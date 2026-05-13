@@ -1,0 +1,58 @@
+name: 🟢 Fast Loop (12h Agentic RAG)
+
+on:
+  schedule:
+    # 04:00 i 16:00 UTC = 06:00 i 18:00 CEST (lato) / 05:00 i 17:00 CET (zima).
+    # GHA cron jest fixed-UTC i nie ma DST — w październiku przy zmianie czasu
+    # na CET godziny przesuwają się o 1h wstecz w czasie polskim.
+    # Aby zachować 6:00/18:00 PL przez cały rok, zmień na '0 5,17 * * *' w CET.
+    # GHA cron to best-effort — opóźnienia 5-60 min są normalne.
+    - cron: '0 4,16 * * *'
+  workflow_dispatch:   # ręczne wymuszenie z panelu Actions
+
+permissions:
+  contents: read       # tylko czytamy kod; Fast Loop nie pisze do repo
+
+jobs:
+  run-market-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # FinOps: twardy limit, by zawieszony job nie zjadał minut
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true   # cache zależności między uruchomieniami
+
+      - name: 📦 Sync dependencies
+        run: uv sync --frozen
+
+      - name: 🧠 Run Agent (LangGraph + XGBoost + LLM)
+        env:
+          # Database
+          SUPABASE_URL:        ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:        ${{ secrets.SUPABASE_KEY }}
+          # LLM
+          OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
+          # Market data
+          FINNHUB_API_KEY:       ${{ secrets.FINNHUB_API_KEY }}
+          # News + Sentiment (CSV - rotacja przy rate-limit)
+          ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
+          # Email raport (opcjonalne — gdy NOTIFICATIONS_ENABLED=true)
+          NOTIFICATIONS_ENABLED: ${{ vars.NOTIFICATIONS_ENABLED || 'false' }}
+          RESEND_API_KEY:        ${{ secrets.RESEND_API_KEY }}
+          DIGEST_FROM_EMAIL:     ${{ vars.DIGEST_FROM_EMAIL || 'onboarding@resend.dev' }}
+          DIGEST_TO_EMAIL:       ${{ vars.DIGEST_TO_EMAIL }}
+          # Agent config (opcjonalnie nadpisz w secrets/variables)
+          VOLATILITY_THRESHOLD: ${{ vars.VOLATILITY_THRESHOLD || '0.02' }}
+          SYMBOLS:             ${{ vars.SYMBOLS || 'AAPL,VOO,CSPX.L' }}
+          ML_MODEL_PATH:       data/models/price_predictor.ubj
+        run: uv run python main_agent.py

@@ -1,0 +1,63 @@
+name: 🔵 Slow Loop (Weekly ML Retraining)
+
+on:
+  schedule:
+    # Niedziela 03:00 UTC — niskie obciążenie serwerów
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # KRYTYCZNE — job musi pushować zaktualizowany .ubj
+
+jobs:
+  retrain-predictive-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          # Token z prawem zapisu (default GITHUB_TOKEN wystarcza
+          # przy ustawionym permissions.contents=write powyżej)
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: 📦 Sync dependencies
+        run: uv sync --frozen
+
+      - name: 📈 Train XGBoost on prediction_logs
+        env:
+          # Slow Loop potrzebuje TYLKO dostępu do bazy (least privilege)
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SYMBOLS:      ${{ vars.SYMBOLS || 'AAPL,VOO,CSPX.L' }}
+          ML_MODEL_PATH: data/models/price_predictor.ubj
+          # Dummy values dla wymaganych przez Settings, ale nieużywanych w Slow Loop
+          OPENAI_API_KEY:         unused-in-slow-loop
+          FINNHUB_API_KEY:        unused-in-slow-loop
+          ALPHA_VANTAGE_API_KEYS: unused-in-slow-loop
+        run: uv run python main_trainer.py
+
+      - name: 💾 Commit and push updated model
+        run: |
+          git config --global user.name "AI Model Trainer"
+          git config --global user.email "ml-trainer@users.noreply.github.com"
+
+          if git diff --quiet data/models/price_predictor.ubj; then
+            echo "Brak zmian w modelu wag po treningu (lub za mało danych)."
+          else
+            git add data/models/price_predictor.ubj
+            git commit -m "chore(ml): update XGBoost model weights [skip ci]"
+            git push
+          fi
