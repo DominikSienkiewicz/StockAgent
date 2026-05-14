@@ -17,6 +17,9 @@ from src.application.report_charts import (
     build_forecast_chart_url,
 )
 from src.application.report_formatting import (
+    company_label as _company_label,
+)
+from src.application.report_formatting import (
     delta_color as _delta_color,
 )
 from src.application.report_formatting import (
@@ -68,6 +71,77 @@ __all__ = [
 ]
 
 _SAFE_URL_SCHEMES = {"http", "https"}
+
+_DIRECTION_LABEL = {
+    "BULLISH": "KUP",
+    "BEARISH": "SPRZEDAJ",
+    "SIDEWAYS": "WSTRZYMAJ",
+}
+
+_DIRECTION_COLOR = {
+    "KUP": "#16a34a",
+    "SPRZEDAJ": "#dc2626",
+    "WSTRZYMAJ": "#737373",
+}
+
+_DIRECTION_BG = {
+    "KUP": "#f0fdf4",
+    "SPRZEDAJ": "#fef2f2",
+    "WSTRZYMAJ": "#f9fafb",
+}
+
+
+def _recommendation(r: SymbolResult) -> str:
+    return _DIRECTION_LABEL.get(r.trend or "", "WSTRZYMAJ")
+
+
+def _recommendation_reason_html(r: SymbolResult) -> str:
+    """Zwraca krótki HTML-owy powód rekomendacji (1–2 zdania)."""
+    direction = _recommendation(r)
+    color = _DIRECTION_COLOR.get(direction, "#737373")
+    bg = _DIRECTION_BG.get(direction, "#f9fafb")
+
+    conf_part = (
+        f"Pewność: <strong>{r.confidence_score * 100:.0f}%</strong>."
+        if r.confidence_score is not None
+        else ""
+    )
+    change_part = ""
+    if r.expected_change is not None:
+        change_part = (
+            f" Prognozowana zmiana: "
+            f"<strong style='color: {_delta_color(r.expected_change)};'>"
+            f"{_pct(r.expected_change, signed=True)}</strong>."
+        )
+    sentiment_part = ""
+    if r.sentiment_score is not None:
+        if r.sentiment_score > 0.2:
+            sentiment_part = " Sentyment rynkowy pozytywny."
+        elif r.sentiment_score < -0.2:
+            sentiment_part = " Sentyment rynkowy negatywny."
+        else:
+            sentiment_part = " Sentyment neutralny."
+
+    return (
+        f"<div style='margin-top: 6px; padding: 6px 10px; background: {bg}; "
+        f"border-radius: 3px; font-size: 12px;'>"
+        f"<span style='font-weight: 700; color: {color};'>➤ {direction}</span> — "
+        f"{conf_part}{change_part}{sentiment_part}"
+        f"</div>"
+    )
+
+
+def _recommendation_reason_text(r: SymbolResult) -> str:
+    direction = _recommendation(r)
+    conf_part = f"pewność {r.confidence_score * 100:.0f}%" if r.confidence_score is not None else ""
+    change_part = (
+        f"prognoza {_pct(r.expected_change, signed=True)}"
+        if r.expected_change is not None
+        else ""
+    )
+    parts = [p for p in [conf_part, change_part] if p]
+    detail = ", ".join(parts)
+    return f"Rekomendacja: {direction}" + (f" ({detail})" if detail else "")
 
 
 def _html(value: object) -> str:
@@ -202,7 +276,7 @@ def _render_html(
                 <span style="font-weight: 700; color: {dir_color}; min-width: 90px;">
                   {sig.direction}
                 </span>
-                <span style="font-weight: 600; min-width: 60px;">{_html(sig.symbol)}</span>
+                <span style="font-weight: 600; min-width: 60px;">{_html(_company_label(sig.symbol))}</span>
                 <span style="color: #4b5563;">
                   pewność <strong>{sig.confidence * 100:.0f}%</strong>
                 </span>
@@ -232,7 +306,7 @@ def _render_html(
               <div style="margin-bottom: 6px; padding: 8px 12px; background: #fffbeb;
                           border-left: 3px solid {sev_color}; border-radius: 4px;
                           font-size: 12px;">
-                <strong>{_html(rs.symbol)}</strong>
+                <strong>{_html(_company_label(rs.symbol))}</strong>
                 <span style="color: {sev_color}; font-weight: 600;">
                   · {type_label.get(rs.type, rs.type)}
                 </span><br/>
@@ -242,12 +316,12 @@ def _render_html(
 
     # Portfolio mood box
     bullish_part = (
-        f"<strong>{_html(mood['most_bullish'].symbol)}</strong> "
+        f"<strong>{_html(_company_label(mood['most_bullish'].symbol))}</strong> "
         f"({mood['most_bullish'].sentiment_score:+.2f})"
         if mood["most_bullish"] else "—"
     )
     bearish_part = (
-        f"<strong>{_html(mood['most_bearish'].symbol)}</strong> "
+        f"<strong>{_html(_company_label(mood['most_bearish'].symbol))}</strong> "
         f"({mood['most_bearish'].sentiment_score:+.2f})"
         if mood["most_bearish"] else "—"
     )
@@ -282,7 +356,7 @@ def _render_html(
               <div style="margin-bottom: 4px; padding: 6px 10px; background: #fafafa;
                           border-left: 3px solid {color}; border-radius: 4px;
                           font-size: 12px;">
-                {mark} <strong>{_html(p.symbol)}</strong>
+                {mark} <strong>{_html(_company_label(p.symbol))}</strong>
                 <span style="color: #6b7280;">·
                   prognoza {_html(_trend_label(p.predicted_trend))} ·
                   trafność <strong style="color: {color};">
@@ -347,7 +421,7 @@ def _render_html(
               <div style="margin-bottom: 8px; padding: 10px 12px; background: #faf5ff;
                           border-left: 3px solid #9333ea; border-radius: 4px;
                           font-size: 12px;">
-                <strong>{_html(r.symbol)}:</strong>
+                <strong>{_html(_company_label(r.symbol))}:</strong>
                 <span style="color: #581c87;">{_html(r.reflection_insight)}</span>
               </div>
             """)
@@ -366,6 +440,7 @@ def _render_html(
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Pewność</th>
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Sentyment</th>
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Newsy</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Rekomendacja</th>
           </tr>
         """)
         for r in saved:
@@ -386,9 +461,11 @@ def _render_html(
                 if r.target_price is not None
                 else "—"
             )
+            rec = _recommendation(r)
+            rec_color = _DIRECTION_COLOR.get(rec, "#737373")
             sections.append(f"""
               <tr>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; font-weight: 600;">{_html(r.symbol)}</td>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; font-weight: 600;">{_html(_company_label(r.symbol))}</td>
                 <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{_money(r.current_price)}</td>
                 <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; color: {_delta_color(r.delta)};">{_pct(r.delta)}</td>
                 <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; color: {_trend_color(r.trend)}; font-weight: 600;">{_html(_trend_label(r.trend))}</td>
@@ -396,6 +473,7 @@ def _render_html(
                 <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{confidence_text}</td>
                 <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{sentiment_text}</td>
                 <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{r.news_volume or 0}</td>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; font-weight: 700; color: {rec_color};">{rec}</td>
               </tr>
             """)
         sections.append("</table>")
@@ -455,10 +533,12 @@ def _render_html(
                     f"<ul style='margin: 4px 0 0 20px; padding: 0;'>{''.join(items)}</ul>"
                     "</div>"
                 )
+            rec_block = _recommendation_reason_html(r)
             sections.append(f"""
               <div style="margin-bottom: 10px; padding: 10px 12px; background: #fafafa; border-left: 3px solid {_trend_color(r.trend)}; border-radius: 4px;">
-                <div style="font-weight: 600; font-size: 13px;">{_html(r.symbol)} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span></div>
+                <div style="font-weight: 600; font-size: 13px;">{_html(_company_label(r.symbol))} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span></div>
                 {move_line}
+                {rec_block}
                 <div style="font-size: 12px; color: #4b5563; margin-top: 6px;">{_html(r.reasoning)}</div>
                 {news_block}
               </div>
@@ -491,7 +571,7 @@ def _render_html(
         for r in errors:
             sections.append(f"""
               <div style="margin-bottom: 8px; padding: 10px; background: #fef2f2; border-left: 3px solid #dc2626; border-radius: 4px; font-size: 12px;">
-                <strong>{_html(r.symbol)}</strong>: {_html(r.error_message)}
+                <strong>{_html(_company_label(r.symbol))}</strong>: {_html(r.error_message)}
               </div>
             """)
 
@@ -543,7 +623,7 @@ def _render_plain(
         lines.append("-" * 64)
         for sig in trade_signals:
             lines.append(
-                f"  {sig.direction:9s} {sig.symbol:6s} "
+                f"  {sig.direction:9s} {_company_label(sig.symbol):40s} "
                 f"pewność {sig.confidence * 100:.0f}%  "
                 f"prognoza {_pct(sig.expected_change, signed=True):>8s}  "
                 f"siła {sig.strength:.2f}"
@@ -561,7 +641,7 @@ def _render_plain(
         }
         for rs in risk_signals:
             lines.append(
-                f"  ⚠ {rs.symbol}: [{type_label.get(rs.type, rs.type)}] {rs.description}"
+                f"  ⚠ {_company_label(rs.symbol)}: [{type_label.get(rs.type, rs.type)}] {rs.description}"
             )
         lines.append("")
 
@@ -573,7 +653,7 @@ def _render_plain(
         for p in resolved_predictions:
             mark = "✅" if p.is_correct else "❌"
             lines.append(
-                f"  {mark} {p.symbol:6s}  trend {_trend_label(p.predicted_trend):11s} "
+                f"  {mark} {_company_label(p.symbol):40s}  trend {_trend_label(p.predicted_trend):11s} "
                 f"trafność {p.accuracy_score * 100:.0f}%"
             )
         lines.append(
@@ -590,10 +670,10 @@ def _render_plain(
     )
     if mood["most_bullish"]:
         mb = mood["most_bullish"]
-        lines.append(f"  Najbardziej pozytywny: {mb.symbol} ({mb.sentiment_score:+.2f})")
+        lines.append(f"  Najbardziej pozytywny: {_company_label(mb.symbol)} ({mb.sentiment_score:+.2f})")
     if mood["most_bearish"]:
         mbe = mood["most_bearish"]
-        lines.append(f"  Najbardziej negatywny: {mbe.symbol} ({mbe.sentiment_score:+.2f})")
+        lines.append(f"  Najbardziej negatywny: {_company_label(mbe.symbol)} ({mbe.sentiment_score:+.2f})")
     lines.append(
         f"  Wysoka pewność (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}"
         f"  ·  Newsów: {mood['total_news']}"
@@ -616,7 +696,7 @@ def _render_plain(
         lines.append("WNIOSKI Z POPRZEDNICH CYKLI (Self-Reflection)")
         lines.append("-" * 64)
         for r in reflections:
-            lines.append(f"  {r.symbol}: {r.reflection_insight}")
+            lines.append(f"  {_company_label(r.symbol)}: {r.reflection_insight}")
         lines.append("")
 
     if saved:
@@ -639,12 +719,14 @@ def _render_plain(
                 if r.sentiment_score is not None
                 else "sentyment —"
             )
+            rec_text = _recommendation_reason_text(r)
             lines.append(
-                f"  {r.symbol:6s} {_money(r.current_price):>10s}  "
+                f"  {_company_label(r.symbol):40s} {_money(r.current_price):>10s}  "
                 f"Δ12h {_pct(r.delta, signed=True):>8s}  →  "
                 f"{_trend_label(r.trend):11s} {forecast_part}{conf_part}"
             )
             lines.append(f"         {sentiment_part}")
+            lines.append(f"         {rec_text}")
             if r.reasoning:
                 lines.append(f"        └ {r.reasoning}")
             for n in r.top_news:
@@ -665,7 +747,7 @@ def _render_plain(
         lines.append("BŁĘDY")
         lines.append("-" * 64)
         for r in errors:
-            lines.append(f"  {r.symbol}: {r.error_message}")
+            lines.append(f"  {_company_label(r.symbol)}: {r.error_message}")
         lines.append("")
 
     return "\n".join(lines)

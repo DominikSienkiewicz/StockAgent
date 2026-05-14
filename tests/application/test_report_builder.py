@@ -16,6 +16,7 @@ from src.application.report_builder import (
     parse_resolved_predictions,
     to_symbol_result,
 )
+from src.application.report_formatting import company_label
 
 
 def _saved_result() -> SymbolResult:
@@ -694,3 +695,156 @@ class TestToSymbolResult:
         assert result.status == "saved"
         assert result.delta is None
         assert result.trend is None
+
+
+class TestCompanyLabel:
+    def test_known_symbol_returns_name(self):
+        assert company_label("AAPL") == "AAPL (Apple Inc.)"
+
+    def test_known_symbol_msft(self):
+        assert company_label("MSFT") == "MSFT (Microsoft Corporation)"
+
+    def test_known_symbol_nvda(self):
+        assert company_label("NVDA") == "NVDA (NVIDIA Corporation)"
+
+    def test_unknown_symbol_returns_symbol_only(self):
+        assert company_label("ZZZZ") == "ZZZZ"
+
+    def test_empty_symbol_returns_empty(self):
+        assert company_label("") == ""
+
+
+class TestCompanyNamesInReport:
+    def test_html_shows_company_name_in_predictions_table(self):
+        r = SymbolResult(
+            symbol="AAPL", status="saved",
+            delta=Decimal("0.025"), current_price=Decimal("298.87"),
+            trend="BULLISH", target_price=Decimal("305.00"),
+            confidence_score=0.85, reasoning="strong macro",
+            sentiment_score=0.42,
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "Apple Inc." in html
+
+    def test_html_shows_company_name_in_reasoning_section(self):
+        r = SymbolResult(
+            symbol="MSFT", status="saved",
+            trend="BULLISH", confidence_score=0.7,
+            current_price=Decimal("400"), target_price=Decimal("420"),
+            reasoning="cloud growth", sentiment_score=0.3,
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "Microsoft Corporation" in html
+
+    def test_html_shows_company_name_in_trade_signals(self):
+        r = SymbolResult(
+            symbol="NVDA", status="saved", trend="BULLISH",
+            confidence_score=0.9, current_price=Decimal("900"),
+            target_price=Decimal("950"),
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "NVIDIA Corporation" in html
+
+    def test_html_does_not_show_company_name_in_ignored_section(self):
+        r = SymbolResult(symbol="AAPL", status="ignored", delta=Decimal("0.001"))
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        # Sekcja "Pominięte" NIE powinna zawierać nazwy spółki
+        ignored_section = html.split("Pominięte")[1] if "Pominięte" in html else ""
+        assert "Apple Inc." not in ignored_section
+
+    def test_html_shows_company_name_in_errors_section(self):
+        r = SymbolResult(symbol="AAPL", status="error", error_message="timeout")
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "Apple Inc." in html
+
+    def test_plain_text_shows_company_name_in_predictions(self):
+        r = SymbolResult(
+            symbol="AAPL", status="saved",
+            delta=Decimal("0.025"), current_price=Decimal("298.87"),
+            trend="BULLISH", target_price=Decimal("305.00"),
+            confidence_score=0.85, reasoning="strong macro",
+            sentiment_score=0.42,
+        )
+        _, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "Apple Inc." in text
+
+    def test_unknown_symbol_shows_only_ticker(self):
+        r = SymbolResult(
+            symbol="ZZZZ", status="saved",
+            trend="SIDEWAYS", confidence_score=0.5,
+            current_price=Decimal("10"), reasoning="no data",
+            sentiment_score=0.0,
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "ZZZZ" in html
+        assert "ZZZZ (" not in html  # Brak nawiasów gdy nazwa nieznana
+
+
+class TestRecommendationInReport:
+    def test_html_shows_kup_for_bullish(self):
+        r = SymbolResult(
+            symbol="AAPL", status="saved", trend="BULLISH",
+            confidence_score=0.8, current_price=Decimal("100"),
+            target_price=Decimal("106"), reasoning="positive outlook",
+            sentiment_score=0.4,
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        # Rekomendacja KUP musi pojawić się w sekcji predykcji/uzasadnień
+        after_header = (
+            html.split("Wygenerowane predykcje")[1]
+            if "Wygenerowane predykcje" in html
+            else html
+        )
+        assert "KUP" in after_header
+
+    def test_html_shows_sprzedaj_for_bearish(self):
+        r = SymbolResult(
+            symbol="TSLA", status="saved", trend="BEARISH",
+            confidence_score=0.75, current_price=Decimal("200"),
+            target_price=Decimal("190"), reasoning="negative outlook",
+            sentiment_score=-0.3,
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        after_header = (
+            html.split("Wygenerowane predykcje")[1]
+            if "Wygenerowane predykcje" in html
+            else html
+        )
+        assert "SPRZEDAJ" in after_header
+
+    def test_html_shows_wstrzymaj_for_sideways(self):
+        r = SymbolResult(
+            symbol="IBM", status="saved", trend="SIDEWAYS",
+            confidence_score=0.6, current_price=Decimal("150"),
+            target_price=Decimal("151"), reasoning="mixed signals",
+            sentiment_score=0.0,
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        after_header = (
+            html.split("Wygenerowane predykcje")[1]
+            if "Wygenerowane predykcje" in html
+            else html
+        )
+        assert "WSTRZYMAJ" in after_header
+
+    def test_html_recommendation_includes_why_reason(self):
+        r = SymbolResult(
+            symbol="AAPL", status="saved", trend="BULLISH",
+            confidence_score=0.8, current_price=Decimal("100"),
+            target_price=Decimal("106"), reasoning="positive outlook",
+            sentiment_score=0.4,
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        # Powinien być powód (pewność / prognoza zmiana)
+        assert "80%" in html  # pewność
+        assert "+6.00%" in html  # prognozowana zmiana
+
+    def test_plain_text_includes_recommendation(self):
+        r = SymbolResult(
+            symbol="AAPL", status="saved", trend="BULLISH",
+            confidence_score=0.8, current_price=Decimal("100"),
+            target_price=Decimal("106"), reasoning="positive outlook",
+            sentiment_score=0.4,
+        )
+        _, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "KUP" in text or "REKOMENDACJA" in text.upper()
