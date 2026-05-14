@@ -36,6 +36,8 @@ dev = [
     "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
+    "testcontainers>=4.14.2",
+    "psycopg2-binary>=2.9.12",
 ]
 
 # Opcjonalna grupa pod przełączenie na Anthropic Claude
@@ -64,6 +66,7 @@ addopts = [
 ]
 markers = [
     "integration: testy integracyjne (sieć / DB) — pomijalne lokalnie",
+    "containers: testy z Docker (testcontainers) — wymagają działającego demona Docker",
 ]
 
 # ---------------------------------------------------------------------------

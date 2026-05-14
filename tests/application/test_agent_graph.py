@@ -16,6 +16,16 @@ from src.application.ports import (
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.value_objects import Money, Threshold
 
+EXPECTED_ML_FEATURES = [
+    "price_delta",
+    "av_sentiment_score",
+    "av_relevance_avg",
+    "news_volume_24h",
+    "high_relevance_count",
+    "llm_trend_signal",
+    "av_llm_agreement",
+]
+
 
 @pytest.fixture
 def market_port() -> Mock:
@@ -87,7 +97,13 @@ def _setup_full_analysis_mocks(
     has_prior_prediction: bool = False,
 ) -> None:
     """Boilerplate — komplet mocków dla pełnej ścieżki analizy."""
-    sentiment_port.get_social_score.return_value = {"galaxy_score": 85, "sentiment": "bearish"}
+    sentiment_port.get_social_score.return_value = {
+        "av_sentiment_score": -0.42,
+        "av_relevance_avg": 0.72,
+        "news_volume_24h": 4,
+        "high_relevance_count": 2,
+        "av_sentiment_label": "Bearish",
+    }
     news_port.get_news_context.return_value = [
         {"title": "Reuters: Fed keeps rates", "source": "Reuters"}
     ]
@@ -105,6 +121,7 @@ def _setup_full_analysis_mocks(
     llm_port.analyze.return_value = {
         "trend_direction": "BEARISH",
         "confidence_score": 0.85,
+        "av_agreement": 0.25,
         "target_price_12h": 88.0,
         "reasoning": "Strong negative sentiment + macro headwinds.",
     }
@@ -400,6 +417,53 @@ class TestColdStartBaseline:
 
         assert final["ml_target_price"] == Decimal("89.5")   # z ml_port.predict
         ml_port.predict.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Kontrakt cech ML — trening i predykcja muszą używać identycznych nazw
+# ---------------------------------------------------------------------------
+
+
+class TestMlFeatureContract:
+    def test_prediction_uses_full_training_feature_contract(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ml_port.is_trained = True
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        features = ml_port.predict.call_args.args[0]
+        assert list(features) == EXPECTED_ML_FEATURES
+        assert features["price_delta"] == -0.1
+        assert features["av_sentiment_score"] == -0.42
+        assert features["av_relevance_avg"] == 0.72
+        assert features["news_volume_24h"] == 4.0
+        assert features["high_relevance_count"] == 2.0
+        assert features["llm_trend_signal"] == -1.0
+        assert features["av_llm_agreement"] == 0.25
+
+    def test_save_persists_ml_feature_inputs_for_slow_loop(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        saved_record = repository_port.save_prediction.call_args.args[0]
+        assert saved_record["sentiment_score"] == -0.42
+        assert saved_record["av_relevance_avg"] == 0.72
+        assert saved_record["news_volume_24h"] == 4
+        assert saved_record["high_relevance_count"] == 2
+        assert saved_record["av_llm_agreement"] == 0.25
 
 
 # ---------------------------------------------------------------------------

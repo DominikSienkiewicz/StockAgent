@@ -6,6 +6,7 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from src.application.ml_features import ML_FEATURE_COLUMNS
 from src.application.ports import (
     EmbeddingPort,
     LLMPort,
@@ -48,6 +49,15 @@ def _summarize_news(news: list[dict[str, Any]]) -> str:
     """Konkatenacja tytułów najnowszych newsów w jednej linijce (dla promptu)."""
     titles = [item.get("title", "") for item in news[:5]]
     return " | ".join(t for t in titles if t)
+
+
+def _float_or_default(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def create_agent_graph(
@@ -165,17 +175,26 @@ def create_agent_graph(
             llm_analysis.get("trend_direction", "SIDEWAYS"), 0
         )
         # Cross-validation: czy LLM zgodził się z AV (Phase B)
-        av_llm_agreement = float(llm_analysis.get("av_agreement", 0.5) or 0.5)
+        av_llm_agreement = _float_or_default(llm_analysis.get("av_agreement"), 0.5)
 
-        features = {
-            "price_delta":          float(state["delta"]),
-            "av_sentiment_score":   float(sentiment.get("av_sentiment_score", 0) or 0),
-            "av_relevance_avg":     float(sentiment.get("av_relevance_avg", 0) or 0),
-            "news_volume_24h":      float(sentiment.get("news_volume_24h", 0) or 0),
-            "high_relevance_count": float(sentiment.get("high_relevance_count", 0) or 0),
-            "llm_trend_signal":     float(llm_trend_signal),
-            "av_llm_agreement":     av_llm_agreement,
+        raw_features = {
+            "price_delta": float(state["delta"]),
+            "av_sentiment_score": _float_or_default(
+                sentiment.get("av_sentiment_score"), 0.0
+            ),
+            "av_relevance_avg": _float_or_default(
+                sentiment.get("av_relevance_avg"), 0.0
+            ),
+            "news_volume_24h": _float_or_default(
+                sentiment.get("news_volume_24h"), 0.0
+            ),
+            "high_relevance_count": _float_or_default(
+                sentiment.get("high_relevance_count"), 0.0
+            ),
+            "llm_trend_signal": float(llm_trend_signal),
+            "av_llm_agreement": av_llm_agreement,
         }
+        features = {name: raw_features[name] for name in ML_FEATURE_COLUMNS}
         # Cold-start guard: dopóki XGBoost nie ma wytrenowanych wag (pierwsze
         # tygodnie działania, przed pierwszym Slow Loop), używamy baseline
         # "cena bez zmian". Agent działa, LLM nadal daje trend; gdy model się
@@ -201,6 +220,12 @@ def create_agent_graph(
             # Zapisujemy nowy główny sygnał sentymentu (AV) jako sentiment_score.
             # Schema bazy nie wymaga zmian — pole jest generyczne.
             "sentiment_score": sentiment.get("av_sentiment_score"),
+            "av_relevance_avg": sentiment.get("av_relevance_avg"),
+            "news_volume_24h": sentiment.get("news_volume_24h"),
+            "high_relevance_count": sentiment.get("high_relevance_count"),
+            "av_llm_agreement": _float_or_default(
+                llm_analysis.get("av_agreement"), 0.5
+            ),
             "news_summary": news_summary,
             "predicted_trend": llm_analysis.get("trend_direction"),
             "predicted_target_price": state.get("ml_target_price"),

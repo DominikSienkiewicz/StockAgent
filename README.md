@@ -128,7 +128,7 @@ All sections are **conditional** — they only render when data exists. The firs
 - **QuickChart.io** — URL-based charts (`<img src>` in HTML), zero dependency
 - **Pydantic Settings** v2 — typed env vars from `.env` with validators (CSV → list)
 - **requests** + `urllib3.Retry` — shared session with exponential backoff on 429 / 5xx
-- **pytest 9** + **pytest-mock** — 266 tests (mocked requests, supabase, OpenAI)
+- **pytest 9** + **pytest-mock** — 277 passing tests + 7 skipped live API tests
 - **ruff** — lint (E, W, F, I, B, UP, SIM rule sets)
 - **mypy** strict mode — every file fully typed
 - **GitHub Actions CI** — ruff + mypy + pytest on every push / PR
@@ -163,8 +163,9 @@ cp .env.example .env
 #   migrations/001_init.sql        (prediction_logs + ml_feature_store)
 #   migrations/002_price_snapshots.sql  (price_snapshots — breaks cold-start)
 #   migrations/003_add_embedding.sql    (embedding VECTOR(1536) + pgvector index)
+#   migrations/004_align_ml_feature_store.sql  (7-feature XGBoost contract)
 
-# 4. Smoke test (expect 259 tests passing + 7 skipped integration)
+# 4. Smoke test (expect 277 tests passing + 7 skipped live API tests)
 uv run pytest
 
 # 5. Single Fast Loop run
@@ -208,9 +209,10 @@ uv sync                            # install deps
 uv sync --extra anthropic          # + Anthropic SDK
 uv run python main_agent.py        # one Fast Loop run (analysis + email)
 uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain)
-uv run pytest                      # 266 tests
-uv run pytest -m "not integration" # unit only (what CI runs)
-uv run pytest -m integration       # integration only (requires real keys)
+uv run pytest                                   # full local suite
+uv run pytest -m "not integration and not containers" # unit only
+uv run pytest -m containers                    # Docker/Postgres schema tests
+uv run pytest -m integration                   # live API tests (requires real keys)
 uv run ruff check src tests        # lint
 uv run mypy src                    # type check (strict)
 ```

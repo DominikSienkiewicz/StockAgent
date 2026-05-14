@@ -37,10 +37,16 @@ def main(settings: Settings | None = None) -> int:
     use_case = build_use_case(settings)
 
     logger.info("Slow Loop start — symbols=%s", settings.symbols)
+    try:
+        use_case.refresh_feature_store()
+    except Exception:
+        logger.exception("Failed to refresh feature store")
+        return 1
+
     failures = 0
     for symbol in settings.symbols:
         try:
-            result = use_case.run(symbol)
+            result = use_case.run(symbol, refresh_view=False)
             logger.info("%s: %s", symbol, result)
         except Exception:
             logger.exception("Training failed for symbol %s", symbol)

@@ -116,7 +116,10 @@ class TestMainTrainer:
         exit_code = main_trainer.main(settings)
 
         assert exit_code == 0
+        fake_uc.refresh_feature_store.assert_called_once()
         assert fake_uc.run.call_count == len(settings.symbols)
+        assert fake_uc.run.call_args_list[0].kwargs == {"refresh_view": False}
+        assert fake_uc.run.call_args_list[1].kwargs == {"refresh_view": False}
 
     def test_main_returns_one_on_training_failure(
         self, settings, mock_external_clients, mocker
@@ -128,3 +131,15 @@ class TestMainTrainer:
         exit_code = main_trainer.main(settings)
 
         assert exit_code == 1
+
+    def test_main_returns_one_when_feature_store_refresh_fails(
+        self, settings, mock_external_clients, mocker
+    ):
+        fake_uc = MagicMock()
+        fake_uc.refresh_feature_store.side_effect = RuntimeError("DB down")
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+
+        exit_code = main_trainer.main(settings)
+
+        assert exit_code == 1
+        fake_uc.run.assert_not_called()

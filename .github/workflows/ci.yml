@@ -12,7 +12,7 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: 📥 Checkout repository
@@ -39,5 +39,9 @@ jobs:
 
       - name: 🧪 Pytest (unit tests)
         # Integration tests (-m integration) wymagają prawdziwych kluczy API —
-        # pomijane w CI, uruchamiane tylko lokalnie / w dedykowanym jobie.
-        run: uv run pytest -m "not integration"
+        # pomijane w CI. Testy kontenerowe uruchamiamy jawnie w następnym kroku.
+        run: uv run pytest -m "not integration and not containers"
+
+      - name: 🐳 Pytest (container schema tests)
+        # Testy migracji SQL odpalają Postgres + pgvector przez testcontainers.
+        run: uv run pytest -m containers

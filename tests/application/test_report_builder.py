@@ -570,6 +570,63 @@ class TestClickableNewsLinks:
         assert "<a href" not in html.split("No URL news")[0][-200:]
 
 
+class TestHtmlEscaping:
+    def test_escapes_llm_news_and_error_text(self):
+        r = SymbolResult(
+            symbol="<NVDA>",
+            status="saved",
+            reasoning="<script>alert(1)</script>",
+            sentiment_score=0.3,
+            top_news=[
+                TopNewsItem(
+                    title="<b>bad</b>",
+                    source="<src>",
+                    url="https://example.com/?a=1&b=2",
+                    relevance=0.9,
+                    sentiment=0.2,
+                )
+            ],
+        )
+        err = SymbolResult(
+            symbol="<ERR>",
+            status="error",
+            error_message="<img src=x onerror=alert(1)>",
+        )
+
+        html, _ = build_html_report(
+            [r, err], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+        )
+
+        assert "<script>" not in html
+        assert "<img src=x" not in html
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+        assert "&lt;b&gt;bad&lt;/b&gt;" in html
+        assert "&lt;src&gt;" in html
+        assert "https://example.com/?a=1&amp;b=2" in html
+
+    def test_rejects_unsafe_news_url(self):
+        r = SymbolResult(
+            symbol="X",
+            status="saved",
+            reasoning="r",
+            sentiment_score=0.3,
+            top_news=[
+                TopNewsItem(
+                    title="unsafe link",
+                    source="Reuters",
+                    url="javascript:alert(1)",
+                    relevance=0.9,
+                    sentiment=0.2,
+                )
+            ],
+        )
+
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+        assert "javascript:alert" not in html
+        assert "<a href" not in html.split("unsafe link")[0][-200:]
+
+
 class TestToSymbolResult:
     def test_maps_saved_status(self):
         raw = {

@@ -9,7 +9,15 @@ from src.application.ports import MLPredictionPort
 from src.domain.value_objects import Money
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 
-FEATURE_NAMES = ["price_delta", "sentiment_score", "llm_trend_signal"]
+FEATURE_NAMES = [
+    "price_delta",
+    "av_sentiment_score",
+    "av_relevance_avg",
+    "news_volume_24h",
+    "high_relevance_count",
+    "llm_trend_signal",
+    "av_llm_agreement",
+]
 
 
 def _synthetic_dataset(n: int = 120) -> tuple[pd.DataFrame, pd.Series]:
@@ -21,12 +29,20 @@ def _synthetic_dataset(n: int = 120) -> tuple[pd.DataFrame, pd.Series]:
     features = pd.DataFrame(
         {
             "price_delta": rng.normal(0, 0.05, n),
-            "sentiment_score": rng.uniform(0, 100, n),
+            "av_sentiment_score": rng.uniform(-1, 1, n),
+            "av_relevance_avg": rng.uniform(0, 1, n),
+            "news_volume_24h": rng.integers(0, 12, n).astype(float),
+            "high_relevance_count": rng.integers(0, 5, n).astype(float),
             "llm_trend_signal": rng.choice([-1, 0, 1], size=n).astype(float),
+            "av_llm_agreement": rng.uniform(0, 1, n),
         }
     )
     target = pd.Series(
-        100 + features["price_delta"] * 50 + features["sentiment_score"] * 0.1
+        100
+        + features["price_delta"] * 50
+        + features["av_sentiment_score"] * 8
+        + features["llm_trend_signal"] * 2
+        + features["av_llm_agreement"] * 3
     )
     return features, target
 
@@ -65,23 +81,54 @@ class TestTrain:
         assert Path(model_path).exists()
         assert Path(model_path).stat().st_size > 0
 
+    def test_returns_validation_metrics(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset()
+        result = adapter.train(features, target)
+
+        assert result["validation_rmse"] < result["baseline_rmse"]
+
+    def test_skips_save_when_model_does_not_beat_baseline(
+        self, adapter: XGBoostAdapter, model_path: str
+    ):
+        features, _ = _synthetic_dataset(n=80)
+        target = pd.Series([100.0] * 80)
+
+        result = adapter.train(features, target)
+
+        assert result["status"] == "skipped_validation_failed"
+        assert not Path(model_path).exists()
+        assert adapter.is_trained is False
+
 
 class TestPredict:
     def test_returns_money_instance(self, trained_adapter: XGBoostAdapter):
-        features = {"price_delta": 0.02, "sentiment_score": 75.0, "llm_trend_signal": 1.0}
+        features = dict.fromkeys(FEATURE_NAMES, 0.0)
+        features.update({
+            "price_delta": 0.02,
+            "av_sentiment_score": 0.5,
+            "av_relevance_avg": 0.75,
+            "news_volume_24h": 4.0,
+            "high_relevance_count": 2.0,
+            "llm_trend_signal": 1.0,
+            "av_llm_agreement": 0.8,
+        })
         prediction = trained_adapter.predict(features)
         assert isinstance(prediction, Money)
 
     def test_prediction_is_finite_positive_for_typical_input(
         self, trained_adapter: XGBoostAdapter
     ):
-        features = {"price_delta": 0.0, "sentiment_score": 50.0, "llm_trend_signal": 0.0}
+        features = dict.fromkeys(FEATURE_NAMES, 0.0)
+        features.update({
+            "av_relevance_avg": 0.5,
+            "news_volume_24h": 3.0,
+            "av_llm_agreement": 0.5,
+        })
         prediction = trained_adapter.predict(features)
-        # syntetyczny model dla x=0, sentiment=50 → ~105
         assert Decimal("80") < prediction.amount < Decimal("130")
 
     def test_raises_when_model_not_trained(self, adapter: XGBoostAdapter):
-        features = {"price_delta": 0.0, "sentiment_score": 50.0, "llm_trend_signal": 0.0}
+        features = dict.fromkeys(FEATURE_NAMES, 0.0)
         with pytest.raises(RuntimeError, match="not trained"):
             adapter.predict(features)
 
@@ -92,7 +139,16 @@ class TestModelPersistence:
     ):
         # Pierwszy adapter trenuje i zapisuje. Drugi czyta z dysku.
         reloaded = XGBoostAdapter(model_path=model_path)
-        features = {"price_delta": 0.02, "sentiment_score": 75.0, "llm_trend_signal": 1.0}
+        features = dict.fromkeys(FEATURE_NAMES, 0.0)
+        features.update({
+            "price_delta": 0.02,
+            "av_sentiment_score": 0.5,
+            "av_relevance_avg": 0.75,
+            "news_volume_24h": 4.0,
+            "high_relevance_count": 2.0,
+            "llm_trend_signal": 1.0,
+            "av_llm_agreement": 0.8,
+        })
 
         original = trained_adapter.predict(features)
         from_disk = reloaded.predict(features)

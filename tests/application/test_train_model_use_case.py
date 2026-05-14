@@ -9,6 +9,16 @@ from src.application.use_cases.train_model import (
     TrainModelUseCase,
 )
 
+EXPECTED_ML_FEATURES = [
+    "price_delta",
+    "av_sentiment_score",
+    "av_relevance_avg",
+    "news_volume_24h",
+    "high_relevance_count",
+    "llm_trend_signal",
+    "av_llm_agreement",
+]
+
 
 @pytest.fixture
 def ml_port() -> Mock:
@@ -31,8 +41,12 @@ def _feature_store_rows(n: int) -> list[dict]:
         {
             "price_current": 100.0 + i * 0.5,
             "price_prev_12h": 99.0 + i * 0.5,
-            "sentiment_score": 70.0 + (i % 10),
+            "av_sentiment_score": -0.5 + (i % 10) / 10,
+            "av_relevance_avg": 0.5 + (i % 5) / 10,
+            "news_volume_24h": 1 + (i % 8),
+            "high_relevance_count": i % 3,
             "llm_trend_signal": (i % 3) - 1,
+            "av_llm_agreement": 0.4 + (i % 6) / 10,
             "target_price": 101.0 + i * 0.5,
         }
         for i in range(n)
@@ -40,6 +54,13 @@ def _feature_store_rows(n: int) -> list[dict]:
 
 
 class TestRun:
+    def test_refresh_feature_store_delegates_to_repository(
+        self, use_case, repository_port
+    ):
+        use_case.refresh_feature_store()
+
+        repository_port.refresh_feature_store.assert_called_once()
+
     def test_returns_not_enough_data_when_below_minimum(
         self, use_case, repository_port, ml_port
     ):
@@ -63,6 +84,16 @@ class TestRun:
         assert result["status"] == "skipped"
         ml_port.train.assert_not_called()
 
+    def test_can_skip_feature_store_refresh(
+        self, use_case, repository_port, ml_port
+    ):
+        repository_port.get_feature_store_data.return_value = []
+
+        use_case.run("AAPL", refresh_view=False)
+
+        repository_port.refresh_feature_store.assert_not_called()
+        ml_port.train.assert_not_called()
+
     def test_trains_model_with_correct_features_and_target(
         self, use_case, repository_port, ml_port
     ):
@@ -76,10 +107,7 @@ class TestRun:
         ml_port.train.assert_called_once()
         features, target = ml_port.train.call_args.args
         assert isinstance(features, pd.DataFrame)
-        # Feature engineering: zawsze dorzucamy price_delta
-        assert "price_delta" in features.columns
-        assert "sentiment_score" in features.columns
-        assert "llm_trend_signal" in features.columns
+        assert list(features.columns) == EXPECTED_ML_FEATURES
         # Target = target_price (z widoku)
         assert isinstance(target, pd.Series)
         assert len(features) == len(target)

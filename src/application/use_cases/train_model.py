@@ -4,6 +4,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.application.ml_features import ML_FEATURE_COLUMNS, TARGET_COLUMN
 from src.application.ports import MLPredictionPort, RepositoryPort
 
 # Minimalna liczba próbek, by trening miał sens (zapobiega overfittingowi na 2 rekordach).
@@ -23,6 +24,9 @@ class TrainModelUseCase:
     def __init__(self, ml_port: MLPredictionPort, db_port: RepositoryPort) -> None:
         self._ml_port = ml_port
         self._db_port = db_port
+
+    def refresh_feature_store(self) -> None:
+        self._db_port.refresh_feature_store()
 
     def run(self, symbol: str, refresh_view: bool = True) -> dict[str, Any]:
         if refresh_view:
@@ -45,12 +49,19 @@ class TrainModelUseCase:
         df["price_delta"] = (
             (df["price_current"] - df["price_prev_12h"]) / df["price_prev_12h"]
         )
-        required_columns = [
-            "price_delta", "sentiment_score", "llm_trend_signal", "target_price"
-        ]
+        required_columns = [*ML_FEATURE_COLUMNS, TARGET_COLUMN]
         df = df.dropna(subset=required_columns)
 
-        features = df[["price_delta", "sentiment_score", "llm_trend_signal"]]
-        target = df["target_price"]
+        if len(df) < MIN_SAMPLES_FOR_TRAINING:
+            return {
+                "status": "skipped",
+                "reason": (
+                    f"Not enough valid samples for '{symbol}' "
+                    f"({len(df)} < {MIN_SAMPLES_FOR_TRAINING})."
+                ),
+            }
+
+        features = df[list(ML_FEATURE_COLUMNS)]
+        target = df[TARGET_COLUMN]
 
         return self._ml_port.train(features, target)

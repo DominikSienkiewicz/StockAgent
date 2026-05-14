@@ -1,0 +1,80 @@
+# AGENTS.md — zasady pracy w repo StockAgent
+
+## Stack i narzędzia
+
+- **Python 3.12**, manager zależności: **`uv`** (nie `pip`!). Każda komenda przez `uv run ...`.
+- Dodanie zależności: `uv add <pkg>`; w zmianie uwzględnij **oba** `pyproject.toml` + `uv.lock`.
+- macOS: XGBoost wymaga `brew install libomp` (jednorazowo).
+
+## Quality gate — przed zgłoszeniem pracy jako gotowej
+
+Każda zmiana w kodzie musi przejść **wszystkie trzy**:
+
+```bash
+uv run ruff check src tests main_agent.py main_trainer.py
+uv run mypy src main_agent.py main_trainer.py      # strict mode
+uv run pytest
+```
+
+Nie zgłaszaj pracy jako ukończonej, dopóki te trzy nie są zielone.
+
+## Architektura — Hexagonal + DDD
+
+Kierunek zależności jest **jednokierunkowy**, nie wolno go odwracać:
+
+```
+domain  ←  application  ←  infrastructure
+```
+
+- **`src/domain/`** — czysta logika biznesowa. **Zero importów zewnętrznych** (brak
+  `requests`, `pandas`, `openai`, `langgraph` itd.). Tylko stdlib + inne moduły domeny.
+- **`src/application/`** — porty (interfejsy ABC w `ports.py`), use cases, graf
+  LangGraph, prompty, report builder. Zna `domain`, **nie zna** konkretnych adapterów.
+- **`src/infrastructure/`** — adaptery implementujące porty. Jedyne miejsce z I/O.
+- **`main_agent.py` / `main_trainer.py`** — DI Container. Jedyne miejsce, gdzie
+  konkretne adaptery są łączone z use case'ami.
+
+Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
+`infrastructure/`. Nigdy nie wstrzykuj konkretnej klasy infrastruktury do `application`.
+
+## Konwencje testów
+
+- Każdy port ma testy z mockami; każdy adapter ma testy jednostkowe (mock sieci)
+  + opcjonalnie integracyjne.
+- Adaptery HTTP: testy mockują **`requests.Session.get` / `requests.Session.post`**
+  (adaptery wołają przez `self._session` z `_http.build_session()`, nie przez gołe `requests`).
+- Testy integracyjne (prawdziwe API): oznaczone `@pytest.mark.integration`,
+  pomijane bez kluczy w env. CI uruchamia testy bez integracji oraz osobny zestaw
+  `@pytest.mark.containers`.
+- Mocki portów: `Mock(spec=SomePort)`.
+
+## Reguły domenowe / FinOps
+
+- **Bramka volatility**: płatne porty (LLM, Alpha Vantage, embeddingi) **nie mogą**
+  być wołane, gdy zmiana ceny < `volatility_threshold`. Logika progu żyje w domenie
+  (`Asset.evaluate_volatility`) — graf jest tylko wykonawcą.
+- **Cold-start**: `check_price_node` zapisuje snapshot ceny w KAŻDYM cyklu
+  (`price_snapshots`), żeby następny cykl miał punkt odniesienia.
+- **Self-Reflection**: `reflect_node` działa PRZED bramką volatility — ocena
+  przeszłej predykcji jest niezależna od tego, czy bieżący cykl robi nową prognozę.
+- **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. `main_agent.main()`
+  zwraca exit 1 tylko gdy **wszystkie** symbole padły.
+
+## Sekrety
+
+- **Nigdy** nie commituj `.env`. Do `.env.example` wpisuj wyłącznie placeholdery.
+- Klucze API w GitHub Actions: jako Repository Secrets (workflowy czytają `${{ secrets.* }}`).
+
+## Język
+
+- Komentarze w kodzie i treść raportu mailowego: **polski**.
+- `README.md`: **angielski**.
+- Identyfikatory (klasy, funkcje, zmienne): angielski.
+
+## Znane kompromisy
+
+- `agent_graph.py` ma per-file override w `[tool.mypy]` (`disable_error_code = ["arg-type"]`)
+  — typing stubs LangGraph 1.x nie inferują `StateGraph[AgentState]` poprawnie.
+  Runtime jest poprawny; nie usuwaj override'u bez weryfikacji.
+- `report_builder.py` ma `E501` wyłączone (per-file w ruff) — inline HTML
+  templating ma naturalnie długie linie.
