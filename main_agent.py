@@ -163,7 +163,13 @@ def main(settings: Settings | None = None) -> int:
     except Exception:
         logger.exception("Failed to send report")
 
-    return 1 if failures else 0
+    # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).
+    # Pojedyncze błędy per-symbol (np. ticker niewspierany przez Finnhub free)
+    # są raportowane w mailu i nie powinny psuć całego cyklu w GHA.
+    total = len(settings.symbols)
+    if total > 0 and failures == total:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

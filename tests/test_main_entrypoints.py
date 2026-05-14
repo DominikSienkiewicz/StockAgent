@@ -75,13 +75,31 @@ class TestMainAgent:
         assert exit_code == 0
         assert fake_uc.run.call_count == len(settings.symbols)
 
-    def test_main_returns_one_on_any_failure(self, settings, mock_external_clients, mocker):
+    def test_main_returns_zero_on_partial_failure(
+        self, settings, mock_external_clients, mocker
+    ):
+        """Pojedyncze błędy per-symbol (np. niewspierany ticker) → exit 0.
+        Agent zrobił swoją robotę dla pozostałych, raport poszedł."""
+        fake_uc = MagicMock()
+        # 1 symbol pada, 1 przechodzi → częściowy sukces
+        fake_uc.run.side_effect = [
+            RuntimeError("CSPX.L unsupported"),
+            {"status": "ignored", "delta": Decimal("0")},
+        ]
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+
+        exit_code = main_agent.main(settings)
+        assert exit_code == 0
+
+    def test_main_returns_one_when_all_symbols_fail(
+        self, settings, mock_external_clients, mocker
+    ):
+        """Catastrophic failure (np. bad credentials, network down) → exit 1."""
         fake_uc = MagicMock()
         fake_uc.run.side_effect = RuntimeError("API down")
         mocker.patch("main_agent.build_use_case", return_value=fake_uc)
 
         exit_code = main_agent.main(settings)
-
         assert exit_code == 1
 
 

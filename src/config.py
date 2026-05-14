@@ -45,8 +45,9 @@ class Settings(BaseSettings):
     # ----- Agent config -----
     volatility_threshold: Decimal = Field(default=Decimal("0.02"))
     # NoDecode wyłącza próbę JSON-parse'owania env var — używamy własnego validatora CSV.
+    # Default to małe smoke-test portfolio; w produkcji nadpisz przez SYMBOLS env var.
     symbols: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["AAPL", "VOO", "CSPX.L"]
+        default_factory=lambda: ["AAPL", "MSFT", "NVDA"]
     )
 
     # ----- ML -----
