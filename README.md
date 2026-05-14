@@ -162,6 +162,7 @@ cp .env.example .env
 # Open Supabase → SQL Editor → paste & run, in order:
 #   migrations/001_init.sql        (prediction_logs + ml_feature_store)
 #   migrations/002_price_snapshots.sql  (price_snapshots — breaks cold-start)
+#   migrations/003_add_embedding.sql    (embedding VECTOR(1536) + pgvector index)
 
 # 4. Smoke test (expect 259 tests passing + 7 skipped integration)
 uv run pytest
