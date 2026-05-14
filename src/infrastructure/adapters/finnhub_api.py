@@ -34,6 +34,11 @@ class FinnhubAdapter(MarketDataPort):
             params={"symbol": symbol, "token": self._api_key},
             timeout=self._timeout,
         )
+        if response.status_code == 403:
+            raise ValueError(
+                f"Ticker '{symbol}' is not supported by Finnhub free tier (403 Forbidden). "
+                "LSE tickers with dot notation (e.g. CSPX.L) require a paid plan."
+            )
         response.raise_for_status()
 
         payload = response.json()

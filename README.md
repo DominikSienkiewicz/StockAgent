@@ -245,15 +245,6 @@ All tunable parameters live in [`src/config.py`](src/config.py) as a `Settings` 
 
 Plus internal constants in `report_builder.py` (`DIVERGENCE_PRICE_THRESHOLD = 0.02`, `AV_LLM_CONFLICT_THRESHOLD = 0.3`, `LOW_SIGNAL_NEWS_THRESHOLD = 3`, `HIGH_RELEVANCE_BAR = 0.8`) and `xgboost_local.py` (hyperparameters `max_depth=4, eta=0.1, subsample=0.8`).
 
-## Architecture decisions
-
-- [`docs/02-architecture-overview.md`](docs/02-architecture-overview.md) — Hexagonal + DDD, Dual-Loop Engine (Fast 12h + Slow weekly)
-- [`docs/10-ports-and-adapters.md`](docs/10-ports-and-adapters.md) — 8 ports, adapter swap without touching the domain
-- [`docs/13-prompts-and-self-reflection.md`](docs/13-prompts-and-self-reflection.md) — XML prompts for Claude/GPT-4o, AV ↔ LLM cross-validation
-- [`docs/14-ml-hybrid-xgboost.md`](docs/14-ml-hybrid-xgboost.md) — Ensemble LLM + XGBoost, Continual Learning
-
-Full documentation (17 files) in [`docs/`](docs/README.md).
-
 ## Disclaimer
 
 Educational / proof-of-concept project demonstrating expertise in Agentic AI, Hexagonal Architecture, and FinOps. **Generated predictions do not constitute investment advice.** Make financial decisions at your own risk, after consulting a licensed advisor.

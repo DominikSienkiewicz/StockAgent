@@ -21,6 +21,15 @@ def _ok_response(payload: dict, status_code: int = 200) -> Mock:
     return response
 
 
+def _error_response(status_code: int) -> Mock:
+    response = Mock(spec=requests.Response)
+    response.status_code = status_code
+    response.raise_for_status.side_effect = requests.HTTPError(
+        f"{status_code} Client Error"
+    )
+    return response
+
+
 class TestGetCurrentPrice:
     def test_returns_money_from_finnhub_quote(self, adapter, mocker):
         mock_get = mocker.patch(
@@ -59,15 +68,23 @@ class TestGetCurrentPrice:
         assert mock_get.call_args.kwargs["timeout"] > 0
 
     def test_raises_on_http_error(self, adapter, mocker):
-        response = Mock(spec=requests.Response)
-        response.raise_for_status.side_effect = requests.HTTPError("401 Unauthorized")
         mocker.patch(
             "requests.Session.get",
-            return_value=response,
+            return_value=_error_response(401),
         )
 
         with pytest.raises(requests.HTTPError):
             adapter.get_current_price("AAPL")
+
+    def test_raises_value_error_for_403_unsupported_ticker(self, adapter, mocker):
+        # Finnhub free tier returns 403 for LSE tickers like CSPX.L
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_error_response(403),
+        )
+
+        with pytest.raises(ValueError, match="not supported"):
+            adapter.get_current_price("CSPX.L")
 
     def test_raises_value_error_when_response_lacks_price(self, adapter, mocker):
         # Finnhub przy nieznanym tickerze zwraca 200 + {"c": 0, ...} albo brak klucza
