@@ -34,7 +34,7 @@ _SAMPLE_RESPONSE = {
 class TestGetSocialScore:
     def test_returns_normalized_metrics_dict(self, adapter, mocker):
         mocker.patch(
-            "src.infrastructure.adapters.lunarcrush_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_RESPONSE),
         )
 
@@ -47,7 +47,7 @@ class TestGetSocialScore:
 
     def test_passes_bearer_token_in_authorization_header(self, adapter, mocker):
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.lunarcrush_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_RESPONSE),
         )
 
@@ -58,7 +58,7 @@ class TestGetSocialScore:
 
     def test_url_contains_symbol(self, adapter, mocker):
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.lunarcrush_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_RESPONSE),
         )
 
@@ -70,7 +70,7 @@ class TestGetSocialScore:
 
     def test_sets_request_timeout(self, adapter, mocker):
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.lunarcrush_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_RESPONSE),
         )
 
@@ -82,7 +82,7 @@ class TestGetSocialScore:
         response = Mock(spec=requests.Response)
         response.raise_for_status.side_effect = requests.HTTPError("429 Too Many Requests")
         mocker.patch(
-            "src.infrastructure.adapters.lunarcrush_api.requests.get",
+            "requests.Session.get",
             return_value=response,
         )
 
@@ -92,7 +92,7 @@ class TestGetSocialScore:
     def test_returns_empty_metrics_when_data_missing(self, adapter, mocker):
         # LunarCrush przy nieznanym tickerze może zwrócić 200 z pustym data
         mocker.patch(
-            "src.infrastructure.adapters.lunarcrush_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({"data": {}}),
         )
 

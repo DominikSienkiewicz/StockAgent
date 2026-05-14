@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import requests
-
 from src.application.ports import MarketDataPort
 from src.domain.value_objects import Money
+from src.infrastructure.adapters._http import build_session
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10  # sekundy
@@ -27,9 +26,10 @@ class FinnhubAdapter(MarketDataPort):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._session = build_session()
 
     def get_current_price(self, symbol: str) -> Money:
-        response = requests.get(
+        response = self._session.get(
             f"{self._base_url}/quote",
             params={"symbol": symbol, "token": self._api_key},
             timeout=self._timeout,

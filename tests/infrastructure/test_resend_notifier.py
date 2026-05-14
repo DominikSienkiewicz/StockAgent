@@ -31,7 +31,7 @@ class TestResendNotifier:
 
     def test_posts_to_emails_endpoint(self, notifier, mocker):
         mock_post = mocker.patch(
-            "src.infrastructure.adapters.resend_notifier.requests.post",
+            "requests.Session.post",
             return_value=_ok_response(),
         )
 
@@ -42,7 +42,7 @@ class TestResendNotifier:
 
     def test_passes_bearer_token_in_authorization(self, notifier, mocker):
         mock_post = mocker.patch(
-            "src.infrastructure.adapters.resend_notifier.requests.post",
+            "requests.Session.post",
             return_value=_ok_response(),
         )
 
@@ -53,7 +53,7 @@ class TestResendNotifier:
 
     def test_payload_contains_from_to_subject_html_text(self, notifier, mocker):
         mock_post = mocker.patch(
-            "src.infrastructure.adapters.resend_notifier.requests.post",
+            "requests.Session.post",
             return_value=_ok_response(),
         )
 
@@ -69,7 +69,7 @@ class TestResendNotifier:
     def test_logs_message_id_on_success(self, notifier, mocker, caplog):
         caplog.set_level(logging.INFO)
         mocker.patch(
-            "src.infrastructure.adapters.resend_notifier.requests.post",
+            "requests.Session.post",
             return_value=_ok_response({"id": "abc-123"}),
         )
 
@@ -82,7 +82,7 @@ class TestResendNotifier:
         response = MagicMock(spec=requests.Response)
         response.raise_for_status.side_effect = requests.HTTPError("401")
         mocker.patch(
-            "src.infrastructure.adapters.resend_notifier.requests.post",
+            "requests.Session.post",
             return_value=response,
         )
 

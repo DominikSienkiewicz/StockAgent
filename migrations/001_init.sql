@@ -96,3 +96,13 @@ BEGIN
     REFRESH MATERIALIZED VIEW CONCURRENTLY ml_feature_store;
 END;
 $$;
+
+-- ---------------------------------------------------------------------
+-- Row Level Security — WYŁĄCZONE.
+--   StockAgent to projekt backend-only: jedyny dostęp do bazy odbywa się
+--   z zaufanego środowiska (GitHub Actions / lokalnie) przez klucz API.
+--   Nie ma frontendu ani użytkowników końcowych łączących się bezpośrednio,
+--   więc RLS tylko by przeszkadzał (blokuje INSERT/UPDATE). Wyłączamy jawnie,
+--   żeby zachowanie było deterministyczne niezależnie od ustawień Supabase UI.
+-- ---------------------------------------------------------------------
+ALTER TABLE prediction_logs DISABLE ROW LEVEL SECURITY;

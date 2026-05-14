@@ -41,6 +41,10 @@ class XGBoostAdapter(MLPredictionPort):
         model.load_model(self._model_path)
         self._model = model
 
+    @property
+    def is_trained(self) -> bool:
+        return self._model is not None
+
     def train(self, features: Any, target: Any) -> dict[str, Any]:
         model = xgb.XGBRegressor(**self._params)
         model.fit(features, target)

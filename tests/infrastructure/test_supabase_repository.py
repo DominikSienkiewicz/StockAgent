@@ -42,16 +42,16 @@ def repo(mock_client: MagicMock) -> SupabaseRepository:
 
 
 # ---------------------------------------------------------------------------
-# get_last_price
+# get_last_price / save_price_snapshot — price_snapshots table
 # ---------------------------------------------------------------------------
 
 
 class TestGetLastPrice:
-    def test_returns_money_for_existing_symbol(self, repo, mock_client):
+    def test_returns_money_from_price_snapshots(self, repo, mock_client):
         _set_chain_response(
             mock_client,
             ["table", "select", "eq", "order", "limit"],
-            [{"price_at_prediction": 192.5}],
+            [{"price": 192.5}],
         )
 
         price = repo.get_last_price("AAPL")
@@ -65,17 +65,31 @@ class TestGetLastPrice:
         )
         assert repo.get_last_price("UNKNOWN") is None
 
-    def test_queries_prediction_logs_table_with_symbol_filter(self, repo, mock_client):
+    def test_queries_price_snapshots_table_with_symbol_filter(self, repo, mock_client):
         _set_chain_response(
             mock_client, ["table", "select", "eq", "order", "limit"], data=[]
         )
 
         repo.get_last_price("VOO")
 
-        mock_client.table.assert_called_with("prediction_logs")
+        # Czyta z price_snapshots, NIE z prediction_logs
+        mock_client.table.assert_called_with("price_snapshots")
         mock_client.table.return_value.select.return_value.eq.assert_called_with(
             "symbol", "VOO"
         )
+
+
+class TestSavePriceSnapshot:
+    def test_inserts_symbol_and_price_to_snapshots_table(self, repo, mock_client):
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": "snap-1"}])
+
+        repo.save_price_snapshot("AAPL", Money(Decimal("298.87")))
+
+        mock_client.table.assert_called_with("price_snapshots")
+        inserted = mock_client.table.return_value.insert.call_args.args[0]
+        assert inserted["symbol"] == "AAPL"
+        # Decimal serializowany do str (JSON-safe)
+        assert str(inserted["price"]) == "298.87"
 
 
 # ---------------------------------------------------------------------------
@@ -174,18 +188,21 @@ class TestGetUnverifiedPrediction:
 
 
 class TestUpdatePredictionAccuracy:
-    def test_updates_record_with_actual_price_and_insight(self, repo, mock_client):
+    def test_updates_record_with_price_accuracy_and_insight(self, repo, mock_client):
         _set_chain_response(mock_client, ["table", "update", "eq"], [{"id": "uuid-1"}])
 
         repo.update_prediction_accuracy(
             prediction_id="uuid-1",
             actual_price=Decimal("99.0"),
+            accuracy_score=0.87,
             insight="Zignorowałem makro.",
         )
 
         payload = mock_client.table.return_value.update.call_args.args[0]
         # Decimal musi być serializowany
         assert str(payload["actual_price_after_12h"]) == "99.0"
+        # accuracy_score zamyka pętlę feedback — bez niego get_accuracy_stats() pusty
+        assert payload["accuracy_score"] == 0.87
         assert payload["correction_insights"] == "Zignorowałem makro."
         mock_client.table.return_value.update.return_value.eq.assert_called_with(
             "id", "uuid-1"

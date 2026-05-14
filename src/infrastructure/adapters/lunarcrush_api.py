@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import requests
-
 from src.application.ports import SentimentPort
+from src.infrastructure.adapters._http import build_session
 
 DEFAULT_BASE_URL = "https://lunarcrush.com/api4/public"
 DEFAULT_TIMEOUT = 10
@@ -29,9 +28,10 @@ class LunarCrushAdapter(SentimentPort):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._session = build_session()
 
     def get_social_score(self, symbol: str) -> dict[str, Any]:
-        response = requests.get(
+        response = self._session.get(
             f"{self._base_url}/stocks/{symbol}/v1",
             headers={"Authorization": f"Bearer {self._api_key}"},
             timeout=self._timeout,

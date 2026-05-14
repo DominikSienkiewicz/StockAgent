@@ -5,6 +5,7 @@ import pytest
 
 from src.application.agent_graph import create_agent_graph
 from src.application.ports import (
+    EmbeddingPort,
     LLMPort,
     MarketDataPort,
     MLPredictionPort,
@@ -33,7 +34,11 @@ def news_port() -> Mock:
 
 @pytest.fixture
 def repository_port() -> Mock:
-    return Mock(spec=RepositoryPort)
+    repo = Mock(spec=RepositoryPort)
+    # Domyślnie brak historii — reflect_node (wykonywany w KAŻDYM cyklu)
+    # nie ma czego oceniać. Testy full-analysis nadpisują to przez helper.
+    repo.get_unverified_prediction.return_value = None
+    return repo
 
 
 @pytest.fixture
@@ -105,6 +110,44 @@ def _setup_full_analysis_mocks(
     }
     llm_port.analyze_mistake.return_value = "Zignorowałem szerszy kontekst makro."
     ml_port.predict.return_value = Money(Decimal("89.5"))
+    ml_port.is_trained = True   # domyślnie: model wytrenowany
+
+
+# ---------------------------------------------------------------------------
+# Price snapshot — zapisywany w KAŻDYM cyklu (cold-start deadlock fix)
+# ---------------------------------------------------------------------------
+
+
+class TestPriceSnapshot:
+    def test_snapshot_saved_on_ignored_cycle(
+        self, workflow, market_port, repository_port
+    ):
+        # Nawet gdy cykl kończy się "ignored", bieżąca cena MUSI zostać
+        # zapisana — inaczej następny cykl nie ma punktu odniesienia.
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "ignored"
+        repository_port.save_price_snapshot.assert_called_once()
+        args = repository_port.save_price_snapshot.call_args.args
+        assert args[0] == "AAPL"
+        assert args[1].amount == Decimal("99.0")
+
+    def test_snapshot_saved_on_full_analysis_cycle(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        repository_port.save_price_snapshot.assert_called_once_with(
+            "AAPL", Money(Decimal("90.0"))
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -243,14 +286,48 @@ class TestVolatilityBelowThreshold:
 
         assert final["status"] == "ignored"
         assert final["delta"] == Decimal("-0.01")
-        # FINOPS: żadne płatne API nie wolno wywołać
+        # FINOPS: żadne PŁATNE API nie wolno wywołać przy zmianie poniżej progu.
         sentiment_port.get_social_score.assert_not_called()
         news_port.get_news_context.assert_not_called()
         llm_port.analyze.assert_not_called()
-        llm_port.analyze_mistake.assert_not_called()
         ml_port.predict.assert_not_called()
         repository_port.save_prediction.assert_not_called()
-        repository_port.get_unverified_prediction.assert_not_called()
+        # reflect_node działa ZAWSZE — get_unverified_prediction (read-only, tanie)
+        # JEST wołane, ale przy braku historii (None) nie generuje żadnych kosztów:
+        # ani analyze_mistake (płatne LLM), ani update (zapis) się nie wykonuje.
+        repository_port.get_unverified_prediction.assert_called_once_with("AAPL")
+        llm_port.analyze_mistake.assert_not_called()
+        repository_port.update_prediction_accuracy.assert_not_called()
+
+
+    def test_reflect_runs_even_when_cycle_is_ignored(
+        self, workflow, market_port, repository_port, llm_port,
+    ):
+        """Sedno naprawy: ocena poprzedniej predykcji odbywa się ZAWSZE,
+        niezależnie od tego, czy bieżący cykl przekroczył próg zmienności.
+        Bez tego predykcje z cykli przed 'ignored' nigdy nie dostawały
+        accuracy_score (czekały >12h aż trafi się cykl z volatility)."""
+        # Bieżący cykl: zmiana -1% → poniżej progu → "ignored".
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))
+        # ALE jest zaległa predykcja sprzed 12h do oceny:
+        repository_port.get_unverified_prediction.return_value = Prediction(
+            id="stale-uuid",
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BEARISH,
+            price_at_prediction=Decimal("100.0"),
+            predicted_target_price=Decimal("95.0"),
+        )
+        llm_port.analyze_mistake.return_value = "Trend był OK ale skala przeszacowana."
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        # Cykl kończy się "ignored" (brak nowej prognozy)...
+        assert final["status"] == "ignored"
+        # ...ALE zaległa predykcja ZOSTAŁA oceniona — accuracy_score zapisany.
+        repository_port.update_prediction_accuracy.assert_called_once()
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["prediction_id"] == "stale-uuid"
+        assert isinstance(kwargs["accuracy_score"], float)
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +360,142 @@ class TestCustomThreshold:
 
         assert final["status"] == "ignored"
         sentiment_port.get_social_score.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# XGBoost cold-start — baseline zamiast crasha (Bug 2 fix)
+# ---------------------------------------------------------------------------
+
+
+class TestColdStartBaseline:
+    def test_uses_current_price_as_baseline_when_model_untrained(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=False,
+        )
+        ml_port.is_trained = False   # cold start — brak wytrenowanego modelu
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        # Agent NIE crashuje — kończy "saved" z baseline = bieżąca cena
+        assert final["status"] == "saved"
+        assert final["ml_target_price"] == Decimal("90.0")  # current_price
+        ml_port.predict.assert_not_called()   # nie wołamy nietrenowanego modelu
+
+    def test_uses_xgboost_prediction_when_model_trained(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ml_port.is_trained = True
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["ml_target_price"] == Decimal("89.5")   # z ml_port.predict
+        ml_port.predict.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# accuracy_score zapisywany przy reflekcji (Bug 1 fix)
+# ---------------------------------------------------------------------------
+
+
+class TestAccuracyScorePersisted:
+    def test_reflect_node_passes_accuracy_score_to_repository(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Poprzednia predykcja BULLISH @100 target 105; teraz cena 110 → trafiona.
+        market_port.get_current_price.return_value = Money(Decimal("110.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        repository_port.update_prediction_accuracy.assert_called_once()
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        # accuracy_score MUSI być przekazany (inaczej get_accuracy_stats zawsze pusty)
+        assert "accuracy_score" in kwargs
+        assert isinstance(kwargs["accuracy_score"], float)
+        assert 0.0 <= kwargs["accuracy_score"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# Embedding podsumowania newsów → pgvector (#4)
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddingPersistence:
+    def test_embedding_added_to_record_when_port_provided(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1, 0.2, 0.3]
+        workflow = create_agent_graph(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        saved_record = repository_port.save_prediction.call_args.args[0]
+        assert saved_record["embedding"] == [0.1, 0.2, 0.3]
+        embedding_port.embed.assert_called_once()
+
+    def test_save_works_without_embedding_port(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # workflow fixture nie ma embedding_port — rekord po prostu bez 'embedding'
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        saved_record = repository_port.save_prediction.call_args.args[0]
+        assert "embedding" not in saved_record
+
+    def test_embedding_failure_does_not_break_save(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.side_effect = RuntimeError("OpenAI down")
+        workflow = create_agent_graph(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        # Graceful — save mimo błędu embeddingu
+        assert final["status"] == "saved"
+        saved_record = repository_port.save_prediction.call_args.args[0]
+        assert "embedding" not in saved_record

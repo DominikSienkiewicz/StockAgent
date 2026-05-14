@@ -7,9 +7,8 @@ from __future__ import annotations
 
 import logging
 
-import requests
-
 from src.application.ports import ReportNotifierPort
+from src.infrastructure.adapters._http import build_session
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +37,10 @@ class ResendNotifier(ReportNotifierPort):
         self._recipient = recipient
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._session = build_session()
 
     def send_report(self, subject: str, html_body: str, plain_text: str) -> None:
-        response = requests.post(
+        response = self._session.post(
             f"{self._base_url}/emails",
             headers={
                 "Authorization": f"Bearer {self._api_key}",

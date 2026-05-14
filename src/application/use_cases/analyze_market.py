@@ -5,6 +5,7 @@ from typing import Any
 
 from src.application.agent_graph import AgentState, create_agent_graph
 from src.application.ports import (
+    EmbeddingPort,
     LLMPort,
     MarketDataPort,
     MLPredictionPort,
@@ -33,6 +34,7 @@ class AnalyzeMarketUseCase:
         ml_port: MLPredictionPort,
         llm_port: LLMPort,
         threshold: Threshold,
+        embedding_port: EmbeddingPort | None = None,
     ) -> None:
         self._repository = repository_port
         self._workflow = create_agent_graph(
@@ -43,6 +45,7 @@ class AnalyzeMarketUseCase:
             ml_port=ml_port,
             llm_port=llm_port,
             threshold=threshold,
+            embedding_port=embedding_port,
         )
 
     def run(self, symbol: str) -> dict[str, Any]:

@@ -12,6 +12,7 @@ from src.domain.value_objects import Money
 
 DEFAULT_TABLE = "prediction_logs"
 DEFAULT_FEATURE_VIEW = "ml_feature_store"
+DEFAULT_SNAPSHOT_TABLE = "price_snapshots"
 
 
 def _serialize(value: Any) -> Any:
@@ -44,19 +45,23 @@ class SupabaseRepository(RepositoryPort):
         key: str,
         table_name: str = DEFAULT_TABLE,
         feature_view: str = DEFAULT_FEATURE_VIEW,
+        snapshot_table: str = DEFAULT_SNAPSHOT_TABLE,
     ) -> None:
         self._client = create_client(url, key)
         self._table = table_name
         self._view = feature_view
+        self._snapshot_table = snapshot_table
 
     # -----------------------------------------------------------------------
     # Reads
     # -----------------------------------------------------------------------
 
     def get_last_price(self, symbol: str) -> Money | None:
+        # Czytamy z price_snapshots — zapisywane w KAŻDYM cyklu, więc nawet
+        # gdy bot dotąd nie zrobił żadnej predykcji, ma punkt odniesienia.
         response = (
-            self._client.table(self._table)
-            .select("price_at_prediction")
+            self._client.table(self._snapshot_table)
+            .select("price")
             .eq("symbol", symbol)
             .order("timestamp", desc=True)
             .limit(1)
@@ -65,7 +70,7 @@ class SupabaseRepository(RepositoryPort):
         rows = _rows(response)
         if not rows:
             return None
-        return Money(Decimal(str(rows[0]["price_at_prediction"])))
+        return Money(Decimal(str(rows[0]["price"])))
 
     def get_unverified_prediction(self, symbol: str) -> Prediction | None:
         response = (
@@ -157,6 +162,10 @@ class SupabaseRepository(RepositoryPort):
     # Writes
     # -----------------------------------------------------------------------
 
+    def save_price_snapshot(self, symbol: str, price: Money) -> None:
+        record = _serialize_record({"symbol": symbol, "price": price.amount})
+        self._client.table(self._snapshot_table).insert(record).execute()
+
     def save_prediction(self, prediction: dict[str, Any]) -> str:
         record = _serialize_record(prediction)
         response = self._client.table(self._table).insert(record).execute()
@@ -171,11 +180,13 @@ class SupabaseRepository(RepositoryPort):
         self,
         prediction_id: str,
         actual_price: Decimal,
+        accuracy_score: float,
         insight: str,
     ) -> None:
         payload = _serialize_record(
             {
                 "actual_price_after_12h": actual_price,
+                "accuracy_score": accuracy_score,
                 "correction_insights": insight,
             }
         )

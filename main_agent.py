@@ -17,7 +17,12 @@ import sys
 import time
 from datetime import UTC, datetime
 
-from src.application.ports import LLMPort, ReportNotifierPort, RepositoryPort
+from src.application.ports import (
+    EmbeddingPort,
+    LLMPort,
+    ReportNotifierPort,
+    RepositoryPort,
+)
 from src.application.report_builder import (
     build_html_report,
     parse_resolved_predictions,
@@ -78,6 +83,17 @@ def build_repository(settings: Settings) -> RepositoryPort:
     return SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
 
 
+def build_embedding_adapter(settings: Settings) -> EmbeddingPort | None:
+    """Embeddingi działają tylko na OpenAI (jedyny provider z embeddings API
+    w naszym stacku). Przy LLM_PROVIDER=anthropic embeddingi są wyłączone —
+    save_node zapisuje rekord bez wektora (graceful)."""
+    if settings.llm_provider != "openai":
+        return None
+    from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
+
+    return OpenAIEmbeddingAdapter(api_key=settings.openai_api_key)
+
+
 def build_use_case(
     settings: Settings,
     repository: RepositoryPort | None = None,
@@ -95,6 +111,7 @@ def build_use_case(
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
         llm_port=build_llm_adapter(settings),
         threshold=Threshold(settings.volatility_threshold),
+        embedding_port=build_embedding_adapter(settings),
     )
 
 

@@ -33,7 +33,13 @@ class RepositoryPort(ABC):
     """Persystencja: zapis predykcji, odczyt historii, dostęp do feature store."""
 
     @abstractmethod
-    def get_last_price(self, symbol: str) -> Money | None: ...
+    def get_last_price(self, symbol: str) -> Money | None:
+        """Najnowszy snapshot ceny z `price_snapshots` (nie z prediction_logs)."""
+
+    @abstractmethod
+    def save_price_snapshot(self, symbol: str, price: Money) -> None:
+        """Zapisuje bieżącą cenę — wywoływane w KAŻDYM cyklu (rozwiązuje
+        cold-start deadlock: następny cykl ma punkt odniesienia do delty)."""
 
     @abstractmethod
     def save_prediction(self, prediction: dict[str, Any]) -> str:
@@ -48,6 +54,7 @@ class RepositoryPort(ABC):
         self,
         prediction_id: str,
         actual_price: Decimal,
+        accuracy_score: float,
         insight: str,
     ) -> None: ...
 
@@ -71,6 +78,14 @@ class RepositoryPort(ABC):
 class MLPredictionPort(ABC):
     """Lokalny model predykcyjny (np. XGBoost)."""
 
+    @property
+    @abstractmethod
+    def is_trained(self) -> bool:
+        """Czy model jest gotów do predykcji (wagi załadowane / wytrenowane).
+
+        Fast Loop sprawdza to przed wywołaniem `predict()` — przy cold-starcie
+        (brak pliku modelu) używa baseline zamiast crashować."""
+
     @abstractmethod
     def predict(self, current_features: dict[str, float]) -> Money: ...
 
@@ -90,6 +105,16 @@ class LLMPort(ABC):
     @abstractmethod
     def analyze_mistake(self, prompt: str) -> str:
         """Diagnoza błędnej predykcji — zwraca tekstowy correction_insight."""
+
+
+class EmbeddingPort(ABC):
+    """Generowanie wektorów embeddingu dla tekstu (np. OpenAI embeddings).
+
+    Wektor podsumowania newsów trafia do `prediction_logs.embedding` (pgvector),
+    co umożliwia przyszły similarity search nad historycznymi sytuacjami."""
+
+    @abstractmethod
+    def embed(self, text: str) -> list[float]: ...
 
 
 class ReportNotifierPort(ABC):

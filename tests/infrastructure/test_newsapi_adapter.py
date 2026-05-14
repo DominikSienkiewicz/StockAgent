@@ -46,7 +46,7 @@ _SAMPLE_RESPONSE = {
 class TestGetNewsContext:
     def test_returns_normalized_list_of_articles(self, adapter, mocker):
         mocker.patch(
-            "src.infrastructure.adapters.news_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_RESPONSE),
         )
 
@@ -63,7 +63,7 @@ class TestGetNewsContext:
 
     def test_passes_symbol_apikey_and_pagination(self, adapter, mocker):
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.news_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_RESPONSE),
         )
 
@@ -77,7 +77,7 @@ class TestGetNewsContext:
 
     def test_sets_request_timeout(self, adapter, mocker):
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.news_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_RESPONSE),
         )
 
@@ -89,7 +89,7 @@ class TestGetNewsContext:
         response = Mock(spec=requests.Response)
         response.raise_for_status.side_effect = requests.HTTPError("401 Unauthorized")
         mocker.patch(
-            "src.infrastructure.adapters.news_api.requests.get",
+            "requests.Session.get",
             return_value=response,
         )
 
@@ -98,7 +98,7 @@ class TestGetNewsContext:
 
     def test_returns_empty_list_when_no_articles(self, adapter, mocker):
         mocker.patch(
-            "src.infrastructure.adapters.news_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({"status": "ok", "articles": []}),
         )
 
@@ -109,7 +109,7 @@ class TestGetNewsContext:
     def test_handles_article_with_missing_source_name(self, adapter, mocker):
         # Defensywne dekodowanie — niektóre artykuły mogą mieć None w source.name
         mocker.patch(
-            "src.infrastructure.adapters.news_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({
                 "status": "ok",
                 "articles": [{"source": {}, "title": "T", "publishedAt": "x"}],

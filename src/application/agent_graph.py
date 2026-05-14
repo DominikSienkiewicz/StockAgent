@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
 from src.application.ports import (
+    EmbeddingPort,
     LLMPort,
     MarketDataPort,
     MLPredictionPort,
@@ -16,6 +18,8 @@ from src.application.ports import (
 from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction_prompt
 from src.domain.asset import Asset, PriceDelta
 from src.domain.value_objects import Money, Threshold
+
+logger = logging.getLogger(__name__)
 
 
 class AgentState(TypedDict, total=False):
@@ -55,20 +59,30 @@ def create_agent_graph(
     ml_port: MLPredictionPort,
     llm_port: LLMPort,
     threshold: Threshold,
+    embedding_port: EmbeddingPort | None = None,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
     Topologia:
-        check_price → [delta ≥ threshold?]
-            ├── nie → ignore → END
-            └── tak → reflect → analyze_sentiment → fetch_news
-                                                    → predict → save → END
+        check_price → reflect → [delta ≥ threshold?]
+                                  ├── nie → ignore → END
+                                  └── tak → analyze_sentiment → fetch_news
+                                                              → predict → save → END
+
+    `reflect` jest PRZED bramką volatility — ocena poprzedniej predykcji
+    (backward pass) jest niezależna od tego, czy bieżący cykl robi nową
+    prognozę (forward pass). Dzięki temu każda predykcja jest oceniana
+    dokładnie w następnym cyklu (~12h), niezależnie od tego, czy ten cykl
+    przekroczył próg zmienności.
     """
 
     def check_price_node(state: AgentState) -> dict[str, Any]:
         current = market_port.get_current_price(state["symbol"])
         previous = Money(state["previous_price"])
         delta = PriceDelta.calculate(previous, current)
+        # Snapshot ceny w KAŻDYM cyklu — następny cykl użyje go jako punktu
+        # odniesienia (rozwiązuje cold-start deadlock).
+        repository_port.save_price_snapshot(state["symbol"], current)
         return {
             "current_price": current.amount,
             "delta": delta.percentage,
@@ -78,7 +92,7 @@ def create_agent_graph(
         asset = Asset(symbol=state["symbol"])
         delta = PriceDelta(state["delta"])
         if asset.evaluate_volatility(delta, threshold):
-            return "reflect"
+            return "analyze_sentiment"
         return "ignore"
 
     def reflect_node(state: AgentState) -> dict[str, Any]:
@@ -92,6 +106,10 @@ def create_agent_graph(
         # Predykcje odczytane z repozytorium muszą mieć id (kontrakt RepositoryPort).
         assert last.id is not None, "Prediction from repository must have id"
 
+        # Domena liczy accuracy_score (0.0-1.0) — zapis zamyka pętlę feedback:
+        # to ten wskaźnik napędza get_accuracy_stats() i trening XGBoost.
+        accuracy = float(last.accuracy_score(current_price))
+
         if not last.is_trend_correct(current_price):
             prompt = get_mistake_diagnosis_prompt(
                 last_trend=str(last.predicted_trend),
@@ -102,6 +120,7 @@ def create_agent_graph(
             repository_port.update_prediction_accuracy(
                 prediction_id=last.id,
                 actual_price=current_price,
+                accuracy_score=accuracy,
                 insight=insight,
             )
             return {"reflection_context": f"Ostatni błąd: {insight}"}
@@ -109,6 +128,7 @@ def create_agent_graph(
         repository_port.update_prediction_accuracy(
             prediction_id=last.id,
             actual_price=current_price,
+            accuracy_score=accuracy,
             insight="Trafiona predykcja.",
         )
         return {"reflection_context": "Ostatnie prognozy były trafne. Kontynuuj strategię."}
@@ -156,11 +176,18 @@ def create_agent_graph(
             "llm_trend_signal":     float(llm_trend_signal),
             "av_llm_agreement":     av_llm_agreement,
         }
-        ml_price = ml_port.predict(features)
+        # Cold-start guard: dopóki XGBoost nie ma wytrenowanych wag (pierwsze
+        # tygodnie działania, przed pierwszym Slow Loop), używamy baseline
+        # "cena bez zmian". Agent działa, LLM nadal daje trend; gdy model się
+        # wytrenuje, automatycznie przejmuje predykcję liczbową.
+        if ml_port.is_trained:
+            ml_target = ml_port.predict(features).amount
+        else:
+            ml_target = state["current_price"]
 
         return {
             "llm_analysis": llm_analysis,
-            "ml_target_price": ml_price.amount,
+            "ml_target_price": ml_target,
         }
 
     def save_node(state: AgentState) -> dict[str, Any]:
@@ -168,7 +195,7 @@ def create_agent_graph(
         sentiment = state.get("sentiment") or {}
         news_summary = _summarize_news(state.get("news", []))
 
-        record = {
+        record: dict[str, Any] = {
             "symbol": state["symbol"],
             "price_at_prediction": state["current_price"],
             # Zapisujemy nowy główny sygnał sentymentu (AV) jako sentiment_score.
@@ -179,6 +206,17 @@ def create_agent_graph(
             "predicted_target_price": state.get("ml_target_price"),
             "reasoning_text": llm_analysis.get("reasoning"),
         }
+
+        # Embedding podsumowania newsów → pgvector. Opcjonalne (graceful):
+        # gdy brak portu lub pusty tekst / błąd API, zapisujemy bez wektora.
+        if embedding_port is not None and news_summary:
+            try:
+                vector = embedding_port.embed(news_summary)
+                if vector:
+                    record["embedding"] = vector
+            except Exception:
+                logger.exception("Embedding failed for %s — saving without vector", state["symbol"])
+
         prediction_id = repository_port.save_prediction(record)
         return {"prediction_id": prediction_id, "status": "saved"}
 
@@ -196,15 +234,18 @@ def create_agent_graph(
     workflow.add_node("ignore", ignore_node)
 
     workflow.set_entry_point("check_price")
+    # check_price → reflect: bezwarunkowo. Ocena przeszłej predykcji odbywa się
+    # w KAŻDYM cyklu, niezależnie od bieżącej zmienności.
+    workflow.add_edge("check_price", "reflect")
+    # reflect → bramka volatility: dopiero TU decydujemy, czy robić nową prognozę.
     workflow.add_conditional_edges(
-        "check_price",
+        "reflect",
         should_analyze,
         {
-            "reflect": "reflect",
+            "analyze_sentiment": "analyze_sentiment",
             "ignore": "ignore",
         },
     )
-    workflow.add_edge("reflect", "analyze_sentiment")
     workflow.add_edge("analyze_sentiment", "fetch_news")
     workflow.add_edge("fetch_news", "predict")
     workflow.add_edge("predict", "save")

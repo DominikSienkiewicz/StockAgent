@@ -105,6 +105,23 @@ class TestModelPersistence:
         assert adapter is not None
 
 
+class TestIsTrained:
+    def test_false_on_cold_start(self, adapter: XGBoostAdapter):
+        # Brak pliku modelu → is_trained False (Fast Loop użyje baseline)
+        assert adapter.is_trained is False
+
+    def test_true_after_training(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset()
+        adapter.train(features, target)
+        assert adapter.is_trained is True
+
+    def test_true_when_model_loaded_from_disk(
+        self, trained_adapter: XGBoostAdapter, model_path: str
+    ):
+        reloaded = XGBoostAdapter(model_path=model_path)
+        assert reloaded.is_trained is True
+
+
 class TestAdapterImplementsPort:
     def test_is_ml_prediction_port(self):
         assert issubclass(XGBoostAdapter, MLPredictionPort)

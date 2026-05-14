@@ -24,7 +24,7 @@ def _ok_response(payload: dict, status_code: int = 200) -> Mock:
 class TestGetCurrentPrice:
     def test_returns_money_from_finnhub_quote(self, adapter, mocker):
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.finnhub_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({"c": 192.53, "d": 1.2, "dp": 0.63}),
         )
 
@@ -36,7 +36,7 @@ class TestGetCurrentPrice:
 
     def test_passes_symbol_and_token_as_query_params(self, adapter, mocker):
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.finnhub_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({"c": 100.0}),
         )
 
@@ -49,7 +49,7 @@ class TestGetCurrentPrice:
 
     def test_sets_request_timeout(self, adapter, mocker):
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.finnhub_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({"c": 100.0}),
         )
 
@@ -62,7 +62,7 @@ class TestGetCurrentPrice:
         response = Mock(spec=requests.Response)
         response.raise_for_status.side_effect = requests.HTTPError("401 Unauthorized")
         mocker.patch(
-            "src.infrastructure.adapters.finnhub_api.requests.get",
+            "requests.Session.get",
             return_value=response,
         )
 
@@ -72,7 +72,7 @@ class TestGetCurrentPrice:
     def test_raises_value_error_when_response_lacks_price(self, adapter, mocker):
         # Finnhub przy nieznanym tickerze zwraca 200 + {"c": 0, ...} albo brak klucza
         mocker.patch(
-            "src.infrastructure.adapters.finnhub_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({"d": 0, "dp": 0}),
         )
 
@@ -82,7 +82,7 @@ class TestGetCurrentPrice:
     def test_raises_value_error_when_price_is_zero(self, adapter, mocker):
         # Finnhub: 0 oznacza brak danych
         mocker.patch(
-            "src.infrastructure.adapters.finnhub_api.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({"c": 0, "d": 0, "dp": 0}),
         )
 

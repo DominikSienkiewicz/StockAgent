@@ -93,7 +93,7 @@ class TestPerTickerFetch:
     def test_makes_one_request_per_symbol(self, client, mocker):
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
 
@@ -113,7 +113,7 @@ class TestPerTickerFetch:
     def test_caches_after_first_full_fetch(self, client, mocker):
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
 
@@ -128,7 +128,7 @@ class TestPerTickerFetch:
     def test_passes_apikey_in_params(self, client, mocker):
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
         client.articles_for("AAPL")
@@ -141,7 +141,7 @@ class TestBatching:
     def test_splits_large_symbol_lists_into_batches(self, mocker):
         # 22 symbole, batch_size=10 → 3 batche (10+10+2)
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
         # Sleep mock — nie chcemy 2× 1.1s w teście
@@ -162,7 +162,7 @@ class TestBatching:
 
     def test_sleeps_between_batches(self, mocker):
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
         sleep_mock = mocker.patch(
@@ -181,7 +181,7 @@ class TestBatching:
         # Jeden artykuł pojawia się w dwóch batchach (np. wzmianka o AAPL i MSFT)
         duplicated_article = _SAMPLE_PAYLOAD["feed"][0]
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({"feed": [duplicated_article]}),
         )
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
@@ -203,7 +203,7 @@ class TestBatching:
             )
         })
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=rate_limit_response,
         )
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
@@ -225,7 +225,7 @@ class TestApiKeyRotation:
     def test_rotates_to_next_key_when_first_is_rate_limited(self, mocker):
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get"
+            "requests.Session.get"
         )
         # AAPL: rate-limit z key1 → rotacja → sukces z key2.
         # AMD/NVDA: sukces z key2 (już aktywny).
@@ -254,7 +254,7 @@ class TestApiKeyRotation:
         # Gdy key#1 zadziała w pierwszym batchu, nie wracamy do key#0
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get"
+            "requests.Session.get"
         )
         mock_get.side_effect = [
             self._rate_limit_response(),       # batch 1 z key1 — fail
@@ -277,7 +277,7 @@ class TestApiKeyRotation:
         caplog.set_level(logging.ERROR)
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get"
+            "requests.Session.get"
         )
         # Wszystkie 3 klucze rate-limited
         mock_get.side_effect = [self._rate_limit_response()] * 3
@@ -296,7 +296,7 @@ class TestApiKeyRotation:
         # key2 też rate-limit → klucze wyczerpane, ale batch 1 ma już dane.
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get"
+            "requests.Session.get"
         )
         mock_get.side_effect = [
             _ok_response(_SAMPLE_PAYLOAD),     # batch 1 / key1 OK
@@ -317,7 +317,7 @@ class TestApiKeyRotation:
 class TestArticlesFor:
     def test_filters_by_symbol_via_ticker_sentiment(self, client, mocker):
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
 
@@ -328,7 +328,7 @@ class TestArticlesFor:
 
     def test_filters_by_relevance_threshold(self, client, mocker):
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
 
@@ -346,7 +346,7 @@ class TestArticlesFor:
             relevance_threshold=0.05,
         )
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
 
@@ -355,7 +355,7 @@ class TestArticlesFor:
 
     def test_articles_include_normalized_fields(self, client, mocker):
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
 
@@ -374,7 +374,7 @@ class TestArticlesFor:
 class TestSentimentFor:
     def test_computes_relevance_weighted_average(self, client, mocker):
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
 
@@ -389,7 +389,7 @@ class TestSentimentFor:
 
     def test_returns_neutral_defaults_when_no_articles(self, client, mocker):
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({"feed": []}),
         )
 
@@ -402,7 +402,7 @@ class TestSentimentFor:
     def test_handles_missing_feed_field(self, client, mocker):
         # AV przy nadmiernym rate-limit czasem zwraca {"Information": "..."}
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=_ok_response({"Information": "rate limit reached"}),
         )
 
@@ -429,7 +429,7 @@ class TestErrorHandling:
         response = MagicMock(spec=requests.Response)
         response.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
         mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.requests.get",
+            "requests.Session.get",
             return_value=response,
         )
 

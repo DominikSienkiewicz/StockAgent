@@ -18,38 +18,32 @@ In the era of AI-driven information overload, a single price tick is a useless s
 ## How it works
 
 ```
-Finnhub (US prices) ──┐
-                       │
-Alpha Vantage         │   ┌─► reflect ─► sentiment ─► news ─► predict ─► save
-NEWS_SENTIMENT  ──────┼──►│  (Self-     (AV multi-   (top    (LLM +    (Supabase
-(N keys, rotation)    │   │   Reflection feature      news,   XGBoost,  prediction_logs
-                       │   │   from DB)  dict)        clickable cross-   + embedding)
-prev_price ───────────┘   │              ×22 syms)    URLs)    valid.)        │
-(Supabase)                │                                                    │
-                          │   ┌────► [Δ > threshold?] ──no──► ignore           │
-                          └──►│                                                │
-                              └──yes──► full graph (LangGraph 1.x)             │
-                                                                                │
-                                       ┌────────────────────────────────────────┘
-                                       ▼
-                              accuracy_stats + resolved_predictions
-                                       │
-                                       ▼
-                              HTML report (QuickChart + 6 sections)
-                                       │
-                                       ▼
-                              Resend.com email (sandbox or custom domain)
+Finnhub (US prices) ──► check_price ──► reflect ──► [Δ ≥ threshold?]
+                         (+ snapshot     (Self-        ├── no ──► ignore ──┐
+                          to DB)          Reflection)  │                   │
+                                                       └── yes ──► sentiment │
+                                                                   → news    │
+                                                                   → predict │
+                                                                   → save ───┤
+                                                                             │
+                          ┌──────────────────────────────────────────────────┘
+                          ▼
+                 accuracy_stats + resolved_predictions
+                          ▼
+                 HTML report (QuickChart) ──► Resend.com email
 ```
 
-1. **Fetch prices** — `FinnhubAdapter` pulls current quotes for 22 US tickers in parallel. Free tier supports US exchanges only; tickers with a dot (`CSPX.L`, `BAS.DE`) are rejected with 403 — the agent handles this gracefully.
-2. **Volatility gate** — `Asset.evaluate_volatility(delta, threshold)` lives in the pure domain (Hexagonal core). Δ < 2% → `ignore`, no paid APIs touched. **Domain decides, graph executes.**
-3. **Self-Reflection** — `reflect_node` reads the last unverified prediction from `prediction_logs`. If it was wrong → LLM diagnoses why ("I ignored hawkish Fed signals"). The insight is injected into the next prediction's prompt as `<reflection_context>`.
-4. **News + Sentiment (one batch across N keys)** — `AlphaVantageClient` rotates N keys when one exhausts its 25 req/day quota. A `relevance ≥ 0.5` filter strips noise **before** anything reaches the LLM. Per ticker it returns a multi-feature dict: `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `av_sentiment_label`.
+1. **Fetch price + snapshot** — `FinnhubAdapter` pulls the current quote for each US ticker. `check_price_node` saves a **price snapshot in every cycle** (`price_snapshots` table) so the next cycle always has a reference point — this breaks the cold-start deadlock. Free tier is US-only; dotted tickers (`CSPX.L`, `BAS.DE`) get a 403 and are handled gracefully.
+2. **Self-Reflection (runs every cycle, before the volatility gate)** — `reflect_node` reads the last unverified prediction. It computes `accuracy_score` via the domain, persists it, and — if the prediction was wrong — the LLM diagnoses why ("I ignored hawkish Fed signals"). The insight is injected into the next prediction's prompt as `<reflection_context>`. Decoupled from the volatility gate so every prediction is scored ~12h later, regardless of the current cycle's volatility.
+3. **Volatility gate** — `Asset.evaluate_volatility(delta, threshold)` lives in the pure domain (Hexagonal core). Δ < 2% → `ignore`, no paid APIs touched. **Domain decides, graph executes.**
+4. **News + Sentiment** — `AlphaVantageClient` makes one request per ticker, rotating N API keys when one exhausts its 25 req/day quota. A `relevance ≥ 0.5` filter strips noise **before** anything reaches the LLM. Per ticker it returns a multi-feature dict: `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `av_sentiment_label`.
 5. **LLM (cross-validation)** — GPT-4o (or Claude when `LLM_PROVIDER=anthropic`) receives pre-computed AV sentiment + headlines + reflection context. It returns structured JSON: `trend_direction`, `confidence_score`, **`av_agreement`** (whether it agrees with AV — anything below 0.3 flags potential manipulation), `target_price_12h`, `reasoning`.
-6. **ML hard prediction (local XGBoost)** — model lives in a `.ubj` file inside the repo (Local-First AI). Consumes 7 features: `price_delta`, `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `llm_trend_signal`, `av_llm_agreement`. Returns a hard price target.
-7. **Persist** — `SupabaseRepository` writes the full record to `prediction_logs` (including an embedding of the news summary for later RAG-style retrieval).
+6. **ML hard prediction (local XGBoost)** — model lives in a `.ubj` file inside the repo (Local-First AI). Consumes 7 features: `price_delta`, `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `llm_trend_signal`, `av_llm_agreement`. On cold start (no trained weights yet) it falls back to a "no change" baseline instead of crashing.
+7. **Persist** — `SupabaseRepository` writes the full record to `prediction_logs`. The news summary is embedded (OpenAI `text-embedding-3-small` → 1536-dim `pgvector`) for later RAG-style retrieval — graceful when embeddings are unavailable.
 8. **Slow Loop (weekly cycle)** — `main_trainer.py` retrains XGBoost on resolved predictions (those with `accuracy_score`), commits the new weights back to the repo (Continual Learning).
 9. **Deliver** — Polish-language HTML report via Resend with 2 charts (Δ12h + forecast), correlation scatter plot, trade signals sorted by `confidence × |Δ|`, risk signals with severity badges, day-over-day diff, and clickable news headlines.
+
+All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff, and a single per-symbol error never aborts the whole cycle.
 
 ## Sources
 
@@ -57,8 +51,9 @@ prev_price ───────────┘   │              ×22 syms)   
 |---|---|---|
 | **Finnhub** (`/quote`) | One request per ticker, 60 req/min free tier | US exchanges only. `.L` / `.DE` / `.NL` tickers → 403. |
 | **Alpha Vantage** `NEWS_SENTIMENT` | One request per ticker, `limit=50`, client-side relevance filter ≥ 0.5 | **AND filter on tickers** = a separate request per symbol. Rate limit 25 req/day × N keys = N × 25/day. |
-| **Supabase** (Postgres + pgvector) | `prediction_logs` table + materialized view `ml_feature_store` | Service role key. RPC `refresh_ml_feature_store` is called before training. |
+| **Supabase** (Postgres + pgvector) | `prediction_logs` + `price_snapshots` tables + materialized view `ml_feature_store` | Service role key. RPC `refresh_ml_feature_store` is called before training. |
 | **OpenAI** `chat.completions` | JSON mode (`response_format={"type":"json_object"}`), temperature 0.2 | Default LLM. Switch to Anthropic Claude via `LLM_PROVIDER=anthropic`. |
+| **OpenAI** `embeddings` | `text-embedding-3-small` → 1536-dim vector | Embeds the news summary into `pgvector`. Disabled when `LLM_PROVIDER=anthropic`. |
 | **Anthropic** (optional) | Messages API, `claude-sonnet-4-6`, max_tokens 4096 | Adapter strips ```` ```json ... ``` ```` wrappers (Claude has no JSON mode). |
 | **QuickChart.io** | URL-based, GET request | Zero setup, no dependency, works in every mail client. |
 | **Resend.com** | Sandbox sender `onboarding@resend.dev` | Free tier 100 mails/day. No domain verification required — just a verified recipient. |
@@ -132,9 +127,11 @@ All sections are **conditional** — they only render when data exists. The firs
 - **Resend.com** — HTML email, sandbox sender without domain verification
 - **QuickChart.io** — URL-based charts (`<img src>` in HTML), zero dependency
 - **Pydantic Settings** v2 — typed env vars from `.env` with validators (CSV → list)
-- **pytest 9** + **pytest-mock** — 234 tests (mocked requests, supabase, OpenAI)
+- **requests** + `urllib3.Retry` — shared session with exponential backoff on 429 / 5xx
+- **pytest 9** + **pytest-mock** — 266 tests (mocked requests, supabase, OpenAI)
 - **ruff** — lint (E, W, F, I, B, UP, SIM rule sets)
 - **mypy** strict mode — every file fully typed
+- **GitHub Actions CI** — ruff + mypy + pytest on every push / PR
 
 Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero deps) → Application (ports + use cases + LangGraph) → Infrastructure (adapters for API / DB / LLM / ML / email). Dependency arrow flows one way (`domain ← application ← infrastructure`).
 
@@ -162,9 +159,11 @@ cp .env.example .env
 # fill in the keys (see the ".env keys" block below)
 
 # 3. Database schema
-# Open Supabase → SQL Editor → paste & run migrations/001_init.sql
+# Open Supabase → SQL Editor → paste & run, in order:
+#   migrations/001_init.sql        (prediction_logs + ml_feature_store)
+#   migrations/002_price_snapshots.sql  (price_snapshots — breaks cold-start)
 
-# 4. Smoke test (expect 234 tests passing + 6 skipped integration)
+# 4. Smoke test (expect 259 tests passing + 7 skipped integration)
 uv run pytest
 
 # 5. Single Fast Loop run
@@ -208,7 +207,8 @@ uv sync                            # install deps
 uv sync --extra anthropic          # + Anthropic SDK
 uv run python main_agent.py        # one Fast Loop run (analysis + email)
 uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain)
-uv run pytest                      # 234 tests
+uv run pytest                      # 266 tests
+uv run pytest -m "not integration" # unit only (what CI runs)
 uv run pytest -m integration       # integration only (requires real keys)
 uv run ruff check src tests        # lint
 uv run mypy src                    # type check (strict)
@@ -216,14 +216,15 @@ uv run mypy src                    # type check (strict)
 
 ## GitHub Actions
 
-Two workflows in [`.github/workflows/`](.github/workflows/):
+Three workflows in [`.github/workflows/`](.github/workflows/):
 
 | File | Cron (UTC) | Polish time (CEST / CET) | What it does |
 |---|---|---|---|
-| [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml) | `0 4,16 * * *` | **06:00 / 18:00** (summer) / 05:00 / 17:00 (winter) | Analysis + email report |
+| [`ci.yml`](.github/workflows/ci.yml) | — (on push / PR) | — | ruff + mypy + pytest (unit only) |
+| [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml) | `30 6 * * *` + `0 13 * * *` | **08:30 / 15:00** (summer) / 07:30 / 14:00 (winter) | Analysis + email report |
 | [`slow_loop_weekly.yml`](.github/workflows/slow_loop_weekly.yml) | `0 3 * * 0` | Sunday 05:00 (summer) | XGBoost retraining + commit new weights |
 
-Both expose `workflow_dispatch` for manual triggers from the GitHub UI. The cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
+The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
 
 **Repository secrets:** `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY` (optional: `ANTHROPIC_API_KEY`).
 **Repository variables:** `NOTIFICATIONS_ENABLED`, `DIGEST_FROM_EMAIL`, `DIGEST_TO_EMAIL`, `SYMBOLS`, `VOLATILITY_THRESHOLD` (all optional with sensible defaults).
@@ -236,7 +237,7 @@ All tunable parameters live in [`src/config.py`](src/config.py) as a `Settings` 
 |---|---|---|
 | `llm_provider` | `openai` | `openai` or `anthropic` |
 | `volatility_threshold` | `0.02` | Threshold that triggers full analysis (2%) |
-| `symbols` | `[AAPL,VOO,CSPX.L]` | Monitored tickers (CSV in env) |
+| `symbols` | `[AAPL, MSFT, NVDA]` | Monitored tickers (CSV in env — override with the 22-symbol portfolio) |
 | `alpha_vantage_api_keys` | `[]` | CSV of keys for rotation on rate-limit |
 | `ml_model_path` | `data/models/price_predictor.ubj` | XGBoost weights file |
 | `notifications_enabled` | `false` | Enables email delivery |
@@ -247,7 +248,7 @@ Plus internal constants in `report_builder.py` (`DIVERGENCE_PRICE_THRESHOLD = 0.
 ## Architecture decisions
 
 - [`docs/02-architecture-overview.md`](docs/02-architecture-overview.md) — Hexagonal + DDD, Dual-Loop Engine (Fast 12h + Slow weekly)
-- [`docs/10-ports-and-adapters.md`](docs/10-ports-and-adapters.md) — 7 ports, adapter swap without touching the domain
+- [`docs/10-ports-and-adapters.md`](docs/10-ports-and-adapters.md) — 8 ports, adapter swap without touching the domain
 - [`docs/13-prompts-and-self-reflection.md`](docs/13-prompts-and-self-reflection.md) — XML prompts for Claude/GPT-4o, AV ↔ LLM cross-validation
 - [`docs/14-ml-hybrid-xgboost.md`](docs/14-ml-hybrid-xgboost.md) — Ensemble LLM + XGBoost, Continual Learning
 

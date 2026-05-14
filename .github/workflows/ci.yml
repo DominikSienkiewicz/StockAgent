@@ -1,0 +1,43 @@
+name: ✅ CI (lint + types + tests)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: 📦 Sync dependencies (incl. dev + anthropic extra)
+        run: uv sync --frozen --extra anthropic
+
+      - name: 🔍 Ruff (lint)
+        run: uv run ruff check src tests main_agent.py main_trainer.py
+
+      - name: 🔎 Mypy (strict type check)
+        run: uv run mypy src main_agent.py main_trainer.py
+
+      - name: 🧪 Pytest (unit tests)
+        # Integration tests (-m integration) wymagają prawdziwych kluczy API —
+        # pomijane w CI, uruchamiane tylko lokalnie / w dedykowanym jobie.
+        run: uv run pytest -m "not integration"

@@ -13,7 +13,7 @@ import time
 from collections.abc import Iterable
 from typing import Any
 
-import requests
+from src.infrastructure.adapters._http import build_session
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ class AlphaVantageClient:
         self._cached_feed: list[dict[str, Any]] | None = None
         # Indeks aktualnie używanego klucza — przesuwany przy rate-limit.
         self._active_key_idx = 0
+        self._session = build_session()
 
     @staticmethod
     def _filter_supported(symbols: list[str]) -> list[str]:
@@ -162,7 +163,7 @@ class AlphaVantageClient:
         return None
 
     def _fetch_batch(self, tickers: list[str], api_key: str) -> dict[str, Any]:
-        response = requests.get(
+        response = self._session.get(
             f"{self._base_url}/query",
             params={
                 "function": "NEWS_SENTIMENT",

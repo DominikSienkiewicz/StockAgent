@@ -32,7 +32,10 @@ def news_port() -> Mock:
 
 @pytest.fixture
 def repository_port() -> Mock:
-    return Mock(spec=RepositoryPort)
+    repo = Mock(spec=RepositoryPort)
+    # reflect_node działa w każdym cyklu — domyślnie brak historii do oceny.
+    repo.get_unverified_prediction.return_value = None
+    return repo
 
 
 @pytest.fixture
