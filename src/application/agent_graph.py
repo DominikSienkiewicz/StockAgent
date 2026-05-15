@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 from decimal import Decimal
 from typing import Any, TypedDict
@@ -8,6 +9,7 @@ from langgraph.graph import END, StateGraph
 
 from src.application.ml_features import ML_FEATURE_COLUMNS
 from src.application.ports import (
+    AdvisoryCouncilPort,
     EmbeddingPort,
     LLMPort,
     MarketDataPort,
@@ -18,6 +20,7 @@ from src.application.ports import (
 )
 from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction_prompt
 from src.domain.asset import Asset, PriceDelta
+from src.domain.council import CouncilInput, CouncilVerdict
 from src.domain.value_objects import Money, Threshold
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,9 @@ class AgentState(TypedDict, total=False):
 
     # Persystencja
     prediction_id: str | None
+
+    # Rada doradcza
+    council_verdict: CouncilVerdict | None
 
 
 def _summarize_news(news: list[dict[str, Any]]) -> str:
@@ -70,6 +76,7 @@ def create_agent_graph(
     llm_port: LLMPort,
     threshold: Threshold,
     embedding_port: EmbeddingPort | None = None,
+    council_port: AdvisoryCouncilPort | None = None,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
@@ -209,6 +216,36 @@ def create_agent_graph(
             "ml_target_price": ml_target,
         }
 
+    def council_node(state: AgentState) -> dict[str, Any]:
+        if council_port is None:
+            return {"council_verdict": None}
+        sentiment = state.get("sentiment") or {}
+        news = state.get("news", [])
+        llm_analysis = state.get("llm_analysis") or {}
+        data = CouncilInput(
+            symbol=state["symbol"],
+            current_price=state["current_price"],
+            price_delta_pct=state["delta"] * Decimal("100"),
+            sentiment_score=_float_or_default(sentiment.get("av_sentiment_score"), 0.0),
+            news_articles=[
+                item.get("title", "")
+                for item in news[:5]
+                if item.get("title")
+            ],
+            llm_trend=str(llm_analysis.get("trend_direction", "SIDEWAYS")),
+            llm_confidence=_float_or_default(llm_analysis.get("confidence_score"), 0.5),
+            ml_price_target=state.get("ml_target_price") or state["current_price"],
+        )
+        try:
+            verdict = council_port.analyze(state["symbol"], data)
+        except Exception:
+            logger.exception(
+                "council_node failed for %s — continuing without verdict",
+                state["symbol"],
+            )
+            verdict = None
+        return {"council_verdict": verdict}
+
     def save_node(state: AgentState) -> dict[str, Any]:
         llm_analysis = state.get("llm_analysis", {})
         sentiment = state.get("sentiment") or {}
@@ -230,6 +267,11 @@ def create_agent_graph(
             "predicted_trend": llm_analysis.get("trend_direction"),
             "predicted_target_price": state.get("ml_target_price"),
             "reasoning_text": llm_analysis.get("reasoning"),
+            "council_verdict": (
+                dataclasses.asdict(state["council_verdict"])
+                if state.get("council_verdict") is not None
+                else None
+            ),
         }
 
         # Embedding podsumowania newsów → pgvector. Opcjonalne (graceful):
@@ -255,6 +297,7 @@ def create_agent_graph(
     workflow.add_node("analyze_sentiment", analyze_sentiment_node)
     workflow.add_node("fetch_news", fetch_news_node)
     workflow.add_node("predict", predict_node)
+    workflow.add_node("council", council_node)
     workflow.add_node("save", save_node)
     workflow.add_node("ignore", ignore_node)
 
@@ -273,7 +316,8 @@ def create_agent_graph(
     )
     workflow.add_edge("analyze_sentiment", "fetch_news")
     workflow.add_edge("fetch_news", "predict")
-    workflow.add_edge("predict", "save")
+    workflow.add_edge("predict", "council")
+    workflow.add_edge("council", "save")
     workflow.add_edge("save", END)
     workflow.add_edge("ignore", END)
 

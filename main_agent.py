@@ -18,6 +18,7 @@ import time
 from datetime import UTC, datetime
 
 from src.application.ports import (
+    AdvisoryCouncilPort,
     EmbeddingPort,
     LLMPort,
     ReportNotifierPort,
@@ -31,6 +32,7 @@ from src.application.report_builder import (
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.config import Settings
 from src.domain.value_objects import Threshold
+from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
 from src.infrastructure.adapters.alpha_vantage_adapters import (
     AlphaVantageNewsAdapter,
     AlphaVantageSentimentAdapter,
@@ -83,6 +85,11 @@ def build_repository(settings: Settings) -> RepositoryPort:
     return SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
 
 
+def build_council_adapter(llm_port: LLMPort) -> AdvisoryCouncilPort:
+    """Rada doradcza używa tego samego LLM co główny agent."""
+    return LLMAdvisoryCouncil(llm_port=llm_port)
+
+
 def build_embedding_adapter(settings: Settings) -> EmbeddingPort | None:
     """Embeddingi działają tylko na OpenAI (jedyny provider z embeddings API
     w naszym stacku). Przy LLM_PROVIDER=anthropic embeddingi są wyłączone —
@@ -103,15 +110,17 @@ def build_use_case(
         api_keys=settings.alpha_vantage_api_keys,
         symbols=settings.symbols,
     )
+    llm_port = build_llm_adapter(settings)
     return AnalyzeMarketUseCase(
         market_port=FinnhubAdapter(api_key=settings.finnhub_api_key),
         sentiment_port=AlphaVantageSentimentAdapter(av_client),
         news_port=AlphaVantageNewsAdapter(av_client),
         repository_port=repository or build_repository(settings),
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
-        llm_port=build_llm_adapter(settings),
+        llm_port=llm_port,
         threshold=Threshold(settings.volatility_threshold),
         embedding_port=build_embedding_adapter(settings),
+        council_port=build_council_adapter(llm_port),
     )
 
 

@@ -51,6 +51,7 @@ from src.application.report_signals import (
     market_status,
     parse_resolved_predictions,
 )
+from src.domain.council import CouncilVerdict
 
 __all__ = [
     "ResolvedPrediction",
@@ -89,6 +90,11 @@ _DIRECTION_BG = {
     "SPRZEDAJ": "#fef2f2",
     "WSTRZYMAJ": "#f9fafb",
 }
+
+_COUNCIL_REC_LABEL = {"BUY": "KUP", "SELL": "SPRZEDAJ", "HOLD": "TRZYMAJ"}
+_COUNCIL_REC_COLOR = {"BUY": "#16a34a", "SELL": "#dc2626", "HOLD": "#ca8a04"}
+_COUNCIL_REC_BG = {"BUY": "#f0fdf4", "SELL": "#fef2f2", "HOLD": "#fefce8"}
+_COUNCIL_REC_EMOJI = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}
 
 
 def _recommendation(r: SymbolResult) -> str:
@@ -155,6 +161,64 @@ def _safe_href(url: str | None) -> str | None:
     if parsed.scheme not in _SAFE_URL_SCHEMES or not parsed.netloc:
         return None
     return _html(url)
+
+
+def _render_council_section(verdict: CouncilVerdict) -> str:
+    final = verdict.final_recommendation
+    label = _COUNCIL_REC_LABEL.get(final, final)
+    color = _COUNCIL_REC_COLOR.get(final, "#737373")
+    bg = _COUNCIL_REC_BG.get(final, "#f9fafb")
+    strength_pct = int(verdict.consensus_strength * 100)
+
+    rows = ""
+    for op in verdict.investor_opinions:
+        op_label = _COUNCIL_REC_LABEL.get(op.recommendation, op.recommendation)
+        op_emoji = _COUNCIL_REC_EMOJI.get(op.recommendation, "⬜")
+        op_color = _COUNCIL_REC_COLOR.get(op.recommendation, "#737373")
+        op_bg = _COUNCIL_REC_BG.get(op.recommendation, "#f9fafb")
+        factors = ", ".join(op.key_factors[:3])
+        rows += (
+            f'<tr style="background:{op_bg}">'
+            f'<td style="padding:6px 10px;font-weight:500">{html.escape(op.investor_name)}</td>'
+            f'<td style="padding:6px 10px;color:{op_color};font-weight:700">'
+            f'{op_emoji} {html.escape(op_label)}</td>'
+            f'<td style="padding:6px 10px;text-align:center">{int(op.confidence * 100)}%</td>'
+            f'<td style="padding:6px 10px;font-size:0.85em;color:#555">{html.escape(factors)}</td>'
+            f'</tr>'
+        )
+
+    dissent = ""
+    if verdict.dissenting_views:
+        views = "; ".join(html.escape(v) for v in verdict.dissenting_views)
+        dissent = (
+            f'<tr><td colspan="4" style="padding:8px 10px;font-size:0.85em;'
+            f'color:#92400e;background:#fffbeb">'
+            f'⚠️ Głosy niezgodne: {views}</td></tr>'
+        )
+
+    return (
+        f'<div style="margin-top:16px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">'
+        f'<div style="background:{bg};padding:12px 16px;border-bottom:1px solid #e5e7eb">'
+        f'<span style="font-weight:700;font-size:1.05em">RADA DORADCZA</span>'
+        f'&nbsp;&nbsp;'
+        f'<span style="background:{color};color:#fff;padding:2px 10px;border-radius:12px;'
+        f'font-weight:700">{label}</span>'
+        f'&nbsp;&nbsp;'
+        f'<span style="color:#555;font-size:0.9em">Zgodność: {strength_pct}%</span>'
+        f'<div style="margin-top:6px;font-size:0.9em;color:#374151;font-style:italic">'
+        f'&ldquo;{html.escape(verdict.summary)}&rdquo;</div>'
+        f'</div>'
+        f'<table style="width:100%;border-collapse:collapse;font-size:0.9em">'
+        f'<thead><tr style="background:#f3f4f6">'
+        f'<th style="padding:6px 10px;text-align:left;font-weight:600">Inwestor</th>'
+        f'<th style="padding:6px 10px;text-align:left;font-weight:600">Opinia</th>'
+        f'<th style="padding:6px 10px;text-align:center;font-weight:600">Pewność</th>'
+        f'<th style="padding:6px 10px;text-align:left;font-weight:600">Kluczowe czynniki</th>'
+        f'</tr></thead>'
+        f'<tbody>{rows}{dissent}</tbody>'
+        f'</table>'
+        f'</div>'
+    )
 
 
 def build_html_report(
@@ -491,7 +555,7 @@ def _render_html(
         # Uzasadnienia
         sections.append("<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>💡 Uzasadnienia</h3>")
         for r in saved:
-            if not r.reasoning:
+            if not r.reasoning and r.council_verdict is None:
                 continue
             move_line = ""
             if r.current_price is not None and r.target_price is not None:
@@ -534,13 +598,19 @@ def _render_html(
                     "</div>"
                 )
             rec_block = _recommendation_reason_html(r)
+            council_block = (
+                _render_council_section(r.council_verdict)
+                if r.council_verdict is not None
+                else ""
+            )
             sections.append(f"""
               <div style="margin-bottom: 10px; padding: 10px 12px; background: #fafafa; border-left: 3px solid {_trend_color(r.trend)}; border-radius: 4px;">
                 <div style="font-weight: 600; font-size: 13px;">{_html(_company_label(r.symbol))} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span></div>
                 {move_line}
                 {rec_block}
-                <div style="font-size: 12px; color: #4b5563; margin-top: 6px;">{_html(r.reasoning)}</div>
+                {f'<div style="font-size: 12px; color: #4b5563; margin-top: 6px;">{_html(r.reasoning)}</div>' if r.reasoning else ''}
                 {news_block}
+                {council_block}
               </div>
             """)
 
@@ -771,6 +841,8 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
     confidence = llm.get("confidence_score")
     av_agreement = llm.get("av_agreement")
 
+    council_verdict = raw.get("council_verdict")
+
     return SymbolResult(
         symbol=symbol,
         status=status,
@@ -786,6 +858,7 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
         av_llm_agreement=float(av_agreement) if av_agreement is not None else None,
         reflection_insight=_clean_reflection(raw.get("reflection_context")),
         top_news=_extract_top_news(raw.get("news") or []),
+        council_verdict=council_verdict if isinstance(council_verdict, CouncilVerdict) else None,
     )
 
 

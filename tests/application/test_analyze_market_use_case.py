@@ -132,6 +132,78 @@ class TestRun:
         ml_port.predict.assert_not_called()
 
 
+def test_analyze_market_passes_council_port_to_graph():
+    """AnalyzeMarketUseCase forwards council_port — council_node gets invoked."""
+    from decimal import Decimal
+    from unittest.mock import Mock
+
+    from src.application.ports import (
+        AdvisoryCouncilPort,
+        LLMPort,
+        MarketDataPort,
+        MLPredictionPort,
+        NewsPort,
+        RepositoryPort,
+        SentimentPort,
+    )
+    from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
+    from src.domain.council import CouncilVerdict, InvestorOpinion
+    from src.domain.value_objects import Money, Threshold
+
+    market = Mock(spec=MarketDataPort)
+    market.get_current_price.return_value = Money(Decimal("180.00"))
+    sentiment = Mock(spec=SentimentPort)
+    sentiment.get_social_score.return_value = {
+        "av_sentiment_score": 0.5, "av_sentiment_label": "Bullish",
+        "av_relevance_avg": 0.7, "news_volume_24h": 10, "high_relevance_count": 3,
+    }
+    news = Mock(spec=NewsPort)
+    news.get_news_context.return_value = [{"title": "Apple gains"}]
+    repo = Mock(spec=RepositoryPort)
+    repo.get_unverified_prediction.return_value = None
+    repo.save_prediction.return_value = "pred-123"
+    ml = Mock(spec=MLPredictionPort)
+    ml.is_trained = True
+    ml.predict.return_value = Money(Decimal("185.00"))
+    llm = Mock(spec=LLMPort)
+    llm.analyze.return_value = {
+        "trend_direction": "BULLISH", "confidence_score": 0.8,
+        "av_agreement": 0.9, "target_price_12h": 185.0, "reasoning": "ok",
+    }
+    council_port = Mock(spec=AdvisoryCouncilPort)
+    verdict = CouncilVerdict(
+        final_recommendation="BUY",
+        consensus_strength=0.7,
+        summary="Rada kupuje.",
+        dissenting_views=[],
+        investor_opinions=[
+            InvestorOpinion(
+                investor_name="Warren Buffett",
+                recommendation="BUY",
+                confidence=0.9,
+                reasoning="moat",
+                key_factors=["moat"],
+            )
+        ],
+    )
+    council_port.analyze.return_value = verdict
+
+    use_case = AnalyzeMarketUseCase(
+        market_port=market,
+        sentiment_port=sentiment,
+        news_port=news,
+        repository_port=repo,
+        ml_port=ml,
+        llm_port=llm,
+        threshold=Threshold(Decimal("0.02")),
+        council_port=council_port,
+    )
+    # previous_price much lower to trigger volatility gate
+    repo.get_last_price.return_value = Money(Decimal("170.00"))
+    use_case.run("AAPL")
+    council_port.analyze.assert_called_once()
+
+
 class TestThresholdInjection:
     def test_respects_custom_threshold(
         self,

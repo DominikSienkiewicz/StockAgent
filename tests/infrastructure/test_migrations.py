@@ -22,6 +22,7 @@ MIGRATION_FILES = [
     "002_price_snapshots.sql",
     "003_add_embedding.sql",
     "004_align_ml_feature_store.sql",
+    "005_council_verdict.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -153,6 +154,39 @@ class TestMigrations:
     def test_ivfflat_index_created_on_embedding(self, pg_conn):
         indexes = _indexes(pg_conn, "prediction_logs")
         assert "idx_prediction_logs_embedding" in indexes
+
+    def test_council_verdict_column_exists(self, pg_conn):
+        cols = _columns(pg_conn, "prediction_logs")
+        assert "council_verdict" in cols, "Brak kolumny council_verdict w prediction_logs"
+
+    def test_council_verdict_column_is_nullable(self, pg_conn):
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol) VALUES (%s) RETURNING id",
+                ("TEST_COUNCIL_NULL",),
+            )
+            row = cur.fetchone()
+        assert row is not None
+
+    def test_council_verdict_accepts_json(self, pg_conn):
+        import json
+
+        verdict = json.dumps(
+            {
+                "final_recommendation": "BUY",
+                "consensus_strength": 0.75,
+                "summary": "Rada kupuje.",
+                "investor_opinions": [],
+            }
+        )
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, council_verdict)"
+                " VALUES (%s, %s::jsonb) RETURNING id",
+                ("TEST_COUNCIL_JSON", verdict),
+            )
+            row = cur.fetchone()
+        assert row is not None
 
     def test_migrations_are_idempotent(self, pg_conn):
         # Drugie uruchomienie tych samych migracji nie może rzucić błędu

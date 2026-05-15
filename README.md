@@ -24,6 +24,7 @@ Finnhub (US prices) ──► check_price ──► reflect ──► [Δ ≥ th
                                                        └── yes ──► sentiment │
                                                                    → news    │
                                                                    → predict │
+                                                                   → council │  ← 11 investor personas
                                                                    → save ───┤
                                                                              │
                           ┌──────────────────────────────────────────────────┘
@@ -39,9 +40,10 @@ Finnhub (US prices) ──► check_price ──► reflect ──► [Δ ≥ th
 4. **News + Sentiment** — `AlphaVantageClient` makes one request per ticker, rotating N API keys when one exhausts its 25 req/day quota. A `relevance ≥ 0.5` filter strips noise **before** anything reaches the LLM. Per ticker it returns a multi-feature dict: `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `av_sentiment_label`.
 5. **LLM (cross-validation)** — GPT-4o (or Claude when `LLM_PROVIDER=anthropic`) receives pre-computed AV sentiment + headlines + reflection context. It returns structured JSON: `trend_direction`, `confidence_score`, **`av_agreement`** (whether it agrees with AV — anything below 0.3 flags potential manipulation), `target_price_12h`, `reasoning`.
 6. **ML hard prediction (local XGBoost)** — model lives in a `.ubj` file inside the repo (Local-First AI). Consumes 7 features: `price_delta`, `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `llm_trend_signal`, `av_llm_agreement`. On cold start (no trained weights yet) it falls back to a "no change" baseline instead of crashing.
-7. **Persist** — `SupabaseRepository` writes the full record to `prediction_logs`. The news summary is embedded (OpenAI `text-embedding-3-small` → 1536-dim `pgvector`) for later RAG-style retrieval — graceful when embeddings are unavailable.
-8. **Slow Loop (weekly cycle)** — `main_trainer.py` retrains XGBoost on resolved predictions (those with `accuracy_score`), commits the new weights back to the repo (Continual Learning).
-9. **Deliver** — Polish-language HTML report via Resend with 2 charts (Δ12h + forecast), correlation scatter plot, trade signals sorted by `confidence × |Δ|`, risk signals with severity badges, day-over-day diff, and clickable news headlines.
+7. **Advisory Council** — after `predict_node`, 11 legendary investor personas (Buffett, Graham, Soros, Lynch, Dalio, Munger, Fisher, Tudor Jones, Gross, Livermore, Burry) each independently analyse the same data via parallel LLM calls (`ThreadPoolExecutor(max_workers=11)`). A 12th "chairman" call synthesises a consensus `CouncilVerdict` (BUY/SELL/HOLD + `consensus_strength` + `dissenting_views`). Only fires when the volatility gate passes; gracefully skipped on error. Stored as JSONB in `prediction_logs`, rendered as a styled table in the email report.
+8. **Persist** — `SupabaseRepository` writes the full record to `prediction_logs`. The news summary is embedded (OpenAI `text-embedding-3-small` → 1536-dim `pgvector`) for later RAG-style retrieval — graceful when embeddings are unavailable.
+9. **Slow Loop (weekly cycle)** — `main_trainer.py` retrains XGBoost on resolved predictions (those with `accuracy_score`), commits the new weights back to the repo (Continual Learning).
+10. **Deliver** — Polish-language HTML report via Resend with 2 charts (Δ12h + forecast), correlation scatter plot, trade signals sorted by `confidence × |Δ|`, risk signals with severity badges, day-over-day diff, and clickable news headlines.
 
 All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff, and a single per-symbol error never aborts the whole cycle.
 

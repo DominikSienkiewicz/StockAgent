@@ -3,14 +3,14 @@ name: 🟢 Fast Loop (12h Agentic RAG)
 on:
   schedule:
     # Dwa wpisy bo godziny mają różne minuty (8:30 vs 15:00).
-    # 06:30 UTC = 08:30 CEST (lato) / 07:30 CET (zima)
-    # 13:00 UTC = 15:00 CEST (lato) / 14:00 CET (zima)
+    # 05:30 UTC = 07:30 CEST (lato) / 06:30 CET (zima)
+    # 12:00 UTC = 14:00 CEST (lato) / 13:00 CET (zima)
     # GHA cron jest fixed-UTC i nie ma DST — w październiku przy zmianie czasu
     # na CET godziny przesuwają się o 1h wstecz w czasie polskim.
-    # Aby zachować 8:30/15:00 PL przez cały rok, zmień na '30 7' i '0 14' w CET.
+    # Aby zachować 7:30/14:00 PL przez cały rok, zmień na '30 6' i '0 13' w CET.
     # GHA cron to best-effort — opóźnienia 5-60 min są normalne.
-    - cron: '30 6 * * *'
-    - cron: '0 13 * * *'
+    - cron: '30 5 * * *'
+    - cron: '0 12 * * *'
   workflow_dispatch:   # ręczne wymuszenie z panelu Actions
 
 permissions:

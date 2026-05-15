@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import Any
 
+from src.domain.council import CouncilInput, CouncilVerdict
 from src.domain.prediction import Prediction
 from src.domain.value_objects import Money
 
@@ -122,3 +123,10 @@ class ReportNotifierPort(ABC):
 
     @abstractmethod
     def send_report(self, subject: str, html_body: str, plain_text: str) -> None: ...
+
+
+class AdvisoryCouncilPort(ABC):
+    """Rada doradcza inwestorów — 11 równoległych analiz + konsensus."""
+
+    @abstractmethod
+    def analyze(self, symbol: str, data: CouncilInput) -> CouncilVerdict: ...

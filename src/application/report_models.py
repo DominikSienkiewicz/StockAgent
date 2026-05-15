@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from src.domain.council import CouncilVerdict
+
 
 @dataclass(frozen=True)
 class TopNewsItem:
@@ -32,6 +34,7 @@ class SymbolResult:
     reflection_insight: str | None = None
     top_news: list[TopNewsItem] = field(default_factory=list)
     error_message: str | None = None
+    council_verdict: CouncilVerdict | None = None
 
     @property
     def expected_change(self) -> Decimal | None:
