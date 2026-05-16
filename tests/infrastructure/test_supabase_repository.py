@@ -117,6 +117,21 @@ class TestSavePrediction:
 
         assert record_id == "uuid-789"
 
+    def test_raises_when_insert_returns_empty_rows(self, repo, mock_client):
+        # Supabase czasem zwraca puste response.data (np. przy konflikcie RLS).
+        # Bez tego guardu prediction_id propagowałby się jako None / KeyError.
+        _set_chain_response(mock_client, ["table", "insert"], data=[])
+
+        with pytest.raises(RuntimeError, match="AAPL"):
+            repo.save_prediction(
+                {
+                    "symbol": "AAPL",
+                    "price_at_prediction": Decimal("100.0"),
+                    "predicted_trend": "BULLISH",
+                    "predicted_target_price": Decimal("105.0"),
+                }
+            )
+
     def test_serializes_decimal_values_for_json(self, repo, mock_client):
         _set_chain_response(mock_client, ["table", "insert"], [{"id": "uuid-1"}])
 
@@ -189,7 +204,9 @@ class TestGetUnverifiedPrediction:
 
 class TestUpdatePredictionAccuracy:
     def test_updates_record_with_price_accuracy_and_insight(self, repo, mock_client):
-        _set_chain_response(mock_client, ["table", "update", "eq"], [{"id": "uuid-1"}])
+        _set_chain_response(
+            mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}]
+        )
 
         repo.update_prediction_accuracy(
             prediction_id="uuid-1",
@@ -207,6 +224,30 @@ class TestUpdatePredictionAccuracy:
         mock_client.table.return_value.update.return_value.eq.assert_called_with(
             "id", "uuid-1"
         )
+
+    def test_idempotency_guard_filters_already_resolved_predictions(
+        self, repo, mock_client
+    ):
+        """Idempotency: update musi mieć WHERE actual_price_after_12h IS NULL.
+
+        Bez tego dwa równoczesne cykle (np. ręczny workflow_dispatch nakładający
+        się na scheduled run) mogłyby nadpisać już ocenioną predykcję drugą
+        oceną z lekko innej ceny."""
+        _set_chain_response(
+            mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}]
+        )
+
+        repo.update_prediction_accuracy(
+            prediction_id="uuid-1",
+            actual_price=Decimal("99.0"),
+            accuracy_score=0.87,
+            insight="x",
+        )
+
+        is_call = (
+            mock_client.table.return_value.update.return_value.eq.return_value.is_
+        )
+        is_call.assert_called_with("actual_price_after_12h", "null")
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +273,52 @@ class TestGetFeatureStoreData:
     def test_returns_empty_list_when_no_data(self, repo, mock_client):
         _set_chain_response(mock_client, ["table", "select", "eq", "order"], [])
         assert repo.get_feature_store_data("UNKNOWN") == []
+
+
+# ---------------------------------------------------------------------------
+# refresh_feature_store — retry z exponential backoff
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshFeatureStoreRetry:
+    def test_retries_on_transient_error_then_succeeds(
+        self, repo, mock_client, mocker
+    ):
+        # Pierwsze 2 wywołania rzucają, trzecie OK.
+        rpc = mock_client.rpc.return_value
+        rpc.execute.side_effect = [
+            RuntimeError("503 Service Unavailable"),
+            RuntimeError("503 Service Unavailable"),
+            MagicMock(data=[]),
+        ]
+        mocker.patch("src.infrastructure.adapters.supabase_repo.time.sleep")
+
+        repo.refresh_feature_store()  # nie powinno rzucić
+
+        assert rpc.execute.call_count == 3
+
+    def test_raises_after_exhausting_retries(self, repo, mock_client, mocker):
+        rpc = mock_client.rpc.return_value
+        rpc.execute.side_effect = RuntimeError("persistent failure")
+        mocker.patch("src.infrastructure.adapters.supabase_repo.time.sleep")
+
+        with pytest.raises(RuntimeError, match="persistent failure"):
+            repo.refresh_feature_store()
+
+        # 3 próby = MAX_ATTEMPTS
+        assert rpc.execute.call_count == 3
+
+    def test_succeeds_on_first_attempt_does_not_sleep(
+        self, repo, mock_client, mocker
+    ):
+        rpc = mock_client.rpc.return_value
+        rpc.execute.return_value = MagicMock(data=[])
+        sleep_mock = mocker.patch("src.infrastructure.adapters.supabase_repo.time.sleep")
+
+        repo.refresh_feature_store()
+
+        assert rpc.execute.call_count == 1
+        sleep_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

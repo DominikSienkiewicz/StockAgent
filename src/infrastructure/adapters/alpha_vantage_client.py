@@ -89,8 +89,9 @@ class AlphaVantageClient:
                 skipped.append(sym)
         if skipped:
             logger.warning(
-                "Alpha Vantage doesn't support tickers with non-alphanumeric chars; "
-                "skipping: %s",
+                "Alpha Vantage doesn't support tickers with non-alphanumeric chars "
+                "(np. dot-notation LSE/ETF jak CSPX.L); sentiment & news będą puste "
+                "dla: %s. Aby ich uniknąć w portfolio, usuń z SYMBOLS env var.",
                 skipped,
             )
         return valid

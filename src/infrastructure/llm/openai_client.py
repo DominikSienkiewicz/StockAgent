@@ -9,6 +9,10 @@ from src.application.ports import LLMPort
 
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_TEMPERATURE = 0.2  # niska temperatura — chcemy deterministycznego Quanta
+# GHA fast loop ma 15 min hard timeout. SDK domyślnie czeka 600s na response —
+# zawieszone wywołanie LLM mogłoby zjeść cały cykl. 30s starcza dla normalnego
+# GPT-4o response (typowo 3-8s) i nie maskuje legitnych długich generacji.
+DEFAULT_TIMEOUT = 30.0
 
 
 class OpenAIAdapter(LLMPort):
@@ -19,6 +23,10 @@ class OpenAIAdapter(LLMPort):
 
     Przełączenie na Anthropic = podmiana tej klasy w DI Containerze
     (main_agent.py). Reszta systemu nie wie, że jesteśmy na OpenAI.
+
+    Prompt caching: OpenAI cache'uje automatycznie prefixy ≥1024 tokenów
+    dla zapytań w 5-10 min oknie (gpt-4o, gpt-4o-mini). Nie wymaga
+    cache_control marker'ów po stronie SDK.
     """
 
     def __init__(
@@ -26,8 +34,9 @@ class OpenAIAdapter(LLMPort):
         api_key: str,
         model: str = DEFAULT_MODEL,
         temperature: float = DEFAULT_TEMPERATURE,
+        timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
-        self._client = OpenAI(api_key=api_key)
+        self._client = OpenAI(api_key=api_key, timeout=timeout)
         self._model = model
         self._temperature = temperature
 

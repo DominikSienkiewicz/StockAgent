@@ -32,8 +32,7 @@ class AlphaVantageSentimentAdapter(SentimentPort):
       - high_relevance_count: int               — ile artykułów z relevance ≥ 0.8
       - av_sentiment_label:   str               — kategoria (Bullish/Bearish/...)
 
-    Pola `galaxy_score` / `social_volume` (legacy z LunarCrush) NIE są
-    zwracane — graf używa nowych nazw bezpośrednio.
+    Graf używa tych pól bezpośrednio (po przejściu z LunarCrush na AV NEWS_SENTIMENT).
     """
 
     def __init__(self, client: AlphaVantageClient) -> None:

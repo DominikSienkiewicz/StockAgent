@@ -136,7 +136,10 @@ class TestConfiguration:
 
     def test_initializes_client_with_api_key(self, mock_anthropic_class):
         AnthropicAdapter(api_key="sk-ant-secret")
-        mock_anthropic_class.assert_called_once_with(api_key="sk-ant-secret")
+        call = mock_anthropic_class.call_args
+        assert call.kwargs["api_key"] == "sk-ant-secret"
+        # GHA fast loop ma 15 min hard timeout — SDK musi mieć krótszy.
+        assert call.kwargs["timeout"] > 0
 
 
 class TestAdapterImplementsPort:

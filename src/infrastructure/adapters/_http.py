@@ -1,8 +1,8 @@
 """Wspólny HTTP client z retry/backoff dla transientnych błędów.
 
-Adaptery (Finnhub, Alpha Vantage, NewsAPI, LunarCrush, Resend) używają
-`build_session()` zamiast gołego `requests` — dzięki temu pojedynczy
-timeout albo chwilowy 5xx nie wywala całego symbolu z cyklu.
+Adaptery (Finnhub, Alpha Vantage, Resend) używają `build_session()` zamiast
+gołego `requests` — dzięki temu pojedynczy timeout albo chwilowy 5xx nie
+wywala całego symbolu z cyklu.
 """
 
 from __future__ import annotations

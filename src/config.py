@@ -33,11 +33,6 @@ class Settings(BaseSettings):
     # Alpha Vantage akceptuje CSV — wiele kluczy rotujemy, gdy jeden wyczerpie
     # dzienny limit (25 req/dobę free). Wpisz w .env: ALPHA_VANTAGE_API_KEYS=k1,k2,k3
     alpha_vantage_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    # Stare klucze pozostawione jako opcjonalne — kod ich już nie używa,
-    # ale można je trzymać w .env na potrzeby fallback / eksperymentów.
-    lunarcrush_api_key: str | None = None
-    news_api_key: str | None = None
-
     # ----- Database -----
     supabase_url: str
     supabase_key: str

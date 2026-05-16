@@ -25,8 +25,6 @@ def env(monkeypatch):
         "LLM_PROVIDER",
         "ML_MODEL_PATH",
         "ANTHROPIC_API_KEY",
-        "LUNARCRUSH_API_KEY",
-        "NEWS_API_KEY",
         "ALPHA_VANTAGE_API_KEY",  # legacy fallback — chcemy czysty stan
     ):
         monkeypatch.delenv(optional, raising=False)
@@ -44,14 +42,6 @@ class TestSettings:
         env.delenv("FINNHUB_API_KEY")
         with pytest.raises(ValueError, match="finnhub_api_key"):
             Settings(_env_file=None)
-
-    def test_lunarcrush_and_newsapi_are_optional(self, env):
-        # Te klucze przeszły w status legacy/opcjonalny.
-        env.delenv("LUNARCRUSH_API_KEY", raising=False)
-        env.delenv("NEWS_API_KEY", raising=False)
-        settings = Settings(_env_file=None)
-        assert settings.lunarcrush_api_key is None
-        assert settings.news_api_key is None
 
     def test_alpha_vantage_is_required(self, env):
         env.delenv("ALPHA_VANTAGE_API_KEYS")

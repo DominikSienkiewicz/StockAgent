@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from typing import Any, Literal
 
 from src.application.council_prompts import (
@@ -16,6 +16,11 @@ from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 logger = logging.getLogger(__name__)
 
 _VALID_RECS: frozenset[str] = frozenset({"BUY", "SELL", "HOLD"})
+# Górna granica oczekiwania na CAŁY zestaw 11 wywołań LLM równolegle.
+# LLM port ma już własny timeout (30s) — ten jest buforem na sumę narzutu
+# threadpool/scheduler. Po jego przekroczeniu kontynuujemy z opiniami,
+# które zdążyły się zwrócić (graceful degradation).
+_COUNCIL_TOTAL_TIMEOUT_S = 60.0
 
 
 def _parse_recommendation(raw: Any) -> Literal["BUY", "SELL", "HOLD"]:
@@ -64,9 +69,25 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
                 executor.submit(self._call_investor, name, data): i
                 for i, name in enumerate(investor_names)
             }
-            for future in as_completed(future_to_idx):
-                idx = future_to_idx[future]
-                opinions[idx] = future.result()
+            try:
+                for future in as_completed(
+                    future_to_idx, timeout=_COUNCIL_TOTAL_TIMEOUT_S
+                ):
+                    idx = future_to_idx[future]
+                    opinions[idx] = future.result()
+            except TimeoutError:
+                pending = [
+                    investor_names[i] for f, i in future_to_idx.items() if not f.done()
+                ]
+                logger.warning(
+                    "Advisory council: hit %ss total timeout — %d investor(s) pending: %s",
+                    _COUNCIL_TOTAL_TIMEOUT_S,
+                    len(pending),
+                    pending,
+                )
+                # Anulujemy wiszące future'y (nie czekamy na nie w __exit__).
+                for future in future_to_idx:
+                    future.cancel()
 
         resolved_opinions: list[InvestorOpinion] = [
             op for op in opinions if op is not None

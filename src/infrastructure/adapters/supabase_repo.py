@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
@@ -10,9 +12,16 @@ from src.application.ports import RepositoryPort
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.value_objects import Money
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_TABLE = "prediction_logs"
 DEFAULT_FEATURE_VIEW = "ml_feature_store"
 DEFAULT_SNAPSHOT_TABLE = "price_snapshots"
+
+# Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
+# treningiem; transient błąd sieci nie powinien wywalać całego treningu.
+_REFRESH_MAX_ATTEMPTS = 3
+_REFRESH_BACKOFF_S = 2.0
 
 
 def _serialize(value: Any) -> Any:
@@ -110,8 +119,29 @@ class SupabaseRepository(RepositoryPort):
         Bez tego widok zmaterializowany pokazuje stan z momentu ostatniego
         REFRESH — co psuje Continual Learning (model uczy się na nieaktualnym
         snapshocie). Wywoływane przez Slow Loop przed treningiem.
+
+        Retry z exponential backoff — transient błąd sieci/Supabase
+        (gateway 5xx) nie powinien wywalać całego Slow Loop.
         """
-        self._client.rpc("refresh_ml_feature_store").execute()
+        last_exc: Exception | None = None
+        for attempt in range(1, _REFRESH_MAX_ATTEMPTS + 1):
+            try:
+                self._client.rpc("refresh_ml_feature_store").execute()
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt < _REFRESH_MAX_ATTEMPTS:
+                    delay = _REFRESH_BACKOFF_S * (2 ** (attempt - 1))
+                    logger.warning(
+                        "refresh_feature_store attempt %d/%d failed (%s) — retrying in %.1fs",
+                        attempt,
+                        _REFRESH_MAX_ATTEMPTS,
+                        type(exc).__name__,
+                        delay,
+                    )
+                    time.sleep(delay)
+        assert last_exc is not None  # for type narrowing
+        raise last_exc
 
     def get_recently_resolved_predictions(self, hours: int) -> list[dict[str, Any]]:
         """Predykcje zamknięte (z accuracy_score) w ostatnich `hours` godzinach."""
@@ -190,4 +220,14 @@ class SupabaseRepository(RepositoryPort):
                 "correction_insights": insight,
             }
         )
-        self._client.table(self._table).update(payload).eq("id", prediction_id).execute()
+        # Idempotency guard: aktualizujemy tylko gdy actual_price_after_12h jest
+        # NULL. Bez tego dwa równoczesne cykle (np. ręczny workflow_dispatch
+        # nakładający się na scheduled run) mogłyby nadpisać już ocenioną
+        # predykcję drugą oceną z lekko innej ceny.
+        (
+            self._client.table(self._table)
+            .update(payload)
+            .eq("id", prediction_id)
+            .is_("actual_price_after_12h", "null")
+            .execute()
+        )

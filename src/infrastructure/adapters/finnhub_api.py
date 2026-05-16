@@ -44,9 +44,13 @@ class FinnhubAdapter(MarketDataPort):
         payload = response.json()
         price = payload.get("c")
         if not price:
+            # Nie logujemy całego payloadu — Finnhub error responses bywają
+            # niedeterministyczne i mogą zawierać dane diagnostyczne kontekstu
+            # konta. Wystarczy boolowski status pól, których brakuje.
+            has_change = "d" in payload
             raise ValueError(
                 f"Finnhub returned no price for symbol '{symbol}' "
-                f"(payload: {payload}). Ticker may be invalid or delisted."
+                f"(has_change_field={has_change}). Ticker may be invalid or delisted."
             )
 
         return Money(Decimal(str(price)))

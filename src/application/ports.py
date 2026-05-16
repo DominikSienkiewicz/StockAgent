@@ -17,14 +17,14 @@ class MarketDataPort(ABC):
 
 
 class SentimentPort(ABC):
-    """Źródło metryk sentymentu społecznego (np. LunarCrush)."""
+    """Źródło metryk sentymentu finansowego (Alpha Vantage NEWS_SENTIMENT)."""
 
     @abstractmethod
     def get_social_score(self, symbol: str) -> dict[str, Any]: ...
 
 
 class NewsPort(ABC):
-    """Źródło artykułów newsowych (np. NewsAPI, SerpApi)."""
+    """Źródło artykułów newsowych (Alpha Vantage NEWS_SENTIMENT feed)."""
 
     @abstractmethod
     def get_news_context(self, symbol: str) -> list[dict[str, Any]]: ...

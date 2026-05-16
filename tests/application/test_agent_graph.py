@@ -282,6 +282,60 @@ class TestSelfReflectionOnCorrectPrediction:
 
 
 # ---------------------------------------------------------------------------
+# Edge case — sentiment z explicit None values (AV brak danych dla tickera)
+# ---------------------------------------------------------------------------
+
+
+class TestSentimentWithNullValues:
+    """AV NEWS_SENTIMENT czasem zwraca rekordy z null'ami (np. ticker bez
+    sklasyfikowanego sentymentu). _float_or_default musi je przepuścić bez
+    crashu, a save_node nie może wywalić się na None w polach JSON-safe."""
+
+    def test_full_analysis_runs_when_sentiment_fields_are_null(
+        self,
+        workflow,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        # Wszystkie pola sentymentu jako None — najgorszy realny case z AV.
+        sentiment_port.get_social_score.return_value = {
+            "av_sentiment_score": None,
+            "av_relevance_avg": None,
+            "news_volume_24h": None,
+            "high_relevance_count": None,
+            "av_sentiment_label": None,
+        }
+        news_port.get_news_context.return_value = []
+        repository_port.get_unverified_prediction.return_value = None
+        repository_port.save_prediction.return_value = "pred-uuid"
+        # LLM też może zwrócić av_agreement=None (gdy brak danych do oceny).
+        llm_port.analyze.return_value = {
+            "trend_direction": "SIDEWAYS",
+            "confidence_score": 0.5,
+            "av_agreement": None,
+            "target_price_12h": 90.0,
+            "reasoning": "Brak sygnału.",
+        }
+        ml_port.predict.return_value = Money(Decimal("90.0"))
+        ml_port.is_trained = True
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        # Cykl kończy się sukcesem — None'y nie wywalają grafu.
+        assert final["status"] == "saved"
+        # Predict node wywołał ML z domyślnymi 0.0 dla null'i (sanity check
+        # _float_or_default — wartości muszą być float, nie None).
+        ml_call_args = ml_port.predict.call_args.args[0]
+        for value in ml_call_args.values():
+            assert isinstance(value, float)
+
+
+# ---------------------------------------------------------------------------
 # Path 4 — low volatility → ignore early (FinOps: ZERO płatnych wywołań)
 # ---------------------------------------------------------------------------
 

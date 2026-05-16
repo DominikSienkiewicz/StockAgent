@@ -139,7 +139,11 @@ class TestConfiguration:
 
     def test_initializes_openai_client_with_api_key(self, mock_openai_class):
         OpenAIAdapter(api_key="sk-secret-123")
-        mock_openai_class.assert_called_once_with(api_key="sk-secret-123")
+        # Sprawdzamy że api_key trafia (bez asercji na timeout — to detal),
+        # ale timeout MUSI być ustawiony (GHA hard limit 15 min).
+        call = mock_openai_class.call_args
+        assert call.kwargs["api_key"] == "sk-secret-123"
+        assert call.kwargs["timeout"] > 0
 
 
 class TestAdapterImplementsPort:
