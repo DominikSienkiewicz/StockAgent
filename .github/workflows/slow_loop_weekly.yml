@@ -54,10 +54,17 @@ jobs:
           git config --global user.name "AI Model Trainer"
           git config --global user.email "ml-trainer@users.noreply.github.com"
 
-          if git diff --quiet data/models/price_predictor.ubj; then
-            echo "Brak zmian w modelu wag po treningu (lub za mało danych)."
+          MODEL_PATH="data/models/price_predictor.ubj"
+
+          if [ ! -f "$MODEL_PATH" ]; then
+            echo "Trener nie wyprodukował pliku modelu (prawdopodobnie za mało danych) — pomijam commit."
+            exit 0
+          fi
+
+          git add "$MODEL_PATH"
+          if git diff --cached --quiet -- "$MODEL_PATH"; then
+            echo "Brak zmian w modelu wag po treningu."
           else
-            git add data/models/price_predictor.ubj
             git commit -m "chore(ml): update XGBoost model weights [skip ci]"
             git push
           fi
