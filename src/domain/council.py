@@ -1,9 +1,11 @@
 # src/domain/council.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal
+
+from src.domain.value_objects import Fundamentals, ValuationVerdict
 
 
 @dataclass(frozen=True)
@@ -16,6 +18,9 @@ class CouncilInput:
     llm_trend: str
     llm_confidence: float
     ml_price_target: Decimal
+    # Pola opcjonalne — domyślne wartości zapewniają wsteczną kompatybilność
+    fundamentals: Fundamentals | None = field(default=None)
+    valuation_verdict: ValuationVerdict = field(default=ValuationVerdict.UNKNOWN)
 
 
 @dataclass(frozen=True)

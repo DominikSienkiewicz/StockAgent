@@ -100,3 +100,12 @@ class TestSettings:
         settings = Settings(_env_file=None)
         assert settings.llm_provider == "anthropic"
         assert settings.anthropic_api_key is None
+
+    def test_symbols_etf_defaults_to_empty(self, env: pytest.MonkeyPatch) -> None:
+        settings = Settings(_env_file=None)
+        assert settings.symbols_etf == []
+
+    def test_symbols_etf_parses_csv(self, env: pytest.MonkeyPatch) -> None:
+        env.setenv("SYMBOLS_ETF", "VOO, CSPX.L , SPY")
+        settings = Settings(_env_file=None)
+        assert settings.symbols_etf == ["VOO", "CSPX.L", "SPY"]

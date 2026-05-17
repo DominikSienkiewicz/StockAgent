@@ -6,7 +6,7 @@ from typing import Any
 
 from src.domain.council import CouncilInput, CouncilVerdict
 from src.domain.prediction import Prediction
-from src.domain.value_objects import Money
+from src.domain.value_objects import Fundamentals, Money
 
 
 class MarketDataPort(ABC):
@@ -75,6 +75,16 @@ class RepositoryPort(ABC):
     def get_recently_resolved_predictions(self, hours: int) -> list[dict[str, Any]]:
         """Predykcje z wypełnionym `accuracy_score` w ostatnich `hours` godzin."""
 
+    @abstractmethod
+    def get_cached_fundamentals(self, symbol: str) -> Fundamentals | None:
+        """Zwraca fundamentale z cache jeśli `fetched_at` mieści się w
+        FUNDAMENTALS_CACHE_TTL_HOURS. Filtr TTL po stronie repo —
+        adapter nie zna polityki świeżości."""
+
+    @abstractmethod
+    def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
+        """Upsert jednego wiersza per symbol (nadpisuje poprzedni snapshot)."""
+
 
 class MLPredictionPort(ABC):
     """Lokalny model predykcyjny (np. XGBoost)."""
@@ -130,3 +140,13 @@ class AdvisoryCouncilPort(ABC):
 
     @abstractmethod
     def analyze(self, symbol: str, data: CouncilInput) -> CouncilVerdict: ...
+
+
+class FundamentalsPort(ABC):
+    """Źródło danych fundamentalnych spółek (P/E, PEG, EPS growth).
+
+    Zwraca None dla aktywów bez sensownych fundamentów (ETF-y, błąd API,
+    brak danych w źródle)."""
+
+    @abstractmethod
+    def get_fundamentals(self, symbol: str) -> Fundamentals | None: ...

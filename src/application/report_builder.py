@@ -43,6 +43,7 @@ from src.application.report_models import (
     SymbolResult,
     TopNewsItem,
     TradeSignal,
+    ValuationSection,
 )
 from src.application.report_signals import (
     build_portfolio_mood,
@@ -52,6 +53,7 @@ from src.application.report_signals import (
     parse_resolved_predictions,
 )
 from src.domain.council import CouncilVerdict
+from src.domain.value_objects import ValuationVerdict
 
 __all__ = [
     "ResolvedPrediction",
@@ -59,6 +61,7 @@ __all__ = [
     "SymbolResult",
     "TopNewsItem",
     "TradeSignal",
+    "ValuationSection",
     "build_chart_url",
     "build_correlation_chart_url",
     "build_forecast_chart_url",
@@ -95,6 +98,70 @@ _COUNCIL_REC_LABEL = {"BUY": "KUP", "SELL": "SPRZEDAJ", "HOLD": "TRZYMAJ"}
 _COUNCIL_REC_COLOR = {"BUY": "#16a34a", "SELL": "#dc2626", "HOLD": "#ca8a04"}
 _COUNCIL_REC_BG = {"BUY": "#f0fdf4", "SELL": "#fef2f2", "HOLD": "#fefce8"}
 _COUNCIL_REC_EMOJI = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}
+
+_VERDICT_COLOR = {
+    "UNDERVALUED": "#2e7d32",  # zielony
+    "FAIR": "#616161",         # szary
+    "OVERVALUED": "#c62828",   # czerwony
+    "UNKNOWN": "#9e9e9e",      # jasnoszary
+}
+
+
+def _render_valuation(section: ValuationSection | None) -> str:
+    """Renderuje sekcję wyceny fundamentalnej do HTML."""
+    if section is None:
+        return ""
+
+    def fmt(v: float | None) -> str:
+        return f"{v:.2f}" if isinstance(v, (int, float)) else "—"
+
+    growth = (
+        f"{section.eps_growth_yoy * 100:.1f}%"
+        if section.eps_growth_yoy is not None
+        else "—"
+    )
+    color = _VERDICT_COLOR.get(section.verdict.value, "#616161")
+
+    return (
+        f'<div style="margin-top:16px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">'
+        f'<div style="background:#f9fafb;padding:10px 16px;border-bottom:1px solid #e5e7eb">'
+        f'<span style="font-weight:700;font-size:1.0em">Wycena fundamentalna</span>'
+        f'&nbsp;&nbsp;'
+        f'<span style="background:{color};color:#fff;padding:2px 10px;border-radius:12px;font-weight:700">'
+        f'{section.verdict.value}</span>'
+        f'</div>'
+        f'<table style="width:100%;border-collapse:collapse;font-size:0.9em">'
+        f'<tr><td style="padding:6px 14px;color:#4b5563">Trailing P/E</td><td style="padding:6px 14px;font-weight:500">{fmt(section.trailing_pe)}</td>'
+        f'<td style="padding:6px 14px;color:#4b5563">Forward P/E</td><td style="padding:6px 14px;font-weight:500">{fmt(section.forward_pe)}</td></tr>'
+        f'<tr style="background:#f9fafb"><td style="padding:6px 14px;color:#4b5563">PEG ratio</td><td style="padding:6px 14px;font-weight:500">{fmt(section.peg_ratio)}</td>'
+        f'<td style="padding:6px 14px;color:#4b5563">EPS growth YoY</td><td style="padding:6px 14px;font-weight:500">{growth}</td></tr>'
+        f'</table>'
+        f'<div style="padding:6px 14px;font-size:0.8em;color:#9ca3af">Dane fundamentalne pobrane: {section.fetched_at.isoformat()}</div>'
+        f'</div>'
+    )
+
+
+def _render_valuation_text(section: ValuationSection | None) -> str:
+    """Renderuje sekcję wyceny fundamentalnej do plain text."""
+    if section is None:
+        return ""
+
+    def fmt(v: float | None) -> str:
+        return f"{v:.2f}" if isinstance(v, (int, float)) else "—"
+
+    growth = (
+        f"{section.eps_growth_yoy * 100:.1f}%"
+        if section.eps_growth_yoy is not None
+        else "—"
+    )
+
+    lines = [
+        "  Wycena fundamentalna:",
+        f"    Trailing P/E: {fmt(section.trailing_pe)}  · Forward P/E: {fmt(section.forward_pe)}",
+        f"    PEG ratio: {fmt(section.peg_ratio)}  · EPS growth YoY: {growth}",
+        f"    Werdykt: {section.verdict.value}",
+    ]
+    return "\n".join(lines)
 
 
 def _recommendation(r: SymbolResult) -> str:
@@ -603,6 +670,7 @@ def _render_html(
                 if r.council_verdict is not None
                 else ""
             )
+            valuation_block = _render_valuation(r.valuation)
             sections.append(f"""
               <div style="margin-bottom: 10px; padding: 10px 12px; background: #fafafa; border-left: 3px solid {_trend_color(r.trend)}; border-radius: 4px;">
                 <div style="font-weight: 600; font-size: 13px;">{_html(_company_label(r.symbol))} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span></div>
@@ -611,6 +679,7 @@ def _render_html(
                 {f'<div style="font-size: 12px; color: #4b5563; margin-top: 6px;">{_html(r.reasoning)}</div>' if r.reasoning else ''}
                 {news_block}
                 {council_block}
+                {valuation_block}
               </div>
             """)
 
@@ -804,6 +873,9 @@ def _render_plain(
                     f"        📰 [{n.source or '?'}] {n.title[:78]}"
                     f" (rel={n.relevance:.2f}, sent={n.sentiment:+.2f})"
                 )
+            valuation_text = _render_valuation_text(r.valuation)
+            if valuation_text:
+                lines.append(valuation_text)
         lines.append("")
 
     if ignored:
@@ -843,6 +915,23 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
 
     council_verdict = raw.get("council_verdict")
 
+    valuation: ValuationSection | None = None
+    verdict = raw.get("valuation_verdict")
+    fundamentals = raw.get("fundamentals")
+    if (
+        isinstance(verdict, ValuationVerdict)
+        and verdict is not ValuationVerdict.UNKNOWN
+        and fundamentals is not None
+    ):
+        valuation = ValuationSection(
+            trailing_pe=fundamentals.trailing_pe,
+            forward_pe=fundamentals.forward_pe,
+            peg_ratio=fundamentals.peg_ratio,
+            eps_growth_yoy=fundamentals.eps_growth_yoy,
+            verdict=verdict,
+            fetched_at=fundamentals.fetched_at,
+        )
+
     return SymbolResult(
         symbol=symbol,
         status=status,
@@ -859,6 +948,7 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
         reflection_insight=_clean_reflection(raw.get("reflection_context")),
         top_news=_extract_top_news(raw.get("news") or []),
         council_verdict=council_verdict if isinstance(council_verdict, CouncilVerdict) else None,
+        valuation=valuation,
     )
 
 

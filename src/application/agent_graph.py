@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Any, TypedDict
 
@@ -11,6 +12,7 @@ from src.application.ml_features import ML_FEATURE_COLUMNS
 from src.application.ports import (
     AdvisoryCouncilPort,
     EmbeddingPort,
+    FundamentalsPort,
     LLMPort,
     MarketDataPort,
     MLPredictionPort,
@@ -21,7 +23,7 @@ from src.application.ports import (
 from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction_prompt
 from src.domain.asset import Asset, PriceDelta
 from src.domain.council import CouncilInput, CouncilVerdict
-from src.domain.value_objects import Money, Threshold
+from src.domain.value_objects import AssetType, Fundamentals, Money, Threshold, ValuationVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +35,19 @@ class AgentState(TypedDict, total=False):
     delta: Decimal
     status: str
 
+    # Opcjonalny obiekt Asset (przekazywany z zewnątrz, gdy dostępny asset_type)
+    asset: Asset
+
     # Self-Reflection
     reflection_context: str
 
     # Zewnętrzne dane
     sentiment: dict[str, Any] | None
     news: list[dict[str, Any]]
+
+    # Fundamenty i wycena
+    fundamentals: Fundamentals | None
+    valuation_verdict: ValuationVerdict
 
     # Predykcja
     llm_analysis: dict[str, Any]
@@ -66,6 +75,40 @@ def _float_or_default(value: Any, default: float) -> float:
         return default
 
 
+def _build_fetch_fundamentals_node(
+    port: FundamentalsPort,
+) -> Callable[[AgentState], dict[str, Any]]:
+    """Buduje węzeł grafu z domknięciem nad portem (DI-friendly i testowalny).
+
+    Pozycja w grafie: po reflect_node, PRZED bramką volatility.
+    Czytanie cache jest darmowe; płatne wywołania AV dzieją się tylko
+    w slow loop (fast loop dostaje NullFundamentalsAdapter jako delegate).
+    """
+
+    def fetch_fundamentals_node(state: AgentState) -> dict[str, Any]:
+        # Asset zawsze obecny w state gdy fundamentals_port != None
+        # (main_agent.py klasyfikuje i przekazuje asset przed wywołaniem grafu).
+        asset: Asset = state["asset"]
+        if asset.asset_type is not AssetType.STOCK:
+            return {
+                "fundamentals": None,
+                "valuation_verdict": ValuationVerdict.UNKNOWN,
+            }
+
+        try:
+            fundamentals = port.get_fundamentals(asset.symbol)
+        except Exception:
+            return {
+                "fundamentals": None,
+                "valuation_verdict": ValuationVerdict.UNKNOWN,
+            }
+
+        verdict = asset.evaluate_valuation(fundamentals)
+        return {"fundamentals": fundamentals, "valuation_verdict": verdict}
+
+    return fetch_fundamentals_node
+
+
 def create_agent_graph(
     *,
     market_port: MarketDataPort,
@@ -77,20 +120,24 @@ def create_agent_graph(
     threshold: Threshold,
     embedding_port: EmbeddingPort | None = None,
     council_port: AdvisoryCouncilPort | None = None,
+    fundamentals_port: FundamentalsPort | None = None,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
-    Topologia:
+    Topologia bez fundamentals_port:
         check_price → reflect → [delta ≥ threshold?]
                                   ├── nie → ignore → END
                                   └── tak → analyze_sentiment → fetch_news
                                                               → predict → save → END
 
-    `reflect` jest PRZED bramką volatility — ocena poprzedniej predykcji
-    (backward pass) jest niezależna od tego, czy bieżący cykl robi nową
-    prognozę (forward pass). Dzięki temu każda predykcja jest oceniana
-    dokładnie w następnym cyklu (~12h), niezależnie od tego, czy ten cykl
-    przekroczył próg zmienności.
+    Topologia z fundamentals_port:
+        check_price → reflect → fetch_fundamentals → [delta ≥ threshold?]
+                                                        ├── nie → ignore → END
+                                                        └── tak → analyze_sentiment → …
+
+    `reflect` i `fetch_fundamentals` są PRZED bramką volatility — działają
+    w każdym cyklu niezależnie od bieżącej zmienności. Czytanie cache
+    fundamentów jest darmowe; płatne wywołania AV dzieją się tylko w slow loop.
     """
 
     def check_price_node(state: AgentState) -> dict[str, Any]:
@@ -235,6 +282,8 @@ def create_agent_graph(
             llm_trend=str(llm_analysis.get("trend_direction", "SIDEWAYS")),
             llm_confidence=_float_or_default(llm_analysis.get("confidence_score"), 0.5),
             ml_price_target=state.get("ml_target_price") or state["current_price"],
+            fundamentals=state.get("fundamentals"),
+            valuation_verdict=state.get("valuation_verdict", ValuationVerdict.UNKNOWN),
         )
         try:
             verdict = council_port.analyze(state["symbol"], data)
@@ -305,15 +354,36 @@ def create_agent_graph(
     # check_price → reflect: bezwarunkowo. Ocena przeszłej predykcji odbywa się
     # w KAŻDYM cyklu, niezależnie od bieżącej zmienności.
     workflow.add_edge("check_price", "reflect")
-    # reflect → bramka volatility: dopiero TU decydujemy, czy robić nową prognozę.
-    workflow.add_conditional_edges(
-        "reflect",
-        should_analyze,
-        {
-            "analyze_sentiment": "analyze_sentiment",
-            "ignore": "ignore",
-        },
-    )
+
+    if fundamentals_port is not None:
+        # reflect → fetch_fundamentals → bramka volatility.
+        # Węzeł fundamentów jest PRZED bramką — czytanie cache jest darmowe.
+        workflow.add_node(
+            "fetch_fundamentals",
+            _build_fetch_fundamentals_node(fundamentals_port),
+        )
+        workflow.add_edge("reflect", "fetch_fundamentals")
+        # fetch_fundamentals → bramka volatility: dopiero TU decydujemy, czy robić
+        # nową prognozę.
+        workflow.add_conditional_edges(
+            "fetch_fundamentals",
+            should_analyze,
+            {
+                "analyze_sentiment": "analyze_sentiment",
+                "ignore": "ignore",
+            },
+        )
+    else:
+        # Tryb kompatybilności wstecznej: reflect → bramka volatility bezpośrednio.
+        workflow.add_conditional_edges(
+            "reflect",
+            should_analyze,
+            {
+                "analyze_sentiment": "analyze_sentiment",
+                "ignore": "ignore",
+            },
+        )
+
     workflow.add_edge("analyze_sentiment", "fetch_news")
     workflow.add_edge("fetch_news", "predict")
     workflow.add_edge("predict", "council")

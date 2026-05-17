@@ -1,7 +1,7 @@
 # 📈 StockAgent
 **Architected & Developed by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/)** *Principal AI Engineer | Full Stack Architect*
 
-Autonomous financial agent that runs every 12h, monitors a curated portfolio of US stocks and ETFs, **fuses price action with curated financial sentiment** (Alpha Vantage NEWS_SENTIMENT), **detects cross-signal divergences** (LLM ↔ AV agreement < 0.3 = 🚨 fake news / manipulation), **learns from its own mistakes** (Self-Reflection backed by closed predictions in Supabase), and delivers a full Polish-language digest email — with charts, trade signals, accuracy history, and clickable top news straight from your inbox.
+Autonomous financial agent that runs once daily (on trading days), monitors a curated portfolio of US stocks and ETFs, **fuses price action with curated financial sentiment** (Alpha Vantage NEWS_SENTIMENT), **detects cross-signal divergences** (LLM ↔ AV agreement < 0.3 = 🚨 fake news / manipulation), **learns from its own mistakes** (Self-Reflection backed by closed predictions in Supabase), and delivers a full Polish-language digest email — with charts, trade signals, accuracy history, and clickable top news straight from your inbox.
 
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.3](https://img.shields.io/badge/LangGraph-1.3-1C3C3C?style=for-the-badge)
@@ -13,21 +13,21 @@ Autonomous financial agent that runs every 12h, monitors a curated portfolio of 
 
 ## 🧠 The Vision: Signal over Noise
 
-In the era of AI-driven information overload, a single price tick is a useless signal — what matters is the **covariance of sentiment, news, and historical predictions**. This agent treats the market as a system: every 12h it pulls clean numerical data, enriches it through a curated financial filter, models hybridly (LLM for reasoning + XGBoost for quantitative inference), and **cyclically confronts itself with reality** through Self-Reflection. It's not a scraper, and it's not another "GPT predict stocks" — it's a **cognitive filter** designed for an aware decision-maker.
+In the era of AI-driven information overload, a single price tick is a useless signal — what matters is the **covariance of sentiment, news, and historical predictions**. This agent treats the market as a system: once a day it pulls clean numerical data, enriches it through a curated financial filter, models hybridly (LLM for reasoning + XGBoost for quantitative inference), and **cyclically confronts itself with reality** through Self-Reflection. It's not a scraper, and it's not another "GPT predict stocks" — it's a **cognitive filter** designed for an aware decision-maker.
 
 ## How it works
 
 ```
-Finnhub (US prices) ──► check_price ──► reflect ──► [Δ ≥ threshold?]
-                         (+ snapshot     (Self-        ├── no ──► ignore ──┐
-                          to DB)          Reflection)  │                   │
-                                                       └── yes ──► sentiment │
-                                                                   → news    │
-                                                                   → predict │
-                                                                   → council │  ← 11 investor personas
-                                                                   → save ───┤
-                                                                             │
-                          ┌──────────────────────────────────────────────────┘
+Finnhub (US prices) ──► check_price ──► reflect ──► fetch_fundamentals ──► [Δ ≥ threshold?]
+                         (+ snapshot     (Self-        (AlphaVantage           ├── no ──► ignore ──┐
+                          to DB)          Reflection)   OVERVIEW+EARNINGS       │                   │
+                                                        slow loop only)         └── yes ──► sentiment │
+                                                                                            → news    │
+                                                                                            → predict │
+                                                                                            → council │  ← 11 investor personas
+                                                                                            → save ───┤
+                                                                                                      │
+                          ┌───────────────────────────────────────────────────────────────────────────┘
                           ▼
                  accuracy_stats + resolved_predictions
                           ▼
@@ -36,14 +36,15 @@ Finnhub (US prices) ──► check_price ──► reflect ──► [Δ ≥ th
 
 1. **Fetch price + snapshot** — `FinnhubAdapter` pulls the current quote for each US ticker. `check_price_node` saves a **price snapshot in every cycle** (`price_snapshots` table) so the next cycle always has a reference point — this breaks the cold-start deadlock. Free tier is US-only; dotted tickers (`CSPX.L`, `BAS.DE`) get a 403 and are handled gracefully.
 2. **Self-Reflection (runs every cycle, before the volatility gate)** — `reflect_node` reads the last unverified prediction. It computes `accuracy_score` via the domain, persists it, and — if the prediction was wrong — the LLM diagnoses why ("I ignored hawkish Fed signals"). The insight is injected into the next prediction's prompt as `<reflection_context>`. Decoupled from the volatility gate so every prediction is scored ~12h later, regardless of the current cycle's volatility.
-3. **Volatility gate** — `Asset.evaluate_volatility(delta, threshold)` lives in the pure domain (Hexagonal core). Δ < 2% → `ignore`, no paid APIs touched. **Domain decides, graph executes.**
-4. **News + Sentiment** — `AlphaVantageClient` makes one request per ticker, rotating N API keys when one exhausts its 25 req/day quota. A `relevance ≥ 0.5` filter strips noise **before** anything reaches the LLM. Per ticker it returns a multi-feature dict: `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `av_sentiment_label`.
-5. **LLM (cross-validation)** — GPT-4o (or Claude when `LLM_PROVIDER=anthropic`) receives pre-computed AV sentiment + headlines + reflection context. It returns structured JSON: `trend_direction`, `confidence_score`, **`av_agreement`** (whether it agrees with AV — anything below 0.3 flags potential manipulation), `target_price_12h`, `reasoning`.
-6. **ML hard prediction (local XGBoost)** — model lives in a `.ubj` file inside the repo (Local-First AI). Consumes 7 features: `price_delta`, `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `llm_trend_signal`, `av_llm_agreement`. On cold start (no trained weights yet) it falls back to a "no change" baseline instead of crashing.
-7. **Advisory Council** — after `predict_node`, 11 legendary investor personas (Buffett, Graham, Soros, Lynch, Dalio, Munger, Fisher, Tudor Jones, Gross, Livermore, Burry) each independently analyse the same data via parallel LLM calls (`ThreadPoolExecutor(max_workers=11)`). A 12th "chairman" call synthesises a consensus `CouncilVerdict` (BUY/SELL/HOLD + `consensus_strength` + `dissenting_views`). Only fires when the volatility gate passes; gracefully skipped on error. Stored as JSONB in `prediction_logs`, rendered as a styled table in the email report.
-8. **Persist** — `SupabaseRepository` writes the full record to `prediction_logs`. The news summary is embedded (OpenAI `text-embedding-3-small` → 1536-dim `pgvector`) for later RAG-style retrieval — graceful when embeddings are unavailable.
-9. **Slow Loop (weekly cycle)** — `main_trainer.py` retrains XGBoost on resolved predictions (those with `accuracy_score`), commits the new weights back to the repo (Continual Learning).
-10. **Deliver** — Polish-language HTML report via Resend with 2 charts (Δ12h + forecast), correlation scatter plot, trade signals sorted by `confidence × |Δ|`, risk signals with severity badges, day-over-day diff, and clickable news headlines.
+3. **Fundamentals (slow loop refreshes, fast loop reads cache)** — `fetch_fundamentals_node` runs after `reflect` and before the volatility gate. The `FundamentalsPort` is implemented by `AlphaVantageFundamentalsAdapter` (2 API requests per stock symbol: `OVERVIEW` + `EARNINGS`) wrapped in `CachedFundamentalsAdapter` (decorator pattern). In the **slow loop**, real API calls populate the `fundamentals_cache` Supabase table. In the **fast loop**, a `NullFundamentalsAdapter` delegate skips API calls and reads from cache only. ETF symbols (configured via `SYMBOLS_ETF`) always skip fetching — they have no meaningful per-share EPS/P/E. The domain evaluates a deterministic `ValuationVerdict` (`UNDERVALUED / FAIR / OVERVALUED / UNKNOWN`) based primarily on PEG ratio, with PE/growth qualifiers; ETFs always get `UNKNOWN`. The verdict is surfaced to the Council prompt as a `Valuation snapshot` block and rendered as a dedicated **Wycena fundamentalna** section in the email report.
+4. **Volatility gate** — `Asset.evaluate_volatility(delta, threshold)` lives in the pure domain (Hexagonal core). Δ < 2% → `ignore`, no paid APIs touched. **Domain decides, graph executes.**
+5. **News + Sentiment** — `AlphaVantageClient` makes one request per ticker, rotating N API keys when one exhausts its 25 req/day quota. A `relevance ≥ 0.5` filter strips noise **before** anything reaches the LLM. Per ticker it returns a multi-feature dict: `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `av_sentiment_label`.
+6. **LLM (cross-validation)** — GPT-4o (or Claude when `LLM_PROVIDER=anthropic`) receives pre-computed AV sentiment + headlines + reflection context + fundamentals valuation snapshot. It returns structured JSON: `trend_direction`, `confidence_score`, **`av_agreement`** (whether it agrees with AV — anything below 0.3 flags potential manipulation), `target_price_12h`, `reasoning`.
+7. **ML hard prediction (local XGBoost)** — model lives in a `.ubj` file inside the repo (Local-First AI). Consumes 7 features: `price_delta`, `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `llm_trend_signal`, `av_llm_agreement`. On cold start (no trained weights yet) it falls back to a "no change" baseline instead of crashing.
+8. **Advisory Council** — after `predict_node`, 11 legendary investor personas (Buffett, Graham, Soros, Lynch, Dalio, Munger, Fisher, Tudor Jones, Gross, Livermore, Burry) each independently analyse the same data via parallel LLM calls (`ThreadPoolExecutor(max_workers=11)`). A 12th "chairman" call synthesises a consensus `CouncilVerdict` (BUY/SELL/HOLD + `consensus_strength` + `dissenting_views`). Only fires when the volatility gate passes; gracefully skipped on error. Stored as JSONB in `prediction_logs`, rendered as a styled table in the email report.
+9. **Persist** — `SupabaseRepository` writes the full record to `prediction_logs`. The news summary is embedded (OpenAI `text-embedding-3-small` → 1536-dim `pgvector`) for later RAG-style retrieval — graceful when embeddings are unavailable.
+10. **Slow Loop (weekly cycle)** — `main_trainer.py` retrains XGBoost on resolved predictions (those with `accuracy_score`), commits the new weights back to the repo (Continual Learning). Also runs a fundamentals refresh step using `AlphaVantageFundamentalsAdapter` to repopulate `fundamentals_cache`.
+11. **Deliver** — Polish-language HTML report via Resend with 2 charts (Δ12h + forecast), correlation scatter plot, trade signals sorted by `confidence × |Δ|`, risk signals with severity badges, day-over-day diff, and clickable news headlines.
 
 All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff, and a single per-symbol error never aborts the whole cycle.
 
@@ -53,7 +54,8 @@ All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff,
 |---|---|---|
 | **Finnhub** (`/quote`) | One request per ticker, 60 req/min free tier | US exchanges only. `.L` / `.DE` / `.NL` tickers → 403. |
 | **Alpha Vantage** `NEWS_SENTIMENT` | One request per ticker, `limit=50`, client-side relevance filter ≥ 0.5 | **AND filter on tickers** = a separate request per symbol. Rate limit 25 req/day × N keys = N × 25/day. |
-| **Supabase** (Postgres + pgvector) | `prediction_logs` + `price_snapshots` tables + materialized view `ml_feature_store` | Service role key. RPC `refresh_ml_feature_store` is called before training. |
+| **Alpha Vantage** `OVERVIEW` + `EARNINGS` | 2 requests per stock symbol per slow-loop refresh | Used by `AlphaVantageFundamentalsAdapter`. Free tier = 25 req/day → max ~12 stock symbols per refresh with a single key. Multi-key rotation via `ALPHA_VANTAGE_API_KEYS` (CSV) already supported. ETF symbols (`SYMBOLS_ETF`) are skipped. |
+| **Supabase** (Postgres + pgvector) | `prediction_logs` + `price_snapshots` + `fundamentals_cache` tables + materialized view `ml_feature_store` | Service role key. RPC `refresh_ml_feature_store` is called before training. |
 | **OpenAI** `chat.completions` | JSON mode (`response_format={"type":"json_object"}`), temperature 0.2 | Default LLM. Switch to Anthropic Claude via `LLM_PROVIDER=anthropic`. |
 | **OpenAI** `embeddings` | `text-embedding-3-small` → 1536-dim vector | Embeds the news summary into `pgvector`. Disabled when `LLM_PROVIDER=anthropic`. |
 | **Anthropic** (optional) | Messages API, `claude-sonnet-4-6`, max_tokens 4096 | Adapter strips ```` ```json ... ``` ```` wrappers (Claude has no JSON mode). |
@@ -130,7 +132,7 @@ All sections are **conditional** — they only render when data exists. The firs
 - **QuickChart.io** — URL-based charts (`<img src>` in HTML), zero dependency
 - **Pydantic Settings** v2 — typed env vars from `.env` with validators (CSV → list)
 - **requests** + `urllib3.Retry` — shared session with exponential backoff on 429 / 5xx
-- **pytest 9** + **pytest-mock** — 277 passing tests + 7 skipped live API tests
+- **pytest 9** + **pytest-mock** — 376 passing tests + 5 skipped live API tests
 - **ruff** — lint (E, W, F, I, B, UP, SIM rule sets)
 - **mypy** strict mode — every file fully typed
 - **GitHub Actions CI** — ruff + mypy + pytest on every push / PR
@@ -166,8 +168,10 @@ cp .env.example .env
 #   migrations/002_price_snapshots.sql  (price_snapshots — breaks cold-start)
 #   migrations/003_add_embedding.sql    (embedding VECTOR(1536) + pgvector index)
 #   migrations/004_align_ml_feature_store.sql  (7-feature XGBoost contract)
+#   migrations/005_investor_advisory_board.sql  (council verdicts schema)
+#   migrations/006_fundamentals_cache.sql       (fundamentals_cache table with TTL)
 
-# 4. Smoke test (expect 277 tests passing + 7 skipped live API tests)
+# 4. Smoke test (expect 376 tests passing + 5 skipped live API tests)
 uv run pytest
 
 # 5. Single Fast Loop run
@@ -198,6 +202,7 @@ DIGEST_TO_EMAIL=you@example.com
 
 # Agent
 SYMBOLS=AAPL,AMZN,GOOGL,MSFT,META,NVDA,TSLA,AMD,NET,PLTR,ORCL,UBER,TSM,ASML,ASMIY,SAP,SIEGY,NVO,VT,QUAL,IHI,VB
+SYMBOLS_ETF=VT,QUAL,IHI,VB          # CSV of ETF tickers — skip fundamentals fetch
 VOLATILITY_THRESHOLD=0.02
 ML_MODEL_PATH=data/models/price_predictor.ubj
 ```
@@ -226,7 +231,7 @@ Three workflows in [`.github/workflows/`](.github/workflows/):
 | File | Cron (UTC) | Polish time (CEST / CET) | What it does |
 |---|---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | — (on push / PR) | — | ruff + mypy + pytest (unit only) |
-| [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml) | `30 5 * * 1-5` + `0 12 * * 1-5` | **07:30 / 14:00** (summer) / 06:30 / 13:00 (winter), **Mon–Fri only** | Analysis + email report (skipped on weekends — market closed) |
+| [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml) | `30 5 * * 1-5` | **07:30** (summer) / 06:30 (winter), **Mon–Fri only** | Analysis + email report (skipped on weekends — market closed) |
 | [`slow_loop_weekly.yml`](.github/workflows/slow_loop_weekly.yml) | `0 3 * * 0` | Sunday 05:00 (summer) | XGBoost retraining + commit new weights |
 
 The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
@@ -244,6 +249,7 @@ All tunable parameters live in [`src/config.py`](src/config.py) as a `Settings` 
 | `volatility_threshold` | `0.02` | Threshold that triggers full analysis (2%) |
 | `symbols` | `[AAPL, MSFT, NVDA]` | Monitored tickers (CSV in env — override with the 22-symbol portfolio) |
 | `alpha_vantage_api_keys` | `[]` | CSV of keys for rotation on rate-limit |
+| `symbols_etf` | `[]` | CSV of tickers classified as ETFs (e.g. `VT,QUAL,IHI,VB`). ETFs skip fundamentals fetching (no meaningful per-share EPS/P/E) and always receive `ValuationVerdict.UNKNOWN`. |
 | `ml_model_path` | `data/models/price_predictor.ubj` | XGBoost weights file |
 | `notifications_enabled` | `false` | Enables email delivery |
 | `digest_from_email` | `onboarding@resend.dev` | Resend sandbox sender |

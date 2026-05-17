@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from src.domain.council import CouncilInput, InvestorOpinion
+from src.domain.value_objects import ValuationVerdict
 
 INVESTOR_PERSONAS: dict[str, str] = {
     "Warren Buffett": (
@@ -73,6 +74,36 @@ INVESTOR_PERSONAS: dict[str, str] = {
 }
 
 
+def _format_valuation_block(data: CouncilInput) -> str:
+    """Formatuje blok wyceny do wstrzyknięcia w prompt inwestora.
+
+    Zwraca pusty string gdy werdykt jest nieznany lub brak danych fundamentalnych.
+    """
+    if data.valuation_verdict is ValuationVerdict.UNKNOWN or data.fundamentals is None:
+        return ""
+    f = data.fundamentals
+
+    def _fmt(v: float | None) -> str:
+        return f"{v:.2f}" if isinstance(v, (int, float)) else "n/a"
+
+    growth_pct = (
+        f"{f.eps_growth_yoy * 100:.1f}%"
+        if f.eps_growth_yoy is not None
+        else "n/a"
+    )
+    return (
+        f"\nValuation snapshot (as of {f.fetched_at.isoformat()}):\n"
+        f"- Trailing P/E: {_fmt(f.trailing_pe)}\n"
+        f"- Forward P/E: {_fmt(f.forward_pe)}\n"
+        f"- PEG ratio: {_fmt(f.peg_ratio)}\n"
+        f"- EPS growth YoY: {growth_pct}\n"
+        f"- Deterministic verdict: {data.valuation_verdict.value}\n\n"
+        "Consider this signal in your recommendation. You may disagree with "
+        "the deterministic verdict if you justify it based on sector context "
+        "or growth trajectory.\n"
+    )
+
+
 def investor_prompt(persona: str, data: CouncilInput) -> str:
     style = INVESTOR_PERSONAS[persona]
     news_formatted = "\n".join(f"  - {a}" for a in data.news_articles) or "  (brak newsów)"
@@ -96,7 +127,7 @@ Cel cenowy ML (XGBoost): {data.ml_price_target}
 <newsy>
 {news_formatted}
 </newsy>
-
+{_format_valuation_block(data)}
 <output_schema>
 {{
     "recommendation": "BUY" | "SELL" | "HOLD",

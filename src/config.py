@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     symbols: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["AAPL", "MSFT", "NVDA"]
     )
+    # Symbole klasyfikowane jako ETF — pomijają fundamentale (brak EPS/P/E).
+    symbols_etf: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # ----- ML -----
     ml_model_path: str = "data/models/price_predictor.ubj"
@@ -59,6 +61,14 @@ class Settings(BaseSettings):
     @classmethod
     def _parse_symbols(cls, value: str | list[str]) -> list[str]:
         """Pozwala podać SYMBOLS=AAPL,MSFT,GOOGL w .env (CSV → list[str])."""
+        if isinstance(value, str):
+            return [s.strip() for s in value.split(",") if s.strip()]
+        return value
+
+    @field_validator("symbols_etf", mode="before")
+    @classmethod
+    def _parse_symbols_etf(cls, value: str | list[str]) -> list[str]:
+        """Pozwala podać SYMBOLS_ETF=VOO,CSPX.L w .env (CSV → list[str])."""
         if isinstance(value, str):
             return [s.strip() for s in value.split(",") if s.strip()]
         return value

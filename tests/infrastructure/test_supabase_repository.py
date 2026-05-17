@@ -1,11 +1,13 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.application.ports import RepositoryPort
 from src.domain.prediction import TrendDirection
-from src.domain.value_objects import Money
+from src.domain.value_objects import FUNDAMENTALS_CACHE_TTL_HOURS, Fundamentals, Money
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
 # ---------------------------------------------------------------------------
@@ -14,7 +16,9 @@ from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 # ---------------------------------------------------------------------------
 
 
-def _set_chain_response(client: MagicMock, methods: list[str], data: list[dict]) -> MagicMock:
+def _set_chain_response(
+    client: MagicMock, methods: list[str], data: list[dict[str, Any]]
+) -> MagicMock:
     """Configures a chained call ending in .execute() returning `data`.
 
     Returns the response mock for further assertions if needed.
@@ -29,7 +33,7 @@ def _set_chain_response(client: MagicMock, methods: list[str], data: list[dict])
 
 
 @pytest.fixture
-def mock_client(mocker) -> MagicMock:
+def mock_client(mocker: Any) -> MagicMock:
     create = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
     client = MagicMock()
     create.return_value = client
@@ -47,7 +51,9 @@ def repo(mock_client: MagicMock) -> SupabaseRepository:
 
 
 class TestGetLastPrice:
-    def test_returns_money_from_price_snapshots(self, repo, mock_client):
+    def test_returns_money_from_price_snapshots(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(
             mock_client,
             ["table", "select", "eq", "order", "limit"],
@@ -59,13 +65,17 @@ class TestGetLastPrice:
         assert isinstance(price, Money)
         assert price.amount == Decimal("192.5")
 
-    def test_returns_none_when_no_history(self, repo, mock_client):
+    def test_returns_none_when_no_history(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(
             mock_client, ["table", "select", "eq", "order", "limit"], data=[]
         )
         assert repo.get_last_price("UNKNOWN") is None
 
-    def test_queries_price_snapshots_table_with_symbol_filter(self, repo, mock_client):
+    def test_queries_price_snapshots_table_with_symbol_filter(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(
             mock_client, ["table", "select", "eq", "order", "limit"], data=[]
         )
@@ -80,7 +90,9 @@ class TestGetLastPrice:
 
 
 class TestSavePriceSnapshot:
-    def test_inserts_symbol_and_price_to_snapshots_table(self, repo, mock_client):
+    def test_inserts_symbol_and_price_to_snapshots_table(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(mock_client, ["table", "insert"], [{"id": "snap-1"}])
 
         repo.save_price_snapshot("AAPL", Money(Decimal("298.87")))
@@ -98,7 +110,9 @@ class TestSavePriceSnapshot:
 
 
 class TestSavePrediction:
-    def test_returns_inserted_uuid(self, repo, mock_client):
+    def test_returns_inserted_uuid(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(
             mock_client,
             ["table", "insert"],
@@ -117,7 +131,9 @@ class TestSavePrediction:
 
         assert record_id == "uuid-789"
 
-    def test_raises_when_insert_returns_empty_rows(self, repo, mock_client):
+    def test_raises_when_insert_returns_empty_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         # Supabase czasem zwraca puste response.data (np. przy konflikcie RLS).
         # Bez tego guardu prediction_id propagowałby się jako None / KeyError.
         _set_chain_response(mock_client, ["table", "insert"], data=[])
@@ -132,7 +148,9 @@ class TestSavePrediction:
                 }
             )
 
-    def test_serializes_decimal_values_for_json(self, repo, mock_client):
+    def test_serializes_decimal_values_for_json(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(mock_client, ["table", "insert"], [{"id": "uuid-1"}])
 
         repo.save_prediction(
@@ -155,7 +173,9 @@ class TestSavePrediction:
 
 
 class TestGetUnverifiedPrediction:
-    def test_maps_row_to_prediction_domain_object(self, repo, mock_client):
+    def test_maps_row_to_prediction_domain_object(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(
             mock_client,
             ["table", "select", "eq", "is_", "order", "limit"],
@@ -179,13 +199,17 @@ class TestGetUnverifiedPrediction:
         assert prediction.price_at_prediction == Decimal("100.0")
         assert prediction.predicted_target_price == Decimal("105.0")
 
-    def test_returns_none_when_no_unverified_prediction(self, repo, mock_client):
+    def test_returns_none_when_no_unverified_prediction(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(
             mock_client, ["table", "select", "eq", "is_", "order", "limit"], []
         )
         assert repo.get_unverified_prediction("AAPL") is None
 
-    def test_filters_by_null_actual_price(self, repo, mock_client):
+    def test_filters_by_null_actual_price(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(
             mock_client, ["table", "select", "eq", "is_", "order", "limit"], []
         )
@@ -203,7 +227,9 @@ class TestGetUnverifiedPrediction:
 
 
 class TestUpdatePredictionAccuracy:
-    def test_updates_record_with_price_accuracy_and_insight(self, repo, mock_client):
+    def test_updates_record_with_price_accuracy_and_insight(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(
             mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}]
         )
@@ -226,8 +252,8 @@ class TestUpdatePredictionAccuracy:
         )
 
     def test_idempotency_guard_filters_already_resolved_predictions(
-        self, repo, mock_client
-    ):
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         """Idempotency: update musi mieć WHERE actual_price_after_12h IS NULL.
 
         Bez tego dwa równoczesne cykle (np. ręczny workflow_dispatch nakładający
@@ -256,8 +282,10 @@ class TestUpdatePredictionAccuracy:
 
 
 class TestGetFeatureStoreData:
-    def test_returns_rows_from_materialized_view(self, repo, mock_client):
-        rows = [
+    def test_returns_rows_from_materialized_view(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        rows: list[dict[str, Any]] = [
             {"price_current": 100.0, "sentiment_score": 75.0, "llm_trend_signal": 1},
             {"price_current": 102.0, "sentiment_score": 80.0, "llm_trend_signal": 1},
         ]
@@ -270,7 +298,9 @@ class TestGetFeatureStoreData:
         assert result == rows
         mock_client.table.assert_any_call("ml_feature_store")
 
-    def test_returns_empty_list_when_no_data(self, repo, mock_client):
+    def test_returns_empty_list_when_no_data(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
         _set_chain_response(mock_client, ["table", "select", "eq", "order"], [])
         assert repo.get_feature_store_data("UNKNOWN") == []
 
@@ -282,8 +312,8 @@ class TestGetFeatureStoreData:
 
 class TestRefreshFeatureStoreRetry:
     def test_retries_on_transient_error_then_succeeds(
-        self, repo, mock_client, mocker
-    ):
+        self, repo: SupabaseRepository, mock_client: MagicMock, mocker: Any
+    ) -> None:
         # Pierwsze 2 wywołania rzucają, trzecie OK.
         rpc = mock_client.rpc.return_value
         rpc.execute.side_effect = [
@@ -297,7 +327,9 @@ class TestRefreshFeatureStoreRetry:
 
         assert rpc.execute.call_count == 3
 
-    def test_raises_after_exhausting_retries(self, repo, mock_client, mocker):
+    def test_raises_after_exhausting_retries(
+        self, repo: SupabaseRepository, mock_client: MagicMock, mocker: Any
+    ) -> None:
         rpc = mock_client.rpc.return_value
         rpc.execute.side_effect = RuntimeError("persistent failure")
         mocker.patch("src.infrastructure.adapters.supabase_repo.time.sleep")
@@ -309,8 +341,8 @@ class TestRefreshFeatureStoreRetry:
         assert rpc.execute.call_count == 3
 
     def test_succeeds_on_first_attempt_does_not_sleep(
-        self, repo, mock_client, mocker
-    ):
+        self, repo: SupabaseRepository, mock_client: MagicMock, mocker: Any
+    ) -> None:
         rpc = mock_client.rpc.return_value
         rpc.execute.return_value = MagicMock(data=[])
         sleep_mock = mocker.patch("src.infrastructure.adapters.supabase_repo.time.sleep")
@@ -322,10 +354,117 @@ class TestRefreshFeatureStoreRetry:
 
 
 # ---------------------------------------------------------------------------
+# get_cached_fundamentals / save_fundamentals — fundamentals_cache table
+# ---------------------------------------------------------------------------
+
+
+class TestSaveFundamentals:
+    def test_save_fundamentals_upserts_row(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """save_fundamentals musi wywołać upsert na fundamentals_cache z pełnym payloadem."""
+        _set_chain_response(mock_client, ["table", "upsert"], [])
+        fetched = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
+        fund = Fundamentals(
+            trailing_pe=25.4,
+            forward_pe=22.1,
+            peg_ratio=1.5,
+            eps_growth_yoy=0.12,
+            fetched_at=fetched,
+        )
+
+        repo.save_fundamentals("AAPL", fund)
+
+        mock_client.table.assert_called_with("fundamentals_cache")
+        payload = mock_client.table.return_value.upsert.call_args.args[0]
+        assert payload["symbol"] == "AAPL"
+        assert payload["trailing_pe"] == 25.4
+        assert payload["forward_pe"] == 22.1
+        assert payload["peg_ratio"] == 1.5
+        assert payload["eps_growth_yoy"] == 0.12
+        # fetched_at musi być ISO string
+        assert payload["fetched_at"] == fetched.isoformat()
+
+
+class TestGetCachedFundamentals:
+    def test_get_cached_fundamentals_returns_none_when_empty(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """Gdy Supabase zwraca puste data, metoda zwraca None."""
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "gte"],
+            [],
+        )
+
+        result = repo.get_cached_fundamentals("AAPL")
+
+        assert result is None
+
+    def test_get_cached_fundamentals_returns_fundamentals_when_fresh(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """Gdy Supabase zwraca wiersz, metoda zwraca wypełniony obiekt Fundamentals."""
+        fetched_iso = "2026-05-18T12:00:00+00:00"
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "gte"],
+            [
+                {
+                    "symbol": "AAPL",
+                    "trailing_pe": 25.4,
+                    "forward_pe": 22.1,
+                    "peg_ratio": 1.5,
+                    "eps_growth_yoy": 0.12,
+                    "fetched_at": fetched_iso,
+                }
+            ],
+        )
+
+        result = repo.get_cached_fundamentals("AAPL")
+
+        assert result is not None
+        assert isinstance(result, Fundamentals)
+        assert result.trailing_pe == 25.4
+        assert result.forward_pe == 22.1
+        assert result.peg_ratio == 1.5
+        assert result.eps_growth_yoy == 0.12
+        assert result.fetched_at == datetime.fromisoformat(fetched_iso)
+
+    def test_get_cached_fundamentals_uses_ttl_filter(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """Metoda filtruje wyniki przez .gte("fetched_at", cutoff) z tolerancją 1 minuty."""
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "gte"],
+            [],
+        )
+
+        before_call = datetime.now(UTC)
+        repo.get_cached_fundamentals("AAPL")
+        after_call = datetime.now(UTC)
+
+        # Pobierz argument cutoff przekazany do .gte(...)
+        gte_call = (
+            mock_client.table.return_value.select.return_value.eq.return_value.gte
+        )
+        gte_call.assert_called_once()
+        field_arg, cutoff_arg = gte_call.call_args.args
+        assert field_arg == "fetched_at"
+
+        cutoff_dt = datetime.fromisoformat(cutoff_arg)
+        ttl = timedelta(hours=FUNDAMENTALS_CACHE_TTL_HOURS)
+        expected_min = before_call - ttl - timedelta(minutes=1)
+        expected_max = after_call - ttl + timedelta(minutes=1)
+        assert expected_min <= cutoff_dt <= expected_max
+
+
+# ---------------------------------------------------------------------------
 # Port conformance
 # ---------------------------------------------------------------------------
 
 
 class TestAdapterImplementsPort:
-    def test_is_repository_port(self):
+    def test_is_repository_port(self) -> None:
         assert issubclass(SupabaseRepository, RepositoryPort)

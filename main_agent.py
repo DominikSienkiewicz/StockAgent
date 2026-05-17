@@ -31,13 +31,18 @@ from src.application.report_builder import (
 )
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.config import Settings
-from src.domain.value_objects import Threshold
+from src.domain.asset import Asset
+from src.domain.value_objects import AssetType, Threshold
 from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
 from src.infrastructure.adapters.alpha_vantage_adapters import (
     AlphaVantageNewsAdapter,
     AlphaVantageSentimentAdapter,
 )
 from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
+from src.infrastructure.adapters.cached_fundamentals import (
+    CachedFundamentalsAdapter,
+    NullFundamentalsAdapter,
+)
 from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
 from src.infrastructure.adapters.resend_notifier import NullNotifier, ResendNotifier
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
@@ -111,16 +116,23 @@ def build_use_case(
         symbols=settings.symbols,
     )
     llm_port = build_llm_adapter(settings)
+    supabase_repo = repository or build_repository(settings)
+    # Fast loop: delegate = Null — nie woła płatnego AV, czyta tylko cache Supabase.
+    fundamentals_port = CachedFundamentalsAdapter(
+        repo=supabase_repo,
+        delegate=NullFundamentalsAdapter(),
+    )
     return AnalyzeMarketUseCase(
         market_port=FinnhubAdapter(api_key=settings.finnhub_api_key),
         sentiment_port=AlphaVantageSentimentAdapter(av_client),
         news_port=AlphaVantageNewsAdapter(av_client),
-        repository_port=repository or build_repository(settings),
+        repository_port=supabase_repo,
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
         llm_port=llm_port,
         threshold=Threshold(settings.volatility_threshold),
         embedding_port=build_embedding_adapter(settings),
         council_port=build_council_adapter(llm_port),
+        fundamentals_port=fundamentals_port,
     )
 
 
@@ -142,7 +154,12 @@ def main(settings: Settings | None = None) -> int:
     failures = 0
     for symbol in settings.symbols:
         try:
-            raw = use_case.run(symbol)
+            # Klasyfikacja STOCK/ETF — ETF-y pomijają fundamentale (brak EPS/P/E).
+            asset_type = (
+                AssetType.ETF if symbol in settings.symbols_etf else AssetType.STOCK
+            )
+            asset = Asset(symbol=symbol, asset_type=asset_type)
+            raw = use_case.run(symbol, asset=asset)
             logger.info(
                 "%s: status=%s delta=%s prediction_id=%s",
                 symbol,

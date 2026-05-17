@@ -14,6 +14,10 @@ import sys
 
 from src.application.use_cases.train_model import TrainModelUseCase
 from src.config import Settings
+from src.infrastructure.adapters.alpha_vantage_fundamentals import (
+    AlphaVantageFundamentalsAdapter,
+)
+from src.infrastructure.adapters.cached_fundamentals import CachedFundamentalsAdapter
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 
@@ -34,6 +38,9 @@ def main(settings: Settings | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
     settings = settings or Settings.from_env()
+    supabase_repo = SupabaseRepository(
+        url=settings.supabase_url, key=settings.supabase_key
+    )
     use_case = build_use_case(settings)
 
     logger.info("Slow Loop start — symbols=%s", settings.symbols)
@@ -42,6 +49,23 @@ def main(settings: Settings | None = None) -> int:
     except Exception:
         logger.exception("Failed to refresh feature store")
         return 1
+
+    # Slow loop płaci za Alpha Vantage requesty i odświeża cache fundamentów.
+    # Fast loop czyta wyłącznie z cache — nigdy nie woła AV bezpośrednio.
+    fundamentals_port = CachedFundamentalsAdapter(
+        repo=supabase_repo,
+        delegate=AlphaVantageFundamentalsAdapter(
+            api_keys=settings.alpha_vantage_api_keys,
+        ),
+    )
+    # Odświeżenie fundamentów dla spółek (STOCK) — ETF-y nie mają EPS/P/E.
+    # Pojedynczy błąd nie wywala całego cyklu.
+    stock_symbols = [s for s in settings.symbols if s not in settings.symbols_etf]
+    for symbol in stock_symbols:
+        try:
+            fundamentals_port.get_fundamentals(symbol)
+        except Exception:
+            logger.exception("Fundamentals refresh failed for %s", symbol)
 
     failures = 0
     for symbol in settings.symbols:

@@ -23,6 +23,7 @@ MIGRATION_FILES = [
     "003_add_embedding.sql",
     "004_align_ml_feature_store.sql",
     "005_council_verdict.sql",
+    "006_fundamentals_cache.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -191,3 +192,30 @@ class TestMigrations:
     def test_migrations_are_idempotent(self, pg_conn):
         # Drugie uruchomienie tych samych migracji nie może rzucić błędu
         _apply_migrations(pg_conn)
+
+    def test_fundamentals_cache_table_has_required_columns(self, pg_conn) -> None:
+        cols = _columns(pg_conn, "fundamentals_cache")
+        required = {
+            "symbol",
+            "trailing_pe",
+            "forward_pe",
+            "peg_ratio",
+            "eps_growth_yoy",
+            "fetched_at",
+        }
+        assert required <= cols, f"Brakujące kolumny: {required - cols}"
+
+    def test_fundamentals_cache_has_primary_key_on_symbol(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT constraint_name FROM information_schema.table_constraints
+                WHERE table_name = 'fundamentals_cache' AND constraint_type = 'PRIMARY KEY'
+                """
+            )
+            constraints = [row[0] for row in cur.fetchall()]
+        assert len(constraints) > 0, "Brak primary key na fundamentals_cache"
+
+    def test_fundamentals_cache_fetched_at_index_exists(self, pg_conn) -> None:
+        indexes = _indexes(pg_conn, "fundamentals_cache")
+        assert "idx_fundamentals_cache_fetched_at" in indexes

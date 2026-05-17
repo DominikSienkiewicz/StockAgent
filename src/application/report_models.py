@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 
 from src.domain.council import CouncilVerdict
+from src.domain.value_objects import ValuationVerdict
+
+
+@dataclass(frozen=True)
+class ValuationSection:
+    trailing_pe: float | None
+    forward_pe: float | None
+    peg_ratio: float | None
+    eps_growth_yoy: float | None
+    verdict: ValuationVerdict
+    fetched_at: datetime
 
 
 @dataclass(frozen=True)
@@ -35,6 +47,7 @@ class SymbolResult:
     top_news: list[TopNewsItem] = field(default_factory=list)
     error_message: str | None = None
     council_verdict: CouncilVerdict | None = None
+    valuation: ValuationSection | None = None
 
     @property
     def expected_change(self) -> Decimal | None:

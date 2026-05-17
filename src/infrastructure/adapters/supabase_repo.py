@@ -10,7 +10,7 @@ from supabase import create_client
 
 from src.application.ports import RepositoryPort
 from src.domain.prediction import Prediction, TrendDirection
-from src.domain.value_objects import Money
+from src.domain.value_objects import FUNDAMENTALS_CACHE_TTL_HOURS, Fundamentals, Money
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,42 @@ class SupabaseRepository(RepositoryPort):
             "correct_count": sum(1 for s in scores if s > 0.5),
             "days_window": days,
         }
+
+    def get_cached_fundamentals(self, symbol: str) -> Fundamentals | None:
+        """Zwraca fundamentale z cache jeśli `fetched_at` mieści się w
+        FUNDAMENTALS_CACHE_TTL_HOURS. Filtr TTL po stronie repo —
+        adapter nie zna polityki świeżości."""
+        cutoff = datetime.now(UTC) - timedelta(hours=FUNDAMENTALS_CACHE_TTL_HOURS)
+        response = (
+            self._client.table("fundamentals_cache")
+            .select("*")
+            .eq("symbol", symbol)
+            .gte("fetched_at", cutoff.isoformat())
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        return Fundamentals(
+            trailing_pe=row.get("trailing_pe"),
+            forward_pe=row.get("forward_pe"),
+            peg_ratio=row.get("peg_ratio"),
+            eps_growth_yoy=row.get("eps_growth_yoy"),
+            fetched_at=datetime.fromisoformat(row["fetched_at"]),
+        )
+
+    def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
+        """Upsert jednego wiersza per symbol (nadpisuje poprzedni snapshot)."""
+        payload: dict[str, Any] = {
+            "symbol": symbol,
+            "trailing_pe": fundamentals.trailing_pe,
+            "forward_pe": fundamentals.forward_pe,
+            "peg_ratio": fundamentals.peg_ratio,
+            "eps_growth_yoy": fundamentals.eps_growth_yoy,
+            "fetched_at": fundamentals.fetched_at.isoformat(),
+        }
+        self._client.table("fundamentals_cache").upsert(payload).execute()
 
     # -----------------------------------------------------------------------
     # Writes
