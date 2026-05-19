@@ -116,3 +116,109 @@ class TestCouncilHtmlSection:
         results = [SymbolResult(symbol="AAPL", status="saved")]
         html, _ = build_html_report(results, datetime.now(UTC), 1.0)
         assert "RADA DORADCZA" not in html
+
+
+class TestCouncilSectionUsesDomainBehavior:
+    """Sekcja rady w raporcie korzysta z metod domenowych (is_split_decision,
+    vote_distribution, has_strong_consensus) zamiast inline'owych warunków
+    w HTML. Bez tego logika decyzyjna była rozsmarowana po warstwie prezentacji.
+    """
+
+    def _result_with_opinions(
+        self, opinions: list[InvestorOpinion], final: str = "BUY",
+        consensus: float = 0.6,
+    ) -> SymbolResult:
+        verdict = CouncilVerdict(
+            final_recommendation=final,  # type: ignore[arg-type]
+            consensus_strength=consensus,
+            summary="Test.",
+            dissenting_views=[],
+            investor_opinions=opinions,
+        )
+        return SymbolResult(
+            symbol="AAPL",
+            status="saved",
+            delta=Decimal("0.035"),
+            current_price=Decimal("180.00"),
+            trend="BULLISH",
+            council_verdict=verdict,
+        )
+
+    def _build(self, opinions: list[InvestorOpinion], **kw: object) -> str:
+        results = [self._result_with_opinions(opinions, **kw)]  # type: ignore[arg-type]
+        html, _ = build_html_report(results, datetime.now(UTC), 1.0)
+        return html
+
+    def test_split_decision_warning_shown_when_buy_and_sell_present(self):
+        opinions = [
+            InvestorOpinion(
+                investor_name="Warren Buffett",
+                recommendation="BUY",  # type: ignore[arg-type]
+                confidence=0.9, reasoning="x", key_factors=[],
+            ),
+            InvestorOpinion(
+                investor_name="George Soros",
+                recommendation="SELL",  # type: ignore[arg-type]
+                confidence=0.7, reasoning="x", key_factors=[],
+            ),
+        ]
+        html = self._build(opinions)
+        # Marker dla "split decision" — fundamentalny brak zgody w radzie.
+        assert "SPLIT" in html or "PODZIELONA" in html
+
+    def test_no_split_warning_when_only_buy_and_hold(self):
+        opinions = [
+            InvestorOpinion(
+                investor_name="Warren Buffett",
+                recommendation="BUY",  # type: ignore[arg-type]
+                confidence=0.9, reasoning="x", key_factors=[],
+            ),
+            InvestorOpinion(
+                investor_name="Charlie Munger",
+                recommendation="HOLD",  # type: ignore[arg-type]
+                confidence=0.6, reasoning="x", key_factors=[],
+            ),
+        ]
+        html = self._build(opinions)
+        assert "SPLIT" not in html and "PODZIELONA" not in html
+
+    def test_vote_distribution_displayed(self):
+        # Trzy głosy: 2 BUY, 1 SELL → rozkład widoczny w raporcie
+        opinions = [
+            InvestorOpinion(
+                investor_name=name, recommendation=rec,  # type: ignore[arg-type]
+                confidence=0.8, reasoning="x", key_factors=[],
+            )
+            for name, rec in [
+                ("A", "BUY"), ("B", "BUY"), ("C", "SELL"),
+            ]
+        ]
+        html = self._build(opinions)
+        # Format "2 BUY" / "1 SELL" — albo polski odpowiednik. Niech będzie elastyczne.
+        assert "2" in html
+        # Najprostszy sprawdzian: wszystkie 3 etykiety obecne gdzieś w sekcji
+        assert "KUP" in html
+        assert "SPRZEDAJ" in html
+
+    def test_strong_consensus_badge_when_above_threshold(self):
+        opinions = [
+            InvestorOpinion(
+                investor_name="Warren Buffett",
+                recommendation="BUY",  # type: ignore[arg-type]
+                confidence=0.9, reasoning="x", key_factors=[],
+            ),
+        ]
+        html = self._build(opinions, consensus=0.85)
+        assert "SILNY KONSENSUS" in html or "STRONG CONSENSUS" in html
+
+    def test_no_strong_consensus_badge_when_below_threshold(self):
+        opinions = [
+            InvestorOpinion(
+                investor_name="Warren Buffett",
+                recommendation="BUY",  # type: ignore[arg-type]
+                confidence=0.7, reasoning="x", key_factors=[],
+            ),
+        ]
+        html = self._build(opinions, consensus=0.5)
+        assert "SILNY KONSENSUS" not in html
+        assert "STRONG CONSENSUS" not in html

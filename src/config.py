@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     openai_api_key: str
     anthropic_api_key: str | None = None
 
+    # Heterogeniczna strategia: rada doradcza (15+1 wywołań × N symboli) może
+    # działać na tańszym modelu niż główna analiza, bo persona-acting + JSON
+    # nie wymaga frontier reasoningu. Gdy obie None → rada używa głównego
+    # LLM (zachowanie domyślne, wstecznie kompatybilne). Override przykładowo:
+    #   council_llm_provider=anthropic, council_llm_model=claude-haiku-4-5
+    # albo (ten sam provider co main, inny model):
+    #   council_llm_model=gpt-4o-mini
+    council_llm_provider: Literal["openai", "anthropic"] | None = None
+    council_llm_model: str | None = None
+
     # ----- Market / sentiment / news -----
     finnhub_api_key: str
     # Alpha Vantage akceptuje CSV — wiele kluczy rotujemy, gdy jeden wyczerpie
@@ -39,6 +49,11 @@ class Settings(BaseSettings):
 
     # ----- Agent config -----
     volatility_threshold: Decimal = Field(default=Decimal("0.02"))
+    # Osobny, wyższy próg dla rady doradczej. Rada (15 wywołań LLM + chairman)
+    # jest droga — przy małych Δ jej werdykt to prawie zawsze HOLD. Domyślnie
+    # 3% — można podnieść do 5% przy ciasnym budżecie albo wyłączyć (0.0) dla
+    # backtestów. Ustaw 0.0, by rada chodziła zawsze gdy główna bramka przepuści.
+    council_volatility_threshold: Decimal = Field(default=Decimal("0.03"))
     # NoDecode wyłącza próbę JSON-parse'owania env var — używamy własnego validatora CSV.
     # Default to małe smoke-test portfolio; w produkcji nadpisz przez SYMBOLS env var.
     symbols: Annotated[list[str], NoDecode] = Field(

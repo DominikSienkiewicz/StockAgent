@@ -35,9 +35,36 @@ class TestSentimentAdapter:
 
     def test_delegates_to_client_sentiment_for(self, client):
         client.sentiment_for.return_value = {"av_sentiment_score": 0.5}
+        client.degraded_reason = None
         adapter = AlphaVantageSentimentAdapter(client)
 
         result = adapter.get_social_score("AAPL")
 
         assert result == {"av_sentiment_score": 0.5}
         client.sentiment_for.assert_called_once_with("AAPL")
+
+    def test_propagates_degraded_reason_when_client_exhausted(self, client):
+        # Gdy klient AV jest w stanie degradacji (np. wszystkie klucze
+        # wyczerpane), sentiment payload niesie ze sobą sygnał `degraded_reason`,
+        # który dalej wpada do data_quality_flags w predict_node.
+        client.sentiment_for.return_value = {
+            "av_sentiment_score": 0.0,
+            "news_volume_24h": 0,
+        }
+        client.degraded_reason = "av_keys_exhausted"
+        adapter = AlphaVantageSentimentAdapter(client)
+
+        result = adapter.get_social_score("AAPL")
+
+        assert result["degraded_reason"] == "av_keys_exhausted"
+
+    def test_no_degraded_reason_key_when_client_healthy(self, client):
+        # Brak degradacji = brak klucza w payloadzie (nie pusty string,
+        # nie None — żeby graph mógł użyć `if "degraded_reason" in sentiment`).
+        client.sentiment_for.return_value = {"av_sentiment_score": 0.4}
+        client.degraded_reason = None
+        adapter = AlphaVantageSentimentAdapter(client)
+
+        result = adapter.get_social_score("AAPL")
+
+        assert "degraded_reason" not in result

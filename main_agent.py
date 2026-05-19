@@ -16,6 +16,7 @@ import logging
 import sys
 import time
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from src.application.ports import (
     AdvisoryCouncilPort,
@@ -90,17 +91,59 @@ def build_repository(settings: Settings) -> RepositoryPort:
     return SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
 
 
+def build_council_llm_adapter(settings: Settings, main_llm: LLMPort) -> LLMPort:
+    """Wybiera LLM dla rady doradczej.
+
+    Domyślnie rada korzysta z `main_llm` (jedna instancja klienta SDK,
+    wstecznie kompatybilne). Gdy `council_llm_provider` lub
+    `council_llm_model` są ustawione → buduje OSOBNY adapter z innym
+    modelem/providerem. Pozwala to puścić ~94% callsów cyklu (15 person × N
+    symboli) na tańszym modelu, zachowując frontier model dla głównej analizy.
+    """
+    if settings.council_llm_provider is None and settings.council_llm_model is None:
+        return main_llm
+
+    provider = settings.council_llm_provider or settings.llm_provider
+    if provider == "anthropic":
+        if not settings.anthropic_api_key:
+            raise ValueError(
+                "council_llm_provider=anthropic but ANTHROPIC_API_KEY is not set."
+            )
+        from src.infrastructure.llm.anthropic_client import (
+            DEFAULT_MODEL as ANTHROPIC_DEFAULT,
+        )
+        from src.infrastructure.llm.anthropic_client import AnthropicAdapter
+
+        return AnthropicAdapter(
+            api_key=settings.anthropic_api_key,
+            model=settings.council_llm_model or ANTHROPIC_DEFAULT,
+        )
+
+    from src.infrastructure.llm.openai_client import DEFAULT_MODEL as OPENAI_DEFAULT
+    from src.infrastructure.llm.openai_client import OpenAIAdapter
+
+    return OpenAIAdapter(
+        api_key=settings.openai_api_key,
+        model=settings.council_llm_model or OPENAI_DEFAULT,
+    )
+
+
 def build_council_adapter(llm_port: LLMPort) -> AdvisoryCouncilPort:
-    """Rada doradcza używa tego samego LLM co główny agent."""
+    """Pakuje LLM port w `LLMAdvisoryCouncil`. Sam wybór modelu rady robi
+    `build_council_llm_adapter` — ten helper tylko spina."""
     return LLMAdvisoryCouncil(llm_port=llm_port)
 
 
 def build_embedding_adapter(settings: Settings) -> EmbeddingPort | None:
-    """Embeddingi działają tylko na OpenAI (jedyny provider z embeddings API
-    w naszym stacku). Przy LLM_PROVIDER=anthropic embeddingi są wyłączone —
-    save_node zapisuje rekord bez wektora (graceful)."""
-    if settings.llm_provider != "openai":
-        return None
+    """Embeddingi — OpenAI niezależnie od LLM_PROVIDER.
+
+    Anthropic nie udostępnia natywnego embeddings API; OpenAI to nasz jedyny
+    provider w stacku. `openai_api_key` jest wymaganym polem w `Settings`
+    (bez default), więc jest zawsze obecne — embeddingi działają również
+    gdy LLM_PROVIDER=anthropic. Dzięki temu kolumna `embedding` w
+    `prediction_logs` (pgvector) jest wypełniona dla wszystkich deploymentów,
+    a similarity search nad newsami nie zależy od wyboru LLM.
+    """
     from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
 
     return OpenAIEmbeddingAdapter(api_key=settings.openai_api_key)
@@ -116,6 +159,7 @@ def build_use_case(
         symbols=settings.symbols,
     )
     llm_port = build_llm_adapter(settings)
+    council_llm_port = build_council_llm_adapter(settings, llm_port)
     supabase_repo = repository or build_repository(settings)
     # Fast loop: delegate = Null — nie woła płatnego AV, czyta tylko cache Supabase.
     fundamentals_port = CachedFundamentalsAdapter(
@@ -131,7 +175,13 @@ def build_use_case(
         llm_port=llm_port,
         threshold=Threshold(settings.volatility_threshold),
         embedding_port=build_embedding_adapter(settings),
-        council_port=build_council_adapter(llm_port),
+        council_port=build_council_adapter(council_llm_port),
+        # 0.0 → wyłączony (rada zawsze leci gdy główna bramka przepuści).
+        council_threshold=(
+            Threshold(settings.council_volatility_threshold)
+            if settings.council_volatility_threshold > Decimal("0")
+            else None
+        ),
         fundamentals_port=fundamentals_port,
     )
 

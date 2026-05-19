@@ -41,10 +41,10 @@ Finnhub (US prices) ──► check_price ──► reflect ──► fetch_fund
 5. **News + Sentiment** — `AlphaVantageClient` makes one request per ticker, rotating N API keys when one exhausts its 25 req/day quota. A `relevance ≥ 0.5` filter strips noise **before** anything reaches the LLM. Per ticker it returns a multi-feature dict: `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `av_sentiment_label`.
 6. **LLM (cross-validation)** — GPT-4o (or Claude when `LLM_PROVIDER=anthropic`) receives pre-computed AV sentiment + headlines + reflection context + fundamentals valuation snapshot. It returns structured JSON: `trend_direction`, `confidence_score`, **`av_agreement`** (whether it agrees with AV — anything below 0.3 flags potential manipulation), `target_price_12h`, `reasoning`.
 7. **ML hard prediction (local XGBoost)** — model lives in a `.ubj` file inside the repo (Local-First AI). Consumes 7 features: `price_delta`, `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `llm_trend_signal`, `av_llm_agreement`. On cold start (no trained weights yet) it falls back to a "no change" baseline instead of crashing.
-8. **Advisory Council** — after `predict_node`, 15 legendary investor personas (Buffett, Graham, Soros, Lynch, Dalio, Munger, Fisher, Tudor Jones, Gross, Livermore, Wood, Burry, Marks, Druckenmiller, Greenblatt) each independently analyse the same data via parallel LLM calls (one worker per investor). The personas live in the domain layer (`DEFAULT_INVESTOR_PERSONAS` in `src/domain/council.py`) — adding or removing a member is a single edit there. A final "chairman" call synthesises a consensus `CouncilVerdict` (BUY/SELL/HOLD + `consensus_strength` + `dissenting_views`). Only fires when the volatility gate passes; gracefully skipped on error. Stored as JSONB in `prediction_logs`, rendered as a styled table in the email report.
+8. **Advisory Council** — after `predict_node`, 15 legendary investor personas (Buffett, Graham, Soros, Lynch, Dalio, Munger, Fisher, Tudor Jones, Gross, Livermore, Wood, Burry, Marks, Druckenmiller, Greenblatt) each independently analyse the same data via parallel LLM calls (one worker per investor). The personas live in the domain layer (`DEFAULT_INVESTOR_PERSONAS` in `src/domain/council.py`) — adding or removing a member is a single edit there. A final "chairman" call synthesises a consensus `CouncilVerdict` (BUY/SELL/HOLD + `consensus_strength` + `dissenting_views`). Two volatility gates: the main one (`volatility_threshold`, default 2%) decides whether to run the prediction pipeline at all; the **council-specific gate** (`council_volatility_threshold`, default 3%) further filters out medium-Δ cycles where the 16 LLM calls would mostly return HOLD — set it to `0.0` to disable. Stored as JSONB in `prediction_logs.council_verdict` (legacy blob) **and** as one row per investor in `council_votes` (structured audit trail — query "how did Burry vote on NVDA in the last month" without parsing JSON). Rendered as a styled table in the email report.
 9. **Persist** — `SupabaseRepository` writes the full record to `prediction_logs`. The news summary is embedded (OpenAI `text-embedding-3-small` → 1536-dim `pgvector`) for later RAG-style retrieval — graceful when embeddings are unavailable.
 10. **Slow Loop (weekly cycle)** — `main_trainer.py` retrains XGBoost on resolved predictions (those with `accuracy_score`), commits the new weights back to the repo (Continual Learning). Also runs a fundamentals refresh step using `AlphaVantageFundamentalsAdapter` to repopulate `fundamentals_cache`.
-11. **Deliver** — Polish-language HTML report via Resend with 2 charts (Δ12h + forecast), correlation scatter plot, trade signals sorted by `confidence × |Δ|`, risk signals with severity badges, day-over-day diff, and clickable news headlines.
+11. **Deliver** — Polish-language HTML report via Resend with 2 charts (Δ12h + forecast), correlation scatter plot, trade signals sorted by `confidence × |Δ|`, risk signals with severity badges, day-over-day diff, and clickable news headlines. Two sections (council + fundamentals valuation) render via Jinja2 templates in `src/application/templates/` — autoescape on, the rest of the report still uses f-string composition in `report_builder.py` (incremental migration). The council template surfaces domain-level signals via `CouncilVerdict.is_split_decision()` (⚠️ PODZIELONA RADA badge), `has_strong_consensus()` (SILNY KONSENSUS badge), and `vote_distribution()` (BUY/SELL/HOLD count).
 
 All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff, and a single per-symbol error never aborts the whole cycle.
 
@@ -57,7 +57,7 @@ All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff,
 | **Alpha Vantage** `OVERVIEW` + `EARNINGS` | 2 requests per stock symbol per slow-loop refresh | Used by `AlphaVantageFundamentalsAdapter`. Free tier = 25 req/day → max ~12 stock symbols per refresh with a single key. Multi-key rotation via `ALPHA_VANTAGE_API_KEYS` (CSV) already supported. ETF symbols (`SYMBOLS_ETF`) are skipped. |
 | **Supabase** (Postgres + pgvector) | `prediction_logs` + `price_snapshots` + `fundamentals_cache` tables + materialized view `ml_feature_store` | Service role key. RPC `refresh_ml_feature_store` is called before training. |
 | **OpenAI** `chat.completions` | JSON mode (`response_format={"type":"json_object"}`), temperature 0.2 | Default LLM. Switch to Anthropic Claude via `LLM_PROVIDER=anthropic`. |
-| **OpenAI** `embeddings` | `text-embedding-3-small` → 1536-dim vector | Embeds the news summary into `pgvector`. Disabled when `LLM_PROVIDER=anthropic`. |
+| **OpenAI** `embeddings` | `text-embedding-3-small` → 1536-dim vector | Embeds the news summary into `pgvector`. Wired regardless of `LLM_PROVIDER` since `OPENAI_API_KEY` is always required — works with the Anthropic LLM too. |
 | **Anthropic** (optional) | Messages API, `claude-sonnet-4-6`, max_tokens 4096 | Adapter strips ```` ```json ... ``` ```` wrappers (Claude has no JSON mode). |
 | **QuickChart.io** | URL-based, GET request | Zero setup, no dependency, works in every mail client. |
 | **Resend.com** | Sandbox sender `onboarding@resend.dev` | Free tier 100 mails/day. No domain verification required — just a verified recipient. |
@@ -170,8 +170,10 @@ cp .env.example .env
 #   migrations/004_align_ml_feature_store.sql  (7-feature XGBoost contract)
 #   migrations/005_investor_advisory_board.sql  (council verdicts schema)
 #   migrations/006_fundamentals_cache.sql       (fundamentals_cache table with TTL)
+#   migrations/007_council_votes.sql            (per-investor structured audit trail)
+#   migrations/008_data_quality_flags.sql       (data_quality_flags on prediction_logs)
 
-# 4. Smoke test (expect 376 tests passing + 5 skipped live API tests)
+# 4. Smoke test (expect 432 tests passing + 5 skipped live API tests)
 uv run pytest
 
 # 5. Single Fast Loop run
@@ -246,7 +248,10 @@ All tunable parameters live in [`src/config.py`](src/config.py) as a `Settings` 
 | Field | Default | Description |
 |---|---|---|
 | `llm_provider` | `openai` | `openai` or `anthropic` |
+| `council_llm_provider` | `None` | Override LLM provider for the advisory council only (heterogeneous strategy: cheap model for 15-persona council, frontier for main analysis). `None` → reuses `llm_provider`. |
+| `council_llm_model` | `None` | Override model name for the council adapter (e.g. `gpt-4o-mini`, `claude-haiku-4-5`). `None` → provider default. |
 | `volatility_threshold` | `0.02` | Threshold that triggers full analysis (2%) |
+| `council_volatility_threshold` | `0.03` | Extra threshold for the advisory council (15 LLM calls). Below this Δ the council is skipped even if the main gate passed. `0.0` disables. |
 | `symbols` | `[AAPL, MSFT, NVDA]` | Monitored tickers (CSV in env — override with the 22-symbol portfolio) |
 | `alpha_vantage_api_keys` | `[]` | CSV of keys for rotation on rate-limit |
 | `symbols_etf` | `[]` | CSV of tickers classified as ETFs (e.g. `VT,QUAL,IHI,VB`). ETFs skip fundamentals fetching (no meaningful per-share EPS/P/E) and always receive `ValuationVerdict.UNKNOWN`. |

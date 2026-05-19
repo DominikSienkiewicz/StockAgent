@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import Any
 
-from src.domain.council import CouncilInput, CouncilVerdict
+from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.prediction import Prediction
 from src.domain.value_objects import Fundamentals, Money
 
@@ -84,6 +84,20 @@ class RepositoryPort(ABC):
     @abstractmethod
     def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
         """Upsert jednego wiersza per symbol (nadpisuje poprzedni snapshot)."""
+
+    @abstractmethod
+    def save_council_votes(
+        self,
+        prediction_id: str,
+        symbol: str,
+        votes: list[InvestorOpinion],
+    ) -> None:
+        """Strukturalny audit trail rady — jedna linia per inwestor.
+
+        Umożliwia odpytywanie "jak Burry głosował na NVDA w ostatnim miesiącu"
+        bez parsowania JSONB blob `prediction_logs.council_verdict`. Pusta lista
+        głosów to no-op (rada padła całkowicie / została pominięta progiem).
+        """
 
 
 class MLPredictionPort(ABC):

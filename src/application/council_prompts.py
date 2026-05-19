@@ -46,16 +46,19 @@ def _format_valuation_block(data: CouncilInput) -> str:
 
 
 def investor_prompt(persona: str, data: CouncilInput) -> str:
+    """Prompt dla pojedynczego inwestora w radzie.
+
+    Układ cache-friendly: PRZEZ blokiem persony idą wszystkie dane wspólne
+    (dane rynkowe, newsy, wycena, output_schema), które są identyczne dla
+    15 wywołań w tym samym cyklu. Persona ląduje NA KOŃCU, żeby
+    najdłuższy wspólny prefix mógł być cache'owany:
+    - Anthropic ephemeral cache: ≥1024 tok prefixu, TTL 5 min — łapie się
+      gdy prompt ma news + wycenę,
+    - OpenAI automatyczny prompt cache: ≥1024 tok prefixu, też łapie.
+    """
     style = INVESTOR_PERSONAS[persona]
     news_formatted = "\n".join(f"  - {a}" for a in data.news_articles) or "  (brak newsów)"
     return f"""
-<rola>
-Wcielasz się w {persona}. Twoja filozofia inwestycyjna:
-{style}
-Analizujesz aktywo {data.symbol} i wydajesz rekomendację zgodną z twoją filozofią.
-Odpowiadasz wyłącznie w formacie JSON. Uzasadnienie po polsku.
-</rola>
-
 <dane_rynkowe>
 Symbol: {data.symbol}
 Cena aktualna: {data.current_price}
@@ -77,6 +80,14 @@ Cel cenowy ML (XGBoost): {data.ml_price_target}
     "key_factors": ["czynnik 1", "czynnik 2", "czynnik 3"]
 }}
 </output_schema>
+
+<rola>
+Wcielasz się w {persona}. Twoja filozofia inwestycyjna:
+{style}
+Analizujesz aktywo {data.symbol} powyżej i wydajesz rekomendację zgodną
+z twoją filozofią. Odpowiadasz wyłącznie w formacie JSON wg powyższego
+output_schema. Uzasadnienie po polsku.
+</rola>
 """.strip()
 
 

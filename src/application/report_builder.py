@@ -52,6 +52,7 @@ from src.application.report_signals import (
     market_status,
     parse_resolved_predictions,
 )
+from src.application.report_templates import render_template
 from src.domain.council import CouncilVerdict
 from src.domain.value_objects import ValuationVerdict
 
@@ -108,7 +109,7 @@ _VERDICT_COLOR = {
 
 
 def _render_valuation(section: ValuationSection | None) -> str:
-    """Renderuje sekcję wyceny fundamentalnej do HTML."""
+    """Renderuje sekcję wyceny fundamentalnej do HTML (Jinja2 template)."""
     if section is None:
         return ""
 
@@ -120,24 +121,18 @@ def _render_valuation(section: ValuationSection | None) -> str:
         if section.eps_growth_yoy is not None
         else "—"
     )
-    color = _VERDICT_COLOR.get(section.verdict.value, "#616161")
-
-    return (
-        f'<div style="margin-top:16px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">'
-        f'<div style="background:#f9fafb;padding:10px 16px;border-bottom:1px solid #e5e7eb">'
-        f'<span style="font-weight:700;font-size:1.0em">Wycena fundamentalna</span>'
-        f'&nbsp;&nbsp;'
-        f'<span style="background:{color};color:#fff;padding:2px 10px;border-radius:12px;font-weight:700">'
-        f'{section.verdict.value}</span>'
-        f'</div>'
-        f'<table style="width:100%;border-collapse:collapse;font-size:0.9em">'
-        f'<tr><td style="padding:6px 14px;color:#4b5563">Trailing P/E</td><td style="padding:6px 14px;font-weight:500">{fmt(section.trailing_pe)}</td>'
-        f'<td style="padding:6px 14px;color:#4b5563">Forward P/E</td><td style="padding:6px 14px;font-weight:500">{fmt(section.forward_pe)}</td></tr>'
-        f'<tr style="background:#f9fafb"><td style="padding:6px 14px;color:#4b5563">PEG ratio</td><td style="padding:6px 14px;font-weight:500">{fmt(section.peg_ratio)}</td>'
-        f'<td style="padding:6px 14px;color:#4b5563">EPS growth YoY</td><td style="padding:6px 14px;font-weight:500">{growth}</td></tr>'
-        f'</table>'
-        f'<div style="padding:6px 14px;font-size:0.8em;color:#9ca3af">Dane fundamentalne pobrane: {section.fetched_at.isoformat()}</div>'
-        f'</div>'
+    return render_template(
+        "valuation_section.html.j2",
+        {
+            "section": section,
+            "verdict_value": section.verdict.value,
+            "verdict_color": _VERDICT_COLOR.get(section.verdict.value, "#616161"),
+            "trailing_pe_fmt": fmt(section.trailing_pe),
+            "forward_pe_fmt": fmt(section.forward_pe),
+            "peg_ratio_fmt": fmt(section.peg_ratio),
+            "growth_fmt": growth,
+            "fetched_at_iso": section.fetched_at.isoformat(),
+        },
     )
 
 
@@ -231,60 +226,39 @@ def _safe_href(url: str | None) -> str | None:
 
 
 def _render_council_section(verdict: CouncilVerdict) -> str:
+    """Renderuje sekcję rady doradczej (Jinja2 template).
+
+    Logika decyzyjna (split decision, strong consensus, vote distribution)
+    pochodzi z metod domenowych `CouncilVerdict` — template tylko renderuje.
+    """
     final = verdict.final_recommendation
-    label = _COUNCIL_REC_LABEL.get(final, final)
-    color = _COUNCIL_REC_COLOR.get(final, "#737373")
-    bg = _COUNCIL_REC_BG.get(final, "#f9fafb")
-    strength_pct = int(verdict.consensus_strength * 100)
-
-    rows = ""
-    for op in verdict.investor_opinions:
-        op_label = _COUNCIL_REC_LABEL.get(op.recommendation, op.recommendation)
-        op_emoji = _COUNCIL_REC_EMOJI.get(op.recommendation, "⬜")
-        op_color = _COUNCIL_REC_COLOR.get(op.recommendation, "#737373")
-        op_bg = _COUNCIL_REC_BG.get(op.recommendation, "#f9fafb")
-        factors = ", ".join(op.key_factors[:3])
-        rows += (
-            f'<tr style="background:{op_bg}">'
-            f'<td style="padding:6px 10px;font-weight:500">{html.escape(op.investor_name)}</td>'
-            f'<td style="padding:6px 10px;color:{op_color};font-weight:700">'
-            f'{op_emoji} {html.escape(op_label)}</td>'
-            f'<td style="padding:6px 10px;text-align:center">{int(op.confidence * 100)}%</td>'
-            f'<td style="padding:6px 10px;font-size:0.85em;color:#555">{html.escape(factors)}</td>'
-            f'</tr>'
-        )
-
-    dissent = ""
-    if verdict.dissenting_views:
-        views = "; ".join(html.escape(v) for v in verdict.dissenting_views)
-        dissent = (
-            f'<tr><td colspan="4" style="padding:8px 10px;font-size:0.85em;'
-            f'color:#92400e;background:#fffbeb">'
-            f'⚠️ Głosy niezgodne: {views}</td></tr>'
-        )
-
-    return (
-        f'<div style="margin-top:16px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">'
-        f'<div style="background:{bg};padding:12px 16px;border-bottom:1px solid #e5e7eb">'
-        f'<span style="font-weight:700;font-size:1.05em">RADA DORADCZA</span>'
-        f'&nbsp;&nbsp;'
-        f'<span style="background:{color};color:#fff;padding:2px 10px;border-radius:12px;'
-        f'font-weight:700">{label}</span>'
-        f'&nbsp;&nbsp;'
-        f'<span style="color:#555;font-size:0.9em">Zgodność: {strength_pct}%</span>'
-        f'<div style="margin-top:6px;font-size:0.9em;color:#374151;font-style:italic">'
-        f'&ldquo;{html.escape(verdict.summary)}&rdquo;</div>'
-        f'</div>'
-        f'<table style="width:100%;border-collapse:collapse;font-size:0.9em">'
-        f'<thead><tr style="background:#f3f4f6">'
-        f'<th style="padding:6px 10px;text-align:left;font-weight:600">Inwestor</th>'
-        f'<th style="padding:6px 10px;text-align:left;font-weight:600">Opinia</th>'
-        f'<th style="padding:6px 10px;text-align:center;font-weight:600">Pewność</th>'
-        f'<th style="padding:6px 10px;text-align:left;font-weight:600">Kluczowe czynniki</th>'
-        f'</tr></thead>'
-        f'<tbody>{rows}{dissent}</tbody>'
-        f'</table>'
-        f'</div>'
+    opinion_rows = [
+        {
+            "name": op.investor_name,
+            "label": _COUNCIL_REC_LABEL.get(op.recommendation, op.recommendation),
+            "emoji": _COUNCIL_REC_EMOJI.get(op.recommendation, "⬜"),
+            "color": _COUNCIL_REC_COLOR.get(op.recommendation, "#737373"),
+            "bg": _COUNCIL_REC_BG.get(op.recommendation, "#f9fafb"),
+            "confidence_pct": int(op.confidence * 100),
+            "confidence_label": op.confidence_label(),
+            "factors": ", ".join(op.key_factors[:3]),
+        }
+        for op in verdict.investor_opinions
+    ]
+    return render_template(
+        "council_section.html.j2",
+        {
+            "verdict": verdict,
+            "label": _COUNCIL_REC_LABEL.get(final, final),
+            "color": _COUNCIL_REC_COLOR.get(final, "#737373"),
+            "bg": _COUNCIL_REC_BG.get(final, "#f9fafb"),
+            "strength_pct": int(verdict.consensus_strength * 100),
+            "opinion_rows": opinion_rows,
+            "vote_dist": verdict.vote_distribution(),
+            "is_split": verdict.is_split_decision(),
+            "strong_consensus": verdict.has_strong_consensus(),
+            "dissenting_views": verdict.dissenting_views,
+        },
     )
 
 

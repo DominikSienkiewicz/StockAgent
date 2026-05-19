@@ -291,6 +291,30 @@ class TestApiKeyRotation:
         assert mock_get.call_count == 3
         assert "exhausted" in caplog.text.lower()
 
+    def test_exposes_degraded_reason_when_all_keys_exhausted(self, mocker):
+        # Sygnał dla warstwy aplikacji: bieżący cykl działał na (potencjalnie)
+        # niekompletnym feedzie. Bez tego sygnału newsy=[] dla wszystkich
+        # symboli wyglądają identycznie jak "spokojny dzień, brak newsów".
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch("requests.Session.get")
+        mock_get.side_effect = [self._rate_limit_response()] * 2
+
+        client = AlphaVantageClient(api_keys=["k1", "k2"], symbols=["AAPL"])
+        client._fetch()
+
+        assert client.degraded_reason == "av_keys_exhausted"
+
+    def test_degraded_reason_is_none_when_first_call_succeeds(self, mocker):
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response(_SAMPLE_PAYLOAD),
+        )
+        client = AlphaVantageClient(api_keys=["k1", "k2"], symbols=["AAPL"])
+        client._fetch()
+
+        assert client.degraded_reason is None
+
     def test_partial_feed_when_keys_exhaust_mid_fetch(self, mocker):
         # 2 batche, 2 klucze. Batch 1 z key1 → OK. Batch 2: key1 rate-limit,
         # key2 też rate-limit → klucze wyczerpane, ale batch 1 ma już dane.

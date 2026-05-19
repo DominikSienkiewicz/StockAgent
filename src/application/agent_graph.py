@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any, TypedDict
@@ -59,6 +60,13 @@ class AgentState(TypedDict, total=False):
     # Rada doradcza
     council_verdict: CouncilVerdict | None
 
+    # Audit jakości danych wejściowych — flagi typu "av_sentiment_score_missing",
+    # "news_volume_24h_invalid". Pusta lista = wszystko OK. Trafia do
+    # prediction_logs.data_quality_flags i pozwala odsiać śmieciowe rekordy
+    # przy treningu / analizach. Bez tego cichych zer w features nie da się
+    # odróżnić od prawdziwych zer.
+    data_quality_flags: list[str]
+
 
 def _summarize_news(news: list[dict[str, Any]]) -> str:
     """Konkatenacja tytułów najnowszych newsów w jednej linijce (dla promptu)."""
@@ -73,6 +81,25 @@ def _float_or_default(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _validate_float(value: Any, field_name: str, default: float) -> tuple[float, str | None]:
+    """Parsuje pole liczbowe i jednocześnie wykrywa skażone wejście.
+
+    Zwraca `(parsed_value, flag_or_None)`. Flaga sygnalizuje *jaki* problem
+    wykryto — None = pole brak danych (`_missing`), nie-numeryczne lub NaN/Inf
+    = `_invalid`. Bez tego rozróżnienia 0.0 z padłego wejścia było
+    nieodróżnialne od prawdziwego 0.0 i model uczył się na śmieciach.
+    """
+    if value is None:
+        return default, f"{field_name}_missing"
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default, f"{field_name}_invalid"
+    if math.isnan(parsed) or math.isinf(parsed):
+        return default, f"{field_name}_invalid"
+    return parsed, None
 
 
 def _build_fetch_fundamentals_node(
@@ -120,6 +147,7 @@ def create_agent_graph(
     threshold: Threshold,
     embedding_port: EmbeddingPort | None = None,
     council_port: AdvisoryCouncilPort | None = None,
+    council_threshold: Threshold | None = None,
     fundamentals_port: FundamentalsPort | None = None,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
@@ -228,25 +256,43 @@ def create_agent_graph(
         llm_trend_signal = {"BULLISH": 1, "BEARISH": -1, "SIDEWAYS": 0}.get(
             llm_analysis.get("trend_direction", "SIDEWAYS"), 0
         )
-        # Cross-validation: czy LLM zgodził się z AV (Phase B)
-        av_llm_agreement = _float_or_default(llm_analysis.get("av_agreement"), 0.5)
+
+        # Walidacja pól liczbowych — każdy padły input zostawia ślad w
+        # data_quality_flags (None → _missing, nie-numeryczne/NaN → _invalid).
+        flags: list[str] = []
+        # Adapter sentymentu (AV) może oznaczyć cały feed jako zdegradowany
+        # (np. wszystkie klucze wyczerpane). Wtedy 0.0 we wszystkich polach
+        # to nie "spokojny dzień" tylko "brak danych" — flaga to rozróżnia.
+        degraded_reason = sentiment.get("degraded_reason")
+        if degraded_reason:
+            flags.append(str(degraded_reason))
+
+        def _v(value: Any, name: str, default: float = 0.0) -> float:
+            parsed, flag = _validate_float(value, name, default)
+            if flag is not None:
+                flags.append(flag)
+            return parsed
 
         raw_features = {
             "price_delta": float(state["delta"]),
-            "av_sentiment_score": _float_or_default(
-                sentiment.get("av_sentiment_score"), 0.0
+            "av_sentiment_score": _v(
+                sentiment.get("av_sentiment_score"), "av_sentiment_score"
             ),
-            "av_relevance_avg": _float_or_default(
-                sentiment.get("av_relevance_avg"), 0.0
+            "av_relevance_avg": _v(
+                sentiment.get("av_relevance_avg"), "av_relevance_avg"
             ),
-            "news_volume_24h": _float_or_default(
-                sentiment.get("news_volume_24h"), 0.0
+            "news_volume_24h": _v(
+                sentiment.get("news_volume_24h"), "news_volume_24h"
             ),
-            "high_relevance_count": _float_or_default(
-                sentiment.get("high_relevance_count"), 0.0
+            "high_relevance_count": _v(
+                sentiment.get("high_relevance_count"), "high_relevance_count"
             ),
             "llm_trend_signal": float(llm_trend_signal),
-            "av_llm_agreement": av_llm_agreement,
+            # av_agreement domyślnie 0.5 (neutralny) — brak agreement to nie jest
+            # to samo co 0% zgody (które jest informacją samą w sobie).
+            "av_llm_agreement": _v(
+                llm_analysis.get("av_agreement"), "av_llm_agreement", default=0.5
+            ),
         }
         features = {name: raw_features[name] for name in ML_FEATURE_COLUMNS}
         # Cold-start guard: dopóki XGBoost nie ma wytrenowanych wag (pierwsze
@@ -261,11 +307,26 @@ def create_agent_graph(
         return {
             "llm_analysis": llm_analysis,
             "ml_target_price": ml_target,
+            "data_quality_flags": flags,
         }
 
     def council_node(state: AgentState) -> dict[str, Any]:
         if council_port is None:
             return {"council_verdict": None}
+        # Osobny, opcjonalny próg dla rady. Główna bramka volatility już
+        # przepuściła (predict_node odpalił) — tu odsiewamy dodatkowo średnie
+        # zmienności, dla których 15 wywołań LLM rady się ekonomicznie nie opłaca.
+        if council_threshold is not None:
+            asset = Asset(symbol=state["symbol"])
+            delta = PriceDelta(state["delta"])
+            if not asset.evaluate_volatility(delta, council_threshold):
+                logger.info(
+                    "council_node skipped for %s — |Δ|=%.4f < council_threshold=%.4f",
+                    state["symbol"],
+                    abs(float(state["delta"])),
+                    float(council_threshold.value),
+                )
+                return {"council_verdict": None}
         sentiment = state.get("sentiment") or {}
         news = state.get("news", [])
         llm_analysis = state.get("llm_analysis") or {}
@@ -299,6 +360,14 @@ def create_agent_graph(
         llm_analysis = state.get("llm_analysis", {})
         sentiment = state.get("sentiment") or {}
         news_summary = _summarize_news(state.get("news", []))
+        data_quality_flags = state.get("data_quality_flags", []) or []
+        if data_quality_flags:
+            logger.warning(
+                "data_quality issues for %s: %s — record saved with flags, "
+                "downstream training should filter these out",
+                state["symbol"],
+                data_quality_flags,
+            )
 
         record: dict[str, Any] = {
             "symbol": state["symbol"],
@@ -321,6 +390,7 @@ def create_agent_graph(
                 if state.get("council_verdict") is not None
                 else None
             ),
+            "data_quality_flags": data_quality_flags,
         }
 
         # Embedding podsumowania newsów → pgvector. Opcjonalne (graceful):
@@ -334,6 +404,26 @@ def create_agent_graph(
                 logger.exception("Embedding failed for %s — saving without vector", state["symbol"])
 
         prediction_id = repository_port.save_prediction(record)
+
+        # Strukturalny audit trail rady — JSONB blob w prediction_logs zostaje
+        # (wstecz-kompat), ale głosy lecą też do osobnej tabeli, żeby dało się
+        # je odpytywać per inwestor/symbol bez parsowania JSON. Pusta lista =
+        # no-op po stronie adaptera (rada padła lub pominięta progiem).
+        verdict = state.get("council_verdict")
+        if verdict is not None:
+            try:
+                repository_port.save_council_votes(
+                    prediction_id=prediction_id,
+                    symbol=state["symbol"],
+                    votes=verdict.investor_opinions,
+                )
+            except Exception:
+                logger.exception(
+                    "save_council_votes failed for %s — JSONB blob in "
+                    "prediction_logs is still saved",
+                    state["symbol"],
+                )
+
         return {"prediction_id": prediction_id, "status": "saved"}
 
     def ignore_node(_: AgentState) -> dict[str, Any]:

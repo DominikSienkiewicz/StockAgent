@@ -84,6 +84,51 @@ class TestInvestorPrompt:
         assert "key_factors" in prompt
 
 
+class TestInvestorPromptCacheFriendlyLayout:
+    """W jednym cyklu rada robi 15 wywołań LLM — wszystkie z identycznymi
+    danymi rynkowymi/newsami/wyceną, różnią się tylko personą. Żeby OpenAI
+    auto-cache i Anthropic ephemeral cache (≥1024 tok TTL 5min) złapały
+    największy możliwy wspólny prefix, dane dzielone muszą iść PRZED
+    blokiem persony, a nie po. Bez tego każda z 15 opinii jest pełnopłatna.
+    """
+
+    def test_shared_market_data_appears_before_persona_block(self):
+        data = _make_input()
+        prompt = investor_prompt("Warren Buffett", data)
+        # Bardzo charakterystyczna fraza z persony (style Buffetta)
+        persona_marker = "trwałą przewagą konkurencyjną"
+        # Charakterystyczna fraza z bloku danych
+        data_marker = "Cena aktualna:"
+        assert data_marker in prompt
+        assert persona_marker in prompt
+        assert prompt.index(data_marker) < prompt.index(persona_marker), (
+            "Shared market data must precede persona block so the prefix can "
+            "be cached across the 15 council calls in one cycle."
+        )
+
+    def test_two_personas_share_identical_prefix(self):
+        # Dwa różne investor_prompty z TYM SAMYM CouncilInput muszą mieć
+        # taki sam prefix do momentu pojawienia się persony — to dosłownie
+        # to, co cache LLM trafia.
+        data = _make_input()
+        p_buffett = investor_prompt("Warren Buffett", data)
+        p_wood = investor_prompt("Cathie Wood", data)
+
+        # Znajdź najdłuższy wspólny prefix
+        common_len = 0
+        for a, b in zip(p_buffett, p_wood, strict=False):
+            if a != b:
+                break
+            common_len += 1
+
+        # W typowym promptcie dane + newsy + wycena ≈ 500-1500 znaków.
+        # Minimum 300 znaków wspólnego prefixu = realny zysk na cache.
+        assert common_len >= 300, (
+            f"Investor prompts share only {common_len} chars of common prefix; "
+            "shared data block should be at the start for cache leverage."
+        )
+
+
 class TestChairmanPrompt:
     def test_uses_dynamic_council_size_not_hardcoded(self):
         # Bug regression: chairman_prompt miał wpisane na sztywno "11 legendarnych

@@ -468,3 +468,60 @@ class TestGetCachedFundamentals:
 class TestAdapterImplementsPort:
     def test_is_repository_port(self) -> None:
         assert issubclass(SupabaseRepository, RepositoryPort)
+
+
+# ---------------------------------------------------------------------------
+# save_council_votes — strukturalny audit trail rady
+# ---------------------------------------------------------------------------
+
+
+class TestSaveCouncilVotes:
+    def test_batch_inserts_one_row_per_investor(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.council import InvestorOpinion
+
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}, {"id": 2}])
+
+        votes = [
+            InvestorOpinion(
+                investor_name="Warren Buffett",
+                recommendation="BUY",
+                confidence=0.9,
+                reasoning="Silna fosa.",
+                key_factors=["moat"],
+            ),
+            InvestorOpinion(
+                investor_name="Michael Burry",
+                recommendation="SELL",
+                confidence=0.7,
+                reasoning="Zawyżone P/E.",
+                key_factors=["bubble"],
+            ),
+        ]
+
+        repo.save_council_votes(
+            prediction_id="uuid-pred-1", symbol="AAPL", votes=votes
+        )
+
+        # Sprawdzamy że tabela to council_votes
+        mock_client.table.assert_any_call("council_votes")
+        inserted = mock_client.table.return_value.insert.call_args.args[0]
+        assert isinstance(inserted, list)
+        assert len(inserted) == 2
+        names = {row["investor_name"] for row in inserted}
+        assert names == {"Warren Buffett", "Michael Burry"}
+        for row in inserted:
+            assert row["prediction_id"] == "uuid-pred-1"
+            assert row["symbol"] == "AAPL"
+            assert row["recommendation"] in {"BUY", "SELL", "HOLD"}
+            assert 0.0 <= row["confidence"] <= 1.0
+
+    def test_noop_for_empty_votes(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Brak głosów (np. rada padła całkowicie) — nie wołamy insert na pusto.
+        repo.save_council_votes(prediction_id="uuid-1", symbol="AAPL", votes=[])
+        # Żadne wywołanie .table("council_votes") nie powinno się odbyć
+        for call in mock_client.table.call_args_list:
+            assert call.args[0] != "council_votes"

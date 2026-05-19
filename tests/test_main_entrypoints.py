@@ -59,6 +59,93 @@ class TestLLMProviderFactory:
             main_agent.build_llm_adapter(settings)
 
 
+class TestCouncilLLMFactory:
+    """Heterogeniczna strategia LLM — rada doradcza (15+1 wywołań × 22 symbole
+    = ~94% wszystkich callsów) może działać na tańszym modelu niż główna
+    analiza, bo persona-acting + JSON nie wymaga frontier reasoningu.
+
+    Gdy obie council_llm_* są None → rada używa głównego LLM (wstecznie
+    kompatybilne). Gdy ustawione → osobny adapter z innym providerem/modelem.
+    """
+
+    def test_falls_back_to_main_llm_when_council_overrides_none(
+        self, settings, mocker
+    ):
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+        # Brak override'u — Settings ma defaulty None.
+        main_llm = main_agent.build_llm_adapter(settings)
+        council_llm = main_agent.build_council_llm_adapter(settings, main_llm)
+
+        # Identyczna instancja — brak duplikatu klienta SDK.
+        assert council_llm is main_llm
+
+    def test_uses_separate_openai_adapter_when_council_model_set(
+        self, settings, mocker
+    ):
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+        from src.infrastructure.llm.openai_client import OpenAIAdapter
+
+        settings.council_llm_model = "gpt-4o-mini"
+        main_llm = main_agent.build_llm_adapter(settings)
+        council_llm = main_agent.build_council_llm_adapter(settings, main_llm)
+
+        assert council_llm is not main_llm
+        assert isinstance(council_llm, OpenAIAdapter)
+        assert council_llm._model == "gpt-4o-mini"  # type: ignore[attr-defined]
+
+    def test_uses_anthropic_when_council_provider_anthropic(
+        self, settings, mocker
+    ):
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+        mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
+        from src.infrastructure.llm.anthropic_client import AnthropicAdapter
+
+        settings.anthropic_api_key = "sk-ant-test"
+        settings.council_llm_provider = "anthropic"
+        settings.council_llm_model = "claude-haiku-4-5"
+        main_llm = main_agent.build_llm_adapter(settings)
+        council_llm = main_agent.build_council_llm_adapter(settings, main_llm)
+
+        assert isinstance(council_llm, AnthropicAdapter)
+        assert council_llm._model == "claude-haiku-4-5"  # type: ignore[attr-defined]
+
+    def test_raises_when_council_anthropic_without_key(self, settings):
+        settings.anthropic_api_key = None
+        settings.council_llm_provider = "anthropic"
+        # main pozostaje openai — error musi być specyficzny dla council
+        main_llm_stub = MagicMock()
+
+        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+            main_agent.build_council_llm_adapter(settings, main_llm_stub)
+
+
+class TestEmbeddingAdapterFactory:
+    def test_returns_openai_embeddings_for_openai_provider(self, settings, mocker):
+        mocker.patch("src.infrastructure.llm.openai_embeddings.OpenAI")
+        from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
+
+        adapter = main_agent.build_embedding_adapter(settings)
+
+        assert isinstance(adapter, OpenAIEmbeddingAdapter)
+
+    def test_returns_openai_embeddings_even_when_anthropic_provider(
+        self, settings, mocker
+    ):
+        # Anthropic nie ma natywnego embeddings API. OPENAI_API_KEY jest
+        # wymagane field w Settings (zawsze obecne) — embeddingi działają
+        # niezależnie od wybranego LLM providera. Bez tej zmiany pgvector
+        # był NULL dla 50% deploymentów (LLM_PROVIDER=anthropic).
+        mocker.patch("src.infrastructure.llm.openai_embeddings.OpenAI")
+        from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
+
+        settings.llm_provider = "anthropic"
+        settings.anthropic_api_key = "sk-ant-test"
+
+        adapter = main_agent.build_embedding_adapter(settings)
+
+        assert isinstance(adapter, OpenAIEmbeddingAdapter)
+
+
 class TestMainAgent:
     def test_build_use_case_wires_all_adapters(self, settings, mock_external_clients):
         use_case = main_agent.build_use_case(settings)

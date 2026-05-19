@@ -71,7 +71,22 @@ class AlphaVantageClient:
         self._cached_feed: list[dict[str, Any]] | None = None
         # Indeks aktualnie używanego klucza — przesuwany przy rate-limit.
         self._active_key_idx = 0
+        # Sygnał degradacji wystawiany na zewnątrz: gdy wszystkie klucze
+        # zwróciły rate-limit, feed jest (potencjalnie) niekompletny. Bez
+        # tego sygnału pusty feed wygląda identycznie jak "spokojny dzień".
+        self._degraded_reason: str | None = None
         self._session = build_session()
+
+    @property
+    def degraded_reason(self) -> str | None:
+        """Niesie informację o degradacji feedu w bieżącym cyklu.
+
+        Wartości: `"av_keys_exhausted"` gdy rotacja wyczerpała wszystkie klucze
+        i co najmniej jeden batch nie został pobrany. `None` gdy wszystko OK.
+        Konsumowane przez `AlphaVantageSentimentAdapter` → graph
+        → `prediction_logs.data_quality_flags`.
+        """
+        return self._degraded_reason
 
     @staticmethod
     def _filter_supported(symbols: list[str]) -> list[str]:
@@ -123,6 +138,7 @@ class AlphaVantageClient:
                     "All %d Alpha Vantage API keys exhausted — returning partial feed.",
                     len(self._api_keys),
                 )
+                self._degraded_reason = "av_keys_exhausted"
                 break
 
             for article in payload.get("feed", []):

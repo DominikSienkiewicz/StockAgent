@@ -66,3 +66,13 @@ def test_fundamentals_port_has_get_fundamentals() -> None:
 def test_repository_port_has_fundamentals_methods() -> None:
     assert hasattr(RepositoryPort, "get_cached_fundamentals")
     assert hasattr(RepositoryPort, "save_fundamentals")
+
+
+def test_repository_port_has_save_council_votes() -> None:
+    # Strukturalny audit trail rady doradczej — osobna tabela na głosy
+    # umożliwia odpytywanie "jak Burry głosował na NVDA w ostatnim miesiącu"
+    # bez parsowania JSONB blob z prediction_logs.council_verdict.
+    assert hasattr(RepositoryPort, "save_council_votes")
+    sig = inspect.signature(RepositoryPort.save_council_votes)
+    assert "prediction_id" in sig.parameters
+    assert "votes" in sig.parameters

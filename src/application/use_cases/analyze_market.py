@@ -39,6 +39,7 @@ class AnalyzeMarketUseCase:
         threshold: Threshold,
         embedding_port: EmbeddingPort | None = None,
         council_port: AdvisoryCouncilPort | None = None,
+        council_threshold: Threshold | None = None,
         fundamentals_port: FundamentalsPort | None = None,
     ) -> None:
         self._repository = repository_port
@@ -52,6 +53,7 @@ class AnalyzeMarketUseCase:
             threshold=threshold,
             embedding_port=embedding_port,
             council_port=council_port,
+            council_threshold=council_threshold,
             fundamentals_port=fundamentals_port,
         )
 

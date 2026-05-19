@@ -39,4 +39,11 @@ class AlphaVantageSentimentAdapter(SentimentPort):
         self._client = client
 
     def get_social_score(self, symbol: str) -> dict[str, Any]:
-        return self._client.sentiment_for(symbol)
+        payload = self._client.sentiment_for(symbol)
+        # Sygnał degradacji feedu (np. wszystkie klucze AV wyczerpane) wpada
+        # do payloadu jako sentinel key. Graph promuje to do
+        # data_quality_flags, by trening mógł odsiać te cykle.
+        reason = self._client.degraded_reason
+        if reason is not None:
+            payload = {**payload, "degraded_reason": reason}
+        return payload
