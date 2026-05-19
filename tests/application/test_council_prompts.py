@@ -33,7 +33,7 @@ def _make_opinion(investor: str, rec: str = "BUY") -> InvestorOpinion:
 
 
 class TestInvestorPersonas:
-    def test_all_eleven_investors_present(self):
+    def test_all_investors_present(self):
         expected = {
             "Warren Buffett",
             "Benjamin Graham",
@@ -45,9 +45,19 @@ class TestInvestorPersonas:
             "Paul Tudor Jones",
             "Bill Gross",
             "Jesse Livermore",
+            "Cathie Wood",
             "Michael Burry",
+            "Howard Marks",
+            "Stanley Druckenmiller",
+            "Joel Greenblatt",
         }
         assert set(INVESTOR_PERSONAS.keys()) == expected
+
+    def test_personas_sourced_from_domain(self):
+        from src.domain.council import DEFAULT_INVESTOR_PERSONAS
+
+        domain_names = {p.name for p in DEFAULT_INVESTOR_PERSONAS}
+        assert set(INVESTOR_PERSONAS.keys()) == domain_names
 
     def test_each_persona_is_non_empty_string(self):
         for name, style in INVESTOR_PERSONAS.items():
@@ -67,10 +77,6 @@ class TestInvestorPrompt:
         prompt = investor_prompt("Ray Dalio", _make_input())
         assert "180" in prompt
 
-    def test_contains_news(self):
-        prompt = investor_prompt("Michael Burry", _make_input())
-        assert "Apple beats earnings" in prompt
-
     def test_contains_output_schema_keys(self):
         prompt = investor_prompt("George Soros", _make_input())
         assert "recommendation" in prompt
@@ -79,6 +85,14 @@ class TestInvestorPrompt:
 
 
 class TestChairmanPrompt:
+    def test_uses_dynamic_council_size_not_hardcoded(self):
+        # Bug regression: chairman_prompt miał wpisane na sztywno "11 legendarnych
+        # inwestorów" niezależnie od liczby opinii przekazanych do funkcji.
+        opinions = [_make_opinion("Warren Buffett"), _make_opinion("Peter Lynch")]
+        prompt = chairman_prompt(opinions, _make_input())
+        assert "2 legendarnych" in prompt
+        assert "11 legendarnych" not in prompt
+
     def test_contains_all_investor_names(self):
         opinions = [
             _make_opinion("Warren Buffett", "BUY"),

@@ -16,7 +16,7 @@ from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 logger = logging.getLogger(__name__)
 
 _VALID_RECS: frozenset[str] = frozenset({"BUY", "SELL", "HOLD"})
-# Górna granica oczekiwania na CAŁY zestaw 11 wywołań LLM równolegle.
+# Górna granica oczekiwania na CAŁY zestaw wywołań LLM równolegle.
 # LLM port ma już własny timeout (30s) — ten jest buforem na sumę narzutu
 # threadpool/scheduler. Po jego przekroczeniu kontynuujemy z opiniami,
 # które zdążyły się zwrócić (graceful degradation).
@@ -40,7 +40,7 @@ def _parse_opinion(name: str, raw: dict[str, Any]) -> InvestorOpinion:
 
 
 class LLMAdvisoryCouncil(AdvisoryCouncilPort):
-    """11 równoległych wywołań LLM (jeden na inwestora) + wywołanie konsensusu."""
+    """N równoległych wywołań LLM (jeden na inwestora) + wywołanie konsensusu."""
 
     def __init__(self, llm_port: LLMPort) -> None:
         self._llm = llm_port
@@ -64,7 +64,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         investor_names = list(INVESTOR_PERSONAS.keys())
         opinions: list[InvestorOpinion | None] = [None] * len(investor_names)
 
-        with ThreadPoolExecutor(max_workers=11) as executor:
+        with ThreadPoolExecutor(max_workers=max(1, len(investor_names))) as executor:
             future_to_idx = {
                 executor.submit(self._call_investor, name, data): i
                 for i, name in enumerate(investor_names)
