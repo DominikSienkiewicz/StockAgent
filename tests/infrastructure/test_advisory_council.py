@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from src.application.ports import AdvisoryCouncilPort, LLMPort
-from src.domain.council import CouncilInput, CouncilVerdict
+from src.domain.council import CouncilInput, CouncilVerdict, InvestorPersona
 from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
 
 ALL_INVESTORS = [
@@ -18,6 +18,11 @@ ALL_INVESTORS = [
     "Stanley Druckenmiller", "Joel Greenblatt",
 ]
 COUNCIL_SIZE = len(ALL_INVESTORS)
+
+_TEST_PERSONAS = tuple(
+    InvestorPersona(name=name, style=f"Test style for {name}. " * 3)
+    for name in ALL_INVESTORS
+)
 
 
 def _make_input() -> CouncilInput:
@@ -60,7 +65,7 @@ def llm_port() -> Mock:
 
 @pytest.fixture
 def council(llm_port: Mock) -> LLMAdvisoryCouncil:
-    return LLMAdvisoryCouncil(llm_port=llm_port)
+    return LLMAdvisoryCouncil(llm_port=llm_port, personas=_TEST_PERSONAS)
 
 
 class TestLLMAdvisoryCouncilIsPort:

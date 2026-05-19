@@ -128,10 +128,21 @@ def build_council_llm_adapter(settings: Settings, main_llm: LLMPort) -> LLMPort:
     )
 
 
-def build_council_adapter(llm_port: LLMPort) -> AdvisoryCouncilPort:
-    """Pakuje LLM port w `LLMAdvisoryCouncil`. Sam wybór modelu rady robi
-    `build_council_llm_adapter` — ten helper tylko spina."""
-    return LLMAdvisoryCouncil(llm_port=llm_port)
+def build_council_adapter(
+    settings: Settings, llm_port: LLMPort
+) -> AdvisoryCouncilPort:
+    """Pakuje LLM port + załadowane persony w `LLMAdvisoryCouncil`.
+
+    Persony czytane z `settings.council_personas_dir` przy starcie agenta —
+    fail-fast: jeśli katalog pusty/zepsuty, agent w ogóle nie startuje
+    zamiast cicho lecieć z mniejszą/inną radą.
+    """
+    from pathlib import Path
+
+    from src.infrastructure.persona_loader import load_council_personas
+
+    personas = load_council_personas(Path(settings.council_personas_dir))
+    return LLMAdvisoryCouncil(llm_port=llm_port, personas=personas)
 
 
 def build_embedding_adapter(settings: Settings) -> EmbeddingPort | None:
@@ -175,7 +186,7 @@ def build_use_case(
         llm_port=llm_port,
         threshold=Threshold(settings.volatility_threshold),
         embedding_port=build_embedding_adapter(settings),
-        council_port=build_council_adapter(council_llm_port),
+        council_port=build_council_adapter(settings, council_llm_port),
         # 0.0 → wyłączony (rada zawsze leci gdy główna bramka przepuści).
         council_threshold=(
             Threshold(settings.council_volatility_threshold)

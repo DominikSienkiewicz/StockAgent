@@ -2,11 +2,10 @@
 from decimal import Decimal
 
 from src.application.council_prompts import (
-    INVESTOR_PERSONAS,
     chairman_prompt,
     investor_prompt,
 )
-from src.domain.council import CouncilInput, InvestorOpinion
+from src.domain.council import CouncilInput, InvestorOpinion, InvestorPersona
 
 
 def _make_input() -> CouncilInput:
@@ -32,56 +31,59 @@ def _make_opinion(investor: str, rec: str = "BUY") -> InvestorOpinion:
     )
 
 
-class TestInvestorPersonas:
-    def test_all_investors_present(self):
-        expected = {
-            "Warren Buffett",
-            "Benjamin Graham",
-            "George Soros",
-            "Peter Lynch",
-            "Ray Dalio",
-            "Charlie Munger",
-            "Philip Fisher",
-            "Paul Tudor Jones",
-            "Bill Gross",
-            "Jesse Livermore",
-            "Cathie Wood",
-            "Michael Burry",
-            "Howard Marks",
-            "Stanley Druckenmiller",
-            "Joel Greenblatt",
-        }
-        assert set(INVESTOR_PERSONAS.keys()) == expected
+def _persona(name: str, style: str) -> InvestorPersona:
+    return InvestorPersona(name=name, style=style)
 
-    def test_personas_sourced_from_domain(self):
-        from src.domain.council import DEFAULT_INVESTOR_PERSONAS
 
-        domain_names = {p.name for p in DEFAULT_INVESTOR_PERSONAS}
-        assert set(INVESTOR_PERSONAS.keys()) == domain_names
-
-    def test_each_persona_is_non_empty_string(self):
-        for name, style in INVESTOR_PERSONAS.items():
-            assert isinstance(style, str) and len(style) > 20, f"{name} persona too short"
+# Persona fixtures używane w testach prompta — niezależne od plików
+# w data/council_personas/, żeby testy unitarne nie wymagały filesystem.
+_BUFFETT = _persona(
+    "Warren Buffett",
+    "Inwestujesz tylko w firmy z trwałą przewagą konkurencyjną (economic moat). "
+    "Margines bezpieczeństwa, horyzont 10+ lat.",
+)
+_WOOD = _persona(
+    "Cathie Wood",
+    "Inwestujesz w disruptive innovation — AI, robotyka, blockchain. "
+    "Horyzont 5-10 lat z ekspozycją na hiperwzrost.",
+)
+_LYNCH = _persona(
+    "Peter Lynch",
+    "Invest in what you know. GARP — growth at reasonable price. PEG ratio.",
+)
+_DALIO = _persona(
+    "Ray Dalio",
+    "Cykle długu, all-weather portfolio, makro: stopy procentowe, inflacja, PKB.",
+)
+_SOROS = _persona(
+    "George Soros",
+    "Teoria reflexivity: ceny wpływają na fundamenty i odwrotnie. Punkty zwrotne makro.",
+)
 
 
 class TestInvestorPrompt:
     def test_contains_investor_name(self):
-        prompt = investor_prompt("Warren Buffett", _make_input())
+        prompt = investor_prompt(_BUFFETT, _make_input())
         assert "Warren Buffett" in prompt
 
     def test_contains_symbol(self):
-        prompt = investor_prompt("Peter Lynch", _make_input())
+        prompt = investor_prompt(_LYNCH, _make_input())
         assert "AAPL" in prompt
 
     def test_contains_price(self):
-        prompt = investor_prompt("Ray Dalio", _make_input())
+        prompt = investor_prompt(_DALIO, _make_input())
         assert "180" in prompt
 
     def test_contains_output_schema_keys(self):
-        prompt = investor_prompt("George Soros", _make_input())
+        prompt = investor_prompt(_SOROS, _make_input())
         assert "recommendation" in prompt
         assert "confidence" in prompt
         assert "key_factors" in prompt
+
+    def test_contains_persona_style_text(self):
+        # Persona.style musi wylądować w prompcie — to całe sedno DI person.
+        prompt = investor_prompt(_BUFFETT, _make_input())
+        assert "trwałą przewagą konkurencyjną" in prompt
 
 
 class TestInvestorPromptCacheFriendlyLayout:
@@ -94,10 +96,8 @@ class TestInvestorPromptCacheFriendlyLayout:
 
     def test_shared_market_data_appears_before_persona_block(self):
         data = _make_input()
-        prompt = investor_prompt("Warren Buffett", data)
-        # Bardzo charakterystyczna fraza z persony (style Buffetta)
+        prompt = investor_prompt(_BUFFETT, data)
         persona_marker = "trwałą przewagą konkurencyjną"
-        # Charakterystyczna fraza z bloku danych
         data_marker = "Cena aktualna:"
         assert data_marker in prompt
         assert persona_marker in prompt
@@ -111,10 +111,9 @@ class TestInvestorPromptCacheFriendlyLayout:
         # taki sam prefix do momentu pojawienia się persony — to dosłownie
         # to, co cache LLM trafia.
         data = _make_input()
-        p_buffett = investor_prompt("Warren Buffett", data)
-        p_wood = investor_prompt("Cathie Wood", data)
+        p_buffett = investor_prompt(_BUFFETT, data)
+        p_wood = investor_prompt(_WOOD, data)
 
-        # Znajdź najdłuższy wspólny prefix
         common_len = 0
         for a, b in zip(p_buffett, p_wood, strict=False):
             if a != b:

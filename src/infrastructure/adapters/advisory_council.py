@@ -6,12 +6,16 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from typing import Any, Literal
 
 from src.application.council_prompts import (
-    INVESTOR_PERSONAS,
     chairman_prompt,
     investor_prompt,
 )
 from src.application.ports import AdvisoryCouncilPort, LLMPort
-from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
+from src.domain.council import (
+    CouncilInput,
+    CouncilVerdict,
+    InvestorOpinion,
+    InvestorPersona,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,20 +44,36 @@ def _parse_opinion(name: str, raw: dict[str, Any]) -> InvestorOpinion:
 
 
 class LLMAdvisoryCouncil(AdvisoryCouncilPort):
-    """N równoległych wywołań LLM (jeden na inwestora) + wywołanie konsensusu."""
+    """N równoległych wywołań LLM (jeden na inwestora) + wywołanie konsensusu.
 
-    def __init__(self, llm_port: LLMPort) -> None:
+    Personas wstrzykiwane przez konstruktor — żadne globalne źródło prawdy.
+    Skład rady definiowany przez pliki JSON w `data/council_personas/`
+    (parsowane przez `infrastructure.persona_loader`).
+    """
+
+    def __init__(
+        self,
+        llm_port: LLMPort,
+        personas: tuple[InvestorPersona, ...],
+    ) -> None:
+        if not personas:
+            raise ValueError("LLMAdvisoryCouncil requires at least one persona.")
         self._llm = llm_port
+        self._personas = personas
 
-    def _call_investor(self, name: str, data: CouncilInput) -> InvestorOpinion:
+    def _call_investor(
+        self, persona: InvestorPersona, data: CouncilInput
+    ) -> InvestorOpinion:
         try:
-            prompt = investor_prompt(name, data)
+            prompt = investor_prompt(persona, data)
             raw = self._llm.analyze(prompt)
-            return _parse_opinion(name, raw)
+            return _parse_opinion(persona.name, raw)
         except Exception:
-            logger.exception("Advisory council: %s failed — defaulting to HOLD", name)
+            logger.exception(
+                "Advisory council: %s failed — defaulting to HOLD", persona.name
+            )
             return InvestorOpinion(
-                investor_name=name,
+                investor_name=persona.name,
                 recommendation="HOLD",
                 confidence=0.0,
                 reasoning="Błąd analizy.",
@@ -61,13 +81,13 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
             )
 
     def analyze(self, symbol: str, data: CouncilInput) -> CouncilVerdict:
-        investor_names = list(INVESTOR_PERSONAS.keys())
-        opinions: list[InvestorOpinion | None] = [None] * len(investor_names)
+        personas = self._personas
+        opinions: list[InvestorOpinion | None] = [None] * len(personas)
 
-        with ThreadPoolExecutor(max_workers=max(1, len(investor_names))) as executor:
+        with ThreadPoolExecutor(max_workers=max(1, len(personas))) as executor:
             future_to_idx = {
-                executor.submit(self._call_investor, name, data): i
-                for i, name in enumerate(investor_names)
+                executor.submit(self._call_investor, persona, data): i
+                for i, persona in enumerate(personas)
             }
             try:
                 for future in as_completed(
@@ -77,7 +97,9 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
                     opinions[idx] = future.result()
             except TimeoutError:
                 pending = [
-                    investor_names[i] for f, i in future_to_idx.items() if not f.done()
+                    personas[i].name
+                    for f, i in future_to_idx.items()
+                    if not f.done()
                 ]
                 logger.warning(
                     "Advisory council: hit %ss total timeout — %d investor(s) pending: %s",

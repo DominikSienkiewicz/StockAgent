@@ -2,17 +2,11 @@
 from __future__ import annotations
 
 from src.domain.council import (
-    DEFAULT_INVESTOR_PERSONAS,
     CouncilInput,
     InvestorOpinion,
+    InvestorPersona,
 )
 from src.domain.value_objects import ValuationVerdict
-
-# Kompatybilność wsteczna: warstwa infrastructure iteruje po nazwach inwestorów.
-# Źródłem prawdy jest DEFAULT_INVESTOR_PERSONAS w domenie.
-INVESTOR_PERSONAS: dict[str, str] = {
-    persona.name: persona.style for persona in DEFAULT_INVESTOR_PERSONAS
-}
 
 
 def _format_valuation_block(data: CouncilInput) -> str:
@@ -45,7 +39,7 @@ def _format_valuation_block(data: CouncilInput) -> str:
     )
 
 
-def investor_prompt(persona: str, data: CouncilInput) -> str:
+def investor_prompt(persona: InvestorPersona, data: CouncilInput) -> str:
     """Prompt dla pojedynczego inwestora w radzie.
 
     Układ cache-friendly: PRZEZ blokiem persony idą wszystkie dane wspólne
@@ -56,7 +50,6 @@ def investor_prompt(persona: str, data: CouncilInput) -> str:
       gdy prompt ma news + wycenę,
     - OpenAI automatyczny prompt cache: ≥1024 tok prefixu, też łapie.
     """
-    style = INVESTOR_PERSONAS[persona]
     news_formatted = "\n".join(f"  - {a}" for a in data.news_articles) or "  (brak newsów)"
     return f"""
 <dane_rynkowe>
@@ -82,8 +75,8 @@ Cel cenowy ML (XGBoost): {data.ml_price_target}
 </output_schema>
 
 <rola>
-Wcielasz się w {persona}. Twoja filozofia inwestycyjna:
-{style}
+Wcielasz się w {persona.name}. Twoja filozofia inwestycyjna:
+{persona.style}
 Analizujesz aktywo {data.symbol} powyżej i wydajesz rekomendację zgodną
 z twoją filozofią. Odpowiadasz wyłącznie w formacie JSON wg powyższego
 output_schema. Uzasadnienie po polsku.

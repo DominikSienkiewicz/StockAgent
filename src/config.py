@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     council_llm_provider: Literal["openai", "anthropic"] | None = None
     council_llm_model: str | None = None
 
+    # Katalog z plikami JSON definiującymi członków rady doradczej. Dodanie /
+    # usunięcie persony = dodanie / usunięcie pliku, bez zmian w kodzie.
+    # Walidator: `uv run python -m src.tools.validate_personas`.
+    council_personas_dir: str = "data/council_personas"
+
     # ----- Market / sentiment / news -----
     finnhub_api_key: str
     # Alpha Vantage akceptuje CSV — wiele kluczy rotujemy, gdy jeden wyczerpie

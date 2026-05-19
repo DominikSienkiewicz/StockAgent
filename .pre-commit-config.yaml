@@ -1,0 +1,23 @@
+# .pre-commit-config.yaml
+# Konfiguracja https://pre-commit.com — uruchamiana automatycznie przed commitem
+# gdy w repo zainstalowane jest `pre-commit install`.
+#
+# Setup (jednorazowo per klon):
+#   uv tool install pre-commit
+#   pre-commit install
+#
+# Ręczne uruchomienie wszystkich hooków na całym repo:
+#   pre-commit run --all-files
+
+repos:
+  - repo: local
+    hooks:
+      # Waliduje pliki JSON z personami rady doradczej. Łapie literówki
+      # (brakujące pole, malformed JSON, duplikat name) ZANIM agent
+      # wystartuje na produkcji.
+      - id: validate-council-personas
+        name: Validate council persona JSON files
+        entry: uv run python -m src.tools.validate_personas
+        language: system
+        files: ^data/council_personas/.*\.json$
+        pass_filenames: false
