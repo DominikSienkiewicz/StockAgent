@@ -24,6 +24,9 @@ MIGRATION_FILES = [
     "004_align_ml_feature_store.sql",
     "005_council_verdict.sql",
     "006_fundamentals_cache.sql",
+    "007_council_votes.sql",
+    "008_data_quality_flags.sql",
+    "009_trend_correctness.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -107,6 +110,7 @@ class TestMigrations:
             "av_llm_agreement",
             "predicted_trend", "predicted_target_price", "reasoning_text",
             "actual_price_after_12h", "accuracy_score", "correction_insights",
+            "is_trend_correct",
             "embedding",
         }
         assert required <= cols, f"Brakujące kolumny: {required - cols}"
@@ -188,6 +192,20 @@ class TestMigrations:
             )
             row = cur.fetchone()
         assert row is not None
+
+    def test_is_trend_correct_column_exists(self, pg_conn):
+        cols = _columns(pg_conn, "prediction_logs")
+        assert "is_trend_correct" in cols, "Brak kolumny is_trend_correct"
+
+    def test_is_trend_correct_accepts_boolean_and_null(self, pg_conn):
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, is_trend_correct)"
+                " VALUES (%s, %s), (%s, %s), (%s, NULL) RETURNING id",
+                ("TEST_TC_T", True, "TEST_TC_F", False, "TEST_TC_NULL"),
+            )
+            rows = cur.fetchall()
+        assert len(rows) == 3
 
     def test_migrations_are_idempotent(self, pg_conn):
         # Drugie uruchomienie tych samych migracji nie może rzucić błędu

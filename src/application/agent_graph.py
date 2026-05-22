@@ -198,11 +198,13 @@ def create_agent_graph(
         # Predykcje odczytane z repozytorium muszą mieć id (kontrakt RepositoryPort).
         assert last.id is not None, "Prediction from repository must have id"
 
-        # Domena liczy accuracy_score (0.0-1.0) — zapis zamyka pętlę feedback:
-        # to ten wskaźnik napędza get_accuracy_stats() i trening XGBoost.
+        # Domena liczy accuracy_score (0.0-1.0) — bliskość ceny do celu,
+        # to napędza trening XGBoost. is_trend_correct (zgodność kierunku)
+        # jest niezależną miarą i napędza trafność raportu.
         accuracy = float(last.accuracy_score(current_price))
+        trend_correct = last.is_trend_correct(current_price)
 
-        if not last.is_trend_correct(current_price):
+        if not trend_correct:
             prompt = get_mistake_diagnosis_prompt(
                 last_trend=str(last.predicted_trend),
                 last_news_summary="(zapisany w prediction_logs)",
@@ -213,6 +215,7 @@ def create_agent_graph(
                 prediction_id=last.id,
                 actual_price=current_price,
                 accuracy_score=accuracy,
+                is_trend_correct=trend_correct,
                 insight=insight,
             )
             return {"reflection_context": f"Ostatni błąd: {insight}"}
@@ -221,6 +224,7 @@ def create_agent_graph(
             prediction_id=last.id,
             actual_price=current_price,
             accuracy_score=accuracy,
+            is_trend_correct=trend_correct,
             insight="Trafiona predykcja.",
         )
         return {"reflection_context": "Ostatnie prognozy były trafne. Kontynuuj strategię."}

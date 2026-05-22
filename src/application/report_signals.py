@@ -108,17 +108,20 @@ def detect_risk_signals(results: list[SymbolResult]) -> list[RiskSignal]:
 def parse_resolved_predictions(
     rows: list[dict[str, Any]],
 ) -> list[ResolvedPrediction]:
-    """Mapuje rekordy z `prediction_logs` na DTO `ResolvedPrediction`."""
+    """Mapuje rekordy z `prediction_logs` na DTO `ResolvedPrediction`.
+
+    Trafność jedzie po `is_trend_correct` (zgodność kierunku) — NIE po
+    `accuracy_score`, które przy cold-starcie jest ~100% także dla
+    kierunkowo błędnych prognoz."""
     out: list[ResolvedPrediction] = []
     for row in rows:
-        score = row.get("accuracy_score")
-        if score is None:
+        trend_correct = row.get("is_trend_correct")
+        if trend_correct is None:
             continue
         out.append(ResolvedPrediction(
             symbol=str(row.get("symbol", "?")),
             predicted_trend=str(row.get("predicted_trend", "?")),
-            accuracy_score=float(score),
-            is_correct=float(score) > 0.5,
+            is_correct=bool(trend_correct),
         ))
     return out
 

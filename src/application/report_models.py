@@ -80,9 +80,8 @@ class RiskSignal:
 
 @dataclass(frozen=True)
 class ResolvedPrediction:
-    """Predykcja zamknięta w bieżącym cyklu (dostała accuracy_score)."""
+    """Predykcja zamknięta — oceniona kierunkowo (is_trend_correct)."""
 
     symbol: str
     predicted_trend: str
-    accuracy_score: float
     is_correct: bool

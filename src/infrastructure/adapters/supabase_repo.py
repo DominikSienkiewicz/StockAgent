@@ -148,21 +148,27 @@ class SupabaseRepository(RepositoryPort):
         raise last_exc
 
     def get_recently_resolved_predictions(self, hours: int) -> list[dict[str, Any]]:
-        """Predykcje zamknięte (z accuracy_score) w ostatnich `hours` godzinach."""
+        """Predykcje zamknięte (z oceną kierunku) w ostatnich `hours` godzinach.
+
+        Filtr po `is_trend_correct` (nie `accuracy_score`) — to ono napędza
+        trafność raportu i naturalnie odsiewa wiersze sprzed migracji 009."""
         cutoff = datetime.now(UTC) - timedelta(hours=hours)
         response = (
             self._client.table(self._table)
-            .select("symbol, predicted_trend, accuracy_score, timestamp")
+            .select("symbol, predicted_trend, is_trend_correct, timestamp")
             .gte("timestamp", cutoff.isoformat())
-            .not_.is_("accuracy_score", "null")
+            .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
             .execute()
         )
         return _rows(response)
 
     def get_accuracy_stats(self, days: int) -> dict[str, Any]:
-        """Średnia accuracy_score predykcji z ostatnich `days` dni
-        (tylko te z wypełnionym `actual_price_after_12h`).
+        """Trafność kierunkowa predykcji z ostatnich `days` dni.
+
+        `mean_accuracy` to hit-rate (udział trafionych kierunkowo predykcji),
+        liczony z `is_trend_correct` — NIE z `accuracy_score` (bliskość ceny do
+        celu, przy cold-starcie zawsze ~100% niezależnie od kierunku).
 
         Zwraca dict z kluczami: `mean_accuracy`, `sample_count`, `correct_count`,
         `days_window`. Gdy brak danych → mean_accuracy=None.
@@ -170,25 +176,30 @@ class SupabaseRepository(RepositoryPort):
         cutoff = datetime.now(UTC) - timedelta(days=days)
         response = (
             self._client.table(self._table)
-            .select("accuracy_score")
+            .select("is_trend_correct")
             .gte("timestamp", cutoff.isoformat())
-            .not_.is_("accuracy_score", "null")
+            .not_.is_("is_trend_correct", "null")
             .execute()
         )
         rows = _rows(response)
-        scores = [float(r["accuracy_score"]) for r in rows if r.get("accuracy_score") is not None]
+        flags = [
+            bool(r["is_trend_correct"])
+            for r in rows
+            if r.get("is_trend_correct") is not None
+        ]
 
-        if not scores:
+        if not flags:
             return {
                 "mean_accuracy": None,
                 "sample_count": 0,
                 "correct_count": 0,
                 "days_window": days,
             }
+        correct_count = sum(1 for f in flags if f)
         return {
-            "mean_accuracy": sum(scores) / len(scores),
-            "sample_count": len(scores),
-            "correct_count": sum(1 for s in scores if s > 0.5),
+            "mean_accuracy": correct_count / len(flags),
+            "sample_count": len(flags),
+            "correct_count": correct_count,
             "days_window": days,
         }
 
@@ -275,12 +286,14 @@ class SupabaseRepository(RepositoryPort):
         prediction_id: str,
         actual_price: Decimal,
         accuracy_score: float,
+        is_trend_correct: bool,
         insight: str,
     ) -> None:
         payload = _serialize_record(
             {
                 "actual_price_after_12h": actual_price,
                 "accuracy_score": accuracy_score,
+                "is_trend_correct": is_trend_correct,
                 "correction_insights": insight,
             }
         )

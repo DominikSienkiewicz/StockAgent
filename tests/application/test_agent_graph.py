@@ -548,6 +548,46 @@ class TestAccuracyScorePersisted:
 
 
 # ---------------------------------------------------------------------------
+# is_trend_correct zapisywany przy reflekcji — accuracy_score (bliskość celu)
+# nie rozróżnia kierunku, więc trafność raportu musi jechać po tym polu.
+# ---------------------------------------------------------------------------
+
+
+class TestTrendCorrectnessPersisted:
+    def test_reflect_persists_trend_correct_false_when_direction_wrong(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Poprzednio: BULLISH @100. Teraz cena 90 (spadek) → zły kierunek.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["is_trend_correct"] is False
+
+    def test_reflect_persists_trend_correct_true_when_direction_right(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Poprzednio: BULLISH @100. Teraz cena 110 (wzrost) → kierunek OK.
+        market_port.get_current_price.return_value = Money(Decimal("110.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["is_trend_correct"] is True
+
+
+# ---------------------------------------------------------------------------
 # Embedding podsumowania newsów → pgvector (#4)
 # ---------------------------------------------------------------------------
 

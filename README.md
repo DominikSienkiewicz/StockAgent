@@ -35,7 +35,7 @@ Finnhub (US prices) ──► check_price ──► reflect ──► fetch_fund
 ```
 
 1. **Fetch price + snapshot** — `FinnhubAdapter` pulls the current quote for each US ticker. `check_price_node` saves a **price snapshot in every cycle** (`price_snapshots` table) so the next cycle always has a reference point — this breaks the cold-start deadlock. Free tier is US-only; dotted tickers (`CSPX.L`, `BAS.DE`) get a 403 and are handled gracefully.
-2. **Self-Reflection (runs every cycle, before the volatility gate)** — `reflect_node` reads the last unverified prediction. It computes `accuracy_score` via the domain, persists it, and — if the prediction was wrong — the LLM diagnoses why ("I ignored hawkish Fed signals"). The insight is injected into the next prediction's prompt as `<reflection_context>`. Decoupled from the volatility gate so every prediction is scored ~12h later, regardless of the current cycle's volatility.
+2. **Self-Reflection (runs every cycle, before the volatility gate)** — `reflect_node` reads the last unverified prediction. It computes two independent domain metrics and persists both: `accuracy_score` (how close the price landed to the numeric target — feeds XGBoost training) and `is_trend_correct` (whether the directional call matched reality — feeds the report's hit-rate). If the prediction was directionally wrong, the LLM diagnoses why ("I ignored hawkish Fed signals"). The insight is injected into the next prediction's prompt as `<reflection_context>`. Decoupled from the volatility gate so every prediction is scored ~12h later, regardless of the current cycle's volatility.
 3. **Fundamentals (slow loop refreshes, fast loop reads cache)** — `fetch_fundamentals_node` runs after `reflect` and before the volatility gate. The `FundamentalsPort` is implemented by `AlphaVantageFundamentalsAdapter` (2 API requests per stock symbol: `OVERVIEW` + `EARNINGS`) wrapped in `CachedFundamentalsAdapter` (decorator pattern). In the **slow loop**, real API calls populate the `fundamentals_cache` Supabase table. In the **fast loop**, a `NullFundamentalsAdapter` delegate skips API calls and reads from cache only. ETF symbols (configured via `SYMBOLS_ETF`) always skip fetching — they have no meaningful per-share EPS/P/E. The domain evaluates a deterministic `ValuationVerdict` (`UNDERVALUED / FAIR / OVERVALUED / UNKNOWN`) based primarily on PEG ratio, with PE/growth qualifiers; ETFs always get `UNKNOWN`. The verdict is surfaced to the Council prompt as a `Valuation snapshot` block and rendered as a dedicated **Wycena fundamentalna** section in the email report.
 4. **Volatility gate** — `Asset.evaluate_volatility(delta, threshold)` lives in the pure domain (Hexagonal core). Δ < 2% → `ignore`, no paid APIs touched. **Domain decides, graph executes.**
 5. **News + Sentiment** — `AlphaVantageClient` makes one request per ticker, rotating N API keys when one exhausts its 25 req/day quota. A `relevance ≥ 0.5` filter strips noise **before** anything reaches the LLM. Per ticker it returns a multi-feature dict: `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `av_sentiment_label`.
@@ -107,8 +107,8 @@ The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallbac
 - 🎯 **Strongest signals** — top BUY/SELL, colour-coded (priority 1: actionable)
 - 🚨 **Warning signals** — divergence + AV/LLM conflict + low signal
 - 📊 **Portfolio mood** — average sentiment, most positive/negative, high-confidence count
-- 📊 **Closed predictions (24h)** — ✅ correct / ❌ wrong from previous cycles
-- 🎯 **Accuracy history** — mean accuracy over the last 30 days
+- 📊 **Closed predictions (24h)** — ✅ Trafiona / ❌ Błędna by trend direction from previous cycles
+- 🎯 **Accuracy history** — directional hit-rate over the last 30 days
 - 📈 **Δ12h chart** (QuickChart bar chart)
 - 🧠 **Self-Reflection** — lessons learned per symbol (purple box)
 - 🔮 **Predictions table** — price · Δ12h · trend · forecast (12h) `+X.YZ%` · confidence · sentiment · news count
@@ -172,8 +172,9 @@ cp .env.example .env
 #   migrations/006_fundamentals_cache.sql       (fundamentals_cache table with TTL)
 #   migrations/007_council_votes.sql            (per-investor structured audit trail)
 #   migrations/008_data_quality_flags.sql       (data_quality_flags on prediction_logs)
+#   migrations/009_trend_correctness.sql        (is_trend_correct on prediction_logs + backfill)
 
-# 4. Smoke test (expect 448 tests passing + 5 skipped live API tests)
+# 4. Smoke test (expect 453 tests passing + 5 skipped live API tests)
 uv run pytest
 
 # 5. Single Fast Loop run

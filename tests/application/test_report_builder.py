@@ -507,9 +507,9 @@ class TestRiskSignals:
 class TestDayOverDay:
     def test_parses_resolved_predictions(self):
         rows = [
-            {"symbol": "NVDA", "predicted_trend": "BULLISH", "accuracy_score": 0.91},
-            {"symbol": "SAP",  "predicted_trend": "BEARISH", "accuracy_score": 0.21},
-            {"symbol": "Z",    "predicted_trend": "BULLISH", "accuracy_score": None},  # filtered
+            {"symbol": "NVDA", "predicted_trend": "BULLISH", "is_trend_correct": True},
+            {"symbol": "SAP",  "predicted_trend": "BEARISH", "is_trend_correct": False},
+            {"symbol": "Z",    "predicted_trend": "BULLISH", "is_trend_correct": None},  # filtered
         ]
         resolved = parse_resolved_predictions(rows)
         assert len(resolved) == 2
@@ -517,12 +517,26 @@ class TestDayOverDay:
         assert by_sym["NVDA"].is_correct is True
         assert by_sym["SAP"].is_correct is False
 
+    def test_correctness_reflects_trend_direction_not_price_proximity(self):
+        """Regresja: predykcja BULLISH na spółce, która SPADŁA, musi być
+        oznaczona jako błędna — nawet gdy liczbowa prognoza wypadła blisko.
+
+        Bug: 'trafność' liczono z accuracy_score (odległość od celu +0.00%
+        z cold-startu), więc kierunkowo błędne prognozy dostawały ~100%."""
+        rows = [
+            {"symbol": "AMD", "predicted_trend": "BULLISH",
+             "accuracy_score": 0.995, "is_trend_correct": False},
+        ]
+        resolved = parse_resolved_predictions(rows)
+        assert len(resolved) == 1
+        assert resolved[0].is_correct is False
+
     def test_html_renders_resolved_section(self):
         resolved = [
             ResolvedPrediction(symbol="NVDA", predicted_trend="BULLISH",
-                               accuracy_score=0.91, is_correct=True),
+                               is_correct=True),
             ResolvedPrediction(symbol="SAP", predicted_trend="BEARISH",
-                               accuracy_score=0.21, is_correct=False),
+                               is_correct=False),
         ]
         html, text = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
@@ -530,7 +544,9 @@ class TestDayOverDay:
         )
         assert "Zamknięte predykcje" in html
         assert "NVDA" in html and "SAP" in html
+        assert "Trafiona" in html and "Błędna" in html
         assert "ZAMKNIĘTE PREDYKCJE" in text
+        assert "Trafiona" in text and "Błędna" in text
 
     def test_no_section_when_no_resolved(self):
         html, _ = build_html_report(

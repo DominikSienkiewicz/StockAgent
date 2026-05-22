@@ -56,8 +56,12 @@ class RepositoryPort(ABC):
         prediction_id: str,
         actual_price: Decimal,
         accuracy_score: float,
+        is_trend_correct: bool,
         insight: str,
-    ) -> None: ...
+    ) -> None:
+        """Zamyka predykcję feedbackiem. `accuracy_score` (bliskość ceny do
+        celu) napędza trening; `is_trend_correct` (zgodność kierunku) napędza
+        trafność raportu — to dwie różne miary, nie wolno ich mylić."""
 
     @abstractmethod
     def get_feature_store_data(self, symbol: str) -> list[dict[str, Any]]:
@@ -73,7 +77,8 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def get_recently_resolved_predictions(self, hours: int) -> list[dict[str, Any]]:
-        """Predykcje z wypełnionym `accuracy_score` w ostatnich `hours` godzin."""
+        """Predykcje z ocenionym kierunkiem (`is_trend_correct`) z ostatnich
+        `hours` godzin."""
 
     @abstractmethod
     def get_cached_fundamentals(self, symbol: str) -> Fundamentals | None:

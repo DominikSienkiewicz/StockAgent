@@ -457,6 +457,7 @@ def _render_html(
         for p in resolved_predictions:
             mark = "✅" if p.is_correct else "❌"
             color = "#16a34a" if p.is_correct else "#dc2626"
+            verdict = "Trafiona" if p.is_correct else "Błędna"
             sections.append(f"""
               <div style="margin-bottom: 4px; padding: 6px 10px; background: #fafafa;
                           border-left: 3px solid {color}; border-radius: 4px;
@@ -464,9 +465,7 @@ def _render_html(
                 {mark} <strong>{_html(_company_label(p.symbol))}</strong>
                 <span style="color: #6b7280;">·
                   prognoza {_html(_trend_label(p.predicted_trend))} ·
-                  trafność <strong style="color: {color};">
-                    {p.accuracy_score * 100:.0f}%
-                  </strong>
+                  <strong style="color: {color};">{verdict}</strong>
                 </span>
               </div>
             """)
@@ -492,7 +491,7 @@ def _render_html(
         <div style="color: #78350f;">
           Średnia trafność: <strong>{acc * 100:.1f}%</strong>
           · Predykcji ocenionych: {n}
-          · Poprawnych (accuracy > 0.5): {correct}
+          · Poprawnych kierunkowo: {correct}
         </div>
       </div>
         """)
@@ -765,9 +764,10 @@ def _render_plain(
         lines.append("-" * 64)
         for p in resolved_predictions:
             mark = "✅" if p.is_correct else "❌"
+            verdict = "Trafiona" if p.is_correct else "Błędna"
             lines.append(
                 f"  {mark} {_company_label(p.symbol):40s}  trend {_trend_label(p.predicted_trend):11s} "
-                f"trafność {p.accuracy_score * 100:.0f}%"
+                f"{verdict}"
             )
         lines.append(
             f"  Suma: {correct}/{len(resolved_predictions)} "

@@ -238,6 +238,7 @@ class TestUpdatePredictionAccuracy:
             prediction_id="uuid-1",
             actual_price=Decimal("99.0"),
             accuracy_score=0.87,
+            is_trend_correct=False,
             insight="Zignorowałem makro.",
         )
 
@@ -246,6 +247,8 @@ class TestUpdatePredictionAccuracy:
         assert str(payload["actual_price_after_12h"]) == "99.0"
         # accuracy_score zamyka pętlę feedback — bez niego get_accuracy_stats() pusty
         assert payload["accuracy_score"] == 0.87
+        # is_trend_correct napędza trafność raportu (kierunek, nie bliskość ceny)
+        assert payload["is_trend_correct"] is False
         assert payload["correction_insights"] == "Zignorowałem makro."
         mock_client.table.return_value.update.return_value.eq.assert_called_with(
             "id", "uuid-1"
@@ -267,6 +270,7 @@ class TestUpdatePredictionAccuracy:
             prediction_id="uuid-1",
             actual_price=Decimal("99.0"),
             accuracy_score=0.87,
+            is_trend_correct=True,
             insight="x",
         )
 
