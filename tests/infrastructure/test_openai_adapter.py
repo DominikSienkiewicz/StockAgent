@@ -261,3 +261,63 @@ class TestOpenAILive:
             'Return JSON: {"answer": 42}. Only JSON, nothing else.'
         )
         assert isinstance(result, dict)
+
+
+class TestQuotaAlertEmit:
+    """429 → QuotaAlert. WARNING gdy retry zadziałał, CRITICAL gdy padło."""
+
+    def test_warning_when_retry_succeeds(self, mock_openai_class, mocker):
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+
+        monitor = QuotaMonitor()
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        adapter = OpenAIAdapter(
+            api_key="sk-test", model="gpt-4o", quota_monitor=monitor
+        )
+        mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
+        mock_client.chat.completions.create.side_effect = [
+            _rate_limit_error(),
+            _completion("{}"),
+        ]
+
+        adapter.analyze("Predict.")
+
+        assert len(monitor.alerts) == 1
+        alert = monitor.alerts[0]
+        assert alert.severity is QuotaSeverity.WARNING
+        assert "gpt-4o" in alert.source
+
+    def test_critical_when_retries_exhausted(self, mock_openai_class, mocker):
+        from openai import RateLimitError
+
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+
+        monitor = QuotaMonitor()
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        adapter = OpenAIAdapter(
+            api_key="sk-test", model="gpt-4o", quota_monitor=monitor
+        )
+        mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
+        mock_client.chat.completions.create.side_effect = _rate_limit_error()
+
+        with pytest.raises(RateLimitError):
+            adapter.analyze("Predict.")
+
+        assert len(monitor.alerts) == 1
+        assert monitor.alerts[0].severity is QuotaSeverity.CRITICAL
+
+    def test_no_alert_on_clean_call(self, adapter_with_client):
+        from src.application.quota_monitor import QuotaMonitor
+
+        monitor = QuotaMonitor()
+        adapter, client = adapter_with_client
+        adapter._quota_monitor = monitor  # type: ignore[attr-defined]
+        client.chat.completions.create.return_value = _completion("{}")
+
+        adapter.analyze("Predict.")
+
+        assert monitor.alerts == []

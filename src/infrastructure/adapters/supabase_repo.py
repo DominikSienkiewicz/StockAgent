@@ -11,6 +11,7 @@ from supabase import create_client
 from src.application.ports import RepositoryPort
 from src.domain.council import InvestorOpinion
 from src.domain.prediction import Prediction, TrendDirection
+from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import FUNDAMENTALS_CACHE_TTL_HOURS, Fundamentals, Money
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ DEFAULT_TABLE = "prediction_logs"
 DEFAULT_FEATURE_VIEW = "ml_feature_store"
 DEFAULT_SNAPSHOT_TABLE = "price_snapshots"
 DEFAULT_COUNCIL_VOTES_TABLE = "council_votes"
+DEFAULT_QUOTA_ALERTS_TABLE = "quota_alerts"
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -58,12 +60,14 @@ class SupabaseRepository(RepositoryPort):
         feature_view: str = DEFAULT_FEATURE_VIEW,
         snapshot_table: str = DEFAULT_SNAPSHOT_TABLE,
         council_votes_table: str = DEFAULT_COUNCIL_VOTES_TABLE,
+        quota_alerts_table: str = DEFAULT_QUOTA_ALERTS_TABLE,
     ) -> None:
         self._client = create_client(url, key)
         self._table = table_name
         self._view = feature_view
         self._snapshot_table = snapshot_table
         self._council_votes_table = council_votes_table
+        self._quota_alerts_table = quota_alerts_table
 
     # -----------------------------------------------------------------------
     # Reads
@@ -256,6 +260,46 @@ class SupabaseRepository(RepositoryPort):
                 f"Supabase insert returned no data for {record.get('symbol')}"
             )
         return str(rows[0]["id"])
+
+    def save_quota_alert(self, alert: QuotaAlert) -> None:
+        row = {
+            "source": alert.source,
+            "severity": alert.severity.value,
+            "message": alert.message,
+            "action": alert.action,
+            "occurred_at": alert.occurred_at.isoformat(),
+        }
+        self._client.table(self._quota_alerts_table).insert(row).execute()
+
+    def get_recent_quota_alerts(self, hours: int) -> list[QuotaAlert]:
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+        response = (
+            self._client.table(self._quota_alerts_table)
+            .select("*")
+            .gte("occurred_at", cutoff.isoformat())
+            .order("occurred_at", desc=True)
+            .execute()
+        )
+        rows = _rows(response)
+        out: list[QuotaAlert] = []
+        for row in rows:
+            try:
+                severity = QuotaSeverity(row["severity"])
+            except (KeyError, ValueError):
+                continue
+            occurred = row.get("occurred_at")
+            if not isinstance(occurred, str):
+                continue
+            out.append(
+                QuotaAlert(
+                    source=str(row.get("source", "?")),
+                    severity=severity,
+                    message=str(row.get("message", "")),
+                    action=str(row.get("action", "")),
+                    occurred_at=datetime.fromisoformat(occurred),
+                )
+            )
+        return out
 
     def save_council_votes(
         self,

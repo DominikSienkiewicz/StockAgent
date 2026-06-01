@@ -45,6 +45,10 @@ from src.application.report_models import (
     TradeSignal,
     ValuationSection,
 )
+from src.application.report_quota_banner import (
+    render_quota_banner_html,
+    render_quota_banner_text,
+)
 from src.application.report_risk_watch import (
     render_risk_watch_html,
     render_risk_watch_text,
@@ -59,6 +63,7 @@ from src.application.report_signals import (
 from src.application.report_templates import render_template
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.council import CouncilVerdict
+from src.domain.quota import QuotaAlert
 from src.domain.value_objects import ValuationVerdict
 
 __all__ = [
@@ -274,6 +279,7 @@ def build_html_report(
     accuracy_stats: dict[str, Any] | None = None,
     resolved_predictions: list[ResolvedPrediction] | None = None,
     macro_risk_report: MacroRiskReport | None = None,
+    quota_alerts: list[QuotaAlert] | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
@@ -297,12 +303,18 @@ def build_html_report(
     macro_risk_text = (
         render_risk_watch_text(macro_risk_report) if macro_risk_report else ""
     )
+    quota_html = render_quota_banner_html(quota_alerts or [])
+    quota_text = render_quota_banner_text(quota_alerts or [])
 
     html = _render_html(
         results, saved, ignored, errors, started_at, duration_seconds,
         mood, session, accuracy_stats, trade_signals, risk_signals,
         resolved_predictions or [],
     )
+    if quota_html:
+        html = html.replace(
+            "<!-- QUOTA_BANNER_SLOT -->", quota_html, 1
+        )
     if macro_risk_html:
         html = html.replace(
             "<!-- RISK_WATCH_SLOT -->", macro_risk_html, 1
@@ -312,6 +324,10 @@ def build_html_report(
         mood, session, accuracy_stats, trade_signals, risk_signals,
         resolved_predictions or [],
     )
+    if quota_text:
+        text = text.replace(
+            "<!-- QUOTA_BANNER_SLOT -->", quota_text, 1
+        )
     if macro_risk_text:
         text = text.replace(
             "<!-- RISK_WATCH_SLOT -->", macro_risk_text, 1
@@ -350,6 +366,10 @@ def _render_html(
         · Liczba symboli: {len(results)}
       </div>
     """)
+
+    # Slot bannera kwot — wypełniany przez build_html_report, gdy są alerty.
+    # Trafia NAJWYŻEJ (przed sesją), bo wyczerpanie limitu to top-priority info.
+    sections.append("<!-- QUOTA_BANNER_SLOT -->")
 
     # Status sesji giełdowej
     sections.append(f"""
@@ -743,6 +763,7 @@ def _render_plain(
     resolved_predictions: list[ResolvedPrediction],
 ) -> str:
     lines: list[str] = []
+    lines.append("<!-- QUOTA_BANNER_SLOT -->")
     lines.append("=" * 64)
     lines.append("STOCKAGENT — RAPORT CYKLU")
     lines.append("=" * 64)

@@ -11,8 +11,11 @@ import logging
 import re
 import time
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
 
+from src.application.quota_monitor import QuotaMonitor
+from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.infrastructure.adapters._http import build_session
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,7 @@ class AlphaVantageClient:
         limit: int = DEFAULT_LIMIT,
         batch_size: int = DEFAULT_BATCH_SIZE,
         crypto_symbols: Iterable[str] | None = None,
+        quota_monitor: QuotaMonitor | None = None,
     ) -> None:
         # Akceptujemy pojedynczy klucz (str) lub listę — rotacja przy rate-limit.
         if isinstance(api_keys, str):
@@ -78,6 +82,7 @@ class AlphaVantageClient:
         self._cached_feed: list[dict[str, Any]] | None = None
         # Indeks aktualnie używanego klucza — przesuwany przy rate-limit.
         self._active_key_idx = 0
+        self._quota_monitor = quota_monitor
         # Sygnał degradacji wystawiany na zewnątrz: gdy wszystkie klucze
         # zwróciły rate-limit, feed jest (potencjalnie) niekompletny. Bez
         # tego sygnału pusty feed wygląda identycznie jak "spokojny dzień".
@@ -146,6 +151,18 @@ class AlphaVantageClient:
                     len(self._api_keys),
                 )
                 self._degraded_reason = "av_keys_exhausted"
+                self._emit_quota_alert(
+                    severity=QuotaSeverity.CRITICAL,
+                    message=(
+                        f"All {len(self._api_keys)} Alpha Vantage API keys hit "
+                        "the daily 25 req/day limit. News + sentiment feed is "
+                        "incomplete for this cycle."
+                    ),
+                    action=(
+                        "Add another key in ALPHA_VANTAGE_API_KEYS (free at "
+                        "alphavantage.co), or wait for UTC midnight reset."
+                    ),
+                )
                 break
 
             for article in payload.get("feed", []):
@@ -185,6 +202,22 @@ class AlphaVantageClient:
             return payload
 
         return None
+
+    def _emit_quota_alert(
+        self, severity: QuotaSeverity, message: str, action: str
+    ) -> None:
+        """Wystawia alert do QuotaMonitor jeśli ten jest skonfigurowany."""
+        if self._quota_monitor is None:
+            return
+        self._quota_monitor.record(
+            QuotaAlert(
+                source="Alpha Vantage",
+                severity=severity,
+                message=message,
+                action=action,
+                occurred_at=datetime.now(UTC),
+            )
+        )
 
     def _fetch_batch(self, tickers: list[str], api_key: str) -> dict[str, Any]:
         response = self._session.get(

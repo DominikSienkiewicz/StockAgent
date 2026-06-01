@@ -1,5 +1,5 @@
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 import requests
@@ -80,6 +80,7 @@ class TestResendNotifier:
 
     def test_raises_on_http_error(self, notifier, mocker):
         response = MagicMock(spec=requests.Response)
+        response.status_code = 401
         response.raise_for_status.side_effect = requests.HTTPError("401")
         mocker.patch(
             "requests.Session.post",
@@ -128,3 +129,72 @@ class TestResendLive:
             html_body="<h1>Hello</h1><p>This is a smoke test.</p>",
             plain_text="Hello — this is a smoke test.",
         )
+
+
+class TestQuotaAlertEmit:
+    def _resp(self, status_code: int, body: dict | None = None) -> Mock:
+        import requests
+
+        r = Mock(spec=requests.Response)
+        r.status_code = status_code
+        r.json.return_value = body or {}
+        if status_code >= 400:
+            r.raise_for_status.side_effect = requests.HTTPError(f"{status_code}")
+        else:
+            r.raise_for_status = Mock()
+        return r
+
+    def test_emits_critical_on_429(self, mocker):
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+        from src.infrastructure.adapters.resend_notifier import ResendNotifier
+
+        monitor = QuotaMonitor()
+        notifier = ResendNotifier(
+            api_key="re_x", sender="a@x", recipient="b@x",
+            quota_monitor=monitor,
+        )
+        mocker.patch("requests.Session.post", return_value=self._resp(429))
+
+        with pytest.raises(requests.HTTPError):
+            notifier.send_report("subj", "<html>", "text")
+
+        assert len(monitor.alerts) == 1
+        assert monitor.alerts[0].severity is QuotaSeverity.CRITICAL
+        assert monitor.alerts[0].source == "Resend"
+        assert "100" in monitor.alerts[0].message  # mails/day
+
+    def test_emits_critical_on_4xx_other(self, mocker):
+        from src.application.quota_monitor import QuotaMonitor
+        from src.infrastructure.adapters.resend_notifier import ResendNotifier
+
+        monitor = QuotaMonitor()
+        notifier = ResendNotifier(
+            api_key="re_x", sender="a@x", recipient="b@x",
+            quota_monitor=monitor,
+        )
+        mocker.patch("requests.Session.post", return_value=self._resp(401))
+
+        with pytest.raises(requests.HTTPError):
+            notifier.send_report("subj", "<html>", "text")
+
+        assert len(monitor.alerts) == 1
+        assert "401" in monitor.alerts[0].message
+
+    def test_no_alert_on_200(self, mocker):
+        from src.application.quota_monitor import QuotaMonitor
+        from src.infrastructure.adapters.resend_notifier import ResendNotifier
+
+        monitor = QuotaMonitor()
+        notifier = ResendNotifier(
+            api_key="re_x", sender="a@x", recipient="b@x",
+            quota_monitor=monitor,
+        )
+        mocker.patch(
+            "requests.Session.post",
+            return_value=self._resp(200, {"id": "msg-123"}),
+        )
+
+        notifier.send_report("subj", "<html>", "text")
+
+        assert monitor.alerts == []

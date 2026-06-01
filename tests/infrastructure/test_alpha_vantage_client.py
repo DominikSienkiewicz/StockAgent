@@ -554,3 +554,68 @@ class TestCryptoPrefix:
             t for t in mock_get.call_args_list[0].kwargs["params"]["tickers"].split(",")
         )
         assert "CRYPTO:BTC" in sent_tickers or sent_tickers == {"CRYPTO:BTC"}
+
+
+class TestQuotaAlertEmit:
+    """Wyczerpanie wszystkich kluczy AV → QuotaAlert(CRITICAL) do monitora."""
+
+    def _rate_limited_response(self) -> MagicMock:
+        response = MagicMock(spec=requests.Response)
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "Information": "Thank you for using Alpha Vantage! "
+            "Our standard API rate limit is 25 requests per day."
+        }
+        return response
+
+    def test_emits_critical_alert_when_all_keys_exhausted(self, mocker):
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+
+        monitor = QuotaMonitor()
+        client = AlphaVantageClient(
+            api_keys=["k1", "k2"],
+            symbols=["AAPL"],
+            quota_monitor=monitor,
+        )
+        mocker.patch(
+            "requests.Session.get",
+            return_value=self._rate_limited_response(),
+        )
+
+        client.articles_for("AAPL")
+
+        assert len(monitor.alerts) == 1
+        alert = monitor.alerts[0]
+        assert alert.source == "Alpha Vantage"
+        assert alert.severity is QuotaSeverity.CRITICAL
+        assert "2" in alert.message  # liczba kluczy
+        assert "ALPHA_VANTAGE_API_KEYS" in alert.action
+
+    def test_no_alert_when_keys_have_budget(self, mocker):
+        from src.application.quota_monitor import QuotaMonitor
+
+        monitor = QuotaMonitor()
+        client = AlphaVantageClient(
+            api_keys=["k1"],
+            symbols=["AAPL"],
+            quota_monitor=monitor,
+        )
+        response = MagicMock(spec=requests.Response)
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {"feed": []}
+        mocker.patch("requests.Session.get", return_value=response)
+
+        client.articles_for("AAPL")
+
+        assert monitor.alerts == []
+
+    def test_no_monitor_means_no_emit_no_crash(self, mocker):
+        # Bez monitora: rate-limit dalej działa, tylko brak emitu.
+        client = AlphaVantageClient(api_keys=["k"], symbols=["AAPL"])
+        mocker.patch(
+            "requests.Session.get",
+            return_value=self._rate_limited_response(),
+        )
+
+        client.articles_for("AAPL")  # nie wywala się

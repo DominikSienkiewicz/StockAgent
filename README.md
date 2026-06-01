@@ -89,6 +89,23 @@ Why a separate pool:
 
 Everything else (predict, news, sentiment, advisory council, prediction logs, self-reflection) works identically to equities — crypto goes through the same `AnalyzeMarketUseCase`.
 
+## Quota monitoring (no silent exhaustion)
+
+Every adapter that has a paid / metered quota writes a `QuotaAlert` to a shared `QuotaMonitor` when something looks bad:
+
+| Adapter | What it emits |
+|---|---|
+| `AlphaVantageClient` | `CRITICAL` when all `ALPHA_VANTAGE_API_KEYS` have hit the daily 25 req/day cap — feed is partial. |
+| `OpenAIAdapter` | `WARNING` when 429 was retried but eventually succeeded (you're at the TPM edge). `CRITICAL` when retries are exhausted and the call failed. Source field includes the model: `OpenAI (gpt-4o)`. |
+| `FinnhubAdapter` | `CRITICAL` on 429 (free tier 60 req/min hit). |
+| `ResendNotifier` | `CRITICAL` on 429 (free 100 mails/day) or any other 4xx — email was not delivered. The alert appears in the **next** report once delivery recovers. |
+
+All alerts from the current cycle are persisted to the `quota_alerts` table (migration `010_quota_alerts.sql`). The report builder pulls **the last 24 h** of alerts and renders them as a coloured banner at the **very top** of the e-mail (above the NYSE session line). Severity drives the banner colour and ordering — `CRITICAL` rows come first.
+
+If anything `CRITICAL` is in the current cycle, the e-mail subject is prefixed with `⚠️ [QUOTA] ` so the alert is visible directly in the inbox, before opening.
+
+This means: **no exhausted limit, blocked email, or rate-limited API call can silently disappear into the logs**. If the agent saw it, you see it.
+
 ## Risk Watch (separate macro pass)
 
 Beyond the per-symbol prediction loop, the agent runs a **separate Risk Watch use case** (`MonitorMacroRiskUseCase`) over proxy instruments that signal *risk-off* conditions. These tickers are tracked but **never enter the prediction pipeline** — their semantics are inverted (a *rise* in `SH` means S&P 500 is *falling*, which is a warning).

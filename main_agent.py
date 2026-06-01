@@ -25,6 +25,7 @@ from src.application.ports import (
     ReportNotifierPort,
     RepositoryPort,
 )
+from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import (
     SymbolResult,
     build_html_report,
@@ -38,6 +39,7 @@ from src.application.use_cases.monitor_macro_risk import (
 )
 from src.config import Settings
 from src.domain.asset import Asset
+from src.domain.quota import QuotaSeverity
 from src.domain.value_objects import AssetType, Threshold
 from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
 from src.infrastructure.adapters.alpha_vantage_adapters import (
@@ -60,6 +62,8 @@ from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 ACCURACY_STATS_DAYS = 30
 RESOLVED_PREDICTIONS_HOURS = 24
 
+logger = logging.getLogger(__name__)
+
 
 def _ignored_result(symbol: str) -> SymbolResult:
     """Tworzy SymbolResult dla symbolu pre-filtrowanego z SYMBOLS_UNSUPPORTED_PRICE.
@@ -73,10 +77,10 @@ def _ignored_result(symbol: str) -> SymbolResult:
         error_message="unsupported by current price adapter (Finnhub free)",
     )
 
-logger = logging.getLogger(__name__)
 
-
-def build_llm_adapter(settings: Settings) -> LLMPort:
+def build_llm_adapter(
+    settings: Settings, quota_monitor: QuotaMonitor | None = None
+) -> LLMPort:
     """Factory LLM — wybiera providera na podstawie konfiguracji."""
     if settings.llm_provider == "anthropic":
         if not settings.anthropic_api_key:
@@ -86,14 +90,20 @@ def build_llm_adapter(settings: Settings) -> LLMPort:
             )
         from src.infrastructure.llm.anthropic_client import AnthropicAdapter
 
+        # AnthropicAdapter nie wspiera QuotaMonitor (do dorobienia w przyszłości
+        # przez analogię do OpenAIAdapter).
         return AnthropicAdapter(api_key=settings.anthropic_api_key)
 
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
-    return OpenAIAdapter(api_key=settings.openai_api_key)
+    return OpenAIAdapter(
+        api_key=settings.openai_api_key, quota_monitor=quota_monitor
+    )
 
 
-def build_notifier(settings: Settings) -> ReportNotifierPort:
+def build_notifier(
+    settings: Settings, quota_monitor: QuotaMonitor | None = None
+) -> ReportNotifierPort:
     """Factory notifier — Resend gdy włączone i skonfigurowane, inaczej Null."""
     if (
         settings.notifications_enabled
@@ -104,6 +114,7 @@ def build_notifier(settings: Settings) -> ReportNotifierPort:
             api_key=settings.resend_api_key,
             sender=settings.digest_from_email,
             recipient=settings.digest_to_email,
+            quota_monitor=quota_monitor,
         )
     return NullNotifier()
 
@@ -112,7 +123,11 @@ def build_repository(settings: Settings) -> RepositoryPort:
     return SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
 
 
-def build_council_llm_adapter(settings: Settings, main_llm: LLMPort) -> LLMPort:
+def build_council_llm_adapter(
+    settings: Settings,
+    main_llm: LLMPort,
+    quota_monitor: QuotaMonitor | None = None,
+) -> LLMPort:
     """Wybiera LLM dla rady doradczej.
 
     Domyślnie rada korzysta z `main_llm` (jedna instancja klienta SDK,
@@ -146,6 +161,7 @@ def build_council_llm_adapter(settings: Settings, main_llm: LLMPort) -> LLMPort:
     return OpenAIAdapter(
         api_key=settings.openai_api_key,
         model=settings.council_llm_model or OPENAI_DEFAULT,
+        quota_monitor=quota_monitor,
     )
 
 
@@ -203,6 +219,7 @@ def build_macro_risk_use_case(
 def build_use_case(
     settings: Settings,
     repository: RepositoryPort | None = None,
+    quota_monitor: QuotaMonitor | None = None,
 ) -> AnalyzeMarketUseCase:
     """DI Container — buduje wszystkie adaptery i wstrzykuje do Use Case'a.
 
@@ -215,9 +232,12 @@ def build_use_case(
         api_keys=settings.alpha_vantage_api_keys,
         symbols=all_av_symbols,
         crypto_symbols=settings.crypto_symbols,
+        quota_monitor=quota_monitor,
     )
-    llm_port = build_llm_adapter(settings)
-    council_llm_port = build_council_llm_adapter(settings, llm_port)
+    llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor)
+    council_llm_port = build_council_llm_adapter(
+        settings, llm_port, quota_monitor=quota_monitor
+    )
     supabase_repo = repository or build_repository(settings)
     # Fast loop: delegate = Null — nie woła płatnego AV, czyta tylko cache Supabase.
     fundamentals_port = CachedFundamentalsAdapter(
@@ -226,7 +246,9 @@ def build_use_case(
     )
     # Routing: krypto → CoinGecko, reszta → Finnhub. Use case widzi jeden port.
     market_port = RoutingMarketDataPort(
-        equity=FinnhubAdapter(api_key=settings.finnhub_api_key),
+        equity=FinnhubAdapter(
+            api_key=settings.finnhub_api_key, quota_monitor=quota_monitor
+        ),
         crypto=CoinGeckoAdapter(),
         crypto_symbols=settings.crypto_symbols,
     )
@@ -271,9 +293,12 @@ def main(settings: Settings | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
     settings = settings or Settings.from_env()
+    quota_monitor = QuotaMonitor()
     repository = build_repository(settings)
-    use_case = build_use_case(settings, repository=repository)
-    notifier = build_notifier(settings)
+    use_case = build_use_case(
+        settings, repository=repository, quota_monitor=quota_monitor
+    )
+    notifier = build_notifier(settings, quota_monitor=quota_monitor)
 
     started_at = datetime.now(UTC)
     started_perf = time.perf_counter()
@@ -369,15 +394,32 @@ def main(settings: Settings | None = None) -> int:
         except Exception:
             logger.exception("Failed to fetch resolved predictions")
 
+        # Persystencja alertów z BIEŻĄCEGO cyklu (przed odczytem history,
+        # żeby też tu trafiły) + odczyt z ostatnich 24h dla bannera.
+        for alert in quota_monitor.alerts:
+            try:
+                repository.save_quota_alert(alert)
+            except Exception:
+                logger.exception("Failed to persist quota alert from %s", alert.source)
+        try:
+            recent_alerts = repository.get_recent_quota_alerts(hours=24)
+        except Exception:
+            logger.exception("Failed to fetch recent quota alerts — using cycle-only")
+            recent_alerts = list(quota_monitor.alerts)
+
         html, text = build_html_report(
             results, started_at, duration,
             accuracy_stats=accuracy_stats,
             resolved_predictions=resolved,
             macro_risk_report=macro_risk_report,
+            quota_alerts=recent_alerts,
         )
         analyzed = sum(1 for r in results if r.status == "saved")
+        # Subject prefix gdy są CRITICAL — wymusza zwrócenie uwagi w skrzynce.
+        max_sev = quota_monitor.max_severity()
+        prefix = "⚠️ [QUOTA] " if max_sev is QuotaSeverity.CRITICAL else ""
         subject = (
-            f"StockAgent — {analyzed} predykcji, {failures} błędów "
+            f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów "
             f"({started_at.strftime('%Y-%m-%d %H:%M UTC')})"
         )
         notifier.send_report(subject=subject, html_body=html, plain_text=text)

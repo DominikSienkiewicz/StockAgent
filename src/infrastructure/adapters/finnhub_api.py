@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from src.application.ports import MarketDataPort
+from src.application.quota_monitor import QuotaMonitor
+from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Money
 from src.infrastructure.adapters._http import build_session
 
@@ -22,11 +25,13 @@ class FinnhubAdapter(MarketDataPort):
         api_key: str,
         base_url: str = DEFAULT_BASE_URL,
         timeout: int = DEFAULT_TIMEOUT,
+        quota_monitor: QuotaMonitor | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._session = build_session()
+        self._quota_monitor = quota_monitor
 
     def get_current_price(self, symbol: str) -> Money:
         response = self._session.get(
@@ -38,6 +43,19 @@ class FinnhubAdapter(MarketDataPort):
             raise ValueError(
                 f"Ticker '{symbol}' is not supported by Finnhub free tier (403 Forbidden). "
                 "LSE tickers with dot notation (e.g. CSPX.L) require a paid plan."
+            )
+        if response.status_code == 429:
+            # Free tier: 60 req/min. Powyżej tego dostajemy 429.
+            self._emit_quota_alert(
+                severity=QuotaSeverity.CRITICAL,
+                message=(
+                    f"Finnhub returned 429 for '{symbol}' — free tier "
+                    "limit (60 req/min) exhausted."
+                ),
+                action=(
+                    "Reduce SYMBOLS count or raise SYMBOL_THROTTLE_SECONDS "
+                    "to slow the loop, or upgrade Finnhub plan."
+                ),
             )
         response.raise_for_status()
 
@@ -54,3 +72,18 @@ class FinnhubAdapter(MarketDataPort):
             )
 
         return Money(Decimal(str(price)))
+
+    def _emit_quota_alert(
+        self, severity: QuotaSeverity, message: str, action: str
+    ) -> None:
+        if self._quota_monitor is None:
+            return
+        self._quota_monitor.record(
+            QuotaAlert(
+                source="Finnhub",
+                severity=severity,
+                message=message,
+                action=action,
+                occurred_at=datetime.now(UTC),
+            )
+        )

@@ -4,11 +4,14 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, TypeVar
 
 from openai import OpenAI, RateLimitError
 
 from src.application.ports import LLMPort
+from src.application.quota_monitor import QuotaMonitor
+from src.domain.quota import QuotaAlert, QuotaSeverity
 
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_TEMPERATURE = 0.2  # niska temperatura — chcemy deterministycznego Quanta
@@ -53,12 +56,14 @@ class OpenAIAdapter(LLMPort):
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE,
+        quota_monitor: QuotaMonitor | None = None,
     ) -> None:
         self._client = OpenAI(api_key=api_key, timeout=timeout)
         self._model = model
         self._temperature = temperature
         self._max_retries = max_retries
         self._backoff_base = backoff_base
+        self._quota_monitor = quota_monitor
 
     def analyze(self, prompt: str) -> dict[str, Any]:
         response = self._call_with_retry(
@@ -94,13 +99,45 @@ class OpenAIAdapter(LLMPort):
         return content.strip()
 
     def _call_with_retry(self, fn: Callable[[], T]) -> T:
-        """Retry'uje wyłącznie RateLimitError (429). Honoruje retry-after."""
+        """Retry'uje wyłącznie RateLimitError (429). Honoruje retry-after.
+
+        Sygnalizacja kwot:
+        - sukces po >=1 retry → WARNING (na granicy TPM)
+        - wyczerpanie retry → CRITICAL przed propagacją wyjątku
+        """
         attempt = 0
         while True:
             try:
-                return fn()
+                result = fn()
+                if attempt > 0:
+                    # Sukces po retry — daliśmy radę, ale jesteśmy na granicy.
+                    self._emit_quota_alert(
+                        severity=QuotaSeverity.WARNING,
+                        message=(
+                            f"OpenAI {self._model} hit TPM limit "
+                            f"{attempt}× during a single call (retry succeeded)."
+                        ),
+                        action=(
+                            "Consider COUNCIL_LLM_MODEL=gpt-4o-mini for the "
+                            "council (15× higher TPM, ~15× cheaper) or "
+                            "upgrade your OpenAI usage tier."
+                        ),
+                    )
+                return result
             except RateLimitError as exc:
                 if attempt >= self._max_retries:
+                    self._emit_quota_alert(
+                        severity=QuotaSeverity.CRITICAL,
+                        message=(
+                            f"OpenAI {self._model} returned 429 after "
+                            f"{self._max_retries} retries — call failed."
+                        ),
+                        action=(
+                            "Upgrade OpenAI tier or route the advisory "
+                            "council to a higher-TPM model via "
+                            "COUNCIL_LLM_MODEL."
+                        ),
+                    )
                     raise
                 wait = self._compute_wait(exc, attempt)
                 logger.warning(
@@ -126,3 +163,18 @@ class OpenAIAdapter(LLMPort):
                     pass
         # Fallback: backoff wykładniczy 2s, 4s, 8s.
         return float(self._backoff_base * (2**attempt))
+
+    def _emit_quota_alert(
+        self, severity: QuotaSeverity, message: str, action: str
+    ) -> None:
+        if self._quota_monitor is None:
+            return
+        self._quota_monitor.record(
+            QuotaAlert(
+                source=f"OpenAI ({self._model})",
+                severity=severity,
+                message=message,
+                action=action,
+                occurred_at=datetime.now(UTC),
+            )
+        )

@@ -128,3 +128,44 @@ class TestFinnhubLive:
         adapter = FinnhubAdapter(api_key=api_key)
         price = adapter.get_current_price("AAPL")
         assert price.amount > 0
+
+
+class TestQuotaAlertEmit:
+    """429 → QuotaAlert.CRITICAL do monitora."""
+
+    def test_emits_critical_on_429(self, mocker):
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+        from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
+
+        monitor = QuotaMonitor()
+        adapter = FinnhubAdapter(api_key="x", quota_monitor=monitor)
+
+        response = Mock(spec=requests.Response)
+        response.status_code = 429
+        response.raise_for_status.side_effect = requests.HTTPError("429")
+        mocker.patch("requests.Session.get", return_value=response)
+
+        with pytest.raises(requests.HTTPError):
+            adapter.get_current_price("AAPL")
+
+        assert len(monitor.alerts) == 1
+        assert monitor.alerts[0].source == "Finnhub"
+        assert monitor.alerts[0].severity is QuotaSeverity.CRITICAL
+
+    def test_no_alert_on_200(self, mocker):
+        from src.application.quota_monitor import QuotaMonitor
+        from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
+
+        monitor = QuotaMonitor()
+        adapter = FinnhubAdapter(api_key="x", quota_monitor=monitor)
+
+        response = Mock(spec=requests.Response)
+        response.status_code = 200
+        response.json.return_value = {"c": 100.0}
+        response.raise_for_status = Mock()
+        mocker.patch("requests.Session.get", return_value=response)
+
+        adapter.get_current_price("AAPL")
+
+        assert monitor.alerts == []

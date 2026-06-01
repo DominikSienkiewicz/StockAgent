@@ -7,6 +7,7 @@ from typing import Any
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.prediction import Prediction
+from src.domain.quota import QuotaAlert
 from src.domain.value_objects import Fundamentals, Money
 
 
@@ -90,6 +91,21 @@ class RepositoryPort(ABC):
     @abstractmethod
     def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
         """Upsert jednego wiersza per symbol (nadpisuje poprzedni snapshot)."""
+
+    @abstractmethod
+    def save_quota_alert(self, alert: QuotaAlert) -> None:
+        """Persystuje pojedynczy alert wyczerpania limitu / subskrypcji.
+
+        main_agent woła po cyklu dla każdego alertu zebranego przez
+        `QuotaMonitor`. Tabela `quota_alerts` (migracja 010) jest
+        audit trail; banner w mailu używa `get_recent_quota_alerts`.
+        """
+
+    @abstractmethod
+    def get_recent_quota_alerts(self, hours: int) -> list[QuotaAlert]:
+        """Zwraca alerty z ostatnich `hours` godzin, posortowane malejąco
+        po `occurred_at`. Banner w mailu używa tej listy, by pokazać też
+        alerty z poprzednich cykli, których jeszcze nie naprawiono."""
 
     @abstractmethod
     def save_council_votes(

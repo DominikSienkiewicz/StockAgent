@@ -529,3 +529,91 @@ class TestSaveCouncilVotes:
         # Żadne wywołanie .table("council_votes") nie powinno się odbyć
         for call in mock_client.table.call_args_list:
             assert call.args[0] != "council_votes"
+
+
+class TestQuotaAlerts:
+    def test_save_quota_alert_inserts_to_quota_alerts_table(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from src.domain.quota import QuotaAlert, QuotaSeverity
+
+        alert = QuotaAlert(
+            source="Alpha Vantage",
+            severity=QuotaSeverity.CRITICAL,
+            message="All 5 keys exhausted",
+            action="Add new key in .env",
+            occurred_at=datetime(2026, 6, 1, 14, 32, tzinfo=UTC),
+        )
+
+        repo.save_quota_alert(alert)
+
+        mock_client.table.assert_any_call("quota_alerts")
+        inserted = mock_client.table.return_value.insert.call_args.args[0]
+        assert inserted["source"] == "Alpha Vantage"
+        assert inserted["severity"] == "CRITICAL"
+        assert inserted["message"] == "All 5 keys exhausted"
+        assert inserted["action"] == "Add new key in .env"
+        assert inserted["occurred_at"].startswith("2026-06-01")
+
+    def test_get_recent_quota_alerts_parses_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.quota import QuotaSeverity
+
+        mock_response = MagicMock()
+        mock_response.data = [
+            {
+                "source": "OpenAI",
+                "severity": "WARNING",
+                "message": "TPM hit",
+                "action": "tier-up",
+                "occurred_at": "2026-06-01T14:30:00+00:00",
+            },
+            {
+                "source": "Alpha Vantage",
+                "severity": "CRITICAL",
+                "message": "exhausted",
+                "action": "add key",
+                "occurred_at": "2026-06-01T13:00:00+00:00",
+            },
+        ]
+        # Łańcuch: table().select().gte().order().execute()
+        chain = mock_client.table.return_value
+        chain.select.return_value.gte.return_value.order.return_value.execute.return_value = (
+            mock_response
+        )
+
+        alerts = repo.get_recent_quota_alerts(hours=24)
+
+        assert len(alerts) == 2
+        assert alerts[0].source == "OpenAI"
+        assert alerts[0].severity is QuotaSeverity.WARNING
+        assert alerts[1].source == "Alpha Vantage"
+        assert alerts[1].severity is QuotaSeverity.CRITICAL
+
+    def test_get_recent_quota_alerts_skips_malformed_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        mock_response = MagicMock()
+        mock_response.data = [
+            {"severity": "WARNING", "occurred_at": "2026-06-01T14:30:00+00:00"},
+            # nieznane severity
+            {
+                "source": "X",
+                "severity": "UNKNOWN_LEVEL",
+                "occurred_at": "2026-06-01T13:00:00+00:00",
+            },
+            # bez occurred_at
+            {"source": "X", "severity": "WARNING"},
+        ]
+        chain = mock_client.table.return_value
+        chain.select.return_value.gte.return_value.order.return_value.execute.return_value = (
+            mock_response
+        )
+
+        # Tylko pierwszy ma wszystkie wymagane pola.
+        alerts = repo.get_recent_quota_alerts(hours=24)
+
+        assert len(alerts) == 1
