@@ -49,9 +49,11 @@ from src.infrastructure.adapters.cached_fundamentals import (
     CachedFundamentalsAdapter,
     NullFundamentalsAdapter,
 )
+from src.infrastructure.adapters.coingecko import CoinGeckoAdapter
 from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
 from src.infrastructure.adapters.nbp_client import NbpClient
 from src.infrastructure.adapters.resend_notifier import NullNotifier, ResendNotifier
+from src.infrastructure.adapters.routing_market_data import RoutingMarketDataPort
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 
@@ -202,10 +204,17 @@ def build_use_case(
     settings: Settings,
     repository: RepositoryPort | None = None,
 ) -> AnalyzeMarketUseCase:
-    """DI Container — buduje wszystkie adaptery i wstrzykuje do Use Case'a."""
+    """DI Container — buduje wszystkie adaptery i wstrzykuje do Use Case'a.
+
+    SYMBOLS przekazujemy do AlphaVantageClient jako sumę akcji + krypto,
+    z osobną listą crypto_symbols → adapter wewnętrznie prefiksuje BTC →
+    CRYPTO:BTC w requestach NEWS_SENTIMENT.
+    """
+    all_av_symbols = list(settings.symbols) + list(settings.crypto_symbols)
     av_client = AlphaVantageClient(
         api_keys=settings.alpha_vantage_api_keys,
-        symbols=settings.symbols,
+        symbols=all_av_symbols,
+        crypto_symbols=settings.crypto_symbols,
     )
     llm_port = build_llm_adapter(settings)
     council_llm_port = build_council_llm_adapter(settings, llm_port)
@@ -215,8 +224,27 @@ def build_use_case(
         repo=supabase_repo,
         delegate=NullFundamentalsAdapter(),
     )
+    # Routing: krypto → CoinGecko, reszta → Finnhub. Use case widzi jeden port.
+    market_port = RoutingMarketDataPort(
+        equity=FinnhubAdapter(api_key=settings.finnhub_api_key),
+        crypto=CoinGeckoAdapter(),
+        crypto_symbols=settings.crypto_symbols,
+    )
+    crypto_threshold = (
+        Threshold(settings.crypto_volatility_threshold)
+        if settings.crypto_symbols
+        else None
+    )
+    # Próg rady dla krypto — używamy tego samego co głównego (5%), bo i tak
+    # bramka volatility już odsiała pierwszy poziom; council ma jedynie
+    # drugie sito kosztowe i nie ma sensu robić go ostrzejszego.
+    crypto_council_threshold = (
+        Threshold(settings.crypto_volatility_threshold)
+        if settings.crypto_symbols
+        else None
+    )
     return AnalyzeMarketUseCase(
-        market_port=FinnhubAdapter(api_key=settings.finnhub_api_key),
+        market_port=market_port,
         sentiment_port=AlphaVantageSentimentAdapter(av_client),
         news_port=AlphaVantageNewsAdapter(av_client),
         repository_port=supabase_repo,
@@ -232,6 +260,8 @@ def build_use_case(
             else None
         ),
         fundamentals_port=fundamentals_port,
+        crypto_threshold=crypto_threshold,
+        crypto_council_threshold=crypto_council_threshold,
     )
 
 
@@ -247,15 +277,24 @@ def main(settings: Settings | None = None) -> int:
 
     started_at = datetime.now(UTC)
     started_perf = time.perf_counter()
-    logger.info("Fast Loop start — symbols=%s", settings.symbols)
+    logger.info(
+        "Fast Loop start — symbols=%s crypto=%s",
+        settings.symbols,
+        settings.crypto_symbols,
+    )
 
     results = []
     failures = 0
     unsupported = set(settings.symbols_unsupported_price)
+    crypto_set = set(settings.crypto_symbols)
+    etf_set = set(settings.symbols_etf)
+    # Krypto dochodzi do puli iterowanych symboli — ma własny adapter ceny
+    # (CoinGecko) i własny próg volatility (5%).
+    all_symbols = list(settings.symbols) + list(settings.crypto_symbols)
     # Eligible — symbole, dla których pójdzie pełna analiza. Unsupported tickery
     # są oznaczone "ignored" przed pętlą, więc throttle policzy je poprawnie.
-    eligible = [s for s in settings.symbols if s not in unsupported]
-    for skipped in (s for s in settings.symbols if s in unsupported):
+    eligible = [s for s in all_symbols if s not in unsupported]
+    for skipped in (s for s in all_symbols if s in unsupported):
         logger.info(
             "%s: skipped — in SYMBOLS_UNSUPPORTED_PRICE (Finnhub free / EU-listed)",
             skipped,
@@ -264,10 +303,14 @@ def main(settings: Settings | None = None) -> int:
 
     for index, symbol in enumerate(eligible):
         try:
-            # Klasyfikacja STOCK/ETF — ETF-y pomijają fundamentale (brak EPS/P/E).
-            asset_type = (
-                AssetType.ETF if symbol in settings.symbols_etf else AssetType.STOCK
-            )
+            # Klasyfikacja STOCK/ETF/CRYPTO — każdy typ ma własne reguły
+            # (pomijanie fundamentali dla ETF/CRYPTO, osobne progi dla CRYPTO).
+            if symbol in crypto_set:
+                asset_type = AssetType.CRYPTO
+            elif symbol in etf_set:
+                asset_type = AssetType.ETF
+            else:
+                asset_type = AssetType.STOCK
             asset = Asset(symbol=symbol, asset_type=asset_type)
             raw = use_case.run(symbol, asset=asset)
             logger.info(
@@ -344,7 +387,7 @@ def main(settings: Settings | None = None) -> int:
     # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).
     # Pojedyncze błędy per-symbol (np. ticker niewspierany przez Finnhub free)
     # są raportowane w mailu i nie powinny psuć całego cyklu w GHA.
-    total = len(settings.symbols)
+    total = len(eligible)
     if total > 0 and failures == total:
         return 1
     return 0

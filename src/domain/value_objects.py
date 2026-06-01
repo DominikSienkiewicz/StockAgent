@@ -17,6 +17,9 @@ class Threshold:
 class AssetType(Enum):
     STOCK = "STOCK"
     ETF = "ETF"
+    # Krypto: 24/7 market, brak EPS/P/E. Wycena fundamentalna nie ma sensu —
+    # `Asset.evaluate_valuation` zwraca UNKNOWN tak samo jak dla ETF.
+    CRYPTO = "CRYPTO"
     OTHER = "OTHER"
 
 

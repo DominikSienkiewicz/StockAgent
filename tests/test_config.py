@@ -188,3 +188,31 @@ class TestResilienceSettings:
         env.setenv("SYMBOL_THROTTLE_SECONDS", "-1")
         with pytest.raises(ValueError, match="symbol_throttle_seconds"):
             Settings(_env_file=None)
+
+
+class TestCryptoSettings:
+    def test_crypto_symbols_defaults_empty(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        settings = Settings(_env_file=None)
+        assert settings.crypto_symbols == []
+
+    def test_crypto_symbols_parses_csv(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("CRYPTO_SYMBOLS", "BTC, ETH ,SOL")
+        settings = Settings(_env_file=None)
+        assert settings.crypto_symbols == ["BTC", "ETH", "SOL"]
+
+    def test_crypto_volatility_threshold_defaults_to_five_percent(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        settings = Settings(_env_file=None)
+        assert settings.crypto_volatility_threshold == Decimal("0.05")
+
+    def test_crypto_volatility_threshold_reads_env(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("CRYPTO_VOLATILITY_THRESHOLD", "0.08")
+        settings = Settings(_env_file=None)
+        assert settings.crypto_volatility_threshold == Decimal("0.08")

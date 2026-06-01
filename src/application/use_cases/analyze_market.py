@@ -41,6 +41,8 @@ class AnalyzeMarketUseCase:
         council_port: AdvisoryCouncilPort | None = None,
         council_threshold: Threshold | None = None,
         fundamentals_port: FundamentalsPort | None = None,
+        crypto_threshold: Threshold | None = None,
+        crypto_council_threshold: Threshold | None = None,
     ) -> None:
         self._repository = repository_port
         self._workflow = create_agent_graph(
@@ -55,6 +57,8 @@ class AnalyzeMarketUseCase:
             council_port=council_port,
             council_threshold=council_threshold,
             fundamentals_port=fundamentals_port,
+            crypto_threshold=crypto_threshold,
+            crypto_council_threshold=crypto_council_threshold,
         )
 
     def run(self, symbol: str, asset: Asset | None = None) -> dict[str, Any]:

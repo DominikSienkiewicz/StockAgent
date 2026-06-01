@@ -69,6 +69,17 @@ class Settings(BaseSettings):
     # Symbole klasyfikowane jako ETF — pomijają fundamentale (brak EPS/P/E).
     symbols_etf: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
+    # ----- Krypto -----
+    # Tickery klasyfikowane jako AssetType.CRYPTO. Routing: CoinGecko zamiast
+    # Finnhuba dla ceny, AV NEWS_SENTIMENT z prefiksem CRYPTO:. Krypto nie
+    # ma EPS/P/E, więc fundamentale pomijane jak dla ETF.
+    crypto_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # Osobny, wyższy próg volatility — natywna zmienność BTC/ETH to 3-5%
+    # dziennie, więc 2% (akcyjny) odpalałby pełną analizę KAŻDEGO cyklu.
+    # 5% sprawia, że pełen pipeline (LLM + council) idzie tylko gdy ruch
+    # jest faktycznie sygnałem, nie szumem.
+    crypto_volatility_threshold: Decimal = Field(default=Decimal("0.05"))
+
     # ----- Risk Watch -----
     # Lista instrumentów proxy ryzyka makro (inverse ETFs, gold, VIX, EPOL).
     # Monitorowane przez osobny use case (MonitorMacroRisk), nie wchodzą do
@@ -132,6 +143,13 @@ class Settings(BaseSettings):
     def _parse_symbols_unsupported_price(
         cls, value: str | list[str]
     ) -> list[str]:
+        if isinstance(value, str):
+            return [s.strip() for s in value.split(",") if s.strip()]
+        return value
+
+    @field_validator("crypto_symbols", mode="before")
+    @classmethod
+    def _parse_crypto_symbols(cls, value: str | list[str]) -> list[str]:
         if isinstance(value, str):
             return [s.strip() for s in value.split(",") if s.strip()]
         return value

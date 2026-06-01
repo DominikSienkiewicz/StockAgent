@@ -459,3 +459,98 @@ class TestErrorHandling:
 
         with pytest.raises(requests.HTTPError):
             client.articles_for("AAPL")
+
+
+class TestCryptoPrefix:
+    """AV NEWS_SENTIMENT przyjmuje krypto tickery z prefiksem CRYPTO:
+    (e.g. CRYPTO:BTC, CRYPTO:ETH). Klient mapuje wewnętrznie — caller
+    używa czystych BTC/ETH, request idzie z prefiksem, parsowanie też.
+    """
+
+    def _ok_with_crypto_feed(self, btc_relevance: float = 0.9,
+                             btc_sentiment: float = 0.3) -> MagicMock:
+        response = MagicMock(spec=requests.Response)
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "feed": [
+                {
+                    "title": "BTC headline",
+                    "url": "https://x.com/btc",
+                    "source": "x.com",
+                    "time_published": "20260601T100000",
+                    "summary": "summary",
+                    "ticker_sentiment": [
+                        {
+                            "ticker": "CRYPTO:BTC",
+                            "relevance_score": str(btc_relevance),
+                            "ticker_sentiment_score": str(btc_sentiment),
+                        },
+                    ],
+                }
+            ]
+        }
+        return response
+
+    def test_request_sends_crypto_prefix(self, mocker):
+        mock_get = mocker.patch(
+            "requests.Session.get",
+            return_value=self._ok_with_crypto_feed(),
+        )
+        client = AlphaVantageClient(
+            api_keys=["k"], symbols=["BTC"], crypto_symbols={"BTC"}
+        )
+
+        client.articles_for("BTC")
+
+        # tickers w params powinno być CRYPTO:BTC, nie BTC
+        call_params = mock_get.call_args.kwargs["params"]
+        assert call_params["tickers"] == "CRYPTO:BTC"
+
+    def test_articles_for_plain_ticker_returns_crypto_articles(self, mocker):
+        mocker.patch(
+            "requests.Session.get",
+            return_value=self._ok_with_crypto_feed(),
+        )
+        client = AlphaVantageClient(
+            api_keys=["k"], symbols=["BTC"], crypto_symbols={"BTC"}
+        )
+
+        articles = client.articles_for("BTC")
+
+        assert len(articles) == 1
+        assert articles[0]["title"] == "BTC headline"
+
+    def test_sentiment_for_plain_crypto_ticker(self, mocker):
+        mocker.patch(
+            "requests.Session.get",
+            return_value=self._ok_with_crypto_feed(
+                btc_relevance=0.9, btc_sentiment=0.4
+            ),
+        )
+        client = AlphaVantageClient(
+            api_keys=["k"], symbols=["BTC"], crypto_symbols={"BTC"}
+        )
+
+        sentiment = client.sentiment_for("BTC")
+
+        assert sentiment["news_volume_24h"] == 1
+        assert sentiment["av_sentiment_score"] == pytest.approx(0.4)
+
+    def test_equity_tickers_unaffected_by_crypto_set(self, mocker):
+        mock_get = mocker.patch(
+            "requests.Session.get",
+            return_value=self._ok_with_crypto_feed(),
+        )
+        client = AlphaVantageClient(
+            api_keys=["k"],
+            symbols=["BTC", "AAPL"],
+            crypto_symbols={"BTC"},
+        )
+
+        client.articles_for("BTC")
+
+        # AAPL pozostaje czysty, BTC dostał prefix.
+        sent_tickers = set(
+            t for t in mock_get.call_args_list[0].kwargs["params"]["tickers"].split(",")
+        )
+        assert "CRYPTO:BTC" in sent_tickers or sent_tickers == {"CRYPTO:BTC"}

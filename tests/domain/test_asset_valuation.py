@@ -28,6 +28,12 @@ def test_etf_returns_unknown() -> None:
     assert asset.evaluate_valuation(_f()) is ValuationVerdict.UNKNOWN
 
 
+def test_crypto_returns_unknown() -> None:
+    # Krypto nie ma EPS/P/E — wycena fundamentalna nie ma sensu, jak dla ETF.
+    asset = Asset(symbol="BTC", asset_type=AssetType.CRYPTO)
+    assert asset.evaluate_valuation(_f()) is ValuationVerdict.UNKNOWN
+
+
 def test_none_fundamentals_returns_unknown() -> None:
     asset = Asset(symbol="AAPL")
     assert asset.evaluate_valuation(None) is ValuationVerdict.UNKNOWN

@@ -149,6 +149,8 @@ def create_agent_graph(
     council_port: AdvisoryCouncilPort | None = None,
     council_threshold: Threshold | None = None,
     fundamentals_port: FundamentalsPort | None = None,
+    crypto_threshold: Threshold | None = None,
+    crypto_council_threshold: Threshold | None = None,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
@@ -180,10 +182,27 @@ def create_agent_graph(
             "delta": delta.percentage,
         }
 
+    def _pick_threshold(
+        state: AgentState,
+        default: Threshold,
+        crypto_override: Threshold | None,
+    ) -> Threshold:
+        """Wybiera próg per asset_type. CRYPTO ma osobną zmienność (3-5%
+        dziennie natywnie), więc bramka 2% dla akcji byłaby bezsensowna."""
+        asset = state.get("asset")
+        if (
+            asset is not None
+            and asset.asset_type is AssetType.CRYPTO
+            and crypto_override is not None
+        ):
+            return crypto_override
+        return default
+
     def should_analyze(state: AgentState) -> str:
-        asset = Asset(symbol=state["symbol"])
+        asset = state.get("asset") or Asset(symbol=state["symbol"])
         delta = PriceDelta(state["delta"])
-        if asset.evaluate_volatility(delta, threshold):
+        chosen = _pick_threshold(state, threshold, crypto_threshold)
+        if asset.evaluate_volatility(delta, chosen):
             return "analyze_sentiment"
         return "ignore"
 
@@ -321,14 +340,17 @@ def create_agent_graph(
         # przepuściła (predict_node odpalił) — tu odsiewamy dodatkowo średnie
         # zmienności, dla których 15 wywołań LLM rady się ekonomicznie nie opłaca.
         if council_threshold is not None:
-            asset = Asset(symbol=state["symbol"])
+            asset = state.get("asset") or Asset(symbol=state["symbol"])
             delta = PriceDelta(state["delta"])
-            if not asset.evaluate_volatility(delta, council_threshold):
+            chosen = _pick_threshold(
+                state, council_threshold, crypto_council_threshold
+            )
+            if not asset.evaluate_volatility(delta, chosen):
                 logger.info(
-                    "council_node skipped for %s — |Δ|=%.4f < council_threshold=%.4f",
+                    "council_node skipped for %s — |Δ|=%.4f < threshold=%.4f",
                     state["symbol"],
                     abs(float(state["delta"])),
-                    float(council_threshold.value),
+                    float(chosen.value),
                 )
                 return {"council_verdict": None}
         sentiment = state.get("sentiment") or {}

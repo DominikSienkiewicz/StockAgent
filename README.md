@@ -62,6 +62,7 @@ All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff,
 | **QuickChart.io** | URL-based, GET request | Zero setup, no dependency, works in every mail client. |
 | **Resend.com** | Sandbox sender `onboarding@resend.dev` | Free tier 100 mails/day. No domain verification required — just a verified recipient. |
 | **NBP** (`/exchangerates/rates/A`) | 30-day window for EUR & USD vs PLN | Free, no API key, no rate limit. Used by `NbpClient` (implements `MacroIndicatorsPort`) to compute 30-day FX-stress for the Risk Watch section. |
+| **CoinGecko** (`/simple/price`) | One request per cycle for the configured crypto basket | Free, no API key, no meaningful rate limit. Used by `CoinGeckoAdapter` (implements `MarketDataPort`) for crypto prices. Maps clean tickers (`BTC`, `ETH`) to CoinGecko coin ids (`bitcoin`, `ethereum`). |
 
 ## Symbols (default portfolio of 35)
 
@@ -75,6 +76,18 @@ VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE
 Sector mix: 🤖 AI / semis (NVDA, AMD, TSM, ASML, ASMIY, MU, QCOM, INTC, SNDK) · ☁️ cloud / software (MSFT, ORCL, NET, SAP, PLTR, CRWD, IBM) · 📱 big tech (AAPL, AMZN, GOOGL, META) · 🖥️ hardware (DELL, SSNLF) · 🚗 mobility (TSLA, UBER) · 🏭 industrial / pharma (SIEGY, NVO) · 💰 financials (BLK) · 📊 ETFs (VT, QUAL, IHI, VB, EWY, IVV, XDWD.DE, IUSN.DE).
 
 Configurable via `SYMBOLS` in `.env` (CSV).
+
+## Crypto basket (separate price source, separate threshold)
+
+Crypto tickers live in their **own pool** — `CRYPTO_SYMBOLS=BTC,ETH` — and are routed to a different price adapter (`CoinGeckoAdapter`, not Finnhub). The graph itself doesn't know — `RoutingMarketDataPort` picks the right adapter per symbol behind the `MarketDataPort` interface.
+
+Why a separate pool:
+
+- **Different volatility profile** — BTC natively moves 3–5% per day. The equity threshold (2%) would make every crypto cycle pass the volatility gate, burning 16 LLM calls (15-persona council + chairman) on routine noise. `CRYPTO_VOLATILITY_THRESHOLD=0.05` (5%) keeps the gate meaningful: full pipeline only runs when the move is actually a signal.
+- **Different ticker format on the news side** — Alpha Vantage `NEWS_SENTIMENT` requires the `CRYPTO:` prefix (`CRYPTO:BTC`, `CRYPTO:ETH`). `AlphaVantageClient` translates `BTC ↔ CRYPTO:BTC` internally so the rest of the system stays clean.
+- **No fundamentals** — same model as ETFs: `AssetType.CRYPTO` ⇒ `evaluate_valuation` short-circuits to `ValuationVerdict.UNKNOWN`, no AlphaVantage `OVERVIEW` / `EARNINGS` requests wasted.
+
+Everything else (predict, news, sentiment, advisory council, prediction logs, self-reflection) works identically to equities — crypto goes through the same `AnalyzeMarketUseCase`.
 
 ## Risk Watch (separate macro pass)
 
@@ -235,6 +248,10 @@ RISK_SYMBOLS=EPOL,SH,PSQ,RWM,EUM,SQQQ,TBT,GLD,VIXY,UVXY
 RISK_SYMBOL_TYPES=EPOL:SOVEREIGN_PROXY,SH:INVERSE_EQUITY,PSQ:INVERSE_EQUITY,RWM:INVERSE_EQUITY,EUM:INVERSE_EQUITY,SQQQ:INVERSE_EQUITY,TBT:INVERSE_TREASURY,GLD:SAFE_HAVEN,VIXY:VOLATILITY,UVXY:VOLATILITY
 NBP_ENABLED=true                                      # pulls EUR/PLN, USD/PLN 30-day window from api.nbp.pl
 
+# Crypto (separate price source: CoinGecko, separate threshold)
+CRYPTO_SYMBOLS=BTC,ETH                                 # routed to CoinGeckoAdapter, news prefixed CRYPTO:
+CRYPTO_VOLATILITY_THRESHOLD=0.05                       # 5% gate — crypto natively moves 3-5%/day
+
 # Resilience / rate-limit
 COUNCIL_LLM_MODEL=gpt-4o-mini                          # cheaper model for the 15-persona council (frees gpt-4o TPM)
 SYMBOLS_UNSUPPORTED_PRICE=CSPX.L,XDWD.DE,IUSN.DE       # tickers the price adapter cannot fetch (Finnhub free 403) — marked "ignored"
@@ -291,6 +308,8 @@ All tunable parameters live in [`src/config.py`](src/config.py) as a `Settings` 
 | `risk_symbols` | `[]` | CSV of Risk Watch tickers (inverse / safe-haven / VIX / sovereign-proxy). When empty, the Risk Watch use case is not built. |
 | `risk_symbol_types` | `{}` | `SYM:TYPE,SYM:TYPE,...` mapping each `risk_symbols` entry to a `MacroRiskInstrumentType` (`INVERSE_EQUITY` / `INVERSE_TREASURY` / `SAFE_HAVEN` / `VOLATILITY` / `SOVEREIGN_PROXY`). |
 | `nbp_enabled` | `false` | When `true`, wires `NbpClient` (`MacroIndicatorsPort`) into Risk Watch — adds the EUR/PLN, USD/PLN 30-day stress block to the e-mail. |
+| `crypto_symbols` | `[]` | CSV of crypto tickers (clean form: `BTC,ETH`). Routed via `RoutingMarketDataPort` to `CoinGeckoAdapter`. News goes through Alpha Vantage with the `CRYPTO:` prefix added by `AlphaVantageClient`. Fundamentals always skipped (no per-coin EPS/P/E). |
+| `crypto_volatility_threshold` | `0.05` | Separate volatility gate for `AssetType.CRYPTO` — equity threshold (2%) would treat BTC's natural 3-5% daily move as a signal every cycle. 5% keeps the LLM/council budget under control. |
 | `symbols_unsupported_price` | `[]` | CSV of tickers the current price adapter cannot fetch (Finnhub free → 403 on EU-listed `.DE` / `.L`). Pre-filtered in `main_agent.main()` — they show up as **ignored**, not **errors**, so the report's error count reflects actual issues. |
 | `symbol_throttle_seconds` | `0.0` | Sleep between symbols in the main loop. Set `> 0` to spread LLM calls across the OpenAI **TPM window** (gpt-4o tier 1 = 30k tokens / min) — at 30+ symbols with the 15-persona council, bursting hits 429s. Recommended: `2.0`. |
 | `council_llm_provider` / `council_llm_model` | `None` | Route the advisory council to a cheaper / faster LLM. With 15 personas × N symbols the council dominates token use — pinning it to `gpt-4o-mini` (200k TPM, ~15× cheaper) frees gpt-4o quota for the main analysis. Recommended for portfolios > 25 symbols. |

@@ -54,6 +54,7 @@ class AlphaVantageClient:
         relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
         limit: int = DEFAULT_LIMIT,
         batch_size: int = DEFAULT_BATCH_SIZE,
+        crypto_symbols: Iterable[str] | None = None,
     ) -> None:
         # Akceptujemy pojedynczy klucz (str) lub listę — rotacja przy rate-limit.
         if isinstance(api_keys, str):
@@ -62,7 +63,13 @@ class AlphaVantageClient:
             self._api_keys = list(api_keys)
         if not self._api_keys:
             raise ValueError("AlphaVantageClient requires at least one API key.")
-        self._symbols = self._filter_supported(list(symbols))
+        # Krypto: AV oczekuje prefiksu `CRYPTO:` w `tickers`. Trzymamy mapowanie
+        # plain → wire (BTC → CRYPTO:BTC) i zamieniamy zarówno w requestach
+        # jak i przy lookupie ticker_sentiment.
+        self._crypto_symbols: set[str] = set(crypto_symbols or ())
+        self._symbols = [
+            self._to_wire(s) for s in self._filter_supported(list(symbols))
+        ]
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._threshold = relevance_threshold
@@ -198,12 +205,24 @@ class AlphaVantageClient:
     # Public API
     # -----------------------------------------------------------------------
 
+    def _to_wire(self, symbol: str) -> str:
+        """Plain ticker (BTC) → wire format wymagany przez AV (CRYPTO:BTC).
+
+        Dla zwykłych akcji zwraca ticker bez zmian. Mapowanie idzie tylko
+        w jedną stronę — odwrotne przejście robi się przez `self._crypto_symbols`
+        przy parsowaniu ticker_sentiment.
+        """
+        if symbol in self._crypto_symbols:
+            return f"CRYPTO:{symbol}"
+        return symbol
+
     def articles_for(self, symbol: str) -> list[dict[str, Any]]:
         """Zwraca artykuły gdzie `symbol` ma relevance ≥ threshold,
         wzbogacone o per-ticker fields (sentyment, relevance)."""
+        wire_symbol = self._to_wire(symbol)
         out: list[dict[str, Any]] = []
         for item in self._fetch():
-            ticker_data = self._ticker_block(item, symbol)
+            ticker_data = self._ticker_block(item, wire_symbol)
             if ticker_data is None:
                 continue
             if ticker_data["relevance"] < self._threshold:
