@@ -8,6 +8,7 @@ from src.application.ports import (
     AdvisoryCouncilPort,
     FundamentalsPort,
     LLMPort,
+    MacroIndicatorsPort,
     MarketDataPort,
     MLPredictionPort,
     NewsPort,
@@ -23,6 +24,7 @@ ALL_PORTS = [
     RepositoryPort,
     MLPredictionPort,
     LLMPort,
+    MacroIndicatorsPort,
 ]
 
 

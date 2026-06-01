@@ -12,7 +12,10 @@ from src.config import Settings
 
 @pytest.fixture
 def settings() -> Settings:
+    # _env_file=None odcina pydantic-settings od loadowania .env (developerzy
+    # mają w nim klucze, risk_symbols itp. — testy muszą być deterministyczne).
     return Settings(
+        _env_file=None,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1", "av2"],
@@ -189,6 +192,63 @@ class TestMainAgent:
         exit_code = main_agent.main(settings)
         assert exit_code == 1
 
+    def test_main_throttles_between_symbols(
+        self, settings, mock_external_clients, mocker
+    ):
+        """SYMBOL_THROTTLE_SECONDS > 0 → sleep między symbolami."""
+        s = settings.model_copy(update={"symbol_throttle_seconds": 0.05})
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mock_sleep = mocker.patch("main_agent.time.sleep")
+
+        main_agent.main(s)
+
+        # Throttle między symbolami (NIE po ostatnim) → n-1 wywołań sleep.
+        expected_sleeps = len(s.symbols) - 1
+        sleep_calls = [
+            c for c in mock_sleep.call_args_list
+            if c.args and c.args[0] == 0.05
+        ]
+        assert len(sleep_calls) == expected_sleeps
+
+    def test_main_no_throttle_when_zero(
+        self, settings, mock_external_clients, mocker
+    ):
+        """SYMBOL_THROTTLE_SECONDS=0 → brak sleepa (default)."""
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mock_sleep = mocker.patch("main_agent.time.sleep")
+
+        main_agent.main(settings)
+
+        sleep_with_zero = [
+            c for c in mock_sleep.call_args_list
+            if c.args and c.args[0] > 0
+        ]
+        assert sleep_with_zero == []
+
+    def test_main_skips_unsupported_symbols_as_ignored(
+        self, settings, mock_external_clients, mocker
+    ):
+        """Tickery z SYMBOLS_UNSUPPORTED_PRICE nie wchodzą w use_case.run()."""
+        s = settings.model_copy(update={
+            "symbols": ["AAPL", "CSPX.L", "XDWD.DE"],
+            "symbols_unsupported_price": ["CSPX.L", "XDWD.DE"],
+        })
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+
+        exit_code = main_agent.main(s)
+
+        # Tylko AAPL dostała się do use_case.
+        assert exit_code == 0
+        assert fake_uc.run.call_count == 1
+        called_symbol = fake_uc.run.call_args_list[0].args[0]
+        assert called_symbol == "AAPL"
+
 
 class TestMainTrainer:
     def test_build_use_case_wires_supabase_and_xgboost(self, settings, mock_external_clients):
@@ -230,3 +290,55 @@ class TestMainTrainer:
 
         assert exit_code == 1
         fake_uc.run.assert_not_called()
+
+
+class TestBuildMacroRiskUseCase:
+    """Factory MonitorMacroRisk — DI Risk Watch w main_agent.py."""
+
+    def _settings(self, **overrides) -> Settings:
+        from src.domain.macro_risk import MacroRiskInstrumentType
+
+        base = dict(
+            openai_api_key="sk-test",
+            finnhub_api_key="fh",
+            alpha_vantage_api_keys=["av1"],
+            supabase_url="https://test.supabase.co",
+            supabase_key="anon",
+            symbols=["AAPL"],
+            volatility_threshold=Decimal("0.02"),
+            ml_model_path="data/models/missing.ubj",
+            risk_symbols=["SH", "GLD"],
+            risk_symbol_types={
+                "SH": MacroRiskInstrumentType.INVERSE_EQUITY,
+                "GLD": MacroRiskInstrumentType.SAFE_HAVEN,
+            },
+            nbp_enabled=False,
+        )
+        base.update(overrides)
+        return Settings(**base)
+
+    def test_returns_none_when_no_risk_symbols(self):
+        s = self._settings(risk_symbols=[])
+        repo = MagicMock()
+        assert main_agent.build_macro_risk_use_case(s, repo) is None
+
+    def test_returns_none_when_no_symbol_types(self):
+        s = self._settings(risk_symbol_types={})
+        repo = MagicMock()
+        assert main_agent.build_macro_risk_use_case(s, repo) is None
+
+    def test_returns_use_case_without_macro_port_when_nbp_disabled(self):
+        s = self._settings(nbp_enabled=False)
+        repo = MagicMock()
+        uc = main_agent.build_macro_risk_use_case(s, repo)
+        assert uc is not None
+        assert uc._macro is None  # type: ignore[attr-defined]
+
+    def test_returns_use_case_with_nbp_client_when_enabled(self):
+        from src.infrastructure.adapters.nbp_client import NbpClient
+
+        s = self._settings(nbp_enabled=True)
+        repo = MagicMock()
+        uc = main_agent.build_macro_risk_use_case(s, repo)
+        assert uc is not None
+        assert isinstance(uc._macro, NbpClient)  # type: ignore[attr-defined]

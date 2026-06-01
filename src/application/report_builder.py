@@ -45,6 +45,10 @@ from src.application.report_models import (
     TradeSignal,
     ValuationSection,
 )
+from src.application.report_risk_watch import (
+    render_risk_watch_html,
+    render_risk_watch_text,
+)
 from src.application.report_signals import (
     build_portfolio_mood,
     build_trade_signals,
@@ -53,6 +57,7 @@ from src.application.report_signals import (
     parse_resolved_predictions,
 )
 from src.application.report_templates import render_template
+from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.council import CouncilVerdict
 from src.domain.value_objects import ValuationVerdict
 
@@ -268,6 +273,7 @@ def build_html_report(
     duration_seconds: float,
     accuracy_stats: dict[str, Any] | None = None,
     resolved_predictions: list[ResolvedPrediction] | None = None,
+    macro_risk_report: MacroRiskReport | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
@@ -275,6 +281,8 @@ def build_html_report(
         accuracy_stats: wynik `RepositoryPort.get_accuracy_stats(days)`.
         resolved_predictions: zamknięte predykcje z ostatnich N godzin
             (do sekcji day-over-day).
+        macro_risk_report: wynik `MonitorMacroRiskUseCase.run(...)` — gdy
+            podany, w raporcie pojawia się sekcja 🚨 Risk Watch.
     """
     saved = [r for r in results if r.status == "saved"]
     ignored = [r for r in results if r.status == "ignored"]
@@ -283,17 +291,31 @@ def build_html_report(
     session = market_status(started_at)
     trade_signals = build_trade_signals(results)
     risk_signals = detect_risk_signals(results)
+    macro_risk_html = (
+        render_risk_watch_html(macro_risk_report) if macro_risk_report else ""
+    )
+    macro_risk_text = (
+        render_risk_watch_text(macro_risk_report) if macro_risk_report else ""
+    )
 
     html = _render_html(
         results, saved, ignored, errors, started_at, duration_seconds,
         mood, session, accuracy_stats, trade_signals, risk_signals,
         resolved_predictions or [],
     )
+    if macro_risk_html:
+        html = html.replace(
+            "<!-- RISK_WATCH_SLOT -->", macro_risk_html, 1
+        )
     text = _render_plain(
         results, saved, ignored, errors, started_at, duration_seconds,
         mood, session, accuracy_stats, trade_signals, risk_signals,
         resolved_predictions or [],
     )
+    if macro_risk_text:
+        text = text.replace(
+            "<!-- RISK_WATCH_SLOT -->", macro_risk_text, 1
+        )
     return html, text
 
 
@@ -355,6 +377,10 @@ def _render_html(
         </div>
       </div>
     """)
+
+    # Slot na sekcję Risk Watch — wypełniany przez build_html_report,
+    # gdy wywołujący przekaże MacroRiskReport. Bez slotu sekcja jest pomijana.
+    sections.append("<!-- RISK_WATCH_SLOT -->")
 
     # 🎯 Trade ideas (najsilniejsze sygnały transakcyjne)
     if trade_signals:
@@ -728,6 +754,9 @@ def _render_plain(
         f"(predykcji={len(saved)}, pominiętych={len(ignored)}, błędów={len(errors)})"
     )
     lines.append("")
+
+    # Slot na sekcję Risk Watch w wariancie plain text — analogicznie do HTML.
+    lines.append("<!-- RISK_WATCH_SLOT -->")
 
     # Trade ideas
     if trade_signals:

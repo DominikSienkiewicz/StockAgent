@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import logging
+import time
+from collections.abc import Callable
+from typing import Any, TypeVar
 
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 
 from src.application.ports import LLMPort
 
@@ -13,6 +16,16 @@ DEFAULT_TEMPERATURE = 0.2  # niska temperatura — chcemy deterministycznego Qua
 # zawieszone wywołanie LLM mogłoby zjeść cały cykl. 30s starcza dla normalnego
 # GPT-4o response (typowo 3-8s) i nie maskuje legitnych długich generacji.
 DEFAULT_TIMEOUT = 30.0
+
+# Retry-on-429 — TPM limit (tokens per minute) potrafi się odbić nagle przy
+# 30+ symbolach z radą doradczą. Backoff: 2s, 4s, 8s (chyba że SDK zwróci
+# nagłówek `retry-after` → wtedy honorujemy go).
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BACKOFF_BASE = 2.0
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 class OpenAIAdapter(LLMPort):
@@ -27,6 +40,9 @@ class OpenAIAdapter(LLMPort):
     Prompt caching: OpenAI cache'uje automatycznie prefixy ≥1024 tokenów
     dla zapytań w 5-10 min oknie (gpt-4o, gpt-4o-mini). Nie wymaga
     cache_control marker'ów po stronie SDK.
+
+    Retry: 429 (TPM exceeded) jest retry'owany z backoffem; wszelkie inne
+    błędy lecą natychmiast w górę (niech caller decyduje).
     """
 
     def __init__(
@@ -35,17 +51,23 @@ class OpenAIAdapter(LLMPort):
         model: str = DEFAULT_MODEL,
         temperature: float = DEFAULT_TEMPERATURE,
         timeout: float = DEFAULT_TIMEOUT,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        backoff_base: float = DEFAULT_BACKOFF_BASE,
     ) -> None:
         self._client = OpenAI(api_key=api_key, timeout=timeout)
         self._model = model
         self._temperature = temperature
+        self._max_retries = max_retries
+        self._backoff_base = backoff_base
 
     def analyze(self, prompt: str) -> dict[str, Any]:
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=self._temperature,
+        response = self._call_with_retry(
+            lambda: self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=self._temperature,
+            )
         )
         content = response.choices[0].message.content
         if not content:
@@ -59,12 +81,48 @@ class OpenAIAdapter(LLMPort):
             ) from exc
 
     def analyze_mistake(self, prompt: str) -> str:
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=self._temperature,
+        response = self._call_with_retry(
+            lambda: self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self._temperature,
+            )
         )
         content = response.choices[0].message.content
         if content is None:
             return ""
         return content.strip()
+
+    def _call_with_retry(self, fn: Callable[[], T]) -> T:
+        """Retry'uje wyłącznie RateLimitError (429). Honoruje retry-after."""
+        attempt = 0
+        while True:
+            try:
+                return fn()
+            except RateLimitError as exc:
+                if attempt >= self._max_retries:
+                    raise
+                wait = self._compute_wait(exc, attempt)
+                logger.warning(
+                    "OpenAI 429 (attempt %d/%d) — sleeping %.1fs",
+                    attempt + 1,
+                    self._max_retries,
+                    wait,
+                )
+                time.sleep(wait)
+                attempt += 1
+
+    def _compute_wait(self, exc: RateLimitError, attempt: int) -> float:
+        # Najpierw spróbuj `retry-after` z odpowiedzi serwera — to jego
+        # rekomendacja, nie nasze zgadywanie.
+        response = getattr(exc, "response", None)
+        if response is not None:
+            headers = getattr(response, "headers", {}) or {}
+            raw = headers.get("retry-after")
+            if isinstance(raw, str):
+                try:
+                    return float(raw)
+                except ValueError:
+                    pass
+        # Fallback: backoff wykładniczy 2s, 4s, 8s.
+        return float(self._backoff_base * (2**attempt))

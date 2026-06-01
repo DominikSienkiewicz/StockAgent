@@ -61,17 +61,38 @@ All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff,
 | **Anthropic** (optional) | Messages API, `claude-sonnet-4-6`, max_tokens 4096 | Adapter strips ```` ```json ... ``` ```` wrappers (Claude has no JSON mode). |
 | **QuickChart.io** | URL-based, GET request | Zero setup, no dependency, works in every mail client. |
 | **Resend.com** | Sandbox sender `onboarding@resend.dev` | Free tier 100 mails/day. No domain verification required — just a verified recipient. |
+| **NBP** (`/exchangerates/rates/A`) | 30-day window for EUR & USD vs PLN | Free, no API key, no rate limit. Used by `NbpClient` (implements `MacroIndicatorsPort`) to compute 30-day FX-stress for the Risk Watch section. |
 
-## Symbols (default portfolio of 22)
+## Symbols (default portfolio of 35)
 
 ```text
 AAPL,AMZN,GOOGL,MSFT,META,NVDA,TSLA,AMD,NET,PLTR,
-ORCL,UBER,TSM,ASML,ASMIY,SAP,SIEGY,NVO,VT,QUAL,IHI,VB
+ORCL,UBER,TSM,ASML,ASMIY,SAP,SIEGY,NVO,
+DELL,IBM,MU,QCOM,CRWD,INTC,SNDK,BLK,SSNLF,
+VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE
 ```
 
-Sector mix: 🤖 AI / semis (NVDA, AMD, TSM, ASML, ASMIY) · ☁️ cloud (MSFT, ORCL, NET, SAP, PLTR) · 📱 big tech (AAPL, AMZN, GOOGL, META) · 🚗 mobility (TSLA, UBER) · 🏭 industrial / pharma (SIEGY, NVO) · 📊 ETFs (VT, QUAL, IHI, VB).
+Sector mix: 🤖 AI / semis (NVDA, AMD, TSM, ASML, ASMIY, MU, QCOM, INTC, SNDK) · ☁️ cloud / software (MSFT, ORCL, NET, SAP, PLTR, CRWD, IBM) · 📱 big tech (AAPL, AMZN, GOOGL, META) · 🖥️ hardware (DELL, SSNLF) · 🚗 mobility (TSLA, UBER) · 🏭 industrial / pharma (SIEGY, NVO) · 💰 financials (BLK) · 📊 ETFs (VT, QUAL, IHI, VB, EWY, IVV, XDWD.DE, IUSN.DE).
 
 Configurable via `SYMBOLS` in `.env` (CSV).
+
+## Risk Watch (separate macro pass)
+
+Beyond the per-symbol prediction loop, the agent runs a **separate Risk Watch use case** (`MonitorMacroRiskUseCase`) over proxy instruments that signal *risk-off* conditions. These tickers are tracked but **never enter the prediction pipeline** — their semantics are inverted (a *rise* in `SH` means S&P 500 is *falling*, which is a warning).
+
+```text
+EPOL                                # iShares MSCI Poland — sovereign proxy, decline = capital flight from PL
+SH,PSQ,RWM,EUM,SQQQ                 # inverse equity (SPY, QQQ, Dow, EM, 3× QQQ)
+TBT                                 # inverse long-Treasuries — proxy for rising yields
+GLD                                 # gold — classic safe haven
+VIXY,UVXY                           # short-term VIX futures — explicit volatility hedge
+```
+
+Each instrument is tagged with a `MacroRiskInstrumentType` via `RISK_SYMBOL_TYPES`. The domain (`MacroRiskSignal.evaluate_alert`) maps price change to one of `NORMAL / ELEVATED / CRITICAL` — for `SOVEREIGN_PROXY` the sign is inverted so a *falling* EPOL triggers the alert.
+
+When `NBP_ENABLED=true`, the `NbpClient` adapter (implements `MacroIndicatorsPort`) pulls a 30-day EUR/PLN and USD/PLN window from `api.nbp.pl` (free, no key). `PolishMacroSnapshot.evaluate_stress_level` raises ELEVATED / CRITICAL when the złoty weakens > 2% / > 5% over the window — early warning for PL fiscal stress visible in FX before it shows up in the rating.
+
+Output lands in the e-mail as a dedicated **🚨 Risk Watch** section (signals table + FX block + overall alert level). A per-symbol fetch failure (e.g. Finnhub 403 on a delisted ticker) is logged and skipped — Risk Watch never breaks the main report.
 
 ## Risk signals (three types)
 
@@ -204,10 +225,20 @@ DIGEST_FROM_EMAIL=onboarding@resend.dev   # sandbox or your own verified domain
 DIGEST_TO_EMAIL=you@example.com
 
 # Agent
-SYMBOLS=AAPL,AMZN,GOOGL,MSFT,META,NVDA,TSLA,AMD,NET,PLTR,ORCL,UBER,TSM,ASML,ASMIY,SAP,SIEGY,NVO,VT,QUAL,IHI,VB
-SYMBOLS_ETF=VT,QUAL,IHI,VB          # CSV of ETF tickers — skip fundamentals fetch
+SYMBOLS=AAPL,AMZN,GOOGL,MSFT,META,NVDA,TSLA,AMD,NET,PLTR,ORCL,UBER,TSM,ASML,ASMIY,SAP,SIEGY,NVO,DELL,IBM,MU,QCOM,CRWD,INTC,SNDK,BLK,SSNLF,VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE
+SYMBOLS_ETF=VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE   # CSV of ETF tickers — skip fundamentals fetch
 VOLATILITY_THRESHOLD=0.02
 ML_MODEL_PATH=data/models/price_predictor.ubj
+
+# Risk Watch (optional, separate use case)
+RISK_SYMBOLS=EPOL,SH,PSQ,RWM,EUM,SQQQ,TBT,GLD,VIXY,UVXY
+RISK_SYMBOL_TYPES=EPOL:SOVEREIGN_PROXY,SH:INVERSE_EQUITY,PSQ:INVERSE_EQUITY,RWM:INVERSE_EQUITY,EUM:INVERSE_EQUITY,SQQQ:INVERSE_EQUITY,TBT:INVERSE_TREASURY,GLD:SAFE_HAVEN,VIXY:VOLATILITY,UVXY:VOLATILITY
+NBP_ENABLED=true                                      # pulls EUR/PLN, USD/PLN 30-day window from api.nbp.pl
+
+# Resilience / rate-limit
+COUNCIL_LLM_MODEL=gpt-4o-mini                          # cheaper model for the 15-persona council (frees gpt-4o TPM)
+SYMBOLS_UNSUPPORTED_PRICE=CSPX.L,XDWD.DE,IUSN.DE       # tickers the price adapter cannot fetch (Finnhub free 403) — marked "ignored"
+SYMBOL_THROTTLE_SECONDS=2                              # sleep between symbols to avoid bursting the OpenAI TPM limit
 ```
 
 The same env vars feed **GitHub Actions secrets** — local and CI hit the **same Supabase database**, guaranteeing "works on my machine == works in prod" parity.
@@ -257,6 +288,12 @@ All tunable parameters live in [`src/config.py`](src/config.py) as a `Settings` 
 | `symbols` | `[AAPL, MSFT, NVDA]` | Monitored tickers (CSV in env — override with the 22-symbol portfolio) |
 | `alpha_vantage_api_keys` | `[]` | CSV of keys for rotation on rate-limit |
 | `symbols_etf` | `[]` | CSV of tickers classified as ETFs (e.g. `VT,QUAL,IHI,VB`). ETFs skip fundamentals fetching (no meaningful per-share EPS/P/E) and always receive `ValuationVerdict.UNKNOWN`. |
+| `risk_symbols` | `[]` | CSV of Risk Watch tickers (inverse / safe-haven / VIX / sovereign-proxy). When empty, the Risk Watch use case is not built. |
+| `risk_symbol_types` | `{}` | `SYM:TYPE,SYM:TYPE,...` mapping each `risk_symbols` entry to a `MacroRiskInstrumentType` (`INVERSE_EQUITY` / `INVERSE_TREASURY` / `SAFE_HAVEN` / `VOLATILITY` / `SOVEREIGN_PROXY`). |
+| `nbp_enabled` | `false` | When `true`, wires `NbpClient` (`MacroIndicatorsPort`) into Risk Watch — adds the EUR/PLN, USD/PLN 30-day stress block to the e-mail. |
+| `symbols_unsupported_price` | `[]` | CSV of tickers the current price adapter cannot fetch (Finnhub free → 403 on EU-listed `.DE` / `.L`). Pre-filtered in `main_agent.main()` — they show up as **ignored**, not **errors**, so the report's error count reflects actual issues. |
+| `symbol_throttle_seconds` | `0.0` | Sleep between symbols in the main loop. Set `> 0` to spread LLM calls across the OpenAI **TPM window** (gpt-4o tier 1 = 30k tokens / min) — at 30+ symbols with the 15-persona council, bursting hits 429s. Recommended: `2.0`. |
+| `council_llm_provider` / `council_llm_model` | `None` | Route the advisory council to a cheaper / faster LLM. With 15 personas × N symbols the council dominates token use — pinning it to `gpt-4o-mini` (200k TPM, ~15× cheaper) frees gpt-4o quota for the main analysis. Recommended for portfolios > 25 symbols. |
 | `ml_model_path` | `data/models/price_predictor.ubj` | XGBoost weights file |
 | `notifications_enabled` | `false` | Enables email delivery |
 | `digest_from_email` | `onboarding@resend.dev` | Resend sandbox sender |

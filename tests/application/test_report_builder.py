@@ -864,3 +864,56 @@ class TestRecommendationInReport:
         )
         _, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "KUP" in text or "REKOMENDACJA" in text.upper()
+
+
+class TestBuildReportWithRiskWatch:
+    """Integracja MacroRiskReport → wstawiana sekcja Risk Watch w mailu."""
+
+    def _make_macro_report(self):
+        from src.application.use_cases.monitor_macro_risk import MacroRiskReport
+        from src.domain.macro_risk import (
+            MacroAlertLevel,
+            MacroRiskInstrumentType,
+            MacroRiskSignal,
+        )
+        from src.domain.value_objects import Money
+
+        return MacroRiskReport(
+            signals=[
+                MacroRiskSignal(
+                    symbol="SH",
+                    instrument_type=MacroRiskInstrumentType.INVERSE_EQUITY,
+                    current_price=Money(Decimal("104")),
+                    previous_price=Money(Decimal("100")),
+                )
+            ],
+            overall_alert=MacroAlertLevel.CRITICAL,
+        )
+
+    def test_html_contains_risk_watch_section_when_report_provided(self):
+        r = _saved_result()
+        html, _ = build_html_report(
+            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            macro_risk_report=self._make_macro_report(),
+        )
+        assert "Risk Watch" in html
+        assert "SH" in html
+        # Slot placeholder musi być wymieniony, nie zostać surowo w outpucie.
+        assert "RISK_WATCH_SLOT" not in html
+
+    def test_html_skips_section_when_no_macro_report(self):
+        r = _saved_result()
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        # Surowy komentarz HTML jest dopuszczalny — placeholder pozostaje
+        # w drzewie i jest ignorowany przez klientów mailowych.
+        assert "Risk Watch" not in html
+
+    def test_plain_text_contains_risk_watch_block(self):
+        r = _saved_result()
+        _, text = build_html_report(
+            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            macro_risk_report=self._make_macro_report(),
+        )
+        assert "Risk Watch" in text
+        assert "SH" in text
+        assert "RISK_WATCH_SLOT" not in text

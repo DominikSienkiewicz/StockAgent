@@ -26,11 +26,16 @@ from src.application.ports import (
     RepositoryPort,
 )
 from src.application.report_builder import (
+    SymbolResult,
     build_html_report,
     parse_resolved_predictions,
     to_symbol_result,
 )
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
+from src.application.use_cases.monitor_macro_risk import (
+    MacroRiskReport,
+    MonitorMacroRiskUseCase,
+)
 from src.config import Settings
 from src.domain.asset import Asset
 from src.domain.value_objects import AssetType, Threshold
@@ -45,12 +50,26 @@ from src.infrastructure.adapters.cached_fundamentals import (
     NullFundamentalsAdapter,
 )
 from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
+from src.infrastructure.adapters.nbp_client import NbpClient
 from src.infrastructure.adapters.resend_notifier import NullNotifier, ResendNotifier
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 
 ACCURACY_STATS_DAYS = 30
 RESOLVED_PREDICTIONS_HOURS = 24
+
+
+def _ignored_result(symbol: str) -> SymbolResult:
+    """Tworzy SymbolResult dla symbolu pre-filtrowanego z SYMBOLS_UNSUPPORTED_PRICE.
+
+    Ląduje w mailu jako "ignored" (nie błąd) — żeby ograniczenia free tier
+    Finnhub nie zaśmiecały sekcji błędów cyklu po cyklu.
+    """
+    return SymbolResult(
+        symbol=symbol,
+        status="ignored",
+        error_message="unsupported by current price adapter (Finnhub free)",
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +179,25 @@ def build_embedding_adapter(settings: Settings) -> EmbeddingPort | None:
     return OpenAIEmbeddingAdapter(api_key=settings.openai_api_key)
 
 
+def build_macro_risk_use_case(
+    settings: Settings,
+    repository: RepositoryPort,
+) -> MonitorMacroRiskUseCase | None:
+    """Buduje MonitorMacroRisk gdy są skonfigurowane tickery ryzyka.
+
+    Brak `risk_symbols` lub `risk_symbol_types` = wyłączony Risk Watch.
+    NBP wpinamy tylko gdy NBP_ENABLED=true (osobne źródło, osobny port).
+    """
+    if not settings.risk_symbols or not settings.risk_symbol_types:
+        return None
+    macro_port = NbpClient() if settings.nbp_enabled else None
+    return MonitorMacroRiskUseCase(
+        market_port=FinnhubAdapter(api_key=settings.finnhub_api_key),
+        repository_port=repository,
+        macro_port=macro_port,
+    )
+
+
 def build_use_case(
     settings: Settings,
     repository: RepositoryPort | None = None,
@@ -213,7 +251,18 @@ def main(settings: Settings | None = None) -> int:
 
     results = []
     failures = 0
-    for symbol in settings.symbols:
+    unsupported = set(settings.symbols_unsupported_price)
+    # Eligible — symbole, dla których pójdzie pełna analiza. Unsupported tickery
+    # są oznaczone "ignored" przed pętlą, więc throttle policzy je poprawnie.
+    eligible = [s for s in settings.symbols if s not in unsupported]
+    for skipped in (s for s in settings.symbols if s in unsupported):
+        logger.info(
+            "%s: skipped — in SYMBOLS_UNSUPPORTED_PRICE (Finnhub free / EU-listed)",
+            skipped,
+        )
+        results.append(_ignored_result(skipped))
+
+    for index, symbol in enumerate(eligible):
         try:
             # Klasyfikacja STOCK/ETF — ETF-y pomijają fundamentale (brak EPS/P/E).
             asset_type = (
@@ -234,8 +283,32 @@ def main(settings: Settings | None = None) -> int:
             failures += 1
             results.append(to_symbol_result(symbol, None, error=str(exc)))
 
+        # Throttle MIĘDZY symbolami — chroni OpenAI TPM. Po ostatnim brak sleepa.
+        if settings.symbol_throttle_seconds > 0 and index < len(eligible) - 1:
+            time.sleep(settings.symbol_throttle_seconds)
+
     duration = time.perf_counter() - started_perf
     logger.info("Fast Loop done — failures=%d/%d", failures, len(settings.symbols))
+
+    # ---- Risk Watch (osobny pass, nie miesza się z predykcjami) ----
+    macro_risk_report: MacroRiskReport | None = None
+    risk_use_case = build_macro_risk_use_case(settings, repository)
+    if risk_use_case is not None:
+        try:
+            symbol_types = {
+                sym: settings.risk_symbol_types[sym]
+                for sym in settings.risk_symbols
+                if sym in settings.risk_symbol_types
+            }
+            macro_risk_report = risk_use_case.run(symbol_types)
+            logger.info(
+                "Risk Watch — overall=%s signals=%d nbp=%s",
+                macro_risk_report.overall_alert.value,
+                len(macro_risk_report.signals),
+                macro_risk_report.polish_macro is not None,
+            )
+        except Exception:
+            logger.exception("Risk Watch failed — pomijam sekcję w raporcie")
 
     # ---- Wysyłka raportu ----
     try:
@@ -257,6 +330,7 @@ def main(settings: Settings | None = None) -> int:
             results, started_at, duration,
             accuracy_stats=accuracy_stats,
             resolved_predictions=resolved,
+            macro_risk_report=macro_risk_report,
         )
         analyzed = sum(1 for r in results if r.status == "saved")
         subject = (

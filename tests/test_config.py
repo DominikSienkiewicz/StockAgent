@@ -109,3 +109,82 @@ class TestSettings:
         env.setenv("SYMBOLS_ETF", "VOO, CSPX.L , SPY")
         settings = Settings(_env_file=None)
         assert settings.symbols_etf == ["VOO", "CSPX.L", "SPY"]
+
+    def test_risk_symbols_default_empty(self, env: pytest.MonkeyPatch) -> None:
+        settings = Settings(_env_file=None)
+        assert settings.risk_symbols == []
+        assert settings.risk_symbol_types == {}
+
+    def test_risk_symbols_parses_csv(self, env: pytest.MonkeyPatch) -> None:
+        env.setenv("RISK_SYMBOLS", "EPOL, SH , VIXY")
+        settings = Settings(_env_file=None)
+        assert settings.risk_symbols == ["EPOL", "SH", "VIXY"]
+
+    def test_risk_symbol_types_parses_mapping(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        from src.domain.macro_risk import MacroRiskInstrumentType
+
+        env.setenv(
+            "RISK_SYMBOL_TYPES",
+            "EPOL:SOVEREIGN_PROXY,SH:INVERSE_EQUITY,VIXY:VOLATILITY",
+        )
+        settings = Settings(_env_file=None)
+        assert settings.risk_symbol_types == {
+            "EPOL": MacroRiskInstrumentType.SOVEREIGN_PROXY,
+            "SH": MacroRiskInstrumentType.INVERSE_EQUITY,
+            "VIXY": MacroRiskInstrumentType.VOLATILITY,
+        }
+
+    def test_risk_symbol_types_rejects_unknown_enum(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("RISK_SYMBOL_TYPES", "EPOL:NOT_A_REAL_TYPE")
+        with pytest.raises(ValueError, match="NOT_A_REAL_TYPE"):
+            Settings(_env_file=None)
+
+    def test_nbp_enabled_defaults_false(self, env: pytest.MonkeyPatch) -> None:
+        settings = Settings(_env_file=None)
+        assert settings.nbp_enabled is False
+
+    def test_nbp_enabled_reads_env(self, env: pytest.MonkeyPatch) -> None:
+        env.setenv("NBP_ENABLED", "true")
+        settings = Settings(_env_file=None)
+        assert settings.nbp_enabled is True
+
+
+class TestResilienceSettings:
+    def test_symbols_unsupported_price_defaults_empty(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        settings = Settings(_env_file=None)
+        assert settings.symbols_unsupported_price == []
+
+    def test_symbols_unsupported_price_parses_csv(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("SYMBOLS_UNSUPPORTED_PRICE", "CSPX.L, XDWD.DE ,IUSN.DE")
+        settings = Settings(_env_file=None)
+        assert settings.symbols_unsupported_price == [
+            "CSPX.L", "XDWD.DE", "IUSN.DE",
+        ]
+
+    def test_symbol_throttle_defaults_to_zero(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        settings = Settings(_env_file=None)
+        assert settings.symbol_throttle_seconds == 0.0
+
+    def test_symbol_throttle_parses_float(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("SYMBOL_THROTTLE_SECONDS", "2.5")
+        settings = Settings(_env_file=None)
+        assert settings.symbol_throttle_seconds == 2.5
+
+    def test_symbol_throttle_negative_rejected(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("SYMBOL_THROTTLE_SECONDS", "-1")
+        with pytest.raises(ValueError, match="symbol_throttle_seconds"):
+            Settings(_env_file=None)

@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
+from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.prediction import Prediction
 from src.domain.value_objects import Fundamentals, Money
 
@@ -169,3 +170,13 @@ class FundamentalsPort(ABC):
 
     @abstractmethod
     def get_fundamentals(self, symbol: str) -> Fundamentals | None: ...
+
+
+class MacroIndicatorsPort(ABC):
+    """Wskaźniki makroekonomiczne polskiego rynku (kurs PLN, ew. rentowności).
+
+    Zwraca None, gdy źródło niedostępne — wywołujący traktuje brak danych
+    jako "neutralne tło" i nie blokuje raportu."""
+
+    @abstractmethod
+    def fetch_polish_macro(self) -> PolishMacroSnapshot | None: ...

@@ -151,6 +151,102 @@ class TestAdapterImplementsPort:
         assert issubclass(OpenAIAdapter, LLMPort)
 
 
+def _rate_limit_error(retry_after_seconds: float | None = None) -> Exception:
+    """Buduje wyjątek RateLimitError jak SDK OpenAI (response 429)."""
+    from openai import RateLimitError
+
+    response = MagicMock()
+    response.status_code = 429
+    response.headers = {}
+    if retry_after_seconds is not None:
+        response.headers["retry-after"] = str(retry_after_seconds)
+    body = {"error": {"message": "tpm exceeded", "type": "tokens"}}
+    return RateLimitError(message="rate limited", response=response, body=body)
+
+
+class TestRetryOn429:
+    """OpenAI TPM (tokens per minute) potrafi się odbić nagle przy 30+ symbolach
+    z radą doradczą. Adapter retry'uje 429 z backoffem, pozwalając SDK i kodowi
+    klienta nie martwić się tym (poza prawdziwymi długotrwałymi limitami).
+    """
+
+    def test_retries_on_429_then_succeeds(self, adapter_with_client, mocker):
+        adapter, client = adapter_with_client
+        mocker.patch(
+            "src.infrastructure.llm.openai_client.time.sleep"
+        )  # bez realnego spania
+        client.chat.completions.create.side_effect = [
+            _rate_limit_error(),
+            _rate_limit_error(),
+            _completion(json.dumps({"trend_direction": "BULLISH"})),
+        ]
+
+        result = adapter.analyze("Predict.")
+
+        assert result["trend_direction"] == "BULLISH"
+        assert client.chat.completions.create.call_count == 3
+
+    def test_raises_after_max_retries(self, adapter_with_client, mocker):
+        from openai import RateLimitError
+
+        adapter, client = adapter_with_client
+        mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
+        client.chat.completions.create.side_effect = _rate_limit_error()
+
+        with pytest.raises(RateLimitError):
+            adapter.analyze("Predict.")
+
+        # Defaultowy max_retries=3 + initial = 4 wywołania.
+        assert client.chat.completions.create.call_count == 4
+
+    def test_does_not_retry_on_non_429_errors(self, adapter_with_client, mocker):
+        adapter, client = adapter_with_client
+        mock_sleep = mocker.patch(
+            "src.infrastructure.llm.openai_client.time.sleep"
+        )
+        client.chat.completions.create.side_effect = RuntimeError("network down")
+
+        with pytest.raises(RuntimeError):
+            adapter.analyze("Predict.")
+
+        assert client.chat.completions.create.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_respects_retry_after_header_when_present(
+        self, adapter_with_client, mocker
+    ):
+        adapter, client = adapter_with_client
+        mock_sleep = mocker.patch(
+            "src.infrastructure.llm.openai_client.time.sleep"
+        )
+        client.chat.completions.create.side_effect = [
+            _rate_limit_error(retry_after_seconds=7.5),
+            _completion("{}"),
+        ]
+
+        adapter.analyze("Predict.")
+
+        # Wzięliśmy retry-after = 7.5s zamiast defaultowego backoffu.
+        first_sleep = mock_sleep.call_args_list[0].args[0]
+        assert first_sleep >= 7.5
+
+    def test_retry_also_works_for_analyze_mistake(
+        self, adapter_with_client, mocker
+    ):
+        """analyze_mistake (free-form text) musi mieć tę samą logikę retry."""
+        adapter, client = adapter_with_client
+        mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
+        client.chat.completions.create.side_effect = [
+            _rate_limit_error(),
+            _completion("It was wrong because..."),
+        ]
+
+        result = adapter.analyze_mistake("Diagnose.")
+
+        assert "wrong" in result
+        assert client.chat.completions.create.call_count == 2
+
+
 @pytest.mark.integration
 class TestOpenAILive:
     def test_real_api_returns_json(self):

@@ -1,4 +1,4 @@
-# CLAUDE.md — zasady pracy w repo StockAgent
+  # CLAUDE.md — zasady pracy w repo StockAgent
 
 ## Stack i narzędzia
 
@@ -67,6 +67,31 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 
 - **Nigdy** nie commituj `.env`. Do `.env.example` wpisuj wyłącznie placeholdery.
 - Klucze API w GitHub Actions: jako Repository Secrets (workflowy czytają `${{ secrets.* }}`).
+
+## Synchronizacja `.env` ↔ `.env.example`
+
+Plik `.env.example` to **template dla nowych deploymentów** — musi się rozwijać
+razem z `.env`, nie zostawać w tyle. Po każdej zmianie w `.env` zastosuj te
+reguły do `.env.example` w tym samym kroku:
+
+- **Sekrety** (API keys, tokeny, hasła, DB credentials, adresy mailowe odbiorców):
+  wyłącznie **placeholdery** typu `sk-...`, `re_...`,
+  `https://twoj-projekt.supabase.co`, `you@example.com`. Nigdy realnych wartości
+  z `.env`.
+- **Cała reszta** (konfiguracja niewrażliwa — `SYMBOLS`, `SYMBOLS_ETF`,
+  `RISK_SYMBOLS`, `RISK_SYMBOL_TYPES`, `SYMBOLS_UNSUPPORTED_PRICE`,
+  `VOLATILITY_THRESHOLD`, `SYMBOL_THROTTLE_SECONDS`, `NBP_ENABLED`,
+  `COUNCIL_LLM_MODEL`, `ML_MODEL_PATH`, `NOTIFICATIONS_ENABLED`,
+  `LLM_PROVIDER`, `DIGEST_FROM_EMAIL` itd.): **identyczne wartości** jak w `.env`.
+  Template pokazuje rzeczywistą produkcyjną konfigurację, żeby nowy deployment
+  startował z sensownym defaultem zamiast minimalistycznego szkieletu wymagającego
+  dośledzenia z README.
+
+Gdy pole jest **wrażliwe** (sekret) — placeholder w `.env.example`, prawdziwa
+wartość w `.env`. Gdy **niewrażliwe** — dokładnie ten sam string w obu plikach.
+
+Sygnał, że robisz to dobrze: `diff .env .env.example` pokazuje **tylko** linie
+z sekretami; każda inna różnica to dryf, który trzeba naprawić.
 
 ## Język
 

@@ -7,6 +7,8 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from src.domain.macro_risk import MacroRiskInstrumentType
+
 
 class Settings(BaseSettings):
     """Konfiguracja runtime — wczytywana z `.env` i zmiennych środowiskowych.
@@ -67,6 +69,31 @@ class Settings(BaseSettings):
     # Symbole klasyfikowane jako ETF — pomijają fundamentale (brak EPS/P/E).
     symbols_etf: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
+    # ----- Risk Watch -----
+    # Lista instrumentów proxy ryzyka makro (inverse ETFs, gold, VIX, EPOL).
+    # Monitorowane przez osobny use case (MonitorMacroRisk), nie wchodzą do
+    # głównej pętli predykcyjnej.
+    risk_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # Mapowanie symbol → typ instrumentu (np. SH:INVERSE_EQUITY).
+    # Format env: "SYM:TYPE,SYM:TYPE,..." gdzie TYPE ∈ MacroRiskInstrumentType.
+    risk_symbol_types: Annotated[
+        dict[str, MacroRiskInstrumentType], NoDecode
+    ] = Field(default_factory=dict)
+    # Włącza adapter NBP do raportu (kursy EUR/PLN, USD/PLN).
+    nbp_enabled: bool = False
+
+    # ----- Resilience -----
+    # Tickery, które wiadomo z góry, że nie zadziałają z obecnymi adapterami
+    # (Finnhub free → 403 dla EU-listed). Pre-filtrujemy je w głównej pętli
+    # i mailujemy jako "ignored", nie "error" — żeby nie zaśmiecać sekcji
+    # błędów oczywistymi ograniczeniami planu.
+    symbols_unsupported_price: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    # Sleep w sekundach między symbolami w głównej pętli — chroni OpenAI TPM
+    # przy 30+ tickerach z radą doradczą. 0 = bez throttle.
+    symbol_throttle_seconds: float = Field(default=0.0)
+
     # ----- ML -----
     ml_model_path: str = "data/models/price_predictor.ubj"
 
@@ -92,6 +119,70 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [s.strip() for s in value.split(",") if s.strip()]
         return value
+
+    @field_validator("risk_symbols", mode="before")
+    @classmethod
+    def _parse_risk_symbols(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, str):
+            return [s.strip() for s in value.split(",") if s.strip()]
+        return value
+
+    @field_validator("symbols_unsupported_price", mode="before")
+    @classmethod
+    def _parse_symbols_unsupported_price(
+        cls, value: str | list[str]
+    ) -> list[str]:
+        if isinstance(value, str):
+            return [s.strip() for s in value.split(",") if s.strip()]
+        return value
+
+    @field_validator("symbol_throttle_seconds")
+    @classmethod
+    def _validate_symbol_throttle(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError(
+                f"symbol_throttle_seconds must be non-negative (got {value})"
+            )
+        return value
+
+    @field_validator("risk_symbol_types", mode="before")
+    @classmethod
+    def _parse_risk_symbol_types(
+        cls,
+        value: str | dict[str, MacroRiskInstrumentType] | dict[str, str],
+    ) -> dict[str, MacroRiskInstrumentType]:
+        """Pozwala podać RISK_SYMBOL_TYPES=SH:INVERSE_EQUITY,GLD:SAFE_HAVEN
+        (CSV `SYM:TYPE` → dict[str, MacroRiskInstrumentType]).
+        """
+        if isinstance(value, dict):
+            return {
+                k: (v if isinstance(v, MacroRiskInstrumentType)
+                    else MacroRiskInstrumentType(v))
+                for k, v in value.items()
+            }
+        if not value:
+            return {}
+        out: dict[str, MacroRiskInstrumentType] = {}
+        for chunk in value.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            if ":" not in chunk:
+                raise ValueError(
+                    f"RISK_SYMBOL_TYPES entry '{chunk}' must be SYMBOL:TYPE"
+                )
+            sym, raw_type = chunk.split(":", 1)
+            sym = sym.strip()
+            raw_type = raw_type.strip()
+            try:
+                out[sym] = MacroRiskInstrumentType(raw_type)
+            except ValueError as exc:
+                raise ValueError(
+                    f"RISK_SYMBOL_TYPES: '{raw_type}' is not a valid "
+                    f"MacroRiskInstrumentType (allowed: "
+                    f"{[t.value for t in MacroRiskInstrumentType]})"
+                ) from exc
+        return out
 
     @field_validator("alpha_vantage_api_keys", mode="before")
     @classmethod
