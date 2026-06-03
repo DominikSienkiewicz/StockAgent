@@ -104,7 +104,13 @@ def build_llm_adapter(
 def build_notifier(
     settings: Settings, quota_monitor: QuotaMonitor | None = None
 ) -> ReportNotifierPort:
-    """Factory notifier — Resend gdy włączone i skonfigurowane, inaczej Null."""
+    """Factory notifier — Resend gdy włączone i skonfigurowane, inaczej Null.
+
+    Gdy wpada w Null mimo `notifications_enabled=true`, loguje WARNING z nazwą
+    brakującego sekretu — inaczej "Notifications disabled" nie mówi, czego
+    brakuje (typowo: DIGEST_TO_EMAIL / RESEND_API_KEY nie ustawione jako
+    GitHub repo *Secret*, nie Variable).
+    """
     if (
         settings.notifications_enabled
         and settings.resend_api_key
@@ -115,6 +121,22 @@ def build_notifier(
             sender=settings.digest_from_email,
             recipient=settings.digest_to_email,
             quota_monitor=quota_monitor,
+        )
+
+    if not settings.notifications_enabled:
+        logger.info(
+            "Email wyłączony (notifications_enabled=false w config.toml)."
+        )
+    else:
+        missing = []
+        if not settings.resend_api_key:
+            missing.append("RESEND_API_KEY")
+        if not settings.digest_to_email:
+            missing.append("DIGEST_TO_EMAIL")
+        logger.warning(
+            "Email WŁĄCZONY (notifications_enabled=true), ale brakuje sekretów: "
+            "%s — ustaw je jako GitHub repo Secrets (nie Variables) / w .env.",
+            ", ".join(missing),
         )
     return NullNotifier()
 

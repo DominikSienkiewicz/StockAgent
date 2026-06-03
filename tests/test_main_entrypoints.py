@@ -342,3 +342,55 @@ class TestBuildMacroRiskUseCase:
         uc = main_agent.build_macro_risk_use_case(s, repo)
         assert uc is not None
         assert isinstance(uc._macro, NbpClient)  # type: ignore[attr-defined]
+
+
+class TestNotifierFactory:
+    """build_notifier — gdy mail wyłączony, log MUSI wskazać który z trzech
+    warunków zawiódł (regresja 2026-06-03: 'Notifications disabled' nie mówił
+    czego brakuje → zgadywanka, gdy DIGEST_TO_EMAIL nie był repo Secret)."""
+
+    def _ready(self, settings: Settings) -> Settings:
+        settings.notifications_enabled = True
+        settings.resend_api_key = "re_test"
+        settings.digest_to_email = "you@example.com"
+        return settings
+
+    def test_returns_resend_when_all_present(self, settings):
+        from src.infrastructure.adapters.resend_notifier import ResendNotifier
+
+        n = main_agent.build_notifier(self._ready(settings))
+        assert isinstance(n, ResendNotifier)
+
+    def test_warns_naming_missing_digest_to_email(self, settings, caplog):
+        import logging
+
+        from src.infrastructure.adapters.resend_notifier import NullNotifier
+
+        s = self._ready(settings)
+        s.digest_to_email = None  # włączone, ale brak odbiorcy
+        with caplog.at_level(logging.WARNING):
+            n = main_agent.build_notifier(s)
+        assert isinstance(n, NullNotifier)
+        assert "DIGEST_TO_EMAIL" in caplog.text
+        assert "RESEND_API_KEY" not in caplog.text  # ten jest obecny
+
+    def test_warns_naming_missing_resend_key(self, settings, caplog):
+        import logging
+
+        s = self._ready(settings)
+        s.resend_api_key = None
+        with caplog.at_level(logging.WARNING):
+            main_agent.build_notifier(s)
+        assert "RESEND_API_KEY" in caplog.text
+
+    def test_no_warning_when_intentionally_disabled(self, settings, caplog):
+        import logging
+
+        from src.infrastructure.adapters.resend_notifier import NullNotifier
+
+        settings.notifications_enabled = False
+        with caplog.at_level(logging.WARNING):
+            n = main_agent.build_notifier(settings)
+        assert isinstance(n, NullNotifier)
+        # Świadome wyłączenie → bez WARNING (najwyżej INFO).
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
