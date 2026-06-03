@@ -128,14 +128,22 @@ class TestLoadCouncilPersonas:
 
 class TestRealPersonaFiles:
     """Sanity: pliki dostarczone razem z repo (data/council_personas/) ładują
-    się czysto, dają tych samych 15 inwestorów co wcześniej."""
+    się czysto. Rada ograniczona do 7 najważniejszych doradców."""
 
-    def test_default_directory_yields_15_personas(self) -> None:
+    def test_default_directory_yields_7_personas(self) -> None:
         from src.infrastructure.persona_loader import DEFAULT_PERSONAS_DIR
 
         personas = load_council_personas(DEFAULT_PERSONAS_DIR)
         names = {p.name for p in personas}
-        assert len(personas) == 15
-        assert "Warren Buffett" in names
-        assert "Cathie Wood" in names
-        assert "Joel Greenblatt" in names
+        assert names == {
+            "Warren Buffett",
+            "Benjamin Graham",
+            "Peter Lynch",
+            "Ray Dalio",
+            "George Soros",
+            "Cathie Wood",
+            "Howard Marks",
+        }
+        # Usunięci doradcy nie mogą wrócić przez przypadkowy plik.
+        assert "Joel Greenblatt" not in names
+        assert "Michael Burry" not in names

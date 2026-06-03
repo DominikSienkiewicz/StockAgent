@@ -60,7 +60,7 @@ class TestValidatePersonasCLI:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # Brak --dir → użyj DEFAULT_PERSONAS_DIR. W repo ten katalog istnieje
-        # z 15 wygenerowanymi plikami.
+        # z 7 wygenerowanymi plikami (rada ograniczona do 7 doradców).
         rc = validate_main([])
         assert rc == 0
-        assert "15 persona" in capsys.readouterr().out
+        assert "7 persona" in capsys.readouterr().out

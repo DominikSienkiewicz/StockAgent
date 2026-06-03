@@ -103,7 +103,7 @@ class TestInvestorPromptCacheFriendlyLayout:
         assert persona_marker in prompt
         assert prompt.index(data_marker) < prompt.index(persona_marker), (
             "Shared market data must precede persona block so the prefix can "
-            "be cached across the 15 council calls in one cycle."
+            "be cached across the 7 council calls in one cycle."
         )
 
     def test_two_personas_share_identical_prefix(self):
