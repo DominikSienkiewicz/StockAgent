@@ -84,6 +84,39 @@ class TestBuildHtmlReport:
         )
         assert "Big Tech" in text
 
+    def test_suggestions_section_appears_for_hot_sector(self):
+        # CRWD +6% → gorący sektor cyber → sekcja WARTE UWAGI z peerami.
+        hot = SymbolResult(
+            symbol="CRWD", status="saved", delta=Decimal("0.06"),
+            current_price=Decimal("769"), trend="BULLISH",
+            target_price=Decimal("780"), confidence_score=0.75,
+            sentiment_score=0.3, sentiment_label="Bullish",
+        )
+        html, text = build_html_report(
+            [hot], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+        )
+        assert "Warte uwagi" in html
+        assert "WARTE UWAGI" in text
+        # Marker slotu nie może wyciec do treści.
+        assert "SUGGESTIONS_SLOT" not in html
+        assert "SUGGESTIONS_SLOT" not in text
+
+    def test_no_suggestions_section_when_no_hot_sector(self):
+        # Mały ruch, neutralny sentyment → brak sekcji i brak markera.
+        cold = SymbolResult(
+            symbol="AAPL", status="saved", delta=Decimal("0.004"),
+            current_price=Decimal("100"), trend="SIDEWAYS",
+            target_price=Decimal("100"), confidence_score=0.6,
+            sentiment_score=0.05, sentiment_label="Neutral",
+        )
+        html, text = build_html_report(
+            [cold], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+        )
+        assert "Warte uwagi" not in html
+        assert "WARTE UWAGI" not in text
+        assert "SUGGESTIONS_SLOT" not in html
+        assert "SUGGESTIONS_SLOT" not in text
+
     def test_html_shows_errors_section_when_present(self):
         html, _ = build_html_report(
             [_error_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0

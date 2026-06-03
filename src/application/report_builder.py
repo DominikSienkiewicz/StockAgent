@@ -66,6 +66,11 @@ from src.application.report_signals import (
     market_status,
     parse_resolved_predictions,
 )
+from src.application.report_suggestions import (
+    build_sector_suggestions,
+    render_suggestions_html,
+    render_suggestions_text,
+)
 from src.application.report_templates import render_template
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.council import CouncilVerdict
@@ -311,6 +316,9 @@ def build_html_report(
     )
     quota_html = render_quota_banner_html(quota_alerts or [])
     quota_text = render_quota_banner_text(quota_alerts or [])
+    suggestions = build_sector_suggestions(results)
+    suggestions_html = render_suggestions_html(suggestions)
+    suggestions_text = render_suggestions_text(suggestions)
 
     html = _render_html(
         results, saved, ignored, errors, started_at, duration_seconds,
@@ -325,6 +333,8 @@ def build_html_report(
         html = html.replace(
             "<!-- RISK_WATCH_SLOT -->", macro_risk_html, 1
         )
+    # Slot zawsze podmieniamy (też na "") — inaczej znacznik zostałby w treści.
+    html = html.replace("<!-- SUGGESTIONS_SLOT -->", suggestions_html, 1)
     text = _render_plain(
         results, saved, ignored, errors, started_at, duration_seconds,
         mood, session, accuracy_stats, trade_signals, risk_signals,
@@ -338,6 +348,10 @@ def build_html_report(
         text = text.replace(
             "<!-- RISK_WATCH_SLOT -->", macro_risk_text, 1
         )
+    # Plain text: usuwamy znacznik (pusta sekcja) albo wstawiamy treść.
+    text = text.replace(
+        "<!-- SUGGESTIONS_SLOT -->\n", f"{suggestions_text}\n\n" if suggestions_text else "", 1
+    ).replace("<!-- SUGGESTIONS_SLOT -->", suggestions_text, 1)
     return html, text
 
 
@@ -714,6 +728,8 @@ def _render_html(
               </div>
             """)
 
+    sections.append("<!-- SUGGESTIONS_SLOT -->")
+
     # Scatter: sentyment vs cena (jeśli ≥3 punkty)
     scatter_url = build_correlation_chart_url(results)
     if scatter_url:
@@ -913,6 +929,8 @@ def _render_plain(
             if valuation_text:
                 lines.append(valuation_text)
         lines.append("")
+
+    lines.append("<!-- SUGGESTIONS_SLOT -->")
 
     if ignored:
         lines.append("POMINIĘTE (poniżej progu zmienności)")

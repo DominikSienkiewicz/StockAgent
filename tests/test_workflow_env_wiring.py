@@ -25,6 +25,14 @@ REQUIRED_ENV_KEYS = {
     "SYMBOLS",
     "CRYPTO_SYMBOLS",
     "CRYPTO_VOLATILITY_THRESHOLD",
+    # FinOps: bez nich rada leci na drogim gpt-4o bez throttle → alerty TPM.
+    # GHA nie eksportuje vars.* automatycznie; musi być jawne w env: kroku.
+    "COUNCIL_LLM_MODEL",
+    "SYMBOL_THROTTLE_SECONDS",
+    "COUNCIL_VOLATILITY_THRESHOLD",
+    # Bez tego tickery niewspierane przez Finnhub free (EU dot-notation, OTC)
+    # lecą jako BŁĘDY zamiast jako "pominięte/ignored".
+    "SYMBOLS_UNSUPPORTED_PRICE",
 }
 
 

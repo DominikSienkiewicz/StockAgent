@@ -187,6 +187,22 @@ SECTORS: dict[str, str] = {
 }
 
 
+# Kuratorowana pula peerów per sektor akcji — nadzbiór monitorowanych. Służy
+# sekcji 💡 WARTE UWAGI: gdy sektor jest "gorący" w bieżącym cyklu, sugerujemy
+# stąd tickery, których jeszcze nie monitorujemy. Tylko sektory akcji
+# (ETF/Krypto mają inną dynamikę i nie są tu uwzględniane).
+PEERS: dict[str, list[str]] = {
+    "Big Tech": ["NFLX", "DIS"],
+    "Półprzewodniki/AI": ["AVGO", "TXN", "AMAT", "KLAC", "LRCX", "ARM", "MRVL"],
+    "Chmura/Software": ["CRM", "ADBE", "NOW", "MDB", "WDAY", "HUBS"],
+    "Cyberbezpieczeństwo": ["ZS", "FTNT", "CYBR", "TENB", "QLYS"],
+    "Hardware": ["HPQ", "HPE", "WDC", "STX", "SMCI", "LOGI"],
+    "Mobilność": ["LYFT", "RIVN", "LCID", "GM", "F"],
+    "Przemysł/Pharma": ["LLY", "MRK", "PFE", "ABBV", "NVS"],
+    "Finanse": ["JPM", "GS", "MS", "V", "MA"],
+}
+
+
 def sector_label(symbol: str) -> str | None:
     """Zwraca sektor (PL) dla symbolu lub None, gdy nieznany.
 

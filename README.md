@@ -163,7 +163,8 @@ The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallbac
 - 🎯 **Accuracy history** — directional hit-rate over the last 30 days
 - 📈 **Δ12h chart** (QuickChart bar chart)
 - 🧠 **Self-Reflection** — lessons learned per symbol (purple box)
-- 🔮 **Predictions table** — price · Δ12h · trend · forecast (12h) `+X.YZ%` · confidence · sentiment · news count
+- 🔮 **Predictions table** — price · Δ12h · trend · forecast (12h) `+X.YZ%` · confidence · sentiment · news count. Each row is tagged with its **sector** next to the company name (stocks → Polish sector e.g. `Cyberbezpieczeństwo`, ETFs → `ETF`, crypto → `Krypto`); mapping in `report_formatting.SECTORS`.
+- 💡 **Worth a look (sectors in motion)** — peer suggestions computed **from the current cycle only, zero extra API calls**: when a stock sector runs hot (its strongest monitored move `|Δ12h| ≥ 3%` or mean `|sentiment| ≥ 0.3`), the report suggests notable peers in that sector you don't yet monitor (curated `report_formatting.PEERS`), e.g. *Cyberbezpieczeństwo gorące (CRWD +6.0%, PANW +4.2%) — rozważ: ZS, FTNT, CYBR*. Top 3 sectors, 3 peers each; section hidden when nothing is hot.
 - 📈 **Forecast chart** (QuickChart bar chart)
 - 💡 **Reasoning** + 📰 **Top news** (clickable `<a href>` links to the original articles)
 - 📈 **Sentiment vs price correlation** (scatter plot)
@@ -306,7 +307,7 @@ Three workflows in [`.github/workflows/`](.github/workflows/):
 The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
 
 **Repository secrets:** `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY` (optional: `ANTHROPIC_API_KEY`).
-**Repository variables:** `NOTIFICATIONS_ENABLED`, `DIGEST_FROM_EMAIL`, `DIGEST_TO_EMAIL`, `SYMBOLS`, `VOLATILITY_THRESHOLD`, `CRYPTO_SYMBOLS`, `CRYPTO_VOLATILITY_THRESHOLD` (all optional with sensible defaults). Note: GitHub Actions does **not** auto-export `vars.*` — a variable only reaches the agent if it is explicitly mapped into the step's `env:` block in [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml). Leave `CRYPTO_SYMBOLS` unset (or omit the mapping) and BTC/ETH are silently dropped before the prediction loop.
+**Repository variables:** `NOTIFICATIONS_ENABLED`, `DIGEST_FROM_EMAIL`, `DIGEST_TO_EMAIL`, `SYMBOLS`, `VOLATILITY_THRESHOLD`, `CRYPTO_SYMBOLS`, `CRYPTO_VOLATILITY_THRESHOLD`, `COUNCIL_LLM_MODEL`, `SYMBOL_THROTTLE_SECONDS`, `COUNCIL_VOLATILITY_THRESHOLD` (all optional with sensible defaults — the council defaults to `gpt-4o-mini` with a 2s throttle to stay under the gpt-4o TPM ceiling). Note: GitHub Actions does **not** auto-export `vars.*` — a variable only reaches the agent if it is explicitly mapped into the step's `env:` block in [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml). Leave `CRYPTO_SYMBOLS` unset (or omit the mapping) and BTC/ETH are silently dropped before the prediction loop. The wiring is guarded by [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py).
 
 ## Configuration
 
