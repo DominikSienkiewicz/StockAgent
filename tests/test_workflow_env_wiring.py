@@ -1,14 +1,15 @@
-"""Regression guard — workflow `env:` musi mapować config potrzebny w produkcji.
+"""Regression guard — po centralizacji configu do `config.toml` workflow
+wstrzykuje WYŁĄCZNIE sekrety; config niewrażliwy czytany jest wprost z pliku.
 
-Bug (2026-06-03): raport cyklu nie zawierał BTC/ETH, mimo że `CRYPTO_SYMBOLS`
-było ustawione w `.env`. Przyczyna: GitHub Actions NIE eksportuje automatycznie
-`vars.*` / `secrets.*` do procesu — zmienna trafia do agenta tylko, jeśli jest
-jawnie wymieniona w bloku `env:` kroku. `fast_loop_12h.yml` mapował `SYMBOLS`,
-ale pomijał `CRYPTO_SYMBOLS`, więc `Settings.crypto_symbols` spadało do pustego
-defaultu i krypto było odsiewane PRZED pętlą.
+Historia: GitHub Actions nie eksportuje `vars.*`/`secrets.*` automatycznie —
+trzeba je jawnie wymienić w `env:` kroku. Wcześniej trzymaliśmy tam też config
+niewrażliwy (SYMBOLS, CRYPTO_SYMBOLS, COUNCIL_*…), co rodziło drift
+`.env` ↔ `.env.example` ↔ workflow. Teraz ten config żyje w `config.toml`
+(czytany przez `Settings`), więc workflow ma zostać czysty od niego.
 
-Ten test pilnuje, by config sterujący doborem symboli był podpięty w workflow —
-inaczej dryf `.env` ↔ workflow po cichu gubi całe klasy aktywów.
+Ten test pilnuje obu stron:
+1. wszystkie SEKRETY są zmapowane (inaczej brak klucza w procesie → crash),
+2. żaden config niewrażliwy nie wrócił do workflow (inaczej znów drift).
 """
 
 from __future__ import annotations
@@ -17,28 +18,41 @@ from pathlib import Path
 
 import yaml
 
-WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "fast_loop_12h.yml"
+ROOT = Path(__file__).parent.parent
+WORKFLOW = ROOT / ".github" / "workflows" / "fast_loop_12h.yml"
 
-# Config niewrażliwy, który steruje TYM, jakie symbole i progi widzi Fast Loop.
-# Brak któregokolwiek w workflow = produkcja leci na cichym defaultcie Settings.
-REQUIRED_ENV_KEYS = {
+# Sekrety, które MUSZĄ trafić do env kroku agenta (config.toml ich nie zawiera).
+REQUIRED_SECRET_KEYS = {
+    "SUPABASE_URL",
+    "SUPABASE_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "FINNHUB_API_KEY",
+    "ALPHA_VANTAGE_API_KEYS",
+    "RESEND_API_KEY",
+    "DIGEST_TO_EMAIL",
+}
+
+# Config niewrażliwy — należy do config.toml, NIE do workflow. Gdyby któryś tu
+# wrócił, drift wraca razem z nim.
+FORBIDDEN_NONSECRET_KEYS = {
     "SYMBOLS",
+    "SYMBOLS_ETF",
     "CRYPTO_SYMBOLS",
     "CRYPTO_VOLATILITY_THRESHOLD",
-    # FinOps: bez nich rada leci na drogim gpt-4o bez throttle → alerty TPM.
-    # GHA nie eksportuje vars.* automatycznie; musi być jawne w env: kroku.
-    "COUNCIL_LLM_MODEL",
-    "SYMBOL_THROTTLE_SECONDS",
+    "VOLATILITY_THRESHOLD",
     "COUNCIL_VOLATILITY_THRESHOLD",
-    # Bez tego tickery niewspierane przez Finnhub free (EU dot-notation, OTC)
-    # lecą jako BŁĘDY zamiast jako "pominięte/ignored".
-    "SYMBOLS_UNSUPPORTED_PRICE",
-    # Analiza główna na Anthropic (Claude). Bez tych kluczy w prod Settings
-    # spada do LLM_PROVIDER=openai / brak ANTHROPIC_API_KEY, a rada bez jawnego
-    # COUNCIL_LLM_PROVIDER=openai poszłaby na Anthropic z modelem OpenAI → crash.
-    "LLM_PROVIDER",
-    "ANTHROPIC_API_KEY",
     "COUNCIL_LLM_PROVIDER",
+    "COUNCIL_LLM_MODEL",
+    "LLM_PROVIDER",
+    "SYMBOL_THROTTLE_SECONDS",
+    "SYMBOLS_UNSUPPORTED_PRICE",
+    "RISK_SYMBOLS",
+    "RISK_SYMBOL_TYPES",
+    "NBP_ENABLED",
+    "NOTIFICATIONS_ENABLED",
+    "DIGEST_FROM_EMAIL",
+    "ML_MODEL_PATH",
 }
 
 
@@ -52,19 +66,29 @@ def _run_agent_env() -> dict[str, object]:
     return run_step.get("env", {})
 
 
-def test_fast_loop_maps_crypto_config_into_env() -> None:
+def test_all_required_secrets_are_mapped() -> None:
     env_keys = set(_run_agent_env().keys())
-    missing = REQUIRED_ENV_KEYS - env_keys
+    missing = REQUIRED_SECRET_KEYS - env_keys
     assert not missing, (
-        f"fast_loop_12h.yml nie mapuje {sorted(missing)} do env kroku agenta — "
-        f"te zmienne nie dotrą do procesu i Settings spadnie do defaultu "
-        f"(np. brak CRYPTO_SYMBOLS = BTC/ETH gubione przed pętlą)."
+        f"fast_loop_12h.yml nie mapuje sekretów {sorted(missing)} do env "
+        f"kroku agenta — bez nich proces dostanie pusty klucz i padnie."
     )
 
 
+def test_no_non_secret_config_leaks_into_workflow() -> None:
+    env_keys = set(_run_agent_env().keys())
+    leaked = FORBIDDEN_NONSECRET_KEYS & env_keys
+    assert not leaked, (
+        f"Config niewrażliwy {sorted(leaked)} wrócił do workflow — miejsce na "
+        f"to jest w config.toml (single source of truth), inaczej drift wraca."
+    )
+
+
+def test_config_toml_exists() -> None:
+    assert (ROOT / "config.toml").is_file(), "brak config.toml w repo"
+
+
 def test_dependency_sync_installs_anthropic_extra() -> None:
-    # Analiza główna na Claude wymaga SDK anthropic, które jest optional-dependency.
-    # Bez `--extra anthropic` w `uv sync` import w prod się wywali.
     sync_cmds = [
         str(s.get("run", "")) for s in _steps() if "uv sync" in str(s.get("run", ""))
     ]

@@ -38,12 +38,12 @@ jobs:
 
       - name: 📈 Train XGBoost on prediction_logs
         env:
-          # Slow Loop potrzebuje TYLKO dostępu do bazy (least privilege)
+          # Slow Loop potrzebuje TYLKO dostępu do bazy (least privilege).
+          # Symbole i ml_model_path czyta z config.toml (commitowany).
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          SYMBOLS:      ${{ vars.SYMBOLS || 'AAPL,VOO,CSPX.L' }}
-          ML_MODEL_PATH: data/models/price_predictor.ubj
-          # Dummy values dla wymaganych przez Settings, ale nieużywanych w Slow Loop
+          # Dummy values dla pól wymaganych przez Settings, nieużywanych w Slow Loop
+          # (trener nie buduje LLM, więc Anthropic nie jest potrzebny).
           OPENAI_API_KEY:         unused-in-slow-loop
           FINNHUB_API_KEY:        unused-in-slow-loop
           ALPHA_VANTAGE_API_KEYS: unused-in-slow-loop

@@ -5,17 +5,29 @@ from decimal import Decimal
 from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
 
 from src.domain.macro_risk import MacroRiskInstrumentType
 
 
 class Settings(BaseSettings):
-    """Konfiguracja runtime — wczytywana z `.env` i zmiennych środowiskowych.
+    """Konfiguracja runtime — dwa rozłączne źródła:
 
-    Wszystkie tajemnice (klucze API, DB credentials) trzymane są tutaj.
-    Klucze nieobowiązkowe mają wartości domyślne. Wymagane (bez default)
-    rzucają `ValidationError` przy starcie, jeśli brakuje ich w env.
+    - **Config niewrażliwy** (symbole, progi, modele, providerzy, throttle…)
+      żyje w commitowanym `config.toml` — single source of truth, wersjonowany,
+      review-owalny. Bez duplikacji w `.env`/`.env.example`/workflow.
+    - **Sekrety** (klucze API, DB credentials, odbiorca maila) NIGDY nie trafiają
+      do `config.toml` — czytane z env / `.env` (lokalnie) / GitHub Secrets (CI).
+
+    Precedencja (od najwyższej): init kwargs → env var → `.env` → `config.toml`
+    → defaulty w kodzie. Dzięki temu env/.env może nadpisać dowolną wartość
+    (np. szybki eksperyment lokalny), a sekrety wstrzykuje się przez env.
     """
 
     model_config = SettingsConfigDict(
@@ -24,6 +36,37 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Dokłada `config.toml` jako źródło PONIŻEJ env/.env (sekrety i
+        eksperymenty z env nadpisują), a POWYŻEJ defaultów w kodzie.
+
+        `STOCKAGENT_DISABLE_TOML=1` pomija źródło TOML — używają tego testy
+        jednostkowe, by asertować czyste defaulty pól bez wpływu config.toml.
+        """
+        sources: list[PydanticBaseSettingsSource] = [
+            init_settings,
+            env_settings,
+            dotenv_settings,
+        ]
+        if os.environ.get("STOCKAGENT_DISABLE_TOML") != "1":
+            # Ścieżkę podajemy wprost (nie przez model_config), by w trybie
+            # wyłączonym nie było ostrzeżenia o nieużytym kluczu `toml_file`.
+            # `STOCKAGENT_TOML_FILE` pozwala testom wskazać tymczasowy plik.
+            toml_file = os.environ.get("STOCKAGENT_TOML_FILE", "config.toml")
+            sources.append(
+                TomlConfigSettingsSource(settings_cls, toml_file=toml_file)
+            )
+        sources.append(file_secret_settings)
+        return tuple(sources)
 
     # ----- LLM -----
     llm_provider: Literal["openai", "anthropic"] = "openai"

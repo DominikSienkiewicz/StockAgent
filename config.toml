@@ -1,0 +1,57 @@
+# =====================================================
+# StockAgent — config NIEWRAŻLIWY (single source of truth)
+# =====================================================
+# Ten plik jest commitowany i wersjonowany. Czytany wprost przez
+# `src/config.py` (pydantic-settings, TomlConfigSettingsSource).
+#
+# SEKRETY (klucze API, DB credentials, DIGEST_TO_EMAIL) NIE należą tutaj —
+# żyją w `.env` (lokalnie) i GitHub Secrets (CI). Patrz `.env.example`.
+#
+# Precedencja: env var > .env > TEN PLIK > defaulty w kodzie.
+# Każdą wartość można nadpisać zmienną środowiskową (np. szybki eksperyment).
+
+# --- LLM ---
+# Analiza główna na Anthropic Claude Sonnet 4.6 (warstwa decyzyjna).
+# Rada osobno na tanim OpenAI gpt-5-mini — trzyma QuotaMonitor (Anthropic go
+# nie wspiera). COUNCIL_LLM_PROVIDER MUSI być 'openai', inaczej rada dziedziczy
+# 'anthropic' z modelem OpenAI → crash.
+llm_provider = "anthropic"
+council_llm_provider = "openai"
+council_llm_model = "gpt-5-mini"
+council_personas_dir = "data/council_personas"
+
+# --- Bramki volatility (Decimal jako string — dokładność) ---
+volatility_threshold = "0.02"
+council_volatility_threshold = "0.03"
+crypto_volatility_threshold = "0.05"
+
+# --- Pętla / resilience ---
+symbol_throttle_seconds = 2.0
+ml_model_path = "data/models/price_predictor.ubj"
+
+# --- Powiadomienia (sam nadawca; ODBIORCA = sekret w .env) ---
+notifications_enabled = true
+digest_from_email = "onboarding@resend.dev"
+
+# --- NBP (kursy do raportu) ---
+nbp_enabled = true
+
+# --- Portfolio (43) ---
+symbols = [
+  "AAPL", "AMZN", "GOOGL", "MSFT", "META", "NVDA", "TSLA", "AMD", "NET",
+  "PLTR", "ORCL", "UBER", "TSM", "ASML", "ASMIY", "SAP", "SIEGY", "NVO",
+  "DELL", "IBM", "MU", "QCOM", "CRWD", "INTC", "SNDK", "BLK", "SSNLF",
+  "TEAM", "FROG", "SNOW", "DDOG", "SAIL", "OKTA", "S", "PANW",
+  "VT", "QUAL", "IHI", "VB", "EWY", "IVV", "XDWD.DE", "IUSN.DE",
+]
+# ETF-y — pomijają fundamentale (brak EPS/P/E).
+symbols_etf = ["VOO", "CSPX.L", "XDWD.DE", "IUSN.DE", "VT", "QUAL", "IHI", "VB", "EWY", "IVV"]
+# Tickery niewspierane przez Finnhub free (EU dot-notation / OTC) → "ignored", nie "error".
+symbols_unsupported_price = ["CSPX.L", "XDWD.DE", "IUSN.DE", "SSNLF"]
+
+# --- Krypto (CoinGecko zamiast Finnhub) ---
+crypto_symbols = ["BTC", "ETH"]
+
+# --- Risk Watch (osobny use case) ---
+risk_symbols = ["EPOL", "SH", "PSQ", "RWM", "EUM", "SQQQ", "TBT", "GLD", "VIXY", "UVXY"]
+risk_symbol_types = { EPOL = "SOVEREIGN_PROXY", SH = "INVERSE_EQUITY", PSQ = "INVERSE_EQUITY", RWM = "INVERSE_EQUITY", EUM = "INVERSE_EQUITY", SQQQ = "INVERSE_EQUITY", TBT = "INVERSE_TREASURY", GLD = "SAFE_HAVEN", VIXY = "VOLATILITY", UVXY = "VOLATILITY" }

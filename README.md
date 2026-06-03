@@ -228,58 +228,38 @@ cp .env.example .env
 #   migrations/008_data_quality_flags.sql       (data_quality_flags on prediction_logs)
 #   migrations/009_trend_correctness.sql        (is_trend_correct on prediction_logs + backfill)
 
-# 4. Smoke test (expect 453 tests passing + 5 skipped live API tests)
+# 4. Smoke test (expect 600+ tests passing + ~21 skipped live/Docker tests)
 uv run pytest
 
 # 5. Single Fast Loop run
 uv run python main_agent.py
 ```
 
-`.env` keys:
+Config is split in two: **secrets** live in `.env` (gitignored) / GitHub Secrets; **everything non-secret** (symbols, thresholds, models, providers, throttle, Risk Watch…) lives in committed [`config.toml`](config.toml) — the single source of truth, read directly by `Settings`. No duplication across `.env` / workflow / repo variables.
+
+`.env` — **secrets only**:
 
 ```env
-# LLM
-LLM_PROVIDER=anthropic          # main analysis on Claude Sonnet 4.6; or openai
-OPENAI_API_KEY=sk-...            # still required (embeddings + council)
-ANTHROPIC_API_KEY=sk-ant-...     # required for LLM_PROVIDER=anthropic; needs `uv sync --extra anthropic`
+# LLM (main analysis = Anthropic; embeddings + council = OpenAI)
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...            # needs `uv sync --extra anthropic`
 
-# Market + News
-FINNHUB_API_KEY=
+# Market data + News/Sentiment
+FINNHUB_API_KEY=...
 ALPHA_VANTAGE_API_KEYS=key1,key2,key3   # CSV — rotation on rate-limit
 
-# DB
+# Database (Supabase)
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=eyJ...                     # service_role key
 
-# Email (optional)
-NOTIFICATIONS_ENABLED=true
+# Email — recipient is a secret; sender + on/off toggle live in config.toml
 RESEND_API_KEY=re_...
-DIGEST_FROM_EMAIL=onboarding@resend.dev   # sandbox or your own verified domain
 DIGEST_TO_EMAIL=you@example.com
-
-# Agent
-SYMBOLS=AAPL,AMZN,GOOGL,MSFT,META,NVDA,TSLA,AMD,NET,PLTR,ORCL,UBER,TSM,ASML,ASMIY,SAP,SIEGY,NVO,DELL,IBM,MU,QCOM,CRWD,INTC,SNDK,BLK,SSNLF,TEAM,FROG,SNOW,DDOG,SAIL,OKTA,S,PANW,VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE
-SYMBOLS_ETF=VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE   # CSV of ETF tickers — skip fundamentals fetch
-VOLATILITY_THRESHOLD=0.02
-ML_MODEL_PATH=data/models/price_predictor.ubj
-
-# Risk Watch (optional, separate use case)
-RISK_SYMBOLS=EPOL,SH,PSQ,RWM,EUM,SQQQ,TBT,GLD,VIXY,UVXY
-RISK_SYMBOL_TYPES=EPOL:SOVEREIGN_PROXY,SH:INVERSE_EQUITY,PSQ:INVERSE_EQUITY,RWM:INVERSE_EQUITY,EUM:INVERSE_EQUITY,SQQQ:INVERSE_EQUITY,TBT:INVERSE_TREASURY,GLD:SAFE_HAVEN,VIXY:VOLATILITY,UVXY:VOLATILITY
-NBP_ENABLED=true                                      # pulls EUR/PLN, USD/PLN 30-day window from api.nbp.pl
-
-# Crypto (separate price source: CoinGecko, separate threshold)
-CRYPTO_SYMBOLS=BTC,ETH                                 # routed to CoinGeckoAdapter, news prefixed CRYPTO:
-CRYPTO_VOLATILITY_THRESHOLD=0.05                       # 5% gate — crypto natively moves 3-5%/day
-
-# Resilience / rate-limit
-COUNCIL_LLM_PROVIDER=openai                            # council stays on OpenAI (keeps QuotaMonitor) even when main=Claude
-COUNCIL_LLM_MODEL=gpt-5-mini                           # cheap model for the 7-persona council
-SYMBOLS_UNSUPPORTED_PRICE=CSPX.L,XDWD.DE,IUSN.DE,SSNLF # tickers the price adapter cannot fetch (Finnhub free 403 / OTC) — marked "ignored"
-SYMBOL_THROTTLE_SECONDS=2                              # sleep between symbols to avoid bursting the OpenAI TPM limit
 ```
 
-The same env vars feed **GitHub Actions secrets** — local and CI hit the **same Supabase database**, guaranteeing "works on my machine == works in prod" parity.
+Everything else — `symbols`, `symbols_etf`, `volatility_threshold`, `crypto_symbols`, `council_llm_provider/model`, `risk_symbols`, `nbp_enabled`, `symbol_throttle_seconds`, `notifications_enabled`, `digest_from_email`, … — is edited in [`config.toml`](config.toml). Any value can still be overridden by an environment variable (precedence: **env → `.env` → `config.toml` → code defaults**), e.g. `SYMBOL_THROTTLE_SECONDS=0` for a quick local run.
+
+The secrets feed **GitHub Actions Secrets** — local and CI hit the **same Supabase database**, guaranteeing "works on my machine == works in prod" parity. `config.toml` is committed, so CI gets the same config without any repo variables.
 
 ## Build commands
 
@@ -308,16 +288,16 @@ Three workflows in [`.github/workflows/`](.github/workflows/):
 
 The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
 
-**Repository secrets:** `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`. **`ANTHROPIC_API_KEY` is required** — the main analysis runs on Claude (`LLM_PROVIDER=anthropic`).
-**Repository variables:** `NOTIFICATIONS_ENABLED`, `DIGEST_FROM_EMAIL`, `DIGEST_TO_EMAIL`, `SYMBOLS`, `VOLATILITY_THRESHOLD`, `CRYPTO_SYMBOLS`, `CRYPTO_VOLATILITY_THRESHOLD`, `LLM_PROVIDER`, `COUNCIL_LLM_PROVIDER`, `COUNCIL_LLM_MODEL`, `SYMBOL_THROTTLE_SECONDS`, `COUNCIL_VOLATILITY_THRESHOLD`, `SYMBOLS_UNSUPPORTED_PRICE` (all optional with sensible defaults — main analysis defaults to Claude Sonnet 4.6, the council to OpenAI `gpt-5-mini` with a 2s throttle). Note: GitHub Actions does **not** auto-export `vars.*` — a variable only reaches the agent if it is explicitly mapped into the step's `env:` block in [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml). Leave `CRYPTO_SYMBOLS` unset (or omit the mapping) and BTC/ETH are silently dropped before the prediction loop. The wiring is guarded by [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py).
+**Repository secrets** (the only things CI needs beyond the committed `config.toml`): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`, `DIGEST_TO_EMAIL`. `ANTHROPIC_API_KEY` is required (main analysis runs on Claude); `DIGEST_TO_EMAIL` is a **secret** (was a variable — move it).
+**Repository variables:** none. All non-secret config lives in committed [`config.toml`](config.toml), read directly by `Settings` — so there is nothing to map in the workflow `env:` and no `vars.*` drift to guard. The workflow injects only the secrets above; the split (secrets mapped, non-secret config kept out) is guarded by [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py).
 
 ## Configuration
 
-All tunable parameters live in [`src/config.py`](src/config.py) as a `Settings` Pydantic model with validators. Override via env vars or `.env`:
+All tunable parameters are a `Settings` Pydantic model in [`src/config.py`](src/config.py) with validators. Non-secret values are set in committed [`config.toml`](config.toml); secrets come from `.env` / GitHub Secrets. Precedence: **env var → `.env` → `config.toml` → the code defaults below** (so any field can be overridden ad-hoc via an env var). The `Default` column is the in-code fallback when a field is absent everywhere; `config.toml` ships the actual production values.
 
 | Field | Default | Description |
 |---|---|---|
-| `llm_provider` | `openai` | `openai` or `anthropic` |
+| `llm_provider` | `openai` | `openai` or `anthropic` (production `config.toml` sets `anthropic`). |
 | `council_llm_provider` | `None` | Override LLM provider for the advisory council only (heterogeneous strategy: cheap model for 7-persona council, frontier for main analysis). `None` → reuses `llm_provider`. |
 | `council_llm_model` | `None` | Override model name for the council adapter (e.g. `gpt-5-mini`, `claude-haiku-4-5`). `None` → provider default. |
 | `council_personas_dir` | `data/council_personas` | Directory with one JSON file per council member (`{"name": str, "style": str}`). Validate with `uv run python -m src.tools.validate_personas`. |
