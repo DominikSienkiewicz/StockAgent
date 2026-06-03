@@ -64,16 +64,17 @@ All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff,
 | **NBP** (`/exchangerates/rates/A`) | 30-day window for EUR & USD vs PLN | Free, no API key, no rate limit. Used by `NbpClient` (implements `MacroIndicatorsPort`) to compute 30-day FX-stress for the Risk Watch section. |
 | **CoinGecko** (`/simple/price`) | One request per cycle for the configured crypto basket | Free, no API key, no meaningful rate limit. Used by `CoinGeckoAdapter` (implements `MarketDataPort`) for crypto prices. Maps clean tickers (`BTC`, `ETH`) to CoinGecko coin ids (`bitcoin`, `ethereum`). |
 
-## Symbols (default portfolio of 35)
+## Symbols (default portfolio of 43)
 
 ```text
 AAPL,AMZN,GOOGL,MSFT,META,NVDA,TSLA,AMD,NET,PLTR,
 ORCL,UBER,TSM,ASML,ASMIY,SAP,SIEGY,NVO,
 DELL,IBM,MU,QCOM,CRWD,INTC,SNDK,BLK,SSNLF,
+TEAM,FROG,SNOW,DDOG,SAIL,OKTA,S,PANW,
 VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE
 ```
 
-Sector mix: 🤖 AI / semis (NVDA, AMD, TSM, ASML, ASMIY, MU, QCOM, INTC, SNDK) · ☁️ cloud / software (MSFT, ORCL, NET, SAP, PLTR, CRWD, IBM) · 📱 big tech (AAPL, AMZN, GOOGL, META) · 🖥️ hardware (DELL, SSNLF) · 🚗 mobility (TSLA, UBER) · 🏭 industrial / pharma (SIEGY, NVO) · 💰 financials (BLK) · 📊 ETFs (VT, QUAL, IHI, VB, EWY, IVV, XDWD.DE, IUSN.DE).
+Sector mix: 🤖 AI / semis (NVDA, AMD, TSM, ASML, ASMIY, MU, QCOM, INTC, SNDK) · ☁️ cloud / software (MSFT, ORCL, NET, SAP, PLTR, IBM, TEAM, FROG, SNOW, DDOG) · 🔐 cybersecurity (CRWD, PANW, OKTA, S, SAIL) · 📱 big tech (AAPL, AMZN, GOOGL, META) · 🖥️ hardware (DELL, SSNLF) · 🚗 mobility (TSLA, UBER) · 🏭 industrial / pharma (SIEGY, NVO) · 💰 financials (BLK) · 📊 ETFs (VT, QUAL, IHI, VB, EWY, IVV, XDWD.DE, IUSN.DE).
 
 Configurable via `SYMBOLS` in `.env` (CSV).
 
@@ -255,7 +256,7 @@ DIGEST_FROM_EMAIL=onboarding@resend.dev   # sandbox or your own verified domain
 DIGEST_TO_EMAIL=you@example.com
 
 # Agent
-SYMBOLS=AAPL,AMZN,GOOGL,MSFT,META,NVDA,TSLA,AMD,NET,PLTR,ORCL,UBER,TSM,ASML,ASMIY,SAP,SIEGY,NVO,DELL,IBM,MU,QCOM,CRWD,INTC,SNDK,BLK,SSNLF,VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE
+SYMBOLS=AAPL,AMZN,GOOGL,MSFT,META,NVDA,TSLA,AMD,NET,PLTR,ORCL,UBER,TSM,ASML,ASMIY,SAP,SIEGY,NVO,DELL,IBM,MU,QCOM,CRWD,INTC,SNDK,BLK,SSNLF,TEAM,FROG,SNOW,DDOG,SAIL,OKTA,S,PANW,VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE
 SYMBOLS_ETF=VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE   # CSV of ETF tickers — skip fundamentals fetch
 VOLATILITY_THRESHOLD=0.02
 ML_MODEL_PATH=data/models/price_predictor.ubj
@@ -305,7 +306,7 @@ Three workflows in [`.github/workflows/`](.github/workflows/):
 The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
 
 **Repository secrets:** `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY` (optional: `ANTHROPIC_API_KEY`).
-**Repository variables:** `NOTIFICATIONS_ENABLED`, `DIGEST_FROM_EMAIL`, `DIGEST_TO_EMAIL`, `SYMBOLS`, `VOLATILITY_THRESHOLD` (all optional with sensible defaults).
+**Repository variables:** `NOTIFICATIONS_ENABLED`, `DIGEST_FROM_EMAIL`, `DIGEST_TO_EMAIL`, `SYMBOLS`, `VOLATILITY_THRESHOLD`, `CRYPTO_SYMBOLS`, `CRYPTO_VOLATILITY_THRESHOLD` (all optional with sensible defaults). Note: GitHub Actions does **not** auto-export `vars.*` — a variable only reaches the agent if it is explicitly mapped into the step's `env:` block in [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml). Leave `CRYPTO_SYMBOLS` unset (or omit the mapping) and BTC/ETH are silently dropped before the prediction loop.
 
 ## Configuration
 

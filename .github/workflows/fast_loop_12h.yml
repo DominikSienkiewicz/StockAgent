@@ -63,5 +63,10 @@ jobs:
           # Agent config (opcjonalnie nadpisz w secrets/variables)
           VOLATILITY_THRESHOLD: ${{ vars.VOLATILITY_THRESHOLD || '0.02' }}
           SYMBOLS:             ${{ vars.SYMBOLS || 'AAPL,VOO,CSPX.L' }}
+          # Krypto — osobny adapter ceny (CoinGecko) i wyższy próg volatility.
+          # GHA NIE eksportuje vars.* automatycznie: bez tej linii Settings.crypto_symbols
+          # spada do pustego defaultu i BTC/ETH są gubione PRZED pętlą predykcyjną.
+          CRYPTO_SYMBOLS:             ${{ vars.CRYPTO_SYMBOLS || '' }}
+          CRYPTO_VOLATILITY_THRESHOLD: ${{ vars.CRYPTO_VOLATILITY_THRESHOLD || '0.05' }}
           ML_MODEL_PATH:       data/models/price_predictor.ubj
         run: uv run python main_agent.py
