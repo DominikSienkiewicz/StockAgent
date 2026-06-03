@@ -42,15 +42,20 @@ jobs:
           enable-cache: true   # cache zależności między uruchomieniami
 
       - name: 📦 Sync dependencies
-        run: uv sync --frozen
+        # --extra anthropic: analiza główna chodzi na Claude (LLM_PROVIDER=anthropic),
+        # więc SDK anthropic MUSI być zainstalowany (jest optional-dependency).
+        run: uv sync --frozen --extra anthropic
 
       - name: 🧠 Run Agent (LangGraph + XGBoost + LLM)
         env:
           # Database
           SUPABASE_URL:        ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:        ${{ secrets.SUPABASE_KEY }}
-          # LLM
+          # LLM — analiza główna na Anthropic (Claude Sonnet 4.6), embeddingi i
+          # rada na OpenAI. Oba klucze wymagane. ANTHROPIC_API_KEY = repo secret.
+          LLM_PROVIDER:        ${{ vars.LLM_PROVIDER || 'anthropic' }}
           OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
           # Market data
           FINNHUB_API_KEY:       ${{ secrets.FINNHUB_API_KEY }}
           # News + Sentiment (CSV - rotacja przy rate-limit)
@@ -68,12 +73,14 @@ jobs:
           # spada do pustego defaultu i BTC/ETH są gubione PRZED pętlą predykcyjną.
           CRYPTO_SYMBOLS:             ${{ vars.CRYPTO_SYMBOLS || '' }}
           CRYPTO_VOLATILITY_THRESHOLD: ${{ vars.CRYPTO_VOLATILITY_THRESHOLD || '0.05' }}
-          # FinOps: rada doradcza (15 person × N symboli) to ~94% callsów cyklu.
-          # Default mini = ~15× wyższy TPM i ~15× taniej; bez tego rada leci na
-          # gpt-4o (default Settings) i bursti limit TPM. Throttle rozkłada calle
-          # w oknie TPM, próg rady ucina ją przy małych Δ. GHA nie eksportuje
-          # vars.* automatycznie — defaulty działają nawet bez repo variables.
-          COUNCIL_LLM_MODEL:           ${{ vars.COUNCIL_LLM_MODEL || 'gpt-4o-mini' }}
+          # FinOps: rada (7 person + chairman) to ~94% callsów cyklu. Chodzi na
+          # tanim OpenAI gpt-5-mini, NIE na Claude — trzyma QuotaMonitor (Anthropic
+          # go nie wspiera) i jest dużo tańsza niż Sonnet. COUNCIL_LLM_PROVIDER
+          # MUSI być 'openai': inaczej rada dziedziczy LLM_PROVIDER=anthropic i
+          # dostaje model OpenAI → crash. Throttle rozkłada calle w oknie TPM.
+          # GHA nie eksportuje vars.* automatycznie — defaulty działają bez repo vars.
+          COUNCIL_LLM_PROVIDER:        ${{ vars.COUNCIL_LLM_PROVIDER || 'openai' }}
+          COUNCIL_LLM_MODEL:           ${{ vars.COUNCIL_LLM_MODEL || 'gpt-5-mini' }}
           SYMBOL_THROTTLE_SECONDS:     ${{ vars.SYMBOL_THROTTLE_SECONDS || '2' }}
           COUNCIL_VOLATILITY_THRESHOLD: ${{ vars.COUNCIL_VOLATILITY_THRESHOLD || '0.03' }}
           # Tickery, których Finnhub free nie wyceni (EU dot-notation: .DE/.L →

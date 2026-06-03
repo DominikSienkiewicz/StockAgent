@@ -33,13 +33,22 @@ REQUIRED_ENV_KEYS = {
     # Bez tego tickery niewspierane przez Finnhub free (EU dot-notation, OTC)
     # lecą jako BŁĘDY zamiast jako "pominięte/ignored".
     "SYMBOLS_UNSUPPORTED_PRICE",
+    # Analiza główna na Anthropic (Claude). Bez tych kluczy w prod Settings
+    # spada do LLM_PROVIDER=openai / brak ANTHROPIC_API_KEY, a rada bez jawnego
+    # COUNCIL_LLM_PROVIDER=openai poszłaby na Anthropic z modelem OpenAI → crash.
+    "LLM_PROVIDER",
+    "ANTHROPIC_API_KEY",
+    "COUNCIL_LLM_PROVIDER",
 }
 
 
-def _run_agent_env() -> dict[str, object]:
+def _steps() -> list[dict[str, object]]:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    steps = spec["jobs"]["run-market-agent"]["steps"]
-    run_step = next(s for s in steps if str(s.get("run", "")).endswith("main_agent.py"))
+    return spec["jobs"]["run-market-agent"]["steps"]
+
+
+def _run_agent_env() -> dict[str, object]:
+    run_step = next(s for s in _steps() if str(s.get("run", "")).endswith("main_agent.py"))
     return run_step.get("env", {})
 
 
@@ -50,4 +59,16 @@ def test_fast_loop_maps_crypto_config_into_env() -> None:
         f"fast_loop_12h.yml nie mapuje {sorted(missing)} do env kroku agenta — "
         f"te zmienne nie dotrą do procesu i Settings spadnie do defaultu "
         f"(np. brak CRYPTO_SYMBOLS = BTC/ETH gubione przed pętlą)."
+    )
+
+
+def test_dependency_sync_installs_anthropic_extra() -> None:
+    # Analiza główna na Claude wymaga SDK anthropic, które jest optional-dependency.
+    # Bez `--extra anthropic` w `uv sync` import w prod się wywali.
+    sync_cmds = [
+        str(s.get("run", "")) for s in _steps() if "uv sync" in str(s.get("run", ""))
+    ]
+    assert sync_cmds, "brak kroku `uv sync` w workflow"
+    assert any("--extra anthropic" in cmd for cmd in sync_cmds), (
+        "krok `uv sync` musi instalować `--extra anthropic` (LLM_PROVIDER=anthropic)."
     )

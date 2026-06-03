@@ -321,3 +321,38 @@ class TestQuotaAlertEmit:
         adapter.analyze("Predict.")
 
         assert monitor.alerts == []
+
+
+class TestTemperatureCompatibility:
+    """GPT-5 / o-series akceptują tylko domyślną temperature (=1). Adapter NIE
+    może wysyłać `temperature` dla takich modeli — inaczej 400 BadRequest
+    wywala radę w produkcji (regresja 2026-06-03, COUNCIL_LLM_MODEL=gpt-5-mini)."""
+
+    def _adapter(self, mock_openai_class, model: str) -> tuple[OpenAIAdapter, MagicMock]:
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        return OpenAIAdapter(api_key="sk-test", model=model), client
+
+    def test_gpt4o_still_sends_temperature(self, mock_openai_class):
+        adapter, client = self._adapter(mock_openai_class, "gpt-4o")
+        client.chat.completions.create.return_value = _completion("{}")
+        adapter.analyze("x")
+        assert client.chat.completions.create.call_args.kwargs["temperature"] == 0.2
+
+    def test_gpt5_mini_omits_temperature_in_analyze(self, mock_openai_class):
+        adapter, client = self._adapter(mock_openai_class, "gpt-5-mini")
+        client.chat.completions.create.return_value = _completion("{}")
+        adapter.analyze("x")
+        assert "temperature" not in client.chat.completions.create.call_args.kwargs
+
+    def test_gpt5_mini_omits_temperature_in_analyze_mistake(self, mock_openai_class):
+        adapter, client = self._adapter(mock_openai_class, "gpt-5-mini")
+        client.chat.completions.create.return_value = _completion("insight")
+        adapter.analyze_mistake("x")
+        assert "temperature" not in client.chat.completions.create.call_args.kwargs
+
+    def test_o_series_omits_temperature(self, mock_openai_class):
+        adapter, client = self._adapter(mock_openai_class, "o3-mini")
+        client.chat.completions.create.return_value = _completion("{}")
+        adapter.analyze("x")
+        assert "temperature" not in client.chat.completions.create.call_args.kwargs

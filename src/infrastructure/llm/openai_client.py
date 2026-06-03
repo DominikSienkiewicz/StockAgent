@@ -15,6 +15,10 @@ from src.domain.quota import QuotaAlert, QuotaSeverity
 
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_TEMPERATURE = 0.2  # niska temperatura — chcemy deterministycznego Quanta
+# Modele reasoning (GPT-5, o-series) akceptują WYŁĄCZNIE domyślną temperature (=1)
+# i zwracają 400 BadRequest na każdą inną. Dla nich `temperature` pomijamy w
+# requeście (API użyje defaultu). Prefiksy dobrane pod faktyczne ograniczenie API.
+_NO_CUSTOM_TEMPERATURE_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 # GHA fast loop ma 15 min hard timeout. SDK domyślnie czeka 600s na response —
 # zawieszone wywołanie LLM mogłoby zjeść cały cykl. 30s starcza dla normalnego
 # GPT-4o response (typowo 3-8s) i nie maskuje legitnych długich generacji.
@@ -65,13 +69,30 @@ class OpenAIAdapter(LLMPort):
         self._backoff_base = backoff_base
         self._quota_monitor = quota_monitor
 
+    def _supports_custom_temperature(self) -> bool:
+        """GPT-5 / o-series akceptują tylko default temperature (=1)."""
+        model = self._model.lower()
+        return not any(
+            model.startswith(p) for p in _NO_CUSTOM_TEMPERATURE_PREFIXES
+        )
+
+    def _create_kwargs(self, prompt: str, *, json_mode: bool) -> dict[str, Any]:
+        """Wspólny builder argumentów create() — `temperature` tylko gdy model
+        ją wspiera (inaczej API zwraca 400 dla GPT-5/o-series)."""
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        if self._supports_custom_temperature():
+            kwargs["temperature"] = self._temperature
+        return kwargs
+
     def analyze(self, prompt: str) -> dict[str, Any]:
         response = self._call_with_retry(
             lambda: self._client.chat.completions.create(
-                model=self._model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=self._temperature,
+                **self._create_kwargs(prompt, json_mode=True)
             )
         )
         content = response.choices[0].message.content
@@ -88,12 +109,10 @@ class OpenAIAdapter(LLMPort):
     def analyze_mistake(self, prompt: str) -> str:
         response = self._call_with_retry(
             lambda: self._client.chat.completions.create(
-                model=self._model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self._temperature,
+                **self._create_kwargs(prompt, json_mode=False)
             )
         )
-        content = response.choices[0].message.content
+        content: str | None = response.choices[0].message.content
         if content is None:
             return ""
         return content.strip()
@@ -118,9 +137,9 @@ class OpenAIAdapter(LLMPort):
                             f"{attempt}× during a single call (retry succeeded)."
                         ),
                         action=(
-                            "Consider COUNCIL_LLM_MODEL=gpt-4o-mini for the "
-                            "council (15× higher TPM, ~15× cheaper) or "
-                            "upgrade your OpenAI usage tier."
+                            "Council already on a mini model — raise "
+                            "COUNCIL_VOLATILITY_THRESHOLD, drop to gpt-5-nano, "
+                            "or upgrade your OpenAI usage tier."
                         ),
                     )
                 return result

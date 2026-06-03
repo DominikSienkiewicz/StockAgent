@@ -5,7 +5,8 @@ Autonomous financial agent that runs once daily (on trading days), monitors a cu
 
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.3](https://img.shields.io/badge/LangGraph-1.3-1C3C3C?style=for-the-badge)
-![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o-412991?style=for-the-badge&logo=openai&logoColor=white)
+![Anthropic](https://img.shields.io/badge/Anthropic-Claude_Sonnet_4.6-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
+![OpenAI](https://img.shields.io/badge/OpenAI-embeddings_+_council-412991?style=for-the-badge&logo=openai&logoColor=white)
 ![XGBoost](https://img.shields.io/badge/XGBoost-3.2-FF6B35?style=for-the-badge)
 ![Supabase](https://img.shields.io/badge/Supabase-Postgres+pgvector-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
 ![Resend](https://img.shields.io/badge/Resend-Email-000000?style=for-the-badge)
@@ -24,7 +25,7 @@ Finnhub (US prices) ──► check_price ──► reflect ──► fetch_fund
                                                         slow loop only)         └── yes ──► sentiment │
                                                                                             → news    │
                                                                                             → predict │
-                                                                                            → council │  ← 15 investor personas
+                                                                                            → council │  ← 7 investor personas
                                                                                             → save ───┤
                                                                                                       │
                           ┌───────────────────────────────────────────────────────────────────────────┘
@@ -39,9 +40,9 @@ Finnhub (US prices) ──► check_price ──► reflect ──► fetch_fund
 3. **Fundamentals (slow loop refreshes, fast loop reads cache)** — `fetch_fundamentals_node` runs after `reflect` and before the volatility gate. The `FundamentalsPort` is implemented by `AlphaVantageFundamentalsAdapter` (2 API requests per stock symbol: `OVERVIEW` + `EARNINGS`) wrapped in `CachedFundamentalsAdapter` (decorator pattern). In the **slow loop**, real API calls populate the `fundamentals_cache` Supabase table. In the **fast loop**, a `NullFundamentalsAdapter` delegate skips API calls and reads from cache only. ETF symbols (configured via `SYMBOLS_ETF`) always skip fetching — they have no meaningful per-share EPS/P/E. The domain evaluates a deterministic `ValuationVerdict` (`UNDERVALUED / FAIR / OVERVALUED / UNKNOWN`) based primarily on PEG ratio, with PE/growth qualifiers; ETFs always get `UNKNOWN`. The verdict is surfaced to the Council prompt as a `Valuation snapshot` block and rendered as a dedicated **Wycena fundamentalna** section in the email report.
 4. **Volatility gate** — `Asset.evaluate_volatility(delta, threshold)` lives in the pure domain (Hexagonal core). Δ < 2% → `ignore`, no paid APIs touched. **Domain decides, graph executes.**
 5. **News + Sentiment** — `AlphaVantageClient` makes one request per ticker, rotating N API keys when one exhausts its 25 req/day quota. A `relevance ≥ 0.5` filter strips noise **before** anything reaches the LLM. Per ticker it returns a multi-feature dict: `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `av_sentiment_label`.
-6. **LLM (cross-validation)** — GPT-4o (or Claude when `LLM_PROVIDER=anthropic`) receives pre-computed AV sentiment + headlines + reflection context + fundamentals valuation snapshot. It returns structured JSON: `trend_direction`, `confidence_score`, **`av_agreement`** (whether it agrees with AV — anything below 0.3 flags potential manipulation), `target_price_12h`, `reasoning`.
+6. **LLM (cross-validation)** — **Claude Sonnet 4.6** (default; or OpenAI GPT when `LLM_PROVIDER=openai`) receives pre-computed AV sentiment + headlines + reflection context + fundamentals valuation snapshot. It returns structured JSON: `trend_direction`, `confidence_score`, **`av_agreement`** (whether it agrees with AV — anything below 0.3 flags potential manipulation), `target_price_12h`, `reasoning`.
 7. **ML hard prediction (local XGBoost)** — model lives in a `.ubj` file inside the repo (Local-First AI). Consumes 7 features: `price_delta`, `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `llm_trend_signal`, `av_llm_agreement`. On cold start (no trained weights yet) it falls back to a "no change" baseline instead of crashing.
-8. **Advisory Council** — after `predict_node`, 15 legendary investor personas (Buffett, Graham, Soros, Lynch, Dalio, Munger, Fisher, Tudor Jones, Gross, Livermore, Wood, Burry, Marks, Druckenmiller, Greenblatt) each independently analyse the same data via parallel LLM calls (one worker per investor). The personas are **data, not code** — one JSON file per investor in [`data/council_personas/`](data/council_personas/), schema `{"name": str, "style": str}`. Adding / removing a council member = adding / removing a file. Loader (`src/infrastructure/persona_loader.py`) validates schema and uniqueness at startup; CLI walidator `uv run python -m src.tools.validate_personas` plus a pre-commit hook catch typos before runtime. A final "chairman" call synthesises a consensus `CouncilVerdict` (BUY/SELL/HOLD + `consensus_strength` + `dissenting_views`). Two volatility gates: the main one (`volatility_threshold`, default 2%) decides whether to run the prediction pipeline at all; the **council-specific gate** (`council_volatility_threshold`, default 3%) further filters out medium-Δ cycles where the 16 LLM calls would mostly return HOLD — set it to `0.0` to disable. Stored as JSONB in `prediction_logs.council_verdict` (legacy blob) **and** as one row per investor in `council_votes` (structured audit trail — query "how did Burry vote on NVDA in the last month" without parsing JSON). Rendered as a styled table in the email report.
+8. **Advisory Council** — after `predict_node`, 7 legendary investor personas (Buffett, Graham, Lynch, Dalio, Soros, Wood, Marks) each independently analyse the same data via parallel LLM calls (one worker per investor). The personas are **data, not code** — one JSON file per investor in [`data/council_personas/`](data/council_personas/), schema `{"name": str, "style": str}`. Adding / removing a council member = adding / removing a file. Loader (`src/infrastructure/persona_loader.py`) validates schema and uniqueness at startup; CLI walidator `uv run python -m src.tools.validate_personas` plus a pre-commit hook catch typos before runtime. A final "chairman" call synthesises a consensus `CouncilVerdict` (BUY/SELL/HOLD + `consensus_strength` + `dissenting_views`). Two volatility gates: the main one (`volatility_threshold`, default 2%) decides whether to run the prediction pipeline at all; the **council-specific gate** (`council_volatility_threshold`, default 3%) further filters out medium-Δ cycles where the 8 LLM calls would mostly return HOLD — set it to `0.0` to disable. Stored as JSONB in `prediction_logs.council_verdict` (legacy blob) **and** as one row per investor in `council_votes` (structured audit trail — query "how did Soros vote on NVDA in the last month" without parsing JSON). Rendered as a styled table in the email report.
 9. **Persist** — `SupabaseRepository` writes the full record to `prediction_logs`. The news summary is embedded (OpenAI `text-embedding-3-small` → 1536-dim `pgvector`) for later RAG-style retrieval — graceful when embeddings are unavailable.
 10. **Slow Loop (weekly cycle)** — `main_trainer.py` retrains XGBoost on resolved predictions (those with `accuracy_score`), commits the new weights back to the repo (Continual Learning). Also runs a fundamentals refresh step using `AlphaVantageFundamentalsAdapter` to repopulate `fundamentals_cache`.
 11. **Deliver** — Polish-language HTML report via Resend with 2 charts (Δ12h + forecast), correlation scatter plot, trade signals sorted by `confidence × |Δ|`, risk signals with severity badges, day-over-day diff, and clickable news headlines. Two sections (council + fundamentals valuation) render via Jinja2 templates in `src/application/templates/` — autoescape on, the rest of the report still uses f-string composition in `report_builder.py` (incremental migration). The council template surfaces domain-level signals via `CouncilVerdict.is_split_decision()` (⚠️ PODZIELONA RADA badge), `has_strong_consensus()` (SILNY KONSENSUS badge), and `vote_distribution()` (BUY/SELL/HOLD count).
@@ -56,9 +57,9 @@ All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff,
 | **Alpha Vantage** `NEWS_SENTIMENT` | One request per ticker, `limit=50`, client-side relevance filter ≥ 0.5 | **AND filter on tickers** = a separate request per symbol. Rate limit 25 req/day × N keys = N × 25/day. |
 | **Alpha Vantage** `OVERVIEW` + `EARNINGS` | 2 requests per stock symbol per slow-loop refresh | Used by `AlphaVantageFundamentalsAdapter`. Free tier = 25 req/day → max ~12 stock symbols per refresh with a single key. Multi-key rotation via `ALPHA_VANTAGE_API_KEYS` (CSV) already supported. ETF symbols (`SYMBOLS_ETF`) are skipped. |
 | **Supabase** (Postgres + pgvector) | `prediction_logs` + `price_snapshots` + `fundamentals_cache` tables + materialized view `ml_feature_store` | Service role key. RPC `refresh_ml_feature_store` is called before training. |
-| **OpenAI** `chat.completions` | JSON mode (`response_format={"type":"json_object"}`), temperature 0.2 | Default LLM. Switch to Anthropic Claude via `LLM_PROVIDER=anthropic`. |
+| **OpenAI** `chat.completions` | JSON mode (`response_format={"type":"json_object"}`), temperature 0.2 | Advisory council (`gpt-5-mini`) + fallback main LLM. Main analysis defaults to Claude; set `LLM_PROVIDER=openai` to run everything on OpenAI. |
 | **OpenAI** `embeddings` | `text-embedding-3-small` → 1536-dim vector | Embeds the news summary into `pgvector`. Wired regardless of `LLM_PROVIDER` since `OPENAI_API_KEY` is always required — works with the Anthropic LLM too. |
-| **Anthropic** (optional) | Messages API, `claude-sonnet-4-6`, max_tokens 4096 | Adapter strips ```` ```json ... ``` ```` wrappers (Claude has no JSON mode). |
+| **Anthropic** (default main LLM) | Messages API, `claude-sonnet-4-6`, max_tokens 4096 | Adapter strips ```` ```json ... ``` ```` wrappers (Claude has no JSON mode). |
 | **QuickChart.io** | URL-based, GET request | Zero setup, no dependency, works in every mail client. |
 | **Resend.com** | Sandbox sender `onboarding@resend.dev` | Free tier 100 mails/day. No domain verification required — just a verified recipient. |
 | **NBP** (`/exchangerates/rates/A`) | 30-day window for EUR & USD vs PLN | Free, no API key, no rate limit. Used by `NbpClient` (implements `MacroIndicatorsPort`) to compute 30-day FX-stress for the Risk Watch section. |
@@ -84,7 +85,7 @@ Crypto tickers live in their **own pool** — `CRYPTO_SYMBOLS=BTC,ETH` — and a
 
 Why a separate pool:
 
-- **Different volatility profile** — BTC natively moves 3–5% per day. The equity threshold (2%) would make every crypto cycle pass the volatility gate, burning 16 LLM calls (15-persona council + chairman) on routine noise. `CRYPTO_VOLATILITY_THRESHOLD=0.05` (5%) keeps the gate meaningful: full pipeline only runs when the move is actually a signal.
+- **Different volatility profile** — BTC natively moves 3–5% per day. The equity threshold (2%) would make every crypto cycle pass the volatility gate, burning 8 LLM calls (7-persona council + chairman) on routine noise. `CRYPTO_VOLATILITY_THRESHOLD=0.05` (5%) keeps the gate meaningful: full pipeline only runs when the move is actually a signal.
 - **Different ticker format on the news side** — Alpha Vantage `NEWS_SENTIMENT` requires the `CRYPTO:` prefix (`CRYPTO:BTC`, `CRYPTO:ETH`). `AlphaVantageClient` translates `BTC ↔ CRYPTO:BTC` internally so the rest of the system stays clean.
 - **No fundamentals** — same model as ETFs: `AssetType.CRYPTO` ⇒ `evaluate_valuation` short-circuits to `ValuationVerdict.UNKNOWN`, no AlphaVantage `OVERVIEW` / `EARNINGS` requests wasted.
 
@@ -97,7 +98,7 @@ Every adapter that has a paid / metered quota writes a `QuotaAlert` to a shared 
 | Adapter | What it emits |
 |---|---|
 | `AlphaVantageClient` | `CRITICAL` when all `ALPHA_VANTAGE_API_KEYS` have hit the daily 25 req/day cap — feed is partial. |
-| `OpenAIAdapter` | `WARNING` when 429 was retried but eventually succeeded (you're at the TPM edge). `CRITICAL` when retries are exhausted and the call failed. Source field includes the model: `OpenAI (gpt-4o)`. |
+| `OpenAIAdapter` | `WARNING` when 429 was retried but eventually succeeded (you're at the TPM edge). `CRITICAL` when retries are exhausted and the call failed. Source field includes the model: `OpenAI (gpt-5-mini)`. |
 | `FinnhubAdapter` | `CRITICAL` on 429 (free tier 60 req/min hit). |
 | `ResendNotifier` | `CRITICAL` on 429 (free 100 mails/day) or any other 4xx — email was not delivered. The alert appears in the **next** report once delivery recovers. |
 
@@ -177,8 +178,8 @@ All sections are **conditional** — they only render when data exists. The firs
 - **Python 3.12** with `from __future__ import annotations`
 - **[uv](https://github.com/astral-sh/uv)** (Astral) — dependency manager, `uv sync --frozen` in CI
 - **[LangGraph](https://langchain-ai.github.io/langgraph/) 1.3** — decision graph with `StateGraph[AgentState]`
-- **OpenAI Python SDK** v2 — GPT-4o (default) with `response_format={"type":"json_object"}`
-- **Anthropic Python SDK** (optional extra) — Claude Sonnet 4.6 as an alternative
+- **OpenAI Python SDK** v2 — `gpt-5-mini` advisory council + `text-embedding-3-small` embeddings, JSON mode
+- **Anthropic Python SDK** (extra `anthropic`) — Claude Sonnet 4.6, **default model for the main analysis**
 - **XGBoost 3.2** + scikit-learn — sklearn-style API, native `.ubj` (UBJSON) format
 - **Supabase** (Postgres 16 + pgvector) — REST via `supabase-py`, service_role key
 - **Resend.com** — HTML email, sandbox sender without domain verification
@@ -201,7 +202,7 @@ Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero 
 - **OpenAI** API key — https://platform.openai.com/api-keys
 - **Supabase** project (free tier) — https://supabase.com/dashboard
 - **Resend** account + API key — https://resend.com (optional, for emails)
-- *(Optional)* Anthropic API key — required when `LLM_PROVIDER=anthropic`
+- **Anthropic API key — required** (default `LLM_PROVIDER=anthropic`; main analysis runs on Claude)
 
 ## Local setup
 
@@ -238,9 +239,9 @@ uv run python main_agent.py
 
 ```env
 # LLM
-LLM_PROVIDER=openai             # or anthropic
-OPENAI_API_KEY=sk-...
-# ANTHROPIC_API_KEY=sk-ant-...  # requires `uv sync --extra anthropic`
+LLM_PROVIDER=anthropic          # main analysis on Claude Sonnet 4.6; or openai
+OPENAI_API_KEY=sk-...            # still required (embeddings + council)
+ANTHROPIC_API_KEY=sk-ant-...     # required for LLM_PROVIDER=anthropic; needs `uv sync --extra anthropic`
 
 # Market + News
 FINNHUB_API_KEY=
@@ -272,8 +273,9 @@ CRYPTO_SYMBOLS=BTC,ETH                                 # routed to CoinGeckoAdap
 CRYPTO_VOLATILITY_THRESHOLD=0.05                       # 5% gate — crypto natively moves 3-5%/day
 
 # Resilience / rate-limit
-COUNCIL_LLM_MODEL=gpt-4o-mini                          # cheaper model for the 15-persona council (frees gpt-4o TPM)
-SYMBOLS_UNSUPPORTED_PRICE=CSPX.L,XDWD.DE,IUSN.DE       # tickers the price adapter cannot fetch (Finnhub free 403) — marked "ignored"
+COUNCIL_LLM_PROVIDER=openai                            # council stays on OpenAI (keeps QuotaMonitor) even when main=Claude
+COUNCIL_LLM_MODEL=gpt-5-mini                           # cheap model for the 7-persona council
+SYMBOLS_UNSUPPORTED_PRICE=CSPX.L,XDWD.DE,IUSN.DE,SSNLF # tickers the price adapter cannot fetch (Finnhub free 403 / OTC) — marked "ignored"
 SYMBOL_THROTTLE_SECONDS=2                              # sleep between symbols to avoid bursting the OpenAI TPM limit
 ```
 
@@ -306,8 +308,8 @@ Three workflows in [`.github/workflows/`](.github/workflows/):
 
 The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
 
-**Repository secrets:** `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY` (optional: `ANTHROPIC_API_KEY`).
-**Repository variables:** `NOTIFICATIONS_ENABLED`, `DIGEST_FROM_EMAIL`, `DIGEST_TO_EMAIL`, `SYMBOLS`, `VOLATILITY_THRESHOLD`, `CRYPTO_SYMBOLS`, `CRYPTO_VOLATILITY_THRESHOLD`, `COUNCIL_LLM_MODEL`, `SYMBOL_THROTTLE_SECONDS`, `COUNCIL_VOLATILITY_THRESHOLD` (all optional with sensible defaults — the council defaults to `gpt-4o-mini` with a 2s throttle to stay under the gpt-4o TPM ceiling). Note: GitHub Actions does **not** auto-export `vars.*` — a variable only reaches the agent if it is explicitly mapped into the step's `env:` block in [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml). Leave `CRYPTO_SYMBOLS` unset (or omit the mapping) and BTC/ETH are silently dropped before the prediction loop. The wiring is guarded by [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py).
+**Repository secrets:** `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`. **`ANTHROPIC_API_KEY` is required** — the main analysis runs on Claude (`LLM_PROVIDER=anthropic`).
+**Repository variables:** `NOTIFICATIONS_ENABLED`, `DIGEST_FROM_EMAIL`, `DIGEST_TO_EMAIL`, `SYMBOLS`, `VOLATILITY_THRESHOLD`, `CRYPTO_SYMBOLS`, `CRYPTO_VOLATILITY_THRESHOLD`, `LLM_PROVIDER`, `COUNCIL_LLM_PROVIDER`, `COUNCIL_LLM_MODEL`, `SYMBOL_THROTTLE_SECONDS`, `COUNCIL_VOLATILITY_THRESHOLD`, `SYMBOLS_UNSUPPORTED_PRICE` (all optional with sensible defaults — main analysis defaults to Claude Sonnet 4.6, the council to OpenAI `gpt-5-mini` with a 2s throttle). Note: GitHub Actions does **not** auto-export `vars.*` — a variable only reaches the agent if it is explicitly mapped into the step's `env:` block in [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml). Leave `CRYPTO_SYMBOLS` unset (or omit the mapping) and BTC/ETH are silently dropped before the prediction loop. The wiring is guarded by [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py).
 
 ## Configuration
 
@@ -316,11 +318,11 @@ All tunable parameters live in [`src/config.py`](src/config.py) as a `Settings` 
 | Field | Default | Description |
 |---|---|---|
 | `llm_provider` | `openai` | `openai` or `anthropic` |
-| `council_llm_provider` | `None` | Override LLM provider for the advisory council only (heterogeneous strategy: cheap model for 15-persona council, frontier for main analysis). `None` → reuses `llm_provider`. |
-| `council_llm_model` | `None` | Override model name for the council adapter (e.g. `gpt-4o-mini`, `claude-haiku-4-5`). `None` → provider default. |
+| `council_llm_provider` | `None` | Override LLM provider for the advisory council only (heterogeneous strategy: cheap model for 7-persona council, frontier for main analysis). `None` → reuses `llm_provider`. |
+| `council_llm_model` | `None` | Override model name for the council adapter (e.g. `gpt-5-mini`, `claude-haiku-4-5`). `None` → provider default. |
 | `council_personas_dir` | `data/council_personas` | Directory with one JSON file per council member (`{"name": str, "style": str}`). Validate with `uv run python -m src.tools.validate_personas`. |
 | `volatility_threshold` | `0.02` | Threshold that triggers full analysis (2%) |
-| `council_volatility_threshold` | `0.03` | Extra threshold for the advisory council (15 LLM calls). Below this Δ the council is skipped even if the main gate passed. `0.0` disables. |
+| `council_volatility_threshold` | `0.03` | Extra threshold for the advisory council (8 LLM calls: 7 personas + chairman). Below this Δ the council is skipped even if the main gate passed. `0.0` disables. |
 | `symbols` | `[AAPL, MSFT, NVDA]` | Monitored tickers (CSV in env — override with the 22-symbol portfolio) |
 | `alpha_vantage_api_keys` | `[]` | CSV of keys for rotation on rate-limit |
 | `symbols_etf` | `[]` | CSV of tickers classified as ETFs (e.g. `VT,QUAL,IHI,VB`). ETFs skip fundamentals fetching (no meaningful per-share EPS/P/E) and always receive `ValuationVerdict.UNKNOWN`. |
@@ -330,8 +332,8 @@ All tunable parameters live in [`src/config.py`](src/config.py) as a `Settings` 
 | `crypto_symbols` | `[]` | CSV of crypto tickers (clean form: `BTC,ETH`). Routed via `RoutingMarketDataPort` to `CoinGeckoAdapter`. News goes through Alpha Vantage with the `CRYPTO:` prefix added by `AlphaVantageClient`. Fundamentals always skipped (no per-coin EPS/P/E). |
 | `crypto_volatility_threshold` | `0.05` | Separate volatility gate for `AssetType.CRYPTO` — equity threshold (2%) would treat BTC's natural 3-5% daily move as a signal every cycle. 5% keeps the LLM/council budget under control. |
 | `symbols_unsupported_price` | `[]` | CSV of tickers the current price adapter cannot fetch (Finnhub free → 403 on EU-listed `.DE` / `.L`). Pre-filtered in `main_agent.main()` — they show up as **ignored**, not **errors**, so the report's error count reflects actual issues. |
-| `symbol_throttle_seconds` | `0.0` | Sleep between symbols in the main loop. Set `> 0` to spread LLM calls across the OpenAI **TPM window** (gpt-4o tier 1 = 30k tokens / min) — at 30+ symbols with the 15-persona council, bursting hits 429s. Recommended: `2.0`. |
-| `council_llm_provider` / `council_llm_model` | `None` | Route the advisory council to a cheaper / faster LLM. With 15 personas × N symbols the council dominates token use — pinning it to `gpt-4o-mini` (200k TPM, ~15× cheaper) frees gpt-4o quota for the main analysis. Recommended for portfolios > 25 symbols. |
+| `symbol_throttle_seconds` | `0.0` | Sleep between symbols in the main loop. Set `> 0` to spread LLM calls across the OpenAI **TPM window** (council on OpenAI; tier 1 = 30k tokens / min) — at 30+ symbols with the 7-persona council, bursting hits 429s. Recommended: `2.0`. |
+| `council_llm_provider` / `council_llm_model` | `None` | Route the advisory council to a cheaper / faster LLM. With 7 personas × N symbols the council dominates token use — pinning it to a cheap model (`gpt-5-mini`) keeps council cost low while the main analysis runs on Claude Sonnet 4.6. |
 | `ml_model_path` | `data/models/price_predictor.ubj` | XGBoost weights file |
 | `notifications_enabled` | `false` | Enables email delivery |
 | `digest_from_email` | `onboarding@resend.dev` | Resend sandbox sender |
