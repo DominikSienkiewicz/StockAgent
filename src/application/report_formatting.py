@@ -122,6 +122,91 @@ def company_label(symbol: str) -> str:
     return symbol
 
 
+# Mapowanie symbol → sektor (PL), używane w sekcji PREDYKCJE maila. Membership
+# w słowniku pełni też rolę klasyfikacji klasy aktywa: ETF-y → "ETF",
+# krypto → "Krypto", akcje → konkretny sektor. Symbol spoza słownika nie
+# dostaje etykiety (po cichu, tak jak company_label pomija nieznaną nazwę).
+# Pokrywa domyślne portfolio (43) + krypto; rozszerzaj wraz z SYMBOLS.
+SECTORS: dict[str, str] = {
+    # Big Tech
+    "AAPL": "Big Tech",
+    "AMZN": "Big Tech",
+    "GOOGL": "Big Tech",
+    "GOOG": "Big Tech",
+    "META": "Big Tech",
+    # Półprzewodniki / AI
+    "NVDA": "Półprzewodniki/AI",
+    "AMD": "Półprzewodniki/AI",
+    "TSM": "Półprzewodniki/AI",
+    "ASML": "Półprzewodniki/AI",
+    "ASMIY": "Półprzewodniki/AI",
+    "MU": "Półprzewodniki/AI",
+    "QCOM": "Półprzewodniki/AI",
+    "INTC": "Półprzewodniki/AI",
+    "SNDK": "Półprzewodniki/AI",
+    # Chmura / Software
+    "MSFT": "Chmura/Software",
+    "ORCL": "Chmura/Software",
+    "NET": "Chmura/Software",
+    "SAP": "Chmura/Software",
+    "PLTR": "Chmura/Software",
+    "IBM": "Chmura/Software",
+    "TEAM": "Chmura/Software",
+    "FROG": "Chmura/Software",
+    "SNOW": "Chmura/Software",
+    "DDOG": "Chmura/Software",
+    # Cyberbezpieczeństwo
+    "CRWD": "Cyberbezpieczeństwo",
+    "PANW": "Cyberbezpieczeństwo",
+    "OKTA": "Cyberbezpieczeństwo",
+    "S": "Cyberbezpieczeństwo",
+    "SAIL": "Cyberbezpieczeństwo",
+    # Hardware
+    "DELL": "Hardware",
+    "SSNLF": "Hardware",
+    # Mobilność
+    "TSLA": "Mobilność",
+    "UBER": "Mobilność",
+    # Przemysł / Pharma
+    "SIEGY": "Przemysł/Pharma",
+    "NVO": "Przemysł/Pharma",
+    # Finanse
+    "BLK": "Finanse",
+    # ETF
+    "VT": "ETF",
+    "QUAL": "ETF",
+    "IHI": "ETF",
+    "VB": "ETF",
+    "EWY": "ETF",
+    "IVV": "ETF",
+    "XDWD.DE": "ETF",
+    "IUSN.DE": "ETF",
+    # Krypto
+    "BTC": "Krypto",
+    "ETH": "Krypto",
+}
+
+
+def sector_label(symbol: str) -> str | None:
+    """Zwraca sektor (PL) dla symbolu lub None, gdy nieznany.
+
+    None → renderer pomija etykietę (brak '—'), analogicznie do company_label.
+    """
+    if not symbol:
+        return None
+    return SECTORS.get(symbol)
+
+
+def company_label_with_sector(symbol: str) -> str:
+    """'SYMBOL (Nazwa) · Sektor' lub 'SYMBOL (Nazwa)' gdy sektor nieznany.
+
+    Używane w sekcji PREDYKCJE — sektor doklejony przy nazwie spółki.
+    """
+    label = company_label(symbol)
+    sector = sector_label(symbol)
+    return f"{label} · {sector}" if sector else label
+
+
 _TREND_PL = {
     "BULLISH": "Wzrostowy",
     "BEARISH": "Spadkowy",

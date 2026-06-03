@@ -71,6 +71,19 @@ class TestBuildHtmlReport:
         )
         assert "macro tailwinds" in html
 
+    def test_html_shows_sector_in_predictions(self):
+        # AAPL → Big Tech, doklejony przy nazwie spółki w sekcji PREDYKCJE.
+        html, _ = build_html_report(
+            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+        )
+        assert "Big Tech" in html
+
+    def test_plain_text_shows_sector_in_predictions(self):
+        _, text = build_html_report(
+            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+        )
+        assert "Big Tech" in text
+
     def test_html_shows_errors_section_when_present(self):
         html, _ = build_html_report(
             [_error_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0

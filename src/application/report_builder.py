@@ -20,6 +20,9 @@ from src.application.report_formatting import (
     company_label as _company_label,
 )
 from src.application.report_formatting import (
+    company_label_with_sector as _company_label_with_sector,
+)
+from src.application.report_formatting import (
     delta_color as _delta_color,
 )
 from src.application.report_formatting import (
@@ -27,6 +30,9 @@ from src.application.report_formatting import (
 )
 from src.application.report_formatting import (
     pct as _pct,
+)
+from src.application.report_formatting import (
+    sector_label as _sector_label,
 )
 from src.application.report_formatting import (
     sentiment_label as _sentiment_label,
@@ -690,9 +696,15 @@ def _render_html(
                 else ""
             )
             valuation_block = _render_valuation(r.valuation)
+            _sector = _sector_label(r.symbol)
+            sector_tag = (
+                f' <span style="color: #6b7280; font-weight: 500;">· {_html(_sector)}</span>'
+                if _sector
+                else ""
+            )
             sections.append(f"""
               <div style="margin-bottom: 10px; padding: 10px 12px; background: #fafafa; border-left: 3px solid {_trend_color(r.trend)}; border-radius: 4px;">
-                <div style="font-weight: 600; font-size: 13px;">{_html(_company_label(r.symbol))} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span></div>
+                <div style="font-weight: 600; font-size: 13px;">{_html(_company_label(r.symbol))}{sector_tag} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span></div>
                 {move_line}
                 {rec_block}
                 {f'<div style="font-size: 12px; color: #4b5563; margin-top: 6px;">{_html(r.reasoning)}</div>' if r.reasoning else ''}
@@ -884,7 +896,7 @@ def _render_plain(
             )
             rec_text = _recommendation_reason_text(r)
             lines.append(
-                f"  {_company_label(r.symbol):40s} {_money(r.current_price):>10s}  "
+                f"  {_company_label_with_sector(r.symbol):55s} {_money(r.current_price):>10s}  "
                 f"Δ12h {_pct(r.delta, signed=True):>8s}  →  "
                 f"{_trend_label(r.trend):11s} {forecast_part}{conf_part}"
             )
