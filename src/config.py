@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -14,6 +15,12 @@ from pydantic_settings import (
 )
 
 from src.domain.macro_risk import MacroRiskInstrumentType
+
+# Ścieżka do config.toml zakotwiczona w ROOCIE repo (src/config.py → ../config.toml),
+# NIE względem CWD. Inaczej agent odpalony spoza roota nie znajduje pliku i cały
+# config niewrażliwy po cichu spada do defaultów (np. notifications_enabled=False).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_TOML_FILE = str(_REPO_ROOT / "config.toml")
 
 
 class Settings(BaseSettings):
@@ -61,7 +68,7 @@ class Settings(BaseSettings):
             # Ścieżkę podajemy wprost (nie przez model_config), by w trybie
             # wyłączonym nie było ostrzeżenia o nieużytym kluczu `toml_file`.
             # `STOCKAGENT_TOML_FILE` pozwala testom wskazać tymczasowy plik.
-            toml_file = os.environ.get("STOCKAGENT_TOML_FILE", "config.toml")
+            toml_file = os.environ.get("STOCKAGENT_TOML_FILE", _DEFAULT_TOML_FILE)
             sources.append(
                 TomlConfigSettingsSource(settings_cls, toml_file=toml_file)
             )

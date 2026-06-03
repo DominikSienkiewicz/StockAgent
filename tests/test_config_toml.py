@@ -54,6 +54,20 @@ def test_settings_reads_non_secret_from_toml(
     assert s.llm_provider == "anthropic"
 
 
+def test_config_toml_found_regardless_of_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Config.toml musi być znajdowany niezależnie od CWD — inaczej agent
+    odpalony spoza roota repo dostaje DEFAULTY (np. notifications_enabled=False,
+    symbols=[AAPL,MSFT,NVDA]) i po cichu nie wysyła maila / gubi portfolio."""
+    monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
+    monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
+    monkeypatch.chdir(tmp_path)  # CWD != root repo
+    s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    assert len(s.symbols) == 43, "config.toml nie został znaleziony spoza roota"
+    assert s.notifications_enabled is True
+
+
 def test_env_overrides_toml(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
