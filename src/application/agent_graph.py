@@ -54,6 +54,10 @@ class AgentState(TypedDict, total=False):
     llm_analysis: dict[str, Any]
     ml_target_price: Decimal
 
+    # Embedding podsumowania newsów — liczony raz w predict_node (RAG retrieval)
+    # i reużyty w save_node, żeby nie embedować dwa razy na cykl.
+    news_embedding: list[float] | None
+
     # Persystencja
     prediction_id: str | None
 
@@ -72,6 +76,43 @@ def _summarize_news(news: list[dict[str, Any]]) -> str:
     """Konkatenacja tytułów najnowszych newsów w jednej linijce (dla promptu)."""
     titles = [item.get("title", "") for item in news[:5]]
     return " | ".join(t for t in titles if t)
+
+
+def _build_similar_context(
+    repository_port: RepositoryPort,
+    embedding: list[float],
+    symbol: str,
+) -> str:
+    """Buduje tekstowy blok 'podobne historyczne sytuacje' do promptu (RAG).
+
+    W pełni graceful: brak RPC / pgvector / błąd → pusty string (predykcja
+    działa bez RAG). Każdy rekord skracamy do: kierunek, czy trafiony, wniosek.
+    """
+    try:
+        similar = repository_port.find_similar_predictions(embedding, limit=3)
+        lines: list[str] = []
+        for item in similar or []:
+            summary = str(item.get("news_summary") or "").strip()
+            if not summary:
+                continue
+            trend = item.get("predicted_trend") or "?"
+            correct = item.get("is_trend_correct")
+            outcome = (
+                "prognoza trafiła" if correct
+                else "prognoza chybiła" if correct is False
+                else "wynik nieznany"
+            )
+            insight = str(item.get("correction_insights") or "").strip()
+            line = f"  - [{trend}, {outcome}] {summary}"
+            if insight:
+                line += f" → wniosek: {insight}"
+            lines.append(line)
+        return "\n".join(lines)
+    except Exception:
+        logger.exception(
+            "find_similar_predictions failed for %s — predicting without RAG", symbol
+        )
+        return ""
 
 
 def _float_or_default(value: Any, default: float) -> float:
@@ -151,6 +192,7 @@ def create_agent_graph(
     fundamentals_port: FundamentalsPort | None = None,
     crypto_threshold: Threshold | None = None,
     crypto_council_threshold: Threshold | None = None,
+    reflection_min_age_hours: int = 0,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
@@ -209,7 +251,11 @@ def create_agent_graph(
     def reflect_node(state: AgentState) -> dict[str, Any]:
         symbol = state["symbol"]
         current_price = state["current_price"]
-        last = repository_port.get_unverified_prediction(symbol)
+        # min_age_hours odsiewa predykcje zbyt świeże, by je rzetelnie ocenić
+        # (nakładające się cykle: manualny dispatch + scheduled). 0 = bez filtra.
+        last = repository_port.get_unverified_prediction(
+            symbol, min_age_hours=reflection_min_age_hours
+        )
 
         if last is None:
             return {"reflection_context": "Brak danych historycznych do oceny."}
@@ -259,6 +305,24 @@ def create_agent_graph(
         news = state.get("news", [])
         news_summary = _summarize_news(news)
 
+        # RAG: embedujemy podsumowanie newsów RAZ (reużyte w save_node) i
+        # wyszukujemy podobne historyczne sytuacje, by wstrzyknąć je do promptu
+        # ("jak skończyły się analogiczne układy"). W pełni graceful — błąd
+        # embeddingu/retrievalu nie blokuje predykcji.
+        news_embedding: list[float] | None = None
+        similar_context = ""
+        if embedding_port is not None and news_summary:
+            try:
+                news_embedding = embedding_port.embed(news_summary)
+            except Exception:
+                logger.exception(
+                    "Embedding failed for %s — predicting without RAG", state["symbol"]
+                )
+            if news_embedding:
+                similar_context = _build_similar_context(
+                    repository_port, news_embedding, state["symbol"]
+                )
+
         # 1. LLM — analiza jakościowa z cross-validation pre-computed AV sentymentu
         prompt = get_prediction_prompt(
             symbol=state["symbol"],
@@ -272,6 +336,7 @@ def create_agent_graph(
                 "news_summary": news_summary,
             },
             reflection_context=state.get("reflection_context", ""),
+            similar_context=similar_context,
         )
         llm_analysis = llm_port.analyze(prompt)
 
@@ -331,6 +396,8 @@ def create_agent_graph(
             "llm_analysis": llm_analysis,
             "ml_target_price": ml_target,
             "data_quality_flags": flags,
+            # Reużywane w save_node — embedujemy newsy tylko raz na cykl.
+            "news_embedding": news_embedding,
         }
 
     def council_node(state: AgentState) -> dict[str, Any]:
@@ -338,7 +405,7 @@ def create_agent_graph(
             return {"council_verdict": None}
         # Osobny, opcjonalny próg dla rady. Główna bramka volatility już
         # przepuściła (predict_node odpalił) — tu odsiewamy dodatkowo średnie
-        # zmienności, dla których 15 wywołań LLM rady się ekonomicznie nie opłaca.
+        # zmienności, dla których N wywołań LLM rady się ekonomicznie nie opłaca.
         if council_threshold is not None:
             asset = state.get("asset") or Asset(symbol=state["symbol"])
             delta = PriceDelta(state["delta"])
@@ -421,13 +488,22 @@ def create_agent_graph(
 
         # Embedding podsumowania newsów → pgvector. Opcjonalne (graceful):
         # gdy brak portu lub pusty tekst / błąd API, zapisujemy bez wektora.
+        # predict_node zwykle już policzył wektor (RAG) — reużywamy go, żeby
+        # nie embedować dwa razy na cykl. Fallback: embedujemy tu, jeśli predict
+        # nie dostarczył wektora (np. retrieval był pominięty).
         if embedding_port is not None and news_summary:
-            try:
-                vector = embedding_port.embed(news_summary)
-                if vector:
-                    record["embedding"] = vector
-            except Exception:
-                logger.exception("Embedding failed for %s — saving without vector", state["symbol"])
+            vector = state.get("news_embedding")
+            if not vector:
+                try:
+                    vector = embedding_port.embed(news_summary)
+                except Exception:
+                    logger.exception(
+                        "Embedding failed for %s — saving without vector",
+                        state["symbol"],
+                    )
+                    vector = None
+            if vector:
+                record["embedding"] = vector
 
         prediction_id = repository_port.save_prediction(record)
 

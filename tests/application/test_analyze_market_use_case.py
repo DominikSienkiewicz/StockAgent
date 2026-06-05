@@ -204,6 +204,50 @@ def test_analyze_market_passes_council_port_to_graph():
     council_port.analyze.assert_called_once()
 
 
+class TestGraphCompiledOnce:
+    """Graf kompilujemy RAZ przy konstrukcji, nie per `run()`.
+
+    Przy 43 symbolach na cykl rekompilacja w każdym `run()` to 43× zbędna
+    praca. Kompilacja jest deterministyczna (zależy tylko od topologii i
+    wstrzykniętych portów), więc skompilowaną aplikację można reużyć.
+    """
+
+    def test_compile_called_once_across_multiple_runs(
+        self, monkeypatch, repository_port, market_port
+    ):
+        from unittest.mock import Mock
+
+        from src.application.use_cases import analyze_market as module
+        from src.domain.value_objects import Money, Threshold
+
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        market_port.get_current_price.return_value = Money(Decimal("100.0"))
+
+        compiled_app = Mock()
+        compiled_app.invoke.return_value = {"status": "ignored"}
+        fake_workflow = Mock()
+        fake_workflow.compile.return_value = compiled_app
+        monkeypatch.setattr(
+            module, "create_agent_graph", lambda **_kw: fake_workflow
+        )
+
+        use_case = module.AnalyzeMarketUseCase(
+            market_port=market_port,
+            sentiment_port=Mock(),
+            news_port=Mock(),
+            repository_port=repository_port,
+            ml_port=Mock(),
+            llm_port=Mock(),
+            threshold=Threshold(Decimal("0.02")),
+        )
+        use_case.run("AAPL")
+        use_case.run("MSFT")
+        use_case.run("NVDA")
+
+        fake_workflow.compile.assert_called_once()
+        assert compiled_app.invoke.call_count == 3
+
+
 class TestThresholdInjection:
     def test_respects_custom_threshold(
         self,

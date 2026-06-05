@@ -199,7 +199,9 @@ class TestFullAnalysisColdStart:
 
         # Kolejność wywołań
         market_port.get_current_price.assert_called_once_with("AAPL")
-        repository_port.get_unverified_prediction.assert_called_once_with("AAPL")
+        repository_port.get_unverified_prediction.assert_called_once_with(
+            "AAPL", min_age_hours=0
+        )
         sentiment_port.get_social_score.assert_called_once_with("AAPL")
         news_port.get_news_context.assert_called_once_with("AAPL")
         llm_port.analyze.assert_called_once()
@@ -366,7 +368,9 @@ class TestVolatilityBelowThreshold:
         # reflect_node działa ZAWSZE — get_unverified_prediction (read-only, tanie)
         # JEST wołane, ale przy braku historii (None) nie generuje żadnych kosztów:
         # ani analyze_mistake (płatne LLM), ani update (zapis) się nie wykonuje.
-        repository_port.get_unverified_prediction.assert_called_once_with("AAPL")
+        repository_port.get_unverified_prediction.assert_called_once_with(
+            "AAPL", min_age_hours=0
+        )
         llm_port.analyze_mistake.assert_not_called()
         repository_port.update_prediction_accuracy.assert_not_called()
 
@@ -399,6 +403,31 @@ class TestVolatilityBelowThreshold:
         kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
         assert kwargs["prediction_id"] == "stale-uuid"
         assert isinstance(kwargs["accuracy_score"], float)
+
+    def test_reflect_passes_configured_min_age_to_repository(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        """reflection_min_age_hours przeniesione z konfiguracji aż do repo —
+        bez tego filtr przedwczesnej oceny nigdy by się nie aktywował."""
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))
+        repository_port.get_unverified_prediction.return_value = None
+        workflow = create_agent_graph(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            reflection_min_age_hours=6,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        repository_port.get_unverified_prediction.assert_called_once_with(
+            "AAPL", min_age_hours=6
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -657,3 +686,82 @@ class TestEmbeddingPersistence:
         assert final["status"] == "saved"
         saved_record = repository_port.save_prediction.call_args.args[0]
         assert "embedding" not in saved_record
+
+
+# ---------------------------------------------------------------------------
+# RAG retrieval (#7) — embedding newsów wykorzystany do wstrzyknięcia
+# podobnych historycznych sytuacji do promptu predykcji.
+# ---------------------------------------------------------------------------
+
+
+class TestRagRetrieval:
+    def test_similar_past_situations_injected_into_prediction_prompt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = [
+            {
+                "news_summary": "Fed hawkish surprise spooks tech",
+                "predicted_trend": "BEARISH",
+                "is_trend_correct": True,
+                "correction_insights": "reaguj na jastrzębi Fed",
+            }
+        ]
+        workflow = create_agent_graph(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        # Pierwsze llm.analyze() = prompt predykcji (brak rady w tym grafie).
+        prediction_prompt = llm_port.analyze.call_args_list[0].args[0]
+        assert "Fed hawkish surprise spooks tech" in prediction_prompt
+        repository_port.find_similar_predictions.assert_called_once()
+
+    def test_retrieval_failure_does_not_break_prediction(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.side_effect = RuntimeError(
+            "pgvector RPC missing"
+        )
+        workflow = create_agent_graph(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+
+    def test_no_retrieval_without_embedding_port(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        repository_port.find_similar_predictions.assert_not_called()

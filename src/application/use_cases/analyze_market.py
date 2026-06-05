@@ -43,9 +43,10 @@ class AnalyzeMarketUseCase:
         fundamentals_port: FundamentalsPort | None = None,
         crypto_threshold: Threshold | None = None,
         crypto_council_threshold: Threshold | None = None,
+        reflection_min_age_hours: int = 0,
     ) -> None:
         self._repository = repository_port
-        self._workflow = create_agent_graph(
+        workflow = create_agent_graph(
             market_port=market_port,
             sentiment_port=sentiment_port,
             news_port=news_port,
@@ -59,7 +60,12 @@ class AnalyzeMarketUseCase:
             fundamentals_port=fundamentals_port,
             crypto_threshold=crypto_threshold,
             crypto_council_threshold=crypto_council_threshold,
+            reflection_min_age_hours=reflection_min_age_hours,
         )
+        # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
+        # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().
+        # Inaczej przy 43 symbolach na cykl rekompilowalibyśmy graf 43×.
+        self._app = workflow.compile()
 
     def run(self, symbol: str, asset: Asset | None = None) -> dict[str, Any]:
         previous = self._repository.get_last_price(symbol)
@@ -73,6 +79,5 @@ class AnalyzeMarketUseCase:
         if asset is not None:
             initial_state["asset"] = asset
 
-        app = self._workflow.compile()
-        result: dict[str, Any] = app.invoke(initial_state)
+        result: dict[str, Any] = self._app.invoke(initial_state)
         return result

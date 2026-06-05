@@ -28,6 +28,9 @@ crypto_volatility_threshold = "0.05"
 # --- Pętla / resilience ---
 symbol_throttle_seconds = 2.0
 ml_model_path = "data/models/price_predictor.ubj"
+# Minimalny wiek predykcji (h), zanim reflect ją oceni. Kadencja dzienna →
+# 6h bezpiecznie odsiewa przedwczesną ocenę przy nakładających się cyklach.
+reflection_min_age_hours = 6
 
 # --- Powiadomienia (sam nadawca; ODBIORCA = sekret w .env) ---
 notifications_enabled = true

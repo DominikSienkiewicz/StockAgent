@@ -220,6 +220,43 @@ class TestGetUnverifiedPrediction:
         is_call = mock_client.table.return_value.select.return_value.eq.return_value.is_
         is_call.assert_called_with("actual_price_after_12h", "null")
 
+    def test_min_age_hours_adds_timestamp_upper_bound(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """min_age_hours>0 ogranicza do predykcji starszych niż próg —
+        chroni przed przedwczesną oceną świeżo zapisanej predykcji przy
+        nakładających się cyklach (manualny dispatch + scheduled)."""
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "is_", "lte", "order", "limit"],
+            [],
+        )
+
+        repo.get_unverified_prediction("AAPL", min_age_hours=6)
+
+        lte_call = (
+            mock_client.table.return_value.select.return_value.eq.return_value
+            .is_.return_value.lte
+        )
+        assert lte_call.call_args.args[0] == "timestamp"
+
+    def test_no_timestamp_filter_when_min_age_zero(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """Domyślnie (min_age_hours=0) zachowanie bez zmian — brak filtra .lte,
+        żeby nie złamać wstecznej kompatybilności."""
+        _set_chain_response(
+            mock_client, ["table", "select", "eq", "is_", "order", "limit"], []
+        )
+
+        repo.get_unverified_prediction("AAPL")
+
+        lte = (
+            mock_client.table.return_value.select.return_value.eq.return_value
+            .is_.return_value.lte
+        )
+        lte.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # update_prediction_accuracy
@@ -617,3 +654,79 @@ class TestQuotaAlerts:
         alerts = repo.get_recent_quota_alerts(hours=24)
 
         assert len(alerts) == 1
+
+
+class TestGetRecentlyResolvedSelectsPostMortemColumns:
+    def test_select_includes_reasoning_price_and_insight(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """Post-mortem w raporcie potrzebuje oryginalnego uzasadnienia, diagnozy
+        i cen — muszą być w SELECT, inaczej sekcja 'Zamknięte predykcje' nie ma
+        z czego pokazać 'dlaczego wzrosło/spadło i czy się potwierdziło'."""
+        repo.get_recently_resolved_predictions(24)
+        select_arg = mock_client.table.return_value.select.call_args.args[0]
+        for col in (
+            "reasoning_text",
+            "correction_insights",
+            "price_at_prediction",
+            "actual_price_after_12h",
+        ):
+            assert col in select_arg
+
+
+class TestGetResolvedPredictionsForEval:
+    def test_returns_rows_and_filters_by_window(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        rows = [
+            {
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": True,
+                "price_at_prediction": 100.0,
+                "predicted_target_price": 104.0,
+                "actual_price_after_12h": 105.0,
+                "timestamp": "2026-06-01T12:00:00+00:00",
+            }
+        ]
+        mock_response = MagicMock()
+        mock_response.data = rows
+        # Łańcuch: table().select().gte().not_.is_().order().execute()
+        chain = mock_client.table.return_value
+        (
+            chain.select.return_value.gte.return_value.not_.is_.return_value
+            .order.return_value.execute.return_value
+        ) = mock_response
+
+        out = repo.get_resolved_predictions_for_eval(days=30)
+
+        assert out == rows
+        gte_call = chain.select.return_value.gte
+        assert gte_call.call_args.args[0] == "timestamp"
+
+
+class TestFindSimilarPredictions:
+    def test_calls_rpc_and_returns_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        rows = [{"news_summary": "Fed hawkish", "predicted_trend": "BEARISH"}]
+        mock_response = MagicMock()
+        mock_response.data = rows
+        mock_client.rpc.return_value.execute.return_value = mock_response
+
+        out = repo.find_similar_predictions([0.1, 0.2, 0.3], limit=3)
+
+        assert out == rows
+        name, params = mock_client.rpc.call_args.args
+        assert name == "match_news_embeddings"
+        assert params["query_embedding"] == [0.1, 0.2, 0.3]
+        assert params["match_count"] == 3
+
+    def test_returns_empty_list_when_rpc_unavailable(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # RPC nieobecne (migracja 011 niezaaplikowana) → graceful [], nie crash.
+        mock_client.rpc.side_effect = Exception("function does not exist")
+
+        out = repo.find_similar_predictions([0.1, 0.2], limit=3)
+
+        assert out == []

@@ -49,8 +49,16 @@ class RepositoryPort(ABC):
         """Zwraca ID zapisanej predykcji."""
 
     @abstractmethod
-    def get_unverified_prediction(self, symbol: str) -> Prediction | None:
-        """Najnowsza predykcja sprzed 12-24h bez przypisanej rzeczywistej ceny."""
+    def get_unverified_prediction(
+        self, symbol: str, min_age_hours: int = 0
+    ) -> Prediction | None:
+        """Najnowsza predykcja bez przypisanej rzeczywistej ceny.
+
+        `min_age_hours` > 0 → bierze tylko predykcje starsze niż próg
+        (timestamp ≤ now − min_age_hours). Chroni przed przedwczesną oceną:
+        gdy ręczny `workflow_dispatch` nałoży się na scheduled run, świeżo
+        zapisana predykcja nie zostanie oceniona po cenie sprzed kilku minut
+        (co zatruwałoby accuracy_score i zawyżało hit-rate raportu)."""
 
     @abstractmethod
     def update_prediction_accuracy(
@@ -106,6 +114,19 @@ class RepositoryPort(ABC):
         """Zwraca alerty z ostatnich `hours` godzin, posortowane malejąco
         po `occurred_at`. Banner w mailu używa tej listy, by pokazać też
         alerty z poprzednich cykli, których jeszcze nie naprawiono."""
+
+    @abstractmethod
+    def find_similar_predictions(
+        self, embedding: list[float], limit: int = 3
+    ) -> list[dict[str, Any]]:
+        """Wyszukuje historyczne predykcje o najbardziej podobnym kontekście
+        newsowym (similarity search nad `prediction_logs.embedding`, pgvector).
+
+        Zasila RAG w `predict_node`: wstrzykuje "jak podobne sytuacje skończyły
+        się w przeszłości" do promptu. Implementacja MUSI być graceful — gdy
+        pgvector / RPC niedostępne, zwraca `[]` (predykcja działa bez RAG).
+        Zwracane rekordy zawierają m.in. `news_summary`, `predicted_trend`,
+        `is_trend_correct`, `correction_insights`."""
 
     @abstractmethod
     def save_council_votes(
@@ -172,7 +193,10 @@ class ReportNotifierPort(ABC):
 
 
 class AdvisoryCouncilPort(ABC):
-    """Rada doradcza inwestorów — 11 równoległych analiz + konsensus."""
+    """Rada doradcza inwestorów — N równoległych analiz person + konsensus.
+
+    Liczba person jest data-driven (pliki JSON w `council_personas_dir`),
+    więc nie podajemy jej tu na sztywno."""
 
     @abstractmethod
     def analyze(self, symbol: str, data: CouncilInput) -> CouncilVerdict: ...

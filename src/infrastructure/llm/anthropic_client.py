@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
-from typing import Any
+import time
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any, TypeVar
 
-from anthropic import Anthropic
+from anthropic import Anthropic, APIConnectionError, APIStatusError
 
 from src.application.ports import LLMPort
+from src.application.quota_monitor import QuotaMonitor
+from src.domain.quota import QuotaAlert, QuotaSeverity
 
 # Modele Claude 4.x (stan na maj 2026).
 DEFAULT_MODEL = "claude-sonnet-4-6"   # dobre konto kosztów/jakości
@@ -18,6 +24,15 @@ DEFAULT_TIMEOUT = 30.0
 # Liczymy ~4 znaki/token jako bezpieczne oszacowanie.
 _CACHE_MIN_CHARS = 4096
 
+# Retry na 429 (rate limit) i 5xx (w tym 529 Overloaded) — analogicznie do
+# OpenAIAdapter. Claude jest domyślnym, głównym LLM, więc musi mieć tę samą
+# odporność: pojedynczy 529 z przeciążonego API nie może ubijać symbolu.
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BACKOFF_BASE = 2.0
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 _CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
@@ -35,6 +50,11 @@ class AnthropicAdapter(LLMPort):
     włączamy ephemeral cache_control na content bloku. Cache działa per
     identyczny prefix — przy 2 cyklach dziennie ten sam template promptu
     daje cache hit na strukturalnej części (rola/instrukcje/schemat).
+
+    Retry: 429 (rate limit) oraz 5xx/529 (Overloaded) i błędy połączenia są
+    retry'owane z backoffem; inne błędy (np. 400) lecą natychmiast w górę.
+    Sygnał kwot trafia do `QuotaMonitor` (WARNING po udanym retry, CRITICAL
+    po wyczerpaniu) — tak samo jak w OpenAIAdapter.
     """
 
     def __init__(
@@ -44,11 +64,17 @@ class AnthropicAdapter(LLMPort):
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
         timeout: float = DEFAULT_TIMEOUT,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        backoff_base: float = DEFAULT_BACKOFF_BASE,
+        quota_monitor: QuotaMonitor | None = None,
     ) -> None:
         self._client = Anthropic(api_key=api_key, timeout=timeout)
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
+        self._max_retries = max_retries
+        self._backoff_base = backoff_base
+        self._quota_monitor = quota_monitor
 
     @staticmethod
     def _build_user_content(prompt: str) -> Any:
@@ -62,13 +88,112 @@ class AnthropicAdapter(LLMPort):
         return [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]
 
     def _call(self, prompt: str) -> str:
-        response = self._client.messages.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            temperature=self._temperature,
-            messages=[{"role": "user", "content": self._build_user_content(prompt)}],
+        response = self._call_with_retry(
+            lambda: self._client.messages.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
+                messages=[
+                    {"role": "user", "content": self._build_user_content(prompt)}
+                ],
+            )
         )
         return self._extract_text(response)
+
+    def _call_with_retry(self, fn: Callable[[], T]) -> T:
+        """Retry'uje wyłącznie błędy transient (429 / 5xx / connection).
+
+        Sygnalizacja kwot:
+        - sukces po >=1 retry → WARNING (na granicy limitu),
+        - wyczerpanie retry → CRITICAL przed propagacją wyjątku.
+        """
+        attempt = 0
+        while True:
+            try:
+                result = fn()
+                if attempt > 0:
+                    self._emit_quota_alert(
+                        severity=QuotaSeverity.WARNING,
+                        message=(
+                            f"Anthropic {self._model} hit a transient error "
+                            f"{attempt}× during a single call (retry succeeded)."
+                        ),
+                        action=(
+                            "Transient 429/5xx — usually self-heals. If frequent, "
+                            "raise COUNCIL_VOLATILITY_THRESHOLD or check Anthropic "
+                            "status / your usage tier."
+                        ),
+                    )
+                return result
+            except (APIStatusError, APIConnectionError) as exc:
+                if not self._is_transient(exc):
+                    raise
+                if attempt >= self._max_retries:
+                    self._emit_quota_alert(
+                        severity=QuotaSeverity.CRITICAL,
+                        message=(
+                            f"Anthropic {self._model} failed after "
+                            f"{self._max_retries} retries "
+                            f"({type(exc).__name__}) — call failed."
+                        ),
+                        action=(
+                            "Check Anthropic status page / upgrade usage tier, or "
+                            "switch LLM_PROVIDER=openai for this run."
+                        ),
+                    )
+                    raise
+                wait = self._compute_wait(exc, attempt)
+                logger.warning(
+                    "Anthropic transient error %s (attempt %d/%d) — sleeping %.1fs",
+                    type(exc).__name__,
+                    attempt + 1,
+                    self._max_retries,
+                    wait,
+                )
+                time.sleep(wait)
+                attempt += 1
+
+    @staticmethod
+    def _is_transient(exc: APIStatusError | APIConnectionError) -> bool:
+        """429 i 5xx (w tym 529 Overloaded) oraz błędy połączenia są transient.
+
+        Błędy klienta (4xx poza 429 — np. 400 zły prompt, 401 zły klucz) nie
+        mają sensu retry'ować: powtórzenie nie zmieni wyniku."""
+        if isinstance(exc, APIConnectionError):
+            return True
+        status = getattr(exc, "status_code", None)
+        return status == 429 or (isinstance(status, int) and status >= 500)
+
+    def _compute_wait(
+        self, exc: APIStatusError | APIConnectionError, attempt: int
+    ) -> float:
+        # Najpierw `retry-after` z odpowiedzi serwera — to jego rekomendacja.
+        response = getattr(exc, "response", None)
+        if response is not None:
+            headers = getattr(response, "headers", {}) or {}
+            raw = headers.get("retry-after")
+            if isinstance(raw, str):
+                try:
+                    return float(raw)
+                except ValueError:
+                    pass
+        # Fallback: backoff wykładniczy (2s, 4s, 8s przy base=2.0).
+        return float(self._backoff_base * (2**attempt))
+
+    def _emit_quota_alert(
+        self, severity: QuotaSeverity, message: str, action: str
+    ) -> None:
+        if self._quota_monitor is None:
+            return
+        self._quota_monitor.record(
+            QuotaAlert(
+                source=f"Anthropic ({self._model})",
+                severity=severity,
+                message=message,
+                action=action,
+                occurred_at=datetime.now(UTC),
+            )
+        )
 
     @staticmethod
     def _extract_text(response: Any) -> str:

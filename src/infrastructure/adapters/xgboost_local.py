@@ -92,9 +92,29 @@ class XGBoostAdapter(MLPredictionPort):
                 f"Model not trained — no weights at '{self._model_path}'. "
                 "Run TrainModelUseCase first (Slow Loop)."
             )
-        frame = pd.DataFrame([current_features])
+        frame = self._align_features(current_features)
         prediction = float(self._model.predict(frame)[0])
         return Money(Decimal(str(prediction)))
+
+    def _align_features(self, current_features: dict[str, float]) -> pd.DataFrame:
+        """Wyrównuje wejście do cech, na których model BYŁ trenowany.
+
+        Bierze dokładnie `feature_names_in_` w kolejności modelu — ignoruje
+        nadmiarowe cechy (np. nowa cecha w ML_FEATURE_COLUMNS, której stary
+        model w repo jeszcze nie zna) i jawnie zgłasza brakujące (KeyError),
+        zamiast wpychać NaN albo wywalać się na mismatchu nazw kolumn.
+        Dzięki temu kontrakt cech może ewoluować bez psucia predykcji.
+        """
+        expected = getattr(self._model, "feature_names_in_", None)
+        if expected is None:
+            return pd.DataFrame([current_features])
+        expected_cols = [str(c) for c in expected]
+        missing = [c for c in expected_cols if c not in current_features]
+        if missing:
+            raise KeyError(
+                f"Missing required ML features for prediction: {missing}"
+            )
+        return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
 
 
 def _time_ordered_split(

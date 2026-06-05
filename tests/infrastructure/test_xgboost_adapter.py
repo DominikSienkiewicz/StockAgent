@@ -133,6 +133,31 @@ class TestPredict:
             adapter.predict(features)
 
 
+class TestPredictFeatureAlignment:
+    """predict() wyrównuje wejście do cech, na których model był NAPRAWDĘ
+    trenowany (`feature_names_in_`). Bez tego ewolucja kontraktu cech (dodanie
+    nowej cechy do ML_FEATURE_COLUMNS przy starym .ubj w repo) cicho psuła
+    predykcję mismatchem nazw kolumn."""
+
+    def test_ignores_unknown_extra_features_and_scrambled_order(
+        self, trained_adapter: XGBoostAdapter
+    ):
+        # Model zna 7 cech. Wejście dorzuca nieznaną cechę + miesza kolejność.
+        features: dict[str, float] = {"holding_hours": 24.0}
+        for name in reversed(FEATURE_NAMES):
+            features[name] = 0.5
+        prediction = trained_adapter.predict(features)
+        assert isinstance(prediction, Money)
+
+    def test_raises_keyerror_when_required_feature_missing(
+        self, trained_adapter: XGBoostAdapter
+    ):
+        # Brak wymaganej cechy → jawny błąd, nie ciche NaN wpychane do modelu.
+        features = dict.fromkeys(FEATURE_NAMES[:-1], 0.5)
+        with pytest.raises(KeyError):
+            trained_adapter.predict(features)
+
+
 class TestModelPersistence:
     def test_loads_existing_model_from_disk_on_init(
         self, trained_adapter: XGBoostAdapter, model_path: str

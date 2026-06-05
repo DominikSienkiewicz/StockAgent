@@ -45,6 +45,90 @@ def _error_result() -> SymbolResult:
     )
 
 
+def _crypto_saved() -> SymbolResult:
+    return SymbolResult(
+        symbol="BTC", status="saved", delta=Decimal("0.07"),
+        current_price=Decimal("65000"), trend="BULLISH",
+        target_price=Decimal("68000"), confidence_score=0.7,
+        sentiment_score=0.5, sentiment_label="Bullish", news_volume=4,
+        asset_class="CRYPTO",
+    )
+
+
+def _crypto_ignored() -> SymbolResult:
+    return SymbolResult(
+        symbol="ETH", status="ignored", delta=Decimal("0.01"),
+        current_price=Decimal("3200"), asset_class="CRYPTO",
+    )
+
+
+class TestCryptoSection:
+    """Krypto musi być WIDOCZNE w raporcie jako osobna sekcja — także gdy
+    cykl został zignorowany (ruch poniżej progu 5%). Wcześniej krypto ginęło
+    wśród ~40 akcji albo pojawiało się tylko jako mały chip w 'Pominięte'."""
+
+    def test_to_symbol_result_sets_asset_class_from_asset(self):
+        from src.domain.asset import Asset
+        from src.domain.value_objects import AssetType
+
+        raw = {
+            "status": "ignored",
+            "delta": 0.01,
+            "current_price": 3200,
+            "asset": Asset(symbol="ETH", asset_type=AssetType.CRYPTO),
+        }
+        result = to_symbol_result("ETH", raw)
+        assert result.asset_class == "CRYPTO"
+
+    def test_html_has_dedicated_crypto_section(self):
+        html, _ = build_html_report(
+            [_saved_result(), _crypto_saved(), _crypto_ignored()],
+            datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0,
+        )
+        # Wyróżnik sekcji (emoji), niezależny od taga sektora "Krypto" w treści.
+        assert "🪙" in html
+        assert "BTC" in html
+
+    def test_ignored_crypto_visible_with_price_in_section(self):
+        # Ignored krypto (poniżej progu) MUSI pokazać cenę w sekcji krypto —
+        # lista 'Pominięte' pokazuje tylko deltę, nie cenę.
+        html, _ = build_html_report(
+            [_crypto_ignored()],
+            datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0,
+        )
+        assert "🪙" in html
+        assert "$3200.00" in html
+
+    def test_crypto_section_in_plain_text(self):
+        _, text = build_html_report(
+            [_crypto_saved(), _crypto_ignored()],
+            datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0,
+        )
+        assert "KRYPTO" in text.upper()
+        assert "BTC" in text and "ETH" in text
+
+    def test_no_crypto_section_when_no_crypto(self):
+        html, _ = build_html_report(
+            [_saved_result()], datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0
+        )
+        assert "🪙" not in html
+
+    def test_crypto_section_shows_prediction_reasoning(self):
+        # "dlaczego wzrośnie/spadnie" dla krypto — widoczne w sekcji krypto.
+        btc = SymbolResult(
+            symbol="BTC", status="saved", delta=Decimal("0.07"),
+            current_price=Decimal("65000"), trend="BULLISH",
+            target_price=Decimal("68000"), confidence_score=0.7,
+            reasoning="Napływy do ETF-ów spot napędzają popyt.",
+            asset_class="CRYPTO",
+        )
+        html, text = build_html_report(
+            [btc], datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0
+        )
+        assert "Napływy do ETF-ów spot napędzają popyt" in html
+        assert "Napływy do ETF-ów spot napędzają popyt" in text
+
+
 class TestBuildHtmlReport:
     def test_returns_html_and_plain_text(self):
         results = [_saved_result(), _ignored_result(), _error_result()]
@@ -180,10 +264,13 @@ class TestPolishLabels:
         html, _ = build_html_report(
             [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
         )
-        assert "Zmiana 12h" in html
+        # Label horyzontu jest uczciwy względem realnej kadencji (dziennej,
+        # weekend ~72h) — "(cykl)" zamiast mylącego sztywnego "12h".
+        assert "Zmiana (cykl)" in html
         assert "Prognoza" in html
         assert "Sentyment" in html
         assert "Target" not in html  # stara wersja
+        assert "Zmiana 12h" not in html  # mylące sztywne "12h" usunięte
 
 
 class TestBuildChartUrl:
@@ -599,6 +686,104 @@ class TestDayOverDay:
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, resolved_predictions=[],
         )
         assert "Zamknięte predykcje" not in html
+
+
+class TestResolvedPostMortem:
+    """Sekcja 'Zamknięte predykcje' to pełen post-mortem: dlaczego prognoza
+    mówiła wzrost/spadek (oryginalne uzasadnienie), co się faktycznie stało
+    (ruch ceny) oraz czy/​dlaczego się potwierdziła (diagnoza dla chybionych).
+    Dotyczy akcji I krypto (wszystko leci przez prediction_logs)."""
+
+    def test_parse_enriches_with_reasoning_move_and_insight(self):
+        rows = [
+            {
+                "symbol": "NVDA", "predicted_trend": "BULLISH",
+                "is_trend_correct": True,
+                "reasoning_text": "Silny popyt na GPU AI.",
+                "correction_insights": "Trafiona predykcja.",
+                "price_at_prediction": 100.0,
+                "actual_price_after_12h": 106.0,
+            }
+        ]
+        r = parse_resolved_predictions(rows)[0]
+        assert r.reasoning == "Silny popyt na GPU AI."
+        assert r.insight == "Trafiona predykcja."
+        assert r.price_at_prediction == Decimal("100.0")
+        assert r.actual_price == Decimal("106.0")
+        assert r.actual_change_pct == Decimal("0.06")
+
+    def test_miss_shows_reasoning_actual_move_and_diagnosis(self):
+        resolved = [
+            ResolvedPrediction(
+                symbol="SAP", predicted_trend="BEARISH", is_correct=False,
+                reasoning="Słabe wyniki kwartalne.",
+                insight="Zignorowałem odbicie całego sektora chmury.",
+                price_at_prediction=Decimal("100"),
+                actual_price=Decimal("104"),
+            )
+        ]
+        html, text = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            resolved_predictions=resolved,
+        )
+        # (1) dlaczego prognoza mówiła spadek
+        assert "Słabe wyniki kwartalne" in html
+        # (2) co się faktycznie stało — ruch ceny
+        assert "+4.00%" in html
+        # (3) dlaczego się NIE potwierdziła — diagnoza
+        assert "Zignorowałem odbicie całego sektora chmury" in html
+        # plain text też niesie pełen post-mortem
+        assert "Słabe wyniki kwartalne" in text
+        assert "Zignorowałem odbicie całego sektora chmury" in text
+
+    def test_hit_shows_reasoning_and_confirmation(self):
+        resolved = [
+            ResolvedPrediction(
+                symbol="NVDA", predicted_trend="BULLISH", is_correct=True,
+                reasoning="Popyt na GPU do AI rośnie.",
+                insight="Trafiona predykcja.",
+                price_at_prediction=Decimal("100"),
+                actual_price=Decimal("106"),
+            )
+        ]
+        html, _ = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            resolved_predictions=resolved,
+        )
+        assert "Popyt na GPU do AI rośnie" in html
+        assert "+6.00%" in html
+        assert "Trafiona" in html
+
+    def test_crypto_closed_prediction_is_covered_and_tagged(self):
+        resolved = [
+            ResolvedPrediction(
+                symbol="BTC", predicted_trend="BULLISH", is_correct=True,
+                reasoning="Napływy do ETF-ów spot.",
+                insight="Trafiona predykcja.",
+                price_at_prediction=Decimal("60000"),
+                actual_price=Decimal("63000"),
+            )
+        ]
+        html, _ = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            resolved_predictions=resolved,
+        )
+        assert "BTC" in html
+        assert "Krypto" in html  # tag klasy aktywa (company_label_with_sector)
+        assert "Napływy do ETF-ów spot" in html
+
+    def test_backward_compatible_without_new_fields(self):
+        # Stary kształt (bez reasoning/insight/cen) wciąż się renderuje.
+        resolved = [
+            ResolvedPrediction(
+                symbol="AMD", predicted_trend="BULLISH", is_correct=True
+            )
+        ]
+        html, _ = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            resolved_predictions=resolved,
+        )
+        assert "AMD" in html and "Trafiona" in html
 
 
 class TestClickableNewsLinks:

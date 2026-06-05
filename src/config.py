@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     openai_api_key: str
     anthropic_api_key: str | None = None
 
-    # Heterogeniczna strategia: rada doradcza (15+1 wywołań × N symboli) może
+    # Heterogeniczna strategia: rada doradcza (N person + chairman × M symboli) może
     # działać na tańszym modelu niż główna analiza, bo persona-acting + JSON
     # nie wymaga frontier reasoningu. Gdy obie None → rada używa głównego
     # LLM (zachowanie domyślne, wstecznie kompatybilne). Override przykładowo:
@@ -106,7 +106,7 @@ class Settings(BaseSettings):
 
     # ----- Agent config -----
     volatility_threshold: Decimal = Field(default=Decimal("0.02"))
-    # Osobny, wyższy próg dla rady doradczej. Rada (15 wywołań LLM + chairman)
+    # Osobny, wyższy próg dla rady doradczej. Rada (N wywołań LLM person + chairman)
     # jest droga — przy małych Δ jej werdykt to prawie zawsze HOLD. Domyślnie
     # 3% — można podnieść do 5% przy ciasnym budżecie albo wyłączyć (0.0) dla
     # backtestów. Ustaw 0.0, by rada chodziła zawsze gdy główna bramka przepuści.
@@ -154,6 +154,13 @@ class Settings(BaseSettings):
     # Sleep w sekundach między symbolami w głównej pętli — chroni OpenAI TPM
     # przy 30+ tickerach z radą doradczą. 0 = bez throttle.
     symbol_throttle_seconds: float = Field(default=0.0)
+
+    # Minimalny wiek (godziny) predykcji, zanim reflect_node ją oceni. Chroni
+    # przed przedwczesną oceną przy nakładających się cyklach (ręczny
+    # workflow_dispatch tuż po scheduled run oceniłby świeżą predykcję po
+    # cenie sprzed minut → zatruty accuracy_score i zawyżony hit-rate).
+    # 0 = bez filtra (zachowanie wsteczne). Produkcja: ~6h (kadencja dzienna).
+    reflection_min_age_hours: int = Field(default=0)
 
     # ----- ML -----
     ml_model_path: str = "data/models/price_predictor.ubj"

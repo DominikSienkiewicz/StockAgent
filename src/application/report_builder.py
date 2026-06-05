@@ -246,6 +246,133 @@ def _safe_href(url: str | None) -> str | None:
     return _html(url)
 
 
+def _is_crypto(r: SymbolResult) -> bool:
+    return r.asset_class == "CRYPTO"
+
+
+def _render_crypto_section_html(results: list[SymbolResult]) -> str:
+    """Dedykowana sekcja 🪙 Krypto — widoczna NIEZALEŻNIE od bramki volatility.
+
+    Krypto ma osobny próg (5%) i 24/7 rynek, więc często ląduje jako 'ignored'
+    i ginęło w chipach 'Pominięte'. Tu pokazujemy każdy ticker krypto z ceną,
+    Δ i statusem (prognoza dla 'saved', 'poniżej progu' dla 'ignored')."""
+    cryptos = [r for r in results if _is_crypto(r) and r.status != "error"]
+    if not cryptos:
+        return ""
+    rows = []
+    for r in cryptos:
+        if r.status == "saved":
+            trend_part = (
+                f"<span style='color: {_trend_color(r.trend)}; font-weight: 600;'>"
+                f"{_html(_trend_label(r.trend))}</span>"
+            )
+            forecast_part = (
+                f" · prognoza <span style='color: {_delta_color(r.expected_change)};'>"
+                f"{_pct(r.expected_change, signed=True)}</span>"
+                if r.expected_change is not None
+                else ""
+            )
+            conf_part = (
+                f" · pewność {r.confidence_score * 100:.0f}%"
+                if r.confidence_score is not None
+                else ""
+            )
+            status_html = f"{trend_part}{forecast_part}{conf_part}"
+        else:
+            status_html = (
+                "<span style='color: #6b7280;'>poniżej progu zmienności</span>"
+            )
+        rows.append(f"""
+          <div style="margin-bottom: 6px; padding: 8px 12px; background: #fdf4ff;
+                      border-left: 3px solid #a855f7; border-radius: 4px; font-size: 13px;">
+            <strong>{_html(_company_label(r.symbol))}</strong>
+            <span style="color: #4b5563;">· {_money(r.current_price)}
+              · Δ <span style="color: {_delta_color(r.delta)};">{_pct(r.delta, signed=True)}</span>
+              · {status_html}</span>
+          </div>
+        """)
+    return (
+        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>🪙 Krypto</h2>"
+        + "".join(rows)
+    )
+
+
+def _render_crypto_section_text(results: list[SymbolResult]) -> str:
+    cryptos = [r for r in results if _is_crypto(r) and r.status != "error"]
+    if not cryptos:
+        return ""
+    lines = ["KRYPTO", "-" * 64]
+    for r in cryptos:
+        if r.status == "saved":
+            status = (
+                f"{_trend_label(r.trend)} "
+                f"prognoza {_pct(r.expected_change, signed=True)}"
+                if r.expected_change is not None
+                else _trend_label(r.trend)
+            )
+        else:
+            status = "poniżej progu"
+        lines.append(
+            f"  {_company_label(r.symbol):40s} {_money(r.current_price):>12s}  "
+            f"Δ {_pct(r.delta, signed=True):>8s}  {status}"
+        )
+    return "\n".join(lines)
+
+
+def _resolved_why(p: ResolvedPrediction) -> str:
+    """Zwięzłe 'dlaczego' werdyktu: dla chybionych — diagnoza z reflect,
+    dla trafionych — potwierdzenie tezy (insight 'Trafiona predykcja.' jest
+    placeholderem, więc go nie pokazujemy dosłownie)."""
+    if p.is_correct:
+        return "Teza prognozy się potwierdziła."
+    if p.insight and "trafiona" not in p.insight.lower():
+        return p.insight
+    return "Kierunek się nie potwierdził."
+
+
+def _render_resolved_item_html(p: ResolvedPrediction) -> str:
+    mark = "✅" if p.is_correct else "❌"
+    color = "#16a34a" if p.is_correct else "#dc2626"
+    verdict = "Trafiona" if p.is_correct else "Błędna"
+    reason_line = (
+        f"<div style='font-size: 11px; color: #4b5563; margin-top: 3px;'>"
+        f"<strong>Prognoza ({_html(_trend_label(p.predicted_trend))})</strong>, bo: "
+        f"{_html(p.reasoning)}</div>"
+        if p.reasoning
+        else ""
+    )
+    move_line = ""
+    if p.actual_change_pct is not None:
+        move_txt = _pct(p.actual_change_pct, signed=True)
+        prices = (
+            f"{_money(p.price_at_prediction)} → {_money(p.actual_price)} "
+            if p.price_at_prediction is not None and p.actual_price is not None
+            else ""
+        )
+        move_line = (
+            f"<div style='font-size: 11px; color: #4b5563; margin-top: 2px;'>"
+            f"Faktycznie: {prices}"
+            f"<span style='color: {_delta_color(p.actual_change_pct)};'>"
+            f"({move_txt})</span></div>"
+        )
+    why_line = (
+        f"<div style='font-size: 11px; margin-top: 2px;'>"
+        f"<strong style='color: {color};'>Dlaczego:</strong> "
+        f"<span style='color: #4b5563;'>{_html(_resolved_why(p))}</span></div>"
+    )
+    return f"""
+      <div style="margin-bottom: 8px; padding: 8px 10px; background: #fafafa;
+                  border-left: 3px solid {color}; border-radius: 4px;
+                  font-size: 12px;">
+        {mark} <strong>{_html(_company_label_with_sector(p.symbol))}</strong>
+        <span style="color: {color}; font-weight: 600;">· {verdict}</span>
+        {reason_line}
+        {move_line}
+        {why_line}
+      </div>
+    """
+
+
 def _render_council_section(verdict: CouncilVerdict) -> str:
     """Renderuje sekcję rady doradczej (Jinja2 template).
 
@@ -422,6 +549,11 @@ def _render_html(
     # gdy wywołujący przekaże MacroRiskReport. Bez slotu sekcja jest pomijana.
     sections.append("<!-- RISK_WATCH_SLOT -->")
 
+    # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
+    crypto_html = _render_crypto_section_html(results)
+    if crypto_html:
+        sections.append(crypto_html)
+
     # 🎯 Trade ideas (najsilniejsze sygnały transakcyjne)
     if trade_signals:
         sections.append(
@@ -521,20 +653,7 @@ def _render_html(
             "📊 Zamknięte predykcje (ostatnie 24h)</h2>"
         )
         for p in resolved_predictions:
-            mark = "✅" if p.is_correct else "❌"
-            color = "#16a34a" if p.is_correct else "#dc2626"
-            verdict = "Trafiona" if p.is_correct else "Błędna"
-            sections.append(f"""
-              <div style="margin-bottom: 4px; padding: 6px 10px; background: #fafafa;
-                          border-left: 3px solid {color}; border-radius: 4px;
-                          font-size: 12px;">
-                {mark} <strong>{_html(_company_label(p.symbol))}</strong>
-                <span style="color: #6b7280;">·
-                  prognoza {_html(_trend_label(p.predicted_trend))} ·
-                  <strong style="color: {color};">{verdict}</strong>
-                </span>
-              </div>
-            """)
+            sections.append(_render_resolved_item_html(p))
         sections.append(
             "<div style='font-size: 11px; color: #6b7280; margin: 4px 0 16px 0;'>"
             f"Suma: {len(correct)} trafionych / {len(wrong)} błędnych "
@@ -574,7 +693,7 @@ def _render_html(
     if chart_url:
         sections.append(f"""
       <div style="margin-bottom: 16px; text-align: center;">
-        <img src="{_html(chart_url)}" alt="Wykres zmiany cen 12h"
+        <img src="{_html(chart_url)}" alt="Wykres zmiany cen (cykl)"
              style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />
       </div>
         """)
@@ -604,9 +723,9 @@ def _render_html(
           <tr style="background: #f3f4f6; text-align: left;">
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Symbol</th>
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Cena</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Zmiana 12h</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Zmiana (cykl)</th>
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Trend</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Prognoza (12h)</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Prognoza (nast. cykl)</th>
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Pewność</th>
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Sentyment</th>
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Newsy</th>
@@ -807,6 +926,12 @@ def _render_plain(
     # Slot na sekcję Risk Watch w wariancie plain text — analogicznie do HTML.
     lines.append("<!-- RISK_WATCH_SLOT -->")
 
+    # Krypto — osobna sekcja (widoczna też gdy 'ignored').
+    crypto_text = _render_crypto_section_text(results)
+    if crypto_text:
+        lines.append(crypto_text)
+        lines.append("")
+
     # Trade ideas
     if trade_signals:
         lines.append("NAJSILNIEJSZE SYGNAŁY")
@@ -844,9 +969,21 @@ def _render_plain(
             mark = "✅" if p.is_correct else "❌"
             verdict = "Trafiona" if p.is_correct else "Błędna"
             lines.append(
-                f"  {mark} {_company_label(p.symbol):40s}  trend {_trend_label(p.predicted_trend):11s} "
-                f"{verdict}"
+                f"  {mark} {_company_label_with_sector(p.symbol)}  "
+                f"prognoza {_trend_label(p.predicted_trend)} — {verdict}"
             )
+            if p.reasoning:
+                lines.append(f"        bo: {p.reasoning}")
+            if p.actual_change_pct is not None:
+                prices = (
+                    f"{_money(p.price_at_prediction)} → {_money(p.actual_price)} "
+                    if p.price_at_prediction is not None and p.actual_price is not None
+                    else ""
+                )
+                lines.append(
+                    f"        faktycznie: {prices}({_pct(p.actual_change_pct, signed=True)})"
+                )
+            lines.append(f"        dlaczego: {_resolved_why(p)}")
         lines.append(
             f"  Suma: {correct}/{len(resolved_predictions)} "
             f"({correct / max(1, len(resolved_predictions)) * 100:.0f}% accuracy)"
@@ -913,7 +1050,7 @@ def _render_plain(
             rec_text = _recommendation_reason_text(r)
             lines.append(
                 f"  {_company_label_with_sector(r.symbol):55s} {_money(r.current_price):>10s}  "
-                f"Δ12h {_pct(r.delta, signed=True):>8s}  →  "
+                f"Δ {_pct(r.delta, signed=True):>8s}  →  "
                 f"{_trend_label(r.trend):11s} {forecast_part}{conf_part}"
             )
             lines.append(f"         {sentiment_part}")
@@ -964,6 +1101,15 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
     status = str(raw.get("status", "unknown"))
     sentiment = raw.get("sentiment") or {}
     llm = raw.get("llm_analysis") or {}
+
+    # Klasa aktywa z domeny — graf trzyma Asset w stanie (main_agent klasyfikuje
+    # STOCK/ETF/CRYPTO przed wywołaniem). Pozwala raportowi rozpoznać krypto
+    # niezawodnie, niezależnie od statusu (saved/ignored).
+    asset = raw.get("asset")
+    asset_class = (
+        asset.asset_type.value if asset is not None and hasattr(asset, "asset_type")
+        else None
+    )
     confidence = llm.get("confidence_score")
     av_agreement = llm.get("av_agreement")
 
@@ -1003,6 +1149,7 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
         top_news=_extract_top_news(raw.get("news") or []),
         council_verdict=council_verdict if isinstance(council_verdict, CouncilVerdict) else None,
         valuation=valuation,
+        asset_class=asset_class,
     )
 
 

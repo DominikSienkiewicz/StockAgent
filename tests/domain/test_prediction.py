@@ -71,3 +71,28 @@ class TestAccuracyScore:
         # error = |10 - 105| / 100 = 0.95 → 1 - 0.95 = 0.05 (jeszcze pozytywny)
         # ale dla dużych odchyleń wynik zostaje sklipowany do 0.0
         assert prediction.accuracy_score(Decimal("1000.0")) == Decimal("0.0")
+
+
+class TestZeroPriceAtPredictionGuard:
+    """Skażona cena 0 w prediction_logs nie może wywalać reflect_node.
+
+    Obie metody dzielą przez `price_at_prediction` — bez guardu pojedynczy
+    rekord z ceną 0 (np. błędny snapshot, wadliwy feed) rzuca
+    ZeroDivisionError i ubija cały symbol w cyklu.
+    """
+
+    def test_is_trend_correct_does_not_raise_on_zero_price(self):
+        prediction = _make_prediction(
+            TrendDirection.SIDEWAYS, price_at=Decimal("0"), target=Decimal("0")
+        )
+        # SIDEWAYS dzieli actual_delta / price_at_prediction → 0/0.
+        # Cena nie zmieniła się względem (nieznanego) 0 → traktujemy jak SIDEWAYS-correct.
+        assert prediction.is_trend_correct(Decimal("0")) is True
+
+    def test_accuracy_score_does_not_raise_on_zero_price(self):
+        prediction = _make_prediction(
+            TrendDirection.BULLISH, price_at=Decimal("0"), target=Decimal("105.0")
+        )
+        # Bez punktu odniesienia (cena 0) nie da się policzyć błędu względnego →
+        # zwracamy 0.0 (brak wiarygodnego sygnału), nie crash.
+        assert prediction.accuracy_score(Decimal("110.0")) == Decimal("0.0")

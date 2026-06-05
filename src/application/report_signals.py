@@ -122,8 +122,28 @@ def parse_resolved_predictions(
             symbol=str(row.get("symbol", "?")),
             predicted_trend=str(row.get("predicted_trend", "?")),
             is_correct=bool(trend_correct),
+            reasoning=_clean_text(row.get("reasoning_text")),
+            insight=_clean_text(row.get("correction_insights")),
+            price_at_prediction=_to_decimal(row.get("price_at_prediction")),
+            actual_price=_to_decimal(row.get("actual_price_after_12h")),
         ))
     return out
+
+
+def _clean_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (ArithmeticError, TypeError, ValueError):
+        return None
 
 
 def build_portfolio_mood(results: list[SymbolResult]) -> dict[str, Any]:

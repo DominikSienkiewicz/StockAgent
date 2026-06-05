@@ -90,9 +90,9 @@ def build_llm_adapter(
             )
         from src.infrastructure.llm.anthropic_client import AnthropicAdapter
 
-        # AnthropicAdapter nie wspiera QuotaMonitor (do dorobienia w przyszłości
-        # przez analogię do OpenAIAdapter).
-        return AnthropicAdapter(api_key=settings.anthropic_api_key)
+        return AnthropicAdapter(
+            api_key=settings.anthropic_api_key, quota_monitor=quota_monitor
+        )
 
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
@@ -155,8 +155,8 @@ def build_council_llm_adapter(
     Domyślnie rada korzysta z `main_llm` (jedna instancja klienta SDK,
     wstecznie kompatybilne). Gdy `council_llm_provider` lub
     `council_llm_model` są ustawione → buduje OSOBNY adapter z innym
-    modelem/providerem. Pozwala to puścić ~94% callsów cyklu (15 person × N
-    symboli) na tańszym modelu, zachowując frontier model dla głównej analizy.
+    modelem/providerem. Pozwala to puścić większość callsów cyklu (N person ×
+    M symboli) na tańszym modelu, zachowując frontier model dla głównej analizy.
     """
     if settings.council_llm_provider is None and settings.council_llm_model is None:
         return main_llm
@@ -175,6 +175,7 @@ def build_council_llm_adapter(
         return AnthropicAdapter(
             api_key=settings.anthropic_api_key,
             model=settings.council_llm_model or ANTHROPIC_DEFAULT,
+            quota_monitor=quota_monitor,
         )
 
     from src.infrastructure.llm.openai_client import DEFAULT_MODEL as OPENAI_DEFAULT
@@ -306,6 +307,7 @@ def build_use_case(
         fundamentals_port=fundamentals_port,
         crypto_threshold=crypto_threshold,
         crypto_council_threshold=crypto_council_threshold,
+        reflection_min_age_hours=settings.reflection_min_age_hours,
     )
 
 

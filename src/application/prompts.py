@@ -7,6 +7,7 @@ def get_prediction_prompt(
     symbol: str,
     current_data: dict[str, Any],
     reflection_context: str,
+    similar_context: str = "",
 ) -> str:
     """Główny system prompt dla LLM-a w węźle predict.
 
@@ -14,8 +15,22 @@ def get_prediction_prompt(
     Zawiera:
       - Self-Reflection context (wnioski z historycznych błędów),
       - cross-validation z Alpha Vantage sentymentem (LLM ocenia czy się zgadza
-        z pre-computed sygnałem; rozbieżność = czerwona flaga, fake news?).
+        z pre-computed sygnałem; rozbieżność = czerwona flaga, fake news?),
+      - opcjonalny RAG: podobne historyczne sytuacje (similar_context) wyszukane
+        przez similarity search nad embeddingami newsów (pusty string = brak).
     """
+    similar_block = (
+        f"""
+<similar_past_situations>
+Najbardziej podobne historyczne sytuacje (RAG po embeddingach newsów) i ich
+rzeczywisty wynik. Użyj ich jako analogii — czy obecny układ przypomina
+sytuację, w której prognoza się sprawdziła lub zawiodła?
+{similar_context}
+</similar_past_situations>
+"""
+        if similar_context
+        else ""
+    )
     return f"""
 <role>
 Jesteś rygorystycznym, algorytmicznym analitykiem ilościowym (Quant).
@@ -30,10 +45,10 @@ dla tego aktywa. Musisz zaktualizować swój aparat poznawczy o te dane.
 Jeśli popełniłeś błąd w przeszłości, nie powielaj go.
 {reflection_context}
 </reflection_context>
-
+{similar_block}
 <current_market_data>
 Cena aktualna: {current_data.get("price")}
-Zmiana 12h: {current_data.get("delta_percentage")}%
+Zmiana od ostatniego cyklu: {current_data.get("delta_percentage")}%
 </current_market_data>
 
 <alpha_vantage_signal>
@@ -83,7 +98,7 @@ def get_mistake_diagnosis_prompt(
     """Prompt dla LLM-a w węźle reflect — diagnoza błędnej predykcji."""
     return f"""
 Jesteś analitykiem korygującym.
-12h temu przewidziałeś trend: {last_trend}.
+W poprzednim cyklu przewidziałeś trend: {last_trend}.
 Oparłeś to na newsach: {last_news_summary}.
 Aktualna cena to {actual_price}, prognoza była błędna.
 

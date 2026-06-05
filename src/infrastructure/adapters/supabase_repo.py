@@ -89,16 +89,22 @@ class SupabaseRepository(RepositoryPort):
             return None
         return Money(Decimal(str(rows[0]["price"])))
 
-    def get_unverified_prediction(self, symbol: str) -> Prediction | None:
-        response = (
+    def get_unverified_prediction(
+        self, symbol: str, min_age_hours: int = 0
+    ) -> Prediction | None:
+        query = (
             self._client.table(self._table)
             .select("*")
             .eq("symbol", symbol)
             .is_("actual_price_after_12h", "null")
-            .order("timestamp", desc=True)
-            .limit(1)
-            .execute()
         )
+        # Górne ograniczenie wieku — pomija predykcje zbyt świeże, by je
+        # rzetelnie ocenić (patrz docstring portu). Filtr dokładamy tylko gdy
+        # próg > 0, by nie zmieniać zachowania domyślnego.
+        if min_age_hours > 0:
+            cutoff = datetime.now(UTC) - timedelta(hours=min_age_hours)
+            query = query.lte("timestamp", cutoff.isoformat())
+        response = query.order("timestamp", desc=True).limit(1).execute()
         rows = _rows(response)
         if not rows:
             return None
@@ -157,11 +163,38 @@ class SupabaseRepository(RepositoryPort):
         Filtr po `is_trend_correct` (nie `accuracy_score`) — to ono napędza
         trafność raportu i naturalnie odsiewa wiersze sprzed migracji 009."""
         cutoff = datetime.now(UTC) - timedelta(hours=hours)
+        # Pełen post-mortem w raporcie: oryginalne uzasadnienie + diagnoza + ceny
+        # (a nie tylko kierunek), żeby pokazać "dlaczego wzrosło/spadło i czy
+        # prognoza się potwierdziła".
         response = (
             self._client.table(self._table)
-            .select("symbol, predicted_trend, is_trend_correct, timestamp")
+            .select(
+                "symbol, predicted_trend, is_trend_correct, timestamp, "
+                "reasoning_text, correction_insights, price_at_prediction, "
+                "actual_price_after_12h"
+            )
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
+            .order("timestamp", desc=True)
+            .execute()
+        )
+        return _rows(response)
+
+    def get_resolved_predictions_for_eval(self, days: int) -> list[dict[str, Any]]:
+        """Zamknięte predykcje z ostatnich `days` dni z polami do ewaluacji
+        (ceny + kierunek). Read-only; używane przez `src.tools.evaluate`.
+
+        Metoda concrete-only (nie część `RepositoryPort`) — to narzędzie
+        offline-analizy, nie część runtime'owego kontraktu use case'ów."""
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        response = (
+            self._client.table(self._table)
+            .select(
+                "predicted_trend, is_trend_correct, price_at_prediction, "
+                "predicted_target_price, actual_price_after_12h, timestamp"
+            )
+            .gte("timestamp", cutoff.isoformat())
+            .not_.is_("actual_price_after_12h", "null")
             .order("timestamp", desc=True)
             .execute()
         )
@@ -300,6 +333,29 @@ class SupabaseRepository(RepositoryPort):
                 )
             )
         return out
+
+    def find_similar_predictions(
+        self, embedding: list[float], limit: int = 3
+    ) -> list[dict[str, Any]]:
+        """Similarity search nad `prediction_logs.embedding` (pgvector) przez
+        RPC `match_news_embeddings` (migracja 011).
+
+        Graceful: gdy RPC nie istnieje (migracja niezaaplikowana) lub błąd
+        sieci/Supabase — zwraca `[]`, żeby RAG był czysto opcjonalnym
+        wzbogaceniem, a nie twardą zależnością predykcji."""
+        try:
+            response = self._client.rpc(
+                "match_news_embeddings",
+                {"query_embedding": embedding, "match_count": limit},
+            ).execute()
+        except Exception:
+            logger.warning(
+                "match_news_embeddings RPC unavailable — RAG retrieval skipped "
+                "(apply migration 011 to enable).",
+                exc_info=True,
+            )
+            return []
+        return _rows(response)
 
     def save_council_votes(
         self,

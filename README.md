@@ -36,16 +36,16 @@ Finnhub (US prices) ──► check_price ──► reflect ──► fetch_fund
 ```
 
 1. **Fetch price + snapshot** — `FinnhubAdapter` pulls the current quote for each US ticker. `check_price_node` saves a **price snapshot in every cycle** (`price_snapshots` table) so the next cycle always has a reference point — this breaks the cold-start deadlock. Free tier is US-only; dotted tickers (`CSPX.L`, `BAS.DE`) get a 403 and are handled gracefully.
-2. **Self-Reflection (runs every cycle, before the volatility gate)** — `reflect_node` reads the last unverified prediction. It computes two independent domain metrics and persists both: `accuracy_score` (how close the price landed to the numeric target — feeds XGBoost training) and `is_trend_correct` (whether the directional call matched reality — feeds the report's hit-rate). If the prediction was directionally wrong, the LLM diagnoses why ("I ignored hawkish Fed signals"). The insight is injected into the next prediction's prompt as `<reflection_context>`. Decoupled from the volatility gate so every prediction is scored ~12h later, regardless of the current cycle's volatility.
+2. **Self-Reflection (runs every cycle, before the volatility gate)** — `reflect_node` reads the last unverified prediction. It computes two independent domain metrics and persists both: `accuracy_score` (how close the price landed to the numeric target — feeds XGBoost training) and `is_trend_correct` (whether the directional call matched reality — feeds the report's hit-rate). If the prediction was directionally wrong, the LLM diagnoses why ("I ignored hawkish Fed signals"). The insight is injected into the next prediction's prompt as `<reflection_context>`. Decoupled from the volatility gate so every prediction is scored on the **next cycle**, regardless of the current cycle's volatility. **Prediction horizon, honestly:** the loop runs once per trading day (not every 12h despite the legacy `*_12h` names), so a prediction is resolved ~24h later on weekdays and ~72h later across a weekend. A `reflection_min_age_hours` guard (config, default `0`; production `6`) skips predictions too fresh to score fairly — so an overlapping manual `workflow_dispatch` can't prematurely close a prediction made minutes earlier and pollute the accuracy signal.
 3. **Fundamentals (slow loop refreshes, fast loop reads cache)** — `fetch_fundamentals_node` runs after `reflect` and before the volatility gate. The `FundamentalsPort` is implemented by `AlphaVantageFundamentalsAdapter` (2 API requests per stock symbol: `OVERVIEW` + `EARNINGS`) wrapped in `CachedFundamentalsAdapter` (decorator pattern). In the **slow loop**, real API calls populate the `fundamentals_cache` Supabase table. In the **fast loop**, a `NullFundamentalsAdapter` delegate skips API calls and reads from cache only. ETF symbols (configured via `SYMBOLS_ETF`) always skip fetching — they have no meaningful per-share EPS/P/E. The domain evaluates a deterministic `ValuationVerdict` (`UNDERVALUED / FAIR / OVERVALUED / UNKNOWN`) based primarily on PEG ratio, with PE/growth qualifiers; ETFs always get `UNKNOWN`. The verdict is surfaced to the Council prompt as a `Valuation snapshot` block and rendered as a dedicated **Wycena fundamentalna** section in the email report.
 4. **Volatility gate** — `Asset.evaluate_volatility(delta, threshold)` lives in the pure domain (Hexagonal core). Δ < 2% → `ignore`, no paid APIs touched. **Domain decides, graph executes.**
 5. **News + Sentiment** — `AlphaVantageClient` makes one request per ticker, rotating N API keys when one exhausts its 25 req/day quota. A `relevance ≥ 0.5` filter strips noise **before** anything reaches the LLM. Per ticker it returns a multi-feature dict: `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `av_sentiment_label`.
 6. **LLM (cross-validation)** — **Claude Sonnet 4.6** (default; or OpenAI GPT when `LLM_PROVIDER=openai`) receives pre-computed AV sentiment + headlines + reflection context + fundamentals valuation snapshot. It returns structured JSON: `trend_direction`, `confidence_score`, **`av_agreement`** (whether it agrees with AV — anything below 0.3 flags potential manipulation), `target_price_12h`, `reasoning`.
 7. **ML hard prediction (local XGBoost)** — model lives in a `.ubj` file inside the repo (Local-First AI). Consumes 7 features: `price_delta`, `av_sentiment_score`, `av_relevance_avg`, `news_volume_24h`, `high_relevance_count`, `llm_trend_signal`, `av_llm_agreement`. On cold start (no trained weights yet) it falls back to a "no change" baseline instead of crashing.
 8. **Advisory Council** — after `predict_node`, 7 legendary investor personas (Buffett, Graham, Lynch, Dalio, Soros, Wood, Marks) each independently analyse the same data via parallel LLM calls (one worker per investor). The personas are **data, not code** — one JSON file per investor in [`data/council_personas/`](data/council_personas/), schema `{"name": str, "style": str}`. Adding / removing a council member = adding / removing a file. Loader (`src/infrastructure/persona_loader.py`) validates schema and uniqueness at startup; CLI walidator `uv run python -m src.tools.validate_personas` plus a pre-commit hook catch typos before runtime. A final "chairman" call synthesises a consensus `CouncilVerdict` (BUY/SELL/HOLD + `consensus_strength` + `dissenting_views`). Two volatility gates: the main one (`volatility_threshold`, default 2%) decides whether to run the prediction pipeline at all; the **council-specific gate** (`council_volatility_threshold`, default 3%) further filters out medium-Δ cycles where the 8 LLM calls would mostly return HOLD — set it to `0.0` to disable. Stored as JSONB in `prediction_logs.council_verdict` (legacy blob) **and** as one row per investor in `council_votes` (structured audit trail — query "how did Soros vote on NVDA in the last month" without parsing JSON). Rendered as a styled table in the email report.
-9. **Persist** — `SupabaseRepository` writes the full record to `prediction_logs`. The news summary is embedded (OpenAI `text-embedding-3-small` → 1536-dim `pgvector`) for later RAG-style retrieval — graceful when embeddings are unavailable.
+9. **Persist + RAG** — `SupabaseRepository` writes the full record to `prediction_logs`. The news summary is embedded (OpenAI `text-embedding-3-small` → 1536-dim `pgvector`) **once per cycle in `predict_node`** and reused at save time. That embedding is **actually consumed**: before the LLM call, `predict_node` runs a pgvector similarity search (`match_news_embeddings` RPC, migration `011`) to pull the most similar *past* situations and their real outcomes (trend, hit/miss, the correction insight) into the prompt as `<similar_past_situations>`. RAG is fully graceful — if the RPC/pgvector is unavailable, retrieval is skipped and the prediction still runs.
 10. **Slow Loop (weekly cycle)** — `main_trainer.py` retrains XGBoost on resolved predictions (those with `accuracy_score`), commits the new weights back to the repo (Continual Learning). Also runs a fundamentals refresh step using `AlphaVantageFundamentalsAdapter` to repopulate `fundamentals_cache`.
-11. **Deliver** — Polish-language HTML report via Resend with 2 charts (Δ12h + forecast), correlation scatter plot, trade signals sorted by `confidence × |Δ|`, risk signals with severity badges, day-over-day diff, and clickable news headlines. Two sections (council + fundamentals valuation) render via Jinja2 templates in `src/application/templates/` — autoescape on, the rest of the report still uses f-string composition in `report_builder.py` (incremental migration). The council template surfaces domain-level signals via `CouncilVerdict.is_split_decision()` (⚠️ PODZIELONA RADA badge), `has_strong_consensus()` (SILNY KONSENSUS badge), and `vote_distribution()` (BUY/SELL/HOLD count).
+11. **Deliver** — Polish-language HTML report via Resend with 2 charts (Δ per cycle + forecast), correlation scatter plot, trade signals sorted by `confidence × |Δ|`, risk signals with severity badges, day-over-day diff, and clickable news headlines. Two sections (council + fundamentals valuation) render via Jinja2 templates in `src/application/templates/` — autoescape on, the rest of the report still uses f-string composition in `report_builder.py` (incremental migration). The council template surfaces domain-level signals via `CouncilVerdict.is_split_decision()` (⚠️ PODZIELONA RADA badge), `has_strong_consensus()` (SILNY KONSENSUS badge), and `vote_distribution()` (BUY/SELL/HOLD count).
 
 All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff, and a single per-symbol error never aborts the whole cycle.
 
@@ -99,6 +99,7 @@ Every adapter that has a paid / metered quota writes a `QuotaAlert` to a shared 
 |---|---|
 | `AlphaVantageClient` | `CRITICAL` when all `ALPHA_VANTAGE_API_KEYS` have hit the daily 25 req/day cap — feed is partial. |
 | `OpenAIAdapter` | `WARNING` when 429 was retried but eventually succeeded (you're at the TPM edge). `CRITICAL` when retries are exhausted and the call failed. Source field includes the model: `OpenAI (gpt-5-mini)`. |
+| `AnthropicAdapter` (default main LLM) | Same retry/backoff as OpenAI on 429 / 5xx / 529 (Overloaded) / connection errors. `WARNING` after a successful retry, `CRITICAL` when retries are exhausted. Source field includes the model: `Anthropic (claude-sonnet-4-6)`. |
 | `FinnhubAdapter` | `CRITICAL` on 429 (free tier 60 req/min hit). |
 | `ResendNotifier` | `CRITICAL` on 429 (free 100 mails/day) or any other 4xx — email was not delivered. The alert appears in the **next** report once delivery recovers. |
 
@@ -160,12 +161,13 @@ The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallbac
 - 🎯 **Strongest signals** — top BUY/SELL, colour-coded (priority 1: actionable)
 - 🚨 **Warning signals** — divergence + AV/LLM conflict + low signal
 - 📊 **Portfolio mood** — average sentiment, most positive/negative, high-confidence count
-- 📊 **Closed predictions (24h)** — ✅ Trafiona / ❌ Błędna by trend direction from previous cycles
+- 📊 **Closed predictions (24h)** — full **post-mortem** per resolved prediction (stocks **and** crypto): the original thesis (*why up/down* — `reasoning_text`), the actual move (`$A → $B (+C%)`), the ✅ Trafiona / ❌ Błędna verdict, and **why** (the `reflect` diagnosis for misses, thesis-confirmed for hits). All from data already in `prediction_logs` — no extra LLM calls.
 - 🎯 **Accuracy history** — directional hit-rate over the last 30 days
-- 📈 **Δ12h chart** (QuickChart bar chart)
+- 🪙 **Krypto** — dedicated section listing every tracked crypto ticker (price · Δ · trend/forecast for `saved`, "poniżej progu" for `ignored`). Rendered from the domain asset class (`Asset.asset_type`, surfaced as `SymbolResult.asset_class`), **independent of the 5% volatility gate** — so crypto stays visible even on a quiet day instead of vanishing into the "Pominięte" chips.
+- 📈 **Δ chart** (QuickChart bar chart, change since last cycle)
 - 🧠 **Self-Reflection** — lessons learned per symbol (purple box)
-- 🔮 **Predictions table** — price · Δ12h · trend · forecast (12h) `+X.YZ%` · confidence · sentiment · news count. Each row is tagged with its **sector** next to the company name (stocks → Polish sector e.g. `Cyberbezpieczeństwo`, ETFs → `ETF`, crypto → `Krypto`); mapping in `report_formatting.SECTORS`.
-- 💡 **Worth a look (sectors in motion)** — peer suggestions computed **from the current cycle only, zero extra API calls**: when a stock sector runs hot (its strongest monitored move `|Δ12h| ≥ 3%` or mean `|sentiment| ≥ 0.3`), the report suggests notable peers in that sector you don't yet monitor (curated `report_formatting.PEERS`), e.g. *Cyberbezpieczeństwo gorące (CRWD +6.0%, PANW +4.2%) — rozważ: ZS, FTNT, CYBR*. Top 3 sectors, 3 peers each; section hidden when nothing is hot.
+- 🔮 **Predictions table** — price · Δ (per cycle) · trend · forecast (next cycle) `+X.YZ%` · confidence · sentiment · news count. Each row is tagged with its **sector** next to the company name (stocks → Polish sector e.g. `Cyberbezpieczeństwo`, ETFs → `ETF`, crypto → `Krypto`); mapping in `report_formatting.SECTORS`.
+- 💡 **Worth a look (sectors in motion)** — peer suggestions computed **from the current cycle only, zero extra API calls**: when a stock sector runs hot (its strongest monitored move `|Δ| ≥ 3%` or mean `|sentiment| ≥ 0.3`), the report suggests notable peers in that sector you don't yet monitor (curated `report_formatting.PEERS`), e.g. *Cyberbezpieczeństwo gorące (CRWD +6.0%, PANW +4.2%) — rozważ: ZS, FTNT, CYBR*. Top 3 sectors, 3 peers each; section hidden when nothing is hot.
 - 📈 **Forecast chart** (QuickChart bar chart)
 - 💡 **Reasoning** + 📰 **Top news** (clickable `<a href>` links to the original articles)
 - 📈 **Sentiment vs price correlation** (scatter plot)
@@ -186,7 +188,7 @@ All sections are **conditional** — they only render when data exists. The firs
 - **QuickChart.io** — URL-based charts (`<img src>` in HTML), zero dependency
 - **Pydantic Settings** v2 — typed env vars from `.env` with validators (CSV → list)
 - **requests** + `urllib3.Retry` — shared session with exponential backoff on 429 / 5xx
-- **pytest 9** + **pytest-mock** — 376 passing tests + 5 skipped live API tests
+- **pytest 9** + **pytest-mock** — 640+ passing tests + skipped live-API / Docker-container tests
 - **ruff** — lint (E, W, F, I, B, UP, SIM rule sets)
 - **mypy** strict mode — every file fully typed
 - **GitHub Actions CI** — ruff + mypy + pytest on every push / PR
@@ -222,13 +224,15 @@ cp .env.example .env
 #   migrations/002_price_snapshots.sql  (price_snapshots — breaks cold-start)
 #   migrations/003_add_embedding.sql    (embedding VECTOR(1536) + pgvector index)
 #   migrations/004_align_ml_feature_store.sql  (7-feature XGBoost contract)
-#   migrations/005_investor_advisory_board.sql  (council verdicts schema)
+#   migrations/005_council_verdict.sql          (council verdicts schema)
 #   migrations/006_fundamentals_cache.sql       (fundamentals_cache table with TTL)
 #   migrations/007_council_votes.sql            (per-investor structured audit trail)
 #   migrations/008_data_quality_flags.sql       (data_quality_flags on prediction_logs)
 #   migrations/009_trend_correctness.sql        (is_trend_correct on prediction_logs + backfill)
+#   migrations/010_quota_alerts.sql             (quota_alerts audit trail for the report banner)
+#   migrations/011_match_news_embeddings.sql    (pgvector RPC for RAG retrieval over news embeddings)
 
-# 4. Smoke test (expect 600+ tests passing + ~21 skipped live/Docker tests)
+# 4. Smoke test (expect 640+ tests passing + ~22 skipped live/Docker tests)
 uv run pytest
 
 # 5. Single Fast Loop run
@@ -268,6 +272,8 @@ uv sync                            # install deps
 uv sync --extra anthropic          # + Anthropic SDK
 uv run python main_agent.py        # one Fast Loop run (analysis + email)
 uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain)
+uv run python -m src.tools.evaluate            # offline eval: hit-rate + RMSE vs baseline (read-only)
+uv run python -m src.tools.evaluate --days 60  # custom evaluation window
 uv run pytest                                   # full local suite
 uv run pytest -m "not integration and not containers" # unit only
 uv run pytest -m containers                    # Docker/Postgres schema tests
@@ -314,6 +320,7 @@ All tunable parameters are a `Settings` Pydantic model in [`src/config.py`](src/
 | `symbols_unsupported_price` | `[]` | CSV of tickers the current price adapter cannot fetch (Finnhub free → 403 on EU-listed `.DE` / `.L`). Pre-filtered in `main_agent.main()` — they show up as **ignored**, not **errors**, so the report's error count reflects actual issues. |
 | `symbol_throttle_seconds` | `0.0` | Sleep between symbols in the main loop. Set `> 0` to spread LLM calls across the OpenAI **TPM window** (council on OpenAI; tier 1 = 30k tokens / min) — at 30+ symbols with the 7-persona council, bursting hits 429s. Recommended: `2.0`. |
 | `council_llm_provider` / `council_llm_model` | `None` | Route the advisory council to a cheaper / faster LLM. With 7 personas × N symbols the council dominates token use — pinning it to a cheap model (`gpt-5-mini`) keeps council cost low while the main analysis runs on Claude Sonnet 4.6. |
+| `reflection_min_age_hours` | `0` | Minimum age (hours) a prediction must reach before `reflect_node` scores it. `0` = score the latest unverified prediction regardless of age (legacy). Production `config.toml` sets `6`: guards against an overlapping manual run prematurely closing a fresh prediction against a near-identical price (which would pollute `accuracy_score` and inflate the report hit-rate). |
 | `ml_model_path` | `data/models/price_predictor.ubj` | XGBoost weights file |
 | `notifications_enabled` | `false` | Enables email delivery |
 | `digest_from_email` | `onboarding@resend.dev` | Resend sandbox sender |

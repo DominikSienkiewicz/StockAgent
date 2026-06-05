@@ -27,6 +27,8 @@ MIGRATION_FILES = [
     "007_council_votes.sql",
     "008_data_quality_flags.sql",
     "009_trend_correctness.sql",
+    "010_quota_alerts.sql",
+    "011_match_news_embeddings.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -159,6 +161,34 @@ class TestMigrations:
     def test_ivfflat_index_created_on_embedding(self, pg_conn):
         indexes = _indexes(pg_conn, "prediction_logs")
         assert "idx_prediction_logs_embedding" in indexes
+
+    def test_match_news_embeddings_rpc_returns_similar_rows(self, pg_conn):
+        """RPC RAG (migracja 011) zwraca historyczne predykcje wg podobieństwa
+        embeddingu, z polem similarity."""
+        with pg_conn.cursor() as cur:
+            # Dwie zamknięte predykcje z embeddingami (1536-dim).
+            near = "[" + ",".join(["0.1"] * 1536) + "]"
+            far = "[" + ",".join(["0.9"] * 1536) + "]"
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, news_summary, predicted_trend, is_trend_correct, "
+                " actual_price_after_12h, embedding) "
+                "VALUES (%s,%s,%s,%s,%s,%s::vector),(%s,%s,%s,%s,%s,%s::vector)",
+                (
+                    "NEAR", "Fed hawkish", "BEARISH", True, 100.0, near,
+                    "FAR", "Earnings beat", "BULLISH", False, 200.0, far,
+                ),
+            )
+            query = "[" + ",".join(["0.11"] * 1536) + "]"
+            cur.execute(
+                "SELECT symbol, similarity FROM "
+                "match_news_embeddings(%s::vector, %s)",
+                (query, 1),
+            )
+            rows = cur.fetchall()
+        # Najbliższy zapytaniu jest "NEAR".
+        assert len(rows) == 1
+        assert rows[0][0] == "NEAR"
 
     def test_council_verdict_column_exists(self, pg_conn):
         cols = _columns(pg_conn, "prediction_logs")

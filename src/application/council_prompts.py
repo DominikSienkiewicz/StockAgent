@@ -44,7 +44,7 @@ def investor_prompt(persona: InvestorPersona, data: CouncilInput) -> str:
 
     Układ cache-friendly: PRZEZ blokiem persony idą wszystkie dane wspólne
     (dane rynkowe, newsy, wycena, output_schema), które są identyczne dla
-    15 wywołań w tym samym cyklu. Persona ląduje NA KOŃCU, żeby
+    wszystkich wywołań person w tym samym cyklu. Persona ląduje NA KOŃCU, żeby
     najdłuższy wspólny prefix mógł być cache'owany:
     - Anthropic ephemeral cache: ≥1024 tok prefixu, TTL 5 min — łapie się
       gdy prompt ma news + wycenę,
