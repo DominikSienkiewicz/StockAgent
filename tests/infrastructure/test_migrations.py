@@ -164,11 +164,31 @@ class TestMigrations:
 
     def test_match_news_embeddings_rpc_returns_similar_rows(self, pg_conn):
         """RPC RAG (migracja 011) zwraca historyczne predykcje wg podobieństwa
-        embeddingu, z polem similarity."""
+        embeddingu, z polem similarity.
+
+        Regresja: operator pgvector `<=>` to dystans KOSINUSOWY — mierzy tylko
+        kierunek wektora, nie jego długość. Wektory stałe ([0.1]*1536 vs
+        [0.9]*1536) są równoległe (każdy = c·[1,...,1]), więc mają IDENTYCZNY
+        (zerowy) dystans kosinusowy do dowolnego zapytania. `ORDER BY ... LIMIT
+        1` rozstrzygał wtedy remis losowo i potrafił zwrócić wiersz "TEST"
+        wstrzyknięty przez inny test (współdzielony, module-scoped kontener).
+        Fixture'y muszą więc różnić się KIERUNKIEM, a test izolować swój zbiór
+        embeddingów, żeby wynik był deterministyczny niezależnie od kolejności
+        testów."""
+
+        def embed(head: float, tail: float) -> str:
+            # 1536-dim: pierwsza połowa = head, druga = tail → różny KIERUNEK.
+            return "[" + ",".join([str(head)] * 768 + [str(tail)] * 768) + "]"
+
         with pg_conn.cursor() as cur:
-            # Dwie zamknięte predykcje z embeddingami (1536-dim).
-            near = "[" + ",".join(["0.1"] * 1536) + "]"
-            far = "[" + ",".join(["0.9"] * 1536) + "]"
+            # Izolacja od embeddingów wstrzykniętych przez inne testy w tym
+            # samym kontenerze (np. "TEST" z testu akceptacji 1536-dim).
+            cur.execute("DELETE FROM prediction_logs WHERE embedding IS NOT NULL")
+
+            # NEAR jest kierunkowo zgodny z query, FAR — przeciwny.
+            query = embed(1.0, 0.0)
+            near = embed(0.9, 0.1)
+            far = embed(0.1, 0.9)
             cur.execute(
                 "INSERT INTO prediction_logs "
                 "(symbol, news_summary, predicted_trend, is_trend_correct, "
@@ -179,14 +199,13 @@ class TestMigrations:
                     "FAR", "Earnings beat", "BULLISH", False, 200.0, far,
                 ),
             )
-            query = "[" + ",".join(["0.11"] * 1536) + "]"
             cur.execute(
                 "SELECT symbol, similarity FROM "
                 "match_news_embeddings(%s::vector, %s)",
                 (query, 1),
             )
             rows = cur.fetchall()
-        # Najbliższy zapytaniu jest "NEAR".
+        # Najbliższy kierunkowo jest "NEAR" (dystans ~0.006 << FAR ~0.89).
         assert len(rows) == 1
         assert rows[0][0] == "NEAR"
 
