@@ -289,7 +289,7 @@ Three workflows in [`.github/workflows/`](.github/workflows/):
 | File | Cron (UTC) | Polish time (CEST / CET) | What it does |
 |---|---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | — (on push / PR) | — | ruff + mypy + pytest (unit only) |
-| [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml) | `30 5 * * 1-5` | **07:30** (summer) / 06:30 (winter), **Mon–Fri only** | Analysis + email report (skipped on weekends — market closed) |
+| [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml) | _disabled_ (manual only) | — | Analysis + email report. **Daily schedule is currently paused** — the cron is commented out, so it runs only via manual `workflow_dispatch`. Re-enable by uncommenting the `schedule` block. |
 | [`slow_loop_weekly.yml`](.github/workflows/slow_loop_weekly.yml) | `0 3 * * 0` | Sunday 05:00 (summer) | XGBoost retraining + commit new weights |
 
 The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
