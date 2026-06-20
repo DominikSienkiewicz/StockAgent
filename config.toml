@@ -38,6 +38,9 @@ rag_outcome_weight = 0.3
 # --- Powiadomienia (sam nadawca; ODBIORCA = sekret w .env) ---
 notifications_enabled = true
 digest_from_email = "onboarding@resend.dev"
+# Real-time alerty CRITICAL na kanały push (Telegram/Slack) w chwili zdarzenia,
+# out-of-band od dziennego maila. Sekrety kanałów (TELEGRAM_*, SLACK_*) w .env.
+realtime_alerts_enabled = false
 
 # --- NBP (kursy do raportu) ---
 nbp_enabled = true

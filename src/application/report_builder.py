@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import html
 import urllib.parse
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -32,6 +32,9 @@ from src.application.report_formatting import (
     pct as _pct,
 )
 from src.application.report_formatting import (
+    provenance_badges_html as _provenance_badges_html,
+)
+from src.application.report_formatting import (
     sector_label as _sector_label,
 )
 from src.application.report_formatting import (
@@ -46,6 +49,7 @@ from src.application.report_formatting import (
 from src.application.report_models import (
     ResolvedPrediction,
     RiskSignal,
+    SimilarPrecedent,
     SymbolResult,
     TopNewsItem,
     TradeSignal,
@@ -74,12 +78,17 @@ from src.application.report_suggestions import (
 from src.application.report_templates import _env, render_template
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.council import CouncilVerdict
+from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
-from src.domain.value_objects import ValuationVerdict
+from src.domain.value_objects import (
+    FUNDAMENTALS_CACHE_TTL_HOURS,
+    ValuationVerdict,
+)
 
 __all__ = [
     "ResolvedPrediction",
     "RiskSignal",
+    "SimilarPrecedent",
     "SymbolResult",
     "TopNewsItem",
     "TradeSignal",
@@ -484,6 +493,45 @@ def _render_news_block_html(top_news: list[TopNewsItem]) -> str:
     return _NEWS_BLOCK_TEMPLATE.render(items=items)
 
 
+# Q5: etykieta wyniku analogu (kierunkowo trafiony / chybiony / nieoceniony).
+_PRECEDENT_OUTCOME = {
+    True: ("✅ trafił", "#16a34a"),
+    False: ("❌ chybił", "#dc2626"),
+}
+
+
+def _render_precedents_block_html(precedents: list[SimilarPrecedent]) -> str:
+    """Renderuje blok 'Na podstawie analogów' (Q5) — audytowalny ślad RAG.
+
+    Pokazuje historyczne sytuacje, które agent pobrał w tym cyklu, z ich
+    rzeczywistym wynikiem kierunkowym. Pusta lista → pusty string (brak bloku,
+    brak błędu). `summary` pochodzi z LLM-a (dane zewnętrzne) → escapujemy
+    przez `_html`."""
+    if not precedents:
+        return ""
+    items = []
+    for p in precedents:
+        outcome_txt, outcome_color = (
+            _PRECEDENT_OUTCOME[p.is_trend_correct]
+            if p.is_trend_correct is not None
+            else ("• wynik nieznany", "#6b7280")
+        )
+        items.append(
+            f"<li style='margin: 2px 0;'>"
+            f"<span style='color: {_trend_color(p.predicted_trend)}; font-weight: 600;'>"
+            f"{_html(_trend_label(p.predicted_trend))}</span> "
+            f"<span style='color: {outcome_color};'>({outcome_txt})</span> — "
+            f"{_html(p.summary)}</li>"
+        )
+    return (
+        "<div style='font-size: 11px; color: #4b5563; margin-top: 8px;'>"
+        "🧭 <strong>Na podstawie analogów:</strong>"
+        "<ul style='margin: 4px 0 0 20px; padding: 0;'>"
+        + "".join(items)
+        + "</ul></div>"
+    )
+
+
 def build_html_report(
     results: list[SymbolResult],
     started_at: datetime,
@@ -854,7 +902,16 @@ def _render_html(
         # Uzasadnienia
         sections.append("<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>💡 Uzasadnienia</h3>")
         for r in saved:
-            if not r.reasoning and r.council_verdict is None:
+            # Q5/Q6: blok renderujemy też, gdy są analogi (precedent receipts)
+            # lub odznaki proweniencji — nawet bez reasoning/rady.
+            badges_html = _provenance_badges_html(r.provenance_badges)
+            precedents_block = _render_precedents_block_html(r.similar_precedents)
+            if (
+                not r.reasoning
+                and r.council_verdict is None
+                and not badges_html
+                and not precedents_block
+            ):
                 continue
             move_line = ""
             if r.current_price is not None and r.target_price is not None:
@@ -889,10 +946,11 @@ def _render_html(
             )
             sections.append(f"""
               <div style="margin-bottom: 10px; padding: 10px 12px; background: #fafafa; border-left: 3px solid {_trend_color(r.trend)}; border-radius: 4px;">
-                <div style="font-weight: 600; font-size: 13px;">{_html(_company_label(r.symbol))}{sector_tag} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span></div>
+                <div style="font-weight: 600; font-size: 13px;">{_html(_company_label(r.symbol))}{sector_tag} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span>{badges_html}</div>
                 {move_line}
                 {rec_block}
                 {f'<div style="font-size: 12px; color: #4b5563; margin-top: 6px;">{_html(r.reasoning)}</div>' if r.reasoning else ''}
+                {precedents_block}
                 {news_block}
                 {council_block}
                 {valuation_block}
@@ -1107,8 +1165,26 @@ def _render_plain(
             )
             lines.append(f"         {sentiment_part}")
             lines.append(f"         {rec_text}")
+            # Q6: odznaki proweniencji (pomijamy FRESH — brak szumu).
+            badge_labels = [
+                b.label for b in r.provenance_badges
+                if b.level is not ProvenanceLevel.FRESH
+            ]
+            if badge_labels:
+                lines.append(f"         proweniencja: {', '.join(badge_labels)}")
             if r.reasoning:
                 lines.append(f"        └ {r.reasoning}")
+            # Q5: precedent receipts (analogi RAG).
+            for prec in r.similar_precedents:
+                outcome = (
+                    "trafił" if prec.is_trend_correct
+                    else "chybił" if prec.is_trend_correct is False
+                    else "wynik nieznany"
+                )
+                lines.append(
+                    f"        🧭 analog [{_trend_label(prec.predicted_trend)}, {outcome}]: "
+                    f"{prec.summary[:72]}"
+                )
             for n in r.top_news:
                 lines.append(
                     f"        📰 [{n.source or '?'}] {n.title[:78]}"
@@ -1184,6 +1260,22 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
             fetched_at=fundamentals.fetched_at,
         )
 
+    # Q5: precedent receipts — kompaktowe analogi RAG z bieżącego cyklu.
+    similar_precedents = _extract_precedents(raw.get("similar_precedents"))
+
+    # Q6: odznaki proweniencji — z degraded_reason, wieku fundamentów (TTL) i
+    # data_quality_flags. Cała ocena progu żyje w domenie (build_provenance_badges).
+    fundamentals_fetched_at = (
+        fundamentals.fetched_at if fundamentals is not None else None
+    )
+    provenance_badges = build_provenance_badges(
+        degraded_reason=sentiment.get("degraded_reason"),
+        fundamentals_fetched_at=fundamentals_fetched_at,
+        data_quality_flags=raw.get("data_quality_flags") or [],
+        now=datetime.now(UTC),
+        ttl_hours=FUNDAMENTALS_CACHE_TTL_HOURS,
+    )
+
     return SymbolResult(
         symbol=symbol,
         status=status,
@@ -1202,7 +1294,34 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
         council_verdict=council_verdict if isinstance(council_verdict, CouncilVerdict) else None,
         valuation=valuation,
         asset_class=asset_class,
+        similar_precedents=similar_precedents,
+        provenance_badges=provenance_badges,
     )
+
+
+def _extract_precedents(raw_precedents: Any) -> list[SimilarPrecedent]:
+    """Mapuje surowe rekordy analogów z grafu na DTO `SimilarPrecedent`.
+
+    Wejście to lista dictów `{summary, predicted_trend, is_trend_correct}`
+    z predict_node (`_build_similar_context`). Defensywnie pomijamy rekordy
+    bez streszczenia — pusty/brak wejścia → pusta lista (raport bez bloku)."""
+    if not isinstance(raw_precedents, list):
+        return []
+    out: list[SimilarPrecedent] = []
+    for item in raw_precedents:
+        if not isinstance(item, dict):
+            continue
+        summary = str(item.get("summary") or "").strip()
+        if not summary:
+            continue
+        out.append(
+            SimilarPrecedent(
+                summary=summary,
+                predicted_trend=str(item.get("predicted_trend") or "?"),
+                is_trend_correct=item.get("is_trend_correct"),
+            )
+        )
+    return out
 
 
 def _clean_reflection(raw_ctx: Any) -> str | None:

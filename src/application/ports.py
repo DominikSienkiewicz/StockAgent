@@ -219,6 +219,17 @@ class ReportNotifierPort(ABC):
     def send_report(self, subject: str, html_body: str, plain_text: str) -> None: ...
 
 
+class AlertNotifierPort(ABC):
+    """Real-time push pojedynczych alertów CRITICAL — odsprzężony od dziennego maila.
+
+    Pozwala wystawić alert (np. wyczerpanie limitu, email nie poszedł) natychmiast
+    w cyklu, nie czekając na następny raport dobowy. Adapter formatuje alerty i
+    deleguje do dowolnego transportu (Telegram / Slack / Resend)."""
+
+    @abstractmethod
+    def send_alert(self, alerts: list[QuotaAlert]) -> None: ...
+
+
 class AdvisoryCouncilPort(ABC):
     """Rada doradcza inwestorów — N równoległych analiz person + konsensus.
 

@@ -10,15 +10,46 @@ Brak globalnego stanu — każda sesja main_agent ma własną instancję.
 
 from __future__ import annotations
 
+import logging
+
+from src.application.ports import AlertNotifierPort
 from src.domain.quota import QuotaAlert, QuotaSeverity
+
+logger = logging.getLogger(__name__)
 
 
 class QuotaMonitor:
-    def __init__(self) -> None:
+    def __init__(self, alert_notifier: AlertNotifierPort | None = None) -> None:
         self._alerts: list[QuotaAlert] = []
+        # U4 — opcjonalny real-time push. Default None ⇒ dzisiejsze zachowanie.
+        self._alert_notifier = alert_notifier
+        # Debounce per źródło na czas życia monitora — jedno CRITICAL z danego
+        # źródła pushuje raz, kolejne tylko trafiają do raportu dobowego.
+        self._alerted_sources: set[str] = set()
 
     def record(self, alert: QuotaAlert) -> None:
         self._alerts.append(alert)
+        self._maybe_push_realtime(alert)
+
+    def _maybe_push_realtime(self, alert: QuotaAlert) -> None:
+        if self._alert_notifier is None:
+            return
+        if alert.severity is not QuotaSeverity.CRITICAL:
+            return
+        if alert.source in self._alerted_sources:
+            return
+        # Debounce ustawiamy PRZED wysyłką: nawet gdy push padnie, nie spamujemy
+        # ponownie tego samego źródła w tym cyklu.
+        self._alerted_sources.add(alert.source)
+        try:
+            self._alert_notifier.send_alert([alert])
+        except Exception:
+            # Padający push nie może wywalić record() ani cyklu — alert i tak
+            # został już zebrany do raportu dobowego.
+            logger.exception(
+                "QuotaMonitor: real-time alert push failed for source=%s",
+                alert.source,
+            )
 
     @property
     def alerts(self) -> list[QuotaAlert]:

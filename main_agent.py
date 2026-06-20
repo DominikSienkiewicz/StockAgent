@@ -42,6 +42,7 @@ from src.domain.asset import Asset
 from src.domain.quota import QuotaSeverity
 from src.domain.value_objects import AssetType, Threshold
 from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
+from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
 from src.infrastructure.adapters.alpha_vantage_adapters import (
     AlphaVantageNewsAdapter,
     AlphaVantageSentimentAdapter,
@@ -52,6 +53,7 @@ from src.infrastructure.adapters.cached_fundamentals import (
     NullFundamentalsAdapter,
 )
 from src.infrastructure.adapters.coingecko import CoinGeckoAdapter
+from src.infrastructure.adapters.composite_notifier import CompositeNotifier
 from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
 from src.infrastructure.adapters.nbp_client import NbpClient
 from src.infrastructure.adapters.resend_notifier import NullNotifier, ResendNotifier
@@ -101,32 +103,63 @@ def build_llm_adapter(
     )
 
 
+def build_push_channels(
+    settings: Settings, quota_monitor: QuotaMonitor | None = None
+) -> list[ReportNotifierPort]:
+    """Buduje kanały push (Telegram/Slack) dla obecnych sekretów (U1).
+
+    Kanał jest dołączany TYLKO gdy jego sekrety są ustawione — analogicznie do
+    Resend. Lista może być pusta (brak skonfigurowanych kanałów)."""
+    from src.infrastructure.adapters.slack_notifier import SlackNotifier
+    from src.infrastructure.adapters.telegram_notifier import TelegramNotifier
+
+    channels: list[ReportNotifierPort] = []
+    if settings.telegram_bot_token and settings.telegram_chat_id:
+        channels.append(
+            TelegramNotifier(
+                bot_token=settings.telegram_bot_token,
+                chat_id=settings.telegram_chat_id,
+                quota_monitor=quota_monitor,
+            )
+        )
+    if settings.slack_webhook_url:
+        channels.append(
+            SlackNotifier(
+                webhook_url=settings.slack_webhook_url,
+                quota_monitor=quota_monitor,
+            )
+        )
+    return channels
+
+
 def build_notifier(
     settings: Settings, quota_monitor: QuotaMonitor | None = None
 ) -> ReportNotifierPort:
-    """Factory notifier — Resend gdy włączone i skonfigurowane, inaczej Null.
+    """Factory notifier — Resend + kanały push (Telegram/Slack) jako jeden
+    `ReportNotifierPort` (CompositeNotifier). Każdy skonfigurowany kanał dostaje
+    kopię dziennego raportu; brak jakiegokolwiek kanału → Null.
 
     Gdy wpada w Null mimo `notifications_enabled=true`, loguje WARNING z nazwą
     brakującego sekretu — inaczej "Notifications disabled" nie mówi, czego
     brakuje (typowo: DIGEST_TO_EMAIL / RESEND_API_KEY nie ustawione jako
     GitHub repo *Secret*, nie Variable).
     """
+    channels: list[ReportNotifierPort] = []
     if (
         settings.notifications_enabled
         and settings.resend_api_key
         and settings.digest_to_email
     ):
-        return ResendNotifier(
-            api_key=settings.resend_api_key,
-            sender=settings.digest_from_email,
-            recipient=settings.digest_to_email,
-            quota_monitor=quota_monitor,
+        channels.append(
+            ResendNotifier(
+                api_key=settings.resend_api_key,
+                sender=settings.digest_from_email,
+                recipient=settings.digest_to_email,
+                quota_monitor=quota_monitor,
+            )
         )
-
-    if not settings.notifications_enabled:
-        logger.info(
-            "Email wyłączony (notifications_enabled=false w config.toml)."
-        )
+    elif not settings.notifications_enabled:
+        logger.info("Email wyłączony (notifications_enabled=false w config.toml).")
     else:
         missing = []
         if not settings.resend_api_key:
@@ -138,7 +171,15 @@ def build_notifier(
             "%s — ustaw je jako GitHub repo Secrets (nie Variables) / w .env.",
             ", ".join(missing),
         )
-    return NullNotifier()
+
+    # Kanały push (Telegram/Slack) dochodzą do dziennego raportu obok maila.
+    channels.extend(build_push_channels(settings, quota_monitor=quota_monitor))
+
+    if not channels:
+        return NullNotifier()
+    if len(channels) == 1:
+        return channels[0]
+    return CompositeNotifier(channels)
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
@@ -322,7 +363,16 @@ def main(settings: Settings | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
     settings = settings or Settings.from_env()
-    quota_monitor = QuotaMonitor()
+    # Real-time alerty (U4): kanał alertów budujemy BEZ quota_monitora, żeby
+    # CRITICAL wyemitowany podczas pushu alertu nie wracał rekurencyjnie do
+    # record() → push → record(). Hook montujemy tylko gdy włączony i jest dokąd.
+    alert_channels = build_push_channels(settings, quota_monitor=None)
+    alert_notifier = (
+        DelegatingAlertNotifier(CompositeNotifier(alert_channels))
+        if settings.realtime_alerts_enabled and alert_channels
+        else None
+    )
+    quota_monitor = QuotaMonitor(alert_notifier=alert_notifier)
     repository = build_repository(settings)
     use_case = build_use_case(
         settings, repository=repository, quota_monitor=quota_monitor

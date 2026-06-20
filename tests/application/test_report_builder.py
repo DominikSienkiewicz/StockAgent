@@ -1005,6 +1005,40 @@ class TestHtmlEscapingRegression:
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         _assert_escaped(html, _XSS_IMG, _XSS_IMG_MARKER)
 
+    def test_rag_precedent_summary_escaped(self):
+        # Q5: news_summary analogu pochodzi z LLM-a (dane zewnętrzne) — musi
+        # być escapowany w bloku "Na podstawie analogów".
+        raw = {
+            "status": "saved", "delta": Decimal("0.03"),
+            "current_price": Decimal("100"), "ml_target_price": Decimal("103"),
+            "llm_analysis": {"trend_direction": "BULLISH",
+                             "confidence_score": 0.8, "reasoning": "r"},
+            "sentiment": {"av_sentiment_score": 0.2},
+            "similar_precedents": [
+                {"summary": _XSS_SCRIPT, "predicted_trend": "BEARISH",
+                 "is_trend_correct": True},
+            ],
+        }
+        result = to_symbol_result("X", raw)
+        html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        _assert_escaped(html, _XSS_SCRIPT, _XSS_SCRIPT_MARKER)
+
+    def test_provenance_badge_detail_escaped(self):
+        # Q6: degraded_reason / nazwy flag trafiają do detalu chipa (title) —
+        # muszą być escapowane.
+        raw = {
+            "status": "saved", "delta": Decimal("0.03"),
+            "current_price": Decimal("100"), "ml_target_price": Decimal("103"),
+            "llm_analysis": {"trend_direction": "BULLISH",
+                             "confidence_score": 0.8, "reasoning": "r"},
+            "sentiment": {"av_sentiment_score": 0.0,
+                          "degraded_reason": _XSS_IMG},
+            "data_quality_flags": [_XSS_IMG],
+        }
+        result = to_symbol_result("X", raw)
+        html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        _assert_escaped(html, _XSS_IMG, _XSS_IMG_MARKER)
+
 
 class TestToSymbolResult:
     def test_maps_saved_status(self):
@@ -1073,6 +1107,160 @@ class TestToSymbolResult:
         assert result.status == "saved"
         assert result.delta is None
         assert result.trend is None
+
+
+class TestRagPrecedentReceipts:
+    """Q5 — analogi RAG z cyklu wystawione jako audytowalny blok."""
+
+    def _raw_with_precedents(self, precedents):
+        return {
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("103"),
+            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
+                             "reasoning": "r"},
+            "sentiment": {"av_sentiment_score": 0.2},
+            "similar_precedents": precedents,
+        }
+
+    def test_to_symbol_result_maps_precedents(self):
+        raw = self._raw_with_precedents([
+            {"summary": "Fed hawkish surprise", "predicted_trend": "BEARISH",
+             "is_trend_correct": True},
+        ])
+        result = to_symbol_result("AAPL", raw)
+        assert len(result.similar_precedents) == 1
+        assert result.similar_precedents[0].summary == "Fed hawkish surprise"
+        assert result.similar_precedents[0].predicted_trend == "BEARISH"
+        assert result.similar_precedents[0].is_trend_correct is True
+
+    def test_missing_precedents_yields_empty_list(self):
+        result = to_symbol_result("AAPL", {"status": "saved", "llm_analysis": {},
+                                           "sentiment": {}})
+        assert result.similar_precedents == []
+
+    def test_html_renders_analog_block_with_outcomes(self):
+        raw = self._raw_with_precedents([
+            {"summary": "Fed hawkish surprise spooks tech",
+             "predicted_trend": "BEARISH", "is_trend_correct": True},
+            {"summary": "Strong earnings beat", "predicted_trend": "BULLISH",
+             "is_trend_correct": False},
+        ])
+        result = to_symbol_result("AAPL", raw)
+        html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "Na podstawie analogów" in html
+        assert "Fed hawkish surprise spooks tech" in html
+        assert "Strong earnings beat" in html
+
+    def test_no_analog_block_when_empty(self):
+        raw = self._raw_with_precedents([])
+        result = to_symbol_result("AAPL", raw)
+        html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "Na podstawie analogów" not in html
+
+    def test_plain_text_shows_analog_summary(self):
+        raw = self._raw_with_precedents([
+            {"summary": "Fed hawkish surprise spooks tech",
+             "predicted_trend": "BEARISH", "is_trend_correct": True},
+        ])
+        result = to_symbol_result("AAPL", raw)
+        _, text = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "Fed hawkish surprise spooks tech" in text
+        assert "analog" in text
+
+    def test_analog_summary_escaped(self):
+        raw = self._raw_with_precedents([
+            {"summary": "<script>alert(1)</script>", "predicted_trend": "BULLISH",
+             "is_trend_correct": True},
+        ])
+        result = to_symbol_result("AAPL", raw)
+        html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "<script>alert(1)</script>" not in html
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
+class TestProvenanceBadgesInReport:
+    """Q6 — odznaki proweniencji renderowane jako chipy przy wierszu symbolu."""
+
+    def test_to_symbol_result_builds_degraded_badge(self):
+        raw = {
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("103"),
+            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
+                             "reasoning": "r"},
+            "sentiment": {"av_sentiment_score": 0.0,
+                          "degraded_reason": "av_keys_exhausted"},
+            "data_quality_flags": ["av_keys_exhausted"],
+        }
+        result = to_symbol_result("AAPL", raw)
+        levels = [b.level.value for b in result.provenance_badges]
+        assert "DEGRADED" in levels
+
+    def test_clean_inputs_yield_fresh_only(self):
+        raw = {
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("103"),
+            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
+                             "reasoning": "r"},
+            "sentiment": {"av_sentiment_score": 0.2},
+            "data_quality_flags": [],
+        }
+        result = to_symbol_result("AAPL", raw)
+        levels = [b.level.value for b in result.provenance_badges]
+        assert levels == ["FRESH"]
+
+    def test_html_renders_degraded_chip(self):
+        raw = {
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("103"),
+            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
+                             "reasoning": "r"},
+            "sentiment": {"av_sentiment_score": 0.0,
+                          "degraded_reason": "av_keys_exhausted"},
+            "data_quality_flags": ["av_keys_exhausted"],
+        }
+        result = to_symbol_result("AAPL", raw)
+        html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "Dane zdegradowane" in html
+
+    def test_fresh_chip_not_rendered_no_noise(self):
+        raw = {
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("103"),
+            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
+                             "reasoning": "r"},
+            "sentiment": {"av_sentiment_score": 0.2},
+            "data_quality_flags": [],
+        }
+        result = to_symbol_result("AAPL", raw)
+        html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "Świeże" not in html
+
+    def test_plain_text_shows_provenance_label(self):
+        raw = {
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("103"),
+            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
+                             "reasoning": "r"},
+            "sentiment": {"av_sentiment_score": 0.0,
+                          "degraded_reason": "av_keys_exhausted"},
+            "data_quality_flags": ["av_keys_exhausted"],
+        }
+        result = to_symbol_result("AAPL", raw)
+        _, text = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "proweniencja" in text
+        assert "Dane zdegradowane" in text
 
 
 class TestCompanyLabel:

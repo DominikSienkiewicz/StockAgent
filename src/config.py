@@ -180,6 +180,17 @@ class Settings(BaseSettings):
     digest_from_email: str = "onboarding@resend.dev"
     digest_to_email: str | None = None
 
+    # ----- Kanały push (Telegram / Slack — opcjonalne, U1/U4) -----
+    # SEKRETY (placeholdery w .env.example): kanał jest budowany, gdy jego
+    # sekrety są obecne (analogicznie do Resend). chat_id/webhook to adresy
+    # docelowe → traktujemy jak sekret (jak digest_to_email).
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    slack_webhook_url: str | None = None
+    # Real-time alerty CRITICAL (U4): pushuj alert kwoty w chwili zdarzenia,
+    # out-of-band od dziennego maila. NIEWRAŻLIWY flag → config.toml.
+    realtime_alerts_enabled: bool = False
+
     @field_validator("symbols", mode="before")
     @classmethod
     def _parse_symbols(cls, value: str | list[str]) -> list[str]:

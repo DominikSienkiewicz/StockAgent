@@ -90,6 +90,11 @@ class AgentState(TypedDict, total=False):
     # i reużyty w save_node, żeby nie embedować dwa razy na cykl.
     news_embedding: list[float] | None
 
+    # Q5: precedent receipts — zwięzła lista top-3 analogów RAG użytych w tym
+    # cyklu (`{summary, predicted_trend, is_trend_correct}`). Render-only:
+    # przepływa do SymbolResult i raportu, NIE jest persystowana (brak migracji).
+    similar_precedents: list[dict[str, Any]]
+
     # Persystencja
     prediction_id: str | None
 
@@ -110,23 +115,35 @@ def _summarize_news(news: list[dict[str, Any]]) -> str:
     return " | ".join(t for t in titles if t)
 
 
+# Q5: ile analogów wystawiamy jako "precedent receipts" w raporcie. Trzymamy
+# zwięźle (top-3), żeby blok "Na podstawie analogów" był czytelny i mailowalny.
+_PRECEDENT_RECEIPT_LIMIT = 3
+
+
 def _build_similar_context(
     repository_port: RepositoryPort,
     embedding: list[float],
     symbol: str,
     outcome_weight: float = 0.0,
-) -> str:
-    """Buduje tekstowy blok 'podobne historyczne sytuacje' do promptu (RAG).
+) -> tuple[str, list[dict[str, Any]]]:
+    """Buduje blok 'podobne historyczne sytuacje' do promptu (RAG) ORAZ zwraca
+    rerankowane rekordy do reużycia jako precedent receipts (Q5).
 
-    W pełni graceful: brak RPC / pgvector / błąd → pusty string (predykcja
-    działa bez RAG). Każdy rekord skracamy do: kierunek, czy trafiony, wniosek.
-    `outcome_weight` (#9): rerank analogów po realnym wyniku (trafiony analog
-    przed nietrafionym przy zbliżonym similarity); 0.0 = sama kolejność RPC.
+    Zwraca `(similar_context, precedents)`:
+      - `similar_context` — tekstowy blok wstrzykiwany do promptu (jak dotąd),
+      - `precedents` — zwięzła lista top-N analogów `{summary, predicted_trend,
+        is_trend_correct}` dla raportu ("dlaczego ta decyzja").
+
+    W pełni graceful: brak RPC / pgvector / błąd → `("", [])` (predykcja działa
+    bez RAG i bez receipts). Jeden retrieval + jeden rerank — zero dodatkowych
+    płatnych wywołań ponad to, co RAG już robił. `outcome_weight` (#9): rerank
+    analogów po realnym wyniku; 0.0 = sama kolejność RPC.
     """
     try:
         similar = repository_port.find_similar_predictions(embedding, limit=3)
         similar = rerank_analogs(list(similar or []), outcome_weight=outcome_weight)
         lines: list[str] = []
+        precedents: list[dict[str, Any]] = []
         for item in similar or []:
             summary = str(item.get("news_summary") or "").strip()
             if not summary:
@@ -143,12 +160,22 @@ def _build_similar_context(
             if insight:
                 line += f" → wniosek: {insight}"
             lines.append(line)
-        return "\n".join(lines)
+            if len(precedents) < _PRECEDENT_RECEIPT_LIMIT:
+                # Kompaktowy rekord do raportu — surowe pola (escapowanie robi
+                # report_builder przez _html przy renderze).
+                precedents.append(
+                    {
+                        "summary": summary,
+                        "predicted_trend": str(trend),
+                        "is_trend_correct": correct,
+                    }
+                )
+        return "\n".join(lines), precedents
     except Exception:
         logger.exception(
             "find_similar_predictions failed for %s — predicting without RAG", symbol
         )
-        return ""
+        return "", []
 
 
 def _float_or_default(value: Any, default: float) -> float:
@@ -490,6 +517,9 @@ def create_agent_graph(
         # embeddingu/retrievalu nie blokuje predykcji.
         news_embedding: list[float] | None = None
         similar_context = ""
+        # Q5: precedent receipts — te same analogi, które trafiają do promptu,
+        # reużyte jako audytowalny blok "Na podstawie analogów" w raporcie.
+        similar_precedents: list[dict[str, Any]] = []
         if embedding_port is not None and news_summary:
             try:
                 news_embedding = embedding_port.embed(news_summary)
@@ -498,7 +528,7 @@ def create_agent_graph(
                     "Embedding failed for %s — predicting without RAG", state["symbol"]
                 )
             if news_embedding:
-                similar_context = _build_similar_context(
+                similar_context, similar_precedents = _build_similar_context(
                     repository_port, news_embedding, state["symbol"], rag_outcome_weight
                 )
 
@@ -627,6 +657,8 @@ def create_agent_graph(
             "data_quality_flags": flags,
             # Reużywane w save_node — embedujemy newsy tylko raz na cykl.
             "news_embedding": news_embedding,
+            # Q5: precedent receipts dla raportu (render-only, brak persystencji).
+            "similar_precedents": similar_precedents,
         }
 
     def council_node(state: AgentState) -> dict[str, Any]:

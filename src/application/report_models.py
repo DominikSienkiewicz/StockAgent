@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from src.domain.council import CouncilVerdict
+from src.domain.provenance import ProvenanceBadge
 from src.domain.value_objects import ValuationVerdict
 
 
@@ -25,6 +26,20 @@ class TopNewsItem:
     url: str | None
     relevance: float
     sentiment: float
+
+
+@dataclass(frozen=True)
+class SimilarPrecedent:
+    """Q5 — pojedynczy analog RAG użyty w bieżącym cyklu (precedent receipt).
+
+    Kompaktowy snapshot historycznej sytuacji: jej streszczenie, prognozowany
+    wtedy trend i czy się sprawdził kierunkowo. Render-only — buduje blok
+    'Na podstawie analogów' w raporcie. `is_trend_correct` może być None
+    (analog jeszcze nieoceniony)."""
+
+    summary: str
+    predicted_trend: str
+    is_trend_correct: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +67,12 @@ class SymbolResult:
     error_message: str | None = None
     council_verdict: CouncilVerdict | None = None
     valuation: ValuationSection | None = None
+    # Q5: analogi RAG użyte w tym cyklu (precedent receipts). Pusta lista =
+    # brak retrievalu / brak analogów → raport nie renderuje bloku.
+    similar_precedents: list[SimilarPrecedent] = field(default_factory=list)
+    # Q6: odznaki proweniencji danych (FRESH / STALE / DEGRADED / FLAGGED).
+    # Pusta lista = brak sygnału (renderer pomija chipy).
+    provenance_badges: list[ProvenanceBadge] = field(default_factory=list)
 
     @property
     def expected_change(self) -> Decimal | None:

@@ -1248,3 +1248,235 @@ class TestRagRetrieval:
         workflow.compile().invoke(_initial_state("100.0"))
 
         repository_port.find_similar_predictions.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Q5 — RAG precedent receipts: analogi RAG (już pobrane w tym cyklu) wystawione
+# jako auditowalny "dlaczego ta decyzja". Zero nowych płatnych wywołań —
+# reużywamy embedding + RPC, które predict_node i tak wykonał.
+# ---------------------------------------------------------------------------
+
+
+class TestRagPrecedentReceipts:
+    def _make_workflow(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, embedding_port,
+    ):
+        return create_agent_graph(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        )
+
+    def test_precedents_captured_into_node_output(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = [
+            {
+                "news_summary": "Fed hawkish surprise spooks tech",
+                "predicted_trend": "BEARISH",
+                "is_trend_correct": True,
+                "correction_insights": "reaguj na jastrzębi Fed",
+            },
+            {
+                "news_summary": "Strong earnings beat",
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": False,
+            },
+        ]
+        workflow = self._make_workflow(
+            market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port, embedding_port,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        precedents = final["similar_precedents"]
+        assert len(precedents) == 2
+        assert precedents[0]["summary"] == "Fed hawkish surprise spooks tech"
+        assert precedents[0]["predicted_trend"] == "BEARISH"
+        assert precedents[0]["is_trend_correct"] is True
+        assert precedents[1]["is_trend_correct"] is False
+
+    def test_precedents_capped_at_top_3(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = [
+            {"news_summary": f"sytuacja {i}", "predicted_trend": "BULLISH",
+             "is_trend_correct": True}
+            for i in range(5)
+        ]
+        workflow = self._make_workflow(
+            market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port, embedding_port,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert len(final["similar_precedents"]) == 3
+
+    def test_records_without_summary_skipped(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = [
+            {"news_summary": "", "predicted_trend": "BULLISH"},
+            {"news_summary": "realny analog", "predicted_trend": "BEARISH",
+             "is_trend_correct": True},
+        ]
+        workflow = self._make_workflow(
+            market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port, embedding_port,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        precedents = final["similar_precedents"]
+        assert len(precedents) == 1
+        assert precedents[0]["summary"] == "realny analog"
+
+    def test_empty_rag_yields_empty_precedents(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = []
+        workflow = self._make_workflow(
+            market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port, embedding_port,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["similar_precedents"] == []
+
+    def test_retrieval_failure_yields_empty_precedents(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.side_effect = RuntimeError("boom")
+        workflow = self._make_workflow(
+            market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port, embedding_port,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        # Graceful — brak analogów, ale cykl się kończy zapisem.
+        assert final["status"] == "saved"
+        assert final["similar_precedents"] == []
+
+    def test_find_similar_called_once_no_extra_paid_call(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # FinOps: receipts NIE mogą dodać drugiego wywołania RPC/embeddingu.
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = [
+            {"news_summary": "analog", "predicted_trend": "BULLISH",
+             "is_trend_correct": True},
+        ]
+        workflow = self._make_workflow(
+            market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port, embedding_port,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        repository_port.find_similar_predictions.assert_called_once()
+        # Embedding: raz w predict (RAG) — reużyty w save_node (brak 2. wywołania).
+        embedding_port.embed.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Q6 — Data-provenance: sygnały świeżości/jakości (degraded_reason, wiek
+# fundamentów, data_quality_flags) wystawione w wyjściu predict_node, by
+# to_symbol_result mógł zbudować odznaki proweniencji. Zero płatnych wywołań.
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceSignals:
+    def test_degraded_reason_surfaced_in_data_quality_flags(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        sentiment_port.get_social_score.return_value = {
+            "av_sentiment_score": 0.0,
+            "av_relevance_avg": 0.0,
+            "news_volume_24h": 0,
+            "high_relevance_count": 0,
+            "av_sentiment_label": "Neutral",
+            "degraded_reason": "av_keys_exhausted",
+        }
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        # degraded_reason musi trafić do flag, by to_symbol_result zbudował
+        # odznakę DEGRADED. (Provenance buduje się w report z raw outputu.)
+        assert "av_keys_exhausted" in final["data_quality_flags"]
+
+    def test_clean_cycle_has_no_quality_flags(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        workflow = create_agent_graph(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        repository_port.get_last_prediction_price.return_value = Money(
+            Decimal("100.0")
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        # Czysty cykl → brak flag (FRESH w raporcie).
+        assert final["data_quality_flags"] == []

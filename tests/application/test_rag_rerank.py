@@ -15,8 +15,9 @@ class TestBuildSimilarContextRerank:
              "is_trend_correct": True, "similarity": 0.85, "correction_insights": ""},
         ]
         # BETA trafiony (0.85+0.3=1.15) > ALPHA nietrafiony (0.9) → BETA wyżej.
-        ctx = _build_similar_context(repo, [0.1], "AAPL", outcome_weight=0.3)
-        assert ctx.index("BETA") < ctx.index("ALPHA")
+        # _build_similar_context zwraca (tekst, rekordy) — receipts #Q5.
+        text, _records = _build_similar_context(repo, [0.1], "AAPL", outcome_weight=0.3)
+        assert text.index("BETA") < text.index("ALPHA")
 
 
 class TestRerankAnalogs:

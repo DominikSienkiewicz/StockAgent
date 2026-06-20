@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import html
+from collections.abc import Sequence
 from decimal import Decimal
+
+from src.domain.provenance import ProvenanceBadge, ProvenanceLevel
 
 COMPANY_NAMES: dict[str, str] = {
     # Mega-cap tech
@@ -288,3 +292,40 @@ def score_to_pl_label(score: float) -> str:
     if score < 0.35:
         return "Lekko pozytywny"
     return "Pozytywny"
+
+
+# Q6: kolor i tło chipa proweniencji per poziom. FRESH celowo nie ma chipa
+# (brak szumu), więc nie ma go tu — render pomija FRESH.
+_PROVENANCE_STYLE: dict[ProvenanceLevel, tuple[str, str]] = {
+    # (kolor tekstu/obwódki, tło)
+    ProvenanceLevel.STALE: ("#92400e", "#fef3c7"),     # bursztynowy — cache
+    ProvenanceLevel.DEGRADED: ("#991b1b", "#fef2f2"),  # czerwony — skażone
+    ProvenanceLevel.FLAGGED: ("#1e40af", "#eff6ff"),   # niebieski — flagi
+}
+
+
+def provenance_badges_html(badges: Sequence[ProvenanceBadge]) -> str:
+    """Renderuje listę odznak proweniencji jako inline'owe chipy HTML.
+
+    FRESH jest pomijany (oznacza "wszystko OK" — chip byłby tylko szumem).
+    Etykieta i detail mogą pochodzić z danych zewnętrznych (degraded_reason,
+    nazwy flag), więc OBA przechodzą przez `html.escape` — chip nie może być
+    sinkiem XSS. Pusta lista / same FRESH → pusty string (renderer pomija blok).
+    """
+    chips: list[str] = []
+    for badge in badges:
+        if badge.level is ProvenanceLevel.FRESH:
+            continue
+        color, bg = _PROVENANCE_STYLE.get(badge.level, ("#4b5563", "#f3f4f6"))
+        label = html.escape(badge.label, quote=True)
+        title_attr = (
+            f' title="{html.escape(badge.detail, quote=True)}"'
+            if badge.detail
+            else ""
+        )
+        chips.append(
+            f"<span{title_attr} style=\"display: inline-block; padding: 1px 6px; "
+            f"margin: 0 2px; font-size: 10px; font-weight: 600; border-radius: 3px; "
+            f"color: {color}; background: {bg};\">{label}</span>"
+        )
+    return "".join(chips)
