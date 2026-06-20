@@ -14,6 +14,7 @@ from src.application.report_risk_watch import (
     render_risk_watch_text,
 )
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
+from src.domain.drawdown import DrawdownSignal
 from src.domain.macro_risk import (
     MacroAlertLevel,
     MacroRiskInstrumentType,
@@ -21,6 +22,14 @@ from src.domain.macro_risk import (
 )
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.value_objects import Money
+
+
+def _drawdown(symbol: str, peak: str, current: str) -> DrawdownSignal:
+    return DrawdownSignal(
+        symbol=symbol,
+        current_price=Decimal(current),
+        peak_price=Decimal(peak),
+    )
 
 
 def _signal(
@@ -125,3 +134,51 @@ class TestPlainTextRendering:
         text = render_risk_watch_text(report)
         assert "EUR/PLN" in text
         assert "4.45" in text
+
+
+class TestDrawdownRendering:
+    def test_html_renders_critical_drawdown_row(self) -> None:
+        # TSLA: szczyt 100 → 82 = -18% → CRITICAL (> 20%? nie; ale >10% → ELEVATED).
+        # Bierzemy -25%, by trafić CRITICAL i czerwony kolor.
+        report = MacroRiskReport(
+            drawdowns=[_drawdown("TSLA", peak="100", current="75")],
+            overall_alert=MacroAlertLevel.CRITICAL,
+        )
+        html = render_risk_watch_html(report)
+        assert "TSLA" in html
+        assert "-25" in html  # -25% od szczytu
+        # Czerwony kolor wiersza CRITICAL.
+        assert "#dc2626" in html
+
+    def test_html_drawdown_present_even_without_signals(self) -> None:
+        report = MacroRiskReport(
+            drawdowns=[_drawdown("TSLA", peak="200", current="100")],
+            overall_alert=MacroAlertLevel.CRITICAL,
+        )
+        html = render_risk_watch_html(report)
+        assert html != ""
+        assert "TSLA" in html
+
+    def test_html_escapes_symbol(self) -> None:
+        report = MacroRiskReport(
+            drawdowns=[_drawdown("<b>X", peak="100", current="80")],
+            overall_alert=MacroAlertLevel.CRITICAL,
+        )
+        html = render_risk_watch_html(report)
+        assert "<b>X" not in html
+        assert "&lt;b&gt;X" in html
+
+    def test_text_lists_drawdowns(self) -> None:
+        report = MacroRiskReport(
+            drawdowns=[_drawdown("TSLA", peak="100", current="82")],
+            overall_alert=MacroAlertLevel.ELEVATED,
+        )
+        text = render_risk_watch_text(report)
+        assert "TSLA" in text
+        assert "-18" in text
+
+    def test_empty_drawdowns_render_nothing_extra(self) -> None:
+        # Brak sygnałów, brak makro, brak drawdownów → sekcja pusta.
+        report = MacroRiskReport()
+        assert render_risk_watch_html(report) == ""
+        assert render_risk_watch_text(report) == ""

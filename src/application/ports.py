@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -38,6 +39,15 @@ class RepositoryPort(ABC):
     @abstractmethod
     def get_last_price(self, symbol: str) -> Money | None:
         """Najnowszy snapshot ceny z `price_snapshots` (nie z prediction_logs)."""
+
+    @abstractmethod
+    def get_price_history(
+        self, symbol: str, days: int
+    ) -> list[tuple[datetime, Money]]:
+        """Chronologiczna historia cen z `price_snapshots` (rosnąco po czasie),
+        za ostatnie `days` dni. Zasila analizy portfelowe (drawdown, korelacje) —
+        wszystko liczone z DARMOWYCH snapshotów, bez płatnych portów. Pusta lista
+        gdy brak historii."""
 
     @abstractmethod
     def get_last_prediction_price(self, symbol: str) -> Money | None:

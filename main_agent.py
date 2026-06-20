@@ -37,6 +37,7 @@ from src.application.use_cases.monitor_macro_risk import (
     MacroRiskReport,
     MonitorMacroRiskUseCase,
 )
+from src.application.use_cases.portfolio_risk import PortfolioRiskUseCase
 from src.config import Settings
 from src.domain.asset import Asset
 from src.domain.quota import QuotaSeverity
@@ -462,6 +463,20 @@ def main(settings: Settings | None = None) -> int:
         except Exception:
             logger.exception("Risk Watch failed — pomijam sekcję w raporcie")
 
+    # ---- Portfolio Radar (Q4 — korelacja/koncentracja watchlisty, darmowe) ----
+    portfolio_risk_report = None
+    try:
+        portfolio_risk_report = PortfolioRiskUseCase(
+            repository_port=repository
+        ).run(all_symbols)
+        logger.info(
+            "Portfolio Radar — clusters=%d watchlist=%d",
+            len(portfolio_risk_report.clusters),
+            portfolio_risk_report.watchlist_size,
+        )
+    except Exception:
+        logger.exception("Portfolio Radar failed — pomijam sekcję w raporcie")
+
     # ---- Wysyłka raportu ----
     try:
         accuracy_stats = None
@@ -496,6 +511,7 @@ def main(settings: Settings | None = None) -> int:
             accuracy_stats=accuracy_stats,
             resolved_predictions=resolved,
             macro_risk_report=macro_risk_report,
+            portfolio_risk_report=portfolio_risk_report,
             quota_alerts=recent_alerts,
         )
         analyzed = sum(1 for r in results if r.status == "saved")

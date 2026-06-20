@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from src.domain.council import CouncilVerdict
 from src.domain.provenance import ProvenanceBadge
+from src.domain.sizing import SizeBand
 from src.domain.value_objects import ValuationVerdict
 
 
@@ -93,6 +94,10 @@ class TradeSignal:
     strength: float
     current_price: Decimal | None
     target_price: Decimal | None
+    # Q7: sugerowana banda wielkości pozycji (Kelly-lite z konsensusu rady +
+    # track recordu agenta). None = brak danych do sizingu (np. brak werdyktu
+    # rady) — wsteczna kompatybilność, renderer pomija magnitudę.
+    size_band: SizeBand | None = None
 
 
 @dataclass(frozen=True)

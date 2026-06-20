@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from src.application.ports import (
     MacroIndicatorsPort,
     MarketDataPort,
     RepositoryPort,
 )
+from src.domain.drawdown import DrawdownSignal, peak_from_history
 from src.domain.macro_risk import (
     MacroAlertLevel,
     MacroRiskInstrumentType,
@@ -29,6 +31,15 @@ from src.domain.macro_risk import (
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
 
 logger = logging.getLogger(__name__)
+
+# Okno historii snapshotów do liczenia szczytu (darmowe odczyty z repo).
+_DRAWDOWN_HISTORY_DAYS = 30
+
+# Domyślne progi drawdownu (dodatnie ułamki głębokości spadku):
+# ELEVATED przy -10% od szczytu, CRITICAL przy -20% — kalibracja pod
+# swing instrumentów akcyjnych, nie dzienny szum.
+_DRAWDOWN_ELEVATED_PCT = Decimal("0.10")
+_DRAWDOWN_CRITICAL_PCT = Decimal("0.20")
 
 # Mapowanie poziomu stresu PL → MacroAlertLevel, by overall_alert miał
 # jedną wspólną skalę.
@@ -50,6 +61,9 @@ class MacroRiskReport:
     signals: list[MacroRiskSignal] = field(default_factory=list)
     polish_macro: PolishMacroSnapshot | None = None
     overall_alert: MacroAlertLevel = MacroAlertLevel.NORMAL
+    # Per-symbol drawdown od szczytu (liczony z darmowych snapshotów).
+    # Default pusty → wsteczna kompatybilność starszych ścieżek raportu.
+    drawdowns: list[DrawdownSignal] = field(default_factory=list)
 
 
 class MonitorMacroRiskUseCase:
@@ -70,12 +84,14 @@ class MonitorMacroRiskUseCase:
         self, symbol_types: dict[str, MacroRiskInstrumentType]
     ) -> MacroRiskReport:
         signals = self._collect_signals(symbol_types)
+        drawdowns = self._collect_drawdowns(symbol_types)
         polish_macro = self._fetch_polish_macro()
-        overall = self._compute_overall_alert(signals, polish_macro)
+        overall = self._compute_overall_alert(signals, drawdowns, polish_macro)
         return MacroRiskReport(
             signals=signals,
             polish_macro=polish_macro,
             overall_alert=overall,
+            drawdowns=drawdowns,
         )
 
     def _collect_signals(
@@ -107,6 +123,37 @@ class MonitorMacroRiskUseCase:
                 logger.exception("risk_watch signal failed for %s", symbol)
         return out
 
+    def _collect_drawdowns(
+        self, symbol_types: dict[str, MacroRiskInstrumentType]
+    ) -> list[DrawdownSignal]:
+        """Drawdown per symbol z DARMOWEJ historii snapshotów.
+
+        Dla każdego śledzonego symbolu pobiera 30-dniową historię cen,
+        wyznacza szczyt (max) i porównuje z ostatnim snapshotem. Symbol bez
+        historii (cold start) jest pomijany. Pojedynczy błąd nie wywala cyklu.
+        """
+        out: list[DrawdownSignal] = []
+        for symbol in symbol_types:
+            try:
+                history = self._repository.get_price_history(
+                    symbol, days=_DRAWDOWN_HISTORY_DAYS
+                )
+                if not history:
+                    continue
+                prices = [price.amount for _, price in history]
+                peak = peak_from_history(prices)
+                current = prices[-1]  # historia rosnąco — ostatni = najnowszy
+                out.append(
+                    DrawdownSignal(
+                        symbol=symbol,
+                        current_price=current,
+                        peak_price=peak,
+                    )
+                )
+            except Exception:
+                logger.exception("risk_watch drawdown failed for %s", symbol)
+        return out
+
     def _fetch_polish_macro(self) -> PolishMacroSnapshot | None:
         if self._macro is None:
             return None
@@ -119,9 +166,17 @@ class MonitorMacroRiskUseCase:
     @staticmethod
     def _compute_overall_alert(
         signals: list[MacroRiskSignal],
+        drawdowns: list[DrawdownSignal],
         polish_macro: PolishMacroSnapshot | None,
     ) -> MacroAlertLevel:
         levels: list[MacroAlertLevel] = [s.evaluate_alert() for s in signals]
+        levels.extend(
+            dd.evaluate_drawdown(
+                elevated_pct=_DRAWDOWN_ELEVATED_PCT,
+                critical_pct=_DRAWDOWN_CRITICAL_PCT,
+            )
+            for dd in drawdowns
+        )
         if polish_macro is not None:
             levels.append(_STRESS_TO_ALERT[polish_macro.evaluate_stress_level()])
         if not levels:

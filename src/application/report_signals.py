@@ -12,6 +12,7 @@ from src.application.report_models import (
     SymbolResult,
     TradeSignal,
 )
+from src.domain.sizing import SizeBand, suggest_band
 
 DIVERGENCE_PRICE_THRESHOLD = Decimal("0.02")
 DIVERGENCE_SENTIMENT_THRESHOLD = 0.2
@@ -24,9 +25,15 @@ NYSE_CLOSE = time(16, 0)
 
 
 def build_trade_signals(
-    results: list[SymbolResult], top_n: int = 5
+    results: list[SymbolResult], top_n: int = 5, hit_rate: float | None = None
 ) -> list[TradeSignal]:
-    """Top sygnały transakcyjne — posortowane po sile sygnału."""
+    """Top sygnały transakcyjne — posortowane po sile sygnału.
+
+    Q7: gdy symbol ma werdykt rady (`council_verdict`), doklejamy sugerowaną
+    bandę wielkości pozycji (Kelly-lite z konsensusu + dissentu rady i — gdy
+    podany — historycznego hit-rate agenta). `hit_rate` jest wspólny dla
+    całego cyklu (np. `accuracy_stats["mean_accuracy"]`); None = cold-start →
+    sizing konserwatywny. Brak werdyktu rady → `size_band` None."""
     signals: list[TradeSignal] = []
     for r in results:
         if r.status != "saved":
@@ -42,9 +49,22 @@ def build_trade_signals(
             strength=strength,
             current_price=r.current_price,
             target_price=r.target_price,
+            size_band=_size_band_for(r, hit_rate),
         ))
     signals.sort(key=lambda s: s.strength, reverse=True)
     return signals[:top_n]
+
+
+def _size_band_for(r: SymbolResult, hit_rate: float | None) -> SizeBand | None:
+    """Wylicza bandę pozycji z werdyktu rady symbolu; None gdy brak werdyktu."""
+    verdict = r.council_verdict
+    if verdict is None:
+        return None
+    return suggest_band(
+        consensus_strength=verdict.consensus_strength,
+        dissent_ratio=verdict.dissent_ratio(),
+        hit_rate=hit_rate,
+    )
 
 
 def detect_risk_signals(results: list[SymbolResult]) -> list[RiskSignal]:

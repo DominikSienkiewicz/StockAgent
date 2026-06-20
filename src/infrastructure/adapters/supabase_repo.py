@@ -113,6 +113,29 @@ class SupabaseRepository(RepositoryPort):
             return None
         return Money(Decimal(str(rows[0]["price"])))
 
+    def get_price_history(
+        self, symbol: str, days: int
+    ) -> list[tuple[datetime, Money]]:
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        response = (
+            self._client.table(self._snapshot_table)
+            .select("timestamp, price")
+            .eq("symbol", symbol)
+            .gte("timestamp", cutoff.isoformat())
+            .order("timestamp", desc=False)
+            .execute()
+        )
+        out: list[tuple[datetime, Money]] = []
+        for row in _rows(response):
+            ts = row.get("timestamp")
+            price = row.get("price")
+            if not isinstance(ts, str) or price is None:
+                continue
+            out.append(
+                (datetime.fromisoformat(ts), Money(Decimal(str(price))))
+            )
+        return out
+
     def get_last_prediction_price(self, symbol: str) -> Money | None:
         # Cena ostatniej zalogowanej predykcji — referencja dla cechy price_delta
         # w inference (musi pokrywać się z LAG(price_at_prediction) w widoku

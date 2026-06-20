@@ -23,9 +23,19 @@ from src.application.use_cases.monitor_macro_risk import (
     MacroRiskReport,
     MonitorMacroRiskUseCase,
 )
+from src.domain.drawdown import DrawdownSignal
 from src.domain.macro_risk import MacroAlertLevel, MacroRiskInstrumentType
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
 from src.domain.value_objects import Money
+
+
+def _history(*prices: str) -> list[tuple[datetime, Money]]:
+    """Chronologiczna (rosnąco) historia snapshotów cen do mocka repo."""
+    base = datetime(2026, 5, 1, tzinfo=UTC)
+    return [
+        (base.replace(day=i + 1), Money(Decimal(p)))
+        for i, p in enumerate(prices)
+    ]
 
 SYMBOLS = {
     "SH": MacroRiskInstrumentType.INVERSE_EQUITY,
@@ -214,3 +224,85 @@ class TestPolishMacroIntegration:
         assert (
             report.polish_macro.evaluate_stress_level() is MacroStressLevel.ELEVATED
         )
+
+
+class TestDrawdowns:
+    def test_builds_drawdown_signal_per_symbol_from_history(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        market_port.get_current_price.return_value = Money(Decimal("90"))
+        repository_port.get_last_price.return_value = Money(Decimal("89"))
+        # Szczyt 120 w historii, ostatni snapshot 90 → drawdown -25%.
+        repository_port.get_price_history.return_value = _history("100", "120", "90")
+
+        report = _make_uc(market_port, repository_port).run(
+            {"TSLA": MacroRiskInstrumentType.INVERSE_EQUITY}
+        )
+
+        assert len(report.drawdowns) == 1
+        dd = report.drawdowns[0]
+        assert isinstance(dd, DrawdownSignal)
+        assert dd.symbol == "TSLA"
+        assert dd.peak_price == Decimal("120")
+        assert dd.current_price == Decimal("90")
+
+    def test_uses_latest_history_price_as_current(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        """Current = ostatni snapshot z historii (rosnąco), nie pierwszy."""
+        market_port.get_current_price.return_value = Money(Decimal("0"))
+        repository_port.get_last_price.return_value = Money(Decimal("99"))
+        repository_port.get_price_history.return_value = _history("100", "120", "80")
+
+        report = _make_uc(market_port, repository_port).run(
+            {"TSLA": MacroRiskInstrumentType.INVERSE_EQUITY}
+        )
+
+        assert report.drawdowns[0].current_price == Decimal("80")
+
+    def test_empty_history_yields_no_drawdown_signal(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        market_port.get_current_price.return_value = Money(Decimal("100"))
+        repository_port.get_last_price.return_value = Money(Decimal("99"))
+        repository_port.get_price_history.return_value = []
+
+        report = _make_uc(market_port, repository_port).run(
+            {"TSLA": MacroRiskInstrumentType.INVERSE_EQUITY}
+        )
+
+        assert report.drawdowns == []
+
+    def test_drawdown_error_does_not_kill_cycle(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        market_port.get_current_price.return_value = Money(Decimal("100"))
+        repository_port.get_last_price.return_value = Money(Decimal("99"))
+        repository_port.get_price_history.side_effect = RuntimeError("DB down")
+
+        report = _make_uc(market_port, repository_port).run(
+            {"TSLA": MacroRiskInstrumentType.INVERSE_EQUITY}
+        )
+
+        # Sygnał makro nadal zbudowany mimo padniętej historii.
+        assert report.drawdowns == []
+        assert len(report.signals) == 1
+
+    def test_critical_drawdown_lifts_overall_alert(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        """Głęboki drawdown sam w sobie podnosi overall_alert do CRITICAL."""
+        market_port.get_current_price.return_value = Money(Decimal("100"))
+        # Sygnał makro: NORMAL (cena płaska vs poprzednia).
+        repository_port.get_last_price.return_value = Money(Decimal("100"))
+        # Historia: szczyt 200, teraz 100 → -50% → CRITICAL drawdown.
+        repository_port.get_price_history.return_value = _history("200", "100")
+
+        report = _make_uc(market_port, repository_port).run(
+            {"TSLA": MacroRiskInstrumentType.INVERSE_EQUITY}
+        )
+
+        assert report.overall_alert is MacroAlertLevel.CRITICAL
+
+    def test_default_drawdowns_empty_for_backward_compat(self) -> None:
+        assert MacroRiskReport().drawdowns == []

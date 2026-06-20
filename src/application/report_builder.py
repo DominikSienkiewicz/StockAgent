@@ -55,6 +55,7 @@ from src.application.report_models import (
     TradeSignal,
     ValuationSection,
 )
+from src.application.report_portfolio import render_correlation_html
 from src.application.report_quota_banner import (
     render_quota_banner_html,
     render_quota_banner_text,
@@ -77,6 +78,7 @@ from src.application.report_suggestions import (
 )
 from src.application.report_templates import _env, render_template
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
+from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.council import CouncilVerdict
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
@@ -539,6 +541,7 @@ def build_html_report(
     accuracy_stats: dict[str, Any] | None = None,
     resolved_predictions: list[ResolvedPrediction] | None = None,
     macro_risk_report: MacroRiskReport | None = None,
+    portfolio_risk_report: PortfolioRiskReport | None = None,
     quota_alerts: list[QuotaAlert] | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
@@ -555,10 +558,19 @@ def build_html_report(
     errors = [r for r in results if r.status == "error"]
     mood = build_portfolio_mood(results)
     session = market_status(started_at)
-    trade_signals = build_trade_signals(results)
+    # Q7: hit-rate cyklu (z accuracy_stats) napędza pasmo wielkości pozycji.
+    hit_rate = accuracy_stats.get("mean_accuracy") if accuracy_stats else None
+    trade_signals = build_trade_signals(results, hit_rate=hit_rate)
     risk_signals = detect_risk_signals(results)
     macro_risk_html = (
         render_risk_watch_html(macro_risk_report) if macro_risk_report else ""
+    )
+    # Q4: sekcja korelacji/koncentracji portfela (render_correlation_html zwraca
+    # "" gdy brak klastrów → sekcja sama się chowa).
+    portfolio_html = (
+        render_correlation_html(portfolio_risk_report)
+        if portfolio_risk_report
+        else ""
     )
     macro_risk_text = (
         render_risk_watch_text(macro_risk_report) if macro_risk_report else ""
@@ -582,6 +594,8 @@ def build_html_report(
         html = html.replace(
             "<!-- RISK_WATCH_SLOT -->", macro_risk_html, 1
         )
+    # Slot portfela zawsze podmieniamy (też na "") — inaczej znacznik zostałby w treści.
+    html = html.replace("<!-- PORTFOLIO_SLOT -->", portfolio_html, 1)
     # Slot zawsze podmieniamy (też na "") — inaczej znacznik zostałby w treści.
     html = html.replace("<!-- SUGGESTIONS_SLOT -->", suggestions_html, 1)
     text = _render_plain(
@@ -670,6 +684,8 @@ def _render_html(
     # Slot na sekcję Risk Watch — wypełniany przez build_html_report,
     # gdy wywołujący przekaże MacroRiskReport. Bez slotu sekcja jest pomijana.
     sections.append("<!-- RISK_WATCH_SLOT -->")
+    # Slot na radar korelacji portfela (Q4) — wypełniany przez build_html_report.
+    sections.append("<!-- PORTFOLIO_SLOT -->")
 
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
     crypto_html = _render_crypto_section_html(results)
@@ -694,6 +710,13 @@ def _render_html(
                 "OBSERWUJ": "#f9fafb",
             }[sig.direction]
             change_color = _delta_color(sig.expected_change)
+            # Q7: pasmo wielkości pozycji (Kelly-lite z konsensusu rady + hit-rate).
+            size_html = (
+                f'<span style="color: #6b7280; font-size: 12px;">'
+                f"{_html(sig.size_band.label)}</span>"
+                if sig.size_band
+                else ""
+            )
             sections.append(f"""
               <div style="margin-bottom: 8px; padding: 10px 14px; background: {dir_bg};
                           border-left: 4px solid {dir_color}; border-radius: 4px;
@@ -708,6 +731,7 @@ def _render_html(
                 <span style="color: {change_color};">
                   prognoza <strong>{_pct(sig.expected_change, signed=True)}</strong>
                 </span>
+                {size_html}
                 <span style="color: #6b7280; margin-left: auto; font-size: 12px;">
                   siła sygnału: <strong>{sig.strength:.2f}</strong>
                 </span>
@@ -1047,11 +1071,12 @@ def _render_plain(
         lines.append("NAJSILNIEJSZE SYGNAŁY")
         lines.append("-" * 64)
         for sig in trade_signals:
+            size_txt = f"  [{sig.size_band.label}]" if sig.size_band else ""
             lines.append(
                 f"  {sig.direction:9s} {_company_label(sig.symbol):40s} "
                 f"pewność {sig.confidence * 100:.0f}%  "
                 f"prognoza {_pct(sig.expected_change, signed=True):>8s}  "
-                f"siła {sig.strength:.2f}"
+                f"siła {sig.strength:.2f}{size_txt}"
             )
         lines.append("")
 

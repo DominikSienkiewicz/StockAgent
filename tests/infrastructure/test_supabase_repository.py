@@ -625,6 +625,45 @@ class TestAdapterImplementsPort:
 # ---------------------------------------------------------------------------
 
 
+class TestGetPriceHistory:
+    def test_maps_rows_to_timestamp_price_pairs(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "gte", "order"],
+            [
+                {"timestamp": "2026-06-01T00:00:00+00:00", "price": 100.0},
+                {"timestamp": "2026-06-02T00:00:00+00:00", "price": 110.0},
+            ],
+        )
+
+        result = repo.get_price_history("AAPL", days=30)
+
+        assert len(result) == 2
+        ts, money = result[0]
+        assert isinstance(money, Money)
+        assert money.amount == Decimal("100.0")
+        assert ts.year == 2026
+
+    def test_returns_empty_when_no_history(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client, ["table", "select", "eq", "gte", "order"], []
+        )
+        assert repo.get_price_history("X", days=30) == []
+
+    def test_queries_price_snapshots_chronologically(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client, ["table", "select", "eq", "gte", "order"], []
+        )
+        repo.get_price_history("VOO", days=7)
+        mock_client.table.assert_called_with("price_snapshots")
+
+
 class TestGetCouncilVotesForPrediction:
     def test_maps_rows_to_investor_opinions(
         self, repo: SupabaseRepository, mock_client: MagicMock

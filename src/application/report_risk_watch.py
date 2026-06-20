@@ -11,12 +11,18 @@ import html as _html
 from decimal import Decimal
 
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
+from src.domain.drawdown import DrawdownSignal
 from src.domain.macro_risk import (
     MacroAlertLevel,
     MacroRiskInstrumentType,
     MacroRiskSignal,
 )
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
+
+# Progi drawdownu spójne z use case'em — render tylko prezentuje wynik
+# domeny, ale poziom alertu liczy tą samą skalą (ELEVATED -10%, CRITICAL -20%).
+_DRAWDOWN_ELEVATED_PCT = Decimal("0.10")
+_DRAWDOWN_CRITICAL_PCT = Decimal("0.20")
 
 _ALERT_LABEL = {
     MacroAlertLevel.NORMAL: "NORMAL",
@@ -57,8 +63,19 @@ def _format_pct(value: Decimal) -> str:
     return f"{sign}{pct}%"
 
 
+def _drawdown_alert(dd: DrawdownSignal) -> MacroAlertLevel:
+    return dd.evaluate_drawdown(
+        elevated_pct=_DRAWDOWN_ELEVATED_PCT,
+        critical_pct=_DRAWDOWN_CRITICAL_PCT,
+    )
+
+
 def render_risk_watch_html(report: MacroRiskReport) -> str:
-    if not report.signals and report.polish_macro is None:
+    if (
+        not report.signals
+        and not report.drawdowns
+        and report.polish_macro is None
+    ):
         return ""
 
     parts: list[str] = []
@@ -82,6 +99,9 @@ def render_risk_watch_html(report: MacroRiskReport) -> str:
 
     if report.signals:
         parts.append(_render_signals_table_html(report.signals))
+
+    if report.drawdowns:
+        parts.append(_render_drawdowns_table_html(report.drawdowns))
 
     if report.polish_macro is not None:
         parts.append(_render_polish_macro_html(report.polish_macro))
@@ -120,6 +140,43 @@ def _render_signals_table_html(signals: list[MacroRiskSignal]) -> str:
     )
 
 
+def _render_drawdowns_table_html(drawdowns: list[DrawdownSignal]) -> str:
+    rows: list[str] = []
+    for dd in drawdowns:
+        alert = _drawdown_alert(dd)
+        color = _ALERT_COLOR[alert]
+        bg = _ALERT_BG[alert]
+        # Czerwone tło wiersza dla CRITICAL ("TSLA -18% od 30d szczytu").
+        row_bg = bg if alert is MacroAlertLevel.CRITICAL else "transparent"
+        rows.append(
+            f"<tr style='background: {row_bg};'>"
+            f"<td style='padding: 6px 8px;'>"
+            f"<strong>{_html.escape(dd.symbol)}</strong></td>"
+            f"<td style='padding: 6px 8px; text-align: right; "
+            f"color: {color}; font-weight: 600;'>"
+            f"{_format_pct(dd.drawdown_fraction)}</td>"
+            f"<td style='padding: 6px 8px; text-align: right; color: #6b7280;'>"
+            f"{dd.peak_price}</td>"
+            f"<td style='padding: 6px 8px; color: {color}; font-weight: 600;'>"
+            f"{_ALERT_LABEL[alert]}</td>"
+            f"</tr>"
+        )
+    return (
+        "<table style='width: 100%; border-collapse: collapse; "
+        "font-size: 13px; margin-bottom: 16px;'>"
+        "<thead><tr style='background: #f9fafb; color: #6b7280; "
+        "text-transform: uppercase; font-size: 11px;'>"
+        "<th style='padding: 6px 8px; text-align: left;'>Ticker</th>"
+        "<th style='padding: 6px 8px; text-align: right;'>"
+        "Spadek od 30d szczytu</th>"
+        "<th style='padding: 6px 8px; text-align: right;'>Szczyt</th>"
+        "<th style='padding: 6px 8px; text-align: left;'>Alert</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+
+
 def _render_polish_macro_html(snap: PolishMacroSnapshot) -> str:
     stress = snap.evaluate_stress_level()
     label = _STRESS_LABEL[stress]
@@ -137,7 +194,11 @@ def _render_polish_macro_html(snap: PolishMacroSnapshot) -> str:
 
 
 def render_risk_watch_text(report: MacroRiskReport) -> str:
-    if not report.signals and report.polish_macro is None:
+    if (
+        not report.signals
+        and not report.drawdowns
+        and report.polish_macro is None
+    ):
         return ""
 
     lines: list[str] = []
@@ -154,6 +215,18 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
                 f"  {sig.symbol:6s} "
                 f"{_INSTRUMENT_LABEL[sig.instrument_type]:18s} "
                 f"Δ={_format_pct(sig.change_pct):>7s} "
+                f"[{_ALERT_LABEL[alert]}]"
+            )
+        lines.append("")
+
+    if report.drawdowns:
+        lines.append("-- Drawdown od 30d szczytu --")
+        for dd in report.drawdowns:
+            alert = _drawdown_alert(dd)
+            lines.append(
+                f"  {dd.symbol:6s} "
+                f"{_format_pct(dd.drawdown_fraction):>8s} od szczytu "
+                f"(szczyt {dd.peak_price}) "
                 f"[{_ALERT_LABEL[alert]}]"
             )
         lines.append("")
