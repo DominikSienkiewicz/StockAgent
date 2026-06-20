@@ -1,6 +1,7 @@
 # src/domain/council.py
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal
@@ -173,6 +174,32 @@ def derive_consensus(
     )
     strength = buckets[winner] / total_weight
     return winner, strength
+
+
+_DIRECTION_TO_REC: dict[str, Literal["BUY", "SELL", "HOLD"]] = {
+    "UP": "BUY",
+    "DOWN": "SELL",
+    "FLAT": "HOLD",
+}
+
+
+def vindicated_dissenters(
+    opinions: Sequence[InvestorOpinion],
+    actual_direction: Literal["UP", "DOWN", "FLAT"],
+    final_recommendation: Literal["BUY", "SELL", "HOLD"],
+) -> tuple[InvestorOpinion, ...]:
+    """Inwestorzy 'wybronieni' przez rynek: głosowali zgodnie z RZECZYWISTYM
+    ruchem (BUY↔UP, SELL↔DOWN, HOLD↔FLAT), ale niezgodnie z finalną
+    rekomendacją rady. Napędza counterfactual dissent-replay w self-reflection:
+    'bearish dysydent miał rację — ważenie jego głosu odwróciłoby decyzję'.
+
+    Gdy trafna rekomendacja == finalna (rada miała rację), zwraca pustą krotkę —
+    nie ma kogo 'bronić'.
+    """
+    right_rec = _DIRECTION_TO_REC[actual_direction]
+    if right_rec == final_recommendation:
+        return ()
+    return tuple(op for op in opinions if op.recommendation == right_rec)
 
 
 @dataclass(frozen=True)

@@ -312,6 +312,7 @@ def build_use_case(
         crypto_threshold=crypto_threshold,
         crypto_council_threshold=crypto_council_threshold,
         reflection_min_age_hours=settings.reflection_min_age_hours,
+        rag_outcome_weight=settings.rag_outcome_weight,
     )
 
 

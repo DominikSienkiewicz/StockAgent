@@ -142,6 +142,16 @@ class RepositoryPort(ABC):
         `is_trend_correct`, `correction_insights`."""
 
     @abstractmethod
+    def get_council_votes_for_prediction(
+        self, prediction_id: str
+    ) -> list[InvestorOpinion]:
+        """Głosy rady zapisane dla danej predykcji (`council_votes`).
+
+        Napędza counterfactual dissent-replay: gdy predykcja okazała się błędna,
+        self-reflection sprawdza, który dysydent rady miał rację. Pusta lista =
+        brak zapisanych głosów (rada padła / pominięta progiem)."""
+
+    @abstractmethod
     def save_council_votes(
         self,
         prediction_id: str,

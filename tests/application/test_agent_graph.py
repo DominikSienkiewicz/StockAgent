@@ -52,6 +52,8 @@ def repository_port() -> Mock:
     # Brak wcześniejszej predykcji → cecha price_delta liczona jako 0.0 (z flagą).
     # Testy weryfikujące referencję cechy nadpisują to konkretną ceną.
     repo.get_last_prediction_price.return_value = None
+    # Domyślnie brak zapisanych głosów rady (dissent-replay nie ma czego dociągać).
+    repo.get_council_votes_for_prediction.return_value = []
     return repo
 
 
@@ -360,6 +362,38 @@ class TestSelfReflectionOnWrongPrediction:
         # reflection_context trafia do stanu i zostaje użyty w predykcji
         assert "Zignorowałem szerszy kontekst makro." in final["reflection_context"]
         assert final["status"] == "saved"
+
+    def test_dissent_replay_enriches_prompt_with_vindicated_dissenter(
+        self,
+        workflow,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ):
+        from src.domain.council import InvestorOpinion
+
+        # Prior BULLISH(=BUY) @100; cena spadła do 90 (DOWN) → błędny kierunek.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        # Rada miała dysydenta SELL (Burry), który trafił spadek — agent szedł BUY.
+        repository_port.get_council_votes_for_prediction.return_value = [
+            InvestorOpinion("Burry", "SELL", 0.8, "Zadłużenie", ()),
+            InvestorOpinion("Wood", "BUY", 0.7, "Wzrost", ()),
+        ]
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        repository_port.get_council_votes_for_prediction.assert_called_once_with(
+            "prev-uuid-456"
+        )
+        prompt = llm_port.analyze_mistake.call_args.args[0]
+        assert "Burry" in prompt
 
 
 # ---------------------------------------------------------------------------

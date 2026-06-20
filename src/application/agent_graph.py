@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from decimal import Decimal
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -24,8 +24,10 @@ from src.application.ports import (
     SentimentPort,
 )
 from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction_prompt
+from src.application.rag_rerank import rerank_analogs
 from src.domain.asset import Asset, PriceDelta
-from src.domain.council import CouncilInput, CouncilVerdict
+from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
+from src.domain.prediction import Prediction
 from src.domain.value_objects import AssetType, Fundamentals, Money, Threshold, ValuationVerdict
 
 logger = logging.getLogger(__name__)
@@ -112,14 +114,18 @@ def _build_similar_context(
     repository_port: RepositoryPort,
     embedding: list[float],
     symbol: str,
+    outcome_weight: float = 0.0,
 ) -> str:
     """Buduje tekstowy blok 'podobne historyczne sytuacje' do promptu (RAG).
 
     W pełni graceful: brak RPC / pgvector / błąd → pusty string (predykcja
     działa bez RAG). Każdy rekord skracamy do: kierunek, czy trafiony, wniosek.
+    `outcome_weight` (#9): rerank analogów po realnym wyniku (trafiony analog
+    przed nietrafionym przy zbliżonym similarity); 0.0 = sama kolejność RPC.
     """
     try:
         similar = repository_port.find_similar_predictions(embedding, limit=3)
+        similar = rerank_analogs(list(similar or []), outcome_weight=outcome_weight)
         lines: list[str] = []
         for item in similar or []:
             summary = str(item.get("news_summary") or "").strip()
@@ -199,6 +205,45 @@ def _validate_trend_direction(value: Any) -> tuple[int, str | None]:
     return _TREND_SIGNALS["SIDEWAYS"], "trend_direction_invalid"
 
 
+_TREND_TO_REC: dict[str, Literal["BUY", "SELL", "HOLD"]] = {
+    "BULLISH": "BUY",
+    "BEARISH": "SELL",
+    "SIDEWAYS": "HOLD",
+}
+
+
+def _vindicated_context(
+    repository_port: RepositoryPort,
+    last: Prediction,
+    current_price: Decimal,
+    symbol: str,
+) -> str:
+    """Buduje blok 'wybroniony dysydent' do promptu diagnozy (#8 dissent-replay).
+
+    W pełni graceful: brak id / błąd odczytu / brak głosów / brak dysydenta →
+    pusty string (diagnoza działa bez bloku). Zero płatnych wywołań."""
+    if last.id is None:
+        return ""
+    try:
+        votes = repository_port.get_council_votes_for_prediction(last.id)
+    except Exception:
+        logger.exception(
+            "get_council_votes_for_prediction failed for %s — diagnoza bez dissent",
+            symbol,
+        )
+        return ""
+    actual_dir: Literal["UP", "DOWN", "FLAT"]
+    if current_price > last.price_at_prediction:
+        actual_dir = "UP"
+    elif current_price < last.price_at_prediction:
+        actual_dir = "DOWN"
+    else:
+        actual_dir = "FLAT"
+    final_rec = _TREND_TO_REC.get(str(last.predicted_trend), "HOLD")
+    vindicated = vindicated_dissenters(votes, actual_dir, final_rec)
+    return ", ".join(f"{op.investor_name} ({op.recommendation})" for op in vindicated)
+
+
 def _build_fetch_fundamentals_node(
     port: FundamentalsPort,
 ) -> Callable[[AgentState], dict[str, Any]]:
@@ -249,6 +294,7 @@ def create_agent_graph(
     crypto_threshold: Threshold | None = None,
     crypto_council_threshold: Threshold | None = None,
     reflection_min_age_hours: int = 0,
+    rag_outcome_weight: float = 0.0,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
@@ -384,10 +430,17 @@ def create_agent_graph(
         diagnose_paid = gate_asset.evaluate_volatility(gate_delta, gate_threshold)
 
         if diagnose_paid:
+            # Counterfactual dissent-replay (#8): który dysydent rady trafił ruch,
+            # mimo że agent poszedł inaczej? Wzbogaca diagnozę o stłumiony, trafny
+            # głos mniejszości. W pełni graceful — brak głosów / błąd → bez bloku.
+            vindicated_ctx = _vindicated_context(
+                repository_port, last, current_price, symbol
+            )
             prompt = get_mistake_diagnosis_prompt(
                 last_trend=str(last.predicted_trend),
                 last_news_summary="(zapisany w prediction_logs)",
                 actual_price=str(current_price),
+                vindicated_context=vindicated_ctx,
             )
             # #14: płatne wywołanie LLM diagnozy — log jawny + timing.
             _log_paid_call("reflect", symbol, "llm_port.analyze_mistake")
@@ -446,7 +499,7 @@ def create_agent_graph(
                 )
             if news_embedding:
                 similar_context = _build_similar_context(
-                    repository_port, news_embedding, state["symbol"]
+                    repository_port, news_embedding, state["symbol"], rag_outcome_weight
                 )
 
         # 1. LLM — analiza jakościowa z cross-validation pre-computed AV sentymentu

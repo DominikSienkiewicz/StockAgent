@@ -625,6 +625,45 @@ class TestAdapterImplementsPort:
 # ---------------------------------------------------------------------------
 
 
+class TestGetCouncilVotesForPrediction:
+    def test_maps_rows_to_investor_opinions(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq"],
+            [
+                {
+                    "investor_name": "Burry",
+                    "recommendation": "SELL",
+                    "confidence": 0.8,
+                    "reasoning": "Zadłużenie",
+                    "key_factors": ["leverage"],
+                }
+            ],
+        )
+
+        result = repo.get_council_votes_for_prediction("pred-1")
+
+        assert len(result) == 1
+        assert result[0].investor_name == "Burry"
+        assert result[0].recommendation == "SELL"
+        assert result[0].key_factors == ("leverage",)
+
+    def test_returns_empty_when_no_votes(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "select", "eq"], [])
+        assert repo.get_council_votes_for_prediction("pred-x") == []
+
+    def test_queries_council_votes_by_prediction_id(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "select", "eq"], [])
+        repo.get_council_votes_for_prediction("pred-9")
+        mock_client.table.assert_called_with("council_votes")
+
+
 class TestSaveCouncilVotes:
     def test_batch_inserts_one_row_per_investor(
         self, repo: SupabaseRepository, mock_client: MagicMock

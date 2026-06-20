@@ -103,13 +103,26 @@ def get_mistake_diagnosis_prompt(
     last_trend: str,
     last_news_summary: str,
     actual_price: str,
+    vindicated_context: str = "",
 ) -> str:
-    """Prompt dla LLM-a w węźle reflect — diagnoza błędnej predykcji."""
+    """Prompt dla LLM-a w węźle reflect — diagnoza błędnej predykcji.
+
+    `vindicated_context` (opcjonalny) niesie counterfactual dissent-replay:
+    informację o członku rady, który głosował przeciw finalnej decyzji, ale
+    trafił rzeczywisty ruch. Zmusza diagnozę do rozważenia, czy stłumiony głos
+    mniejszości był trafniejszy."""
+    dissent_block = (
+        f"\nWybroniony dysydent rady (głosował przeciw finalnej decyzji, ale "
+        f"trafił ruch): {vindicated_context}. Rozważ, czy jego teza była "
+        f"trafniejsza i czemu została zignorowana."
+        if vindicated_context
+        else ""
+    )
     return f"""
 Jesteś analitykiem korygującym.
 W poprzednim cyklu przewidziałeś trend: {last_trend}.
 Oparłeś to na newsach: {last_news_summary}.
-Aktualna cena to {actual_price}, prognoza była błędna.
+Aktualna cena to {actual_price}, prognoza była błędna.{dissent_block}
 
 Zidentyfikuj, dlaczego te newsy wprowadziły Cię w błąd (np. zignorowałeś
 szerszy kontekst rynkowy, news był fake-newsem, sentyment był manipulowany).

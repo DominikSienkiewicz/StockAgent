@@ -44,6 +44,7 @@ class AnalyzeMarketUseCase:
         crypto_threshold: Threshold | None = None,
         crypto_council_threshold: Threshold | None = None,
         reflection_min_age_hours: int = 0,
+        rag_outcome_weight: float = 0.0,
     ) -> None:
         self._repository = repository_port
         workflow = create_agent_graph(
@@ -61,6 +62,7 @@ class AnalyzeMarketUseCase:
             crypto_threshold=crypto_threshold,
             crypto_council_threshold=crypto_council_threshold,
             reflection_min_age_hours=reflection_min_age_hours,
+            rag_outcome_weight=rag_outcome_weight,
         )
         # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().

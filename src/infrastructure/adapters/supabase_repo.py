@@ -421,6 +421,31 @@ class SupabaseRepository(RepositoryPort):
             return []
         return _rows(response)
 
+    def get_council_votes_for_prediction(
+        self, prediction_id: str
+    ) -> list[InvestorOpinion]:
+        response = (
+            self._client.table(self._council_votes_table)
+            .select("investor_name, recommendation, confidence, reasoning, key_factors")
+            .eq("prediction_id", prediction_id)
+            .execute()
+        )
+        out: list[InvestorOpinion] = []
+        for row in _rows(response):
+            rec = row.get("recommendation")
+            if rec not in ("BUY", "SELL", "HOLD"):
+                continue
+            out.append(
+                InvestorOpinion(
+                    investor_name=str(row.get("investor_name", "?")),
+                    recommendation=rec,
+                    confidence=float(row.get("confidence") or 0.0),
+                    reasoning=str(row.get("reasoning") or ""),
+                    key_factors=tuple(row.get("key_factors") or []),
+                )
+            )
+        return out
+
     def save_council_votes(
         self,
         prediction_id: str,

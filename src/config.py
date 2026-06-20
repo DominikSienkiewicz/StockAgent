@@ -165,6 +165,11 @@ class Settings(BaseSettings):
     # Ustaw 0, by świadomie wyłączyć filtr (np. backtest / zachowanie wsteczne).
     reflection_min_age_hours: int = Field(default=6)
 
+    # Waga wyniku w outcome-aware reranku analogów RAG (#9). 0.0 = sama
+    # kolejność similarity (zachowanie wsteczne); >0 promuje analogi, których
+    # prognoza realnie się sprawdziła. Produkcja: 0.3.
+    rag_outcome_weight: float = Field(default=0.0)
+
     # ----- ML -----
     ml_model_path: str = "data/models/price_predictor.ubj"
 

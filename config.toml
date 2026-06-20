@@ -31,6 +31,9 @@ ml_model_path = "data/models/price_predictor.ubj"
 # Minimalny wiek predykcji (h), zanim reflect ją oceni. Kadencja dzienna →
 # 6h bezpiecznie odsiewa przedwczesną ocenę przy nakładających się cyklach.
 reflection_min_age_hours = 6
+# Outcome-aware RAG rerank (#9): waga realnego wyniku analogu (trafiony przed
+# nietrafionym przy zbliżonym similarity). 0.0 = sama kolejność similarity.
+rag_outcome_weight = 0.3
 
 # --- Powiadomienia (sam nadawca; ODBIORCA = sekret w .env) ---
 notifications_enabled = true

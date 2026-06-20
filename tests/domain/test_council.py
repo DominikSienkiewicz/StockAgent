@@ -8,7 +8,47 @@ from src.domain.council import (
     CouncilVerdict,
     InvestorOpinion,
     derive_consensus,
+    vindicated_dissenters,
 )
+
+
+def _named_opinion(name: str, rec: str) -> InvestorOpinion:
+    return InvestorOpinion(
+        investor_name=name,
+        recommendation=rec,
+        confidence=0.8,
+        reasoning="...",
+        key_factors=(),
+    )
+
+
+class TestVindicatedDissenters:
+    """Dysydent 'wybroniony' = głosował zgodnie z RZECZYWISTYM ruchem, ale
+    niezgodnie z finalną rekomendacją rady (BUY↔UP, SELL↔DOWN, HOLD↔FLAT)."""
+
+    def test_returns_dissenter_who_matched_actual_move(self):
+        opinions = (
+            _named_opinion("Burry", "SELL"),
+            _named_opinion("Wood", "BUY"),
+            _named_opinion("Marks", "HOLD"),
+        )
+        # Rada powiedziała BUY, cena SPADŁA (DOWN) → SELL-owy Burry miał rację.
+        result = vindicated_dissenters(opinions, "DOWN", "BUY")
+        assert tuple(o.investor_name for o in result) == ("Burry",)
+
+    def test_empty_when_final_recommendation_was_already_right(self):
+        opinions = (_named_opinion("Wood", "BUY"), _named_opinion("Burry", "SELL"))
+        # Cena wzrosła (UP), rada powiedziała BUY → trafna decyzja = finalna,
+        # więc żaden dysydent nie został 'wybroniony'.
+        assert vindicated_dissenters(opinions, "UP", "BUY") == ()
+
+    def test_flat_maps_to_hold(self):
+        opinions = (_named_opinion("Marks", "HOLD"), _named_opinion("Wood", "BUY"))
+        result = vindicated_dissenters(opinions, "FLAT", "BUY")
+        assert tuple(o.investor_name for o in result) == ("Marks",)
+
+    def test_empty_opinions(self):
+        assert vindicated_dissenters((), "UP", "SELL") == ()
 
 
 def _make_opinion(rec: str = "BUY", confidence: float = 0.8) -> InvestorOpinion:
