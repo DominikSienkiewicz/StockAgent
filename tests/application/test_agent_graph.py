@@ -661,6 +661,92 @@ class TestPredictNodeLlmGuard:
 
 
 # ---------------------------------------------------------------------------
+# #21 — walidacja trend_direction z LLM przed mapowaniem na sygnał ML
+# ---------------------------------------------------------------------------
+
+
+class TestTrendDirectionValidation:
+    """trend_direction z LLM napędza cechę llm_trend_signal. Dotychczas `.get`
+    z domyślnym 0 cicho traktował KAŻDY nieoczekiwany string (np. "UP",
+    literówkę) jako neutralny SIDEWAYS bez żadnej flagi jakości — w przeciwień-
+    stwie do pól liczbowych, które zostawiają ślad (_missing/_invalid). Po
+    naprawie: present-but-invalid → sygnał 0 + flaga `trend_direction_invalid`;
+    poprawna wartość (case-insensitive) → właściwy sygnał, bez flagi; brak
+    wartości → SIDEWAYS, bez flagi (genuinely-absent ma prawo default'ować)."""
+
+    def test_unexpected_trend_string_maps_to_neutral_and_flags(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        # "UP" nie należy do {BULLISH, BEARISH, SIDEWAYS} → neutralny sygnał + flaga.
+        llm_port.analyze.return_value = {
+            "trend_direction": "UP",
+            "confidence_score": 0.7,
+            "av_agreement": 0.5,
+            "reasoning": "Up.",
+        }
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        features = ml_port.predict.call_args.args[0]
+        # Nieznany kierunek → neutralny sygnał 0.0 (jak SIDEWAYS).
+        assert features["llm_trend_signal"] == 0.0
+        # ...ALE zostawia ślad jakości (inaczej śmieć udaje prawdziwy SIDEWAYS).
+        assert "trend_direction_invalid" in final["data_quality_flags"]
+        saved_record = repository_port.save_prediction.call_args.args[0]
+        assert "trend_direction_invalid" in saved_record["data_quality_flags"]
+
+    def test_lowercase_trend_is_normalized_without_flag(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        # "bullish" (lowercase) to wciąż poprawny kierunek — case-insensitive.
+        llm_port.analyze.return_value = {
+            "trend_direction": "bullish",
+            "confidence_score": 0.8,
+            "av_agreement": 0.9,
+            "reasoning": "Bull.",
+        }
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        features = ml_port.predict.call_args.args[0]
+        assert features["llm_trend_signal"] == 1.0  # BULLISH
+        assert "trend_direction_invalid" not in final["data_quality_flags"]
+
+    def test_missing_trend_defaults_to_sideways_without_flag(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        # Brak klucza trend_direction — genuinely-absent ma prawo default'ować
+        # do SIDEWAYS bez flagi (to nie jest skażony input, tylko brak pola).
+        llm_port.analyze.return_value = {
+            "confidence_score": 0.5,
+            "av_agreement": 0.5,
+            "reasoning": "Brak kierunku.",
+        }
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        features = ml_port.predict.call_args.args[0]
+        assert features["llm_trend_signal"] == 0.0  # SIDEWAYS
+        assert "trend_direction_invalid" not in final["data_quality_flags"]
+
+
+# ---------------------------------------------------------------------------
 # Path 4 — low volatility → ignore early (FinOps: ZERO płatnych wywołań)
 # ---------------------------------------------------------------------------
 

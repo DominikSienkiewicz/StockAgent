@@ -63,7 +63,9 @@ class RepositoryPort(ABC):
     def get_unverified_prediction(
         self, symbol: str, min_age_hours: int = 0
     ) -> Prediction | None:
-        """Najnowsza predykcja bez przypisanej rzeczywistej ceny.
+        """NAJSTARSZA nierozliczona predykcja (bez rzeczywistej ceny), starsza
+        niż `min_age_hours`. Oldest-first, by drenować zaległości — inaczej
+        starsze nierozliczone predykcje nigdy nie wejdą do feature store.
 
         `min_age_hours` > 0 → bierze tylko predykcje starsze niż próg
         (timestamp ≤ now − min_age_hours). Chroni przed przedwczesną oceną:

@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from src.application import report_builder
 from src.application.report_builder import (
     ResolvedPrediction,
+    RiskSignal,
     SymbolResult,
     TopNewsItem,
     build_chart_url,
@@ -873,6 +875,135 @@ class TestHtmlEscaping:
 
         assert "javascript:alert" not in html
         assert "<a href" not in html.split("unsafe link")[0][-200:]
+
+    def test_escapes_unknown_risk_signal_type_fallback(self, monkeypatch):
+        """Finding #36: gdy `rs.type` nie ma etykiety w `type_label`, surowa
+        wartość trafia do HTML jako fallback. Dziś typy są hardcodowane, ale
+        jeśli kiedyś staną się danymi pochodzącymi z zewnątrz, fallback bez
+        escapowania jest sinkiem dla wstrzyknięcia HTML. Sąsiedni
+        `rs.description` JEST escapowany — fallback musi być symetryczny."""
+        injected = RiskSignal(
+            symbol="X",
+            type="<b>x</b>",  # nieznany typ z HTML — uderza w fallback
+            severity="high",
+            description="<i>desc</i>",
+        )
+        monkeypatch.setattr(
+            report_builder, "detect_risk_signals", lambda results: [injected]
+        )
+        r = SymbolResult(symbol="X", status="saved", delta=Decimal("0.02"))
+
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+        # Surowy HTML z `type` nie może wyciec — musi być zescapowany.
+        assert "<b>x</b>" not in html
+        assert "&lt;b&gt;x&lt;/b&gt;" in html
+        # Sąsiednie pole pozostaje (już wcześniej) zescapowane.
+        assert "&lt;i&gt;desc&lt;/i&gt;" in html
+
+
+# Payloady używane przez regresje escapowania (finding #35). Każdy niesie
+# surowy znacznik, który MUSI zniknąć z outputu, oraz "marker" — fragment
+# zescapowany identycznie przez stdlib `html.escape` i autoescape Jinja
+# (MarkupSafe). Różnią się one tylko escapowaniem `"` (`&quot;` vs `&#34;`),
+# więc marker celowo zawiera tylko kątowe nawiasy, na które obie się zgadzają.
+_XSS_SCRIPT = "<script>alert(1)</script>"
+_XSS_SCRIPT_MARKER = "&lt;script&gt;alert(1)&lt;/script&gt;"
+_XSS_IMG = '"><img src=x onerror=alert(1)>'
+_XSS_IMG_MARKER = "&lt;img src=x onerror=alert(1)&gt;"
+
+
+def _assert_escaped(html: str, payload: str, marker: str) -> None:
+    """Twierdzi, że surowy payload nie wyciekł do HTML, a pole faktycznie
+    zostało wyrenderowane w zescapowanej formie (a nie po cichu pominięte).
+
+    Niezależne od biblioteki escapującej: f-string używa stdlib
+    `html.escape`, autoescape Jinja — MarkupSafe; różnią się tylko na `"`.
+    `marker` zawiera wyłącznie kątowe nawiasy, więc pasuje do obu."""
+    assert payload not in html, f"Surowy payload wyciekł do HTML: {payload!r}"
+    assert marker in html, (
+        f"Brak zescapowanego markera (czy pole zostało wyrenderowane?): {marker!r}"
+    )
+
+
+class TestHtmlEscapingRegression:
+    """Finding #35 — twardy regression guard na escapowanie niezaufanych pól.
+
+    Większość maila składana jest f-stringami, gdzie KAŻDA niezaufana wartość
+    musi być ręcznie owinięta w `_html(...)`. Jedno zapomniane `_html()` =
+    stored-HTML-injection. Te testy zamrażają obecny (poprawny) stan: dla każdego
+    niezaufanego pola renderowanego do maila wstrzykujemy payload XSS i żądamy,
+    by output był zescapowany. Jeśli ktoś w przyszłości doda nowe pole bez
+    `_html()` (lub zdejmie istniejące), odpowiedni test zczerwienieje."""
+
+    def test_news_title_escaped(self):
+        r = SymbolResult(
+            symbol="X", status="saved", reasoning="r", sentiment_score=0.3,
+            current_price=Decimal("100"), target_price=Decimal("105"),
+            top_news=[TopNewsItem(title=_XSS_SCRIPT, source="Reuters",
+                                  url="https://example.com/1",
+                                  relevance=0.9, sentiment=0.2)],
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        _assert_escaped(html, _XSS_SCRIPT, _XSS_SCRIPT_MARKER)
+
+    def test_news_source_escaped(self):
+        r = SymbolResult(
+            symbol="X", status="saved", reasoning="r", sentiment_score=0.3,
+            current_price=Decimal("100"), target_price=Decimal("105"),
+            top_news=[TopNewsItem(title="ok", source=_XSS_IMG,
+                                  url="https://example.com/1",
+                                  relevance=0.9, sentiment=0.2)],
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        _assert_escaped(html, _XSS_IMG, _XSS_IMG_MARKER)
+
+    def test_llm_reasoning_escaped(self):
+        r = SymbolResult(
+            symbol="X", status="saved", reasoning=_XSS_SCRIPT,
+            sentiment_score=0.3, current_price=Decimal("100"),
+            target_price=Decimal("105"),
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        _assert_escaped(html, _XSS_SCRIPT, _XSS_SCRIPT_MARKER)
+
+    def test_reflection_insight_escaped(self):
+        r = SymbolResult(
+            symbol="X", status="saved", sentiment_score=0.3,
+            reflection_insight=_XSS_IMG,
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        _assert_escaped(html, _XSS_IMG, _XSS_IMG_MARKER)
+
+    def test_error_message_escaped(self):
+        r = SymbolResult(
+            symbol="X", status="error", error_message=_XSS_SCRIPT,
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        _assert_escaped(html, _XSS_SCRIPT, _XSS_SCRIPT_MARKER)
+
+    def test_resolved_prediction_reasoning_and_insight_escaped(self):
+        resolved = [
+            ResolvedPrediction(
+                symbol="X", predicted_trend="BEARISH", is_correct=False,
+                reasoning=_XSS_SCRIPT, insight=_XSS_IMG,
+                price_at_prediction=Decimal("100"), actual_price=Decimal("104"),
+            )
+        ]
+        html, _ = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            resolved_predictions=resolved,
+        )
+        _assert_escaped(html, _XSS_SCRIPT, _XSS_SCRIPT_MARKER)
+        _assert_escaped(html, _XSS_IMG, _XSS_IMG_MARKER)
+
+    def test_unknown_symbol_in_ignored_chip_escaped(self):
+        # Symbol w chipie 'Pominięte' renderowany przez _html(r.symbol).
+        r = SymbolResult(
+            symbol=_XSS_IMG, status="ignored", delta=Decimal("0.001"),
+        )
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        _assert_escaped(html, _XSS_IMG, _XSS_IMG_MARKER)
 
 
 class TestToSymbolResult:

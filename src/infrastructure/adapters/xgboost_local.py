@@ -25,6 +25,21 @@ VALIDATION_FRACTION = 0.2
 MIN_VALIDATION_SAMPLES = 10
 MIN_RMSE_IMPROVEMENT = 1e-9
 
+# Walk-forward (expanding window): liczba foldów i minimalna liczba próbek, poniżej
+# której nie ma sensu robić CV (spadamy do pojedynczego splitu). Każdy fold dokłada
+# kolejny chronologiczny blok do treningu i waliduje na następnym — to lepszy
+# (mniej hałaśliwy) estymator dla niestacjonarnej serii finansowej niż jeden split.
+WALK_FORWARD_FOLDS = 4
+MIN_FOLD_SAMPLES = 50
+
+# Komunikat dołączany do wyniku: raportowane metryki dotyczą KANDYDATA na
+# holdoucie (foldach), a shipowany model jest refitowany na WSZYSTKICH danych
+# i nie jest re-walidowany — więc nie traktuj tych liczb jak jakości produkcyjnej.
+METRIC_NOTE = (
+    "candidate holdout metrics (walk-forward folds); shipped model refit on "
+    "all data and not re-validated"
+)
+
 
 class XGBoostAdapter(MLPredictionPort):
     """Adapter dla lokalnego modelu XGBoost (Local-First AI).
@@ -64,34 +79,37 @@ class XGBoostAdapter(MLPredictionPort):
     def train(self, features: Any, target: Any) -> dict[str, Any]:
         feature_frame = pd.DataFrame(features).reset_index(drop=True)
         target_series = pd.Series(target).reset_index(drop=True)
-        train_x, valid_x, train_y, valid_y = _time_ordered_split(
-            feature_frame, target_series
+
+        # Walk-forward (expanding window) zamiast jednego splitu 20%: bramka
+        # „pobij baseline" opiera się na ŚREDNIEJ z foldów, nie na jednym
+        # hałaśliwym estymatorze z jednego reżimu rynku (finding #23).
+        candidate_rmse, baseline_rmse, directional_hit_rate, n_folds = (
+            self._walk_forward_evaluate(feature_frame, target_series)
         )
+        # Per-feature drift stats (mean/std) — obserwowalne niezależnie od
+        # werdyktu bramki, żeby porównać rozkład cech z poprzednim runem.
+        feature_stats = _feature_distribution_stats(feature_frame)
 
-        candidate = xgb.XGBRegressor(**self._params)
-        candidate.fit(train_x, train_y)
-
-        candidate_preds = candidate.predict(valid_x)
-        validation_rmse = _rmse(valid_y, candidate_preds)
-        # Baseline persystencji: „zwrot = 0" (cena 12h naprzód = cena bieżąca).
-        # Target to zwrot, więc uczciwy baseline to wektor zer — a NIE rozrzut
-        # pojedynczego skalara z train (stary baseline mierzył coś bez sensu).
-        baseline_rmse = _rmse(valid_y, np.zeros(len(valid_y)))
-        directional_hit_rate = _directional_hit_rate(valid_y, candidate_preds)
-        if validation_rmse >= baseline_rmse - MIN_RMSE_IMPROVEMENT:
+        if candidate_rmse >= baseline_rmse - MIN_RMSE_IMPROVEMENT:
             return {
                 "status": "skipped_validation_failed",
                 "reason": (
-                    "Model did not beat the zero-return persistence baseline "
-                    "on the validation holdout."
+                    "Candidate did not beat the zero-return persistence "
+                    "baseline on average across walk-forward folds."
                 ),
                 "n_samples": len(target_series),
-                "validation_rmse": validation_rmse,
+                "n_folds": n_folds,
+                "candidate_holdout_rmse": candidate_rmse,
                 "baseline_rmse": baseline_rmse,
-                "validation_directional_hit_rate": directional_hit_rate,
+                "candidate_holdout_directional_hit_rate": directional_hit_rate,
+                "feature_stats": feature_stats,
+                "metric_note": METRIC_NOTE,
                 "model_path": self._model_path,
             }
 
+        # Shipowany model: refit na WSZYSTKICH danych (train+holdout) — NIE jest
+        # re-walidowany, więc raportowane RMSE/hit-rate to metryki KANDYDATA
+        # (finding #22, patrz METRIC_NOTE).
         model = xgb.XGBRegressor(**self._params)
         model.fit(feature_frame, target_series)
         model_path = Path(self._model_path)
@@ -101,11 +119,49 @@ class XGBoostAdapter(MLPredictionPort):
         return {
             "status": "trained_successfully",
             "n_samples": len(target_series),
-            "validation_rmse": validation_rmse,
+            "n_folds": n_folds,
+            "candidate_holdout_rmse": candidate_rmse,
             "baseline_rmse": baseline_rmse,
-            "validation_directional_hit_rate": directional_hit_rate,
+            "candidate_holdout_directional_hit_rate": directional_hit_rate,
+            "feature_stats": feature_stats,
+            "metric_note": METRIC_NOTE,
             "model_path": self._model_path,
         }
+
+    def _walk_forward_evaluate(
+        self, features: pd.DataFrame, target: pd.Series
+    ) -> tuple[float, float, float, int]:
+        """Ewaluacja walk-forward (expanding window) na danych time-ordered.
+
+        Zwraca (avg_candidate_rmse, avg_baseline_rmse, avg_directional_hit_rate,
+        n_folds) uśrednione po foldach. Poniżej `MIN_FOLD_SAMPLES` spada do
+        pojedynczego splitu (sane fallback), zwracając n_folds=1.
+        """
+        folds = _expanding_window_folds(len(target))
+        candidate_rmses: list[float] = []
+        baseline_rmses: list[float] = []
+        hit_rates: list[float] = []
+        for train_end, valid_end in folds:
+            train_x = features.iloc[:train_end]
+            train_y = target.iloc[:train_end]
+            valid_x = features.iloc[train_end:valid_end]
+            valid_y = target.iloc[train_end:valid_end]
+
+            candidate = xgb.XGBRegressor(**self._params)
+            candidate.fit(train_x, train_y)
+            preds = candidate.predict(valid_x)
+
+            candidate_rmses.append(_rmse(valid_y, preds))
+            # Baseline persystencji: „zwrot = 0" (cena 12h naprzód = cena bieżąca).
+            baseline_rmses.append(_rmse(valid_y, np.zeros(len(valid_y))))
+            hit_rates.append(_directional_hit_rate(valid_y, preds))
+
+        return (
+            float(np.mean(candidate_rmses)),
+            float(np.mean(baseline_rmses)),
+            float(np.mean(hit_rates)),
+            len(folds),
+        )
 
     def predict(
         self, current_features: dict[str, float], current_price: Decimal
@@ -143,21 +199,57 @@ class XGBoostAdapter(MLPredictionPort):
         return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
 
 
-def _time_ordered_split(
-    features: pd.DataFrame,
-    target: pd.Series,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
-    validation_size = max(MIN_VALIDATION_SAMPLES, int(len(target) * VALIDATION_FRACTION))
-    if validation_size >= len(target):
-        raise ValueError("Not enough samples to create validation holdout.")
+def _expanding_window_folds(n_samples: int) -> list[tuple[int, int]]:
+    """Zwraca granice (train_end, valid_end) dla foldów expanding-window.
 
-    train_end = len(target) - validation_size
-    return (
-        features.iloc[:train_end],
-        features.iloc[train_end:],
-        target.iloc[:train_end],
-        target.iloc[train_end:],
-    )
+    Dane są time-ordered: każdy fold trenuje na [0, train_end) i waliduje na
+    [train_end, valid_end). Kolejne foldy rozszerzają okno treningowe (expanding)
+    — replikuje to produkcyjny scenariusz „trenuj na przeszłości, predykuj
+    przyszłość". Poniżej `MIN_FOLD_SAMPLES` zwracamy jeden split (sane fallback),
+    żeby nie ciąć i tak małej próbki na bezsensownie cienkie foldy.
+    """
+    single_split = _single_split_bounds(n_samples)
+    if n_samples < MIN_FOLD_SAMPLES:
+        return [single_split]
+
+    # Walidacyjny blok per fold; reszta na początku idzie do pierwszego treningu.
+    block = n_samples // (WALK_FORWARD_FOLDS + 1)
+    if block < 1:
+        return [single_split]
+
+    folds: list[tuple[int, int]] = []
+    for fold_idx in range(1, WALK_FORWARD_FOLDS + 1):
+        train_end = block * fold_idx
+        valid_end = train_end + block if fold_idx < WALK_FORWARD_FOLDS else n_samples
+        if valid_end > train_end and train_end >= 1:
+            folds.append((train_end, valid_end))
+    return folds or [single_split]
+
+
+def _single_split_bounds(n_samples: int) -> tuple[int, int]:
+    """Granice pojedynczego chronologicznego splitu 20% (fallback / mała próbka)."""
+    validation_size = max(MIN_VALIDATION_SAMPLES, int(n_samples * VALIDATION_FRACTION))
+    if validation_size >= n_samples:
+        raise ValueError("Not enough samples to create validation holdout.")
+    train_end = n_samples - validation_size
+    return (train_end, n_samples)
+
+
+def _feature_distribution_stats(
+    features: pd.DataFrame,
+) -> dict[str, dict[str, float]]:
+    """Per-feature mean/std — prosty drift-detector rozkładu cech wejściowych.
+
+    Porównanie tych statystyk między runami pozwala wykryć dryf danych (zmianę
+    rozkładu cech), który może cicho degradować model mimo „zielonej" bramki."""
+    stats: dict[str, dict[str, float]] = {}
+    for column in features.columns:
+        series = pd.to_numeric(features[column], errors="coerce")
+        stats[str(column)] = {
+            "mean": float(series.mean()),
+            "std": float(series.std(ddof=0)),
+        }
+    return stats
 
 
 def _rmse(actual: pd.Series, predicted: Any) -> float:
@@ -170,7 +262,7 @@ def _directional_hit_rate(actual: pd.Series, predicted: Any) -> float:
     """Frakcja trafień KIERUNKU zwrotu (znak przewidzianego = znak rzeczywistego).
 
     Uzupełnia RMSE: model może mieć niskie RMSE, a wciąż mylić kierunek ruchu.
-    Liczony na tym samym holdoucie walidacyjnym co `validation_rmse`."""
+    Liczony na tym samym holdoucie foldu co `candidate_holdout_rmse`."""
     actual_arr = np.asarray(actual, dtype=float)
     predicted_arr = np.asarray(predicted, dtype=float)
     if actual_arr.size == 0:

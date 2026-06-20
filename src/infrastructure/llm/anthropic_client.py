@@ -14,9 +14,17 @@ from src.application.ports import LLMPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
-# Modele Claude 4.x (stan na maj 2026).
-DEFAULT_MODEL = "claude-sonnet-4-6"   # dobre konto kosztów/jakości
-DEFAULT_MAX_TOKENS = 4096
+# Centralny model id (rodzina Claude 4.x). Świadomie BEZ daty w komentarzu —
+# data dryfuje (zostaje "maj 2026" długo po fakcie) i sugeruje fałszywą
+# aktualność. Zmianę modelu robi się tu albo przez COUNCIL_LLM_MODEL w configu;
+# `validate_model_id` poniżej łapie pusty/typo'd override natychmiast.
+DEFAULT_MODEL = "claude-sonnet-4-6"  # dobry kompromis kosztów/jakości
+# Wszystkie publiczne id modeli Anthropic zaczynają się od "claude-".
+_ANTHROPIC_MODEL_PREFIX = "claude-"
+# #31 — Strukturalne schematy JSON (predykcja, council) potrzebują kilkuset
+# tokenów wyjścia, nie 4096. Ciasny cap tnie koszt per-investor council call;
+# nadpisywalny przez konstruktor (max_tokens=) dla wolnych generacji.
+DEFAULT_MAX_TOKENS = 768
 DEFAULT_TEMPERATURE = 0.2
 # GHA fast loop ma 15 min hard timeout; SDK domyślnie czeka 600s.
 DEFAULT_TIMEOUT = 30.0
@@ -35,6 +43,29 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+
+
+def validate_model_id(model: str) -> None:
+    """Lekka walidacja id modelu — bez sieciowego calla na starcie.
+
+    #30 — Stary/wycofany id failuje dopiero przy 1. API callu (non-retried 4xx),
+    per symbol, co cykl — cichy total outage wykrywany dopiero przez exit code
+    "wszystkie symbole padły". Tutaj łapiemy OCZYWISTĄ pomyłkę config (pusty
+    string, zły provider prefix) natychmiast, z czytelnym komunikatem. Nie
+    weryfikujemy istnienia konkretnego id w API — to wymagałoby calla i i tak
+    by się starzało.
+    """
+    if not model or not model.strip():
+        raise ValueError(
+            "Anthropic model id is empty — set a valid 'claude-*' id "
+            "(e.g. via COUNCIL_LLM_MODEL or the model= argument)."
+        )
+    if not model.startswith(_ANTHROPIC_MODEL_PREFIX):
+        raise ValueError(
+            f"Anthropic model id {model!r} is malformed — expected an id "
+            f"starting with {_ANTHROPIC_MODEL_PREFIX!r} "
+            f"(e.g. 'claude-sonnet-4-6')."
+        )
 
 
 class AnthropicAdapter(LLMPort):
@@ -68,6 +99,8 @@ class AnthropicAdapter(LLMPort):
         backoff_base: float = DEFAULT_BACKOFF_BASE,
         quota_monitor: QuotaMonitor | None = None,
     ) -> None:
+        # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
+        validate_model_id(model)
         self._client = Anthropic(api_key=api_key, timeout=timeout)
         self._model = model
         self._max_tokens = max_tokens

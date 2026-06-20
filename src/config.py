@@ -159,8 +159,11 @@ class Settings(BaseSettings):
     # przed przedwczesną oceną przy nakładających się cyklach (ręczny
     # workflow_dispatch tuż po scheduled run oceniłby świeżą predykcję po
     # cenie sprzed minut → zatruty accuracy_score i zawyżony hit-rate).
-    # 0 = bez filtra (zachowanie wsteczne). Produkcja: ~6h (kadencja dzienna).
-    reflection_min_age_hours: int = Field(default=0)
+    # Default = 6h: bezpieczna bramka zgodna z produkcyjną kadencją dzienną
+    # (config.toml też ustawia 6). Deployment na samych defaultach kodu — albo
+    # konstrukcja Settings() bez TOML — dostaje działającą bramkę, nie footgun.
+    # Ustaw 0, by świadomie wyłączyć filtr (np. backtest / zachowanie wsteczne).
+    reflection_min_age_hours: int = Field(default=6)
 
     # ----- ML -----
     ml_model_path: str = "data/models/price_predictor.ubj"

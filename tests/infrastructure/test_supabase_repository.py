@@ -309,6 +309,26 @@ class TestGetUnverifiedPrediction:
         is_call = mock_client.table.return_value.select.return_value.eq.return_value.is_
         is_call.assert_called_with("actual_price_after_12h", "null")
 
+    def test_orders_oldest_first_to_drain_backlog(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """#19: self-reflection musi opróżniać backlog — bierzemy NAJSTARSZĄ
+        nierozliczoną predykcję (timestamp ASC), nie najnowszą. Przy DESC
+        starsze nierozliczone predykcje nigdy nie stałyby się znów "najnowsze"
+        i utknęłyby na zawsze (brak actual_price_after_12h → nie wchodzą do
+        ml_feature_store, nie liczą się do hit-rate)."""
+        _set_chain_response(
+            mock_client, ["table", "select", "eq", "is_", "order", "limit"], []
+        )
+
+        repo.get_unverified_prediction("AAPL")
+
+        order_call = (
+            mock_client.table.return_value.select.return_value.eq.return_value
+            .is_.return_value.order
+        )
+        order_call.assert_called_with("timestamp", desc=False)
+
     def test_min_age_hours_adds_timestamp_upper_bound(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:

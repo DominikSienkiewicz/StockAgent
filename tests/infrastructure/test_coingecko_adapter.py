@@ -165,3 +165,77 @@ class TestExtensibility:
 class TestAdapterImplementsPort:
     def test_is_market_data_port(self) -> None:
         assert issubclass(CoinGeckoAdapter, MarketDataPort)
+
+
+def _rate_limited_response(retry_after: str | None = None) -> Mock:
+    """CoinGecko free tier zwraca 429 przy przekroczeniu ~5-15 req/min."""
+    response = Mock(spec=requests.Response)
+    response.status_code = 429
+    response.headers = {"Retry-After": retry_after} if retry_after else {}
+    response.raise_for_status.side_effect = requests.HTTPError("429 error")
+    return response
+
+
+class TestQuotaAlertEmit:
+    """429 z CoinGecko → QuotaAlert do monitora (mirror FinnhubAdapter)."""
+
+    def test_emits_critical_alert_on_429(self, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+
+        monitor = QuotaMonitor()
+        adapter = CoinGeckoAdapter(quota_monitor=monitor)
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_rate_limited_response(),
+        )
+
+        with pytest.raises(requests.HTTPError):
+            adapter.get_current_price("BTC")
+
+        assert len(monitor.alerts) == 1
+        alert = monitor.alerts[0]
+        assert alert.source == "CoinGecko"
+        assert alert.severity is QuotaSeverity.CRITICAL
+        assert alert.message
+        assert alert.action
+
+    def test_retry_after_header_surfaced_in_action(self, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        monitor = QuotaMonitor()
+        adapter = CoinGeckoAdapter(quota_monitor=monitor)
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_rate_limited_response(retry_after="42"),
+        )
+
+        with pytest.raises(requests.HTTPError):
+            adapter.get_current_price("BTC")
+
+        assert "42" in monitor.alerts[0].action
+
+    def test_happy_path_emits_no_alert(self, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        monitor = QuotaMonitor()
+        adapter = CoinGeckoAdapter(quota_monitor=monitor)
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response({"bitcoin": {"usd": 50000}}),
+        )
+
+        adapter.get_current_price("BTC")
+
+        assert monitor.alerts == []
+
+    def test_no_monitor_means_no_crash_on_429(self, mocker) -> None:
+        # Backward-compat: bez monitora 429 dalej raisuje HTTPError, brak emitu.
+        adapter = CoinGeckoAdapter()
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_rate_limited_response(),
+        )
+
+        with pytest.raises(requests.HTTPError):
+            adapter.get_current_price("BTC")

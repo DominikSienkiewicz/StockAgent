@@ -22,10 +22,13 @@ class TestBuildSession:
         assert isinstance(retry, Retry)
         assert retry.total == RETRY_TOTAL
 
-    def test_mounts_retry_adapter_on_http(self):
+    def test_http_scheme_not_mounted_with_custom_retry(self):
+        # https-only: nie montujemy już retry-adaptera na http://. Schemat http
+        # spada na domyślny adapter requests (bez naszego retry total=3) — cała
+        # komunikacja agenta idzie po https.
         session = build_session()
         adapter = session.get_adapter("http://example.com")
-        assert isinstance(adapter.max_retries, Retry)
+        assert adapter.max_retries.total != RETRY_TOTAL
 
     def test_retries_transient_status_codes(self):
         session = build_session()

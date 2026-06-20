@@ -139,6 +139,15 @@ class AlphaVantageClient:
         ]
 
         for idx, batch in enumerate(batches):
+            # Short-circuit: jeśli rotacja w poprzednim batchu wyczerpała
+            # WSZYSTKIE klucze, kolejne batche i tak dostałyby None — nie
+            # re-chodzimy po martwych kluczach i nie śpimy między nimi.
+            if self._active_key_idx >= len(self._api_keys):
+                self._mark_keys_exhausted()
+                break
+
+            # Pacing 1 req/sec dotyczy tylko realnych requestów: śpimy przed
+            # batchem >0 dopiero gdy mamy żywy klucz, do którego pójdzie request.
             if idx > 0:
                 time.sleep(INTER_REQUEST_DELAY_SECONDS)
 
@@ -146,23 +155,7 @@ class AlphaVantageClient:
             if payload is None:
                 # Wszystkie klucze wyczerpane — graceful degradation:
                 # zostawiamy częściowy feed z poprzednich batchów.
-                logger.error(
-                    "All %d Alpha Vantage API keys exhausted — returning partial feed.",
-                    len(self._api_keys),
-                )
-                self._degraded_reason = "av_keys_exhausted"
-                self._emit_quota_alert(
-                    severity=QuotaSeverity.CRITICAL,
-                    message=(
-                        f"All {len(self._api_keys)} Alpha Vantage API keys hit "
-                        "the daily 25 req/day limit. News + sentiment feed is "
-                        "incomplete for this cycle."
-                    ),
-                    action=(
-                        "Add another key in ALPHA_VANTAGE_API_KEYS (free at "
-                        "alphavantage.co), or wait for UTC midnight reset."
-                    ),
-                )
+                self._mark_keys_exhausted()
                 break
 
             for article in payload.get("feed", []):
@@ -175,6 +168,33 @@ class AlphaVantageClient:
 
         self._cached_feed = combined
         return self._cached_feed
+
+    def _mark_keys_exhausted(self) -> None:
+        """Wystawia sygnał degradacji + CRITICAL alert (idempotentnie).
+
+        Wołane zarówno gdy batch zwrócił None (rotacja wyczerpała klucze
+        w trakcie), jak i przy short-circuit kolejnych batchów po wcześniejszym
+        wyczerpaniu. Guard na `_degraded_reason` zapobiega podwójnemu alertowi.
+        """
+        if self._degraded_reason is not None:
+            return
+        logger.error(
+            "All %d Alpha Vantage API keys exhausted — returning partial feed.",
+            len(self._api_keys),
+        )
+        self._degraded_reason = "av_keys_exhausted"
+        self._emit_quota_alert(
+            severity=QuotaSeverity.CRITICAL,
+            message=(
+                f"All {len(self._api_keys)} Alpha Vantage API keys hit "
+                "the daily 25 req/day limit. News + sentiment feed is "
+                "incomplete for this cycle."
+            ),
+            action=(
+                "Add another key in ALPHA_VANTAGE_API_KEYS (free at "
+                "alphavantage.co), or wait for UTC midnight reset."
+            ),
+        )
 
     def _fetch_batch_with_rotation(
         self, tickers: list[str]
@@ -195,8 +215,11 @@ class AlphaVantageClient:
                     str(payload.get("Information", ""))[:160],
                 )
                 self._active_key_idx += 1
-                if self._active_key_idx < len(self._api_keys):
-                    time.sleep(INTER_REQUEST_DELAY_SECONDS)  # respect 1 req/sec
+                # Bez sleepa: do martwego klucza nie poszedł realny request,
+                # więc pacing 1 req/sec go nie dotyczy. Re-chodzenie po
+                # wyczerpanych kluczach z 1.1s przerwą marnowałoby wall-clock
+                # na quota-wyczerpany dzień. Pacing pilnuje tylko realnych
+                # requestów (w `_fetch`, między batchami).
                 continue
 
             return payload

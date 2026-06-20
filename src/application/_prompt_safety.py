@@ -21,6 +21,7 @@ Moduł jest czysty (stdlib only) — należy do warstwy ``application`` i nie ro
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 # Markery fence'a — jawne, mało prawdopodobne do wystąpienia w realnym nagłówku.
 START_UNTRUSTED_FENCE = "<<<UNTRUSTED_NEWS_DATA>>>"
@@ -74,7 +75,7 @@ def _sanitize_item(item: str, max_len: int) -> str:
 
 def fence_untrusted(
     label: str,
-    items: list[str] | str,
+    items: Sequence[str] | str,
     *,
     max_len: int = 300,
 ) -> str:

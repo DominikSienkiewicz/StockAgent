@@ -41,13 +41,28 @@ def _parse_recommendation(raw: Any) -> Literal["BUY", "SELL", "HOLD"]:
     return "HOLD"
 
 
+def _clamp_unit(raw: Any, default: float = 0.5) -> float:
+    """Przycina skalar dostarczony przez LLM do przedziału [0,1].
+
+    Model dryfujący na skalę 0-100 (częsta usterka) zwracałby confidence=85,
+    co bez bramki czyniłoby KAŻDĄ opinię HIGH (progi confidence_label to
+    0.75/0.5) i korumpowało sygnał konwikcji (finding #20). Brak/None/błędny
+    typ → wartość domyślna.
+    """
+    try:
+        value = float(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, value))
+
+
 def _parse_opinion(name: str, raw: dict[str, Any]) -> InvestorOpinion:
     return InvestorOpinion(
         investor_name=name,
         recommendation=_parse_recommendation(raw.get("recommendation")),
-        confidence=float(raw.get("confidence") or 0.5),
+        confidence=_clamp_unit(raw.get("confidence")),
         reasoning=str(raw.get("reasoning") or ""),
-        key_factors=list(raw.get("key_factors") or []),
+        key_factors=tuple(str(f) for f in (raw.get("key_factors") or [])),
     )
 
 
@@ -101,7 +116,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
                 recommendation="HOLD",
                 confidence=0.0,
                 reasoning="Błąd analizy.",
-                key_factors=[],
+                key_factors=(),
             )
 
     def analyze(self, symbol: str, data: CouncilInput) -> CouncilVerdict:
@@ -157,6 +172,6 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
             final_recommendation=final_recommendation,
             consensus_strength=consensus_strength,
             summary=str(raw.get("summary") or ""),
-            dissenting_views=list(raw.get("dissenting_views") or []),
-            investor_opinions=resolved_opinions,
+            dissenting_views=tuple(str(v) for v in (raw.get("dissenting_views") or [])),
+            investor_opinions=tuple(resolved_opinions),
         )

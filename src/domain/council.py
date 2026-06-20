@@ -14,13 +14,19 @@ class CouncilInput:
     current_price: Decimal
     price_delta_pct: Decimal
     sentiment_score: float
-    news_articles: list[str]
+    news_articles: tuple[str, ...]
     llm_trend: str
     llm_confidence: float
     ml_price_target: Decimal
     # Pola opcjonalne — domyślne wartości zapewniają wsteczną kompatybilność
     fundamentals: Fundamentals | None = field(default=None)
     valuation_verdict: ValuationVerdict = field(default=ValuationVerdict.UNKNOWN)
+
+    def __post_init__(self) -> None:
+        # Kolekcja jako tuple — frozen=True blokuje tylko rebinding atrybutu, NIE
+        # mutację listy w miejscu. Koercja gwarantuje realną niezmienność value
+        # objectu (i przyjmuje listę od callera dla wstecznej kompatybilności).
+        object.__setattr__(self, "news_articles", tuple(self.news_articles))
 
 
 # Próg "wyraźnego konsensusu" w radzie. 0.7 = chairman uznał, że co najmniej
@@ -43,7 +49,11 @@ class InvestorOpinion:
     recommendation: Literal["BUY", "SELL", "HOLD"]
     confidence: float
     reasoning: str
-    key_factors: list[str]
+    key_factors: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        # Tuple zamiast listy — realna niezmienność frozen value objectu.
+        object.__setattr__(self, "key_factors", tuple(self.key_factors))
 
     def confidence_label(self) -> Literal["HIGH", "MEDIUM", "LOW"]:
         """Kategoryzacja pewności inwestora — używana w mailu i przy filtracji
@@ -61,8 +71,14 @@ class CouncilVerdict:
     final_recommendation: Literal["BUY", "SELL", "HOLD"]
     consensus_strength: float
     summary: str
-    dissenting_views: list[str]
-    investor_opinions: list[InvestorOpinion]
+    dissenting_views: tuple[str, ...]
+    investor_opinions: tuple[InvestorOpinion, ...]
+
+    def __post_init__(self) -> None:
+        # Tuple zamiast list — frozen=True nie chroni przed mutacją kolekcji
+        # w miejscu; koercja daje realną niezmienność (i przyjmuje listę callera).
+        object.__setattr__(self, "dissenting_views", tuple(self.dissenting_views))
+        object.__setattr__(self, "investor_opinions", tuple(self.investor_opinions))
 
     def has_strong_consensus(
         self, threshold: float = STRONG_CONSENSUS_THRESHOLD

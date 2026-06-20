@@ -619,3 +619,68 @@ class TestQuotaAlertEmit:
         )
 
         client.articles_for("AAPL")  # nie wywala się
+
+
+class TestRateLimitRotationDoesNotSleep:
+    """Rotacja kluczy SPOWODOWANA rate-limitem nie powinna spać: do martwego
+    klucza nie idzie żaden request, więc pacing 1 req/sec go nie dotyczy.
+    Na wyczerpany dzień to oszczędza re-chodzenie po martwych kluczach."""
+
+    def _rate_limit_response(self):
+        return _ok_response({"Information": "rate limit reached"})
+
+    def test_no_sleep_between_dead_keys_on_rotation(self, mocker):
+        sleep_mock = mocker.patch(
+            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
+        )
+        mock_get = mocker.patch("requests.Session.get")
+        # 3 klucze, wszystkie rate-limited dla jednego symbolu (1 batch).
+        mock_get.side_effect = [self._rate_limit_response()] * 3
+
+        client = AlphaVantageClient(
+            api_keys=["k1", "k2", "k3"], symbols=["AAPL"]
+        )
+        client._fetch()
+
+        # Rotacja po martwych kluczach: żaden request nie poszedł do nich
+        # naprawdę → brak sleepów pacingowych.
+        assert sleep_mock.call_count == 0
+
+    def test_short_circuits_when_all_keys_exhausted_across_batches(self, mocker):
+        # Po wyczerpaniu wszystkich kluczy w batchu 1 NIE re-chodzimy po nich
+        # w batchu 2 — short-circuit, zero dodatkowych requestów i sleepów.
+        sleep_mock = mocker.patch(
+            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
+        )
+        mock_get = mocker.patch("requests.Session.get")
+        mock_get.side_effect = [self._rate_limit_response()] * 2
+
+        symbols = [f"SYM{i:02d}" for i in range(15)]  # 2 batche @ batch_size=10
+        client = AlphaVantageClient(
+            api_keys=["k1", "k2"], symbols=symbols, batch_size=10
+        )
+        client._fetch()
+
+        # Batch 1 wyczerpuje oba klucze (2 requesty). Batch 2 nie odpala
+        # ŻADNEGO requestu — klucze już znane jako martwe.
+        assert mock_get.call_count == 2
+        # I żadnego sleepu (rotacja po dead-keyach + brak batcha 2).
+        assert sleep_mock.call_count == 0
+
+    def test_happy_path_pacing_preserved(self, mocker):
+        # Realne requesty dalej rozstawione 1 req/sec: 2 batche → 1 sleep.
+        sleep_mock = mocker.patch(
+            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
+        )
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response(_SAMPLE_PAYLOAD),
+        )
+        symbols = [f"SYM{i:02d}" for i in range(15)]
+        client = AlphaVantageClient(
+            api_keys=["k1", "k2"], symbols=symbols, batch_size=10
+        )
+        client._fetch()
+
+        assert sleep_mock.call_count == 1
+        assert sleep_mock.call_args.args[0] >= 1.0

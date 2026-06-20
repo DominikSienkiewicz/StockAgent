@@ -159,3 +159,68 @@ def test_quota_monitor_is_optional_no_crash_on_quota() -> None:
     with patch.object(adapter._session, "get") as mock_get:
         mock_get.return_value = _mock_response(RATE_LIMITED_JSON)
         assert adapter.get_fundamentals("AAPL") is None
+
+
+class TestKeyRotation:
+    """Rotacja kluczy wyłącznie na wykrytym wyczerpaniu (soft-limit),
+    nie co request — inaczej 2 req/symbol smarują load po wszystkich
+    kluczach i biją w dzienny cap równocześnie, bez rezerwy."""
+
+    def test_non_exhausted_key_reused_across_calls(self) -> None:
+        # 2 klucze, 3 symbole × 2 requesty = 6 wywołań na KEY1 (bez rotacji).
+        adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"])
+        with patch.object(adapter._session, "get") as mock_get:
+            mock_get.side_effect = [
+                _mock_response(OVERVIEW_JSON),
+                _mock_response(EARNINGS_JSON),
+            ] * 3
+            adapter.get_fundamentals("AAPL")
+            adapter.get_fundamentals("MSFT")
+            adapter.get_fundamentals("GOOG")
+
+        keys_used = [c.kwargs["params"]["apikey"] for c in mock_get.call_args_list]
+        assert keys_used == ["KEY1"] * 6  # ani razu nie sięgnięto po KEY2
+
+    def test_rotates_to_next_key_on_exhaustion(self) -> None:
+        # KEY1 wyczerpany na OVERVIEW → rotacja → KEY2 dowozi OVERVIEW+EARNINGS.
+        adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"])
+        with patch.object(adapter._session, "get") as mock_get:
+            mock_get.side_effect = [
+                _mock_response(RATE_LIMITED_JSON),   # KEY1 / OVERVIEW — exhausted
+                _mock_response(OVERVIEW_JSON),       # KEY2 / OVERVIEW — OK
+                _mock_response(EARNINGS_JSON),       # KEY2 / EARNINGS — OK
+            ]
+            result = adapter.get_fundamentals("AAPL")
+
+        assert result is not None
+        keys_used = [c.kwargs["params"]["apikey"] for c in mock_get.call_args_list]
+        assert keys_used == ["KEY1", "KEY2", "KEY2"]
+
+    def test_returns_none_and_alerts_when_all_keys_exhausted(self) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+
+        monitor = QuotaMonitor()
+        adapter = AlphaVantageFundamentalsAdapter(
+            api_keys=["KEY1", "KEY2"], quota_monitor=monitor
+        )
+        with patch.object(adapter._session, "get") as mock_get:
+            mock_get.return_value = _mock_response(RATE_LIMITED_JSON)
+            result = adapter.get_fundamentals("AAPL")
+
+        assert result is None
+        assert len(monitor.alerts) == 1
+        assert monitor.alerts[0].severity is QuotaSeverity.CRITICAL
+
+    def test_does_not_retry_already_exhausted_keys(self) -> None:
+        # Po wyczerpaniu wszystkich kluczy kolejny symbol nie spala
+        # już budżetu na martwych kluczach — short-circuit, zero requestów.
+        adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"])
+        with patch.object(adapter._session, "get") as mock_get:
+            mock_get.return_value = _mock_response(RATE_LIMITED_JSON)
+            adapter.get_fundamentals("AAPL")   # wyczerpuje oba klucze
+            calls_after_first = mock_get.call_count
+            result = adapter.get_fundamentals("MSFT")  # nie powinien wołać API
+
+        assert result is None
+        assert mock_get.call_count == calls_after_first

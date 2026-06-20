@@ -173,6 +173,32 @@ def _validate_float(value: Any, field_name: str, default: float) -> tuple[float,
     return parsed, None
 
 
+# Dozwolone kierunki trendu z LLM → sygnał liczbowy dla cechy ML. Mapowanie
+# jest case-insensitive (normalizacja do upper-case), bo LLM bywa niespójny
+# w wielkości liter ("bullish" vs "BULLISH").
+_TREND_SIGNALS: dict[str, int] = {"BULLISH": 1, "BEARISH": -1, "SIDEWAYS": 0}
+
+
+def _validate_trend_direction(value: Any) -> tuple[int, str | None]:
+    """Waliduje trend_direction z LLM przed mapowaniem na sygnał ML.
+
+    Zwraca `(signal, flag_or_None)`. Genuinely-absent (None / pusty string)
+    może bez flagi default'ować do SIDEWAYS — to nie jest skażony input, tylko
+    brak pola. Wartość OBECNA, ale spoza zbioru {BULLISH, BEARISH, SIDEWAYS}
+    (np. "UP", literówka) → neutralny sygnał 0 + flaga `trend_direction_invalid`
+    (analogicznie do `_validate_float`). Bez tej flagi śmieciowy kierunek
+    udawał prawdziwy SIDEWAYS i model uczył się na cichym zerze.
+    """
+    if value is None:
+        return _TREND_SIGNALS["SIDEWAYS"], None
+    normalized = str(value).strip().upper()
+    if not normalized:
+        return _TREND_SIGNALS["SIDEWAYS"], None
+    if normalized in _TREND_SIGNALS:
+        return _TREND_SIGNALS[normalized], None
+    return _TREND_SIGNALS["SIDEWAYS"], "trend_direction_invalid"
+
+
 def _build_fetch_fundamentals_node(
     port: FundamentalsPort,
 ) -> Callable[[AgentState], dict[str, Any]]:
@@ -462,8 +488,11 @@ def create_agent_graph(
             llm_failed = True
 
         # 2. ML — twarda predykcja liczbowa (multi-feature)
-        llm_trend_signal = {"BULLISH": 1, "BEARISH": -1, "SIDEWAYS": 0}.get(
-            llm_analysis.get("trend_direction", "SIDEWAYS"), 0
+        # #21: trend_direction walidowany jak pola liczbowe — present-but-invalid
+        # (np. "UP") daje neutralny sygnał, ALE zostawia flagę jakości. Genuinely
+        # -absent default'uje do SIDEWAYS bez flagi.
+        llm_trend_signal, trend_flag = _validate_trend_direction(
+            llm_analysis.get("trend_direction")
         )
 
         # Walidacja pól liczbowych — każdy padły input zostawia ślad w
@@ -471,6 +500,8 @@ def create_agent_graph(
         flags: list[str] = []
         if llm_failed:
             flags.append("llm_analysis_failed")
+        if trend_flag is not None:
+            flags.append(trend_flag)
         # Adapter sentymentu (AV) może oznaczyć cały feed jako zdegradowany
         # (np. wszystkie klucze wyczerpane). Wtedy 0.0 we wszystkich polach
         # to nie "spokojny dzień" tylko "brak danych" — flaga to rozróżnia.
@@ -573,11 +604,11 @@ def create_agent_graph(
             current_price=state["current_price"],
             price_delta_pct=state["delta"] * Decimal("100"),
             sentiment_score=_float_or_default(sentiment.get("av_sentiment_score"), 0.0),
-            news_articles=[
+            news_articles=tuple(
                 item.get("title", "")
                 for item in news[:5]
                 if item.get("title")
-            ],
+            ),
             llm_trend=str(llm_analysis.get("trend_direction", "SIDEWAYS")),
             llm_confidence=_float_or_default(llm_analysis.get("confidence_score"), 0.5),
             ml_price_target=state.get("ml_target_price") or state["current_price"],
@@ -670,7 +701,7 @@ def create_agent_graph(
                 repository_port.save_council_votes(
                     prediction_id=prediction_id,
                     symbol=state["symbol"],
-                    votes=verdict.investor_opinions,
+                    votes=list(verdict.investor_opinions),
                 )
             except Exception:
                 logger.exception(

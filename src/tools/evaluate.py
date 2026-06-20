@@ -5,7 +5,10 @@ Mierzy OFFLINE, czy agent faktycznie bije naiwny baseline — zanim zmiana
 API: czyta tylko zamknięte (ocenione) predykcje z Supabase.
 
 Metryki:
-    - hit_rate     — trafność KIERUNKOWA (udział is_trend_correct=True),
+    - hit_rate     — blended trafność (udział is_trend_correct=True po WSZYSTKICH
+                     wierszach; SIDEWAYS liczy się jako trafienie na spokojnych dniach),
+    - directional_hit_rate — trafność liczona TYLKO po BULLISH/BEARISH (bez „cichych"
+                     trafień SIDEWAYS) + osobne pokrycie SIDEWAYS,
     - model_rmse   — RMSE prognozy (predicted_target_price) vs cena rzeczywista,
     - baseline_rmse— RMSE naiwnego "last-value" (cena_w_momencie_predykcji),
     - beats_baseline — czy model_rmse < baseline_rmse (czy w ogóle warto).
@@ -28,10 +31,16 @@ from typing import Any
 @dataclass(frozen=True)
 class EvalReport:
     sample_count: int
-    hit_rate: float | None        # trafność kierunkowa (0.0-1.0)
+    hit_rate: float | None        # blended trafność (BULLISH/BEARISH/SIDEWAYS)
     model_rmse: float | None      # RMSE prognozy vs rzeczywistość
     baseline_rmse: float | None   # RMSE naiwnego "brak zmiany"
     beats_baseline: bool          # czy model bije baseline
+    # Finding #24: blended hit_rate zalicza SIDEWAYS jako trafienie zawsze, gdy
+    # ruch < ±0.5% — banking trafień na spokojnych dniach myli „trafiłem kierunek"
+    # z „nic się nie ruszyło". Rozdzielamy directional-only od pokrycia SIDEWAYS.
+    directional_hit_rate: float | None  # trafność tylko BULLISH/BEARISH
+    directional_count: int              # liczba kierunkowych z flagą
+    sideways_count: int                 # liczba SIDEWAYS z flagą
 
 
 def _to_float(value: Any) -> float | None:
@@ -65,6 +74,28 @@ def summarize_evaluation(rows: list[dict[str, Any]]) -> EvalReport:
     ]
     hit_rate = (sum(flags) / len(flags)) if flags else None
 
+    # Directional-only hit-rate: tylko predykcje BULLISH/BEARISH. SIDEWAYS jest
+    # raportowane jako osobne pokrycie (count), bo trafienie SIDEWAYS to często
+    # „dzień bez ruchu", a nie realna trafność kierunku.
+    directional_flags = [
+        bool(r["is_trend_correct"])
+        for r in rows
+        if r.get("is_trend_correct") is not None
+        and str(r.get("predicted_trend")).upper() in ("BULLISH", "BEARISH")
+    ]
+    directional_hit_rate = (
+        (sum(directional_flags) / len(directional_flags))
+        if directional_flags
+        else None
+    )
+    directional_count = len(directional_flags)
+    sideways_count = sum(
+        1
+        for r in rows
+        if r.get("is_trend_correct") is not None
+        and str(r.get("predicted_trend")).upper() == "SIDEWAYS"
+    )
+
     model_errors: list[float] = []
     baseline_errors: list[float] = []
     for r in rows:
@@ -91,6 +122,9 @@ def summarize_evaluation(rows: list[dict[str, Any]]) -> EvalReport:
         model_rmse=model_rmse,
         baseline_rmse=baseline_rmse,
         beats_baseline=beats_baseline,
+        directional_hit_rate=directional_hit_rate,
+        directional_count=directional_count,
+        sideways_count=sideways_count,
     )
 
 
@@ -104,11 +138,16 @@ def format_report(report: EvalReport, days: int) -> str:
         return f"{v:.4f}" if v is not None else "—"
 
     verdict = "✅ bije baseline" if report.beats_baseline else "⚠️ NIE bije baseline"
+    directional = (
+        f"{_pct(report.directional_hit_rate)} "
+        f"(n={report.directional_count}, SIDEWAYS={report.sideways_count})"
+    )
     lines = [
         f"StockAgent — ewaluacja predykcji (ostatnie {days} dni)",
         "=" * 56,
         f"  Próbek (zamkniętych predykcji): {report.sample_count}",
-        f"  Trafność kierunkowa (hit-rate): {_pct(report.hit_rate)}",
+        f"  Hit-rate (blended):             {_pct(report.hit_rate)}",
+        f"  Hit-rate (kierunkowy):          {directional}",
         f"  RMSE modelu:                    {_num(report.model_rmse)}",
         f"  RMSE baseline (last-value):     {_num(report.baseline_rmse)}",
         f"  Werdykt:                        {verdict}",

@@ -22,6 +22,12 @@ DEFAULT_PERSONAS_DIR = Path("data/council_personas")
 # persona. Powyżej 20 znaków = sensowne zdanie po polsku/angielsku.
 _MIN_STYLE_LENGTH = 20
 
+# Górne granice długości. `name` i `style` wpadają wprost do promptu LLM rady
+# (finding #37) — operator-controlled, więc ryzyko ograniczone, ale oversized
+# plik to wektor kosztu/prompt-injection. Fail-fast przy ładowaniu.
+_MAX_NAME_LENGTH = 120
+_MAX_STYLE_LENGTH = 2000
+
 
 class PersonaSchemaError(ValueError):
     """Plik persony nie spełnia kontraktu: brak pól, zła struktura, duplikat."""
@@ -78,13 +84,29 @@ def _load_persona_file(path: Path) -> InvestorPersona:
         raise PersonaSchemaError(
             f"{path.name}: missing or empty 'name' field"
         )
+    name = name.strip()
+    if len(name) > _MAX_NAME_LENGTH:
+        raise PersonaSchemaError(
+            f"{path.name}: 'name' too long (>{_MAX_NAME_LENGTH} chars)"
+        )
+    # Znaki kontrolne / nowe linie w name = wektor prompt-injection (name
+    # wpada do promptu LLM). Dopuszczamy tylko drukowalne znaki w jednej linii.
+    if any(ch == "\n" or ch == "\r" or ord(ch) < 0x20 for ch in name):
+        raise PersonaSchemaError(
+            f"{path.name}: 'name' contains control characters or newlines"
+        )
     if not isinstance(style, str):
         raise PersonaSchemaError(
             f"{path.name}: missing 'style' field"
         )
-    if len(style.strip()) < _MIN_STYLE_LENGTH:
+    style = style.strip()
+    if len(style) < _MIN_STYLE_LENGTH:
         raise PersonaSchemaError(
             f"{path.name}: 'style' too short (<{_MIN_STYLE_LENGTH} chars)"
         )
+    if len(style) > _MAX_STYLE_LENGTH:
+        raise PersonaSchemaError(
+            f"{path.name}: 'style' too long (>{_MAX_STYLE_LENGTH} chars)"
+        )
 
-    return InvestorPersona(name=name.strip(), style=style.strip())
+    return InvestorPersona(name=name, style=style)

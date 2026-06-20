@@ -87,32 +87,48 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
         if not api_keys:
             raise ValueError("api_keys must contain at least one key")
         self._api_keys = api_keys
+        # Indeks aktywnego klucza — przesuwany WYŁĄCZNIE przy wykrytym
+        # soft-limicie (jak rotacja w news clientcie), nie co request.
+        # Przy 2 req/symbol (OVERVIEW+EARNINGS) rotacja per-request smaruje
+        # load po wszystkich kluczach i bije w dzienny cap równocześnie —
+        # zostajemy więc na jednym kluczu aż padnie, reszta jest rezerwą.
         self._key_index = 0
         self._session = build_session()
         self._quota_monitor = quota_monitor
 
-    def _next_key(self) -> str:
-        key = self._api_keys[self._key_index % len(self._api_keys)]
-        self._key_index += 1
-        return key
+    def _current_key(self) -> str:
+        return self._api_keys[self._key_index]
 
     def _get(self, function: str, symbol: str) -> dict[str, Any]:
-        params = {
-            "function": function,
-            "symbol": symbol,
-            "apikey": self._next_key(),
-        }
-        response = self._session.get(_BASE_URL, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        if not isinstance(data, dict):
-            return {}
-        # Soft-limit (200 + `Information`/`Note`, brak danych) musi być
-        # rozróżniony od zwykłej pustki — inaczej dane giną po cichu.
-        if _is_rate_limited(data):
-            note = data.get("Information") or data.get("Note") or ""
-            raise _AlphaVantageQuotaExhausted(str(note))
-        return data
+        """Woła AV aktualnym kluczem; przy soft-limicie rotuje na kolejny
+        i ponawia. Gdy WSZYSTKIE klucze wyczerpane — `_AlphaVantageQuotaExhausted`."""
+        while self._key_index < len(self._api_keys):
+            params = {
+                "function": function,
+                "symbol": symbol,
+                "apikey": self._current_key(),
+            }
+            response = self._session.get(_BASE_URL, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict):
+                return {}
+            # Soft-limit (200 + `Information`/`Note`, brak danych) musi być
+            # rozróżniony od zwykłej pustki — inaczej dane giną po cichu.
+            if _is_rate_limited(data):
+                note = data.get("Information") or data.get("Note") or ""
+                logger.warning(
+                    "Alpha Vantage fundamentals key #%d exhausted — rotating.",
+                    self._key_index + 1,
+                )
+                self._key_index += 1
+                if self._key_index >= len(self._api_keys):
+                    raise _AlphaVantageQuotaExhausted(str(note))
+                continue
+            return data
+        # Klucze wyczerpane jeszcze przed tym wywołaniem (short-circuit) —
+        # nie spalamy requestu na martwym kluczu.
+        raise _AlphaVantageQuotaExhausted("all keys exhausted")
 
     def _emit_quota_alert(self, message: str, action: str) -> None:
         """Wystawia CRITICAL alert do QuotaMonitor, jeśli ten jest skonfigurowany."""

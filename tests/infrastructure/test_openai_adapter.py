@@ -323,6 +323,110 @@ class TestQuotaAlertEmit:
         assert monitor.alerts == []
 
 
+class TestModelIdValidation:
+    """#30 — Hardcoded model id bez guardu = cichy total outage. Walidacja w
+    __init__ łapie pusty/typo'd id natychmiast, z czytelnym komunikatem."""
+
+    def test_empty_model_id_raises_at_construction(self, mock_openai_class):
+        with pytest.raises(ValueError, match="model"):
+            OpenAIAdapter(api_key="sk-test", model="")
+
+    def test_whitespace_model_id_raises_at_construction(self, mock_openai_class):
+        with pytest.raises(ValueError, match="model"):
+            OpenAIAdapter(api_key="sk-test", model="   ")
+
+    def test_wrong_prefix_model_id_raises_at_construction(self, mock_openai_class):
+        # id bez prefiksu "gpt-"/"o" jest oczywiście błędny dla OpenAI.
+        with pytest.raises(ValueError, match="gpt-"):
+            OpenAIAdapter(api_key="sk-test", model="claude-sonnet-4-6")
+
+    def test_valid_gpt_model_constructs_fine(self, mock_openai_class):
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-4o-mini")
+        assert adapter is not None
+
+    def test_valid_o_series_model_constructs_fine(self, mock_openai_class):
+        # Reasoning models (o-series) nie mają prefiksu "gpt-" — muszą przejść.
+        adapter = OpenAIAdapter(api_key="sk-test", model="o3-mini")
+        assert adapter is not None
+
+    def test_default_model_id_constructs_fine(self, mock_openai_class):
+        adapter = OpenAIAdapter(api_key="sk-test")
+        assert adapter is not None
+
+
+class TestMaxTokensCap:
+    """#31 — Bez `max_tokens`/`max_completion_tokens` output OpenAI jest
+    ograniczony tylko defaultem modelu. Schematy JSON potrzebują kilkuset
+    tokenów — ustawiamy ciasny, nadpisywalny cap. Reasoning models (gpt-5,
+    o-series) używają `max_completion_tokens`, reszta `max_tokens`."""
+
+    def _token_cap(self, kwargs: dict) -> int:
+        # Akceptujemy obie nazwy parametru zależnie od rodziny modelu.
+        if "max_completion_tokens" in kwargs:
+            return kwargs["max_completion_tokens"]
+        return kwargs["max_tokens"]
+
+    def test_gpt4o_sets_max_tokens(self, mock_openai_class):
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.return_value = _completion("{}")
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-4o")
+
+        adapter.analyze("Predict.")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "max_tokens" in kwargs
+        assert kwargs["max_tokens"] <= 1024
+
+    def test_gpt5_uses_max_completion_tokens(self, mock_openai_class):
+        # Reasoning model — param name to `max_completion_tokens`, nie `max_tokens`.
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.return_value = _completion("{}")
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-5-mini")
+
+        adapter.analyze("Predict.")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "max_completion_tokens" in kwargs
+        assert "max_tokens" not in kwargs
+        assert kwargs["max_completion_tokens"] <= 1024
+
+    def test_o_series_uses_max_completion_tokens(self, mock_openai_class):
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.return_value = _completion("{}")
+        adapter = OpenAIAdapter(api_key="sk-test", model="o3-mini")
+
+        adapter.analyze("Predict.")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "max_completion_tokens" in kwargs
+        assert "max_tokens" not in kwargs
+
+    def test_max_tokens_overridable_via_constructor(self, mock_openai_class):
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.return_value = _completion("{}")
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-4o", max_tokens=2048)
+
+        adapter.analyze("Predict.")
+
+        assert client.chat.completions.create.call_args.kwargs["max_tokens"] == 2048
+
+    def test_analyze_mistake_also_capped(self, mock_openai_class):
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.return_value = _completion("insight")
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-4o")
+
+        adapter.analyze_mistake("Diagnose.")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        cap = self._token_cap(kwargs)
+        assert 0 < cap <= 4096
+
+
 class TestTemperatureCompatibility:
     """GPT-5 / o-series akceptują tylko domyślną temperature (=1). Adapter NIE
     może wysyłać `temperature` dla takich modeli — inaczej 400 BadRequest

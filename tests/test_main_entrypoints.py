@@ -229,6 +229,42 @@ class TestMainAgent:
         ]
         assert sleep_with_zero == []
 
+    def test_done_log_denominator_counts_eligible_not_settings_symbols(
+        self, settings, mock_external_clients, mocker, caplog
+    ):
+        """#34: log 'Fast Loop done — failures=d/d' MUSI dzielić przez liczbę
+        FAKTYCZNIE przetworzonych symboli (eligible = symbols + crypto −
+        unsupported), nie przez len(settings.symbols). Inaczej przy obecności
+        krypto / unsupported mianownik jest zły (failures mogą nawet przekroczyć
+        mianownik), co rozjeżdża się z logiką exit-code używającą len(eligible)."""
+        import logging
+
+        # symbols=2 (AAPL, VOO), crypto=1 (BTC), unsupported=1 (VOO) →
+        # eligible = [AAPL, BTC] (2). len(settings.symbols)=2 też jest 2, więc
+        # dobieramy liczby tak, by oba mianowniki RÓŻNIŁY się: bez unsupported,
+        # z krypto → eligible=3, ale settings.symbols=2.
+        s = settings.model_copy(update={
+            "symbols": ["AAPL", "VOO"],
+            "crypto_symbols": ["BTC"],
+            "symbols_unsupported_price": [],
+        })
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+
+        with caplog.at_level(logging.INFO, logger="main_agent"):
+            main_agent.main(s)
+
+        done_logs = [
+            rec.message for rec in caplog.records
+            if "Fast Loop done" in rec.message
+        ]
+        assert done_logs, "spodziewany log 'Fast Loop done'"
+        # eligible = AAPL + VOO + BTC = 3 (nic nie unsupported), a
+        # len(settings.symbols) = 2 → mianownik MUSI być 3.
+        assert "failures=0/3" in done_logs[0], done_logs[0]
+        assert "/2" not in done_logs[0], done_logs[0]
+
     def test_main_skips_unsupported_symbols_as_ignored(
         self, settings, mock_external_clients, mocker
     ):

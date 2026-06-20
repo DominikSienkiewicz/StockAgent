@@ -11,6 +11,7 @@ from src.domain.council import CouncilInput, CouncilVerdict, InvestorPersona
 from src.infrastructure.adapters.advisory_council import (
     COUNCIL_MAX_PERSONAS,
     LLMAdvisoryCouncil,
+    _parse_opinion,
 )
 
 ALL_INVESTORS = [
@@ -226,7 +227,37 @@ class TestConsensusDerivedFromVotes:
         result = council.analyze("AAPL", _make_input())
 
         assert result.summary == "Większość radzi kupować."
-        assert result.dissenting_views == ["Soros: zbyt ryzykowne"]
+        # dissenting_views to teraz tuple (frozen value object — finding #32).
+        assert result.dissenting_views == ("Soros: zbyt ryzykowne",)
+
+
+class TestConfidenceClamp:
+    """Finding #20: confidence dostarczane przez LLM musi być przycięte do
+    [0,1] na granicy parsowania. Model dryfujący na skalę 0-100 nie może
+    podbijać każdej opinii do HIGH (progi confidence_label to 0.75/0.5)."""
+
+    def test_confidence_above_one_clamped_to_one(self) -> None:
+        # Dryf na skalę 0-100: confidence=85 → musi spaść do 1.0, nie zostać 85.
+        opinion = _parse_opinion("Inv", {"recommendation": "BUY", "confidence": 85})
+        assert opinion.confidence == 1.0
+
+    def test_confidence_below_zero_clamped_to_zero(self) -> None:
+        opinion = _parse_opinion("Inv", {"recommendation": "BUY", "confidence": -3})
+        assert opinion.confidence == 0.0
+
+    def test_confidence_in_range_passes_through(self) -> None:
+        opinion = _parse_opinion("Inv", {"recommendation": "BUY", "confidence": 0.7})
+        assert opinion.confidence == 0.7
+
+    def test_confidence_missing_defaults_to_half(self) -> None:
+        opinion = _parse_opinion("Inv", {"recommendation": "BUY"})
+        assert opinion.confidence == 0.5
+
+    def test_high_confidence_label_not_triggered_by_drift(self) -> None:
+        # Regresja na sedno findingu: 85 sklamowane do 1.0 → label HIGH legalnie,
+        # ale wartość liczbowa nie korumpuje już dalszych obliczeń (np. ważenia).
+        opinion = _parse_opinion("Inv", {"recommendation": "BUY", "confidence": 85})
+        assert 0.0 <= opinion.confidence <= 1.0
 
 
 class TestPersonaCap:

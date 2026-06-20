@@ -18,7 +18,26 @@ EPS_GROWTH_LOW = 0.10
 
 @dataclass(frozen=True)
 class PriceDelta:
-    percentage: Decimal
+    # `fraction` trzyma UŁAMEK zmiany ceny (np. 0.02 dla +2%), NIE procent.
+    # Dawna nazwa `percentage` była myląca i groziła 100x błędem (finding #33).
+    fraction: Decimal
+
+    @property
+    def percent(self) -> Decimal:
+        """Zmiana wyrażona w procentach (fraction * 100). Wygodny przelicznik
+        dla warstwy prezentacji — nie używać do bramki volatility, która
+        operuje na ułamku."""
+        return self.fraction * 100
+
+    @property
+    def percentage(self) -> Decimal:
+        """DEPRECATED alias na `fraction` (zwraca UŁAMEK, nie procent).
+
+        Zachowany wyłącznie dla zewnętrznych czytelników poza tym pakietem
+        (np. `application/agent_graph.py` czyta `delta.percentage` jako ułamek).
+        Nowy kod powinien używać `fraction` (ułamek) lub `percent` (procent).
+        """
+        return self.fraction
 
     @staticmethod
     def calculate(previous: Money, current: Money) -> "PriceDelta":
@@ -34,7 +53,9 @@ class Asset:
     asset_type: AssetType = field(default=AssetType.STOCK)
 
     def evaluate_volatility(self, delta: PriceDelta, threshold: Threshold) -> bool:
-        return abs(delta.percentage) >= threshold.value
+        # Bramka operuje na UŁAMKU (fraction), nie procencie — próg też jest
+        # ułamkiem (np. 0.02 = 2%).
+        return abs(delta.fraction) >= threshold.value
 
     def evaluate_valuation(
         self, fundamentals: Fundamentals | None

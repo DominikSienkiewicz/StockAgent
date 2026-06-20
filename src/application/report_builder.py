@@ -71,7 +71,7 @@ from src.application.report_suggestions import (
     render_suggestions_html,
     render_suggestions_text,
 )
-from src.application.report_templates import render_template
+from src.application.report_templates import _env, render_template
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.council import CouncilVerdict
 from src.domain.quota import QuotaAlert
@@ -237,15 +237,6 @@ def _html(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-def _safe_href(url: str | None) -> str | None:
-    if not url:
-        return None
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in _SAFE_URL_SCHEMES or not parsed.netloc:
-        return None
-    return _html(url)
-
-
 def _is_crypto(r: SymbolResult) -> bool:
     return r.asset_class == "CRYPTO"
 
@@ -408,6 +399,89 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
             "dissenting_views": verdict.dissenting_views,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# ⚠️  BEZPIECZEŃSTWO — escapowanie niezaufanych pól w treści maila
+# ---------------------------------------------------------------------------
+# Większość HTML-a maila składana jest f-stringami (funkcje `_render_html`,
+# `_render_crypto_section_html`, `_render_resolved_item_html` itd.). W tym trybie
+# escapowanie NIE jest domyślne: KAŻDA wartość pochodząca z danych zewnętrznych
+# (tytuły/źródła newsów z Alpha Vantage, `reasoning`/`insight` z LLM-a,
+# `reflection_insight`, `error_message`, dowolny symbol/tekst spoza whitelisty)
+# MUSI być ręcznie owinięta w `_html(...)` przed wstawieniem do f-stringa.
+# Jedno zapomniane `_html()` = stored-HTML-injection sink.
+#
+# Regresje pilnujące tej reguły: `TestHtmlEscaping` oraz
+# `TestHtmlEscapingRegression` w tests/application/test_report_builder.py —
+# wstrzykują payload XSS w każde niezaufane pole i żądają zescapowanego outputu.
+# Dodając nowe pole z danych zewnętrznych: owiń je w `_html()` ORAZ dopisz tam
+# test regresyjny.
+#
+# Docelowo te sekcje migrują na autoescapowany Jinja env (jak council/valuation
+# w templates/), gdzie escapowanie jest domyślne, nie opt-in. Pierwszą sekcją
+# przeniesioną na ten model jest blok "Top newsy" (`_render_news_block_html`
+# poniżej, renderowany przez `_env.from_string` z włączonym autoescape).
+# Pozostałe sekcje wciąż używają ręcznego `_html()` — patrz końcowy raport.
+# ---------------------------------------------------------------------------
+
+# Inline Jinja template bloku "Top newsy" — renderowany przez WSPÓLNY,
+# autoescapowany `_env` (select_autoescape(default_for_string=True)).
+# Escapowanie `title`/`source` jest tu DOMYŚLNE; `href` to zwalidowany surowy
+# URL (sam autoescape zadba o atrybut, bez podwójnego escapowania).
+_NEWS_BLOCK_TEMPLATE = _env.from_string(
+    "{%- if items -%}"
+    "<div style='font-size: 11px; color: #4b5563; margin-top: 8px;'>"
+    "📰 <strong>Top newsy:</strong>"
+    "<ul style='margin: 4px 0 0 20px; padding: 0;'>"
+    "{%- for n in items -%}"
+    "<li style='margin: 2px 0;'>"
+    "<strong>[{{ n.source_label }}]</strong> "
+    "{% if n.href %}"
+    "<a href='{{ n.href }}' target='_blank' "
+    "style='color: #2563eb; text-decoration: none;'>{{ n.title }}</a>"
+    "{% else %}{{ n.title }}{% endif %}"
+    " <span style='color: #6b7280;'>"
+    "(relevance {{ n.relevance_fmt }}, sentyment {{ n.sentiment_fmt }})"
+    "</span></li>"
+    "{%- endfor -%}"
+    "</ul></div>"
+    "{%- endif -%}"
+)
+
+
+def _safe_news_url(url: str | None) -> str | None:
+    """Zwraca ZWALIDOWANY surowy URL (http/https + netloc) albo None.
+
+    Waliduje schemat (tylko http/https) i obecność hosta — odrzuca m.in.
+    `javascript:`. NIE escapuje: autoescape Jinja zrobi to sam w atrybucie
+    `href`, więc unikamy podwójnego escapowania w template'cie.
+    """
+    if not url:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in _SAFE_URL_SCHEMES or not parsed.netloc:
+        return None
+    return url
+
+
+def _render_news_block_html(top_news: list[TopNewsItem]) -> str:
+    """Renderuje blok 'Top newsy' przez autoescapowany Jinja env.
+
+    Migracja przyrostowa f-string → Jinja (finding #35): escapowanie tytułów
+    i źródeł newsów jest tu domyślne, nie opt-in. Output równoważny dawnemu
+    f-stringowi (te same style inline, kolejność i format relevance/sentyment)."""
+    items = [
+        {
+            "source_label": n.source or "unknown",
+            "title": n.title,
+            "href": _safe_news_url(n.url),
+            "relevance_fmt": f"{n.relevance:.2f}",
+            "sentiment_fmt": f"{n.sentiment:+.2f}",
+        }
+        for n in top_news
+    ]
+    return _NEWS_BLOCK_TEMPLATE.render(items=items)
 
 
 def build_html_report(
@@ -611,7 +685,7 @@ def _render_html(
                           font-size: 12px;">
                 <strong>{_html(_company_label(rs.symbol))}</strong>
                 <span style="color: {sev_color}; font-weight: 600;">
-                  · {type_label.get(rs.type, rs.type)}
+                  · {type_label.get(rs.type, _html(rs.type))}
                 </span><br/>
                 <span style="color: #4b5563;">{_html(rs.description)}</span>
               </div>
@@ -797,31 +871,9 @@ def _render_html(
                     f"{conf_part}"
                     f"</div>"
                 )
-            news_block = ""
-            if r.top_news:
-                items = []
-                for n in r.top_news:
-                    src = f"<strong>[{_html(n.source or 'unknown')}]</strong>"
-                    href = _safe_href(n.url)
-                    title_html = _html(n.title)
-                    if href:
-                        title_html = (
-                            f"<a href='{href}' target='_blank' "
-                            f"style='color: #2563eb; text-decoration: none;'>"
-                            f"{title_html}</a>"
-                        )
-                    items.append(
-                        f"<li style='margin: 2px 0;'>{src} {title_html}"
-                        f" <span style='color: #6b7280;'>"
-                        f"(relevance {n.relevance:.2f}, sentyment {n.sentiment:+.2f})"
-                        f"</span></li>"
-                    )
-                news_block = (
-                    "<div style='font-size: 11px; color: #4b5563; margin-top: 8px;'>"
-                    "📰 <strong>Top newsy:</strong>"
-                    f"<ul style='margin: 4px 0 0 20px; padding: 0;'>{''.join(items)}</ul>"
-                    "</div>"
-                )
+            # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
+            # (finding #35). Escapowanie title/source jest tu domyślne.
+            news_block = _render_news_block_html(r.top_news)
             rec_block = _recommendation_reason_html(r)
             council_block = (
                 _render_council_section(r.council_verdict)

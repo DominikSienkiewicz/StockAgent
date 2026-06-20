@@ -214,6 +214,24 @@ class TestResilienceSettings:
         with pytest.raises(ValueError, match="symbol_throttle_seconds"):
             Settings(_env_file=None)
 
+    def test_reflection_min_age_hours_default_is_safe_nonzero(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        # Shipped code default MUSI być bezpieczny (≠0). Default 0 wyłączał
+        # bramkę wieku w reflect_node → przedwczesna ocena świeżej predykcji
+        # zatruwała accuracy_score (XGBoost) i hit-rate raportu. conftest
+        # ustawia STOCKAGENT_DISABLE_TOML=1, więc to czysty default z kodu,
+        # nie wartość z config.toml.
+        settings = Settings(_env_file=None)
+        assert settings.reflection_min_age_hours == 6
+
+    def test_reflection_min_age_hours_reads_env(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("REFLECTION_MIN_AGE_HOURS", "12")
+        settings = Settings(_env_file=None)
+        assert settings.reflection_min_age_hours == 12
+
 
 class TestCryptoSettings:
     def test_crypto_symbols_defaults_empty(

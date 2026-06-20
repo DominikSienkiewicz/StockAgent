@@ -1,3 +1,5 @@
+import threading
+import time
 from datetime import UTC, datetime
 from unittest.mock import Mock
 
@@ -59,3 +61,81 @@ def test_cached_does_not_save_when_delegate_returns_none() -> None:
     adapter = CachedFundamentalsAdapter(repo=repo, delegate=delegate)
     assert adapter.get_fundamentals("VOO") is None
     repo.save_fundamentals.assert_not_called()
+
+
+class TestSingleFlight:
+    """Per-symbol single-flight: dwa nakładające się cykle dla tego samego
+    symbolu nie powinny obie spalić płatnego requestu AV — drugi wołający
+    dostaje świeżo wypełniony cache zamiast ponownie iść do delegata."""
+
+    def test_concurrent_same_symbol_calls_delegate_once(self) -> None:
+        repo = Mock(spec=RepositoryPort)
+        delegate = Mock(spec=FundamentalsPort)
+        fresh = _sample_fundamentals()
+
+        # Cache pusty na starcie; po pierwszym save'ie zwraca już dane —
+        # symuluje read-through repo widziane przez drugiego wołającego.
+        cache_state: dict[str, Fundamentals] = {}
+        repo.get_cached_fundamentals.side_effect = lambda sym: cache_state.get(sym)
+        repo.save_fundamentals.side_effect = (
+            lambda sym, val: cache_state.__setitem__(sym, val)
+        )
+
+        # Wolny delegat → okno na wyścig: drugi wątek wchodzi w czasie
+        # gdy pierwszy jeszcze „płaci” za request.
+        def slow_fetch(sym: str) -> Fundamentals:
+            time.sleep(0.05)
+            return fresh
+
+        delegate.get_fundamentals.side_effect = slow_fetch
+
+        adapter = CachedFundamentalsAdapter(repo=repo, delegate=delegate)
+        results: list[Fundamentals | None] = []
+
+        def worker() -> None:
+            results.append(adapter.get_fundamentals("AAPL"))
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Płatny delegat ruszył DOKŁADNIE raz — drugi wątek dostał cache.
+        assert delegate.get_fundamentals.call_count == 1
+        assert results == [fresh, fresh]
+
+    def test_different_symbols_not_serialized(self) -> None:
+        # Lock jest per-symbol: AAPL i MSFT nie blokują się nawzajem.
+        repo = Mock(spec=RepositoryPort)
+        delegate = Mock(spec=FundamentalsPort)
+        repo.get_cached_fundamentals.return_value = None
+        fresh = _sample_fundamentals()
+
+        in_flight = threading.Event()
+        proceed = threading.Event()
+        seen_overlap = threading.Event()
+
+        def fetch(sym: str) -> Fundamentals:
+            if sym == "AAPL":
+                in_flight.set()          # AAPL trzyma swój lock
+                proceed.wait(timeout=1)  # i czeka
+            else:
+                # MSFT wejdzie tylko jeśli NIE jest serializowany za AAPL.
+                if in_flight.wait(timeout=1):
+                    seen_overlap.set()
+                proceed.set()            # zwalnia AAPL
+            return fresh
+
+        delegate.get_fundamentals.side_effect = fetch
+        adapter = CachedFundamentalsAdapter(repo=repo, delegate=delegate)
+
+        t_aapl = threading.Thread(target=lambda: adapter.get_fundamentals("AAPL"))
+        t_msft = threading.Thread(target=lambda: adapter.get_fundamentals("MSFT"))
+        t_aapl.start()
+        t_msft.start()
+        t_aapl.join()
+        t_msft.join()
+
+        # MSFT pracował RÓWNOLEGLE z AAPL — różne symbole się nie blokują.
+        assert seen_overlap.is_set()

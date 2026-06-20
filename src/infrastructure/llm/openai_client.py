@@ -15,10 +15,19 @@ from src.domain.quota import QuotaAlert, QuotaSeverity
 
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_TEMPERATURE = 0.2  # niska temperatura — chcemy deterministycznego Quanta
+# Publiczne id modeli OpenAI zaczynają się od "gpt-" (gpt-4o, gpt-5-mini...) albo
+# "o" (o1, o3-mini, o4...). `validate_model_id` używa tego do fail-fast na
+# oczywiście-złym configu.
+_OPENAI_MODEL_PREFIXES = ("gpt-", "o")
 # Modele reasoning (GPT-5, o-series) akceptują WYŁĄCZNIE domyślną temperature (=1)
 # i zwracają 400 BadRequest na każdą inną. Dla nich `temperature` pomijamy w
-# requeście (API użyje defaultu). Prefiksy dobrane pod faktyczne ograniczenie API.
+# requeście (API użyje defaultu). Te same modele wymagają też `max_completion_tokens`
+# zamiast `max_tokens` (patrz `_token_limit_kwarg`). Prefiksy dobrane pod
+# faktyczne ograniczenie API.
 _NO_CUSTOM_TEMPERATURE_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+# #31 — Strukturalne schematy JSON potrzebują kilkuset tokenów wyjścia. Bez capa
+# OpenAI ogranicza output tylko defaultem modelu. Ciasny, nadpisywalny cap.
+DEFAULT_MAX_TOKENS = 768
 # GHA fast loop ma 15 min hard timeout. SDK domyślnie czeka 600s na response —
 # zawieszone wywołanie LLM mogłoby zjeść cały cykl. 30s starcza dla normalnego
 # GPT-4o response (typowo 3-8s) i nie maskuje legitnych długich generacji.
@@ -33,6 +42,27 @@ DEFAULT_BACKOFF_BASE = 2.0
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+def validate_model_id(model: str) -> None:
+    """Lekka walidacja id modelu — bez sieciowego calla na starcie.
+
+    #30 — Stary/wycofany/typo'd id failuje dopiero przy 1. API callu
+    (non-retried 4xx), per symbol, co cykl — cichy total outage wykrywany
+    dopiero przez exit code "wszystkie symbole padły". Łapiemy OCZYWISTĄ
+    pomyłkę config (pusty string, zły provider prefix) natychmiast, z
+    czytelnym komunikatem. Nie weryfikujemy istnienia konkretnego id w API.
+    """
+    if not model or not model.strip():
+        raise ValueError(
+            "OpenAI model id is empty — set a valid 'gpt-*' or 'o*' id "
+            "(e.g. via COUNCIL_LLM_MODEL or the model= argument)."
+        )
+    if not model.startswith(_OPENAI_MODEL_PREFIXES):
+        raise ValueError(
+            f"OpenAI model id {model!r} is malformed — expected an id "
+            f"starting with 'gpt-' or 'o' (e.g. 'gpt-4o', 'o3-mini')."
+        )
 
 
 class OpenAIAdapter(LLMPort):
@@ -61,13 +91,17 @@ class OpenAIAdapter(LLMPort):
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE,
         quota_monitor: QuotaMonitor | None = None,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
+        # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
+        validate_model_id(model)
         self._client = OpenAI(api_key=api_key, timeout=timeout)
         self._model = model
         self._temperature = temperature
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._quota_monitor = quota_monitor
+        self._max_tokens = max_tokens
 
     def _supports_custom_temperature(self) -> bool:
         """GPT-5 / o-series akceptują tylko default temperature (=1)."""
@@ -76,9 +110,21 @@ class OpenAIAdapter(LLMPort):
             model.startswith(p) for p in _NO_CUSTOM_TEMPERATURE_PREFIXES
         )
 
+    def _token_limit_kwarg(self) -> str:
+        """Nazwa parametru capa wyjścia zależna od rodziny modelu.
+
+        Reasoning models (gpt-5, o-series) odrzucają `max_tokens` i wymagają
+        `max_completion_tokens`. Reszta (gpt-4o itd.) używa `max_tokens`.
+        Te same prefiksy co dla temperature — to ta sama rodzina modeli."""
+        model = self._model.lower()
+        if any(model.startswith(p) for p in _NO_CUSTOM_TEMPERATURE_PREFIXES):
+            return "max_completion_tokens"
+        return "max_tokens"
+
     def _create_kwargs(self, prompt: str, *, json_mode: bool) -> dict[str, Any]:
         """Wspólny builder argumentów create() — `temperature` tylko gdy model
-        ją wspiera (inaczej API zwraca 400 dla GPT-5/o-series)."""
+        ją wspiera (inaczej API zwraca 400 dla GPT-5/o-series); cap wyjścia
+        pod właściwą nazwą parametru (`max_tokens` / `max_completion_tokens`)."""
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
@@ -87,6 +133,8 @@ class OpenAIAdapter(LLMPort):
             kwargs["response_format"] = {"type": "json_object"}
         if self._supports_custom_temperature():
             kwargs["temperature"] = self._temperature
+        # #31 — cap wyjścia: bez niego output ograniczony tylko defaultem modelu.
+        kwargs[self._token_limit_kwarg()] = self._max_tokens
         return kwargs
 
     def analyze(self, prompt: str) -> dict[str, Any]:

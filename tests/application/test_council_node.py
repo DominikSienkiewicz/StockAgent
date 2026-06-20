@@ -14,8 +14,9 @@ from src.application.ports import (
     RepositoryPort,
     SentimentPort,
 )
+from src.domain.asset import Asset
 from src.domain.council import CouncilVerdict, InvestorOpinion
-from src.domain.value_objects import Money, Threshold
+from src.domain.value_objects import AssetType, Money, Threshold
 
 
 def _make_verdict() -> CouncilVerdict:
@@ -86,6 +87,60 @@ def _make_graph(
     council_threshold: Threshold | None = None,
 ):
     return _make_graph_with_repo(council_port, council_threshold)[0]
+
+
+def _make_crypto_graph(
+    council_port: AdvisoryCouncilPort,
+    *,
+    council_threshold: Threshold,
+    crypto_council_threshold: Threshold,
+):
+    """Wariant grafu dla aktywa CRYPTO z ROZRÓŻNIALNYMI progami rady:
+    stock `council_threshold` vs `crypto_council_threshold`. Próg główny
+    volatility ustawiony nisko (0.5%), żeby zawsze przepuścił i izolować
+    zachowanie bramki RADY (council_node), a nie głównej bramki."""
+    market = Mock(spec=MarketDataPort)
+    market.get_current_price.return_value = Money(Decimal("180.00"))
+    sentiment = Mock(spec=SentimentPort)
+    sentiment.get_social_score.return_value = {
+        "av_sentiment_score": 0.5,
+        "av_sentiment_label": "Bullish",
+        "av_relevance_avg": 0.7,
+        "news_volume_24h": 10,
+        "high_relevance_count": 3,
+    }
+    news = Mock(spec=NewsPort)
+    news.get_news_context.return_value = [{"title": "BTC gains", "source": "Reuters"}]
+    repo = Mock(spec=RepositoryPort)
+    repo.get_unverified_prediction.return_value = None
+    repo.get_last_prediction_price.return_value = Money(Decimal("100.0"))
+    repo.save_prediction.return_value = "pred-123"
+    ml = Mock(spec=MLPredictionPort)
+    ml.is_trained = True
+    ml.predict.return_value = Money(Decimal("185.00"))
+    llm = Mock(spec=LLMPort)
+    llm.analyze.return_value = {
+        "trend_direction": "BULLISH",
+        "confidence_score": 0.8,
+        "av_agreement": 0.9,
+        "target_price_12h": 185.0,
+        "reasoning": "Strong momentum.",
+    }
+    graph = create_agent_graph(
+        market_port=market,
+        sentiment_port=sentiment,
+        news_port=news,
+        repository_port=repo,
+        ml_port=ml,
+        llm_port=llm,
+        # Główna bramka nisko (0.5%) — żeby krypto zawsze ją przeszło.
+        threshold=Threshold(Decimal("0.005")),
+        crypto_threshold=Threshold(Decimal("0.005")),
+        council_port=council_port,
+        council_threshold=council_threshold,
+        crypto_council_threshold=crypto_council_threshold,
+    )
+    return graph, repo
 
 
 class TestCouncilNodeIntegration:
@@ -205,3 +260,61 @@ class TestCouncilVolatilityThreshold:
         # Δ≈+2.27%, ponad główny próg 2%
         app.invoke({"symbol": "AAPL", "previous_price": Decimal("176.00")})
         council_port.analyze.assert_called_once()
+
+
+class TestCryptoCouncilVolatilityThreshold:
+    """#38: bramka rady (council_node) wybiera próg per asset_type przez
+    _pick_threshold. Dla CRYPTO MUSI użyć `crypto_council_threshold`, nie
+    `council_threshold` akcji — main_agent wiąże osobny próg dla krypto, bo ma
+    ono inną natywną zmienność. Bez tego pokrycia regresja (krypto spada do
+    progu akcji) przeszłaby niezauważona. Progi celowo ROZRÓŻNIALNE."""
+
+    def test_crypto_council_skipped_using_crypto_threshold_not_stock(self):
+        # stock council_threshold=2%, crypto_council_threshold=8%.
+        # current=180, prev=170 → Δ≈+5.88%. To JEST ponad próg akcji (2%), więc
+        # gdyby council_node błędnie użył progu akcji → rada by ODPALIŁA.
+        # Skoro używa progu KRYPTO (8%), Δ 5.88% < 8% → rada POMINIĘTA.
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = _make_verdict()
+        graph, _ = _make_crypto_graph(
+            council_port,
+            council_threshold=Threshold(Decimal("0.02")),
+            crypto_council_threshold=Threshold(Decimal("0.08")),
+        )
+        app = graph.compile()
+        asset = Asset(symbol="BTC", asset_type=AssetType.CRYPTO)
+        result = app.invoke({
+            "symbol": "BTC",
+            "previous_price": Decimal("170.00"),
+            "asset": asset,
+        })
+        # Sedno: rada pominięta DZIĘKI progowi krypto (5.88% < 8%), mimo że
+        # próg akcji (2%) by ją przepuścił. To dowodzi, że crypto override działa.
+        council_port.analyze.assert_not_called()
+        assert result.get("council_verdict") is None
+        # Główna analiza i tak się zakończyła (rada to opcjonalny dodatek).
+        assert result.get("status") == "saved"
+
+    def test_crypto_council_called_using_crypto_threshold_not_stock(self):
+        # stock council_threshold=20%, crypto_council_threshold=3%.
+        # current=180, prev=170 → Δ≈+5.88%. PONIŻEJ progu akcji (20%), więc
+        # gdyby council_node błędnie użył progu akcji → rada by była POMINIĘTA.
+        # Skoro używa progu KRYPTO (3%), Δ 5.88% ≥ 3% → rada ODPALA.
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = _make_verdict()
+        graph, _ = _make_crypto_graph(
+            council_port,
+            council_threshold=Threshold(Decimal("0.20")),
+            crypto_council_threshold=Threshold(Decimal("0.03")),
+        )
+        app = graph.compile()
+        asset = Asset(symbol="BTC", asset_type=AssetType.CRYPTO)
+        result = app.invoke({
+            "symbol": "BTC",
+            "previous_price": Decimal("170.00"),
+            "asset": asset,
+        })
+        # Sedno: rada ODPALIŁA DZIĘKI progowi krypto (5.88% ≥ 3%), mimo że
+        # próg akcji (20%) by ją zablokował.
+        council_port.analyze.assert_called_once()
+        assert result.get("council_verdict") is not None

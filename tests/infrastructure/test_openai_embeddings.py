@@ -176,6 +176,78 @@ class TestRetryAndQuota:
         sleep.assert_called_once_with(5.0)
 
 
+class TestContentHashCache:
+    """#29 — Cross-cycle cache: ten sam wolnozmienny news_summary (cadence 12h)
+    nie może być re-embedowany od zera w każdym cyklu. Cache po sha256
+    znormalizowanego tekstu eliminuje czysty re-burn płatnego calla."""
+
+    def test_same_text_twice_calls_api_once(self, adapter_with_client):
+        adapter, client = adapter_with_client
+        client.embeddings.create.return_value = _embedding_response([0.1, 0.2])
+
+        first = adapter.embed("Apple beats earnings")
+        second = adapter.embed("Apple beats earnings")
+
+        assert first == [0.1, 0.2]
+        assert second == [0.1, 0.2]
+        # Drugie wywołanie to cache hit — API ruszyło dokładnie raz.
+        assert client.embeddings.create.call_count == 1
+
+    def test_different_text_calls_api_twice(self, adapter_with_client):
+        adapter, client = adapter_with_client
+        client.embeddings.create.side_effect = [
+            _embedding_response([0.1]),
+            _embedding_response([0.2]),
+        ]
+
+        adapter.embed("Apple beats earnings")
+        adapter.embed("Nvidia surges on AI demand")
+
+        assert client.embeddings.create.call_count == 2
+
+    def test_empty_text_returns_empty_without_call_and_no_caching(
+        self, adapter_with_client
+    ):
+        adapter, client = adapter_with_client
+
+        assert adapter.embed("") == []
+        assert adapter.embed("   ") == []
+        client.embeddings.create.assert_not_called()
+
+    def test_cache_is_bounded_oldest_evicted_past_capacity(self, mock_openai_class):
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.embeddings.create.side_effect = [
+            _embedding_response([float(i)]) for i in range(10)
+        ]
+        # Pojemność 2 — po dodaniu trzeciego tekstu najstarszy wypada.
+        adapter = OpenAIEmbeddingAdapter(api_key="sk-test", cache_size=2)
+
+        adapter.embed("text-A")  # call 1
+        adapter.embed("text-B")  # call 2
+        adapter.embed("text-C")  # call 3 — wypycha text-A z cache'a
+        assert client.embeddings.create.call_count == 3
+
+        # text-B i text-C nadal w cache'u → bez nowych calli.
+        adapter.embed("text-B")
+        adapter.embed("text-C")
+        assert client.embeddings.create.call_count == 3
+
+        # text-A został eksmitowany → ponowny embedding to nowy call.
+        adapter.embed("text-A")
+        assert client.embeddings.create.call_count == 4
+
+    def test_normalized_whitespace_hits_same_cache_entry(self, adapter_with_client):
+        # Ten sam tekst z innym otaczającym whitespace'em → jeden wpis cache'a.
+        adapter, client = adapter_with_client
+        client.embeddings.create.return_value = _embedding_response([0.5])
+
+        adapter.embed("Apple beats earnings")
+        adapter.embed("  Apple beats earnings  ")
+
+        assert client.embeddings.create.call_count == 1
+
+
 @pytest.mark.integration
 class TestOpenAIEmbeddingsLive:
     def test_real_api_returns_1536_dim_vector(self):

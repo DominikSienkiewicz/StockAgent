@@ -331,6 +331,68 @@ class TestRetryAndQuota:
         sleep.assert_called_once_with(7.0)
 
 
+class TestModelIdValidation:
+    """#30 — Hardcoded model id bez guardu = cichy total outage (pusty/typo'd
+    config failuje dopiero przy 1. callu, per symbol, co cykl). Walidacja w
+    __init__ łapie oczywiście-zły id natychmiast, z czytelnym komunikatem."""
+
+    def test_empty_model_id_raises_at_construction(self, mock_anthropic_class):
+        with pytest.raises(ValueError, match="model"):
+            AnthropicAdapter(api_key="sk-ant-test", model="")
+
+    def test_whitespace_model_id_raises_at_construction(self, mock_anthropic_class):
+        with pytest.raises(ValueError, match="model"):
+            AnthropicAdapter(api_key="sk-ant-test", model="   ")
+
+    def test_wrong_prefix_model_id_raises_at_construction(self, mock_anthropic_class):
+        # id bez prefiksu "claude-" jest oczywiście błędny dla Anthropic.
+        with pytest.raises(ValueError, match="claude-"):
+            AnthropicAdapter(api_key="sk-ant-test", model="gpt-4o")
+
+    def test_valid_model_id_constructs_fine(self, mock_anthropic_class):
+        adapter = AnthropicAdapter(api_key="sk-ant-test", model="claude-opus-4-7")
+        assert adapter is not None
+
+    def test_default_model_id_constructs_fine(self, mock_anthropic_class):
+        # Domyślny model id musi przejść własną walidację.
+        adapter = AnthropicAdapter(api_key="sk-ant-test")
+        assert adapter is not None
+
+
+class TestMaxTokensCap:
+    """#31 — Schematy JSON potrzebują kilkuset tokenów; uniformny 4096 (w tym
+    per-investor council calls) to przeszacowanie. Domyślny cap ~768 tnie koszt
+    wyjścia, pozostaje nadpisywalny przez konstruktor."""
+
+    def test_default_max_tokens_is_tight(self, adapter_with_client):
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _message_response("{}")
+
+        adapter.analyze("Predict.")
+
+        # Cap dopasowany do schematu JSON (kilkaset tokenów), nie 4096.
+        assert client.messages.create.call_args.kwargs["max_tokens"] <= 1024
+
+    def test_max_tokens_overridable_via_constructor(self, mock_anthropic_class):
+        client = MagicMock()
+        mock_anthropic_class.return_value = client
+        client.messages.create.return_value = _message_response("{}")
+        adapter = AnthropicAdapter(api_key="sk-ant-test", max_tokens=2048)
+
+        adapter.analyze("Predict.")
+
+        assert client.messages.create.call_args.kwargs["max_tokens"] == 2048
+
+    def test_analyze_mistake_also_has_bounded_cap(self, adapter_with_client):
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _message_response("insight")
+
+        adapter.analyze_mistake("Diagnose.")
+
+        cap = client.messages.create.call_args.kwargs["max_tokens"]
+        assert 0 < cap <= 4096
+
+
 class TestAdapterImplementsPort:
     def test_is_llm_port(self):
         assert issubclass(AnthropicAdapter, LLMPort)

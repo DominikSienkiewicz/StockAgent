@@ -20,7 +20,12 @@ RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
 
 
 def build_session() -> requests.Session:
-    """Zwraca `requests.Session` z zamontowanym retry na http:// i https://."""
+    """Zwraca `requests.Session` z zamontowanym retry na https://.
+
+    https-only: wszystkie API agenta (Finnhub, Alpha Vantage, CoinGecko, NBP,
+    Resend, Supabase, OpenAI/Anthropic) komunikują się po https, więc montujemy
+    retry-adapter wyłącznie na schemacie https:// — nie ma ścieżki http://.
+    """
     session = requests.Session()
     retry = Retry(
         total=RETRY_TOTAL,
@@ -31,5 +36,4 @@ def build_session() -> requests.Session:
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
-    session.mount("http://", adapter)
     return session

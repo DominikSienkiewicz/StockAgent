@@ -86,7 +86,26 @@ class TestTrain:
         features, target = _synthetic_dataset()
         result = adapter.train(features, target)
 
-        assert result["validation_rmse"] < result["baseline_rmse"]
+        assert result["candidate_holdout_rmse"] < result["baseline_rmse"]
+
+    def test_metric_keys_are_candidate_scoped_and_self_describing(
+        self, adapter: XGBoostAdapter
+    ):
+        # Finding #22: shipowany model jest refitowany na WSZYSTKICH danych i nie
+        # jest re-walidowany, więc raportowane RMSE/hit-rate dotyczą KANDYDATA na
+        # holdoucie — nazwy kluczy muszą to mówić wprost, plus `metric_note`.
+        features, target = _synthetic_dataset()
+        result = adapter.train(features, target)
+
+        assert "candidate_holdout_rmse" in result
+        assert "candidate_holdout_directional_hit_rate" in result
+        # Stare, mylące nazwy nie mogą udawać jakości shipowanego modelu.
+        assert "validation_rmse" not in result
+        assert "validation_directional_hit_rate" not in result
+        assert "refit on all data" in result["metric_note"]
+        # Niezmienniki kontraktu zachowane.
+        assert result["n_samples"] == len(target)
+        assert result["model_path"] == adapter._model_path
 
     def test_skips_save_when_model_does_not_beat_baseline(
         self, adapter: XGBoostAdapter, model_path: str
@@ -106,9 +125,11 @@ class TestTrain:
         self, adapter: XGBoostAdapter
     ):
         # Baseline = "predykcja zwrotu = 0" (persystencja: cena bez zmian).
-        # baseline_rmse musi równać się RMSE zwrotów walidacyjnych względem 0,
-        # a NIE rozrzutowi pojedynczego skalara z train (stary, błędny baseline).
-        n = 120
+        # baseline_rmse musi być RMSE zwrotów względem 0 (a NIE rozrzutem
+        # pojedynczego skalara z train — stary, błędny baseline). Przy małej
+        # próbce (n=15 < MIN_FOLD_SAMPLES) adapter spada do pojedynczego splitu,
+        # więc baseline jest liczony na holdoucie tego jednego splitu.
+        n = 15
         features, target = _synthetic_dataset(n=n)
         validation_size = max(10, int(n * 0.2))
         valid_target = target.iloc[n - validation_size:]
@@ -116,18 +137,102 @@ class TestTrain:
 
         result = adapter.train(features, target)
 
+        assert result["n_folds"] == 1
         assert result["baseline_rmse"] == pytest.approx(expected_baseline, rel=1e-9)
 
-    def test_reports_validation_directional_hit_rate(
+    def test_reports_candidate_holdout_directional_hit_rate(
         self, adapter: XGBoostAdapter
     ):
         features, target = _synthetic_dataset()
         result = adapter.train(features, target)
 
-        hit_rate = result["validation_directional_hit_rate"]
+        hit_rate = result["candidate_holdout_directional_hit_rate"]
         assert 0.0 <= hit_rate <= 1.0
         # Sygnał jest realny → kierunek trafiony częściej niż losowo.
         assert hit_rate > 0.5
+
+
+class TestWalkForwardValidation:
+    """Finding #23: ewaluacja walk-forward (expanding window) zamiast jednego,
+    hałaśliwego splitu 20%. Decyzja o shipowaniu zależy od ŚREDNIEJ z foldów +
+    raport niesie per-feature drift stats i `n_folds`."""
+
+    def test_strong_signal_ships_across_folds(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=200)
+        result = adapter.train(features, target)
+
+        assert result["status"] == "trained_successfully"
+        # Wystarczająco duża próbka → realne foldy walk-forward.
+        assert result["n_folds"] >= 3
+        # Bramka oparta na ŚREDNIEJ z foldów: kandydat bije baseline średnio.
+        assert result["candidate_holdout_rmse"] < result["baseline_rmse"]
+
+    def test_no_signal_dataset_is_skipped(self, adapter: XGBoostAdapter):
+        # Czysty szum bez sygnału — model nie pobije baseline persystencji
+        # średnio po foldach → skip, model nie ląduje na dysku.
+        rng = np.random.default_rng(7)
+        n = 200
+        features = pd.DataFrame(
+            {name: rng.normal(0, 1, n) for name in FEATURE_NAMES}
+        )
+        target = pd.Series(rng.normal(0, 0.05, n))
+
+        result = adapter.train(features, target)
+
+        assert result["status"] == "skipped_validation_failed"
+        assert adapter.is_trained is False
+
+    def test_zero_return_dataset_is_skipped(self, adapter: XGBoostAdapter):
+        # Zwrot zawsze 0 → baseline persystencji bezbłędny, nic go nie pobije.
+        features, _ = _synthetic_dataset(n=200)
+        target = pd.Series([0.0] * 200)
+
+        result = adapter.train(features, target)
+
+        assert result["status"] == "skipped_validation_failed"
+        assert adapter.is_trained is False
+
+    def test_result_reports_n_folds_above_one_for_large_sample(
+        self, adapter: XGBoostAdapter
+    ):
+        features, target = _synthetic_dataset(n=200)
+        result = adapter.train(features, target)
+        assert result["n_folds"] > 1
+
+    def test_small_sample_falls_back_to_single_split(
+        self, adapter: XGBoostAdapter
+    ):
+        # Poniżej progu na walk-forward → pojedynczy split (zachowanie sane).
+        features, target = _synthetic_dataset(n=15)
+        result = adapter.train(features, target)
+        assert result["n_folds"] == 1
+
+    def test_result_includes_per_feature_distribution_stats(
+        self, adapter: XGBoostAdapter
+    ):
+        # Drift-detection: per-feature mean/std w wyniku, żeby porównać z
+        # poprzednim runem i wykryć dryf rozkładu cech wejściowych.
+        features, target = _synthetic_dataset(n=120)
+        result = adapter.train(features, target)
+
+        stats = result["feature_stats"]
+        assert set(stats.keys()) == set(FEATURE_NAMES)
+        for name in FEATURE_NAMES:
+            assert "mean" in stats[name]
+            assert "std" in stats[name]
+            expected_mean = float(features[name].mean())
+            assert stats[name]["mean"] == pytest.approx(expected_mean, rel=1e-9)
+
+    def test_feature_stats_present_even_when_skipped(
+        self, adapter: XGBoostAdapter
+    ):
+        # Dryf cech jest obserwowalny niezależnie od werdyktu bramki.
+        features, _ = _synthetic_dataset(n=200)
+        target = pd.Series([0.0] * 200)
+        result = adapter.train(features, target)
+
+        assert result["status"] == "skipped_validation_failed"
+        assert set(result["feature_stats"].keys()) == set(FEATURE_NAMES)
 
 
 class TestPredict:

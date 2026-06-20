@@ -276,7 +276,7 @@ def build_use_case(
         equity=FinnhubAdapter(
             api_key=settings.finnhub_api_key, quota_monitor=quota_monitor
         ),
-        crypto=CoinGeckoAdapter(),
+        crypto=CoinGeckoAdapter(quota_monitor=quota_monitor),
         crypto_symbols=settings.crypto_symbols,
     )
     crypto_threshold = (
@@ -384,7 +384,12 @@ def main(settings: Settings | None = None) -> int:
             time.sleep(settings.symbol_throttle_seconds)
 
     duration = time.perf_counter() - started_perf
-    logger.info("Fast Loop done — failures=%d/%d", failures, len(settings.symbols))
+    # #34: mianownik MUSI być liczbą faktycznie przetworzonych symboli
+    # (eligible = symbols + crypto − unsupported), a nie len(settings.symbols).
+    # Pętla iteruje `eligible`, więc failures odnoszą się do niego — inaczej
+    # przy obecności krypto/unsupported ratio się rozjeżdża (failures mogą nawet
+    # przekroczyć mianownik). Spójne z logiką exit-code (też używa len(eligible)).
+    logger.info("Fast Loop done — failures=%d/%d", failures, len(eligible))
 
     # ---- Risk Watch (osobny pass, nie miesza się z predykcjami) ----
     macro_risk_report: MacroRiskReport | None = None

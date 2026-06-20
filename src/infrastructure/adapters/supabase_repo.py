@@ -145,7 +145,12 @@ class SupabaseRepository(RepositoryPort):
         if min_age_hours > 0:
             cutoff = datetime.now(UTC) - timedelta(hours=min_age_hours)
             query = query.lte("timestamp", cutoff.isoformat())
-        response = query.order("timestamp", desc=True).limit(1).execute()
+        # ASC (oldest-first) — #19: opróżniamy backlog, rozliczając NAJSTARSZĄ
+        # nierozliczoną predykcję, która przekroczyła próg min_age_hours. Przy
+        # DESC starsze nierozliczone predykcje nigdy nie stałyby się znów
+        # "najnowsze" i utknęłyby na zawsze (brak actual_price_after_12h →
+        # nie wchodzą do ml_feature_store, nie liczą się do hit-rate).
+        response = query.order("timestamp", desc=False).limit(1).execute()
         rows = _rows(response)
         if not rows:
             return None

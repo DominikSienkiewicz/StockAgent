@@ -6,8 +6,10 @@ ile ma kolumna `embedding VECTOR(1536)` w `prediction_logs` (pgvector).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TypeVar
@@ -27,6 +29,12 @@ DEFAULT_TIMEOUT = 30.0
 # Backoff: 2s, 4s, 8s (chyba że SDK zwróci `retry-after` → wtedy honorujemy go).
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF_BASE = 2.0
+# Cross-cycle cache: news_summary zmienia się wolno (cadence 12h), więc ten sam
+# tekst trafia do embed() w wielu cyklach. Bez cache'a każdy cykl re-embeduje go
+# od zera — czysty re-burn płatnego calla. Bounded LRU keyed po sha256 tekstu
+# (znormalizowanego) eliminuje to bez ryzyka nieograniczonego wzrostu pamięci.
+# 256 wpisów ≈ kilka cykli × kilkadziesiąt symboli — z dużym zapasem.
+DEFAULT_CACHE_SIZE = 256
 
 logger = logging.getLogger(__name__)
 
@@ -50,21 +58,55 @@ class OpenAIEmbeddingAdapter(EmbeddingPort):
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE,
+        cache_size: int = DEFAULT_CACHE_SIZE,
     ) -> None:
         self._client = OpenAI(api_key=api_key, timeout=timeout)
         self._model = model
         self._quota_monitor = quota_monitor
         self._max_retries = max_retries
         self._backoff_base = backoff_base
+        # In-process bounded LRU: sha256(znormalizowany tekst) → wektor.
+        # OrderedDict zachowuje kolejność wstawień; przekroczenie pojemności
+        # eksmituje najstarszy wpis (popitem(last=False)).
+        self._cache_size = cache_size
+        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+
+    @staticmethod
+    def _cache_key(text: str) -> str:
+        # Normalizacja: strip otaczającego whitespace'u — "x" i "  x  " to ten
+        # sam content embeddingu (i tak wysyłamy `text`, ale klucz musi być
+        # stabilny względem trywialnych różnic formatowania newsów).
+        normalized = text.strip()
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
     def embed(self, text: str) -> list[float]:
         # Pusty tekst → zerowy wektor (AV nie zwrócił newsów dla tego symbolu).
+        # Nie cache'ujemy — to gałąź bez płatnego calla, więc bez zysku.
         if not text or not text.strip():
             return []
+
+        key = self._cache_key(text)
+        cached = self._cache.get(key)
+        if cached is not None:
+            # Cache hit — pomijamy płatny call. Odświeżamy pozycję LRU.
+            self._cache.move_to_end(key)
+            return list(cached)
+
         response = self._call_with_retry(
             lambda: self._client.embeddings.create(model=self._model, input=text)
         )
-        return list(response.data[0].embedding)
+        vector = list(response.data[0].embedding)
+        self._store_in_cache(key, vector)
+        return vector
+
+    def _store_in_cache(self, key: str, vector: list[float]) -> None:
+        if self._cache_size <= 0:
+            return
+        self._cache[key] = list(vector)
+        self._cache.move_to_end(key)
+        # Bounded: po przekroczeniu pojemności wyrzucamy najstarszy wpis.
+        while len(self._cache) > self._cache_size:
+            self._cache.popitem(last=False)
 
     def _call_with_retry(self, fn: Callable[[], T]) -> T:
         """Retry'uje wyłącznie RateLimitError (429). Honoruje retry-after.
