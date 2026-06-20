@@ -35,6 +35,7 @@ def repository_port() -> Mock:
     repo = Mock(spec=RepositoryPort)
     # reflect_node działa w każdym cyklu — domyślnie brak historii do oceny.
     repo.get_unverified_prediction.return_value = None
+    repo.get_last_prediction_price.return_value = None
     return repo
 
 
@@ -161,6 +162,7 @@ def test_analyze_market_passes_council_port_to_graph():
     news.get_news_context.return_value = [{"title": "Apple gains"}]
     repo = Mock(spec=RepositoryPort)
     repo.get_unverified_prediction.return_value = None
+    repo.get_last_prediction_price.return_value = Money(Decimal("100.0"))
     repo.save_prediction.return_value = "pred-123"
     ml = Mock(spec=MLPredictionPort)
     ml.is_trained = True

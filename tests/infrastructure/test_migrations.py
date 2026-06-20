@@ -29,6 +29,7 @@ MIGRATION_FILES = [
     "009_trend_correctness.sql",
     "010_quota_alerts.sql",
     "011_match_news_embeddings.sql",
+    "012_ml_feature_store_return_target.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -131,7 +132,8 @@ class TestMigrations:
             "high_relevance_count",
             "llm_trend_signal",
             "av_llm_agreement",
-            "target_price",
+            # Target to ZWROT 12h (migracja 012), nie cena bezwzględna.
+            "target_return",
         }
         assert required <= cols, f"Brakujące kolumny: {required - cols}"
 

@@ -40,6 +40,17 @@ class RepositoryPort(ABC):
         """Najnowszy snapshot ceny z `price_snapshots` (nie z prediction_logs)."""
 
     @abstractmethod
+    def get_last_prediction_price(self, symbol: str) -> Money | None:
+        """Cena OSTATNIEJ zalogowanej predykcji (`prediction_logs.price_at_prediction`).
+
+        Referencja dla cechy `price_delta` w inference. Widok `ml_feature_store`
+        liczy `price_delta` jako `LAG(price_at_prediction)` — czyli zmianę względem
+        POPRZEDNIEJ predykcji. Fast Loop musi użyć tej samej referencji (nie
+        ostatniego snapshotu ceny), inaczej cecha ma inny rozkład w treningu i
+        w predykcji (train/serve skew). Zwraca None gdy brak wcześniejszej
+        predykcji dla symbolu (pierwszy cykl — widok i tak takie wiersze odsiewa)."""
+
+    @abstractmethod
     def save_price_snapshot(self, symbol: str, price: Money) -> None:
         """Zapisuje bieżącą cenę — wywoływane w KAŻDYM cyklu (rozwiązuje
         cold-start deadlock: następny cykl ma punkt odniesienia do delty)."""
@@ -155,7 +166,11 @@ class MLPredictionPort(ABC):
         (brak pliku modelu) używa baseline zamiast crashować."""
 
     @abstractmethod
-    def predict(self, current_features: dict[str, float]) -> Money: ...
+    def predict(
+        self, current_features: dict[str, float], current_price: Decimal
+    ) -> Money:
+        """Predykcja ceny docelowej 12h. Model przewiduje ZWROT — `current_price`
+        jest potrzebna do rekonstrukcji ceny bezwzględnej (`cena*(1+zwrot)`)."""
 
     @abstractmethod
     def train(self, features: Any, target: Any) -> dict[str, Any]:

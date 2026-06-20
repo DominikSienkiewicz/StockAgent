@@ -16,9 +16,9 @@ class TrainModelUseCase:
 
     Pipeline:
     1. Odczyt zmaterializowanego widoku `ml_feature_store` z repozytorium.
-    2. Feature engineering (kalkulacja price_delta).
-    3. Drop NaN.
-    4. Separacja X / Y i wywołanie ml_port.train().
+    2. Drop NaN (widok już liczy `price_delta` i `target_return`, z guardem
+       anty-inf po stronie SQL — train_model NIE dubluje tej logiki).
+    3. Separacja X / Y i wywołanie ml_port.train().
     """
 
     def __init__(self, ml_port: MLPredictionPort, db_port: RepositoryPort) -> None:
@@ -46,9 +46,10 @@ class TrainModelUseCase:
             }
 
         df = pd.DataFrame(rows)
-        df["price_delta"] = (
-            (df["price_current"] - df["price_prev_12h"]) / df["price_prev_12h"]
-        )
+        # price_delta i target_return przychodzą GOTOWE z widoku (NaN-guarded).
+        # Nie przeliczamy ich tutaj — stary recompute (current-prev)/prev dublował
+        # logikę widoku i przy prev=0 dawał +inf, który przeżywał dropna i trafiał
+        # do XGBoost. dropna odsiewa wiersze, dla których widok zwrócił NULL.
         required_columns = [*ML_FEATURE_COLUMNS, TARGET_COLUMN]
         df = df.dropna(subset=required_columns)
 

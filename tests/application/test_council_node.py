@@ -54,6 +54,7 @@ def _make_graph_with_repo(
     news.get_news_context.return_value = [{"title": "Apple gains", "source": "Reuters"}]
     repo = Mock(spec=RepositoryPort)
     repo.get_unverified_prediction.return_value = None
+    repo.get_last_prediction_price.return_value = Money(Decimal("100.0"))
     repo.save_prediction.return_value = "pred-123"
     ml = Mock(spec=MLPredictionPort)
     ml.is_trained = True

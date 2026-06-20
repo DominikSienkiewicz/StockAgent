@@ -34,6 +34,9 @@ def _make_graph(sentiment_payload: dict, llm_payload: dict | None = None):
     news.get_news_context.return_value = [{"title": "Apple gains", "source": "Reuters"}]
     repo = Mock(spec=RepositoryPort)
     repo.get_unverified_prediction.return_value = None
+    # Cena poprzedniej predykcji (referencja price_delta) — ustawiona, by te
+    # testy skupiały się na flagach sentymentu/numerycznych, bez flagi "no_prior".
+    repo.get_last_prediction_price.return_value = Money(Decimal("100.0"))
     repo.save_prediction.return_value = "pred-1"
     ml = Mock(spec=MLPredictionPort)
     ml.is_trained = True

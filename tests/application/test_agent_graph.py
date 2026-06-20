@@ -48,6 +48,9 @@ def repository_port() -> Mock:
     # Domyślnie brak historii — reflect_node (wykonywany w KAŻDYM cyklu)
     # nie ma czego oceniać. Testy full-analysis nadpisują to przez helper.
     repo.get_unverified_prediction.return_value = None
+    # Brak wcześniejszej predykcji → cecha price_delta liczona jako 0.0 (z flagą).
+    # Testy weryfikujące referencję cechy nadpisują to konkretną ceną.
+    repo.get_last_prediction_price.return_value = None
     return repo
 
 
@@ -210,6 +213,61 @@ class TestFullAnalysisColdStart:
         # Brak poprzedniej predykcji — nie diagnozujemy błędu
         llm_port.analyze_mistake.assert_not_called()
         repository_port.update_prediction_accuracy.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# P0: kontrakt cechy price_delta i rekonstrukcja ceny z ZWROTU
+# ---------------------------------------------------------------------------
+
+
+class TestPriceDeltaFeatureContract:
+    """Cecha price_delta podawana do ML musi być liczona względem ceny
+    POPRZEDNIEJ zalogowanej predykcji (jak LAG(price_at_prediction) w widoku
+    ml_feature_store), a NIE względem snapshotu używanego przez bramkę
+    volatility — inaczej cecha ma inny rozkład w treningu i w inference."""
+
+    def test_ml_price_delta_uses_last_prediction_price_not_snapshot(
+        self,
+        workflow,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        # Snapshot (referencja bramki, z initial_state) = 100 → gate delta = -10%.
+        # Ostatnia ZALOGOWANA predykcja była przy 120 → cecha ML = (90-120)/120.
+        repository_port.get_last_prediction_price.return_value = Money(Decimal("120.0"))
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        features = ml_port.predict.call_args.args[0]
+        assert features["price_delta"] == pytest.approx((90.0 - 120.0) / 120.0)
+
+    def test_ml_predict_receives_current_price_for_reconstruction(
+        self,
+        workflow,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        # Model przewiduje zwrot → predict potrzebuje bieżącej ceny do rekonstrukcji.
+        assert ml_port.predict.call_args.kwargs.get("current_price") == Decimal("90.0")
 
 
 # ---------------------------------------------------------------------------
@@ -517,12 +575,15 @@ class TestMlFeatureContract:
             sentiment_port, news_port, repository_port, ml_port, llm_port,
         )
         ml_port.is_trained = True
+        # price_delta liczone względem ceny poprzedniej predykcji (kontrakt jak w
+        # widoku), nie względem snapshotu: (90-120)/120.
+        repository_port.get_last_prediction_price.return_value = Money(Decimal("120.0"))
 
         workflow.compile().invoke(_initial_state("100.0"))
 
         features = ml_port.predict.call_args.args[0]
         assert list(features) == EXPECTED_ML_FEATURES
-        assert features["price_delta"] == -0.1
+        assert features["price_delta"] == pytest.approx((90.0 - 120.0) / 120.0)
         assert features["av_sentiment_score"] == -0.42
         assert features["av_relevance_avg"] == 0.72
         assert features["news_volume_24h"] == 4.0

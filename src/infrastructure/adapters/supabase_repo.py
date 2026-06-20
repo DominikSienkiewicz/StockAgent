@@ -89,6 +89,23 @@ class SupabaseRepository(RepositoryPort):
             return None
         return Money(Decimal(str(rows[0]["price"])))
 
+    def get_last_prediction_price(self, symbol: str) -> Money | None:
+        # Cena ostatniej zalogowanej predykcji — referencja dla cechy price_delta
+        # w inference (musi pokrywać się z LAG(price_at_prediction) w widoku
+        # ml_feature_store, inaczej cecha ma inny rozkład w treningu i predykcji).
+        response = (
+            self._client.table(self._table)
+            .select("price_at_prediction")
+            .eq("symbol", symbol)
+            .order("timestamp", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows or rows[0].get("price_at_prediction") is None:
+            return None
+        return Money(Decimal(str(rows[0]["price_at_prediction"])))
+
     def get_unverified_prediction(
         self, symbol: str, min_age_hours: int = 0
     ) -> Prediction | None:

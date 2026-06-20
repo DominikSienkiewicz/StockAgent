@@ -361,8 +361,24 @@ def create_agent_graph(
                 flags.append(flag)
             return parsed
 
+        # Cecha price_delta MUSI być liczona względem ceny POPRZEDNIEJ zalogowanej
+        # predykcji — tak jak LAG(price_at_prediction) w widoku ml_feature_store.
+        # state["delta"] (zmiana od snapshotu) napędza bramkę volatility, ale ma
+        # inny interwał niż trening → użycie go tutaj dawało train/serve skew.
+        current_price = state["current_price"]
+        last_pred_price = repository_port.get_last_prediction_price(state["symbol"])
+        if last_pred_price is not None and last_pred_price.amount != 0:
+            ml_price_delta = float(
+                (current_price - last_pred_price.amount) / last_pred_price.amount
+            )
+        else:
+            # Pierwsza predykcja dla symbolu — widok i tak odsiewa takie wiersze
+            # (price_prev_12h NULL → price_delta NULL), więc neutralne 0.0 + flaga.
+            ml_price_delta = 0.0
+            flags.append("price_delta_no_prior_prediction")
+
         raw_features = {
-            "price_delta": float(state["delta"]),
+            "price_delta": ml_price_delta,
             "av_sentiment_score": _v(
                 sentiment.get("av_sentiment_score"), "av_sentiment_score"
             ),
@@ -388,7 +404,9 @@ def create_agent_graph(
         # "cena bez zmian". Agent działa, LLM nadal daje trend; gdy model się
         # wytrenuje, automatycznie przejmuje predykcję liczbową.
         if ml_port.is_trained:
-            ml_target = ml_port.predict(features).amount
+            # Model przewiduje ZWROT 12h; predict() rekonstruuje cenę bezwzględną
+            # z bieżącej ceny (cena*(1+zwrot)).
+            ml_target = ml_port.predict(features, current_price=current_price).amount
         else:
             ml_target = state["current_price"]
 

@@ -1,5 +1,6 @@
 from unittest.mock import Mock
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -36,18 +37,23 @@ def use_case(ml_port, repository_port) -> TrainModelUseCase:
 
 
 def _feature_store_rows(n: int) -> list[dict]:
-    """Generuje n rekordów z widoku ml_feature_store."""
+    """Generuje n rekordów jak z widoku ml_feature_store.
+
+    Widok dostarcza GOTOWE `price_delta` (NaN-guarded) i `target_return` (zwrot
+    12h) — train_model ich NIE przelicza, tylko selekcjonuje i robi dropna.
+    """
     return [
         {
             "price_current": 100.0 + i * 0.5,
             "price_prev_12h": 99.0 + i * 0.5,
+            "price_delta": (100.0 + i * 0.5 - (99.0 + i * 0.5)) / (99.0 + i * 0.5),
             "av_sentiment_score": -0.5 + (i % 10) / 10,
             "av_relevance_avg": 0.5 + (i % 5) / 10,
             "news_volume_24h": 1 + (i % 8),
             "high_relevance_count": i % 3,
             "llm_trend_signal": (i % 3) - 1,
             "av_llm_agreement": 0.4 + (i % 6) / 10,
-            "target_price": 101.0 + i * 0.5,
+            "target_return": 0.01 * ((i % 5) - 2),
         }
         for i in range(n)
     ]
@@ -108,40 +114,45 @@ class TestRun:
         features, target = ml_port.train.call_args.args
         assert isinstance(features, pd.DataFrame)
         assert list(features.columns) == EXPECTED_ML_FEATURES
-        # Target = target_price (z widoku)
+        # Target = target_return (zwrot 12h z widoku), nie cena bezwzględna
         assert isinstance(target, pd.Series)
         assert len(features) == len(target)
 
-    def test_computes_price_delta_from_current_and_previous(
+    def test_uses_view_price_delta_without_recompute(
         self, use_case, repository_port, ml_port
     ):
-        repository_port.get_feature_store_data.return_value = _feature_store_rows(
-            MIN_SAMPLES_FOR_TRAINING + 5
-        )
-        ml_port.train.return_value = {"status": "trained_successfully"}
-
-        use_case.run("AAPL")
-
-        features, _ = ml_port.train.call_args.args
-        # price_delta = (current - prev) / prev
-        row = features.iloc[0]
-        # rows[0]: price_current=100.0, price_prev_12h=99.0 → delta ≈ 0.0101
-        assert abs(row["price_delta"] - (100.0 - 99.0) / 99.0) < 1e-6
-
-    def test_drops_rows_with_nan_after_feature_engineering(
-        self, use_case, repository_port, ml_port
-    ):
-        # Wstrzykujemy rekord z None price_prev_12h — produkuje NaN przy delta
+        # Widok dostarcza price_delta GOTOWE — train_model nie wolno go przeliczać
+        # (stary recompute (current-prev)/prev dublował logikę i robił +inf przy
+        # prev=0). Ustawiamy price_delta na wartość, której recompute NIGDY by nie
+        # dał, i sprawdzamy, że trafia do modelu bez zmian.
         rows = _feature_store_rows(MIN_SAMPLES_FOR_TRAINING + 5)
-        rows[0]["price_prev_12h"] = None  # type: ignore[assignment]
+        for r in rows:
+            r["price_delta"] = 0.5
         repository_port.get_feature_store_data.return_value = rows
         ml_port.train.return_value = {"status": "trained_successfully"}
 
         use_case.run("AAPL")
 
         features, _ = ml_port.train.call_args.args
-        # Pierwszy rekord powinien zostać dropniety
+        assert (features["price_delta"] == 0.5).all()
+
+    def test_drops_rows_when_view_price_delta_is_null(
+        self, use_case, repository_port, ml_port
+    ):
+        # Widok emituje price_delta=NULL gdy price_prev_12h=0/NULL (guard anty-inf).
+        # train_model NIE przelicza (stary recompute dawał +inf przeżywające
+        # dropna) — wiersz z NULL price_delta musi zostać odrzucony, a do modelu
+        # trafiają wyłącznie skończone wartości.
+        rows = _feature_store_rows(MIN_SAMPLES_FOR_TRAINING + 5)
+        rows[0]["price_delta"] = None  # type: ignore[assignment]
+        repository_port.get_feature_store_data.return_value = rows
+        ml_port.train.return_value = {"status": "trained_successfully"}
+
+        use_case.run("AAPL")
+
+        features, _ = ml_port.train.call_args.args
         assert len(features) == len(rows) - 1
+        assert bool(np.isfinite(features["price_delta"]).all())
 
     def test_returns_ml_train_result(self, use_case, repository_port, ml_port):
         repository_port.get_feature_store_data.return_value = _feature_store_rows(

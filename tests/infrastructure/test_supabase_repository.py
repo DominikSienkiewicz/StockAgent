@@ -105,6 +105,54 @@ class TestSavePriceSnapshot:
 
 
 # ---------------------------------------------------------------------------
+# get_last_prediction_price — referencja dla cechy price_delta (P0: train/serve
+# skew). Czyta cenę OSTATNIEJ zalogowanej predykcji z prediction_logs, bo widok
+# ml_feature_store liczy price_delta jako LAG(price_at_prediction) — inference
+# musi użyć tej samej referencji, nie ostatniego snapshotu.
+# ---------------------------------------------------------------------------
+
+
+class TestGetLastPredictionPrice:
+    def test_returns_money_from_latest_prediction(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "order", "limit"],
+            [{"price_at_prediction": 187.25}],
+        )
+
+        price = repo.get_last_prediction_price("AAPL")
+
+        assert isinstance(price, Money)
+        assert price.amount == Decimal("187.25")
+
+    def test_returns_none_when_no_predictions(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client, ["table", "select", "eq", "order", "limit"], data=[]
+        )
+        assert repo.get_last_prediction_price("UNKNOWN") is None
+
+    def test_reads_prediction_logs_not_snapshots(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client, ["table", "select", "eq", "order", "limit"], data=[]
+        )
+
+        repo.get_last_prediction_price("VOO")
+
+        # Referencja = poprzednia zalogowana predykcja (prediction_logs),
+        # NIE snapshot ceny (price_snapshots).
+        mock_client.table.assert_called_with("prediction_logs")
+        mock_client.table.return_value.select.return_value.eq.assert_called_with(
+            "symbol", "VOO"
+        )
+
+
+# ---------------------------------------------------------------------------
 # save_prediction
 # ---------------------------------------------------------------------------
 
