@@ -78,3 +78,84 @@ def test_get_fundamentals_returns_none_on_http_error() -> None:
     with patch.object(adapter._session, "get") as mock_get:
         mock_get.side_effect = Exception("network down")
         assert adapter.get_fundamentals("AAPL") is None
+
+
+# Body sygnalizujący wyczerpanie dziennego limitu (25/dobę free tier):
+# HTTP 200, ale zamiast danych pole `Information` (czasem `Note`).
+RATE_LIMITED_JSON: dict[str, Any] = {
+    "Information": (
+        "Thank you for using Alpha Vantage! Our standard API rate limit "
+        "is 25 requests per day."
+    )
+}
+
+
+def test_get_fundamentals_emits_critical_alert_on_daily_quota() -> None:
+    """Soft-limit 200 (pole `Information`) musi wystawić CRITICAL alert,
+    a nie po cichu zwrócić None jak przy zwykłym braku danych."""
+    from src.application.quota_monitor import QuotaMonitor
+    from src.domain.quota import QuotaSeverity
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(
+        api_keys=["KEY1"], quota_monitor=monitor
+    )
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = _mock_response(RATE_LIMITED_JSON)
+        result = adapter.get_fundamentals("AAPL")
+
+    assert result is None
+    assert len(monitor.alerts) == 1
+    alert = monitor.alerts[0]
+    assert alert.severity is QuotaSeverity.CRITICAL
+    assert "fundamentals" in alert.source.lower()
+    assert alert.message
+    assert alert.action
+
+
+def test_get_fundamentals_emits_critical_alert_on_note_key() -> None:
+    """AV bywa niespójne: czasem soft-limit ma pole `Note` zamiast
+    `Information`. Oba muszą być wykryte."""
+    from src.application.quota_monitor import QuotaMonitor
+    from src.domain.quota import QuotaSeverity
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(
+        api_keys=["KEY1"], quota_monitor=monitor
+    )
+    note_json: dict[str, Any] = {
+        "Note": "Thank you for using Alpha Vantage! ... 25 requests per day ..."
+    }
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = _mock_response(note_json)
+        result = adapter.get_fundamentals("AAPL")
+
+    assert result is None
+    assert len(monitor.alerts) == 1
+    assert monitor.alerts[0].severity is QuotaSeverity.CRITICAL
+
+
+def test_genuine_empty_response_does_not_emit_alert() -> None:
+    """Zwykły pusty 200 (np. ETF bez fundamentów) to NIE jest quota —
+    None bez alertu, distinguishable od soft-limitu."""
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(
+        api_keys=["KEY1"], quota_monitor=monitor
+    )
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = [_mock_response({}), _mock_response({})]
+        result = adapter.get_fundamentals("VOO")
+
+    assert result is None
+    assert monitor.alerts == []
+
+
+def test_quota_monitor_is_optional_no_crash_on_quota() -> None:
+    """Backward-compat: bez wstrzykniętego monitora soft-limit nie wywala
+    adaptera, tylko zwraca None (z logiem)."""
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"])
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = _mock_response(RATE_LIMITED_JSON)
+        assert adapter.get_fundamentals("AAPL") is None

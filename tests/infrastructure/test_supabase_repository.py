@@ -90,18 +90,34 @@ class TestGetLastPrice:
 
 
 class TestSavePriceSnapshot:
-    def test_inserts_symbol_and_price_to_snapshots_table(
+    def test_upserts_symbol_and_price_to_snapshots_table(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        _set_chain_response(mock_client, ["table", "insert"], [{"id": "snap-1"}])
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": "snap-1"}])
 
         repo.save_price_snapshot("AAPL", Money(Decimal("298.87")))
 
         mock_client.table.assert_called_with("price_snapshots")
-        inserted = mock_client.table.return_value.insert.call_args.args[0]
+        inserted = mock_client.table.return_value.upsert.call_args.args[0]
         assert inserted["symbol"] == "AAPL"
         # Decimal serializowany do str (JSON-safe)
         assert str(inserted["price"]) == "298.87"
+
+    def test_upsert_uses_symbol_timestamp_hour_conflict_key(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """Idempotency (#7): re-run GHA / nakładający się workflow_dispatch /
+        retry LangGraph nie może duplikować snapshotu. Upsert na konflikt
+        (symbol, timestamp_hour) aktualizuje istniejący logiczny wiersz zamiast
+        wstawiać duplikat (duplikaty podwójnie liczyłyby się w widoku
+        ml_feature_store i w get_accuracy_stats)."""
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": "snap-1"}])
+
+        repo.save_price_snapshot("AAPL", Money(Decimal("298.87")))
+
+        upsert = mock_client.table.return_value.upsert
+        upsert.assert_called_once()
+        assert upsert.call_args.kwargs["on_conflict"] == "symbol,timestamp_hour"
 
 
 # ---------------------------------------------------------------------------
@@ -158,12 +174,14 @@ class TestGetLastPredictionPrice:
 
 
 class TestSavePrediction:
-    def test_returns_inserted_uuid(
+    def test_returns_upserted_uuid(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
+        # Upsert z domyślnym merge zwraca wiersz (z id) — save_prediction MUSI
+        # nadal zwracać to id (graf używa go jako prediction_id).
         _set_chain_response(
             mock_client,
-            ["table", "insert"],
+            ["table", "upsert"],
             [{"id": "uuid-789", "symbol": "AAPL"}],
         )
 
@@ -179,12 +197,35 @@ class TestSavePrediction:
 
         assert record_id == "uuid-789"
 
-    def test_raises_when_insert_returns_empty_rows(
+    def test_upsert_uses_symbol_timestamp_hour_conflict_key(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """Idempotency (#7): same-hour re-run aktualizuje istniejący wiersz
+        zamiast duplikować. Bez on_conflict duplikaty podwójnie liczyłyby się
+        w get_accuracy_stats i w widoku ml_feature_store."""
+        _set_chain_response(
+            mock_client, ["table", "upsert"], [{"id": "uuid-1", "symbol": "AAPL"}]
+        )
+
+        repo.save_prediction(
+            {
+                "symbol": "AAPL",
+                "price_at_prediction": Decimal("100.0"),
+                "predicted_trend": "BULLISH",
+                "predicted_target_price": Decimal("105.0"),
+            }
+        )
+
+        upsert = mock_client.table.return_value.upsert
+        upsert.assert_called_once()
+        assert upsert.call_args.kwargs["on_conflict"] == "symbol,timestamp_hour"
+
+    def test_raises_when_upsert_returns_empty_rows(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
         # Supabase czasem zwraca puste response.data (np. przy konflikcie RLS).
         # Bez tego guardu prediction_id propagowałby się jako None / KeyError.
-        _set_chain_response(mock_client, ["table", "insert"], data=[])
+        _set_chain_response(mock_client, ["table", "upsert"], data=[])
 
         with pytest.raises(RuntimeError, match="AAPL"):
             repo.save_prediction(
@@ -199,7 +240,7 @@ class TestSavePrediction:
     def test_serializes_decimal_values_for_json(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        _set_chain_response(mock_client, ["table", "insert"], [{"id": "uuid-1"}])
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": "uuid-1"}])
 
         repo.save_prediction(
             {
@@ -209,7 +250,7 @@ class TestSavePrediction:
             }
         )
 
-        inserted = mock_client.table.return_value.insert.call_args.args[0]
+        inserted = mock_client.table.return_value.upsert.call_args.args[0]
         # Decimal nie jest JSON-serializowalny natywnie — adapter musi zamieniać na str/float
         assert isinstance(inserted["price_at_prediction"], str | float | int)
         assert str(inserted["price_at_prediction"]) == "100.55"
@@ -711,6 +752,12 @@ class TestGetRecentlyResolvedSelectsPostMortemColumns:
         """Post-mortem w raporcie potrzebuje oryginalnego uzasadnienia, diagnozy
         i cen — muszą być w SELECT, inaczej sekcja 'Zamknięte predykcje' nie ma
         z czego pokazać 'dlaczego wzrosło/spadło i czy się potwierdziło'."""
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [[]])
+
         repo.get_recently_resolved_predictions(24)
         select_arg = mock_client.table.return_value.select.call_args.args[0]
         for col in (
@@ -720,6 +767,110 @@ class TestGetRecentlyResolvedSelectsPostMortemColumns:
             "actual_price_after_12h",
         ):
             assert col in select_arg
+
+    def test_aggregates_all_rows_across_pages(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """#8: get_recently_resolved_predictions też paginuje — bez tego raport
+        pokazywałby max 1000 zamkniętych predykcji."""
+        full_page = [{"symbol": "AAPL"} for _ in range(1000)]
+        short_page = [{"symbol": "VOO"}]
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [full_page, short_page])
+
+        out = repo.get_recently_resolved_predictions(24)
+
+        assert len(out) == 1001
+        assert order_builder.range.call_count == 2
+
+
+def _set_paginated_response(
+    range_builder: MagicMock, pages: list[list[dict[str, Any]]]
+) -> None:
+    """Konfiguruje terminalny `.range(...).execute()` tak, by kolejne wywołania
+    zwracały kolejne strony (#8: paginacja wokół PostgREST cap ~1000).
+
+    `range_builder` to obiekt, na którym wołane jest `.range(offset, end)`
+    (np. `chain...order.return_value`). Każde wejście listy `pages` to jedna
+    strona; helper zwraca odpowiedź per wywołanie `.range(...)`."""
+    responses = []
+    for page in pages:
+        resp = MagicMock()
+        resp.data = page
+        responses.append(resp)
+    # .range(...) zwraca builder, którego .execute() daje kolejną stronę.
+    range_results = []
+    for resp in responses:
+        builder = MagicMock()
+        builder.execute.return_value = resp
+        range_results.append(builder)
+    range_builder.range.side_effect = range_results
+
+
+class TestGetAccuracyStats:
+    def test_small_result_set_computes_hit_rate(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """Zachowanie dla <PAGE_SIZE wierszy bez zmian: jedna krótka strona."""
+        rows = [
+            {"is_trend_correct": True},
+            {"is_trend_correct": False},
+            {"is_trend_correct": True},
+        ]
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [rows])
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert stats["sample_count"] == 3
+        assert stats["correct_count"] == 2
+        assert stats["mean_accuracy"] == 2 / 3
+        assert stats["days_window"] == 30
+
+    def test_adds_deterministic_order_by_timestamp(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """#8: bez .order() obcięty podzbiór (~1000) był niedeterministyczny."""
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [[]])
+
+        repo.get_accuracy_stats(days=30)
+
+        order_call = chain.select.return_value.gte.return_value.not_.is_.return_value.order
+        assert order_call.call_args.args[0] == "timestamp"
+        assert order_call.call_args.kwargs.get("desc") is True
+
+    def test_mean_accuracy_computed_over_all_pages(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """#8: cap ~1000 biasował hit-rate. mean_accuracy musi obejmować pełen
+        zbiór z wszystkich stron paginacji, nie tylko pierwsze 1000 wierszy."""
+        # Strona 1: 1000 wierszy, wszystkie True. Strona 2: 1000 wierszy False.
+        page1 = [{"is_trend_correct": True} for _ in range(1000)]
+        page2 = [{"is_trend_correct": False} for _ in range(1000)]
+        short_page = [{"is_trend_correct": True}]
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [page1, page2, short_page])
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        # 1001 True z 2001 → gdyby obcięto do 1000, byłoby 100%.
+        assert stats["sample_count"] == 2001
+        assert stats["correct_count"] == 1001
+        assert stats["mean_accuracy"] == 1001 / 2001
+        assert order_builder.range.call_count == 3
 
 
 class TestGetResolvedPredictionsForEval:
@@ -736,20 +887,40 @@ class TestGetResolvedPredictionsForEval:
                 "timestamp": "2026-06-01T12:00:00+00:00",
             }
         ]
-        mock_response = MagicMock()
-        mock_response.data = rows
-        # Łańcuch: table().select().gte().not_.is_().order().execute()
+        # Łańcuch z paginacją: table().select().gte().not_.is_().order().range().execute()
         chain = mock_client.table.return_value
-        (
-            chain.select.return_value.gte.return_value.not_.is_.return_value
-            .order.return_value.execute.return_value
-        ) = mock_response
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        # Jedna krótka strona (<PAGE_SIZE) → koniec paginacji.
+        _set_paginated_response(order_builder, [rows])
 
         out = repo.get_resolved_predictions_for_eval(days=30)
 
         assert out == rows
         gte_call = chain.select.return_value.gte
         assert gte_call.call_args.args[0] == "timestamp"
+
+    def test_aggregates_all_rows_across_pages(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """#8: hosted Supabase cap ~1000 wierszy bez błędu. Read musi paginować
+        po .range(...) aż do krótkiej strony, inaczej trafność jest obcinana."""
+        full_page = [{"timestamp": f"2026-06-01T00:{i:02d}:00+00:00"} for i in range(1000)]
+        short_page = [{"timestamp": "2026-06-02T00:00:00+00:00"}]
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [full_page, short_page])
+
+        out = repo.get_resolved_predictions_for_eval(days=30)
+
+        assert len(out) == 1001
+        assert order_builder.range.call_count == 2
+        # Pierwsza strona: offset 0; druga: offset 1000.
+        assert order_builder.range.call_args_list[0].args == (0, 999)
+        assert order_builder.range.call_args_list[1].args == (1000, 1999)
 
 
 class TestFindSimilarPredictions:

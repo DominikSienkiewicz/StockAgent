@@ -207,6 +207,43 @@ class AnthropicAdapter(LLMPort):
         match = _CODE_BLOCK_RE.search(text)
         return match.group(1) if match else text
 
+    @staticmethod
+    def _extract_first_json_object(text: str) -> str | None:
+        """Wyłuskuje PIERWSZY zbalansowany obiekt {...} z tekstu.
+
+        Claude nie ma natywnego JSON Mode — bywa, że owija JSON w prozę
+        ("Here is the analysis: {...} hope that helps") albo dokleja komentarz
+        po obiekcie. Skanujemy znak po znaku, licząc głębokość nawiasów i
+        respektując stringi (nawias w stringu nie zmienia głębokości; escape
+        `\\` nie kończy stringa). Zwraca substring obiektu albo None, gdy
+        żaden zbalansowany {...} nie istnieje.
+        """
+        start = text.find("{")
+        if start == -1:
+            return None
+        depth = 0
+        in_string = False
+        escaped = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        return None
+
     def analyze(self, prompt: str) -> dict[str, Any]:
         text = self._call(prompt)
         if not text:
@@ -214,10 +251,18 @@ class AnthropicAdapter(LLMPort):
         cleaned = self._strip_code_block(text).strip()
         try:
             return json.loads(cleaned)  # type: ignore[no-any-return]
-        except json.JSONDecodeError as exc:
+        except json.JSONDecodeError:
+            # Fallback: proza wokół JSON-a / komentarz po obiekcie. Wyłuskaj
+            # pierwszy zbalansowany {...} i spróbuj sparsować jego.
+            candidate = self._extract_first_json_object(cleaned)
+            if candidate is not None:
+                try:
+                    return json.loads(candidate)  # type: ignore[no-any-return]
+                except json.JSONDecodeError:
+                    pass
             raise ValueError(
                 f"Anthropic returned invalid JSON: {cleaned[:200]!r}"
-            ) from exc
+            ) from None
 
     def analyze_mistake(self, prompt: str) -> str:
         return self._call(prompt).strip()

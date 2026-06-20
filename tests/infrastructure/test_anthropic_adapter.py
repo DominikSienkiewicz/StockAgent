@@ -96,6 +96,62 @@ class TestAnalyze:
 
         assert result["trend_direction"] == "BEARISH"
 
+    def test_extracts_json_from_prose_wrapped_response(self, adapter_with_client):
+        # Claude nie ma natywnego JSON Mode — czasem owija JSON w prozę.
+        # Adapter musi wyłuskać pierwszy zbalansowany obiekt {...}.
+        adapter, client = adapter_with_client
+        prose = (
+            'Here is the analysis: '
+            '{"trend_direction":"BULLISH","confidence_score":0.8} '
+            'hope this helps'
+        )
+        client.messages.create.return_value = _message_response(prose)
+
+        result = adapter.analyze("Predict.")
+
+        assert result == {
+            "trend_direction": "BULLISH",
+            "confidence_score": 0.8,
+        }
+
+    def test_ignores_trailing_commentary_after_object(self, adapter_with_client):
+        # Tekst po zamykającym nawiasie nie może wywalić parsowania.
+        adapter, client = adapter_with_client
+        text = '{"trend_direction": "NEUTRAL"}\n\nLet me know if you need more.'
+        client.messages.create.return_value = _message_response(text)
+
+        result = adapter.analyze("Predict.")
+
+        assert result["trend_direction"] == "NEUTRAL"
+
+    def test_brace_inside_string_does_not_break_extraction(
+        self, adapter_with_client
+    ):
+        # Nawias klamrowy w stringu nie może mylić skanera balansu.
+        adapter, client = adapter_with_client
+        text = (
+            'Result: {"reasoning": "earnings up }{ noise", '
+            '"trend_direction": "BULLISH"} done'
+        )
+        client.messages.create.return_value = _message_response(text)
+
+        result = adapter.analyze("Predict.")
+
+        assert result["trend_direction"] == "BULLISH"
+        assert result["reasoning"] == "earnings up }{ noise"
+
+    def test_raises_value_error_when_no_json_object_present(
+        self, adapter_with_client
+    ):
+        # Genuinie nie-JSON (brak zbalansowanego obiektu) nadal musi failować.
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _message_response(
+            "I cannot analyze this asset right now."
+        )
+
+        with pytest.raises(ValueError, match="JSON"):
+            adapter.analyze("Predict.")
+
 
 class TestAnalyzeMistake:
     def test_returns_plain_text_content(self, adapter_with_client):

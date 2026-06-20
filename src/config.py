@@ -5,7 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     NoDecode,
@@ -217,6 +217,29 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError(
                 f"symbol_throttle_seconds must be non-negative (got {value})"
+            )
+        return value
+
+    @field_validator(
+        "volatility_threshold",
+        "council_volatility_threshold",
+        "crypto_volatility_threshold",
+    )
+    @classmethod
+    def _validate_volatility_threshold(
+        cls, value: Decimal, info: ValidationInfo
+    ) -> Decimal:
+        """Odrzuca ujemne progi volatility.
+
+        Ujemny próg sprawia, że `abs(delta) >= threshold` jest ZAWSZE
+        prawdziwe → bramka FinOps cicho znika i każdy płatny port (LLM,
+        Alpha Vantage, embeddingi) odpala co cykl, bez błędu startu.
+        `0` jest dozwolone — `council_volatility_threshold = 0.0` to
+        udokumentowany "always run" disable switch.
+        """
+        if value < 0:
+            raise ValueError(
+                f"{info.field_name} must be non-negative (got {value})"
             )
         return value
 

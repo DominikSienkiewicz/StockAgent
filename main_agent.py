@@ -205,7 +205,9 @@ def build_council_adapter(
     return LLMAdvisoryCouncil(llm_port=llm_port, personas=personas)
 
 
-def build_embedding_adapter(settings: Settings) -> EmbeddingPort | None:
+def build_embedding_adapter(
+    settings: Settings, quota_monitor: QuotaMonitor | None = None
+) -> EmbeddingPort | None:
     """Embeddingi — OpenAI niezależnie od LLM_PROVIDER.
 
     Anthropic nie udostępnia natywnego embeddings API; OpenAI to nasz jedyny
@@ -217,7 +219,9 @@ def build_embedding_adapter(settings: Settings) -> EmbeddingPort | None:
     """
     from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
 
-    return OpenAIEmbeddingAdapter(api_key=settings.openai_api_key)
+    return OpenAIEmbeddingAdapter(
+        api_key=settings.openai_api_key, quota_monitor=quota_monitor
+    )
 
 
 def build_macro_risk_use_case(
@@ -296,7 +300,7 @@ def build_use_case(
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
         llm_port=llm_port,
         threshold=Threshold(settings.volatility_threshold),
-        embedding_port=build_embedding_adapter(settings),
+        embedding_port=build_embedding_adapter(settings, quota_monitor=quota_monitor),
         council_port=build_council_adapter(settings, council_llm_port),
         # 0.0 → wyłączony (rada zawsze leci gdy główna bramka przepuści).
         council_threshold=(

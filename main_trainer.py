@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import sys
 
+from src.application.quota_monitor import QuotaMonitor
 from src.application.use_cases.train_model import TrainModelUseCase
 from src.config import Settings
 from src.infrastructure.adapters.alpha_vantage_fundamentals import (
@@ -38,6 +39,7 @@ def main(settings: Settings | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
     settings = settings or Settings.from_env()
+    quota_monitor = QuotaMonitor()
     supabase_repo = SupabaseRepository(
         url=settings.supabase_url, key=settings.supabase_key
     )
@@ -56,6 +58,7 @@ def main(settings: Settings | None = None) -> int:
         repo=supabase_repo,
         delegate=AlphaVantageFundamentalsAdapter(
             api_keys=settings.alpha_vantage_api_keys,
+            quota_monitor=quota_monitor,
         ),
     )
     # Odświeżenie fundamentów dla spółek (STOCK) — ETF-y nie mają EPS/P/E.
@@ -66,6 +69,15 @@ def main(settings: Settings | None = None) -> int:
             fundamentals_port.get_fundamentals(symbol)
         except Exception:
             logger.exception("Fundamentals refresh failed for %s", symbol)
+
+    # Persystencja alertów kwoty zebranych podczas odświeżania fundamentów
+    # (np. wyczerpany dzienny limit AV) — banner w mailu czyta ostatnie 24h,
+    # więc wyczerpanie limitu w Slow Loop będzie widoczne w najbliższym raporcie.
+    for alert in quota_monitor.alerts:
+        try:
+            supabase_repo.save_quota_alert(alert)
+        except Exception:
+            logger.exception("Failed to persist quota alert from %s", alert.source)
 
     failures = 0
     for symbol in settings.symbols:

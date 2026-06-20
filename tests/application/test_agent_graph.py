@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -169,6 +170,59 @@ class TestPriceSnapshot:
             "AAPL", Money(Decimal("90.0"))
         )
 
+    def test_snapshot_NOT_written_when_cycle_crashes_before_terminal(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # #6: idempotencja. Snapshot ceny musi być zapisany dopiero w węźle
+        # TERMINALNYM (save / ignore), NIE na starcie check_price. Gdy cykl
+        # pada w połowie (np. predict_node rzuca), żaden snapshot nie może
+        # zostać zapisany — inaczej retry odczytałby świeży snapshot padłej
+        # próby (delta≈0) i bramka volatility cicho zignorowałaby symbol.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        # predict_node pada twardo (ML niezależny od guardu LLM z #12) —
+        # symuluje crash PO check_price, PRZED save.
+        ml_port.predict.side_effect = RuntimeError("XGBoost segfault")
+
+        with pytest.raises(Exception):  # noqa: B017 - dowolny wyjątek z grafu
+            workflow.compile().invoke(_initial_state("100.0"))
+
+        # Sedno naprawy: brak terminala = brak snapshotu = retry reużyje
+        # referencji z POPRZEDNIEGO ukończonego cyklu.
+        repository_port.save_price_snapshot.assert_not_called()
+
+    def test_snapshot_write_failure_does_not_abort_ignored_cycle(
+        self, workflow, market_port, repository_port,
+    ):
+        # #15: przejściowy błąd Supabase na zapisie snapshotu (teraz w węźle
+        # terminalnym) nie może wywalić grafu. Cykl kończy się normalnie.
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))  # -1%
+        repository_port.save_price_snapshot.side_effect = RuntimeError("Supabase 503")
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "ignored"
+        repository_port.save_price_snapshot.assert_called_once()
+
+    def test_snapshot_write_failure_does_not_abort_saved_cycle(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # #15: jak wyżej, ale dla cyklu z pełną analizą (save_node).
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        repository_port.save_price_snapshot.side_effect = RuntimeError("Supabase 503")
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        assert final["prediction_id"] == "pred-uuid-123"
+
 
 # ---------------------------------------------------------------------------
 # Path 1 — high volatility, no prior prediction (cold start)
@@ -309,6 +363,107 @@ class TestSelfReflectionOnWrongPrediction:
 
 
 # ---------------------------------------------------------------------------
+# #16 — paid analyze_mistake bounded by volatility gate; cheap bookkeeping
+#        (accuracy/trend/update) runs ALWAYS, regardless of current volatility.
+# ---------------------------------------------------------------------------
+
+
+class TestReflectMistakeDiagnosisGatedByVolatility:
+    def _wrong_prediction(self) -> Prediction:
+        # BULLISH @100 target 105; spadek poniżej 100 → zły kierunek.
+        return Prediction(
+            id="stale-uuid",
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100.0"),
+            predicted_target_price=Decimal("105.0"),
+        )
+
+    def test_skips_paid_diagnosis_when_below_threshold_but_still_records(
+        self, workflow, market_port, repository_port, llm_port,
+    ):
+        # Cykl płaski: prev=100, current=99.5 → |Δ|=0.5% < 2% (bramka ignoruje).
+        # Prior był BŁĘDNY (BULLISH, a cena spadła) — KIEDYŚ to płaciło za
+        # analyze_mistake mimo niskiej zmienności. Teraz: tania księgowość
+        # (accuracy/trend/update) leci, ale PŁATNE analyze_mistake jest pominięte.
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))
+        repository_port.get_unverified_prediction.return_value = self._wrong_prediction()
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "ignored"
+        # PŁATNE LLM pominięte — sedno #16.
+        llm_port.analyze_mistake.assert_not_called()
+        # Tania księgowość WYKONANA mimo niskiej zmienności.
+        repository_port.update_prediction_accuracy.assert_called_once()
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["prediction_id"] == "stale-uuid"
+        assert kwargs["is_trend_correct"] is False
+        assert isinstance(kwargs["accuracy_score"], float)
+        # Generyczny insight zamiast diagnozy LLM.
+        assert "zmienno" in kwargs["insight"].lower()
+
+    def test_diagnoses_paid_when_at_or_above_threshold_and_trend_wrong(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Cykl zmienny: prev=100, current=90 → |Δ|=10% ≥ 2% → bramka przepuszcza.
+        # Prior był błędny → płatna diagnoza LLM odpala się jak dotąd.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        llm_port.analyze_mistake.assert_called_once()
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["insight"] == "Zignorowałem szerszy kontekst makro."
+        assert "Zignorowałem szerszy kontekst makro." in final["reflection_context"]
+
+    def test_crypto_uses_crypto_threshold_for_diagnosis_gate(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # #16 reużywa _pick_threshold: dla CRYPTO bramka diagnozy używa
+        # crypto_threshold. prev=100, current=97 → |Δ|=3%. Akcje (2%) by
+        # przepuściły, ale crypto_threshold=5% → diagnoza pominięta.
+        from src.domain.asset import Asset
+        from src.domain.value_objects import AssetType
+
+        market_port.get_current_price.return_value = Money(Decimal("97.0"))
+        repository_port.get_unverified_prediction.return_value = Prediction(
+            id="crypto-uuid",
+            symbol="BTC",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100.0"),
+            predicted_target_price=Decimal("110.0"),
+        )
+        llm_port.analyze_mistake.return_value = "nie powinno się odpalić"
+        workflow = create_agent_graph(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            crypto_threshold=Threshold(Decimal("0.05")),
+        )
+
+        asset = Asset(symbol="BTC", asset_type=AssetType.CRYPTO)
+        workflow.compile().invoke({
+            "symbol": "BTC",
+            "previous_price": Decimal("100.0"),
+            "asset": asset,
+        })
+
+        # 3% < crypto 5% → płatna diagnoza pominięta, księgowość wykonana.
+        llm_port.analyze_mistake.assert_not_called()
+        repository_port.update_prediction_accuracy.assert_called_once()
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["is_trend_correct"] is False
+
+
+# ---------------------------------------------------------------------------
 # Path 3 — high volatility, prior prediction CORRECT → reinforcement
 # ---------------------------------------------------------------------------
 
@@ -339,6 +494,64 @@ class TestSelfReflectionOnCorrectPrediction:
         repository_port.update_prediction_accuracy.assert_called_once()
         assert "trafn" in final["reflection_context"].lower()
         assert final["status"] == "saved"
+
+
+# ---------------------------------------------------------------------------
+# #14 — instrumentacja: timing per-node + jawny log każdego płatnego wywołania
+# ---------------------------------------------------------------------------
+
+
+class TestPaidNodeInstrumentation:
+    def test_paid_nodes_emit_timing_logs(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, caplog,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        with caplog.at_level(logging.INFO, logger="src.application.agent_graph"):
+            workflow.compile().invoke(_initial_state("100.0"))
+
+        timing_logs = [
+            rec.message for rec in caplog.records if "elapsed_ms" in rec.message
+        ]
+        joined = " ".join(timing_logs)
+        # Każdy płatny węzeł raportuje swój czas wykonania z symbolem.
+        for node_name in ("analyze_sentiment", "fetch_news", "predict"):
+            assert node_name in joined, f"brak timing logu dla {node_name}"
+        assert "AAPL" in joined
+
+    def test_explicit_paid_call_log_emitted(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, caplog,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        with caplog.at_level(logging.INFO, logger="src.application.agent_graph"):
+            workflow.compile().invoke(_initial_state("100.0"))
+
+        joined = " ".join(rec.message for rec in caplog.records)
+        # Jawna linia, gdy odpala się płatne wywołanie (FinOps audit).
+        assert "paid call" in joined.lower()
+
+    def test_no_paid_timing_logs_when_cycle_ignored(
+        self, workflow, market_port, repository_port, caplog,
+    ):
+        # Cykl poniżej progu → płatne węzły się nie odpalają → brak ich timingów.
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))  # -1%
+        with caplog.at_level(logging.INFO, logger="src.application.agent_graph"):
+            workflow.compile().invoke(_initial_state("100.0"))
+
+        paid_timing = [
+            rec.message for rec in caplog.records
+            if "elapsed_ms" in rec.message
+            and ("predict" in rec.message or "fetch_news" in rec.message
+                 or "analyze_sentiment" in rec.message)
+        ]
+        assert not paid_timing, f"płatne węzły nie powinny się odpalić: {paid_timing}"
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +609,58 @@ class TestSentimentWithNullValues:
 
 
 # ---------------------------------------------------------------------------
+# #12-guard — predict_node degraduje gracefully gdy llm_port.analyze rzuca
+# ---------------------------------------------------------------------------
+
+
+class TestPredictNodeLlmGuard:
+    """W przeciwieństwie do council_node, predict_node wołał llm_port.analyze
+    bez guardu — czatliwa / zepsuta odpowiedź LLM (ValueError przy parsowaniu)
+    wywalała cały symbol. Powinien degradować: neutralna analiza + flaga."""
+
+    def test_llm_analyze_failure_degrades_to_neutral_analysis(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        # LLM zwraca śmieć → adapter rzuca ValueError przy parsowaniu JSON.
+        llm_port.analyze.side_effect = ValueError("LLM returned non-JSON prose")
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        # Symbol NIE crashuje — kończy "saved" z neutralną analizą.
+        assert final["status"] == "saved"
+        assert final["llm_analysis"]["trend_direction"] == "SIDEWAYS"
+        assert final["llm_analysis"]["confidence_score"] == 0.5
+        # Ślad degradacji w data_quality_flags (trening odsieje te rekordy).
+        assert "llm_analysis_failed" in final["data_quality_flags"]
+        # Zapisany rekord też niesie flagę.
+        saved_record = repository_port.save_prediction.call_args.args[0]
+        assert "llm_analysis_failed" in saved_record["data_quality_flags"]
+
+    def test_predict_continues_to_ml_when_llm_fails(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Po fallbacku LLM, ML nadal liczy predykcję (llm_trend_signal=0 → SIDEWAYS).
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        llm_port.analyze.side_effect = ValueError("boom")
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        ml_port.predict.assert_called_once()
+        features = ml_port.predict.call_args.args[0]
+        # Neutralny fallback → llm_trend_signal SIDEWAYS = 0.0.
+        assert features["llm_trend_signal"] == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Path 4 — low volatility → ignore early (FinOps: ZERO płatnych wywołań)
 # ---------------------------------------------------------------------------
 
@@ -432,6 +697,43 @@ class TestVolatilityBelowThreshold:
         llm_port.analyze_mistake.assert_not_called()
         repository_port.update_prediction_accuracy.assert_not_called()
 
+
+    def test_gate_decision_is_logged_when_ignored(
+        self, workflow, market_port, repository_port, caplog,
+    ):
+        # #13: decyzja bramki volatility musi być widoczna w logach (wcześniej
+        # cisza — niemożliwe było odróżnienie "ignore z premedytacją" od buga).
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))  # -1%
+        with caplog.at_level(logging.INFO, logger="src.application.agent_graph"):
+            workflow.compile().invoke(_initial_state("100.0"))
+
+        joined = " ".join(rec.message for rec in caplog.records)
+        assert "AAPL" in joined
+        assert "ignore" in joined.lower()
+        # Log zawiera |delta|, próg i typ aktywa do diagnostyki FinOps.
+        assert "0.01" in joined  # |delta| = 1%
+        assert "0.02" in joined  # próg
+
+    def test_gate_decision_is_logged_when_analyzing(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, caplog,
+    ):
+        # #13: decyzja "przepuść" też loguje się (symetria z "ignore").
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        with caplog.at_level(logging.INFO, logger="src.application.agent_graph"):
+            workflow.compile().invoke(_initial_state("100.0"))
+
+        gate_logs = [
+            rec.message for rec in caplog.records
+            if "volatility gate" in rec.message.lower()
+        ]
+        assert gate_logs, "spodziewany log decyzji bramki volatility"
+        joined = " ".join(gate_logs)
+        assert "AAPL" in joined
+        assert "analyze" in joined.lower()
 
     def test_reflect_runs_even_when_cycle_is_ignored(
         self, workflow, market_port, repository_port, llm_port,

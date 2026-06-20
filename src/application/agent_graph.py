@@ -3,7 +3,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any, TypedDict
 
@@ -27,6 +29,34 @@ from src.domain.council import CouncilInput, CouncilVerdict
 from src.domain.value_objects import AssetType, Fundamentals, Money, Threshold, ValuationVerdict
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _timed_node(node_name: str, symbol: str) -> Iterator[None]:
+    """#14: lekka instrumentacja czasu wykonania płatnego węzła.
+
+    Mierzy elapsed_ms i loguje go na INFO (z nazwą węzła i symbolem). Czas
+    jest raportowany ZAWSZE, nawet gdy węzeł rzuci wyjątek (FinOps: chcemy
+    wiedzieć, jak długo trwało wywołanie, które padło). Trzyma się warstwy
+    application — żadnego nowego portu, czysty stdlib.
+    """
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        logger.info(
+            "node=%s symbol=%s elapsed_ms=%.1f", node_name, symbol, elapsed_ms
+        )
+
+
+def _log_paid_call(node_name: str, symbol: str, detail: str) -> None:
+    """#14: jawna linia w logu, gdy odpala się PŁATNE wywołanie zewnętrzne
+    (LLM / sentyment / news). Pozwala audytować FinOps — ile płatnych wywołań
+    poszło w danym cyklu i z którego węzła."""
+    logger.info(
+        "paid call: node=%s symbol=%s %s", node_name, symbol, detail
+    )
 
 
 class AgentState(TypedDict, total=False):
@@ -216,13 +246,34 @@ def create_agent_graph(
         current = market_port.get_current_price(state["symbol"])
         previous = Money(state["previous_price"])
         delta = PriceDelta.calculate(previous, current)
-        # Snapshot ceny w KAŻDYM cyklu — następny cykl użyje go jako punktu
-        # odniesienia (rozwiązuje cold-start deadlock).
-        repository_port.save_price_snapshot(state["symbol"], current)
+        # #6: snapshot ceny NIE jest już zapisywany tutaj. Zapis przeniesiony do
+        # węzłów TERMINALNYCH (save_node / ignore_node), żeby cykl był idempotentny:
+        # cykl, który padł w połowie, nie zostawia snapshotu, więc retry reużyje
+        # referencji z poprzedniego UKOŃCZONEGO cyklu (zamiast porównywać się do
+        # świeżego snapshotu padłej próby → delta≈0 → cichy "ignore").
         return {
             "current_price": current.amount,
             "delta": delta.percentage,
         }
+
+    def _persist_price_snapshot(state: AgentState) -> None:
+        """#6/#15: zapis snapshotu ceny — wołany wyłącznie z węzłów terminalnych.
+
+        Cold-start nadal działa, bo KAŻDY ukończony cykl (saved albo ignored)
+        zapisuje snapshot, więc następny cykl ma punkt odniesienia. Zapis jest
+        owinięty w try/except (jak save_council_votes / embedding), żeby
+        przejściowy błąd Supabase nie wywalił całego grafu.
+        """
+        try:
+            repository_port.save_price_snapshot(
+                state["symbol"], Money(state["current_price"])
+            )
+        except Exception:
+            logger.exception(
+                "save_price_snapshot failed for %s — cykl kończy się bez "
+                "zapisu referencji ceny; następny cykl użyje starszego snapshotu",
+                state["symbol"],
+            )
 
     def _pick_threshold(
         state: AgentState,
@@ -244,9 +295,19 @@ def create_agent_graph(
         asset = state.get("asset") or Asset(symbol=state["symbol"])
         delta = PriceDelta(state["delta"])
         chosen = _pick_threshold(state, threshold, crypto_threshold)
-        if asset.evaluate_volatility(delta, chosen):
-            return "analyze_sentiment"
-        return "ignore"
+        passes = asset.evaluate_volatility(delta, chosen)
+        decision = "analyze" if passes else "ignore"
+        # #13: decyzja bramki volatility musi być widoczna w logach — bez tego
+        # nie dało się odróżnić zamierzonego "ignore" (FinOps) od cichego buga.
+        logger.info(
+            "volatility gate for %s: |Δ|=%.4f threshold=%.4f asset_type=%s → %s",
+            state["symbol"],
+            abs(float(state["delta"])),
+            float(chosen.value),
+            asset.asset_type.value,
+            decision,
+        )
+        return "analyze_sentiment" if passes else "ignore"
 
     def reflect_node(state: AgentState) -> dict[str, Any]:
         symbol = state["symbol"]
@@ -269,38 +330,77 @@ def create_agent_graph(
         accuracy = float(last.accuracy_score(current_price))
         trend_correct = last.is_trend_correct(current_price)
 
-        if not trend_correct:
-            prompt = get_mistake_diagnosis_prompt(
-                last_trend=str(last.predicted_trend),
-                last_news_summary="(zapisany w prediction_logs)",
-                actual_price=str(current_price),
-            )
-            insight = llm_port.analyze_mistake(prompt)
+        if trend_correct:
             repository_port.update_prediction_accuracy(
                 prediction_id=last.id,
                 actual_price=current_price,
                 accuracy_score=accuracy,
                 is_trend_correct=trend_correct,
-                insight=insight,
+                insight="Trafiona predykcja.",
             )
-            return {"reflection_context": f"Ostatni błąd: {insight}"}
+            return {
+                "reflection_context": "Ostatnie prognozy były trafne. Kontynuuj strategię."
+            }
+
+        # #16: prior był BŁĘDNY. Tania księgowość (accuracy/trend/update) leci
+        # ZAWSZE — to nie kosztuje płatnego API. PŁATNE analyze_mistake (LLM) jest
+        # natomiast bramkowane tą samą logiką progu co główna bramka volatility
+        # (_pick_threshold + Asset.evaluate_volatility), bo reflect biegnie po
+        # check_price i ma już state["delta"]. Inaczej płaski cykl płaciłby za
+        # diagnozę za każdym razem, gdy wisi nieoceniona błędna predykcja.
+        #
+        # UWAGA: to zawęża dotychczasową regułę "reflect jest w pełni niezależny
+        # od zmienności" — niezależna pozostaje TYLKO tania część (ocena);
+        # kosztowna diagnoza LLM jest teraz związana z progiem volatility.
+        gate_asset = state.get("asset") or Asset(symbol=symbol)
+        gate_delta = PriceDelta(state["delta"])
+        gate_threshold = _pick_threshold(state, threshold, crypto_threshold)
+        diagnose_paid = gate_asset.evaluate_volatility(gate_delta, gate_threshold)
+
+        if diagnose_paid:
+            prompt = get_mistake_diagnosis_prompt(
+                last_trend=str(last.predicted_trend),
+                last_news_summary="(zapisany w prediction_logs)",
+                actual_price=str(current_price),
+            )
+            # #14: płatne wywołanie LLM diagnozy — log jawny + timing.
+            _log_paid_call("reflect", symbol, "llm_port.analyze_mistake")
+            with _timed_node("reflect_analyze_mistake", symbol):
+                insight = llm_port.analyze_mistake(prompt)
+        else:
+            # Niska zmienność — nie palimy budżetu LLM na diagnozę. Predykcja
+            # i tak zostaje zamknięta z accuracy/trend; diagnozę odkładamy.
+            insight = "Niska zmienność — diagnoza LLM odłożona."
 
         repository_port.update_prediction_accuracy(
             prediction_id=last.id,
             actual_price=current_price,
             accuracy_score=accuracy,
             is_trend_correct=trend_correct,
-            insight="Trafiona predykcja.",
+            insight=insight,
         )
-        return {"reflection_context": "Ostatnie prognozy były trafne. Kontynuuj strategię."}
+        return {"reflection_context": f"Ostatni błąd: {insight}"}
 
     def analyze_sentiment_node(state: AgentState) -> dict[str, Any]:
-        return {"sentiment": sentiment_port.get_social_score(state["symbol"])}
+        symbol = state["symbol"]
+        # #14: węzeł płatny (Alpha Vantage NEWS_SENTIMENT) — instrumentujemy czas
+        # i logujemy jawnie fakt płatnego wywołania.
+        _log_paid_call("analyze_sentiment", symbol, "sentiment_port.get_social_score")
+        with _timed_node("analyze_sentiment", symbol):
+            return {"sentiment": sentiment_port.get_social_score(symbol)}
 
     def fetch_news_node(state: AgentState) -> dict[str, Any]:
-        return {"news": news_port.get_news_context(state["symbol"])}
+        symbol = state["symbol"]
+        # #14: węzeł płatny (Alpha Vantage NEWS feed) — instrumentacja jak wyżej.
+        _log_paid_call("fetch_news", symbol, "news_port.get_news_context")
+        with _timed_node("fetch_news", symbol):
+            return {"news": news_port.get_news_context(symbol)}
 
     def predict_node(state: AgentState) -> dict[str, Any]:
+        symbol = state["symbol"]
+        # #14: predict to najdroższy węzeł (LLM + ewentualny embedding/RAG).
+        # Mierzymy całkowity czas węzła; perf_counter zamknięty tuż przed return.
+        predict_start = time.perf_counter()
         sentiment = state.get("sentiment") or {}
         news = state.get("news", [])
         news_summary = _summarize_news(news)
@@ -338,7 +438,28 @@ def create_agent_graph(
             reflection_context=state.get("reflection_context", ""),
             similar_context=similar_context,
         )
-        llm_analysis = llm_port.analyze(prompt)
+        # #12-guard: w przeciwieństwie do council_node, predict_node wołał
+        # llm_port.analyze bez zabezpieczenia. Czatliwa / niepoprawna odpowiedź
+        # LLM (adapter rzuca ValueError przy parsowaniu JSON) wywalała cały
+        # symbol. Degradujemy gracefully: neutralna analiza + flaga jakości,
+        # żeby ML i zapis nadal się wykonały, a trening odsiał te rekordy.
+        llm_failed = False
+        # #14: jawny log płatnego wywołania LLM (główna analiza jakościowa).
+        _log_paid_call("predict", symbol, "llm_port.analyze")
+        try:
+            llm_analysis = llm_port.analyze(prompt)
+        except Exception:
+            logger.exception(
+                "llm_port.analyze failed for %s — degraduję do neutralnej analizy",
+                state["symbol"],
+            )
+            llm_analysis = {
+                "trend_direction": "SIDEWAYS",
+                "confidence_score": 0.5,
+                "av_agreement": 0.5,
+                "reasoning": "Analiza LLM niedostępna — neutralny fallback.",
+            }
+            llm_failed = True
 
         # 2. ML — twarda predykcja liczbowa (multi-feature)
         llm_trend_signal = {"BULLISH": 1, "BEARISH": -1, "SIDEWAYS": 0}.get(
@@ -348,6 +469,8 @@ def create_agent_graph(
         # Walidacja pól liczbowych — każdy padły input zostawia ślad w
         # data_quality_flags (None → _missing, nie-numeryczne/NaN → _invalid).
         flags: list[str] = []
+        if llm_failed:
+            flags.append("llm_analysis_failed")
         # Adapter sentymentu (AV) może oznaczyć cały feed jako zdegradowany
         # (np. wszystkie klucze wyczerpane). Wtedy 0.0 we wszystkich polach
         # to nie "spokojny dzień" tylko "brak danych" — flaga to rozróżnia.
@@ -410,6 +533,10 @@ def create_agent_graph(
         else:
             ml_target = state["current_price"]
 
+        # #14: pojedyncze wyjście węzła — logujemy całkowity czas predict.
+        elapsed_ms = (time.perf_counter() - predict_start) * 1000.0
+        logger.info("node=predict symbol=%s elapsed_ms=%.1f", symbol, elapsed_ms)
+
         return {
             "llm_analysis": llm_analysis,
             "ml_target_price": ml_target,
@@ -457,8 +584,12 @@ def create_agent_graph(
             fundamentals=state.get("fundamentals"),
             valuation_verdict=state.get("valuation_verdict", ValuationVerdict.UNKNOWN),
         )
+        # #14: rada to N równoległych wywołań LLM — najdroższy płatny węzeł.
+        # Jawny log płatnego wywołania + timing (mierzony też przy błędzie).
+        _log_paid_call("council", state["symbol"], "council_port.analyze")
         try:
-            verdict = council_port.analyze(state["symbol"], data)
+            with _timed_node("council", state["symbol"]):
+                verdict = council_port.analyze(state["symbol"], data)
         except Exception:
             logger.exception(
                 "council_node failed for %s — continuing without verdict",
@@ -480,6 +611,14 @@ def create_agent_graph(
                 data_quality_flags,
             )
 
+        # #17: zawężenie do zmiennej lokalnej WEWNĄTRZ gałęzi `is not None`, żeby
+        # mypy widział `CouncilVerdict` (nie `CouncilVerdict | None`) w asdict().
+        # Wcześniej maskował to szeroki override `disable_error_code=["arg-type"]`.
+        council_verdict = state.get("council_verdict")
+        council_verdict_dict = (
+            dataclasses.asdict(council_verdict) if council_verdict is not None else None
+        )
+
         record: dict[str, Any] = {
             "symbol": state["symbol"],
             "price_at_prediction": state["current_price"],
@@ -496,11 +635,7 @@ def create_agent_graph(
             "predicted_trend": llm_analysis.get("trend_direction"),
             "predicted_target_price": state.get("ml_target_price"),
             "reasoning_text": llm_analysis.get("reasoning"),
-            "council_verdict": (
-                dataclasses.asdict(state["council_verdict"])
-                if state.get("council_verdict") is not None
-                else None
-            ),
+            "council_verdict": council_verdict_dict,
             "data_quality_flags": data_quality_flags,
         }
 
@@ -544,9 +679,14 @@ def create_agent_graph(
                     state["symbol"],
                 )
 
+        # #6: węzeł terminalny — zapisujemy snapshot ceny dla następnego cyklu.
+        _persist_price_snapshot(state)
+
         return {"prediction_id": prediction_id, "status": "saved"}
 
-    def ignore_node(_: AgentState) -> dict[str, Any]:
+    def ignore_node(state: AgentState) -> dict[str, Any]:
+        # #6: węzeł terminalny — zapisujemy snapshot ceny dla następnego cyklu.
+        _persist_price_snapshot(state)
         return {"status": "ignored"}
 
     # ---------- Topologia ----------
@@ -570,7 +710,10 @@ def create_agent_graph(
         # Węzeł fundamentów jest PRZED bramką — czytanie cache jest darmowe.
         workflow.add_node(
             "fetch_fundamentals",
-            _build_fetch_fundamentals_node(fundamentals_port),
+            # #17: LangGraph 1.x stubs typują węzły jako `_Node[Never]` i nie
+            # inferują schematu opartego o TypedDict (StateGraph[AgentState]).
+            # Runtime jest poprawny; wąski ignore zamiast szerokiego override.
+            _build_fetch_fundamentals_node(fundamentals_port),  # type: ignore[arg-type]
         )
         workflow.add_edge("reflect", "fetch_fundamentals")
         # fetch_fundamentals → bramka volatility: dopiero TU decydujemy, czy robić

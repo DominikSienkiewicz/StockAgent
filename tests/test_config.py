@@ -75,6 +75,31 @@ class TestSettings:
         settings = Settings(_env_file=None)
         assert settings.volatility_threshold == Decimal("0.05")
 
+    def test_negative_volatility_threshold_rejected(self, env):
+        # Ujemny próg sprawia, że abs(delta) >= threshold ZAWSZE prawdziwe →
+        # płatne porty (LLM/AV/embeddingi) odpalają co cykl, bez błędu startu.
+        with pytest.raises(ValueError, match="volatility_threshold"):
+            Settings(_env_file=None, volatility_threshold=Decimal("-0.01"))
+
+    def test_negative_council_volatility_threshold_rejected(self, env):
+        with pytest.raises(ValueError, match="council_volatility_threshold"):
+            Settings(
+                _env_file=None, council_volatility_threshold=Decimal("-0.01")
+            )
+
+    def test_negative_crypto_volatility_threshold_rejected(self, env):
+        with pytest.raises(ValueError, match="crypto_volatility_threshold"):
+            Settings(
+                _env_file=None, crypto_volatility_threshold=Decimal("-0.01")
+            )
+
+    def test_council_volatility_threshold_zero_is_accepted(self, env):
+        # 0.0 to udokumentowany "always run" disable switch — nie footgun.
+        settings = Settings(
+            _env_file=None, council_volatility_threshold=Decimal("0")
+        )
+        assert settings.council_volatility_threshold == Decimal("0")
+
     def test_default_symbols_list(self, env):
         settings = Settings(_env_file=None)
         assert isinstance(settings.symbols, list)

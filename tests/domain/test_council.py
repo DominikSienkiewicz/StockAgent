@@ -1,7 +1,14 @@
 # tests/domain/test_council.py
 from decimal import Decimal
 
-from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
+import pytest
+
+from src.domain.council import (
+    CouncilInput,
+    CouncilVerdict,
+    InvestorOpinion,
+    derive_consensus,
+)
 
 
 def _make_opinion(rec: str = "BUY", confidence: float = 0.8) -> InvestorOpinion:
@@ -185,6 +192,71 @@ class TestInvestorOpinionBehavior:
         # < 0.5 = LOW
         assert _make_opinion(confidence=0.5).confidence_label() == "MEDIUM"
         assert _make_opinion(confidence=0.4999).confidence_label() == "LOW"
+
+
+class TestDeriveConsensus:
+    """Czysta funkcja domenowa: rekomendacja + siła konsensusu liczone z
+    realnych głosów inwestorów (confidence-weighted), nie z liczby od chairman."""
+
+    def test_unanimous_buy_high_strength(self):
+        ops = [_make_opinion("BUY", confidence=0.8) for _ in range(5)]
+        rec, strength = derive_consensus(ops)
+        assert rec == "BUY"
+        # Jednogłośne BUY → cała "masa" pewności na zwycięskim koszyku → 1.0
+        assert strength == 1.0
+
+    def test_three_buy_one_sell_three_hold_deterministic(self):
+        # 3×BUY, 1×SELL, 3×HOLD — wszystkie confidence=0.8.
+        # Suma confidence = 7 * 0.8 = 5.6; zwycięzca to remis BUY/HOLD po 3.
+        # Tie-break preferuje BUY > SELL > HOLD → BUY wygrywa.
+        # strength = (3 * 0.8) / (7 * 0.8) = 2.4 / 5.6 = 3/7.
+        ops = (
+            [_make_opinion("BUY", confidence=0.8) for _ in range(3)]
+            + [_make_opinion("SELL", confidence=0.8)]
+            + [_make_opinion("HOLD", confidence=0.8) for _ in range(3)]
+        )
+        rec, strength = derive_consensus(ops)
+        assert rec == "BUY"
+        assert strength == pytest.approx(3 / 7)
+
+    def test_confidence_weighted_winner_not_headcount(self):
+        # 1×BUY z confidence 0.9 vs 2×SELL z confidence 0.1 każdy.
+        # Headcount mówi SELL (2 głosy), ale waga pewności mówi BUY
+        # (0.9 vs 0.2). Funkcja musi ważyć pewnością.
+        ops = [
+            _make_opinion("BUY", confidence=0.9),
+            _make_opinion("SELL", confidence=0.1),
+            _make_opinion("SELL", confidence=0.1),
+        ]
+        rec, strength = derive_consensus(ops)
+        assert rec == "BUY"
+        assert strength == pytest.approx(0.9 / 1.1)
+
+    def test_empty_opinions_safe_default(self):
+        rec, strength = derive_consensus([])
+        assert rec == "HOLD"
+        assert strength == 0.0
+
+    def test_all_zero_confidence_falls_back_to_headcount(self):
+        # Gdy wszyscy mają confidence 0.0, waga jest bezużyteczna — wracamy
+        # do liczenia głosów, żeby nie dzielić przez zero.
+        ops = [
+            _make_opinion("SELL", confidence=0.0),
+            _make_opinion("SELL", confidence=0.0),
+            _make_opinion("BUY", confidence=0.0),
+        ]
+        rec, strength = derive_consensus(ops)
+        assert rec == "SELL"
+        assert strength == pytest.approx(2 / 3)
+
+    def test_strength_in_unit_interval(self):
+        ops = [
+            _make_opinion("BUY", confidence=0.7),
+            _make_opinion("SELL", confidence=0.6),
+            _make_opinion("HOLD", confidence=0.55),
+        ]
+        _, strength = derive_consensus(ops)
+        assert 0.0 <= strength <= 1.0
 
 
 class TestCouncilInput:

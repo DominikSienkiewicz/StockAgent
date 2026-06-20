@@ -30,6 +30,7 @@ MIGRATION_FILES = [
     "010_quota_alerts.sql",
     "011_match_news_embeddings.sql",
     "012_ml_feature_store_return_target.sql",
+    "013_idempotency_and_pagination.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -288,3 +289,83 @@ class TestMigrations:
     def test_fundamentals_cache_fetched_at_index_exists(self, pg_conn) -> None:
         indexes = _indexes(pg_conn, "fundamentals_cache")
         assert "idx_fundamentals_cache_fetched_at" in indexes
+
+    # -- Migracja 013: idempotency (timestamp_hour + UNIQUE) -----------------
+
+    def test_price_snapshots_has_timestamp_hour_column(self, pg_conn) -> None:
+        cols = _columns(pg_conn, "price_snapshots")
+        assert "timestamp_hour" in cols, "Brak kolumny timestamp_hour (migracja 013)"
+
+    def test_prediction_logs_has_timestamp_hour_column(self, pg_conn) -> None:
+        cols = _columns(pg_conn, "prediction_logs")
+        assert "timestamp_hour" in cols, "Brak kolumny timestamp_hour (migracja 013)"
+
+    def test_price_snapshots_has_unique_index_on_symbol_hour(self, pg_conn) -> None:
+        indexes = _indexes(pg_conn, "price_snapshots")
+        assert "idx_price_snapshots_symbol_hour_uniq" in indexes
+
+    def test_prediction_logs_has_unique_index_on_symbol_hour(self, pg_conn) -> None:
+        indexes = _indexes(pg_conn, "prediction_logs")
+        assert "idx_prediction_logs_symbol_hour_uniq" in indexes
+
+    def test_timestamp_hour_truncates_to_hour(self, pg_conn) -> None:
+        """timestamp_hour to date_trunc('hour', timestamp) — dwa snapshoty w tej
+        samej godzinie kolidują (UNIQUE), więc upsert aktualizuje, nie duplikuje."""
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO price_snapshots (symbol, price, timestamp) "
+                "VALUES (%s, %s, %s) RETURNING timestamp_hour",
+                ("TS_HOUR", 100.0, "2026-06-01T14:37:00+00:00"),
+            )
+            row = cur.fetchone()
+        assert row is not None
+        assert str(row[0]).startswith("2026-06-01 14:00:00")
+
+    def test_price_snapshots_unique_constraint_rejects_same_hour_duplicate(
+        self, pg_conn
+    ) -> None:
+        """UNIQUE(symbol, timestamp_hour): drugi INSERT w tej samej godzinie bez
+        ON CONFLICT musi rzucić — to twardy fundament idempotentnego upsertu."""
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO price_snapshots (symbol, price, timestamp) "
+                "VALUES (%s, %s, %s)",
+                ("DUP_HOUR", 100.0, "2026-06-02T09:10:00+00:00"),
+            )
+            with pytest.raises(psycopg2.errors.UniqueViolation):
+                cur.execute(
+                    "INSERT INTO price_snapshots (symbol, price, timestamp) "
+                    "VALUES (%s, %s, %s)",
+                    ("DUP_HOUR", 200.0, "2026-06-02T09:55:00+00:00"),
+                )
+
+    def test_prediction_logs_upsert_on_conflict_updates_not_duplicates(
+        self, pg_conn
+    ) -> None:
+        """Upsert ON CONFLICT (symbol, timestamp_hour): same-hour re-run
+        aktualizuje istniejący wiersz zamiast duplikować (regresja #7)."""
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM prediction_logs WHERE symbol = 'UPSERT_PL'")
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction, timestamp) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (symbol, timestamp_hour) "
+                "DO UPDATE SET price_at_prediction = EXCLUDED.price_at_prediction",
+                ("UPSERT_PL", 100.0, "2026-06-03T11:05:00+00:00"),
+            )
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction, timestamp) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (symbol, timestamp_hour) "
+                "DO UPDATE SET price_at_prediction = EXCLUDED.price_at_prediction",
+                ("UPSERT_PL", 250.0, "2026-06-03T11:50:00+00:00"),
+            )
+            cur.execute(
+                "SELECT count(*), max(price_at_prediction) FROM prediction_logs "
+                "WHERE symbol = 'UPSERT_PL'"
+            )
+            row = cur.fetchone()
+        assert row is not None
+        # Jeden logiczny wiersz, zaktualizowana cena (250), nie duplikat.
+        assert row[0] == 1
+        assert float(row[1]) == 250.0

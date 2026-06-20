@@ -98,10 +98,3 @@ python_version = "3.12"
 strict = true
 ignore_missing_imports = true
 files = ["src", "tests"]
-
-# LangGraph 1.x typing stubs use `_Node[Never]` for StateGraph nodes and don't
-# infer TypedDict-based state schemas. Runtime is fine; we relax arg-type only
-# in the file that interfaces with LangGraph.
-[[tool.mypy.overrides]]
-module = "src.application.agent_graph"
-disable_error_code = ["arg-type"]

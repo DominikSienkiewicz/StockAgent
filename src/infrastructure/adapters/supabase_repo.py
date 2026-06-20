@@ -27,6 +27,30 @@ DEFAULT_QUOTA_ALERTS_TABLE = "quota_alerts"
 _REFRESH_MAX_ATTEMPTS = 3
 _REFRESH_BACKOFF_S = 2.0
 
+# Hosted Supabase / PostgREST tnie SELECT do ~1000 wierszy BEZ błędu (#8).
+# Agregaty (get_accuracy_stats itd.) muszą paginować po .range(), inaczej
+# trafność liczona jest na obciętym, niedeterministycznym podzbiorze.
+_PAGE_SIZE = 1000
+
+
+def _paginate(query_builder: Any) -> list[dict[str, Any]]:
+    """Iteruje .range(offset, offset+_PAGE_SIZE-1) po `query_builder` aż do
+    zwrócenia krótkiej strony (<_PAGE_SIZE), kumulując wszystkie wiersze.
+
+    `query_builder` to gotowy builder (po .order/.gte/...), na którym wywołanie
+    .range(...).execute() zwraca kolejną stronę. Dla zbiorów <_PAGE_SIZE
+    zachowanie jest identyczne jak pojedynczy select (jedna iteracja)."""
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        response = query_builder.range(offset, offset + _PAGE_SIZE - 1).execute()
+        page = _rows(response)
+        rows.extend(page)
+        if len(page) < _PAGE_SIZE:
+            break
+        offset += _PAGE_SIZE
+    return rows
+
 
 def _serialize(value: Any) -> Any:
     """Decimal → str (JSON-safe, zachowuje precyzję) — pozostałe typy bez zmian."""
@@ -183,7 +207,9 @@ class SupabaseRepository(RepositoryPort):
         # Pełen post-mortem w raporcie: oryginalne uzasadnienie + diagnoza + ceny
         # (a nie tylko kierunek), żeby pokazać "dlaczego wzrosło/spadło i czy
         # prognoza się potwierdziła".
-        response = (
+        # Paginacja (#8) — bez niej raport pokazałby max ~1000 zamkniętych
+        # predykcji (cichy cap PostgREST).
+        query = (
             self._client.table(self._table)
             .select(
                 "symbol, predicted_trend, is_trend_correct, timestamp, "
@@ -193,9 +219,8 @@ class SupabaseRepository(RepositoryPort):
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
-            .execute()
         )
-        return _rows(response)
+        return _paginate(query)
 
     def get_resolved_predictions_for_eval(self, days: int) -> list[dict[str, Any]]:
         """Zamknięte predykcje z ostatnich `days` dni z polami do ewaluacji
@@ -204,7 +229,8 @@ class SupabaseRepository(RepositoryPort):
         Metoda concrete-only (nie część `RepositoryPort`) — to narzędzie
         offline-analizy, nie część runtime'owego kontraktu use case'ów."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        response = (
+        # Paginacja (#8) — ewaluacja musi widzieć pełen zbiór, nie obcięte 1000.
+        query = (
             self._client.table(self._table)
             .select(
                 "predicted_trend, is_trend_correct, price_at_prediction, "
@@ -213,9 +239,8 @@ class SupabaseRepository(RepositoryPort):
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("actual_price_after_12h", "null")
             .order("timestamp", desc=True)
-            .execute()
         )
-        return _rows(response)
+        return _paginate(query)
 
     def get_accuracy_stats(self, days: int) -> dict[str, Any]:
         """Trafność kierunkowa predykcji z ostatnich `days` dni.
@@ -228,14 +253,17 @@ class SupabaseRepository(RepositoryPort):
         `days_window`. Gdy brak danych → mean_accuracy=None.
         """
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        response = (
+        # Paginacja (#8): hit-rate liczony na PEŁNYM zbiorze, nie obciętych 1000
+        # wierszy. .order("timestamp") czyni podzbiór deterministycznym —
+        # bez niego obcięta próbka była losowa przy każdym wywołaniu.
+        query = (
             self._client.table(self._table)
             .select("is_trend_correct")
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
-            .execute()
+            .order("timestamp", desc=True)
         )
-        rows = _rows(response)
+        rows = _paginate(query)
         flags = [
             bool(r["is_trend_correct"])
             for r in rows
@@ -298,16 +326,30 @@ class SupabaseRepository(RepositoryPort):
     # -----------------------------------------------------------------------
 
     def save_price_snapshot(self, symbol: str, price: Money) -> None:
+        # Upsert na (symbol, timestamp_hour) (#7) — re-run GHA / nakładający się
+        # workflow_dispatch / retry LangGraph aktualizuje istniejący wiersz w tej
+        # samej godzinie zamiast duplikować (duplikaty zaburzały trafność).
         record = _serialize_record({"symbol": symbol, "price": price.amount})
-        self._client.table(self._snapshot_table).insert(record).execute()
+        (
+            self._client.table(self._snapshot_table)
+            .upsert(record, on_conflict="symbol,timestamp_hour")
+            .execute()
+        )
 
     def save_prediction(self, prediction: dict[str, Any]) -> str:
+        # Upsert na (symbol, timestamp_hour) (#7) — idempotentny zapis predykcji.
+        # Domyślny merge upsertu zwraca wiersz, więc nadal mamy z czego odczytać
+        # id (graf używa go jako prediction_id).
         record = _serialize_record(prediction)
-        response = self._client.table(self._table).insert(record).execute()
+        response = (
+            self._client.table(self._table)
+            .upsert(record, on_conflict="symbol,timestamp_hour")
+            .execute()
+        )
         rows = _rows(response)
         if not rows:
             raise RuntimeError(
-                f"Supabase insert returned no data for {record.get('symbol')}"
+                f"Supabase upsert returned no data for {record.get('symbol')}"
             )
         return str(rows[0]["id"])
 

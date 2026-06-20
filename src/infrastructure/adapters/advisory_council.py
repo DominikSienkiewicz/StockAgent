@@ -15,6 +15,7 @@ from src.domain.council import (
     CouncilVerdict,
     InvestorOpinion,
     InvestorPersona,
+    derive_consensus,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,13 @@ _VALID_RECS: frozenset[str] = frozenset({"BUY", "SELL", "HOLD"})
 # threadpool/scheduler. Po jego przekroczeniu kontynuujemy z opiniami,
 # które zdążyły się zwrócić (graceful degradation).
 _COUNCIL_TOTAL_TIMEOUT_S = 60.0
+
+# Górny limit liczby person w radzie. Fan-out skaluje koszt LLM liniowo z
+# liczbą plików person — bez capu dodanie pliku JSON niezauważalnie podbija
+# rachunek za każdy cykl. 12 to praktyczny sufit: tyle różnych szkół
+# inwestycyjnych w pełni pokrywa spektrum opinii, więcej to redundancja.
+# (Follow-up: orchestrator mógłby wystawić to jako settings.council_max_personas.)
+COUNCIL_MAX_PERSONAS = 12
 
 
 def _parse_recommendation(raw: Any) -> Literal["BUY", "SELL", "HOLD"]:
@@ -55,11 +63,27 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         self,
         llm_port: LLMPort,
         personas: tuple[InvestorPersona, ...],
+        max_personas: int = COUNCIL_MAX_PERSONAS,
     ) -> None:
         if not personas:
             raise ValueError("LLMAdvisoryCouncil requires at least one persona.")
         self._llm = llm_port
+        # Cap fan-outu: powyżej `max_personas` ucinamy radę i logujemy WARNING
+        # z nazwami odrzuconych person. Kolejność person jest deterministyczna
+        # (loader sortuje po name), więc ucinanie też jest stabilne.
+        if len(personas) > max_personas:
+            dropped = [p.name for p in personas[max_personas:]]
+            logger.warning(
+                "Advisory council: %d personas exceed cap of %d — "
+                "truncating to %d, dropping: %s",
+                len(personas),
+                max_personas,
+                max_personas,
+                dropped,
+            )
+            personas = personas[:max_personas]
         self._personas = personas
+        self._max_personas = max_personas
 
     def _call_investor(
         self, persona: InvestorPersona, data: CouncilInput
@@ -122,9 +146,16 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
             logger.exception("Advisory council: chairman call failed")
             raw = {}
 
+        # AUTORYTATYWNA decyzja + siła konsensusu liczone z REALNYCH głosów
+        # (domena), nie z liczby od chairmana. Dzięki temu jednogłośne BUY
+        # zostaje BUY nawet gdy chairman padnie — nie ma cichego defaultu
+        # HOLD/0.5 nadpisującego głosy inwestorów (finding #3).
+        final_recommendation, consensus_strength = derive_consensus(resolved_opinions)
+
+        # Chairman dostarcza już TYLKO warstwę narracyjną (summary, dissent).
         return CouncilVerdict(
-            final_recommendation=_parse_recommendation(raw.get("final_recommendation")),
-            consensus_strength=float(raw.get("consensus_strength") or 0.5),
+            final_recommendation=final_recommendation,
+            consensus_strength=consensus_strength,
             summary=str(raw.get("summary") or ""),
             dissenting_views=list(raw.get("dissenting_views") or []),
             investor_opinions=resolved_opinions,

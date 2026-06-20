@@ -16,12 +16,36 @@ from datetime import UTC, datetime
 from typing import Any
 
 from src.application.ports import FundamentalsPort
+from src.application.quota_monitor import QuotaMonitor
+from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Fundamentals
 from src.infrastructure.adapters._http import build_session
 
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://www.alphavantage.co/query"
+
+
+class _AlphaVantageQuotaExhausted(Exception):
+    """Wewnętrzny sygnał: AV zwróciło soft-limit 200 (pole `Information`/`Note`),
+    a nie realne dane. Odróżnia wyczerpanie limitu od zwykłej pustej odpowiedzi,
+    żeby `get_fundamentals` nie potraktował go cicho jako brak fundamentów."""
+
+
+def _is_rate_limited(payload: dict[str, Any]) -> bool:
+    """AV w free tier sygnalizuje wyczerpanie dziennego limitu (25/dobę)
+    odpowiedzią 200 z polem `Information` (czasem `Note`) i BEZ realnych
+    danych. Wykrywamy ten wzorzec, by nie zwracać cicho None."""
+    has_soft_limit_marker = "Information" in payload or "Note" in payload
+    if not has_soft_limit_marker:
+        return False
+    # Realna odpowiedź OVERVIEW/EARNINGS niesie te klucze; jeśli któryś
+    # jest obecny, to nie jest soft-limit (AV nie miesza danych z notką).
+    has_real_data = any(
+        key in payload
+        for key in ("Symbol", "PERatio", "quarterlyEarnings", "annualEarnings")
+    )
+    return not has_real_data
 
 
 def _parse_float(value: Any) -> float | None:
@@ -55,12 +79,17 @@ def _eps_growth_yoy(earnings_json: dict[str, Any]) -> float | None:
 class AlphaVantageFundamentalsAdapter(FundamentalsPort):
     """Implementacja FundamentalsPort oparta o publiczne API Alpha Vantage."""
 
-    def __init__(self, api_keys: list[str]) -> None:
+    def __init__(
+        self,
+        api_keys: list[str],
+        quota_monitor: QuotaMonitor | None = None,
+    ) -> None:
         if not api_keys:
             raise ValueError("api_keys must contain at least one key")
         self._api_keys = api_keys
         self._key_index = 0
         self._session = build_session()
+        self._quota_monitor = quota_monitor
 
     def _next_key(self) -> str:
         key = self._api_keys[self._key_index % len(self._api_keys)]
@@ -78,12 +107,52 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
         data = response.json()
         if not isinstance(data, dict):
             return {}
+        # Soft-limit (200 + `Information`/`Note`, brak danych) musi być
+        # rozróżniony od zwykłej pustki — inaczej dane giną po cichu.
+        if _is_rate_limited(data):
+            note = data.get("Information") or data.get("Note") or ""
+            raise _AlphaVantageQuotaExhausted(str(note))
         return data
+
+    def _emit_quota_alert(self, message: str, action: str) -> None:
+        """Wystawia CRITICAL alert do QuotaMonitor, jeśli ten jest skonfigurowany."""
+        if self._quota_monitor is None:
+            return
+        self._quota_monitor.record(
+            QuotaAlert(
+                source="Alpha Vantage fundamentals",
+                severity=QuotaSeverity.CRITICAL,
+                message=message,
+                action=action,
+                occurred_at=datetime.now(UTC),
+            )
+        )
 
     def get_fundamentals(self, symbol: str) -> Fundamentals | None:
         try:
             overview = self._get("OVERVIEW", symbol)
             earnings = self._get("EARNINGS", symbol)
+        except _AlphaVantageQuotaExhausted as exc:
+            # Wyczerpany dzienny limit: NIE udajemy pustych fundamentów.
+            # Emitujemy alert i przerywamy — kolejne klucze i tak są wspólne
+            # z resztą integracji AV, więc dalsze próby tylko spalą budżet.
+            logger.error(
+                "Alpha Vantage fundamentals daily quota exhausted for %s: %s",
+                symbol,
+                exc,
+            )
+            self._emit_quota_alert(
+                message=(
+                    "Alpha Vantage fundamentals hit the daily 25 req/day limit; "
+                    "P/E and EPS-growth data is missing for this cycle."
+                ),
+                action=(
+                    "Add another key in ALPHA_VANTAGE_API_KEYS (free at "
+                    "alphavantage.co), reduce the number of fundamentals symbols, "
+                    "or wait for the UTC-midnight reset."
+                ),
+            )
+            return None
         except Exception as exc:
             logger.warning(
                 "Alpha Vantage fundamentals fetch failed for %s: %s", symbol, exc

@@ -112,6 +112,53 @@ class CouncilVerdict:
         return dissenting / len(self.investor_opinions)
 
 
+def derive_consensus(
+    opinions: list[InvestorOpinion],
+) -> tuple[Literal["BUY", "SELL", "HOLD"], float]:
+    """Wylicza autorytatywną rekomendację rady i siłę konsensusu z REALNYCH głosów.
+
+    Decyzja należy do domeny, nie do chairman-LLM: bierzemy faktyczne opinie
+    inwestorów (po rozwiązaniu/timeoutach) i liczymy z nich deterministyczny
+    wynik. Dzięki temu jednogłośne BUY zostaje BUY nawet gdy wywołanie chairmana
+    padnie — żadna "wymyślona" liczba 0.5/HOLD nie nadpisze prawdziwych głosów.
+
+    Algorytm:
+    - Każda rekomendacja zbiera "masę" = sumę confidence swoich głosów.
+    - Zwycięski koszyk = ten z największą masą (confidence-weighted, nie headcount).
+      Remis rozstrzygany preferencją BUY > SELL > HOLD (stabilna kolejność).
+    - `consensus_strength` = masa zwycięzcy / masa wszystkich głosów ∈ [0, 1].
+
+    Przypadki brzegowe:
+    - brak opinii → ("HOLD", 0.0) — bezpieczny default, nic nie zgaduje.
+    - wszystkie confidence == 0.0 → waga bezużyteczna (dzielenie przez zero),
+      więc cofamy się do liczenia głosów (headcount) zamiast masy pewności.
+    """
+    if not opinions:
+        return "HOLD", 0.0
+
+    total_confidence = sum(op.confidence for op in opinions)
+    # Gdy wszyscy mają zerową pewność, ważenie traci sens — używamy headcountu.
+    use_headcount = total_confidence <= 0.0
+
+    buckets: dict[str, float] = {rec: 0.0 for rec in _RECOMMENDATIONS}
+    for op in opinions:
+        if op.recommendation in buckets:
+            buckets[op.recommendation] += 1.0 if use_headcount else op.confidence
+
+    total_weight = sum(buckets.values())
+    if total_weight <= 0.0:
+        # Teoretycznie nieosiągalne (opinions niepuste), ale chroni przed dzieleniem.
+        return "HOLD", 0.0
+
+    # max() z kluczem stabilnym względem preferencji BUY > SELL > HOLD przy remisie.
+    winner = max(
+        _RECOMMENDATIONS,
+        key=lambda rec: (buckets[rec], -_RECOMMENDATIONS.index(rec)),
+    )
+    strength = buckets[winner] / total_weight
+    return winner, strength
+
+
 @dataclass(frozen=True)
 class InvestorPersona:
     """Tożsamość i filozofia inwestycyjna członka rady doradczej.

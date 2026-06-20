@@ -30,6 +30,18 @@ class TestMoney:
     def test_different_amounts_are_not_equal(self) -> None:
         assert Money(Decimal("50.0")) != Money(Decimal("51.0"))
 
+    def test_allows_negative_amount(self) -> None:
+        # Money reprezentuje też delty/zmiany cen — ujemne są legalne.
+        assert Money(Decimal("-12.34")).amount == Decimal("-12.34")
+
+    def test_rejects_nan(self) -> None:
+        with pytest.raises(ValueError, match="NaN|finite"):
+            Money(Decimal("NaN"))
+
+    def test_rejects_infinity(self) -> None:
+        with pytest.raises(ValueError, match="Inf|finite"):
+            Money(Decimal("Infinity"))
+
 
 class TestThreshold:
     def test_creates_threshold_with_decimal_value(self) -> None:
@@ -40,6 +52,24 @@ class TestThreshold:
         threshold = Threshold(Decimal("0.02"))
         with pytest.raises(FrozenInstanceError):
             threshold.value = Decimal("0.05")  # type: ignore[misc]
+
+    def test_allows_zero(self) -> None:
+        # 0 = "always run" — legalne, tylko ujemne jest footgunem.
+        assert Threshold(Decimal("0")).value == Decimal("0")
+
+    def test_rejects_negative_value(self) -> None:
+        # Ujemny próg → abs(delta) >= value ZAWSZE prawdziwe → bramka
+        # volatility cicho wyłączona.
+        with pytest.raises(ValueError, match="non-negative|negative"):
+            Threshold(Decimal("-1"))
+
+    def test_rejects_nan(self) -> None:
+        with pytest.raises(ValueError, match="NaN|finite"):
+            Threshold(Decimal("NaN"))
+
+    def test_rejects_infinity(self) -> None:
+        with pytest.raises(ValueError, match="Inf|finite"):
+            Threshold(Decimal("Infinity"))
 
 
 def test_asset_type_members() -> None:
