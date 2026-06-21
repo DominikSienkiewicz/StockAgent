@@ -309,6 +309,22 @@ The loop workflows expose `workflow_dispatch` for manual triggers from the GitHu
 **Optional alpha-data sources** (category "Data"): seven extra signals — SEC EDGAR insider flow, AlphaVantage earnings calendar, Finnhub options/IV, Reddit social velocity, FRED yield-curve, Finnhub analyst consensus, and regime-tagged RAG (vector memory). Each is a port + adapter with a **Null fallback** and is **off by default** in `config.toml` (`insider_flow_enabled`, `earnings_calendar_enabled`, `options_flow_enabled`, `social_velocity_enabled`, `yield_curve_enabled`, `analyst_consensus_enabled`, `vector_memory_enabled`) — so they make **zero network calls** until you flip a flag (and supply its key where needed). Enabled per-symbol signals are aggregated into an "Alpha Signals" report section; `vector_memory_enabled` needs migration `017`.
 **Repository variables:** none. All non-secret config lives in committed [`config.toml`](config.toml), read directly by `Settings` — so there is nothing to map in the workflow `env:` and no `vars.*` drift to guard. The workflow injects only the secrets above; the split (secrets mapped, non-secret config kept out) is guarded by [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py).
 
+### Managing the secrets (helper scripts)
+
+Two `gh`-CLI helpers in [`scripts/`](scripts/) keep the repo's GitHub Actions secrets in sync with your local `.env`. Both derive the required list **live** from `.github/workflows/*.yml` (every `secrets.*` / `vars.*` reference, minus the auto-injected `GITHUB_TOKEN`), so they never drift from the workflows:
+
+```bash
+# Audit: which required secrets/variables are set on the repo, which are missing.
+# Read-only — never changes anything. Exit 0 = all present, 1 = something missing.
+scripts/gh-secrets-check.sh
+
+# Push: set the secrets/variables on the repo from .env. Prints a masked plan and
+# asks for confirmation; values go to gh over stdin (never as args). --dry-run to preview.
+scripts/gh-secrets-sync.sh [--dry-run] [-y]
+```
+
+Both accept `-R owner/repo` (default: auto-detected from the git remote) and `-f <env-file>` (default: `<repo>/.env`). `.env` keys that no workflow references (e.g. `FRED_API_KEY`, `TELEGRAM_*`, `SLACK_WEBHOOK_URL`) are reported but never pushed. Auth uses your `gh auth login` token, or a `GH_TOKEN` from `.env` if present (a fine-grained PAT needs `Secrets: Read and write`).
+
 ## Configuration
 
 All tunable parameters are a `Settings` Pydantic model in [`src/config.py`](src/config.py) with validators. Non-secret values are set in committed [`config.toml`](config.toml); secrets come from `.env` / GitHub Secrets. Precedence: **env var → `.env` → `config.toml` → the code defaults below** (so any field can be overridden ad-hoc via an env var). The `Default` column is the in-code fallback when a field is absent everywhere; `config.toml` ships the actual production values.
