@@ -31,6 +31,10 @@ MIGRATION_FILES = [
     "011_match_news_embeddings.sql",
     "012_ml_feature_store_return_target.sql",
     "013_idempotency_and_pagination.sql",
+    "014_subscribers.sql",
+    "015_persona_accuracy.sql",
+    "016_confidence_calibration.sql",
+    "017_vector_memory_regime.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -290,6 +294,10 @@ class TestMigrations:
         indexes = _indexes(pg_conn, "fundamentals_cache")
         assert "idx_fundamentals_cache_fetched_at" in indexes
 
+    def test_subscribers_table_has_required_columns(self, pg_conn) -> None:
+        cols = _columns(pg_conn, "subscribers")
+        assert {"id", "email", "symbols"} <= cols, f"Brakujące kolumny: {cols}"
+
     # -- Migracja 013: idempotency (timestamp_hour + UNIQUE) -----------------
 
     def test_price_snapshots_has_timestamp_hour_column(self, pg_conn) -> None:
@@ -369,3 +377,94 @@ class TestMigrations:
         # Jeden logiczny wiersz, zaktualizowana cena (250), nie duplikat.
         assert row[0] == 1
         assert float(row[1]) == 250.0
+
+
+@pytest.fixture
+def fresh_pg():
+    """Świeży, IZOLOWANY kontener Postgres (function scope) — dla testów, które
+    muszą zacząć od stanu PRZED konkretną migracją (nie da się tego uzyskać w
+    module-scoped kontenerze, gdzie wszystkie migracje są już zaaplikowane)."""
+    import docker
+
+    try:
+        docker.from_env().ping()
+    except Exception:
+        pytest.skip("Docker daemon niedostępny — pomijam testy kontenerowe")
+
+    with PostgresContainer(PGVECTOR_IMAGE) as container:
+        conn = psycopg2.connect(
+            host=container.get_container_host_ip(),
+            port=container.get_exposed_port(5432),
+            dbname=container.dbname,
+            user=container.username,
+            password=container.password,
+        )
+        conn.autocommit = True
+        yield conn
+        conn.close()
+
+
+@pytest.mark.containers
+class TestMigration013DedupesPreexistingDuplicates:
+    """Regresja: 013 zakładał czystą tabelę i robił od razu CREATE UNIQUE INDEX.
+    Na produkcji `price_snapshots`/`prediction_logs` miały już DUPLIKATY z ery
+    przed idempotencją (gołe .insert() przy re-run/retry), więc unique index
+    wywalał się błędem 23505. Migracja MUSI najpierw zdeduplikować."""
+
+    def _apply_up_to_012(self, conn: psycopg2.extensions.connection) -> None:
+        idx = MIGRATION_FILES.index("013_idempotency_and_pagination.sql")
+        with conn.cursor() as cur:
+            for filename in MIGRATION_FILES[:idx]:
+                cur.execute((MIGRATIONS_DIR / filename).read_text())
+
+    def test_013_dedupes_then_builds_unique_index(self, fresh_pg) -> None:
+        conn = fresh_pg
+        self._apply_up_to_012(conn)
+        with conn.cursor() as cur:
+            # Dwa snapshoty TEJ SAMEJ godziny (17:10 i 17:40 → hour 17:00) =
+            # duplikat (symbol, timestamp_hour). Odtwarza błąd z produkcji.
+            cur.execute(
+                "INSERT INTO price_snapshots (symbol, price, timestamp) VALUES "
+                "('VT', 100.0, '2026-06-03 17:10:00+00'), "
+                "('VT', 101.0, '2026-06-03 17:40:00+00')"
+            )
+            # prediction_logs: rozliczona (17:10) vs nierozliczona (17:40) —
+            # dedup MUSI zachować rozliczoną (nie tracimy accuracy/feedbacku).
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, predicted_trend, is_trend_correct) VALUES "
+                "('VT', '2026-06-03 17:10:00+00', 'BULLISH', true), "
+                "('VT', '2026-06-03 17:40:00+00', 'BEARISH', NULL)"
+            )
+
+            # Aplikacja 013 NIE może rzucić mimo duplikatów (sedno naprawy).
+            cur.execute(
+                (MIGRATIONS_DIR / "013_idempotency_and_pagination.sql").read_text()
+            )
+
+            # Unikalne indeksy powstały.
+            assert "idx_price_snapshots_symbol_hour_uniq" in _indexes(
+                conn, "price_snapshots"
+            )
+            assert "idx_prediction_logs_symbol_hour_uniq" in _indexes(
+                conn, "prediction_logs"
+            )
+
+            # Zdeduplikowane: jeden wiersz na (symbol, godzina).
+            cur.execute("SELECT count(*) FROM price_snapshots WHERE symbol='VT'")
+            assert cur.fetchone()[0] == 1
+            cur.execute("SELECT count(*) FROM prediction_logs WHERE symbol='VT'")
+            assert cur.fetchone()[0] == 1
+
+            # price_snapshots: zachowany NAJNOWSZY snapshot (101 @ 17:40).
+            cur.execute("SELECT price FROM price_snapshots WHERE symbol='VT'")
+            assert float(cur.fetchone()[0]) == 101.0
+            # prediction_logs: zachowany ROZLICZONY wiersz (BULLISH @ 17:10),
+            # mimo że jest starszy — feedback ma priorytet nad świeżością.
+            cur.execute(
+                "SELECT predicted_trend, is_trend_correct "
+                "FROM prediction_logs WHERE symbol='VT'"
+            )
+            kept = cur.fetchone()
+            assert kept[0] == "BULLISH"
+            assert kept[1] is True

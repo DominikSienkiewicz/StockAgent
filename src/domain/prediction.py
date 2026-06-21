@@ -1,6 +1,26 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
+
+
+def calibration_error(samples: Sequence[tuple[float, bool]]) -> float:
+    """#4 — luka kalibracji: |śr. deklarowana pewność − realna trafność| ∈ [0,1].
+
+    0 = idealnie skalibrowane; wysokie = rada przepewna (lub niedopewna).
+    Każdy sample to (confidence∈[0,1], czy_trafiona_kierunkowo). Pusta → 0.0."""
+    if not samples:
+        return 0.0
+    mean_conf = sum(c for c, _ in samples) / len(samples)
+    accuracy = sum(1 for _, ok in samples if ok) / len(samples)
+    return abs(mean_conf - accuracy)
+
+
+def calibration_score(confidence: float, correct: bool) -> float:
+    """#4 — kalibracja pojedynczej predykcji: `1 − |confidence − wynik(0/1)|`
+    ∈ [0,1]. 1 = pewność idealnie dopasowana do wyniku."""
+    outcome = 1.0 if correct else 0.0
+    return 1.0 - abs(confidence - outcome)
 
 
 class TrendDirection(StrEnum):

@@ -4,7 +4,7 @@ import dataclasses
 import logging
 import math
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any, Literal, TypedDict
@@ -22,12 +22,16 @@ from src.application.ports import (
     NewsPort,
     RepositoryPort,
     SentimentPort,
+    Tool,
+    ToolUseLLMPort,
 )
 from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction_prompt
 from src.application.rag_rerank import rerank_analogs
 from src.domain.asset import Asset, PriceDelta
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
+from src.domain.feature_attribution import FeatureContribution, top_contributions
 from src.domain.prediction import Prediction
+from src.domain.regime_key import canonical_regime_key
 from src.domain.value_objects import AssetType, Fundamentals, Money, Threshold, ValuationVerdict
 
 logger = logging.getLogger(__name__)
@@ -95,6 +99,15 @@ class AgentState(TypedDict, total=False):
     # przepływa do SymbolResult i raportu, NIE jest persystowana (brak migracji).
     similar_precedents: list[dict[str, Any]]
 
+    # Q3: atrybucja cech ML (SHAP-lite) — render-only do raportu.
+    feature_attribution: tuple[FeatureContribution, ...]
+
+    # #7 reżim rynku (label do promptu + mnożnik progu, ≥1.0) i #5 contagion
+    # (werdykty skorelowanych spółek z tego cyklu) — przekazywane per symbol.
+    regime_context: str
+    regime_multiplier: float
+    peer_context: tuple[tuple[str, str], ...]
+
     # Persystencja
     prediction_id: str | None
 
@@ -125,6 +138,7 @@ def _build_similar_context(
     embedding: list[float],
     symbol: str,
     outcome_weight: float = 0.0,
+    regime: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Buduje blok 'podobne historyczne sytuacje' do promptu (RAG) ORAZ zwraca
     rerankowane rekordy do reużycia jako precedent receipts (Q5).
@@ -140,7 +154,9 @@ def _build_similar_context(
     analogów po realnym wyniku; 0.0 = sama kolejność RPC.
     """
     try:
-        similar = repository_port.find_similar_predictions(embedding, limit=3)
+        similar = repository_port.find_similar_predictions(
+            embedding, limit=3, regime=regime
+        )
         similar = rerank_analogs(list(similar or []), outcome_weight=outcome_weight)
         lines: list[str] = []
         precedents: list[dict[str, Any]] = []
@@ -322,6 +338,10 @@ def create_agent_graph(
     crypto_council_threshold: Threshold | None = None,
     reflection_min_age_hours: int = 0,
     rag_outcome_weight: float = 0.0,
+    tool_use_port: ToolUseLLMPort | None = None,
+    research_tools: Sequence[Tool] = (),
+    tool_use_threshold: Threshold | None = None,
+    vector_memory_enabled: bool = False,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
@@ -387,8 +407,15 @@ def create_agent_graph(
             and asset.asset_type is AssetType.CRYPTO
             and crypto_override is not None
         ):
-            return crypto_override
-        return default
+            base = crypto_override
+        else:
+            base = default
+        # #7: reżim rynku może tylko ZACIEŚNIĆ próg (mnożnik ≥ 1.0 gwarantowany
+        # przez RegimeDetector) — w RISK-OFF mniej cykli odpala płatne porty.
+        mult = state.get("regime_multiplier", 1.0)
+        if mult and mult != 1.0:
+            return Threshold(base.value * Decimal(str(mult)))
+        return base
 
     def should_analyze(state: AgentState) -> str:
         asset = state.get("asset") or Asset(symbol=state["symbol"])
@@ -528,8 +555,17 @@ def create_agent_graph(
                     "Embedding failed for %s — predicting without RAG", state["symbol"]
                 )
             if news_embedding:
+                # Vector Memory: gdy włączone, retrieval preferuje analogi z tego
+                # samego reżimu rynku (filtr w RPC, migracja 017).
+                regime_filter = (
+                    state.get("regime_context") if vector_memory_enabled else None
+                )
                 similar_context, similar_precedents = _build_similar_context(
-                    repository_port, news_embedding, state["symbol"], rag_outcome_weight
+                    repository_port,
+                    news_embedding,
+                    state["symbol"],
+                    rag_outcome_weight,
+                    regime=regime_filter,
                 )
 
         # 1. LLM — analiza jakościowa z cross-validation pre-computed AV sentymentu
@@ -546,6 +582,11 @@ def create_agent_graph(
             },
             reflection_context=state.get("reflection_context", ""),
             similar_context=similar_context,
+            # #7 reżim + #5 contagion (oba z bieżącego cyklu, przekazane w state).
+            regime_context=state.get("regime_context", ""),
+            peer_context=", ".join(
+                f"{sym}:{stance}" for sym, stance in state.get("peer_context", ())
+            ),
         )
         # #12-guard: w przeciwieństwie do council_node, predict_node wołał
         # llm_port.analyze bez zabezpieczenia. Czatliwa / niepoprawna odpowiedź
@@ -553,10 +594,30 @@ def create_agent_graph(
         # symbol. Degradujemy gracefully: neutralna analiza + flaga jakości,
         # żeby ML i zapis nadal się wykonały, a trening odsiał te rekordy.
         llm_failed = False
+        # #6: tool-use research agent. Tylko NAJWIĘKSZE ruchy (osobny, wyższy próg
+        # `tool_use_threshold`) uzasadniają kosztowną, wielorundową pętlę tool-use,
+        # w której model może dociągnąć read-only toole (fundamenty/makro) przed
+        # werdyktem. Poniżej tego progu (albo gdy tool-use wyłączony) — zwykły,
+        # jednorazowy llm_port.analyze. Bramka liczona na tej samej delcie co
+        # główna bramka volatility (state["delta"] względem snapshotu).
         # #14: jawny log płatnego wywołania LLM (główna analiza jakościowa).
-        _log_paid_call("predict", symbol, "llm_port.analyze")
         try:
-            llm_analysis = llm_port.analyze(prompt)
+            if (
+                tool_use_port is not None
+                and research_tools
+                and tool_use_threshold is not None
+                and (state.get("asset") or Asset(symbol=symbol)).evaluate_volatility(
+                    PriceDelta(state["delta"]), tool_use_threshold
+                )
+            ):
+                _log_paid_call("predict", symbol, "tool_use_port.analyze_with_tools")
+                with _timed_node("predict_tool_use", symbol):
+                    llm_analysis = tool_use_port.analyze_with_tools(
+                        prompt, research_tools
+                    )
+            else:
+                _log_paid_call("predict", symbol, "llm_port.analyze")
+                llm_analysis = llm_port.analyze(prompt)
         except Exception:
             logger.exception(
                 "llm_port.analyze failed for %s — degraduję do neutralnej analizy",
@@ -640,10 +701,20 @@ def create_agent_graph(
         # tygodnie działania, przed pierwszym Slow Loop), używamy baseline
         # "cena bez zmian". Agent działa, LLM nadal daje trend; gdy model się
         # wytrenuje, automatycznie przejmuje predykcję liczbową.
+        feature_attribution: tuple[FeatureContribution, ...] = ()
         if ml_port.is_trained:
             # Model przewiduje ZWROT 12h; predict() rekonstruuje cenę bezwzględną
             # z bieżącej ceny (cena*(1+zwrot)).
             ml_target = ml_port.predict(features, current_price=current_price).amount
+            # Q3: atrybucja cech (SHAP-lite) — lokalny CPU, zero płatnych. Graceful:
+            # gdyby explain padł, predykcja i tak leci (atrybucja jest dodatkiem).
+            try:
+                contribs = {
+                    k: v for k, v in ml_port.explain(features).items() if k != "_bias"
+                }
+                feature_attribution = top_contributions(contribs)
+            except Exception:
+                logger.exception("explain() failed for %s — bez atrybucji", symbol)
         else:
             ml_target = state["current_price"]
 
@@ -659,6 +730,8 @@ def create_agent_graph(
             "news_embedding": news_embedding,
             # Q5: precedent receipts dla raportu (render-only, brak persystencji).
             "similar_precedents": similar_precedents,
+            # Q3: atrybucja cech ML dla raportu (render-only).
+            "feature_attribution": feature_attribution,
         }
 
     def council_node(state: AgentState) -> dict[str, Any]:
@@ -699,6 +772,8 @@ def create_agent_graph(
             ml_price_target=state.get("ml_target_price") or state["current_price"],
             fundamentals=state.get("fundamentals"),
             valuation_verdict=state.get("valuation_verdict", ValuationVerdict.UNKNOWN),
+            # #3: typ aktywa napędza dobór wag person (per klasa aktywa).
+            asset_type=(state.get("asset") or Asset(symbol=state["symbol"])).asset_type,
         )
         # #14: rada to N równoległych wywołań LLM — najdroższy płatny węzeł.
         # Jawny log płatnego wywołania + timing (mierzony też przy błędzie).
@@ -750,10 +825,21 @@ def create_agent_graph(
             "news_summary": news_summary,
             "predicted_trend": llm_analysis.get("trend_direction"),
             "predicted_target_price": state.get("ml_target_price"),
+            # #4: persystujemy deklarowaną pewność — bez niej Slow-Loopowy sędzia
+            # nie oceni kalibracji (migracja 016).
+            "confidence_score": _float_or_default(
+                llm_analysis.get("confidence_score"), 0.5
+            ),
             "reasoning_text": llm_analysis.get("reasoning"),
             "council_verdict": council_verdict_dict,
             "data_quality_flags": data_quality_flags,
         }
+
+        # Vector Memory: tagujemy embedding reżimem rynku, w którym powstała
+        # predykcja (migracja 017), żeby przyszły RAG mógł filtrować analogi po
+        # reżimie. Bez flagi kolumna zostaje NULL (RAG działa jak dotąd).
+        if vector_memory_enabled:
+            record["regime"] = canonical_regime_key(state.get("regime_context"))
 
         # Embedding podsumowania newsów → pgvector. Opcjonalne (graceful):
         # gdy brak portu lub pusty tekst / błąd API, zapisujemy bez wektora.

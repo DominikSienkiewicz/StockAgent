@@ -90,6 +90,76 @@ class Settings(BaseSettings):
     council_llm_provider: Literal["openai", "anthropic"] | None = None
     council_llm_model: str | None = None
 
+    # ----- Rada: ważenie person (#3) i tryb debaty (#1) -----
+    persona_weighting_enabled: bool = False
+    debate_mode_enabled: bool = False
+
+    # ----- Model routing (#2 — tani model + eskalacja do frontier) -----
+    model_routing_enabled: bool = False
+    routing_floor: float = 0.6
+    router_cheap_model: str = "gpt-5-mini"
+    router_frontier_provider: Literal["openai", "anthropic"] = "anthropic"
+    router_frontier_model: str = "claude-sonnet-4-6"
+
+    # ----- Reżim rynku (#7), contagion (#5), kalibracja (#4) -----
+    # Regime może tylko ZACIEŚNIĆ próg volatility (mnożnik ≥ 1.0).
+    regime_aware_enabled: bool = False
+    regime_threshold_max_multiplier: float = 2.0
+    # Contagion: werdykty skorelowanych spółek z tego cyklu do promptu.
+    contagion_enabled: bool = False
+    peer_groups: dict[str, list[str]] = Field(default_factory=dict)
+    # LLM-as-Judge kalibracji pewności (Slow Loop, migracja 016).
+    calibration_judge_enabled: bool = False
+
+    # ----- Risk: VaR / stress-test / hedge-effectiveness -----
+    # Wszystkie liczone z DARMOWEJ historii snapshotów (zero płatnych portów),
+    # render-only sekcje raportu. Domyślnie off (additywne, bezpieczne).
+    portfolio_var_enabled: bool = False
+    # Poziom ufności VaR/CVaR (empiryczny percentyl ogona strat). 0.95 = strata
+    # przekraczana w ~5% najgorszych okresów.
+    var_confidence: float = 0.95
+    stress_test_enabled: bool = False
+    hedge_effectiveness_enabled: bool = False
+
+    # ----- Trust / track-record (equity curve, calibration, lessons) -----
+    # Render-only, zero płatnych. Czytają zamknięte predykcje z okna
+    # `track_record_days`. Domyślnie off.
+    equity_curve_enabled: bool = False
+    calibration_curve_enabled: bool = False
+    lessons_enabled: bool = False
+    # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
+    track_record_days: int = 30
+
+    # ----- Dane: nowe źródła alpha (default off → Null adapter, zero płatnych) -----
+    # Każde źródło ma adapter (wolne/istniejące API) i Null-fallback. W Fast Loop
+    # domyślnie Null; realny adapter włącza dopiero flaga (+ ewentualny klucz).
+    insider_flow_enabled: bool = False
+    earnings_calendar_enabled: bool = False
+    options_flow_enabled: bool = False
+    social_velocity_enabled: bool = False
+    yield_curve_enabled: bool = False
+    analyst_consensus_enabled: bool = False
+    # Cross-Asset Vector Memory — tagowanie embeddingów reżimem + filtr w RAG
+    # (migracja 017). Bez flagi RAG działa jak dotąd (bez filtra reżimu).
+    vector_memory_enabled: bool = False
+    # SEC EDGAR wymaga nagłówka User-Agent z kontaktem (polityka SEC). Niewrażliwe
+    # — w config.toml realna wartość, nadpisywalna przez env.
+    edgar_user_agent: str = "StockAgent/1.0 (contact@example.com)"
+    # FRED API key (darmowy, ale wymagany do pobrań krzywej rentowności) — SEKRET.
+    fred_api_key: str | None = None
+
+    # ----- Tool-use research agent (#6) -----
+    # Na NAJWIĘKSZYCH ruchach (osobny, wyższy próg) główna analiza idzie pętlą
+    # tool-use: model może dociągnąć read-only toole (fundamenty/makro) przed
+    # werdyktem. Domyślnie OFF — to płatna, wielorundowa ścieżka.
+    tool_use_enabled: bool = False
+    # Osobny próg volatility — wyższy niż główny (2%), bo każda runda tool-use to
+    # dodatkowe wywołanie LLM. Tylko ruchy ≥ tego progu uruchamiają pętlę.
+    tool_use_volatility_threshold: Decimal = Field(default=Decimal("0.05"))
+    # Twardy cap rund tool-call (FinOps). Worst-case wywołań płatnych na analizę
+    # = tool_use_max_rounds + 1 (ostatnie wymuszone bez toolów).
+    tool_use_max_rounds: int = Field(default=3)
+
     # Katalog z plikami JSON definiującymi członków rady doradczej. Dodanie /
     # usunięcie persony = dodanie / usunięcie pliku, bez zmian w kodzie.
     # Walidator: `uv run python -m src.tools.validate_personas`.
@@ -191,6 +261,14 @@ class Settings(BaseSettings):
     # out-of-band od dziennego maila. NIEWRAŻLIWY flag → config.toml.
     realtime_alerts_enabled: bool = False
 
+    # ----- Dystrybucja (U2/U3 — opcjonalne, niewrażliwe → config.toml) -----
+    # U2: personalizowany fan-out — każdy subskrybent (tabela `subscribers`)
+    # dostaje raport tnięty do swojej watchlisty. Brak/false → pojedyncza wysyłka.
+    subscriptions_enabled: bool = False
+    # U3: publikacja statycznego digestu web (read-only dashboard).
+    web_digest_enabled: bool = False
+    web_digest_path: str = "public/digest/index.html"
+
     @field_validator("symbols", mode="before")
     @classmethod
     def _parse_symbols(cls, value: str | list[str]) -> list[str]:
@@ -239,10 +317,36 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("var_confidence")
+    @classmethod
+    def _validate_var_confidence(cls, value: float) -> float:
+        """Poziom ufności VaR musi leżeć w (0,1) — inaczej percentyl ogona jest
+        bez sensu (0 lub 1 → pusty/pełny ogon)."""
+        if not 0.0 < value < 1.0:
+            raise ValueError(f"var_confidence must be in (0,1) (got {value})")
+        return value
+
+    @field_validator("track_record_days")
+    @classmethod
+    def _validate_track_record_days(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError(f"track_record_days must be >= 1 (got {value})")
+        return value
+
+    @field_validator("tool_use_max_rounds")
+    @classmethod
+    def _validate_tool_use_max_rounds(cls, value: int) -> int:
+        """Cap rund tool-use musi być ≥ 1 — inaczej pętla nie zdąży wywołać
+        żadnego toola (research agent zdegradowałby się do zwykłego analyze)."""
+        if value < 1:
+            raise ValueError(f"tool_use_max_rounds must be >= 1 (got {value})")
+        return value
+
     @field_validator(
         "volatility_threshold",
         "council_volatility_threshold",
         "crypto_volatility_threshold",
+        "tool_use_volatility_threshold",
     )
     @classmethod
     def _validate_volatility_threshold(

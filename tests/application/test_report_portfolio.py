@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from src.application.report_portfolio import render_correlation_html
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
+from src.domain.scenarios import ScenarioImpact
 
 
 class TestRenderCorrelationHtml:
@@ -70,3 +71,59 @@ class TestRenderCorrelationHtml:
         html = render_correlation_html(report)
         # Sekcja ma nagłówek h2 (spójność z innymi sekcjami raportu).
         assert "<h2" in html
+
+
+class TestRenderVarAndStress:
+    def test_var_block_rendered_when_present(self) -> None:
+        report = PortfolioRiskReport(
+            var=0.08,
+            cvar=0.12,
+            var_confidence=0.95,
+        )
+        html = render_correlation_html(report)
+        # Sekcja renderuje się też bez klastrów, gdy jest VaR.
+        assert "<h2" in html
+        assert "Value-at-Risk" in html
+        # VaR/CVaR jako procenty + poziom ufności.
+        assert "8.0%" in html
+        assert "12.0%" in html
+        assert "95%" in html
+
+    def test_stress_table_rendered_when_present(self) -> None:
+        report = PortfolioRiskReport(
+            scenarios=(
+                ScenarioImpact(
+                    scenario_name="Krach -20%",
+                    market_shock=-0.20,
+                    portfolio_pnl=-0.18,
+                    per_symbol={"NVDA": -0.30, "GLD": 0.06},
+                    worst_symbol="NVDA",
+                    worst_pnl=-0.30,
+                ),
+            ),
+        )
+        html = render_correlation_html(report)
+        assert "<h2" in html
+        assert "Krach -20%" in html
+        # Najsłabszy symbol scenariusza widoczny.
+        assert "NVDA" in html
+
+    def test_stress_scenario_name_html_escaped(self) -> None:
+        report = PortfolioRiskReport(
+            scenarios=(
+                ScenarioImpact(
+                    scenario_name="<b>x</b>",
+                    market_shock=-0.10,
+                    portfolio_pnl=-0.09,
+                    per_symbol={"<i>S</i>": -0.09},
+                    worst_symbol="<i>S</i>",
+                    worst_pnl=-0.09,
+                ),
+            ),
+        )
+        html = render_correlation_html(report)
+        assert "<b>x</b>" not in html
+        assert "&lt;b&gt;" in html
+
+    def test_no_var_no_stress_no_clusters_renders_nothing(self) -> None:
+        assert render_correlation_html(PortfolioRiskReport()) == ""

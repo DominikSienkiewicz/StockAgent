@@ -1,12 +1,12 @@
 # src/domain/council.py
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal
 
-from src.domain.value_objects import Fundamentals, ValuationVerdict
+from src.domain.value_objects import AssetType, Fundamentals, ValuationVerdict
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,9 @@ class CouncilInput:
     # Pola opcjonalne — domyślne wartości zapewniają wsteczną kompatybilność
     fundamentals: Fundamentals | None = field(default=None)
     valuation_verdict: ValuationVerdict = field(default=ValuationVerdict.UNKNOWN)
+    # Klasa aktywa — pozwala adaptacyjnemu ważeniu person (feature #3) dobrać
+    # tabelę wag zależnie od typu (np. inne trafności person dla krypto niż akcji).
+    asset_type: AssetType = field(default=AssetType.STOCK)
 
     def __post_init__(self) -> None:
         # Kolekcja jako tuple — frozen=True blokuje tylko rebinding atrybutu, NIE
@@ -128,9 +131,26 @@ class CouncilVerdict:
         )
         return dissenting / len(self.investor_opinions)
 
+    def opinion_shift(self, before: Sequence[InvestorOpinion]) -> int:
+        """Ilu inwestorów zmieniło rekomendację względem stanu `before`.
+
+        Używane przez debate mode (feature #1): porównuje rekomendacje z rundy 1
+        (`before`) z opiniami w tym werdykcie (po rewizji), dopasowując po
+        `investor_name`. Inwestor obecny tylko w `before` (brak w werdykcie) jest
+        ignorowany — liczymy realne zmiany zdania, nie różnice w składzie.
+        """
+        prior: dict[str, str] = {op.investor_name: op.recommendation for op in before}
+        return sum(
+            1
+            for op in self.investor_opinions
+            if op.investor_name in prior
+            and prior[op.investor_name] != op.recommendation
+        )
+
 
 def derive_consensus(
     opinions: list[InvestorOpinion],
+    weights: Mapping[str, float] | None = None,
 ) -> tuple[Literal["BUY", "SELL", "HOLD"], float]:
     """Wylicza autorytatywną rekomendację rady i siłę konsensusu z REALNYCH głosów.
 
@@ -140,10 +160,15 @@ def derive_consensus(
     padnie — żadna "wymyślona" liczba 0.5/HOLD nie nadpisze prawdziwych głosów.
 
     Algorytm:
-    - Każda rekomendacja zbiera "masę" = sumę confidence swoich głosów.
+    - Każda rekomendacja zbiera "masę" = sumę `confidence * waga_persony` swoich
+      głosów. Waga (feature #3) pochodzi z historycznej trafności persony;
+      `weights.get(name, 1.0)` — brak wpisu = waga neutralna 1.0.
     - Zwycięski koszyk = ten z największą masą (confidence-weighted, nie headcount).
       Remis rozstrzygany preferencją BUY > SELL > HOLD (stabilna kolejność).
     - `consensus_strength` = masa zwycięzcy / masa wszystkich głosów ∈ [0, 1].
+
+    `weights=None` (lub pusta mapa) → zachowanie identyczne jak bez ważenia:
+    każda persona dostaje wagę 1.0, więc masa = sama confidence.
 
     Przypadki brzegowe:
     - brak opinii → ("HOLD", 0.0) — bezpieczny default, nic nie zgaduje.
@@ -153,6 +178,10 @@ def derive_consensus(
     if not opinions:
         return "HOLD", 0.0
 
+    def _weight(op: InvestorOpinion) -> float:
+        # Brak mapy wag albo brak wpisu dla persony → waga neutralna 1.0.
+        return weights.get(op.investor_name, 1.0) if weights is not None else 1.0
+
     total_confidence = sum(op.confidence for op in opinions)
     # Gdy wszyscy mają zerową pewność, ważenie traci sens — używamy headcountu.
     use_headcount = total_confidence <= 0.0
@@ -160,7 +189,8 @@ def derive_consensus(
     buckets: dict[str, float] = {rec: 0.0 for rec in _RECOMMENDATIONS}
     for op in opinions:
         if op.recommendation in buckets:
-            buckets[op.recommendation] += 1.0 if use_headcount else op.confidence
+            mass = 1.0 if use_headcount else op.confidence * _weight(op)
+            buckets[op.recommendation] += mass
 
     total_weight = sum(buckets.values())
     if total_weight <= 0.0:

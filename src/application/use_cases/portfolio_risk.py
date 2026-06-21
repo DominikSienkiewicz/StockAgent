@@ -14,6 +14,7 @@ pusty, łagodny raport.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -23,7 +24,9 @@ from src.domain.correlation import (
     detect_clusters,
     returns_from_prices,
 )
+from src.domain.scenarios import Scenario, ScenarioImpact, stress_test
 from src.domain.value_objects import Money
+from src.domain.var import conditional_var, historical_var
 
 logger = logging.getLogger(__name__)
 
@@ -54,18 +57,42 @@ class PortfolioRiskReport:
     verdict: str = ""
     watchlist_size: int = 0
     threshold: float = CLUSTER_THRESHOLD
+    # R1: VaR/CVaR portfela równoważonego (empiryczny percentyl ogona strat),
+    # liczone z tych samych darmowych zwrotów. None = wyłączone / brak danych.
+    var: float | None = None
+    cvar: float | None = None
+    var_confidence: float = 0.95
+    # R2: wyniki scenariuszy stress-test (β-to-portfel × szok). Pusta krotka =
+    # wyłączone / brak scenariuszy.
+    scenarios: tuple[ScenarioImpact, ...] = ()
 
 
 class PortfolioRiskUseCase:
-    """Slow scanner korelacji — uruchamiany po AnalyzeMarketUseCase."""
+    """Slow scanner korelacji — uruchamiany po AnalyzeMarketUseCase.
 
-    def __init__(self, *, repository_port: RepositoryPort) -> None:
+    Opcjonalnie (flagi) dokłada VaR/CVaR (R1) i stress-test (R2) — oba liczone
+    z tych SAMYCH darmowych zwrotów co macierz korelacji, zero nowych odczytów.
+    """
+
+    def __init__(
+        self,
+        *,
+        repository_port: RepositoryPort,
+        var_enabled: bool = False,
+        stress_enabled: bool = False,
+        var_confidence: float = 0.95,
+        scenarios: Sequence[Scenario] = (),
+    ) -> None:
         self._repository = repository_port
+        self._var_enabled = var_enabled
+        self._stress_enabled = stress_enabled
+        self._var_confidence = var_confidence
+        self._scenarios = tuple(scenarios)
 
     def run(self, symbols: list[str]) -> PortfolioRiskReport:
         returns_by_symbol = self._collect_returns(symbols)
         if len(returns_by_symbol) < 2:
-            # <2 symbole z historią — nie ma czego korelować.
+            # <2 symbole z historią — nie ma czego korelować ani liczyć VaR.
             return PortfolioRiskReport()
 
         matrix = correlation_matrix(returns_by_symbol)
@@ -73,13 +100,47 @@ class PortfolioRiskUseCase:
         clusters = detect_clusters(matrix, usable_symbols, CLUSTER_THRESHOLD)
         watchlist_size = len(usable_symbols)
         verdict = self._build_verdict(matrix, clusters, watchlist_size)
+
+        # R1/R2 — VaR/CVaR i stress-test z równoważonych zwrotów portfela.
+        # Liczone tylko gdy włączone (flagi); ten sam szereg zwrotów napędza oba.
+        var: float | None = None
+        cvar: float | None = None
+        scenarios_out: tuple[ScenarioImpact, ...] = ()
+        if self._var_enabled or (self._stress_enabled and self._scenarios):
+            market_returns = self._equal_weight_returns(returns_by_symbol)
+            if self._var_enabled and market_returns:
+                var = historical_var(market_returns, self._var_confidence)
+                cvar = conditional_var(market_returns, self._var_confidence)
+            if self._stress_enabled and self._scenarios and market_returns:
+                scenarios_out = tuple(
+                    stress_test(returns_by_symbol, market_returns, self._scenarios)
+                )
+
         return PortfolioRiskReport(
             matrix=matrix,
             clusters=clusters,
             verdict=verdict,
             watchlist_size=watchlist_size,
             threshold=CLUSTER_THRESHOLD,
+            var=var,
+            cvar=cvar,
+            var_confidence=self._var_confidence,
+            scenarios=scenarios_out,
         )
+
+    @staticmethod
+    def _equal_weight_returns(
+        returns_by_symbol: dict[str, list[float]],
+    ) -> list[float]:
+        """Szereg zwrotów portfela równoważonego: średnia zwrotów po symbolach
+        w każdym okresie. Szeregi są już wyrównane (równe długości) po
+        `_align_by_timestamp`; `min` zabezpiecza na wszelki wypadek."""
+        series = list(returns_by_symbol.values())
+        if not series:
+            return []
+        n = min(len(s) for s in series)
+        count = len(series)
+        return [sum(s[t] for s in series) / count for t in range(n)]
 
     def _collect_returns(self, symbols: list[str]) -> dict[str, list[float]]:
         """Pobiera historię per symbol, wyrównuje po timestampie i liczy zwroty.

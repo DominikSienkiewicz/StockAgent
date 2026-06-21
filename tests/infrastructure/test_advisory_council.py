@@ -8,6 +8,7 @@ import pytest
 
 from src.application.ports import AdvisoryCouncilPort, LLMPort
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorPersona
+from src.domain.value_objects import AssetType
 from src.infrastructure.adapters.advisory_council import (
     COUNCIL_MAX_PERSONAS,
     LLMAdvisoryCouncil,
@@ -320,3 +321,225 @@ class TestPersonaCap:
         personas = self._personas(3)
         council = LLMAdvisoryCouncil(llm_port=llm_port, personas=personas)
         assert isinstance(council, LLMAdvisoryCouncil)
+
+
+def _personas(names: tuple[str, ...]) -> tuple[InvestorPersona, ...]:
+    return tuple(
+        InvestorPersona(name=n, style=f"Styl testowy dla {n}. " * 3) for n in names
+    )
+
+
+class TestAdaptivePersonaWeighting:
+    """Feature #3: weights_provider waży głosy person ich historyczną
+    trafnością. Brak providera → werdykt jak dziś (wagi 1.0)."""
+
+    def _opinion(self, rec: str, conf: float = 0.5) -> dict:
+        return {
+            "recommendation": rec,
+            "confidence": conf,
+            "reasoning": "...",
+            "key_factors": [],
+        }
+
+    def test_provider_called_with_asset_type(self, llm_port: Mock):
+        llm_port.analyze.return_value = self._opinion("BUY")
+        captured: list[AssetType] = []
+
+        def provider(asset_type: AssetType) -> dict[str, float]:
+            captured.append(asset_type)
+            return {}
+
+        personas = _personas(("A", "B"))
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=personas, weights_provider=provider
+        )
+        data = CouncilInput(
+            symbol="BTC",
+            current_price=Decimal("60000"),
+            price_delta_pct=Decimal("3.5"),
+            sentiment_score=0.6,
+            news_articles=["x"],
+            llm_trend="BULLISH",
+            llm_confidence=0.82,
+            ml_price_target=Decimal("61000"),
+            asset_type=AssetType.CRYPTO,
+        )
+        council.analyze("BTC", data)
+        assert AssetType.CRYPTO in captured
+
+    def test_heavy_persona_swings_verdict(self, llm_port: Mock):
+        # Round-1: "Star" → BUY, dwie inne → SELL, równe confidence 0.5.
+        # Bez wag: SELL (headcount/masa). Z 5× wagą dla Star: BUY wygrywa.
+        def side_effect(prompt: str) -> dict:
+            if "Star" in prompt:
+                return self._opinion("BUY")
+            if "B persona" in prompt or "C persona" in prompt:
+                return self._opinion("SELL")
+            # chairman
+            return _verdict_json()
+
+        llm_port.analyze.side_effect = side_effect
+        personas = _personas(("Star", "B persona", "C persona"))
+
+        def provider(asset_type: AssetType) -> dict[str, float]:
+            return {"Star": 5.0, "B persona": 1.0, "C persona": 1.0}
+
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=personas, weights_provider=provider
+        )
+        result = council.analyze("AAPL", _make_input())
+        assert result.final_recommendation == "BUY"
+
+    def test_no_provider_unchanged(self, llm_port: Mock):
+        # Bez weights_provider werdykt wynika z czystej masy confidence.
+        def side_effect(prompt: str) -> dict:
+            if "Star" in prompt:
+                return self._opinion("BUY")
+            if "B persona" in prompt or "C persona" in prompt:
+                return self._opinion("SELL")
+            return _verdict_json()
+
+        llm_port.analyze.side_effect = side_effect
+        personas = _personas(("Star", "B persona", "C persona"))
+        council = LLMAdvisoryCouncil(llm_port=llm_port, personas=personas)
+        result = council.analyze("AAPL", _make_input())
+        # 2×SELL vs 1×BUY przy równym confidence → SELL.
+        assert result.final_recommendation == "SELL"
+
+    def test_provider_exception_falls_back_to_unweighted(self, llm_port: Mock):
+        # Wyjątek w providerze nie może wywalić rady — degradujemy do wag None.
+        def side_effect(prompt: str) -> dict:
+            if "Star" in prompt:
+                return self._opinion("BUY")
+            if "B persona" in prompt or "C persona" in prompt:
+                return self._opinion("SELL")
+            return _verdict_json()
+
+        llm_port.analyze.side_effect = side_effect
+        personas = _personas(("Star", "B persona", "C persona"))
+
+        def provider(asset_type: AssetType) -> dict[str, float]:
+            raise RuntimeError("weights store down")
+
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=personas, weights_provider=provider
+        )
+        result = council.analyze("AAPL", _make_input())
+        # Provider padł → wagi None → headcount/masa wygrywa SELL.
+        assert result.final_recommendation == "SELL"
+
+
+class TestDebateMode:
+    """Feature #1: jedna runda rewizji, gdy round-1 jest podzielone
+    (jednocześnie BUY i SELL). N round-1 + N rewizji + 1 chairman = 2N+1."""
+
+    def _split_side_effect(self, llm_port: Mock, n: int):
+        """Round-1 podzielone: persona 0 → BUY, persona 1 → SELL, reszta → HOLD.
+        Po rewizji wszyscy → BUY. Chairman na końcu."""
+        round1_calls = {"n": 0}
+
+        def side_effect(prompt: str) -> dict:
+            # Rewizja rozpoznawana po bloku peerów (unikalny marker).
+            if "<opinie_peerow>" in prompt:
+                return _opinion_json("BUY")
+            # Chairman rozpoznawany po schemacie werdyktu.
+            if "final_recommendation" in prompt:
+                return _verdict_json()
+            # Round-1 investor.
+            idx = round1_calls["n"]
+            round1_calls["n"] += 1
+            if idx == 0:
+                return _opinion_json("BUY")
+            if idx == 1:
+                return _opinion_json("SELL")
+            return _opinion_json("HOLD")
+
+        llm_port.analyze.side_effect = side_effect
+
+    def test_split_round1_triggers_one_revision_round(self, llm_port: Mock):
+        n = 3
+        self._split_side_effect(llm_port, n)
+        personas = _personas(("A", "B", "C"))
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=personas, debate_mode=True
+        )
+        council.analyze("AAPL", _make_input())
+        # N round-1 + N rewizji + 1 chairman = 2N+1.
+        assert llm_port.analyze.call_count == 2 * n + 1
+
+    def test_verdict_reflects_revised_votes(self, llm_port: Mock):
+        n = 3
+        self._split_side_effect(llm_port, n)
+        personas = _personas(("A", "B", "C"))
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=personas, debate_mode=True
+        )
+        result = council.analyze("AAPL", _make_input())
+        # Po rewizji wszyscy głosują BUY → werdykt BUY (round-1 był split).
+        assert result.final_recommendation == "BUY"
+        # Werdykt zawiera zrewidowane opinie (wszystkie BUY), nie round-1.
+        assert all(op.recommendation == "BUY" for op in result.investor_opinions)
+
+    def test_consensus_round1_no_revision(self, llm_port: Mock):
+        # Round-1 jednomyślne BUY (brak SELL) → brak rewizji: N + 1.
+        n = 3
+
+        def side_effect(prompt: str) -> dict:
+            if "final_recommendation" in prompt:
+                return _verdict_json()
+            return _opinion_json("BUY")
+
+        llm_port.analyze.side_effect = side_effect
+        personas = _personas(("A", "B", "C"))
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=personas, debate_mode=True
+        )
+        council.analyze("AAPL", _make_input())
+        assert llm_port.analyze.call_count == n + 1
+
+    def test_debate_off_never_revises_even_when_split(self, llm_port: Mock):
+        # debate_mode=False: nawet split round-1 nie wywołuje rewizji.
+        n = 3
+        round1_calls = {"n": 0}
+
+        def side_effect(prompt: str) -> dict:
+            if "<opinie_peerow>" in prompt:
+                raise AssertionError("revision must not run when debate is off")
+            if "final_recommendation" in prompt:
+                return _verdict_json()
+            idx = round1_calls["n"]
+            round1_calls["n"] += 1
+            if idx == 0:
+                return _opinion_json("BUY")
+            if idx == 1:
+                return _opinion_json("SELL")
+            return _opinion_json("HOLD")
+
+        llm_port.analyze.side_effect = side_effect
+        personas = _personas(("A", "B", "C"))
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=personas, debate_mode=False
+        )
+        council.analyze("AAPL", _make_input())
+        # N round-1 + 1 chairman, zero rewizji.
+        assert llm_port.analyze.call_count == n + 1
+
+    def test_default_debate_mode_is_off(self, llm_port: Mock):
+        # Domyślnie debate_mode wyłączone (wsteczna kompatybilność).
+        n = 3
+        round1_calls = {"n": 0}
+
+        def side_effect(prompt: str) -> dict:
+            if "<opinie_peerow>" in prompt:
+                raise AssertionError("revision must not run by default")
+            if "final_recommendation" in prompt:
+                return _verdict_json()
+            idx = round1_calls["n"]
+            round1_calls["n"] += 1
+            return _opinion_json("BUY" if idx == 0 else "SELL" if idx == 1 else "HOLD")
+
+        llm_port.analyze.side_effect = side_effect
+        personas = _personas(("A", "B", "C"))
+        council = LLMAdvisoryCouncil(llm_port=llm_port, personas=personas)
+        council.analyze("AAPL", _make_input())
+        assert llm_port.analyze.call_count == n + 1

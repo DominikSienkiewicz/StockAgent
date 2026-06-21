@@ -14,7 +14,9 @@ i pomijany.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 
 from src.application.ports import (
@@ -22,13 +24,16 @@ from src.application.ports import (
     MarketDataPort,
     RepositoryPort,
 )
+from src.domain.correlation import returns_from_prices
 from src.domain.drawdown import DrawdownSignal, peak_from_history
+from src.domain.hedge import HedgeAssessment, assess_hedge
 from src.domain.macro_risk import (
     MacroAlertLevel,
     MacroRiskInstrumentType,
     MacroRiskSignal,
 )
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
+from src.domain.value_objects import Money
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +69,18 @@ class MacroRiskReport:
     # Per-symbol drawdown od szczytu (liczony z darmowych snapshotów).
     # Default pusty → wsteczna kompatybilność starszych ścieżek raportu.
     drawdowns: list[DrawdownSignal] = field(default_factory=list)
+    # R3: skuteczność hedge'y (realized corr instrumentów ryzyka vs book).
+    # Default pusty → wsteczna kompatybilność.
+    hedges: list[HedgeAssessment] = field(default_factory=list)
 
 
 class MonitorMacroRiskUseCase:
-    """Slow scanner — uruchamiany po głównej pętli AnalyzeMarketUseCase."""
+    """Slow scanner — uruchamiany po głównej pętli AnalyzeMarketUseCase.
+
+    Opcjonalnie (flaga `hedge_enabled` + `book_symbols`) liczy skuteczność
+    hedge'y (R3): realized correlation instrumentów ryzyka vs portfel bazowy.
+    Wszystko z DARMOWYCH snapshotów — zero płatnych portów.
+    """
 
     def __init__(
         self,
@@ -75,16 +88,21 @@ class MonitorMacroRiskUseCase:
         market_port: MarketDataPort,
         repository_port: RepositoryPort,
         macro_port: MacroIndicatorsPort | None = None,
+        book_symbols: Sequence[str] = (),
+        hedge_enabled: bool = False,
     ) -> None:
         self._market = market_port
         self._repository = repository_port
         self._macro = macro_port
+        self._book_symbols = tuple(book_symbols)
+        self._hedge_enabled = hedge_enabled
 
     def run(
         self, symbol_types: dict[str, MacroRiskInstrumentType]
     ) -> MacroRiskReport:
         signals = self._collect_signals(symbol_types)
         drawdowns = self._collect_drawdowns(symbol_types)
+        hedges = self._collect_hedge_assessments(symbol_types)
         polish_macro = self._fetch_polish_macro()
         overall = self._compute_overall_alert(signals, drawdowns, polish_macro)
         return MacroRiskReport(
@@ -92,7 +110,90 @@ class MonitorMacroRiskUseCase:
             polish_macro=polish_macro,
             overall_alert=overall,
             drawdowns=drawdowns,
+            hedges=hedges,
         )
+
+    def _collect_hedge_assessments(
+        self, symbol_types: dict[str, MacroRiskInstrumentType]
+    ) -> list[HedgeAssessment]:
+        """Skuteczność każdego instrumentu ryzyka jako hedge'a portfela bazowego.
+
+        Dla każdego symbolu ryzyka liczy realized correlation jego zwrotów ze
+        zwrotami portfela równoważonego (book_symbols), wyrównanych po wspólnych
+        timestampach. Instrumenty ryzyka traktujemy jak hedge ODWROTNY (mają
+        rosnąć, gdy book spada → `expect_inverse=True`). Wyłączone / brak booka /
+        brak historii → []. Pojedynczy błąd nie wywala cyklu."""
+        if not self._hedge_enabled or not self._book_symbols:
+            return []
+        all_symbols = list(dict.fromkeys([*self._book_symbols, *symbol_types]))
+        raw: dict[str, list[tuple[datetime, Money]]] = {}
+        for symbol in all_symbols:
+            try:
+                history = self._repository.get_price_history(
+                    symbol, days=_DRAWDOWN_HISTORY_DAYS
+                )
+            except Exception:
+                logger.exception("hedge history fetch failed for %s", symbol)
+                continue
+            if len(history) >= 3:
+                raw[symbol] = history
+
+        out: list[HedgeAssessment] = []
+        for hedge_symbol in symbol_types:
+            if hedge_symbol not in raw:
+                continue
+            # Wyrównujemy book + ten hedge po WSPÓLNYCH timestampach (każdy hedge
+            # może mieć inny przekrój dat z bookiem).
+            subset = {b: raw[b] for b in self._book_symbols if b in raw}
+            if not subset:
+                continue
+            subset[hedge_symbol] = raw[hedge_symbol]
+            aligned = self._aligned_returns(subset)
+            hedge_returns = aligned.get(hedge_symbol)
+            book_series = [aligned[b] for b in self._book_symbols if b in aligned]
+            if not hedge_returns or not book_series:
+                continue
+            count = len(book_series)
+            length = len(hedge_returns)
+            book_returns = [
+                sum(series[t] for series in book_series) / count
+                for t in range(length)
+            ]
+            out.append(
+                assess_hedge(
+                    hedge_symbol,
+                    book_returns,
+                    hedge_returns,
+                    expect_inverse=True,
+                )
+            )
+        return out
+
+    @staticmethod
+    def _aligned_returns(
+        raw: dict[str, list[tuple[datetime, Money]]],
+    ) -> dict[str, list[float]]:
+        """Wyrównuje szeregi cen po WSPÓLNYCH timestampach i liczy zwroty.
+
+        Analogiczne do PortfolioRiskUseCase — po wyrównaniu wszystkie szeregi
+        mają tę samą długość, więc zwroty są sparowane okres-w-okres. Symbol
+        z <2 zwrotami po wyrównaniu jest pomijany."""
+        if not raw:
+            return {}
+        common: set[datetime] | None = None
+        for series in raw.values():
+            stamps = {ts for ts, _ in series}
+            common = stamps if common is None else (common & stamps)
+        if not common:
+            return {}
+        ordered = sorted(common)
+        out: dict[str, list[float]] = {}
+        for symbol, series in raw.items():
+            by_ts = {ts: float(price.amount) for ts, price in series}
+            rets = returns_from_prices([by_ts[ts] for ts in ordered])
+            if len(rets) >= 2:
+                out[symbol] = rets
+        return out
 
     def _collect_signals(
         self, symbol_types: dict[str, MacroRiskInstrumentType]

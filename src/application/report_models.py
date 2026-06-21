@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from src.domain.council import CouncilVerdict
+from src.domain.feature_attribution import FeatureContribution
 from src.domain.provenance import ProvenanceBadge
 from src.domain.sizing import SizeBand
 from src.domain.value_objects import ValuationVerdict
@@ -74,6 +75,11 @@ class SymbolResult:
     # Q6: odznaki proweniencji danych (FRESH / STALE / DEGRADED / FLAGGED).
     # Pusta lista = brak sygnału (renderer pomija chipy).
     provenance_badges: list[ProvenanceBadge] = field(default_factory=list)
+    # Q3: feature attribution (SHAP-lite) — które cechy ML pchnęły prognozę w
+    # górę/dół i o ile (znakowane wkłady, posortowane malejąco po module). Pusty
+    # tuple = brak atrybucji (model nietrenowany / cykl bez predykcji) →
+    # wstecznie kompatybilne, renderer pomija sekcję.
+    feature_attribution: tuple[FeatureContribution, ...] = ()
 
     @property
     def expected_change(self) -> Decimal | None:

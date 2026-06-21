@@ -90,6 +90,77 @@ class TestBuildsReport:
         assert "NVDA" in report.verdict
 
 
+class TestVarAndStress:
+    """R1/R2 — VaR/CVaR i stress-test liczone z tych samych darmowych zwrotów
+    co macierz korelacji. Domyślnie wyłączone (wsteczna kompatybilność)."""
+
+    def _history(self) -> dict[str, list[tuple[datetime, Money]]]:
+        return {
+            "NVDA": _series(["100", "110", "104.5", "125.4", "118.0"]),
+            "MSFT": _series(["50", "55", "52.25", "62.7", "59.0"]),
+            "GLD": _series(["100", "90", "94.5", "75.6", "80.0"]),
+        }
+
+    def test_var_disabled_by_default(self, repository_port: Mock) -> None:
+        repository_port.get_price_history.side_effect = (
+            lambda sym, days: self._history()[sym]
+        )
+        report = PortfolioRiskUseCase(repository_port=repository_port).run(
+            ["NVDA", "MSFT", "GLD"]
+        )
+        assert report.var is None
+        assert report.cvar is None
+        assert report.scenarios == ()
+
+    def test_var_and_cvar_populated_when_enabled(
+        self, repository_port: Mock
+    ) -> None:
+        repository_port.get_price_history.side_effect = (
+            lambda sym, days: self._history()[sym]
+        )
+        report = PortfolioRiskUseCase(
+            repository_port=repository_port,
+            var_enabled=True,
+            var_confidence=0.95,
+        ).run(["NVDA", "MSFT", "GLD"])
+        assert report.var is not None and report.var >= 0.0
+        assert report.cvar is not None
+        # CVaR (expected shortfall) nigdy nie jest mniejszy niż VaR.
+        assert report.cvar >= report.var
+        assert report.var_confidence == 0.95
+
+    def test_stress_scenarios_populated_when_enabled(
+        self, repository_port: Mock
+    ) -> None:
+        from src.domain.scenarios import Scenario
+
+        repository_port.get_price_history.side_effect = (
+            lambda sym, days: self._history()[sym]
+        )
+        scenarios = (
+            Scenario(name="Korekta -10%", market_shock=-0.10),
+            Scenario(name="Krach -20%", market_shock=-0.20),
+        )
+        report = PortfolioRiskUseCase(
+            repository_port=repository_port,
+            stress_enabled=True,
+            scenarios=scenarios,
+        ).run(["NVDA", "MSFT", "GLD"])
+        assert len(report.scenarios) == 2
+        names = {s.scenario_name for s in report.scenarios}
+        assert names == {"Korekta -10%", "Krach -20%"}
+        # Każdy scenariusz wycenia per-symbol wpływ dla całej watchlisty.
+        assert all(impact.per_symbol for impact in report.scenarios)
+
+    def test_var_skipped_when_too_few_symbols(self, repository_port: Mock) -> None:
+        repository_port.get_price_history.return_value = _series(["100", "110"])
+        report = PortfolioRiskUseCase(
+            repository_port=repository_port, var_enabled=True
+        ).run(["AAPL"])
+        # <2 symbole z historią → pusty raport, bez VaR.
+        assert report.var is None
+
+
 class TestGracefulDegradation:
     def test_single_symbol_yields_empty_report(self, repository_port: Mock) -> None:
         repository_port.get_price_history.return_value = _series(["100", "110"])

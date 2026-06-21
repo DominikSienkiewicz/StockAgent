@@ -88,6 +88,22 @@ def main(settings: Settings | None = None) -> int:
             logger.exception("Training failed for symbol %s", symbol)
             failures += 1
 
+    # #4: LLM-as-Judge kalibracji pewności (Slow Loop, poza budżetem Fast Loopa).
+    if settings.calibration_judge_enabled:
+        try:
+            from main_agent import build_llm_adapter
+            from src.application.use_cases.calibrate_confidence import (
+                CalibrateConfidenceUseCase,
+            )
+
+            cal_result = CalibrateConfidenceUseCase(
+                repository_port=supabase_repo,
+                llm_port=build_llm_adapter(settings, quota_monitor=quota_monitor),
+            ).run(days=30)
+            logger.info("Calibration judge — %s", cal_result.get("status"))
+        except Exception:
+            logger.exception("Calibration judge failed — pomijam")
+
     logger.info("Slow Loop done — failures=%d/%d", failures, len(settings.symbols))
     return 1 if failures else 0
 

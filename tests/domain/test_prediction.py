@@ -1,6 +1,31 @@
 from decimal import Decimal
 
-from src.domain.prediction import Prediction, TrendDirection
+import pytest
+
+from src.domain.prediction import (
+    Prediction,
+    TrendDirection,
+    calibration_error,
+    calibration_score,
+)
+
+
+class TestCalibration:
+    def test_calibration_error_zero_when_confidence_matches_accuracy(self):
+        samples = [(0.5, True), (0.5, False)]
+        assert calibration_error(samples) == pytest.approx(0.0)
+
+    def test_calibration_error_high_when_overconfident(self):
+        samples = [(0.9, True), (0.9, False)]
+        assert calibration_error(samples) == pytest.approx(0.4)
+
+    def test_calibration_error_empty(self):
+        assert calibration_error([]) == 0.0
+
+    def test_calibration_score_per_prediction(self):
+        assert calibration_score(0.9, correct=False) == pytest.approx(0.1)
+        assert calibration_score(0.8, correct=True) == pytest.approx(0.8)
+        assert calibration_score(1.0, correct=True) == pytest.approx(1.0)
 
 
 def _make_prediction(

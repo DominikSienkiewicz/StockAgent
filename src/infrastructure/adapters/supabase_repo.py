@@ -4,15 +4,22 @@ import logging
 import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from supabase import create_client
 
 from src.application.ports import RepositoryPort
+from src.application.report_council_history import InvestorHistory
 from src.domain.council import InvestorOpinion
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.quota import QuotaAlert, QuotaSeverity
-from src.domain.value_objects import FUNDAMENTALS_CACHE_TTL_HOURS, Fundamentals, Money
+from src.domain.regime_key import canonical_regime_key
+from src.domain.value_objects import (
+    FUNDAMENTALS_CACHE_TTL_HOURS,
+    AssetType,
+    Fundamentals,
+    Money,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +257,27 @@ class SupabaseRepository(RepositoryPort):
         )
         return _paginate(query)
 
+    def get_resolved_predictions(self, days: int) -> list[dict[str, Any]]:
+        """Zamknięte predykcje (oceniony kierunek) z ostatnich `days` dni.
+
+        Ten sam zestaw kolumn co `get_recently_resolved_predictions` (godziny),
+        ale szersze okno dniowe — zasila track-record (krzywa kapitału, panel
+        lessons). `parse_resolved_predictions` parsuje oba kształty. Paginacja
+        (#8) — pełen zbiór, nie obcięte ~1000 wierszy PostgREST."""
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        query = (
+            self._client.table(self._table)
+            .select(
+                "symbol, predicted_trend, is_trend_correct, timestamp, "
+                "reasoning_text, correction_insights, price_at_prediction, "
+                "actual_price_after_12h"
+            )
+            .gte("timestamp", cutoff.isoformat())
+            .not_.is_("is_trend_correct", "null")
+            .order("timestamp", desc=True)
+        )
+        return _paginate(query)
+
     def get_resolved_predictions_for_eval(self, days: int) -> list[dict[str, Any]]:
         """Zamknięte predykcje z ostatnich `days` dni z polami do ewaluacji
         (ceny + kierunek). Read-only; używane przez `src.tools.evaluate`.
@@ -422,19 +450,25 @@ class SupabaseRepository(RepositoryPort):
         return out
 
     def find_similar_predictions(
-        self, embedding: list[float], limit: int = 3
+        self, embedding: list[float], limit: int = 3, regime: str | None = None
     ) -> list[dict[str, Any]]:
         """Similarity search nad `prediction_logs.embedding` (pgvector) przez
-        RPC `match_news_embeddings` (migracja 011).
+        RPC `match_news_embeddings` (migracja 011; filtr reżimu z migracji 017).
 
         Graceful: gdy RPC nie istnieje (migracja niezaaplikowana) lub błąd
         sieci/Supabase — zwraca `[]`, żeby RAG był czysto opcjonalnym
-        wzbogaceniem, a nie twardą zależnością predykcji."""
+        wzbogaceniem, a nie twardą zależnością predykcji.
+
+        `regime`: gdy podany, dokłada parametr `filter_regime` do RPC (migracja
+        017 filtruje analogi po reżimie; NULL/UNKNOWN w bazie przepuszcza)."""
+        params: dict[str, Any] = {
+            "query_embedding": embedding,
+            "match_count": limit,
+        }
+        if regime is not None:
+            params["filter_regime"] = canonical_regime_key(regime)
         try:
-            response = self._client.rpc(
-                "match_news_embeddings",
-                {"query_embedding": embedding, "match_count": limit},
-            ).execute()
+            response = self._client.rpc("match_news_embeddings", params).execute()
         except Exception:
             logger.warning(
                 "match_news_embeddings RPC unavailable — RAG retrieval skipped "
@@ -443,6 +477,100 @@ class SupabaseRepository(RepositoryPort):
             )
             return []
         return _rows(response)
+
+    def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        response = (
+            self._client.table(self._table)
+            .select("id, confidence_score, is_trend_correct, reasoning_text")
+            .gte("timestamp", cutoff.isoformat())
+            .not_.is_("is_trend_correct", "null")
+            .not_.is_("confidence_score", "null")
+            .order("timestamp", desc=True)
+            .execute()
+        )
+        return _rows(response)
+
+    def save_calibration(
+        self, prediction_id: str, score: float, insight: str
+    ) -> None:
+        (
+            self._client.table(self._table)
+            .update(
+                {"confidence_calibration": score, "calibration_insight": insight}
+            )
+            .eq("id", prediction_id)
+            .execute()
+        )
+
+    def get_persona_accuracy(
+        self, asset_type: AssetType, window_days: int = 90
+    ) -> dict[str, float]:
+        # Liczenie trafności per persona (rekomendacja vs realny ruch ceny) robi
+        # RPC `persona_accuracy_weights` w SQL (migracja 015) — Python tylko mapuje
+        # wynik. `asset_type` zarezerwowany na przyszłe ważenie per klasa aktywa
+        # (dziś council_votes nie nosi typu → waga globalna). Graceful: brak RPC
+        # / błąd → {} (ważenie wyłączone, każda persona waży 1.0).
+        _ = asset_type
+        try:
+            response = self._client.rpc(
+                "persona_accuracy_weights", {"window_days": window_days}
+            ).execute()
+        except Exception:
+            logger.warning(
+                "persona_accuracy_weights RPC unavailable — ważenie person pominięte "
+                "(zaaplikuj migrację 015).",
+                exc_info=True,
+            )
+            return {}
+        out: dict[str, float] = {}
+        for row in _rows(response):
+            name = row.get("investor_name")
+            weight = row.get("weight")
+            if name is None or weight is None:
+                continue
+            out[str(name)] = float(weight)
+        return out
+
+    def get_council_vote_history(
+        self,
+        symbols: list[str],
+        *,
+        window_days: int = 30,
+        investors: list[str] | None = None,
+    ) -> list[InvestorHistory]:
+        if not symbols:
+            return []
+        cutoff = datetime.now(UTC) - timedelta(days=window_days)
+        query = (
+            self._client.table(self._council_votes_table)
+            .select("investor_name, symbol, recommendation, timestamp")
+            .in_("symbol", symbols)
+            .gte("timestamp", cutoff.isoformat())
+        )
+        if investors:
+            query = query.in_("investor_name", investors)
+        response = query.order("timestamp", desc=True).execute()
+        # Grupowanie per (inwestor, symbol); kolejność malejąca po czasie
+        # zachowana (rekomendacje od najnowszej).
+        grouped: dict[tuple[str, str], list[Literal["BUY", "SELL", "HOLD"]]] = {}
+        for row in _rows(response):
+            name = str(row.get("investor_name") or "")
+            sym = str(row.get("symbol") or "")
+            rec_raw = row.get("recommendation")
+            if not name or not sym or rec_raw not in ("BUY", "SELL", "HOLD"):
+                continue
+            rec = cast("Literal['BUY', 'SELL', 'HOLD']", rec_raw)
+            grouped.setdefault((name, sym), []).append(rec)
+        return [
+            InvestorHistory(
+                investor_name=name,
+                symbol=sym,
+                recommendations=tuple(recs),
+                window_days=window_days,
+            )
+            for (name, sym), recs in grouped.items()
+        ]
 
     def get_council_votes_for_prediction(
         self, prediction_id: str

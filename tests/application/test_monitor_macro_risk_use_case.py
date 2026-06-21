@@ -306,3 +306,93 @@ class TestDrawdowns:
 
     def test_default_drawdowns_empty_for_backward_compat(self) -> None:
         assert MacroRiskReport().drawdowns == []
+
+
+class TestHedgeEffectiveness:
+    """R3 — realized correlation hedge vs book. Inverse ETF, który faktycznie
+    porusza się przeciwnie do portfela, jest 'skuteczny'; jeśli koreluje
+    dodatnio (zepsuty hedge) — 'odwrócony'. Domyślnie wyłączone."""
+
+    def _wire(
+        self, market: Mock, repo: Mock, histories: dict[str, list]
+    ) -> None:
+        repo.get_price_history.side_effect = (
+            lambda sym, days: histories.get(sym, [])
+        )
+        market.get_current_price.return_value = Money(Decimal("80"))
+        repo.get_last_price.return_value = Money(Decimal("82"))
+
+    def test_hedges_empty_by_default(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        self._wire(
+            market_port, repository_port,
+            {"AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
+             "SH": _history("100", "90", "94.5", "75.6", "80.06")},
+        )
+        report = _make_uc(market_port, repository_port).run(
+            {"SH": MacroRiskInstrumentType.INVERSE_EQUITY}
+        )
+        assert report.hedges == []
+
+    def test_effective_inverse_hedge_labeled_skuteczny(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        # SH to dokładne lustro zwrotów AAPL → korelacja -1 → effectiveness +1.
+        self._wire(
+            market_port, repository_port,
+            {"AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
+             "SH": _history("100", "90", "94.5", "75.6", "80.06")},
+        )
+        uc = MonitorMacroRiskUseCase(
+            market_port=market_port,
+            repository_port=repository_port,
+            book_symbols=["AAPL"],
+            hedge_enabled=True,
+        )
+        report = uc.run({"SH": MacroRiskInstrumentType.INVERSE_EQUITY})
+
+        assert len(report.hedges) == 1
+        h = report.hedges[0]
+        assert h.hedge_symbol == "SH"
+        assert h.correlation < 0          # porusza się przeciwnie do booka
+        assert h.effectiveness > 0.5      # dobry inverse hedge
+        assert h.label == "skuteczny"
+
+    def test_broken_hedge_labeled_odwrocony(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        # "Hedge" porusza się TAK SAMO jak book (korelacja +1) → odwrócony.
+        self._wire(
+            market_port, repository_port,
+            {"AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
+             "BAD": _history("100", "110", "104.5", "125.4", "118.0")},
+        )
+        uc = MonitorMacroRiskUseCase(
+            market_port=market_port,
+            repository_port=repository_port,
+            book_symbols=["AAPL"],
+            hedge_enabled=True,
+        )
+        report = uc.run({"BAD": MacroRiskInstrumentType.INVERSE_EQUITY})
+
+        assert report.hedges[0].label == "odwrócony"
+
+    def test_no_book_symbols_yields_no_hedges(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        self._wire(
+            market_port, repository_port,
+            {"SH": _history("100", "90", "94.5", "75.6", "80.06")},
+        )
+        uc = MonitorMacroRiskUseCase(
+            market_port=market_port,
+            repository_port=repository_port,
+            book_symbols=[],
+            hedge_enabled=True,
+        )
+        report = uc.run({"SH": MacroRiskInstrumentType.INVERSE_EQUITY})
+        assert report.hedges == []
+
+    def test_default_hedges_empty_for_backward_compat(self) -> None:
+        assert MacroRiskReport().hedges == []

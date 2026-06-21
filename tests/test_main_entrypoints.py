@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import main_agent
+import main_backtest
 import main_trainer
 from src.config import Settings
 
@@ -326,6 +327,50 @@ class TestMainTrainer:
 
         assert exit_code == 1
         fake_uc.run.assert_not_called()
+
+
+class TestMainBacktest:
+    """Offline walk-forward backtest harness (T3) — DI + top-level main()."""
+
+    def test_build_use_case_wires_supabase_and_xgboost(
+        self, settings, mock_external_clients
+    ):
+        use_case = main_backtest.build_use_case(settings)
+        assert use_case is not None
+
+    def test_main_runs_backtest_per_symbol(
+        self, settings, mock_external_clients, mocker
+    ):
+        from src.domain.backtest import BacktestSummary
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = BacktestSummary(
+            n_folds=4,
+            mean_candidate_rmse=0.03,
+            mean_baseline_rmse=0.05,
+            mean_hit_rate=0.6,
+            improvement_pct=40.0,
+            beats_baseline=True,
+            verdict="model bije baseline o 40.0%",
+        )
+        mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
+
+        exit_code = main_backtest.main(settings)
+
+        assert exit_code == 0
+        assert fake_uc.run.call_count == len(settings.symbols)
+        # Widok odświeżamy raz globalnie → per-symbol refresh_view=False.
+        assert fake_uc.run.call_args_list[0].kwargs == {"refresh_view": False}
+
+    def test_main_survives_single_symbol_failure(
+        self, settings, mock_external_clients, mocker
+    ):
+        fake_uc = MagicMock()
+        fake_uc.run.side_effect = RuntimeError("XGBoost boom")
+        mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
+
+        # Pojedynczy błąd per-symbol nie wywala harnessa.
+        assert main_backtest.main(settings) == 0
 
 
 class TestBuildMacroRiskUseCase:

@@ -128,19 +128,16 @@ class XGBoostAdapter(MLPredictionPort):
             "model_path": self._model_path,
         }
 
-    def _walk_forward_evaluate(
+    def _walk_forward_folds_detail(
         self, features: pd.DataFrame, target: pd.Series
-    ) -> tuple[float, float, float, int]:
-        """Ewaluacja walk-forward (expanding window) na danych time-ordered.
-
-        Zwraca (avg_candidate_rmse, avg_baseline_rmse, avg_directional_hit_rate,
-        n_folds) uśrednione po foldach. Poniżej `MIN_FOLD_SAMPLES` spada do
-        pojedynczego splitu (sane fallback), zwracając n_folds=1.
+    ) -> list[dict[str, float]]:
+        """Per-fold metryki walk-forward (expanding window) na danych
+        time-ordered. Jedno źródło prawdy dla `_walk_forward_evaluate` (średnia)
+        i `walk_forward_report` (szczegół). Poniżej `MIN_FOLD_SAMPLES` spada do
+        pojedynczego splitu (sane fallback) → jeden fold.
         """
         folds = _expanding_window_folds(len(target))
-        candidate_rmses: list[float] = []
-        baseline_rmses: list[float] = []
-        hit_rates: list[float] = []
+        out: list[dict[str, float]] = []
         for train_end, valid_end in folds:
             train_x = features.iloc[:train_end]
             train_y = target.iloc[:train_end]
@@ -151,17 +148,46 @@ class XGBoostAdapter(MLPredictionPort):
             candidate.fit(train_x, train_y)
             preds = candidate.predict(valid_x)
 
-            candidate_rmses.append(_rmse(valid_y, preds))
-            # Baseline persystencji: „zwrot = 0" (cena 12h naprzód = cena bieżąca).
-            baseline_rmses.append(_rmse(valid_y, np.zeros(len(valid_y))))
-            hit_rates.append(_directional_hit_rate(valid_y, preds))
+            out.append(
+                {
+                    "train_end": float(train_end),
+                    "valid_end": float(valid_end),
+                    "n_train": float(train_end),
+                    "n_valid": float(valid_end - train_end),
+                    "candidate_rmse": _rmse(valid_y, preds),
+                    # Baseline persystencji: „zwrot = 0" (cena 12h = cena bieżąca).
+                    "baseline_rmse": _rmse(valid_y, np.zeros(len(valid_y))),
+                    "hit_rate": _directional_hit_rate(valid_y, preds),
+                }
+            )
+        return out
 
+    def _walk_forward_evaluate(
+        self, features: pd.DataFrame, target: pd.Series
+    ) -> tuple[float, float, float, int]:
+        """Ewaluacja walk-forward (expanding window) na danych time-ordered.
+
+        Zwraca (avg_candidate_rmse, avg_baseline_rmse, avg_directional_hit_rate,
+        n_folds) uśrednione po foldach z `_walk_forward_folds_detail`.
+        """
+        details = self._walk_forward_folds_detail(features, target)
         return (
-            float(np.mean(candidate_rmses)),
-            float(np.mean(baseline_rmses)),
-            float(np.mean(hit_rates)),
-            len(folds),
+            float(np.mean([d["candidate_rmse"] for d in details])),
+            float(np.mean([d["baseline_rmse"] for d in details])),
+            float(np.mean([d["hit_rate"] for d in details])),
+            len(details),
         )
+
+    def walk_forward_report(
+        self, features: Any, target: Any
+    ) -> list[dict[str, float]]:
+        """Per-fold metryki OOS bez persystencji (offline backtest harness).
+
+        Reużywa logikę foldów `train()` (finding #23). Czysto ewaluacyjna —
+        nie zapisuje modelu i nie zmienia stanu adaptera (`self._model`)."""
+        feature_frame = pd.DataFrame(features).reset_index(drop=True)
+        target_series = pd.Series(target).reset_index(drop=True)
+        return self._walk_forward_folds_detail(feature_frame, target_series)
 
     def predict(
         self, current_features: dict[str, float], current_price: Decimal
@@ -177,6 +203,40 @@ class XGBoostAdapter(MLPredictionPort):
         predicted_return = float(self._model.predict(frame)[0])
         target_price = current_price * (Decimal("1") + Decimal(str(predicted_return)))
         return Money(target_price)
+
+    def explain(self, current_features: dict[str, float]) -> dict[str, float]:
+        """Q3 — znakowane wkłady per-cecha w surową predykcję (SHAP-lite).
+
+        Liczone lokalnie z boostera przez `pred_contribs=True` (dokładne wartości
+        SHAP dla modeli drzewiastych) — zero nowych płatnych wywołań. Zwraca
+        `{nazwa_cechy: znakowany_wkład}` w jednostkach targetu (zwrot 12h);
+        dodatni wkład pchnął prognozę w górę, ujemny w dół. Bias (base value)
+        jest pod osobnym kluczem `_bias`, NIE jako cecha — dzięki temu suma
+        wszystkich wartości słownika ≈ surowy zwrot modelu (addytywność SHAP).
+        Wejście jest wyrównane do `feature_names_in_` tak samo jak w `predict()`
+        (nadmiarowe cechy ignorowane, brakujące → KeyError). Bramka „model
+        wytrenowany" identyczna jak w `predict()`.
+        """
+        if self._model is None:
+            raise RuntimeError(
+                f"Model not trained — no weights at '{self._model_path}'. "
+                "Run TrainModelUseCase first (Slow Loop)."
+            )
+        frame = self._align_features(current_features)
+        booster = self._model.get_booster()
+        # pred_contribs zwraca macierz [n_próbek, n_cech + 1]; ostatnia kolumna to
+        # bias (base value). Mamy jedną próbkę → bierzemy wiersz 0.
+        contributions = booster.predict(
+            xgb.DMatrix(frame), pred_contribs=True
+        )
+        row = np.asarray(contributions, dtype=float).reshape(-1)
+        feature_names = [str(c) for c in frame.columns]
+        result: dict[str, float] = {
+            name: float(row[idx]) for idx, name in enumerate(feature_names)
+        }
+        # Ostatni element to bias — pod dedykowanym kluczem, nie jako cecha.
+        result["_bias"] = float(row[len(feature_names)])
+        return result
 
     def _align_features(self, current_features: dict[str, float]) -> pd.DataFrame:
         """Wyrównuje wejście do cech, na których model BYŁ trenowany.

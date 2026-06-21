@@ -32,10 +32,10 @@ jobs:
         run: uv sync --frozen --extra anthropic
 
       - name: 🔍 Ruff (lint)
-        run: uv run ruff check src tests main_agent.py main_trainer.py
+        run: uv run ruff check src tests main_agent.py main_trainer.py main_backtest.py
 
       - name: 🔎 Mypy (strict type check)
-        run: uv run mypy src main_agent.py main_trainer.py
+        run: uv run mypy src main_agent.py main_trainer.py main_backtest.py
 
       - name: 🧪 Pytest (unit tests)
         # Integration tests (-m integration) wymagają prawdziwych kluczy API —

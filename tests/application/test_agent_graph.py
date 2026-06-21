@@ -13,6 +13,8 @@ from src.application.ports import (
     NewsPort,
     RepositoryPort,
     SentimentPort,
+    Tool,
+    ToolUseLLMPort,
 )
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.value_objects import Money, Threshold
@@ -1480,3 +1482,210 @@ class TestProvenanceSignals:
 
         # Czysty cykl → brak flag (FRESH w raporcie).
         assert final["data_quality_flags"] == []
+
+
+# ---------------------------------------------------------------------------
+# #6 — Tool-use research agent: na NAJWIĘKSZYCH ruchach (osobny, wyższy próg)
+# predict_node przełącza główną analizę na pętlę tool-use (ToolUseLLMPort),
+# która pozwala modelowi dociągnąć read-only toole (fundamenty/makro) przed
+# werdyktem. Poniżej progu tool-use — zwykły llm_port.analyze (FinOps).
+# ---------------------------------------------------------------------------
+
+
+class TestToolUseResearchAgent:
+    def _tools(self) -> list[Tool]:
+        # Atrapa read-only toola — w teście nie wywołujemy func (adapter to mock).
+        return [
+            Tool(
+                name="get_macro",
+                description="Polski makro snapshot.",
+                parameters={"type": "object", "properties": {}, "required": []},
+                func=lambda args: {"available": False},
+            )
+        ]
+
+    def test_uses_tool_loop_when_move_exceeds_tool_threshold(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # -10% ≥ 5% próg tool-use → analiza idzie pętlą tool-use, nie zwykłym analyze.
+        tool_use_port = Mock(spec=ToolUseLLMPort)
+        tool_use_port.analyze_with_tools.return_value = {
+            "trend_direction": "BEARISH",
+            "confidence_score": 0.9,
+            "av_agreement": 0.3,
+            "reasoning": "Po sprawdzeniu fundamentów: pogorszenie.",
+        }
+        workflow = create_agent_graph(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            tool_use_port=tool_use_port,
+            research_tools=self._tools(),
+            tool_use_threshold=Threshold(Decimal("0.05")),
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        tool_use_port.analyze_with_tools.assert_called_once()
+        # Pętla tool-use przejmuje główną analizę — zwykły analyze NIE leci.
+        llm_port.analyze.assert_not_called()
+        # Werdykt z tool-use trafia do analizy i napędza dalsze węzły.
+        assert final["llm_analysis"]["trend_direction"] == "BEARISH"
+        # Tool i prompt przekazane do adaptera.
+        args = tool_use_port.analyze_with_tools.call_args.args
+        assert isinstance(args[0], str)  # prompt
+        assert args[1][0].name == "get_macro"
+
+    def test_falls_back_to_plain_analyze_below_tool_threshold(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # -3%: główna bramka 2% przepuszcza (analiza leci), ale < 5% próg tool-use
+        # → zwykły llm_port.analyze, BEZ kosztownej pętli tool-use.
+        tool_use_port = Mock(spec=ToolUseLLMPort)
+        workflow = create_agent_graph(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            tool_use_port=tool_use_port,
+            research_tools=self._tools(),
+            tool_use_threshold=Threshold(Decimal("0.05")),
+        )
+        market_port.get_current_price.return_value = Money(Decimal("97.0"))  # -3%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        tool_use_port.analyze_with_tools.assert_not_called()
+        llm_port.analyze.assert_called_once()
+
+    def test_tool_loop_failure_degrades_gracefully(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Pętla tool-use rzuca (np. cap rund + zła odpowiedź) → predict_node
+        # degraduje do neutralnej analizy + flagi, jak guard #12. Brak crashu.
+        tool_use_port = Mock(spec=ToolUseLLMPort)
+        tool_use_port.analyze_with_tools.side_effect = RuntimeError("tool loop boom")
+        workflow = create_agent_graph(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            tool_use_port=tool_use_port,
+            research_tools=self._tools(),
+            tool_use_threshold=Threshold(Decimal("0.05")),
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        assert final["llm_analysis"]["trend_direction"] == "SIDEWAYS"
+        assert "llm_analysis_failed" in final["data_quality_flags"]
+
+    def test_no_tool_port_always_uses_plain_analyze(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Backward-compat: brak tool_use_port → zwykły analyze nawet przy dużym ruchu.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        llm_port.analyze.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Cross-Asset Vector Memory — tag reżimu przy embeddingu + filtr reżimu w RAG.
+# Bez flagi: zachowanie wsteczne (regime=None, brak kolumny regime w rekordzie).
+# ---------------------------------------------------------------------------
+
+
+class TestVectorMemory:
+    def _make(self, ports: dict, *, enabled: bool, embedding_port: Mock):
+        return create_agent_graph(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+            vector_memory_enabled=enabled,
+        )
+
+    def _state(self) -> dict:
+        return {
+            "symbol": "AAPL",
+            "previous_price": Decimal("100.0"),
+            "regime_context": "RISK-OFF",
+        }
+
+    def test_regime_passed_to_retrieval_and_stored_when_enabled(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = []
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+        self._make(ports, enabled=True, embedding_port=embedding_port).compile().invoke(
+            self._state()
+        )
+
+        # RAG filtrowany po reżimie (surowa etykieta — repo kanonizuje).
+        _, kwargs = repository_port.find_similar_predictions.call_args
+        assert kwargs.get("regime") == "RISK-OFF"
+        # Zapisany rekord NIESIE kanoniczny tag reżimu (do tagowania pamięci).
+        saved = repository_port.save_prediction.call_args.args[0]
+        assert saved["regime"] == "RISK-OFF"
+
+    def test_no_regime_filter_or_tag_when_disabled(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = []
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+        self._make(ports, enabled=False, embedding_port=embedding_port).compile().invoke(
+            self._state()
+        )
+
+        _, kwargs = repository_port.find_similar_predictions.call_args
+        assert kwargs.get("regime") is None
+        saved = repository_port.save_prediction.call_args.args[0]
+        assert "regime" not in saved

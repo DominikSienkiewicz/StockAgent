@@ -11,10 +11,16 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from src.application.alpha_signals import AlphaSignals
+from src.application.report_alpha import render_alpha_html
 from src.application.report_charts import (
     build_chart_url,
     build_correlation_chart_url,
     build_forecast_chart_url,
+)
+from src.application.report_council_history import (
+    InvestorHistory,
+    render_council_history_html,
 )
 from src.application.report_formatting import (
     company_label as _company_label,
@@ -46,6 +52,7 @@ from src.application.report_formatting import (
 from src.application.report_formatting import (
     trend_label as _trend_label,
 )
+from src.application.report_lessons import LessonsReport
 from src.application.report_models import (
     ResolvedPrediction,
     RiskSignal,
@@ -77,9 +84,14 @@ from src.application.report_suggestions import (
     render_suggestions_text,
 )
 from src.application.report_templates import _env, render_template
+from src.application.report_track_record import render_track_record_html
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
+from src.domain.calibration_curve import CalibrationBucket
 from src.domain.council import CouncilVerdict
+from src.domain.equity_curve import EquityCurve
+from src.domain.feature_attribution import FeatureContribution
+from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
 from src.domain.value_objects import (
@@ -534,6 +546,30 @@ def _render_precedents_block_html(precedents: list[SimilarPrecedent]) -> str:
     )
 
 
+def _render_attribution_block_html(
+    contribs: tuple[FeatureContribution, ...],
+) -> str:
+    """Renderuje blok 'Wkład cech' (Q3 SHAP-lite) — które cechy ML pchnęły
+    predykcję w górę/dół i o ile. Pusta krotka → pusty string."""
+    if not contribs:
+        return ""
+    chips = []
+    for c in contribs:
+        positive = c.contribution >= 0
+        color = "#16a34a" if positive else "#dc2626"
+        sign = "+" if positive else ""
+        chips.append(
+            f"<span style='display:inline-block; margin-right:10px;'>"
+            f"{_html(c.feature)} "
+            f"<strong style='color:{color};'>{sign}{c.contribution:.4f}</strong></span>"
+        )
+    return (
+        "<div style='font-size: 11px; color: #475569; margin-top: 6px; "
+        "padding: 4px 8px; background: #f8fafc; border-radius: 3px;'>"
+        "🔍 <strong>Wkład cech:</strong> " + "".join(chips) + "</div>"
+    )
+
+
 def build_html_report(
     results: list[SymbolResult],
     started_at: datetime,
@@ -542,7 +578,15 @@ def build_html_report(
     resolved_predictions: list[ResolvedPrediction] | None = None,
     macro_risk_report: MacroRiskReport | None = None,
     portfolio_risk_report: PortfolioRiskReport | None = None,
+    council_history: list[InvestorHistory] | None = None,
     quota_alerts: list[QuotaAlert] | None = None,
+    symbols_filter: frozenset[str] | None = None,
+    equity_curve: EquityCurve | None = None,
+    calibration_buckets: list[CalibrationBucket] | None = None,
+    lessons: LessonsReport | None = None,
+    alpha_signals: dict[str, AlphaSignals] | None = None,
+    yield_curve: YieldCurveSnapshot | None = None,
+    alpha_prices: dict[str, Decimal] | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
@@ -553,6 +597,10 @@ def build_html_report(
         macro_risk_report: wynik `MonitorMacroRiskUseCase.run(...)` — gdy
             podany, w raporcie pojawia się sekcja 🚨 Risk Watch.
     """
+    # U2: personalizacja — gdy podany filtr symboli (subskrybent), tniemy wyniki
+    # do jego watchlisty. Analiza i tak poszła RAZ nad unią; tu tylko re-slicing.
+    if symbols_filter is not None:
+        results = [r for r in results if r.symbol in symbols_filter]
     saved = [r for r in results if r.status == "saved"]
     ignored = [r for r in results if r.status == "ignored"]
     errors = [r for r in results if r.status == "error"]
@@ -571,6 +619,18 @@ def build_html_report(
         render_correlation_html(portfolio_risk_report)
         if portfolio_risk_report
         else ""
+    )
+    # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
+    council_history_html = render_council_history_html(council_history or [])
+    # T1/T2/T4: sekcja Track Record (krzywa kapitału, kalibracja, lessons).
+    # render zwraca "" gdy wszystkie trzy podsekcje puste.
+    track_record_html = render_track_record_html(
+        equity_curve, calibration_buckets, lessons
+    )
+    # Dane: sekcja Alpha Signals (insider/analitycy/opcje/social/earnings per
+    # symbol + krzywa rentowności FRED). render zwraca "" gdy brak danych.
+    alpha_html = render_alpha_html(
+        alpha_signals or {}, yield_curve, alpha_prices
     )
     macro_risk_text = (
         render_risk_watch_text(macro_risk_report) if macro_risk_report else ""
@@ -596,6 +656,11 @@ def build_html_report(
         )
     # Slot portfela zawsze podmieniamy (też na "") — inaczej znacznik zostałby w treści.
     html = html.replace("<!-- PORTFOLIO_SLOT -->", portfolio_html, 1)
+    html = html.replace("<!-- COUNCIL_HISTORY_SLOT -->", council_history_html, 1)
+    # Slot Track Record zawsze podmieniamy (też na ""), by znacznik nie został.
+    html = html.replace("<!-- TRACK_RECORD_SLOT -->", track_record_html, 1)
+    # Slot Alpha Signals (Dane) — zawsze podmieniany (też na "").
+    html = html.replace("<!-- ALPHA_SLOT -->", alpha_html, 1)
     # Slot zawsze podmieniamy (też na "") — inaczej znacznik zostałby w treści.
     html = html.replace("<!-- SUGGESTIONS_SLOT -->", suggestions_html, 1)
     text = _render_plain(
@@ -686,6 +751,12 @@ def _render_html(
     sections.append("<!-- RISK_WATCH_SLOT -->")
     # Slot na radar korelacji portfela (Q4) — wypełniany przez build_html_report.
     sections.append("<!-- PORTFOLIO_SLOT -->")
+    # Slot na panel historii głosów rady (U5).
+    sections.append("<!-- COUNCIL_HISTORY_SLOT -->")
+    # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
+    sections.append("<!-- TRACK_RECORD_SLOT -->")
+    # Slot na sekcję Alpha Signals (Dane — insider/analitycy/opcje/social/FRED).
+    sections.append("<!-- ALPHA_SLOT -->")
 
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
     crypto_html = _render_crypto_section_html(results)
@@ -930,11 +1001,13 @@ def _render_html(
             # lub odznaki proweniencji — nawet bez reasoning/rady.
             badges_html = _provenance_badges_html(r.provenance_badges)
             precedents_block = _render_precedents_block_html(r.similar_precedents)
+            attribution_block = _render_attribution_block_html(r.feature_attribution)
             if (
                 not r.reasoning
                 and r.council_verdict is None
                 and not badges_html
                 and not precedents_block
+                and not attribution_block
             ):
                 continue
             move_line = ""
@@ -974,6 +1047,7 @@ def _render_html(
                 {move_line}
                 {rec_block}
                 {f'<div style="font-size: 12px; color: #4b5563; margin-top: 6px;">{_html(r.reasoning)}</div>' if r.reasoning else ''}
+                {attribution_block}
                 {precedents_block}
                 {news_block}
                 {council_block}
@@ -1321,6 +1395,8 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
         asset_class=asset_class,
         similar_precedents=similar_precedents,
         provenance_badges=provenance_badges,
+        # Q3: atrybucja cech ML (SHAP-lite) — render-only.
+        feature_attribution=tuple(raw.get("feature_attribution") or ()),
     )
 
 

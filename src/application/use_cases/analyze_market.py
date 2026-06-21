@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -14,6 +15,8 @@ from src.application.ports import (
     NewsPort,
     RepositoryPort,
     SentimentPort,
+    Tool,
+    ToolUseLLMPort,
 )
 from src.domain.asset import Asset
 from src.domain.value_objects import Threshold
@@ -45,6 +48,10 @@ class AnalyzeMarketUseCase:
         crypto_council_threshold: Threshold | None = None,
         reflection_min_age_hours: int = 0,
         rag_outcome_weight: float = 0.0,
+        tool_use_port: ToolUseLLMPort | None = None,
+        research_tools: Sequence[Tool] = (),
+        tool_use_threshold: Threshold | None = None,
+        vector_memory_enabled: bool = False,
     ) -> None:
         self._repository = repository_port
         workflow = create_agent_graph(
@@ -63,19 +70,35 @@ class AnalyzeMarketUseCase:
             crypto_council_threshold=crypto_council_threshold,
             reflection_min_age_hours=reflection_min_age_hours,
             rag_outcome_weight=rag_outcome_weight,
+            tool_use_port=tool_use_port,
+            research_tools=research_tools,
+            tool_use_threshold=tool_use_threshold,
+            vector_memory_enabled=vector_memory_enabled,
         )
         # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().
         # Inaczej przy 43 symbolach na cykl rekompilowalibyśmy graf 43×.
         self._app = workflow.compile()
 
-    def run(self, symbol: str, asset: Asset | None = None) -> dict[str, Any]:
+    def run(
+        self,
+        symbol: str,
+        asset: Asset | None = None,
+        *,
+        regime_context: str = "",
+        regime_multiplier: float = 1.0,
+        peer_context: tuple[tuple[str, str], ...] = (),
+    ) -> dict[str, Any]:
         previous = self._repository.get_last_price(symbol)
 
         # Cold start: brak historii → previous=0 → delta=0 (guard w domenie) → ignore.
         initial_state: AgentState = {
             "symbol": symbol,
             "previous_price": previous.amount if previous else Decimal("0"),
+            # #7 reżim (label + mnożnik progu) i #5 contagion (peery z tego cyklu).
+            "regime_context": regime_context,
+            "regime_multiplier": regime_multiplier,
+            "peer_context": peer_context,
         }
         # Przekazujemy asset z klasyfikacją (STOCK/ETF), gdy dostępny z zewnątrz.
         if asset is not None:

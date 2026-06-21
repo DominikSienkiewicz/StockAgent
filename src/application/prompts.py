@@ -10,6 +10,8 @@ def get_prediction_prompt(
     current_data: dict[str, Any],
     reflection_context: str,
     similar_context: str = "",
+    regime_context: str = "",
+    peer_context: str = "",
 ) -> str:
     """Główny system prompt dla LLM-a w węźle predict.
 
@@ -33,6 +35,20 @@ sytuację, w której prognoza się sprawdziła lub zawiodła?
         if similar_context
         else ""
     )
+    # #7: reżim rynku (RISK-OFF zacieśnia progi, persony defensywne).
+    regime_block = (
+        f"\n<market_regime>\nReżim rynku: {regime_context}. Uwzględnij go w "
+        f"ocenie ryzyka.\n</market_regime>\n"
+        if regime_context
+        else ""
+    )
+    # #5: werdykty skorelowanych holdingów z TEGO cyklu (contagion).
+    peer_block = (
+        f"\n<peer_signals>\nSkorelowane spółki w tym cyklu: {peer_context}. "
+        f"Czy obecny układ jest spójny z klastrem?\n</peer_signals>\n"
+        if peer_context
+        else ""
+    )
     # Nagłówki newsów to dane nieufne (Alpha Vantage) — ogradzamy je fence'em
     # DATA-ONLY, żeby spreparowany nagłówek nie przejął output_schema.
     news_fenced = fence_untrusted("NEWS", str(current_data.get("news_summary") or ""))
@@ -50,6 +66,7 @@ dla tego aktywa. Musisz zaktualizować swój aparat poznawczy o te dane.
 Jeśli popełniłeś błąd w przeszłości, nie powielaj go.
 {reflection_context}
 </reflection_context>
+{regime_block}{peer_block}
 {similar_block}
 <current_market_data>
 Cena aktualna: {current_data.get("price")}

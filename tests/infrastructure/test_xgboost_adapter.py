@@ -315,6 +315,75 @@ class TestPredictFeatureAlignment:
             trained_adapter.predict(features, current_price=Decimal("100"))
 
 
+class TestExplain:
+    """Q3 — feature attribution (SHAP-lite). `explain()` zwraca znakowane wkłady
+    per-cecha z boostera (pred_contribs), żeby raport pokazał, co pchnęło
+    prognozę w górę/dół. Lokalny CPU, zero nowych płatnych wywołań."""
+
+    def _typical_features(self) -> dict[str, float]:
+        features = dict.fromkeys(FEATURE_NAMES, 0.0)
+        features.update({
+            "price_delta": 0.02,
+            "av_sentiment_score": 0.5,
+            "av_relevance_avg": 0.75,
+            "news_volume_24h": 4.0,
+            "high_relevance_count": 2.0,
+            "llm_trend_signal": 1.0,
+            "av_llm_agreement": 0.8,
+        })
+        return features
+
+    def test_returns_contribution_per_known_feature(
+        self, trained_adapter: XGBoostAdapter
+    ):
+        contribs = trained_adapter.explain(self._typical_features())
+        # Klucz per cecha, na której model był trenowany (bias pod osobnym kluczem).
+        assert set(FEATURE_NAMES).issubset(set(contribs.keys()))
+
+    def test_contributions_are_finite_floats(
+        self, trained_adapter: XGBoostAdapter
+    ):
+        contribs = trained_adapter.explain(self._typical_features())
+        for value in contribs.values():
+            assert isinstance(value, float)
+            assert np.isfinite(value)
+
+    def test_sum_of_contributions_plus_bias_approximates_raw_prediction(
+        self, trained_adapter: XGBoostAdapter
+    ):
+        # Niezmiennik addytywności SHAP: suma wkładów + bias ≈ surowy zwrot modelu.
+        features = self._typical_features()
+        contribs = trained_adapter.explain(features)
+        raw_return = float(
+            trained_adapter._model.predict(  # type: ignore[union-attr]
+                trained_adapter._align_features(features)
+            )[0]
+        )
+        total = sum(contribs.values())
+        assert total == pytest.approx(raw_return, abs=1e-4)
+
+    def test_exposes_bias_under_dedicated_key(
+        self, trained_adapter: XGBoostAdapter
+    ):
+        # Bias/base value jest osobno (nie jako cecha) — czytelny dla raportu.
+        contribs = trained_adapter.explain(self._typical_features())
+        assert "_bias" in contribs
+        assert "_bias" not in FEATURE_NAMES
+
+    def test_raises_when_model_not_trained(self, adapter: XGBoostAdapter):
+        with pytest.raises(RuntimeError, match="not trained"):
+            adapter.explain(self._typical_features())
+
+    def test_ignores_unknown_extra_features(
+        self, trained_adapter: XGBoostAdapter
+    ):
+        # Tak jak predict(): nieznana cecha jest ignorowana (wyrównanie do modelu).
+        features = self._typical_features()
+        features["holding_hours"] = 24.0
+        contribs = trained_adapter.explain(features)
+        assert "holding_hours" not in contribs
+
+
 class TestModelPersistence:
     def test_loads_existing_model_from_disk_on_init(
         self, trained_adapter: XGBoostAdapter, model_path: str

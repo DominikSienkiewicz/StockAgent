@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from typing import Any, Literal
 
 from src.application.council_prompts import (
     chairman_prompt,
     investor_prompt,
+    investor_revision_prompt,
 )
 from src.application.ports import AdvisoryCouncilPort, LLMPort
 from src.domain.council import (
@@ -17,6 +19,7 @@ from src.domain.council import (
     InvestorPersona,
     derive_consensus,
 )
+from src.domain.value_objects import AssetType
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +82,17 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         llm_port: LLMPort,
         personas: tuple[InvestorPersona, ...],
         max_personas: int = COUNCIL_MAX_PERSONAS,
+        weights_provider: Callable[[AssetType], Mapping[str, float]] | None = None,
+        debate_mode: bool = False,
     ) -> None:
         if not personas:
             raise ValueError("LLMAdvisoryCouncil requires at least one persona.")
         self._llm = llm_port
+        # Feature #3: dostawca wag person z historycznej trafności (per typ aktywa).
+        # None → ważenie wyłączone (każda persona waży 1.0, werdykt jak dotąd).
+        self._weights_provider = weights_provider
+        # Feature #1: jedna runda rewizji, gdy round-1 jest podzielone. Off → jak dziś.
+        self._debate_mode = debate_mode
         # Cap fan-outu: powyżej `max_personas` ucinamy radę i logujemy WARNING
         # z nazwami odrzuconych person. Kolejność person jest deterministyczna
         # (loader sortuje po name), więc ucinanie też jest stabilne.
@@ -100,6 +110,15 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         self._personas = personas
         self._max_personas = max_personas
 
+    def _hold_fallback(self, name: str) -> InvestorOpinion:
+        return InvestorOpinion(
+            investor_name=name,
+            recommendation="HOLD",
+            confidence=0.0,
+            reasoning="Błąd analizy.",
+            key_factors=(),
+        )
+
     def _call_investor(
         self, persona: InvestorPersona, data: CouncilInput
     ) -> InvestorOpinion:
@@ -111,21 +130,46 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
             logger.exception(
                 "Advisory council: %s failed — defaulting to HOLD", persona.name
             )
-            return InvestorOpinion(
-                investor_name=persona.name,
-                recommendation="HOLD",
-                confidence=0.0,
-                reasoning="Błąd analizy.",
-                key_factors=(),
+            return self._hold_fallback(persona.name)
+
+    def _call_revision(
+        self,
+        persona: InvestorPersona,
+        data: CouncilInput,
+        round1: list[InvestorOpinion],
+    ) -> InvestorOpinion:
+        # Pokazujemy personie stanowiska peerów (wszystkie poza nią) z rundy 1.
+        peers = [op for op in round1 if op.investor_name != persona.name]
+        try:
+            prompt = investor_revision_prompt(persona, data, peers)
+            raw = self._llm.analyze(prompt)
+            return _parse_opinion(persona.name, raw)
+        except Exception:
+            logger.exception(
+                "Advisory council: %s revision failed — keeping round-1 vote",
+                persona.name,
             )
+            # Degradacja: trzymamy głos z rundy 1, nie wymyślamy HOLD.
+            for op in round1:
+                if op.investor_name == persona.name:
+                    return op
+            return self._hold_fallback(persona.name)
 
-    def analyze(self, symbol: str, data: CouncilInput) -> CouncilVerdict:
-        personas = self._personas
+    def _run_round(
+        self,
+        personas: tuple[InvestorPersona, ...],
+        call: Callable[[InvestorPersona], InvestorOpinion],
+    ) -> list[InvestorOpinion]:
+        """Uruchamia jedną rundę wywołań person równolegle z budżetem czasowym.
+
+        Współdzielone przez rundę 1 i rundę rewizji (debate mode) — ta sama
+        maszyneria timeoutu/anulowania. Zwraca opinie, które zdążyły się zwrócić
+        (graceful degradation: pojedynczy timeout nie wywala całego cyklu).
+        """
         opinions: list[InvestorOpinion | None] = [None] * len(personas)
-
         with ThreadPoolExecutor(max_workers=max(1, len(personas))) as executor:
             future_to_idx = {
-                executor.submit(self._call_investor, persona, data): i
+                executor.submit(call, persona): i
                 for i, persona in enumerate(personas)
             }
             try:
@@ -149,10 +193,45 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
                 # Anulujemy wiszące future'y (nie czekamy na nie w __exit__).
                 for future in future_to_idx:
                     future.cancel()
+        return [op for op in opinions if op is not None]
 
-        resolved_opinions: list[InvestorOpinion] = [
-            op for op in opinions if op is not None
-        ]
+    def _resolve_weights(self, data: CouncilInput) -> Mapping[str, float] | None:
+        """Pobiera wagi person z providera (feature #3) lub None.
+
+        Błąd providera nie może zatrzymać rady — degradujemy do braku wag
+        (każda persona waży 1.0, werdykt jak bez ważenia).
+        """
+        if self._weights_provider is None:
+            return None
+        try:
+            return self._weights_provider(data.asset_type)
+        except Exception:
+            logger.exception(
+                "Advisory council: weights_provider failed — falling back to unweighted"
+            )
+            return None
+
+    def _is_split(self, opinions: list[InvestorOpinion]) -> bool:
+        # Split = jednocześnie BUY i SELL (pomijając HOLD) — fundamentalny brak
+        # zgody co do kierunku. Reużywa semantyki CouncilVerdict.is_split_decision.
+        recs = {op.recommendation for op in opinions}
+        return "BUY" in recs and "SELL" in recs
+
+    def analyze(self, symbol: str, data: CouncilInput) -> CouncilVerdict:
+        personas = self._personas
+
+        # --- Runda 1: równoległe opinie wszystkich person ---
+        resolved_opinions = self._run_round(
+            personas, lambda p: self._call_investor(p, data)
+        )
+
+        # --- Debate mode (feature #1): JEDNA runda rewizji, gdy round-1 split ---
+        # Cap = dokładnie jedna runda rewizji; po niej derive_consensus z REVISED.
+        if self._debate_mode and self._is_split(resolved_opinions):
+            round1 = resolved_opinions
+            resolved_opinions = self._run_round(
+                personas, lambda p: self._call_revision(p, data, round1)
+            )
 
         try:
             prompt = chairman_prompt(resolved_opinions, data)
@@ -164,8 +243,12 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         # AUTORYTATYWNA decyzja + siła konsensusu liczone z REALNYCH głosów
         # (domena), nie z liczby od chairmana. Dzięki temu jednogłośne BUY
         # zostaje BUY nawet gdy chairman padnie — nie ma cichego defaultu
-        # HOLD/0.5 nadpisującego głosy inwestorów (finding #3).
-        final_recommendation, consensus_strength = derive_consensus(resolved_opinions)
+        # HOLD/0.5 nadpisującego głosy inwestorów (finding #3). Wagi (feature #3)
+        # ważą głos każdej persony jej historyczną trafnością.
+        weights = self._resolve_weights(data)
+        final_recommendation, consensus_strength = derive_consensus(
+            resolved_opinions, weights
+        )
 
         # Chairman dostarcza już TYLKO warstwę narracyjną (summary, dissent).
         return CouncilVerdict(

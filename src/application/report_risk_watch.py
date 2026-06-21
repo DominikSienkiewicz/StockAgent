@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.drawdown import DrawdownSignal
+from src.domain.hedge import HedgeAssessment
 from src.domain.macro_risk import (
     MacroAlertLevel,
     MacroRiskInstrumentType,
@@ -74,6 +75,7 @@ def render_risk_watch_html(report: MacroRiskReport) -> str:
     if (
         not report.signals
         and not report.drawdowns
+        and not report.hedges
         and report.polish_macro is None
     ):
         return ""
@@ -103,10 +105,56 @@ def render_risk_watch_html(report: MacroRiskReport) -> str:
     if report.drawdowns:
         parts.append(_render_drawdowns_table_html(report.drawdowns))
 
+    if report.hedges:
+        parts.append(_render_hedges_table_html(report.hedges))
+
     if report.polish_macro is not None:
         parts.append(_render_polish_macro_html(report.polish_macro))
 
     return "".join(parts)
+
+
+# Kolor etykiety skuteczności hedge'a: zielony = skuteczny, bursztyn =
+# nieskuteczny, czerwony = odwrócony (porusza się jak book, nie chroni).
+_HEDGE_COLOR = {
+    "skuteczny": "#16a34a",
+    "nieskuteczny": "#ca8a04",
+    "odwrócony": "#dc2626",
+}
+
+
+def _render_hedges_table_html(hedges: list[HedgeAssessment]) -> str:
+    """Tabela skuteczności hedge'y (R3) — realized corr instrumentu vs book."""
+    rows: list[str] = []
+    for h in hedges:
+        color = _HEDGE_COLOR.get(h.label, "#6b7280")
+        rows.append(
+            "<tr>"
+            "<td style='padding: 6px 8px;'><strong>"
+            f"{_html.escape(h.hedge_symbol)}</strong></td>"
+            f"<td style='padding: 6px 8px; text-align: right;'>"
+            f"{h.correlation:+.2f}</td>"
+            f"<td style='padding: 6px 8px; text-align: right;'>"
+            f"{h.effectiveness:+.2f}</td>"
+            f"<td style='padding: 6px 8px; color: {color}; font-weight: 600;'>"
+            f"{_html.escape(h.label)}</td>"
+            "</tr>"
+        )
+    return (
+        "<p style='font-size: 12px; color: #6b7280; margin: 12px 0 6px 0;'>"
+        "🛡️ Skuteczność hedge'y (realized corr vs portfel):</p>"
+        "<table style='width: 100%; border-collapse: collapse; "
+        "font-size: 13px; margin-bottom: 16px;'>"
+        "<thead><tr style='background: #f9fafb; color: #6b7280; "
+        "text-transform: uppercase; font-size: 11px;'>"
+        "<th style='padding: 6px 8px; text-align: left;'>Hedge</th>"
+        "<th style='padding: 6px 8px; text-align: right;'>Korelacja</th>"
+        "<th style='padding: 6px 8px; text-align: right;'>Skuteczność</th>"
+        "<th style='padding: 6px 8px; text-align: left;'>Ocena</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
 
 
 def _render_signals_table_html(signals: list[MacroRiskSignal]) -> str:
@@ -197,6 +245,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
     if (
         not report.signals
         and not report.drawdowns
+        and not report.hedges
         and report.polish_macro is None
     ):
         return ""
@@ -228,6 +277,17 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
                 f"{_format_pct(dd.drawdown_fraction):>8s} od szczytu "
                 f"(szczyt {dd.peak_price}) "
                 f"[{_ALERT_LABEL[alert]}]"
+            )
+        lines.append("")
+
+    if report.hedges:
+        lines.append("-- Skuteczność hedge'y (corr vs portfel) --")
+        for h in report.hedges:
+            lines.append(
+                f"  {h.hedge_symbol:6s} "
+                f"corr={h.correlation:+.2f} "
+                f"skuteczność={h.effectiveness:+.2f} "
+                f"[{h.label}]"
             )
         lines.append("")
 

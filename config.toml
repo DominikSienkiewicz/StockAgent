@@ -18,12 +18,60 @@
 llm_provider = "anthropic"
 council_llm_provider = "openai"
 council_llm_model = "gpt-5-mini"
+# Rada: ważenie person trafnością (#3, RPC z migracji 015) i tryb debaty (#1,
+# jedna runda rewizji przy podzielonym round-1). Domyślnie off.
+persona_weighting_enabled = false
+debate_mode_enabled = false
+# Model routing (#2): tani model domyślnie, eskalacja do frontier gdy
+# confidence < routing_floor. Domyślnie off (główna analiza wg llm_provider).
+model_routing_enabled = false
+routing_floor = 0.6
+router_cheap_model = "gpt-5-mini"
+router_frontier_provider = "anthropic"
+router_frontier_model = "claude-sonnet-4-6"
+# Reżim rynku (#7): RISK-OFF zacieśnia próg volatility (mnożnik ≤ max). Off.
+regime_aware_enabled = false
+regime_threshold_max_multiplier = 2.0
+# Contagion (#5): werdykty skorelowanych spółek z tego cyklu do promptu. Off.
+contagion_enabled = false
+peer_groups = {}
+# Kalibracja pewności sędzią-LLM (#4, Slow Loop, migracja 016). Off.
+calibration_judge_enabled = false
+# Tool-use research agent (#6): na największych ruchach model dociąga read-only
+# toole (fundamenty/makro) przed werdyktem. Płatna, wielorundowa ścieżka — off.
+tool_use_enabled = false
+tool_use_max_rounds = 3
+# Risk: VaR/CVaR + stress-test (rozszerzenia PortfolioRisk) i hedge-effectiveness
+# (rozszerzenie Risk Watch). Wszystkie z darmowych snapshotów, render-only. Off.
+portfolio_var_enabled = false
+var_confidence = 0.95
+stress_test_enabled = false
+hedge_effectiveness_enabled = false
+# Trust / track-record (render-only, zero płatnych): krzywa kapitału (paper-PnL),
+# krzywa kalibracji (reliability), panel „lessons learned". Off.
+equity_curve_enabled = false
+calibration_curve_enabled = false
+lessons_enabled = false
+track_record_days = 30
+# Dane — nowe źródła alpha. Default off → Null adapter (zero płatnych). Realny
+# adapter włącza flaga (+ ewentualny klucz: FRED_API_KEY dla yield_curve).
+insider_flow_enabled = false
+earnings_calendar_enabled = false
+options_flow_enabled = false
+social_velocity_enabled = false
+yield_curve_enabled = false
+analyst_consensus_enabled = false
+vector_memory_enabled = false
+# SEC EDGAR wymaga User-Agent z kontaktem (polityka SEC). Podmień na swój kontakt.
+edgar_user_agent = "StockAgent/1.0 (contact@example.com)"
 council_personas_dir = "data/council_personas"
 
 # --- Bramki volatility (Decimal jako string — dokładność) ---
 volatility_threshold = "0.02"
 council_volatility_threshold = "0.03"
 crypto_volatility_threshold = "0.05"
+# Osobny, wyższy próg dla pętli tool-use (#6) — tylko duże ruchy ją uruchamiają.
+tool_use_volatility_threshold = "0.05"
 
 # --- Pętla / resilience ---
 symbol_throttle_seconds = 2.0
@@ -41,6 +89,11 @@ digest_from_email = "onboarding@resend.dev"
 # Real-time alerty CRITICAL na kanały push (Telegram/Slack) w chwili zdarzenia,
 # out-of-band od dziennego maila. Sekrety kanałów (TELEGRAM_*, SLACK_*) w .env.
 realtime_alerts_enabled = false
+# U2: personalizowany fan-out per subskrybent (tabela `subscribers`). false =
+# pojedyncza wysyłka na DIGEST_TO_EMAIL. U3: statyczny digest web (read-only).
+subscriptions_enabled = false
+web_digest_enabled = false
+web_digest_path = "public/digest/index.html"
 
 # --- NBP (kursy do raportu) ---
 nbp_enabled = true

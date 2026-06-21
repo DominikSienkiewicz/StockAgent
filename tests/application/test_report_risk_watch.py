@@ -53,6 +53,66 @@ class TestEmptyReport:
         assert render_risk_watch_text(report) == ""
 
 
+class TestHedgeRendering:
+    def test_html_renders_hedge_row(self) -> None:
+        from src.domain.hedge import HedgeAssessment
+
+        report = MacroRiskReport(
+            hedges=[
+                HedgeAssessment(
+                    hedge_symbol="SH",
+                    correlation=-0.92,
+                    effectiveness=0.92,
+                    label="skuteczny",
+                )
+            ],
+        )
+        html = render_risk_watch_html(report)
+        # Sekcja renderuje się też bez sygnałów, gdy jest ocena hedge'a.
+        assert "Risk Watch" in html
+        assert "SH" in html
+        assert "skuteczny" in html
+
+    def test_html_escapes_hedge_symbol(self) -> None:
+        from src.domain.hedge import HedgeAssessment
+
+        report = MacroRiskReport(
+            hedges=[
+                HedgeAssessment(
+                    hedge_symbol="<b>x</b>",
+                    correlation=0.5,
+                    effectiveness=-0.5,
+                    label="odwrócony",
+                )
+            ],
+        )
+        html = render_risk_watch_html(report)
+        assert "<b>x</b>" not in html
+        assert "&lt;b&gt;" in html
+
+    def test_text_lists_hedges(self) -> None:
+        from src.domain.hedge import HedgeAssessment
+
+        report = MacroRiskReport(
+            hedges=[
+                HedgeAssessment(
+                    hedge_symbol="SH",
+                    correlation=-0.92,
+                    effectiveness=0.92,
+                    label="skuteczny",
+                )
+            ],
+        )
+        text = render_risk_watch_text(report)
+        assert "SH" in text
+        assert "skuteczny" in text
+
+    def test_empty_hedges_render_nothing_extra(self) -> None:
+        report = MacroRiskReport(hedges=[])
+        assert render_risk_watch_html(report) == ""
+        assert render_risk_watch_text(report) == ""
+
+
 class TestHtmlRendering:
     def test_renders_section_header(self) -> None:
         report = MacroRiskReport(

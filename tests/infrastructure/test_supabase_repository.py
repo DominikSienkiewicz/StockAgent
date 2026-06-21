@@ -625,6 +625,92 @@ class TestAdapterImplementsPort:
 # ---------------------------------------------------------------------------
 
 
+class TestSaveCalibration:
+    def test_updates_prediction_with_calibration(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client, ["table", "update", "eq"], [{"id": "pred-1"}]
+        )
+
+        repo.save_calibration("pred-1", 0.72, "Przepewna na krypto.")
+
+        mock_client.table.assert_called_with("prediction_logs")
+        payload = mock_client.table.return_value.update.call_args.args[0]
+        assert payload["confidence_calibration"] == 0.72
+        assert payload["calibration_insight"] == "Przepewna na krypto."
+
+
+class TestGetPersonaAccuracy:
+    def test_maps_rpc_rows_to_weights(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.value_objects import AssetType
+
+        _set_chain_response(
+            mock_client,
+            ["rpc"],
+            [
+                {"investor_name": "Wood", "weight": 1.4},
+                {"investor_name": "Burry", "weight": 0.7},
+            ],
+        )
+
+        result = repo.get_persona_accuracy(AssetType.CRYPTO)
+
+        assert result == {"Wood": 1.4, "Burry": 0.7}
+
+    def test_returns_empty_on_rpc_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.value_objects import AssetType
+
+        mock_client.rpc.side_effect = Exception("RPC missing")
+        assert repo.get_persona_accuracy(AssetType.STOCK) == {}
+
+
+class TestGetCouncilVoteHistory:
+    def test_groups_rows_into_investor_histories(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "in_", "gte", "order"],
+            [
+                {"investor_name": "Soros", "symbol": "NVDA",
+                 "recommendation": "SELL", "timestamp": "2026-06-10T00:00:00+00:00"},
+                {"investor_name": "Soros", "symbol": "NVDA",
+                 "recommendation": "HOLD", "timestamp": "2026-06-09T00:00:00+00:00"},
+                {"investor_name": "Wood", "symbol": "NVDA",
+                 "recommendation": "BUY", "timestamp": "2026-06-10T00:00:00+00:00"},
+            ],
+        )
+
+        result = repo.get_council_vote_history(["NVDA"], window_days=30)
+
+        soros = next(h for h in result if h.investor_name == "Soros")
+        assert soros.symbol == "NVDA"
+        assert soros.recommendations == ("SELL", "HOLD")  # newest-first
+        assert soros.window_days == 30
+
+    def test_returns_empty_when_no_votes(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client, ["table", "select", "in_", "gte", "order"], []
+        )
+        assert repo.get_council_vote_history(["X"]) == []
+
+    def test_queries_council_votes_table(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client, ["table", "select", "in_", "gte", "order"], []
+        )
+        repo.get_council_vote_history(["NVDA"])
+        mock_client.table.assert_called_with("council_votes")
+
+
 class TestGetPriceHistory:
     def test_maps_rows_to_timestamp_price_pairs(
         self, repo: SupabaseRepository, mock_client: MagicMock

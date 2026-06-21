@@ -10,6 +10,7 @@ from src.domain.council import (
     derive_consensus,
     vindicated_dissenters,
 )
+from src.domain.value_objects import AssetType
 
 
 def _named_opinion(name: str, rec: str) -> InvestorOpinion:
@@ -299,6 +300,152 @@ class TestDeriveConsensus:
         assert 0.0 <= strength <= 1.0
 
 
+class TestDeriveConsensusWeighted:
+    """Feature #3: adaptacyjne ważenie person. Masa głosu = confidence * waga
+    person (z historycznej trafności). weights=None → identycznie jak dziś."""
+
+    def _named(self, name: str, rec: str, conf: float = 0.8) -> InvestorOpinion:
+        return InvestorOpinion(
+            investor_name=name,
+            recommendation=rec,  # type: ignore[arg-type]
+            confidence=conf,
+            reasoning="...",
+            key_factors=(),
+        )
+
+    def test_weights_none_identical_to_unweighted(self):
+        # Brak wag → wynik dokładnie taki jak bez parametru.
+        ops = [
+            self._named("A", "BUY", 0.9),
+            self._named("B", "SELL", 0.1),
+            self._named("C", "SELL", 0.1),
+        ]
+        assert derive_consensus(ops, None) == derive_consensus(ops)
+
+    def test_high_weight_minority_flips_winner(self):
+        # Headcount: 2×SELL vs 1×BUY. Confidence równe (0.5 każdy), więc bez
+        # wag SELL wygrywa (masa 1.0 vs 0.5). Z mocną wagą dla persony "Star"
+        # (BUY) jej głos przeważa i odwraca werdykt na BUY.
+        ops = [
+            self._named("Star", "BUY", 0.5),
+            self._named("B", "SELL", 0.5),
+            self._named("C", "SELL", 0.5),
+        ]
+        # Bez wag: SELL.
+        assert derive_consensus(ops)[0] == "SELL"
+        # Z wagą: Star ma trafność 5× wyższą → BUY masa 0.5*5=2.5 > SELL 1.0.
+        weights = {"Star": 5.0, "B": 1.0, "C": 1.0}
+        rec, strength = derive_consensus(ops, weights)
+        assert rec == "BUY"
+        # strength = 2.5 / (2.5 + 0.5 + 0.5) = 2.5 / 3.5.
+        assert strength == pytest.approx(2.5 / 3.5)
+
+    def test_missing_name_defaults_weight_one(self):
+        # Persona spoza mapy wag dostaje wagę 1.0 (neutralną).
+        ops = [
+            self._named("Known", "BUY", 0.5),
+            self._named("Unknown", "SELL", 0.5),
+        ]
+        weights = {"Known": 1.0}  # "Unknown" nie ma wpisu → 1.0
+        rec, strength = derive_consensus(ops, weights)
+        # Remis mas (0.5 vs 0.5) → tie-break BUY > SELL.
+        assert rec == "BUY"
+        assert strength == pytest.approx(0.5)
+
+    def test_empty_weights_mapping_acts_like_unweighted(self):
+        ops = [self._named("A", "BUY", 0.9), self._named("B", "SELL", 0.1)]
+        assert derive_consensus(ops, {}) == derive_consensus(ops)
+
+
+class TestOpinionShift:
+    """Feature #1 (debate mode): ilu inwestorów zmieniło rekomendację między
+    rundą 1 a finalnym werdyktem (po rewizji)."""
+
+    def _verdict(self, opinions: list[InvestorOpinion]) -> CouncilVerdict:
+        return CouncilVerdict(
+            final_recommendation="BUY",
+            consensus_strength=0.7,
+            summary="Test.",
+            dissenting_views=[],
+            investor_opinions=opinions,
+        )
+
+    def test_counts_investors_who_changed_recommendation(self):
+        before = [
+            _make_opinion("BUY"),  # Warren Buffett (nazwa z _make_opinion)
+        ]
+        before[0] = InvestorOpinion(
+            investor_name="A", recommendation="SELL", confidence=0.8,
+            reasoning="x", key_factors=(),
+        )
+        after = [
+            InvestorOpinion(
+                investor_name="A", recommendation="BUY", confidence=0.8,
+                reasoning="y", key_factors=(),
+            )
+        ]
+        v = self._verdict(after)
+        assert v.opinion_shift(before) == 1
+
+    def test_zero_when_nobody_changed(self):
+        before = [
+            InvestorOpinion(
+                investor_name="A", recommendation="BUY", confidence=0.8,
+                reasoning="x", key_factors=(),
+            )
+        ]
+        after = [
+            InvestorOpinion(
+                investor_name="A", recommendation="BUY", confidence=0.9,
+                reasoning="changed reasoning only", key_factors=(),
+            )
+        ]
+        v = self._verdict(after)
+        assert v.opinion_shift(before) == 0
+
+    def test_matches_by_investor_name(self):
+        before = [
+            InvestorOpinion(
+                investor_name="A", recommendation="SELL", confidence=0.8,
+                reasoning="x", key_factors=(),
+            ),
+            InvestorOpinion(
+                investor_name="B", recommendation="HOLD", confidence=0.8,
+                reasoning="x", key_factors=(),
+            ),
+        ]
+        after = [
+            InvestorOpinion(
+                investor_name="A", recommendation="BUY", confidence=0.8,
+                reasoning="x", key_factors=(),
+            ),
+            InvestorOpinion(
+                investor_name="B", recommendation="HOLD", confidence=0.8,
+                reasoning="x", key_factors=(),
+            ),
+        ]
+        v = self._verdict(after)
+        # Tylko A zmienił (SELL→BUY); B bez zmian.
+        assert v.opinion_shift(before) == 1
+
+    def test_unknown_name_in_before_ignored(self):
+        # Inwestor obecny tylko w "before" (nie ma go w werdykcie) nie liczy się.
+        before = [
+            InvestorOpinion(
+                investor_name="Ghost", recommendation="SELL", confidence=0.8,
+                reasoning="x", key_factors=(),
+            )
+        ]
+        after = [
+            InvestorOpinion(
+                investor_name="A", recommendation="BUY", confidence=0.8,
+                reasoning="x", key_factors=(),
+            )
+        ]
+        v = self._verdict(after)
+        assert v.opinion_shift(before) == 0
+
+
 class TestCouncilInput:
     def test_stores_all_fields(self):
         data = CouncilInput(
@@ -313,3 +460,46 @@ class TestCouncilInput:
         )
         assert data.symbol == "AAPL"
         assert data.ml_price_target == Decimal("185.00")
+
+    def test_asset_type_defaults_to_stock(self):
+        # Pole opcjonalne, wstecznie kompatybilne — domyślnie STOCK.
+        data = CouncilInput(
+            symbol="AAPL",
+            current_price=Decimal("180.00"),
+            price_delta_pct=Decimal("3.5"),
+            sentiment_score=0.6,
+            news_articles=["x"],
+            llm_trend="BULLISH",
+            llm_confidence=0.82,
+            ml_price_target=Decimal("185.00"),
+        )
+        assert data.asset_type is AssetType.STOCK
+
+    def test_asset_type_can_be_overridden(self):
+        data = CouncilInput(
+            symbol="BTC",
+            current_price=Decimal("60000.00"),
+            price_delta_pct=Decimal("3.5"),
+            sentiment_score=0.6,
+            news_articles=["x"],
+            llm_trend="BULLISH",
+            llm_confidence=0.82,
+            ml_price_target=Decimal("61000.00"),
+            asset_type=AssetType.CRYPTO,
+        )
+        assert data.asset_type is AssetType.CRYPTO
+
+    def test_news_articles_still_coerced_to_tuple_with_asset_type(self):
+        # Regresja: dodanie asset_type nie może zepsuć koercji tuple w __post_init__.
+        data = CouncilInput(
+            symbol="AAPL",
+            current_price=Decimal("180.00"),
+            price_delta_pct=Decimal("3.5"),
+            sentiment_score=0.6,
+            news_articles=["a", "b"],
+            llm_trend="BULLISH",
+            llm_confidence=0.82,
+            ml_price_target=Decimal("185.00"),
+            asset_type=AssetType.ETF,
+        )
+        assert isinstance(data.news_articles, tuple)

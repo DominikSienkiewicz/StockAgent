@@ -281,6 +281,7 @@ uv sync                            # install deps
 uv sync --extra anthropic          # + Anthropic SDK
 uv run python main_agent.py        # one Fast Loop run (analysis + email)
 uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain)
+uv run python main_backtest.py     # offline walk-forward backtest: per-symbol out-of-sample RMSE / hit-rate vs baseline (read-only, no model write)
 uv run python -m src.tools.evaluate            # offline eval: hit-rate + RMSE vs baseline (read-only)
 uv run python -m src.tools.evaluate --days 60  # custom evaluation window
 uv run pytest                                   # full local suite
@@ -303,7 +304,9 @@ Three workflows in [`.github/workflows/`](.github/workflows/):
 
 The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
 
-**Repository secrets** (the only things CI needs beyond the committed `config.toml`): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`, `DIGEST_TO_EMAIL`. `ANTHROPIC_API_KEY` is required (main analysis runs on Claude); `DIGEST_TO_EMAIL` is a **secret** (was a variable — move it).
+**Repository secrets** (the only things CI needs beyond the committed `config.toml`): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`, `DIGEST_TO_EMAIL`. `ANTHROPIC_API_KEY` is required (main analysis runs on Claude); `DIGEST_TO_EMAIL` is a **secret** (was a variable — move it). `FRED_API_KEY` is **optional** — only needed when `yield_curve_enabled = true` (the FRED yield-curve alpha source).
+
+**Optional alpha-data sources** (category "Data"): seven extra signals — SEC EDGAR insider flow, AlphaVantage earnings calendar, Finnhub options/IV, Reddit social velocity, FRED yield-curve, Finnhub analyst consensus, and regime-tagged RAG (vector memory). Each is a port + adapter with a **Null fallback** and is **off by default** in `config.toml` (`insider_flow_enabled`, `earnings_calendar_enabled`, `options_flow_enabled`, `social_velocity_enabled`, `yield_curve_enabled`, `analyst_consensus_enabled`, `vector_memory_enabled`) — so they make **zero network calls** until you flip a flag (and supply its key where needed). Enabled per-symbol signals are aggregated into an "Alpha Signals" report section; `vector_memory_enabled` needs migration `017`.
 **Repository variables:** none. All non-secret config lives in committed [`config.toml`](config.toml), read directly by `Settings` — so there is nothing to map in the workflow `env:` and no `vars.*` drift to guard. The workflow injects only the secrets above; the split (secrets mapped, non-secret config kept out) is guarded by [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py).
 
 ## Configuration
