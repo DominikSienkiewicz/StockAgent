@@ -188,6 +188,14 @@ class TestMigrations:
             return "[" + ",".join([str(head)] * 768 + [str(tail)] * 768) + "]"
 
         with pg_conn.cursor() as cur:
+            # Determinizm: ivfflat (lists=100, migracja 003) to indeks
+            # PRZYBLIŻONY — przy domyślnym probes=1 skanuje tylko 1 z 100 list,
+            # więc na tabeli z paroma wierszami potrafi zwrócić 0 trafień (KNN
+            # mija właściwą listę). Podbijamy probes do liczby list → pełny skan
+            # = dokładne KNN, niezależne od planera i liczby wierszy. Produkcyjny
+            # RPC zostaje przybliżony (przy dużych danych recall jest OK) — to
+            # tylko utwardzenie testu, nie zmiana zachowania RPC.
+            cur.execute("SET ivfflat.probes = 100")
             # Izolacja od embeddingów wstrzykniętych przez inne testy w tym
             # samym kontenerze (np. "TEST" z testu akceptacji 1536-dim).
             cur.execute("DELETE FROM prediction_logs WHERE embedding IS NOT NULL")
