@@ -28,6 +28,15 @@ _NO_CUSTOM_TEMPERATURE_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 # #31 — Strukturalne schematy JSON potrzebują kilkuset tokenów wyjścia. Bez capa
 # OpenAI ogranicza output tylko defaultem modelu. Ciasny, nadpisywalny cap.
 DEFAULT_MAX_TOKENS = 768
+# Regresja 2026-06-21 (COUNCIL_LLM_MODEL=gpt-5-mini): dla reasoning models
+# `max_completion_tokens` budżetuje NIEWIDOCZNE tokeny rozumowania + widoczny
+# output RAZEM, a rozumowanie idzie pierwsze. Cap 768 bywał w całości zjadany
+# przez rozumowanie → finish_reason="length", content="" → cała rada padała z
+# "empty content" przy HTTP 200. Reasoning models dostają większy domyślny sufit.
+# To SUFIT (płacisz za realnie wygenerowane tokeny), więc zapas jest darmowy dla
+# krótkich odpowiedzi, a chroni przed ucięciem rozumowania. Nadpisywalny przez
+# konstruktor (max_tokens=).
+REASONING_MAX_TOKENS = 4096
 # GHA fast loop ma 15 min hard timeout. SDK domyślnie czeka 600s na response —
 # zawieszone wywołanie LLM mogłoby zjeść cały cykl. 30s starcza dla normalnego
 # GPT-4o response (typowo 3-8s) i nie maskuje legitnych długich generacji.
@@ -91,7 +100,7 @@ class OpenAIAdapter(LLMPort):
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE,
         quota_monitor: QuotaMonitor | None = None,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_tokens: int | None = None,
     ) -> None:
         # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
         validate_model_id(model)
@@ -101,6 +110,8 @@ class OpenAIAdapter(LLMPort):
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._quota_monitor = quota_monitor
+        # None → domyślny cap zależny od rodziny modelu (reasoning vs nie);
+        # jawna wartość → twardy override (per-rodzinny default pomijany).
         self._max_tokens = max_tokens
 
     def _supports_custom_temperature(self) -> bool:
@@ -110,16 +121,33 @@ class OpenAIAdapter(LLMPort):
             model.startswith(p) for p in _NO_CUSTOM_TEMPERATURE_PREFIXES
         )
 
+    def _is_reasoning_model(self) -> bool:
+        """Reasoning models (gpt-5, o-series) różnią się nazwą parametru capa
+        wyjścia ORAZ semantyką budżetu tokenów (rozumowanie + output razem)."""
+        model = self._model.lower()
+        return any(model.startswith(p) for p in _NO_CUSTOM_TEMPERATURE_PREFIXES)
+
     def _token_limit_kwarg(self) -> str:
         """Nazwa parametru capa wyjścia zależna od rodziny modelu.
 
         Reasoning models (gpt-5, o-series) odrzucają `max_tokens` i wymagają
         `max_completion_tokens`. Reszta (gpt-4o itd.) używa `max_tokens`.
         Te same prefiksy co dla temperature — to ta sama rodzina modeli."""
-        model = self._model.lower()
-        if any(model.startswith(p) for p in _NO_CUSTOM_TEMPERATURE_PREFIXES):
+        if self._is_reasoning_model():
             return "max_completion_tokens"
         return "max_tokens"
+
+    def _resolved_max_tokens(self) -> int:
+        """Efektywny cap wyjścia.
+
+        Jawny `max_tokens=` z konstruktora wygrywa zawsze. Bez niego: reasoning
+        models dostają większy zapas (`REASONING_MAX_TOKENS`), bo `max_completion_tokens`
+        budżetuje rozumowanie + output razem — 768 bywało zjadane w całości przez
+        rozumowanie (regresja 2026-06-21). Nie-reasoning zostaje przy ciasnym
+        `DEFAULT_MAX_TOKENS`."""
+        if self._max_tokens is not None:
+            return self._max_tokens
+        return REASONING_MAX_TOKENS if self._is_reasoning_model() else DEFAULT_MAX_TOKENS
 
     def _create_kwargs(self, prompt: str, *, json_mode: bool) -> dict[str, Any]:
         """Wspólny builder argumentów create() — `temperature` tylko gdy model
@@ -134,7 +162,7 @@ class OpenAIAdapter(LLMPort):
         if self._supports_custom_temperature():
             kwargs["temperature"] = self._temperature
         # #31 — cap wyjścia: bez niego output ograniczony tylko defaultem modelu.
-        kwargs[self._token_limit_kwarg()] = self._max_tokens
+        kwargs[self._token_limit_kwarg()] = self._resolved_max_tokens()
         return kwargs
 
     def analyze(self, prompt: str) -> dict[str, Any]:
@@ -143,9 +171,26 @@ class OpenAIAdapter(LLMPort):
                 **self._create_kwargs(prompt, json_mode=True)
             )
         )
-        content = response.choices[0].message.content
+        choice = response.choices[0]
+        content = choice.message.content
         if not content:
-            raise ValueError("OpenAI returned empty content for analyze().")
+            # Pusta treść przy HTTP 200 to objaw — przyczynę zdradza finish_reason.
+            # "length" = model uciął się zanim wyemitował widoczną treść; dla
+            # reasoning models (gpt-5/o-series) zwykle znaczy, że rozumowanie
+            # zjadło cały `max_completion_tokens` (regresja 2026-06-21).
+            finish_reason = getattr(choice, "finish_reason", None)
+            if finish_reason == "length":
+                raise ValueError(
+                    "OpenAI returned empty content for analyze(): response "
+                    "truncated (finish_reason='length') before any visible "
+                    "output — for reasoning models this means reasoning "
+                    "consumed the whole max_completion_tokens budget. Raise "
+                    "max_tokens for this model."
+                )
+            raise ValueError(
+                "OpenAI returned empty content for analyze() "
+                f"(finish_reason={finish_reason!r})."
+            )
 
         try:
             return json.loads(content)  # type: ignore[no-any-return]

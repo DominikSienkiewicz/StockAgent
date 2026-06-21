@@ -7,14 +7,17 @@ from src.application.ports import LLMPort
 from src.infrastructure.llm.openai_client import OpenAIAdapter
 
 
-def _completion(content: str) -> MagicMock:
+def _completion(content: str | None, finish_reason: str = "stop") -> MagicMock:
     """Tworzy mock odpowiedzi OpenAI Chat Completions w nowym SDK (v2+).
 
-    Struktura: response.choices[0].message.content
+    Struktura: response.choices[0].message.content + choices[0].finish_reason.
+    `finish_reason` istotny dla reasoning models: "length" = ucięcie zanim
+    pojawiła się widoczna treść (rozumowanie zjadło budżet tokenów).
     """
     response = MagicMock()
     response.choices = [MagicMock()]
     response.choices[0].message.content = content
+    response.choices[0].finish_reason = finish_reason
     return response
 
 
@@ -390,7 +393,10 @@ class TestMaxTokensCap:
         kwargs = client.chat.completions.create.call_args.kwargs
         assert "max_completion_tokens" in kwargs
         assert "max_tokens" not in kwargs
-        assert kwargs["max_completion_tokens"] <= 1024
+        # Reasoning models budżetują rozumowanie + output razem — cap musi mieć
+        # zapas na niewidoczne tokeny rozumowania (regresja 2026-06-21), więc
+        # NIE jest tak ciasny jak dla gpt-4o.
+        assert kwargs["max_completion_tokens"] >= 2048
 
     def test_o_series_uses_max_completion_tokens(self, mock_openai_class):
         client = MagicMock()
@@ -425,6 +431,74 @@ class TestMaxTokensCap:
         kwargs = client.chat.completions.create.call_args.kwargs
         cap = self._token_cap(kwargs)
         assert 0 < cap <= 4096
+
+
+class TestReasoningModelBudget:
+    """Regresja 2026-06-21: COUNCIL_LLM_MODEL=gpt-5-mini, cała rada padała z
+    'OpenAI returned empty content' przy HTTP 200. Dla reasoning models
+    `max_completion_tokens` budżetuje rozumowanie + widoczny output RAZEM, a
+    rozumowanie idzie pierwsze. Cap 768 (dobrany pod widoczny JSON gpt-4o) bywa
+    w całości zjadany przez rozumowanie → finish_reason='length', content=''.
+    Reasoning models muszą dostać większy domyślny sufit — to SUFIT (płacisz za
+    realne tokeny), więc zapas jest darmowy dla krótkich odpowiedzi."""
+
+    def test_reasoning_model_gets_reasoning_safe_default_budget(
+        self, mock_openai_class
+    ):
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.return_value = _completion("{}")
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-5-mini")
+
+        adapter.analyze("x")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        # 768 nie starcza na rozumowanie + JSON; reasoning models potrzebują
+        # zapasu na niewidoczne tokeny rozumowania PRZED widoczną treścią.
+        assert kwargs["max_completion_tokens"] >= 2048
+
+    def test_non_reasoning_model_keeps_tight_default(self, mock_openai_class):
+        # gpt-4o (nie-reasoning) nie marnuje budżetu na rozumowanie — zostaje
+        # przy ciasnym, tanim capie.
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.return_value = _completion("{}")
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-4o")
+
+        adapter.analyze("x")
+
+        assert client.chat.completions.create.call_args.kwargs["max_tokens"] <= 1024
+
+    def test_explicit_override_wins_for_reasoning_model(self, mock_openai_class):
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.return_value = _completion("{}")
+        adapter = OpenAIAdapter(
+            api_key="sk-test", model="gpt-5-mini", max_tokens=512
+        )
+
+        adapter.analyze("x")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["max_completion_tokens"] == 512
+
+
+class TestEmptyContentDiagnostics:
+    """Pusta treść przy HTTP 200 to objaw, nie przyczyna. Komunikat błędu musi
+    rozróżniać ucięcie z powodu limitu tokenów (finish_reason='length') od
+    innych przyczyn — inaczej kolejny incydent jest tak samo nieczytelny jak
+    2026-06-21 (cała rada 'empty content', zero wskazówki dlaczego)."""
+
+    def test_length_finish_reason_gives_actionable_error(self, mock_openai_class):
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.return_value = _completion(
+            None, finish_reason="length"
+        )
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-5-mini")
+
+        with pytest.raises(ValueError, match="truncat|max_completion_tokens"):
+            adapter.analyze("x")
 
 
 class TestTemperatureCompatibility:
