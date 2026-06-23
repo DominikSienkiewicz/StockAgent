@@ -163,6 +163,11 @@ _VERDICT_COLOR = {
 }
 
 
+def _section_h2(title: str) -> str:
+    """Nagłówek sekcji raportu (H2) — jedno źródło prawdy dla stylu."""
+    return f"<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>{title}</h2>"
+
+
 def _render_valuation(section: ValuationSection | None) -> str:
     """Renderuje sekcję wyceny fundamentalnej do HTML (Jinja2 template)."""
     if section is None:
@@ -317,7 +322,7 @@ def _render_crypto_section_html(results: list[SymbolResult]) -> str:
           </div>
         """)
     return (
-        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>🪙 Krypto</h2>"
+        _section_h2("🪙 Krypto")
         + "".join(rows)
     )
 
@@ -735,10 +740,7 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
     """🎯 Najsilniejsze sygnały transakcyjne. Pusty string, gdy brak sygnałów."""
     if not trade_signals:
         return ""
-    parts = [
-        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-        + "🎯 Najsilniejsze sygnały</h2>"
-    ]
+    parts = [_section_h2("🎯 Najsilniejsze sygnały")]
     for sig in trade_signals:
         dir_color = {
             "KUP": "#16a34a",
@@ -818,10 +820,7 @@ def _render_resolved_predictions_html(
         return ""
     correct = [p for p in resolved_predictions if p.is_correct]
     wrong = [p for p in resolved_predictions if not p.is_correct]
-    parts = [
-        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-        + "📊 Zamknięte predykcje (ostatnie 24h)</h2>"
-    ]
+    parts = [_section_h2("📊 Zamknięte predykcje (ostatnie 24h)")]
     parts.extend(_render_resolved_item_html(p) for p in resolved_predictions)
     parts.append(
         "<div style='font-size: 11px; color: #6b7280; margin: 4px 0 16px 0;'>"
@@ -867,10 +866,7 @@ def _render_reflections_html(saved: list[SymbolResult]) -> str:
     reflections = [r for r in saved if r.reflection_insight]
     if not reflections:
         return ""
-    parts = [
-        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-        + "🧠 Wnioski z poprzednich cykli (Self-Reflection)</h2>"
-    ]
+    parts = [_section_h2("🧠 Wnioski z poprzednich cykli (Self-Reflection)")]
     for r in reflections:
         parts.append(f"""
               <div style="margin-bottom: 8px; padding: 10px 12px; background: #faf5ff;
@@ -893,9 +889,8 @@ def _render_ignored_html(ignored: list[SymbolResult]) -> str:
         for r in ignored
     )
     return (
-        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-        "⏸ Pominięte (poniżej progu zmienności)</h2>"
-        f"<div>{rows}</div>"
+        _section_h2("⏸ Pominięte (poniżej progu zmienności)")
+        + f"<div>{rows}</div>"
     )
 
 
@@ -1020,7 +1015,7 @@ def _render_saved_section_html(saved: list[SymbolResult]) -> str:
     if not saved:
         return ""
     parts = [
-        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>🔮 Wygenerowane predykcje</h2>",
+        _section_h2("🔮 Wygenerowane predykcje"),
         "<table style='width: 100%; border-collapse: collapse; font-size: 13px;'>",
         """
           <tr style="background: #f3f4f6; text-align: left;">
