@@ -174,7 +174,7 @@ class TestPriceSnapshot:
             "AAPL", Money(Decimal("90.0"))
         )
 
-    def test_snapshot_NOT_written_when_cycle_crashes_before_terminal(
+    def test_snapshot_not_written_when_cycle_crashes_before_terminal(
         self, workflow, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,
     ):
@@ -1647,11 +1647,11 @@ class TestVectorMemory:
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
         )
-        ports = dict(
-            market_port=market_port, sentiment_port=sentiment_port,
-            news_port=news_port, repository_port=repository_port,
-            ml_port=ml_port, llm_port=llm_port,
-        )
+        ports = {
+            "market_port": market_port, "sentiment_port": sentiment_port,
+            "news_port": news_port, "repository_port": repository_port,
+            "ml_port": ml_port, "llm_port": llm_port,
+        }
 
         self._make(ports, enabled=True, embedding_port=embedding_port).compile().invoke(
             self._state()
@@ -1675,11 +1675,11 @@ class TestVectorMemory:
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
         )
-        ports = dict(
-            market_port=market_port, sentiment_port=sentiment_port,
-            news_port=news_port, repository_port=repository_port,
-            ml_port=ml_port, llm_port=llm_port,
-        )
+        ports = {
+            "market_port": market_port, "sentiment_port": sentiment_port,
+            "news_port": news_port, "repository_port": repository_port,
+            "ml_port": ml_port, "llm_port": llm_port,
+        }
 
         self._make(ports, enabled=False, embedding_port=embedding_port).compile().invoke(
             self._state()

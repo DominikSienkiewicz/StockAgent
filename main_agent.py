@@ -660,6 +660,15 @@ def _resolve_regime(
     return regime_context, regime_multiplier
 
 
+def _classify_asset(symbol: str, crypto_set: set[str], etf_set: set[str]) -> AssetType:
+    """STOCK/ETF/CRYPTO — pomijanie fundamentali dla ETF/CRYPTO, osobne progi CRYPTO."""
+    if symbol in crypto_set:
+        return AssetType.CRYPTO
+    if symbol in etf_set:
+        return AssetType.ETF
+    return AssetType.STOCK
+
+
 def _analyze_symbols(
     eligible: list[str],
     *,
@@ -682,15 +691,10 @@ def _analyze_symbols(
     alpha_prices: dict[str, Decimal] = {}
     for index, symbol in enumerate(eligible):
         try:
-            # Klasyfikacja STOCK/ETF/CRYPTO — każdy typ ma własne reguły
-            # (pomijanie fundamentali dla ETF/CRYPTO, osobne progi dla CRYPTO).
-            if symbol in crypto_set:
-                asset_type = AssetType.CRYPTO
-            elif symbol in etf_set:
-                asset_type = AssetType.ETF
-            else:
-                asset_type = AssetType.STOCK
-            asset = Asset(symbol=symbol, asset_type=asset_type)
+            asset = Asset(
+                symbol=symbol,
+                asset_type=_classify_asset(symbol, crypto_set, etf_set),
+            )
             # #5: werdykty skorelowanych spółek JUŻ przetworzonych w tym cyklu.
             peer_ctx = (
                 build_peer_context(symbol, settings.peer_groups, processed_stances)

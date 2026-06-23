@@ -96,6 +96,15 @@ def _render_sparkline_html(curve: EquityCurve) -> str:
     )
 
 
+def _severity_color(value: float) -> str:
+    """Próg rozjazdu → kolor: ≥0.15 czerwony, ≥0.07 żółty, inaczej zielony."""
+    if value >= 0.15:
+        return "#dc2626"
+    if value >= 0.07:
+        return "#ca8a04"
+    return "#16a34a"
+
+
 def _render_calibration_html(buckets: list[CalibrationBucket]) -> str:
     """T2 — reliability diagram jako tabela: bucket pewności → realny hit-rate."""
     ece = expected_calibration_error(buckets)
@@ -103,7 +112,7 @@ def _render_calibration_html(buckets: list[CalibrationBucket]) -> str:
     for b in buckets:
         gap = abs(b.hit_rate - b.mean_confidence)
         # Im większy rozjazd pewności vs realnego hit-rate, tym bardziej czerwono.
-        color = "#dc2626" if gap >= 0.15 else "#ca8a04" if gap >= 0.07 else "#16a34a"
+        color = _severity_color(gap)
         rows.append(
             "<tr>"
             f"<td style='padding: 6px 8px;'>{b.lower * 100:.0f}–{b.upper * 100:.0f}%</td>"
@@ -114,7 +123,7 @@ def _render_calibration_html(buckets: list[CalibrationBucket]) -> str:
             f"font-weight: 600;'>{b.hit_rate * 100:.0f}%</td>"
             "</tr>"
         )
-    ece_color = "#dc2626" if ece >= 0.15 else "#ca8a04" if ece >= 0.07 else "#16a34a"
+    ece_color = _severity_color(ece)
     return (
         "<p style='font-size: 12px; color: #6b7280; margin: 12px 0 6px 0;'>"
         "🎯 Krzywa kalibracji (deklarowana pewność vs realny hit-rate):</p>"

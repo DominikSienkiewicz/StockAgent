@@ -536,7 +536,13 @@ class TestDebateMode:
                 return _verdict_json()
             idx = round1_calls["n"]
             round1_calls["n"] += 1
-            return _opinion_json("BUY" if idx == 0 else "SELL" if idx == 1 else "HOLD")
+            if idx == 0:
+                rec = "BUY"
+            elif idx == 1:
+                rec = "SELL"
+            else:
+                rec = "HOLD"
+            return _opinion_json(rec)
 
         llm_port.analyze.side_effect = side_effect
         personas = _personas(("A", "B", "C"))

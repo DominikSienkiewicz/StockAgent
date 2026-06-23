@@ -134,8 +134,8 @@ class TestRun:
         use_case.run("AAPL")
 
         features, _ = ml_port.train.call_args.args
-        # Element-wise na pandas Series — approx nie broadcastuje, więc exact.
-        assert (features["price_delta"] == 0.5).all()
+        # Wszystkie wiersze dostały price_delta=0.5 — porównanie tolerancyjne na float.
+        assert np.allclose(features["price_delta"], 0.5)
 
     def test_drops_rows_when_view_price_delta_is_null(
         self, use_case, repository_port, ml_port

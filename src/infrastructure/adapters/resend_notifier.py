@@ -8,8 +8,6 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-import requests
-
 from src.application.ports import ReportNotifierPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
@@ -89,10 +87,7 @@ class ResendNotifier(ReportNotifierPort):
                     "is verified in your Resend domain settings."
                 ),
             )
-        try:
-            response.raise_for_status()
-        except requests.HTTPError:
-            raise
+        response.raise_for_status()
         message_id = response.json().get("id", "<no-id>")
         logger.info(
             "Resend: sent report to %s (id=%s)", self._recipient, message_id

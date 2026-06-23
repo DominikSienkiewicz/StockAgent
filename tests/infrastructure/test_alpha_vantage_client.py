@@ -551,7 +551,7 @@ class TestCryptoPrefix:
 
         # AAPL pozostaje czysty, BTC dostał prefix.
         sent_tickers = set(
-            t for t in mock_get.call_args_list[0].kwargs["params"]["tickers"].split(",")
+            mock_get.call_args_list[0].kwargs["params"]["tickers"].split(",")
         )
         assert "CRYPTO:BTC" in sent_tickers or sent_tickers == {"CRYPTO:BTC"}
 

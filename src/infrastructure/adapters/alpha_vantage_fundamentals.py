@@ -148,14 +148,12 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
         try:
             overview = self._get("OVERVIEW", symbol)
             earnings = self._get("EARNINGS", symbol)
-        except _AlphaVantageQuotaExhausted as exc:
+        except _AlphaVantageQuotaExhausted:
             # Wyczerpany dzienny limit: NIE udajemy pustych fundamentów.
             # Emitujemy alert i przerywamy — kolejne klucze i tak są wspólne
             # z resztą integracji AV, więc dalsze próby tylko spalą budżet.
-            logger.error(
-                "Alpha Vantage fundamentals daily quota exhausted for %s: %s",
-                symbol,
-                exc,
+            logger.exception(
+                "Alpha Vantage fundamentals daily quota exhausted for %s", symbol
             )
             self._emit_quota_alert(
                 message=(

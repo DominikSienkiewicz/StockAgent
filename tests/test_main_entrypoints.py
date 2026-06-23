@@ -209,7 +209,7 @@ class TestMainAgent:
         expected_sleeps = len(s.symbols) - 1
         sleep_calls = [
             c for c in mock_sleep.call_args_list
-            if c.args and c.args[0] == 0.05
+            if c.args and c.args[0] == pytest.approx(0.05)
         ]
         assert len(sleep_calls) == expected_sleeps
 
@@ -379,22 +379,22 @@ class TestBuildMacroRiskUseCase:
     def _settings(self, **overrides) -> Settings:
         from src.domain.macro_risk import MacroRiskInstrumentType
 
-        base = dict(
-            openai_api_key="sk-test",
-            finnhub_api_key="fh",
-            alpha_vantage_api_keys=["av1"],
-            supabase_url="https://test.supabase.co",
-            supabase_key="anon",
-            symbols=["AAPL"],
-            volatility_threshold=Decimal("0.02"),
-            ml_model_path="data/models/missing.ubj",
-            risk_symbols=["SH", "GLD"],
-            risk_symbol_types={
+        base = {
+            "openai_api_key": "sk-test",
+            "finnhub_api_key": "fh",
+            "alpha_vantage_api_keys": ["av1"],
+            "supabase_url": "https://test.supabase.co",
+            "supabase_key": "anon",
+            "symbols": ["AAPL"],
+            "volatility_threshold": Decimal("0.02"),
+            "ml_model_path": "data/models/missing.ubj",
+            "risk_symbols": ["SH", "GLD"],
+            "risk_symbol_types": {
                 "SH": MacroRiskInstrumentType.INVERSE_EQUITY,
                 "GLD": MacroRiskInstrumentType.SAFE_HAVEN,
             },
-            nbp_enabled=False,
-        )
+            "nbp_enabled": False,
+        }
         base.update(overrides)
         return Settings(**base)
 

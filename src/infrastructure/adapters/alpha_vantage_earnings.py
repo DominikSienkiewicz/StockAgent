@@ -55,7 +55,8 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
             if body is None:
                 return None
             return self._parse(symbol, body)
-        except Exception:  # noqa: BLE001 — opcjonalne źródło, nigdy nie rzuca
+        # Opcjonalne źródło — nigdy nie rzuca w górę; każdy błąd degradujemy do None.
+        except Exception:  # noqa: BLE001
             logger.exception("AlphaVantage earnings fetch failed for %s", symbol)
             return None
 

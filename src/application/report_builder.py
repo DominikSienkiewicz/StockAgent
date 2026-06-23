@@ -737,7 +737,7 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
         return ""
     parts = [
         "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-        "🎯 Najsilniejsze sygnały</h2>"
+        + "🎯 Najsilniejsze sygnały</h2>"
     ]
     for sig in trade_signals:
         dir_color = {
@@ -820,7 +820,7 @@ def _render_resolved_predictions_html(
     wrong = [p for p in resolved_predictions if not p.is_correct]
     parts = [
         "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-        "📊 Zamknięte predykcje (ostatnie 24h)</h2>"
+        + "📊 Zamknięte predykcje (ostatnie 24h)</h2>"
     ]
     parts.extend(_render_resolved_item_html(p) for p in resolved_predictions)
     parts.append(
@@ -869,7 +869,7 @@ def _render_reflections_html(saved: list[SymbolResult]) -> str:
         return ""
     parts = [
         "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-        "🧠 Wnioski z poprzednich cykli (Self-Reflection)</h2>"
+        + "🧠 Wnioski z poprzednich cykli (Self-Reflection)</h2>"
     ]
     for r in reflections:
         parts.append(f"""
@@ -1354,11 +1354,12 @@ def _render_prediction_text(r: SymbolResult) -> list[str]:
         lines.append(f"        └ {r.reasoning}")
     # Q5: precedent receipts (analogi RAG).
     for prec in r.similar_precedents:
-        outcome = (
-            "trafił" if prec.is_trend_correct
-            else "chybił" if prec.is_trend_correct is False
-            else "wynik nieznany"
-        )
+        if prec.is_trend_correct:
+            outcome = "trafił"
+        elif prec.is_trend_correct is False:
+            outcome = "chybił"
+        else:
+            outcome = "wynik nieznany"
         lines.append(
             f"        🧭 analog [{_trend_label(prec.predicted_trend)}, {outcome}]: "
             f"{prec.summary[:72]}"

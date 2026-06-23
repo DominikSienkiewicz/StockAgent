@@ -96,7 +96,12 @@ def fence_untrusted(
         oczyszczone elementy (każdy w nowym wierszu jako punkt listy),
         marker końca. Zawsze zwraca kompletny fence — nawet dla pustego wejścia.
     """
-    raw_items = ([items] if items.strip() else []) if isinstance(items, str) else list(items)
+    if not isinstance(items, str):
+        raw_items = list(items)
+    elif items.strip():
+        raw_items = [items]
+    else:
+        raw_items = []
 
     sanitized = [s for s in (_sanitize_item(it, max_len) for it in raw_items) if s]
 

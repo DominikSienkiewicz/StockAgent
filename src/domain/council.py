@@ -111,7 +111,7 @@ class CouncilVerdict:
         gdy któraś rekomendacja nie padła ani razu — dzięki temu konsumenci
         (raport HTML, dashboard) nie muszą obsługiwać brakujących kluczy.
         """
-        dist: dict[str, int] = {rec: 0 for rec in _RECOMMENDATIONS}
+        dist: dict[str, int] = dict.fromkeys(_RECOMMENDATIONS, 0)
         for op in self.investor_opinions:
             if op.recommendation in dist:
                 dist[op.recommendation] += 1
@@ -186,7 +186,7 @@ def derive_consensus(
     # Gdy wszyscy mają zerową pewność, ważenie traci sens — używamy headcountu.
     use_headcount = total_confidence <= 0.0
 
-    buckets: dict[str, float] = {rec: 0.0 for rec in _RECOMMENDATIONS}
+    buckets: dict[str, float] = dict.fromkeys(_RECOMMENDATIONS, 0.0)
     for op in opinions:
         if op.recommendation in buckets:
             mass = 1.0 if use_headcount else op.confidence * _weight(op)

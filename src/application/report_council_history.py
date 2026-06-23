@@ -64,7 +64,7 @@ class InvestorHistory:
 
     def tally(self) -> dict[str, int]:
         """Liczba głosów na każdą rekomendację (zawsze 3 deterministyczne klucze)."""
-        dist: dict[str, int] = {rec: 0 for rec in _RECOMMENDATIONS}
+        dist: dict[str, int] = dict.fromkeys(_RECOMMENDATIONS, 0)
         for rec in self.recommendations:
             if rec in dist:
                 dist[rec] += 1

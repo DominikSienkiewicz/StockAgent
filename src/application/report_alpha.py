@@ -76,7 +76,7 @@ def render_alpha_html(
 
     parts: list[str] = [
         "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
-        "🛰️ Alpha Signals — dodatkowe źródła danych</h2>"
+        + "🛰️ Alpha Signals — dodatkowe źródła danych</h2>"
     ]
     if has_yield and yield_curve is not None:
         parts.append(_render_yield_curve_html(yield_curve))

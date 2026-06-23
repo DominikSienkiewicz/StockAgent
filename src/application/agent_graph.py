@@ -145,11 +145,12 @@ def _format_analog(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         return None
     trend = item.get("predicted_trend") or "?"
     correct = item.get("is_trend_correct")
-    outcome = (
-        "prognoza trafiła" if correct
-        else "prognoza chybiła" if correct is False
-        else "wynik nieznany"
-    )
+    if correct:
+        outcome = "prognoza trafiła"
+    elif correct is False:
+        outcome = "prognoza chybiła"
+    else:
+        outcome = "wynik nieznany"
     insight = str(item.get("correction_insights") or "").strip()
     line = f"  - [{trend}, {outcome}] {summary}"
     if insight:

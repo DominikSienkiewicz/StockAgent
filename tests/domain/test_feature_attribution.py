@@ -13,7 +13,8 @@ class TestFeatureContribution:
         contribution = FeatureContribution(feature="price_delta", contribution=0.5)
         try:
             contribution.contribution = 1.0  # type: ignore[misc]
-        except Exception as exc:  # noqa: BLE001 — interesuje nas tylko, że rzuca
+        # Interesuje nas tylko, że przypisanie do frozen pola rzuca — typ nieistotny.
+        except Exception as exc:  # noqa: BLE001
             raised = exc
         else:
             raised = None
