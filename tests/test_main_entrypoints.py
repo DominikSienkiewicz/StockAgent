@@ -475,3 +475,127 @@ class TestNotifierFactory:
         assert isinstance(n, NullNotifier)
         # Świadome wyłączenie → bez WARNING (najwyżej INFO).
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+class TestProcessOneSymbol:
+    def _kwargs(self, settings, use_case):
+        return dict(
+            use_case=use_case,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=False,
+            alpha_use_case=MagicMock(),
+        )
+
+    def test_success_returns_result_not_failure(self, settings):
+        uc = MagicMock()
+        uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        proc = main_agent._process_one_symbol(
+            "AAPL", peer_ctx=(), **self._kwargs(settings, uc)
+        )
+        assert proc.is_failure is False
+        assert proc.result.symbol == "AAPL"
+        uc.run.assert_called_once()
+
+    def test_exception_returns_failure_with_error(self, settings):
+        uc = MagicMock()
+        uc.run.side_effect = RuntimeError("boom")
+        proc = main_agent._process_one_symbol(
+            "AAPL", peer_ctx=(), **self._kwargs(settings, uc)
+        )
+        assert proc.is_failure is True
+        assert proc.result.status == "error"
+
+    def test_collect_alpha_enriches_on_success(self, settings):
+        uc = MagicMock()
+        uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        kwargs = self._kwargs(settings, uc)
+        kwargs["collect_alpha"] = True
+        proc = main_agent._process_one_symbol("AAPL", peer_ctx=(), **kwargs)
+        kwargs["alpha_use_case"].enrich.assert_called_once_with("AAPL")
+        assert proc.alpha_signal is not None
+
+
+class TestAnalyzeSymbolsParallel:
+    def _kwargs(self, settings, use_case):
+        return dict(
+            use_case=use_case,
+            settings=settings,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=False,
+            alpha_use_case=MagicMock(),
+        )
+
+    def test_parallel_processes_all_in_eligible_order(self, settings):
+        s = settings.model_copy(update={"symbol_concurrency": 4})
+        uc = MagicMock()
+        uc.run.side_effect = lambda sym, **kw: {
+            "status": "ignored", "delta": Decimal("0"), "symbol": sym,
+        }
+        eligible = ["AAPL", "MSFT", "NVDA", "AMD", "TSLA"]
+        results, failures, _signals, _prices = main_agent._analyze_symbols(
+            eligible, **self._kwargs(s, uc)
+        )
+        assert failures == 0
+        assert [r.symbol for r in results] == eligible  # kolejność zachowana
+        assert uc.run.call_count == len(eligible)
+
+    def test_parallel_single_failure_isolated(self, settings):
+        s = settings.model_copy(update={"symbol_concurrency": 4})
+        uc = MagicMock()
+
+        def _run(sym, **kw):
+            if sym == "MSFT":
+                raise RuntimeError("boom")
+            return {"status": "ignored", "delta": Decimal("0")}
+
+        uc.run.side_effect = _run
+        eligible = ["AAPL", "MSFT", "NVDA"]
+        results, failures, _s, _p = main_agent._analyze_symbols(
+            eligible, **self._kwargs(s, uc)
+        )
+        assert failures == 1
+        assert len(results) == 3  # reszta przetworzona mimo błędu jednego
+
+    def test_parallel_does_not_build_peer_context(self, settings, mocker):
+        s = settings.model_copy(update={
+            "symbol_concurrency": 4, "contagion_enabled": False,
+        })
+        uc = MagicMock()
+        uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        spy = mocker.patch("main_agent.build_peer_context")
+        main_agent._analyze_symbols(["AAPL", "MSFT"], **self._kwargs(s, uc))
+        spy.assert_not_called()
+
+    def test_contagion_forces_sequential_despite_concurrency(self, settings, mocker):
+        s = settings.model_copy(update={
+            "symbol_concurrency": 4, "contagion_enabled": True,
+        })
+        uc = MagicMock()
+        uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        spy = mocker.patch("main_agent.build_peer_context", return_value=())
+        main_agent._analyze_symbols(["AAPL", "MSFT"], **self._kwargs(s, uc))
+        # Sekwencyjna ścieżka (peer_context budowany) mimo concurrency=4.
+        assert spy.call_count == 2
+
+    def test_parallel_uses_thread_pool_executor(self, settings, mocker):
+        s = settings.model_copy(update={"symbol_concurrency": 3})
+        uc = MagicMock()
+        uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        spy = mocker.spy(main_agent, "ThreadPoolExecutor")
+        main_agent._analyze_symbols(["AAPL", "MSFT"], **self._kwargs(s, uc))
+        spy.assert_called_once()
+        assert spy.call_args.kwargs.get("max_workers") == 3
+
+    def test_sequential_path_no_thread_pool(self, settings, mocker):
+        s = settings.model_copy(update={"symbol_concurrency": 1})
+        uc = MagicMock()
+        uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        spy = mocker.spy(main_agent, "ThreadPoolExecutor")
+        main_agent._analyze_symbols(["AAPL", "MSFT"], **self._kwargs(s, uc))
+        spy.assert_not_called()

@@ -32,6 +32,7 @@ def test_real_config_toml_parses_and_has_expected_invariants() -> None:
     assert len(data["symbols"]) == 43
     assert "SSNLF" in data["symbols_unsupported_price"]
     assert data["crypto_symbols"] == ["BTC", "ETH"]
+    assert data["symbol_concurrency"] == 4
     # Sekrety NIE mogą wyciec do commitowanego pliku.
     for secret in ("openai_api_key", "anthropic_api_key", "supabase_key",
                    "finnhub_api_key", "digest_to_email"):

@@ -259,3 +259,31 @@ class TestCryptoSettings:
         env.setenv("CRYPTO_VOLATILITY_THRESHOLD", "0.08")
         settings = Settings(_env_file=None)
         assert settings.crypto_volatility_threshold == Decimal("0.08")
+
+
+class TestSymbolConcurrency:
+    def _base(self, **overrides):
+        base = dict(
+            _env_file=None,
+            openai_api_key="sk-test",
+            finnhub_api_key="fh",
+            alpha_vantage_api_keys=["av1"],
+            supabase_url="https://t.supabase.co",
+            supabase_key="anon",
+            symbols=["AAPL"],
+            volatility_threshold=Decimal("0.02"),
+        )
+        base.update(overrides)
+        return base
+
+    def test_defaults_to_one(self):
+        s = Settings(**self._base())
+        assert s.symbol_concurrency == 1
+
+    def test_accepts_positive(self):
+        s = Settings(**self._base(symbol_concurrency=4))
+        assert s.symbol_concurrency == 4
+
+    def test_rejects_below_one(self):
+        with pytest.raises(ValueError, match="symbol_concurrency must be >= 1"):
+            Settings(**self._base(symbol_concurrency=0))

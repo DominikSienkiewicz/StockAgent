@@ -225,6 +225,13 @@ class Settings(BaseSettings):
     # przy 30+ tickerach z radą doradczą. 0 = bez throttle.
     symbol_throttle_seconds: float = Field(default=0.0)
 
+    # Liczba symboli przetwarzanych równolegle w głównej pętli (Fast Loop).
+    # 1 = sekwencyjnie (wstecznie zgodne). > 1 = ThreadPoolExecutor; uwaga: każdy
+    # symbol wewnętrznie rozwija radę do ~7 równoległych callsów OpenAI, więc
+    # realny fan-out to ~N×7 — trzymaj zachowawczo (config.toml: 4). Throttle i
+    # contagion (#5) działają tylko w trybie sekwencyjnym (patrz _analyze_symbols).
+    symbol_concurrency: int = Field(default=1)
+
     # Minimalny wiek (godziny) predykcji, zanim reflect_node ją oceni. Chroni
     # przed przedwczesną oceną przy nakładających się cyklach (ręczny
     # workflow_dispatch tuż po scheduled run oceniłby świeżą predykcję po
@@ -292,6 +299,15 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError(
                 f"symbol_throttle_seconds must be non-negative (got {value})"
+            )
+        return value
+
+    @field_validator("symbol_concurrency")
+    @classmethod
+    def _validate_symbol_concurrency(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError(
+                f"symbol_concurrency must be >= 1 (got {value})"
             )
         return value
 

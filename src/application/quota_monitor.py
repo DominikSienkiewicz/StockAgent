@@ -11,6 +11,7 @@ Brak globalnego stanu — każda sesja main_agent ma własną instancję.
 from __future__ import annotations
 
 import logging
+import threading
 
 from src.application.ports import AlertNotifierPort
 from src.domain.quota import QuotaAlert, QuotaSeverity
@@ -26,10 +27,14 @@ class QuotaMonitor:
         # Debounce per źródło na czas życia monitora — jedno CRITICAL z danego
         # źródła pushuje raz, kolejne tylko trafiają do raportu dobowego.
         self._alerted_sources: set[str] = set()
+        # Serializuje record() — chroni check-then-act na _alerted_sources przy
+        # współbieżnym wołaniu (rada na 7 wątkach, równoległe symbole ~N×7).
+        self._lock = threading.Lock()
 
     def record(self, alert: QuotaAlert) -> None:
-        self._alerts.append(alert)
-        self._maybe_push_realtime(alert)
+        with self._lock:
+            self._alerts.append(alert)
+            self._maybe_push_realtime(alert)
 
     def _maybe_push_realtime(self, alert: QuotaAlert) -> None:
         if self._alert_notifier is None:

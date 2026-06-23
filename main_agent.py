@@ -15,9 +15,10 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, NamedTuple
 
 from src.application.alpha_signals import AlphaSignals
 from src.application.ports import (
@@ -669,6 +670,65 @@ def _classify_asset(symbol: str, crypto_set: set[str], etf_set: set[str]) -> Ass
     return AssetType.STOCK
 
 
+class _ProcessedSymbol(NamedTuple):
+    """Wynik przetworzenia jednego symbolu — niezależny od ścieżki (seq/parallel)."""
+
+    result: SymbolResult
+    is_failure: bool
+    alpha_signal: AlphaSignals | None
+    alpha_price: Decimal | None
+
+
+def _process_one_symbol(
+    symbol: str,
+    *,
+    peer_ctx: tuple[tuple[str, str], ...],
+    use_case: AnalyzeMarketUseCase,
+    crypto_set: set[str],
+    etf_set: set[str],
+    regime_context: str,
+    regime_multiplier: float,
+    collect_alpha: bool,
+    alpha_use_case: AlphaEnrichmentUseCase,
+) -> _ProcessedSymbol:
+    """Przetwarza jeden symbol. NIGDY nie rzuca — łapie wyjątek i zwraca wynik
+    z `is_failure=True`. Dzięki temu pula wątków (ścieżka równoległa
+    `_analyze_symbols`) nigdy nie widzi wyjątku, a semantyka resilience jest
+    identyczna z dawną pętlą sekwencyjną."""
+    try:
+        asset = Asset(
+            symbol=symbol,
+            asset_type=_classify_asset(symbol, crypto_set, etf_set),
+        )
+        raw = use_case.run(
+            symbol,
+            asset=asset,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            peer_context=peer_ctx,
+        )
+        logger.info(
+            "%s: status=%s delta=%s prediction_id=%s",
+            symbol,
+            raw.get("status"),
+            raw.get("delta"),
+            raw.get("prediction_id"),
+        )
+        sr = to_symbol_result(symbol, raw)
+        alpha_signal: AlphaSignals | None = None
+        alpha_price: Decimal | None = None
+        if collect_alpha:
+            alpha_signal = alpha_use_case.enrich(symbol)
+            if sr.current_price is not None:
+                alpha_price = sr.current_price
+        return _ProcessedSymbol(sr, False, alpha_signal, alpha_price)
+    except Exception as exc:
+        logger.exception("Failed to process symbol %s", symbol)
+        return _ProcessedSymbol(
+            to_symbol_result(symbol, None, error=str(exc)), True, None, None
+        )
+
+
 def _analyze_symbols(
     eligible: list[str],
     *,
@@ -683,6 +743,49 @@ def _analyze_symbols(
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Główna pętla per-symbol. Pojedynczy błąd nie wywala cyklu (resilience).
     Zwraca (wyniki, liczba_błędów, alpha_signals, alpha_prices)."""
+    # Ścieżka równoległa: tylko gdy concurrency > 1 ORAZ contagion off (contagion
+    # #5 zależy od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
+    if settings.symbol_concurrency > 1 and not settings.contagion_enabled:
+        with ThreadPoolExecutor(max_workers=settings.symbol_concurrency) as executor:
+            processed = list(
+                executor.map(
+                    lambda sym: _process_one_symbol(
+                        sym,
+                        peer_ctx=(),
+                        use_case=use_case,
+                        crypto_set=crypto_set,
+                        etf_set=etf_set,
+                        regime_context=regime_context,
+                        regime_multiplier=regime_multiplier,
+                        collect_alpha=collect_alpha,
+                        alpha_use_case=alpha_use_case,
+                    ),
+                    eligible,
+                )
+            )
+        # executor.map zachowuje kolejność wejścia → results deterministyczne.
+        return (
+            [p.result for p in processed],
+            sum(1 for p in processed if p.is_failure),
+            {
+                sym: p.alpha_signal
+                for sym, p in zip(eligible, processed, strict=True)
+                if p.alpha_signal is not None
+            },
+            {
+                sym: p.alpha_price
+                for sym, p in zip(eligible, processed, strict=True)
+                if p.alpha_price is not None
+            },
+        )
+
+    if settings.symbol_concurrency > 1 and settings.contagion_enabled:
+        logger.warning(
+            "symbol_concurrency=%d zignorowane — contagion_enabled wymaga "
+            "przetwarzania sekwencyjnego (peer_context zależy od kolejności).",
+            settings.symbol_concurrency,
+        )
+
     results: list[SymbolResult] = []
     failures = 0
     # #5: akumulator werdyktów tego cyklu (symbol → stance) dla contagion.
@@ -690,45 +793,31 @@ def _analyze_symbols(
     alpha_signals: dict[str, AlphaSignals] = {}
     alpha_prices: dict[str, Decimal] = {}
     for index, symbol in enumerate(eligible):
-        try:
-            asset = Asset(
-                symbol=symbol,
-                asset_type=_classify_asset(symbol, crypto_set, etf_set),
-            )
-            # #5: werdykty skorelowanych spółek JUŻ przetworzonych w tym cyklu.
-            peer_ctx = (
-                build_peer_context(symbol, settings.peer_groups, processed_stances)
-                if settings.contagion_enabled
-                else ()
-            )
-            raw = use_case.run(
-                symbol,
-                asset=asset,
-                regime_context=regime_context,
-                regime_multiplier=regime_multiplier,
-                peer_context=peer_ctx,
-            )
-            logger.info(
-                "%s: status=%s delta=%s prediction_id=%s",
-                symbol,
-                raw.get("status"),
-                raw.get("delta"),
-                raw.get("prediction_id"),
-            )
-            sr = to_symbol_result(symbol, raw)
-            results.append(sr)
-            if sr.trend:  # zasil akumulator contagion dla kolejnych symboli
-                processed_stances[symbol] = sr.trend
-            # Dane: per-symbol sygnały alpha (graceful; każdy port Null gdy off).
-            if collect_alpha:
-                alpha_signals[symbol] = alpha_use_case.enrich(symbol)
-                if sr.current_price is not None:
-                    alpha_prices[symbol] = sr.current_price
-        except Exception as exc:
-            logger.exception("Failed to process symbol %s", symbol)
+        peer_ctx = (
+            build_peer_context(symbol, settings.peer_groups, processed_stances)
+            if settings.contagion_enabled
+            else ()
+        )
+        proc = _process_one_symbol(
+            symbol,
+            peer_ctx=peer_ctx,
+            use_case=use_case,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+        )
+        results.append(proc.result)
+        if proc.is_failure:
             failures += 1
-            results.append(to_symbol_result(symbol, None, error=str(exc)))
-
+        elif proc.result.trend:  # zasil akumulator contagion dla kolejnych symboli
+            processed_stances[symbol] = proc.result.trend
+        if proc.alpha_signal is not None:
+            alpha_signals[symbol] = proc.alpha_signal
+        if proc.alpha_price is not None:
+            alpha_prices[symbol] = proc.alpha_price
         # Throttle MIĘDZY symbolami — chroni OpenAI TPM. Po ostatnim brak sleepa.
         if settings.symbol_throttle_seconds > 0 and index < len(eligible) - 1:
             time.sleep(settings.symbol_throttle_seconds)

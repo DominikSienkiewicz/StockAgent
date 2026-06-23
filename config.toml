@@ -75,6 +75,10 @@ tool_use_volatility_threshold = "0.05"
 
 # --- Pętla / resilience ---
 symbol_throttle_seconds = 2.0
+# Symbole przetwarzane równolegle w Fast Loop. Każdy symbol i tak rozwija radę
+# do ~7 callsów OpenAI naraz, więc realny fan-out ~N×7. Przy 429 (rate-limit)
+# obniż tę wartość. 1 = sekwencyjnie. Throttle/contagion działają tylko przy 1.
+symbol_concurrency = 4
 ml_model_path = "data/models/price_predictor.ubj"
 # Minimalny wiek predykcji (h), zanim reflect ją oceni. Kadencja dzienna →
 # 6h bezpiecznie odsiewa przedwczesną ocenę przy nakładających się cyklach.

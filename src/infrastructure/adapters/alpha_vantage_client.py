@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -88,6 +89,9 @@ class AlphaVantageClient:
         # tego sygnału pusty feed wygląda identycznie jak "spokojny dzień".
         self._degraded_reason: str | None = None
         self._session = build_session()
+        # Serializuje leniwy fetch feedu — bez tego współbieżni callerzy (równoległe
+        # symbole) startują N duplikatów cold-startu, zjadając dzienny limit AV.
+        self._fetch_lock = threading.Lock()
 
     @property
     def degraded_reason(self) -> str | None:
@@ -128,9 +132,16 @@ class AlphaVantageClient:
     # -----------------------------------------------------------------------
 
     def _fetch(self) -> list[dict[str, Any]]:
+        # Fast path bez locka: feed już wypełniony.
         if self._cached_feed is not None:
             return self._cached_feed
+        with self._fetch_lock:
+            # Re-check pod lockiem: inny wątek mógł wypełnić feed, gdy czekaliśmy.
+            if self._cached_feed is not None:
+                return self._cached_feed
+            return self._fetch_locked()
 
+    def _fetch_locked(self) -> list[dict[str, Any]]:
         combined: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
         batches = [
