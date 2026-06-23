@@ -88,7 +88,7 @@ class TestConfiguration:
     def test_custom_timeout_forwarded_to_client(self, mock_openai_class):
         OpenAIEmbeddingAdapter(api_key="sk-test", timeout=12.0)
 
-        assert mock_openai_class.call_args.kwargs["timeout"] == 12.0
+        assert mock_openai_class.call_args.kwargs["timeout"] == pytest.approx(12.0)
 
 
 class TestRetryAndQuota:

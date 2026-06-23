@@ -16,6 +16,8 @@ from datetime import datetime
 from decimal import Decimal
 from unittest.mock import Mock
 
+import pytest
+
 from src.application.ports import FundamentalsPort, MacroIndicatorsPort, Tool
 from src.application.tools import build_research_tools
 from src.domain.polish_macro import PolishMacroSnapshot
@@ -110,10 +112,10 @@ def test_get_fundamentals_func_calls_port_and_maps_fields() -> None:
 
     fundamentals_port.get_fundamentals.assert_called_once_with("AAPL")
     assert result["available"] is True
-    assert result["trailing_pe"] == 28.5
-    assert result["forward_pe"] == 24.0
-    assert result["peg_ratio"] == 1.8
-    assert result["eps_growth_yoy"] == 0.12
+    assert result["trailing_pe"] == pytest.approx(28.5)
+    assert result["forward_pe"] == pytest.approx(24.0)
+    assert result["peg_ratio"] == pytest.approx(1.8)
+    assert result["eps_growth_yoy"] == pytest.approx(0.12)
     # Pola liczbowe są plain float, nie Decimal/inne.
     for key in ("trailing_pe", "forward_pe", "peg_ratio", "eps_growth_yoy"):
         assert isinstance(result[key], float), key
@@ -135,7 +137,7 @@ def test_get_fundamentals_func_preserves_none_fields() -> None:
     result = tool.func({"symbol": "SPY"})
 
     assert result["available"] is True
-    assert result["trailing_pe"] == 15.0
+    assert result["trailing_pe"] == pytest.approx(15.0)
     assert result["forward_pe"] is None
     assert result["peg_ratio"] is None
     assert result["eps_growth_yoy"] is None
@@ -196,10 +198,10 @@ def test_get_macro_func_calls_port_and_maps_fields() -> None:
 
     macro_port.fetch_polish_macro.assert_called_once_with()
     assert result["available"] is True
-    assert result["eur_pln"] == 4.30
-    assert result["usd_pln"] == 3.95
-    assert result["eur_pln_30d_change_pct"] == 0.021
-    assert result["usd_pln_30d_change_pct"] == 0.048
+    assert result["eur_pln"] == pytest.approx(4.30)
+    assert result["usd_pln"] == pytest.approx(3.95)
+    assert result["eur_pln_30d_change_pct"] == pytest.approx(0.021)
+    assert result["usd_pln_30d_change_pct"] == pytest.approx(0.048)
     # Żaden Decimal nie wyciekł.
     for key in (
         "eur_pln",

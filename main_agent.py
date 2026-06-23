@@ -17,6 +17,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from src.application.alpha_signals import AlphaSignals
 from src.application.ports import (
@@ -41,7 +42,9 @@ from src.application.report_builder import (
     parse_resolved_predictions,
     to_symbol_result,
 )
-from src.application.report_lessons import build_lessons
+from src.application.report_council_history import InvestorHistory
+from src.application.report_lessons import LessonsReport, build_lessons
+from src.application.report_models import ResolvedPrediction
 from src.application.tools import build_research_tools
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
@@ -49,15 +52,20 @@ from src.application.use_cases.monitor_macro_risk import (
     MacroRiskReport,
     MonitorMacroRiskUseCase,
 )
-from src.application.use_cases.portfolio_risk import PortfolioRiskUseCase
+from src.application.use_cases.portfolio_risk import (
+    PortfolioRiskReport,
+    PortfolioRiskUseCase,
+)
 from src.config import Settings
 from src.domain.asset import Asset
-from src.domain.calibration_curve import reliability_curve
+from src.domain.calibration_curve import CalibrationBucket, reliability_curve
+from src.domain.equity_curve import EquityCurve
 from src.domain.equity_curve import equity_curve as build_equity_curve
+from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.peer_group import build_peer_context
-from src.domain.quota import QuotaSeverity
+from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.scenarios import Scenario
-from src.domain.subscriber import symbols_for
+from src.domain.subscriber import Subscriber, symbols_for
 from src.domain.value_objects import AssetType, Threshold
 from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
 from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
@@ -605,111 +613,73 @@ def build_use_case(
     )
 
 
-def main(settings: Settings | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-    )
-    settings = settings or Settings.from_env()
-    # Real-time alerty (U4): kanał alertów budujemy BEZ quota_monitora, żeby
-    # CRITICAL wyemitowany podczas pushu alertu nie wracał rekurencyjnie do
-    # record() → push → record(). Hook montujemy tylko gdy włączony i jest dokąd.
-    alert_channels = build_push_channels(settings, quota_monitor=None)
-    alert_notifier = (
-        DelegatingAlertNotifier(CompositeNotifier(alert_channels))
-        if settings.realtime_alerts_enabled and alert_channels
-        else None
-    )
-    quota_monitor = QuotaMonitor(alert_notifier=alert_notifier)
-    repository = build_repository(settings)
-    use_case = build_use_case(
-        settings, repository=repository, quota_monitor=quota_monitor
-    )
-    notifier = build_notifier(settings, quota_monitor=quota_monitor)
-    web_publisher = build_web_publisher(settings)  # U3
-    # U2: lista subskrybentów (każdy z własną watchlistą). Brak / błąd → [].
-    subscribers = []
-    if settings.subscriptions_enabled:
-        try:
-            subscribers = SupabaseSubscriberRepository(
-                url=settings.supabase_url, key=settings.supabase_key
-            ).list_subscribers()
-        except Exception:
-            logger.exception("Failed to list subscribers — fallback do pojedynczej wysyłki")
-
-    started_at = datetime.now(UTC)
-    started_perf = time.perf_counter()
-    logger.info(
-        "Fast Loop start — symbols=%s crypto=%s",
-        settings.symbols,
-        settings.crypto_symbols,
-    )
-
-    # Dane: enrichment alpha (per-symbol) + krzywa rentowności (raz na cykl).
-    # Wszystko domyślnie Null/None → zero I/O, póki flagi off.
-    alpha_use_case = build_alpha_enrichment(settings)
-    collect_alpha = alpha_per_symbol_enabled(settings)
-    yield_curve = build_macro_rates_port(settings).fetch_yield_curve()
-    alpha_signals: dict[str, AlphaSignals] = {}
-    alpha_prices: dict[str, Decimal] = {}
-
-    results = []
-    failures = 0
-    unsupported = set(settings.symbols_unsupported_price)
-    crypto_set = set(settings.crypto_symbols)
-    etf_set = set(settings.symbols_etf)
-    # Krypto dochodzi do puli iterowanych symboli — ma własny adapter ceny
-    # (CoinGecko) i własny próg volatility (5%).
-    all_symbols = list(settings.symbols) + list(settings.crypto_symbols)
-    # Eligible — symbole, dla których pójdzie pełna analiza. Unsupported tickery
-    # są oznaczone "ignored" przed pętlą, więc throttle policzy je poprawnie.
-    eligible = [s for s in all_symbols if s not in unsupported]
-    for skipped in (s for s in all_symbols if s in unsupported):
-        logger.info(
-            "%s: skipped — in SYMBOLS_UNSUPPORTED_PRICE (Finnhub free / EU-listed)",
-            skipped,
-        )
-        results.append(_ignored_result(skipped))
-
-    # ---- Risk Watch (PRZED pętlą — zasila też reżim rynku #7) ----
-    macro_risk_report: MacroRiskReport | None = None
+def _run_risk_watch(
+    settings: Settings, repository: RepositoryPort
+) -> MacroRiskReport | None:
+    """Risk Watch przed pętlą (zasila też reżim rynku #7). Off / błąd → None."""
     risk_use_case = build_macro_risk_use_case(settings, repository)
-    if risk_use_case is not None:
-        try:
-            symbol_types = {
-                sym: settings.risk_symbol_types[sym]
-                for sym in settings.risk_symbols
-                if sym in settings.risk_symbol_types
-            }
-            macro_risk_report = risk_use_case.run(symbol_types)
-            logger.info(
-                "Risk Watch — overall=%s signals=%d nbp=%s",
-                macro_risk_report.overall_alert.value,
-                len(macro_risk_report.signals),
-                macro_risk_report.polish_macro is not None,
-            )
-        except Exception:
-            logger.exception("Risk Watch failed — pomijam sekcję w raporcie")
-
-    # #7: reżim rynku z overall_alert (zacieśnia próg + label do promptu). Off → neutral.
-    regime_context = ""
-    regime_multiplier = 1.0
-    if settings.regime_aware_enabled and macro_risk_report is not None:
-        from src.domain.regime import RegimeDetector
-
-        detector = RegimeDetector()
-        regime = detector.classify(macro_risk_report.overall_alert, [])
-        regime_multiplier = detector.threshold_multiplier(
-            regime, settings.regime_threshold_max_multiplier
-        )
-        regime_context = detector.label(regime)
+    if risk_use_case is None:
+        return None
+    try:
+        symbol_types = {
+            sym: settings.risk_symbol_types[sym]
+            for sym in settings.risk_symbols
+            if sym in settings.risk_symbol_types
+        }
+        report = risk_use_case.run(symbol_types)
         logger.info(
-            "Market regime — %s (mnożnik progu %.2f)", regime.value, regime_multiplier
+            "Risk Watch — overall=%s signals=%d nbp=%s",
+            report.overall_alert.value,
+            len(report.signals),
+            report.polish_macro is not None,
         )
+        return report
+    except Exception:
+        logger.exception("Risk Watch failed — pomijam sekcję w raporcie")
+        return None
 
+
+def _resolve_regime(
+    settings: Settings, macro_risk_report: MacroRiskReport | None
+) -> tuple[str, float]:
+    """#7: reżim rynku z overall_alert (zacieśnia próg + label do promptu).
+    Zwraca (regime_context, regime_multiplier). Off / brak raportu → ("", 1.0)."""
+    if not (settings.regime_aware_enabled and macro_risk_report is not None):
+        return "", 1.0
+    from src.domain.regime import RegimeDetector
+
+    detector = RegimeDetector()
+    regime = detector.classify(macro_risk_report.overall_alert, [])
+    regime_multiplier = detector.threshold_multiplier(
+        regime, settings.regime_threshold_max_multiplier
+    )
+    regime_context = detector.label(regime)
+    logger.info(
+        "Market regime — %s (mnożnik progu %.2f)", regime.value, regime_multiplier
+    )
+    return regime_context, regime_multiplier
+
+
+def _analyze_symbols(
+    eligible: list[str],
+    *,
+    use_case: AnalyzeMarketUseCase,
+    settings: Settings,
+    crypto_set: set[str],
+    etf_set: set[str],
+    regime_context: str,
+    regime_multiplier: float,
+    collect_alpha: bool,
+    alpha_use_case: AlphaEnrichmentUseCase,
+) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
+    """Główna pętla per-symbol. Pojedynczy błąd nie wywala cyklu (resilience).
+    Zwraca (wyniki, liczba_błędów, alpha_signals, alpha_prices)."""
+    results: list[SymbolResult] = []
+    failures = 0
     # #5: akumulator werdyktów tego cyklu (symbol → stance) dla contagion.
     processed_stances: dict[str, str] = {}
-
+    alpha_signals: dict[str, AlphaSignals] = {}
+    alpha_prices: dict[str, Decimal] = {}
     for index, symbol in enumerate(eligible):
         try:
             # Klasyfikacja STOCK/ETF/CRYPTO — każdy typ ma własne reguły
@@ -758,19 +728,16 @@ def main(settings: Settings | None = None) -> int:
         # Throttle MIĘDZY symbolami — chroni OpenAI TPM. Po ostatnim brak sleepa.
         if settings.symbol_throttle_seconds > 0 and index < len(eligible) - 1:
             time.sleep(settings.symbol_throttle_seconds)
+    return results, failures, alpha_signals, alpha_prices
 
-    duration = time.perf_counter() - started_perf
-    # #34: mianownik MUSI być liczbą faktycznie przetworzonych symboli
-    # (eligible = symbols + crypto − unsupported), a nie len(settings.symbols).
-    # Pętla iteruje `eligible`, więc failures odnoszą się do niego — inaczej
-    # przy obecności krypto/unsupported ratio się rozjeżdża (failures mogą nawet
-    # przekroczyć mianownik). Spójne z logiką exit-code (też używa len(eligible)).
-    logger.info("Fast Loop done — failures=%d/%d", failures, len(eligible))
 
-    # ---- Portfolio Radar (Q4 — korelacja/koncentracja watchlisty, darmowe) ----
-    portfolio_risk_report = None
+def _build_portfolio_radar(
+    settings: Settings, repository: RepositoryPort, all_symbols: list[str]
+) -> PortfolioRiskReport | None:
+    """Q4 — korelacja/koncentracja watchlisty (+ R1/R2 VaR/CVaR/stress). Darmowe.
+    Błąd → None (sekcja pomijana w raporcie)."""
     try:
-        portfolio_risk_report = PortfolioRiskUseCase(
+        report = PortfolioRiskUseCase(
             repository_port=repository,
             # R1/R2: VaR/CVaR + stress-test (z tych samych darmowych zwrotów).
             var_enabled=settings.portfolio_var_enabled,
@@ -782,86 +749,139 @@ def main(settings: Settings | None = None) -> int:
         ).run(all_symbols)
         logger.info(
             "Portfolio Radar — clusters=%d watchlist=%d",
-            len(portfolio_risk_report.clusters),
-            portfolio_risk_report.watchlist_size,
+            len(report.clusters),
+            report.watchlist_size,
         )
+        return report
     except Exception:
         logger.exception("Portfolio Radar failed — pomijam sekcję w raporcie")
+        return None
 
-    # ---- Wysyłka raportu ----
+
+def _build_track_record(
+    settings: Settings, repository: RepositoryPort
+) -> tuple[EquityCurve | None, list[CalibrationBucket] | None, LessonsReport | None]:
+    """T1/T2/T4 — krzywa kapitału, kalibracja, lessons (render-only, zero
+    płatnych). Każda podsekcja flag-gated; wszystkie czytają zamknięte predykcje
+    z okna track_record_days."""
+    equity_curve: EquityCurve | None = None
+    calibration_buckets: list[CalibrationBucket] | None = None
+    lessons: LessonsReport | None = None
+    if settings.equity_curve_enabled or settings.lessons_enabled:
+        try:
+            tr_resolved = parse_resolved_predictions(
+                repository.get_resolved_predictions(settings.track_record_days)
+            )
+        except Exception:
+            logger.exception("Failed to fetch resolved predictions for track record")
+            tr_resolved = []
+        if settings.equity_curve_enabled:
+            trades = [
+                (r.predicted_trend, float(r.actual_change_pct))
+                for r in tr_resolved
+                if r.actual_change_pct is not None
+            ]
+            equity_curve = build_equity_curve(trades)
+        if settings.lessons_enabled:
+            lessons = build_lessons(tr_resolved)
+    if settings.calibration_curve_enabled:
+        try:
+            cal_rows = repository.get_resolved_for_calibration(
+                settings.track_record_days
+            )
+            samples = [
+                (float(row["confidence_score"]), bool(row["is_trend_correct"]))
+                for row in cal_rows
+                if row.get("confidence_score") is not None
+                and row.get("is_trend_correct") is not None
+            ]
+            calibration_buckets = reliability_curve(samples) if samples else None
+        except Exception:
+            logger.exception("Failed to compute calibration curve")
+    return equity_curve, calibration_buckets, lessons
+
+
+def _fetch_report_context(
+    repository: RepositoryPort, quota_monitor: QuotaMonitor, all_symbols: list[str]
+) -> tuple[
+    dict[str, Any] | None,
+    list[ResolvedPrediction],
+    list[QuotaAlert],
+    list[InvestorHistory],
+]:
+    """Best-effort dociągnięcie danych do raportu: accuracy, zamknięte predykcje,
+    alerty kwot (persystencja bieżących + odczyt 24h) i historia głosów rady.
+    Każdy odczyt osobno owinięty — błąd jednego nie blokuje pozostałych."""
+    accuracy_stats: dict[str, Any] | None = None
+    resolved: list[ResolvedPrediction] = []
     try:
-        accuracy_stats = None
-        resolved = []
-        try:
-            accuracy_stats = repository.get_accuracy_stats(ACCURACY_STATS_DAYS)
-        except Exception:
-            logger.exception("Failed to fetch accuracy stats — report without them")
-        try:
-            resolved_rows = repository.get_recently_resolved_predictions(
-                RESOLVED_PREDICTIONS_HOURS
-            )
-            resolved = parse_resolved_predictions(resolved_rows)
-        except Exception:
-            logger.exception("Failed to fetch resolved predictions")
+        accuracy_stats = repository.get_accuracy_stats(ACCURACY_STATS_DAYS)
+    except Exception:
+        logger.exception("Failed to fetch accuracy stats — report without them")
+    try:
+        resolved_rows = repository.get_recently_resolved_predictions(
+            RESOLVED_PREDICTIONS_HOURS
+        )
+        resolved = parse_resolved_predictions(resolved_rows)
+    except Exception:
+        logger.exception("Failed to fetch resolved predictions")
 
-        # Persystencja alertów z BIEŻĄCEGO cyklu (przed odczytem history,
-        # żeby też tu trafiły) + odczyt z ostatnich 24h dla bannera.
-        for alert in quota_monitor.alerts:
-            try:
-                repository.save_quota_alert(alert)
-            except Exception:
-                logger.exception("Failed to persist quota alert from %s", alert.source)
+    # Persystencja alertów z BIEŻĄCEGO cyklu (przed odczytem history, żeby też
+    # tu trafiły) + odczyt z ostatnich 24h dla bannera.
+    for alert in quota_monitor.alerts:
         try:
-            recent_alerts = repository.get_recent_quota_alerts(hours=24)
+            repository.save_quota_alert(alert)
         except Exception:
-            logger.exception("Failed to fetch recent quota alerts — using cycle-only")
-            recent_alerts = list(quota_monitor.alerts)
+            logger.exception("Failed to persist quota alert from %s", alert.source)
+    try:
+        recent_alerts = repository.get_recent_quota_alerts(hours=24)
+    except Exception:
+        logger.exception("Failed to fetch recent quota alerts — using cycle-only")
+        recent_alerts = list(quota_monitor.alerts)
 
-        # U5: historia głosów rady per inwestor (panel drill-down w raporcie).
-        council_history = []
-        try:
-            council_history = repository.get_council_vote_history(
-                all_symbols, window_days=30
-            )
-        except Exception:
-            logger.exception("Failed to fetch council vote history")
+    # U5: historia głosów rady per inwestor (panel drill-down w raporcie).
+    council_history: list[InvestorHistory] = []
+    try:
+        council_history = repository.get_council_vote_history(
+            all_symbols, window_days=30
+        )
+    except Exception:
+        logger.exception("Failed to fetch council vote history")
+    return accuracy_stats, resolved, recent_alerts, council_history
+
+
+def _dispatch_reports(
+    *,
+    results: list[SymbolResult],
+    started_at: datetime,
+    duration: float,
+    failures: int,
+    settings: Settings,
+    repository: RepositoryPort,
+    quota_monitor: QuotaMonitor,
+    notifier: ReportNotifierPort,
+    web_publisher: WebPublisherPort,
+    subscribers: list[Subscriber],
+    all_symbols: list[str],
+    macro_risk_report: MacroRiskReport | None,
+    portfolio_risk_report: PortfolioRiskReport | None,
+    alpha_signals: dict[str, AlphaSignals],
+    alpha_prices: dict[str, Decimal],
+    yield_curve: YieldCurveSnapshot | None,
+) -> None:
+    """Faza wysyłki: dociągnięcie danych raportu, zbudowanie raportu i rozesłanie
+    — pojedynczo albo per subskrybent (raport tnięty do jego watchlisty). Cała
+    faza jest best-effort: błąd wysyłki nie psuje exit-code cyklu."""
+    try:
+        accuracy_stats, resolved, recent_alerts, council_history = (
+            _fetch_report_context(repository, quota_monitor, all_symbols)
+        )
 
         # T1/T2/T4: Track Record (render-only, zero płatnych). Każda podsekcja
         # flag-gated; wszystkie czytają zamknięte predykcje z okna track_record_days.
-        equity_curve = None
-        calibration_buckets = None
-        lessons = None
-        if settings.equity_curve_enabled or settings.lessons_enabled:
-            try:
-                tr_resolved = parse_resolved_predictions(
-                    repository.get_resolved_predictions(settings.track_record_days)
-                )
-            except Exception:
-                logger.exception("Failed to fetch resolved predictions for track record")
-                tr_resolved = []
-            if settings.equity_curve_enabled:
-                trades = [
-                    (r.predicted_trend, float(r.actual_change_pct))
-                    for r in tr_resolved
-                    if r.actual_change_pct is not None
-                ]
-                equity_curve = build_equity_curve(trades)
-            if settings.lessons_enabled:
-                lessons = build_lessons(tr_resolved)
-        if settings.calibration_curve_enabled:
-            try:
-                cal_rows = repository.get_resolved_for_calibration(
-                    settings.track_record_days
-                )
-                samples = [
-                    (float(row["confidence_score"]), bool(row["is_trend_correct"]))
-                    for row in cal_rows
-                    if row.get("confidence_score") is not None
-                    and row.get("is_trend_correct") is not None
-                ]
-                calibration_buckets = reliability_curve(samples) if samples else None
-            except Exception:
-                logger.exception("Failed to compute calibration curve")
+        equity_curve, calibration_buckets, lessons = _build_track_record(
+            settings, repository
+        )
 
         def _build(symbols_filter: frozenset[str] | None = None) -> tuple[str, str]:
             return build_html_report(
@@ -921,6 +941,119 @@ def main(settings: Settings | None = None) -> int:
             notifier.send_report(subject=subject, html_body=html, plain_text=text)
     except Exception:
         logger.exception("Failed to send report")
+
+
+def main(settings: Settings | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    )
+    settings = settings or Settings.from_env()
+    # Real-time alerty (U4): kanał alertów budujemy BEZ quota_monitora, żeby
+    # CRITICAL wyemitowany podczas pushu alertu nie wracał rekurencyjnie do
+    # record() → push → record(). Hook montujemy tylko gdy włączony i jest dokąd.
+    alert_channels = build_push_channels(settings, quota_monitor=None)
+    alert_notifier = (
+        DelegatingAlertNotifier(CompositeNotifier(alert_channels))
+        if settings.realtime_alerts_enabled and alert_channels
+        else None
+    )
+    quota_monitor = QuotaMonitor(alert_notifier=alert_notifier)
+    repository = build_repository(settings)
+    use_case = build_use_case(
+        settings, repository=repository, quota_monitor=quota_monitor
+    )
+    notifier = build_notifier(settings, quota_monitor=quota_monitor)
+    web_publisher = build_web_publisher(settings)  # U3
+    # U2: lista subskrybentów (każdy z własną watchlistą). Brak / błąd → [].
+    subscribers = []
+    if settings.subscriptions_enabled:
+        try:
+            subscribers = SupabaseSubscriberRepository(
+                url=settings.supabase_url, key=settings.supabase_key
+            ).list_subscribers()
+        except Exception:
+            logger.exception("Failed to list subscribers — fallback do pojedynczej wysyłki")
+
+    started_at = datetime.now(UTC)
+    started_perf = time.perf_counter()
+    logger.info(
+        "Fast Loop start — symbols=%s crypto=%s",
+        settings.symbols,
+        settings.crypto_symbols,
+    )
+
+    # Dane: enrichment alpha (per-symbol) + krzywa rentowności (raz na cykl).
+    # Wszystko domyślnie Null/None → zero I/O, póki flagi off.
+    alpha_use_case = build_alpha_enrichment(settings)
+    collect_alpha = alpha_per_symbol_enabled(settings)
+    yield_curve = build_macro_rates_port(settings).fetch_yield_curve()
+    results: list[SymbolResult] = []
+    unsupported = set(settings.symbols_unsupported_price)
+    crypto_set = set(settings.crypto_symbols)
+    etf_set = set(settings.symbols_etf)
+    # Krypto dochodzi do puli iterowanych symboli — ma własny adapter ceny
+    # (CoinGecko) i własny próg volatility (5%).
+    all_symbols = list(settings.symbols) + list(settings.crypto_symbols)
+    # Eligible — symbole, dla których pójdzie pełna analiza. Unsupported tickery
+    # są oznaczone "ignored" przed pętlą, więc throttle policzy je poprawnie.
+    eligible = [s for s in all_symbols if s not in unsupported]
+    for skipped in (s for s in all_symbols if s in unsupported):
+        logger.info(
+            "%s: skipped — in SYMBOLS_UNSUPPORTED_PRICE (Finnhub free / EU-listed)",
+            skipped,
+        )
+        results.append(_ignored_result(skipped))
+
+    # ---- Risk Watch (PRZED pętlą — zasila też reżim rynku #7) ----
+    macro_risk_report = _run_risk_watch(settings, repository)
+
+    # #7: reżim rynku z overall_alert (zacieśnia próg + label do promptu). Off → neutral.
+    regime_context, regime_multiplier = _resolve_regime(settings, macro_risk_report)
+
+    loop_results, failures, alpha_signals, alpha_prices = _analyze_symbols(
+        eligible,
+        use_case=use_case,
+        settings=settings,
+        crypto_set=crypto_set,
+        etf_set=etf_set,
+        regime_context=regime_context,
+        regime_multiplier=regime_multiplier,
+        collect_alpha=collect_alpha,
+        alpha_use_case=alpha_use_case,
+    )
+    results.extend(loop_results)
+
+    duration = time.perf_counter() - started_perf
+    # #34: mianownik MUSI być liczbą faktycznie przetworzonych symboli
+    # (eligible = symbols + crypto − unsupported), a nie len(settings.symbols).
+    # Pętla iteruje `eligible`, więc failures odnoszą się do niego — inaczej
+    # przy obecności krypto/unsupported ratio się rozjeżdża (failures mogą nawet
+    # przekroczyć mianownik). Spójne z logiką exit-code (też używa len(eligible)).
+    logger.info("Fast Loop done — failures=%d/%d", failures, len(eligible))
+
+    # ---- Portfolio Radar (Q4 — korelacja/koncentracja watchlisty, darmowe) ----
+    portfolio_risk_report = _build_portfolio_radar(settings, repository, all_symbols)
+
+    # ---- Wysyłka raportu ----
+    _dispatch_reports(
+        results=results,
+        started_at=started_at,
+        duration=duration,
+        failures=failures,
+        settings=settings,
+        repository=repository,
+        quota_monitor=quota_monitor,
+        notifier=notifier,
+        web_publisher=web_publisher,
+        subscribers=subscribers,
+        all_symbols=all_symbols,
+        macro_risk_report=macro_risk_report,
+        portfolio_risk_report=portfolio_risk_report,
+        alpha_signals=alpha_signals,
+        alpha_prices=alpha_prices,
+        yield_curve=yield_curve,
+    )
 
     # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).
     # Pojedyncze błędy per-symbol (np. ticker niewspierany przez Finnhub free)

@@ -1,3 +1,5 @@
+import pytest
+
 from src.domain.feature_attribution import (
     FeatureContribution,
     top_contributions,
@@ -20,7 +22,7 @@ class TestFeatureContribution:
     def test_holds_name_and_signed_value(self):
         contribution = FeatureContribution(feature="av_sentiment_score", contribution=-0.3)
         assert contribution.feature == "av_sentiment_score"
-        assert contribution.contribution == -0.3
+        assert contribution.contribution == pytest.approx(-0.3)
 
 
 class TestTopContributions:
@@ -43,8 +45,8 @@ class TestTopContributions:
         contribs = {"up": 0.4, "down": -0.7}
         ranked = top_contributions(contribs)
         as_dict = {c.feature: c.contribution for c in ranked}
-        assert as_dict["up"] == 0.4
-        assert as_dict["down"] == -0.7
+        assert as_dict["up"] == pytest.approx(0.4)
+        assert as_dict["down"] == pytest.approx(-0.7)
 
     def test_caps_at_top_n(self):
         contribs = {name: float(idx) for idx, name in enumerate("abcdefgh")}

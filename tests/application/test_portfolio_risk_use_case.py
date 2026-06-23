@@ -58,8 +58,8 @@ class TestBuildsReport:
         report = _make_uc(repository_port).run(["NVDA", "MSFT", "GLD"])
 
         assert isinstance(report, PortfolioRiskReport)
-        assert report.matrix[("MSFT", "NVDA")] == 1.0
-        assert report.matrix[("GLD", "NVDA")] == -1.0
+        assert report.matrix[("MSFT", "NVDA")] == pytest.approx(1.0)
+        assert report.matrix[("GLD", "NVDA")] == pytest.approx(-1.0)
         # NVDA i MSFT poruszają się razem.
         assert any(
             "NVDA" in cluster and "MSFT" in cluster for cluster in report.clusters
@@ -127,7 +127,7 @@ class TestVarAndStress:
         assert report.cvar is not None
         # CVaR (expected shortfall) nigdy nie jest mniejszy niż VaR.
         assert report.cvar >= report.var
-        assert report.var_confidence == 0.95
+        assert report.var_confidence == pytest.approx(0.95)
 
     def test_stress_scenarios_populated_when_enabled(
         self, repository_port: Mock
@@ -239,7 +239,7 @@ class TestTimestampAlignment:
 
         report = _make_uc(repository_port).run(["A", "B"])
 
-        assert report.matrix[("A", "B")] == 1.0
+        assert report.matrix[("A", "B")] == pytest.approx(1.0)
 
 
 class TestReportImmutability:

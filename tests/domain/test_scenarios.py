@@ -33,7 +33,7 @@ class TestBetaToPortfolio:
         # Wariancja rynku = 0 → beta 0.0 zamiast dzielenia przez zero.
         market = [0.0, 0.0, 0.0, 0.0]
         asset = [0.01, -0.02, 0.03, -0.01]
-        assert beta_to_portfolio(asset, market) == 0.0
+        assert beta_to_portfolio(asset, market) == pytest.approx(0.0)
 
     def test_unequal_length_truncates_to_shorter(self):
         # Asset dłuższy o jeden punkt — liczone tylko na wspólnym prefiksie.
@@ -42,8 +42,8 @@ class TestBetaToPortfolio:
         assert beta_to_portfolio(asset, market) == pytest.approx(2.0)
 
     def test_too_few_paired_points_returns_zero(self):
-        assert beta_to_portfolio([0.01], [0.02]) == 0.0
-        assert beta_to_portfolio([], []) == 0.0
+        assert beta_to_portfolio([0.01], [0.02]) == pytest.approx(0.0)
+        assert beta_to_portfolio([], []) == pytest.approx(0.0)
 
     def test_result_is_finite_float(self):
         beta = beta_to_portfolio([0.02, -0.01, 0.03], [0.01, -0.02, 0.03])
@@ -57,7 +57,7 @@ class TestScenarioDataclasses:
     def test_scenario_is_frozen(self):
         scenario = Scenario(name="krach", market_shock=-0.10)
         assert scenario.name == "krach"
-        assert scenario.market_shock == -0.10
+        assert scenario.market_shock == pytest.approx(-0.10)
         with pytest.raises(FrozenInstanceError):
             scenario.market_shock = -0.20  # type: ignore[misc]
 
@@ -146,7 +146,7 @@ class TestStressTest:
         scenarios = [Scenario(name="krach", market_shock=-0.10)]
         impact = stress_test(returns_by_symbol, market, scenarios)[0]
         assert impact.scenario_name == "krach"
-        assert impact.market_shock == -0.10
+        assert impact.market_shock == pytest.approx(-0.10)
 
     def test_empty_symbols_yields_empty_per_symbol_and_none_worst(self):
         market = [0.01, -0.02, 0.03]
@@ -156,7 +156,7 @@ class TestStressTest:
         impact = impacts[0]
         assert impact.per_symbol == {}
         assert impact.worst_symbol is None
-        assert impact.portfolio_pnl == 0.0
+        assert impact.portfolio_pnl == pytest.approx(0.0)
 
     def test_no_scenarios_yields_empty_list(self):
         market = [0.01, -0.02, 0.03]

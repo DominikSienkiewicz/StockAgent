@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from src.tools.evaluate import EvalReport, summarize_evaluation
 
 
@@ -71,7 +73,7 @@ class TestSummarizeEvaluation:
         ]
         report = summarize_evaluation(rows)
         assert report.sample_count == 2
-        assert report.hit_rate == 1.0
+        assert report.hit_rate == pytest.approx(1.0)
         # tylko 1 wiersz miał komplet cen → RMSE z jednego punktu
         assert math.isclose(report.model_rmse, 1.0, rel_tol=1e-9)
 
@@ -111,7 +113,7 @@ class TestDirectionalHitRateSplit:
         assert report.directional_count == 0
         assert report.sideways_count == 2
         # Blended wciąż liczone dla back-compat.
-        assert report.hit_rate == 1.0
+        assert report.hit_rate == pytest.approx(1.0)
 
     def test_directional_count_ignores_rows_without_flag(self):
         # Wiersz bez is_trend_correct nie wlicza się do żadnego licznika trafień.
@@ -122,5 +124,5 @@ class TestDirectionalHitRateSplit:
         report = summarize_evaluation(rows)
 
         assert report.directional_count == 1
-        assert report.directional_hit_rate == 1.0
+        assert report.directional_hit_rate == pytest.approx(1.0)
         assert report.sideways_count == 0

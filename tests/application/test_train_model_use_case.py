@@ -134,6 +134,7 @@ class TestRun:
         use_case.run("AAPL")
 
         features, _ = ml_port.train.call_args.args
+        # Element-wise na pandas Series — approx nie broadcastuje, więc exact.
         assert (features["price_delta"] == 0.5).all()
 
     def test_drops_rows_when_view_price_delta_is_null(

@@ -42,7 +42,10 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-_CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+# Bez otaczających `\s*` — `\s*(.*?)\s*` na wejściu z dużą ilością białych
+# znaków bez domknięcia fence'a backtrackuje wielomianowo (ReDoS na output LLM).
+# Otaczające białe znaki obcinamy w `_strip_code_block` przez `.strip()`.
+_CODE_BLOCK_RE = re.compile(r"```(?:json)?(.*?)```", re.DOTALL)
 
 
 def validate_model_id(model: str) -> None:
@@ -238,10 +241,24 @@ class AnthropicAdapter(LLMPort):
     @staticmethod
     def _strip_code_block(text: str) -> str:
         match = _CODE_BLOCK_RE.search(text)
-        return match.group(1) if match else text
+        return match.group(1).strip() if match else text
 
     @staticmethod
-    def _extract_first_json_object(text: str) -> str | None:
+    def _next_string_state(ch: str, escaped: bool) -> tuple[bool, bool]:
+        """FSM wnętrza stringu JSON. Zwraca `(wciąż_w_stringu, escaped)`.
+
+        Escape `\\` neutralizuje następny znak; niezescapowany `"` kończy string.
+        """
+        if escaped:
+            return True, False
+        if ch == "\\":
+            return True, True
+        if ch == '"':
+            return False, False
+        return True, False
+
+    @classmethod
+    def _extract_first_json_object(cls, text: str) -> str | None:
         """Wyłuskuje PIERWSZY zbalansowany obiekt {...} z tekstu.
 
         Claude nie ma natywnego JSON Mode — bywa, że owija JSON w prozę
@@ -260,12 +277,7 @@ class AnthropicAdapter(LLMPort):
         for i in range(start, len(text)):
             ch = text[i]
             if in_string:
-                if escaped:
-                    escaped = False
-                elif ch == "\\":
-                    escaped = True
-                elif ch == '"':
-                    in_string = False
+                in_string, escaped = cls._next_string_state(ch, escaped)
                 continue
             if ch == '"':
                 in_string = True

@@ -71,9 +71,9 @@ class TestEquityCurveCompounding:
 
         assert curve.n_trades == 3
         assert curve.total_return == 1.05**3 - 1
-        assert curve.win_rate == 1.0
+        assert curve.win_rate == pytest.approx(1.0)
         # Monotoniczny wzrost → brak obsunięcia.
-        assert curve.max_drawdown == 0.0
+        assert curve.max_drawdown == pytest.approx(0.0)
 
     def test_points_carry_running_equity(self) -> None:
         trades = [("BULLISH", 0.05), ("BULLISH", 0.05), ("BULLISH", 0.05)]
@@ -87,7 +87,7 @@ class TestEquityCurveCompounding:
 
     def test_custom_starting_equity_scales_curve(self) -> None:
         curve = equity_curve([("BULLISH", 0.10)], starting_equity=1000.0)
-        assert curve.points[0].equity == 1100.0
+        assert curve.points[0].equity == pytest.approx(1100.0)
         # total_return jest niezależny od skali kapitału startowego
         # (drobny szum zmiennoprzecinkowy z dzielenia 1100/1000 - 1).
         assert abs(curve.total_return - 0.10) < 1e-12
@@ -97,16 +97,16 @@ class TestEquityCurveDirection:
     def test_correct_bearish_call_is_a_win(self) -> None:
         # Short trafiony: cena spadła o 4% → period_return = (-1) * (-0.04) = +0.04.
         curve = equity_curve([("BEARISH", -0.04)])
-        assert curve.points[0].period_return == 0.04
-        assert curve.win_rate == 1.0
+        assert curve.points[0].period_return == pytest.approx(0.04)
+        assert curve.win_rate == pytest.approx(1.0)
         assert abs(curve.total_return - 0.04) < 1e-12
 
     def test_wrong_bullish_call_yields_negative_return(self) -> None:
         # Long, a cena spadła o 6% → period_return = (+1) * (-0.06) = -0.06.
         curve = equity_curve([("BULLISH", -0.06)])
-        assert curve.points[0].period_return == -0.06
+        assert curve.points[0].period_return == pytest.approx(-0.06)
         assert abs(curve.total_return - (-0.06)) < 1e-12
-        assert curve.win_rate == 0.0
+        assert curve.win_rate == pytest.approx(0.0)
         # Spadek z 1.0 do 0.94 to 6% obsunięcia.
         assert abs(curve.max_drawdown - 0.06) < 1e-12
 
@@ -122,29 +122,29 @@ class TestWinRate:
         ]
         curve = equity_curve(trades)
         assert curve.n_trades == 3
-        assert curve.win_rate == 0.5
+        assert curve.win_rate == pytest.approx(0.5)
 
     def test_all_sideways_win_rate_is_zero(self) -> None:
         # Brak trade'ów kierunkowych → mianownik 0 → win_rate 0.0 (bez dzielenia
         # przez zero).
         curve = equity_curve([("SIDEWAYS", 0.05), ("SIDEWAYS", -0.03)])
-        assert curve.win_rate == 0.0
+        assert curve.win_rate == pytest.approx(0.0)
 
     def test_zero_return_directional_trade_is_not_a_win(self) -> None:
         # Kierunkowy trade z dokładnie zerowym zwrotem nie jest wygraną
         # (period_return > 0 jest ścisłe), ale liczy się do mianownika.
         curve = equity_curve([("BULLISH", 0.0), ("BULLISH", 0.05)])
-        assert curve.win_rate == 0.5
+        assert curve.win_rate == pytest.approx(0.5)
 
 
 class TestSidewaysReturn:
     def test_sideways_contributes_zero_return(self) -> None:
         # SIDEWAYS → signal 0 → period_return 0 → kapitał bez zmian.
         curve = equity_curve([("SIDEWAYS", 0.05)])
-        assert curve.points[0].period_return == 0.0
-        assert curve.points[0].equity == 1.0
-        assert curve.total_return == 0.0
-        assert curve.max_drawdown == 0.0
+        assert curve.points[0].period_return == pytest.approx(0.0)
+        assert curve.points[0].equity == pytest.approx(1.0)
+        assert curve.total_return == pytest.approx(0.0)
+        assert curve.max_drawdown == pytest.approx(0.0)
 
 
 class TestMaxDrawdown:
@@ -160,14 +160,14 @@ class TestMaxDrawdown:
             ("BULLISH", 0.10),
         ]
         curve = equity_curve(trades)
-        assert curve.points[0].equity == 1.20
+        assert curve.points[0].equity == pytest.approx(1.20)
         assert abs(curve.points[1].equity - 0.90) < 1e-12
         assert abs(curve.points[2].equity - 0.99) < 1e-12
         assert abs(curve.max_drawdown - 0.25) < 1e-12
 
     def test_monotonic_rise_has_no_drawdown(self) -> None:
         curve = equity_curve([("BULLISH", 0.01), ("BULLISH", 0.02)])
-        assert curve.max_drawdown == 0.0
+        assert curve.max_drawdown == pytest.approx(0.0)
 
 
 class TestImmutability:

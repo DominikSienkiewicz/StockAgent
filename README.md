@@ -11,6 +11,8 @@ Autonomous financial agent that runs once daily (on trading days), monitors a cu
 ![Supabase](https://img.shields.io/badge/Supabase-Postgres+pgvector-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
 ![Resend](https://img.shields.io/badge/Resend-Email-000000?style=for-the-badge)
 ![Architecture](https://img.shields.io/badge/Architecture-Hexagonal+DDD-orange?style=for-the-badge)
+![Quality Gate](https://img.shields.io/sonar/quality_gate/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud&label=Quality%20Gate)
+![Coverage](https://img.shields.io/sonar/coverage/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud)
 
 ## 🧠 The Vision: Signal over Noise
 
@@ -191,7 +193,7 @@ All sections are **conditional** — they only render when data exists. The firs
 - **pytest 9** + **pytest-mock** — 640+ passing tests + skipped live-API / Docker-container tests
 - **ruff** — lint (E, W, F, I, B, UP, SIM rule sets)
 - **mypy** strict mode — every file fully typed
-- **GitHub Actions CI** — ruff + mypy + pytest on every push / PR
+- **GitHub Actions CI** — ruff + mypy + pytest + SonarCloud scan on every push / PR
 
 Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero deps) → Application (ports + use cases + LangGraph) → Infrastructure (adapters for API / DB / LLM / ML / email). Dependency arrow flows one way (`domain ← application ← infrastructure`).
 
@@ -298,13 +300,15 @@ Three workflows in [`.github/workflows/`](.github/workflows/):
 
 | File | Cron (UTC) | Polish time (CEST / CET) | What it does |
 |---|---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | — (on push / PR) | — | ruff + mypy + pytest (unit only) |
+| [`ci.yml`](.github/workflows/ci.yml) | — (on push / PR) | — | ruff + mypy + pytest, plus a parallel **SonarCloud** scan job (`pytest --cov` → coverage upload) |
 | [`fast_loop_12h.yml`](.github/workflows/fast_loop_12h.yml) | _disabled_ (manual only) | — | Analysis + email report. **Daily schedule is currently paused** — the cron is commented out, so it runs only via manual `workflow_dispatch`. Re-enable by uncommenting the `schedule` block. |
 | [`slow_loop_weekly.yml`](.github/workflows/slow_loop_weekly.yml) | `0 3 * * 0` | Sunday 05:00 (summer) | XGBoost retraining + commit new weights |
 
 The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
 
-**Repository secrets** (the only things CI needs beyond the committed `config.toml`): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`, `DIGEST_TO_EMAIL`. `ANTHROPIC_API_KEY` is required (main analysis runs on Claude); `DIGEST_TO_EMAIL` is a **secret** (was a variable — move it). `FRED_API_KEY` is **optional** — only needed when `yield_curve_enabled = true` (the FRED yield-curve alpha source).
+**Repository secrets** (the only things CI needs beyond the committed `config.toml`): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`, `DIGEST_TO_EMAIL`. `ANTHROPIC_API_KEY` is required (main analysis runs on Claude); `DIGEST_TO_EMAIL` is a **secret** (was a variable — move it). `FRED_API_KEY` is **optional** — only needed when `yield_curve_enabled = true` (the FRED yield-curve alpha source). `SONAR_TOKEN` is **optional** — it enables the SonarCloud scan job; without it that job is skipped, so CI never breaks before Sonar is configured.
+
+**SonarCloud — one-time setup.** [`ci.yml`](.github/workflows/ci.yml) carries a `sonarcloud` job that runs `pytest --cov` and uploads code + coverage to [SonarCloud](https://sonarcloud.io/project/overview?id=DominikSienkiewicz_StockAgent) (keys live in [`sonar-project.properties`](sonar-project.properties)). To enable it: (1) create a **`SONAR_TOKEN`** repository secret (SonarCloud → *My Account → Security*); (2) in SonarCloud, **disable *Automatic Analysis*** (*Administration → Analysis Method*) — CI-based and automatic analysis cannot both run, and only the CI scan uploads the coverage report the "Sonar way" gate (≥ 80% on new code) needs.
 
 **Optional alpha-data sources** (category "Data"): seven extra signals — SEC EDGAR insider flow, AlphaVantage earnings calendar, Finnhub options/IV, Reddit social velocity, FRED yield-curve, Finnhub analyst consensus, and regime-tagged RAG (vector memory). Each is a port + adapter with a **Null fallback** and is **off by default** in `config.toml` (`insider_flow_enabled`, `earnings_calendar_enabled`, `options_flow_enabled`, `social_velocity_enabled`, `yield_curve_enabled`, `analyst_consensus_enabled`, `vector_memory_enabled`) — so they make **zero network calls** until you flip a flag (and supply its key where needed). Enabled per-symbol signals are aggregated into an "Alpha Signals" report section; `vector_memory_enabled` needs migration `017`.
 **Repository variables:** none. All non-secret config lives in committed [`config.toml`](config.toml), read directly by `Settings` — so there is nothing to map in the workflow `env:` and no `vars.*` drift to guard. The workflow injects only the secrets above; the split (secrets mapped, non-secret config kept out) is guarded by [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py).

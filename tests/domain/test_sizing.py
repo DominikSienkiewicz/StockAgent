@@ -1,3 +1,5 @@
+import pytest
+
 from src.domain.sizing import SizeBand, suggest_band
 
 
@@ -13,15 +15,15 @@ class TestSuggestBand:
         band = suggest_band(consensus_strength=0.9, dissent_ratio=0.0, hit_rate=0.7)
         assert band.tier == "full"
         # Górna banda — realna, agresywniejsza alokacja.
-        assert band.min_pct == 4.0
-        assert band.max_pct == 5.0
+        assert band.min_pct == pytest.approx(4.0)
+        assert band.max_pct == pytest.approx(5.0)
         assert "%" in band.label
 
     def test_weak_consensus_gives_starter_band(self):
         band = suggest_band(consensus_strength=0.4, dissent_ratio=0.0, hit_rate=0.7)
         assert band.tier == "starter"
-        assert band.min_pct == 1.0
-        assert band.max_pct == 2.0
+        assert band.min_pct == pytest.approx(1.0)
+        assert band.max_pct == pytest.approx(2.0)
 
     def test_high_dissent_pulls_down_to_starter(self):
         # Konsensus i hit-rate mocne, ale rada się sypie pod werdyktem.
@@ -41,8 +43,8 @@ class TestSuggestBand:
         # Mocny konsensus + niski dissent + nieznany hit-rate → środkowa banda.
         band = suggest_band(consensus_strength=0.85, dissent_ratio=0.1, hit_rate=None)
         assert band.tier == "standard"
-        assert band.min_pct == 2.0
-        assert band.max_pct == 3.0
+        assert band.min_pct == pytest.approx(2.0)
+        assert band.max_pct == pytest.approx(3.0)
 
     def test_clamps_consensus_above_one(self):
         # Wejście poza [0,1] nie może wysadzić reguły — clamp do sensownego zakresu.

@@ -139,6 +139,17 @@ _DIRECTION_BG = {
     "WSTRZYMAJ": "#f9fafb",
 }
 
+# Markery slotów — placeholdery wstawiane przy renderze i podmieniane treścią
+# w build_html_report. Trzymane jako stałe (jedno źródło prawdy), żeby literówka
+# w jednym z dwóch miejsc (szablon ↔ replace) nie zostawiła cicho pustego slotu.
+_QUOTA_BANNER_SLOT = "<!-- QUOTA_BANNER_SLOT -->"
+_RISK_WATCH_SLOT = "<!-- RISK_WATCH_SLOT -->"
+_PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
+_COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
+_TRACK_RECORD_SLOT = "<!-- TRACK_RECORD_SLOT -->"
+_ALPHA_SLOT = "<!-- ALPHA_SLOT -->"
+_SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
+
 _COUNCIL_REC_LABEL = {"BUY": "KUP", "SELL": "SPRZEDAJ", "HOLD": "TRZYMAJ"}
 _COUNCIL_REC_COLOR = {"BUY": "#16a34a", "SELL": "#dc2626", "HOLD": "#ca8a04"}
 _COUNCIL_REC_BG = {"BUY": "#f0fdf4", "SELL": "#fef2f2", "HOLD": "#fefce8"}
@@ -570,6 +581,51 @@ def _render_attribution_block_html(
     )
 
 
+def _fill_html_slots(
+    html: str,
+    *,
+    quota_html: str,
+    macro_risk_html: str,
+    portfolio_html: str,
+    council_history_html: str,
+    track_record_html: str,
+    alpha_html: str,
+    suggestions_html: str,
+) -> str:
+    """Wstawia treść w sloty HTML. QUOTA i RISK_WATCH podmieniamy tylko gdy
+    niepuste (pusty komentarz HTML jest nieszkodliwy); pozostałe sloty zawsze
+    (też na ""), żeby znacznik nie został w treści."""
+    if quota_html:
+        html = html.replace(_QUOTA_BANNER_SLOT, quota_html, 1)
+    if macro_risk_html:
+        html = html.replace(_RISK_WATCH_SLOT, macro_risk_html, 1)
+    html = html.replace(_PORTFOLIO_SLOT, portfolio_html, 1)
+    html = html.replace(_COUNCIL_HISTORY_SLOT, council_history_html, 1)
+    html = html.replace(_TRACK_RECORD_SLOT, track_record_html, 1)
+    html = html.replace(_ALPHA_SLOT, alpha_html, 1)
+    return html.replace(_SUGGESTIONS_SLOT, suggestions_html, 1)
+
+
+def _fill_text_slots(
+    text: str,
+    *,
+    quota_text: str,
+    macro_risk_text: str,
+    suggestions_text: str,
+) -> str:
+    """Wstawia treść w sloty plain-text. QUOTA/RISK_WATCH tylko gdy niepuste;
+    SUGGESTIONS usuwa cały wiersz znacznika, gdy brak sugestii."""
+    if quota_text:
+        text = text.replace(_QUOTA_BANNER_SLOT, quota_text, 1)
+    if macro_risk_text:
+        text = text.replace(_RISK_WATCH_SLOT, macro_risk_text, 1)
+    return text.replace(
+        f"{_SUGGESTIONS_SLOT}\n",
+        f"{suggestions_text}\n\n" if suggestions_text else "",
+        1,
+    ).replace(_SUGGESTIONS_SLOT, suggestions_text, 1)
+
+
 def build_html_report(
     results: list[SymbolResult],
     started_at: datetime,
@@ -646,46 +702,357 @@ def build_html_report(
         mood, session, accuracy_stats, trade_signals, risk_signals,
         resolved_predictions or [],
     )
-    if quota_html:
-        html = html.replace(
-            "<!-- QUOTA_BANNER_SLOT -->", quota_html, 1
-        )
-    if macro_risk_html:
-        html = html.replace(
-            "<!-- RISK_WATCH_SLOT -->", macro_risk_html, 1
-        )
-    # Slot portfela zawsze podmieniamy (też na "") — inaczej znacznik zostałby w treści.
-    html = html.replace("<!-- PORTFOLIO_SLOT -->", portfolio_html, 1)
-    html = html.replace("<!-- COUNCIL_HISTORY_SLOT -->", council_history_html, 1)
-    # Slot Track Record zawsze podmieniamy (też na ""), by znacznik nie został.
-    html = html.replace("<!-- TRACK_RECORD_SLOT -->", track_record_html, 1)
-    # Slot Alpha Signals (Dane) — zawsze podmieniany (też na "").
-    html = html.replace("<!-- ALPHA_SLOT -->", alpha_html, 1)
-    # Slot zawsze podmieniamy (też na "") — inaczej znacznik zostałby w treści.
-    html = html.replace("<!-- SUGGESTIONS_SLOT -->", suggestions_html, 1)
+    html = _fill_html_slots(
+        html,
+        quota_html=quota_html,
+        macro_risk_html=macro_risk_html,
+        portfolio_html=portfolio_html,
+        council_history_html=council_history_html,
+        track_record_html=track_record_html,
+        alpha_html=alpha_html,
+        suggestions_html=suggestions_html,
+    )
     text = _render_plain(
         results, saved, ignored, errors, started_at, duration_seconds,
         mood, session, accuracy_stats, trade_signals, risk_signals,
         resolved_predictions or [],
     )
-    if quota_text:
-        text = text.replace(
-            "<!-- QUOTA_BANNER_SLOT -->", quota_text, 1
-        )
-    if macro_risk_text:
-        text = text.replace(
-            "<!-- RISK_WATCH_SLOT -->", macro_risk_text, 1
-        )
-    # Plain text: usuwamy znacznik (pusta sekcja) albo wstawiamy treść.
-    text = text.replace(
-        "<!-- SUGGESTIONS_SLOT -->\n", f"{suggestions_text}\n\n" if suggestions_text else "", 1
-    ).replace("<!-- SUGGESTIONS_SLOT -->", suggestions_text, 1)
+    text = _fill_text_slots(
+        text,
+        quota_text=quota_text,
+        macro_risk_text=macro_risk_text,
+        suggestions_text=suggestions_text,
+    )
     return html, text
 
 
 # ---------------------------------------------------------------------------
 # HTML
 # ---------------------------------------------------------------------------
+
+
+def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
+    """🎯 Najsilniejsze sygnały transakcyjne. Pusty string, gdy brak sygnałów."""
+    if not trade_signals:
+        return ""
+    parts = [
+        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
+        "🎯 Najsilniejsze sygnały</h2>"
+    ]
+    for sig in trade_signals:
+        dir_color = {
+            "KUP": "#16a34a",
+            "SPRZEDAJ": "#dc2626",
+            "OBSERWUJ": "#737373",
+        }[sig.direction]
+        dir_bg = {
+            "KUP": "#f0fdf4",
+            "SPRZEDAJ": "#fef2f2",
+            "OBSERWUJ": "#f9fafb",
+        }[sig.direction]
+        change_color = _delta_color(sig.expected_change)
+        # Q7: pasmo wielkości pozycji (Kelly-lite z konsensusu rady + hit-rate).
+        size_html = (
+            f'<span style="color: #6b7280; font-size: 12px;">'
+            f"{_html(sig.size_band.label)}</span>"
+            if sig.size_band
+            else ""
+        )
+        parts.append(f"""
+              <div style="margin-bottom: 8px; padding: 10px 14px; background: {dir_bg};
+                          border-left: 4px solid {dir_color}; border-radius: 4px;
+                          font-size: 13px; display: flex; gap: 12px; align-items: center;">
+                <span style="font-weight: 700; color: {dir_color}; min-width: 90px;">
+                  {sig.direction}
+                </span>
+                <span style="font-weight: 600; min-width: 60px;">{_html(_company_label(sig.symbol))}</span>
+                <span style="color: #4b5563;">
+                  pewność <strong>{sig.confidence * 100:.0f}%</strong>
+                </span>
+                <span style="color: {change_color};">
+                  prognoza <strong>{_pct(sig.expected_change, signed=True)}</strong>
+                </span>
+                {size_html}
+                <span style="color: #6b7280; margin-left: auto; font-size: 12px;">
+                  siła sygnału: <strong>{sig.strength:.2f}</strong>
+                </span>
+              </div>
+            """)
+    return "".join(parts)
+
+
+def _render_risk_signals_html(risk_signals: list[RiskSignal]) -> str:
+    """🚨 Sygnały ostrzegawcze. Pusty string, gdy brak sygnałów."""
+    if not risk_signals:
+        return ""
+    parts = [
+        "<h2 style='font-size: 16px; margin: 20px 0 8px 0; color: #991b1b;'>"
+        "🚨 Sygnały ostrzegawcze</h2>"
+    ]
+    type_label = {
+        "DIVERGENCE": "Rozbieżność cena ↔ sentyment",
+        "AV_LLM_CONFLICT": "Niezgodność AV ↔ LLM",
+        "LOW_SIGNAL": "Słaby sygnał",
+    }
+    for rs in risk_signals:
+        sev_color = {"high": "#dc2626", "medium": "#f59e0b", "low": "#6b7280"}[rs.severity]
+        parts.append(f"""
+              <div style="margin-bottom: 6px; padding: 8px 12px; background: #fffbeb;
+                          border-left: 3px solid {sev_color}; border-radius: 4px;
+                          font-size: 12px;">
+                <strong>{_html(_company_label(rs.symbol))}</strong>
+                <span style="color: {sev_color}; font-weight: 600;">
+                  · {type_label.get(rs.type, _html(rs.type))}
+                </span><br/>
+                <span style="color: #4b5563;">{_html(rs.description)}</span>
+              </div>
+            """)
+    return "".join(parts)
+
+
+def _render_resolved_predictions_html(
+    resolved_predictions: list[ResolvedPrediction],
+) -> str:
+    """📊 Zamknięte predykcje z ostatnich 24h. Pusty string, gdy brak."""
+    if not resolved_predictions:
+        return ""
+    correct = [p for p in resolved_predictions if p.is_correct]
+    wrong = [p for p in resolved_predictions if not p.is_correct]
+    parts = [
+        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
+        "📊 Zamknięte predykcje (ostatnie 24h)</h2>"
+    ]
+    parts.extend(_render_resolved_item_html(p) for p in resolved_predictions)
+    parts.append(
+        "<div style='font-size: 11px; color: #6b7280; margin: 4px 0 16px 0;'>"
+        f"Suma: {len(correct)} trafionych / {len(wrong)} błędnych "
+        f"({len(correct) / max(1, len(resolved_predictions)) * 100:.0f}% accuracy)"
+        "</div>"
+    )
+    return "".join(parts)
+
+
+def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
+    """🎯 Historia trafności. Pusty string, gdy brak danych statystyk."""
+    if accuracy_stats and accuracy_stats.get("mean_accuracy") is not None:
+        acc = accuracy_stats["mean_accuracy"]
+        n = accuracy_stats["sample_count"]
+        correct = accuracy_stats["correct_count"]
+        days = accuracy_stats["days_window"]
+        return f"""
+      <div style="padding: 12px 14px; background: #fef3c7; border-left: 3px solid #f59e0b;
+                  border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
+        <div style="font-weight: 600; margin-bottom: 6px; color: #92400e;">
+          🎯 Historia trafności (ostatnie {days} dni)
+        </div>
+        <div style="color: #78350f;">
+          Średnia trafność: <strong>{acc * 100:.1f}%</strong>
+          · Predykcji ocenionych: {n}
+          · Poprawnych kierunkowo: {correct}
+        </div>
+      </div>
+        """
+    if accuracy_stats is not None:
+        return """
+      <div style="padding: 10px 14px; background: #f9fafb; border-radius: 4px;
+                  margin-bottom: 20px; font-size: 12px; color: #6b7280;">
+        🎯 Historia trafności: brak ocenionych predykcji (potrzeba ≥1 zamkniętego cyklu).
+      </div>
+        """
+    return ""
+
+
+def _render_reflections_html(saved: list[SymbolResult]) -> str:
+    """🧠 Wnioski z poprzednich cykli (Self-Reflection). Pusty string, gdy brak."""
+    reflections = [r for r in saved if r.reflection_insight]
+    if not reflections:
+        return ""
+    parts = [
+        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
+        "🧠 Wnioski z poprzednich cykli (Self-Reflection)</h2>"
+    ]
+    for r in reflections:
+        parts.append(f"""
+              <div style="margin-bottom: 8px; padding: 10px 12px; background: #faf5ff;
+                          border-left: 3px solid #9333ea; border-radius: 4px;
+                          font-size: 12px;">
+                <strong>{_html(_company_label(r.symbol))}:</strong>
+                <span style="color: #581c87;">{_html(r.reflection_insight)}</span>
+              </div>
+            """)
+    return "".join(parts)
+
+
+def _render_ignored_html(ignored: list[SymbolResult]) -> str:
+    """⏸ Symbole pominięte poniżej progu zmienności. Pusty string, gdy brak."""
+    if not ignored:
+        return ""
+    rows = "".join(
+        f"<span style='display: inline-block; padding: 2px 8px; margin: 2px; background: #f3f4f6; border-radius: 3px; font-size: 12px;'>"
+        f"<strong>{_html(r.symbol)}</strong> <span style='color: {_delta_color(r.delta)}'>{_pct(r.delta)}</span></span>"
+        for r in ignored
+    )
+    return (
+        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
+        "⏸ Pominięte (poniżej progu zmienności)</h2>"
+        f"<div>{rows}</div>"
+    )
+
+
+def _render_errors_html(errors: list[SymbolResult]) -> str:
+    """⚠️ Symbole, które padły w cyklu. Pusty string, gdy brak błędów."""
+    if not errors:
+        return ""
+    parts = [
+        "<h2 style='font-size: 16px; margin: 20px 0 8px 0; color: #991b1b;'>"
+        "⚠️ Błędy</h2>"
+    ]
+    for r in errors:
+        parts.append(f"""
+              <div style="margin-bottom: 8px; padding: 10px; background: #fef2f2; border-left: 3px solid #dc2626; border-radius: 4px; font-size: 12px;">
+                <strong>{_html(_company_label(r.symbol))}</strong>: {_html(r.error_message)}
+              </div>
+            """)
+    return "".join(parts)
+
+
+def _render_prediction_row_html(r: SymbolResult) -> str:
+    """Pojedynczy wiersz tabeli predykcji (saved)."""
+    sentiment_text = (
+        f"{_html(_sentiment_label(r.sentiment_label))} ({r.sentiment_score:+.2f})"
+        if r.sentiment_score is not None
+        else "—"
+    )
+    confidence_text = (
+        f"{r.confidence_score * 100:.0f}%"
+        if r.confidence_score is not None
+        else "—"
+    )
+    forecast_text = (
+        f"{_money(r.target_price)} "
+        f"<span style='color: {_delta_color(r.expected_change)};'>"
+        f"({_pct(r.expected_change, signed=True)})</span>"
+        if r.target_price is not None
+        else "—"
+    )
+    rec = _recommendation(r)
+    rec_color = _DIRECTION_COLOR.get(rec, "#737373")
+    return f"""
+              <tr>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; font-weight: 600;">{_html(_company_label(r.symbol))}</td>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{_money(r.current_price)}</td>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; color: {_delta_color(r.delta)};">{_pct(r.delta)}</td>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; color: {_trend_color(r.trend)}; font-weight: 600;">{_html(_trend_label(r.trend))}</td>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{forecast_text}</td>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{confidence_text}</td>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{sentiment_text}</td>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{r.news_volume or 0}</td>
+                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; font-weight: 700; color: {rec_color};">{rec}</td>
+              </tr>
+            """
+
+
+def _render_reasoning_block_html(r: SymbolResult) -> str:
+    """Blok 'Uzasadnienia' dla jednej predykcji. Pusty string, gdy nie ma
+    czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji)."""
+    # Q5/Q6: blok renderujemy też, gdy są analogi (precedent receipts)
+    # lub odznaki proweniencji — nawet bez reasoning/rady.
+    badges_html = _provenance_badges_html(r.provenance_badges)
+    precedents_block = _render_precedents_block_html(r.similar_precedents)
+    attribution_block = _render_attribution_block_html(r.feature_attribution)
+    if (
+        not r.reasoning
+        and r.council_verdict is None
+        and not badges_html
+        and not precedents_block
+        and not attribution_block
+    ):
+        return ""
+    move_line = ""
+    if r.current_price is not None and r.target_price is not None:
+        conf_part = (
+            f" · Pewność {r.confidence_score * 100:.0f}%"
+            if r.confidence_score is not None
+            else ""
+        )
+        move_line = (
+            f"<div style='font-size: 11px; color: #6b7280; margin-top: 2px;'>"
+            f"Oczekiwany ruch: {_money(r.current_price)} → {_money(r.target_price)} "
+            f"<span style='color: {_delta_color(r.expected_change)};'>"
+            f"({_pct(r.expected_change, signed=True)})</span>"
+            f"{conf_part}"
+            f"</div>"
+        )
+    # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
+    # (finding #35). Escapowanie title/source jest tu domyślne.
+    news_block = _render_news_block_html(r.top_news)
+    rec_block = _recommendation_reason_html(r)
+    council_block = (
+        _render_council_section(r.council_verdict)
+        if r.council_verdict is not None
+        else ""
+    )
+    valuation_block = _render_valuation(r.valuation)
+    _sector = _sector_label(r.symbol)
+    sector_tag = (
+        f' <span style="color: #6b7280; font-weight: 500;">· {_html(_sector)}</span>'
+        if _sector
+        else ""
+    )
+    return f"""
+              <div style="margin-bottom: 10px; padding: 10px 12px; background: #fafafa; border-left: 3px solid {_trend_color(r.trend)}; border-radius: 4px;">
+                <div style="font-weight: 600; font-size: 13px;">{_html(_company_label(r.symbol))}{sector_tag} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span>{badges_html}</div>
+                {move_line}
+                {rec_block}
+                {f'<div style="font-size: 12px; color: #4b5563; margin-top: 6px;">{_html(r.reasoning)}</div>' if r.reasoning else ''}
+                {attribution_block}
+                {precedents_block}
+                {news_block}
+                {council_block}
+                {valuation_block}
+              </div>
+            """
+
+
+def _render_saved_section_html(saved: list[SymbolResult]) -> str:
+    """🔮 Sekcja wygenerowanych predykcji: tabela + wykres prognozy +
+    uzasadnienia. Pusty string, gdy w tym cyklu nic nie zapisano."""
+    if not saved:
+        return ""
+    parts = [
+        "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>🔮 Wygenerowane predykcje</h2>",
+        "<table style='width: 100%; border-collapse: collapse; font-size: 13px;'>",
+        """
+          <tr style="background: #f3f4f6; text-align: left;">
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Symbol</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Cena</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Zmiana (cykl)</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Trend</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Prognoza (nast. cykl)</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Pewność</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Sentyment</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Newsy</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Rekomendacja</th>
+          </tr>
+        """,
+    ]
+    parts.extend(_render_prediction_row_html(r) for r in saved)
+    parts.append("</table>")
+
+    # Wykres prognozy
+    forecast_chart_url = build_forecast_chart_url(saved)
+    if forecast_chart_url:
+        parts.append(f"""
+      <div style="margin: 16px 0; text-align: center;">
+        <img src="{_html(forecast_chart_url)}" alt="Prognoza zmian cen"
+             style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />
+      </div>
+            """)
+
+    # Uzasadnienia
+    parts.append("<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>💡 Uzasadnienia</h3>")
+    parts.extend(_render_reasoning_block_html(r) for r in saved)
+    return "".join(parts)
 
 
 def _render_html(
@@ -717,7 +1084,7 @@ def _render_html(
 
     # Slot bannera kwot — wypełniany przez build_html_report, gdy są alerty.
     # Trafia NAJWYŻEJ (przed sesją), bo wyczerpanie limitu to top-priority info.
-    sections.append("<!-- QUOTA_BANNER_SLOT -->")
+    sections.append(_QUOTA_BANNER_SLOT)
 
     # Status sesji giełdowej
     sections.append(f"""
@@ -748,15 +1115,15 @@ def _render_html(
 
     # Slot na sekcję Risk Watch — wypełniany przez build_html_report,
     # gdy wywołujący przekaże MacroRiskReport. Bez slotu sekcja jest pomijana.
-    sections.append("<!-- RISK_WATCH_SLOT -->")
+    sections.append(_RISK_WATCH_SLOT)
     # Slot na radar korelacji portfela (Q4) — wypełniany przez build_html_report.
-    sections.append("<!-- PORTFOLIO_SLOT -->")
+    sections.append(_PORTFOLIO_SLOT)
     # Slot na panel historii głosów rady (U5).
-    sections.append("<!-- COUNCIL_HISTORY_SLOT -->")
+    sections.append(_COUNCIL_HISTORY_SLOT)
     # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
-    sections.append("<!-- TRACK_RECORD_SLOT -->")
+    sections.append(_TRACK_RECORD_SLOT)
     # Slot na sekcję Alpha Signals (Dane — insider/analitycy/opcje/social/FRED).
-    sections.append("<!-- ALPHA_SLOT -->")
+    sections.append(_ALPHA_SLOT)
 
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
     crypto_html = _render_crypto_section_html(results)
@@ -764,75 +1131,10 @@ def _render_html(
         sections.append(crypto_html)
 
     # 🎯 Trade ideas (najsilniejsze sygnały transakcyjne)
-    if trade_signals:
-        sections.append(
-            "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-            "🎯 Najsilniejsze sygnały</h2>"
-        )
-        for sig in trade_signals:
-            dir_color = {
-                "KUP": "#16a34a",
-                "SPRZEDAJ": "#dc2626",
-                "OBSERWUJ": "#737373",
-            }[sig.direction]
-            dir_bg = {
-                "KUP": "#f0fdf4",
-                "SPRZEDAJ": "#fef2f2",
-                "OBSERWUJ": "#f9fafb",
-            }[sig.direction]
-            change_color = _delta_color(sig.expected_change)
-            # Q7: pasmo wielkości pozycji (Kelly-lite z konsensusu rady + hit-rate).
-            size_html = (
-                f'<span style="color: #6b7280; font-size: 12px;">'
-                f"{_html(sig.size_band.label)}</span>"
-                if sig.size_band
-                else ""
-            )
-            sections.append(f"""
-              <div style="margin-bottom: 8px; padding: 10px 14px; background: {dir_bg};
-                          border-left: 4px solid {dir_color}; border-radius: 4px;
-                          font-size: 13px; display: flex; gap: 12px; align-items: center;">
-                <span style="font-weight: 700; color: {dir_color}; min-width: 90px;">
-                  {sig.direction}
-                </span>
-                <span style="font-weight: 600; min-width: 60px;">{_html(_company_label(sig.symbol))}</span>
-                <span style="color: #4b5563;">
-                  pewność <strong>{sig.confidence * 100:.0f}%</strong>
-                </span>
-                <span style="color: {change_color};">
-                  prognoza <strong>{_pct(sig.expected_change, signed=True)}</strong>
-                </span>
-                {size_html}
-                <span style="color: #6b7280; margin-left: auto; font-size: 12px;">
-                  siła sygnału: <strong>{sig.strength:.2f}</strong>
-                </span>
-              </div>
-            """)
+    sections.append(_render_trade_signals_html(trade_signals))
 
     # 🚨 Risk signals (anomalie / niespójności)
-    if risk_signals:
-        sections.append(
-            "<h2 style='font-size: 16px; margin: 20px 0 8px 0; color: #991b1b;'>"
-            "🚨 Sygnały ostrzegawcze</h2>"
-        )
-        type_label = {
-            "DIVERGENCE": "Rozbieżność cena ↔ sentyment",
-            "AV_LLM_CONFLICT": "Niezgodność AV ↔ LLM",
-            "LOW_SIGNAL": "Słaby sygnał",
-        }
-        for rs in risk_signals:
-            sev_color = {"high": "#dc2626", "medium": "#f59e0b", "low": "#6b7280"}[rs.severity]
-            sections.append(f"""
-              <div style="margin-bottom: 6px; padding: 8px 12px; background: #fffbeb;
-                          border-left: 3px solid {sev_color}; border-radius: 4px;
-                          font-size: 12px;">
-                <strong>{_html(_company_label(rs.symbol))}</strong>
-                <span style="color: {sev_color}; font-weight: 600;">
-                  · {type_label.get(rs.type, _html(rs.type))}
-                </span><br/>
-                <span style="color: #4b5563;">{_html(rs.description)}</span>
-              </div>
-            """)
+    sections.append(_render_risk_signals_html(risk_signals))
 
     # Portfolio mood box
     bullish_part = (
@@ -862,48 +1164,10 @@ def _render_html(
     """)
 
     # 📊 Day-over-day — zamknięte predykcje z ostatnich 24h
-    if resolved_predictions:
-        correct = [p for p in resolved_predictions if p.is_correct]
-        wrong = [p for p in resolved_predictions if not p.is_correct]
-        sections.append(
-            "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-            "📊 Zamknięte predykcje (ostatnie 24h)</h2>"
-        )
-        for p in resolved_predictions:
-            sections.append(_render_resolved_item_html(p))
-        sections.append(
-            "<div style='font-size: 11px; color: #6b7280; margin: 4px 0 16px 0;'>"
-            f"Suma: {len(correct)} trafionych / {len(wrong)} błędnych "
-            f"({len(correct) / max(1, len(resolved_predictions)) * 100:.0f}% accuracy)"
-            "</div>"
-        )
+    sections.append(_render_resolved_predictions_html(resolved_predictions))
 
     # Historia trafności
-    if accuracy_stats and accuracy_stats.get("mean_accuracy") is not None:
-        acc = accuracy_stats["mean_accuracy"]
-        n = accuracy_stats["sample_count"]
-        correct = accuracy_stats["correct_count"]
-        days = accuracy_stats["days_window"]
-        sections.append(f"""
-      <div style="padding: 12px 14px; background: #fef3c7; border-left: 3px solid #f59e0b;
-                  border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
-        <div style="font-weight: 600; margin-bottom: 6px; color: #92400e;">
-          🎯 Historia trafności (ostatnie {days} dni)
-        </div>
-        <div style="color: #78350f;">
-          Średnia trafność: <strong>{acc * 100:.1f}%</strong>
-          · Predykcji ocenionych: {n}
-          · Poprawnych kierunkowo: {correct}
-        </div>
-      </div>
-        """)
-    elif accuracy_stats is not None:
-        sections.append("""
-      <div style="padding: 10px 14px; background: #f9fafb; border-radius: 4px;
-                  margin-bottom: 20px; font-size: 12px; color: #6b7280;">
-        🎯 Historia trafności: brak ocenionych predykcji (potrzeba ≥1 zamkniętego cyklu).
-      </div>
-        """)
+    sections.append(_render_accuracy_history_html(accuracy_stats))
 
     # Wykres zmiany cen
     chart_url = build_chart_url(results)
@@ -916,146 +1180,12 @@ def _render_html(
         """)
 
     # Self-Reflection — wnioski z poprzednich cykli
-    reflections = [r for r in saved if r.reflection_insight]
-    if reflections:
-        sections.append(
-            "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-            "🧠 Wnioski z poprzednich cykli (Self-Reflection)</h2>"
-        )
-        for r in reflections:
-            sections.append(f"""
-              <div style="margin-bottom: 8px; padding: 10px 12px; background: #faf5ff;
-                          border-left: 3px solid #9333ea; border-radius: 4px;
-                          font-size: 12px;">
-                <strong>{_html(_company_label(r.symbol))}:</strong>
-                <span style="color: #581c87;">{_html(r.reflection_insight)}</span>
-              </div>
-            """)
+    sections.append(_render_reflections_html(saved))
 
     # Predykcje (saved)
-    if saved:
-        sections.append("<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>🔮 Wygenerowane predykcje</h2>")
-        sections.append("<table style='width: 100%; border-collapse: collapse; font-size: 13px;'>")
-        sections.append("""
-          <tr style="background: #f3f4f6; text-align: left;">
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Symbol</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Cena</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Zmiana (cykl)</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Trend</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Prognoza (nast. cykl)</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Pewność</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Sentyment</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Newsy</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Rekomendacja</th>
-          </tr>
-        """)
-        for r in saved:
-            sentiment_text = (
-                f"{_html(_sentiment_label(r.sentiment_label))} ({r.sentiment_score:+.2f})"
-                if r.sentiment_score is not None
-                else "—"
-            )
-            confidence_text = (
-                f"{r.confidence_score * 100:.0f}%"
-                if r.confidence_score is not None
-                else "—"
-            )
-            forecast_text = (
-                f"{_money(r.target_price)} "
-                f"<span style='color: {_delta_color(r.expected_change)};'>"
-                f"({_pct(r.expected_change, signed=True)})</span>"
-                if r.target_price is not None
-                else "—"
-            )
-            rec = _recommendation(r)
-            rec_color = _DIRECTION_COLOR.get(rec, "#737373")
-            sections.append(f"""
-              <tr>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; font-weight: 600;">{_html(_company_label(r.symbol))}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{_money(r.current_price)}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; color: {_delta_color(r.delta)};">{_pct(r.delta)}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; color: {_trend_color(r.trend)}; font-weight: 600;">{_html(_trend_label(r.trend))}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{forecast_text}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{confidence_text}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{sentiment_text}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{r.news_volume or 0}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; font-weight: 700; color: {rec_color};">{rec}</td>
-              </tr>
-            """)
-        sections.append("</table>")
+    sections.append(_render_saved_section_html(saved))
 
-        # Wykres prognozy
-        forecast_chart_url = build_forecast_chart_url(saved)
-        if forecast_chart_url:
-            sections.append(f"""
-      <div style="margin: 16px 0; text-align: center;">
-        <img src="{_html(forecast_chart_url)}" alt="Prognoza zmian cen"
-             style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />
-      </div>
-            """)
-
-        # Uzasadnienia
-        sections.append("<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>💡 Uzasadnienia</h3>")
-        for r in saved:
-            # Q5/Q6: blok renderujemy też, gdy są analogi (precedent receipts)
-            # lub odznaki proweniencji — nawet bez reasoning/rady.
-            badges_html = _provenance_badges_html(r.provenance_badges)
-            precedents_block = _render_precedents_block_html(r.similar_precedents)
-            attribution_block = _render_attribution_block_html(r.feature_attribution)
-            if (
-                not r.reasoning
-                and r.council_verdict is None
-                and not badges_html
-                and not precedents_block
-                and not attribution_block
-            ):
-                continue
-            move_line = ""
-            if r.current_price is not None and r.target_price is not None:
-                conf_part = (
-                    f" · Pewność {r.confidence_score * 100:.0f}%"
-                    if r.confidence_score is not None
-                    else ""
-                )
-                move_line = (
-                    f"<div style='font-size: 11px; color: #6b7280; margin-top: 2px;'>"
-                    f"Oczekiwany ruch: {_money(r.current_price)} → {_money(r.target_price)} "
-                    f"<span style='color: {_delta_color(r.expected_change)};'>"
-                    f"({_pct(r.expected_change, signed=True)})</span>"
-                    f"{conf_part}"
-                    f"</div>"
-                )
-            # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
-            # (finding #35). Escapowanie title/source jest tu domyślne.
-            news_block = _render_news_block_html(r.top_news)
-            rec_block = _recommendation_reason_html(r)
-            council_block = (
-                _render_council_section(r.council_verdict)
-                if r.council_verdict is not None
-                else ""
-            )
-            valuation_block = _render_valuation(r.valuation)
-            _sector = _sector_label(r.symbol)
-            sector_tag = (
-                f' <span style="color: #6b7280; font-weight: 500;">· {_html(_sector)}</span>'
-                if _sector
-                else ""
-            )
-            sections.append(f"""
-              <div style="margin-bottom: 10px; padding: 10px 12px; background: #fafafa; border-left: 3px solid {_trend_color(r.trend)}; border-radius: 4px;">
-                <div style="font-weight: 600; font-size: 13px;">{_html(_company_label(r.symbol))}{sector_tag} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span>{badges_html}</div>
-                {move_line}
-                {rec_block}
-                {f'<div style="font-size: 12px; color: #4b5563; margin-top: 6px;">{_html(r.reasoning)}</div>' if r.reasoning else ''}
-                {attribution_block}
-                {precedents_block}
-                {news_block}
-                {council_block}
-                {valuation_block}
-              </div>
-            """)
-
-    sections.append("<!-- SUGGESTIONS_SLOT -->")
+    sections.append(_SUGGESTIONS_SLOT)
 
     # Scatter: sentyment vs cena (jeśli ≥3 punkty)
     scatter_url = build_correlation_chart_url(results)
@@ -1069,24 +1199,10 @@ def _render_html(
         """)
 
     # Pominięte
-    if ignored:
-        sections.append("<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>⏸ Pominięte (poniżej progu zmienności)</h2>")
-        rows = "".join(
-            f"<span style='display: inline-block; padding: 2px 8px; margin: 2px; background: #f3f4f6; border-radius: 3px; font-size: 12px;'>"
-            f"<strong>{_html(r.symbol)}</strong> <span style='color: {_delta_color(r.delta)}'>{_pct(r.delta)}</span></span>"
-            for r in ignored
-        )
-        sections.append(f"<div>{rows}</div>")
+    sections.append(_render_ignored_html(ignored))
 
     # Błędy
-    if errors:
-        sections.append("<h2 style='font-size: 16px; margin: 20px 0 8px 0; color: #991b1b;'>⚠️ Błędy</h2>")
-        for r in errors:
-            sections.append(f"""
-              <div style="margin-bottom: 8px; padding: 10px; background: #fef2f2; border-left: 3px solid #dc2626; border-radius: 4px; font-size: 12px;">
-                <strong>{_html(_company_label(r.symbol))}</strong>: {_html(r.error_message)}
-              </div>
-            """)
+    sections.append(_render_errors_html(errors))
 
     sections.append("""
       <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #9ca3af;">
@@ -1101,6 +1217,190 @@ def _render_html(
 # ---------------------------------------------------------------------------
 # Plain text fallback
 # ---------------------------------------------------------------------------
+
+
+def _render_trade_signals_text(trade_signals: list[TradeSignal]) -> list[str]:
+    """Sekcja 'Najsilniejsze sygnały' (plain). Pusta lista, gdy brak sygnałów."""
+    if not trade_signals:
+        return []
+    lines = ["NAJSILNIEJSZE SYGNAŁY", "-" * 64]
+    for sig in trade_signals:
+        size_txt = f"  [{sig.size_band.label}]" if sig.size_band else ""
+        lines.append(
+            f"  {sig.direction:9s} {_company_label(sig.symbol):40s} "
+            f"pewność {sig.confidence * 100:.0f}%  "
+            f"prognoza {_pct(sig.expected_change, signed=True):>8s}  "
+            f"siła {sig.strength:.2f}{size_txt}"
+        )
+    lines.append("")
+    return lines
+
+
+def _render_risk_signals_text(risk_signals: list[RiskSignal]) -> list[str]:
+    """Sekcja 'Sygnały ostrzegawcze' (plain). Pusta lista, gdy brak."""
+    if not risk_signals:
+        return []
+    lines = ["SYGNAŁY OSTRZEGAWCZE", "-" * 64]
+    type_label = {
+        "DIVERGENCE": "Rozbieżność",
+        "AV_LLM_CONFLICT": "Niezgodność AV↔LLM",
+        "LOW_SIGNAL": "Słaby sygnał",
+    }
+    for rs in risk_signals:
+        lines.append(
+            f"  ⚠ {_company_label(rs.symbol)}: [{type_label.get(rs.type, rs.type)}] {rs.description}"
+        )
+    lines.append("")
+    return lines
+
+
+def _render_resolved_predictions_text(
+    resolved_predictions: list[ResolvedPrediction],
+) -> list[str]:
+    """Sekcja 'Zamknięte predykcje' (plain). Pusta lista, gdy brak."""
+    if not resolved_predictions:
+        return []
+    correct = sum(1 for p in resolved_predictions if p.is_correct)
+    lines = ["ZAMKNIĘTE PREDYKCJE (ostatnie 24h)", "-" * 64]
+    for p in resolved_predictions:
+        mark = "✅" if p.is_correct else "❌"
+        verdict = "Trafiona" if p.is_correct else "Błędna"
+        lines.append(
+            f"  {mark} {_company_label_with_sector(p.symbol)}  "
+            f"prognoza {_trend_label(p.predicted_trend)} — {verdict}"
+        )
+        if p.reasoning:
+            lines.append(f"        bo: {p.reasoning}")
+        if p.actual_change_pct is not None:
+            prices = (
+                f"{_money(p.price_at_prediction)} → {_money(p.actual_price)} "
+                if p.price_at_prediction is not None and p.actual_price is not None
+                else ""
+            )
+            lines.append(
+                f"        faktycznie: {prices}({_pct(p.actual_change_pct, signed=True)})"
+            )
+        lines.append(f"        dlaczego: {_resolved_why(p)}")
+    lines.append(
+        f"  Suma: {correct}/{len(resolved_predictions)} "
+        f"({correct / max(1, len(resolved_predictions)) * 100:.0f}% accuracy)"
+    )
+    lines.append("")
+    return lines
+
+
+def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list[str]:
+    """Sekcja 'Historia trafności' (plain). Pusta lista, gdy brak danych."""
+    if not (accuracy_stats and accuracy_stats.get("mean_accuracy") is not None):
+        return []
+    return [
+        f"HISTORIA TRAFNOŚCI (ostatnie {accuracy_stats['days_window']} dni)",
+        "-" * 64,
+        f"  Średnia trafność: {accuracy_stats['mean_accuracy'] * 100:.1f}%"
+        f"  ·  Predykcji ocenionych: {accuracy_stats['sample_count']}"
+        f"  ·  Poprawnych: {accuracy_stats['correct_count']}",
+        "",
+    ]
+
+
+def _render_reflections_text(saved: list[SymbolResult]) -> list[str]:
+    """Sekcja 'Wnioski z poprzednich cykli' (plain). Pusta lista, gdy brak."""
+    reflections = [r for r in saved if r.reflection_insight]
+    if not reflections:
+        return []
+    lines = ["WNIOSKI Z POPRZEDNICH CYKLI (Self-Reflection)", "-" * 64]
+    lines.extend(
+        f"  {_company_label(r.symbol)}: {r.reflection_insight}" for r in reflections
+    )
+    lines.append("")
+    return lines
+
+
+def _render_prediction_text(r: SymbolResult) -> list[str]:
+    """Linie jednej predykcji (plain): nagłówek + sentyment + rekomendacja +
+    proweniencja + reasoning + analogi + newsy + wycena."""
+    conf_part = (
+        f" · pewność {r.confidence_score * 100:.0f}%"
+        if r.confidence_score is not None
+        else ""
+    )
+    forecast_part = (
+        f"prognoza {_money(r.target_price)} "
+        f"({_pct(r.expected_change, signed=True)})"
+        if r.target_price is not None and r.expected_change is not None
+        else "prognoza —"
+    )
+    sentiment_part = (
+        f"sentyment {r.sentiment_score:+.2f}"
+        if r.sentiment_score is not None
+        else "sentyment —"
+    )
+    rec_text = _recommendation_reason_text(r)
+    lines = [
+        f"  {_company_label_with_sector(r.symbol):55s} {_money(r.current_price):>10s}  "
+        f"Δ {_pct(r.delta, signed=True):>8s}  →  "
+        f"{_trend_label(r.trend):11s} {forecast_part}{conf_part}",
+        f"         {sentiment_part}",
+        f"         {rec_text}",
+    ]
+    # Q6: odznaki proweniencji (pomijamy FRESH — brak szumu).
+    badge_labels = [
+        b.label for b in r.provenance_badges
+        if b.level is not ProvenanceLevel.FRESH
+    ]
+    if badge_labels:
+        lines.append(f"         proweniencja: {', '.join(badge_labels)}")
+    if r.reasoning:
+        lines.append(f"        └ {r.reasoning}")
+    # Q5: precedent receipts (analogi RAG).
+    for prec in r.similar_precedents:
+        outcome = (
+            "trafił" if prec.is_trend_correct
+            else "chybił" if prec.is_trend_correct is False
+            else "wynik nieznany"
+        )
+        lines.append(
+            f"        🧭 analog [{_trend_label(prec.predicted_trend)}, {outcome}]: "
+            f"{prec.summary[:72]}"
+        )
+    for n in r.top_news:
+        lines.append(
+            f"        📰 [{n.source or '?'}] {n.title[:78]}"
+            f" (rel={n.relevance:.2f}, sent={n.sentiment:+.2f})"
+        )
+    valuation_text = _render_valuation_text(r.valuation)
+    if valuation_text:
+        lines.append(valuation_text)
+    return lines
+
+
+def _render_saved_section_text(saved: list[SymbolResult]) -> list[str]:
+    """Sekcja 'Predykcje' (plain). Pusta lista, gdy nic nie zapisano."""
+    if not saved:
+        return []
+    lines = ["PREDYKCJE", "-" * 64]
+    for r in saved:
+        lines.extend(_render_prediction_text(r))
+    lines.append("")
+    return lines
+
+
+def _render_ignored_text(ignored: list[SymbolResult]) -> list[str]:
+    """Sekcja 'Pominięte' (plain). Pusta lista, gdy brak."""
+    if not ignored:
+        return []
+    ignored_str = ", ".join(f"{r.symbol}({_pct(r.delta)})" for r in ignored)
+    return ["POMINIĘTE (poniżej progu zmienności)", "-" * 64, f"  {ignored_str}", ""]
+
+
+def _render_errors_text(errors: list[SymbolResult]) -> list[str]:
+    """Sekcja 'Błędy' (plain). Pusta lista, gdy brak błędów."""
+    if not errors:
+        return []
+    lines = ["BŁĘDY", "-" * 64]
+    lines.extend(f"  {_company_label(r.symbol)}: {r.error_message}" for r in errors)
+    lines.append("")
+    return lines
 
 
 def _render_plain(
@@ -1118,7 +1418,7 @@ def _render_plain(
     resolved_predictions: list[ResolvedPrediction],
 ) -> str:
     lines: list[str] = []
-    lines.append("<!-- QUOTA_BANNER_SLOT -->")
+    lines.append(_QUOTA_BANNER_SLOT)
     lines.append("=" * 64)
     lines.append("STOCKAGENT — RAPORT CYKLU")
     lines.append("=" * 64)
@@ -1132,7 +1432,7 @@ def _render_plain(
     lines.append("")
 
     # Slot na sekcję Risk Watch w wariancie plain text — analogicznie do HTML.
-    lines.append("<!-- RISK_WATCH_SLOT -->")
+    lines.append(_RISK_WATCH_SLOT)
 
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
     crypto_text = _render_crypto_section_text(results)
@@ -1141,63 +1441,13 @@ def _render_plain(
         lines.append("")
 
     # Trade ideas
-    if trade_signals:
-        lines.append("NAJSILNIEJSZE SYGNAŁY")
-        lines.append("-" * 64)
-        for sig in trade_signals:
-            size_txt = f"  [{sig.size_band.label}]" if sig.size_band else ""
-            lines.append(
-                f"  {sig.direction:9s} {_company_label(sig.symbol):40s} "
-                f"pewność {sig.confidence * 100:.0f}%  "
-                f"prognoza {_pct(sig.expected_change, signed=True):>8s}  "
-                f"siła {sig.strength:.2f}{size_txt}"
-            )
-        lines.append("")
+    lines.extend(_render_trade_signals_text(trade_signals))
 
     # Risk signals
-    if risk_signals:
-        lines.append("SYGNAŁY OSTRZEGAWCZE")
-        lines.append("-" * 64)
-        type_label = {
-            "DIVERGENCE": "Rozbieżność",
-            "AV_LLM_CONFLICT": "Niezgodność AV↔LLM",
-            "LOW_SIGNAL": "Słaby sygnał",
-        }
-        for rs in risk_signals:
-            lines.append(
-                f"  ⚠ {_company_label(rs.symbol)}: [{type_label.get(rs.type, rs.type)}] {rs.description}"
-            )
-        lines.append("")
+    lines.extend(_render_risk_signals_text(risk_signals))
 
     # Zamknięte predykcje
-    if resolved_predictions:
-        correct = sum(1 for p in resolved_predictions if p.is_correct)
-        lines.append("ZAMKNIĘTE PREDYKCJE (ostatnie 24h)")
-        lines.append("-" * 64)
-        for p in resolved_predictions:
-            mark = "✅" if p.is_correct else "❌"
-            verdict = "Trafiona" if p.is_correct else "Błędna"
-            lines.append(
-                f"  {mark} {_company_label_with_sector(p.symbol)}  "
-                f"prognoza {_trend_label(p.predicted_trend)} — {verdict}"
-            )
-            if p.reasoning:
-                lines.append(f"        bo: {p.reasoning}")
-            if p.actual_change_pct is not None:
-                prices = (
-                    f"{_money(p.price_at_prediction)} → {_money(p.actual_price)} "
-                    if p.price_at_prediction is not None and p.actual_price is not None
-                    else ""
-                )
-                lines.append(
-                    f"        faktycznie: {prices}({_pct(p.actual_change_pct, signed=True)})"
-                )
-            lines.append(f"        dlaczego: {_resolved_why(p)}")
-        lines.append(
-            f"  Suma: {correct}/{len(resolved_predictions)} "
-            f"({correct / max(1, len(resolved_predictions)) * 100:.0f}% accuracy)"
-        )
-        lines.append("")
+    lines.extend(_render_resolved_predictions_text(resolved_predictions))
 
     # Nastroje portfela
     lines.append("NASTROJE PORTFELA")
@@ -1217,98 +1467,18 @@ def _render_plain(
     )
     lines.append("")
 
-    if accuracy_stats and accuracy_stats.get("mean_accuracy") is not None:
-        lines.append(f"HISTORIA TRAFNOŚCI (ostatnie {accuracy_stats['days_window']} dni)")
-        lines.append("-" * 64)
-        lines.append(
-            f"  Średnia trafność: {accuracy_stats['mean_accuracy'] * 100:.1f}%"
-            f"  ·  Predykcji ocenionych: {accuracy_stats['sample_count']}"
-            f"  ·  Poprawnych: {accuracy_stats['correct_count']}"
-        )
-        lines.append("")
+    lines.extend(_render_accuracy_history_text(accuracy_stats))
 
     # Wnioski z poprzednich cykli
-    reflections = [r for r in saved if r.reflection_insight]
-    if reflections:
-        lines.append("WNIOSKI Z POPRZEDNICH CYKLI (Self-Reflection)")
-        lines.append("-" * 64)
-        for r in reflections:
-            lines.append(f"  {_company_label(r.symbol)}: {r.reflection_insight}")
-        lines.append("")
+    lines.extend(_render_reflections_text(saved))
 
-    if saved:
-        lines.append("PREDYKCJE")
-        lines.append("-" * 64)
-        for r in saved:
-            conf_part = (
-                f" · pewność {r.confidence_score * 100:.0f}%"
-                if r.confidence_score is not None
-                else ""
-            )
-            forecast_part = (
-                f"prognoza {_money(r.target_price)} "
-                f"({_pct(r.expected_change, signed=True)})"
-                if r.target_price is not None and r.expected_change is not None
-                else "prognoza —"
-            )
-            sentiment_part = (
-                f"sentyment {r.sentiment_score:+.2f}"
-                if r.sentiment_score is not None
-                else "sentyment —"
-            )
-            rec_text = _recommendation_reason_text(r)
-            lines.append(
-                f"  {_company_label_with_sector(r.symbol):55s} {_money(r.current_price):>10s}  "
-                f"Δ {_pct(r.delta, signed=True):>8s}  →  "
-                f"{_trend_label(r.trend):11s} {forecast_part}{conf_part}"
-            )
-            lines.append(f"         {sentiment_part}")
-            lines.append(f"         {rec_text}")
-            # Q6: odznaki proweniencji (pomijamy FRESH — brak szumu).
-            badge_labels = [
-                b.label for b in r.provenance_badges
-                if b.level is not ProvenanceLevel.FRESH
-            ]
-            if badge_labels:
-                lines.append(f"         proweniencja: {', '.join(badge_labels)}")
-            if r.reasoning:
-                lines.append(f"        └ {r.reasoning}")
-            # Q5: precedent receipts (analogi RAG).
-            for prec in r.similar_precedents:
-                outcome = (
-                    "trafił" if prec.is_trend_correct
-                    else "chybił" if prec.is_trend_correct is False
-                    else "wynik nieznany"
-                )
-                lines.append(
-                    f"        🧭 analog [{_trend_label(prec.predicted_trend)}, {outcome}]: "
-                    f"{prec.summary[:72]}"
-                )
-            for n in r.top_news:
-                lines.append(
-                    f"        📰 [{n.source or '?'}] {n.title[:78]}"
-                    f" (rel={n.relevance:.2f}, sent={n.sentiment:+.2f})"
-                )
-            valuation_text = _render_valuation_text(r.valuation)
-            if valuation_text:
-                lines.append(valuation_text)
-        lines.append("")
+    lines.extend(_render_saved_section_text(saved))
 
-    lines.append("<!-- SUGGESTIONS_SLOT -->")
+    lines.append(_SUGGESTIONS_SLOT)
 
-    if ignored:
-        lines.append("POMINIĘTE (poniżej progu zmienności)")
-        lines.append("-" * 64)
-        ignored_str = ", ".join(f"{r.symbol}({_pct(r.delta)})" for r in ignored)
-        lines.append(f"  {ignored_str}")
-        lines.append("")
+    lines.extend(_render_ignored_text(ignored))
 
-    if errors:
-        lines.append("BŁĘDY")
-        lines.append("-" * 64)
-        for r in errors:
-            lines.append(f"  {_company_label(r.symbol)}: {r.error_message}")
-        lines.append("")
+    lines.extend(_render_errors_text(errors))
 
     return "\n".join(lines)
 

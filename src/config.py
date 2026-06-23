@@ -269,41 +269,19 @@ class Settings(BaseSettings):
     web_digest_enabled: bool = False
     web_digest_path: str = "public/digest/index.html"
 
-    @field_validator("symbols", mode="before")
+    @field_validator(
+        "symbols",
+        "symbols_etf",
+        "risk_symbols",
+        "symbols_unsupported_price",
+        "crypto_symbols",
+        mode="before",
+    )
     @classmethod
-    def _parse_symbols(cls, value: str | list[str]) -> list[str]:
-        """Pozwala podać SYMBOLS=AAPL,MSFT,GOOGL w .env (CSV → list[str])."""
-        if isinstance(value, str):
-            return [s.strip() for s in value.split(",") if s.strip()]
-        return value
-
-    @field_validator("symbols_etf", mode="before")
-    @classmethod
-    def _parse_symbols_etf(cls, value: str | list[str]) -> list[str]:
-        """Pozwala podać SYMBOLS_ETF=VOO,CSPX.L w .env (CSV → list[str])."""
-        if isinstance(value, str):
-            return [s.strip() for s in value.split(",") if s.strip()]
-        return value
-
-    @field_validator("risk_symbols", mode="before")
-    @classmethod
-    def _parse_risk_symbols(cls, value: str | list[str]) -> list[str]:
-        if isinstance(value, str):
-            return [s.strip() for s in value.split(",") if s.strip()]
-        return value
-
-    @field_validator("symbols_unsupported_price", mode="before")
-    @classmethod
-    def _parse_symbols_unsupported_price(
-        cls, value: str | list[str]
-    ) -> list[str]:
-        if isinstance(value, str):
-            return [s.strip() for s in value.split(",") if s.strip()]
-        return value
-
-    @field_validator("crypto_symbols", mode="before")
-    @classmethod
-    def _parse_crypto_symbols(cls, value: str | list[str]) -> list[str]:
+    def _parse_csv_symbol_list(cls, value: str | list[str]) -> list[str]:
+        """Pozwala podać listy symboli jako CSV w .env (np. ``SYMBOLS=AAPL,MSFT``,
+        ``SYMBOLS_ETF=VOO,CSPX.L``). String dzielimy po przecinku i trymujemy;
+        gotową listę przepuszczamy bez zmian."""
         if isinstance(value, str):
             return [s.strip() for s in value.split(",") if s.strip()]
         return value

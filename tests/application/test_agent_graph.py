@@ -670,7 +670,7 @@ class TestPredictNodeLlmGuard:
         # Symbol NIE crashuje — kończy "saved" z neutralną analizą.
         assert final["status"] == "saved"
         assert final["llm_analysis"]["trend_direction"] == "SIDEWAYS"
-        assert final["llm_analysis"]["confidence_score"] == 0.5
+        assert final["llm_analysis"]["confidence_score"] == pytest.approx(0.5)
         # Ślad degradacji w data_quality_flags (trening odsieje te rekordy).
         assert "llm_analysis_failed" in final["data_quality_flags"]
         # Zapisany rekord też niesie flagę.
@@ -693,7 +693,7 @@ class TestPredictNodeLlmGuard:
         ml_port.predict.assert_called_once()
         features = ml_port.predict.call_args.args[0]
         # Neutralny fallback → llm_trend_signal SIDEWAYS = 0.0.
-        assert features["llm_trend_signal"] == 0.0
+        assert features["llm_trend_signal"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -731,7 +731,7 @@ class TestTrendDirectionValidation:
         assert final["status"] == "saved"
         features = ml_port.predict.call_args.args[0]
         # Nieznany kierunek → neutralny sygnał 0.0 (jak SIDEWAYS).
-        assert features["llm_trend_signal"] == 0.0
+        assert features["llm_trend_signal"] == pytest.approx(0.0)
         # ...ALE zostawia ślad jakości (inaczej śmieć udaje prawdziwy SIDEWAYS).
         assert "trend_direction_invalid" in final["data_quality_flags"]
         saved_record = repository_port.save_prediction.call_args.args[0]
@@ -756,7 +756,7 @@ class TestTrendDirectionValidation:
         final = workflow.compile().invoke(_initial_state("100.0"))
 
         features = ml_port.predict.call_args.args[0]
-        assert features["llm_trend_signal"] == 1.0  # BULLISH
+        assert features["llm_trend_signal"] == pytest.approx(1.0)  # BULLISH
         assert "trend_direction_invalid" not in final["data_quality_flags"]
 
     def test_missing_trend_defaults_to_sideways_without_flag(
@@ -778,7 +778,7 @@ class TestTrendDirectionValidation:
         final = workflow.compile().invoke(_initial_state("100.0"))
 
         features = ml_port.predict.call_args.args[0]
-        assert features["llm_trend_signal"] == 0.0  # SIDEWAYS
+        assert features["llm_trend_signal"] == pytest.approx(0.0)  # SIDEWAYS
         assert "trend_direction_invalid" not in final["data_quality_flags"]
 
 
@@ -1008,12 +1008,12 @@ class TestMlFeatureContract:
         features = ml_port.predict.call_args.args[0]
         assert list(features) == EXPECTED_ML_FEATURES
         assert features["price_delta"] == pytest.approx((90.0 - 120.0) / 120.0)
-        assert features["av_sentiment_score"] == -0.42
-        assert features["av_relevance_avg"] == 0.72
-        assert features["news_volume_24h"] == 4.0
-        assert features["high_relevance_count"] == 2.0
-        assert features["llm_trend_signal"] == -1.0
-        assert features["av_llm_agreement"] == 0.25
+        assert features["av_sentiment_score"] == pytest.approx(-0.42)
+        assert features["av_relevance_avg"] == pytest.approx(0.72)
+        assert features["news_volume_24h"] == pytest.approx(4.0)
+        assert features["high_relevance_count"] == pytest.approx(2.0)
+        assert features["llm_trend_signal"] == pytest.approx(-1.0)
+        assert features["av_llm_agreement"] == pytest.approx(0.25)
 
     def test_save_persists_ml_feature_inputs_for_slow_loop(
         self, workflow, market_port, sentiment_port, news_port,
@@ -1027,11 +1027,11 @@ class TestMlFeatureContract:
         workflow.compile().invoke(_initial_state("100.0"))
 
         saved_record = repository_port.save_prediction.call_args.args[0]
-        assert saved_record["sentiment_score"] == -0.42
-        assert saved_record["av_relevance_avg"] == 0.72
+        assert saved_record["sentiment_score"] == pytest.approx(-0.42)
+        assert saved_record["av_relevance_avg"] == pytest.approx(0.72)
         assert saved_record["news_volume_24h"] == 4
         assert saved_record["high_relevance_count"] == 2
-        assert saved_record["av_llm_agreement"] == 0.25
+        assert saved_record["av_llm_agreement"] == pytest.approx(0.25)
 
 
 # ---------------------------------------------------------------------------

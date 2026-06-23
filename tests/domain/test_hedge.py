@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from src.domain.hedge import (
     HedgeAssessment,
     assess_hedge,
@@ -57,14 +59,14 @@ def test_zero_variance_returns_zero() -> None:
     """Stała seria (zerowa wariancja) → korelacja 0.0, brak mierzalnej zależności."""
     book = [5.0, 5.0, 5.0, 5.0]
     hedge = [1.0, 2.0, 3.0, 4.0]
-    assert realized_correlation(book, hedge) == 0.0
-    assert hedge_effectiveness(book, hedge, expect_inverse=True) == 0.0
+    assert realized_correlation(book, hedge) == pytest.approx(0.0)
+    assert hedge_effectiveness(book, hedge, expect_inverse=True) == pytest.approx(0.0)
 
 
 def test_too_short_series_returns_zero() -> None:
     """Mniej niż 2 punkty → 0.0 (nie da się policzyć korelacji)."""
-    assert realized_correlation([1.0], [2.0]) == 0.0
-    assert realized_correlation([], []) == 0.0
+    assert realized_correlation([1.0], [2.0]) == pytest.approx(0.0)
+    assert realized_correlation([], []) == pytest.approx(0.0)
 
 
 def test_unequal_length_truncates_to_shorter() -> None:

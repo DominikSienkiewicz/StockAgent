@@ -42,10 +42,14 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 #   - backticki (markdown / fence),
 #   - kątowe markery fence'a (zarówno start, jak i końcowy),
 #   - pseudo-role w stylu czatu ("system:", "assistant:", "<|im_start|>").
+# Kwantyfikatory wokół "UNTRUSTED" są OGRANICZONE ({0,64}) — bez limitu wzorzec
+# `[A-Z_]*UNTRUSTED[A-Z_]*` na powtarzalnym "UNTRUSTED_..." backtrackuje O(n^2)
+# (ReDoS na danych nieufnych). Realne etykiety fence'a są krótkie, więc 64 znaki
+# z naddatkiem pokrywają każdy prawdziwy marker.
 _DANGEROUS_TOKENS_RE = re.compile(
     r"""
       `+                                  # backticki
-    | <<<\s*/?\s*[A-Z_]*UNTRUSTED[A-Z_]*\s*>>>   # próby podrobienia markerów
+    | <<<\s*/?\s*[A-Z_]{0,64}UNTRUSTED[A-Z_]{0,64}\s*>>>  # podrobione markery
     | <\|[^>]*\|>                          # tokeny chat-ML, np. <|im_start|>
     | (?i:\b(?:system|assistant|developer)\s*:)  # pseudo-role
     """,

@@ -80,11 +80,11 @@ class TestFetchYieldCurve:
         snap = client.fetch_yield_curve()
 
         assert isinstance(snap, YieldCurveSnapshot)
-        assert snap.ten_year == 4.25
-        assert snap.two_year == 4.80
-        assert snap.fed_funds == 5.33
+        assert snap.ten_year == pytest.approx(4.25)
+        assert snap.two_year == pytest.approx(4.80)
+        assert snap.fed_funds == pytest.approx(5.33)
         assert snap.spread_10y_2y is not None
-        assert round(snap.spread_10y_2y, 2) == -0.55
+        assert round(snap.spread_10y_2y, 2) == pytest.approx(-0.55)
         assert snap.state() == YieldCurveState.INVERTED
 
     def test_sets_timeout_on_every_call(
@@ -156,9 +156,9 @@ class TestFetchYieldCurve:
         snap = client.fetch_yield_curve()
 
         assert isinstance(snap, YieldCurveSnapshot)
-        assert snap.ten_year == 4.25
+        assert snap.ten_year == pytest.approx(4.25)
         assert snap.two_year is None
-        assert snap.fed_funds == 5.33
+        assert snap.fed_funds == pytest.approx(5.33)
         # Brak 2Y → spread nieobliczalny, stan neutralny.
         assert snap.spread_10y_2y is None
         assert snap.state() == YieldCurveState.NORMAL
@@ -180,9 +180,9 @@ class TestFetchYieldCurve:
         snap = client.fetch_yield_curve()
 
         assert isinstance(snap, YieldCurveSnapshot)
-        assert snap.ten_year == 4.25
+        assert snap.ten_year == pytest.approx(4.25)
         assert snap.two_year is None
-        assert snap.fed_funds == 5.33
+        assert snap.fed_funds == pytest.approx(5.33)
 
     def test_unparseable_value_becomes_none(
         self, client: FredClient, mocker
@@ -202,8 +202,8 @@ class TestFetchYieldCurve:
 
         assert isinstance(snap, YieldCurveSnapshot)
         assert snap.ten_year is None
-        assert snap.two_year == 4.80
-        assert snap.fed_funds == 5.33
+        assert snap.two_year == pytest.approx(4.80)
+        assert snap.fed_funds == pytest.approx(5.33)
 
     def test_all_series_non_200_returns_none(
         self, client: FredClient, mocker

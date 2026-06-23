@@ -391,8 +391,8 @@ class TestArticlesFor:
         assert article["url"] == "https://example.com/1"
         assert article["published_at"] == "20260514T093000"
         # Per-ticker fields
-        assert article["relevance_score"] == 0.95
-        assert article["ticker_sentiment_score"] == 0.52
+        assert article["relevance_score"] == pytest.approx(0.95)
+        assert article["ticker_sentiment_score"] == pytest.approx(0.52)
 
 
 class TestSentimentFor:
@@ -419,7 +419,7 @@ class TestSentimentFor:
 
         result = client.sentiment_for("AAPL")
 
-        assert result["av_sentiment_score"] == 0.0
+        assert result["av_sentiment_score"] == pytest.approx(0.0)
         assert result["news_volume_24h"] == 0
         assert result["av_sentiment_label"] == "Neutral"
 

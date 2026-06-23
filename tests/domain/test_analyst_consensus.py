@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
+
 from src.domain.analyst_consensus import AnalystConsensus, AnalystRating
 
 
@@ -59,12 +61,12 @@ class TestUpside:
     def test_positive_upside_with_decimal_price(self) -> None:
         # cel 150, cena 100 → (150 - 100) / 100 = 0.5.
         consensus = AnalystConsensus(symbol="AAPL", buy=5, price_target=150.0)
-        assert consensus.upside(Decimal("100")) == 0.5
+        assert consensus.upside(Decimal("100")) == pytest.approx(0.5)
 
     def test_negative_upside_when_target_below_price(self) -> None:
         # cel 80, cena 100 → -0.2.
         consensus = AnalystConsensus(symbol="AAPL", hold=5, price_target=80.0)
-        assert consensus.upside(Decimal("100")) == -0.2
+        assert consensus.upside(Decimal("100")) == pytest.approx(-0.2)
 
     def test_none_when_no_price_target(self) -> None:
         consensus = AnalystConsensus(symbol="AAPL", buy=5, price_target=None)

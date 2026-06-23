@@ -198,14 +198,14 @@ class TestResilienceSettings:
         self, env: pytest.MonkeyPatch
     ) -> None:
         settings = Settings(_env_file=None)
-        assert settings.symbol_throttle_seconds == 0.0
+        assert settings.symbol_throttle_seconds == pytest.approx(0.0)
 
     def test_symbol_throttle_parses_float(
         self, env: pytest.MonkeyPatch
     ) -> None:
         env.setenv("SYMBOL_THROTTLE_SECONDS", "2.5")
         settings = Settings(_env_file=None)
-        assert settings.symbol_throttle_seconds == 2.5
+        assert settings.symbol_throttle_seconds == pytest.approx(2.5)
 
     def test_symbol_throttle_negative_rejected(
         self, env: pytest.MonkeyPatch

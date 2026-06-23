@@ -1,10 +1,11 @@
 import json
+import time
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.application.ports import LLMPort
-from src.infrastructure.llm.anthropic_client import AnthropicAdapter
+from src.infrastructure.llm.anthropic_client import DEFAULT_MODEL, AnthropicAdapter
 
 
 def _message_response(text: str | None) -> MagicMock:
@@ -51,7 +52,7 @@ class TestAnalyze:
         result = adapter.analyze("Predict AAPL.")
 
         assert result["trend_direction"] == "BULLISH"
-        assert result["confidence_score"] == 0.85
+        assert result["confidence_score"] == pytest.approx(0.85)
 
     def test_passes_model_and_prompt(self, adapter_with_client):
         adapter, client = adapter_with_client
@@ -351,12 +352,13 @@ class TestModelIdValidation:
 
     def test_valid_model_id_constructs_fine(self, mock_anthropic_class):
         adapter = AnthropicAdapter(api_key="sk-ant-test", model="claude-opus-4-7")
-        assert adapter is not None
+        # Poprawny model id jest przyjęty i zapamiętany.
+        assert adapter._model == "claude-opus-4-7"
 
     def test_default_model_id_constructs_fine(self, mock_anthropic_class):
         # Domyślny model id musi przejść własną walidację.
         adapter = AnthropicAdapter(api_key="sk-ant-test")
-        assert adapter is not None
+        assert adapter._model == DEFAULT_MODEL
 
 
 class TestMaxTokensCap:
@@ -412,3 +414,27 @@ class TestAnthropicLive:
             'Return ONLY JSON: {"answer": 42}. No markdown, just JSON.'
         )
         assert isinstance(result, dict)
+
+
+class TestStripCodeBlockReDoS:
+    """Bezpieczeństwo: ``_strip_code_block`` działa na surowym output LLM.
+    Wzorzec ```` ```...``` ```` z ``\\s*(.*?)\\s*`` miał backtracking rosnący
+    sześciennie na wejściu z dużą ilością białych znaków bez domknięcia fence'a
+    — model (lub wstrzyknięte dane) mógł zawiesić parsowanie (DoS).
+    """
+
+    def test_unbalanced_whitespace_fence_does_not_hang(self) -> None:
+        # Payload, który dla niezabezpieczonego wzorca rośnie wielomianowo.
+        evil = "```json" + " \t\n" * 800 + "`"
+        start = time.perf_counter()
+        out = AnthropicAdapter._strip_code_block(evil)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 1.0, f"_strip_code_block zajęło {elapsed:.2f}s — ReDoS"
+        # Brak domkniętego fence'a => wejście wraca niezmienione.
+        assert out == evil
+
+    def test_extracts_json_from_fenced_block(self) -> None:
+        assert (
+            AnthropicAdapter._strip_code_block('```json\n{"a": 1}\n```') == '{"a": 1}'
+        )
+        assert AnthropicAdapter._strip_code_block('```{"b": 2}```') == '{"b": 2}'

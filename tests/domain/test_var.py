@@ -33,13 +33,13 @@ class TestHistoricalVar:
     def test_all_gains_clamps_to_zero(self):
         # Brak strat w ogonie — kwantyl dodatni, więc VaR = max(0, -kwantyl) = 0.
         returns = [0.01, 0.02, 0.03, 0.05, 0.10]
-        assert historical_var(returns, 0.95) == 0.0
+        assert historical_var(returns, 0.95) == pytest.approx(0.0)
 
     def test_empty_returns_zero(self):
-        assert historical_var([], 0.95) == 0.0
+        assert historical_var([], 0.95) == pytest.approx(0.0)
 
     def test_single_element_returns_zero(self):
-        assert historical_var([-0.5], 0.95) == 0.0
+        assert historical_var([-0.5], 0.95) == pytest.approx(0.0)
 
     def test_lower_confidence_gives_smaller_or_equal_tail(self):
         # 90% sięga płycej w ogon niż 99% → strata nie większa.
@@ -92,13 +92,13 @@ class TestConditionalVar:
 
     def test_all_gains_clamps_to_zero(self):
         returns = [0.01, 0.02, 0.03, 0.05, 0.10]
-        assert conditional_var(returns, 0.95) == 0.0
+        assert conditional_var(returns, 0.95) == pytest.approx(0.0)
 
     def test_empty_returns_zero(self):
-        assert conditional_var([], 0.95) == 0.0
+        assert conditional_var([], 0.95) == pytest.approx(0.0)
 
     def test_single_element_returns_zero(self):
-        assert conditional_var([-0.5], 0.95) == 0.0
+        assert conditional_var([-0.5], 0.95) == pytest.approx(0.0)
 
     def test_default_confidence_is_95(self):
         returns = [-0.30, -0.20, -0.10, -0.05, 0.0, 0.05, 0.10, 0.20]

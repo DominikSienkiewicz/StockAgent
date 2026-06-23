@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from src.domain.correlation import (
     correlation_matrix,
     detect_clusters,
@@ -37,27 +39,27 @@ class TestPearson:
     def test_perfectly_correlated_is_one(self) -> None:
         a = [1.0, 2.0, 3.0, 4.0]
         b = [2.0, 4.0, 6.0, 8.0]  # b = 2a → korelacja idealna
-        assert pearson(a, b) == 1.0
+        assert pearson(a, b) == pytest.approx(1.0)
 
     def test_anti_correlated_is_minus_one(self) -> None:
         a = [1.0, 2.0, 3.0, 4.0]
         b = [4.0, 3.0, 2.0, 1.0]
-        assert pearson(a, b) == -1.0
+        assert pearson(a, b) == pytest.approx(-1.0)
 
     def test_zero_variance_returns_zero(self) -> None:
         # Jedna seria stała → wariancja 0 → nie ma korelacji (guard, nie NaN).
         a = [1.0, 1.0, 1.0, 1.0]
         b = [1.0, 2.0, 3.0, 4.0]
-        assert pearson(a, b) == 0.0
+        assert pearson(a, b) == pytest.approx(0.0)
 
     def test_mismatched_length_uses_common_prefix(self) -> None:
         a = [1.0, 2.0, 3.0, 4.0, 99.0]
         b = [2.0, 4.0, 6.0, 8.0]
-        assert pearson(a, b) == 1.0
+        assert pearson(a, b) == pytest.approx(1.0)
 
     def test_too_short_returns_zero(self) -> None:
-        assert pearson([1.0], [2.0]) == 0.0
-        assert pearson([], []) == 0.0
+        assert pearson([1.0], [2.0]) == pytest.approx(0.0)
+        assert pearson([], []) == pytest.approx(0.0)
 
 
 class TestCorrelationMatrix:
@@ -68,8 +70,8 @@ class TestCorrelationMatrix:
             "C": [-0.01, -0.02, -0.03, -0.04],  # = -A
         }
         matrix = correlation_matrix(returns)
-        assert matrix[("A", "B")] == 1.0
-        assert matrix[("A", "C")] == -1.0
+        assert matrix[("A", "B")] == pytest.approx(1.0)
+        assert matrix[("A", "C")] == pytest.approx(-1.0)
         # Klucze posortowane leksykalnie — brak duplikatów (A,B)/(B,A).
         assert ("B", "A") not in matrix
 

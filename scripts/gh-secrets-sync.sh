@@ -29,7 +29,7 @@ ENV_FILE=""
 REPO=""
 DRY_RUN=0
 ASSUME_YES=0
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     -f|--file) ENV_FILE="${2:-}"; shift 2 ;;
     -R|--repo) REPO="${2:-}"; shift 2 ;;
@@ -42,9 +42,9 @@ done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WF_DIR="$ROOT/.github/workflows"
-[ -n "$ENV_FILE" ] || ENV_FILE="$ROOT/.env"
+[[ -n "$ENV_FILE" ]] || ENV_FILE="$ROOT/.env"
 
-if [ -t 1 ]; then
+if [[ -t 1 ]]; then
   GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; RESET=$'\033[0m'
 else
   GREEN=""; RED=""; YELLOW=""; BOLD=""; DIM=""; RESET=""
@@ -58,7 +58,7 @@ die() { echo "${RED}error:${RESET} $*" >&2; exit 2; }
 get_env_value() {
   local key="$1" file="$2" line val
   line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file" | tail -n1 || true)"
-  [ -z "$line" ] && return 1
+  [[ -z "$line" ]] && return 1
   line="${line#"${line%%[![:space:]]*}"}"   # usuń wiodące białe znaki
   line="${line#export }"
   val="${line#*=}"
@@ -66,23 +66,24 @@ get_env_value() {
   case "$val" in
     \"*\") val="${val#\"}"; val="${val%\"}" ;;
     \'*\') val="${val#\'}"; val="${val%\'}" ;;
+    *) ;;  # bez otaczających cudzysłowów — wartość bierzemy dosłownie
   esac
   printf '%s' "$val"
 }
 
 command -v gh >/dev/null 2>&1 || die "GitHub CLI (gh) not found — install from https://cli.github.com"
-[ -d "$WF_DIR" ] || die "no workflows directory at $WF_DIR"
-[ -f "$ENV_FILE" ] || die "env file not found: $ENV_FILE (copy .env.example to .env first)"
+[[ -d "$WF_DIR" ]] || die "no workflows directory at $WF_DIR"
+[[ -f "$ENV_FILE" ]] || die "env file not found: $ENV_FILE (copy .env.example to .env first)"
 
 # Preferuj GH_TOKEN z pliku env do każdego wywołania gh (nadpisuje zbyt wąski token już
 # wyeksportowany w powłoce). Eksport tylko do tego procesu + jego dzieci, nigdy do Twojej powłoki.
 _ENV_GH_TOKEN="$(get_env_value GH_TOKEN "$ENV_FILE" 2>/dev/null || true)"
-[ -n "${_ENV_GH_TOKEN:-}" ] && export GH_TOKEN="$_ENV_GH_TOKEN"
+[[ -n "${_ENV_GH_TOKEN:-}" ]] && export GH_TOKEN="$_ENV_GH_TOKEN"
 
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated — run: gh auth login (or set GH_TOKEN in $ENV_FILE)"
 
 REPO_FLAG=()
-if [ -n "$REPO" ]; then
+if [[ -n "$REPO" ]]; then
   REPO_FLAG=(--repo "$REPO")
   REPO_LABEL="$REPO"
 else
@@ -93,8 +94,9 @@ fi
 # vars.* — config niewrażliwy żyje w config.toml), grep zwraca 1 i pod `set -o pipefail`
 # wywaliłby skrypt. Pusta lista to poprawny stan, nie błąd.
 discover() {
-  grep -rhoE "$1\.[A-Za-z0-9_]+" "$WF_DIR" 2>/dev/null \
-    | sed "s/^$1\.//" | grep -vx 'GITHUB_TOKEN' | sort -u || true
+  local prefix="$1"
+  grep -rhoE "$prefix\.[A-Za-z0-9_]+" "$WF_DIR" 2>/dev/null \
+    | sed "s/^$prefix\.//" | grep -vx 'GITHUB_TOKEN' | sort -u || true
 }
 
 # Zbuduj plan w równoległych indeksowanych tablicach (bash 3.2 nie ma tablic asocjacyjnych).
@@ -106,10 +108,10 @@ stage_kind() {
   # $1 = rzeczownik gh (secret|variable) · $2 = prefiks workflow (secrets|vars) · $3 = mask(1/0)
   local noun="$1" ref="$2" mask="$3" required name value
   required="$(discover "$ref")"
-  [ -z "$required" ] && return 0
+  [[ -z "$required" ]] && return 0
   while IFS= read -r name; do
-    [ -z "$name" ] && continue
-    if value="$(get_env_value "$name" "$ENV_FILE")" && [ -n "$value" ]; then
+    [[ -z "$name" ]] && continue
+    if value="$(get_env_value "$name" "$ENV_FILE")" && [[ -n "$value" ]]; then
       PLAN_NOUN[N]="$noun"; PLAN_NAME[N]="$name"; PLAN_VALUE[N]="$value"; PLAN_MASK[N]="$mask"
       N=$((N + 1))
     else
@@ -134,15 +136,15 @@ ignored="$(comm -23 <(printf '%s\n' "$env_keys") <(printf '%s\n' "$required_all"
 
 echo "${BOLD}StockAgent — push secrets/variables from $(basename "$ENV_FILE")${RESET}"
 echo "Repo: ${REPO_LABEL}   Source: ${ENV_FILE}"
-[ "$DRY_RUN" = "1" ] && echo "${YELLOW}(dry-run — nothing will be changed)${RESET}"
+[[ "$DRY_RUN" = "1" ]] && echo "${YELLOW}(dry-run — nothing will be changed)${RESET}"
 echo
 echo "${BOLD}Plan${RESET}"
-if [ "$N" -eq 0 ]; then
+if [[ "$N" -eq 0 ]]; then
   echo "  ${DIM}— nothing to push —${RESET}"
 else
   i=0
-  while [ "$i" -lt "$N" ]; do
-    if [ "${PLAN_MASK[i]}" = "1" ]; then
+  while [[ "$i" -lt "$N" ]]; do
+    if [[ "${PLAN_MASK[i]}" = "1" ]]; then
       shown="•••• ${DIM}(${#PLAN_VALUE[i]} chars)${RESET}"
     else
       shown="${PLAN_VALUE[i]}"
@@ -151,15 +153,15 @@ else
     i=$((i + 1))
   done
 fi
-[ -n "$SKIPPED" ] && printf '%s' "$SKIPPED"
-[ -n "$ignored" ] && echo "  ${DIM}ignored (not used by any workflow): $(printf '%s' "$ignored" | tr '\n' ' ')${RESET}"
+[[ -n "$SKIPPED" ]] && printf '%s' "$SKIPPED"
+[[ -n "$ignored" ]] && echo "  ${DIM}ignored (not used by any workflow): $(printf '%s' "$ignored" | tr '\n' ' ')${RESET}"
 echo
 
-if [ "$DRY_RUN" = "1" ] || [ "$N" -eq 0 ]; then
+if [[ "$DRY_RUN" = "1" ]] || [[ "$N" -eq 0 ]]; then
   exit 0
 fi
 
-if [ "$ASSUME_YES" != "1" ]; then
+if [[ "$ASSUME_YES" != "1" ]]; then
   printf 'Apply %s change(s) to %s? [y/N] ' "$N" "$REPO_LABEL"
   read -r reply
   case "$reply" in
@@ -170,7 +172,7 @@ fi
 
 FAIL=0
 i=0
-while [ "$i" -lt "$N" ]; do
+while [[ "$i" -lt "$N" ]]; do
   if err="$(printf '%s' "${PLAN_VALUE[i]}" | gh "${PLAN_NOUN[i]}" set "${PLAN_NAME[i]}" "${REPO_FLAG[@]+"${REPO_FLAG[@]}"}" 2>&1)"; then
     echo "  ${GREEN}✓${RESET} ${PLAN_NOUN[i]} ${PLAN_NAME[i]}"
   else
@@ -180,9 +182,9 @@ while [ "$i" -lt "$N" ]; do
   i=$((i + 1))
 done
 echo
-if [ "$FAIL" -gt 0 ]; then
+if [[ "$FAIL" -gt 0 ]]; then
   echo "${RED}${FAIL} of ${N} failed.${RESET}"
-  if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
+  if [[ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]]; then
     echo "${YELLOW}GH_TOKEN/GITHUB_TOKEN is set${RESET} and overrides your 'gh auth login' token —"
     echo "  ${DIM}a fine-grained PAT needs 'Secrets: Read and write' (and 'Variables: R/W') to set these.${RESET}"
     echo "  ${DIM}Retry with your keyring token:  GH_TOKEN= GITHUB_TOKEN= ${0##*/}${RESET}"

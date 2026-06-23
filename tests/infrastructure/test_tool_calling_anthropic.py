@@ -5,7 +5,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.application.ports import Tool, ToolUseLLMPort
-from src.infrastructure.llm.tool_calling_anthropic import ToolCallingAnthropicAdapter
+from src.infrastructure.llm.tool_calling_anthropic import (
+    DEFAULT_MODEL,
+    ToolCallingAnthropicAdapter,
+)
 
 
 def _text_block(text: str) -> MagicMock:
@@ -326,7 +329,7 @@ class TestConfiguration:
 
     def test_default_model_constructs_fine(self, mock_anthropic_class):
         adapter = ToolCallingAnthropicAdapter(api_key="sk-ant-test")
-        assert adapter is not None
+        assert adapter._model == DEFAULT_MODEL
 
     def test_wrong_prefix_model_raises(self, mock_anthropic_class):
         with pytest.raises(ValueError, match="claude-"):

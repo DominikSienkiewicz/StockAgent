@@ -240,19 +240,19 @@ class TestConfidenceClamp:
     def test_confidence_above_one_clamped_to_one(self) -> None:
         # Dryf na skalę 0-100: confidence=85 → musi spaść do 1.0, nie zostać 85.
         opinion = _parse_opinion("Inv", {"recommendation": "BUY", "confidence": 85})
-        assert opinion.confidence == 1.0
+        assert opinion.confidence == pytest.approx(1.0)
 
     def test_confidence_below_zero_clamped_to_zero(self) -> None:
         opinion = _parse_opinion("Inv", {"recommendation": "BUY", "confidence": -3})
-        assert opinion.confidence == 0.0
+        assert opinion.confidence == pytest.approx(0.0)
 
     def test_confidence_in_range_passes_through(self) -> None:
         opinion = _parse_opinion("Inv", {"recommendation": "BUY", "confidence": 0.7})
-        assert opinion.confidence == 0.7
+        assert opinion.confidence == pytest.approx(0.7)
 
     def test_confidence_missing_defaults_to_half(self) -> None:
         opinion = _parse_opinion("Inv", {"recommendation": "BUY"})
-        assert opinion.confidence == 0.5
+        assert opinion.confidence == pytest.approx(0.5)
 
     def test_high_confidence_label_not_triggered_by_drift(self) -> None:
         # Regresja na sedno findingu: 85 sklamowane do 1.0 → label HIGH legalnie,

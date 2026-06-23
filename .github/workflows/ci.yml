@@ -24,7 +24,7 @@ jobs:
           python-version: '3.12'
 
       - name: ⚡ Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
         with:
           enable-cache: true
 
@@ -45,3 +45,50 @@ jobs:
       - name: 🐳 Pytest (container schema tests)
         # Testy migracji SQL odpalają Postgres + pgvector przez testcontainers.
         run: uv run pytest -m containers
+
+  sonarcloud:
+    name: SonarCloud
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Reads sonar-project.properties (keys, sources/tests split,
+    # sonar.python.coverage.reportPaths → the coverage report produced below).
+    # Prerequisites, one-time (see README → GitHub Actions):
+    #   1. Add a SONAR_TOKEN repository secret (SonarCloud → My Account → Security).
+    #   2. Disable "Automatic Analysis" in SonarCloud (Administration → Analysis
+    #      Method) — CI-based and automatic analysis cannot both run on one project,
+    #      and only the CI scan uploads the coverage report the gate needs.
+    # The scan is skipped until SONAR_TOKEN exists, so this job never blocks CI early.
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: https://sonarcloud.io
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history → accurate new-code & blame attribution
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: 📦 Sync dependencies (incl. dev + anthropic extra)
+        if: ${{ env.SONAR_TOKEN != '' }}
+        run: uv sync --frozen --extra anthropic
+
+      # Coverage for SonarCloud. Mirrors CI's test selection minus integration (real
+      # API keys); container tests use testcontainers (Docker is on the ubuntu runner).
+      # Writes coverage.xml at the repo root, where sonar-project.properties expects it.
+      - name: 🧪 Pytest with coverage
+        if: ${{ env.SONAR_TOKEN != '' }}
+        run: uv run pytest -m "not integration" --cov=src --cov-report=xml
+
+      - name: 🔍 SonarCloud Scan
+        if: ${{ env.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-scan-action@v8.2.0

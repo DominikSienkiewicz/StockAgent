@@ -20,7 +20,7 @@ class TestCalibration:
         assert calibration_error(samples) == pytest.approx(0.4)
 
     def test_calibration_error_empty(self):
-        assert calibration_error([]) == 0.0
+        assert calibration_error([]) == pytest.approx(0.0)
 
     def test_calibration_score_per_prediction(self):
         assert calibration_score(0.9, correct=False) == pytest.approx(0.1)

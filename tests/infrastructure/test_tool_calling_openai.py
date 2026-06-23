@@ -5,7 +5,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.application.ports import Tool, ToolUseLLMPort
-from src.infrastructure.llm.tool_calling_openai import ToolCallingOpenAIAdapter
+from src.infrastructure.llm.tool_calling_openai import (
+    DEFAULT_MODEL,
+    ToolCallingOpenAIAdapter,
+)
 
 
 def _final_message(content: str) -> MagicMock:
@@ -264,7 +267,7 @@ class TestConfiguration:
 
     def test_default_model_constructs_fine(self, mock_openai_class):
         adapter = ToolCallingOpenAIAdapter(api_key="sk-test")
-        assert adapter is not None
+        assert adapter._model == DEFAULT_MODEL
 
     def test_empty_model_id_raises(self, mock_openai_class):
         with pytest.raises(ValueError, match="model"):

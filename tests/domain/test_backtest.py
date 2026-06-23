@@ -1,3 +1,5 @@
+import pytest
+
 from src.domain.backtest import BacktestSummary, summarize_folds
 
 
@@ -62,7 +64,7 @@ class TestSummarizeFolds:
 
         summary = summarize_folds(folds)
 
-        assert summary.improvement_pct == 0.0
+        assert summary.improvement_pct == pytest.approx(0.0)
         # candidate 0.10 > baseline 0.0 → nie bije
         assert summary.beats_baseline is False
 

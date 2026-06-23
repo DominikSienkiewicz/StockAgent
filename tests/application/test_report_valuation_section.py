@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from src.application.report_builder import build_html_report
 from src.application.report_models import SymbolResult, ValuationSection
 from src.domain.value_objects import ValuationVerdict
@@ -35,7 +37,7 @@ def test_valuation_section_dataclass_fields() -> None:
         fetched_at=datetime(2026, 5, 17, tzinfo=UTC),
     )
     assert section.verdict is ValuationVerdict.FAIR
-    assert section.peg_ratio == 1.2
+    assert section.peg_ratio == pytest.approx(1.2)
 
 
 def test_symbol_result_has_valuation_slot() -> None:

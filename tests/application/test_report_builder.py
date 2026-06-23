@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from src.application import report_builder
 from src.application.report_builder import (
     ResolvedPrediction,
@@ -397,7 +399,7 @@ class TestPortfolioMood:
 
     def test_handles_empty_results(self):
         mood = build_portfolio_mood([])
-        assert mood["avg_sentiment"] == 0.0
+        assert mood["avg_sentiment"] == pytest.approx(0.0)
         assert mood["most_bullish"] is None
         assert mood["most_bearish"] is None
         assert mood["saved_count"] == 0
@@ -1073,11 +1075,11 @@ class TestToSymbolResult:
         assert result.status == "saved"
         assert result.trend == "BEARISH"
         assert result.target_price == Decimal("97.0")
-        assert result.confidence_score == 0.72
+        assert result.confidence_score == pytest.approx(0.72)
         assert result.reflection_insight == "Ostatni błąd: nie doceniłem hawkish Fed."
         assert len(result.top_news) == 1
         assert result.top_news[0].source == "Reuters"
-        assert result.top_news[0].relevance == 0.95
+        assert result.top_news[0].relevance == pytest.approx(0.95)
 
     def test_cold_start_reflection_filtered(self):
         raw = {

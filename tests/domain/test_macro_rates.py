@@ -5,6 +5,8 @@ INVERTED/FLAT/NORMAL oraz graceful obsługę braków (None)."""
 
 from __future__ import annotations
 
+import pytest
+
 from src.domain.macro_rates import YieldCurveSnapshot, YieldCurveState
 
 
@@ -13,12 +15,12 @@ class TestSpread10y2y:
         snap = YieldCurveSnapshot(ten_year=4.25, two_year=4.80, fed_funds=5.33)
         # 4.25 - 4.80 == -0.55 (z tolerancją na błąd float)
         assert snap.spread_10y_2y is not None
-        assert round(snap.spread_10y_2y, 2) == -0.55
+        assert round(snap.spread_10y_2y, 2) == pytest.approx(-0.55)
 
     def test_positive_spread(self) -> None:
         snap = YieldCurveSnapshot(ten_year=4.50, two_year=4.00)
         assert snap.spread_10y_2y is not None
-        assert round(snap.spread_10y_2y, 2) == 0.50
+        assert round(snap.spread_10y_2y, 2) == pytest.approx(0.50)
 
     def test_none_when_ten_year_missing(self) -> None:
         snap = YieldCurveSnapshot(ten_year=None, two_year=4.00)

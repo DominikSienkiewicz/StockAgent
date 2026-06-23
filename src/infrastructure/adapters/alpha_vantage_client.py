@@ -158,16 +158,25 @@ class AlphaVantageClient:
                 self._mark_keys_exhausted()
                 break
 
-            for article in payload.get("feed", []):
-                url = article.get("url")
-                if url and url in seen_urls:
-                    continue
-                if url:
-                    seen_urls.add(url)
-                combined.append(article)
+            self._collect_unique_articles(payload, combined, seen_urls)
 
         self._cached_feed = combined
         return self._cached_feed
+
+    @staticmethod
+    def _collect_unique_articles(
+        payload: dict[str, Any],
+        combined: list[dict[str, Any]],
+        seen_urls: set[str],
+    ) -> None:
+        """Dokleja artykuły z batcha do `combined`, deduplikując po URL."""
+        for article in payload.get("feed", []):
+            url = article.get("url")
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+            combined.append(article)
 
     def _mark_keys_exhausted(self) -> None:
         """Wystawia sygnał degradacji + CRITICAL alert (idempotentnie).

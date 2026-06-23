@@ -64,8 +64,8 @@ class TestGetSocialVelocity:
         assert isinstance(snap, SocialVelocitySnapshot)
         assert snap.symbol == "GME"
         assert snap.mentions_24h == 30
-        assert snap.baseline_mentions == 10.0
-        assert snap.velocity_ratio() == 3.0
+        assert snap.baseline_mentions == pytest.approx(10.0)
+        assert snap.velocity_ratio() == pytest.approx(3.0)
         assert snap.trend() is SocialTrend.SURGING
 
     def test_avg_sentiment_is_none(

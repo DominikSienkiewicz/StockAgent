@@ -149,7 +149,7 @@ class TestGetInsiderFlow:
         assert snap.buy_count == 1
         assert snap.sell_count == 1
         # +1000 kupno, -400 sprzedaż → +600 netto.
-        assert snap.net_shares == 600.0
+        assert snap.net_shares == pytest.approx(600.0)
         assert snap.window_days == 90
         assert snap.evaluate_signal() is InsiderSignal.NET_BUYING
 
@@ -173,7 +173,7 @@ class TestGetInsiderFlow:
         snap = adapter.get_insider_flow("AAPL")
 
         assert snap is not None
-        assert snap.net_shares == -800.0
+        assert snap.net_shares == pytest.approx(-800.0)
         assert snap.evaluate_signal() is InsiderSignal.NET_SELLING
 
     def test_skips_filings_outside_window(self, mocker) -> None:
@@ -320,7 +320,7 @@ class TestGetInsiderFlow:
         # Tylko sprzedaż (500) sparsowana; kupno pominięte z powodu zepsutego XML.
         assert snap.sell_count == 1
         assert snap.buy_count == 0
-        assert snap.net_shares == -500.0
+        assert snap.net_shares == pytest.approx(-500.0)
 
     def test_all_xml_failing_still_returns_snapshot_with_counts(
         self, adapter: EdgarInsiderAdapter, mocker
@@ -338,7 +338,7 @@ class TestGetInsiderFlow:
         snap = adapter.get_insider_flow("AAPL")
 
         assert isinstance(snap, InsiderFlowSnapshot)
-        assert snap.net_shares == 0.0
+        assert snap.net_shares == pytest.approx(0.0)
         assert snap.buy_count == 0
         assert snap.sell_count == 0
         assert snap.evaluate_signal() is InsiderSignal.NEUTRAL
@@ -391,7 +391,7 @@ class TestGetInsiderFlow:
         assert snap is not None
         assert snap.buy_count == 1
         assert snap.sell_count == 0
-        assert snap.net_shares == 1000.0
+        assert snap.net_shares == pytest.approx(1000.0)
 
     def test_is_insider_flow_port(self, adapter: EdgarInsiderAdapter) -> None:
         assert isinstance(adapter, InsiderFlowPort)

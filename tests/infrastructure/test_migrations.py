@@ -384,7 +384,7 @@ class TestMigrations:
         assert row is not None
         # Jeden logiczny wiersz, zaktualizowana cena (250), nie duplikat.
         assert row[0] == 1
-        assert float(row[1]) == 250.0
+        assert float(row[1]) == pytest.approx(250.0)
 
 
 @pytest.fixture
@@ -466,7 +466,7 @@ class TestMigration013DedupesPreexistingDuplicates:
 
             # price_snapshots: zachowany NAJNOWSZY snapshot (101 @ 17:40).
             cur.execute("SELECT price FROM price_snapshots WHERE symbol='VT'")
-            assert float(cur.fetchone()[0]) == 101.0
+            assert float(cur.fetchone()[0]) == pytest.approx(101.0)
             # prediction_logs: zachowany ROZLICZONY wiersz (BULLISH @ 17:10),
             # mimo że jest starszy — feedback ma priorytet nad świeżością.
             cur.execute(

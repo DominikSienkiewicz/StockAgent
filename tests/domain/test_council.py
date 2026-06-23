@@ -199,16 +199,16 @@ class TestCouncilVerdictBehavior:
             _make_opinion("HOLD"),
         ]
         v = self._verdict(ops, final="BUY")
-        assert v.dissent_ratio() == 0.5
+        assert v.dissent_ratio() == pytest.approx(0.5)
 
     def test_dissent_ratio_zero_when_unanimous(self):
         ops = [_make_opinion("BUY") for _ in range(5)]
         v = self._verdict(ops, final="BUY")
-        assert v.dissent_ratio() == 0.0
+        assert v.dissent_ratio() == pytest.approx(0.0)
 
     def test_dissent_ratio_zero_when_no_opinions(self):
         v = self._verdict([], final="BUY")
-        assert v.dissent_ratio() == 0.0
+        assert v.dissent_ratio() == pytest.approx(0.0)
 
 
 class TestInvestorOpinionBehavior:
@@ -244,7 +244,7 @@ class TestDeriveConsensus:
         rec, strength = derive_consensus(ops)
         assert rec == "BUY"
         # Jednogłośne BUY → cała "masa" pewności na zwycięskim koszyku → 1.0
-        assert strength == 1.0
+        assert strength == pytest.approx(1.0)
 
     def test_three_buy_one_sell_three_hold_deterministic(self):
         # 3×BUY, 1×SELL, 3×HOLD — wszystkie confidence=0.8.
@@ -276,7 +276,7 @@ class TestDeriveConsensus:
     def test_empty_opinions_safe_default(self):
         rec, strength = derive_consensus([])
         assert rec == "HOLD"
-        assert strength == 0.0
+        assert strength == pytest.approx(0.0)
 
     def test_all_zero_confidence_falls_back_to_headcount(self):
         # Gdy wszyscy mają confidence 0.0, waga jest bezużyteczna — wracamy

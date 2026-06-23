@@ -392,7 +392,7 @@ class TestUpdatePredictionAccuracy:
         # Decimal musi być serializowany
         assert str(payload["actual_price_after_12h"]) == "99.0"
         # accuracy_score zamyka pętlę feedback — bez niego get_accuracy_stats() pusty
-        assert payload["accuracy_score"] == 0.87
+        assert payload["accuracy_score"] == pytest.approx(0.87)
         # is_trend_correct napędza trafność raportu (kierunek, nie bliskość ceny)
         assert payload["is_trend_correct"] is False
         assert payload["correction_insights"] == "Zignorowałem makro."
@@ -528,10 +528,10 @@ class TestSaveFundamentals:
         mock_client.table.assert_called_with("fundamentals_cache")
         payload = mock_client.table.return_value.upsert.call_args.args[0]
         assert payload["symbol"] == "AAPL"
-        assert payload["trailing_pe"] == 25.4
-        assert payload["forward_pe"] == 22.1
-        assert payload["peg_ratio"] == 1.5
-        assert payload["eps_growth_yoy"] == 0.12
+        assert payload["trailing_pe"] == pytest.approx(25.4)
+        assert payload["forward_pe"] == pytest.approx(22.1)
+        assert payload["peg_ratio"] == pytest.approx(1.5)
+        assert payload["eps_growth_yoy"] == pytest.approx(0.12)
         # fetched_at musi być ISO string
         assert payload["fetched_at"] == fetched.isoformat()
 
@@ -575,10 +575,10 @@ class TestGetCachedFundamentals:
 
         assert result is not None
         assert isinstance(result, Fundamentals)
-        assert result.trailing_pe == 25.4
-        assert result.forward_pe == 22.1
-        assert result.peg_ratio == 1.5
-        assert result.eps_growth_yoy == 0.12
+        assert result.trailing_pe == pytest.approx(25.4)
+        assert result.forward_pe == pytest.approx(22.1)
+        assert result.peg_ratio == pytest.approx(1.5)
+        assert result.eps_growth_yoy == pytest.approx(0.12)
         assert result.fetched_at == datetime.fromisoformat(fetched_iso)
 
     def test_get_cached_fundamentals_uses_ttl_filter(
@@ -637,7 +637,7 @@ class TestSaveCalibration:
 
         mock_client.table.assert_called_with("prediction_logs")
         payload = mock_client.table.return_value.update.call_args.args[0]
-        assert payload["confidence_calibration"] == 0.72
+        assert payload["confidence_calibration"] == pytest.approx(0.72)
         assert payload["calibration_insight"] == "Przepewna na krypto."
 
 

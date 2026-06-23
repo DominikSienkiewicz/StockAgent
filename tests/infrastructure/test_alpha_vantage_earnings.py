@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.infrastructure.adapters.alpha_vantage_earnings import (
     AlphaVantageEarningsAdapter,
     NullEarningsCalendarAdapter,
@@ -69,7 +71,7 @@ def test_calls_earnings_calendar_endpoint() -> None:
     assert params["symbol"] == "AAPL"
     assert params["horizon"] == "3month"
     assert params["apikey"] == "KEY"
-    assert kwargs["timeout"] == 10.0
+    assert kwargs["timeout"] == pytest.approx(10.0)
 
 
 def test_past_only_returns_none() -> None:
@@ -132,7 +134,8 @@ def test_today_defaults_without_injection() -> None:
     # Bez wstrzykniętego today adapter nie wybucha przy konstrukcji
     # (data.today() liczona leniwie, nie na imporcie).
     adapter = AlphaVantageEarningsAdapter(api_key="KEY")
-    assert adapter is not None
+    # Brak wstrzyknięcia => today NIE jest zamrożone na starcie (liczone leniwie).
+    assert adapter._today is None
 
 
 def test_null_adapter_returns_none() -> None:

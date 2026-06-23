@@ -409,7 +409,8 @@ class TestModelPersistence:
     def test_cold_start_does_not_raise(self, tmp_path: Path):
         # Brak pliku — konstruktor musi przeżyć (czekamy na pierwszy trening).
         adapter = XGBoostAdapter(model_path=str(tmp_path / "missing.ubj"))
-        assert adapter is not None
+        # Cold start: model nie jest jeszcze wczytany, adapter to wie.
+        assert adapter.is_trained is False
 
 
 class TestIsTrained:

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.application.ports import LLMPort
-from src.infrastructure.llm.openai_client import OpenAIAdapter
+from src.infrastructure.llm.openai_client import DEFAULT_MODEL, OpenAIAdapter
 
 
 def _completion(content: str | None, finish_reason: str = "stop") -> MagicMock:
@@ -52,8 +52,8 @@ class TestAnalyze:
 
         assert isinstance(result, dict)
         assert result["trend_direction"] == "BULLISH"
-        assert result["confidence_score"] == 0.85
-        assert result["target_price_12h"] == 110.0
+        assert result["confidence_score"] == pytest.approx(0.85)
+        assert result["target_price_12h"] == pytest.approx(110.0)
 
     def test_uses_json_response_format(self, adapter_with_client):
         adapter, client = adapter_with_client
@@ -345,16 +345,16 @@ class TestModelIdValidation:
 
     def test_valid_gpt_model_constructs_fine(self, mock_openai_class):
         adapter = OpenAIAdapter(api_key="sk-test", model="gpt-4o-mini")
-        assert adapter is not None
+        assert adapter._model == "gpt-4o-mini"
 
     def test_valid_o_series_model_constructs_fine(self, mock_openai_class):
         # Reasoning models (o-series) nie mają prefiksu "gpt-" — muszą przejść.
         adapter = OpenAIAdapter(api_key="sk-test", model="o3-mini")
-        assert adapter is not None
+        assert adapter._model == "o3-mini"
 
     def test_default_model_id_constructs_fine(self, mock_openai_class):
         adapter = OpenAIAdapter(api_key="sk-test")
-        assert adapter is not None
+        assert adapter._model == DEFAULT_MODEL
 
 
 class TestMaxTokensCap:
@@ -515,7 +515,7 @@ class TestTemperatureCompatibility:
         adapter, client = self._adapter(mock_openai_class, "gpt-4o")
         client.chat.completions.create.return_value = _completion("{}")
         adapter.analyze("x")
-        assert client.chat.completions.create.call_args.kwargs["temperature"] == 0.2
+        assert client.chat.completions.create.call_args.kwargs["temperature"] == pytest.approx(0.2)
 
     def test_gpt5_mini_omits_temperature_in_analyze(self, mock_openai_class):
         adapter, client = self._adapter(mock_openai_class, "gpt-5-mini")

@@ -67,61 +67,72 @@ def _size_band_for(r: SymbolResult, hit_rate: float | None) -> SizeBand | None:
     )
 
 
+def _divergence_signal(r: SymbolResult) -> RiskSignal | None:
+    """Rozbieżność cena↔sentyment — możliwy pump albo niedoszacowane odbicie."""
+    if r.delta is None or r.sentiment_score is None:
+        return None
+    if (
+        r.delta > DIVERGENCE_PRICE_THRESHOLD
+        and r.sentiment_score < -DIVERGENCE_SENTIMENT_THRESHOLD
+    ):
+        return RiskSignal(
+            symbol=r.symbol, type="DIVERGENCE", severity="high",
+            description=(
+                f"cena rośnie {pct(r.delta)} ale sentyment "
+                f"{r.sentiment_score:+.2f} -> możliwa korekta lub pump"
+            ),
+        )
+    if (
+        r.delta < -DIVERGENCE_PRICE_THRESHOLD
+        and r.sentiment_score > DIVERGENCE_SENTIMENT_THRESHOLD
+    ):
+        return RiskSignal(
+            symbol=r.symbol, type="DIVERGENCE", severity="high",
+            description=(
+                f"cena spada {pct(r.delta)} ale sentyment "
+                f"{r.sentiment_score:+.2f} -> okazja lub odbicie?"
+            ),
+        )
+    return None
+
+
+def _av_llm_conflict_signal(r: SymbolResult) -> RiskSignal | None:
+    """LLM kontra Alpha Vantage — potencjalny fake news / manipulacja."""
+    if r.av_llm_agreement is None or r.av_llm_agreement >= AV_LLM_CONFLICT_THRESHOLD:
+        return None
+    return RiskSignal(
+        symbol=r.symbol, type="AV_LLM_CONFLICT", severity="high",
+        description=(
+            f"LLM nie zgadza się z AV (zgoda={r.av_llm_agreement:.2f})"
+            " -> potencjalny fake news / manipulacja"
+        ),
+    )
+
+
+def _low_signal_signal(r: SymbolResult) -> RiskSignal | None:
+    """Decyzja podjęta na zbyt małej liczbie relevantnych newsów."""
+    if r.news_volume is None or r.news_volume >= LOW_SIGNAL_NEWS_THRESHOLD:
+        return None
+    return RiskSignal(
+        symbol=r.symbol, type="LOW_SIGNAL", severity="medium",
+        description=(
+            f"tylko {r.news_volume} relevantnych newsów — decyzja"
+            " na słabych danych"
+        ),
+    )
+
+
+# Detektory uruchamiane per zapisany symbol; każdy zwraca sygnał albo None.
+_RISK_DETECTORS = (_divergence_signal, _av_llm_conflict_signal, _low_signal_signal)
+
+
 def detect_risk_signals(results: list[SymbolResult]) -> list[RiskSignal]:
     """Flagi ostrzegawcze per symbol."""
     out: list[RiskSignal] = []
     for r in results:
         if r.status != "saved":
             continue
-
-        if r.delta is not None and r.sentiment_score is not None:
-            if (
-                r.delta > DIVERGENCE_PRICE_THRESHOLD
-                and r.sentiment_score < -DIVERGENCE_SENTIMENT_THRESHOLD
-            ):
-                out.append(RiskSignal(
-                    symbol=r.symbol, type="DIVERGENCE", severity="high",
-                    description=(
-                        f"cena rośnie {pct(r.delta)} ale sentyment "
-                        f"{r.sentiment_score:+.2f} -> możliwa korekta lub pump"
-                    ),
-                ))
-            elif (
-                r.delta < -DIVERGENCE_PRICE_THRESHOLD
-                and r.sentiment_score > DIVERGENCE_SENTIMENT_THRESHOLD
-            ):
-                out.append(RiskSignal(
-                    symbol=r.symbol, type="DIVERGENCE", severity="high",
-                    description=(
-                        f"cena spada {pct(r.delta)} ale sentyment "
-                        f"{r.sentiment_score:+.2f} -> okazja lub odbicie?"
-                    ),
-                ))
-
-        if (
-            r.av_llm_agreement is not None
-            and r.av_llm_agreement < AV_LLM_CONFLICT_THRESHOLD
-        ):
-            out.append(RiskSignal(
-                symbol=r.symbol, type="AV_LLM_CONFLICT", severity="high",
-                description=(
-                    f"LLM nie zgadza się z AV (zgoda={r.av_llm_agreement:.2f})"
-                    " -> potencjalny fake news / manipulacja"
-                ),
-            ))
-
-        if (
-            r.news_volume is not None
-            and r.news_volume < LOW_SIGNAL_NEWS_THRESHOLD
-        ):
-            out.append(RiskSignal(
-                symbol=r.symbol, type="LOW_SIGNAL", severity="medium",
-                description=(
-                    f"tylko {r.news_volume} relevantnych newsów — decyzja"
-                    " na słabych danych"
-                ),
-            ))
-
+        out.extend(sig for det in _RISK_DETECTORS if (sig := det(r)) is not None)
     return out
 
 

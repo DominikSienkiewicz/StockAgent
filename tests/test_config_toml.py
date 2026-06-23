@@ -50,7 +50,7 @@ def test_settings_reads_non_secret_from_toml(
     monkeypatch.setenv("STOCKAGENT_TOML_FILE", str(toml))
     # Sekrety wstrzykujemy jako kwargs (wygrywają nad TOML); env odcięte.
     s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
-    assert s.symbol_throttle_seconds == 7.5
+    assert s.symbol_throttle_seconds == pytest.approx(7.5)
     assert s.llm_provider == "anthropic"
 
 
@@ -78,4 +78,4 @@ def test_env_overrides_toml(
     monkeypatch.setenv("SYMBOL_THROTTLE_SECONDS", "3.0")
     s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
     # env > toml
-    assert s.symbol_throttle_seconds == 3.0
+    assert s.symbol_throttle_seconds == pytest.approx(3.0)

@@ -20,6 +20,9 @@ from src.domain.macro_risk import (
 )
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
 
+# Domknięcie tabeli HTML — powtarzane w trzech podsekcjach Risk Watch.
+_TABLE_CLOSE = "</tbody></table>"
+
 # Progi drawdownu spójne z use case'em — render tylko prezentuje wynik
 # domeny, ale poziom alertu liczy tą samą skalą (ELEVATED -10%, CRITICAL -20%).
 _DRAWDOWN_ELEVATED_PCT = Decimal("0.10")
@@ -153,7 +156,7 @@ def _render_hedges_table_html(hedges: list[HedgeAssessment]) -> str:
         "<th style='padding: 6px 8px; text-align: left;'>Ocena</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
-        + "</tbody></table>"
+        + _TABLE_CLOSE
     )
 
 
@@ -184,7 +187,7 @@ def _render_signals_table_html(signals: list[MacroRiskSignal]) -> str:
         "<th style='padding: 6px 8px; text-align: left;'>Alert</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
-        + "</tbody></table>"
+        + _TABLE_CLOSE
     )
 
 
@@ -221,7 +224,7 @@ def _render_drawdowns_table_html(drawdowns: list[DrawdownSignal]) -> str:
         "<th style='padding: 6px 8px; text-align: left;'>Alert</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
-        + "</tbody></table>"
+        + _TABLE_CLOSE
     )
 
 

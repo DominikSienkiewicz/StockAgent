@@ -2,6 +2,8 @@ import datetime
 from typing import cast
 from unittest.mock import Mock
 
+import pytest
+
 from src.application.agent_graph import AgentState, _build_fetch_fundamentals_node
 from src.application.ports import FundamentalsPort
 from src.domain.asset import Asset
@@ -37,7 +39,7 @@ def test_node_fetches_and_evaluates_for_stock() -> None:
 
     assert result["valuation_verdict"] is ValuationVerdict.UNDERVALUED
     assert result["fundamentals"] is not None
-    assert result["fundamentals"].peg_ratio == 0.8
+    assert result["fundamentals"].peg_ratio == pytest.approx(0.8)
 
 
 def test_node_returns_unknown_when_port_raises() -> None:

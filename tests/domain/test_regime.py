@@ -99,15 +99,15 @@ class TestClassify:
 class TestThresholdMultiplier:
     def test_risk_off_returns_max_multiplier(self) -> None:
         detector = RegimeDetector()
-        assert detector.threshold_multiplier(MarketRegime.RISK_OFF, 2.0) == 2.0
+        assert detector.threshold_multiplier(MarketRegime.RISK_OFF, 2.0) == pytest.approx(2.0)
 
     def test_neutral_returns_one(self) -> None:
         detector = RegimeDetector()
-        assert detector.threshold_multiplier(MarketRegime.NEUTRAL, 2.0) == 1.0
+        assert detector.threshold_multiplier(MarketRegime.NEUTRAL, 2.0) == pytest.approx(1.0)
 
     def test_risk_on_returns_one(self) -> None:
         detector = RegimeDetector()
-        assert detector.threshold_multiplier(MarketRegime.RISK_ON, 2.0) == 1.0
+        assert detector.threshold_multiplier(MarketRegime.RISK_ON, 2.0) == pytest.approx(1.0)
 
     def test_never_below_one_even_with_sub_one_max(self) -> None:
         detector = RegimeDetector()
@@ -118,7 +118,7 @@ class TestThresholdMultiplier:
 
     def test_risk_off_clamped_to_one_when_max_below_one(self) -> None:
         detector = RegimeDetector()
-        assert detector.threshold_multiplier(MarketRegime.RISK_OFF, 0.5) == 1.0
+        assert detector.threshold_multiplier(MarketRegime.RISK_OFF, 0.5) == pytest.approx(1.0)
 
     @pytest.mark.parametrize("max_mult", [1.0, 1.5, 2.0, 3.0, 5.0])
     def test_ordering_risk_off_ge_neutral_ge_risk_on(
@@ -134,7 +134,7 @@ class TestThresholdMultiplier:
     def test_risk_off_respects_max_multiplier_ceiling(self) -> None:
         detector = RegimeDetector()
         # Mnożnik nigdy nie przekracza max_multiplier (clamp górny).
-        assert detector.threshold_multiplier(MarketRegime.RISK_OFF, 3.0) == 3.0
+        assert detector.threshold_multiplier(MarketRegime.RISK_OFF, 3.0) == pytest.approx(3.0)
 
 
 class TestLabel:

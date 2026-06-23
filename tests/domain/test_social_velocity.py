@@ -15,19 +15,19 @@ class TestVelocityRatio:
         snap = SocialVelocitySnapshot(
             symbol="GME", mentions_24h=30, baseline_mentions=10.0
         )
-        assert snap.velocity_ratio() == 3.0
+        assert snap.velocity_ratio() == pytest.approx(3.0)
 
     def test_baseline_zero_returns_zero_no_division(self) -> None:
         snap = SocialVelocitySnapshot(
             symbol="GME", mentions_24h=30, baseline_mentions=0.0
         )
-        assert snap.velocity_ratio() == 0.0
+        assert snap.velocity_ratio() == pytest.approx(0.0)
 
     def test_negative_baseline_returns_zero(self) -> None:
         snap = SocialVelocitySnapshot(
             symbol="GME", mentions_24h=30, baseline_mentions=-5.0
         )
-        assert snap.velocity_ratio() == 0.0
+        assert snap.velocity_ratio() == pytest.approx(0.0)
 
 
 class TestTrend:

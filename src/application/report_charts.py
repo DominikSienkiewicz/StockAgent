@@ -7,6 +7,9 @@ from decimal import Decimal
 from src.application.report_formatting import delta_color
 from src.application.report_models import SymbolResult
 
+# Kolor siatki wykresów QuickChart — wspólny dla wszystkich osi/wykresów.
+_GRID_COLOR = "rgba(0,0,0,0.06)"
+
 
 def build_chart_url(results: list[SymbolResult]) -> str | None:
     """Generuje URL do QuickChart.io z bar-chartem zmiany ceny per symbol."""
@@ -42,7 +45,7 @@ def build_chart_url(results: list[SymbolResult]) -> str | None:
             "scales": {
                 "y": {
                     "title": {"display": True, "text": "Zmiana (%)"},
-                    "grid": {"color": "rgba(0,0,0,0.06)"},
+                    "grid": {"color": _GRID_COLOR},
                 },
                 "x": {"grid": {"display": False}},
             },
@@ -104,11 +107,11 @@ def build_correlation_chart_url(results: list[SymbolResult]) -> str | None:
             "scales": {
                 "x": {
                     "title": {"display": True, "text": "Sentyment AV (-1 ... +1)"},
-                    "grid": {"color": "rgba(0,0,0,0.06)"},
+                    "grid": {"color": _GRID_COLOR},
                 },
                 "y": {
                     "title": {"display": True, "text": "Zmiana 12h (%)"},
-                    "grid": {"color": "rgba(0,0,0,0.06)"},
+                    "grid": {"color": _GRID_COLOR},
                 },
             },
         },
@@ -160,7 +163,7 @@ def build_forecast_chart_url(results: list[SymbolResult]) -> str | None:
             "scales": {
                 "y": {
                     "title": {"display": True, "text": "Oczekiwana zmiana (%)"},
-                    "grid": {"color": "rgba(0,0,0,0.06)"},
+                    "grid": {"color": _GRID_COLOR},
                 },
                 "x": {"grid": {"display": False}},
             },

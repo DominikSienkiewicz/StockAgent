@@ -101,7 +101,7 @@ class TestGetConsensus:
         consensus = adapter.get_consensus("AAPL")
 
         assert consensus is not None
-        assert consensus.price_target == 220.0
+        assert consensus.price_target == pytest.approx(220.0)
 
     def test_price_target_403_premium_leaves_target_none(
         self, adapter: FinnhubAnalystAdapter, mocker
@@ -152,7 +152,7 @@ class TestGetConsensus:
         consensus = adapter.get_consensus("AAPL")
 
         assert consensus is not None
-        assert consensus.price_target == 215.0
+        assert consensus.price_target == pytest.approx(215.0)
 
     def test_empty_recommendation_list_returns_none(
         self, adapter: FinnhubAnalystAdapter, mocker

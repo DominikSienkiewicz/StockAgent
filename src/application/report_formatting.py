@@ -131,63 +131,29 @@ def company_label(symbol: str) -> str:
 # krypto → "Krypto", akcje → konkretny sektor. Symbol spoza słownika nie
 # dostaje etykiety (po cichu, tak jak company_label pomija nieznaną nazwę).
 # Pokrywa domyślne portfolio (43) + krypto; rozszerzaj wraz z SYMBOLS.
+# Klasyfikacja zgrupowana per sektor — każda nazwa sektora pada raz (łatwiej
+# rozszerzać niż płaską mapę symbol→sektor z powtarzaną etykietą). `SECTORS`
+# spłaszczamy do symbol→sektor dla szybkiego lookupu.
+_SECTOR_SYMBOLS: dict[str, list[str]] = {
+    "Big Tech": ["AAPL", "AMZN", "GOOGL", "GOOG", "META"],
+    "Półprzewodniki/AI": [
+        "NVDA", "AMD", "TSM", "ASML", "ASMIY", "MU", "QCOM", "INTC", "SNDK",
+    ],
+    "Chmura/Software": [
+        "MSFT", "ORCL", "NET", "SAP", "PLTR", "IBM", "TEAM", "FROG", "SNOW", "DDOG",
+    ],
+    "Cyberbezpieczeństwo": ["CRWD", "PANW", "OKTA", "S", "SAIL"],
+    "Hardware": ["DELL", "SSNLF"],
+    "Mobilność": ["TSLA", "UBER"],
+    "Przemysł/Pharma": ["SIEGY", "NVO"],
+    "Finanse": ["BLK"],
+    "ETF": ["VT", "QUAL", "IHI", "VB", "EWY", "IVV", "XDWD.DE", "IUSN.DE"],
+    "Krypto": ["BTC", "ETH"],
+}
 SECTORS: dict[str, str] = {
-    # Big Tech
-    "AAPL": "Big Tech",
-    "AMZN": "Big Tech",
-    "GOOGL": "Big Tech",
-    "GOOG": "Big Tech",
-    "META": "Big Tech",
-    # Półprzewodniki / AI
-    "NVDA": "Półprzewodniki/AI",
-    "AMD": "Półprzewodniki/AI",
-    "TSM": "Półprzewodniki/AI",
-    "ASML": "Półprzewodniki/AI",
-    "ASMIY": "Półprzewodniki/AI",
-    "MU": "Półprzewodniki/AI",
-    "QCOM": "Półprzewodniki/AI",
-    "INTC": "Półprzewodniki/AI",
-    "SNDK": "Półprzewodniki/AI",
-    # Chmura / Software
-    "MSFT": "Chmura/Software",
-    "ORCL": "Chmura/Software",
-    "NET": "Chmura/Software",
-    "SAP": "Chmura/Software",
-    "PLTR": "Chmura/Software",
-    "IBM": "Chmura/Software",
-    "TEAM": "Chmura/Software",
-    "FROG": "Chmura/Software",
-    "SNOW": "Chmura/Software",
-    "DDOG": "Chmura/Software",
-    # Cyberbezpieczeństwo
-    "CRWD": "Cyberbezpieczeństwo",
-    "PANW": "Cyberbezpieczeństwo",
-    "OKTA": "Cyberbezpieczeństwo",
-    "S": "Cyberbezpieczeństwo",
-    "SAIL": "Cyberbezpieczeństwo",
-    # Hardware
-    "DELL": "Hardware",
-    "SSNLF": "Hardware",
-    # Mobilność
-    "TSLA": "Mobilność",
-    "UBER": "Mobilność",
-    # Przemysł / Pharma
-    "SIEGY": "Przemysł/Pharma",
-    "NVO": "Przemysł/Pharma",
-    # Finanse
-    "BLK": "Finanse",
-    # ETF
-    "VT": "ETF",
-    "QUAL": "ETF",
-    "IHI": "ETF",
-    "VB": "ETF",
-    "EWY": "ETF",
-    "IVV": "ETF",
-    "XDWD.DE": "ETF",
-    "IUSN.DE": "ETF",
-    # Krypto
-    "BTC": "Krypto",
-    "ETH": "Krypto",
+    symbol: sector
+    for sector, symbols in _SECTOR_SYMBOLS.items()
+    for symbol in symbols
 }
 
 

@@ -10,6 +10,8 @@ diagram niezawodności predykcji.
 
 from __future__ import annotations
 
+import pytest
+
 from src.domain.calibration_curve import (
     CalibrationBucket,
     expected_calibration_error,
@@ -28,8 +30,8 @@ class TestReliabilityCurve:
         samples = [(0.05, True), (0.05, False), (0.08, True)]
         curve = reliability_curve(samples, n_buckets=10)
         assert len(curve) == 1
-        assert curve[0].lower == 0.0
-        assert curve[0].upper == 0.1
+        assert curve[0].lower == pytest.approx(0.0)
+        assert curve[0].upper == pytest.approx(0.1)
         assert curve[0].count == 3
 
     def test_confidence_one_lands_in_last_bucket(self) -> None:
@@ -39,11 +41,11 @@ class TestReliabilityCurve:
         assert len(curve) == 1
         bucket = curve[0]
         assert isinstance(bucket, CalibrationBucket)
-        assert bucket.lower == 0.9
-        assert bucket.upper == 1.0
+        assert bucket.lower == pytest.approx(0.9)
+        assert bucket.upper == pytest.approx(1.0)
         assert bucket.count == 1
-        assert bucket.mean_confidence == 1.0
-        assert bucket.hit_rate == 1.0
+        assert bucket.mean_confidence == pytest.approx(1.0)
+        assert bucket.hit_rate == pytest.approx(1.0)
 
     def test_buckets_returned_in_ascending_order(self) -> None:
         samples = [(0.95, True), (0.05, False), (0.55, True)]
@@ -60,7 +62,7 @@ class TestReliabilityCurve:
         assert bucket.count == 10
         # Średnia z dziesięciu 0.9 to ~0.9 z dokładnością zmiennoprzecinkową.
         assert abs(bucket.mean_confidence - 0.9) < 1e-9
-        assert bucket.hit_rate == 0.9
+        assert bucket.hit_rate == pytest.approx(0.9)
 
     def test_assigns_samples_to_correct_buckets(self) -> None:
         # 0.05 → [0.0,0.1); 0.15 → [0.1,0.2); 0.95 → [0.9,1.0].
@@ -72,7 +74,7 @@ class TestReliabilityCurve:
 
 class TestExpectedCalibrationError:
     def test_no_buckets_is_zero(self) -> None:
-        assert expected_calibration_error([]) == 0.0
+        assert expected_calibration_error([]) == pytest.approx(0.0)
 
     def test_perfectly_calibrated_set_has_near_zero_ece(self) -> None:
         # Idealna kalibracja: w kubełku 0.9 dokładnie 9/10 trafień,
