@@ -729,7 +729,55 @@ def _process_one_symbol(
         )
 
 
-def _analyze_symbols(
+def _analyze_symbols_parallel(
+    eligible: list[str],
+    *,
+    max_workers: int,
+    use_case: AnalyzeMarketUseCase,
+    crypto_set: set[str],
+    etf_set: set[str],
+    regime_context: str,
+    regime_multiplier: float,
+    collect_alpha: bool,
+    alpha_use_case: AlphaEnrichmentUseCase,
+) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
+    """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy
+    od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
+    executor.map zachowuje kolejność wejścia → wyniki deterministyczne."""
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        processed = list(
+            executor.map(
+                lambda sym: _process_one_symbol(
+                    sym,
+                    peer_ctx=(),
+                    use_case=use_case,
+                    crypto_set=crypto_set,
+                    etf_set=etf_set,
+                    regime_context=regime_context,
+                    regime_multiplier=regime_multiplier,
+                    collect_alpha=collect_alpha,
+                    alpha_use_case=alpha_use_case,
+                ),
+                eligible,
+            )
+        )
+    return (
+        [p.result for p in processed],
+        sum(1 for p in processed if p.is_failure),
+        {
+            sym: p.alpha_signal
+            for sym, p in zip(eligible, processed, strict=True)
+            if p.alpha_signal is not None
+        },
+        {
+            sym: p.alpha_price
+            for sym, p in zip(eligible, processed, strict=True)
+            if p.alpha_price is not None
+        },
+    )
+
+
+def _analyze_symbols_sequential(
     eligible: list[str],
     *,
     use_case: AnalyzeMarketUseCase,
@@ -741,51 +789,8 @@ def _analyze_symbols(
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
-    """Główna pętla per-symbol. Pojedynczy błąd nie wywala cyklu (resilience).
-    Zwraca (wyniki, liczba_błędów, alpha_signals, alpha_prices)."""
-    # Ścieżka równoległa: tylko gdy concurrency > 1 ORAZ contagion off (contagion
-    # #5 zależy od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
-    if settings.symbol_concurrency > 1 and not settings.contagion_enabled:
-        with ThreadPoolExecutor(max_workers=settings.symbol_concurrency) as executor:
-            processed = list(
-                executor.map(
-                    lambda sym: _process_one_symbol(
-                        sym,
-                        peer_ctx=(),
-                        use_case=use_case,
-                        crypto_set=crypto_set,
-                        etf_set=etf_set,
-                        regime_context=regime_context,
-                        regime_multiplier=regime_multiplier,
-                        collect_alpha=collect_alpha,
-                        alpha_use_case=alpha_use_case,
-                    ),
-                    eligible,
-                )
-            )
-        # executor.map zachowuje kolejność wejścia → results deterministyczne.
-        return (
-            [p.result for p in processed],
-            sum(1 for p in processed if p.is_failure),
-            {
-                sym: p.alpha_signal
-                for sym, p in zip(eligible, processed, strict=True)
-                if p.alpha_signal is not None
-            },
-            {
-                sym: p.alpha_price
-                for sym, p in zip(eligible, processed, strict=True)
-                if p.alpha_price is not None
-            },
-        )
-
-    if settings.symbol_concurrency > 1 and settings.contagion_enabled:
-        logger.warning(
-            "symbol_concurrency=%d zignorowane — contagion_enabled wymaga "
-            "przetwarzania sekwencyjnego (peer_context zależy od kolejności).",
-            settings.symbol_concurrency,
-        )
-
+    """Ścieżka sekwencyjna: zachowuje kolejność, buduje peer_context dla contagion
+    (#5) i throttluje między symbolami (ochrona OpenAI TPM)."""
     results: list[SymbolResult] = []
     failures = 0
     # #5: akumulator werdyktów tego cyklu (symbol → stance) dla contagion.
@@ -822,6 +827,55 @@ def _analyze_symbols(
         if settings.symbol_throttle_seconds > 0 and index < len(eligible) - 1:
             time.sleep(settings.symbol_throttle_seconds)
     return results, failures, alpha_signals, alpha_prices
+
+
+def _analyze_symbols(
+    eligible: list[str],
+    *,
+    use_case: AnalyzeMarketUseCase,
+    settings: Settings,
+    crypto_set: set[str],
+    etf_set: set[str],
+    regime_context: str,
+    regime_multiplier: float,
+    collect_alpha: bool,
+    alpha_use_case: AlphaEnrichmentUseCase,
+) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
+    """Dispatcher: wybiera ścieżkę równoległą lub sekwencyjną.
+    Zwraca (wyniki, liczba_błędów, alpha_signals, alpha_prices)."""
+    # Ścieżka równoległa: tylko gdy concurrency > 1 ORAZ contagion off (contagion
+    # #5 zależy od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
+    if settings.symbol_concurrency > 1 and not settings.contagion_enabled:
+        return _analyze_symbols_parallel(
+            eligible,
+            max_workers=settings.symbol_concurrency,
+            use_case=use_case,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+        )
+
+    if settings.symbol_concurrency > 1 and settings.contagion_enabled:
+        logger.warning(
+            "symbol_concurrency=%d zignorowane — contagion_enabled wymaga "
+            "przetwarzania sekwencyjnego (peer_context zależy od kolejności).",
+            settings.symbol_concurrency,
+        )
+
+    return _analyze_symbols_sequential(
+        eligible,
+        use_case=use_case,
+        settings=settings,
+        crypto_set=crypto_set,
+        etf_set=etf_set,
+        regime_context=regime_context,
+        regime_multiplier=regime_multiplier,
+        collect_alpha=collect_alpha,
+        alpha_use_case=alpha_use_case,
+    )
 
 
 def _build_portfolio_radar(

@@ -479,15 +479,15 @@ class TestNotifierFactory:
 
 class TestProcessOneSymbol:
     def _kwargs(self, settings, use_case):
-        return dict(
-            use_case=use_case,
-            crypto_set=set(),
-            etf_set=set(),
-            regime_context="",
-            regime_multiplier=1.0,
-            collect_alpha=False,
-            alpha_use_case=MagicMock(),
-        )
+        return {
+            "use_case": use_case,
+            "crypto_set": set(),
+            "etf_set": set(),
+            "regime_context": "",
+            "regime_multiplier": 1.0,
+            "collect_alpha": False,
+            "alpha_use_case": MagicMock(),
+        }
 
     def test_success_returns_result_not_failure(self, settings):
         uc = MagicMock()
@@ -520,16 +520,16 @@ class TestProcessOneSymbol:
 
 class TestAnalyzeSymbolsParallel:
     def _kwargs(self, settings, use_case):
-        return dict(
-            use_case=use_case,
-            settings=settings,
-            crypto_set=set(),
-            etf_set=set(),
-            regime_context="",
-            regime_multiplier=1.0,
-            collect_alpha=False,
-            alpha_use_case=MagicMock(),
-        )
+        return {
+            "use_case": use_case,
+            "settings": settings,
+            "crypto_set": set(),
+            "etf_set": set(),
+            "regime_context": "",
+            "regime_multiplier": 1.0,
+            "collect_alpha": False,
+            "alpha_use_case": MagicMock(),
+        }
 
     def test_parallel_processes_all_in_eligible_order(self, settings):
         s = settings.model_copy(update={"symbol_concurrency": 4})

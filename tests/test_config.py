@@ -263,16 +263,16 @@ class TestCryptoSettings:
 
 class TestSymbolConcurrency:
     def _base(self, **overrides):
-        base = dict(
-            _env_file=None,
-            openai_api_key="sk-test",
-            finnhub_api_key="fh",
-            alpha_vantage_api_keys=["av1"],
-            supabase_url="https://t.supabase.co",
-            supabase_key="anon",
-            symbols=["AAPL"],
-            volatility_threshold=Decimal("0.02"),
-        )
+        base = {
+            "_env_file": None,
+            "openai_api_key": "sk-test",
+            "finnhub_api_key": "fh",
+            "alpha_vantage_api_keys": ["av1"],
+            "supabase_url": "https://t.supabase.co",
+            "supabase_key": "anon",
+            "symbols": ["AAPL"],
+            "volatility_threshold": Decimal("0.02"),
+        }
         base.update(overrides)
         return base
 
