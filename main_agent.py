@@ -29,6 +29,7 @@ from src.application.ports import (
     InsiderFlowPort,
     LLMPort,
     MacroRatesPort,
+    MarketDataPort,
     OptionsFlowPort,
     ReportNotifierPort,
     RepositoryPort,
@@ -357,6 +358,16 @@ def _dispatch_push_digest(
         )
     except Exception:
         logger.exception("Failed to send messenger digest")
+
+
+def build_market_port(settings: Settings) -> MarketDataPort:
+    """Darmowe źródła ceny: krypto → CoinGecko, reszta → Finnhub.
+    Wydzielone z `build_use_case`, bo `main_watch` (#11) potrzebuje samej ceny."""
+    return RoutingMarketDataPort(
+        equity=FinnhubAdapter(api_key=settings.finnhub_api_key),
+        crypto=CoinGeckoAdapter(),
+        crypto_symbols=settings.crypto_symbols,
+    )
 
 
 def build_repository(settings: Settings) -> RepositoryPort:

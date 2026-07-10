@@ -143,6 +143,9 @@ class Settings(BaseSettings):
     # (migracja 020). Flaga to WARUNEK graceful degradation, nie opcja: nowy
     # klucz przed migracją → PGRST204 i śmierć zapisu całej predykcji. Off.
     receipts_enabled: bool = False
+    # #11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
+    # migracja 021). Zero płatnych wywołań. Off.
+    shock_alerts_enabled: bool = False
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
 

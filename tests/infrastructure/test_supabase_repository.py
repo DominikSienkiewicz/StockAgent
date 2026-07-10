@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -1293,3 +1293,56 @@ class TestGetPreviousVerdict:
         self._set_verdict_chain(mock_client, [])
 
         assert repo.get_previous_verdict("NVDA") is None
+
+
+class TestShockAlerts:
+    """#11 — dedup alertów szoku (migracja 021, UNIQUE(symbol, alert_date))."""
+
+    def test_save_writes_symbol_date_and_direction(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}])
+
+        repo.save_shock_alert("BTC", date(2026, 7, 10), -0.082, "DOWN")
+
+        mock_client.table.assert_called_with("shock_alerts")
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload["symbol"] == "BTC"
+        assert payload["alert_date"] == "2026-07-10"
+        assert payload["direction"] == "DOWN"
+
+    def test_get_sent_returns_symbol_date_pairs(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "gte"],
+            [{"symbol": "BTC", "alert_date": "2026-07-10"}],
+        )
+
+        assert repo.get_sent_shock_alerts(date(2026, 7, 10)) == {
+            ("BTC", date(2026, 7, 10))
+        }
+
+    def test_get_sent_is_graceful_without_migration(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        mock_client.table.side_effect = Exception("no table")
+
+        assert repo.get_sent_shock_alerts(date(2026, 7, 10)) == set()
+
+    def test_last_price_snapshot_returns_price_and_timestamp(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "order", "limit"],
+            [{"price": "65000.0", "timestamp": "2026-07-10T09:00:00+00:00"}],
+        )
+
+        snapshot = repo.get_last_price_snapshot("BTC")
+
+        assert snapshot is not None
+        price, stamp = snapshot
+        assert price.amount == Decimal("65000.0")
+        assert stamp.hour == 9

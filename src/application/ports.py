@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -232,6 +232,27 @@ class RepositoryPort(ABC):
         z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
         "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
         → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
+    def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
+        """#11 — najnowszy snapshot ceny WRAZ ze znacznikiem czasu.
+
+        Alert szoku potrzebuje wieku punktu odniesienia: stęchły snapshot
+        (>30h) daje fałszywy alarm, więc `detect_shock` go tłumi.
+        None = brak historii."""
+
+    @abstractmethod
+    def save_shock_alert(
+        self, symbol: str, alert_date: date, delta: float, direction: str
+    ) -> None:
+        """#11 — persystuje wysłany alert szoku (migracja 021).
+        `UNIQUE(symbol, alert_date)` egzekwuje debounce po stronie bazy."""
+
+    @abstractmethod
+    def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
+        """#11 — pary (symbol, dzień) już zaalarmowane od `since`.
+        Pusty zbiór = brak danych / brak migracji 021 → debounce w domenie
+        polega wtedy wyłącznie na pamięci bieżącego przebiegu."""
 
     @abstractmethod
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:

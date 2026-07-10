@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal, cast
 
@@ -582,6 +582,63 @@ class SupabaseRepository(RepositoryPort):
                 continue
             out[str(name)] = (float(hit_rate), int(votes))
         return out
+
+    def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
+        response = (
+            self._client.table("price_snapshots")
+            .select("price, timestamp")
+            .eq("symbol", symbol)
+            .order("timestamp", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        price, stamp = row.get("price"), row.get("timestamp")
+        if price is None or not isinstance(stamp, str):
+            return None
+        return Money(Decimal(str(price))), datetime.fromisoformat(stamp)
+
+    def save_shock_alert(
+        self, symbol: str, alert_date: date, delta: float, direction: str
+    ) -> None:
+        # UNIQUE(symbol, alert_date) w migracji 021 jest twardym debounce'em —
+        # nawet gdy dwa przebiegi watcha wystartują równolegle.
+        self._client.table("shock_alerts").insert(
+            {
+                "symbol": symbol,
+                "alert_date": alert_date.isoformat(),
+                "delta": delta,
+                "direction": direction,
+            }
+        ).execute()
+
+    def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
+        # Graceful: brak migracji 021 → pusty zbiór (debounce zostaje tylko
+        # w pamięci przebiegu, a UNIQUE i tak zablokuje duplikat przy zapisie).
+        try:
+            response = (
+                self._client.table("shock_alerts")
+                .select("symbol, alert_date")
+                .gte("alert_date", since.isoformat())
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "shock_alerts niedostępne — debounce tylko w pamięci "
+                "(zaaplikuj migrację 021).",
+                exc_info=True,
+            )
+            return set()
+        sent: set[tuple[str, date]] = set()
+        for row in _rows(response):
+            symbol, raw_date = row.get("symbol"), row.get("alert_date")
+            if symbol is None or not isinstance(raw_date, str):
+                continue
+            sent.add((str(symbol), date.fromisoformat(raw_date)))
+        return sent
 
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
         # SUROWO, bez try/except — graceful degradation robi caller

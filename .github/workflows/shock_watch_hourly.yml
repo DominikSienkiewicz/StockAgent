@@ -1,0 +1,57 @@
+name: 🚨 Shock Watch (hourly, free)
+
+on:
+  # Watch chodzi 24/7, NIE tylko w sesji NYSE — BTC/ETH handlują całą dobę.
+  # Domyślnie zakomentowany, tak jak Fast Loop: włącz świadomie, po
+  # zaaplikowaniu migracji 021 i ustawieniu `shock_alerts_enabled = true`.
+  # schedule:
+  #   - cron: '7 * * * *'   # co godzinę, o :07 (rozsmarowanie obciążenia GHA)
+  workflow_dispatch:
+
+permissions:
+  contents: read       # watch nic nie zapisuje do repo
+
+# Watch jest krótki, ale cron co godzinę + opóźnienia GHA (5-60 min) mogą
+# nałożyć dwa przebiegi. Debounce broni bazy, ale po co płacić minutami.
+concurrency:
+  group: shock-watch
+  cancel-in-progress: true
+
+jobs:
+  watch-market-shock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # FinOps: twardy limit minut GHA
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: 📦 Sync dependencies
+        # Bez `--extra anthropic`: watch NIE dotyka LLM. Zero płatnych portów.
+        run: uv sync --frozen
+
+      - name: 🚨 Run shock watch (free sources only)
+        env:
+          # Database — odczyt snapshotów + dedup alertów (migracja 021).
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
+          # Darmowe źródło ceny dla akcji (krypto idzie po CoinGecko, bez klucza).
+          FINNHUB_API_KEY:   ${{ secrets.FINNHUB_API_KEY }}
+          # Settings wymaga OPENAI_API_KEY jako pola obowiązkowego, choć watch
+          # nie woła żadnego LLM. Bez niego konstrukcja Settings rzuca.
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          # Kanały push — darmowe. Brak sekretu = kanał po prostu nie powstaje.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL:  ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: uv run python main_watch.py
