@@ -80,6 +80,9 @@ attestation_enabled = false
 # #15: realny portfel użytkownika (tabela `positions`, migracja 023) — wagi,
 # P/L i VaR w PLN zamiast fikcji równych wag. Off → Null adapter. Off.
 portfolio_positions_enabled = false
+# #17: niedzielna retrospektywa („Tydzień StockAgenta"). Koszt: 1 wywołanie LLM
+# TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Off.
+weekly_recap_enabled = false
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"
 track_record_days = 30

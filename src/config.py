@@ -159,6 +159,11 @@ class Settings(BaseSettings):
     # Nazwa CELOWO nie `portfolio_enabled` — kolidowałaby z `portfolio_var_enabled`
     # i z sekcją watchlisty. Off → Null adapter → dotychczasowe równe wagi.
     portfolio_positions_enabled: bool = False
+    # #17: niedzielna retrospektywa narracyjna (Slow Loop). JEDYNA pozycja
+    # z niezerowym kosztem FinOps: DOKŁADNIE 1 wywołanie LLM tygodniowo
+    # (nie per symbol, nie per cykl). Poniżej 5 zamkniętych predykcji mail
+    # nie wychodzi — reguła domenowa, nie opcja. Off.
+    weekly_recap_enabled: bool = False
     attestation_commitments_path: str = "public/attestation/commitments.jsonl"
     attestation_reveals_path: str = "public/attestation/reveals.jsonl"
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.

@@ -42,9 +42,14 @@ jobs:
           # Symbole i ml_model_path czyta z config.toml (commitowany).
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # Dummy values dla pól wymaganych przez Settings, nieużywanych w Slow Loop
-          # (trener nie buduje LLM, więc Anthropic nie jest potrzebny).
-          OPENAI_API_KEY:         unused-in-slow-loop
+          # #17: niedzielna retrospektywa woła LLM (dokładnie RAZ) i wysyła mail,
+          # więc przy `weekly_recap_enabled = true` te sekrety muszą być realne.
+          # Z flagą off recap nie startuje i dummy w zupełności wystarczą.
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RESEND_API_KEY:    ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO_EMAIL:   ${{ secrets.DIGEST_TO_EMAIL }}
+          # Dummy — trener ich nie używa, ale Settings wymaga pól.
           FINNHUB_API_KEY:        unused-in-slow-loop
           ALPHA_VANTAGE_API_KEYS: unused-in-slow-loop
         run: uv run python main_trainer.py

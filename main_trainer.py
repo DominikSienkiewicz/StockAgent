@@ -12,8 +12,14 @@ from __future__ import annotations
 import logging
 import sys
 
+from main_agent import build_notifier
 from src.application.quota_monitor import QuotaMonitor
+from src.application.report_weekly_recap import (
+    render_weekly_recap_html,
+    render_weekly_recap_text,
+)
 from src.application.use_cases.train_model import TrainModelUseCase
+from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
 from src.config import Settings
 from src.infrastructure.adapters.alpha_vantage_fundamentals import (
     AlphaVantageFundamentalsAdapter,
@@ -110,6 +116,30 @@ def main(settings: Settings | None = None) -> int:
             logger.info("Calibration judge — %s", cal_result.get("status"))
         except Exception:
             logger.exception("Calibration judge failed — pomijam")
+
+    # #17: niedzielna retrospektywa. Slow Loop chodzi co tydzień i dotąd NIE
+    # WYSYŁAŁ użytkownikowi nic. Koszt: dokładnie jedno wywołanie LLM tygodniowo.
+    # Poniżej progu 5 zamkniętych predykcji use case zwraca `skipped_*` i mail
+    # NIE wychodzi — przy chudym tygodniu recap robiłby dramat z szumu.
+    if settings.weekly_recap_enabled:
+        try:
+            from main_agent import build_llm_adapter
+
+            recap_result = WeeklyRecapUseCase(
+                repository_port=supabase_repo,
+                llm_port=build_llm_adapter(settings, quota_monitor=quota_monitor),
+            ).run(days=7)
+            if recap_result["status"] == "recap_ready":
+                recap = recap_result["recap"]
+                narrative = recap_result["narrative"]
+                build_notifier(settings, quota_monitor=quota_monitor).send_report(
+                    subject="📅 Tydzień StockAgenta",
+                    html_body=render_weekly_recap_html(recap, narrative),
+                    plain_text=render_weekly_recap_text(recap, narrative),
+                )
+            logger.info("Weekly recap — %s", recap_result.get("status"))
+        except Exception:
+            logger.exception("Weekly recap failed — pomijam")
 
     logger.info("Slow Loop done — failures=%d/%d", failures, len(settings.symbols))
     return 1 if failures else 0

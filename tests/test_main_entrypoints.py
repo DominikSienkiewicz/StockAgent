@@ -1364,3 +1364,69 @@ class TestAttestationRevealSweep:
         repo.get_unrevealed_commitments.side_effect = Exception("no column")
 
         assert main_agent._sweep_reveals(repo, MagicMock()) == 0
+
+
+class TestWeeklyRecapWiring:
+    """#17 — niedzielny recap. Slow Loop chodzi co tydzień i dotąd nie wysyłał
+    użytkownikowi NIC. Koszt: dokładnie 1 wywołanie LLM tygodniowo."""
+
+    def _trainer(self, settings, mocker, recap_status: str) -> tuple[MagicMock, MagicMock]:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        recap_uc = MagicMock()
+        recap_uc.run.return_value = (
+            {"status": recap_status, "recap": MagicMock(), "narrative": "opowieść"}
+            if recap_status == "recap_ready"
+            else {"status": recap_status, "n_closed": 2}
+        )
+        mocker.patch("main_trainer.WeeklyRecapUseCase", return_value=recap_uc)
+        notifier = MagicMock()
+        mocker.patch("main_trainer.build_notifier", return_value=notifier)
+        mocker.patch("main_agent.build_llm_adapter", return_value=MagicMock())
+        # Renderery są testowane osobno; tu sprawdzamy wyłącznie orkiestrację.
+        mocker.patch("main_trainer.render_weekly_recap_html", return_value="<h2>ok</h2>")
+        mocker.patch("main_trainer.render_weekly_recap_text", return_value="ok")
+        return recap_uc, notifier
+
+    def test_recap_email_is_sent_when_ready(self, settings, mock_external_clients, mocker) -> None:
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        _, notifier = self._trainer(settings, mocker, "recap_ready")
+
+        main_trainer.main(settings)
+
+        notifier.send_report.assert_called_once()
+
+    def test_below_threshold_no_email_goes_out(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # Twardy próg próbki: przy chudym tygodniu recap robiłby dramat z szumu.
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        _, notifier = self._trainer(settings, mocker, "skipped_below_threshold")
+
+        main_trainer.main(settings)
+
+        notifier.send_report.assert_not_called()
+
+    def test_flag_off_never_builds_the_recap(self, settings, mock_external_clients, mocker) -> None:
+        settings.weekly_recap_enabled = False
+        settings.symbols = ["AAPL"]
+        recap_uc, notifier = self._trainer(settings, mocker, "recap_ready")
+
+        main_trainer.main(settings)
+
+        recap_uc.run.assert_not_called()
+        notifier.send_report.assert_not_called()
+
+    def test_recap_failure_does_not_fail_the_slow_loop(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        recap_uc, _ = self._trainer(settings, mocker, "recap_ready")
+        recap_uc.run.side_effect = Exception("LLM down")
+
+        assert main_trainer.main(settings) == 0
