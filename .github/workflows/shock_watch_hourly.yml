@@ -49,6 +49,9 @@ jobs:
           # Settings wymaga OPENAI_API_KEY jako pola obowiązkowego, choć watch
           # nie woła żadnego LLM. Bez niego konstrukcja Settings rzuca.
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          # Analogicznie: walidator Settings wymaga ≥1 klucza Alpha Vantage.
+          # Watch nie woła AV, ale bez tego pola konstrukcja Settings rzuca.
+          ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
           # Kanały push — darmowe. Brak sekretu = kanał po prostu nie powstaje.
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
