@@ -105,9 +105,17 @@ social_velocity_enabled = true
 yield_curve_enabled = true
 analyst_consensus_enabled = true
 vector_memory_enabled = false
-# SEC EDGAR wymaga User-Agent z REALNYM kontaktem (polityka SEC) — z placeholderem
-# SEC może zablokować requesty. PODMIEŃ na swój adres, zanim insider_flow zacznie chodzić.
-edgar_user_agent = "StockAgent/1.0 (contact@example.com)"
+# Trafia dosłownie do nagłówka `User-Agent` requestów do sec.gov (EdgarInsiderAdapter)
+# oraz reddit.com (RedditSocialAdapter). Polityka SEC wymaga REALNEGO kontaktu, żeby
+# mogli napisać, gdy ruch automatyczny zacznie im przeszkadzać — placeholder kończy
+# się 403 albo blokadą IP.
+#
+# UWAGA: ten plik jest commitowany do publicznego repo, więc adres jest jawny i trafia
+# do historii gita na stałe. Dlatego stoi tu ALIAS, nie prywatna skrzynka — jest zbywalny,
+# a SEC i tak potrzebuje wyłącznie działającego kanału kontaktu. Gdyby kiedyś trzeba było
+# go ukryć: zostawić tu placeholder i nadpisać zmienną `EDGAR_USER_AGENT`
+# (precedencja env > .env > config.toml), tak jak repo traktuje `DIGEST_TO_EMAIL`.
+edgar_user_agent = "StockAgent/1.0 (github.shelf261@passmail.net)"
 council_personas_dir = "data/council_personas"
 
 # --- Bramki volatility (Decimal jako string — dokładność) ---
