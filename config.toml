@@ -55,6 +55,9 @@ lessons_enabled = false
 # #9: pewność LLM korygowana historycznym hit-rate'em swojego kubełka kalibracji
 # — przestawia ranking „🎯 Najsilniejsze sygnały". Render-only, zero zapisu. Off.
 calibrated_confidence_enabled = false
+# #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego raportu —
+# pełny plain-text przekracza limit 4096 znaków Telegrama (400, cichy zgon). Off.
+messenger_digest_enabled = false
 track_record_days = 30
 # Dane — nowe źródła alpha. Default off → Null adapter (zero płatnych). Realny
 # adapter włącza flaga (+ ewentualny klucz: FRED_API_KEY dla yield_curve).

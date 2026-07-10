@@ -46,6 +46,7 @@ from src.application.report_builder import (
 )
 from src.application.report_council_history import InvestorHistory
 from src.application.report_lessons import LessonsReport, build_lessons
+from src.application.report_messenger import build_messenger_digest
 from src.application.report_models import ResolvedPrediction
 from src.application.tools import build_research_tools
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
@@ -296,14 +297,55 @@ def build_notifier(
             ", ".join(missing),
         )
 
-    # Kanały push (Telegram/Slack) dochodzą do dziennego raportu obok maila.
-    channels.extend(build_push_channels(settings, quota_monitor=quota_monitor))
+    # #5: gdy messenger digest jest włączony, push NIE wchodzi do tego notifiera
+    # — dostaje osobno 5-linijkowy skrót (`_dispatch_push_digest`). Pełny
+    # plain-text raportu przekracza limit 4096 znaków Telegrama → 400 i cichy
+    # zgon pusha. Z flagą OFF zachowujemy dotychczasowe (wadliwe) sklejenie.
+    if not settings.messenger_digest_enabled:
+        channels.extend(build_push_channels(settings, quota_monitor=quota_monitor))
 
     if not channels:
         return NullNotifier()
     if len(channels) == 1:
         return channels[0]
     return CompositeNotifier(channels)
+
+
+def build_push_notifier(
+    settings: Settings, quota_monitor: QuotaMonitor | None = None
+) -> ReportNotifierPort:
+    """#5 — kanały push jako JEDEN port (Telegram + Slack), z izolacją wyjątków
+    per kanał w `CompositeNotifier`. Brak sekretów → Null (kanał nie powstaje)."""
+    channels = build_push_channels(settings, quota_monitor=quota_monitor)
+    if not channels:
+        return NullNotifier()
+    if len(channels) == 1:
+        return channels[0]
+    return CompositeNotifier(channels)
+
+
+def _dispatch_push_digest(
+    *,
+    push_notifier: ReportNotifierPort,
+    results: list[SymbolResult],
+    started_at: datetime,
+    resolved: list[ResolvedPrediction],
+    subject: str,
+) -> None:
+    """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
+
+    Gałąź U2 (subskrybenci) w ogóle pomijała `notifier.send_report`, więc push
+    nie szedł, gdy ktokolwiek był zapisany. Skrót liczymy nad PEŁNYMI wynikami
+    cyklu — push to jeden kanał, nie personalizowana watchlista.
+    Best-effort: błąd kanału nie może wywalić cyklu.
+    """
+    try:
+        digest = build_messenger_digest(results, started_at, resolved)
+        push_notifier.send_report(
+            subject=subject, html_body=digest, plain_text=digest
+        )
+    except Exception:
+        logger.exception("Failed to send messenger digest")
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
@@ -1224,6 +1266,17 @@ def _dispatch_reports(
                     logger.exception("Failed to send digest to %s", sub.email)
         else:
             notifier.send_report(subject=subject, html_body=html, plain_text=text)
+
+        # #5: push idzie RAZ, skrótem, poza gałęzią fan-outu — inaczej albo
+        # ginie (subskrybenci), albo przekracza limit Telegrama (pełny raport).
+        if settings.messenger_digest_enabled:
+            _dispatch_push_digest(
+                push_notifier=build_push_notifier(settings, quota_monitor),
+                results=results,
+                started_at=started_at,
+                resolved=resolved,
+                subject=subject,
+            )
     except Exception:
         logger.exception("Failed to send report")
 

@@ -917,3 +917,79 @@ class TestDynamicSubject:
 
         assert subject.startswith("⚠️ [QUOTA] ")
         assert "NVDA -4.2%" in subject
+
+
+class TestMessengerDigestSplit:
+    """#5 — push (Telegram/Slack) dostaje 5-linijkowy skrót, nie pełny raport.
+
+    Realny failure mode: pełny plain-text przekracza limit 4096 znaków Telegrama,
+    API zwraca 400 i push ginie po cichu. Dodatkowo gałąź U2 (fan-out per
+    subskrybent) w ogóle pomijała `notifier.send_report`, więc push nie szedł.
+    """
+
+    @staticmethod
+    def _push_settings(settings: Settings, enabled: bool) -> Settings:
+        settings.notifications_enabled = True
+        settings.resend_api_key = "re_test"
+        settings.digest_to_email = "you@example.com"
+        settings.telegram_bot_token = "tg-token"
+        settings.telegram_chat_id = "42"
+        settings.messenger_digest_enabled = enabled
+        return settings
+
+    def test_flag_on_keeps_push_out_of_the_email_notifier(self, settings) -> None:
+        from src.infrastructure.adapters.resend_notifier import ResendNotifier
+
+        notifier = main_agent.build_notifier(self._push_settings(settings, True))
+
+        # Sam Resend — push idzie osobnym kanałem, ze skróconą treścią.
+        assert isinstance(notifier, ResendNotifier)
+
+    def test_flag_off_preserves_the_legacy_composite(self, settings) -> None:
+        from src.infrastructure.adapters.composite_notifier import CompositeNotifier
+
+        notifier = main_agent.build_notifier(self._push_settings(settings, False))
+
+        assert isinstance(notifier, CompositeNotifier)
+
+    def test_build_push_notifier_is_null_without_secrets(self, settings) -> None:
+        from src.infrastructure.adapters.resend_notifier import NullNotifier
+
+        settings.telegram_bot_token = None
+        settings.telegram_chat_id = None
+        settings.slack_webhook_url = None
+
+        assert isinstance(main_agent.build_push_notifier(settings), NullNotifier)
+
+    def test_push_digest_is_sent_once_and_stays_under_the_limit(self) -> None:
+        from src.application.report_messenger import MAX_DIGEST_CHARS
+
+        push = MagicMock()
+        results = [
+            main_agent.SymbolResult(symbol=f"SYM{i}", status="ignored")
+            for i in range(60)
+        ]
+
+        main_agent._dispatch_push_digest(
+            push_notifier=push,
+            results=results,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            resolved=[],
+            subject="StockAgent — cokolwiek",
+        )
+
+        push.send_report.assert_called_once()
+        sent = push.send_report.call_args.kwargs["plain_text"]
+        assert len(sent) <= MAX_DIGEST_CHARS
+
+    def test_push_failure_never_breaks_the_cycle(self) -> None:
+        push = MagicMock()
+        push.send_report.side_effect = Exception("Telegram 400")
+
+        main_agent._dispatch_push_digest(
+            push_notifier=push,
+            results=[],
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            resolved=[],
+            subject="StockAgent",
+        )

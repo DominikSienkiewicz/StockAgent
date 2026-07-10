@@ -266,6 +266,10 @@ class Settings(BaseSettings):
     # SEKRETY (placeholdery w .env.example): kanał jest budowany, gdy jego
     # sekrety są obecne (analogicznie do Resend). chat_id/webhook to adresy
     # docelowe → traktujemy jak sekret (jak digest_to_email).
+    # #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego
+    # plain-textu raportu. Pełny raport przekracza limit 4096 znaków Telegrama →
+    # API zwraca 400 i push ginie po cichu. Off = zachowanie sprzed #5.
+    messenger_digest_enabled: bool = False
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     slack_webhook_url: str | None = None
