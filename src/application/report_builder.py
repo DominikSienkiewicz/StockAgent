@@ -628,6 +628,28 @@ def _render_attribution_block_html(
     )
 
 
+def _cluster_exposure_per_symbol(
+    portfolio: Portfolio | None,
+    clusters: Mapping[str, str] | None,
+    current_prices: Mapping[str, Decimal],
+) -> dict[str, Decimal] | None:
+    """#15 faza 2 — mapa symbol → udział JEGO klastra korelacji w kapitale.
+
+    Trzy pozycje w jednym klastrze to jedna pozycja przebrana za trzy, więc
+    sizing musi widzieć sumę klastra, nie tylko wagę symbolu.
+    Brak portfela lub brak mapy klastrów → None (sizing jak przed fazą 2).
+    """
+    if portfolio is None or not clusters:
+        return None
+    exposures = portfolio.cluster_exposure(clusters, current_prices)
+    by_cluster = {e.cluster: e.weight for e in exposures}
+    return {
+        symbol: by_cluster[cluster]
+        for symbol, cluster in clusters.items()
+        if cluster in by_cluster
+    }
+
+
 def to_lead_signals(
     results: list[SymbolResult], resolved: list[ResolvedPrediction]
 ) -> list[LeadSignal]:
@@ -781,8 +803,25 @@ def build_html_report(
     # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
     # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
     # skorygowanej historią. None → surowa pewność, jak przed #9.
+    # #15: realny portfel. Ceny bierzemy z wyników tego cyklu, a kurs USD/PLN
+    # z `MacroRiskReport.polish_macro` — renderer nie dostaje żadnego portu.
+    current_prices = {
+        r.symbol: r.current_price for r in results if r.current_price is not None
+    }
+    # #15 faza 2: gdy znamy realny portfel, sizing widzi istniejącą ekspozycję
+    # (symbolu i jego klastra) i może zaproponować wyłącznie WĘŻSZĄ bandę.
+    portfolio_weights = (
+        user_portfolio.weights(current_prices) if user_portfolio is not None else None
+    )
+    cluster_exposures = _cluster_exposure_per_symbol(
+        user_portfolio, portfolio_clusters, current_prices
+    )
     trade_signals = build_trade_signals(
-        results, hit_rate=hit_rate, calibration_buckets=signal_calibration_buckets
+        results,
+        hit_rate=hit_rate,
+        calibration_buckets=signal_calibration_buckets,
+        portfolio_weights=portfolio_weights,
+        cluster_exposures=cluster_exposures,
     )
     risk_signals = detect_risk_signals(results)
     macro_risk_html = (
@@ -820,11 +859,6 @@ def build_html_report(
     persona_leaderboard_html = render_persona_leaderboard_html(
         persona_track_record or []
     )
-    # #15: realny portfel. Ceny bierzemy z wyników tego cyklu, a kurs USD/PLN
-    # z `MacroRiskReport.polish_macro` — renderer nie dostaje żadnego portu.
-    current_prices = {
-        r.symbol: r.current_price for r in results if r.current_price is not None
-    }
     usd_pln = (
         macro_risk_report.polish_macro.usd_pln
         if macro_risk_report is not None and macro_risk_report.polish_macro is not None
