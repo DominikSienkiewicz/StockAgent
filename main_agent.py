@@ -360,6 +360,16 @@ def _dispatch_push_digest(
         logger.exception("Failed to send messenger digest")
 
 
+def build_options_port(settings: Settings) -> OptionsFlowPort | None:
+    """#18 — port opcji dla grafu (fetch IV w `_predict_node`, za bramką
+    volatility). None gdy `options_flow_enabled=false` → sygnał nie powstaje."""
+    if not settings.options_flow_enabled:
+        return None
+    from src.infrastructure.adapters.finnhub_options import FinnhubOptionsAdapter
+
+    return FinnhubOptionsAdapter(api_key=settings.finnhub_api_key)
+
+
 def build_market_port(settings: Settings) -> MarketDataPort:
     """Darmowe źródła ceny: krypto → CoinGecko, reszta → Finnhub.
     Wydzielone z `build_use_case`, bo `main_watch` (#11) potrzebuje samej ceny."""
@@ -684,6 +694,9 @@ def build_use_case(
         tool_use_threshold=tool_use_threshold,
         vector_memory_enabled=settings.vector_memory_enabled,
         receipts_enabled=settings.receipts_enabled,
+        # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
+        # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
+        options_port=build_options_port(settings),
     )
 
 

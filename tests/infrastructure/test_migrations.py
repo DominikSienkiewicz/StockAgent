@@ -39,6 +39,10 @@ MIGRATION_FILES = [
     "019_model_scorecards.sql",
     "020_decision_receipts.sql",
     "021_shock_alerts.sql",
+    "022_alpha_fusion_score.sql",
+    "023_positions.sql",
+    "024_attestation.sql",
+    "025_implied_edge.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -501,6 +505,82 @@ class TestMigrations:
                     "VALUES (%s, %s, %s, %s)",
                     ("SHOCK_DUP", "2026-06-05", -9.0, "DOWN"),
                 )
+
+    # -- Migracja 022: alpha_fusion_score (fuzja sygnałów alfa, #14) ----------
+
+    def test_ml_feature_store_exposes_alpha_fusion_score(self, pg_conn) -> None:
+        """Ósma cecha ML: `alpha_fusion_score` musi być widoczna w widoku
+        (migracja 022 przebudowuje MATERIALIZED VIEW dokładając kolumnę)."""
+        cols = _columns(pg_conn, "ml_feature_store")
+        assert "alpha_fusion_score" in cols, (
+            "Brak kolumny alpha_fusion_score w ml_feature_store (migracja 022)"
+        )
+
+    def test_alpha_fusion_score_defaults_to_zero_not_null_in_view(
+        self, pg_conn
+    ) -> None:
+        """Ochrona przed train/serve-skew: w widoku NULL musi wchodzić jako 0.0.
+
+        Bez `COALESCE(alpha_fusion_score, 0.0)` `dropna` przy treningu wyciąłby
+        CAŁĄ historyczną część danych, gdzie kolumna jest NULL (dodana późno).
+        Ten test zamraża tę ochronę: wiersz z alpha_fusion_score = NULL po
+        REFRESH musi pokazać w widoku 0.0, nie NULL.
+        """
+        with pg_conn.cursor() as cur:
+            # Izolacja: własny symbol + sprzątanie (kontener module-scoped).
+            cur.execute("DELETE FROM prediction_logs WHERE symbol = 'AFS_ZERO'")
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, price_at_prediction, actual_price_after_12h, "
+                " alpha_fusion_score) "
+                "VALUES (%s, %s, %s, NULL) RETURNING id",
+                ("AFS_ZERO", 100.0, 110.0),
+            )
+            row_id = cur.fetchone()[0]
+            # Widok jest zmaterializowany — trzeba go odświeżyć, by zobaczyć wiersz.
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute(
+                "SELECT alpha_fusion_score FROM ml_feature_store WHERE id = %s",
+                (row_id,),
+            )
+            result = cur.fetchone()
+        assert result is not None, "Wiersz nie pojawił się w widoku po REFRESH"
+        assert result[0] == 0.0, (
+            f"alpha_fusion_score = {result[0]!r}, oczekiwano 0.0 (COALESCE)"
+        )
+
+    # -- Migracja 023: positions (realny portfel użytkownika, #15) ------------
+
+    def test_positions_table_exists(self, pg_conn) -> None:
+        cols = _columns(pg_conn, "positions")
+        required = {"id", "symbol", "quantity", "avg_cost", "as_of", "created_at"}
+        assert required <= cols, f"Brakujące kolumny: {required - cols}"
+
+    # -- Migracja 024: attestation (commit-reveal track record, #16) ----------
+
+    def test_attestation_columns_are_nullable(self, pg_conn) -> None:
+        """`commitment_hash` i `commitment_salt` MUSZĄ być nullable — stare
+        wiersze i predykcje bez attestacji renderują się jak dziś. INSERT do
+        prediction_logs bez tych kolumn musi nadal działać."""
+        cols = _columns(pg_conn, "prediction_logs")
+        assert {"commitment_hash", "commitment_salt"} <= cols, (
+            "Brak kolumn attestacji commitment_hash/commitment_salt (migracja 024)"
+        )
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol) VALUES (%s) RETURNING id",
+                ("TEST_ATTEST_NULL",),
+            )
+            row = cur.fetchone()
+        assert row is not None
+
+    # -- Migracja 025: implied_edge (edge vs rynek opcji, #18) ----------------
+
+    def test_edge_sigma_column_exists(self, pg_conn) -> None:
+        cols = _columns(pg_conn, "prediction_logs")
+        assert "edge_sigma" in cols, (
+            "Brak kolumny edge_sigma w prediction_logs (migracja 025)"
+        )
 
 
 @pytest.fixture

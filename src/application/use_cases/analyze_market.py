@@ -13,6 +13,7 @@ from src.application.ports import (
     MarketDataPort,
     MLPredictionPort,
     NewsPort,
+    OptionsFlowPort,
     RepositoryPort,
     SentimentPort,
     Tool,
@@ -53,6 +54,7 @@ class AnalyzeMarketUseCase:
         tool_use_threshold: Threshold | None = None,
         vector_memory_enabled: bool = False,
         receipts_enabled: bool = False,
+        options_port: OptionsFlowPort | None = None,
     ) -> None:
         self._repository = repository_port
         workflow = create_agent_graph(
@@ -76,6 +78,7 @@ class AnalyzeMarketUseCase:
             tool_use_threshold=tool_use_threshold,
             vector_memory_enabled=vector_memory_enabled,
             receipts_enabled=receipts_enabled,
+            options_port=options_port,
         )
         # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().

@@ -1844,3 +1844,104 @@ class TestFormatAnalogCarriesIdentity:
         _, precedent = formatted
         assert precedent["id"] == "pred-123"
         assert precedent["similarity"] == 0.87
+
+
+class TestImpliedEdge:
+    """#18 — edge vs rynek opcji. Fetch opcji siedzi w `_predict_node`, czyli
+    NATURALNIE za bramką volatility: przy niskiej zmienności płatny port nie rusza."""
+
+    @staticmethod
+    def _options(iv: float | None) -> Mock:
+        from src.application.ports import OptionsFlowPort
+        from src.domain.options_flow import OptionsFlowSnapshot
+
+        port = Mock(spec=OptionsFlowPort)
+        port.get_options_flow.return_value = (
+            None if iv is None
+            else OptionsFlowSnapshot(symbol="AAPL", put_call_ratio=0.6, implied_vol=iv)
+        )
+        return port
+
+    def _make(self, ports: dict, options_port):
+        return create_agent_graph(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            options_port=options_port,
+        )
+
+    def _ports(self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
+        return dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+    def test_low_volatility_never_touches_the_options_port(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Δ = 0.5% < 2% → bramka odcina cykl PRZED predict_node.
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+        options = self._options(0.45)
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        final = self._make(ports, options).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "ignored"
+        options.get_options_flow.assert_not_called()
+
+    def test_edge_sigma_reaches_the_saved_record(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        options = self._options(0.45)
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports, options).compile().invoke(_initial_state("100.0"))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "edge_sigma" in record
+
+    def test_no_options_port_leaves_the_cycle_identical(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # options_flow_enabled=false → Null/None → sygnał nie powstaje.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports, None).compile().invoke(_initial_state("100.0"))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "edge_sigma" not in record
+
+    def test_options_failure_does_not_break_the_prediction(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        options = self._options(0.45)
+        options.get_options_flow.side_effect = RuntimeError("Finnhub 403")
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        final = self._make(ports, options).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
