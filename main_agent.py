@@ -41,6 +41,7 @@ from src.application.report_builder import (
     SymbolResult,
     build_html_report,
     parse_resolved_predictions,
+    to_lead_signals,
     to_symbol_result,
 )
 from src.application.report_council_history import InvestorHistory
@@ -60,6 +61,7 @@ from src.application.use_cases.portfolio_risk import (
 from src.config import Settings
 from src.domain.asset import Asset
 from src.domain.calibration_curve import CalibrationBucket, reliability_curve
+from src.domain.digest_lead import LeadItem, build_lead, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
 from src.domain.equity_curve import equity_curve as build_equity_curve
@@ -957,6 +959,30 @@ def _build_portfolio_radar(
         return None
 
 
+def _build_subject(
+    *,
+    lead_items: list[LeadItem],
+    analyzed: int,
+    failures: int,
+    started_at: datetime,
+    prefix: str,
+) -> str:
+    """#1 — temat maila jak nagłówek gazety, nie jak licznik.
+
+    Gdy cykl ma lead, jego pierwsza pozycja idzie do tematu ("NVDA -4.2%, rada
+    PODZIELONA"); bez leadu zostaje dotychczasowy temat licznikowy. `prefix`
+    (np. "⚠️ [QUOTA] ") jest sygnałem operacyjnym i przetrwa w obu wariantach.
+
+    Liczone RAZ nad pełnymi danymi cyklu: sekcje raportu są re-slicowane per
+    subskrybent, ale temat jest dla wszystkich ten sam.
+    """
+    headline = lead_headline(lead_items)
+    stamp = started_at.strftime("%Y-%m-%d %H:%M UTC")
+    if headline:
+        return f"{prefix}StockAgent — {headline} ({stamp})"
+    return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
+
+
 def _build_signal_calibration(
     settings: Settings, repository: RepositoryPort
 ) -> list[CalibrationBucket] | None:
@@ -1158,9 +1184,16 @@ def _dispatch_reports(
         # Subject prefix gdy są CRITICAL — wymusza zwrócenie uwagi w skrzynce.
         max_sev = quota_monitor.max_severity()
         prefix = "⚠️ [QUOTA] " if max_sev is QuotaSeverity.CRITICAL else ""
-        subject = (
-            f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów "
-            f"({started_at.strftime('%Y-%m-%d %H:%M UTC')})"
+        # #1: temat z leadu, liczony nad PEŁNYMI wynikami cyklu (nie per
+        # subskrybent) — sekcje są re-slicowane, ale temat jest współdzielony.
+        subject = _build_subject(
+            lead_items=build_lead(
+                to_lead_signals(results, resolved), recent_alerts
+            ),
+            analyzed=analyzed,
+            failures=failures,
+            started_at=started_at,
+            prefix=prefix,
         )
 
         # U3: publikacja statycznego digestu web (read-only dashboard).

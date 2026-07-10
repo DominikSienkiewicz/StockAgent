@@ -1,5 +1,6 @@
 """Smoke testy entry pointów — DI wiring oraz top-level main() z mockami sieci."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -10,6 +11,7 @@ import main_backtest
 import main_trainer
 from src.application.ports import RepositoryPort
 from src.config import Settings
+from src.domain.digest_lead import LeadItem
 from src.domain.earnings import EarningsEvent
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel
@@ -869,3 +871,49 @@ class TestBuildSignalCalibration:
         ]
 
         assert main_agent._build_signal_calibration(self._settings(True), repo) is None
+
+
+class TestDynamicSubject:
+    """#1 — temat maila niesie najmocniejszy sygnał dnia zamiast suchych
+    liczników. Liczony nad PEŁNYMI danymi cyklu, bo subject jest wspólny
+    dla wszystkich subskrybentów (sekcje są re-slicowane, temat nie)."""
+
+    def test_headline_replaces_the_counter_subject(self) -> None:
+        item = LeadItem(icon="🚨", headline="NVDA -4.2%, rada PODZIELONA", detail="")
+
+        subject = main_agent._build_subject(
+            lead_items=[item],
+            analyzed=3,
+            failures=0,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            prefix="",
+        )
+
+        assert "NVDA -4.2%, rada PODZIELONA" in subject
+
+    def test_falls_back_to_counters_without_a_lead(self) -> None:
+        subject = main_agent._build_subject(
+            lead_items=[],
+            analyzed=3,
+            failures=1,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            prefix="",
+        )
+
+        assert "3 predykcji" in subject
+        assert "1 błędów" in subject
+
+    def test_critical_quota_prefix_survives_the_headline(self) -> None:
+        # Prefix [QUOTA] to sygnał operacyjny — nie może zniknąć pod nagłówkiem.
+        item = LeadItem(icon="🚨", headline="NVDA -4.2%", detail="")
+
+        subject = main_agent._build_subject(
+            lead_items=[item],
+            analyzed=1,
+            failures=0,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            prefix="⚠️ [QUOTA] ",
+        )
+
+        assert subject.startswith("⚠️ [QUOTA] ")
+        assert "NVDA -4.2%" in subject

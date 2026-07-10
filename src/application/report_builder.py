@@ -52,6 +52,7 @@ from src.application.report_formatting import (
 from src.application.report_formatting import (
     trend_label as _trend_label,
 )
+from src.application.report_lead import render_lead_html, render_lead_text
 from src.application.report_lessons import LessonsReport
 from src.application.report_models import (
     ResolvedPrediction,
@@ -92,6 +93,7 @@ from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.calibration_curve import CalibrationBucket
 from src.domain.council import CouncilVerdict
+from src.domain.digest_lead import LeadSignal, build_lead
 from src.domain.equity_curve import EquityCurve
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.macro_rates import YieldCurveSnapshot
@@ -117,6 +119,7 @@ __all__ = [
     "build_html_report",
     "build_portfolio_mood",
     "build_trade_signals",
+    "to_lead_signals",
     "detect_risk_signals",
     "market_status",
     "parse_resolved_predictions",
@@ -147,6 +150,9 @@ _DIRECTION_BG = {
 # w build_html_report. Trzymane jako stałe (jedno źródło prawdy), żeby literówka
 # w jednym z dwóch miejsc (szablon ↔ replace) nie zostawiła cicho pustego slotu.
 _QUOTA_BANNER_SLOT = "<!-- QUOTA_BANNER_SLOT -->"
+# #1: lead cyklu — PO quota bannerze (ten jest celowo pierwszy: gdy płatny
+# klucz padł, to ważniejsze niż jakikolwiek ruch ceny).
+_LEAD_SLOT = "<!-- LEAD_SLOT -->"
 _RISK_WATCH_SLOT = "<!-- RISK_WATCH_SLOT -->"
 _PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
 _COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
@@ -591,12 +597,45 @@ def _render_attribution_block_html(
     )
 
 
+def to_lead_signals(
+    results: list[SymbolResult], resolved: list[ResolvedPrediction]
+) -> list[LeadSignal]:
+    """Mapuje DTO raportu na domenowe `LeadSignal` (#1).
+
+    Granica architektury: `src/domain/digest_lead.py` bierze wyłącznie typy
+    domenowe i prymitywy, więc `resolved_label` powstaje TU jako gotowy string.
+    Symbole bez zmiany ceny nie wnoszą nic do rankingu i są pomijane.
+    """
+    labels = {
+        r.symbol: (
+            f"trafiona predykcja {r.predicted_trend}"
+            if r.is_correct
+            else f"chybiona predykcja {r.predicted_trend}"
+        )
+        for r in resolved
+    }
+    signals: list[LeadSignal] = []
+    for r in results:
+        if r.delta is None:
+            continue
+        signals.append(
+            LeadSignal(
+                symbol=r.symbol,
+                price_delta_pct=r.delta,
+                council_verdict=r.council_verdict,
+                resolved_label=labels.get(r.symbol),
+            )
+        )
+    return signals
+
+
 def _fill_html_slots(
     html: str,
     *,
     quota_html: str,
     macro_risk_html: str,
     portfolio_html: str,
+    lead_html: str,
     council_history_html: str,
     persona_leaderboard_html: str,
     track_record_html: str,
@@ -608,6 +647,7 @@ def _fill_html_slots(
     (też na ""), żeby znacznik nie został w treści."""
     if quota_html:
         html = html.replace(_QUOTA_BANNER_SLOT, quota_html, 1)
+    html = html.replace(_LEAD_SLOT, lead_html, 1)
     if macro_risk_html:
         html = html.replace(_RISK_WATCH_SLOT, macro_risk_html, 1)
     html = html.replace(_PORTFOLIO_SLOT, portfolio_html, 1)
@@ -623,14 +663,20 @@ def _fill_text_slots(
     *,
     quota_text: str,
     macro_risk_text: str,
+    lead_text: str,
     suggestions_text: str,
 ) -> str:
     """Wstawia treść w sloty plain-text. QUOTA/RISK_WATCH tylko gdy niepuste;
-    SUGGESTIONS usuwa cały wiersz znacznika, gdy brak sugestii."""
+    LEAD i SUGGESTIONS usuwają cały wiersz znacznika, gdy pusto."""
     if quota_text:
         text = text.replace(_QUOTA_BANNER_SLOT, quota_text, 1)
     if macro_risk_text:
         text = text.replace(_RISK_WATCH_SLOT, macro_risk_text, 1)
+    text = text.replace(
+        f"{_LEAD_SLOT}\n",
+        f"{lead_text}\n\n" if lead_text else "",
+        1,
+    ).replace(_LEAD_SLOT, lead_text, 1)
     return text.replace(
         f"{_SUGGESTIONS_SLOT}\n",
         f"{suggestions_text}\n\n" if suggestions_text else "",
@@ -695,6 +741,15 @@ def build_html_report(
         if portfolio_risk_report
         else ""
     )
+    # #1: lead cyklu. Ranking robi domena; TU jest jedyne miejsce, gdzie DTO
+    # warstwy application (SymbolResult / ResolvedPrediction) są mapowane na
+    # typy domenowe — `src/domain/digest_lead.py` ich nie importuje.
+    lead_items = build_lead(
+        to_lead_signals(results, resolved_predictions or []),
+        quota_alerts or [],
+    )
+    lead_html = render_lead_html(lead_items)
+    lead_text = render_lead_text(lead_items)
     # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
     council_history_html = render_council_history_html(council_history or [])
     # #3: ranking wiarygodności person — ranking (z progiem min_votes) przychodzi
@@ -731,6 +786,7 @@ def build_html_report(
         quota_html=quota_html,
         macro_risk_html=macro_risk_html,
         portfolio_html=portfolio_html,
+        lead_html=lead_html,
         council_history_html=council_history_html,
         persona_leaderboard_html=persona_leaderboard_html,
         track_record_html=track_record_html,
@@ -746,6 +802,7 @@ def build_html_report(
         text,
         quota_text=quota_text,
         macro_risk_text=macro_risk_text,
+        lead_text=lead_text,
         suggestions_text=suggestions_text,
     )
     return html, text
@@ -1100,6 +1157,8 @@ def _render_html(
     # Slot bannera kwot — wypełniany przez build_html_report, gdy są alerty.
     # Trafia NAJWYŻEJ (przed sesją), bo wyczerpanie limitu to top-priority info.
     sections.append(_QUOTA_BANNER_SLOT)
+    # #1: lead cyklu — pierwszy ekran, tuż za bannerem kwot.
+    sections.append(_LEAD_SLOT)
 
     # Status sesji giełdowej
     sections.append(f"""
@@ -1438,6 +1497,7 @@ def _render_plain(
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
+    lines.append(_LEAD_SLOT)
     lines.append("=" * 64)
     lines.append("STOCKAGENT — RAPORT CYKLU")
     lines.append("=" * 64)

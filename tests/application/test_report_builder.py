@@ -22,6 +22,7 @@ from src.application.report_builder import (
 )
 from src.application.report_formatting import company_label
 from src.domain.persona_track_record import PersonaTrackRecord
+from src.domain.quota import QuotaAlert, QuotaSeverity
 
 
 def _saved_result() -> SymbolResult:
@@ -1510,3 +1511,64 @@ class TestPersonaLeaderboardSection:
         )
         assert "ranking wiarygodności" not in html
         assert "PERSONA_LEADERBOARD_SLOT" not in html
+
+
+class TestLeadSection:
+    """#1 — lead na pierwszym ekranie, PO quota bannerze. Ranking robi domena
+    (`build_lead`); report_builder tylko mapuje DTO i renderuje."""
+
+    _HEADING = "Najważniejsze w tym cyklu"
+
+    @staticmethod
+    def _critical_alert() -> QuotaAlert:
+        return QuotaAlert(
+            source="Alpha Vantage",
+            severity=QuotaSeverity.CRITICAL,
+            message="Wyczerpano wszystkie klucze",
+            action="Dodaj klucz",
+            occurred_at=datetime(2026, 5, 14, tzinfo=UTC),
+        )
+
+    def test_lead_suppressed_when_cycle_has_no_signal(self):
+        r = _ignored_result("MSFT")
+        html, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+        assert self._HEADING not in html
+        assert "LEAD_SLOT" not in html
+        assert "LEAD_SLOT" not in text
+
+    def test_critical_quota_alert_produces_a_lead(self):
+        html, _ = build_html_report(
+            [_ignored_result("MSFT")],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
+            quota_alerts=[self._critical_alert()],
+        )
+
+        assert self._HEADING in html
+        assert "Alpha Vantage" in html
+        assert "LEAD_SLOT" not in html
+
+    def test_plain_text_carries_the_lead(self):
+        _, text = build_html_report(
+            [_ignored_result("MSFT")],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
+            quota_alerts=[self._critical_alert()],
+        )
+
+        # Wariant plain-text niesie nagłówek sekcji wersalikami.
+        assert self._HEADING.upper() in text
+        assert "Alpha Vantage" in text
+        assert "LEAD_SLOT" not in text
+
+    def test_lead_appears_before_the_body_of_the_report(self):
+        # Lead to PIERWSZY ekran — musi wyprzedzać sekcje szczegółowe.
+        html, _ = build_html_report(
+            [_saved_result()],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
+            quota_alerts=[self._critical_alert()],
+        )
+
+        assert html.index(self._HEADING) < html.index("AAPL")
