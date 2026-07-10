@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from src.domain.macro_risk import MacroAlertLevel
+
 
 class YieldCurveState(Enum):
     """Stan krzywej rentowności wyprowadzony ze spreadu 10Y-2Y."""
@@ -50,3 +52,20 @@ class YieldCurveSnapshot:
         if spread < flat_below:
             return YieldCurveState.FLAT
         return YieldCurveState.NORMAL
+
+
+def yield_curve_alert_level(state: YieldCurveState) -> MacroAlertLevel:
+    """Mapuje stan krzywej rentowności na poziom alertu makro.
+
+    Inwersja (10Y < 2Y) to klasyczny sygnał recesyjny → ELEVATED; pozostałe
+    stany (FLAT/NORMAL) nie są sygnałem ryzyka → NORMAL.
+
+    Zwraca POJEDYNCZY poziom alertu — JEDEN głos, nie decyzję o reżimie.
+    Orkiestrator dokłada go do licznika `RegimeDetector` (reguła ">= 2 głosy
+    ELEVATED → RISK_OFF"), więc sama inwersja bez innych sygnałów nie wymusza
+    RISK_OFF. To celowa semantyka "głos, nie weto": chroni przed
+    wielomiesięcznymi inwersjami, które inaczej trzymałyby agenta w risk-off.
+    """
+    if state is YieldCurveState.INVERTED:
+        return MacroAlertLevel.ELEVATED
+    return MacroAlertLevel.NORMAL

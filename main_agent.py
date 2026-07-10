@@ -62,7 +62,8 @@ from src.domain.asset import Asset
 from src.domain.calibration_curve import CalibrationBucket, reliability_curve
 from src.domain.equity_curve import EquityCurve
 from src.domain.equity_curve import equity_curve as build_equity_curve
-from src.domain.macro_rates import YieldCurveSnapshot
+from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
+from src.domain.macro_risk import MacroAlertLevel
 from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
 from src.domain.quota import QuotaAlert, QuotaSeverity
@@ -645,16 +646,32 @@ def _run_risk_watch(
 
 
 def _resolve_regime(
-    settings: Settings, macro_risk_report: MacroRiskReport | None
+    settings: Settings,
+    macro_risk_report: MacroRiskReport | None,
+    yield_curve: YieldCurveSnapshot | None = None,
 ) -> tuple[str, float]:
     """#7: reżim rynku z overall_alert (zacieśnia próg + label do promptu).
-    Zwraca (regime_context, regime_multiplier). Off / brak raportu → ("", 1.0)."""
+    Zwraca (regime_context, regime_multiplier). Off / brak raportu → ("", 1.0).
+
+    Inwersja krzywej rentowności wchodzi tu jako GŁOS w liczniku ELEVATED
+    (przez `risk_signals`), a NIE przez `_compute_overall_alert` — max dałby złą
+    semantykę, bo inwersja podbiłaby overall_alert i sama wymusiła RISK_OFF.
+    Reguła `RegimeDetector` (">= 2 głosy ELEVATED → RISK_OFF") sprawia, że sama
+    inwersja daje tylko NEUTRAL. To celowe: inwersje bywają wielomiesięczne,
+    a weto trzymałoby agenta w risk-off przez cały ten czas.
+    Snapshot jest już pobrany przed tym wywołaniem — zero dodatkowego fetchu.
+    """
     if not (settings.regime_aware_enabled and macro_risk_report is not None):
         return "", 1.0
     from src.domain.regime import RegimeDetector
 
+    # Głos krzywej wymaga JEDNOCZEŚNIE yield_curve_enabled i regime_aware_enabled.
+    risk_signals: list[MacroAlertLevel] = []
+    if settings.yield_curve_enabled and yield_curve is not None:
+        risk_signals.append(yield_curve_alert_level(yield_curve.state()))
+
     detector = RegimeDetector()
-    regime = detector.classify(macro_risk_report.overall_alert, [])
+    regime = detector.classify(macro_risk_report.overall_alert, risk_signals)
     regime_multiplier = detector.threshold_multiplier(
         regime, settings.regime_threshold_max_multiplier
     )
@@ -1184,7 +1201,9 @@ def main(settings: Settings | None = None) -> int:
     macro_risk_report = _run_risk_watch(settings, repository)
 
     # #7: reżim rynku z overall_alert (zacieśnia próg + label do promptu). Off → neutral.
-    regime_context, regime_multiplier = _resolve_regime(settings, macro_risk_report)
+    regime_context, regime_multiplier = _resolve_regime(
+        settings, macro_risk_report, yield_curve
+    )
 
     loop_results, failures, alpha_signals, alpha_prices = _analyze_symbols(
         eligible,

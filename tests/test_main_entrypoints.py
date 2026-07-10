@@ -10,6 +10,8 @@ import main_backtest
 import main_trainer
 from src.application.ports import RepositoryPort
 from src.config import Settings
+from src.domain.macro_rates import YieldCurveSnapshot
+from src.domain.macro_risk import MacroAlertLevel
 
 
 @pytest.fixture
@@ -656,3 +658,80 @@ class TestFetchReportContextPersonaTrackRecord:
         )
 
         assert track_record == []
+
+
+class TestResolveRegimeYieldCurveVote:
+    """#7 — inwersja krzywej wchodzi do RegimeDetector jako GŁOS w liczniku
+    ELEVATED, nie jako weto i nie przez `_compute_overall_alert`."""
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.regime_aware_enabled = True
+        settings.yield_curve_enabled = True
+        settings.regime_threshold_max_multiplier = 2.0
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    @staticmethod
+    def _macro(level: MacroAlertLevel) -> MagicMock:
+        report = MagicMock()
+        report.overall_alert = level
+        return report
+
+    def test_inversion_alone_stays_neutral(self) -> None:
+        # Sama inwersja (makro NORMAL) = 1 głos ELEVATED → NEUTRAL, nie RISK_OFF.
+        # To mitygacja wielomiesięcznych inwersji: głos, nie weto.
+        inverted = YieldCurveSnapshot(ten_year=3.0, two_year=4.0)
+
+        context, multiplier = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.NORMAL), inverted
+        )
+
+        assert multiplier == 1.0
+        assert "NEUTRAL" in context.upper() or context != ""
+
+    def test_inversion_plus_elevated_macro_triggers_risk_off(self) -> None:
+        # Dwa głosy ELEVATED (makro + krzywa) → RISK_OFF → próg zacieśniony.
+        inverted = YieldCurveSnapshot(ten_year=3.0, two_year=4.0)
+
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.ELEVATED), inverted
+        )
+
+        assert multiplier > 1.0
+
+    def test_elevated_macro_alone_stays_neutral(self) -> None:
+        # Kontrola: bez inwersji ten sam alert makro daje tylko 1 głos.
+        normal_curve = YieldCurveSnapshot(ten_year=4.5, two_year=3.0)
+
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.ELEVATED), normal_curve
+        )
+
+        assert multiplier == 1.0
+
+    def test_yield_curve_disabled_casts_no_vote(self) -> None:
+        inverted = YieldCurveSnapshot(ten_year=3.0, two_year=4.0)
+        settings = self._settings(yield_curve_enabled=False)
+
+        _, multiplier = main_agent._resolve_regime(
+            settings, self._macro(MacroAlertLevel.ELEVATED), inverted
+        )
+
+        assert multiplier == 1.0
+
+    def test_missing_snapshot_casts_no_vote(self) -> None:
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.ELEVATED), None
+        )
+
+        assert multiplier == 1.0
+
+    def test_regime_off_returns_neutral_defaults(self) -> None:
+        settings = self._settings(regime_aware_enabled=False)
+
+        macro = self._macro(MacroAlertLevel.CRITICAL)
+
+        assert main_agent._resolve_regime(settings, macro, None) == ("", 1.0)
