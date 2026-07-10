@@ -1,7 +1,7 @@
 # 📈 StockAgent
 **Architected & Developed by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/)** *Principal AI Engineer | Full Stack Architect*
 
-Autonomous financial agent that runs once daily (on trading days), monitors a curated portfolio of US stocks and ETFs, **fuses price action with curated financial sentiment** (Alpha Vantage NEWS_SENTIMENT), **detects cross-signal divergences** (LLM ↔ AV agreement < 0.3 = 🚨 fake news / manipulation), **learns from its own mistakes** (Self-Reflection backed by closed predictions in Supabase), and delivers a full Polish-language digest email — with charts, trade signals, accuracy history, and clickable top news straight from your inbox.
+Autonomous financial agent that runs once daily (on trading days, on a cron), monitors a curated portfolio of US stocks and ETFs, **fuses price action with curated financial sentiment** (Alpha Vantage NEWS_SENTIMENT), **detects cross-signal divergences** (LLM ↔ AV agreement < 0.3 = 🚨 fake news / manipulation), **learns from its own mistakes** (Self-Reflection backed by closed predictions in Supabase), and delivers a full Polish-language digest email — with charts, trade signals, accuracy history, and clickable top news straight from your inbox.
 
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.3](https://img.shields.io/badge/LangGraph-1.3-1C3C3C?style=for-the-badge)

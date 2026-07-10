@@ -49,43 +49,43 @@ stress_test_enabled = false
 hedge_effectiveness_enabled = false
 # Trust / track-record (render-only, zero płatnych): krzywa kapitału (paper-PnL),
 # krzywa kalibracji (reliability), panel „lessons learned". Off.
-equity_curve_enabled = false
-calibration_curve_enabled = false
-lessons_enabled = false
+equity_curve_enabled = true
+calibration_curve_enabled = true
+lessons_enabled = true
 # #9: pewność LLM korygowana historycznym hit-rate'em swojego kubełka kalibracji
 # — przestawia ranking „🎯 Najsilniejsze sygnały". Render-only, zero zapisu. Off.
-calibrated_confidence_enabled = false
+calibrated_confidence_enabled = true
 # #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego raportu —
 # pełny plain-text przekracza limit 4096 znaków Telegrama (400, cichy zgon). Off.
-messenger_digest_enabled = false
+messenger_digest_enabled = true
 # #12: karta kondycji modelu (migracja 019) — jawny scorecard walk-forward wraz
 # z odrzutami kandydatów. Zapis w Slow Loopie, render w mailu. Off.
-model_scorecard_enabled = false
+model_scorecard_enabled = true
 # #8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
 # spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Off.
-cycle_diff_enabled = false
+cycle_diff_enabled = true
 # #13: kwity decyzyjne (migracja 020) — persystowany audit trail predykcji.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 020, inaczej PGRST204. Off.
-receipts_enabled = false
+receipts_enabled = true
 # #11: darmowy watch szoku rynkowego poza cyklem (main_watch.py, cron co godzinę,
 # migracja 021). Zero płatnych API — tylko Finnhub/CoinGecko + Supabase. Off.
-shock_alerts_enabled = false
+shock_alerts_enabled = true
 # #14: Alpha Fusion Score (migracja 022) — ważona fuzja insider/opcje/analitycy/
 # social/earnings. Trafia do promptu LLM i jako ósma cecha ML. Off.
-alpha_fusion_enabled = false
+alpha_fusion_enabled = true
 # #16: commit-reveal (migracja 024) — kryptograficznie weryfikowalny track record.
 # Claim: tamper-evidence przy branch protection, NIE niepodrabialny timestamp.
 # Włącz DOPIERO po zaaplikowaniu migracji 024, inaczej PGRST204. Off.
-attestation_enabled = false
+attestation_enabled = true
 # #15: realny portfel użytkownika (tabela `positions`, migracja 023) — wagi,
 # P/L i VaR w PLN zamiast fikcji równych wag. Off → Null adapter. Off.
-portfolio_positions_enabled = false
+portfolio_positions_enabled = true
 # #17: niedzielna retrospektywa („Tydzień StockAgenta"). Koszt: 1 wywołanie LLM
 # TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Off.
-weekly_recap_enabled = false
+weekly_recap_enabled = true
 # #10: publiczny scorecard kalibracji — wyłącznie agregaty (N, hit-rate, ECE),
 # zero PII i zero symboli. Osobna ścieżka niż prywatny web_digest. Off.
-public_scorecard_enabled = false
+public_scorecard_enabled = true
 public_scorecard_path = "public/scorecard/index.html"
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"
