@@ -10,6 +10,7 @@ import main_backtest
 import main_trainer
 from src.application.ports import RepositoryPort
 from src.config import Settings
+from src.domain.earnings import EarningsEvent
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel
 
@@ -735,3 +736,92 @@ class TestResolveRegimeYieldCurveVote:
         macro = self._macro(MacroAlertLevel.CRITICAL)
 
         assert main_agent._resolve_regime(settings, macro, None) == ("", 1.0)
+
+
+class TestProcessOneSymbolEarningsGate:
+    """#6 — mnożnik earnings dociera do grafu, a płatny port AV jest wołany
+    dokładnie RAZ na symbol (prefetch + wstrzyknięcie do enrich)."""
+
+    @staticmethod
+    def _alpha(event: object | None) -> MagicMock:
+        alpha = MagicMock()
+        alpha.fetch_earnings.return_value = event
+        alpha.enrich.return_value = None
+        return alpha
+
+    @staticmethod
+    def _use_case() -> MagicMock:
+        use_case = MagicMock()
+        use_case.run.return_value = {"status": "ignored", "delta": "0.001"}
+        return use_case
+
+    def _run(self, alpha: MagicMock, use_case: MagicMock) -> None:
+        main_agent._process_one_symbol(
+            "AAPL",
+            peer_ctx=(),
+            use_case=use_case,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=True,
+            alpha_use_case=alpha,
+            earnings_gate_enabled=True,
+        )
+
+    def test_gate_disabled_never_touches_the_earnings_port(self) -> None:
+        # Wsteczna kompatybilność: z wyłączonym kalendarzem ścieżka jest
+        # bit-w-bit taka jak przed #6 — zero prefetchu, `enrich(symbol)` gołe.
+        alpha = self._alpha(EarningsEvent("AAPL", days_until=1))
+        use_case = self._use_case()
+
+        main_agent._process_one_symbol(
+            "AAPL",
+            peer_ctx=(),
+            use_case=use_case,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=True,
+            alpha_use_case=alpha,
+        )
+
+        alpha.fetch_earnings.assert_not_called()
+        alpha.enrich.assert_called_once_with("AAPL")
+        assert use_case.run.call_args.kwargs["earnings_multiplier"] == 1.0
+
+    def test_imminent_earnings_tighten_the_gate(self) -> None:
+        alpha = self._alpha(EarningsEvent("AAPL", days_until=1))
+        use_case = self._use_case()
+
+        self._run(alpha, use_case)
+
+        assert use_case.run.call_args.kwargs["earnings_multiplier"] == 1.5
+
+    def test_far_earnings_leave_the_gate_untouched(self) -> None:
+        alpha = self._alpha(EarningsEvent("AAPL", days_until=60))
+        use_case = self._use_case()
+
+        self._run(alpha, use_case)
+
+        assert use_case.run.call_args.kwargs["earnings_multiplier"] == 1.0
+
+    def test_no_earnings_data_leaves_the_gate_untouched(self) -> None:
+        alpha = self._alpha(None)
+        use_case = self._use_case()
+
+        self._run(alpha, use_case)
+
+        assert use_case.run.call_args.kwargs["earnings_multiplier"] == 1.0
+
+    def test_earnings_port_is_paid_for_only_once(self) -> None:
+        # FinOps: bramka nie ma prawa dołożyć ani jednego płatnego wywołania.
+        event = EarningsEvent("AAPL", days_until=1)
+        alpha = self._alpha(event)
+
+        self._run(alpha, self._use_case())
+
+        alpha.fetch_earnings.assert_called_once_with("AAPL")
+        assert alpha.enrich.call_args.kwargs["earnings_prefetched"] is True
+        assert alpha.enrich.call_args.kwargs["earnings"] == event

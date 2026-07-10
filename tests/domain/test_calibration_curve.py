@@ -14,6 +14,7 @@ import pytest
 
 from src.domain.calibration_curve import (
     CalibrationBucket,
+    calibrated_confidence,
     expected_calibration_error,
     reliability_curve,
 )
@@ -105,3 +106,92 @@ class TestExpectedCalibrationError:
         curve = reliability_curve([*bucket_a, *bucket_b], n_buckets=10)
         ece = expected_calibration_error(curve)
         assert abs(ece - 0.1) < 1e-9
+
+
+def _bucket(
+    lower: float, upper: float, count: int, hit_rate: float
+) -> CalibrationBucket:
+    # Pomocnik: mean_confidence nieistotny dla kalibracji, ustawiamy w środku.
+    return CalibrationBucket(
+        lower=lower,
+        upper=upper,
+        count=count,
+        mean_confidence=(lower + upper) / 2,
+        hit_rate=hit_rate,
+    )
+
+
+class TestCalibratedConfidence:
+    # ---- Kontrakt graceful: brak historii → raw bez zmian ----
+
+    def test_empty_curve_returns_raw_unchanged(self) -> None:
+        # Zamrożenie ryzyka (c): pusta krzywa → zachowanie identyczne jak dziś.
+        assert calibrated_confidence(0.85, []) == pytest.approx(0.85)
+
+    def test_no_matching_bucket_returns_raw(self) -> None:
+        # raw=0.85 nie wpada do żadnego dostarczonego kubełka [0.0,0.1).
+        buckets = [_bucket(0.0, 0.1, 50, hit_rate=0.05)]
+        assert calibrated_confidence(0.85, buckets) == pytest.approx(0.85)
+
+    # ---- Zamrożenie shrinkage (największe ryzyko: niestacjonarność) ----
+
+    def test_tiny_sample_barely_moves_raw(self) -> None:
+        # (a) count=1 przy min_count=10 → waga = 1/11 ≈ 0.0909.
+        # Kubełek [0.8,0.9] ma hit_rate 0.2, raw=0.85.
+        # Oczekiwane: 0.85 + (1/11)*(0.2 - 0.85) = 0.85 - 0.0590909... ≈ 0.79090909.
+        buckets = [_bucket(0.8, 0.9, 1, hit_rate=0.2)]
+        result = calibrated_confidence(0.85, buckets, min_count=10)
+        assert result == pytest.approx(0.85 + (1 / 11) * (0.2 - 0.85))
+        # Prawie nie odbiega od raw — mała próbka nie przeciąga.
+        assert abs(result - 0.85) < 0.06
+
+    def test_large_sample_pulls_raw_close_to_hit_rate(self) -> None:
+        # (b) count=100 przy min_count=10 → waga = 100/110 ≈ 0.909.
+        # Kubełek [0.8,0.9] ma hit_rate 0.55, raw=0.85.
+        # Oczekiwane: 0.85 + (100/110)*(0.55 - 0.85) ≈ 0.5772727.
+        buckets = [_bucket(0.8, 0.9, 100, hit_rate=0.55)]
+        result = calibrated_confidence(0.85, buckets, min_count=10)
+        assert result == pytest.approx(0.85 + (100 / 110) * (0.55 - 0.85))
+        # Wynik blisko hit_rate kubełka, wyraźnie poniżej raw.
+        assert abs(result - 0.55) < 0.03
+
+    def test_shrinkage_weight_is_count_over_count_plus_min_count(self) -> None:
+        # Jawna formuła: waga = count / (count + min_count).
+        # count=30, min_count=10 → waga = 30/40 = 0.75.
+        buckets = [_bucket(0.8, 0.9, 30, hit_rate=0.4)]
+        result = calibrated_confidence(0.85, buckets, min_count=10)
+        expected = 0.85 + 0.75 * (0.4 - 0.85)
+        assert result == pytest.approx(expected)
+
+    def test_default_min_count_is_ten(self) -> None:
+        # Domyślny min_count=10 → waga = count/(count+10).
+        buckets = [_bucket(0.8, 0.9, 10, hit_rate=0.5)]
+        result = calibrated_confidence(0.85, buckets)
+        expected = 0.85 + (10 / 20) * (0.5 - 0.85)
+        assert result == pytest.approx(expected)
+
+    # ---- Dopasowanie kubełka wg semantyki reliability_curve ----
+
+    def test_raw_on_lower_edge_matches_that_bucket(self) -> None:
+        # raw=0.8 wpada do [0.8,0.9), nie do [0.7,0.8).
+        buckets = [
+            _bucket(0.7, 0.8, 100, hit_rate=0.1),
+            _bucket(0.8, 0.9, 100, hit_rate=0.9),
+        ]
+        result = calibrated_confidence(0.8, buckets, min_count=10)
+        # Ciągnie w stronę 0.9 (górny kubełek), nie 0.1.
+        assert result > 0.8
+
+    def test_raw_one_matches_top_bucket(self) -> None:
+        # raw=1.0 wpada do ostatniego kubełka [0.9,1.0] (górna krawędź).
+        buckets = [_bucket(0.9, 1.0, 100, hit_rate=0.7)]
+        result = calibrated_confidence(1.0, buckets, min_count=10)
+        assert result == pytest.approx(1.0 + (100 / 110) * (0.7 - 1.0))
+
+    # ---- Wynik zawsze w [0, 1] ----
+
+    def test_result_clamped_to_unit_interval(self) -> None:
+        # Nawet gdyby dane były zdegenerowane, wynik nie wychodzi poza [0,1].
+        buckets = [_bucket(0.9, 1.0, 100, hit_rate=1.0)]
+        result = calibrated_confidence(1.0, buckets, min_count=10)
+        assert 0.0 <= result <= 1.0

@@ -1689,3 +1689,57 @@ class TestVectorMemory:
         assert kwargs.get("regime") is None
         saved = repository_port.save_prediction.call_args.args[0]
         assert "regime" not in saved
+
+
+class TestEarningsThresholdGate:
+    """#6 — mnożnik earnings zacieśnia bramkę volatility i mnoży się
+    z mnożnikiem reżimu. Oba są >= 1.0, więc bramka może się tylko zacieśnić."""
+
+    @staticmethod
+    def _state(**overrides: object) -> dict[str, object]:
+        state: dict[str, object] = {"asset": None}
+        state.update(overrides)
+        return state
+
+    def test_earnings_multiplier_tightens_threshold(self) -> None:
+        from src.application.agent_graph import _pick_threshold
+
+        base = Threshold(Decimal("0.02"))
+        chosen = _pick_threshold(
+            self._state(earnings_multiplier=1.5), base, None  # type: ignore[arg-type]
+        )
+
+        assert chosen.value == Decimal("0.03")
+
+    def test_earnings_and_regime_multipliers_compound(self) -> None:
+        # IMMINENT (1.5) w RISK_OFF (2.0) → próg 2% * 3.0 = 6%.
+        from src.application.agent_graph import _pick_threshold
+
+        base = Threshold(Decimal("0.02"))
+        chosen = _pick_threshold(
+            self._state(earnings_multiplier=1.5, regime_multiplier=2.0),  # type: ignore[arg-type]
+            base,
+            None,
+        )
+
+        assert chosen.value == Decimal("0.06")
+
+    def test_absent_earnings_multiplier_leaves_threshold_untouched(self) -> None:
+        from src.application.agent_graph import _pick_threshold
+
+        base = Threshold(Decimal("0.02"))
+        chosen = _pick_threshold(self._state(), base, None)  # type: ignore[arg-type]
+
+        assert chosen.value == Decimal("0.02")
+
+    def test_earnings_multiplier_never_loosens_the_gate(self) -> None:
+        # Kontrakt domenowy: mnożnik < 1.0 nie ma prawa powstać. Gdyby jednak
+        # przeciekł, bramka nie może się rozluźnić — to reguła FinOps.
+        from src.application.agent_graph import _pick_threshold
+
+        base = Threshold(Decimal("0.02"))
+        chosen = _pick_threshold(
+            self._state(earnings_multiplier=0.5), base, None  # type: ignore[arg-type]
+        )
+
+        assert chosen.value >= Decimal("0.02")

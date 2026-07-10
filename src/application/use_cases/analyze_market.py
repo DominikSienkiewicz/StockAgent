@@ -87,6 +87,7 @@ class AnalyzeMarketUseCase:
         *,
         regime_context: str = "",
         regime_multiplier: float = 1.0,
+        earnings_multiplier: float = 1.0,
         peer_context: tuple[tuple[str, str], ...] = (),
     ) -> dict[str, Any]:
         previous = self._repository.get_last_price(symbol)
@@ -98,6 +99,8 @@ class AnalyzeMarketUseCase:
             # #7 reżim (label + mnożnik progu) i #5 contagion (peery z tego cyklu).
             "regime_context": regime_context,
             "regime_multiplier": regime_multiplier,
+            # #6 bramka earnings — mnożnik progu z domeny (zawsze >= 1.0).
+            "earnings_multiplier": earnings_multiplier,
             "peer_context": peer_context,
         }
         # Przekazujemy asset z klasyfikacją (STOCK/ETF), gdy dostępny z zewnątrz.

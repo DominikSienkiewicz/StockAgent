@@ -41,3 +41,24 @@ class EarningsEvent:
         if self.days_until <= near_days:
             return EarningsProximity.NEAR
         return EarningsProximity.FAR
+
+
+# Mnożniki progu volatility per bliskość earnings. Im bliżej raportu, tym
+# mocniej zacieśniamy bramkę (mniej płatnych wywołań na ruchu, który i tak
+# zdominuje zaskoczenie wynikami). FAR = neutralnie (brak wpływu).
+_THRESHOLD_MULTIPLIER = {
+    EarningsProximity.IMMINENT: 1.5,
+    EarningsProximity.NEAR: 1.15,
+    EarningsProximity.FAR: 1.0,
+}
+
+
+def earnings_threshold_multiplier(proximity: EarningsProximity) -> float:
+    """Mnożnik progu volatility dla bliskości earnings.
+
+    Niezmiennik FinOps (kontrakt jak `RegimeDetector.threshold_multiplier`):
+    wynik jest ZAWSZE >= 1.0 — reguła earnings może tylko ZACIEŚNIĆ bramkę
+    volatility (podnieść próg, zredukować spend), nigdy jej poluzować. Typ
+    `float` dla spójności z `regime_multiplier` (iloczyn w `_pick_threshold`).
+    """
+    return _THRESHOLD_MULTIPLIER[proximity]

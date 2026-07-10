@@ -93,3 +93,58 @@ def test_graceful_when_a_port_raises() -> None:
     assert signals.insider is None          # błąd zdegradowany do None
     assert signals.analyst is not None      # reszta nadal zebrana
     assert signals.has_any()
+
+
+class TestEarningsPrefetchDedup:
+    """#6 — bramka earnings pobiera EarningsEvent PRZED grafem. Żeby nie płacić
+    drugi raz za to samo AV-wywołanie, orkiestrator wstrzykuje pobrany event
+    do `enrich`, a ten pomija własny fetch."""
+
+    def test_fetch_earnings_delegates_to_port(self) -> None:
+        ports = _ports()
+        event = EarningsEvent("AAPL", days_until=1, report_date="2026-07-11")
+        ports["earnings_port"].get_next_earnings.return_value = event
+
+        result = AlphaEnrichmentUseCase(**ports).fetch_earnings("AAPL")
+
+        assert result == event
+        ports["earnings_port"].get_next_earnings.assert_called_once_with("AAPL")
+
+    def test_fetch_earnings_is_graceful_on_port_error(self) -> None:
+        ports = _ports()
+        ports["earnings_port"].get_next_earnings.side_effect = RuntimeError("AV 429")
+
+        assert AlphaEnrichmentUseCase(**ports).fetch_earnings("AAPL") is None
+
+    def test_prefetched_earnings_skips_second_port_call(self) -> None:
+        ports = _ports()
+        _all_none(ports)
+        event = EarningsEvent("AAPL", days_until=1, report_date="2026-07-11")
+
+        signals = AlphaEnrichmentUseCase(**ports).enrich(
+            "AAPL", earnings=event, earnings_prefetched=True
+        )
+
+        assert signals.earnings == event
+        ports["earnings_port"].get_next_earnings.assert_not_called()
+
+    def test_prefetched_none_still_skips_the_fetch(self) -> None:
+        # Prefetch, który zwrócił None (brak raportu), NIE może wywołać portu
+        # ponownie — inaczej de-dup nie działa dokładnie tam, gdzie brak danych.
+        ports = _ports()
+        _all_none(ports)
+
+        signals = AlphaEnrichmentUseCase(**ports).enrich(
+            "AAPL", earnings=None, earnings_prefetched=True
+        )
+
+        assert signals.earnings is None
+        ports["earnings_port"].get_next_earnings.assert_not_called()
+
+    def test_without_prefetch_flag_enrich_fetches_as_before(self) -> None:
+        ports = _ports()
+        _all_none(ports)
+
+        AlphaEnrichmentUseCase(**ports).enrich("AAPL")
+
+        ports["earnings_port"].get_next_earnings.assert_called_once_with("AAPL")

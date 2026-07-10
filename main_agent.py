@@ -60,6 +60,7 @@ from src.application.use_cases.portfolio_risk import (
 from src.config import Settings
 from src.domain.asset import Asset
 from src.domain.calibration_curve import CalibrationBucket, reliability_curve
+from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
 from src.domain.equity_curve import equity_curve as build_equity_curve
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
@@ -711,21 +712,39 @@ def _process_one_symbol(
     regime_multiplier: float,
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
+    earnings_gate_enabled: bool = False,
 ) -> _ProcessedSymbol:
     """Przetwarza jeden symbol. NIGDY nie rzuca — łapie wyjątek i zwraca wynik
     z `is_failure=True`. Dzięki temu pula wątków (ścieżka równoległa
     `_analyze_symbols`) nigdy nie widzi wyjątku, a semantyka resilience jest
-    identyczna z dawną pętlą sekwencyjną."""
+    identyczna z dawną pętlą sekwencyjną.
+
+    `earnings_gate_enabled` (#6) domyślnie WYŁĄCZONE — wtedy ścieżka jest
+    bit-w-bit taka jak przed wprowadzeniem bramki: zero prefetchu, `enrich`
+    wołany dokładnie jak dawniej. Włącza je `settings.earnings_calendar_enabled`.
+    """
     try:
         asset = Asset(
             symbol=symbol,
             asset_type=_classify_asset(symbol, crypto_set, etf_set),
         )
+        # #6: bramka earnings. Event pobieramy PRZED grafem, bo mnożnik progu
+        # musi być znany zanim graf zdecyduje o odpaleniu płatnych portów.
+        # Gdy kalendarz earnings jest wyłączony, nie ruszamy portu w ogóle.
+        earnings_event: EarningsEvent | None = None
+        earnings_multiplier = 1.0
+        if earnings_gate_enabled:
+            earnings_event = alpha_use_case.fetch_earnings(symbol)
+            if earnings_event is not None:
+                earnings_multiplier = earnings_threshold_multiplier(
+                    earnings_event.proximity()
+                )
         raw = use_case.run(
             symbol,
             asset=asset,
             regime_context=regime_context,
             regime_multiplier=regime_multiplier,
+            earnings_multiplier=earnings_multiplier,
             peer_context=peer_ctx,
         )
         logger.info(
@@ -739,7 +758,15 @@ def _process_one_symbol(
         alpha_signal: AlphaSignals | None = None
         alpha_price: Decimal | None = None
         if collect_alpha:
-            alpha_signal = alpha_use_case.enrich(symbol)
+            # De-dup: gdy bramka earnings pobrała już event, wstrzykujemy go,
+            # zamiast płacić za drugie wywołanie Alpha Vantage na ten sam symbol.
+            # Z wyłączoną bramką wołamy `enrich(symbol)` dokładnie jak dawniej.
+            prefetch: dict[str, Any] = (
+                {"earnings": earnings_event, "earnings_prefetched": True}
+                if earnings_gate_enabled
+                else {}
+            )
+            alpha_signal = alpha_use_case.enrich(symbol, **prefetch)
             if sr.current_price is not None:
                 alpha_price = sr.current_price
         return _ProcessedSymbol(sr, False, alpha_signal, alpha_price)
@@ -761,6 +788,7 @@ def _analyze_symbols_parallel(
     regime_multiplier: float,
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
+    earnings_gate_enabled: bool = False,
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy
     od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
@@ -778,6 +806,7 @@ def _analyze_symbols_parallel(
                     regime_multiplier=regime_multiplier,
                     collect_alpha=collect_alpha,
                     alpha_use_case=alpha_use_case,
+                    earnings_gate_enabled=earnings_gate_enabled,
                 ),
                 eligible,
             )
@@ -834,6 +863,7 @@ def _analyze_symbols_sequential(
             regime_multiplier=regime_multiplier,
             collect_alpha=collect_alpha,
             alpha_use_case=alpha_use_case,
+            earnings_gate_enabled=settings.earnings_calendar_enabled,
         )
         results.append(proc.result)
         if proc.is_failure:
@@ -877,6 +907,7 @@ def _analyze_symbols(
             regime_multiplier=regime_multiplier,
             collect_alpha=collect_alpha,
             alpha_use_case=alpha_use_case,
+            earnings_gate_enabled=settings.earnings_calendar_enabled,
         )
 
     if settings.symbol_concurrency > 1 and settings.contagion_enabled:
