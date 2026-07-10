@@ -32,6 +32,7 @@ from src.application.ports import (
     MacroRatesPort,
     MarketDataPort,
     OptionsFlowPort,
+    PortfolioPositionsPort,
     ReportNotifierPort,
     RepositoryPort,
     SocialVelocityPort,
@@ -81,6 +82,7 @@ from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
+from src.domain.portfolio import Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, symbols_for
@@ -360,6 +362,46 @@ def _dispatch_push_digest(
         )
     except Exception:
         logger.exception("Failed to send messenger digest")
+
+
+def build_positions_port(settings: Settings) -> PortfolioPositionsPort:
+    """#15 — realne pozycje użytkownika. Null gdy flaga off → sekcja się chowa,
+    a warstwa ryzyka zostaje przy dotychczasowych równych wagach."""
+    from src.infrastructure.adapters.positions_repo import (
+        NullPositionsAdapter,
+        SupabasePositionsAdapter,
+    )
+
+    if not settings.portfolio_positions_enabled:
+        return NullPositionsAdapter()
+    return SupabasePositionsAdapter(url=settings.supabase_url, key=settings.supabase_key)
+
+
+def _build_user_portfolio(settings: Settings) -> Portfolio | None:
+    """#15 — agregat portfela. Błąd / brak pozycji → None → sekcja się chowa
+    (a nie: fałszywy P/L z niekompletnych danych)."""
+    if not settings.portfolio_positions_enabled:
+        return None
+    port = build_positions_port(settings)
+    try:
+        positions = port.get_positions()
+        as_of = port.get_as_of()
+    except Exception:
+        logger.exception("Failed to fetch portfolio positions")
+        return None
+    if not positions or as_of is None:
+        return None
+    return Portfolio(positions=tuple(positions), as_of=as_of)
+
+
+def _portfolio_clusters(settings: Settings) -> dict[str, str]:
+    """#15 — mapa symbol → klaster korelacji z `peer_groups` (już w configu).
+    Klastrów nie liczymy tutaj; domena tylko sumuje ekspozycję."""
+    clusters: dict[str, str] = {}
+    for cluster, symbols in settings.peer_groups.items():
+        for symbol in symbols:
+            clusters[symbol] = cluster
+    return clusters
 
 
 def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
@@ -1436,6 +1478,8 @@ def _dispatch_reports(
         sectors = _portfolio_sectors(results)
         # #12: karta kondycji modelu (flaga + migracja 019).
         model_scorecard = _build_model_scorecard(settings, repository)
+        # #15: realny portfel użytkownika (flaga + migracja 023).
+        user_portfolio = _build_user_portfolio(settings)
         # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
         consensus_shifts = (
             _build_consensus_shifts(repository, results, now=started_at)
@@ -1465,6 +1509,8 @@ def _dispatch_reports(
                 portfolio_sectors=sectors,
                 model_scorecard=model_scorecard,
                 consensus_shifts=consensus_shifts,
+                user_portfolio=user_portfolio,
+                portfolio_clusters=_portfolio_clusters(settings),
             )
 
         html, text = _build()

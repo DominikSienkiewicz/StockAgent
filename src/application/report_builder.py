@@ -101,6 +101,9 @@ from src.application.report_suggestions import (
 )
 from src.application.report_templates import _env, render_template
 from src.application.report_track_record import render_track_record_html
+from src.application.report_user_portfolio import (
+    render_user_portfolio_html,
+)
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.calibration_curve import CalibrationBucket
@@ -112,6 +115,7 @@ from src.domain.equity_curve import EquityCurve
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
+from src.domain.portfolio import Portfolio
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
 from src.domain.value_objects import (
@@ -171,6 +175,9 @@ _LEAD_SLOT = "<!-- LEAD_SLOT -->"
 _ONBOARDING_SLOT = "<!-- ONBOARDING_SLOT -->"
 _RISK_WATCH_SLOT = "<!-- RISK_WATCH_SLOT -->"
 _PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
+# #15: sekcja 💼 realnego portfela użytkownika (wagi, P/L, klaster, PLN).
+# Nazwa slotu rozłączna z _PORTFOLIO_SLOT (Portfolio Radar) — to inna sekcja.
+_USER_PORTFOLIO_SLOT = "<!-- USER_PORTFOLIO_SLOT -->"
 _COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
 _PERSONA_LEADERBOARD_SLOT = "<!-- PERSONA_LEADERBOARD_SLOT -->"
 # #8: "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs poprzedni cykl.
@@ -655,6 +662,7 @@ def _fill_html_slots(
     quota_html: str,
     macro_risk_html: str,
     portfolio_html: str,
+    user_portfolio_html: str,
     lead_html: str,
     onboarding_html: str,
     council_history_html: str,
@@ -675,6 +683,7 @@ def _fill_html_slots(
     if macro_risk_html:
         html = html.replace(_RISK_WATCH_SLOT, macro_risk_html, 1)
     html = html.replace(_PORTFOLIO_SLOT, portfolio_html, 1)
+    html = html.replace(_USER_PORTFOLIO_SLOT, user_portfolio_html, 1)
     html = html.replace(_COUNCIL_HISTORY_SLOT, council_history_html, 1)
     html = html.replace(_PERSONA_LEADERBOARD_SLOT, persona_leaderboard_html, 1)
     html = html.replace(_CONSENSUS_SHIFT_SLOT, consensus_shift_html, 1)
@@ -739,6 +748,8 @@ def build_html_report(
     portfolio_sectors: Mapping[str, int] | None = None,
     model_scorecard: ModelScorecardView | None = None,
     consensus_shifts: list[tuple[str, ConsensusShift]] | None = None,
+    user_portfolio: Portfolio | None = None,
+    portfolio_clusters: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
@@ -802,6 +813,27 @@ def build_html_report(
     persona_leaderboard_html = render_persona_leaderboard_html(
         persona_track_record or []
     )
+    # #15: realny portfel. Ceny bierzemy z wyników tego cyklu, a kurs USD/PLN
+    # z `MacroRiskReport.polish_macro` — renderer nie dostaje żadnego portu.
+    current_prices = {
+        r.symbol: r.current_price for r in results if r.current_price is not None
+    }
+    usd_pln = (
+        macro_risk_report.polish_macro.usd_pln
+        if macro_risk_report is not None and macro_risk_report.polish_macro is not None
+        else None
+    )
+    user_portfolio_html = (
+        render_user_portfolio_html(
+            user_portfolio,
+            current_prices,
+            clusters=portfolio_clusters,
+            now=started_at,
+            usd_pln=usd_pln,
+        )
+        if user_portfolio is not None
+        else ""
+    )
     # #8: zmiany nastawienia rady. Render odfiltrowuje STABLE i jawnie oznacza
     # stęchłe porównania — pusta lista → sekcja się chowa.
     consensus_shift_html = render_consensus_shift_html(consensus_shifts or [])
@@ -848,6 +880,7 @@ def build_html_report(
         quota_html=quota_html,
         macro_risk_html=macro_risk_html,
         portfolio_html=portfolio_html,
+        user_portfolio_html=user_portfolio_html,
         lead_html=lead_html,
         onboarding_html=onboarding_html,
         council_history_html=council_history_html,
@@ -1259,6 +1292,7 @@ def _render_html(
     sections.append(_RISK_WATCH_SLOT)
     # Slot na radar korelacji portfela (Q4) — wypełniany przez build_html_report.
     sections.append(_PORTFOLIO_SLOT)
+    sections.append(_USER_PORTFOLIO_SLOT)
     # Slot na panel historii głosów rady (U5).
     sections.append(_COUNCIL_HISTORY_SLOT)
     # Slot na ranking wiarygodności person (#3) — "kto z rady miał rację".

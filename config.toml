@@ -77,6 +77,9 @@ alpha_fusion_enabled = false
 # Claim: tamper-evidence przy branch protection, NIE niepodrabialny timestamp.
 # Włącz DOPIERO po zaaplikowaniu migracji 024, inaczej PGRST204. Off.
 attestation_enabled = false
+# #15: realny portfel użytkownika (tabela `positions`, migracja 023) — wagi,
+# P/L i VaR w PLN zamiast fikcji równych wag. Off → Null adapter. Off.
+portfolio_positions_enabled = false
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"
 track_record_days = 30

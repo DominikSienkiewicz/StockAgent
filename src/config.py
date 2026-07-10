@@ -155,6 +155,10 @@ class Settings(BaseSettings):
     # commitów Gita są fałszowalne — to tamper-evidence, nie niepodrabialny
     # timestamp. Off (nowe kolumny przed migracją 024 → PGRST204).
     attestation_enabled: bool = False
+    # #15: realne pozycje użytkownika (tabela `positions`, migracja 023).
+    # Nazwa CELOWO nie `portfolio_enabled` — kolidowałaby z `portfolio_var_enabled`
+    # i z sekcją watchlisty. Off → Null adapter → dotychczasowe równe wagi.
+    portfolio_positions_enabled: bool = False
     attestation_commitments_path: str = "public/attestation/commitments.jsonl"
     attestation_reveals_path: str = "public/attestation/reveals.jsonl"
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.

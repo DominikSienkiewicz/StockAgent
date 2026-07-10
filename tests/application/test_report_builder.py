@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -23,6 +23,7 @@ from src.application.report_builder import (
 from src.application.report_formatting import company_label
 from src.domain.cycle_maturity import SkipReason
 from src.domain.persona_track_record import PersonaTrackRecord
+from src.domain.portfolio import Portfolio, Position
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
 
@@ -1608,3 +1609,52 @@ class TestSkipReasonMapping:
 
         assert result.status == "error"
         assert result.skip_reason is None
+
+
+class TestUserPortfolioSection:
+    """#15 — sekcja 💼 z realnymi wagami i P/L. Kurs PLN dostaje jako wartość
+    z `MacroRiskReport.polish_macro`, NIE przez port — renderery są czyste."""
+
+    @staticmethod
+    def _portfolio(days_old: int) -> Portfolio:
+        as_of = datetime(2026, 5, 14, tzinfo=UTC) - timedelta(days=days_old)
+        return Portfolio(
+            positions=(
+                Position(
+                    symbol="AAPL",
+                    quantity=Decimal("10"),
+                    purchase_price=Decimal("250"),
+                    purchase_date=as_of.date(),
+                ),
+            ),
+            as_of=as_of,
+        )
+
+    def test_section_suppressed_without_a_portfolio(self):
+        html, _ = build_html_report(
+            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+        )
+
+        assert "USER_PORTFOLIO_SLOT" not in html
+
+    def test_fresh_portfolio_renders_real_pnl(self):
+        html, _ = build_html_report(
+            [_saved_result()],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
+            user_portfolio=self._portfolio(days_old=0),
+        )
+
+        assert "AAPL" in html
+        assert "USER_PORTFOLIO_SLOT" not in html
+
+    def test_stale_portfolio_is_badged(self):
+        # Stęchły portfel daje FAŁSZYWY P/L, gorszy niż brak sekcji.
+        html, _ = build_html_report(
+            [_saved_result()],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
+            user_portfolio=self._portfolio(days_old=30),
+        )
+
+        assert "STALE" in html.upper()
