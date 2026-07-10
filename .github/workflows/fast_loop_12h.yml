@@ -65,6 +65,9 @@ jobs:
           # LLM — analiza główna na Anthropic, embeddingi + rada na OpenAI
           OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+          # Krzywa rentowności (FRED) — darmowy klucz, wymagany przy yield_curve_enabled.
+          # Bez niego build_macro_rates_port wpada w Null adapter i głos krzywej nie powstaje.
+          FRED_API_KEY:           ${{ secrets.FRED_API_KEY }}
           # Market data + News/Sentiment
           FINNHUB_API_KEY:        ${{ secrets.FINNHUB_API_KEY }}
           ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}

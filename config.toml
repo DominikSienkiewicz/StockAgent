@@ -30,7 +30,7 @@ router_cheap_model = "gpt-5-mini"
 router_frontier_provider = "anthropic"
 router_frontier_model = "claude-sonnet-4-6"
 # Reżim rynku (#7): RISK-OFF zacieśnia próg volatility (mnożnik ≤ max). Off.
-regime_aware_enabled = false
+regime_aware_enabled = true
 regime_threshold_max_multiplier = 2.0
 # Contagion (#5): werdykty skorelowanych spółek z tego cyklu do promptu. Off.
 contagion_enabled = false
@@ -92,14 +92,21 @@ attestation_reveals_path = "public/attestation/reveals.jsonl"
 track_record_days = 30
 # Dane — nowe źródła alpha. Default off → Null adapter (zero płatnych). Realny
 # adapter włącza flaga (+ ewentualny klucz: FRED_API_KEY dla yield_curve).
-insider_flow_enabled = false
+insider_flow_enabled = true
+# earnings_calendar: +1 wywołanie Alpha Vantage na symbol (~39/dzień) NA DODATEK do
+# sentymentu (~39/dzień). Darmowy AV = 25 req/dzień/klucz, więc wymaga >= 4 kluczy.
+# Włącz dopiero, gdy masz tyle w ALPHA_VANTAGE_API_KEYS. Odblokowuje bramkę earnings (#6).
 earnings_calendar_enabled = false
+# options_flow: option-chain to endpoint PREMIUM Finnhuba — na free tier zwraca 403,
+# więc sygnał nie powstaje, a każdy cykl marnuje ~39 requestów. Off do czasu planu premium.
+# Odblokowuje #18 (edge vs implied move).
 options_flow_enabled = false
-social_velocity_enabled = false
-yield_curve_enabled = false
-analyst_consensus_enabled = false
+social_velocity_enabled = true
+yield_curve_enabled = true
+analyst_consensus_enabled = true
 vector_memory_enabled = false
-# SEC EDGAR wymaga User-Agent z kontaktem (polityka SEC). Podmień na swój kontakt.
+# SEC EDGAR wymaga User-Agent z REALNYM kontaktem (polityka SEC) — z placeholderem
+# SEC może zablokować requesty. PODMIEŃ na swój adres, zanim insider_flow zacznie chodzić.
 edgar_user_agent = "StockAgent/1.0 (contact@example.com)"
 council_personas_dir = "data/council_personas"
 
