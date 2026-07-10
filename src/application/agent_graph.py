@@ -14,12 +14,14 @@ from langgraph.graph import END, StateGraph
 from src.application.ml_features import ML_FEATURE_COLUMNS
 from src.application.ports import (
     AdvisoryCouncilPort,
+    AttestationPublisherPort,
     EmbeddingPort,
     FundamentalsPort,
     LLMPort,
     MarketDataPort,
     MLPredictionPort,
     NewsPort,
+    OptionsFlowPort,
     RepositoryPort,
     SentimentPort,
     Tool,
@@ -27,9 +29,17 @@ from src.application.ports import (
 )
 from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction_prompt
 from src.application.rag_rerank import rerank_analogs
+from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, PriceDelta
+from src.domain.attestation import commit as attestation_commit
+from src.domain.attestation import new_salt
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
 from src.domain.feature_attribution import FeatureContribution, top_contributions
+from src.domain.implied_edge import (
+    ImpliedEdge,
+    evaluate_edge,
+    model_move_from_prices,
+)
 from src.domain.prediction import Prediction
 from src.domain.regime_key import canonical_regime_key
 from src.domain.value_objects import AssetType, Fundamentals, Money, Threshold, ValuationVerdict
@@ -101,6 +111,15 @@ class AgentState(TypedDict, total=False):
 
     # Q3: atrybucja cech ML (SHAP-lite) — render-only do raportu.
     feature_attribution: tuple[FeatureContribution, ...]
+
+    # #14: composite smart-money z 5 źródeł alfa (ważona suma klasyfikacji
+    # domenowych, renormalizowana po dostępnych źródłach). None = wszystkie flagi
+    # alfa off → prompt i cechy identyczne jak przed #14.
+    alpha_fusion: AlphaFusionScore | None
+
+    # #18: dywergencja predykcji modelu od implied move rynku opcji.
+    # None = brak IV / options_flow_enabled=false → sygnał nie powstaje.
+    implied_edge: ImpliedEdge | None
 
     # #7 reżim rynku (label do promptu + mnożnik progu, ≥1.0) i #5 contagion
     # (werdykty skorelowanych spółek z tego cyklu) — przekazywane per symbol.
@@ -366,6 +385,8 @@ class _GraphDeps:
     tool_use_threshold: Threshold | None
     vector_memory_enabled: bool
     receipts_enabled: bool
+    options_port: OptionsFlowPort | None
+    attestation_publisher: AttestationPublisherPort | None
 
 
 def _check_price_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
@@ -696,6 +717,96 @@ def _run_ml_prediction(
     return ml_target, feature_attribution
 
 
+def _attach_commitment(
+    deps: _GraphDeps, record: dict[str, Any]
+) -> None:
+    """#16 — dokleja SHA-256 commitment do rekordu i publikuje go (bez soli).
+
+    Commit-reveal: publikujemy sam HASH treści predykcji + losowej soli.
+    Dopóki sól nie zostanie ujawniona (sweep po rozliczeniu), hash jest
+    nieodwracalny — sceptyk nie pozna predykcji, ale po ujawnieniu zweryfikuje,
+    że powstała PRZED ruchem ceny.
+
+    UCZCIWOŚĆ: daty commitów Gita są fałszowalne. Claim to „tamper-evidence
+    przy branch protection", NIE „niepodrabialny timestamp".
+
+    Klucze dokładane TYLKO gdy publisher istnieje — nowe kolumny przed migracją
+    024 dałyby PGRST204 i zabiły zapis całej predykcji (gate jak `receipts_enabled`).
+    Awaria publikacji nigdy nie wywala cyklu.
+    """
+    if deps.attestation_publisher is None:
+        return
+    payload = {
+        "symbol": record["symbol"],
+        "predicted_trend": record.get("predicted_trend"),
+        "predicted_target_price": str(record.get("predicted_target_price")),
+        "price_at_prediction": str(record.get("price_at_prediction")),
+    }
+    salt = new_salt()
+    commitment = attestation_commit(payload, salt)
+    record["commitment_hash"] = commitment
+    record["commitment_salt"] = salt
+    try:
+        # Publikujemy WYŁĄCZNIE hash — sól zostaje w bazie do czasu revealu.
+        deps.attestation_publisher.publish_commitment(
+            {"symbol": record["symbol"], "commitment": commitment}
+        )
+    except Exception:
+        logger.exception("Attestation commitment publish failed for %s", record["symbol"])
+
+
+def _format_alpha_fusion(fusion: AlphaFusionScore | None) -> str:
+    """#14 — blok promptu z rozbiciem wkładów, np.
+    "Alpha Fusion +0.42 (insider +0.30, options +0.20, social -0.08)".
+
+    Rozbicie jest w promptcie CELOWO: LLM ma widzieć, KTÓRE źródło pcha score,
+    a nie tylko sumę — inaczej composite jest nieaudytowalną czarną skrzynką.
+    Brak fuzji albo score 0.0 → "" → blok w ogóle nie wchodzi do promptu.
+    """
+    if fusion is None or fusion.score == 0.0:
+        return ""
+    parts = ", ".join(
+        f"{name} {value:+.2f}"
+        for name, value in sorted(fusion.contributions.items())
+        if value != 0.0
+    )
+    head = f"Alpha Fusion {fusion.score:+.2f}"
+    return f"{head} ({parts})" if parts else head
+
+
+def _alpha_fusion_value(fusion: AlphaFusionScore | None) -> float:
+    """Ósma cecha ML. Brak fuzji → 0.0, dokładnie jak `COALESCE` w widoku."""
+    return fusion.score if fusion is not None else 0.0
+
+
+# #18: horyzont predykcji. Nazwy `*_12h` są historyczne — pętla chodzi raz na
+# dobę handlową, ale kontrakt predykcji (i kolumna `actual_price_after_12h`)
+# pozostaje 12-godzinny, więc taki horyzont skalujemy sqrt-time.
+_EDGE_HORIZON_HOURS = 12.0
+
+
+def _resolve_implied_edge(
+    deps: _GraphDeps, symbol: str, current_price: Decimal, ml_target: Decimal
+) -> ImpliedEdge | None:
+    """#18 — dywergencja ruchu modelu od implied move rynku opcji.
+
+    Wołane z `_predict_node`, czyli NATURALNIE za bramką volatility: przy niskiej
+    zmienności płatny port opcji w ogóle nie rusza. Brak portu
+    (`options_flow_enabled=false`) → None → cykl identyczny jak dziś.
+    Graceful: Finnhub 403 na darmowym planie jest normą, nie awarią.
+    """
+    if deps.options_port is None:
+        return None
+    try:
+        snapshot = deps.options_port.get_options_flow(symbol)
+    except Exception:
+        logger.warning("Options flow unavailable for %s — edge skipped", symbol)
+        return None
+    iv = snapshot.implied_vol if snapshot is not None else None
+    move = model_move_from_prices(float(current_price), float(ml_target))
+    return evaluate_edge(move, iv, _EDGE_HORIZON_HOURS)
+
+
 def _predict_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
     repository_port = deps.repository_port
     ml_port = deps.ml_port
@@ -730,6 +841,8 @@ def _predict_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
         peer_context=", ".join(
             f"{sym}:{stance}" for sym, stance in state.get("peer_context", ())
         ),
+        # #14: pusty string przy braku fuzji → blok nie wchodzi do promptu.
+        alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
     )
     llm_analysis, llm_failed = _run_llm_analysis(deps, state, prompt, symbol)
 
@@ -809,10 +922,15 @@ def _predict_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
     elapsed_ms = (time.perf_counter() - predict_start) * 1000.0
     logger.info("node=predict symbol=%s elapsed_ms=%.1f", symbol, elapsed_ms)
 
+    implied_edge = _resolve_implied_edge(deps, symbol, current_price, ml_target)
+
     return {
         "llm_analysis": llm_analysis,
         "ml_target_price": ml_target,
         "data_quality_flags": flags,
+        # #18: sygnał INFORMACYJNY (bez roli decyzyjnej) — do walidacji na
+        # zamkniętych predykcjach, zanim dostanie jakąkolwiek moc sprawczą.
+        "implied_edge": implied_edge,
         # Reużywane w save_node — embedujemy newsy tylko raz na cykl.
         "news_embedding": news_embedding,
         # Q5: precedent receipts dla raportu (render-only, brak persystencji).
@@ -949,6 +1067,9 @@ def _save_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
         "reasoning_text": llm_analysis.get("reasoning"),
         "council_verdict": council_verdict_dict,
         "data_quality_flags": data_quality_flags,
+        # #14: ósma cecha ML (migracja 022). Widok robi COALESCE(...,0.0), więc
+        # historyczne NULL-e nie wypadają przez `dropna` (train/serve-skew).
+        "alpha_fusion_score": _alpha_fusion_value(state.get("alpha_fusion")),
     }
 
     # Vector Memory: tagujemy embedding reżimem rynku, w którym powstała
@@ -963,6 +1084,15 @@ def _save_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
     # całej predykcji (dokładnie ten sam gate co `vector_memory_enabled`).
     if deps.receipts_enabled:
         record["decision_receipts"] = _build_decision_receipts(deps, state)
+
+    # #18: `edge_sigma` (migracja 025) tylko gdy sygnał realnie powstał —
+    # bez portu opcji klucz nie istnieje, więc stary schemat zapisuje się jak dotąd.
+    implied_edge = state.get("implied_edge")
+    if implied_edge is not None:
+        record["edge_sigma"] = implied_edge.edge_sigma
+
+    # #16: commit-reveal (migracja 024).
+    _attach_commitment(deps, record)
 
     # Embedding podsumowania newsów → pgvector (reużyty z predict_node lub
     # policzony tu w fallbacku; graceful — przy braku zapisujemy bez wektora).
@@ -1027,6 +1157,8 @@ def create_agent_graph(
     tool_use_threshold: Threshold | None = None,
     vector_memory_enabled: bool = False,
     receipts_enabled: bool = False,
+    options_port: OptionsFlowPort | None = None,
+    attestation_publisher: AttestationPublisherPort | None = None,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
@@ -1067,6 +1199,8 @@ def create_agent_graph(
         tool_use_threshold=tool_use_threshold,
         vector_memory_enabled=vector_memory_enabled,
         receipts_enabled=receipts_enabled,
+        options_port=options_port,
+        attestation_publisher=attestation_publisher,
     )
 
     # ---------- Topologia ----------

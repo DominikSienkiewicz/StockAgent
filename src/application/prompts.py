@@ -12,6 +12,7 @@ def get_prediction_prompt(
     similar_context: str = "",
     regime_context: str = "",
     peer_context: str = "",
+    alpha_fusion_context: str = "",
 ) -> str:
     """Główny system prompt dla LLM-a w węźle predict.
 
@@ -49,6 +50,14 @@ sytuację, w której prognoza się sprawdziła lub zawiodła?
         if peer_context
         else ""
     )
+    # #14: composite smart-money z 5 źródeł alfa. Pusty przy score 0.0 (wszystkie
+    # flagi off) → prompt identyczny jak przed #14. Rozbicie wkładów jest w
+    # bloku celowo: LLM ma wiedzieć, KTÓRE źródło pcha score, nie tylko sumę.
+    alpha_block = (
+        f"\n<alpha_fusion>\n{alpha_fusion_context}\n</alpha_fusion>\n"
+        if alpha_fusion_context
+        else ""
+    )
     # Nagłówki newsów to dane nieufne (Alpha Vantage) — ogradzamy je fence'em
     # DATA-ONLY, żeby spreparowany nagłówek nie przejął output_schema.
     news_fenced = fence_untrusted("NEWS", str(current_data.get("news_summary") or ""))
@@ -66,7 +75,7 @@ dla tego aktywa. Musisz zaktualizować swój aparat poznawczy o te dane.
 Jeśli popełniłeś błąd w przeszłości, nie powielaj go.
 {reflection_context}
 </reflection_context>
-{regime_block}{peer_block}
+{regime_block}{peer_block}{alpha_block}
 {similar_block}
 <current_market_data>
 Cena aktualna: {current_data.get("price")}

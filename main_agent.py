@@ -24,6 +24,7 @@ from src.application.alpha_signals import AlphaSignals
 from src.application.ports import (
     AdvisoryCouncilPort,
     AnalystConsensusPort,
+    AttestationPublisherPort,
     EarningsCalendarPort,
     EmbeddingPort,
     InsiderFlowPort,
@@ -31,6 +32,7 @@ from src.application.ports import (
     MacroRatesPort,
     MarketDataPort,
     OptionsFlowPort,
+    PortfolioPositionsPort,
     ReportNotifierPort,
     RepositoryPort,
     SocialVelocityPort,
@@ -67,6 +69,7 @@ from src.application.use_cases.portfolio_risk import (
     PortfolioRiskUseCase,
 )
 from src.config import Settings
+from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
 from src.domain.calibration_curve import CalibrationBucket, reliability_curve
 from src.domain.consensus_shift import ConsensusShift, detect_shift
@@ -79,6 +82,7 @@ from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
+from src.domain.portfolio import Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, symbols_for
@@ -358,6 +362,71 @@ def _dispatch_push_digest(
         )
     except Exception:
         logger.exception("Failed to send messenger digest")
+
+
+def build_positions_port(settings: Settings) -> PortfolioPositionsPort:
+    """#15 — realne pozycje użytkownika. Null gdy flaga off → sekcja się chowa,
+    a warstwa ryzyka zostaje przy dotychczasowych równych wagach."""
+    from src.infrastructure.adapters.positions_repo import (
+        NullPositionsAdapter,
+        SupabasePositionsAdapter,
+    )
+
+    if not settings.portfolio_positions_enabled:
+        return NullPositionsAdapter()
+    return SupabasePositionsAdapter(url=settings.supabase_url, key=settings.supabase_key)
+
+
+def _build_user_portfolio(settings: Settings) -> Portfolio | None:
+    """#15 — agregat portfela. Błąd / brak pozycji → None → sekcja się chowa
+    (a nie: fałszywy P/L z niekompletnych danych)."""
+    if not settings.portfolio_positions_enabled:
+        return None
+    port = build_positions_port(settings)
+    try:
+        positions = port.get_positions()
+        as_of = port.get_as_of()
+    except Exception:
+        logger.exception("Failed to fetch portfolio positions")
+        return None
+    if not positions or as_of is None:
+        return None
+    return Portfolio(positions=tuple(positions), as_of=as_of)
+
+
+def _portfolio_clusters(settings: Settings) -> dict[str, str]:
+    """#15 — mapa symbol → klaster korelacji z `peer_groups` (już w configu).
+    Klastrów nie liczymy tutaj; domena tylko sumuje ekspozycję."""
+    clusters: dict[str, str] = {}
+    for cluster, symbols in settings.peer_groups.items():
+        for symbol in symbols:
+            clusters[symbol] = cluster
+    return clusters
+
+
+def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
+    """#16 — publisher commit-reveal. Null gdy `attestation_enabled=false`."""
+    from src.infrastructure.adapters.attestation_publisher import (
+        FileAttestationPublisher,
+        NullAttestationPublisher,
+    )
+
+    if not settings.attestation_enabled:
+        return NullAttestationPublisher()
+    return FileAttestationPublisher(
+        commitment_path=settings.attestation_commitments_path,
+        reveal_path=settings.attestation_reveals_path,
+    )
+
+
+def build_options_port(settings: Settings) -> OptionsFlowPort | None:
+    """#18 — port opcji dla grafu (fetch IV w `_predict_node`, za bramką
+    volatility). None gdy `options_flow_enabled=false` → sygnał nie powstaje."""
+    if not settings.options_flow_enabled:
+        return None
+    from src.infrastructure.adapters.finnhub_options import FinnhubOptionsAdapter
+
+    return FinnhubOptionsAdapter(api_key=settings.finnhub_api_key)
 
 
 def build_market_port(settings: Settings) -> MarketDataPort:
@@ -684,6 +753,16 @@ def build_use_case(
         tool_use_threshold=tool_use_threshold,
         vector_memory_enabled=settings.vector_memory_enabled,
         receipts_enabled=settings.receipts_enabled,
+        # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
+        # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
+        options_port=build_options_port(settings),
+        # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
+        # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji.
+        attestation_publisher=(
+            build_attestation_publisher(settings)
+            if settings.attestation_enabled
+            else None
+        ),
     )
 
 
@@ -780,6 +859,7 @@ def _process_one_symbol(
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
     earnings_gate_enabled: bool = False,
+    alpha_fusion_enabled: bool = False,
 ) -> _ProcessedSymbol:
     """Przetwarza jeden symbol. NIGDY nie rzuca — łapie wyjątek i zwraca wynik
     z `is_failure=True`. Dzięki temu pula wątków (ścieżka równoległa
@@ -789,6 +869,11 @@ def _process_one_symbol(
     `earnings_gate_enabled` (#6) domyślnie WYŁĄCZONE — wtedy ścieżka jest
     bit-w-bit taka jak przed wprowadzeniem bramki: zero prefetchu, `enrich`
     wołany dokładnie jak dawniej. Włącza je `settings.earnings_calendar_enabled`.
+
+    `alpha_fusion_enabled` (#14) też domyślnie WYŁĄCZONE. Fuzja zmienia prompt
+    LLM i dokłada ósmą cechę ML, więc jej wdrożenie ma być świadomą, odwracalną
+    decyzją — arbitrem jest walk-forward gate „pobij baseline", nie intuicja
+    dobierającego wagi. Off → `alpha_fusion=None` → prompt i cechy jak przed #14.
     """
     try:
         asset = Asset(
@@ -806,24 +891,12 @@ def _process_one_symbol(
                 earnings_multiplier = earnings_threshold_multiplier(
                     earnings_event.proximity()
                 )
-        raw = use_case.run(
-            symbol,
-            asset=asset,
-            regime_context=regime_context,
-            regime_multiplier=regime_multiplier,
-            earnings_multiplier=earnings_multiplier,
-            peer_context=peer_ctx,
-        )
-        logger.info(
-            "%s: status=%s delta=%s prediction_id=%s",
-            symbol,
-            raw.get("status"),
-            raw.get("delta"),
-            raw.get("prediction_id"),
-        )
-        sr = to_symbol_result(symbol, raw)
+        # #14: enrichment biegnie PRZED grafem. Dawniej działał po nim, więc
+        # LLM i cechy XGBoost nigdy nie widziały sygnałów alfa — 5 pobieranych
+        # źródeł było render-only. Liczba płatnych wywołań się NIE zmienia:
+        # `enrich` i tak leciał raz na symbol, tylko później.
         alpha_signal: AlphaSignals | None = None
-        alpha_price: Decimal | None = None
+        alpha_fusion: AlphaFusionScore | None = None
         if collect_alpha:
             # De-dup: gdy bramka earnings pobrała już event, wstrzykujemy go,
             # zamiast płacić za drugie wywołanie Alpha Vantage na ten sam symbol.
@@ -834,8 +907,35 @@ def _process_one_symbol(
                 else {}
             )
             alpha_signal = alpha_use_case.enrich(symbol, **prefetch)
-            if sr.current_price is not None:
-                alpha_price = sr.current_price
+            if alpha_fusion_enabled and alpha_signal is not None:
+                alpha_fusion = fuse_alpha_signals(
+                    insider=alpha_signal.insider,
+                    options=alpha_signal.options,
+                    social=alpha_signal.social,
+                    analyst=alpha_signal.analyst,
+                    earnings=alpha_signal.earnings,
+                )
+
+        raw = use_case.run(
+            symbol,
+            asset=asset,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            earnings_multiplier=earnings_multiplier,
+            alpha_fusion=alpha_fusion,
+            peer_context=peer_ctx,
+        )
+        logger.info(
+            "%s: status=%s delta=%s prediction_id=%s",
+            symbol,
+            raw.get("status"),
+            raw.get("delta"),
+            raw.get("prediction_id"),
+        )
+        sr = to_symbol_result(symbol, raw)
+        alpha_price: Decimal | None = None
+        if collect_alpha and sr.current_price is not None:
+            alpha_price = sr.current_price
         return _ProcessedSymbol(sr, False, alpha_signal, alpha_price)
     except Exception as exc:
         logger.exception("Failed to process symbol %s", symbol)
@@ -856,6 +956,7 @@ def _analyze_symbols_parallel(
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
     earnings_gate_enabled: bool = False,
+    alpha_fusion_enabled: bool = False,
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy
     od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
@@ -874,6 +975,7 @@ def _analyze_symbols_parallel(
                     collect_alpha=collect_alpha,
                     alpha_use_case=alpha_use_case,
                     earnings_gate_enabled=earnings_gate_enabled,
+                    alpha_fusion_enabled=alpha_fusion_enabled,
                 ),
                 eligible,
             )
@@ -931,6 +1033,7 @@ def _analyze_symbols_sequential(
             collect_alpha=collect_alpha,
             alpha_use_case=alpha_use_case,
             earnings_gate_enabled=settings.earnings_calendar_enabled,
+            alpha_fusion_enabled=settings.alpha_fusion_enabled,
         )
         results.append(proc.result)
         if proc.is_failure:
@@ -975,6 +1078,7 @@ def _analyze_symbols(
             collect_alpha=collect_alpha,
             alpha_use_case=alpha_use_case,
             earnings_gate_enabled=settings.earnings_calendar_enabled,
+            alpha_fusion_enabled=settings.alpha_fusion_enabled,
         )
 
     if settings.symbol_concurrency > 1 and settings.contagion_enabled:
@@ -1089,6 +1193,53 @@ def _build_subject(
     if headline:
         return f"{prefix}StockAgent — {headline} ({stamp})"
     return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
+
+
+def _sweep_reveals(
+    repository: RepositoryPort, publisher: AttestationPublisherPort
+) -> int:
+    """#16 — ujawnia WSZYSTKIE zapadłe commitmenty. Zwraca liczbę revealów.
+
+    Sweep, nie „reveal przy rozliczeniu": predykcje symboli usuniętych z
+    `config.toml` nigdy nie przeszłyby przez reflect, więc ich commitmenty
+    zostałyby na zawsze nieujawnione. Dla sceptyka wygląda to jak ukrywanie
+    nietrafień — a to niszczy cały sens weryfikowalnego track recordu.
+
+    `revealed_at` stemplujemy DOPIERO po udanej publikacji. Odwrotna kolejność
+    zgubiłaby nietrafienie na zawsze: oznaczone jako ujawnione, nigdy ujawnione.
+    Best-effort per wiersz: jeden błąd nie przerywa sweepu.
+    """
+    try:
+        rows = repository.get_unrevealed_commitments()
+    except Exception:
+        logger.exception("Failed to read unrevealed commitments — sweep skipped")
+        return 0
+
+    revealed = 0
+    for row in rows:
+        try:
+            publisher.publish_reveal(
+                {
+                    "symbol": row.get("symbol"),
+                    "commitment": row.get("commitment_hash"),
+                    # Sól wychodzi na jaw dopiero TERAZ — to jest sens revealu.
+                    "salt": row.get("commitment_salt"),
+                    "predicted_trend": row.get("predicted_trend"),
+                    "predicted_target_price": row.get("predicted_target_price"),
+                    "price_at_prediction": row.get("price_at_prediction"),
+                    "actual_price_after_12h": row.get("actual_price_after_12h"),
+                    "is_trend_correct": row.get("is_trend_correct"),
+                }
+            )
+        except Exception:
+            logger.exception("Failed to publish reveal for %s", row.get("id"))
+            continue
+        try:
+            repository.mark_commitment_revealed(str(row["id"]))
+        except Exception:
+            logger.exception("Failed to mark reveal for %s", row.get("id"))
+        revealed += 1
+    return revealed
 
 
 def _build_consensus_shifts(
@@ -1327,6 +1478,8 @@ def _dispatch_reports(
         sectors = _portfolio_sectors(results)
         # #12: karta kondycji modelu (flaga + migracja 019).
         model_scorecard = _build_model_scorecard(settings, repository)
+        # #15: realny portfel użytkownika (flaga + migracja 023).
+        user_portfolio = _build_user_portfolio(settings)
         # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
         consensus_shifts = (
             _build_consensus_shifts(repository, results, now=started_at)
@@ -1356,6 +1509,8 @@ def _dispatch_reports(
                 portfolio_sectors=sectors,
                 model_scorecard=model_scorecard,
                 consensus_shifts=consensus_shifts,
+                user_portfolio=user_portfolio,
+                portfolio_clusters=_portfolio_clusters(settings),
             )
 
         html, text = _build()
@@ -1405,6 +1560,11 @@ def _dispatch_reports(
                     logger.exception("Failed to send digest to %s", sub.email)
         else:
             notifier.send_report(subject=subject, html_body=html, plain_text=text)
+
+        # #16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,
+        # nie może opóźnić ani zablokować raportu.
+        if settings.attestation_enabled:
+            _sweep_reveals(repository, build_attestation_publisher(settings))
 
         # #5: push idzie RAZ, skrótem, poza gałęzią fan-outu — inaczej albo
         # ginie (subskrybenci), albo przekracza limit Telegrama (pełny raport).

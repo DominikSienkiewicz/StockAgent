@@ -9,6 +9,7 @@ import pytest
 import main_agent
 import main_backtest
 import main_trainer
+from src.application.alpha_signals import AlphaSignals
 from src.application.ports import PreviousVerdict, RepositoryPort
 from src.config import Settings
 from src.domain.consensus_shift import ShiftKind
@@ -16,6 +17,7 @@ from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem
 from src.domain.earnings import EarningsEvent
+from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel
 
@@ -1189,3 +1191,242 @@ class TestConsensusShiftWiring:
 
         assert main_agent._build_consensus_shifts(repo, [result], now=now) == []
         repo.get_previous_verdict.assert_not_called()
+
+
+class TestAlphaEnrichmentRunsBeforeTheGraph:
+    """#14 — korekta fundamentalna: enrichment działał PO grafie, więc LLM
+    i cechy XGBoost nigdy nie widziały sygnałów alfa. Musi biec PRZED."""
+
+    @staticmethod
+    def _alpha(signals: object) -> MagicMock:
+        alpha = MagicMock()
+        alpha.fetch_earnings.return_value = None
+        alpha.enrich.return_value = signals
+        return alpha
+
+    @staticmethod
+    def _use_case() -> MagicMock:
+        use_case = MagicMock()
+        use_case.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        return use_case
+
+    def _run(self, alpha: MagicMock, use_case: MagicMock) -> None:
+        main_agent._process_one_symbol(
+            "AAPL",
+            peer_ctx=(),
+            use_case=use_case,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=True,
+            alpha_use_case=alpha,
+            alpha_fusion_enabled=True,
+        )
+
+    def test_enrich_is_called_before_the_graph_runs(self) -> None:
+        order: list[str] = []
+        signals = AlphaSignals(symbol="AAPL")
+        alpha = self._alpha(signals)
+        alpha.enrich.side_effect = lambda *a, **k: (order.append("enrich"), signals)[1]
+        use_case = self._use_case()
+        use_case.run.side_effect = lambda *a, **k: (
+            order.append("graph"),
+            {"status": "ignored", "delta": Decimal("0")},
+        )[1]
+
+        self._run(alpha, use_case)
+
+        assert order == ["enrich", "graph"]
+
+    def test_fusion_score_is_injected_into_the_graph(self) -> None:
+        signals = AlphaSignals(
+            symbol="AAPL",
+            insider=InsiderFlowSnapshot(
+                "AAPL", net_shares=50_000.0, buy_count=5, sell_count=0, window_days=90
+            ),
+        )
+        use_case = self._use_case()
+
+        self._run(self._alpha(signals), use_case)
+
+        fusion = use_case.run.call_args.kwargs["alpha_fusion"]
+        assert fusion is not None
+        assert fusion.score > 0
+
+    def test_no_alpha_collection_means_no_fusion(self) -> None:
+        use_case = self._use_case()
+        alpha = self._alpha(None)
+
+        main_agent._process_one_symbol(
+            "AAPL",
+            peer_ctx=(),
+            use_case=use_case,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=False,
+            alpha_use_case=alpha,
+        )
+
+        assert use_case.run.call_args.kwargs["alpha_fusion"] is None
+        alpha.enrich.assert_not_called()
+
+
+def test_alpha_fusion_flag_off_leaves_the_graph_untouched() -> None:
+    """#14 — z flagą off graf dostaje `alpha_fusion=None`, więc prompt LLM
+    i cechy ML są identyczne jak przed wprowadzeniem fuzji."""
+    alpha = MagicMock()
+    alpha.fetch_earnings.return_value = None
+    alpha.enrich.return_value = AlphaSignals(symbol="AAPL")
+    use_case = MagicMock()
+    use_case.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+
+    main_agent._process_one_symbol(
+        "AAPL",
+        peer_ctx=(),
+        use_case=use_case,
+        crypto_set=set(),
+        etf_set=set(),
+        regime_context="",
+        regime_multiplier=1.0,
+        collect_alpha=True,
+        alpha_use_case=alpha,
+    )
+
+    assert use_case.run.call_args.kwargs["alpha_fusion"] is None
+
+
+class TestAttestationRevealSweep:
+    """#16 — sweep ujawnia WSZYSTKIE zapadłe commitmenty. Bez niego predykcje
+    symboli usuniętych z config.toml nigdy by się nie odsłoniły, a dla sceptyka
+    wygląda to jak ukrywanie nietrafień."""
+
+    @staticmethod
+    def _row(pid: str, salt: str = "s" * 32) -> dict:
+        return {
+            "id": pid,
+            "symbol": "GONE",
+            "predicted_trend": "BULLISH",
+            "predicted_target_price": "110.0",
+            "price_at_prediction": "100.0",
+            "actual_price_after_12h": "95.0",
+            "is_trend_correct": False,
+            "commitment_hash": "deadbeef",
+            "commitment_salt": salt,
+        }
+
+    def test_reveals_every_matured_commitment(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("p-1"), self._row("p-2")]
+        pub = MagicMock()
+
+        revealed = main_agent._sweep_reveals(repo, pub)
+
+        assert revealed == 2
+        assert pub.publish_reveal.call_count == 2
+        assert repo.mark_commitment_revealed.call_count == 2
+
+    def test_reveal_payload_exposes_the_salt(self) -> None:
+        # Dopiero teraz sól wychodzi na jaw — to jest cały sens revealu.
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("p-1")]
+        pub = MagicMock()
+
+        main_agent._sweep_reveals(repo, pub)
+
+        payload = pub.publish_reveal.call_args.args[0]
+        assert payload["salt"] == "s" * 32
+        assert payload["commitment"] == "deadbeef"
+
+    def test_a_failed_reveal_does_not_stop_the_sweep(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("p-1"), self._row("p-2")]
+        pub = MagicMock()
+        pub.publish_reveal.side_effect = [OSError("disk"), "path.jsonl"]
+
+        assert main_agent._sweep_reveals(repo, pub) == 1
+
+    def test_row_is_not_marked_revealed_when_publishing_fails(self) -> None:
+        # Inaczej nietrafienie zniknęłoby na zawsze: oznaczone, nigdy ujawnione.
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("p-1")]
+        pub = MagicMock()
+        pub.publish_reveal.side_effect = OSError("disk")
+
+        main_agent._sweep_reveals(repo, pub)
+
+        repo.mark_commitment_revealed.assert_not_called()
+
+    def test_repository_error_degrades_to_no_sweep(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.side_effect = Exception("no column")
+
+        assert main_agent._sweep_reveals(repo, MagicMock()) == 0
+
+
+class TestWeeklyRecapWiring:
+    """#17 — niedzielny recap. Slow Loop chodzi co tydzień i dotąd nie wysyłał
+    użytkownikowi NIC. Koszt: dokładnie 1 wywołanie LLM tygodniowo."""
+
+    def _trainer(self, settings, mocker, recap_status: str) -> tuple[MagicMock, MagicMock]:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        recap_uc = MagicMock()
+        recap_uc.run.return_value = (
+            {"status": recap_status, "recap": MagicMock(), "narrative": "opowieść"}
+            if recap_status == "recap_ready"
+            else {"status": recap_status, "n_closed": 2}
+        )
+        mocker.patch("main_trainer.WeeklyRecapUseCase", return_value=recap_uc)
+        notifier = MagicMock()
+        mocker.patch("main_trainer.build_notifier", return_value=notifier)
+        mocker.patch("main_agent.build_llm_adapter", return_value=MagicMock())
+        # Renderery są testowane osobno; tu sprawdzamy wyłącznie orkiestrację.
+        mocker.patch("main_trainer.render_weekly_recap_html", return_value="<h2>ok</h2>")
+        mocker.patch("main_trainer.render_weekly_recap_text", return_value="ok")
+        return recap_uc, notifier
+
+    def test_recap_email_is_sent_when_ready(self, settings, mock_external_clients, mocker) -> None:
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        _, notifier = self._trainer(settings, mocker, "recap_ready")
+
+        main_trainer.main(settings)
+
+        notifier.send_report.assert_called_once()
+
+    def test_below_threshold_no_email_goes_out(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # Twardy próg próbki: przy chudym tygodniu recap robiłby dramat z szumu.
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        _, notifier = self._trainer(settings, mocker, "skipped_below_threshold")
+
+        main_trainer.main(settings)
+
+        notifier.send_report.assert_not_called()
+
+    def test_flag_off_never_builds_the_recap(self, settings, mock_external_clients, mocker) -> None:
+        settings.weekly_recap_enabled = False
+        settings.symbols = ["AAPL"]
+        recap_uc, notifier = self._trainer(settings, mocker, "recap_ready")
+
+        main_trainer.main(settings)
+
+        recap_uc.run.assert_not_called()
+        notifier.send_report.assert_not_called()
+
+    def test_recap_failure_does_not_fail_the_slow_loop(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        recap_uc, _ = self._trainer(settings, mocker, "recap_ready")
+        recap_uc.run.side_effect = Exception("LLM down")
+
+        assert main_trainer.main(settings) == 0

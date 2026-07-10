@@ -15,6 +15,7 @@ from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.options_flow import OptionsFlowSnapshot
 from src.domain.polish_macro import PolishMacroSnapshot
+from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.quota import QuotaAlert
 from src.domain.social_velocity import SocialVelocitySnapshot
@@ -234,6 +235,27 @@ class RepositoryPort(ABC):
         → sekcja leaderboardu sama się chowa."""
 
     @abstractmethod
+    def get_resolved_predictions_detailed(self, days: int) -> list[dict[str, Any]]:
+        """#17 — jak `get_resolved_predictions`, ale z polami, których tamta NIE
+        zwraca: `id`, `price_at_prediction`, `predicted_target_price`,
+        `confidence_score`, `actual_price_after_12h` i `council_verdict` (JSONB).
+
+        Recap tygodniowy potrzebuje ich, żeby policzyć accuracy, ECE i
+        wybronionych dysydentów rady. Pusta lista = brak danych."""
+
+    @abstractmethod
+    def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
+        """#16 — ROZLICZONE predykcje z commitmentem, jeszcze nieujawnione.
+
+        Napędza sweep: bez niego predykcje symboli usuniętych z `config.toml`
+        nigdy nie zostałyby ujawnione, a dla sceptyka wygląda to jak ukrywanie
+        nietrafień. Pusta lista = nic do ujawnienia / brak migracji 024."""
+
+    @abstractmethod
+    def mark_commitment_revealed(self, prediction_id: str) -> None:
+        """#16 — stempluje `revealed_at`, żeby sweep nie ujawnił tego dwa razy."""
+
+    @abstractmethod
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         """#11 — najnowszy snapshot ceny WRAZ ze znacznikiem czasu.
 
@@ -425,6 +447,35 @@ class SubscriberRepositoryPort(ABC):
 
     @abstractmethod
     def list_subscribers(self) -> list[Subscriber]: ...
+
+
+class PortfolioPositionsPort(ABC):
+    """#15 — realne pozycje użytkownika (tabela `positions`, migracja 023).
+
+    Bez nich cała warstwa ryzyka liczy fikcję na RÓWNYCH wagach. Pusta lista =
+    brak pozycji / port wyłączony → fallback na dotychczasowe równe wagi."""
+
+    @abstractmethod
+    def get_positions(self) -> list[Position]: ...
+
+    @abstractmethod
+    def get_as_of(self) -> datetime | None:
+        """Znacznik czasu najświeższej pozycji. None = brak danych.
+        Napędza badge STALE — stęchły portfel daje FAŁSZYWY P/L, gorszy niż
+        brak sekcji, więc świeżość jest wymaganiem, nie ozdobnikiem."""
+
+
+class AttestationPublisherPort(ABC):
+    """#16 — publikacja commitmentów i revealów (append-only JSONL).
+
+    Lustro `WebPublisherPort`: zwraca ścieżkę/URL albo "" gdy wyłączone lub
+    błąd. Awaria publikacji NIGDY nie wywala cyklu."""
+
+    @abstractmethod
+    def publish_commitment(self, record: Mapping[str, Any]) -> str: ...
+
+    @abstractmethod
+    def publish_reveal(self, record: Mapping[str, Any]) -> str: ...
 
 
 class WebPublisherPort(ABC):

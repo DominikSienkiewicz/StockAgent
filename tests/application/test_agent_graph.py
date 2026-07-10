@@ -1844,3 +1844,292 @@ class TestFormatAnalogCarriesIdentity:
         _, precedent = formatted
         assert precedent["id"] == "pred-123"
         assert precedent["similarity"] == 0.87
+
+
+class TestImpliedEdge:
+    """#18 — edge vs rynek opcji. Fetch opcji siedzi w `_predict_node`, czyli
+    NATURALNIE za bramką volatility: przy niskiej zmienności płatny port nie rusza."""
+
+    @staticmethod
+    def _options(iv: float | None) -> Mock:
+        from src.application.ports import OptionsFlowPort
+        from src.domain.options_flow import OptionsFlowSnapshot
+
+        port = Mock(spec=OptionsFlowPort)
+        port.get_options_flow.return_value = (
+            None if iv is None
+            else OptionsFlowSnapshot(symbol="AAPL", put_call_ratio=0.6, implied_vol=iv)
+        )
+        return port
+
+    def _make(self, ports: dict, options_port):
+        return create_agent_graph(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            options_port=options_port,
+        )
+
+    def _ports(self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
+        return dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+    def test_low_volatility_never_touches_the_options_port(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Δ = 0.5% < 2% → bramka odcina cykl PRZED predict_node.
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+        options = self._options(0.45)
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        final = self._make(ports, options).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "ignored"
+        options.get_options_flow.assert_not_called()
+
+    def test_edge_sigma_reaches_the_saved_record(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        options = self._options(0.45)
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports, options).compile().invoke(_initial_state("100.0"))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "edge_sigma" in record
+
+    def test_no_options_port_leaves_the_cycle_identical(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # options_flow_enabled=false → Null/None → sygnał nie powstaje.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports, None).compile().invoke(_initial_state("100.0"))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "edge_sigma" not in record
+
+    def test_options_failure_does_not_break_the_prediction(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        options = self._options(0.45)
+        options.get_options_flow.side_effect = RuntimeError("Finnhub 403")
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        final = self._make(ports, options).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+
+
+class TestAlphaFusionInGraph:
+    """#14 — score fuzji sygnałów alfa dociera do promptu LLM i do rekordu.
+    Bez niego 5 pobieranych źródeł alfa było render-only."""
+
+    def _make(self, ports: dict):
+        return create_agent_graph(**ports, threshold=Threshold(Decimal("0.02")))
+
+    def _ports(self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
+        return dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+    def _state(self, score: float | None) -> dict:
+        from src.domain.alpha_fusion import AlphaFusionScore
+
+        state: dict = {"symbol": "AAPL", "previous_price": Decimal("100.0")}
+        if score is not None:
+            state["alpha_fusion"] = AlphaFusionScore(
+                score=score,
+                contributions={"insider": 0.30, "options": 0.12},
+                available_sources=("insider", "options"),
+                earnings_confidence=1.0,
+            )
+        return state
+
+    def test_score_reaches_the_saved_record(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports).compile().invoke(self._state(0.42))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert record["alpha_fusion_score"] == 0.42
+
+    def test_score_reaches_the_llm_prompt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports).compile().invoke(self._state(0.42))
+
+        prompt = llm_port.analyze.call_args.args[0]
+        assert "Alpha Fusion" in prompt
+        assert "0.42" in prompt
+
+    def test_neutral_score_is_omitted_from_the_prompt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Wszystkie flagi alfa off → score 0.0 → prompt identyczny jak dziś.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports).compile().invoke(self._state(None))
+
+        prompt = llm_port.analyze.call_args.args[0]
+        assert "Alpha Fusion" not in prompt
+        record = repository_port.save_prediction.call_args.args[0]
+        assert record["alpha_fusion_score"] == 0.0
+
+
+class TestAttestationCommitment:
+    """#16 — commit-reveal. Przy zapisie predykcji publikujemy SHA-256
+    commitment (hash treści + sól); sól ujawniamy dopiero przy reveal."""
+
+    @staticmethod
+    def _publisher() -> Mock:
+        from src.application.ports import AttestationPublisherPort
+
+        pub = Mock(spec=AttestationPublisherPort)
+        pub.publish_commitment.return_value = "public/attestation/commitments.jsonl"
+        return pub
+
+    def _ports(self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
+        return dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+    def _run(self, ports, publisher):
+        return create_agent_graph(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            attestation_publisher=publisher,
+        ).compile().invoke(_initial_state("100.0"))
+
+    def test_without_publisher_no_commitment_columns_are_written(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # attestation_enabled=false → nowe klucze nie mogą trafić do rekordu
+        # (PGRST204 przed migracją 024 zabiłby zapis całej predykcji).
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._run(ports, None)
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "commitment_hash" not in record
+        assert "commitment_salt" not in record
+
+    def test_commitment_hash_and_salt_are_persisted(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+
+        self._run(ports, publisher)
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert len(record["commitment_hash"]) == 64
+        assert record["commitment_salt"]
+        publisher.publish_commitment.assert_called_once()
+
+    def test_published_commitment_never_leaks_the_salt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Sedno commit-reveal: przed ujawnieniem hash bez soli jest nieodwracalny.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+
+        self._run(ports, publisher)
+
+        published = publisher.publish_commitment.call_args.args[0]
+        assert "salt" not in published
+        assert "commitment" in published
+
+    def test_publisher_failure_never_breaks_the_cycle(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+        publisher.publish_commitment.side_effect = OSError("disk full")
+
+        final = self._run(ports, publisher)
+
+        assert final["status"] == "saved"

@@ -301,6 +301,26 @@ class SupabaseRepository(RepositoryPort):
         )
         return _paginate(query)
 
+    def get_resolved_predictions_detailed(self, days: int) -> list[dict[str, Any]]:
+        """#17 — zamknięte predykcje z polami, których `get_resolved_predictions`
+        nie zwraca: `id`, `predicted_target_price`, `confidence_score` i werdykt
+        rady (JSONB). Recap tygodniowy liczy z nich accuracy, ECE i wybronionych
+        dysydentów. Paginacja jak w pozostałych odczytach track-recordu."""
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        query = (
+            self._client.table(self._table)
+            .select(
+                "id, symbol, predicted_trend, is_trend_correct, timestamp, "
+                "reasoning_text, correction_insights, price_at_prediction, "
+                "predicted_target_price, actual_price_after_12h, "
+                "confidence_score, council_verdict"
+            )
+            .gte("timestamp", cutoff.isoformat())
+            .not_.is_("is_trend_correct", "null")
+            .order("timestamp", desc=True)
+        )
+        return _paginate(query)
+
     def get_resolved_predictions_for_eval(self, days: int) -> list[dict[str, Any]]:
         """Zamknięte predykcje z ostatnich `days` dni z polami do ewaluacji
         (ceny + kierunek). Read-only; używane przez `src.tools.evaluate`.
@@ -582,6 +602,37 @@ class SupabaseRepository(RepositoryPort):
                 continue
             out[str(name)] = (float(hit_rate), int(votes))
         return out
+
+    def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
+        # Graceful: brak migracji 024 → [] (sweep nie ma czego ujawnić).
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        try:
+            response = (
+                self._client.table(self._table)
+                .select(
+                    "id, symbol, predicted_trend, predicted_target_price, "
+                    "price_at_prediction, actual_price_after_12h, "
+                    "is_trend_correct, commitment_hash, commitment_salt"
+                )
+                .gte("timestamp", cutoff)
+                .not_.is_("commitment_hash", "null")
+                .not_.is_("actual_price_after_12h", "null")
+                .is_("revealed_at", "null")
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "Attestation columns unavailable — reveal sweep pominięty "
+                "(zaaplikuj migrację 024).",
+                exc_info=True,
+            )
+            return []
+        return list(_rows(response))
+
+    def mark_commitment_revealed(self, prediction_id: str) -> None:
+        self._client.table(self._table).update(
+            {"revealed_at": datetime.now(UTC).isoformat()}
+        ).eq("id", prediction_id).execute()
 
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         response = (

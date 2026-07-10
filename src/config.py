@@ -146,6 +146,26 @@ class Settings(BaseSettings):
     # #11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
     # migracja 021). Zero płatnych wywołań. Off.
     shock_alerts_enabled: bool = False
+    # #14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
+    # Wchodzi do promptu LLM ORAZ jako ósma cecha XGBoost. Wdrożenie cechy
+    # rozstrzyga walk-forward gate „pobij baseline", nie intuicja wag. Off.
+    alpha_fusion_enabled: bool = False
+    # #16: commit-reveal (migracja 024). W chwili predykcji publikujemy SHA-256
+    # commitment; po rozliczeniu sweep ujawnia sól i plaintext. UWAGA: daty
+    # commitów Gita są fałszowalne — to tamper-evidence, nie niepodrabialny
+    # timestamp. Off (nowe kolumny przed migracją 024 → PGRST204).
+    attestation_enabled: bool = False
+    # #15: realne pozycje użytkownika (tabela `positions`, migracja 023).
+    # Nazwa CELOWO nie `portfolio_enabled` — kolidowałaby z `portfolio_var_enabled`
+    # i z sekcją watchlisty. Off → Null adapter → dotychczasowe równe wagi.
+    portfolio_positions_enabled: bool = False
+    # #17: niedzielna retrospektywa narracyjna (Slow Loop). JEDYNA pozycja
+    # z niezerowym kosztem FinOps: DOKŁADNIE 1 wywołanie LLM tygodniowo
+    # (nie per symbol, nie per cykl). Poniżej 5 zamkniętych predykcji mail
+    # nie wychodzi — reguła domenowa, nie opcja. Off.
+    weekly_recap_enabled: bool = False
+    attestation_commitments_path: str = "public/attestation/commitments.jsonl"
+    attestation_reveals_path: str = "public/attestation/reveals.jsonl"
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
 
