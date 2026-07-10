@@ -21,6 +21,7 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_formatting import company_label
+from src.domain.cycle_maturity import SkipReason
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
@@ -1572,3 +1573,38 @@ class TestLeadSection:
         )
 
         assert html.index(self._HEADING) < html.index("AAPL")
+
+
+class TestSkipReasonMapping:
+    """#4 — `skip_reason` rozdziela przyczyny pominięcia. Bez tego powitalny
+    ton „Dzień 1" przykryłby masową awarię źródeł."""
+
+    def test_cold_start_is_detected_from_zero_previous_price(self):
+        raw = {"status": "ignored", "delta": Decimal("0"), "previous_price": Decimal("0")}
+
+        result = to_symbol_result("AAPL", raw)
+
+        assert result.skip_reason is SkipReason.COLD_START
+
+    def test_below_threshold_when_previous_price_exists(self):
+        raw = {
+            "status": "ignored",
+            "delta": Decimal("0.001"),
+            "previous_price": Decimal("298.87"),
+        }
+
+        result = to_symbol_result("AAPL", raw)
+
+        assert result.skip_reason is SkipReason.BELOW_THRESHOLD
+
+    def test_saved_symbol_has_no_skip_reason(self):
+        raw = {"status": "saved", "delta": Decimal("0.05"), "previous_price": Decimal("100")}
+
+        assert to_symbol_result("AAPL", raw).skip_reason is None
+
+    def test_error_symbol_has_no_skip_reason(self):
+        # Błąd to NIE pominięcie — inaczej awaria wyglądałaby jak cold-start.
+        result = to_symbol_result("AAPL", None, error="HTTP 429")
+
+        assert result.status == "error"
+        assert result.skip_reason is None

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import urllib.parse
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -63,6 +64,10 @@ from src.application.report_models import (
     TradeSignal,
     ValuationSection,
 )
+from src.application.report_onboarding import (
+    render_onboarding_html,
+    render_onboarding_text,
+)
 from src.application.report_persona_leaderboard import (
     render_persona_leaderboard_html,
 )
@@ -93,6 +98,7 @@ from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.calibration_curve import CalibrationBucket
 from src.domain.council import CouncilVerdict
+from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadSignal, build_lead
 from src.domain.equity_curve import EquityCurve
 from src.domain.feature_attribution import FeatureContribution
@@ -153,6 +159,8 @@ _QUOTA_BANNER_SLOT = "<!-- QUOTA_BANNER_SLOT -->"
 # #1: lead cyklu — PO quota bannerze (ten jest celowo pierwszy: gdy płatny
 # klucz padł, to ważniejsze niż jakikolwiek ruch ceny).
 _LEAD_SLOT = "<!-- LEAD_SLOT -->"
+# #4: sekcja powitalna pierwszego cyklu ("Dzień 1") — zamiast ściany "Pominięte".
+_ONBOARDING_SLOT = "<!-- ONBOARDING_SLOT -->"
 _RISK_WATCH_SLOT = "<!-- RISK_WATCH_SLOT -->"
 _PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
 _COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
@@ -636,6 +644,7 @@ def _fill_html_slots(
     macro_risk_html: str,
     portfolio_html: str,
     lead_html: str,
+    onboarding_html: str,
     council_history_html: str,
     persona_leaderboard_html: str,
     track_record_html: str,
@@ -648,6 +657,7 @@ def _fill_html_slots(
     if quota_html:
         html = html.replace(_QUOTA_BANNER_SLOT, quota_html, 1)
     html = html.replace(_LEAD_SLOT, lead_html, 1)
+    html = html.replace(_ONBOARDING_SLOT, onboarding_html, 1)
     if macro_risk_html:
         html = html.replace(_RISK_WATCH_SLOT, macro_risk_html, 1)
     html = html.replace(_PORTFOLIO_SLOT, portfolio_html, 1)
@@ -664,6 +674,7 @@ def _fill_text_slots(
     quota_text: str,
     macro_risk_text: str,
     lead_text: str,
+    onboarding_text: str,
     suggestions_text: str,
 ) -> str:
     """Wstawia treść w sloty plain-text. QUOTA/RISK_WATCH tylko gdy niepuste;
@@ -677,6 +688,11 @@ def _fill_text_slots(
         f"{lead_text}\n\n" if lead_text else "",
         1,
     ).replace(_LEAD_SLOT, lead_text, 1)
+    text = text.replace(
+        f"{_ONBOARDING_SLOT}\n",
+        f"{onboarding_text}\n\n" if onboarding_text else "",
+        1,
+    ).replace(_ONBOARDING_SLOT, onboarding_text, 1)
     return text.replace(
         f"{_SUGGESTIONS_SLOT}\n",
         f"{suggestions_text}\n\n" if suggestions_text else "",
@@ -703,6 +719,8 @@ def build_html_report(
     yield_curve: YieldCurveSnapshot | None = None,
     alpha_prices: dict[str, Decimal] | None = None,
     signal_calibration_buckets: list[CalibrationBucket] | None = None,
+    cycle_maturity: CycleMaturity | None = None,
+    portfolio_sectors: Mapping[str, int] | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
@@ -750,6 +768,15 @@ def build_html_report(
     )
     lead_html = render_lead_html(lead_items)
     lead_text = render_lead_text(lead_items)
+    # #4: powitanie pierwszego cyklu. Renderer nigdy nie decyduje o tonie —
+    # dostaje gotową klasyfikację z domeny (STEADY_STATE → "").
+    maturity = cycle_maturity or CycleMaturity.STEADY_STATE
+    onboarding_html = render_onboarding_html(
+        maturity, instrument_count=len(results), sectors=portfolio_sectors or {}
+    )
+    onboarding_text = render_onboarding_text(
+        maturity, instrument_count=len(results), sectors=portfolio_sectors or {}
+    )
     # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
     council_history_html = render_council_history_html(council_history or [])
     # #3: ranking wiarygodności person — ranking (z progiem min_votes) przychodzi
@@ -787,6 +814,7 @@ def build_html_report(
         macro_risk_html=macro_risk_html,
         portfolio_html=portfolio_html,
         lead_html=lead_html,
+        onboarding_html=onboarding_html,
         council_history_html=council_history_html,
         persona_leaderboard_html=persona_leaderboard_html,
         track_record_html=track_record_html,
@@ -803,6 +831,7 @@ def build_html_report(
         quota_text=quota_text,
         macro_risk_text=macro_risk_text,
         lead_text=lead_text,
+        onboarding_text=onboarding_text,
         suggestions_text=suggestions_text,
     )
     return html, text
@@ -1159,6 +1188,7 @@ def _render_html(
     sections.append(_QUOTA_BANNER_SLOT)
     # #1: lead cyklu — pierwszy ekran, tuż za bannerem kwot.
     sections.append(_LEAD_SLOT)
+    sections.append(_ONBOARDING_SLOT)
 
     # Status sesji giełdowej
     sections.append(f"""
@@ -1498,6 +1528,7 @@ def _render_plain(
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
     lines.append(_LEAD_SLOT)
+    lines.append(_ONBOARDING_SLOT)
     lines.append("=" * 64)
     lines.append("STOCKAGENT — RAPORT CYKLU")
     lines.append("=" * 64)
@@ -1578,6 +1609,18 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
     sentiment = raw.get("sentiment") or {}
     llm = raw.get("llm_analysis") or {}
 
+    # #4: cold-start jest widoczny w stanie końcowym jako previous_price == 0
+    # (graf nie miał punktu odniesienia). Symbol odcięty bramką volatility ma
+    # poprzednią cenę — to zupełnie inna historia niż pierwszy dzień deploymentu.
+    skip_reason: SkipReason | None = None
+    if status == "ignored":
+        previous_price = raw.get("previous_price")
+        skip_reason = (
+            SkipReason.COLD_START
+            if previous_price is None or Decimal(str(previous_price)) == 0
+            else SkipReason.BELOW_THRESHOLD
+        )
+
     # Klasa aktywa z domeny — graf trzyma Asset w stanie (main_agent klasyfikuje
     # STOCK/ETF/CRYPTO przed wywołaniem). Pozwala raportowi rozpoznać krypto
     # niezawodnie, niezależnie od statusu (saved/ignored).
@@ -1627,6 +1670,7 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
     return SymbolResult(
         symbol=symbol,
         status=status,
+        skip_reason=skip_reason,
         delta=_as_decimal(raw.get("delta")),
         current_price=_as_decimal(raw.get("current_price")),
         trend=llm.get("trend_direction"),

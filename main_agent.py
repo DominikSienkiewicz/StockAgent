@@ -45,9 +45,11 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_council_history import InvestorHistory
+from src.application.report_formatting import SECTORS
 from src.application.report_lessons import LessonsReport, build_lessons
 from src.application.report_messenger import build_messenger_digest
 from src.application.report_models import ResolvedPrediction
+from src.application.report_onboarding import onboarding_subject
 from src.application.tools import build_research_tools
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
@@ -62,6 +64,7 @@ from src.application.use_cases.portfolio_risk import (
 from src.config import Settings
 from src.domain.asset import Asset
 from src.domain.calibration_curve import CalibrationBucket, reliability_curve
+from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.digest_lead import LeadItem, build_lead, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
@@ -121,6 +124,9 @@ def _ignored_result(symbol: str) -> SymbolResult:
     return SymbolResult(
         symbol=symbol,
         status="ignored",
+        # #4: trzecia kategoria pominięcia — ticker nieobsługiwany cenowo.
+        # Wykluczona z licznika cold-startu (nigdy nie dostanie punktu odniesienia).
+        skip_reason=SkipReason.UNSUPPORTED_PRICE,
         error_message="unsupported by current price adapter (Finnhub free)",
     )
 
@@ -1001,6 +1007,42 @@ def _build_portfolio_radar(
         return None
 
 
+def _portfolio_sectors(results: list[SymbolResult]) -> dict[str, int]:
+    """#4 — skład portfela wg sektorów (sektor → liczba instrumentów).
+
+    Reużywa istniejący słownik `SECTORS`; symbole spoza mapy trafiają do
+    "Inne", żeby licznik zawsze sumował się do liczby instrumentów.
+    """
+    counts: dict[str, int] = {}
+    for r in results:
+        sector = SECTORS.get(r.symbol, "Inne")
+        counts[sector] = counts.get(sector, 0) + 1
+    return counts
+
+
+def _classify_cycle_maturity(results: list[SymbolResult]) -> CycleMaturity:
+    """#4 — dojrzałość cyklu z policzonych przyczyn pominięcia.
+
+    Symbole nieobsługiwane cenowo są jawnie POZA mianownikiem (nigdy nie dostaną
+    punktu odniesienia), a błędy liczone osobno — cykl zdominowany przez awarie
+    źródeł nie może zostać powitaniem "Dzień 1". Reguła siedzi w domenie.
+    """
+    saved = sum(1 for r in results if r.status == "saved")
+    errors = sum(1 for r in results if r.status == "error")
+    cold_start = sum(1 for r in results if r.skip_reason is SkipReason.COLD_START)
+    below = sum(1 for r in results if r.skip_reason is SkipReason.BELOW_THRESHOLD)
+    unsupported = sum(
+        1 for r in results if r.skip_reason is SkipReason.UNSUPPORTED_PRICE
+    )
+    return classify_cycle(
+        saved_count=saved,
+        cold_start_count=cold_start,
+        below_threshold_count=below,
+        error_count=errors,
+        unsupported_count=unsupported,
+    )
+
+
 def _build_subject(
     *,
     lead_items: list[LeadItem],
@@ -1008,6 +1050,8 @@ def _build_subject(
     failures: int,
     started_at: datetime,
     prefix: str,
+    maturity: CycleMaturity = CycleMaturity.STEADY_STATE,
+    analyzed_total: int = 0,
 ) -> str:
     """#1 — temat maila jak nagłówek gazety, nie jak licznik.
 
@@ -1018,8 +1062,13 @@ def _build_subject(
     Liczone RAZ nad pełnymi danymi cyklu: sekcje raportu są re-slicowane per
     subskrybent, ale temat jest dla wszystkich ten sam.
     """
-    headline = lead_headline(lead_items)
     stamp = started_at.strftime("%Y-%m-%d %H:%M UTC")
+    # #4: pierwszy cykl ma własny, powitalny temat — lead i tak jest wtedy pusty
+    # (brak punktu odniesienia = brak sygnałów).
+    welcome = onboarding_subject(maturity, instrument_count=analyzed_total)
+    if welcome:
+        return f"{prefix}{welcome} ({stamp})"
+    headline = lead_headline(lead_items)
     if headline:
         return f"{prefix}StockAgent — {headline} ({stamp})"
     return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
@@ -1200,6 +1249,9 @@ def _dispatch_reports(
         )
         # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
         signal_calibration_buckets = _build_signal_calibration(settings, repository)
+        # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
+        maturity = _classify_cycle_maturity(results)
+        sectors = _portfolio_sectors(results)
 
         def _build(symbols_filter: frozenset[str] | None = None) -> tuple[str, str]:
             return build_html_report(
@@ -1219,6 +1271,8 @@ def _dispatch_reports(
                 yield_curve=yield_curve,
                 alpha_prices=alpha_prices,
                 signal_calibration_buckets=signal_calibration_buckets,
+                cycle_maturity=maturity,
+                portfolio_sectors=sectors,
             )
 
         html, text = _build()
@@ -1236,6 +1290,8 @@ def _dispatch_reports(
             failures=failures,
             started_at=started_at,
             prefix=prefix,
+            maturity=maturity,
+            analyzed_total=len(results),
         )
 
         # U3: publikacja statycznego digestu web (read-only dashboard).

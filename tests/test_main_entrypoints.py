@@ -11,6 +11,7 @@ import main_backtest
 import main_trainer
 from src.application.ports import RepositoryPort
 from src.config import Settings
+from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem
 from src.domain.earnings import EarningsEvent
 from src.domain.macro_rates import YieldCurveSnapshot
@@ -993,3 +994,66 @@ class TestMessengerDigestSplit:
             resolved=[],
             subject="StockAgent",
         )
+
+
+class TestCycleMaturityWiring:
+    """#4 — klasyfikacja dojrzałości cyklu z policzonych przyczyn pominięcia."""
+
+    @staticmethod
+    def _r(symbol: str, status: str, reason: SkipReason | None = None) -> "main_agent.SymbolResult":
+        return main_agent.SymbolResult(symbol=symbol, status=status, skip_reason=reason)
+
+    def test_all_cold_start_is_first_run(self) -> None:
+        results = [self._r(f"S{i}", "ignored", SkipReason.COLD_START) for i in range(5)]
+
+        assert main_agent._classify_cycle_maturity(results) is CycleMaturity.FIRST_RUN
+
+    def test_mass_source_outage_is_not_first_run(self) -> None:
+        # Największe ryzyko pozycji: awaria NIE może udawać powitania.
+        results = [self._r(f"S{i}", "error") for i in range(5)]
+
+        assert main_agent._classify_cycle_maturity(results) is CycleMaturity.STEADY_STATE
+
+    def test_unsupported_tickers_do_not_make_a_first_run(self) -> None:
+        results = [self._r(f"S{i}", "ignored", SkipReason.UNSUPPORTED_PRICE) for i in range(4)]
+
+        assert main_agent._classify_cycle_maturity(results) is CycleMaturity.STEADY_STATE
+
+    def test_below_threshold_means_the_agent_already_has_a_baseline(self) -> None:
+        results = [self._r("AAPL", "ignored", SkipReason.BELOW_THRESHOLD)]
+
+        assert main_agent._classify_cycle_maturity(results) is CycleMaturity.STEADY_STATE
+
+    def test_unsupported_result_carries_its_skip_reason(self) -> None:
+        assert main_agent._ignored_result("CSPX.L").skip_reason is SkipReason.UNSUPPORTED_PRICE
+
+
+class TestOnboardingSubject:
+    """#4 — pierwszy cykl ma powitalny temat zamiast '0 predykcji, 0 błędów'."""
+
+    def test_first_run_gets_a_welcome_subject(self) -> None:
+        subject = main_agent._build_subject(
+            lead_items=[],
+            analyzed=0,
+            failures=0,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            prefix="",
+            maturity=CycleMaturity.FIRST_RUN,
+            analyzed_total=45,
+        )
+
+        assert "0 predykcji" not in subject
+        assert "45" in subject
+
+    def test_steady_state_keeps_the_counter_subject(self) -> None:
+        subject = main_agent._build_subject(
+            lead_items=[],
+            analyzed=3,
+            failures=0,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            prefix="",
+            maturity=CycleMaturity.STEADY_STATE,
+            analyzed_total=45,
+        )
+
+        assert "3 predykcji" in subject
