@@ -21,6 +21,7 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_formatting import company_label
+from src.domain.persona_track_record import PersonaTrackRecord
 
 
 def _saved_result() -> SymbolResult:
@@ -1469,3 +1470,43 @@ class TestBuildReportWithRiskWatch:
         assert "Risk Watch" in text
         assert "SH" in text
         assert "RISK_WATCH_SLOT" not in text
+
+
+class TestPersonaLeaderboardSection:
+    """#3 — sekcja "Rada — ranking wiarygodności" wpięta w slot raportu."""
+
+    @staticmethod
+    def _records() -> list[PersonaTrackRecord]:
+        return [
+            PersonaTrackRecord(investor_name="Buffett", hit_rate=0.68, votes=22),
+            PersonaTrackRecord(investor_name="Wood", hit_rate=0.41, votes=18),
+        ]
+
+    def test_html_contains_leaderboard_and_fills_slot(self):
+        r = _saved_result()
+        html, _ = build_html_report(
+            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            persona_track_record=self._records(),
+        )
+        assert "ranking wiarygodności" in html
+        assert "Buffett" in html
+        assert "68%" in html
+        assert "22 głosy" in html
+        # Slot musi zostać wymieniony, nie zostać surowo w treści maila.
+        assert "PERSONA_LEADERBOARD_SLOT" not in html
+
+    def test_html_suppresses_section_when_no_track_record(self):
+        r = _saved_result()
+        html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "ranking wiarygodności" not in html
+        # Slot zawsze wymieniany (na ""), żeby marker nie wyciekł do maila.
+        assert "PERSONA_LEADERBOARD_SLOT" not in html
+
+    def test_html_suppresses_section_for_empty_track_record(self):
+        r = _saved_result()
+        html, _ = build_html_report(
+            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            persona_track_record=[],
+        )
+        assert "ranking wiarygodności" not in html
+        assert "PERSONA_LEADERBOARD_SLOT" not in html

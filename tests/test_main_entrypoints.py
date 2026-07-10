@@ -8,6 +8,7 @@ import pytest
 import main_agent
 import main_backtest
 import main_trainer
+from src.application.ports import RepositoryPort
 from src.config import Settings
 
 
@@ -599,3 +600,59 @@ class TestAnalyzeSymbolsParallel:
         spy = mocker.spy(main_agent, "ThreadPoolExecutor")
         main_agent._analyze_symbols(["AAPL", "MSFT"], **self._kwargs(s, uc))
         spy.assert_not_called()
+
+
+class TestFetchReportContextPersonaTrackRecord:
+    """#3 — orkiestrator dociąga track record person i przepuszcza go przez
+    domenowy `rank_personas` (próg min_votes) zanim trafi do raportu."""
+
+    @staticmethod
+    def _repo(**overrides: object) -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_accuracy_stats.return_value = None
+        repo.get_recently_resolved_predictions.return_value = []
+        repo.get_recent_quota_alerts.return_value = []
+        repo.get_council_vote_history.return_value = []
+        repo.get_persona_track_record.return_value = {}
+        for name, value in overrides.items():
+            getattr(repo, name).return_value = value
+        return repo
+
+    @staticmethod
+    def _monitor() -> MagicMock:
+        monitor = MagicMock()
+        monitor.alerts = []
+        return monitor
+
+    def test_ranks_personas_from_repository_stats(self) -> None:
+        repo = self._repo(
+            get_persona_track_record={"Wood": (0.41, 18), "Buffett": (0.68, 22)}
+        )
+
+        *_, track_record = main_agent._fetch_report_context(
+            repo, self._monitor(), ["AAPL"]
+        )
+
+        assert [r.investor_name for r in track_record] == ["Buffett", "Wood"]
+
+    def test_applies_domain_min_votes_threshold(self) -> None:
+        # Persona z 1 głosem i 100% trafności nie może wejść do rankingu.
+        repo = self._repo(
+            get_persona_track_record={"Nowicjusz": (1.0, 1), "Buffett": (0.68, 22)}
+        )
+
+        *_, track_record = main_agent._fetch_report_context(
+            repo, self._monitor(), ["AAPL"]
+        )
+
+        assert [r.investor_name for r in track_record] == ["Buffett"]
+
+    def test_rpc_failure_does_not_break_the_cycle(self) -> None:
+        repo = self._repo()
+        repo.get_persona_track_record.side_effect = Exception("RPC missing")
+
+        *_, track_record = main_agent._fetch_report_context(
+            repo, self._monitor(), ["AAPL"]
+        )
+
+        assert track_record == []

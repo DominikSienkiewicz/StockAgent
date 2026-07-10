@@ -669,6 +669,61 @@ class TestGetPersonaAccuracy:
         assert repo.get_persona_accuracy(AssetType.STOCK) == {}
 
 
+class TestGetPersonaTrackRecord:
+    """#3 — RPC `persona_accuracy_stats` (migracja 018) niesie hit-rate ORAZ
+    liczbę rozliczonych głosów; RPC z migracji 015 zwracało samą wagę."""
+
+    def test_maps_rpc_rows_to_hit_rate_and_vote_count(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["rpc"],
+            [
+                {"investor_name": "Buffett", "hit_rate": 0.68, "vote_count": 22},
+                {"investor_name": "Wood", "hit_rate": 0.41, "vote_count": 18},
+            ],
+        )
+
+        result = repo.get_persona_track_record()
+
+        assert result == {"Buffett": (0.68, 22), "Wood": (0.41, 18)}
+        assert mock_client.rpc.call_args.args[0] == "persona_accuracy_stats"
+
+    def test_passes_window_days_to_rpc(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["rpc"], [])
+
+        repo.get_persona_track_record(window_days=30)
+
+        assert mock_client.rpc.call_args.args[1] == {"window_days": 30}
+
+    def test_skips_rows_with_missing_fields(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["rpc"],
+            [
+                {"investor_name": "Buffett", "hit_rate": 0.68, "vote_count": 22},
+                {"investor_name": "Wood", "hit_rate": None, "vote_count": 18},
+                {"investor_name": "Lynch", "hit_rate": 0.5},
+                {"hit_rate": 0.9, "vote_count": 30},
+            ],
+        )
+
+        assert repo.get_persona_track_record() == {"Buffett": (0.68, 22)}
+
+    def test_returns_empty_on_rpc_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Graceful: brak migracji 018 → brak sekcji w raporcie, nie wyjątek.
+        mock_client.rpc.side_effect = Exception("RPC missing")
+
+        assert repo.get_persona_track_record() == {}
+
+
 class TestGetCouncilVoteHistory:
     def test_groups_rows_into_investor_histories(
         self, repo: SupabaseRepository, mock_client: MagicMock

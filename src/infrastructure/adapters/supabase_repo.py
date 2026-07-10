@@ -532,6 +532,34 @@ class SupabaseRepository(RepositoryPort):
             out[str(name)] = float(weight)
         return out
 
+    def get_persona_track_record(
+        self, window_days: int = 90
+    ) -> dict[str, tuple[float, int]]:
+        # RPC `persona_accuracy_stats` (migracja 018) — ten sam JOIN co 015, ale
+        # zwraca surowy hit-rate ORAZ COUNT(*) głosów. RPC z 015 niesie tylko
+        # przeskalowaną wagę, z której nie da się odtworzyć wielkości próbki.
+        # Graceful: brak RPC / błąd → {} (leaderboard sam się chowa).
+        try:
+            response = self._client.rpc(
+                "persona_accuracy_stats", {"window_days": window_days}
+            ).execute()
+        except Exception:
+            logger.warning(
+                "persona_accuracy_stats RPC unavailable — leaderboard person "
+                "pominięty (zaaplikuj migrację 018).",
+                exc_info=True,
+            )
+            return {}
+        out: dict[str, tuple[float, int]] = {}
+        for row in _rows(response):
+            name = row.get("investor_name")
+            hit_rate = row.get("hit_rate")
+            votes = row.get("vote_count")
+            if name is None or hit_rate is None or votes is None:
+                continue
+            out[str(name)] = (float(hit_rate), int(votes))
+        return out
+
     def get_council_vote_history(
         self,
         symbols: list[str],

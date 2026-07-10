@@ -64,6 +64,7 @@ from src.domain.equity_curve import EquityCurve
 from src.domain.equity_curve import equity_curve as build_equity_curve
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.peer_group import build_peer_context
+from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, symbols_for
@@ -99,6 +100,9 @@ DEFAULT_STRESS_SCENARIOS: tuple[Scenario, ...] = (
 
 ACCURACY_STATS_DAYS = 30
 RESOLVED_PREDICTIONS_HOURS = 24
+# Okno track recordu person (#3) — 90 dni, tak jak domyślne okno RPC z migracji
+# 018. Dłuższe niż okno accuracy: hit-rate per persona potrzebuje próbki.
+PERSONA_TRACK_RECORD_DAYS = 90
 
 logger = logging.getLogger(__name__)
 
@@ -955,9 +959,11 @@ def _fetch_report_context(
     list[ResolvedPrediction],
     list[QuotaAlert],
     list[InvestorHistory],
+    list[PersonaTrackRecord],
 ]:
     """Best-effort dociągnięcie danych do raportu: accuracy, zamknięte predykcje,
-    alerty kwot (persystencja bieżących + odczyt 24h) i historia głosów rady.
+    alerty kwot (persystencja bieżących + odczyt 24h), historia głosów rady
+    i ranking wiarygodności person.
     Każdy odczyt osobno owinięty — błąd jednego nie blokuje pozostałych."""
     accuracy_stats: dict[str, Any] | None = None
     resolved: list[ResolvedPrediction] = []
@@ -994,7 +1000,24 @@ def _fetch_report_context(
         )
     except Exception:
         logger.exception("Failed to fetch council vote history")
-    return accuracy_stats, resolved, recent_alerts, council_history
+
+    # #3: leaderboard person. Surowe (hit_rate, votes) z RPC, ranking i próg
+    # min_votes liczy domena. Brak migracji 018 / błąd RPC → pusty ranking
+    # → sekcja sama się chowa, cykl leci dalej.
+    persona_track_record: list[PersonaTrackRecord] = []
+    try:
+        persona_track_record = rank_personas(
+            repository.get_persona_track_record(PERSONA_TRACK_RECORD_DAYS)
+        )
+    except Exception:
+        logger.exception("Failed to fetch persona track record")
+    return (
+        accuracy_stats,
+        resolved,
+        recent_alerts,
+        council_history,
+        persona_track_record,
+    )
 
 
 def _dispatch_reports(
@@ -1020,9 +1043,13 @@ def _dispatch_reports(
     — pojedynczo albo per subskrybent (raport tnięty do jego watchlisty). Cała
     faza jest best-effort: błąd wysyłki nie psuje exit-code cyklu."""
     try:
-        accuracy_stats, resolved, recent_alerts, council_history = (
-            _fetch_report_context(repository, quota_monitor, all_symbols)
-        )
+        (
+            accuracy_stats,
+            resolved,
+            recent_alerts,
+            council_history,
+            persona_track_record,
+        ) = _fetch_report_context(repository, quota_monitor, all_symbols)
 
         # T1/T2/T4: Track Record (render-only, zero płatnych). Każda podsekcja
         # flag-gated; wszystkie czytają zamknięte predykcje z okna track_record_days.
@@ -1038,6 +1065,7 @@ def _dispatch_reports(
                 macro_risk_report=macro_risk_report,
                 portfolio_risk_report=portfolio_risk_report,
                 council_history=council_history,
+                persona_track_record=persona_track_record,
                 quota_alerts=recent_alerts,
                 symbols_filter=symbols_filter,
                 equity_curve=equity_curve,
