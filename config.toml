@@ -58,6 +58,9 @@ calibrated_confidence_enabled = false
 # #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego raportu —
 # pełny plain-text przekracza limit 4096 znaków Telegrama (400, cichy zgon). Off.
 messenger_digest_enabled = false
+# #12: karta kondycji modelu (migracja 019) — jawny scorecard walk-forward wraz
+# z odrzutami kandydatów. Zapis w Slow Loopie, render w mailu. Off.
+model_scorecard_enabled = false
 track_record_days = 30
 # Dane — nowe źródła alpha. Default off → Null adapter (zero płatnych). Realny
 # adapter włącza flaga (+ ewentualny klucz: FRED_API_KEY dla yield_curve).

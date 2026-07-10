@@ -55,6 +55,10 @@ from src.application.report_formatting import (
 )
 from src.application.report_lead import render_lead_html, render_lead_text
 from src.application.report_lessons import LessonsReport
+from src.application.report_model_scorecard import (
+    ModelScorecardView,
+    render_model_scorecard_html,
+)
 from src.application.report_models import (
     ResolvedPrediction,
     RiskSignal,
@@ -166,6 +170,8 @@ _PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
 _COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
 _PERSONA_LEADERBOARD_SLOT = "<!-- PERSONA_LEADERBOARD_SLOT -->"
 _TRACK_RECORD_SLOT = "<!-- TRACK_RECORD_SLOT -->"
+# #12: karta kondycji modelu — tuż za Track Recordem (ta sama oś zaufania).
+_MODEL_SCORECARD_SLOT = "<!-- MODEL_SCORECARD_SLOT -->"
 _ALPHA_SLOT = "<!-- ALPHA_SLOT -->"
 _SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
 
@@ -647,6 +653,7 @@ def _fill_html_slots(
     onboarding_html: str,
     council_history_html: str,
     persona_leaderboard_html: str,
+    model_scorecard_html: str,
     track_record_html: str,
     alpha_html: str,
     suggestions_html: str,
@@ -664,6 +671,7 @@ def _fill_html_slots(
     html = html.replace(_COUNCIL_HISTORY_SLOT, council_history_html, 1)
     html = html.replace(_PERSONA_LEADERBOARD_SLOT, persona_leaderboard_html, 1)
     html = html.replace(_TRACK_RECORD_SLOT, track_record_html, 1)
+    html = html.replace(_MODEL_SCORECARD_SLOT, model_scorecard_html, 1)
     html = html.replace(_ALPHA_SLOT, alpha_html, 1)
     return html.replace(_SUGGESTIONS_SLOT, suggestions_html, 1)
 
@@ -721,6 +729,7 @@ def build_html_report(
     signal_calibration_buckets: list[CalibrationBucket] | None = None,
     cycle_maturity: CycleMaturity | None = None,
     portfolio_sectors: Mapping[str, int] | None = None,
+    model_scorecard: ModelScorecardView | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
@@ -784,6 +793,20 @@ def build_html_report(
     persona_leaderboard_html = render_persona_leaderboard_html(
         persona_track_record or []
     )
+    # #12: karta kondycji modelu (render zwraca "" gdy brak danych).
+    model_scorecard_html = (
+        render_model_scorecard_html(
+            model_scorecard.summary,
+            trained_at=model_scorecard.trained_at,
+            now=started_at,
+            candidate_rmse=model_scorecard.candidate_rmse,
+            baseline_rmse=model_scorecard.baseline_rmse,
+            directional_hit_rate=model_scorecard.directional_hit_rate,
+            folds=model_scorecard.folds,
+        )
+        if model_scorecard is not None
+        else ""
+    )
     # T1/T2/T4: sekcja Track Record (krzywa kapitału, kalibracja, lessons).
     # render zwraca "" gdy wszystkie trzy podsekcje puste.
     track_record_html = render_track_record_html(
@@ -817,6 +840,7 @@ def build_html_report(
         onboarding_html=onboarding_html,
         council_history_html=council_history_html,
         persona_leaderboard_html=persona_leaderboard_html,
+        model_scorecard_html=model_scorecard_html,
         track_record_html=track_record_html,
         alpha_html=alpha_html,
         suggestions_html=suggestions_html,
@@ -1229,6 +1253,7 @@ def _render_html(
     sections.append(_PERSONA_LEADERBOARD_SLOT)
     # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
     sections.append(_TRACK_RECORD_SLOT)
+    sections.append(_MODEL_SCORECARD_SLOT)
     # Slot na sekcję Alpha Signals (Dane — insider/analitycy/opcje/social/FRED).
     sections.append(_ALPHA_SLOT)
 

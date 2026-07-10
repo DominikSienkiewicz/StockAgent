@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from src.application.report_model_scorecard import (
+    build_scorecard_view,
     render_model_scorecard_html,
     render_model_scorecard_text,
 )
@@ -165,3 +166,54 @@ class TestHtmlEscaping:
             _summary(1, 0, 0), trained_at=_FRESH, now=_NOW
         )
         assert "<script>" not in out
+
+
+class TestBuildScorecardView:
+    """#12 — surowe wiersze z `model_scorecards` → widok sekcji."""
+
+    def test_no_rows_yields_no_view(self) -> None:
+        assert build_scorecard_view([]) is None
+
+    def test_aggregates_run_and_takes_latest_metrics(self) -> None:
+        rows = [
+            {
+                "symbol": "AAPL",
+                "status": "trained_successfully",
+                "timestamp": "2026-07-09T10:00:00+00:00",
+                "candidate_holdout_rmse": 0.021,
+                "baseline_rmse": 0.024,
+                "candidate_holdout_directional_hit_rate": 0.58,
+                "n_folds": 7,
+            },
+            {
+                "symbol": "MSFT",
+                "status": "skipped_validation_failed",
+                "timestamp": "2026-07-09T09:00:00+00:00",
+            },
+        ]
+
+        view = build_scorecard_view(rows)
+
+        assert view is not None
+        assert view.summary.total == 2
+        assert view.summary.accepted == 1
+        assert view.summary.rejected == 1
+        assert view.candidate_rmse == 0.021
+        assert view.folds == 7
+
+    def test_all_rejected_run_is_not_dressed_up(self) -> None:
+        rows = [
+            {"symbol": s, "status": "skipped_validation_failed",
+             "timestamp": "2026-07-09T10:00:00+00:00"}
+            for s in ("AAPL", "MSFT")
+        ]
+
+        view = build_scorecard_view(rows)
+
+        assert view is not None
+        assert view.summary.accepted == 0
+        assert view.summary.rejected == 2
+
+    def test_unparsable_timestamp_yields_no_view(self) -> None:
+        # Bez daty treningu nie da się orzec o świeżości → sekcja się chowa.
+        assert build_scorecard_view([{"symbol": "AAPL", "status": "x"}]) is None

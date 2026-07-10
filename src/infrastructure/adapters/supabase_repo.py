@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal, cast
@@ -559,6 +560,43 @@ class SupabaseRepository(RepositoryPort):
                 continue
             out[str(name)] = (float(hit_rate), int(votes))
         return out
+
+    def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
+        # Jeden wiersz na przebieg treningu (migracja 019). Kolumna `symbol` jest
+        # kluczowa: trening leci per-symbol, więc bez niej nie wiadomo, który
+        # kandydat przeszedł bramkę, a który został odrzucony.
+        payload = {
+            "symbol": symbol,
+            "status": result.get("status"),
+            "candidate_holdout_rmse": result.get("candidate_holdout_rmse"),
+            "baseline_rmse": result.get("baseline_rmse"),
+            "candidate_holdout_directional_hit_rate": result.get(
+                "candidate_holdout_directional_hit_rate"
+            ),
+            "n_folds": result.get("n_folds"),
+            "n_samples": result.get("n_samples"),
+        }
+        self._client.table("model_scorecards").insert(payload).execute()
+
+    def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:
+        # Graceful: brak migracji 019 / błąd → [] (sekcja raportu się chowa).
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        try:
+            response = (
+                self._client.table("model_scorecards")
+                .select("*")
+                .gte("timestamp", cutoff)
+                .order("timestamp", desc=True)
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "model_scorecards niedostępne — karta kondycji modelu pominięta "
+                "(zaaplikuj migrację 019).",
+                exc_info=True,
+            )
+            return []
+        return list(_rows(response))
 
     def get_council_vote_history(
         self,

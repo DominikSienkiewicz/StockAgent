@@ -132,6 +132,10 @@ class Settings(BaseSettings):
     # pewność × |Δ|). Niezależna od `calibration_curve_enabled` — tamta flaga
     # rysuje sekcję Track Record, ta zmienia ranking. Render-only, bez zapisu.
     calibrated_confidence_enabled: bool = False
+    # #12: karta kondycji modelu — jawny scorecard walk-forward (migracja 019).
+    # Pokazuje bramkę "nie shipuj modelu gorszego od baseline'u", łącznie
+    # z odrzutami. Render-only + insert w Slow Loopie. Off.
+    model_scorecard_enabled: bool = False
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
 

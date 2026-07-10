@@ -21,13 +21,16 @@ IMPORTUJEMY z domeny i renderujemy dosłownie — nie przepisujemy jej treści.
 from __future__ import annotations
 
 import html as _html
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from src.domain.model_scorecard import (
     METRIC_NOTE,
     RunSummary,
     improvement_pct,
     is_stale,
+    summarize_run,
 )
 
 _HEADING = "🩺 Karta kondycji modelu"
@@ -195,3 +198,53 @@ def render_model_scorecard_text(
     lines.append(f"  Uwaga: {METRIC_NOTE}")
     lines.append("")
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class ModelScorecardView:
+    """Widok sekcji: zagregowany przebieg + metryki ostatniego kandydata."""
+
+    summary: RunSummary
+    trained_at: datetime
+    candidate_rmse: float | None = None
+    baseline_rmse: float | None = None
+    directional_hit_rate: float | None = None
+    folds: int | None = None
+
+
+def _parse_timestamp(raw: object) -> datetime | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | None:
+    """Składa widok z surowych wierszy `model_scorecards` (najnowsze pierwsze).
+
+    Agreguje CAŁY przebieg (trening leci per-symbol, ~43 wiersze na run), a
+    metryki bierze z najnowszego wiersza, który je niesie. Odrzucony kandydat
+    nie musi mieć metryk — sekcja i tak renderuje rozbicie przebiegu.
+    Brak wierszy albo brak dającej się sparsować daty → None (sekcja się chowa).
+    """
+    if not rows:
+        return None
+    stamps = [ts for ts in (_parse_timestamp(r.get("timestamp")) for r in rows) if ts]
+    if not stamps:
+        return None
+    summary = summarize_run([str(r.get("status", "")) for r in rows])
+    metrics = next(
+        (r for r in rows if r.get("candidate_holdout_rmse") is not None), None
+    )
+    return ModelScorecardView(
+        summary=summary,
+        trained_at=max(stamps),
+        candidate_rmse=metrics.get("candidate_holdout_rmse") if metrics else None,
+        baseline_rmse=metrics.get("baseline_rmse") if metrics else None,
+        directional_hit_rate=(
+            metrics.get("candidate_holdout_directional_hit_rate") if metrics else None
+        ),
+        folds=metrics.get("n_folds") if metrics else None,
+    )

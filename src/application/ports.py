@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -223,6 +223,19 @@ class RepositoryPort(ABC):
         z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
         "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
         → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
+    def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
+        """#12 — zapisuje jeden przebieg treningu walk-forward (migracja 019).
+
+        Trening jest PER-SYMBOL (~43 przebiegi nadpisują jeden plik .ubj), więc
+        `symbol` jest wymagany — bez niego scorecardy są nierozróżnialne.
+        `result` to surowe wyjście `MLPredictionPort.train()`."""
+
+    @abstractmethod
+    def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:
+        """#12 — scorecardy z ostatnich `days` dni, od najnowszego.
+        Pusta lista = brak danych / brak migracji 019 → sekcja się chowa."""
 
     @abstractmethod
     def get_council_vote_history(

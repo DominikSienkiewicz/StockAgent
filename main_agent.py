@@ -48,6 +48,10 @@ from src.application.report_council_history import InvestorHistory
 from src.application.report_formatting import SECTORS
 from src.application.report_lessons import LessonsReport, build_lessons
 from src.application.report_messenger import build_messenger_digest
+from src.application.report_model_scorecard import (
+    ModelScorecardView,
+    build_scorecard_view,
+)
 from src.application.report_models import ResolvedPrediction
 from src.application.report_onboarding import onboarding_subject
 from src.application.tools import build_research_tools
@@ -1074,6 +1078,21 @@ def _build_subject(
     return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
 
 
+def _build_model_scorecard(
+    settings: Settings, repository: RepositoryPort
+) -> ModelScorecardView | None:
+    """#12 — widok karty kondycji modelu. Flaga OFF / brak migracji 019 / błąd
+    odczytu → None → sekcja sama się chowa, cykl leci dalej."""
+    if not settings.model_scorecard_enabled:
+        return None
+    try:
+        rows = repository.get_recent_model_scorecards(settings.track_record_days)
+    except Exception:
+        logger.exception("Failed to fetch model scorecards")
+        return None
+    return build_scorecard_view(rows)
+
+
 def _build_signal_calibration(
     settings: Settings, repository: RepositoryPort
 ) -> list[CalibrationBucket] | None:
@@ -1252,6 +1271,8 @@ def _dispatch_reports(
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
         maturity = _classify_cycle_maturity(results)
         sectors = _portfolio_sectors(results)
+        # #12: karta kondycji modelu (flaga + migracja 019).
+        model_scorecard = _build_model_scorecard(settings, repository)
 
         def _build(symbols_filter: frozenset[str] | None = None) -> tuple[str, str]:
             return build_html_report(
@@ -1273,6 +1294,7 @@ def _dispatch_reports(
                 signal_calibration_buckets=signal_calibration_buckets,
                 cycle_maturity=maturity,
                 portfolio_sectors=sectors,
+                model_scorecard=model_scorecard,
             )
 
         html, text = _build()

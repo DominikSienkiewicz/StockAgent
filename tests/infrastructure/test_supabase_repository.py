@@ -1188,3 +1188,51 @@ class TestFindSimilarPredictions:
         out = repo.find_similar_predictions([0.1, 0.2], limit=3)
 
         assert out == []
+
+
+class TestModelScorecards:
+    """#12 — scorecard walk-forward per symbol (migracja 019)."""
+
+    def test_save_writes_symbol_and_gate_metrics(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}])
+
+        repo.save_model_scorecard(
+            "AAPL",
+            {
+                "status": "trained_successfully",
+                "candidate_holdout_rmse": 0.021,
+                "baseline_rmse": 0.024,
+                "candidate_holdout_directional_hit_rate": 0.58,
+                "n_folds": 7,
+                "n_samples": 1240,
+            },
+        )
+
+        mock_client.table.assert_called_with("model_scorecards")
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        # Bez `symbol` ~43 przebiegi treningu byłyby nierozróżnialne.
+        assert payload["symbol"] == "AAPL"
+        assert payload["status"] == "trained_successfully"
+        assert payload["n_folds"] == 7
+
+    def test_get_recent_returns_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "gte", "order"],
+            [{"symbol": "AAPL", "status": "trained_successfully"}],
+        )
+
+        rows = repo.get_recent_model_scorecards(30)
+
+        assert rows and rows[0]["symbol"] == "AAPL"
+
+    def test_get_recent_is_graceful_on_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        mock_client.table.side_effect = Exception("no table")
+
+        assert repo.get_recent_model_scorecards(30) == []

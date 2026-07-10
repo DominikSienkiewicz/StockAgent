@@ -1057,3 +1057,55 @@ class TestOnboardingSubject:
         )
 
         assert "3 predykcji" in subject
+
+
+class TestModelScorecardPersistence:
+    """#12 — każdy przebieg treningu zapisuje scorecard per symbol, best-effort."""
+
+    def test_scorecard_saved_per_symbol(self, settings, mock_external_clients, mocker) -> None:
+        settings.model_scorecard_enabled = True
+        settings.symbols = ["AAPL", "MSFT"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {
+            "status": "trained_successfully",
+            "candidate_holdout_rmse": 0.02,
+            "baseline_rmse": 0.03,
+            "candidate_holdout_directional_hit_rate": 0.6,
+            "n_folds": 7,
+            "n_samples": 1000,
+        }
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repo = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repo)
+
+        main_trainer.main(settings)
+
+        saved = [c.args[0] for c in repo.save_model_scorecard.call_args_list]
+        assert saved == ["AAPL", "MSFT"]
+
+    def test_scorecard_write_failure_does_not_fail_the_run(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.model_scorecard_enabled = True
+        settings.symbols = ["AAPL"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repo = MagicMock(spec=RepositoryPort)
+        repo.save_model_scorecard.side_effect = Exception("no table")
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repo)
+
+        assert main_trainer.main(settings) == 0
+
+    def test_flag_off_writes_nothing(self, settings, mock_external_clients, mocker) -> None:
+        settings.model_scorecard_enabled = False
+        settings.symbols = ["AAPL"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repo = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repo)
+
+        main_trainer.main(settings)
+
+        repo.save_model_scorecard.assert_not_called()
