@@ -15,9 +15,9 @@ from typing import Any
 from src.application.alpha_signals import AlphaSignals
 from src.application.report_alpha import render_alpha_html
 from src.application.report_charts import (
-    build_chart_url,
-    build_correlation_chart_url,
-    build_forecast_chart_url,
+    build_correlation_chart_html,
+    build_delta_chart_html,
+    build_forecast_chart_html,
 )
 from src.application.report_consensus_shift import (
     render_consensus_shift_html,
@@ -26,6 +26,7 @@ from src.application.report_council_history import (
     InvestorHistory,
     render_council_history_html,
 )
+from src.application.report_finops import render_finops_html
 from src.application.report_formatting import (
     company_label as _company_label,
 )
@@ -113,6 +114,7 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadSignal, build_lead
 from src.domain.equity_curve import EquityCurve
 from src.domain.feature_attribution import FeatureContribution
+from src.domain.finops import CycleCost
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.portfolio import Portfolio
@@ -131,9 +133,9 @@ __all__ = [
     "TopNewsItem",
     "TradeSignal",
     "ValuationSection",
-    "build_chart_url",
-    "build_correlation_chart_url",
-    "build_forecast_chart_url",
+    "build_correlation_chart_html",
+    "build_delta_chart_html",
+    "build_forecast_chart_html",
     "build_html_report",
     "build_portfolio_mood",
     "build_trade_signals",
@@ -185,6 +187,8 @@ _CONSENSUS_SHIFT_SLOT = "<!-- CONSENSUS_SHIFT_SLOT -->"
 _TRACK_RECORD_SLOT = "<!-- TRACK_RECORD_SLOT -->"
 # #12: karta kondycji modelu — tuż za Track Recordem (ta sama oś zaufania).
 _MODEL_SCORECARD_SLOT = "<!-- MODEL_SCORECARD_SLOT -->"
+# FinOps: „agent, który raportuje własny rachunek" — koszt cyklu.
+_FINOPS_SLOT = "<!-- FINOPS_SLOT -->"
 _ALPHA_SLOT = "<!-- ALPHA_SLOT -->"
 _SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
 
@@ -624,6 +628,28 @@ def _render_attribution_block_html(
     )
 
 
+def _cluster_exposure_per_symbol(
+    portfolio: Portfolio | None,
+    clusters: Mapping[str, str] | None,
+    current_prices: Mapping[str, Decimal],
+) -> dict[str, Decimal] | None:
+    """#15 faza 2 — mapa symbol → udział JEGO klastra korelacji w kapitale.
+
+    Trzy pozycje w jednym klastrze to jedna pozycja przebrana za trzy, więc
+    sizing musi widzieć sumę klastra, nie tylko wagę symbolu.
+    Brak portfela lub brak mapy klastrów → None (sizing jak przed fazą 2).
+    """
+    if portfolio is None or not clusters:
+        return None
+    exposures = portfolio.cluster_exposure(clusters, current_prices)
+    by_cluster = {e.cluster: e.weight for e in exposures}
+    return {
+        symbol: by_cluster[cluster]
+        for symbol, cluster in clusters.items()
+        if cluster in by_cluster
+    }
+
+
 def to_lead_signals(
     results: list[SymbolResult], resolved: list[ResolvedPrediction]
 ) -> list[LeadSignal]:
@@ -668,6 +694,7 @@ def _fill_html_slots(
     council_history_html: str,
     persona_leaderboard_html: str,
     consensus_shift_html: str,
+    finops_html: str,
     model_scorecard_html: str,
     track_record_html: str,
     alpha_html: str,
@@ -689,6 +716,7 @@ def _fill_html_slots(
     html = html.replace(_CONSENSUS_SHIFT_SLOT, consensus_shift_html, 1)
     html = html.replace(_TRACK_RECORD_SLOT, track_record_html, 1)
     html = html.replace(_MODEL_SCORECARD_SLOT, model_scorecard_html, 1)
+    html = html.replace(_FINOPS_SLOT, finops_html, 1)
     html = html.replace(_ALPHA_SLOT, alpha_html, 1)
     return html.replace(_SUGGESTIONS_SLOT, suggestions_html, 1)
 
@@ -750,6 +778,7 @@ def build_html_report(
     consensus_shifts: list[tuple[str, ConsensusShift]] | None = None,
     user_portfolio: Portfolio | None = None,
     portfolio_clusters: Mapping[str, str] | None = None,
+    cycle_cost: CycleCost | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
@@ -774,8 +803,25 @@ def build_html_report(
     # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
     # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
     # skorygowanej historią. None → surowa pewność, jak przed #9.
+    # #15: realny portfel. Ceny bierzemy z wyników tego cyklu, a kurs USD/PLN
+    # z `MacroRiskReport.polish_macro` — renderer nie dostaje żadnego portu.
+    current_prices = {
+        r.symbol: r.current_price for r in results if r.current_price is not None
+    }
+    # #15 faza 2: gdy znamy realny portfel, sizing widzi istniejącą ekspozycję
+    # (symbolu i jego klastra) i może zaproponować wyłącznie WĘŻSZĄ bandę.
+    portfolio_weights = (
+        user_portfolio.weights(current_prices) if user_portfolio is not None else None
+    )
+    cluster_exposures = _cluster_exposure_per_symbol(
+        user_portfolio, portfolio_clusters, current_prices
+    )
     trade_signals = build_trade_signals(
-        results, hit_rate=hit_rate, calibration_buckets=signal_calibration_buckets
+        results,
+        hit_rate=hit_rate,
+        calibration_buckets=signal_calibration_buckets,
+        portfolio_weights=portfolio_weights,
+        cluster_exposures=cluster_exposures,
     )
     risk_signals = detect_risk_signals(results)
     macro_risk_html = (
@@ -813,11 +859,6 @@ def build_html_report(
     persona_leaderboard_html = render_persona_leaderboard_html(
         persona_track_record or []
     )
-    # #15: realny portfel. Ceny bierzemy z wyników tego cyklu, a kurs USD/PLN
-    # z `MacroRiskReport.polish_macro` — renderer nie dostaje żadnego portu.
-    current_prices = {
-        r.symbol: r.current_price for r in results if r.current_price is not None
-    }
     usd_pln = (
         macro_risk_report.polish_macro.usd_pln
         if macro_risk_report is not None and macro_risk_report.polish_macro is not None
@@ -837,6 +878,9 @@ def build_html_report(
     # #8: zmiany nastawienia rady. Render odfiltrowuje STABLE i jawnie oznacza
     # stęchłe porównania — pusta lista → sekcja się chowa.
     consensus_shift_html = render_consensus_shift_html(consensus_shifts or [])
+    # FinOps: koszt cyklu. Cykl darmowy (0 wywołań) renderuje się JAWNIE —
+    # to najciekawsza informacja w tej sekcji, nie brak danych.
+    finops_html = render_finops_html(cycle_cost)
     # #12: karta kondycji modelu (render zwraca "" gdy brak danych).
     model_scorecard_html = (
         render_model_scorecard_html(
@@ -886,6 +930,7 @@ def build_html_report(
         council_history_html=council_history_html,
         persona_leaderboard_html=persona_leaderboard_html,
         consensus_shift_html=consensus_shift_html,
+        finops_html=finops_html,
         model_scorecard_html=model_scorecard_html,
         track_record_html=track_record_html,
         alpha_html=alpha_html,
@@ -1210,15 +1255,11 @@ def _render_saved_section_html(saved: list[SymbolResult]) -> str:
     parts.extend(_render_prediction_row_html(r) for r in saved)
     parts.append("</table>")
 
-    # Wykres prognozy
-    forecast_chart_url = build_forecast_chart_url(saved)
-    if forecast_chart_url:
-        parts.append(f"""
-      <div style="margin: 16px 0; text-align: center;">
-        <img src="{_html(forecast_chart_url)}" alt="Prognoza zmian cen"
-             style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />
-      </div>
-            """)
+    # #2: wykres prognozy jako INLINE HTML — koniec z <img> z zewnętrznego hosta.
+    # Fragment jest już zescapowany przez renderer, więc wstawiamy go wprost.
+    forecast_chart = build_forecast_chart_html(saved)
+    if forecast_chart:
+        parts.append(forecast_chart)
 
     # Uzasadnienia
     parts.append("<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>💡 Uzasadnienia</h3>")
@@ -1302,6 +1343,7 @@ def _render_html(
     # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
     sections.append(_TRACK_RECORD_SLOT)
     sections.append(_MODEL_SCORECARD_SLOT)
+    sections.append(_FINOPS_SLOT)
     # Slot na sekcję Alpha Signals (Dane — insider/analitycy/opcje/social/FRED).
     sections.append(_ALPHA_SLOT)
 
@@ -1349,15 +1391,10 @@ def _render_html(
     # Historia trafności
     sections.append(_render_accuracy_history_html(accuracy_stats))
 
-    # Wykres zmiany cen
-    chart_url = build_chart_url(results)
-    if chart_url:
-        sections.append(f"""
-      <div style="margin-bottom: 16px; text-align: center;">
-        <img src="{_html(chart_url)}" alt="Wykres zmiany cen (cykl)"
-             style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />
-      </div>
-        """)
+    # #2: wykres Δ cen jako inline HTML (żadne dane nie opuszczają maila).
+    delta_chart = build_delta_chart_html(results)
+    if delta_chart:
+        sections.append(delta_chart)
 
     # Self-Reflection — wnioski z poprzednich cykli
     sections.append(_render_reflections_html(saved))
@@ -1367,16 +1404,14 @@ def _render_html(
 
     sections.append(_SUGGESTIONS_SLOT)
 
-    # Scatter: sentyment vs cena (jeśli ≥3 punkty)
-    scatter_url = build_correlation_chart_url(results)
-    if scatter_url:
-        sections.append(f"""
-      <h3 style="font-size: 14px; margin: 20px 0 8px 0;">📈 Korelacja sentymentu z ruchem ceny</h3>
-      <div style="margin-bottom: 16px; text-align: center;">
-        <img src="{_html(scatter_url)}" alt="Scatter sentyment vs cena"
-             style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />
-      </div>
-        """)
+    # #2: dawny scatter → tabela kwadrantów, inline (≥3 punkty).
+    correlation_chart = build_correlation_chart_html(results)
+    if correlation_chart:
+        sections.append(
+            '<h3 style="font-size: 14px; margin: 20px 0 8px 0;">'
+            "📈 Korelacja sentymentu z ruchem ceny</h3>"
+        )
+        sections.append(correlation_chart)
 
     # Pominięte
     sections.append(_render_ignored_html(ignored))

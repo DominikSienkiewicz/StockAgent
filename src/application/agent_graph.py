@@ -4,6 +4,7 @@ import dataclasses
 import logging
 import math
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
@@ -40,7 +41,7 @@ from src.domain.implied_edge import (
     evaluate_edge,
     model_move_from_prices,
 )
-from src.domain.prediction import Prediction
+from src.domain.prediction import CRYPTO_SIDEWAYS_TOLERANCE, Prediction
 from src.domain.regime_key import canonical_regime_key
 from src.domain.value_objects import AssetType, Fundamentals, Money, Threshold, ValuationVerdict
 
@@ -66,13 +67,23 @@ def _timed_node(node_name: str, symbol: str) -> Iterator[None]:
         )
 
 
-def _log_paid_call(node_name: str, symbol: str, detail: str) -> None:
-    """#14: jawna linia w logu, gdy odpala się PŁATNE wywołanie zewnętrzne
+def _log_paid_call(
+    deps: _GraphDeps, node_name: str, symbol: str, source: str, detail: str
+) -> None:
+    """Jawna linia w logu, gdy odpala się PŁATNE wywołanie zewnętrzne
     (LLM / sentyment / news). Pozwala audytować FinOps — ile płatnych wywołań
-    poszło w danym cyklu i z którego węzła."""
+    poszło w danym cyklu i z którego węzła.
+
+    `source` to klucz cennika z `src/domain/finops.py` (`llm`, `council_llm`,
+    `sentiment`, `news`). Gdy wstrzyknięto licznik, inkrementujemy go tutaj —
+    jedno miejsce prawdy o tym, co jest płatne. Licznik jest współdzielony
+    przez wszystkie symbole cyklu, bo raportujemy KOSZT CYKLU, nie symbolu.
+    """
     logger.info(
         "paid call: node=%s symbol=%s %s", node_name, symbol, detail
     )
+    if deps.paid_call_meter is not None:
+        deps.paid_call_meter[source] += 1
 
 
 class AgentState(TypedDict, total=False):
@@ -387,6 +398,9 @@ class _GraphDeps:
     receipts_enabled: bool
     options_port: OptionsFlowPort | None
     attestation_publisher: AttestationPublisherPort | None
+    # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). None =
+    # brak raportowania kosztu; graf zachowuje się identycznie jak dotąd.
+    paid_call_meter: Counter[str] | None
 
 
 def _check_price_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
@@ -537,7 +551,16 @@ def _reflect_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
     # to napędza trening XGBoost. is_trend_correct (zgodność kierunku)
     # jest niezależną miarą i napędza trafność raportu.
     accuracy = float(last.accuracy_score(current_price))
-    trend_correct = last.is_trend_correct(current_price)
+    # Pasmo SIDEWAYS zależy od klasy aktywa: ±0.5% to sensowny "brak ruchu" dla
+    # akcji, ale przy dziennej zmienności BTC 3–5% uznawałoby niemal każdy dzień
+    # za ruch i systematycznie zaniżało trafność krypto. Korekta POMIARU.
+    asset = state.get("asset")
+    tolerance = (
+        CRYPTO_SIDEWAYS_TOLERANCE
+        if asset is not None and asset.asset_type is AssetType.CRYPTO
+        else None
+    )
+    trend_correct = last.is_trend_correct(current_price, tolerance=tolerance)
 
     if trend_correct:
         repository_port.update_prediction_accuracy(
@@ -580,7 +603,7 @@ def _reflect_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
             vindicated_context=vindicated_ctx,
         )
         # #14: płatne wywołanie LLM diagnozy — log jawny + timing.
-        _log_paid_call("reflect", symbol, "llm_port.analyze_mistake")
+        _log_paid_call(deps, "reflect", symbol, "llm", "llm_port.analyze_mistake")
         with _timed_node("reflect_analyze_mistake", symbol):
             insight = llm_port.analyze_mistake(prompt)
     else:
@@ -604,7 +627,9 @@ def _analyze_sentiment_node(deps: _GraphDeps, state: AgentState) -> dict[str, An
     symbol = state["symbol"]
     # #14: węzeł płatny (Alpha Vantage NEWS_SENTIMENT) — instrumentujemy czas
     # i logujemy jawnie fakt płatnego wywołania.
-    _log_paid_call("analyze_sentiment", symbol, "sentiment_port.get_social_score")
+    _log_paid_call(
+        deps, "analyze_sentiment", symbol, "sentiment", "sentiment_port.get_social_score"
+    )
     with _timed_node("analyze_sentiment", symbol):
         return {"sentiment": sentiment_port.get_social_score(symbol)}
 
@@ -614,7 +639,7 @@ def _fetch_news_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
     news_port = deps.news_port
     symbol = state["symbol"]
     # #14: węzeł płatny (Alpha Vantage NEWS feed) — instrumentacja jak wyżej.
-    _log_paid_call("fetch_news", symbol, "news_port.get_news_context")
+    _log_paid_call(deps, "fetch_news", symbol, "news", "news_port.get_news_context")
     with _timed_node("fetch_news", symbol):
         return {"news": news_port.get_news_context(symbol)}
 
@@ -671,12 +696,14 @@ def _run_llm_analysis(
                 PriceDelta(state["delta"]), deps.tool_use_threshold
             )
         ):
-            _log_paid_call("predict", symbol, "tool_use_port.analyze_with_tools")
+            _log_paid_call(
+                deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools"
+            )
             with _timed_node("predict_tool_use", symbol):
                 return deps.tool_use_port.analyze_with_tools(
                     prompt, deps.research_tools
                 ), False
-        _log_paid_call("predict", symbol, "llm_port.analyze")
+        _log_paid_call(deps, "predict", symbol, "llm", "llm_port.analyze")
         return deps.llm_port.analyze(prompt), False
     except Exception:
         logger.exception(
@@ -987,7 +1014,9 @@ def _council_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
     )
     # #14: rada to N równoległych wywołań LLM — najdroższy płatny węzeł.
     # Jawny log płatnego wywołania + timing (mierzony też przy błędzie).
-    _log_paid_call("council", state["symbol"], "council_port.analyze")
+    _log_paid_call(
+        deps, "council", state["symbol"], "council_llm", "council_port.analyze"
+    )
     try:
         with _timed_node("council", state["symbol"]):
             verdict = council_port.analyze(state["symbol"], data)
@@ -1159,6 +1188,7 @@ def create_agent_graph(
     receipts_enabled: bool = False,
     options_port: OptionsFlowPort | None = None,
     attestation_publisher: AttestationPublisherPort | None = None,
+    paid_call_meter: Counter[str] | None = None,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
@@ -1201,6 +1231,7 @@ def create_agent_graph(
         receipts_enabled=receipts_enabled,
         options_port=options_port,
         attestation_publisher=attestation_publisher,
+        paid_call_meter=paid_call_meter,
     )
 
     # ---------- Topologia ----------

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -31,6 +31,8 @@ def build_trade_signals(
     top_n: int = 5,
     hit_rate: float | None = None,
     calibration_buckets: Sequence[CalibrationBucket] | None = None,
+    portfolio_weights: Mapping[str, Decimal] | None = None,
+    cluster_exposures: Mapping[str, Decimal] | None = None,
 ) -> list[TradeSignal]:
     """Top sygnały transakcyjne — posortowane po sile sygnału.
 
@@ -68,22 +70,36 @@ def build_trade_signals(
             strength=strength,
             current_price=r.current_price,
             target_price=r.target_price,
-            size_band=_size_band_for(r, hit_rate),
+            size_band=_size_band_for(r, hit_rate, portfolio_weights, cluster_exposures),
             calibrated_confidence=calibrated,
         ))
     signals.sort(key=lambda s: s.strength, reverse=True)
     return signals[:top_n]
 
 
-def _size_band_for(r: SymbolResult, hit_rate: float | None) -> SizeBand | None:
-    """Wylicza bandę pozycji z werdyktu rady symbolu; None gdy brak werdyktu."""
+def _size_band_for(
+    r: SymbolResult,
+    hit_rate: float | None,
+    weights: Mapping[str, Decimal] | None = None,
+    cluster_exposures: Mapping[str, Decimal] | None = None,
+) -> SizeBand | None:
+    """Wylicza bandę pozycji z werdyktu rady symbolu; None gdy brak werdyktu.
+
+    #15 faza 2: gdy znamy realne wagi portfela, banda uwzględnia istniejącą
+    ekspozycję (symbolu i jego klastra korelacji) i może się wyłącznie zwęzić.
+    Brak wag → zachowanie sprzed fazy 2.
+    """
     verdict = r.council_verdict
     if verdict is None:
         return None
+    weight = weights.get(r.symbol) if weights else None
+    cluster = cluster_exposures.get(r.symbol) if cluster_exposures else None
     return suggest_band(
         consensus_strength=verdict.consensus_strength,
         dissent_ratio=verdict.dissent_ratio(),
         hit_rate=hit_rate,
+        current_weight=float(weight) if weight is not None else None,
+        cluster_exposure=float(cluster) if cluster is not None else None,
     )
 
 

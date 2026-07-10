@@ -57,6 +57,7 @@ from src.application.report_model_scorecard import (
 )
 from src.application.report_models import ResolvedPrediction
 from src.application.report_onboarding import onboarding_subject
+from src.application.report_public_scorecard import render_public_scorecard_html
 from src.application.tools import build_research_tools
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
@@ -78,6 +79,7 @@ from src.domain.digest_lead import LeadItem, build_lead, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
 from src.domain.equity_curve import equity_curve as build_equity_curve
+from src.domain.finops import CycleCost, estimate_cycle_cost
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.peer_group import build_peer_context
@@ -437,6 +439,59 @@ def build_market_port(settings: Settings) -> MarketDataPort:
         crypto=CoinGeckoAdapter(),
         crypto_symbols=settings.crypto_symbols,
     )
+
+
+def build_public_scorecard_publisher(settings: Settings) -> WebPublisherPort:
+    """#10 — DRUGA instancja `FileWebPublisher`, z własną ścieżką.
+
+    Nie wolno reużyć instancji prywatnego digestu (`build_web_publisher`):
+    obie piszą do pliku, więc jedna nadpisałaby drugą — publiczny scorecard
+    zastąpiłby prywatny raport albo odwrotnie.
+    """
+    from src.infrastructure.adapters.web_publisher import (
+        FileWebPublisher,
+        NullWebPublisher,
+    )
+
+    if not settings.public_scorecard_enabled:
+        return NullWebPublisher()
+    return FileWebPublisher(output_path=settings.public_scorecard_path)
+
+
+def _publish_public_scorecard(
+    settings: Settings, repository: RepositoryPort, publisher: WebPublisherPort
+) -> None:
+    """#10 — publikuje stronę z agregatami (N, hit-rate, ECE, krzywa).
+
+    Metryki liczone z `resolved`/`cal_rows` NIEZALEŻNIE od flag
+    `equity_curve_enabled` / `calibration_curve_enabled` — tamte sterują
+    sekcjami prywatnego maila, nie publicznym dowodem. Best-effort:
+    błąd odczytu ani `OSError` przy zapisie nie wywalają cyklu.
+    """
+    if not settings.public_scorecard_enabled:
+        return
+    try:
+        resolved = parse_resolved_predictions(
+            repository.get_resolved_predictions(settings.track_record_days)
+        )
+        trades = [
+            (r.predicted_trend, float(r.actual_change_pct))
+            for r in resolved
+            if r.actual_change_pct is not None
+        ]
+        equity = build_equity_curve(trades) if trades else None
+        cal_rows = repository.get_resolved_for_calibration(settings.track_record_days)
+        samples = [
+            (float(row["confidence_score"]), bool(row["is_trend_correct"]))
+            for row in cal_rows
+            if row.get("confidence_score") is not None
+            and row.get("is_trend_correct") is not None
+        ]
+        page = render_public_scorecard_html(resolved, equity, samples)
+        if page:
+            publisher.publish(page)
+    except Exception:
+        logger.exception("Public scorecard publish failed — pomijam")
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
@@ -1453,6 +1508,7 @@ def _dispatch_reports(
     alpha_signals: dict[str, AlphaSignals],
     alpha_prices: dict[str, Decimal],
     yield_curve: YieldCurveSnapshot | None,
+    cycle_cost: CycleCost | None = None,
 ) -> None:
     """Faza wysyłki: dociągnięcie danych raportu, zbudowanie raportu i rozesłanie
     — pojedynczo albo per subskrybent (raport tnięty do jego watchlisty). Cała
@@ -1511,6 +1567,7 @@ def _dispatch_reports(
                 consensus_shifts=consensus_shifts,
                 user_portfolio=user_portfolio,
                 portfolio_clusters=_portfolio_clusters(settings),
+                cycle_cost=cycle_cost,
             )
 
         html, text = _build()
@@ -1560,6 +1617,11 @@ def _dispatch_reports(
                     logger.exception("Failed to send digest to %s", sub.email)
         else:
             notifier.send_report(subject=subject, html_body=html, plain_text=text)
+
+        # #10: publiczny scorecard — osobny publisher, osobna ścieżka.
+        _publish_public_scorecard(
+            settings, repository, build_public_scorecard_publisher(settings)
+        )
 
         # #16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,
         # nie może opóźnić ani zablokować raportu.
@@ -1692,6 +1754,9 @@ def main(settings: Settings | None = None) -> int:
         alpha_signals=alpha_signals,
         alpha_prices=alpha_prices,
         yield_curve=yield_curve,
+        # FinOps: koszt CAŁEGO cyklu z licznika grafu. Cykl w całości odcięty
+        # bramką volatility ma zerowy licznik → sekcja mówi "cykl darmowy".
+        cycle_cost=estimate_cycle_cost(dict(use_case.paid_calls)),
     )
 
     # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).

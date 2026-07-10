@@ -1430,3 +1430,124 @@ class TestWeeklyRecapWiring:
         recap_uc.run.side_effect = Exception("LLM down")
 
         assert main_trainer.main(settings) == 0
+
+
+class TestPublicScorecard:
+    """#10 — publiczny scorecard. DRUGA instancja publishera (nie ta od
+    prywatnego digestu!) i metryki liczone niezależnie od flag track-recordu."""
+
+    @staticmethod
+    def _settings(enabled: bool, **overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.public_scorecard_enabled = enabled
+        settings.public_scorecard_path = "public/scorecard/index.html"
+        settings.track_record_days = 30
+        # Flagi sekcji track-recordu w mailu — scorecard NIE MOŻE od nich zależeć.
+        settings.equity_curve_enabled = False
+        settings.calibration_curve_enabled = False
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    @staticmethod
+    def _repo() -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_predictions.return_value = [
+            {
+                "symbol": "NVDA",
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": True,
+                "price_at_prediction": "100",
+                "actual_price_after_12h": "110",
+            }
+        ]
+        repo.get_resolved_for_calibration.return_value = [
+            {"confidence_score": 0.8, "is_trend_correct": True},
+        ]
+        return repo
+
+    def test_flag_off_publishes_nothing(self) -> None:
+        publisher = MagicMock()
+
+        main_agent._publish_public_scorecard(
+            self._settings(False), self._repo(), publisher
+        )
+
+        publisher.publish.assert_not_called()
+
+    def test_metrics_are_computed_despite_track_record_flags_being_off(self) -> None:
+        # Korekta weryfikatora: scorecard liczy z resolved/cal_rows niezależnie
+        # od `equity_curve_enabled` / `calibration_curve_enabled`.
+        publisher = MagicMock()
+
+        main_agent._publish_public_scorecard(
+            self._settings(True), self._repo(), publisher
+        )
+
+        publisher.publish.assert_called_once()
+
+    def test_published_page_never_leaks_a_watchlist_symbol(self) -> None:
+        publisher = MagicMock()
+
+        main_agent._publish_public_scorecard(
+            self._settings(True), self._repo(), publisher
+        )
+
+        page = publisher.publish.call_args.args[0]
+        assert "NVDA" not in page
+
+    def test_repository_error_never_breaks_the_cycle(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_predictions.side_effect = Exception("supabase down")
+
+        main_agent._publish_public_scorecard(
+            self._settings(True), repo, MagicMock()
+        )
+
+    def test_public_publisher_is_a_separate_instance_from_the_digest(self) -> None:
+        # Reużycie instancji prywatnego digestu nadpisałoby go publiczną stroną.
+        settings = self._settings(True)
+        settings.web_digest_enabled = True
+        settings.web_digest_path = "public/digest/index.html"
+
+        digest_pub = main_agent.build_web_publisher(settings)
+        public_pub = main_agent.build_public_scorecard_publisher(settings)
+
+        assert digest_pub is not public_pub
+
+
+class TestCryptoInTrainingLoop:
+    """Bug: main_trainer trenował tylko settings.symbols, więc BTC/ETH NIGDY
+    nie przechodziły retrainu — model krypto zostawał na zawsze cold-start."""
+
+    def test_crypto_symbols_are_trained_too(self, settings, mock_external_clients, mocker) -> None:
+        settings.symbols = ["AAPL"]
+        settings.crypto_symbols = ["BTC", "ETH"]
+        settings.model_scorecard_enabled = False
+        settings.weekly_recap_enabled = False
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+
+        main_trainer.main(settings)
+
+        trained = [c.args[0] for c in fake_uc.run.call_args_list]
+        assert trained == ["AAPL", "BTC", "ETH"]
+
+    def test_no_duplicate_when_a_symbol_is_in_both_lists(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.symbols = ["AAPL", "BTC"]
+        settings.crypto_symbols = ["BTC"]
+        settings.model_scorecard_enabled = False
+        settings.weekly_recap_enabled = False
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+
+        main_trainer.main(settings)
+
+        trained = [c.args[0] for c in fake_uc.run.call_args_list]
+        assert trained == ["AAPL", "BTC"]

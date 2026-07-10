@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
@@ -58,8 +59,11 @@ class AnalyzeMarketUseCase:
         receipts_enabled: bool = False,
         options_port: OptionsFlowPort | None = None,
         attestation_publisher: AttestationPublisherPort | None = None,
+        paid_call_meter: Counter[str] | None = None,
     ) -> None:
         self._repository = repository_port
+        # Licznik płatnych wywołań CAŁEGO cyklu — jeden na use case, nie na symbol.
+        self.paid_calls: Counter[str] = paid_call_meter or Counter()
         workflow = create_agent_graph(
             market_port=market_port,
             sentiment_port=sentiment_port,
@@ -83,6 +87,7 @@ class AnalyzeMarketUseCase:
             receipts_enabled=receipts_enabled,
             options_port=options_port,
             attestation_publisher=attestation_publisher,
+            paid_call_meter=self.paid_calls,
         )
         # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().

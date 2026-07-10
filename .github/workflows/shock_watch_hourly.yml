@@ -2,10 +2,9 @@ name: 🚨 Shock Watch (hourly, free)
 
 on:
   # Watch chodzi 24/7, NIE tylko w sesji NYSE — BTC/ETH handlują całą dobę.
-  # Domyślnie zakomentowany, tak jak Fast Loop: włącz świadomie, po
-  # zaaplikowaniu migracji 021 i ustawieniu `shock_alerts_enabled = true`.
-  # schedule:
-  #   - cron: '7 * * * *'   # co godzinę, o :07 (rozsmarowanie obciążenia GHA)
+  # Wymaga migracji 021 i `shock_alerts_enabled = true`.
+  schedule:
+    - cron: '7 * * * *'   # co godzinę, o :07 (rozsmarowanie obciążenia GHA)
   workflow_dispatch:
 
 permissions:

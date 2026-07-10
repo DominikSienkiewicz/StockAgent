@@ -82,3 +82,41 @@ class TestSuggestBand:
 class TestSizeBand:
     def test_equality_by_value(self):
         assert SizeBand("full", 4.0, 5.0, "x") == SizeBand("full", 4.0, 5.0, "x")
+
+
+class TestSizingKnowsExistingExposure:
+    """#15 faza 2 — `suggest_band` nie znała istniejącej ekspozycji. Sugerowała
+    „pełną bandę 4-5%" komuś, kto ma już 40% kapitału w tym symbolu."""
+
+    def test_existing_exposure_can_only_shrink_the_band(self) -> None:
+        # Warunki idealne (mocny konsensus, brak dissentu, dobry hit-rate).
+        full = suggest_band(0.9, 0.0, 0.7)
+        capped = suggest_band(0.9, 0.0, 0.7, current_weight=0.40)
+
+        assert full.tier == "full"
+        assert capped.tier != "full"
+
+    def test_exposure_never_upgrades_a_weak_signal(self) -> None:
+        # Brak ekspozycji nie ma prawa podbić słabego sygnału.
+        weak = suggest_band(0.2, 0.9, None)
+        weak_no_exposure = suggest_band(0.2, 0.9, None, current_weight=0.0)
+
+        assert weak.tier == weak_no_exposure.tier == "starter"
+
+    def test_cluster_cap_shrinks_the_band(self) -> None:
+        # Trzy pozycje w jednym klastrze korelacji to jedna pozycja przebrana
+        # za trzy — banda musi to widzieć.
+        full = suggest_band(0.9, 0.0, 0.7)
+        clustered = suggest_band(0.9, 0.0, 0.7, cluster_exposure=0.65)
+
+        assert full.tier == "full"
+        assert clustered.tier != "full"
+
+    def test_defaults_preserve_the_pre_phase_two_behaviour(self) -> None:
+        # Wsteczna kompatybilność: bez nowych argumentów wynik jak dotąd.
+        assert suggest_band(0.9, 0.0, 0.7).tier == "full"
+        assert suggest_band(0.9, 0.0, None).tier == "standard"
+        assert suggest_band(0.2, 0.9, 0.7).tier == "starter"
+
+    def test_full_exposure_forces_the_most_conservative_band(self) -> None:
+        assert suggest_band(0.9, 0.0, 0.7, current_weight=0.95).tier == "starter"
