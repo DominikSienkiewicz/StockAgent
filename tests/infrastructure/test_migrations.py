@@ -35,6 +35,7 @@ MIGRATION_FILES = [
     "015_persona_accuracy.sql",
     "016_confidence_calibration.sql",
     "017_vector_memory_regime.sql",
+    "018_persona_track_record.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -223,6 +224,66 @@ class TestMigrations:
         # Najbliższy kierunkowo jest "NEAR" (dystans ~0.006 << FAR ~0.89).
         assert len(rows) == 1
         assert rows[0][0] == "NEAR"
+
+    def test_persona_accuracy_stats_rpc_returns_hit_rate_and_vote_count(self, pg_conn):
+        """RPC leaderboardu person (#3, migracja 018) zwraca surowy hit-rate
+        ORAZ liczbę rozliczonych głosów.
+
+        Regresja kontraktu: `persona_accuracy_weights` (015) niesie tylko
+        przeskalowaną wagę ∈ [0.5, 1.5], więc `vote_count` był nieodtwarzalny
+        — a bez niego próg `min_votes` w domenie nie ma czego odcinać.
+        Fixture: BUY na rosnącej cenie (trafny) + BUY na spadającej (chybiony)
+        → hit_rate 0.5 przy 2 głosach. Predykcja nierozliczona
+        (actual_price_after_12h IS NULL) NIE może wejść do próbki.
+        """
+        with pg_conn.cursor() as cur:
+            # Izolacja: RPC agreguje po całej tabeli, a kontener jest
+            # współdzielony przez moduł — czyścimy głosy innych testów.
+            cur.execute("DELETE FROM council_votes")
+
+            def add_vote(symbol, price_before, price_after, recommendation):
+                cur.execute(
+                    "INSERT INTO prediction_logs "
+                    "(symbol, price_at_prediction, actual_price_after_12h) "
+                    "VALUES (%s, %s, %s) RETURNING id",
+                    (symbol, price_before, price_after),
+                )
+                prediction_id = cur.fetchone()[0]
+                cur.execute(
+                    "INSERT INTO council_votes "
+                    "(prediction_id, symbol, investor_name, recommendation, confidence) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (prediction_id, symbol, "Buffett", recommendation, 0.8),
+                )
+
+            add_vote("PTR_HIT", 100.0, 110.0, "BUY")   # trafiony
+            add_vote("PTR_MISS", 100.0, 90.0, "BUY")   # chybiony
+            # Nierozliczona predykcja — poza próbką (actual IS NULL).
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction) "
+                "VALUES (%s, %s) RETURNING id",
+                ("PTR_OPEN", 100.0),
+            )
+            open_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO council_votes "
+                "(prediction_id, symbol, investor_name, recommendation, confidence) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (open_id, "PTR_OPEN", "Buffett", "BUY", 0.8),
+            )
+
+            cur.execute(
+                "SELECT investor_name, hit_rate, vote_count "
+                "FROM persona_accuracy_stats(%s)",
+                (90,),
+            )
+            rows = cur.fetchall()
+
+        assert len(rows) == 1
+        name, hit_rate, vote_count = rows[0]
+        assert name == "Buffett"
+        assert float(hit_rate) == pytest.approx(0.5)
+        assert vote_count == 2
 
     def test_council_verdict_column_exists(self, pg_conn):
         cols = _columns(pg_conn, "prediction_logs")

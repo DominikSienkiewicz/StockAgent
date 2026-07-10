@@ -212,6 +212,19 @@ class RepositoryPort(ABC):
         → ważenie wyłączone (każda persona waży 1.0)."""
 
     @abstractmethod
+    def get_persona_track_record(
+        self, window_days: int = 90
+    ) -> dict[str, tuple[float, int]]:
+        """#3 — surowy track record person rady pod leaderboard w raporcie:
+        `{investor_name: (hit_rate, liczba_rozliczonych_głosów)}` (migracja 018).
+
+        W odróżnieniu od `get_persona_accuracy` (zwraca gotową WAGĘ do
+        konsensusu) tu wychodzi nieprzetworzony hit-rate ∈ [0, 1] RAZEM
+        z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
+        "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
+        → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
     def get_council_vote_history(
         self,
         symbols: list[str],

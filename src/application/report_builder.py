@@ -62,6 +62,9 @@ from src.application.report_models import (
     TradeSignal,
     ValuationSection,
 )
+from src.application.report_persona_leaderboard import (
+    render_persona_leaderboard_html,
+)
 from src.application.report_portfolio import render_correlation_html
 from src.application.report_quota_banner import (
     render_quota_banner_html,
@@ -92,6 +95,7 @@ from src.domain.council import CouncilVerdict
 from src.domain.equity_curve import EquityCurve
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.macro_rates import YieldCurveSnapshot
+from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
 from src.domain.value_objects import (
@@ -146,6 +150,7 @@ _QUOTA_BANNER_SLOT = "<!-- QUOTA_BANNER_SLOT -->"
 _RISK_WATCH_SLOT = "<!-- RISK_WATCH_SLOT -->"
 _PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
 _COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
+_PERSONA_LEADERBOARD_SLOT = "<!-- PERSONA_LEADERBOARD_SLOT -->"
 _TRACK_RECORD_SLOT = "<!-- TRACK_RECORD_SLOT -->"
 _ALPHA_SLOT = "<!-- ALPHA_SLOT -->"
 _SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
@@ -593,6 +598,7 @@ def _fill_html_slots(
     macro_risk_html: str,
     portfolio_html: str,
     council_history_html: str,
+    persona_leaderboard_html: str,
     track_record_html: str,
     alpha_html: str,
     suggestions_html: str,
@@ -606,6 +612,7 @@ def _fill_html_slots(
         html = html.replace(_RISK_WATCH_SLOT, macro_risk_html, 1)
     html = html.replace(_PORTFOLIO_SLOT, portfolio_html, 1)
     html = html.replace(_COUNCIL_HISTORY_SLOT, council_history_html, 1)
+    html = html.replace(_PERSONA_LEADERBOARD_SLOT, persona_leaderboard_html, 1)
     html = html.replace(_TRACK_RECORD_SLOT, track_record_html, 1)
     html = html.replace(_ALPHA_SLOT, alpha_html, 1)
     return html.replace(_SUGGESTIONS_SLOT, suggestions_html, 1)
@@ -640,6 +647,7 @@ def build_html_report(
     macro_risk_report: MacroRiskReport | None = None,
     portfolio_risk_report: PortfolioRiskReport | None = None,
     council_history: list[InvestorHistory] | None = None,
+    persona_track_record: list[PersonaTrackRecord] | None = None,
     quota_alerts: list[QuotaAlert] | None = None,
     symbols_filter: frozenset[str] | None = None,
     equity_curve: EquityCurve | None = None,
@@ -683,6 +691,11 @@ def build_html_report(
     )
     # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
     council_history_html = render_council_history_html(council_history or [])
+    # #3: ranking wiarygodności person — ranking (z progiem min_votes) przychodzi
+    # gotowy z domeny; render zwraca "" gdy żadna persona nie ma dość głosów.
+    persona_leaderboard_html = render_persona_leaderboard_html(
+        persona_track_record or []
+    )
     # T1/T2/T4: sekcja Track Record (krzywa kapitału, kalibracja, lessons).
     # render zwraca "" gdy wszystkie trzy podsekcje puste.
     track_record_html = render_track_record_html(
@@ -713,6 +726,7 @@ def build_html_report(
         macro_risk_html=macro_risk_html,
         portfolio_html=portfolio_html,
         council_history_html=council_history_html,
+        persona_leaderboard_html=persona_leaderboard_html,
         track_record_html=track_record_html,
         alpha_html=alpha_html,
         suggestions_html=suggestions_html,
@@ -1115,6 +1129,9 @@ def _render_html(
     sections.append(_PORTFOLIO_SLOT)
     # Slot na panel historii głosów rady (U5).
     sections.append(_COUNCIL_HISTORY_SLOT)
+    # Slot na ranking wiarygodności person (#3) — "kto z rady miał rację".
+    # Zaraz po historii głosów: najpierw KTO jak głosował, potem KTO trafiał.
+    sections.append(_PERSONA_LEADERBOARD_SLOT)
     # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
     sections.append(_TRACK_RECORD_SLOT)
     # Slot na sekcję Alpha Signals (Dane — insider/analitycy/opcje/social/FRED).
