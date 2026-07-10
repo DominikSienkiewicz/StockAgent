@@ -43,6 +43,15 @@ class NewsPort(ABC):
     def get_news_context(self, symbol: str) -> list[dict[str, Any]]: ...
 
 
+@dataclass(frozen=True)
+class PreviousVerdict:
+    """#8 — snapshot poprzedniego cyklu potrzebny detektorowi zmian nastawienia."""
+
+    verdict: CouncilVerdict
+    sentiment_score: float
+    timestamp: datetime
+
+
 class RepositoryPort(ABC):
     """Persystencja: zapis predykcji, odczyt historii, dostęp do feature store."""
 
@@ -223,6 +232,14 @@ class RepositoryPort(ABC):
         z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
         "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
         → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
+    def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
+        """#8 — ostatni ZAPISANY werdykt rady dla symbolu (JSONB `council_verdict`
+        z migracji 005) wraz z sentymentem i znacznikiem czasu tamtego cyklu.
+
+        Adapter jest SUROWY (bez try/except) — graceful degradation robi caller
+        (`_fetch_report_context`), zgodnie ze stylem repo. None = brak historii."""
 
     @abstractmethod
     def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:

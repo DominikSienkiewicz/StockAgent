@@ -9,8 +9,10 @@ import pytest
 import main_agent
 import main_backtest
 import main_trainer
-from src.application.ports import RepositoryPort
+from src.application.ports import PreviousVerdict, RepositoryPort
 from src.config import Settings
+from src.domain.consensus_shift import ShiftKind
+from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem
 from src.domain.earnings import EarningsEvent
@@ -1109,3 +1111,81 @@ class TestModelScorecardPersistence:
         main_trainer.main(settings)
 
         repo.save_model_scorecard.assert_not_called()
+
+
+class TestConsensusShiftWiring:
+    """#8 — flipy rady. Graceful w callerze, tłumienie stęchłych porównań."""
+
+    @staticmethod
+    def _verdict(rec: str, consensus: float = 0.8) -> CouncilVerdict:
+        return CouncilVerdict(
+            final_recommendation=rec,  # type: ignore[arg-type]
+            consensus_strength=consensus,
+            summary="",
+            dissenting_views=(),
+            investor_opinions=(),
+        )
+
+    def _result(self, rec: str) -> "main_agent.SymbolResult":
+        return main_agent.SymbolResult(
+            symbol="NVDA",
+            status="saved",
+            sentiment_score=0.1,
+            council_verdict=self._verdict(rec),
+        )
+
+    def _repo(self, previous: object) -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_previous_verdict.return_value = previous
+        return repo
+
+    def test_flip_is_detected(self) -> None:
+        previous = PreviousVerdict(
+            verdict=self._verdict("BUY"),
+            sentiment_score=0.4,
+            timestamp=datetime(2026, 7, 10, 6, 0, tzinfo=UTC),
+        )
+        shifts = main_agent._build_consensus_shifts(
+            self._repo(previous),
+            [self._result("SELL")],
+            now=datetime(2026, 7, 10, 18, 0, tzinfo=UTC),
+        )
+
+        assert shifts and shifts[0][0] == "NVDA"
+        assert shifts[0][1].kind is ShiftKind.FLIP
+
+    def test_stale_comparison_is_marked_not_dramatised(self) -> None:
+        # Cron bywa zakomentowany — "wczoraj" potrafi być sprzed tygodnia.
+        previous = PreviousVerdict(
+            verdict=self._verdict("BUY"),
+            sentiment_score=0.4,
+            timestamp=datetime(2026, 7, 3, 6, 0, tzinfo=UTC),
+        )
+        shifts = main_agent._build_consensus_shifts(
+            self._repo(previous),
+            [self._result("SELL")],
+            now=datetime(2026, 7, 10, 18, 0, tzinfo=UTC),
+        )
+
+        assert shifts[0][1].kind is ShiftKind.STALE_COMPARISON
+
+    def test_repository_error_degrades_to_no_section(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_previous_verdict.side_effect = Exception("supabase down")
+
+        shifts = main_agent._build_consensus_shifts(
+            repo, [self._result("SELL")], now=datetime(2026, 7, 10, tzinfo=UTC)
+        )
+
+        assert shifts == []
+
+    def test_symbol_without_current_verdict_is_skipped(self) -> None:
+        # Symbol odcięty bramką volatility nie ma świeżego werdyktu —
+        # nie wolno mu pokazywać starego flipu drugi raz.
+        repo = self._repo(None)
+        result = main_agent.SymbolResult(symbol="NVDA", status="ignored")
+
+        now = datetime(2026, 7, 10, tzinfo=UTC)
+
+        assert main_agent._build_consensus_shifts(repo, [result], now=now) == []
+        repo.get_previous_verdict.assert_not_called()

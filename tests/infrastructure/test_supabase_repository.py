@@ -1236,3 +1236,60 @@ class TestModelScorecards:
         mock_client.table.side_effect = Exception("no table")
 
         assert repo.get_recent_model_scorecards(30) == []
+
+
+class TestGetPreviousVerdict:
+    """#8 — poprzedni werdykt rady (JSONB z migracji 005) do detektora flipów.
+    Adapter jest SUROWY: graceful degradation robi caller (styl repo)."""
+
+    @staticmethod
+    def _row() -> dict[str, Any]:
+        return {
+            "council_verdict": {
+                "final_recommendation": "BUY",
+                "consensus_strength": 0.8,
+                "summary": "Kupujemy.",
+                "dissenting_views": ["Soros: SELL"],
+                "investor_opinions": [
+                    {
+                        "investor_name": "Soros",
+                        "recommendation": "SELL",
+                        "confidence": 0.7,
+                        "reasoning": "...",
+                        "key_factors": [],
+                    }
+                ],
+            },
+            "sentiment_score": 0.31,
+            "timestamp": "2026-07-09T10:00:00+00:00",
+        }
+
+    @staticmethod
+    def _set_verdict_chain(client: MagicMock, data: list[dict[str, Any]]) -> None:
+        # `.not_` to PROPERTY, nie wywołanie — generyczny helper łańcucha
+        # (_set_chain_response) tego nie odwzoruje.
+        chain = client.table.return_value.select.return_value.eq.return_value
+        chain = chain.not_.is_.return_value.order.return_value.limit.return_value
+        response = MagicMock()
+        response.data = data
+        chain.execute.return_value = response
+
+    def test_maps_row_to_previous_verdict(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._set_verdict_chain(mock_client, [self._row()])
+
+        previous = repo.get_previous_verdict("NVDA")
+
+        assert previous is not None
+        assert previous.verdict.final_recommendation == "BUY"
+        assert previous.sentiment_score == pytest.approx(0.31)
+        assert previous.verdict.dissenting_views == ("Soros: SELL",)
+        assert len(previous.verdict.investor_opinions) == 1
+
+    def test_returns_none_when_no_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._set_verdict_chain(mock_client, [])
+
+        assert repo.get_previous_verdict("NVDA") is None

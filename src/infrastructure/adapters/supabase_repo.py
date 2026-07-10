@@ -9,9 +9,9 @@ from typing import Any, Literal, cast
 
 from supabase import create_client
 
-from src.application.ports import RepositoryPort
+from src.application.ports import PreviousVerdict, RepositoryPort
 from src.application.report_council_history import InvestorHistory
-from src.domain.council import InvestorOpinion
+from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.regime_key import canonical_regime_key
@@ -75,6 +75,28 @@ def _rows(response: Any) -> list[dict[str, Any]]:
     """Narrow supabase response.data (JSON union) do list[dict]."""
     data = response.data or []
     return cast(list[dict[str, Any]], data)
+
+
+def _deserialize_verdict(raw: dict[str, Any]) -> CouncilVerdict:
+    """Odtwarza `CouncilVerdict` z JSONB (migracja 005). Opinie inwestorów są
+    zapisane jako lista dictów — mapujemy je z powrotem na value objecty."""
+    opinions = tuple(
+        InvestorOpinion(
+            investor_name=str(o.get("investor_name", "")),
+            recommendation=cast(Any, o.get("recommendation", "HOLD")),
+            confidence=float(o.get("confidence") or 0.0),
+            reasoning=str(o.get("reasoning", "")),
+            key_factors=tuple(o.get("key_factors") or ()),
+        )
+        for o in raw.get("investor_opinions") or []
+    )
+    return CouncilVerdict(
+        final_recommendation=cast(Any, raw.get("final_recommendation", "HOLD")),
+        consensus_strength=float(raw.get("consensus_strength") or 0.0),
+        summary=str(raw.get("summary", "")),
+        dissenting_views=tuple(raw.get("dissenting_views") or ()),
+        investor_opinions=opinions,
+    )
 
 
 class SupabaseRepository(RepositoryPort):
@@ -560,6 +582,32 @@ class SupabaseRepository(RepositoryPort):
                 continue
             out[str(name)] = (float(hit_rate), int(votes))
         return out
+
+    def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
+        # SUROWO, bez try/except — graceful degradation robi caller
+        # (`_fetch_report_context`), tak jak reszta odczytów raportowych.
+        response = (
+            self._client.table(self._table)
+            .select("council_verdict, sentiment_score, timestamp")
+            .eq("symbol", symbol)
+            .not_.is_("council_verdict", "null")
+            .order("timestamp", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        raw_verdict = row.get("council_verdict")
+        stamp = row.get("timestamp")
+        if not isinstance(raw_verdict, dict) or not isinstance(stamp, str):
+            return None
+        return PreviousVerdict(
+            verdict=_deserialize_verdict(raw_verdict),
+            sentiment_score=float(row.get("sentiment_score") or 0.0),
+            timestamp=datetime.fromisoformat(stamp),
+        )
 
     def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
         # Jeden wiersz na przebieg treningu (migracja 019). Kolumna `symbol` jest

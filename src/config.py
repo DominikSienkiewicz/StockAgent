@@ -136,6 +136,9 @@ class Settings(BaseSettings):
     # Pokazuje bramkę "nie shipuj modelu gorszego od baseline'u", łącznie
     # z odrzutami. Render-only + insert w Slow Loopie. Off.
     model_scorecard_enabled: bool = False
+    # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
+    # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
+    cycle_diff_enabled: bool = False
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
 

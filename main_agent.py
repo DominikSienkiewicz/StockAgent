@@ -68,6 +68,7 @@ from src.application.use_cases.portfolio_risk import (
 from src.config import Settings
 from src.domain.asset import Asset
 from src.domain.calibration_curve import CalibrationBucket, reliability_curve
+from src.domain.consensus_shift import ConsensusShift, detect_shift
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.digest_lead import LeadItem, build_lead, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
@@ -1078,6 +1079,47 @@ def _build_subject(
     return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
 
 
+def _build_consensus_shifts(
+    repository: RepositoryPort,
+    results: list[SymbolResult],
+    *,
+    now: datetime,
+) -> list[tuple[str, ConsensusShift]]:
+    """#8 — wykrywa zmiany nastawienia rady względem poprzedniego cyklu.
+
+    Tłumienie stęchłych flipów: symbol bez ŚWIEŻEGO werdyktu (odcięty bramką
+    volatility) jest pomijany — inaczej stary flip pokazywałby się w kółko.
+    `gap_hours` liczone z timestampu poprzedniego cyklu; domena degraduje
+    porównanie starsze niż 48h do STALE_COMPARISON, zamiast robić dramaturgię.
+    Graceful w CALLERZE (styl repo): błąd odczytu → brak sekcji, cykl żyje.
+    """
+    shifts: list[tuple[str, ConsensusShift]] = []
+    for r in results:
+        if r.council_verdict is None:
+            continue
+        try:
+            previous = repository.get_previous_verdict(r.symbol)
+        except Exception:
+            logger.exception("Failed to fetch previous verdict for %s", r.symbol)
+            continue
+        if previous is None:
+            continue
+        gap_hours = (now - previous.timestamp).total_seconds() / 3600.0
+        shifts.append(
+            (
+                r.symbol,
+                detect_shift(
+                    previous.verdict,
+                    r.council_verdict,
+                    previous_sentiment=previous.sentiment_score,
+                    current_sentiment=r.sentiment_score or 0.0,
+                    gap_hours=gap_hours,
+                ),
+            )
+        )
+    return shifts
+
+
 def _build_model_scorecard(
     settings: Settings, repository: RepositoryPort
 ) -> ModelScorecardView | None:
@@ -1273,6 +1315,12 @@ def _dispatch_reports(
         sectors = _portfolio_sectors(results)
         # #12: karta kondycji modelu (flaga + migracja 019).
         model_scorecard = _build_model_scorecard(settings, repository)
+        # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
+        consensus_shifts = (
+            _build_consensus_shifts(repository, results, now=started_at)
+            if settings.cycle_diff_enabled
+            else []
+        )
 
         def _build(symbols_filter: frozenset[str] | None = None) -> tuple[str, str]:
             return build_html_report(
@@ -1295,6 +1343,7 @@ def _dispatch_reports(
                 cycle_maturity=maturity,
                 portfolio_sectors=sectors,
                 model_scorecard=model_scorecard,
+                consensus_shifts=consensus_shifts,
             )
 
         html, text = _build()

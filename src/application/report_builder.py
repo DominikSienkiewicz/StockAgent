@@ -19,6 +19,9 @@ from src.application.report_charts import (
     build_correlation_chart_url,
     build_forecast_chart_url,
 )
+from src.application.report_consensus_shift import (
+    render_consensus_shift_html,
+)
 from src.application.report_council_history import (
     InvestorHistory,
     render_council_history_html,
@@ -101,6 +104,7 @@ from src.application.report_track_record import render_track_record_html
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.calibration_curve import CalibrationBucket
+from src.domain.consensus_shift import ConsensusShift
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadSignal, build_lead
@@ -169,6 +173,8 @@ _RISK_WATCH_SLOT = "<!-- RISK_WATCH_SLOT -->"
 _PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
 _COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
 _PERSONA_LEADERBOARD_SLOT = "<!-- PERSONA_LEADERBOARD_SLOT -->"
+# #8: "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs poprzedni cykl.
+_CONSENSUS_SHIFT_SLOT = "<!-- CONSENSUS_SHIFT_SLOT -->"
 _TRACK_RECORD_SLOT = "<!-- TRACK_RECORD_SLOT -->"
 # #12: karta kondycji modelu — tuż za Track Recordem (ta sama oś zaufania).
 _MODEL_SCORECARD_SLOT = "<!-- MODEL_SCORECARD_SLOT -->"
@@ -653,6 +659,7 @@ def _fill_html_slots(
     onboarding_html: str,
     council_history_html: str,
     persona_leaderboard_html: str,
+    consensus_shift_html: str,
     model_scorecard_html: str,
     track_record_html: str,
     alpha_html: str,
@@ -670,6 +677,7 @@ def _fill_html_slots(
     html = html.replace(_PORTFOLIO_SLOT, portfolio_html, 1)
     html = html.replace(_COUNCIL_HISTORY_SLOT, council_history_html, 1)
     html = html.replace(_PERSONA_LEADERBOARD_SLOT, persona_leaderboard_html, 1)
+    html = html.replace(_CONSENSUS_SHIFT_SLOT, consensus_shift_html, 1)
     html = html.replace(_TRACK_RECORD_SLOT, track_record_html, 1)
     html = html.replace(_MODEL_SCORECARD_SLOT, model_scorecard_html, 1)
     html = html.replace(_ALPHA_SLOT, alpha_html, 1)
@@ -730,6 +738,7 @@ def build_html_report(
     cycle_maturity: CycleMaturity | None = None,
     portfolio_sectors: Mapping[str, int] | None = None,
     model_scorecard: ModelScorecardView | None = None,
+    consensus_shifts: list[tuple[str, ConsensusShift]] | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
@@ -793,6 +802,9 @@ def build_html_report(
     persona_leaderboard_html = render_persona_leaderboard_html(
         persona_track_record or []
     )
+    # #8: zmiany nastawienia rady. Render odfiltrowuje STABLE i jawnie oznacza
+    # stęchłe porównania — pusta lista → sekcja się chowa.
+    consensus_shift_html = render_consensus_shift_html(consensus_shifts or [])
     # #12: karta kondycji modelu (render zwraca "" gdy brak danych).
     model_scorecard_html = (
         render_model_scorecard_html(
@@ -840,6 +852,7 @@ def build_html_report(
         onboarding_html=onboarding_html,
         council_history_html=council_history_html,
         persona_leaderboard_html=persona_leaderboard_html,
+        consensus_shift_html=consensus_shift_html,
         model_scorecard_html=model_scorecard_html,
         track_record_html=track_record_html,
         alpha_html=alpha_html,
@@ -1251,6 +1264,7 @@ def _render_html(
     # Slot na ranking wiarygodności person (#3) — "kto z rady miał rację".
     # Zaraz po historii głosów: najpierw KTO jak głosował, potem KTO trafiał.
     sections.append(_PERSONA_LEADERBOARD_SLOT)
+    sections.append(_CONSENSUS_SHIFT_SLOT)
     # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
     sections.append(_TRACK_RECORD_SLOT)
     sections.append(_MODEL_SCORECARD_SLOT)
