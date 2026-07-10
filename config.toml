@@ -64,6 +64,9 @@ model_scorecard_enabled = false
 # #8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
 # spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Off.
 cycle_diff_enabled = false
+# #13: kwity decyzyjne (migracja 020) — persystowany audit trail predykcji.
+# UWAGA: włącz DOPIERO po zaaplikowaniu migracji 020, inaczej PGRST204. Off.
+receipts_enabled = false
 track_record_days = 30
 # Dane — nowe źródła alpha. Default off → Null adapter (zero płatnych). Realny
 # adapter włącza flaga (+ ewentualny klucz: FRED_API_KEY dla yield_curve).

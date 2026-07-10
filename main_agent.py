@@ -672,6 +672,7 @@ def build_use_case(
         research_tools=research_tools,
         tool_use_threshold=tool_use_threshold,
         vector_memory_enabled=settings.vector_memory_enabled,
+        receipts_enabled=settings.receipts_enabled,
     )
 
 

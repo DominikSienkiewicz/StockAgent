@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
     # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
     cycle_diff_enabled: bool = False
+    # #13: kwity decyzyjne — JSONB `decision_receipts` na `prediction_logs`
+    # (migracja 020). Flaga to WARUNEK graceful degradation, nie opcja: nowy
+    # klucz przed migracją → PGRST204 i śmierć zapisu całej predykcji. Off.
+    receipts_enabled: bool = False
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
 
