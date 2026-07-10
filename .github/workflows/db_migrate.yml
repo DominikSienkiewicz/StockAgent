@@ -1,0 +1,50 @@
+name: 🗄️ DB Migrate (manual)
+
+on:
+  # WYŁĄCZNIE ręcznie. Migracje NIE wiszą na cronie Fast Loopa: zepsuta migracja
+  # odpalałaby się wtedy co dzień, a `022` przebudowuje materialized view
+  # `ml_feature_store` (DROP + CREATE). Rejestr `supabase_migrations.schema_migrations`
+  # i tak pomija już zaaplikowane, ale ryzyko blokowania dziennego cyklu zostaje.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Tylko pokaż, co zostałoby zaaplikowane (nic nie zapisuje)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read       # nic nie zapisujemy do repo
+
+# Dwa równoległe pushe do tej samej bazy to przepis na zakleszczenie migracji.
+concurrency:
+  group: db-migrate
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ⚡ Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: 🔍 Dry run — co zostałoby zaaplikowane
+        # Zawsze, także przed realnym pushem: log pokazuje listę migracji,
+        # zanim cokolwiek dotknie bazy.
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
+
+      - name: 🚀 Apply migrations
+        if: ${{ inputs.dry_run == false }}
+        # `--db-url` omija `supabase login` / `link`, więc jedynym sekretem jest
+        # connection string. CLI wymusza TLS — połączenie bez szyfrowania odrzuci.
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: supabase db push --db-url "$SUPABASE_DB_URL"

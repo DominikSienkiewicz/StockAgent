@@ -10,13 +10,16 @@ Uruchomienie:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import psycopg2
 import pytest
 from testcontainers.postgres import PostgresContainer
 
-MIGRATIONS_DIR = Path(__file__).parents[2] / "migrations"
+# `supabase db push` czyta WYŁĄCZNIE `supabase/migrations/` — trzymamy je tam,
+# żeby CLI i testy kontenerowe widziały dokładnie ten sam zbiór plików.
+MIGRATIONS_DIR = Path(__file__).parents[2] / "supabase" / "migrations"
 MIGRATION_FILES = [
     "001_init.sql",
     "002_price_snapshots.sql",
@@ -679,3 +682,51 @@ class TestMigration013DedupesPreexistingDuplicates:
             kept = cur.fetchone()
             assert kept[0] == "BULLISH"
             assert kept[1] is True
+
+
+def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:
+    """`supabase db push` czyta wyłącznie `supabase/migrations/`.
+
+    Trzymanie plików gdzie indziej znaczy, że CLI zaaplikuje ZERO migracji
+    i cicho powie „up to date" — najgorszy możliwy tryb awarii.
+    """
+    assert Path(__file__).parents[2] / "supabase" / "migrations" == MIGRATIONS_DIR
+    assert MIGRATIONS_DIR.is_dir()
+
+
+def test_migration_files_list_matches_the_directory() -> None:
+    """Lista w teście i zawartość katalogu nie mogą się rozjechać.
+
+    CLI globuje katalog, a ten moduł ma listę wpisaną ręcznie. Bez tej asercji
+    nowa migracja mogłaby wejść na produkcję nieprzetestowana (albo odwrotnie:
+    test aplikowałby plik, którego CLI nie widzi).
+    """
+    on_disk = sorted(p.name for p in MIGRATIONS_DIR.glob("*.sql"))
+
+    assert on_disk == MIGRATION_FILES
+
+
+def test_migration_filenames_match_the_supabase_cli_pattern() -> None:
+    """CLI parsuje nazwy regexem `^([0-9]+)_(.*)\\.sql$` (pkg/migration/file.go).
+
+    Plik, który nie pasuje, jest POMIJANY z ostrzeżeniem na stderr — nie błędem.
+    Dodatkowo: pierwsza migracja NIE MOŻE nazywać się `<14 cyfr>_init.sql`,
+    bo CLI pomija taki plik dla wstecznej kompatybilności (list.go `shouldSkip`).
+    """
+    pattern = re.compile(r"^([0-9]+)_(.*)\.sql$")
+    for name in MIGRATION_FILES:
+        assert pattern.match(name), f"CLI pominąłby {name}"
+
+    assert not re.match(r"^[0-9]{14}_init\.sql$", MIGRATION_FILES[0])
+
+
+def test_migration_versions_sort_lexicographically_in_numeric_order() -> None:
+    """CLI aplikuje pliki w kolejności `os.ReadDir` (leksykograficznej).
+
+    Zero-padding do 3 cyfr sprawia, że kolejność leksykograficzna == numeryczna.
+    Bez niego `10_x.sql` wypadłoby PRZED `2_x.sql` i migracje poszłyby na opak.
+    """
+    versions = [name.split("_", 1)[0] for name in MIGRATION_FILES]
+
+    assert versions == sorted(versions)
+    assert versions == [f"{int(v):03d}" for v in versions]

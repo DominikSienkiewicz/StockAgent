@@ -218,3 +218,7 @@ __marimo__/
 .streamlit/secrets.toml
 /.idea/
 /docs/
+
+# Supabase CLI — artefakty lokalne (link, gałęzie preview). Migracje ZOSTAJĄ w repo.
+supabase/.temp/
+supabase/.branches/

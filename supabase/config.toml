@@ -1,0 +1,11 @@
+# =====================================================
+# Supabase CLI — konfiguracja projektu (NIE mylić z /config.toml w roocie,
+# który trzyma niewrażliwy config runtime'u agenta).
+#
+# Ten plik istnieje wyłącznie po to, żeby `supabase` CLI rozpoznał katalog
+# jako projekt. Migracje aplikujemy przez `supabase db push --db-url ...`,
+# więc NIE potrzebujemy `supabase login` ani `supabase link` — a co za tym
+# idzie, nie trzymamy w repo project-refa ani access tokena.
+# =====================================================
+
+project_id = "stockagent"

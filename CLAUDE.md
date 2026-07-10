@@ -64,6 +64,21 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. `main_agent.main()`
   zwraca exit 1 tylko gdy **wszystkie** symbole padły.
 
+## Migracje bazy
+
+- Pliki: `supabase/migrations/NNN_nazwa.sql`, numer zero-paddowany do 3 cyfr.
+  Ta lokalizacja i konwencja nazw NIE są dowolne — `supabase db push` czyta
+  wyłącznie `supabase/migrations/` i parsuje nazwy regexem `^([0-9]+)_(.*)\.sql$`.
+  Plik spoza wzorca jest **po cichu POMIJANY** (ostrzeżenie na stderr, nie błąd).
+- Zero-padding jest wymagany: CLI aplikuje pliki w kolejności leksykograficznej,
+  więc bez niego `10_x.sql` poszłoby PRZED `2_x.sql`.
+- Pierwsza migracja nie może nazywać się `<14 cyfr>_init.sql` — CLI pomija taki
+  plik dla wstecznej kompatybilności.
+- Każda nowa migracja = wpis w `MIGRATION_FILES` + asercja w
+  `tests/infrastructure/test_migrations.py` (testy aplikują komplet na prawdziwym
+  kontenerze pgvector; osobny test pilnuje, żeby lista nie rozjechała się z katalogiem).
+- Aplikacja: ręczny workflow „🗄️ DB Migrate", nigdy z crona Fast Loopa.
+
 ## Sekrety
 
 - **Nigdy** nie commituj `.env`. Do `.env.example` wpisuj wyłącznie placeholdery.
