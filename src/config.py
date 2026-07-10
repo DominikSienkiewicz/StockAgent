@@ -146,6 +146,10 @@ class Settings(BaseSettings):
     # #11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
     # migracja 021). Zero płatnych wywołań. Off.
     shock_alerts_enabled: bool = False
+    # #14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
+    # Wchodzi do promptu LLM ORAZ jako ósma cecha XGBoost. Wdrożenie cechy
+    # rozstrzyga walk-forward gate „pobij baseline", nie intuicja wag. Off.
+    alpha_fusion_enabled: bool = False
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
 

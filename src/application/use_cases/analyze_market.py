@@ -19,6 +19,7 @@ from src.application.ports import (
     Tool,
     ToolUseLLMPort,
 )
+from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset
 from src.domain.value_objects import Threshold
 
@@ -93,6 +94,7 @@ class AnalyzeMarketUseCase:
         regime_context: str = "",
         regime_multiplier: float = 1.0,
         earnings_multiplier: float = 1.0,
+        alpha_fusion: AlphaFusionScore | None = None,
         peer_context: tuple[tuple[str, str], ...] = (),
     ) -> dict[str, Any]:
         previous = self._repository.get_last_price(symbol)
@@ -106,6 +108,8 @@ class AnalyzeMarketUseCase:
             "regime_multiplier": regime_multiplier,
             # #6 bramka earnings — mnożnik progu z domeny (zawsze >= 1.0).
             "earnings_multiplier": earnings_multiplier,
+            # #14 composite alfa — do promptu LLM i do ósmej cechy ML.
+            "alpha_fusion": alpha_fusion,
             "peer_context": peer_context,
         }
         # Przekazujemy asset z klasyfikacją (STOCK/ETF), gdy dostępny z zewnątrz.

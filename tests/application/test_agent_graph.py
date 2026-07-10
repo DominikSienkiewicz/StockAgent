@@ -1945,3 +1945,86 @@ class TestImpliedEdge:
         final = self._make(ports, options).compile().invoke(_initial_state("100.0"))
 
         assert final["status"] == "saved"
+
+
+class TestAlphaFusionInGraph:
+    """#14 — score fuzji sygnałów alfa dociera do promptu LLM i do rekordu.
+    Bez niego 5 pobieranych źródeł alfa było render-only."""
+
+    def _make(self, ports: dict):
+        return create_agent_graph(**ports, threshold=Threshold(Decimal("0.02")))
+
+    def _ports(self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
+        return dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+    def _state(self, score: float | None) -> dict:
+        from src.domain.alpha_fusion import AlphaFusionScore
+
+        state: dict = {"symbol": "AAPL", "previous_price": Decimal("100.0")}
+        if score is not None:
+            state["alpha_fusion"] = AlphaFusionScore(
+                score=score,
+                contributions={"insider": 0.30, "options": 0.12},
+                available_sources=("insider", "options"),
+                earnings_confidence=1.0,
+            )
+        return state
+
+    def test_score_reaches_the_saved_record(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports).compile().invoke(self._state(0.42))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert record["alpha_fusion_score"] == 0.42
+
+    def test_score_reaches_the_llm_prompt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports).compile().invoke(self._state(0.42))
+
+        prompt = llm_port.analyze.call_args.args[0]
+        assert "Alpha Fusion" in prompt
+        assert "0.42" in prompt
+
+    def test_neutral_score_is_omitted_from_the_prompt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Wszystkie flagi alfa off → score 0.0 → prompt identyczny jak dziś.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports).compile().invoke(self._state(None))
+
+        prompt = llm_port.analyze.call_args.args[0]
+        assert "Alpha Fusion" not in prompt
+        record = repository_port.save_prediction.call_args.args[0]
+        assert record["alpha_fusion_score"] == 0.0

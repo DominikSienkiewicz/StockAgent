@@ -28,6 +28,7 @@ from src.application.ports import (
 )
 from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction_prompt
 from src.application.rag_rerank import rerank_analogs
+from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, PriceDelta
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
 from src.domain.feature_attribution import FeatureContribution, top_contributions
@@ -107,6 +108,11 @@ class AgentState(TypedDict, total=False):
 
     # Q3: atrybucja cech ML (SHAP-lite) — render-only do raportu.
     feature_attribution: tuple[FeatureContribution, ...]
+
+    # #14: composite smart-money z 5 źródeł alfa (ważona suma klasyfikacji
+    # domenowych, renormalizowana po dostępnych źródłach). None = wszystkie flagi
+    # alfa off → prompt i cechy identyczne jak przed #14.
+    alpha_fusion: AlphaFusionScore | None
 
     # #18: dywergencja predykcji modelu od implied move rynku opcji.
     # None = brak IV / options_flow_enabled=false → sygnał nie powstaje.
@@ -707,6 +713,30 @@ def _run_ml_prediction(
     return ml_target, feature_attribution
 
 
+def _format_alpha_fusion(fusion: AlphaFusionScore | None) -> str:
+    """#14 — blok promptu z rozbiciem wkładów, np.
+    "Alpha Fusion +0.42 (insider +0.30, options +0.20, social -0.08)".
+
+    Rozbicie jest w promptcie CELOWO: LLM ma widzieć, KTÓRE źródło pcha score,
+    a nie tylko sumę — inaczej composite jest nieaudytowalną czarną skrzynką.
+    Brak fuzji albo score 0.0 → "" → blok w ogóle nie wchodzi do promptu.
+    """
+    if fusion is None or fusion.score == 0.0:
+        return ""
+    parts = ", ".join(
+        f"{name} {value:+.2f}"
+        for name, value in sorted(fusion.contributions.items())
+        if value != 0.0
+    )
+    head = f"Alpha Fusion {fusion.score:+.2f}"
+    return f"{head} ({parts})" if parts else head
+
+
+def _alpha_fusion_value(fusion: AlphaFusionScore | None) -> float:
+    """Ósma cecha ML. Brak fuzji → 0.0, dokładnie jak `COALESCE` w widoku."""
+    return fusion.score if fusion is not None else 0.0
+
+
 # #18: horyzont predykcji. Nazwy `*_12h` są historyczne — pętla chodzi raz na
 # dobę handlową, ale kontrakt predykcji (i kolumna `actual_price_after_12h`)
 # pozostaje 12-godzinny, więc taki horyzont skalujemy sqrt-time.
@@ -769,6 +799,8 @@ def _predict_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
         peer_context=", ".join(
             f"{sym}:{stance}" for sym, stance in state.get("peer_context", ())
         ),
+        # #14: pusty string przy braku fuzji → blok nie wchodzi do promptu.
+        alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
     )
     llm_analysis, llm_failed = _run_llm_analysis(deps, state, prompt, symbol)
 
@@ -993,6 +1025,9 @@ def _save_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
         "reasoning_text": llm_analysis.get("reasoning"),
         "council_verdict": council_verdict_dict,
         "data_quality_flags": data_quality_flags,
+        # #14: ósma cecha ML (migracja 022). Widok robi COALESCE(...,0.0), więc
+        # historyczne NULL-e nie wypadają przez `dropna` (train/serve-skew).
+        "alpha_fusion_score": _alpha_fusion_value(state.get("alpha_fusion")),
     }
 
     # Vector Memory: tagujemy embedding reżimem rynku, w którym powstała

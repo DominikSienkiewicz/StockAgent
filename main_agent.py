@@ -67,6 +67,7 @@ from src.application.use_cases.portfolio_risk import (
     PortfolioRiskUseCase,
 )
 from src.config import Settings
+from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
 from src.domain.calibration_curve import CalibrationBucket, reliability_curve
 from src.domain.consensus_shift import ConsensusShift, detect_shift
@@ -793,6 +794,7 @@ def _process_one_symbol(
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
     earnings_gate_enabled: bool = False,
+    alpha_fusion_enabled: bool = False,
 ) -> _ProcessedSymbol:
     """Przetwarza jeden symbol. NIGDY nie rzuca — łapie wyjątek i zwraca wynik
     z `is_failure=True`. Dzięki temu pula wątków (ścieżka równoległa
@@ -802,6 +804,11 @@ def _process_one_symbol(
     `earnings_gate_enabled` (#6) domyślnie WYŁĄCZONE — wtedy ścieżka jest
     bit-w-bit taka jak przed wprowadzeniem bramki: zero prefetchu, `enrich`
     wołany dokładnie jak dawniej. Włącza je `settings.earnings_calendar_enabled`.
+
+    `alpha_fusion_enabled` (#14) też domyślnie WYŁĄCZONE. Fuzja zmienia prompt
+    LLM i dokłada ósmą cechę ML, więc jej wdrożenie ma być świadomą, odwracalną
+    decyzją — arbitrem jest walk-forward gate „pobij baseline", nie intuicja
+    dobierającego wagi. Off → `alpha_fusion=None` → prompt i cechy jak przed #14.
     """
     try:
         asset = Asset(
@@ -819,24 +826,12 @@ def _process_one_symbol(
                 earnings_multiplier = earnings_threshold_multiplier(
                     earnings_event.proximity()
                 )
-        raw = use_case.run(
-            symbol,
-            asset=asset,
-            regime_context=regime_context,
-            regime_multiplier=regime_multiplier,
-            earnings_multiplier=earnings_multiplier,
-            peer_context=peer_ctx,
-        )
-        logger.info(
-            "%s: status=%s delta=%s prediction_id=%s",
-            symbol,
-            raw.get("status"),
-            raw.get("delta"),
-            raw.get("prediction_id"),
-        )
-        sr = to_symbol_result(symbol, raw)
+        # #14: enrichment biegnie PRZED grafem. Dawniej działał po nim, więc
+        # LLM i cechy XGBoost nigdy nie widziały sygnałów alfa — 5 pobieranych
+        # źródeł było render-only. Liczba płatnych wywołań się NIE zmienia:
+        # `enrich` i tak leciał raz na symbol, tylko później.
         alpha_signal: AlphaSignals | None = None
-        alpha_price: Decimal | None = None
+        alpha_fusion: AlphaFusionScore | None = None
         if collect_alpha:
             # De-dup: gdy bramka earnings pobrała już event, wstrzykujemy go,
             # zamiast płacić za drugie wywołanie Alpha Vantage na ten sam symbol.
@@ -847,8 +842,35 @@ def _process_one_symbol(
                 else {}
             )
             alpha_signal = alpha_use_case.enrich(symbol, **prefetch)
-            if sr.current_price is not None:
-                alpha_price = sr.current_price
+            if alpha_fusion_enabled and alpha_signal is not None:
+                alpha_fusion = fuse_alpha_signals(
+                    insider=alpha_signal.insider,
+                    options=alpha_signal.options,
+                    social=alpha_signal.social,
+                    analyst=alpha_signal.analyst,
+                    earnings=alpha_signal.earnings,
+                )
+
+        raw = use_case.run(
+            symbol,
+            asset=asset,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            earnings_multiplier=earnings_multiplier,
+            alpha_fusion=alpha_fusion,
+            peer_context=peer_ctx,
+        )
+        logger.info(
+            "%s: status=%s delta=%s prediction_id=%s",
+            symbol,
+            raw.get("status"),
+            raw.get("delta"),
+            raw.get("prediction_id"),
+        )
+        sr = to_symbol_result(symbol, raw)
+        alpha_price: Decimal | None = None
+        if collect_alpha and sr.current_price is not None:
+            alpha_price = sr.current_price
         return _ProcessedSymbol(sr, False, alpha_signal, alpha_price)
     except Exception as exc:
         logger.exception("Failed to process symbol %s", symbol)
@@ -869,6 +891,7 @@ def _analyze_symbols_parallel(
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
     earnings_gate_enabled: bool = False,
+    alpha_fusion_enabled: bool = False,
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy
     od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
@@ -887,6 +910,7 @@ def _analyze_symbols_parallel(
                     collect_alpha=collect_alpha,
                     alpha_use_case=alpha_use_case,
                     earnings_gate_enabled=earnings_gate_enabled,
+                    alpha_fusion_enabled=alpha_fusion_enabled,
                 ),
                 eligible,
             )
@@ -944,6 +968,7 @@ def _analyze_symbols_sequential(
             collect_alpha=collect_alpha,
             alpha_use_case=alpha_use_case,
             earnings_gate_enabled=settings.earnings_calendar_enabled,
+            alpha_fusion_enabled=settings.alpha_fusion_enabled,
         )
         results.append(proc.result)
         if proc.is_failure:
@@ -988,6 +1013,7 @@ def _analyze_symbols(
             collect_alpha=collect_alpha,
             alpha_use_case=alpha_use_case,
             earnings_gate_enabled=settings.earnings_calendar_enabled,
+            alpha_fusion_enabled=settings.alpha_fusion_enabled,
         )
 
     if settings.symbol_concurrency > 1 and settings.contagion_enabled:

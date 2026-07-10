@@ -9,6 +9,7 @@ import pytest
 import main_agent
 import main_backtest
 import main_trainer
+from src.application.alpha_signals import AlphaSignals
 from src.application.ports import PreviousVerdict, RepositoryPort
 from src.config import Settings
 from src.domain.consensus_shift import ShiftKind
@@ -16,6 +17,7 @@ from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem
 from src.domain.earnings import EarningsEvent
+from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel
 
@@ -1189,3 +1191,108 @@ class TestConsensusShiftWiring:
 
         assert main_agent._build_consensus_shifts(repo, [result], now=now) == []
         repo.get_previous_verdict.assert_not_called()
+
+
+class TestAlphaEnrichmentRunsBeforeTheGraph:
+    """#14 — korekta fundamentalna: enrichment działał PO grafie, więc LLM
+    i cechy XGBoost nigdy nie widziały sygnałów alfa. Musi biec PRZED."""
+
+    @staticmethod
+    def _alpha(signals: object) -> MagicMock:
+        alpha = MagicMock()
+        alpha.fetch_earnings.return_value = None
+        alpha.enrich.return_value = signals
+        return alpha
+
+    @staticmethod
+    def _use_case() -> MagicMock:
+        use_case = MagicMock()
+        use_case.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        return use_case
+
+    def _run(self, alpha: MagicMock, use_case: MagicMock) -> None:
+        main_agent._process_one_symbol(
+            "AAPL",
+            peer_ctx=(),
+            use_case=use_case,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=True,
+            alpha_use_case=alpha,
+            alpha_fusion_enabled=True,
+        )
+
+    def test_enrich_is_called_before_the_graph_runs(self) -> None:
+        order: list[str] = []
+        signals = AlphaSignals(symbol="AAPL")
+        alpha = self._alpha(signals)
+        alpha.enrich.side_effect = lambda *a, **k: (order.append("enrich"), signals)[1]
+        use_case = self._use_case()
+        use_case.run.side_effect = lambda *a, **k: (
+            order.append("graph"),
+            {"status": "ignored", "delta": Decimal("0")},
+        )[1]
+
+        self._run(alpha, use_case)
+
+        assert order == ["enrich", "graph"]
+
+    def test_fusion_score_is_injected_into_the_graph(self) -> None:
+        signals = AlphaSignals(
+            symbol="AAPL",
+            insider=InsiderFlowSnapshot(
+                "AAPL", net_shares=50_000.0, buy_count=5, sell_count=0, window_days=90
+            ),
+        )
+        use_case = self._use_case()
+
+        self._run(self._alpha(signals), use_case)
+
+        fusion = use_case.run.call_args.kwargs["alpha_fusion"]
+        assert fusion is not None
+        assert fusion.score > 0
+
+    def test_no_alpha_collection_means_no_fusion(self) -> None:
+        use_case = self._use_case()
+        alpha = self._alpha(None)
+
+        main_agent._process_one_symbol(
+            "AAPL",
+            peer_ctx=(),
+            use_case=use_case,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=False,
+            alpha_use_case=alpha,
+        )
+
+        assert use_case.run.call_args.kwargs["alpha_fusion"] is None
+        alpha.enrich.assert_not_called()
+
+
+def test_alpha_fusion_flag_off_leaves_the_graph_untouched() -> None:
+    """#14 — z flagą off graf dostaje `alpha_fusion=None`, więc prompt LLM
+    i cechy ML są identyczne jak przed wprowadzeniem fuzji."""
+    alpha = MagicMock()
+    alpha.fetch_earnings.return_value = None
+    alpha.enrich.return_value = AlphaSignals(symbol="AAPL")
+    use_case = MagicMock()
+    use_case.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+
+    main_agent._process_one_symbol(
+        "AAPL",
+        peer_ctx=(),
+        use_case=use_case,
+        crypto_set=set(),
+        etf_set=set(),
+        regime_context="",
+        regime_multiplier=1.0,
+        collect_alpha=True,
+        alpha_use_case=alpha,
+    )
+
+    assert use_case.run.call_args.kwargs["alpha_fusion"] is None
