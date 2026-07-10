@@ -84,6 +84,13 @@ def main(settings: Settings | None = None) -> int:
         try:
             result = use_case.run(symbol, refresh_view=False)
             logger.info("%s: %s", symbol, result)
+            # #12: karta kondycji modelu. Zapis best-effort (wzorzec
+            # `save_quota_alert`) — brak migracji 019 nie może wywalić treningu.
+            if settings.model_scorecard_enabled:
+                try:
+                    supabase_repo.save_model_scorecard(symbol, result)
+                except Exception:
+                    logger.exception("Failed to persist model scorecard for %s", symbol)
         except Exception:
             logger.exception("Training failed for symbol %s", symbol)
             failures += 1

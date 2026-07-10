@@ -127,6 +127,25 @@ class Settings(BaseSettings):
     equity_curve_enabled: bool = False
     calibration_curve_enabled: bool = False
     lessons_enabled: bool = False
+    # #9: surowa pewność LLM korygowana historycznym hit-rate'em swojego kubełka
+    # kalibracji. Steruje rankingiem "🎯 Najsilniejsze sygnały" (strength =
+    # pewność × |Δ|). Niezależna od `calibration_curve_enabled` — tamta flaga
+    # rysuje sekcję Track Record, ta zmienia ranking. Render-only, bez zapisu.
+    calibrated_confidence_enabled: bool = False
+    # #12: karta kondycji modelu — jawny scorecard walk-forward (migracja 019).
+    # Pokazuje bramkę "nie shipuj modelu gorszego od baseline'u", łącznie
+    # z odrzutami. Render-only + insert w Slow Loopie. Off.
+    model_scorecard_enabled: bool = False
+    # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
+    # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
+    cycle_diff_enabled: bool = False
+    # #13: kwity decyzyjne — JSONB `decision_receipts` na `prediction_logs`
+    # (migracja 020). Flaga to WARUNEK graceful degradation, nie opcja: nowy
+    # klucz przed migracją → PGRST204 i śmierć zapisu całej predykcji. Off.
+    receipts_enabled: bool = False
+    # #11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
+    # migracja 021). Zero płatnych wywołań. Off.
+    shock_alerts_enabled: bool = False
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
 
@@ -261,6 +280,10 @@ class Settings(BaseSettings):
     # SEKRETY (placeholdery w .env.example): kanał jest budowany, gdy jego
     # sekrety są obecne (analogicznie do Resend). chat_id/webhook to adresy
     # docelowe → traktujemy jak sekret (jak digest_to_email).
+    # #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego
+    # plain-textu raportu. Pełny raport przekracza limit 4096 znaków Telegrama →
+    # API zwraca 400 i push ginie po cichu. Off = zachowanie sprzed #5.
+    messenger_digest_enabled: bool = False
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     slack_webhook_url: str | None = None

@@ -11,8 +11,8 @@
 Każda zmiana w kodzie musi przejść **wszystkie trzy**:
 
 ```bash
-uv run ruff check src tests main_agent.py main_trainer.py
-uv run mypy src main_agent.py main_trainer.py      # strict mode
+uv run ruff check src tests main_agent.py main_trainer.py main_watch.py
+uv run mypy src main_agent.py main_trainer.py main_watch.py   # strict mode
 uv run pytest
 ```
 
@@ -31,8 +31,9 @@ domain  ←  application  ←  infrastructure
 - **`src/application/`** — porty (interfejsy ABC w `ports.py`), use cases, graf
   LangGraph, prompty, report builder. Zna `domain`, **nie zna** konkretnych adapterów.
 - **`src/infrastructure/`** — adaptery implementujące porty. Jedyne miejsce z I/O.
-- **`main_agent.py` / `main_trainer.py`** — DI Container. Jedyne miejsce, gdzie
-  konkretne adaptery są łączone z use case'ami.
+- **`main_agent.py` / `main_trainer.py` / `main_watch.py`** — DI Container. Jedyne miejsce,
+  gdzie konkretne adaptery są łączone z use case'ami. `main_watch.py` (#11) reużywa
+  fabryki z `main_agent` i NIE WOŁA żadnego płatnego portu ani `save_price_snapshot`.
 
 Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
 `infrastructure/`. Nigdy nie wstrzykuj konkretnej klasy infrastruktury do `application`.

@@ -60,3 +60,31 @@ def test_proximity_respects_custom_thresholds() -> None:
     assert (
         event.proximity(imminent_days=1, near_days=3) is EarningsProximity.FAR
     )
+
+
+def test_threshold_multiplier_maps_each_proximity() -> None:
+    # Kontrakt jak RegimeDetector.threshold_multiplier: IMMINENT zacieśnia
+    # najmocniej, NEAR słabiej, FAR neutralnie (1.0).
+    from src.domain.earnings import earnings_threshold_multiplier
+
+    assert earnings_threshold_multiplier(EarningsProximity.IMMINENT) == 1.5
+    assert earnings_threshold_multiplier(EarningsProximity.NEAR) == 1.15
+    assert earnings_threshold_multiplier(EarningsProximity.FAR) == 1.0
+
+
+def test_threshold_multiplier_never_loosens_gate() -> None:
+    # Niezmiennik FinOps: dla KAŻDEJ wartości enuma mnożnik >= 1.0 — reguła
+    # earnings może tylko zacieśnić bramkę volatility, nigdy jej poluzować.
+    from src.domain.earnings import earnings_threshold_multiplier
+
+    for proximity in EarningsProximity:
+        assert earnings_threshold_multiplier(proximity) >= 1.0
+
+
+def test_threshold_multiplier_returns_float() -> None:
+    # Spójność typu z regime_multiplier (float), żeby iloczyn w _pick_threshold
+    # pozostał float.
+    from src.domain.earnings import earnings_threshold_multiplier
+
+    result = earnings_threshold_multiplier(EarningsProximity.IMMINENT)
+    assert isinstance(result, float)

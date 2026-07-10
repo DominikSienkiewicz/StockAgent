@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from src.domain.council import CouncilVerdict
+from src.domain.cycle_maturity import SkipReason
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.provenance import ProvenanceBadge
 from src.domain.sizing import SizeBand
@@ -52,6 +53,11 @@ class SymbolResult:
     status: str  # "saved" | "ignored" | "error"
     delta: Decimal | None = None
     current_price: Decimal | None = None
+    # #4: dlaczego symbol został pominięty. Rozdziela cold-start (brak punktu
+    # odniesienia) od realnego odcięcia bramką volatility i od tickerów
+    # niewspieranych cenowo. None = nie pominięto (saved) albo błąd.
+    # Bez tego rozdziału powitalny ton "Dzień 1" przykryłby masową awarię źródeł.
+    skip_reason: SkipReason | None = None
     # Klasa aktywa ("STOCK" | "ETF" | "CRYPTO" | ...) — z domeny (Asset.asset_type).
     # Pozwala raportowi rozpoznać krypto niezawodnie (nie przez słownik SECTORS)
     # i wyświetlić je w dedykowanej sekcji, też gdy cykl był "ignored".
@@ -104,6 +110,11 @@ class TradeSignal:
     # track recordu agenta). None = brak danych do sizingu (np. brak werdyktu
     # rady) — wsteczna kompatybilność, renderer pomija magnitudę.
     size_band: SizeBand | None = None
+    # #9: pewność skorygowana historycznym hit-rate'em swojego kubełka kalibracji.
+    # None = brak historii → `strength` policzone na surowej `confidence`
+    # (zachowanie identyczne jak przed #9). Surowa `confidence` zostaje obok,
+    # żeby raport mógł pokazać "pewność LLM: 85% → skalibrowana historią: 58%".
+    calibrated_confidence: float | None = None
 
 
 @dataclass(frozen=True)

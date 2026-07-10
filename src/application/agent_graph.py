@@ -107,6 +107,9 @@ class AgentState(TypedDict, total=False):
     regime_context: str
     regime_multiplier: float
     peer_context: tuple[tuple[str, str], ...]
+    # #6 bramka earnings — mnożnik progu (≥1.0) zależny od bliskości raportu
+    # kwartalnego. Mnoży się z regime_multiplier w `_pick_threshold`.
+    earnings_multiplier: float
 
     # Persystencja
     prediction_id: str | None
@@ -155,10 +158,14 @@ def _format_analog(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     line = f"  - [{trend}, {outcome}] {summary}"
     if insight:
         line += f" → wniosek: {insight}"
+    # #13: RPC zwraca `id` i `similarity`, a kod je gubił. Bez nich kwit
+    # decyzyjny nie pozwala zaudytować, KTÓRY analog stał za predykcją.
     precedent = {
         "summary": summary,
         "predicted_trend": str(trend),
         "is_trend_correct": correct,
+        "id": item.get("id"),
+        "similarity": item.get("similarity"),
     }
     return line, precedent
 
@@ -358,6 +365,7 @@ class _GraphDeps:
     research_tools: Sequence[Tool]
     tool_use_threshold: Threshold | None
     vector_memory_enabled: bool
+    receipts_enabled: bool
 
 
 def _check_price_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
@@ -399,6 +407,37 @@ def _persist_price_snapshot(deps: _GraphDeps, state: AgentState) -> None:
 
 
 
+def _build_decision_receipts(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
+    """#13 — składa kwit decyzyjny z artefaktów JUŻ policzonych w tym cyklu.
+
+    Zero nowej logiki i zero płatnych wywołań: persystujemy to, za co już
+    zapłaciliśmy. `schema_version` od pierwszego commita — kwity są czytane
+    miesiącami po zapisie, a JSONB nie ma migracji kolumn.
+
+    MVP celowo bez odznak proweniencji: `AgentState` ich nie niesie (liczy je
+    dopiero `to_symbol_result` z innych wejść), a dokładanie ich tutaj byłoby
+    duplikacją logiki. Kwit rośnie w `schema_version: 2`.
+
+    Wszystkie wartości muszą być JSON-serializowalne: `_serialize` w adapterze
+    konwertuje Decimal TYLKO na najwyższym poziomie, więc zagnieżdżony Decimal
+    wywaliłby zapis.
+    """
+    threshold = _pick_threshold(state, deps.threshold, deps.crypto_threshold)
+    attribution: tuple[FeatureContribution, ...] = state.get("feature_attribution", ())
+    precedents: list[dict[str, Any]] = list(state.get("similar_precedents") or [])
+    return {
+        "schema_version": 1,
+        # Próg EFEKTYWNY (po mnożnikach reżimu i earnings), nie surowy z configu
+        # — inaczej post-mortem nie wyjaśni, czemu symbol przeszedł bramkę.
+        "effective_threshold": str(threshold.value),
+        "precedents": precedents,
+        "feature_attribution": [
+            {"feature": c.feature, "contribution": float(c.contribution)}
+            for c in attribution
+        ],
+    }
+
+
 def _pick_threshold(
     state: AgentState,
     default: Threshold,
@@ -417,8 +456,15 @@ def _pick_threshold(
         base = default
     # #7: reżim rynku może tylko ZACIEŚNIĆ próg (mnożnik ≥ 1.0 gwarantowany
     # przez RegimeDetector) — w RISK-OFF mniej cykli odpala płatne porty.
-    mult = state.get("regime_multiplier", 1.0)
-    if mult and not math.isclose(mult, 1.0):
+    # #6: bramka earnings działa tak samo i MNOŻY się z reżimem — predykcja 12h
+    # tuż przed raportem kwartalnym to rzut monetą, więc zaostrzamy próg zamiast
+    # palić tokeny na analizę, którą zaora raport. Oba mnożniki są >= 1.0
+    # (kontrakt domenowy), więc iloczyn też — bramka nigdy się nie ROZLUŹNIA.
+    # `max(..., 1.0)` to pas bezpieczeństwa, gdyby kiedyś przeciekła wartość < 1.
+    regime_mult = state.get("regime_multiplier", 1.0) or 1.0
+    earnings_mult = state.get("earnings_multiplier", 1.0) or 1.0
+    mult = max(regime_mult * earnings_mult, 1.0)
+    if not math.isclose(mult, 1.0):
         return Threshold(base.value * Decimal(str(mult)))
     return base
 
@@ -911,6 +957,13 @@ def _save_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
     if vector_memory_enabled:
         record["regime"] = canonical_regime_key(state.get("regime_context"))
 
+    # #13: kwit decyzyjny — pełny łańcuch dowodowy predykcji (analogi RAG,
+    # atrybucje cech, PRÓG EFEKTYWNY, odznaki proweniencji). Dopisujemy klucz
+    # TYLKO za flagą: nowy klucz przed migracją 020 → PGRST204 i śmierć zapisu
+    # całej predykcji (dokładnie ten sam gate co `vector_memory_enabled`).
+    if deps.receipts_enabled:
+        record["decision_receipts"] = _build_decision_receipts(deps, state)
+
     # Embedding podsumowania newsów → pgvector (reużyty z predict_node lub
     # policzony tu w fallbacku; graceful — przy braku zapisujemy bez wektora).
     vector = _resolve_news_vector(deps, state, news_summary)
@@ -973,6 +1026,7 @@ def create_agent_graph(
     research_tools: Sequence[Tool] = (),
     tool_use_threshold: Threshold | None = None,
     vector_memory_enabled: bool = False,
+    receipts_enabled: bool = False,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
@@ -1012,6 +1066,7 @@ def create_agent_graph(
         research_tools=research_tools,
         tool_use_threshold=tool_use_threshold,
         vector_memory_enabled=vector_memory_enabled,
+        receipts_enabled=receipts_enabled,
     )
 
     # ---------- Topologia ----------

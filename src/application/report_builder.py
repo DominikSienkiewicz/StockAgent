@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import urllib.parse
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -17,6 +18,9 @@ from src.application.report_charts import (
     build_chart_url,
     build_correlation_chart_url,
     build_forecast_chart_url,
+)
+from src.application.report_consensus_shift import (
+    render_consensus_shift_html,
 )
 from src.application.report_council_history import (
     InvestorHistory,
@@ -52,7 +56,12 @@ from src.application.report_formatting import (
 from src.application.report_formatting import (
     trend_label as _trend_label,
 )
+from src.application.report_lead import render_lead_html, render_lead_text
 from src.application.report_lessons import LessonsReport
+from src.application.report_model_scorecard import (
+    ModelScorecardView,
+    render_model_scorecard_html,
+)
 from src.application.report_models import (
     ResolvedPrediction,
     RiskSignal,
@@ -61,6 +70,10 @@ from src.application.report_models import (
     TopNewsItem,
     TradeSignal,
     ValuationSection,
+)
+from src.application.report_onboarding import (
+    render_onboarding_html,
+    render_onboarding_text,
 )
 from src.application.report_persona_leaderboard import (
     render_persona_leaderboard_html,
@@ -91,7 +104,10 @@ from src.application.report_track_record import render_track_record_html
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.calibration_curve import CalibrationBucket
+from src.domain.consensus_shift import ConsensusShift
 from src.domain.council import CouncilVerdict
+from src.domain.cycle_maturity import CycleMaturity, SkipReason
+from src.domain.digest_lead import LeadSignal, build_lead
 from src.domain.equity_curve import EquityCurve
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.macro_rates import YieldCurveSnapshot
@@ -117,6 +133,7 @@ __all__ = [
     "build_html_report",
     "build_portfolio_mood",
     "build_trade_signals",
+    "to_lead_signals",
     "detect_risk_signals",
     "market_status",
     "parse_resolved_predictions",
@@ -147,11 +164,20 @@ _DIRECTION_BG = {
 # w build_html_report. Trzymane jako stałe (jedno źródło prawdy), żeby literówka
 # w jednym z dwóch miejsc (szablon ↔ replace) nie zostawiła cicho pustego slotu.
 _QUOTA_BANNER_SLOT = "<!-- QUOTA_BANNER_SLOT -->"
+# #1: lead cyklu — PO quota bannerze (ten jest celowo pierwszy: gdy płatny
+# klucz padł, to ważniejsze niż jakikolwiek ruch ceny).
+_LEAD_SLOT = "<!-- LEAD_SLOT -->"
+# #4: sekcja powitalna pierwszego cyklu ("Dzień 1") — zamiast ściany "Pominięte".
+_ONBOARDING_SLOT = "<!-- ONBOARDING_SLOT -->"
 _RISK_WATCH_SLOT = "<!-- RISK_WATCH_SLOT -->"
 _PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
 _COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
 _PERSONA_LEADERBOARD_SLOT = "<!-- PERSONA_LEADERBOARD_SLOT -->"
+# #8: "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs poprzedni cykl.
+_CONSENSUS_SHIFT_SLOT = "<!-- CONSENSUS_SHIFT_SLOT -->"
 _TRACK_RECORD_SLOT = "<!-- TRACK_RECORD_SLOT -->"
+# #12: karta kondycji modelu — tuż za Track Recordem (ta sama oś zaufania).
+_MODEL_SCORECARD_SLOT = "<!-- MODEL_SCORECARD_SLOT -->"
 _ALPHA_SLOT = "<!-- ALPHA_SLOT -->"
 _SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
 
@@ -591,14 +617,50 @@ def _render_attribution_block_html(
     )
 
 
+def to_lead_signals(
+    results: list[SymbolResult], resolved: list[ResolvedPrediction]
+) -> list[LeadSignal]:
+    """Mapuje DTO raportu na domenowe `LeadSignal` (#1).
+
+    Granica architektury: `src/domain/digest_lead.py` bierze wyłącznie typy
+    domenowe i prymitywy, więc `resolved_label` powstaje TU jako gotowy string.
+    Symbole bez zmiany ceny nie wnoszą nic do rankingu i są pomijane.
+    """
+    labels = {
+        r.symbol: (
+            f"trafiona predykcja {r.predicted_trend}"
+            if r.is_correct
+            else f"chybiona predykcja {r.predicted_trend}"
+        )
+        for r in resolved
+    }
+    signals: list[LeadSignal] = []
+    for r in results:
+        if r.delta is None:
+            continue
+        signals.append(
+            LeadSignal(
+                symbol=r.symbol,
+                price_delta_pct=r.delta,
+                council_verdict=r.council_verdict,
+                resolved_label=labels.get(r.symbol),
+            )
+        )
+    return signals
+
+
 def _fill_html_slots(
     html: str,
     *,
     quota_html: str,
     macro_risk_html: str,
     portfolio_html: str,
+    lead_html: str,
+    onboarding_html: str,
     council_history_html: str,
     persona_leaderboard_html: str,
+    consensus_shift_html: str,
+    model_scorecard_html: str,
     track_record_html: str,
     alpha_html: str,
     suggestions_html: str,
@@ -608,12 +670,16 @@ def _fill_html_slots(
     (też na ""), żeby znacznik nie został w treści."""
     if quota_html:
         html = html.replace(_QUOTA_BANNER_SLOT, quota_html, 1)
+    html = html.replace(_LEAD_SLOT, lead_html, 1)
+    html = html.replace(_ONBOARDING_SLOT, onboarding_html, 1)
     if macro_risk_html:
         html = html.replace(_RISK_WATCH_SLOT, macro_risk_html, 1)
     html = html.replace(_PORTFOLIO_SLOT, portfolio_html, 1)
     html = html.replace(_COUNCIL_HISTORY_SLOT, council_history_html, 1)
     html = html.replace(_PERSONA_LEADERBOARD_SLOT, persona_leaderboard_html, 1)
+    html = html.replace(_CONSENSUS_SHIFT_SLOT, consensus_shift_html, 1)
     html = html.replace(_TRACK_RECORD_SLOT, track_record_html, 1)
+    html = html.replace(_MODEL_SCORECARD_SLOT, model_scorecard_html, 1)
     html = html.replace(_ALPHA_SLOT, alpha_html, 1)
     return html.replace(_SUGGESTIONS_SLOT, suggestions_html, 1)
 
@@ -623,14 +689,26 @@ def _fill_text_slots(
     *,
     quota_text: str,
     macro_risk_text: str,
+    lead_text: str,
+    onboarding_text: str,
     suggestions_text: str,
 ) -> str:
     """Wstawia treść w sloty plain-text. QUOTA/RISK_WATCH tylko gdy niepuste;
-    SUGGESTIONS usuwa cały wiersz znacznika, gdy brak sugestii."""
+    LEAD i SUGGESTIONS usuwają cały wiersz znacznika, gdy pusto."""
     if quota_text:
         text = text.replace(_QUOTA_BANNER_SLOT, quota_text, 1)
     if macro_risk_text:
         text = text.replace(_RISK_WATCH_SLOT, macro_risk_text, 1)
+    text = text.replace(
+        f"{_LEAD_SLOT}\n",
+        f"{lead_text}\n\n" if lead_text else "",
+        1,
+    ).replace(_LEAD_SLOT, lead_text, 1)
+    text = text.replace(
+        f"{_ONBOARDING_SLOT}\n",
+        f"{onboarding_text}\n\n" if onboarding_text else "",
+        1,
+    ).replace(_ONBOARDING_SLOT, onboarding_text, 1)
     return text.replace(
         f"{_SUGGESTIONS_SLOT}\n",
         f"{suggestions_text}\n\n" if suggestions_text else "",
@@ -656,6 +734,11 @@ def build_html_report(
     alpha_signals: dict[str, AlphaSignals] | None = None,
     yield_curve: YieldCurveSnapshot | None = None,
     alpha_prices: dict[str, Decimal] | None = None,
+    signal_calibration_buckets: list[CalibrationBucket] | None = None,
+    cycle_maturity: CycleMaturity | None = None,
+    portfolio_sectors: Mapping[str, int] | None = None,
+    model_scorecard: ModelScorecardView | None = None,
+    consensus_shifts: list[tuple[str, ConsensusShift]] | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
@@ -677,7 +760,12 @@ def build_html_report(
     session = market_status(started_at)
     # Q7: hit-rate cyklu (z accuracy_stats) napędza pasmo wielkości pozycji.
     hit_rate = accuracy_stats.get("mean_accuracy") if accuracy_stats else None
-    trade_signals = build_trade_signals(results, hit_rate=hit_rate)
+    # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
+    # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
+    # skorygowanej historią. None → surowa pewność, jak przed #9.
+    trade_signals = build_trade_signals(
+        results, hit_rate=hit_rate, calibration_buckets=signal_calibration_buckets
+    )
     risk_signals = detect_risk_signals(results)
     macro_risk_html = (
         render_risk_watch_html(macro_risk_report) if macro_risk_report else ""
@@ -689,12 +777,47 @@ def build_html_report(
         if portfolio_risk_report
         else ""
     )
+    # #1: lead cyklu. Ranking robi domena; TU jest jedyne miejsce, gdzie DTO
+    # warstwy application (SymbolResult / ResolvedPrediction) są mapowane na
+    # typy domenowe — `src/domain/digest_lead.py` ich nie importuje.
+    lead_items = build_lead(
+        to_lead_signals(results, resolved_predictions or []),
+        quota_alerts or [],
+    )
+    lead_html = render_lead_html(lead_items)
+    lead_text = render_lead_text(lead_items)
+    # #4: powitanie pierwszego cyklu. Renderer nigdy nie decyduje o tonie —
+    # dostaje gotową klasyfikację z domeny (STEADY_STATE → "").
+    maturity = cycle_maturity or CycleMaturity.STEADY_STATE
+    onboarding_html = render_onboarding_html(
+        maturity, instrument_count=len(results), sectors=portfolio_sectors or {}
+    )
+    onboarding_text = render_onboarding_text(
+        maturity, instrument_count=len(results), sectors=portfolio_sectors or {}
+    )
     # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
     council_history_html = render_council_history_html(council_history or [])
     # #3: ranking wiarygodności person — ranking (z progiem min_votes) przychodzi
     # gotowy z domeny; render zwraca "" gdy żadna persona nie ma dość głosów.
     persona_leaderboard_html = render_persona_leaderboard_html(
         persona_track_record or []
+    )
+    # #8: zmiany nastawienia rady. Render odfiltrowuje STABLE i jawnie oznacza
+    # stęchłe porównania — pusta lista → sekcja się chowa.
+    consensus_shift_html = render_consensus_shift_html(consensus_shifts or [])
+    # #12: karta kondycji modelu (render zwraca "" gdy brak danych).
+    model_scorecard_html = (
+        render_model_scorecard_html(
+            model_scorecard.summary,
+            trained_at=model_scorecard.trained_at,
+            now=started_at,
+            candidate_rmse=model_scorecard.candidate_rmse,
+            baseline_rmse=model_scorecard.baseline_rmse,
+            directional_hit_rate=model_scorecard.directional_hit_rate,
+            folds=model_scorecard.folds,
+        )
+        if model_scorecard is not None
+        else ""
     )
     # T1/T2/T4: sekcja Track Record (krzywa kapitału, kalibracja, lessons).
     # render zwraca "" gdy wszystkie trzy podsekcje puste.
@@ -725,8 +848,12 @@ def build_html_report(
         quota_html=quota_html,
         macro_risk_html=macro_risk_html,
         portfolio_html=portfolio_html,
+        lead_html=lead_html,
+        onboarding_html=onboarding_html,
         council_history_html=council_history_html,
         persona_leaderboard_html=persona_leaderboard_html,
+        consensus_shift_html=consensus_shift_html,
+        model_scorecard_html=model_scorecard_html,
         track_record_html=track_record_html,
         alpha_html=alpha_html,
         suggestions_html=suggestions_html,
@@ -740,6 +867,8 @@ def build_html_report(
         text,
         quota_text=quota_text,
         macro_risk_text=macro_risk_text,
+        lead_text=lead_text,
+        onboarding_text=onboarding_text,
         suggestions_text=suggestions_text,
     )
     return html, text
@@ -1094,6 +1223,9 @@ def _render_html(
     # Slot bannera kwot — wypełniany przez build_html_report, gdy są alerty.
     # Trafia NAJWYŻEJ (przed sesją), bo wyczerpanie limitu to top-priority info.
     sections.append(_QUOTA_BANNER_SLOT)
+    # #1: lead cyklu — pierwszy ekran, tuż za bannerem kwot.
+    sections.append(_LEAD_SLOT)
+    sections.append(_ONBOARDING_SLOT)
 
     # Status sesji giełdowej
     sections.append(f"""
@@ -1132,8 +1264,10 @@ def _render_html(
     # Slot na ranking wiarygodności person (#3) — "kto z rady miał rację".
     # Zaraz po historii głosów: najpierw KTO jak głosował, potem KTO trafiał.
     sections.append(_PERSONA_LEADERBOARD_SLOT)
+    sections.append(_CONSENSUS_SHIFT_SLOT)
     # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
     sections.append(_TRACK_RECORD_SLOT)
+    sections.append(_MODEL_SCORECARD_SLOT)
     # Slot na sekcję Alpha Signals (Dane — insider/analitycy/opcje/social/FRED).
     sections.append(_ALPHA_SLOT)
 
@@ -1432,6 +1566,8 @@ def _render_plain(
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
+    lines.append(_LEAD_SLOT)
+    lines.append(_ONBOARDING_SLOT)
     lines.append("=" * 64)
     lines.append("STOCKAGENT — RAPORT CYKLU")
     lines.append("=" * 64)
@@ -1512,6 +1648,18 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
     sentiment = raw.get("sentiment") or {}
     llm = raw.get("llm_analysis") or {}
 
+    # #4: cold-start jest widoczny w stanie końcowym jako previous_price == 0
+    # (graf nie miał punktu odniesienia). Symbol odcięty bramką volatility ma
+    # poprzednią cenę — to zupełnie inna historia niż pierwszy dzień deploymentu.
+    skip_reason: SkipReason | None = None
+    if status == "ignored":
+        previous_price = raw.get("previous_price")
+        skip_reason = (
+            SkipReason.COLD_START
+            if previous_price is None or Decimal(str(previous_price)) == 0
+            else SkipReason.BELOW_THRESHOLD
+        )
+
     # Klasa aktywa z domeny — graf trzyma Asset w stanie (main_agent klasyfikuje
     # STOCK/ETF/CRYPTO przed wywołaniem). Pozwala raportowi rozpoznać krypto
     # niezawodnie, niezależnie od statusu (saved/ignored).
@@ -1561,6 +1709,7 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
     return SymbolResult(
         symbol=symbol,
         status=status,
+        skip_reason=skip_reason,
         delta=_as_decimal(raw.get("delta")),
         current_price=_as_decimal(raw.get("current_price")),
         trend=llm.get("trend_direction"),

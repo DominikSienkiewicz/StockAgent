@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -41,6 +41,15 @@ class NewsPort(ABC):
 
     @abstractmethod
     def get_news_context(self, symbol: str) -> list[dict[str, Any]]: ...
+
+
+@dataclass(frozen=True)
+class PreviousVerdict:
+    """#8 — snapshot poprzedniego cyklu potrzebny detektorowi zmian nastawienia."""
+
+    verdict: CouncilVerdict
+    sentiment_score: float
+    timestamp: datetime
 
 
 class RepositoryPort(ABC):
@@ -223,6 +232,48 @@ class RepositoryPort(ABC):
         z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
         "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
         → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
+    def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
+        """#11 — najnowszy snapshot ceny WRAZ ze znacznikiem czasu.
+
+        Alert szoku potrzebuje wieku punktu odniesienia: stęchły snapshot
+        (>30h) daje fałszywy alarm, więc `detect_shock` go tłumi.
+        None = brak historii."""
+
+    @abstractmethod
+    def save_shock_alert(
+        self, symbol: str, alert_date: date, delta: float, direction: str
+    ) -> None:
+        """#11 — persystuje wysłany alert szoku (migracja 021).
+        `UNIQUE(symbol, alert_date)` egzekwuje debounce po stronie bazy."""
+
+    @abstractmethod
+    def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
+        """#11 — pary (symbol, dzień) już zaalarmowane od `since`.
+        Pusty zbiór = brak danych / brak migracji 021 → debounce w domenie
+        polega wtedy wyłącznie na pamięci bieżącego przebiegu."""
+
+    @abstractmethod
+    def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
+        """#8 — ostatni ZAPISANY werdykt rady dla symbolu (JSONB `council_verdict`
+        z migracji 005) wraz z sentymentem i znacznikiem czasu tamtego cyklu.
+
+        Adapter jest SUROWY (bez try/except) — graceful degradation robi caller
+        (`_fetch_report_context`), zgodnie ze stylem repo. None = brak historii."""
+
+    @abstractmethod
+    def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
+        """#12 — zapisuje jeden przebieg treningu walk-forward (migracja 019).
+
+        Trening jest PER-SYMBOL (~43 przebiegi nadpisują jeden plik .ubj), więc
+        `symbol` jest wymagany — bez niego scorecardy są nierozróżnialne.
+        `result` to surowe wyjście `MLPredictionPort.train()`."""
+
+    @abstractmethod
+    def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:
+        """#12 — scorecardy z ostatnich `days` dni, od najnowszego.
+        Pusta lista = brak danych / brak migracji 019 → sekcja się chowa."""
 
     @abstractmethod
     def get_council_vote_history(

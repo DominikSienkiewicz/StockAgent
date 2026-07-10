@@ -52,6 +52,24 @@ hedge_effectiveness_enabled = false
 equity_curve_enabled = false
 calibration_curve_enabled = false
 lessons_enabled = false
+# #9: pewność LLM korygowana historycznym hit-rate'em swojego kubełka kalibracji
+# — przestawia ranking „🎯 Najsilniejsze sygnały". Render-only, zero zapisu. Off.
+calibrated_confidence_enabled = false
+# #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego raportu —
+# pełny plain-text przekracza limit 4096 znaków Telegrama (400, cichy zgon). Off.
+messenger_digest_enabled = false
+# #12: karta kondycji modelu (migracja 019) — jawny scorecard walk-forward wraz
+# z odrzutami kandydatów. Zapis w Slow Loopie, render w mailu. Off.
+model_scorecard_enabled = false
+# #8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
+# spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Off.
+cycle_diff_enabled = false
+# #13: kwity decyzyjne (migracja 020) — persystowany audit trail predykcji.
+# UWAGA: włącz DOPIERO po zaaplikowaniu migracji 020, inaczej PGRST204. Off.
+receipts_enabled = false
+# #11: darmowy watch szoku rynkowego poza cyklem (main_watch.py, cron co godzinę,
+# migracja 021). Zero płatnych API — tylko Finnhub/CoinGecko + Supabase. Off.
+shock_alerts_enabled = false
 track_record_days = 30
 # Dane — nowe źródła alpha. Default off → Null adapter (zero płatnych). Realny
 # adapter włącza flaga (+ ewentualny klucz: FRED_API_KEY dla yield_curve).

@@ -52,6 +52,7 @@ class AnalyzeMarketUseCase:
         research_tools: Sequence[Tool] = (),
         tool_use_threshold: Threshold | None = None,
         vector_memory_enabled: bool = False,
+        receipts_enabled: bool = False,
     ) -> None:
         self._repository = repository_port
         workflow = create_agent_graph(
@@ -74,6 +75,7 @@ class AnalyzeMarketUseCase:
             research_tools=research_tools,
             tool_use_threshold=tool_use_threshold,
             vector_memory_enabled=vector_memory_enabled,
+            receipts_enabled=receipts_enabled,
         )
         # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().
@@ -87,6 +89,7 @@ class AnalyzeMarketUseCase:
         *,
         regime_context: str = "",
         regime_multiplier: float = 1.0,
+        earnings_multiplier: float = 1.0,
         peer_context: tuple[tuple[str, str], ...] = (),
     ) -> dict[str, Any]:
         previous = self._repository.get_last_price(symbol)
@@ -98,6 +101,8 @@ class AnalyzeMarketUseCase:
             # #7 reżim (label + mnożnik progu) i #5 contagion (peery z tego cyklu).
             "regime_context": regime_context,
             "regime_multiplier": regime_multiplier,
+            # #6 bramka earnings — mnożnik progu z domeny (zawsze >= 1.0).
+            "earnings_multiplier": earnings_multiplier,
             "peer_context": peer_context,
         }
         # Przekazujemy asset z klasyfikacją (STOCK/ETF), gdy dostępny z zewnątrz.

@@ -21,6 +21,7 @@ from src.application.ports import (
     OptionsFlowPort,
     SocialVelocityPort,
 )
+from src.domain.earnings import EarningsEvent
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +46,35 @@ class AlphaEnrichmentUseCase:
         self._social = social_port
         self._analyst = analyst_port
 
-    def enrich(self, symbol: str) -> AlphaSignals:
+    def fetch_earnings(self, symbol: str) -> EarningsEvent | None:
+        """#6 — pobiera najbliższy raport kwartalny gracefully (błąd → None).
+
+        Bramka earnings potrzebuje tego eventu PRZED grafem (żeby zacieśnić próg
+        volatility), a `enrich` biegnie PO grafie. Bez tego wejścia orkiestrator
+        musiałby wołać płatny port Alpha Vantage dwa razy na symbol.
+        """
+        return self._safe(self._earnings.get_next_earnings, symbol, "earnings")
+
+    def enrich(
+        self,
+        symbol: str,
+        *,
+        earnings: EarningsEvent | None = None,
+        earnings_prefetched: bool = False,
+    ) -> AlphaSignals:
+        """Agreguje snapshoty 5 portów alpha. Gdy `earnings_prefetched=True`,
+        `earnings` jest brany wprost (także gdy to None — "brak raportu" to
+        pełnoprawny wynik prefetchu) i port earnings NIE jest wołany ponownie.
+        De-dup płatnego wywołania Alpha Vantage dla bramki earnings (#6)."""
+        earnings_signal = (
+            earnings
+            if earnings_prefetched
+            else self._safe(self._earnings.get_next_earnings, symbol, "earnings")
+        )
         return AlphaSignals(
             symbol=symbol,
             insider=self._safe(self._insider.get_insider_flow, symbol, "insider"),
-            earnings=self._safe(self._earnings.get_next_earnings, symbol, "earnings"),
+            earnings=earnings_signal,
             options=self._safe(self._options.get_options_flow, symbol, "options"),
             social=self._safe(self._social.get_social_velocity, symbol, "social"),
             analyst=self._safe(self._analyst.get_consensus, symbol, "analyst"),

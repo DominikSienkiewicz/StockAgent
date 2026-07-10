@@ -36,6 +36,9 @@ MIGRATION_FILES = [
     "016_confidence_calibration.sql",
     "017_vector_memory_regime.sql",
     "018_persona_track_record.sql",
+    "019_model_scorecards.sql",
+    "020_decision_receipts.sql",
+    "021_shock_alerts.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -446,6 +449,58 @@ class TestMigrations:
         # Jeden logiczny wiersz, zaktualizowana cena (250), nie duplikat.
         assert row[0] == 1
         assert float(row[1]) == pytest.approx(250.0)
+
+    # -- Migracja 019: model_scorecards (karta kondycji modelu, #12) ----------
+
+    def test_model_scorecards_has_symbol_column(self, pg_conn) -> None:
+        """Korekta krytyczna weryfikatora: trening jest PER-SYMBOL (~43 przebiegi
+        nadpisują jeden plik .ubj), więc bez kolumny `symbol` scorecardy są
+        nierozróżnialne — nie wiadomo, który symbol zaakceptowano, a który
+        odrzucono. Kolumna `symbol` jest wymaganiem, nie opcją."""
+        cols = _columns(pg_conn, "model_scorecards")
+        assert "symbol" in cols, "Brak kolumny symbol w model_scorecards (migracja 019)"
+
+    # -- Migracja 020: decision_receipts (kwity decyzyjne, #13) ---------------
+
+    def test_decision_receipts_column_is_nullable(self, pg_conn) -> None:
+        """Kolumna JSONB `decision_receipts` MUSI być nullable — stare wiersze
+        (sprzed migracji) i predykcje bez kwitów renderują się jak dziś. INSERT
+        do prediction_logs bez tej kolumny musi nadal działać."""
+        cols = _columns(pg_conn, "prediction_logs")
+        assert "decision_receipts" in cols, (
+            "Brak kolumny decision_receipts w prediction_logs (migracja 020)"
+        )
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol) VALUES (%s) RETURNING id",
+                ("TEST_RECEIPTS_NULL",),
+            )
+            row = cur.fetchone()
+        assert row is not None
+
+    # -- Migracja 021: shock_alerts (alerty szoku poza cyklem, #11) -----------
+
+    def test_shock_alerts_dedups_per_symbol_per_day(self, pg_conn) -> None:
+        """UNIQUE(symbol, alert_date): twardy debounce "jeden alert per symbol
+        per dzień". Drugi INSERT dla tej samej pary (symbol, alert_date) MUSI
+        rzucić UniqueViolation — bez tego spam przy chaotycznym rynku uczy
+        użytkownika ignorować kanał. Wzorzec jak
+        `test_price_snapshots_unique_constraint_rejects_same_hour_duplicate`:
+        autocommit=True → każdy statement to osobna transakcja, więc złapany
+        wyjątek nie zatruwa kontenera współdzielonego przez inne testy."""
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO shock_alerts (symbol, alert_date, delta, direction) "
+                "VALUES (%s, %s, %s, %s)",
+                ("SHOCK_DUP", "2026-06-05", -8.0, "DOWN"),
+            )
+            with pytest.raises(psycopg2.errors.UniqueViolation):
+                cur.execute(
+                    "INSERT INTO shock_alerts "
+                    "(symbol, alert_date, delta, direction) "
+                    "VALUES (%s, %s, %s, %s)",
+                    ("SHOCK_DUP", "2026-06-05", -9.0, "DOWN"),
+                )
 
 
 @pytest.fixture

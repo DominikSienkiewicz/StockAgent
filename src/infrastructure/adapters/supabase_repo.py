@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from collections.abc import Mapping
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal, cast
 
 from supabase import create_client
 
-from src.application.ports import RepositoryPort
+from src.application.ports import PreviousVerdict, RepositoryPort
 from src.application.report_council_history import InvestorHistory
-from src.domain.council import InvestorOpinion
+from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.regime_key import canonical_regime_key
@@ -74,6 +75,28 @@ def _rows(response: Any) -> list[dict[str, Any]]:
     """Narrow supabase response.data (JSON union) do list[dict]."""
     data = response.data or []
     return cast(list[dict[str, Any]], data)
+
+
+def _deserialize_verdict(raw: dict[str, Any]) -> CouncilVerdict:
+    """Odtwarza `CouncilVerdict` z JSONB (migracja 005). Opinie inwestorów są
+    zapisane jako lista dictów — mapujemy je z powrotem na value objecty."""
+    opinions = tuple(
+        InvestorOpinion(
+            investor_name=str(o.get("investor_name", "")),
+            recommendation=cast(Any, o.get("recommendation", "HOLD")),
+            confidence=float(o.get("confidence") or 0.0),
+            reasoning=str(o.get("reasoning", "")),
+            key_factors=tuple(o.get("key_factors") or ()),
+        )
+        for o in raw.get("investor_opinions") or []
+    )
+    return CouncilVerdict(
+        final_recommendation=cast(Any, raw.get("final_recommendation", "HOLD")),
+        consensus_strength=float(raw.get("consensus_strength") or 0.0),
+        summary=str(raw.get("summary", "")),
+        dissenting_views=tuple(raw.get("dissenting_views") or ()),
+        investor_opinions=opinions,
+    )
 
 
 class SupabaseRepository(RepositoryPort):
@@ -559,6 +582,126 @@ class SupabaseRepository(RepositoryPort):
                 continue
             out[str(name)] = (float(hit_rate), int(votes))
         return out
+
+    def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
+        response = (
+            self._client.table("price_snapshots")
+            .select("price, timestamp")
+            .eq("symbol", symbol)
+            .order("timestamp", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        price, stamp = row.get("price"), row.get("timestamp")
+        if price is None or not isinstance(stamp, str):
+            return None
+        return Money(Decimal(str(price))), datetime.fromisoformat(stamp)
+
+    def save_shock_alert(
+        self, symbol: str, alert_date: date, delta: float, direction: str
+    ) -> None:
+        # UNIQUE(symbol, alert_date) w migracji 021 jest twardym debounce'em —
+        # nawet gdy dwa przebiegi watcha wystartują równolegle.
+        self._client.table("shock_alerts").insert(
+            {
+                "symbol": symbol,
+                "alert_date": alert_date.isoformat(),
+                "delta": delta,
+                "direction": direction,
+            }
+        ).execute()
+
+    def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
+        # Graceful: brak migracji 021 → pusty zbiór (debounce zostaje tylko
+        # w pamięci przebiegu, a UNIQUE i tak zablokuje duplikat przy zapisie).
+        try:
+            response = (
+                self._client.table("shock_alerts")
+                .select("symbol, alert_date")
+                .gte("alert_date", since.isoformat())
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "shock_alerts niedostępne — debounce tylko w pamięci "
+                "(zaaplikuj migrację 021).",
+                exc_info=True,
+            )
+            return set()
+        sent: set[tuple[str, date]] = set()
+        for row in _rows(response):
+            symbol, raw_date = row.get("symbol"), row.get("alert_date")
+            if symbol is None or not isinstance(raw_date, str):
+                continue
+            sent.add((str(symbol), date.fromisoformat(raw_date)))
+        return sent
+
+    def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
+        # SUROWO, bez try/except — graceful degradation robi caller
+        # (`_fetch_report_context`), tak jak reszta odczytów raportowych.
+        response = (
+            self._client.table(self._table)
+            .select("council_verdict, sentiment_score, timestamp")
+            .eq("symbol", symbol)
+            .not_.is_("council_verdict", "null")
+            .order("timestamp", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        raw_verdict = row.get("council_verdict")
+        stamp = row.get("timestamp")
+        if not isinstance(raw_verdict, dict) or not isinstance(stamp, str):
+            return None
+        return PreviousVerdict(
+            verdict=_deserialize_verdict(raw_verdict),
+            sentiment_score=float(row.get("sentiment_score") or 0.0),
+            timestamp=datetime.fromisoformat(stamp),
+        )
+
+    def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
+        # Jeden wiersz na przebieg treningu (migracja 019). Kolumna `symbol` jest
+        # kluczowa: trening leci per-symbol, więc bez niej nie wiadomo, który
+        # kandydat przeszedł bramkę, a który został odrzucony.
+        payload = {
+            "symbol": symbol,
+            "status": result.get("status"),
+            "candidate_holdout_rmse": result.get("candidate_holdout_rmse"),
+            "baseline_rmse": result.get("baseline_rmse"),
+            "candidate_holdout_directional_hit_rate": result.get(
+                "candidate_holdout_directional_hit_rate"
+            ),
+            "n_folds": result.get("n_folds"),
+            "n_samples": result.get("n_samples"),
+        }
+        self._client.table("model_scorecards").insert(payload).execute()
+
+    def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:
+        # Graceful: brak migracji 019 / błąd → [] (sekcja raportu się chowa).
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        try:
+            response = (
+                self._client.table("model_scorecards")
+                .select("*")
+                .gte("timestamp", cutoff)
+                .order("timestamp", desc=True)
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "model_scorecards niedostępne — karta kondycji modelu pominięta "
+                "(zaaplikuj migrację 019).",
+                exc_info=True,
+            )
+            return []
+        return list(_rows(response))
 
     def get_council_vote_history(
         self,

@@ -49,3 +49,58 @@ class TestState:
         """Brak danych traktowany neutralnie — NORMAL, nie wywala."""
         snap = YieldCurveSnapshot(ten_year=None, two_year=None)
         assert snap.state() == YieldCurveState.NORMAL
+
+
+class TestYieldCurveAlertLevel:
+    def test_inverted_maps_to_elevated(self) -> None:
+        # Inwersja 10Y-2Y to klasyczny sygnał recesyjny → ELEVATED.
+        from src.domain.macro_rates import yield_curve_alert_level
+        from src.domain.macro_risk import MacroAlertLevel
+
+        assert (
+            yield_curve_alert_level(YieldCurveState.INVERTED)
+            is MacroAlertLevel.ELEVATED
+        )
+
+    def test_flat_and_normal_map_to_normal(self) -> None:
+        # Zdrowa/płaska krzywa nie jest sygnałem ryzyka → poziom neutralny.
+        from src.domain.macro_rates import yield_curve_alert_level
+        from src.domain.macro_risk import MacroAlertLevel
+
+        assert (
+            yield_curve_alert_level(YieldCurveState.FLAT)
+            is MacroAlertLevel.NORMAL
+        )
+        assert (
+            yield_curve_alert_level(YieldCurveState.NORMAL)
+            is MacroAlertLevel.NORMAL
+        )
+
+    def test_covers_every_state(self) -> None:
+        # Każdy wariant enuma ma zdefiniowane mapowanie (brak KeyError).
+        from src.domain.macro_rates import yield_curve_alert_level
+        from src.domain.macro_risk import MacroAlertLevel
+
+        for state in YieldCurveState:
+            assert isinstance(yield_curve_alert_level(state), MacroAlertLevel)
+
+    def test_inversion_alone_is_not_risk_off(self) -> None:
+        """Semantyka GŁOS-nie-WETO: sama inwersja zwraca JEDEN poziom alertu
+        (ELEVATED), a NIE decyzję o reżimie.
+
+        Reguła orkiestratora brzmi ">= 2 głosy ELEVATED → RISK_OFF". Funkcja
+        dostarcza tylko pojedynczy głos, więc inwersja bez innych sygnałów
+        ELEVATED przekłada się na NEUTRAL, nie RISK_OFF. To celowy tie-breaker
+        mitygujący wielomiesięczne inwersje krzywej, które inaczej trzymałyby
+        agenta w risk-off przez miesiące."""
+        from src.domain.macro_rates import yield_curve_alert_level
+        from src.domain.regime import MarketRegime, RegimeDetector
+
+        vote = yield_curve_alert_level(YieldCurveState.INVERTED)
+        detector = RegimeDetector()
+
+        # Pojedynczy głos ELEVATED z krzywej, zero innych sygnałów.
+        regime = detector.classify(macro_alert=vote, risk_signals=[])
+
+        assert regime is MarketRegime.NEUTRAL
+        assert regime is not MarketRegime.RISK_OFF

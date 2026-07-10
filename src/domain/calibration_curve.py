@@ -93,3 +93,63 @@ def expected_calibration_error(buckets: Sequence[CalibrationBucket]) -> float:
         b.count * abs(b.hit_rate - b.mean_confidence) for b in buckets
     )
     return weighted / total
+
+
+def _find_bucket(
+    raw: float, buckets: Sequence[CalibrationBucket]
+) -> CalibrationBucket | None:
+    """Znajduje kubełek, do którego wpada `raw` (semantyka reliability_curve).
+
+    Dopasowanie w przedziale półotwartym `[lower, upper)` — spójne z tym, jak
+    `reliability_curve` przydziela próbki. Górna krawędź `raw == upper` (np.
+    `raw == 1.0` dla ostatniego kubełka `[0.9, 1.0]`) trafia do tego kubełka,
+    tak samo jak `confidence == 1.0` ląduje w ostatnim słupku diagramu.
+    """
+    for bucket in buckets:
+        if bucket.lower <= raw < bucket.upper:
+            return bucket
+    # Górna krawędź: raw dokładnie na `upper` (np. 1.0) → ten kubełek.
+    for bucket in buckets:
+        if raw == bucket.upper:
+            return bucket
+    return None
+
+
+def calibrated_confidence(
+    raw: float,
+    buckets: Sequence[CalibrationBucket],
+    min_count: int = 10,
+) -> float:
+    """Kalibruje surową pewność `raw` historycznym hit-rate jej kubełka.
+
+    Zamiast oddawać użytkownikowi surowe np. 85% pewności, mapujemy `raw` na
+    faktyczny hit-rate kubełka, do którego wpada, ale ze SHRINKAGE przy małej
+    próbce — kubełek zbudowany na garstce obserwacji nie może w pełni
+    przeciągnąć wyniku (niestacjonarność hit-rate: zmiana reżimu unieważnia
+    historię, więc małej próbce ufamy proporcjonalnie mniej).
+
+    Jawna formuła shrinkage (waga zaufania do historii kubełka):
+
+        weight = count / (count + min_count)
+        calibrated = raw + weight * (hit_rate - raw)
+
+    - `count == min_count` → waga 0.5 (pół drogi między `raw` a `hit_rate`),
+    - `count << min_count` → waga bliska 0 (wynik ~ `raw`),
+    - `count >> min_count` → waga bliska 1 (wynik ~ `hit_rate` kubełka).
+
+    Kontrakt graceful (brak historii = zachowanie identyczne jak dziś):
+    - pusta lista kubełków → zwraca `raw`,
+    - brak kubełka pasującego do `raw` → zwraca `raw`,
+    - `min_count <= 0` (brak sensownego progu) → zwraca `raw`.
+
+    Wynik jest zawsze przycięty do przedziału `[0, 1]`.
+    """
+    if not buckets or min_count <= 0:
+        return raw
+    bucket = _find_bucket(raw, buckets)
+    if bucket is None:
+        return raw
+    weight = bucket.count / (bucket.count + min_count)
+    calibrated = raw + weight * (bucket.hit_rate - raw)
+    # Przycięcie do [0, 1] — zabezpieczenie przed zdegenerowanymi danymi.
+    return max(0.0, min(1.0, calibrated))

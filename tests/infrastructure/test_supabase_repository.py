@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -1188,3 +1188,161 @@ class TestFindSimilarPredictions:
         out = repo.find_similar_predictions([0.1, 0.2], limit=3)
 
         assert out == []
+
+
+class TestModelScorecards:
+    """#12 — scorecard walk-forward per symbol (migracja 019)."""
+
+    def test_save_writes_symbol_and_gate_metrics(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}])
+
+        repo.save_model_scorecard(
+            "AAPL",
+            {
+                "status": "trained_successfully",
+                "candidate_holdout_rmse": 0.021,
+                "baseline_rmse": 0.024,
+                "candidate_holdout_directional_hit_rate": 0.58,
+                "n_folds": 7,
+                "n_samples": 1240,
+            },
+        )
+
+        mock_client.table.assert_called_with("model_scorecards")
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        # Bez `symbol` ~43 przebiegi treningu byłyby nierozróżnialne.
+        assert payload["symbol"] == "AAPL"
+        assert payload["status"] == "trained_successfully"
+        assert payload["n_folds"] == 7
+
+    def test_get_recent_returns_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "gte", "order"],
+            [{"symbol": "AAPL", "status": "trained_successfully"}],
+        )
+
+        rows = repo.get_recent_model_scorecards(30)
+
+        assert rows and rows[0]["symbol"] == "AAPL"
+
+    def test_get_recent_is_graceful_on_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        mock_client.table.side_effect = Exception("no table")
+
+        assert repo.get_recent_model_scorecards(30) == []
+
+
+class TestGetPreviousVerdict:
+    """#8 — poprzedni werdykt rady (JSONB z migracji 005) do detektora flipów.
+    Adapter jest SUROWY: graceful degradation robi caller (styl repo)."""
+
+    @staticmethod
+    def _row() -> dict[str, Any]:
+        return {
+            "council_verdict": {
+                "final_recommendation": "BUY",
+                "consensus_strength": 0.8,
+                "summary": "Kupujemy.",
+                "dissenting_views": ["Soros: SELL"],
+                "investor_opinions": [
+                    {
+                        "investor_name": "Soros",
+                        "recommendation": "SELL",
+                        "confidence": 0.7,
+                        "reasoning": "...",
+                        "key_factors": [],
+                    }
+                ],
+            },
+            "sentiment_score": 0.31,
+            "timestamp": "2026-07-09T10:00:00+00:00",
+        }
+
+    @staticmethod
+    def _set_verdict_chain(client: MagicMock, data: list[dict[str, Any]]) -> None:
+        # `.not_` to PROPERTY, nie wywołanie — generyczny helper łańcucha
+        # (_set_chain_response) tego nie odwzoruje.
+        chain = client.table.return_value.select.return_value.eq.return_value
+        chain = chain.not_.is_.return_value.order.return_value.limit.return_value
+        response = MagicMock()
+        response.data = data
+        chain.execute.return_value = response
+
+    def test_maps_row_to_previous_verdict(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._set_verdict_chain(mock_client, [self._row()])
+
+        previous = repo.get_previous_verdict("NVDA")
+
+        assert previous is not None
+        assert previous.verdict.final_recommendation == "BUY"
+        assert previous.sentiment_score == pytest.approx(0.31)
+        assert previous.verdict.dissenting_views == ("Soros: SELL",)
+        assert len(previous.verdict.investor_opinions) == 1
+
+    def test_returns_none_when_no_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._set_verdict_chain(mock_client, [])
+
+        assert repo.get_previous_verdict("NVDA") is None
+
+
+class TestShockAlerts:
+    """#11 — dedup alertów szoku (migracja 021, UNIQUE(symbol, alert_date))."""
+
+    def test_save_writes_symbol_date_and_direction(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}])
+
+        repo.save_shock_alert("BTC", date(2026, 7, 10), -0.082, "DOWN")
+
+        mock_client.table.assert_called_with("shock_alerts")
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload["symbol"] == "BTC"
+        assert payload["alert_date"] == "2026-07-10"
+        assert payload["direction"] == "DOWN"
+
+    def test_get_sent_returns_symbol_date_pairs(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "gte"],
+            [{"symbol": "BTC", "alert_date": "2026-07-10"}],
+        )
+
+        assert repo.get_sent_shock_alerts(date(2026, 7, 10)) == {
+            ("BTC", date(2026, 7, 10))
+        }
+
+    def test_get_sent_is_graceful_without_migration(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        mock_client.table.side_effect = Exception("no table")
+
+        assert repo.get_sent_shock_alerts(date(2026, 7, 10)) == set()
+
+    def test_last_price_snapshot_returns_price_and_timestamp(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "order", "limit"],
+            [{"price": "65000.0", "timestamp": "2026-07-10T09:00:00+00:00"}],
+        )
+
+        snapshot = repo.get_last_price_snapshot("BTC")
+
+        assert snapshot is not None
+        price, stamp = snapshot
+        assert price.amount == Decimal("65000.0")
+        assert stamp.hour == 9

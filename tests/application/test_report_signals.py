@@ -1,7 +1,10 @@
 from decimal import Decimal
 
+import pytest
+
 from src.application.report_models import SymbolResult, TradeSignal
 from src.application.report_signals import build_trade_signals
+from src.domain.calibration_curve import CalibrationBucket
 from src.domain.council import CouncilVerdict, InvestorOpinion
 
 
@@ -103,3 +106,80 @@ class TestBuildTradeSignalsSizeBand:
             target_price=Decimal("110"),
         )
         assert sig.size_band is None
+
+
+class TestCalibratedConfidenceInSignalRanking:
+    """#9 — historyczny hit-rate kubełka pewności koryguje `strength`, które
+    steruje rankingiem "🎯 Najsilniejsze sygnały". Render-only, bez persystencji."""
+
+    @staticmethod
+    def _saved(symbol: str, confidence: float, change: str) -> SymbolResult:
+        return SymbolResult(
+            symbol=symbol,
+            status="saved",
+            trend="BULLISH",
+            confidence_score=confidence,
+            current_price=Decimal("100"),
+            target_price=Decimal("100") * (Decimal("1") + Decimal(change)),
+        )
+
+    @staticmethod
+    def _overconfident_bucket() -> list[CalibrationBucket]:
+        # Kubełek 80-90%: deklarowana pewność 0.85, realny hit-rate 0.55.
+        return [
+            CalibrationBucket(
+                lower=0.8, upper=0.9, count=100, mean_confidence=0.85, hit_rate=0.55
+            )
+        ]
+
+    def test_without_buckets_strength_uses_raw_confidence(self) -> None:
+        (signal,) = build_trade_signals([self._saved("AAPL", 0.85, "0.10")])
+
+        assert signal.strength == pytest.approx(0.85 * 10.0)
+        assert signal.calibrated_confidence is None
+
+    def test_buckets_shrink_overconfident_strength(self) -> None:
+        (signal,) = build_trade_signals(
+            [self._saved("AAPL", 0.85, "0.10")],
+            calibration_buckets=self._overconfident_bucket(),
+        )
+
+        # count=100, min_count=10 → waga 100/110 ≈ 0.909 → ~0.577
+        assert signal.calibrated_confidence == pytest.approx(0.5773, abs=1e-3)
+        assert signal.strength == pytest.approx(signal.calibrated_confidence * 10.0)
+        assert signal.strength < 0.85 * 10.0
+
+    def test_raw_confidence_is_still_reported_alongside(self) -> None:
+        # Raport pokazuje "pewność LLM: 85% → skalibrowana historią: 58%",
+        # więc surowa pewność NIE może zniknąć z sygnału.
+        (signal,) = build_trade_signals(
+            [self._saved("AAPL", 0.85, "0.10")],
+            calibration_buckets=self._overconfident_bucket(),
+        )
+
+        assert signal.confidence == 0.85
+
+    def test_calibration_can_reorder_the_ranking(self) -> None:
+        # Rdzeń pozycji: kalibracja zmienia RANKING, nie tylko etykietę.
+        # AAPL deklaruje 0.85 (kubełek przepewny), MSFT 0.65 (kubełek uczciwy).
+        buckets = [
+            CalibrationBucket(0.8, 0.9, count=100, mean_confidence=0.85, hit_rate=0.30),
+            CalibrationBucket(0.6, 0.7, count=100, mean_confidence=0.65, hit_rate=0.70),
+        ]
+        results = [
+            self._saved("AAPL", 0.85, "0.10"),
+            self._saved("MSFT", 0.65, "0.10"),
+        ]
+
+        raw = build_trade_signals(results)
+        calibrated = build_trade_signals(results, calibration_buckets=buckets)
+
+        assert [s.symbol for s in raw] == ["AAPL", "MSFT"]
+        assert [s.symbol for s in calibrated] == ["MSFT", "AAPL"]
+
+    def test_empty_buckets_behave_like_no_history(self) -> None:
+        (signal,) = build_trade_signals(
+            [self._saved("AAPL", 0.85, "0.10")], calibration_buckets=[]
+        )
+
+        assert signal.strength == pytest.approx(0.85 * 10.0)

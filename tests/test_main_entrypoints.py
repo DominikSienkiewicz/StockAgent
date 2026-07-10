@@ -1,5 +1,6 @@
 """Smoke testy entry pointów — DI wiring oraz top-level main() z mockami sieci."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -8,8 +9,15 @@ import pytest
 import main_agent
 import main_backtest
 import main_trainer
-from src.application.ports import RepositoryPort
+from src.application.ports import PreviousVerdict, RepositoryPort
 from src.config import Settings
+from src.domain.consensus_shift import ShiftKind
+from src.domain.council import CouncilVerdict
+from src.domain.cycle_maturity import CycleMaturity, SkipReason
+from src.domain.digest_lead import LeadItem
+from src.domain.earnings import EarningsEvent
+from src.domain.macro_rates import YieldCurveSnapshot
+from src.domain.macro_risk import MacroAlertLevel
 
 
 @pytest.fixture
@@ -656,3 +664,528 @@ class TestFetchReportContextPersonaTrackRecord:
         )
 
         assert track_record == []
+
+
+class TestResolveRegimeYieldCurveVote:
+    """#7 — inwersja krzywej wchodzi do RegimeDetector jako GŁOS w liczniku
+    ELEVATED, nie jako weto i nie przez `_compute_overall_alert`."""
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.regime_aware_enabled = True
+        settings.yield_curve_enabled = True
+        settings.regime_threshold_max_multiplier = 2.0
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    @staticmethod
+    def _macro(level: MacroAlertLevel) -> MagicMock:
+        report = MagicMock()
+        report.overall_alert = level
+        return report
+
+    def test_inversion_alone_stays_neutral(self) -> None:
+        # Sama inwersja (makro NORMAL) = 1 głos ELEVATED → NEUTRAL, nie RISK_OFF.
+        # To mitygacja wielomiesięcznych inwersji: głos, nie weto.
+        inverted = YieldCurveSnapshot(ten_year=3.0, two_year=4.0)
+
+        context, multiplier = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.NORMAL), inverted
+        )
+
+        assert multiplier == 1.0
+        assert "NEUTRAL" in context.upper() or context != ""
+
+    def test_inversion_plus_elevated_macro_triggers_risk_off(self) -> None:
+        # Dwa głosy ELEVATED (makro + krzywa) → RISK_OFF → próg zacieśniony.
+        inverted = YieldCurveSnapshot(ten_year=3.0, two_year=4.0)
+
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.ELEVATED), inverted
+        )
+
+        assert multiplier > 1.0
+
+    def test_elevated_macro_alone_stays_neutral(self) -> None:
+        # Kontrola: bez inwersji ten sam alert makro daje tylko 1 głos.
+        normal_curve = YieldCurveSnapshot(ten_year=4.5, two_year=3.0)
+
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.ELEVATED), normal_curve
+        )
+
+        assert multiplier == 1.0
+
+    def test_yield_curve_disabled_casts_no_vote(self) -> None:
+        inverted = YieldCurveSnapshot(ten_year=3.0, two_year=4.0)
+        settings = self._settings(yield_curve_enabled=False)
+
+        _, multiplier = main_agent._resolve_regime(
+            settings, self._macro(MacroAlertLevel.ELEVATED), inverted
+        )
+
+        assert multiplier == 1.0
+
+    def test_missing_snapshot_casts_no_vote(self) -> None:
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.ELEVATED), None
+        )
+
+        assert multiplier == 1.0
+
+    def test_regime_off_returns_neutral_defaults(self) -> None:
+        settings = self._settings(regime_aware_enabled=False)
+
+        macro = self._macro(MacroAlertLevel.CRITICAL)
+
+        assert main_agent._resolve_regime(settings, macro, None) == ("", 1.0)
+
+
+class TestProcessOneSymbolEarningsGate:
+    """#6 — mnożnik earnings dociera do grafu, a płatny port AV jest wołany
+    dokładnie RAZ na symbol (prefetch + wstrzyknięcie do enrich)."""
+
+    @staticmethod
+    def _alpha(event: object | None) -> MagicMock:
+        alpha = MagicMock()
+        alpha.fetch_earnings.return_value = event
+        alpha.enrich.return_value = None
+        return alpha
+
+    @staticmethod
+    def _use_case() -> MagicMock:
+        use_case = MagicMock()
+        use_case.run.return_value = {"status": "ignored", "delta": "0.001"}
+        return use_case
+
+    def _run(self, alpha: MagicMock, use_case: MagicMock) -> None:
+        main_agent._process_one_symbol(
+            "AAPL",
+            peer_ctx=(),
+            use_case=use_case,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=True,
+            alpha_use_case=alpha,
+            earnings_gate_enabled=True,
+        )
+
+    def test_gate_disabled_never_touches_the_earnings_port(self) -> None:
+        # Wsteczna kompatybilność: z wyłączonym kalendarzem ścieżka jest
+        # bit-w-bit taka jak przed #6 — zero prefetchu, `enrich(symbol)` gołe.
+        alpha = self._alpha(EarningsEvent("AAPL", days_until=1))
+        use_case = self._use_case()
+
+        main_agent._process_one_symbol(
+            "AAPL",
+            peer_ctx=(),
+            use_case=use_case,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=True,
+            alpha_use_case=alpha,
+        )
+
+        alpha.fetch_earnings.assert_not_called()
+        alpha.enrich.assert_called_once_with("AAPL")
+        assert use_case.run.call_args.kwargs["earnings_multiplier"] == 1.0
+
+    def test_imminent_earnings_tighten_the_gate(self) -> None:
+        alpha = self._alpha(EarningsEvent("AAPL", days_until=1))
+        use_case = self._use_case()
+
+        self._run(alpha, use_case)
+
+        assert use_case.run.call_args.kwargs["earnings_multiplier"] == 1.5
+
+    def test_far_earnings_leave_the_gate_untouched(self) -> None:
+        alpha = self._alpha(EarningsEvent("AAPL", days_until=60))
+        use_case = self._use_case()
+
+        self._run(alpha, use_case)
+
+        assert use_case.run.call_args.kwargs["earnings_multiplier"] == 1.0
+
+    def test_no_earnings_data_leaves_the_gate_untouched(self) -> None:
+        alpha = self._alpha(None)
+        use_case = self._use_case()
+
+        self._run(alpha, use_case)
+
+        assert use_case.run.call_args.kwargs["earnings_multiplier"] == 1.0
+
+    def test_earnings_port_is_paid_for_only_once(self) -> None:
+        # FinOps: bramka nie ma prawa dołożyć ani jednego płatnego wywołania.
+        event = EarningsEvent("AAPL", days_until=1)
+        alpha = self._alpha(event)
+
+        self._run(alpha, self._use_case())
+
+        alpha.fetch_earnings.assert_called_once_with("AAPL")
+        assert alpha.enrich.call_args.kwargs["earnings_prefetched"] is True
+        assert alpha.enrich.call_args.kwargs["earnings"] == event
+
+
+class TestBuildSignalCalibration:
+    """#9 — kubełki pod ranking sygnałów są niezależne od flagi sekcji
+    Track Record i degradują gracefully."""
+
+    @staticmethod
+    def _settings(enabled: bool) -> MagicMock:
+        settings = MagicMock()
+        settings.calibrated_confidence_enabled = enabled
+        settings.track_record_days = 30
+        return settings
+
+    def test_flag_off_reads_nothing(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+
+        assert main_agent._build_signal_calibration(self._settings(False), repo) is None
+        repo.get_resolved_for_calibration.assert_not_called()
+
+    def test_flag_on_builds_buckets_from_resolved_samples(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.return_value = [
+            {"confidence_score": 0.85, "is_trend_correct": True},
+            {"confidence_score": 0.85, "is_trend_correct": False},
+        ]
+
+        buckets = main_agent._build_signal_calibration(self._settings(True), repo)
+
+        assert buckets
+        repo.get_resolved_for_calibration.assert_called_once_with(30)
+
+    def test_repository_error_degrades_to_raw_confidence(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.side_effect = Exception("supabase down")
+
+        assert main_agent._build_signal_calibration(self._settings(True), repo) is None
+
+    def test_no_usable_samples_yields_no_buckets(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.return_value = [
+            {"confidence_score": None, "is_trend_correct": True},
+        ]
+
+        assert main_agent._build_signal_calibration(self._settings(True), repo) is None
+
+
+class TestDynamicSubject:
+    """#1 — temat maila niesie najmocniejszy sygnał dnia zamiast suchych
+    liczników. Liczony nad PEŁNYMI danymi cyklu, bo subject jest wspólny
+    dla wszystkich subskrybentów (sekcje są re-slicowane, temat nie)."""
+
+    def test_headline_replaces_the_counter_subject(self) -> None:
+        item = LeadItem(icon="🚨", headline="NVDA -4.2%, rada PODZIELONA", detail="")
+
+        subject = main_agent._build_subject(
+            lead_items=[item],
+            analyzed=3,
+            failures=0,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            prefix="",
+        )
+
+        assert "NVDA -4.2%, rada PODZIELONA" in subject
+
+    def test_falls_back_to_counters_without_a_lead(self) -> None:
+        subject = main_agent._build_subject(
+            lead_items=[],
+            analyzed=3,
+            failures=1,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            prefix="",
+        )
+
+        assert "3 predykcji" in subject
+        assert "1 błędów" in subject
+
+    def test_critical_quota_prefix_survives_the_headline(self) -> None:
+        # Prefix [QUOTA] to sygnał operacyjny — nie może zniknąć pod nagłówkiem.
+        item = LeadItem(icon="🚨", headline="NVDA -4.2%", detail="")
+
+        subject = main_agent._build_subject(
+            lead_items=[item],
+            analyzed=1,
+            failures=0,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            prefix="⚠️ [QUOTA] ",
+        )
+
+        assert subject.startswith("⚠️ [QUOTA] ")
+        assert "NVDA -4.2%" in subject
+
+
+class TestMessengerDigestSplit:
+    """#5 — push (Telegram/Slack) dostaje 5-linijkowy skrót, nie pełny raport.
+
+    Realny failure mode: pełny plain-text przekracza limit 4096 znaków Telegrama,
+    API zwraca 400 i push ginie po cichu. Dodatkowo gałąź U2 (fan-out per
+    subskrybent) w ogóle pomijała `notifier.send_report`, więc push nie szedł.
+    """
+
+    @staticmethod
+    def _push_settings(settings: Settings, enabled: bool) -> Settings:
+        settings.notifications_enabled = True
+        settings.resend_api_key = "re_test"
+        settings.digest_to_email = "you@example.com"
+        settings.telegram_bot_token = "tg-token"
+        settings.telegram_chat_id = "42"
+        settings.messenger_digest_enabled = enabled
+        return settings
+
+    def test_flag_on_keeps_push_out_of_the_email_notifier(self, settings) -> None:
+        from src.infrastructure.adapters.resend_notifier import ResendNotifier
+
+        notifier = main_agent.build_notifier(self._push_settings(settings, True))
+
+        # Sam Resend — push idzie osobnym kanałem, ze skróconą treścią.
+        assert isinstance(notifier, ResendNotifier)
+
+    def test_flag_off_preserves_the_legacy_composite(self, settings) -> None:
+        from src.infrastructure.adapters.composite_notifier import CompositeNotifier
+
+        notifier = main_agent.build_notifier(self._push_settings(settings, False))
+
+        assert isinstance(notifier, CompositeNotifier)
+
+    def test_build_push_notifier_is_null_without_secrets(self, settings) -> None:
+        from src.infrastructure.adapters.resend_notifier import NullNotifier
+
+        settings.telegram_bot_token = None
+        settings.telegram_chat_id = None
+        settings.slack_webhook_url = None
+
+        assert isinstance(main_agent.build_push_notifier(settings), NullNotifier)
+
+    def test_push_digest_is_sent_once_and_stays_under_the_limit(self) -> None:
+        from src.application.report_messenger import MAX_DIGEST_CHARS
+
+        push = MagicMock()
+        results = [
+            main_agent.SymbolResult(symbol=f"SYM{i}", status="ignored")
+            for i in range(60)
+        ]
+
+        main_agent._dispatch_push_digest(
+            push_notifier=push,
+            results=results,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            resolved=[],
+            subject="StockAgent — cokolwiek",
+        )
+
+        push.send_report.assert_called_once()
+        sent = push.send_report.call_args.kwargs["plain_text"]
+        assert len(sent) <= MAX_DIGEST_CHARS
+
+    def test_push_failure_never_breaks_the_cycle(self) -> None:
+        push = MagicMock()
+        push.send_report.side_effect = Exception("Telegram 400")
+
+        main_agent._dispatch_push_digest(
+            push_notifier=push,
+            results=[],
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            resolved=[],
+            subject="StockAgent",
+        )
+
+
+class TestCycleMaturityWiring:
+    """#4 — klasyfikacja dojrzałości cyklu z policzonych przyczyn pominięcia."""
+
+    @staticmethod
+    def _r(symbol: str, status: str, reason: SkipReason | None = None) -> "main_agent.SymbolResult":
+        return main_agent.SymbolResult(symbol=symbol, status=status, skip_reason=reason)
+
+    def test_all_cold_start_is_first_run(self) -> None:
+        results = [self._r(f"S{i}", "ignored", SkipReason.COLD_START) for i in range(5)]
+
+        assert main_agent._classify_cycle_maturity(results) is CycleMaturity.FIRST_RUN
+
+    def test_mass_source_outage_is_not_first_run(self) -> None:
+        # Największe ryzyko pozycji: awaria NIE może udawać powitania.
+        results = [self._r(f"S{i}", "error") for i in range(5)]
+
+        assert main_agent._classify_cycle_maturity(results) is CycleMaturity.STEADY_STATE
+
+    def test_unsupported_tickers_do_not_make_a_first_run(self) -> None:
+        results = [self._r(f"S{i}", "ignored", SkipReason.UNSUPPORTED_PRICE) for i in range(4)]
+
+        assert main_agent._classify_cycle_maturity(results) is CycleMaturity.STEADY_STATE
+
+    def test_below_threshold_means_the_agent_already_has_a_baseline(self) -> None:
+        results = [self._r("AAPL", "ignored", SkipReason.BELOW_THRESHOLD)]
+
+        assert main_agent._classify_cycle_maturity(results) is CycleMaturity.STEADY_STATE
+
+    def test_unsupported_result_carries_its_skip_reason(self) -> None:
+        assert main_agent._ignored_result("CSPX.L").skip_reason is SkipReason.UNSUPPORTED_PRICE
+
+
+class TestOnboardingSubject:
+    """#4 — pierwszy cykl ma powitalny temat zamiast '0 predykcji, 0 błędów'."""
+
+    def test_first_run_gets_a_welcome_subject(self) -> None:
+        subject = main_agent._build_subject(
+            lead_items=[],
+            analyzed=0,
+            failures=0,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            prefix="",
+            maturity=CycleMaturity.FIRST_RUN,
+            analyzed_total=45,
+        )
+
+        assert "0 predykcji" not in subject
+        assert "45" in subject
+
+    def test_steady_state_keeps_the_counter_subject(self) -> None:
+        subject = main_agent._build_subject(
+            lead_items=[],
+            analyzed=3,
+            failures=0,
+            started_at=datetime(2026, 5, 14, 9, 30, tzinfo=UTC),
+            prefix="",
+            maturity=CycleMaturity.STEADY_STATE,
+            analyzed_total=45,
+        )
+
+        assert "3 predykcji" in subject
+
+
+class TestModelScorecardPersistence:
+    """#12 — każdy przebieg treningu zapisuje scorecard per symbol, best-effort."""
+
+    def test_scorecard_saved_per_symbol(self, settings, mock_external_clients, mocker) -> None:
+        settings.model_scorecard_enabled = True
+        settings.symbols = ["AAPL", "MSFT"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {
+            "status": "trained_successfully",
+            "candidate_holdout_rmse": 0.02,
+            "baseline_rmse": 0.03,
+            "candidate_holdout_directional_hit_rate": 0.6,
+            "n_folds": 7,
+            "n_samples": 1000,
+        }
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repo = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repo)
+
+        main_trainer.main(settings)
+
+        saved = [c.args[0] for c in repo.save_model_scorecard.call_args_list]
+        assert saved == ["AAPL", "MSFT"]
+
+    def test_scorecard_write_failure_does_not_fail_the_run(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.model_scorecard_enabled = True
+        settings.symbols = ["AAPL"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repo = MagicMock(spec=RepositoryPort)
+        repo.save_model_scorecard.side_effect = Exception("no table")
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repo)
+
+        assert main_trainer.main(settings) == 0
+
+    def test_flag_off_writes_nothing(self, settings, mock_external_clients, mocker) -> None:
+        settings.model_scorecard_enabled = False
+        settings.symbols = ["AAPL"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repo = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repo)
+
+        main_trainer.main(settings)
+
+        repo.save_model_scorecard.assert_not_called()
+
+
+class TestConsensusShiftWiring:
+    """#8 — flipy rady. Graceful w callerze, tłumienie stęchłych porównań."""
+
+    @staticmethod
+    def _verdict(rec: str, consensus: float = 0.8) -> CouncilVerdict:
+        return CouncilVerdict(
+            final_recommendation=rec,  # type: ignore[arg-type]
+            consensus_strength=consensus,
+            summary="",
+            dissenting_views=(),
+            investor_opinions=(),
+        )
+
+    def _result(self, rec: str) -> "main_agent.SymbolResult":
+        return main_agent.SymbolResult(
+            symbol="NVDA",
+            status="saved",
+            sentiment_score=0.1,
+            council_verdict=self._verdict(rec),
+        )
+
+    def _repo(self, previous: object) -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_previous_verdict.return_value = previous
+        return repo
+
+    def test_flip_is_detected(self) -> None:
+        previous = PreviousVerdict(
+            verdict=self._verdict("BUY"),
+            sentiment_score=0.4,
+            timestamp=datetime(2026, 7, 10, 6, 0, tzinfo=UTC),
+        )
+        shifts = main_agent._build_consensus_shifts(
+            self._repo(previous),
+            [self._result("SELL")],
+            now=datetime(2026, 7, 10, 18, 0, tzinfo=UTC),
+        )
+
+        assert shifts and shifts[0][0] == "NVDA"
+        assert shifts[0][1].kind is ShiftKind.FLIP
+
+    def test_stale_comparison_is_marked_not_dramatised(self) -> None:
+        # Cron bywa zakomentowany — "wczoraj" potrafi być sprzed tygodnia.
+        previous = PreviousVerdict(
+            verdict=self._verdict("BUY"),
+            sentiment_score=0.4,
+            timestamp=datetime(2026, 7, 3, 6, 0, tzinfo=UTC),
+        )
+        shifts = main_agent._build_consensus_shifts(
+            self._repo(previous),
+            [self._result("SELL")],
+            now=datetime(2026, 7, 10, 18, 0, tzinfo=UTC),
+        )
+
+        assert shifts[0][1].kind is ShiftKind.STALE_COMPARISON
+
+    def test_repository_error_degrades_to_no_section(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_previous_verdict.side_effect = Exception("supabase down")
+
+        shifts = main_agent._build_consensus_shifts(
+            repo, [self._result("SELL")], now=datetime(2026, 7, 10, tzinfo=UTC)
+        )
+
+        assert shifts == []
+
+    def test_symbol_without_current_verdict_is_skipped(self) -> None:
+        # Symbol odcięty bramką volatility nie ma świeżego werdyktu —
+        # nie wolno mu pokazywać starego flipu drugi raz.
+        repo = self._repo(None)
+        result = main_agent.SymbolResult(symbol="NVDA", status="ignored")
+
+        now = datetime(2026, 7, 10, tzinfo=UTC)
+
+        assert main_agent._build_consensus_shifts(repo, [result], now=now) == []
+        repo.get_previous_verdict.assert_not_called()

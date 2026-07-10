@@ -1689,3 +1689,158 @@ class TestVectorMemory:
         assert kwargs.get("regime") is None
         saved = repository_port.save_prediction.call_args.args[0]
         assert "regime" not in saved
+
+
+class TestEarningsThresholdGate:
+    """#6 — mnożnik earnings zacieśnia bramkę volatility i mnoży się
+    z mnożnikiem reżimu. Oba są >= 1.0, więc bramka może się tylko zacieśnić."""
+
+    @staticmethod
+    def _state(**overrides: object) -> dict[str, object]:
+        state: dict[str, object] = {"asset": None}
+        state.update(overrides)
+        return state
+
+    def test_earnings_multiplier_tightens_threshold(self) -> None:
+        from src.application.agent_graph import _pick_threshold
+
+        base = Threshold(Decimal("0.02"))
+        chosen = _pick_threshold(
+            self._state(earnings_multiplier=1.5), base, None  # type: ignore[arg-type]
+        )
+
+        assert chosen.value == Decimal("0.03")
+
+    def test_earnings_and_regime_multipliers_compound(self) -> None:
+        # IMMINENT (1.5) w RISK_OFF (2.0) → próg 2% * 3.0 = 6%.
+        from src.application.agent_graph import _pick_threshold
+
+        base = Threshold(Decimal("0.02"))
+        chosen = _pick_threshold(
+            self._state(earnings_multiplier=1.5, regime_multiplier=2.0),  # type: ignore[arg-type]
+            base,
+            None,
+        )
+
+        assert chosen.value == Decimal("0.06")
+
+    def test_absent_earnings_multiplier_leaves_threshold_untouched(self) -> None:
+        from src.application.agent_graph import _pick_threshold
+
+        base = Threshold(Decimal("0.02"))
+        chosen = _pick_threshold(self._state(), base, None)  # type: ignore[arg-type]
+
+        assert chosen.value == Decimal("0.02")
+
+    def test_earnings_multiplier_never_loosens_the_gate(self) -> None:
+        # Kontrakt domenowy: mnożnik < 1.0 nie ma prawa powstać. Gdyby jednak
+        # przeciekł, bramka nie może się rozluźnić — to reguła FinOps.
+        from src.application.agent_graph import _pick_threshold
+
+        base = Threshold(Decimal("0.02"))
+        chosen = _pick_threshold(
+            self._state(earnings_multiplier=0.5), base, None  # type: ignore[arg-type]
+        )
+
+        assert chosen.value >= Decimal("0.02")
+
+
+class TestDecisionReceipts:
+    """#13 — persystowany audit trail predykcji (migracja 020).
+
+    Flaga `receipts_enabled` NIE jest ozdobnikiem: nowy klucz w rekordzie przed
+    zaaplikowaniem migracji powoduje PGRST204 i kładzie zapis CAŁEJ predykcji.
+    Off = klucza nie ma w ogóle.
+    """
+
+    def _make(self, ports: dict, *, enabled: bool):
+        return create_agent_graph(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            receipts_enabled=enabled,
+        )
+
+    def _record(self, repository_port: Mock) -> dict:
+        return repository_port.save_prediction.call_args.args[0]
+
+    def test_flag_off_omits_the_column_entirely(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+        self._make(ports, enabled=False).compile().invoke(_initial_state("100.0"))
+
+        assert "decision_receipts" not in self._record(repository_port)
+
+    def test_flag_on_writes_versioned_receipts(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+        self._make(ports, enabled=True).compile().invoke(_initial_state("100.0"))
+
+        receipts = self._record(repository_port)["decision_receipts"]
+        assert receipts["schema_version"] == 1
+        # Próg EFEKTYWNY (po mnożnikach), nie surowy z konfiguracji.
+        assert "effective_threshold" in receipts
+
+    def test_receipts_are_json_serialisable(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Regresja: `_serialize` konwertuje Decimal tylko na najwyższym poziomie,
+        # więc zagnieżdżony Decimal wywala zapis do Supabase.
+        import json
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+        self._make(ports, enabled=True).compile().invoke(_initial_state("100.0"))
+
+        json.dumps(self._record(repository_port)["decision_receipts"])
+
+
+class TestFormatAnalogCarriesIdentity:
+    """#13 — RPC zwraca `id` i `similarity`, a `_format_analog` je gubiło.
+    Bez nich kwit nie pozwala zaudytować, KTÓRY analog stał za predykcją."""
+
+    def test_precedent_keeps_id_and_similarity(self):
+        from src.application.agent_graph import _format_analog
+
+        formatted = _format_analog({
+            "id": "pred-123",
+            "similarity": 0.87,
+            "news_summary": "Fed hawkish",
+            "predicted_trend": "BEARISH",
+            "is_trend_correct": True,
+        })
+
+        assert formatted is not None
+        _, precedent = formatted
+        assert precedent["id"] == "pred-123"
+        assert precedent["similarity"] == 0.87

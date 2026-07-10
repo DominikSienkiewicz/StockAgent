@@ -29,6 +29,7 @@ from src.application.ports import (
     InsiderFlowPort,
     LLMPort,
     MacroRatesPort,
+    MarketDataPort,
     OptionsFlowPort,
     ReportNotifierPort,
     RepositoryPort,
@@ -41,11 +42,19 @@ from src.application.report_builder import (
     SymbolResult,
     build_html_report,
     parse_resolved_predictions,
+    to_lead_signals,
     to_symbol_result,
 )
 from src.application.report_council_history import InvestorHistory
+from src.application.report_formatting import SECTORS
 from src.application.report_lessons import LessonsReport, build_lessons
+from src.application.report_messenger import build_messenger_digest
+from src.application.report_model_scorecard import (
+    ModelScorecardView,
+    build_scorecard_view,
+)
 from src.application.report_models import ResolvedPrediction
+from src.application.report_onboarding import onboarding_subject
 from src.application.tools import build_research_tools
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
@@ -60,9 +69,14 @@ from src.application.use_cases.portfolio_risk import (
 from src.config import Settings
 from src.domain.asset import Asset
 from src.domain.calibration_curve import CalibrationBucket, reliability_curve
+from src.domain.consensus_shift import ConsensusShift, detect_shift
+from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
+from src.domain.digest_lead import LeadItem, build_lead, lead_headline
+from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
 from src.domain.equity_curve import equity_curve as build_equity_curve
-from src.domain.macro_rates import YieldCurveSnapshot
+from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
+from src.domain.macro_risk import MacroAlertLevel
 from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
 from src.domain.quota import QuotaAlert, QuotaSeverity
@@ -116,6 +130,9 @@ def _ignored_result(symbol: str) -> SymbolResult:
     return SymbolResult(
         symbol=symbol,
         status="ignored",
+        # #4: trzecia kategoria pominięcia — ticker nieobsługiwany cenowo.
+        # Wykluczona z licznika cold-startu (nigdy nie dostanie punktu odniesienia).
+        skip_reason=SkipReason.UNSUPPORTED_PRICE,
         error_message="unsupported by current price adapter (Finnhub free)",
     )
 
@@ -292,14 +309,65 @@ def build_notifier(
             ", ".join(missing),
         )
 
-    # Kanały push (Telegram/Slack) dochodzą do dziennego raportu obok maila.
-    channels.extend(build_push_channels(settings, quota_monitor=quota_monitor))
+    # #5: gdy messenger digest jest włączony, push NIE wchodzi do tego notifiera
+    # — dostaje osobno 5-linijkowy skrót (`_dispatch_push_digest`). Pełny
+    # plain-text raportu przekracza limit 4096 znaków Telegrama → 400 i cichy
+    # zgon pusha. Z flagą OFF zachowujemy dotychczasowe (wadliwe) sklejenie.
+    if not settings.messenger_digest_enabled:
+        channels.extend(build_push_channels(settings, quota_monitor=quota_monitor))
 
     if not channels:
         return NullNotifier()
     if len(channels) == 1:
         return channels[0]
     return CompositeNotifier(channels)
+
+
+def build_push_notifier(
+    settings: Settings, quota_monitor: QuotaMonitor | None = None
+) -> ReportNotifierPort:
+    """#5 — kanały push jako JEDEN port (Telegram + Slack), z izolacją wyjątków
+    per kanał w `CompositeNotifier`. Brak sekretów → Null (kanał nie powstaje)."""
+    channels = build_push_channels(settings, quota_monitor=quota_monitor)
+    if not channels:
+        return NullNotifier()
+    if len(channels) == 1:
+        return channels[0]
+    return CompositeNotifier(channels)
+
+
+def _dispatch_push_digest(
+    *,
+    push_notifier: ReportNotifierPort,
+    results: list[SymbolResult],
+    started_at: datetime,
+    resolved: list[ResolvedPrediction],
+    subject: str,
+) -> None:
+    """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
+
+    Gałąź U2 (subskrybenci) w ogóle pomijała `notifier.send_report`, więc push
+    nie szedł, gdy ktokolwiek był zapisany. Skrót liczymy nad PEŁNYMI wynikami
+    cyklu — push to jeden kanał, nie personalizowana watchlista.
+    Best-effort: błąd kanału nie może wywalić cyklu.
+    """
+    try:
+        digest = build_messenger_digest(results, started_at, resolved)
+        push_notifier.send_report(
+            subject=subject, html_body=digest, plain_text=digest
+        )
+    except Exception:
+        logger.exception("Failed to send messenger digest")
+
+
+def build_market_port(settings: Settings) -> MarketDataPort:
+    """Darmowe źródła ceny: krypto → CoinGecko, reszta → Finnhub.
+    Wydzielone z `build_use_case`, bo `main_watch` (#11) potrzebuje samej ceny."""
+    return RoutingMarketDataPort(
+        equity=FinnhubAdapter(api_key=settings.finnhub_api_key),
+        crypto=CoinGeckoAdapter(),
+        crypto_symbols=settings.crypto_symbols,
+    )
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
@@ -615,6 +683,7 @@ def build_use_case(
         research_tools=research_tools,
         tool_use_threshold=tool_use_threshold,
         vector_memory_enabled=settings.vector_memory_enabled,
+        receipts_enabled=settings.receipts_enabled,
     )
 
 
@@ -645,16 +714,32 @@ def _run_risk_watch(
 
 
 def _resolve_regime(
-    settings: Settings, macro_risk_report: MacroRiskReport | None
+    settings: Settings,
+    macro_risk_report: MacroRiskReport | None,
+    yield_curve: YieldCurveSnapshot | None = None,
 ) -> tuple[str, float]:
     """#7: reżim rynku z overall_alert (zacieśnia próg + label do promptu).
-    Zwraca (regime_context, regime_multiplier). Off / brak raportu → ("", 1.0)."""
+    Zwraca (regime_context, regime_multiplier). Off / brak raportu → ("", 1.0).
+
+    Inwersja krzywej rentowności wchodzi tu jako GŁOS w liczniku ELEVATED
+    (przez `risk_signals`), a NIE przez `_compute_overall_alert` — max dałby złą
+    semantykę, bo inwersja podbiłaby overall_alert i sama wymusiła RISK_OFF.
+    Reguła `RegimeDetector` (">= 2 głosy ELEVATED → RISK_OFF") sprawia, że sama
+    inwersja daje tylko NEUTRAL. To celowe: inwersje bywają wielomiesięczne,
+    a weto trzymałoby agenta w risk-off przez cały ten czas.
+    Snapshot jest już pobrany przed tym wywołaniem — zero dodatkowego fetchu.
+    """
     if not (settings.regime_aware_enabled and macro_risk_report is not None):
         return "", 1.0
     from src.domain.regime import RegimeDetector
 
+    # Głos krzywej wymaga JEDNOCZEŚNIE yield_curve_enabled i regime_aware_enabled.
+    risk_signals: list[MacroAlertLevel] = []
+    if settings.yield_curve_enabled and yield_curve is not None:
+        risk_signals.append(yield_curve_alert_level(yield_curve.state()))
+
     detector = RegimeDetector()
-    regime = detector.classify(macro_risk_report.overall_alert, [])
+    regime = detector.classify(macro_risk_report.overall_alert, risk_signals)
     regime_multiplier = detector.threshold_multiplier(
         regime, settings.regime_threshold_max_multiplier
     )
@@ -694,21 +779,39 @@ def _process_one_symbol(
     regime_multiplier: float,
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
+    earnings_gate_enabled: bool = False,
 ) -> _ProcessedSymbol:
     """Przetwarza jeden symbol. NIGDY nie rzuca — łapie wyjątek i zwraca wynik
     z `is_failure=True`. Dzięki temu pula wątków (ścieżka równoległa
     `_analyze_symbols`) nigdy nie widzi wyjątku, a semantyka resilience jest
-    identyczna z dawną pętlą sekwencyjną."""
+    identyczna z dawną pętlą sekwencyjną.
+
+    `earnings_gate_enabled` (#6) domyślnie WYŁĄCZONE — wtedy ścieżka jest
+    bit-w-bit taka jak przed wprowadzeniem bramki: zero prefetchu, `enrich`
+    wołany dokładnie jak dawniej. Włącza je `settings.earnings_calendar_enabled`.
+    """
     try:
         asset = Asset(
             symbol=symbol,
             asset_type=_classify_asset(symbol, crypto_set, etf_set),
         )
+        # #6: bramka earnings. Event pobieramy PRZED grafem, bo mnożnik progu
+        # musi być znany zanim graf zdecyduje o odpaleniu płatnych portów.
+        # Gdy kalendarz earnings jest wyłączony, nie ruszamy portu w ogóle.
+        earnings_event: EarningsEvent | None = None
+        earnings_multiplier = 1.0
+        if earnings_gate_enabled:
+            earnings_event = alpha_use_case.fetch_earnings(symbol)
+            if earnings_event is not None:
+                earnings_multiplier = earnings_threshold_multiplier(
+                    earnings_event.proximity()
+                )
         raw = use_case.run(
             symbol,
             asset=asset,
             regime_context=regime_context,
             regime_multiplier=regime_multiplier,
+            earnings_multiplier=earnings_multiplier,
             peer_context=peer_ctx,
         )
         logger.info(
@@ -722,7 +825,15 @@ def _process_one_symbol(
         alpha_signal: AlphaSignals | None = None
         alpha_price: Decimal | None = None
         if collect_alpha:
-            alpha_signal = alpha_use_case.enrich(symbol)
+            # De-dup: gdy bramka earnings pobrała już event, wstrzykujemy go,
+            # zamiast płacić za drugie wywołanie Alpha Vantage na ten sam symbol.
+            # Z wyłączoną bramką wołamy `enrich(symbol)` dokładnie jak dawniej.
+            prefetch: dict[str, Any] = (
+                {"earnings": earnings_event, "earnings_prefetched": True}
+                if earnings_gate_enabled
+                else {}
+            )
+            alpha_signal = alpha_use_case.enrich(symbol, **prefetch)
             if sr.current_price is not None:
                 alpha_price = sr.current_price
         return _ProcessedSymbol(sr, False, alpha_signal, alpha_price)
@@ -744,6 +855,7 @@ def _analyze_symbols_parallel(
     regime_multiplier: float,
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
+    earnings_gate_enabled: bool = False,
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy
     od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
@@ -761,6 +873,7 @@ def _analyze_symbols_parallel(
                     regime_multiplier=regime_multiplier,
                     collect_alpha=collect_alpha,
                     alpha_use_case=alpha_use_case,
+                    earnings_gate_enabled=earnings_gate_enabled,
                 ),
                 eligible,
             )
@@ -817,6 +930,7 @@ def _analyze_symbols_sequential(
             regime_multiplier=regime_multiplier,
             collect_alpha=collect_alpha,
             alpha_use_case=alpha_use_case,
+            earnings_gate_enabled=settings.earnings_calendar_enabled,
         )
         results.append(proc.result)
         if proc.is_failure:
@@ -860,6 +974,7 @@ def _analyze_symbols(
             regime_multiplier=regime_multiplier,
             collect_alpha=collect_alpha,
             alpha_use_case=alpha_use_case,
+            earnings_gate_enabled=settings.earnings_calendar_enabled,
         )
 
     if settings.symbol_concurrency > 1 and settings.contagion_enabled:
@@ -907,6 +1022,155 @@ def _build_portfolio_radar(
     except Exception:
         logger.exception("Portfolio Radar failed — pomijam sekcję w raporcie")
         return None
+
+
+def _portfolio_sectors(results: list[SymbolResult]) -> dict[str, int]:
+    """#4 — skład portfela wg sektorów (sektor → liczba instrumentów).
+
+    Reużywa istniejący słownik `SECTORS`; symbole spoza mapy trafiają do
+    "Inne", żeby licznik zawsze sumował się do liczby instrumentów.
+    """
+    counts: dict[str, int] = {}
+    for r in results:
+        sector = SECTORS.get(r.symbol, "Inne")
+        counts[sector] = counts.get(sector, 0) + 1
+    return counts
+
+
+def _classify_cycle_maturity(results: list[SymbolResult]) -> CycleMaturity:
+    """#4 — dojrzałość cyklu z policzonych przyczyn pominięcia.
+
+    Symbole nieobsługiwane cenowo są jawnie POZA mianownikiem (nigdy nie dostaną
+    punktu odniesienia), a błędy liczone osobno — cykl zdominowany przez awarie
+    źródeł nie może zostać powitaniem "Dzień 1". Reguła siedzi w domenie.
+    """
+    saved = sum(1 for r in results if r.status == "saved")
+    errors = sum(1 for r in results if r.status == "error")
+    cold_start = sum(1 for r in results if r.skip_reason is SkipReason.COLD_START)
+    below = sum(1 for r in results if r.skip_reason is SkipReason.BELOW_THRESHOLD)
+    unsupported = sum(
+        1 for r in results if r.skip_reason is SkipReason.UNSUPPORTED_PRICE
+    )
+    return classify_cycle(
+        saved_count=saved,
+        cold_start_count=cold_start,
+        below_threshold_count=below,
+        error_count=errors,
+        unsupported_count=unsupported,
+    )
+
+
+def _build_subject(
+    *,
+    lead_items: list[LeadItem],
+    analyzed: int,
+    failures: int,
+    started_at: datetime,
+    prefix: str,
+    maturity: CycleMaturity = CycleMaturity.STEADY_STATE,
+    analyzed_total: int = 0,
+) -> str:
+    """#1 — temat maila jak nagłówek gazety, nie jak licznik.
+
+    Gdy cykl ma lead, jego pierwsza pozycja idzie do tematu ("NVDA -4.2%, rada
+    PODZIELONA"); bez leadu zostaje dotychczasowy temat licznikowy. `prefix`
+    (np. "⚠️ [QUOTA] ") jest sygnałem operacyjnym i przetrwa w obu wariantach.
+
+    Liczone RAZ nad pełnymi danymi cyklu: sekcje raportu są re-slicowane per
+    subskrybent, ale temat jest dla wszystkich ten sam.
+    """
+    stamp = started_at.strftime("%Y-%m-%d %H:%M UTC")
+    # #4: pierwszy cykl ma własny, powitalny temat — lead i tak jest wtedy pusty
+    # (brak punktu odniesienia = brak sygnałów).
+    welcome = onboarding_subject(maturity, instrument_count=analyzed_total)
+    if welcome:
+        return f"{prefix}{welcome} ({stamp})"
+    headline = lead_headline(lead_items)
+    if headline:
+        return f"{prefix}StockAgent — {headline} ({stamp})"
+    return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
+
+
+def _build_consensus_shifts(
+    repository: RepositoryPort,
+    results: list[SymbolResult],
+    *,
+    now: datetime,
+) -> list[tuple[str, ConsensusShift]]:
+    """#8 — wykrywa zmiany nastawienia rady względem poprzedniego cyklu.
+
+    Tłumienie stęchłych flipów: symbol bez ŚWIEŻEGO werdyktu (odcięty bramką
+    volatility) jest pomijany — inaczej stary flip pokazywałby się w kółko.
+    `gap_hours` liczone z timestampu poprzedniego cyklu; domena degraduje
+    porównanie starsze niż 48h do STALE_COMPARISON, zamiast robić dramaturgię.
+    Graceful w CALLERZE (styl repo): błąd odczytu → brak sekcji, cykl żyje.
+    """
+    shifts: list[tuple[str, ConsensusShift]] = []
+    for r in results:
+        if r.council_verdict is None:
+            continue
+        try:
+            previous = repository.get_previous_verdict(r.symbol)
+        except Exception:
+            logger.exception("Failed to fetch previous verdict for %s", r.symbol)
+            continue
+        if previous is None:
+            continue
+        gap_hours = (now - previous.timestamp).total_seconds() / 3600.0
+        shifts.append(
+            (
+                r.symbol,
+                detect_shift(
+                    previous.verdict,
+                    r.council_verdict,
+                    previous_sentiment=previous.sentiment_score,
+                    current_sentiment=r.sentiment_score or 0.0,
+                    gap_hours=gap_hours,
+                ),
+            )
+        )
+    return shifts
+
+
+def _build_model_scorecard(
+    settings: Settings, repository: RepositoryPort
+) -> ModelScorecardView | None:
+    """#12 — widok karty kondycji modelu. Flaga OFF / brak migracji 019 / błąd
+    odczytu → None → sekcja sama się chowa, cykl leci dalej."""
+    if not settings.model_scorecard_enabled:
+        return None
+    try:
+        rows = repository.get_recent_model_scorecards(settings.track_record_days)
+    except Exception:
+        logger.exception("Failed to fetch model scorecards")
+        return None
+    return build_scorecard_view(rows)
+
+
+def _build_signal_calibration(
+    settings: Settings, repository: RepositoryPort
+) -> list[CalibrationBucket] | None:
+    """#9 — kubełki kalibracji pod RANKING sygnałów (nie pod sekcję Track Record).
+
+    Świadomie osobne od `_build_track_record`: `calibration_curve_enabled` rysuje
+    sekcję, a `calibrated_confidence_enabled` zmienia ranking. Sprzęgnięcie ich
+    znaczyłoby, że włączenie rankingu po cichu dorysowuje sekcję w mailu.
+    Best-effort: błąd odczytu → None → surowa pewność, cykl leci dalej.
+    """
+    if not settings.calibrated_confidence_enabled:
+        return None
+    try:
+        rows = repository.get_resolved_for_calibration(settings.track_record_days)
+    except Exception:
+        logger.exception("Failed to fetch calibration samples for signal ranking")
+        return None
+    samples = [
+        (float(row["confidence_score"]), bool(row["is_trend_correct"]))
+        for row in rows
+        if row.get("confidence_score") is not None
+        and row.get("is_trend_correct") is not None
+    ]
+    return reliability_curve(samples) if samples else None
 
 
 def _build_track_record(
@@ -1056,6 +1320,19 @@ def _dispatch_reports(
         equity_curve, calibration_buckets, lessons = _build_track_record(
             settings, repository
         )
+        # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
+        signal_calibration_buckets = _build_signal_calibration(settings, repository)
+        # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
+        maturity = _classify_cycle_maturity(results)
+        sectors = _portfolio_sectors(results)
+        # #12: karta kondycji modelu (flaga + migracja 019).
+        model_scorecard = _build_model_scorecard(settings, repository)
+        # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
+        consensus_shifts = (
+            _build_consensus_shifts(repository, results, now=started_at)
+            if settings.cycle_diff_enabled
+            else []
+        )
 
         def _build(symbols_filter: frozenset[str] | None = None) -> tuple[str, str]:
             return build_html_report(
@@ -1074,6 +1351,11 @@ def _dispatch_reports(
                 alpha_signals=alpha_signals,
                 yield_curve=yield_curve,
                 alpha_prices=alpha_prices,
+                signal_calibration_buckets=signal_calibration_buckets,
+                cycle_maturity=maturity,
+                portfolio_sectors=sectors,
+                model_scorecard=model_scorecard,
+                consensus_shifts=consensus_shifts,
             )
 
         html, text = _build()
@@ -1081,9 +1363,18 @@ def _dispatch_reports(
         # Subject prefix gdy są CRITICAL — wymusza zwrócenie uwagi w skrzynce.
         max_sev = quota_monitor.max_severity()
         prefix = "⚠️ [QUOTA] " if max_sev is QuotaSeverity.CRITICAL else ""
-        subject = (
-            f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów "
-            f"({started_at.strftime('%Y-%m-%d %H:%M UTC')})"
+        # #1: temat z leadu, liczony nad PEŁNYMI wynikami cyklu (nie per
+        # subskrybent) — sekcje są re-slicowane, ale temat jest współdzielony.
+        subject = _build_subject(
+            lead_items=build_lead(
+                to_lead_signals(results, resolved), recent_alerts
+            ),
+            analyzed=analyzed,
+            failures=failures,
+            started_at=started_at,
+            prefix=prefix,
+            maturity=maturity,
+            analyzed_total=len(results),
         )
 
         # U3: publikacja statycznego digestu web (read-only dashboard).
@@ -1114,6 +1405,17 @@ def _dispatch_reports(
                     logger.exception("Failed to send digest to %s", sub.email)
         else:
             notifier.send_report(subject=subject, html_body=html, plain_text=text)
+
+        # #5: push idzie RAZ, skrótem, poza gałęzią fan-outu — inaczej albo
+        # ginie (subskrybenci), albo przekracza limit Telegrama (pełny raport).
+        if settings.messenger_digest_enabled:
+            _dispatch_push_digest(
+                push_notifier=build_push_notifier(settings, quota_monitor),
+                results=results,
+                started_at=started_at,
+                resolved=resolved,
+                subject=subject,
+            )
     except Exception:
         logger.exception("Failed to send report")
 
@@ -1184,7 +1486,9 @@ def main(settings: Settings | None = None) -> int:
     macro_risk_report = _run_risk_watch(settings, repository)
 
     # #7: reżim rynku z overall_alert (zacieśnia próg + label do promptu). Off → neutral.
-    regime_context, regime_multiplier = _resolve_regime(settings, macro_risk_report)
+    regime_context, regime_multiplier = _resolve_regime(
+        settings, macro_risk_report, yield_curve
+    )
 
     loop_results, failures, alpha_signals, alpha_prices = _analyze_symbols(
         eligible,
