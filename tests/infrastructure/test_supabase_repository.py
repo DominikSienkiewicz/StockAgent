@@ -1346,3 +1346,32 @@ class TestShockAlerts:
         price, stamp = snapshot
         assert price.amount == Decimal("65000.0")
         assert stamp.hour == 9
+
+
+class TestGetResolvedPredictionsDetailed:
+    """#17 — recap tygodniowy potrzebuje pól, których `get_resolved_predictions`
+    NIE zwraca: id, predicted_target_price, confidence_score, council_verdict."""
+
+    def test_selects_the_fields_the_weekly_recap_needs(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # `.not_` to PROPERTY, nie wywołanie — generyczny helper go nie odwzoruje.
+        chain = mock_client.table.return_value.select.return_value.gte.return_value
+        chain = chain.not_.is_.return_value.order.return_value
+        response = MagicMock()
+        response.data = [{"id": "p-1", "symbol": "AAPL"}]
+        chain.range.return_value.execute.return_value = response
+
+        rows = repo.get_resolved_predictions_detailed(7)
+
+        selected = mock_client.table.return_value.select.call_args.args[0]
+        for field in (
+            "id",
+            "predicted_target_price",
+            "confidence_score",
+            "council_verdict",
+            "actual_price_after_12h",
+            "price_at_prediction",
+        ):
+            assert field in selected
+        assert rows and rows[0]["id"] == "p-1"

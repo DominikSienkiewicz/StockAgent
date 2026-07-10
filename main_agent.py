@@ -24,6 +24,7 @@ from src.application.alpha_signals import AlphaSignals
 from src.application.ports import (
     AdvisoryCouncilPort,
     AnalystConsensusPort,
+    AttestationPublisherPort,
     EarningsCalendarPort,
     EmbeddingPort,
     InsiderFlowPort,
@@ -359,6 +360,21 @@ def _dispatch_push_digest(
         )
     except Exception:
         logger.exception("Failed to send messenger digest")
+
+
+def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
+    """#16 — publisher commit-reveal. Null gdy `attestation_enabled=false`."""
+    from src.infrastructure.adapters.attestation_publisher import (
+        FileAttestationPublisher,
+        NullAttestationPublisher,
+    )
+
+    if not settings.attestation_enabled:
+        return NullAttestationPublisher()
+    return FileAttestationPublisher(
+        commitment_path=settings.attestation_commitments_path,
+        reveal_path=settings.attestation_reveals_path,
+    )
 
 
 def build_options_port(settings: Settings) -> OptionsFlowPort | None:
@@ -698,6 +714,13 @@ def build_use_case(
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings),
+        # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
+        # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji.
+        attestation_publisher=(
+            build_attestation_publisher(settings)
+            if settings.attestation_enabled
+            else None
+        ),
     )
 
 
@@ -1130,6 +1153,53 @@ def _build_subject(
     return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
 
 
+def _sweep_reveals(
+    repository: RepositoryPort, publisher: AttestationPublisherPort
+) -> int:
+    """#16 — ujawnia WSZYSTKIE zapadłe commitmenty. Zwraca liczbę revealów.
+
+    Sweep, nie „reveal przy rozliczeniu": predykcje symboli usuniętych z
+    `config.toml` nigdy nie przeszłyby przez reflect, więc ich commitmenty
+    zostałyby na zawsze nieujawnione. Dla sceptyka wygląda to jak ukrywanie
+    nietrafień — a to niszczy cały sens weryfikowalnego track recordu.
+
+    `revealed_at` stemplujemy DOPIERO po udanej publikacji. Odwrotna kolejność
+    zgubiłaby nietrafienie na zawsze: oznaczone jako ujawnione, nigdy ujawnione.
+    Best-effort per wiersz: jeden błąd nie przerywa sweepu.
+    """
+    try:
+        rows = repository.get_unrevealed_commitments()
+    except Exception:
+        logger.exception("Failed to read unrevealed commitments — sweep skipped")
+        return 0
+
+    revealed = 0
+    for row in rows:
+        try:
+            publisher.publish_reveal(
+                {
+                    "symbol": row.get("symbol"),
+                    "commitment": row.get("commitment_hash"),
+                    # Sól wychodzi na jaw dopiero TERAZ — to jest sens revealu.
+                    "salt": row.get("commitment_salt"),
+                    "predicted_trend": row.get("predicted_trend"),
+                    "predicted_target_price": row.get("predicted_target_price"),
+                    "price_at_prediction": row.get("price_at_prediction"),
+                    "actual_price_after_12h": row.get("actual_price_after_12h"),
+                    "is_trend_correct": row.get("is_trend_correct"),
+                }
+            )
+        except Exception:
+            logger.exception("Failed to publish reveal for %s", row.get("id"))
+            continue
+        try:
+            repository.mark_commitment_revealed(str(row["id"]))
+        except Exception:
+            logger.exception("Failed to mark reveal for %s", row.get("id"))
+        revealed += 1
+    return revealed
+
+
 def _build_consensus_shifts(
     repository: RepositoryPort,
     results: list[SymbolResult],
@@ -1444,6 +1514,11 @@ def _dispatch_reports(
                     logger.exception("Failed to send digest to %s", sub.email)
         else:
             notifier.send_report(subject=subject, html_body=html, plain_text=text)
+
+        # #16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,
+        # nie może opóźnić ani zablokować raportu.
+        if settings.attestation_enabled:
+            _sweep_reveals(repository, build_attestation_publisher(settings))
 
         # #5: push idzie RAZ, skrótem, poza gałęzią fan-outu — inaczej albo
         # ginie (subskrybenci), albo przekracza limit Telegrama (pełny raport).

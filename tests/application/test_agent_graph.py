@@ -2028,3 +2028,108 @@ class TestAlphaFusionInGraph:
         assert "Alpha Fusion" not in prompt
         record = repository_port.save_prediction.call_args.args[0]
         assert record["alpha_fusion_score"] == 0.0
+
+
+class TestAttestationCommitment:
+    """#16 — commit-reveal. Przy zapisie predykcji publikujemy SHA-256
+    commitment (hash treści + sól); sól ujawniamy dopiero przy reveal."""
+
+    @staticmethod
+    def _publisher() -> Mock:
+        from src.application.ports import AttestationPublisherPort
+
+        pub = Mock(spec=AttestationPublisherPort)
+        pub.publish_commitment.return_value = "public/attestation/commitments.jsonl"
+        return pub
+
+    def _ports(self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
+        return dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+    def _run(self, ports, publisher):
+        return create_agent_graph(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            attestation_publisher=publisher,
+        ).compile().invoke(_initial_state("100.0"))
+
+    def test_without_publisher_no_commitment_columns_are_written(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # attestation_enabled=false → nowe klucze nie mogą trafić do rekordu
+        # (PGRST204 przed migracją 024 zabiłby zapis całej predykcji).
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._run(ports, None)
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "commitment_hash" not in record
+        assert "commitment_salt" not in record
+
+    def test_commitment_hash_and_salt_are_persisted(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+
+        self._run(ports, publisher)
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert len(record["commitment_hash"]) == 64
+        assert record["commitment_salt"]
+        publisher.publish_commitment.assert_called_once()
+
+    def test_published_commitment_never_leaks_the_salt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Sedno commit-reveal: przed ujawnieniem hash bez soli jest nieodwracalny.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+
+        self._run(ports, publisher)
+
+        published = publisher.publish_commitment.call_args.args[0]
+        assert "salt" not in published
+        assert "commitment" in published
+
+    def test_publisher_failure_never_breaks_the_cycle(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+        publisher.publish_commitment.side_effect = OSError("disk full")
+
+        final = self._run(ports, publisher)
+
+        assert final["status"] == "saved"

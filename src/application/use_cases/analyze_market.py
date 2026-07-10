@@ -7,6 +7,7 @@ from typing import Any
 from src.application.agent_graph import AgentState, create_agent_graph
 from src.application.ports import (
     AdvisoryCouncilPort,
+    AttestationPublisherPort,
     EmbeddingPort,
     FundamentalsPort,
     LLMPort,
@@ -56,6 +57,7 @@ class AnalyzeMarketUseCase:
         vector_memory_enabled: bool = False,
         receipts_enabled: bool = False,
         options_port: OptionsFlowPort | None = None,
+        attestation_publisher: AttestationPublisherPort | None = None,
     ) -> None:
         self._repository = repository_port
         workflow = create_agent_graph(
@@ -80,6 +82,7 @@ class AnalyzeMarketUseCase:
             vector_memory_enabled=vector_memory_enabled,
             receipts_enabled=receipts_enabled,
             options_port=options_port,
+            attestation_publisher=attestation_publisher,
         )
         # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().

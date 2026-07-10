@@ -29,7 +29,11 @@ ALTER TABLE prediction_logs
     -- SHA-256 commitmentu; publikowany w chwili predykcji (bez soli = nieodwracalny).
     ADD COLUMN IF NOT EXISTS commitment_hash TEXT,
     -- Losowa sól; ujawniana DOPIERO przy reveal (zamknięciu predykcji).
-    ADD COLUMN IF NOT EXISTS commitment_salt TEXT;
+    ADD COLUMN IF NOT EXISTS commitment_salt TEXT,
+    -- Znacznik ujawnienia. Napędza SWEEP „reveal wszystkich zapadłych
+    -- commitmentów": bez niego predykcje symboli usuniętych z configu nigdy
+    -- nie zostałyby ujawnione, a dla sceptyka wygląda to jak ukrywanie nietrafień.
+    ADD COLUMN IF NOT EXISTS revealed_at TIMESTAMPTZ;
 
 -- Sceptyk weryfikuje po HASHU (szuka commitmentu, potem sprawdza reveal) —
 -- indeks po commitment_hash obsługuje ten wzorzec wyszukiwania wprost.
@@ -40,3 +44,8 @@ COMMENT ON COLUMN prediction_logs.commitment_hash IS
     'SHA-256 commitmentu predykcji (#16); publikowany przy predykcji, bez soli nieodwracalny.';
 COMMENT ON COLUMN prediction_logs.commitment_salt IS
     'Losowa sól commitmentu; ujawniana DOPIERO przy reveal (zamknięciu predykcji).';
+
+-- Sweep szuka predykcji ROZLICZONYCH, z commitmentem, jeszcze nieujawnionych.
+CREATE INDEX IF NOT EXISTS idx_prediction_logs_unrevealed
+    ON prediction_logs (timestamp DESC)
+    WHERE commitment_hash IS NOT NULL AND revealed_at IS NULL;

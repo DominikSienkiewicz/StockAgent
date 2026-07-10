@@ -576,6 +576,13 @@ class TestMigrations:
 
     # -- Migracja 025: implied_edge (edge vs rynek opcji, #18) ----------------
 
+    def test_revealed_at_column_supports_the_reveal_sweep(self, pg_conn) -> None:
+        """#16 — bez `revealed_at` sweep nie wie, co już ujawnił, a predykcje
+        symboli usuniętych z configu nigdy nie zostałyby odsłonięte. Dla sceptyka
+        wygląda to jak ukrywanie nietrafień."""
+        cols = _columns(pg_conn, "prediction_logs")
+        assert {"commitment_hash", "commitment_salt", "revealed_at"} <= cols
+
     def test_edge_sigma_column_exists(self, pg_conn) -> None:
         cols = _columns(pg_conn, "prediction_logs")
         assert "edge_sigma" in cols, (

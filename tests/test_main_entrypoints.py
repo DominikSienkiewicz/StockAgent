@@ -1296,3 +1296,71 @@ def test_alpha_fusion_flag_off_leaves_the_graph_untouched() -> None:
     )
 
     assert use_case.run.call_args.kwargs["alpha_fusion"] is None
+
+
+class TestAttestationRevealSweep:
+    """#16 — sweep ujawnia WSZYSTKIE zapadłe commitmenty. Bez niego predykcje
+    symboli usuniętych z config.toml nigdy by się nie odsłoniły, a dla sceptyka
+    wygląda to jak ukrywanie nietrafień."""
+
+    @staticmethod
+    def _row(pid: str, salt: str = "s" * 32) -> dict:
+        return {
+            "id": pid,
+            "symbol": "GONE",
+            "predicted_trend": "BULLISH",
+            "predicted_target_price": "110.0",
+            "price_at_prediction": "100.0",
+            "actual_price_after_12h": "95.0",
+            "is_trend_correct": False,
+            "commitment_hash": "deadbeef",
+            "commitment_salt": salt,
+        }
+
+    def test_reveals_every_matured_commitment(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("p-1"), self._row("p-2")]
+        pub = MagicMock()
+
+        revealed = main_agent._sweep_reveals(repo, pub)
+
+        assert revealed == 2
+        assert pub.publish_reveal.call_count == 2
+        assert repo.mark_commitment_revealed.call_count == 2
+
+    def test_reveal_payload_exposes_the_salt(self) -> None:
+        # Dopiero teraz sól wychodzi na jaw — to jest cały sens revealu.
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("p-1")]
+        pub = MagicMock()
+
+        main_agent._sweep_reveals(repo, pub)
+
+        payload = pub.publish_reveal.call_args.args[0]
+        assert payload["salt"] == "s" * 32
+        assert payload["commitment"] == "deadbeef"
+
+    def test_a_failed_reveal_does_not_stop_the_sweep(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("p-1"), self._row("p-2")]
+        pub = MagicMock()
+        pub.publish_reveal.side_effect = [OSError("disk"), "path.jsonl"]
+
+        assert main_agent._sweep_reveals(repo, pub) == 1
+
+    def test_row_is_not_marked_revealed_when_publishing_fails(self) -> None:
+        # Inaczej nietrafienie zniknęłoby na zawsze: oznaczone, nigdy ujawnione.
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("p-1")]
+        pub = MagicMock()
+        pub.publish_reveal.side_effect = OSError("disk")
+
+        main_agent._sweep_reveals(repo, pub)
+
+        repo.mark_commitment_revealed.assert_not_called()
+
+    def test_repository_error_degrades_to_no_sweep(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.side_effect = Exception("no column")
+
+        assert main_agent._sweep_reveals(repo, MagicMock()) == 0

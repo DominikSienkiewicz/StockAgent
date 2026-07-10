@@ -14,6 +14,7 @@ from langgraph.graph import END, StateGraph
 from src.application.ml_features import ML_FEATURE_COLUMNS
 from src.application.ports import (
     AdvisoryCouncilPort,
+    AttestationPublisherPort,
     EmbeddingPort,
     FundamentalsPort,
     LLMPort,
@@ -30,6 +31,8 @@ from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction
 from src.application.rag_rerank import rerank_analogs
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, PriceDelta
+from src.domain.attestation import commit as attestation_commit
+from src.domain.attestation import new_salt
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
 from src.domain.feature_attribution import FeatureContribution, top_contributions
 from src.domain.implied_edge import (
@@ -383,6 +386,7 @@ class _GraphDeps:
     vector_memory_enabled: bool
     receipts_enabled: bool
     options_port: OptionsFlowPort | None
+    attestation_publisher: AttestationPublisherPort | None
 
 
 def _check_price_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
@@ -711,6 +715,44 @@ def _run_ml_prediction(
     except Exception:
         logger.exception("explain() failed for %s — bez atrybucji", symbol)
     return ml_target, feature_attribution
+
+
+def _attach_commitment(
+    deps: _GraphDeps, record: dict[str, Any]
+) -> None:
+    """#16 — dokleja SHA-256 commitment do rekordu i publikuje go (bez soli).
+
+    Commit-reveal: publikujemy sam HASH treści predykcji + losowej soli.
+    Dopóki sól nie zostanie ujawniona (sweep po rozliczeniu), hash jest
+    nieodwracalny — sceptyk nie pozna predykcji, ale po ujawnieniu zweryfikuje,
+    że powstała PRZED ruchem ceny.
+
+    UCZCIWOŚĆ: daty commitów Gita są fałszowalne. Claim to „tamper-evidence
+    przy branch protection", NIE „niepodrabialny timestamp".
+
+    Klucze dokładane TYLKO gdy publisher istnieje — nowe kolumny przed migracją
+    024 dałyby PGRST204 i zabiły zapis całej predykcji (gate jak `receipts_enabled`).
+    Awaria publikacji nigdy nie wywala cyklu.
+    """
+    if deps.attestation_publisher is None:
+        return
+    payload = {
+        "symbol": record["symbol"],
+        "predicted_trend": record.get("predicted_trend"),
+        "predicted_target_price": str(record.get("predicted_target_price")),
+        "price_at_prediction": str(record.get("price_at_prediction")),
+    }
+    salt = new_salt()
+    commitment = attestation_commit(payload, salt)
+    record["commitment_hash"] = commitment
+    record["commitment_salt"] = salt
+    try:
+        # Publikujemy WYŁĄCZNIE hash — sól zostaje w bazie do czasu revealu.
+        deps.attestation_publisher.publish_commitment(
+            {"symbol": record["symbol"], "commitment": commitment}
+        )
+    except Exception:
+        logger.exception("Attestation commitment publish failed for %s", record["symbol"])
 
 
 def _format_alpha_fusion(fusion: AlphaFusionScore | None) -> str:
@@ -1049,6 +1091,9 @@ def _save_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
     if implied_edge is not None:
         record["edge_sigma"] = implied_edge.edge_sigma
 
+    # #16: commit-reveal (migracja 024).
+    _attach_commitment(deps, record)
+
     # Embedding podsumowania newsów → pgvector (reużyty z predict_node lub
     # policzony tu w fallbacku; graceful — przy braku zapisujemy bez wektora).
     vector = _resolve_news_vector(deps, state, news_summary)
@@ -1113,6 +1158,7 @@ def create_agent_graph(
     vector_memory_enabled: bool = False,
     receipts_enabled: bool = False,
     options_port: OptionsFlowPort | None = None,
+    attestation_publisher: AttestationPublisherPort | None = None,
 ) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
@@ -1154,6 +1200,7 @@ def create_agent_graph(
         vector_memory_enabled=vector_memory_enabled,
         receipts_enabled=receipts_enabled,
         options_port=options_port,
+        attestation_publisher=attestation_publisher,
     )
 
     # ---------- Topologia ----------

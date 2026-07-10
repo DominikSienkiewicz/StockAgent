@@ -150,6 +150,13 @@ class Settings(BaseSettings):
     # Wchodzi do promptu LLM ORAZ jako ósma cecha XGBoost. Wdrożenie cechy
     # rozstrzyga walk-forward gate „pobij baseline", nie intuicja wag. Off.
     alpha_fusion_enabled: bool = False
+    # #16: commit-reveal (migracja 024). W chwili predykcji publikujemy SHA-256
+    # commitment; po rozliczeniu sweep ujawnia sól i plaintext. UWAGA: daty
+    # commitów Gita są fałszowalne — to tamper-evidence, nie niepodrabialny
+    # timestamp. Off (nowe kolumny przed migracją 024 → PGRST204).
+    attestation_enabled: bool = False
+    attestation_commitments_path: str = "public/attestation/commitments.jsonl"
+    attestation_reveals_path: str = "public/attestation/reveals.jsonl"
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
 

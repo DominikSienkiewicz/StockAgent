@@ -73,6 +73,12 @@ shock_alerts_enabled = false
 # #14: Alpha Fusion Score (migracja 022) — ważona fuzja insider/opcje/analitycy/
 # social/earnings. Trafia do promptu LLM i jako ósma cecha ML. Off.
 alpha_fusion_enabled = false
+# #16: commit-reveal (migracja 024) — kryptograficznie weryfikowalny track record.
+# Claim: tamper-evidence przy branch protection, NIE niepodrabialny timestamp.
+# Włącz DOPIERO po zaaplikowaniu migracji 024, inaczej PGRST204. Off.
+attestation_enabled = false
+attestation_commitments_path = "public/attestation/commitments.jsonl"
+attestation_reveals_path = "public/attestation/reveals.jsonl"
 track_record_days = 30
 # Dane — nowe źródła alpha. Default off → Null adapter (zero płatnych). Realny
 # adapter włącza flaga (+ ewentualny klucz: FRED_API_KEY dla yield_curve).
