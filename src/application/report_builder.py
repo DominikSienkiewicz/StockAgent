@@ -656,6 +656,7 @@ def build_html_report(
     alpha_signals: dict[str, AlphaSignals] | None = None,
     yield_curve: YieldCurveSnapshot | None = None,
     alpha_prices: dict[str, Decimal] | None = None,
+    signal_calibration_buckets: list[CalibrationBucket] | None = None,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
@@ -677,7 +678,12 @@ def build_html_report(
     session = market_status(started_at)
     # Q7: hit-rate cyklu (z accuracy_stats) napędza pasmo wielkości pozycji.
     hit_rate = accuracy_stats.get("mean_accuracy") if accuracy_stats else None
-    trade_signals = build_trade_signals(results, hit_rate=hit_rate)
+    # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
+    # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
+    # skorygowanej historią. None → surowa pewność, jak przed #9.
+    trade_signals = build_trade_signals(
+        results, hit_rate=hit_rate, calibration_buckets=signal_calibration_buckets
+    )
     risk_signals = detect_risk_signals(results)
     macro_risk_html = (
         render_risk_watch_html(macro_risk_report) if macro_risk_report else ""

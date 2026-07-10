@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -12,6 +13,7 @@ from src.application.report_models import (
     SymbolResult,
     TradeSignal,
 )
+from src.domain.calibration_curve import CalibrationBucket, calibrated_confidence
 from src.domain.sizing import SizeBand, suggest_band
 
 DIVERGENCE_PRICE_THRESHOLD = Decimal("0.02")
@@ -25,7 +27,10 @@ NYSE_CLOSE = time(16, 0)
 
 
 def build_trade_signals(
-    results: list[SymbolResult], top_n: int = 5, hit_rate: float | None = None
+    results: list[SymbolResult],
+    top_n: int = 5,
+    hit_rate: float | None = None,
+    calibration_buckets: Sequence[CalibrationBucket] | None = None,
 ) -> list[TradeSignal]:
     """Top sygnały transakcyjne — posortowane po sile sygnału.
 
@@ -33,14 +38,28 @@ def build_trade_signals(
     bandę wielkości pozycji (Kelly-lite z konsensusu + dissentu rady i — gdy
     podany — historycznego hit-rate agenta). `hit_rate` jest wspólny dla
     całego cyklu (np. `accuracy_stats["mean_accuracy"]`); None = cold-start →
-    sizing konserwatywny. Brak werdyktu rady → `size_band` None."""
+    sizing konserwatywny. Brak werdyktu rady → `size_band` None.
+
+    #9: gdy podano `calibration_buckets`, `strength` liczymy na pewności
+    SKALIBROWANEJ historycznym hit-rate'em jej kubełka (shrinkage przy małej
+    próbce). Kalibracja przestawia więc RANKING sygnałów, nie tylko etykietę:
+    przepewny kubełek spada, uczciwy rośnie. Brak kubełków → funkcja domenowa
+    zwraca surowe `raw` → zachowanie identyczne jak przed #9. Render-only, zero
+    persystencji: kolumna `confidence_calibration` z migracji 016 ma INNĄ
+    semantykę (post-hoc score sędziego LLM) i nie wolno jej nadpisać."""
     signals: list[TradeSignal] = []
     for r in results:
         if r.status != "saved":
             continue
         if r.confidence_score is None or r.expected_change is None:
             continue
-        strength = r.confidence_score * float(abs(r.expected_change)) * 100
+        calibrated = (
+            calibrated_confidence(r.confidence_score, calibration_buckets)
+            if calibration_buckets
+            else None
+        )
+        effective = r.confidence_score if calibrated is None else calibrated
+        strength = effective * float(abs(r.expected_change)) * 100
         signals.append(TradeSignal(
             symbol=r.symbol,
             direction=_trend_to_direction(r.trend),
@@ -50,6 +69,7 @@ def build_trade_signals(
             current_price=r.current_price,
             target_price=r.target_price,
             size_band=_size_band_for(r, hit_rate),
+            calibrated_confidence=calibrated,
         ))
     signals.sort(key=lambda s: s.strength, reverse=True)
     return signals[:top_n]

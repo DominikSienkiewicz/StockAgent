@@ -825,3 +825,47 @@ class TestProcessOneSymbolEarningsGate:
         alpha.fetch_earnings.assert_called_once_with("AAPL")
         assert alpha.enrich.call_args.kwargs["earnings_prefetched"] is True
         assert alpha.enrich.call_args.kwargs["earnings"] == event
+
+
+class TestBuildSignalCalibration:
+    """#9 — kubełki pod ranking sygnałów są niezależne od flagi sekcji
+    Track Record i degradują gracefully."""
+
+    @staticmethod
+    def _settings(enabled: bool) -> MagicMock:
+        settings = MagicMock()
+        settings.calibrated_confidence_enabled = enabled
+        settings.track_record_days = 30
+        return settings
+
+    def test_flag_off_reads_nothing(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+
+        assert main_agent._build_signal_calibration(self._settings(False), repo) is None
+        repo.get_resolved_for_calibration.assert_not_called()
+
+    def test_flag_on_builds_buckets_from_resolved_samples(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.return_value = [
+            {"confidence_score": 0.85, "is_trend_correct": True},
+            {"confidence_score": 0.85, "is_trend_correct": False},
+        ]
+
+        buckets = main_agent._build_signal_calibration(self._settings(True), repo)
+
+        assert buckets
+        repo.get_resolved_for_calibration.assert_called_once_with(30)
+
+    def test_repository_error_degrades_to_raw_confidence(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.side_effect = Exception("supabase down")
+
+        assert main_agent._build_signal_calibration(self._settings(True), repo) is None
+
+    def test_no_usable_samples_yields_no_buckets(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.return_value = [
+            {"confidence_score": None, "is_trend_correct": True},
+        ]
+
+        assert main_agent._build_signal_calibration(self._settings(True), repo) is None

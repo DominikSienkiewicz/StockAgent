@@ -52,6 +52,9 @@ hedge_effectiveness_enabled = false
 equity_curve_enabled = false
 calibration_curve_enabled = false
 lessons_enabled = false
+# #9: pewność LLM korygowana historycznym hit-rate'em swojego kubełka kalibracji
+# — przestawia ranking „🎯 Najsilniejsze sygnały". Render-only, zero zapisu. Off.
+calibrated_confidence_enabled = false
 track_record_days = 30
 # Dane — nowe źródła alpha. Default off → Null adapter (zero płatnych). Realny
 # adapter włącza flaga (+ ewentualny klucz: FRED_API_KEY dla yield_curve).

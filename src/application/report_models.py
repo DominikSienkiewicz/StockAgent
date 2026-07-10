@@ -104,6 +104,11 @@ class TradeSignal:
     # track recordu agenta). None = brak danych do sizingu (np. brak werdyktu
     # rady) — wsteczna kompatybilność, renderer pomija magnitudę.
     size_band: SizeBand | None = None
+    # #9: pewność skorygowana historycznym hit-rate'em swojego kubełka kalibracji.
+    # None = brak historii → `strength` policzone na surowej `confidence`
+    # (zachowanie identyczne jak przed #9). Surowa `confidence` zostaje obok,
+    # żeby raport mógł pokazać "pewność LLM: 85% → skalibrowana historią: 58%".
+    calibrated_confidence: float | None = None
 
 
 @dataclass(frozen=True)

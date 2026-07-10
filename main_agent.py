@@ -957,6 +957,32 @@ def _build_portfolio_radar(
         return None
 
 
+def _build_signal_calibration(
+    settings: Settings, repository: RepositoryPort
+) -> list[CalibrationBucket] | None:
+    """#9 — kubełki kalibracji pod RANKING sygnałów (nie pod sekcję Track Record).
+
+    Świadomie osobne od `_build_track_record`: `calibration_curve_enabled` rysuje
+    sekcję, a `calibrated_confidence_enabled` zmienia ranking. Sprzęgnięcie ich
+    znaczyłoby, że włączenie rankingu po cichu dorysowuje sekcję w mailu.
+    Best-effort: błąd odczytu → None → surowa pewność, cykl leci dalej.
+    """
+    if not settings.calibrated_confidence_enabled:
+        return None
+    try:
+        rows = repository.get_resolved_for_calibration(settings.track_record_days)
+    except Exception:
+        logger.exception("Failed to fetch calibration samples for signal ranking")
+        return None
+    samples = [
+        (float(row["confidence_score"]), bool(row["is_trend_correct"]))
+        for row in rows
+        if row.get("confidence_score") is not None
+        and row.get("is_trend_correct") is not None
+    ]
+    return reliability_curve(samples) if samples else None
+
+
 def _build_track_record(
     settings: Settings, repository: RepositoryPort
 ) -> tuple[EquityCurve | None, list[CalibrationBucket] | None, LessonsReport | None]:
@@ -1104,6 +1130,8 @@ def _dispatch_reports(
         equity_curve, calibration_buckets, lessons = _build_track_record(
             settings, repository
         )
+        # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
+        signal_calibration_buckets = _build_signal_calibration(settings, repository)
 
         def _build(symbols_filter: frozenset[str] | None = None) -> tuple[str, str]:
             return build_html_report(
@@ -1122,6 +1150,7 @@ def _dispatch_reports(
                 alpha_signals=alpha_signals,
                 yield_curve=yield_curve,
                 alpha_prices=alpha_prices,
+                signal_calibration_buckets=signal_calibration_buckets,
             )
 
         html, text = _build()

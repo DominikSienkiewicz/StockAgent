@@ -127,6 +127,11 @@ class Settings(BaseSettings):
     equity_curve_enabled: bool = False
     calibration_curve_enabled: bool = False
     lessons_enabled: bool = False
+    # #9: surowa pewność LLM korygowana historycznym hit-rate'em swojego kubełka
+    # kalibracji. Steruje rankingiem "🎯 Najsilniejsze sygnały" (strength =
+    # pewność × |Δ|). Niezależna od `calibration_curve_enabled` — tamta flaga
+    # rysuje sekcję Track Record, ta zmienia ranking. Render-only, bez zapisu.
+    calibrated_confidence_enabled: bool = False
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
 
