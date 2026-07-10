@@ -79,6 +79,7 @@ from src.domain.digest_lead import LeadItem, build_lead, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
 from src.domain.equity_curve import equity_curve as build_equity_curve
+from src.domain.finops import CycleCost, estimate_cycle_cost
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.peer_group import build_peer_context
@@ -1507,6 +1508,7 @@ def _dispatch_reports(
     alpha_signals: dict[str, AlphaSignals],
     alpha_prices: dict[str, Decimal],
     yield_curve: YieldCurveSnapshot | None,
+    cycle_cost: CycleCost | None = None,
 ) -> None:
     """Faza wysyłki: dociągnięcie danych raportu, zbudowanie raportu i rozesłanie
     — pojedynczo albo per subskrybent (raport tnięty do jego watchlisty). Cała
@@ -1565,6 +1567,7 @@ def _dispatch_reports(
                 consensus_shifts=consensus_shifts,
                 user_portfolio=user_portfolio,
                 portfolio_clusters=_portfolio_clusters(settings),
+                cycle_cost=cycle_cost,
             )
 
         html, text = _build()
@@ -1751,6 +1754,9 @@ def main(settings: Settings | None = None) -> int:
         alpha_signals=alpha_signals,
         alpha_prices=alpha_prices,
         yield_curve=yield_curve,
+        # FinOps: koszt CAŁEGO cyklu z licznika grafu. Cykl w całości odcięty
+        # bramką volatility ma zerowy licznik → sekcja mówi "cykl darmowy".
+        cycle_cost=estimate_cycle_cost(dict(use_case.paid_calls)),
     )
 
     # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).

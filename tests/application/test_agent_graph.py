@@ -2133,3 +2133,76 @@ class TestAttestationCommitment:
         final = self._run(ports, publisher)
 
         assert final["status"] == "saved"
+
+
+class TestPaidCallMeter:
+    """FinOps transparency — agent raportuje własny rachunek. Licznik zbiera
+    dokładnie te wywołania, które już dziś loguje `_log_paid_call`."""
+
+    def _ports(self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
+        return dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+    def test_gated_cycle_is_free(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Sedno FinOps repo: cykl odcięty bramką volatility nie kosztuje nic.
+        from collections import Counter
+
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+        meter: Counter[str] = Counter()
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        create_agent_graph(
+            **ports, threshold=Threshold(Decimal("0.02")), paid_call_meter=meter
+        ).compile().invoke(_initial_state("100.0"))
+
+        assert sum(meter.values()) == 0
+
+    def test_full_cycle_counts_llm_sentiment_and_news(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from collections import Counter
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        meter: Counter[str] = Counter()
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        create_agent_graph(
+            **ports, threshold=Threshold(Decimal("0.02")), paid_call_meter=meter
+        ).compile().invoke(_initial_state("100.0"))
+
+        assert meter["llm"] >= 1
+        assert meter["sentiment"] == 1
+        assert meter["news"] == 1
+
+    def test_meter_is_optional(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Bez licznika graf działa dokładnie jak dotąd.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        final = create_agent_graph(
+            **ports, threshold=Threshold(Decimal("0.02"))
+        ).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
