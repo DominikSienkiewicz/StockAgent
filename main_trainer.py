@@ -85,8 +85,13 @@ def main(settings: Settings | None = None) -> int:
         except Exception:
             logger.exception("Failed to persist quota alert from %s", alert.source)
 
+    # BUG: trener widział tylko `settings.symbols`, więc BTC/ETH NIGDY nie
+    # przechodziły retrainu — model krypto zostawał na zawsze przy cold-starcie.
+    # `dict.fromkeys` zachowuje kolejność i deduplikuje symbol obecny w obu listach.
+    trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
+
     failures = 0
-    for symbol in settings.symbols:
+    for symbol in trainable:
         try:
             result = use_case.run(symbol, refresh_view=False)
             logger.info("%s: %s", symbol, result)
@@ -141,7 +146,7 @@ def main(settings: Settings | None = None) -> int:
         except Exception:
             logger.exception("Weekly recap failed — pomijam")
 
-    logger.info("Slow Loop done — failures=%d/%d", failures, len(settings.symbols))
+    logger.info("Slow Loop done — failures=%d/%d", failures, len(trainable))
     return 1 if failures else 0
 
 

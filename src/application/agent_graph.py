@@ -41,7 +41,7 @@ from src.domain.implied_edge import (
     evaluate_edge,
     model_move_from_prices,
 )
-from src.domain.prediction import Prediction
+from src.domain.prediction import CRYPTO_SIDEWAYS_TOLERANCE, Prediction
 from src.domain.regime_key import canonical_regime_key
 from src.domain.value_objects import AssetType, Fundamentals, Money, Threshold, ValuationVerdict
 
@@ -551,7 +551,16 @@ def _reflect_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
     # to napędza trening XGBoost. is_trend_correct (zgodność kierunku)
     # jest niezależną miarą i napędza trafność raportu.
     accuracy = float(last.accuracy_score(current_price))
-    trend_correct = last.is_trend_correct(current_price)
+    # Pasmo SIDEWAYS zależy od klasy aktywa: ±0.5% to sensowny "brak ruchu" dla
+    # akcji, ale przy dziennej zmienności BTC 3–5% uznawałoby niemal każdy dzień
+    # za ruch i systematycznie zaniżało trafność krypto. Korekta POMIARU.
+    asset = state.get("asset")
+    tolerance = (
+        CRYPTO_SIDEWAYS_TOLERANCE
+        if asset is not None and asset.asset_type is AssetType.CRYPTO
+        else None
+    )
+    trend_correct = last.is_trend_correct(current_price, tolerance=tolerance)
 
     if trend_correct:
         repository_port.update_prediction_accuracy(

@@ -29,7 +29,11 @@ class TrendDirection(StrEnum):
     SIDEWAYS = "SIDEWAYS"
 
 
-SIDEWAYS_TOLERANCE = Decimal("0.005")  # ±0.5%
+SIDEWAYS_TOLERANCE = Decimal("0.005")  # ±0.5% — pasmo FLAT dla akcji/ETF
+# Krypto natywnie rusza się 3–5% dziennie, więc pasmo ±0.5% uznawałoby niemal
+# każdy dzień za "ruch" i systematycznie zaniżało trafność predykcji SIDEWAYS
+# na BTC/ETH. Osobny próg jest korektą POMIARU, nie poluzowaniem oceny.
+CRYPTO_SIDEWAYS_TOLERANCE = Decimal("0.025")  # ±2.5%
 
 
 @dataclass(frozen=True)
@@ -40,7 +44,16 @@ class Prediction:
     predicted_target_price: Decimal
     id: str | None = None  # ustawiane przy odczycie z repozytorium
 
-    def is_trend_correct(self, actual_price: Decimal) -> bool:
+    def is_trend_correct(
+        self, actual_price: Decimal, tolerance: Decimal | None = None
+    ) -> bool:
+        """Czy KIERUNEK predykcji się potwierdził.
+
+        `tolerance` dotyczy wyłącznie SIDEWAYS — szerokość pasma "brak ruchu".
+        None → `SIDEWAYS_TOLERANCE` (±0.5%, akcje/ETF). Dla krypto wołający
+        podaje `CRYPTO_SIDEWAYS_TOLERANCE`: przy dziennej zmienności BTC 3–5%
+        pasmo akcyjne uznawałoby niemal każdy dzień za ruch i zaniżało trafność.
+        """
         actual_delta = actual_price - self.price_at_prediction
         if self.predicted_trend == TrendDirection.BULLISH:
             return actual_delta > 0
@@ -51,7 +64,8 @@ class Prediction:
         # jako SIDEWAYS-correct zamiast dzielić przez zero.
         if self.price_at_prediction == 0:
             return actual_delta == 0
-        return abs(actual_delta / self.price_at_prediction) <= SIDEWAYS_TOLERANCE
+        band = SIDEWAYS_TOLERANCE if tolerance is None else tolerance
+        return abs(actual_delta / self.price_at_prediction) <= band
 
     def accuracy_score(self, actual_price: Decimal) -> Decimal:
         # Guard: bez ceny bazowej (0) nie da się policzyć błędu względnego —

@@ -1514,3 +1514,40 @@ class TestPublicScorecard:
         public_pub = main_agent.build_public_scorecard_publisher(settings)
 
         assert digest_pub is not public_pub
+
+
+class TestCryptoInTrainingLoop:
+    """Bug: main_trainer trenował tylko settings.symbols, więc BTC/ETH NIGDY
+    nie przechodziły retrainu — model krypto zostawał na zawsze cold-start."""
+
+    def test_crypto_symbols_are_trained_too(self, settings, mock_external_clients, mocker) -> None:
+        settings.symbols = ["AAPL"]
+        settings.crypto_symbols = ["BTC", "ETH"]
+        settings.model_scorecard_enabled = False
+        settings.weekly_recap_enabled = False
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+
+        main_trainer.main(settings)
+
+        trained = [c.args[0] for c in fake_uc.run.call_args_list]
+        assert trained == ["AAPL", "BTC", "ETH"]
+
+    def test_no_duplicate_when_a_symbol_is_in_both_lists(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.symbols = ["AAPL", "BTC"]
+        settings.crypto_symbols = ["BTC"]
+        settings.model_scorecard_enabled = False
+        settings.weekly_recap_enabled = False
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+
+        main_trainer.main(settings)
+
+        trained = [c.args[0] for c in fake_uc.run.call_args_list]
+        assert trained == ["AAPL", "BTC"]

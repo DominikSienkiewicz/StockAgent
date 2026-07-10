@@ -91,6 +91,10 @@ Why a separate pool:
 - **Different ticker format on the news side** — Alpha Vantage `NEWS_SENTIMENT` requires the `CRYPTO:` prefix (`CRYPTO:BTC`, `CRYPTO:ETH`). `AlphaVantageClient` translates `BTC ↔ CRYPTO:BTC` internally so the rest of the system stays clean.
 - **No fundamentals** — same model as ETFs: `AssetType.CRYPTO` ⇒ `evaluate_valuation` short-circuits to `ValuationVerdict.UNKNOWN`, no AlphaVantage `OVERVIEW` / `EARNINGS` requests wasted.
 
+**Different sideways band** — `SIDEWAYS_TOLERANCE` is ±0.5%, a sensible "no move" band for a stock. Against BTC's 3–5% daily volatility it would call almost every day a move, so a `SIDEWAYS` prediction on crypto was scored wrong nearly every time. `CRYPTO_SIDEWAYS_TOLERANCE` (±2.5%) is used instead when the asset is crypto. This is a measurement correction, not a loosened grade.
+
+**Crypto is retrained** — the Slow Loop iterates `symbols + crypto_symbols`, deduplicated. It previously trained only `symbols`, so BTC and ETH never went through a retrain and their model stayed at cold start forever.
+
 Everything else (predict, news, sentiment, advisory council, prediction logs, self-reflection) works identically to equities — crypto goes through the same `AnalyzeMarketUseCase`.
 
 ## Quota monitoring (no silent exhaustion)

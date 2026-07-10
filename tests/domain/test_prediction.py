@@ -3,6 +3,8 @@ from decimal import Decimal
 import pytest
 
 from src.domain.prediction import (
+    CRYPTO_SIDEWAYS_TOLERANCE,
+    SIDEWAYS_TOLERANCE,
     Prediction,
     TrendDirection,
     calibration_error,
@@ -121,3 +123,42 @@ class TestZeroPriceAtPredictionGuard:
         # Bez punktu odniesienia (cena 0) nie da się policzyć błędu względnego →
         # zwracamy 0.0 (brak wiarygodnego sygnału), nie crash.
         assert prediction.accuracy_score(Decimal("110.0")) == Decimal("0.0")
+
+
+class TestCryptoSidewaysTolerance:
+    """Bug pomiarowy: ±0.5% to sensowne pasmo FLAT dla akcji, ale przy dziennej
+    zmienności BTC 3–5% niemal każdy dzień jest „ruchem", więc predykcja
+    SIDEWAYS na krypto jest praktycznie zawsze uznawana za chybioną."""
+
+    @staticmethod
+    def _sideways(price: str) -> Prediction:
+        return Prediction(
+            symbol="BTC",
+            predicted_trend=TrendDirection.SIDEWAYS,
+            price_at_prediction=Decimal(price),
+            predicted_target_price=Decimal(price),
+        )
+
+    def test_crypto_tolerance_is_wider_than_equity(self) -> None:
+        assert CRYPTO_SIDEWAYS_TOLERANCE > SIDEWAYS_TOLERANCE
+
+    def test_two_percent_crypto_move_is_still_sideways(self) -> None:
+        # 2% na BTC to szum w paśmie dziennej zmienności 3–5%.
+        pred = self._sideways("100")
+
+        assert pred.is_trend_correct(
+            Decimal("102"), tolerance=CRYPTO_SIDEWAYS_TOLERANCE
+        )
+
+    def test_same_move_is_not_sideways_for_equity(self) -> None:
+        # Kontrola: ta sama delta na akcji to realny ruch.
+        pred = self._sideways("100")
+
+        assert not pred.is_trend_correct(Decimal("102"))
+
+    def test_default_tolerance_is_unchanged(self) -> None:
+        # Wsteczna kompatybilność: bez parametru zachowanie jak dotąd.
+        pred = self._sideways("100")
+
+        assert pred.is_trend_correct(Decimal("100.4"))
+        assert not pred.is_trend_correct(Decimal("101"))
