@@ -85,6 +85,12 @@ select = [
     "SIM",  # flake8-simplify
 ]
 
+[tool.ruff.lint.isort]
+# Katalog `supabase/` (migracje dla CLI) w rootcie sprawia, że isort bierze
+# pakiet PyPI `supabase` za first-party i wrzuca go do grupy z `src.*`.
+# To zależność zewnętrzna — trzymamy ją w grupie third-party.
+known-third-party = ["supabase"]
+
 [tool.ruff.lint.per-file-ignores]
 # HTML templating w report_builder ma długie linie z naturalnym stylem inline —
 # łamanie ich pogarsza czytelność.

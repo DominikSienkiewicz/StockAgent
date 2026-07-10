@@ -224,26 +224,38 @@ uv sync
 cp .env.example .env
 # fill in the keys (see the ".env keys" block below)
 
-# 3. Database schema
-# Open Supabase → SQL Editor → paste & run, in order:
-#   migrations/001_init.sql        (prediction_logs + ml_feature_store)
-#   migrations/002_price_snapshots.sql  (price_snapshots — breaks cold-start)
-#   migrations/003_add_embedding.sql    (embedding VECTOR(1536) + pgvector index)
-#   migrations/004_align_ml_feature_store.sql  (7-feature XGBoost contract)
-#   migrations/005_council_verdict.sql          (council verdicts schema)
-#   migrations/006_fundamentals_cache.sql       (fundamentals_cache table with TTL)
-#   migrations/007_council_votes.sql            (per-investor structured audit trail)
-#   migrations/008_data_quality_flags.sql       (data_quality_flags on prediction_logs)
-#   migrations/009_trend_correctness.sql        (is_trend_correct on prediction_logs + backfill)
-#   migrations/010_quota_alerts.sql             (quota_alerts audit trail for the report banner)
-#   migrations/011_match_news_embeddings.sql    (pgvector RPC for RAG retrieval over news embeddings)
-#   migrations/012_ml_feature_store_return_target.sql  (target = 12h RETURN, not absolute price)
-#   migrations/013_idempotency_and_pagination.sql      (timestamp_hour + UNIQUE(symbol,hour) → upsert idempotency)
-#   migrations/014_subscribers.sql              (subscribers table — per-watchlist report fan-out)
-#   migrations/015_persona_accuracy.sql         (persona_accuracy_weights RPC — adaptive council weighting)
-#   migrations/016_confidence_calibration.sql   (confidence_calibration + calibration_insight columns)
-#   migrations/017_vector_memory_regime.sql     (market regime on the pgvector memory)
-#   migrations/018_persona_track_record.sql     (persona_accuracy_stats RPC — hit-rate + vote count for the leaderboard)
+# 3. Database schema — applied by the Supabase CLI, not by hand
+#    Migrations live in supabase/migrations/ and are applied in filename order.
+#    A ledger table (supabase_migrations.schema_migrations) records what ran, so
+#    re-running is a no-op rather than a rebuild. --db-url skips `login`/`link`,
+#    so the only secret is the Postgres connection string (TLS is enforced).
+#
+#    supabase db push --db-url "$SUPABASE_DB_URL" --dry-run   # show, change nothing
+#    supabase db push --db-url "$SUPABASE_DB_URL"              # apply
+#
+#    In CI: run the "🗄️ DB Migrate (manual)" workflow from the Actions tab. It is
+#    deliberately workflow_dispatch-only — a broken migration must not fire on the
+#    Fast Loop cron, and 022 rebuilds the ml_feature_store materialized view.
+#
+#    The migrations, in order:
+#   supabase/migrations/001_init.sql        (prediction_logs + ml_feature_store)
+#   supabase/migrations/002_price_snapshots.sql  (price_snapshots — breaks cold-start)
+#   supabase/migrations/003_add_embedding.sql    (embedding VECTOR(1536) + pgvector index)
+#   supabase/migrations/004_align_ml_feature_store.sql  (7-feature XGBoost contract)
+#   supabase/migrations/005_council_verdict.sql          (council verdicts schema)
+#   supabase/migrations/006_fundamentals_cache.sql       (fundamentals_cache table with TTL)
+#   supabase/migrations/007_council_votes.sql            (per-investor structured audit trail)
+#   supabase/migrations/008_data_quality_flags.sql       (data_quality_flags on prediction_logs)
+#   supabase/migrations/009_trend_correctness.sql        (is_trend_correct on prediction_logs + backfill)
+#   supabase/migrations/010_quota_alerts.sql             (quota_alerts audit trail for the report banner)
+#   supabase/migrations/011_match_news_embeddings.sql    (pgvector RPC for RAG retrieval over news embeddings)
+#   supabase/migrations/012_ml_feature_store_return_target.sql  (target = 12h RETURN, not absolute price)
+#   supabase/migrations/013_idempotency_and_pagination.sql      (timestamp_hour + UNIQUE(symbol,hour) → upsert idempotency)
+#   supabase/migrations/014_subscribers.sql              (subscribers table — per-watchlist report fan-out)
+#   supabase/migrations/015_persona_accuracy.sql         (persona_accuracy_weights RPC — adaptive council weighting)
+#   supabase/migrations/016_confidence_calibration.sql   (confidence_calibration + calibration_insight columns)
+#   supabase/migrations/017_vector_memory_regime.sql     (market regime on the pgvector memory)
+#   supabase/migrations/018_persona_track_record.sql     (persona_accuracy_stats RPC — hit-rate + vote count for the leaderboard)
 
 # ⚠️ Migration 012 is BREAKING for the ML model: it changes the training target
 #    from absolute price to a 12h return, and the code now reconstructs price from
@@ -315,7 +327,7 @@ Three workflows in [`.github/workflows/`](.github/workflows/):
 
 The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
 
-**Repository secrets** (the only things CI needs beyond the committed `config.toml`): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`, `DIGEST_TO_EMAIL`, `FRED_API_KEY`. `ANTHROPIC_API_KEY` is required (main analysis runs on Claude); `DIGEST_TO_EMAIL` is a **secret** (was a variable — move it). `FRED_API_KEY` is **optional** — only needed when `yield_curve_enabled = true` (the FRED yield-curve alpha source). `SONAR_TOKEN` is **optional** — it enables the SonarCloud scan job; without it that job is skipped, so CI never breaks before Sonar is configured.
+**Repository secrets** (the only things CI needs beyond the committed `config.toml`): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`, `DIGEST_TO_EMAIL`, `FRED_API_KEY`. Database migrations need one more, used only by the manual DB Migrate workflow: `SUPABASE_DB_URL` — the **direct Postgres connection string** (`postgresql://postgres:...@db.<ref>.supabase.co:5432/postgres`), not the PostgREST `SUPABASE_URL`. The two are different things and only the former can run DDL. `ANTHROPIC_API_KEY` is required (main analysis runs on Claude); `DIGEST_TO_EMAIL` is a **secret** (was a variable — move it). `FRED_API_KEY` is **optional** — only needed when `yield_curve_enabled = true` (the FRED yield-curve alpha source). `SONAR_TOKEN` is **optional** — it enables the SonarCloud scan job; without it that job is skipped, so CI never breaks before Sonar is configured.
 
 **SonarCloud — one-time setup.** [`ci.yml`](.github/workflows/ci.yml) carries a `sonarcloud` job that runs `pytest --cov` and uploads code + coverage to [SonarCloud](https://sonarcloud.io/project/overview?id=DominikSienkiewicz_StockAgent) (keys live in [`sonar-project.properties`](sonar-project.properties)). To enable it: (1) create a **`SONAR_TOKEN`** repository secret (SonarCloud → *My Account → Security*); (2) in SonarCloud, **disable *Automatic Analysis*** (*Administration → Analysis Method*) — CI-based and automatic analysis cannot both run, and only the CI scan uploads the coverage report the "Sonar way" gate (≥ 80% on new code) needs.
 
