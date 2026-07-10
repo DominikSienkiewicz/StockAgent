@@ -164,6 +164,11 @@ class Settings(BaseSettings):
     # (nie per symbol, nie per cykl). Poniżej 5 zamkniętych predykcji mail
     # nie wychodzi — reguła domenowa, nie opcja. Off.
     weekly_recap_enabled: bool = False
+    # #10: publiczny scorecard kalibracji (landing page). WYŁĄCZNIE agregaty —
+    # zero PII, zero symboli watchlisty, zero kwot. Osobny publisher i osobna
+    # ścieżka niż prywatny `web_digest`. Render-only, zero płatnych. Off.
+    public_scorecard_enabled: bool = False
+    public_scorecard_path: str = "public/scorecard/index.html"
     attestation_commitments_path: str = "public/attestation/commitments.jsonl"
     attestation_reveals_path: str = "public/attestation/reveals.jsonl"
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.

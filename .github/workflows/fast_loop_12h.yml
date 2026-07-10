@@ -18,6 +18,11 @@ on:
 
 permissions:
   contents: read       # tylko czytamy kod; Fast Loop nie pisze do repo
+  # #10: publiczny scorecard kalibracji deployuje się na GitHub Pages.
+  # Wymagane dopiero przy `public_scorecard_enabled = true`; z flagą off
+  # uprawnienia leżą nieużywane i nic nie publikujemy.
+  pages: write
+  id-token: write
 
 # Zapobiega overlapowi: jeśli opóźniony pierwszy run trwa nadal gdy ruszy
 # drugi (GHA cron bywa best-effort, opóźnienia 5-60 min są normalne), nowy

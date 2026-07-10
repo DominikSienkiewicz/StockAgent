@@ -83,6 +83,10 @@ portfolio_positions_enabled = false
 # #17: niedzielna retrospektywa („Tydzień StockAgenta"). Koszt: 1 wywołanie LLM
 # TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Off.
 weekly_recap_enabled = false
+# #10: publiczny scorecard kalibracji — wyłącznie agregaty (N, hit-rate, ECE),
+# zero PII i zero symboli. Osobna ścieżka niż prywatny web_digest. Off.
+public_scorecard_enabled = false
+public_scorecard_path = "public/scorecard/index.html"
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"
 track_record_days = 30
