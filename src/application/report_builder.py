@@ -15,9 +15,9 @@ from typing import Any
 from src.application.alpha_signals import AlphaSignals
 from src.application.report_alpha import render_alpha_html
 from src.application.report_charts import (
-    build_chart_url,
-    build_correlation_chart_url,
-    build_forecast_chart_url,
+    build_correlation_chart_html,
+    build_delta_chart_html,
+    build_forecast_chart_html,
 )
 from src.application.report_consensus_shift import (
     render_consensus_shift_html,
@@ -131,9 +131,9 @@ __all__ = [
     "TopNewsItem",
     "TradeSignal",
     "ValuationSection",
-    "build_chart_url",
-    "build_correlation_chart_url",
-    "build_forecast_chart_url",
+    "build_correlation_chart_html",
+    "build_delta_chart_html",
+    "build_forecast_chart_html",
     "build_html_report",
     "build_portfolio_mood",
     "build_trade_signals",
@@ -1210,15 +1210,11 @@ def _render_saved_section_html(saved: list[SymbolResult]) -> str:
     parts.extend(_render_prediction_row_html(r) for r in saved)
     parts.append("</table>")
 
-    # Wykres prognozy
-    forecast_chart_url = build_forecast_chart_url(saved)
-    if forecast_chart_url:
-        parts.append(f"""
-      <div style="margin: 16px 0; text-align: center;">
-        <img src="{_html(forecast_chart_url)}" alt="Prognoza zmian cen"
-             style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />
-      </div>
-            """)
+    # #2: wykres prognozy jako INLINE HTML — koniec z <img> z zewnętrznego hosta.
+    # Fragment jest już zescapowany przez renderer, więc wstawiamy go wprost.
+    forecast_chart = build_forecast_chart_html(saved)
+    if forecast_chart:
+        parts.append(forecast_chart)
 
     # Uzasadnienia
     parts.append("<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>💡 Uzasadnienia</h3>")
@@ -1349,15 +1345,10 @@ def _render_html(
     # Historia trafności
     sections.append(_render_accuracy_history_html(accuracy_stats))
 
-    # Wykres zmiany cen
-    chart_url = build_chart_url(results)
-    if chart_url:
-        sections.append(f"""
-      <div style="margin-bottom: 16px; text-align: center;">
-        <img src="{_html(chart_url)}" alt="Wykres zmiany cen (cykl)"
-             style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />
-      </div>
-        """)
+    # #2: wykres Δ cen jako inline HTML (żadne dane nie opuszczają maila).
+    delta_chart = build_delta_chart_html(results)
+    if delta_chart:
+        sections.append(delta_chart)
 
     # Self-Reflection — wnioski z poprzednich cykli
     sections.append(_render_reflections_html(saved))
@@ -1367,16 +1358,14 @@ def _render_html(
 
     sections.append(_SUGGESTIONS_SLOT)
 
-    # Scatter: sentyment vs cena (jeśli ≥3 punkty)
-    scatter_url = build_correlation_chart_url(results)
-    if scatter_url:
-        sections.append(f"""
-      <h3 style="font-size: 14px; margin: 20px 0 8px 0;">📈 Korelacja sentymentu z ruchem ceny</h3>
-      <div style="margin-bottom: 16px; text-align: center;">
-        <img src="{_html(scatter_url)}" alt="Scatter sentyment vs cena"
-             style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />
-      </div>
-        """)
+    # #2: dawny scatter → tabela kwadrantów, inline (≥3 punkty).
+    correlation_chart = build_correlation_chart_html(results)
+    if correlation_chart:
+        sections.append(
+            '<h3 style="font-size: 14px; margin: 20px 0 8px 0;">'
+            "📈 Korelacja sentymentu z ruchem ceny</h3>"
+        )
+        sections.append(correlation_chart)
 
     # Pominięte
     sections.append(_render_ignored_html(ignored))

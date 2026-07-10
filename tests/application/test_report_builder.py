@@ -9,9 +9,9 @@ from src.application.report_builder import (
     RiskSignal,
     SymbolResult,
     TopNewsItem,
-    build_chart_url,
-    build_correlation_chart_url,
-    build_forecast_chart_url,
+    build_correlation_chart_html,
+    build_delta_chart_html,
+    build_forecast_chart_html,
     build_html_report,
     build_portfolio_mood,
     build_trade_signals,
@@ -281,37 +281,43 @@ class TestPolishLabels:
         assert "Zmiana 12h" not in html  # mylące sztywne "12h" usunięte
 
 
-class TestBuildChartUrl:
-    def test_returns_quickchart_url(self):
+class TestDeltaChart:
+    """#2 — wykres Δ jako inline HTML. Kontrakt zmieniony świadomie: dawniej
+    `<img>` z quickchart.io (dziura w Gmailu z blokadą obrazków + wyciek danych
+    portfela w URL-u), teraz div-bary renderowane w treści maila."""
+
+    def test_renders_inline_bars_not_a_remote_image(self):
         results = [
             SymbolResult(symbol="AAPL", status="saved", delta=Decimal("0.025")),
             SymbolResult(symbol="MSFT", status="ignored", delta=Decimal("-0.005")),
         ]
-        url = build_chart_url(results)
-        assert url is not None
-        assert "quickchart.io/chart" in url
+        chart = build_delta_chart_html(results)
+        assert chart
+        assert "quickchart" not in chart
+        assert "AAPL" in chart
 
-    def test_returns_none_for_empty_results(self):
-        assert build_chart_url([]) is None
+    def test_returns_empty_for_empty_results(self):
+        assert build_delta_chart_html([]) == ""
 
     def test_excludes_error_results(self):
         results = [
             SymbolResult(symbol="X", status="error", error_message="boom"),
         ]
-        assert build_chart_url(results) is None
+        assert build_delta_chart_html(results) == ""
 
     def test_excludes_results_without_delta(self):
         results = [SymbolResult(symbol="X", status="ignored", delta=None)]
-        assert build_chart_url(results) is None
+        assert build_delta_chart_html(results) == ""
 
-    def test_html_embeds_chart_image(self):
+    def test_report_embeds_the_chart_without_any_remote_host(self):
         html, _ = build_html_report(
             [_saved_result(), _ignored_result()],
             datetime(2026, 5, 14, tzinfo=UTC),
             1.0,
         )
-        assert "<img" in html
-        assert "quickchart.io" in html
+        # Sedno #2: żadne dane nie opuszczają maila, żaden obrazek się nie ładuje.
+        assert "quickchart.io" not in html
+        assert "<img" not in html
 
 
 class TestForecastDetails:
@@ -358,32 +364,34 @@ class TestForecastDetails:
 
 
 class TestForecastChart:
-    def test_returns_quickchart_url_for_saved(self):
+    def test_renders_inline_bars_for_saved(self):
         results = [
             SymbolResult(
                 symbol="AAPL", status="saved",
                 current_price=Decimal("100"), target_price=Decimal("105"),
             )
         ]
-        url = build_forecast_chart_url(results)
-        assert url is not None and "quickchart.io" in url
+        chart = build_forecast_chart_html(results)
+        assert chart
+        assert "quickchart" not in chart
 
     def test_skips_ignored_in_forecast_chart(self):
         results = [
             SymbolResult(symbol="X", status="ignored", delta=Decimal("0.005")),
         ]
-        assert build_forecast_chart_url(results) is None
+        assert build_forecast_chart_html(results) == ""
 
     def test_skips_saved_without_target(self):
         results = [SymbolResult(symbol="X", status="saved", current_price=Decimal("100"))]
-        assert build_forecast_chart_url(results) is None
+        assert build_forecast_chart_html(results) == ""
 
-    def test_html_embeds_forecast_chart_when_saved_present(self):
+    def test_report_contains_both_charts_when_saved_present(self):
         html, _ = build_html_report(
             [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
         )
-        # Powinny być DWA <img> w raporcie: Δ12h + prognoza
-        assert html.count("<img") >= 2
+        # Dwa wykresy: Δ cyklu + prognoza. Oba inline, zero <img>.
+        assert "Zmiana ceny (cykl)" in html
+        assert "<img" not in html
 
 
 class TestPortfolioMood:
@@ -517,24 +525,25 @@ class TestAccuracyStats:
 
 
 class TestCorrelationChart:
-    def test_returns_url_for_3_plus_points(self):
+    def test_renders_quadrant_table_for_3_plus_points(self):
         results = [
             SymbolResult(symbol=s, status="saved",
                          sentiment_score=v, delta=Decimal(str(v / 2)))
             for s, v in [("A", 0.3), ("B", -0.2), ("C", 0.1)]
         ]
-        url = build_correlation_chart_url(results)
-        assert url is not None
-        assert "scatter" in url.lower() or "quickchart" in url
+        chart = build_correlation_chart_html(results)
+        assert chart
+        assert "quickchart" not in chart
+        assert "<table" in chart
 
-    def test_returns_none_for_less_than_3(self):
+    def test_returns_empty_for_less_than_3(self):
         results = [
             SymbolResult(symbol="A", status="saved",
                          sentiment_score=0.3, delta=Decimal("0.05")),
             SymbolResult(symbol="B", status="saved",
                          sentiment_score=-0.2, delta=Decimal("-0.03")),
         ]
-        assert build_correlation_chart_url(results) is None
+        assert build_correlation_chart_html(results) == ""
 
 
 class TestTradeSignals:
