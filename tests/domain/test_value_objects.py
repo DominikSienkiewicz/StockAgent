@@ -25,7 +25,11 @@ class TestMoney:
             money.amount = Decimal("200.00")  # type: ignore[misc]
 
     def test_two_money_with_same_amount_are_equal(self) -> None:
-        assert Money(Decimal("50.0")) == Money(Decimal("50.0"))
+        # Dwie ODRĘBNE instancje o tej samej kwocie — równość ma iść po
+        # wartości, nie po tożsamości obiektu.
+        money = Money(Decimal("50.0"))
+        same_amount = Money(Decimal("50.0"))
+        assert money == same_amount
 
     def test_different_amounts_are_not_equal(self) -> None:
         assert Money(Decimal("50.0")) != Money(Decimal("51.0"))

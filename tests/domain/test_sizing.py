@@ -81,7 +81,11 @@ class TestSuggestBand:
 
 class TestSizeBand:
     def test_equality_by_value(self):
-        assert SizeBand("full", 4.0, 5.0, "x") == SizeBand("full", 4.0, 5.0, "x")
+        # Dwie ODRĘBNE instancje o tych samych polach — równość ma iść po
+        # wartości, nie po tożsamości obiektu.
+        band = SizeBand("full", 4.0, 5.0, "x")
+        same_values = SizeBand("full", 4.0, 5.0, "x")
+        assert band == same_values
 
 
 class TestSizingKnowsExistingExposure:

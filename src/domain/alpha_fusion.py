@@ -45,6 +45,7 @@ Zero importów zewnętrznych — tylko stdlib + inne moduły domeny.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from src.domain.analyst_consensus import AnalystConsensus, AnalystRating
@@ -58,6 +59,11 @@ from src.domain.social_velocity import SocialTrend, SocialVelocitySnapshot
 # Pełny zestaw sumuje się do 1.0; renormalizacja liczy udziały właśnie od tego.
 # Insider najwyżej (insiderzy znają własną spółkę), analyst i social niżej
 # (sell-side jest opóźniony, retail bywa szumem).
+# Tolerancja porównań z zerem. `avg_sentiment` bywa średnią z wielu wzmianek,
+# więc „neutralny" wychodzi z arytmetyki jako ±1e-17, a nie jako dokładne 0.0 —
+# porównanie przez `==` przepuszczałoby taki szum jako kierunek.
+_ZERO_TOLERANCE = 1e-12
+
 ALPHA_WEIGHTS: dict[str, float] = {
     "insider": 0.35,
     "options": 0.25,
@@ -133,7 +139,7 @@ def _social_signal(snapshot: SocialVelocitySnapshot) -> float:
     if snapshot.trend() is not SocialTrend.SURGING:
         return 0.0
     sentiment = snapshot.avg_sentiment
-    if sentiment is None or sentiment == 0.0:
+    if sentiment is None or math.isclose(sentiment, 0.0, abs_tol=_ZERO_TOLERANCE):
         return 0.0
     return 1.0 if sentiment > 0.0 else -1.0
 
