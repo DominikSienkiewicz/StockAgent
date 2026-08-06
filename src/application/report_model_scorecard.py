@@ -103,11 +103,11 @@ def render_model_scorecard_html(
         )
 
     rows: list[str] = [
-        f"<div style='font-size: 13px; margin-bottom: 4px;'>"
-        f"Ostatni trening: <strong>{_html.escape(_fmt_date(trained_at))}</strong>"
-        f"{stale_badge}</div>",
-        f"<div style='font-size: 13px; color: #374151; margin-bottom: 4px;'>"
-        f"Przebieg: {_html.escape(summary.summary_line)}</div>",
+        "<div style='font-size: 13px; margin-bottom: 4px;'>"
+        + f"Ostatni trening: <strong>{_html.escape(_fmt_date(trained_at))}</strong>"
+        + f"{stale_badge}</div>",
+        "<div style='font-size: 13px; color: #374151; margin-bottom: 4px;'>"
+        + f"Przebieg: {_html.escape(summary.summary_line)}</div>",
     ]
 
     reject_notice = _reject_notice(summary)

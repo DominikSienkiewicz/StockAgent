@@ -41,22 +41,37 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 # Sekwencje, które mogłyby udawać sterowanie promptem albo zamknąć nasz fence:
 #   - backticki (markdown / fence),
 #   - kątowe markery fence'a (zarówno start, jak i końcowy),
-#   - pseudo-role w stylu czatu ("system:", "assistant:", "<|im_start|>").
-# Kwantyfikatory wokół "UNTRUSTED" są OGRANICZONE ({0,64}) — bez limitu wzorzec
-# `[A-Z_]*UNTRUSTED[A-Z_]*` na powtarzalnym "UNTRUSTED_..." backtrackuje O(n^2)
-# (ReDoS na danych nieufnych). Realne etykiety fence'a są krótkie, więc 64 znaki
-# z naddatkiem pokrywają każdy prawdziwy marker.
-_DANGEROUS_TOKENS_RE = re.compile(
-    r"""
-      `+                                  # backticki
-    | <<<\s*/?\s*[A-Z_]{0,64}UNTRUSTED[A-Z_]{0,64}\s*>>>  # podrobione markery
-    | <\|[^>]*\|>                          # tokeny chat-ML, np. <|im_start|>
-    | (?i:\b(?:system|assistant|developer)\s*:)  # pseudo-role
-    """,
-    re.VERBOSE,
-)
+#   - tokeny chat-ML ("<|im_start|>") i pseudo-role ("system:", "assistant:").
+# Każda kategoria ma WŁASNY wzorzec zamiast jednej wielkiej alternatywy: ta
+# dawała się czytać wyłącznie w całości, a `IGNORECASE` dla pseudo-ról trzeba
+# było doklejać grupą flagową wokół jednej gałęzi.
+_BACKTICKS_RE = re.compile(r"`+")
+
+# Kandydat na marker fence'a. Wzorzec jest DETERMINISTYCZNY — klasy `[\s/]`,
+# `[A-Z_]` i literał `>` nie mają wspólnych znaków, więc silnik nie ma czego
+# backtrackować. Poprzednia wersja (`[A-Z_]{0,64}UNTRUSTED[A-Z_]{0,64}`)
+# przebiegała tę samą klasę po obu stronach literału i na spreparowanym
+# "UNTRUSTED_UNTRUSTED_…" rosła kwadratowo — ReDoS na danych nieufnych.
+# O tym, czy marker jest PODROBIONY, decyduje `_strip_forged_fence` na gotowym
+# dopasowaniu; wzorzec tylko je znajduje.
+_FENCE_MARKER_RE = re.compile(r"<<<[\s/]*[A-Z_]*\s*>>>")
+
+# Tokeny chat-ML, np. `<|im_start|>`. `[^>]*` i `>` są rozłączne, więc wzorzec
+# domyka się na pierwszym `>` bez nawrotów.
+_CHATML_TOKEN_RE = re.compile(r"<\|[^>]*>")
+
+# Pseudo-role w stylu czatu. Wielkość liter nieistotna — "System:" udaje rolę
+# tak samo skutecznie jak "system:".
+_PSEUDO_ROLE_RE = re.compile(r"\b(?:system|assistant|developer)\s*:", re.IGNORECASE)
 
 _TRUNCATION_MARKER = "…[truncated]"
+
+
+def _strip_forged_fence(match: re.Match[str]) -> str:
+    """Usuwa wyłącznie markery podrabiające NASZ fence. Każdy inny `<<<TOKEN>>>`
+    zostaje nietknięty — to zwykły tekst nagłówka, nie próba sterowania."""
+    marker = match.group()
+    return " " if "UNTRUSTED" in marker else marker
 
 
 def _sanitize_item(item: str, max_len: int) -> str:
@@ -68,8 +83,11 @@ def _sanitize_item(item: str, max_len: int) -> str:
     # Znaki kontrolne (newline, ESC, NUL itd.) zamieniamy na spację, żeby
     # wstrzyknięty nowy wiersz nie rozbił układu i nie udawał nowej sekcji.
     cleaned = _CONTROL_CHARS_RE.sub(" ", item)
-    # Usuń backticki, podrobione markery fence'a i pseudo-role.
-    cleaned = _DANGEROUS_TOKENS_RE.sub(" ", cleaned)
+    # Usuń backticki, podrobione markery fence'a, tokeny chat-ML i pseudo-role.
+    cleaned = _BACKTICKS_RE.sub(" ", cleaned)
+    cleaned = _FENCE_MARKER_RE.sub(_strip_forged_fence, cleaned)
+    cleaned = _CHATML_TOKEN_RE.sub(" ", cleaned)
+    cleaned = _PSEUDO_ROLE_RE.sub(" ", cleaned)
     # Zredukuj wielokrotne białe znaki do pojedynczej spacji — czytelność.
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if len(cleaned) > max_len:
