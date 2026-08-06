@@ -123,16 +123,14 @@ class TestEvaluateDrawdown:
 
     def test_negative_thresholds_raise(self) -> None:
         sig = _signal(peak="100", current="80")
+        elevated_pct = Decimal("-0.1")
+        critical_pct = Decimal("0.2")
         with pytest.raises(ValueError):
-            sig.evaluate_drawdown(
-                elevated_pct=Decimal("-0.1"),
-                critical_pct=Decimal("0.2"),
-            )
+            sig.evaluate_drawdown(elevated_pct=elevated_pct, critical_pct=critical_pct)
 
     def test_inverted_thresholds_raise(self) -> None:
         sig = _signal(peak="100", current="80")
+        elevated_pct = Decimal("0.2")
+        critical_pct = Decimal("0.1")
         with pytest.raises(ValueError):
-            sig.evaluate_drawdown(
-                elevated_pct=Decimal("0.2"),
-                critical_pct=Decimal("0.1"),
-            )
+            sig.evaluate_drawdown(elevated_pct=elevated_pct, critical_pct=critical_pct)

@@ -180,7 +180,8 @@ class TestCouncilSectionUsesDomainBehavior:
             ),
         ]
         html = self._build(opinions)
-        assert "SPLIT" not in html and "PODZIELONA" not in html
+        assert "SPLIT" not in html
+        assert "PODZIELONA" not in html
 
     def test_vote_distribution_displayed(self):
         # Trzy głosy: 2 BUY, 1 SELL → rozkład widoczny w raporcie

@@ -191,8 +191,11 @@ class TestPriceSnapshot:
         # symuluje crash PO check_price, PRZED save.
         ml_port.predict.side_effect = RuntimeError("XGBoost segfault")
 
+        graph = workflow.compile()
+        initial_state = _initial_state("100.0")
+
         with pytest.raises(Exception):  # noqa: B017 - dowolny wyjątek z grafu
-            workflow.compile().invoke(_initial_state("100.0"))
+            graph.invoke(initial_state)
 
         # Sedno naprawy: brak terminala = brak snapshotu = retry reużyje
         # referencji z POPRZEDNIEGO ukończonego cyklu.

@@ -226,16 +226,15 @@ class TestSavePrediction:
         # Supabase czasem zwraca puste response.data (np. przy konflikcie RLS).
         # Bez tego guardu prediction_id propagowałby się jako None / KeyError.
         _set_chain_response(mock_client, ["table", "upsert"], data=[])
+        prediction = {
+            "symbol": "AAPL",
+            "price_at_prediction": Decimal("100.0"),
+            "predicted_trend": "BULLISH",
+            "predicted_target_price": Decimal("105.0"),
+        }
 
         with pytest.raises(RuntimeError, match="AAPL"):
-            repo.save_prediction(
-                {
-                    "symbol": "AAPL",
-                    "price_at_prediction": Decimal("100.0"),
-                    "predicted_trend": "BULLISH",
-                    "predicted_target_price": Decimal("105.0"),
-                }
-            )
+            repo.save_prediction(prediction)
 
     def test_serializes_decimal_values_for_json(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -1228,7 +1227,8 @@ class TestModelScorecards:
 
         rows = repo.get_recent_model_scorecards(30)
 
-        assert rows and rows[0]["symbol"] == "AAPL"
+        assert rows
+        assert rows[0]["symbol"] == "AAPL"
 
     def test_get_recent_is_graceful_on_error(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -1374,4 +1374,5 @@ class TestGetResolvedPredictionsDetailed:
             "price_at_prediction",
         ):
             assert field in selected
-        assert rows and rows[0]["id"] == "p-1"
+        assert rows
+        assert rows[0]["id"] == "p-1"

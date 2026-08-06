@@ -82,7 +82,8 @@ def test_get_fundamentals_tool_has_well_formed_schema() -> None:
     assert "symbol" in schema["properties"]
     assert schema["properties"]["symbol"]["type"] == "string"
     assert schema["required"] == ["symbol"]
-    assert isinstance(tool.description, str) and tool.description
+    assert isinstance(tool.description, str)
+    assert tool.description
 
 
 def test_get_macro_tool_has_empty_object_schema() -> None:
@@ -96,7 +97,8 @@ def test_get_macro_tool_has_empty_object_schema() -> None:
     # Brak wymaganych argumentów — pusty obiekt JSON Schema.
     assert schema.get("required", []) == []
     assert schema.get("properties", {}) == {}
-    assert isinstance(tool.description, str) and tool.description
+    assert isinstance(tool.description, str)
+    assert tool.description
 
 
 # --- get_fundamentals: happy path -----------------------------------------

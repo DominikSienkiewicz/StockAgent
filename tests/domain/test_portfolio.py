@@ -69,10 +69,15 @@ def test_position_rejects_negative_price() -> None:
 
 
 def test_position_rejects_nan_inf() -> None:
+    nan = Decimal("NaN")
+    infinity = Decimal("Infinity")
+    one = Decimal("1")
+    bought_at = date(2026, 1, 1)
+
     with pytest.raises(ValueError):
-        Position("NVDA", Decimal("NaN"), Decimal("1"), date(2026, 1, 1))
+        Position("NVDA", nan, one, bought_at)
     with pytest.raises(ValueError):
-        Position("NVDA", Decimal("1"), Decimal("Infinity"), date(2026, 1, 1))
+        Position("NVDA", one, infinity, bought_at)
 
 
 # --- weights: realne wagi + renormalizacja ----------------------------------

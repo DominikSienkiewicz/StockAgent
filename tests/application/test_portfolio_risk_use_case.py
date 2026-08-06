@@ -123,7 +123,8 @@ class TestVarAndStress:
             var_enabled=True,
             var_confidence=0.95,
         ).run(["NVDA", "MSFT", "GLD"])
-        assert report.var is not None and report.var >= 0.0
+        assert report.var is not None
+        assert report.var >= 0.0
         assert report.cvar is not None
         # CVaR (expected shortfall) nigdy nie jest mniejszy niż VaR.
         assert report.cvar >= report.var

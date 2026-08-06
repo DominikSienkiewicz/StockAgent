@@ -1153,7 +1153,8 @@ class TestConsensusShiftWiring:
             now=datetime(2026, 7, 10, 18, 0, tzinfo=UTC),
         )
 
-        assert shifts and shifts[0][0] == "NVDA"
+        assert shifts
+        assert shifts[0][0] == "NVDA"
         assert shifts[0][1].kind is ShiftKind.FLIP
 
     def test_stale_comparison_is_marked_not_dramatised(self) -> None:

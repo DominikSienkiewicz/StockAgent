@@ -70,8 +70,10 @@ class TestSuggestBand:
     def test_label_is_human_readable_polish(self):
         band = suggest_band(consensus_strength=0.9, dissent_ratio=0.0, hit_rate=0.7)
         # Etykieta dla maila — czytelna, polska, zawiera zakres procentowy.
-        assert "4" in band.label and "5" in band.label
-        assert isinstance(band.label, str) and band.label.strip()
+        assert "4" in band.label
+        assert "5" in band.label
+        assert isinstance(band.label, str)
+        assert band.label.strip()
 
     def test_deterministic(self):
         a = suggest_band(0.9, 0.0, 0.7)

@@ -113,7 +113,8 @@ class TestCryptoSection:
             datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0,
         )
         assert "KRYPTO" in text.upper()
-        assert "BTC" in text and "ETH" in text
+        assert "BTC" in text
+        assert "ETH" in text
 
     def test_no_crypto_section_when_no_crypto(self):
         html, _ = build_html_report(
@@ -143,7 +144,8 @@ class TestBuildHtmlReport:
         html, text = build_html_report(
             results, datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 12.5
         )
-        assert isinstance(html, str) and isinstance(text, str)
+        assert isinstance(html, str)
+        assert isinstance(text, str)
         assert len(html) > 100
         assert len(text) > 50
 
@@ -241,7 +243,8 @@ class TestBuildHtmlReport:
         )
         # Brak crasha, nadal generuje strukturę
         assert ">0<" in html  # zero predykcji
-        assert "Symboli:" in text and "0" in text
+        assert "Symboli:" in text
+        assert "0" in text
 
 
 class TestPolishLabels:
@@ -693,10 +696,13 @@ class TestDayOverDay:
             resolved_predictions=resolved,
         )
         assert "Zamknięte predykcje" in html
-        assert "NVDA" in html and "SAP" in html
-        assert "Trafiona" in html and "Błędna" in html
+        assert "NVDA" in html
+        assert "SAP" in html
+        assert "Trafiona" in html
+        assert "Błędna" in html
         assert "ZAMKNIĘTE PREDYKCJE" in text
-        assert "Trafiona" in text and "Błędna" in text
+        assert "Trafiona" in text
+        assert "Błędna" in text
 
     def test_no_section_when_no_resolved(self):
         html, _ = build_html_report(
@@ -800,7 +806,8 @@ class TestResolvedPostMortem:
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
             resolved_predictions=resolved,
         )
-        assert "AMD" in html and "Trafiona" in html
+        assert "AMD" in html
+        assert "Trafiona" in html
 
 
 class TestClickableNewsLinks:
