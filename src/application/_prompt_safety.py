@@ -47,14 +47,20 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 # było doklejać grupą flagową wokół jednej gałęzi.
 _BACKTICKS_RE = re.compile(r"`+")
 
-# Kandydat na marker fence'a. Wzorzec jest DETERMINISTYCZNY — klasy `[\s/]`,
-# `[A-Z_]` i literał `>` nie mają wspólnych znaków, więc silnik nie ma czego
-# backtrackować. Poprzednia wersja (`[A-Z_]{0,64}UNTRUSTED[A-Z_]{0,64}`)
-# przebiegała tę samą klasę po obu stronach literału i na spreparowanym
-# "UNTRUSTED_UNTRUSTED_…" rosła kwadratowo — ReDoS na danych nieufnych.
-# O tym, czy marker jest PODROBIONY, decyduje `_strip_forged_fence` na gotowym
-# dopasowaniu; wzorzec tylko je znajduje.
-_FENCE_MARKER_RE = re.compile(r"<<<[\s/]*[A-Z_]*\s*>>>")
+# Kandydat na marker fence'a. Wnętrze to JEDNA klasa znaków, rozłączna z `>`,
+# więc każde wejście da się dopasować dokładnie na jeden sposób i silnik nie ma
+# czego backtrackować. Dwie poprzednie wersje miały tu wieloznaczność:
+# `[A-Z_]{0,64}UNTRUSTED[A-Z_]{0,64}` przebiegało tę samą klasę po obu stronach
+# literału, a `[\s/]*[A-Z_]*\s*` opisywało tę samą spację na dwa sposoby — bo
+# `[A-Z_]*` matchuje pusto, a `\s` należy również do `[\s/]`. Obie rosły
+# kwadratowo na spreparowanym nagłówku, czyli ReDoS na danych nieufnych.
+#
+# Klasa jest ŚWIADOMIE szersza od poprzedniej: dopuszcza białe znaki także
+# wewnątrz markera, więc "<<<END UNTRUSTED NEWS DATA>>>" jest teraz kandydatem.
+# Szersze dopasowanie może wyłącznie ZWIĘKSZYĆ liczbę wyłapanych podróbek —
+# o tym, czy marker jest podrobiony, i tak decyduje `_strip_forged_fence`, który
+# każdy marker bez "UNTRUSTED" zwraca nietknięty.
+_FENCE_MARKER_RE = re.compile(r"<<<[A-Z_\s/]*>>>")
 
 # Tokeny chat-ML, np. `<|im_start|>`. `[^>]*` i `>` są rozłączne, więc wzorzec
 # domyka się na pierwszym `>` bez nawrotów.

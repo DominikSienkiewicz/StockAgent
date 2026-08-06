@@ -61,7 +61,6 @@ def classify_cycle(
     cold_start_count: int,
     below_threshold_count: int,
     error_count: int,
-    unsupported_count: int = 0,
 ) -> CycleMaturity:
     """Klasyfikuje dojrzałość cyklu na podstawie zliczeń jego wyników.
 
@@ -70,9 +69,13 @@ def classify_cycle(
 
     Mianownik "obsługiwalności" to symbole, które realnie mogły wygenerować
     predykcję: `saved + cold_start + below_threshold + error`. Symbole
-    `unsupported_count` są z niego JAWNIE wykluczone (trzecia kategoria
-    "ignored", pre-filtrowana wyżej) — nie mogą ani zrobić z incydentu Dnia 1,
-    ani odwrotnie.
+    `SkipReason.UNSUPPORTED_PRICE` (trzecia kategoria "ignored") są z niego
+    wykluczone przez to, że orkiestrator NIE wlicza ich do żadnej z tych
+    liczności — do tej funkcji w ogóle nie docierają, więc nie mogą ani zrobić
+    z incydentu Dnia 1, ani odwrotnie. Świadomie nie ma tu na nie parametru:
+    argument, którego jedyną rolą jest zostać zignorowanym, sugeruje wpływ na
+    wynik, którego nie ma. Kontraktu pilnuje test wiring'u
+    (`TestCycleMaturityWiring`), bo to on filtruje realne wyniki cyklu.
 
     Cykl jest `FIRST_RUN` tylko gdy jest to prawdziwy pierwszy kontakt:
 

@@ -1023,6 +1023,15 @@ class TestCycleMaturityWiring:
 
         assert main_agent._classify_cycle_maturity(results) is CycleMaturity.STEADY_STATE
 
+    def test_unsupported_tickers_do_not_dilute_a_cold_start(self) -> None:
+        # Nieobsługiwane cenowo symbole nigdy nie dostaną punktu odniesienia,
+        # więc muszą wypaść z mianownika ZANIM domena policzy przewagę
+        # cold-startu. Domieszka balastu nie może zepsuć powitania Dnia 1.
+        results = [self._r(f"C{i}", "ignored", SkipReason.COLD_START) for i in range(4)]
+        results += [self._r(f"U{i}", "ignored", SkipReason.UNSUPPORTED_PRICE) for i in range(10)]
+
+        assert main_agent._classify_cycle_maturity(results) is CycleMaturity.FIRST_RUN
+
     def test_below_threshold_means_the_agent_already_has_a_baseline(self) -> None:
         results = [self._r("AAPL", "ignored", SkipReason.BELOW_THRESHOLD)]
 

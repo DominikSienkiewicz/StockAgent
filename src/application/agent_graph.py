@@ -68,7 +68,7 @@ def _timed_node(node_name: str, symbol: str) -> Iterator[None]:
 
 
 def _log_paid_call(
-    deps: _GraphDeps, node_name: str, symbol: str, source: str, detail: str
+    deps: AgentGraphDeps, node_name: str, symbol: str, source: str, detail: str
 ) -> None:
     """Jawna linia w logu, gdy odpala się PŁATNE wywołanie zewnętrzne
     (LLM / sentyment / news). Pozwala audytować FinOps — ile płatnych wywołań
@@ -371,10 +371,17 @@ def _build_fetch_fundamentals_node(
 
 
 @dataclasses.dataclass(frozen=True)
-class _GraphDeps:
+class AgentGraphDeps:
     """Zależności wstrzykiwane do węzłów grafu — zebrane w jeden obiekt, żeby
     węzły były funkcjami modułowymi (testowalnymi osobno), a fabryka
-    create_agent_graph tylko je składała i okablowywała."""
+    create_agent_graph tylko je składała i okablowywała.
+
+    Ten sam obiekt jest WEJŚCIEM `create_agent_graph` i `AnalyzeMarketUseCase`.
+    Wcześniej obie brały te 23 zależności jako osobne kwargi i przepisywały je
+    jedna do drugiej, więc każdy nowy port wymagał zgodnej zmiany w trzech
+    sygnaturach. Pierwsze siedem pól jest wymagane; reszta to opcjonalne
+    rozszerzenia Fast Loopa, których brak wyłącza odpowiedni węzeł albo bramkę.
+    """
 
     market_port: MarketDataPort
     sentiment_port: SentimentPort
@@ -383,27 +390,27 @@ class _GraphDeps:
     ml_port: MLPredictionPort
     llm_port: LLMPort
     threshold: Threshold
-    embedding_port: EmbeddingPort | None
-    council_port: AdvisoryCouncilPort | None
-    council_threshold: Threshold | None
-    fundamentals_port: FundamentalsPort | None
-    crypto_threshold: Threshold | None
-    crypto_council_threshold: Threshold | None
-    reflection_min_age_hours: int
-    rag_outcome_weight: float
-    tool_use_port: ToolUseLLMPort | None
-    research_tools: Sequence[Tool]
-    tool_use_threshold: Threshold | None
-    vector_memory_enabled: bool
-    receipts_enabled: bool
-    options_port: OptionsFlowPort | None
-    attestation_publisher: AttestationPublisherPort | None
+    embedding_port: EmbeddingPort | None = None
+    council_port: AdvisoryCouncilPort | None = None
+    council_threshold: Threshold | None = None
+    fundamentals_port: FundamentalsPort | None = None
+    crypto_threshold: Threshold | None = None
+    crypto_council_threshold: Threshold | None = None
+    reflection_min_age_hours: int = 0
+    rag_outcome_weight: float = 0.0
+    tool_use_port: ToolUseLLMPort | None = None
+    research_tools: Sequence[Tool] = ()
+    tool_use_threshold: Threshold | None = None
+    vector_memory_enabled: bool = False
+    receipts_enabled: bool = False
+    options_port: OptionsFlowPort | None = None
+    attestation_publisher: AttestationPublisherPort | None = None
     # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). None =
     # brak raportowania kosztu; graf zachowuje się identycznie jak dotąd.
-    paid_call_meter: Counter[str] | None
+    paid_call_meter: Counter[str] | None = None
 
 
-def _check_price_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
+def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     market_port = deps.market_port
     current = market_port.get_current_price(state["symbol"])
     previous = Money(state["previous_price"])
@@ -420,7 +427,7 @@ def _check_price_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
-def _persist_price_snapshot(deps: _GraphDeps, state: AgentState) -> None:
+def _persist_price_snapshot(deps: AgentGraphDeps, state: AgentState) -> None:
     """#6/#15: zapis snapshotu ceny — wołany wyłącznie z węzłów terminalnych.
 
     Cold-start nadal działa, bo KAŻDY ukończony cykl (saved albo ignored)
@@ -442,7 +449,7 @@ def _persist_price_snapshot(deps: _GraphDeps, state: AgentState) -> None:
 
 
 
-def _build_decision_receipts(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
+def _build_decision_receipts(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     """#13 — składa kwit decyzyjny z artefaktów JUŻ policzonych w tym cyklu.
 
     Zero nowej logiki i zero płatnych wywołań: persystujemy to, za co już
@@ -505,7 +512,7 @@ def _pick_threshold(
 
 
 
-def _should_analyze(deps: _GraphDeps, state: AgentState) -> str:
+def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
     threshold = deps.threshold
     crypto_threshold = deps.crypto_threshold
     asset = state.get("asset") or Asset(symbol=state["symbol"])
@@ -527,7 +534,7 @@ def _should_analyze(deps: _GraphDeps, state: AgentState) -> str:
 
 
 
-def _reflect_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
+def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     repository_port = deps.repository_port
     reflection_min_age_hours = deps.reflection_min_age_hours
     threshold = deps.threshold
@@ -622,7 +629,7 @@ def _reflect_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
-def _analyze_sentiment_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
+def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     sentiment_port = deps.sentiment_port
     symbol = state["symbol"]
     # #14: węzeł płatny (Alpha Vantage NEWS_SENTIMENT) — instrumentujemy czas
@@ -635,7 +642,7 @@ def _analyze_sentiment_node(deps: _GraphDeps, state: AgentState) -> dict[str, An
 
 
 
-def _fetch_news_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
+def _fetch_news_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     news_port = deps.news_port
     symbol = state["symbol"]
     # #14: węzeł płatny (Alpha Vantage NEWS feed) — instrumentacja jak wyżej.
@@ -646,7 +653,7 @@ def _fetch_news_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 def _compute_rag_context(
-    deps: _GraphDeps, state: AgentState, news_summary: str
+    deps: AgentGraphDeps, state: AgentState, news_summary: str
 ) -> tuple[list[float] | None, str, list[dict[str, Any]]]:
     """RAG: embedujemy podsumowanie newsów RAZ (reużyte w save_node) i
     wyszukujemy podobne historyczne sytuacje do wstrzyknięcia w prompt. W pełni
@@ -681,7 +688,7 @@ def _compute_rag_context(
 
 
 def _run_llm_analysis(
-    deps: _GraphDeps, state: AgentState, prompt: str, symbol: str
+    deps: AgentGraphDeps, state: AgentState, prompt: str, symbol: str
 ) -> tuple[dict[str, Any], bool]:
     """Płatna analiza jakościowa LLM. #6: dla NAJWIĘKSZYCH ruchów (osobny próg
     ``tool_use_threshold``) idzie kosztowna pętla tool-use; inaczej zwykły
@@ -745,7 +752,7 @@ def _run_ml_prediction(
 
 
 def _attach_commitment(
-    deps: _GraphDeps, record: dict[str, Any]
+    deps: AgentGraphDeps, record: dict[str, Any]
 ) -> None:
     """#16 — dokleja SHA-256 commitment do rekordu i publikuje go (bez soli).
 
@@ -819,7 +826,7 @@ _EDGE_HORIZON_HOURS = 12.0
 
 
 def _resolve_implied_edge(
-    deps: _GraphDeps, symbol: str, current_price: Decimal, ml_target: Decimal
+    deps: AgentGraphDeps, symbol: str, current_price: Decimal, ml_target: Decimal
 ) -> ImpliedEdge | None:
     """#18 — dywergencja ruchu modelu od implied move rynku opcji.
 
@@ -840,7 +847,7 @@ def _resolve_implied_edge(
     return evaluate_edge(move, iv, _EDGE_HORIZON_HOURS)
 
 
-def _predict_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
+def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     repository_port = deps.repository_port
     ml_port = deps.ml_port
     symbol = state["symbol"]
@@ -974,7 +981,7 @@ def _predict_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
-def _council_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
+def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     council_port = deps.council_port
     council_threshold = deps.council_threshold
     crypto_council_threshold = deps.crypto_council_threshold
@@ -1037,7 +1044,7 @@ def _council_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 def _resolve_news_vector(
-    deps: _GraphDeps, state: AgentState, news_summary: str
+    deps: AgentGraphDeps, state: AgentState, news_summary: str
 ) -> list[float] | None:
     """Wektor newsów do zapisu w pgvector. predict_node zwykle już go policzył
     (RAG) — reużywamy; fallback: embedujemy tu, jeśli predict go nie dostarczył.
@@ -1056,7 +1063,7 @@ def _resolve_news_vector(
         return None
 
 
-def _save_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
+def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     vector_memory_enabled = deps.vector_memory_enabled
     repository_port = deps.repository_port
     llm_analysis = state.get("llm_analysis", {})
@@ -1163,39 +1170,14 @@ def _save_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
-def _ignore_node(deps: _GraphDeps, state: AgentState) -> dict[str, Any]:
+def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # #6: węzeł terminalny — zapisujemy snapshot ceny dla następnego cyklu.
     _persist_price_snapshot(deps, state)
     return {"status": "ignored"}
 
 
 
-def create_agent_graph(
-    *,
-    market_port: MarketDataPort,
-    sentiment_port: SentimentPort,
-    news_port: NewsPort,
-    repository_port: RepositoryPort,
-    ml_port: MLPredictionPort,
-    llm_port: LLMPort,
-    threshold: Threshold,
-    embedding_port: EmbeddingPort | None = None,
-    council_port: AdvisoryCouncilPort | None = None,
-    council_threshold: Threshold | None = None,
-    fundamentals_port: FundamentalsPort | None = None,
-    crypto_threshold: Threshold | None = None,
-    crypto_council_threshold: Threshold | None = None,
-    reflection_min_age_hours: int = 0,
-    rag_outcome_weight: float = 0.0,
-    tool_use_port: ToolUseLLMPort | None = None,
-    research_tools: Sequence[Tool] = (),
-    tool_use_threshold: Threshold | None = None,
-    vector_memory_enabled: bool = False,
-    receipts_enabled: bool = False,
-    options_port: OptionsFlowPort | None = None,
-    attestation_publisher: AttestationPublisherPort | None = None,
-    paid_call_meter: Counter[str] | None = None,
-) -> StateGraph[AgentState]:
+def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
 
     Topologia bez fundamentals_port:
@@ -1214,32 +1196,6 @@ def create_agent_graph(
     fundamentów jest darmowe; płatne wywołania AV dzieją się tylko w slow loop.
     """
 
-    deps = _GraphDeps(
-        market_port=market_port,
-        sentiment_port=sentiment_port,
-        news_port=news_port,
-        repository_port=repository_port,
-        ml_port=ml_port,
-        llm_port=llm_port,
-        threshold=threshold,
-        embedding_port=embedding_port,
-        council_port=council_port,
-        council_threshold=council_threshold,
-        fundamentals_port=fundamentals_port,
-        crypto_threshold=crypto_threshold,
-        crypto_council_threshold=crypto_council_threshold,
-        reflection_min_age_hours=reflection_min_age_hours,
-        rag_outcome_weight=rag_outcome_weight,
-        tool_use_port=tool_use_port,
-        research_tools=research_tools,
-        tool_use_threshold=tool_use_threshold,
-        vector_memory_enabled=vector_memory_enabled,
-        receipts_enabled=receipts_enabled,
-        options_port=options_port,
-        attestation_publisher=attestation_publisher,
-        paid_call_meter=paid_call_meter,
-    )
-
     # ---------- Topologia ----------
     workflow = StateGraph[AgentState](state_schema=AgentState)
     workflow.add_node("check_price", lambda s: _check_price_node(deps, s))
@@ -1256,7 +1212,7 @@ def create_agent_graph(
     # w KAŻDYM cyklu, niezależnie od bieżącej zmienności.
     workflow.add_edge("check_price", "reflect")
 
-    if fundamentals_port is not None:
+    if deps.fundamentals_port is not None:
         # reflect → fetch_fundamentals → bramka volatility.
         # Węzeł fundamentów jest PRZED bramką — czytanie cache jest darmowe.
         workflow.add_node(
@@ -1264,7 +1220,7 @@ def create_agent_graph(
             # #17: LangGraph 1.x stubs typują węzły jako `_Node[Never]` i nie
             # inferują schematu opartego o TypedDict (StateGraph[AgentState]).
             # Runtime jest poprawny; wąski ignore zamiast szerokiego override.
-            _build_fetch_fundamentals_node(fundamentals_port),  # type: ignore[arg-type]
+            _build_fetch_fundamentals_node(deps.fundamentals_port),  # type: ignore[arg-type]
         )
         workflow.add_edge("reflect", "fetch_fundamentals")
         # fetch_fundamentals → bramka volatility: dopiero TU decydujemy, czy robić

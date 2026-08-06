@@ -4,7 +4,7 @@ from __future__ import annotations
 from decimal import Decimal
 from unittest.mock import Mock
 
-from src.application.agent_graph import create_agent_graph
+from src.application.agent_graph import AgentGraphDeps, create_agent_graph
 from src.application.ports import (
     AdvisoryCouncilPort,
     LLMPort,
@@ -68,7 +68,7 @@ def _make_graph_with_repo(
         "target_price_12h": 185.0,
         "reasoning": "Strong momentum.",
     }
-    graph = create_agent_graph(
+    graph = create_agent_graph(AgentGraphDeps(
         market_port=market,
         sentiment_port=sentiment,
         news_port=news,
@@ -78,7 +78,7 @@ def _make_graph_with_repo(
         threshold=Threshold(Decimal("0.02")),
         council_port=council_port,
         council_threshold=council_threshold,
-    )
+    ))
     return graph, repo
 
 
@@ -126,7 +126,7 @@ def _make_crypto_graph(
         "target_price_12h": 185.0,
         "reasoning": "Strong momentum.",
     }
-    graph = create_agent_graph(
+    graph = create_agent_graph(AgentGraphDeps(
         market_port=market,
         sentiment_port=sentiment,
         news_port=news,
@@ -139,7 +139,7 @@ def _make_crypto_graph(
         council_port=council_port,
         council_threshold=council_threshold,
         crypto_council_threshold=crypto_council_threshold,
-    )
+    ))
     return graph, repo
 
 
