@@ -29,22 +29,22 @@ jobs:
           enable-cache: true
 
       - name: 📦 Sync dependencies (incl. dev + anthropic extra)
-        run: uv sync --frozen --extra anthropic
+        run: uv sync --frozen --extra anthropic --no-build --no-install-project
 
       - name: 🔍 Ruff (lint)
-        run: uv run --frozen ruff check src tests main_agent.py main_trainer.py main_backtest.py
+        run: uv run --frozen --no-build --no-sync ruff check src tests main_agent.py main_trainer.py main_backtest.py
 
       - name: 🔎 Mypy (strict type check)
-        run: uv run --frozen mypy src main_agent.py main_trainer.py main_backtest.py
+        run: uv run --frozen --no-build --no-sync mypy src main_agent.py main_trainer.py main_backtest.py
 
       - name: 🧪 Pytest (unit tests)
         # Integration tests (-m integration) wymagają prawdziwych kluczy API —
         # pomijane w CI. Testy kontenerowe uruchamiamy jawnie w następnym kroku.
-        run: uv run --frozen pytest -m "not integration and not containers"
+        run: uv run --frozen --no-build --no-sync pytest -m "not integration and not containers"
 
       - name: 🐳 Pytest (container schema tests)
         # Testy migracji SQL odpalają Postgres + pgvector przez testcontainers.
-        run: uv run --frozen pytest -m containers
+        run: uv run --frozen --no-build --no-sync pytest -m containers
 
   sonarcloud:
     name: SonarCloud
@@ -80,14 +80,14 @@ jobs:
 
       - name: 📦 Sync dependencies (incl. dev + anthropic extra)
         if: ${{ env.SONAR_TOKEN != '' }}
-        run: uv sync --frozen --extra anthropic
+        run: uv sync --frozen --extra anthropic --no-build --no-install-project
 
       # Coverage for SonarCloud. Mirrors CI's test selection minus integration (real
       # API keys); container tests use testcontainers (Docker is on the ubuntu runner).
       # Writes coverage.xml at the repo root, where sonar-project.properties expects it.
       - name: 🧪 Pytest with coverage
         if: ${{ env.SONAR_TOKEN != '' }}
-        run: uv run --frozen pytest -m "not integration" --cov=src --cov-report=xml
+        run: uv run --frozen --no-build --no-sync pytest -m "not integration" --cov=src --cov-report=xml
 
       - name: 🔍 SonarCloud Scan
         if: ${{ env.SONAR_TOKEN != '' }}

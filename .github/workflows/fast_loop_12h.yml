@@ -51,7 +51,7 @@ jobs:
       - name: 📦 Sync dependencies
         # --extra anthropic: analiza główna chodzi na Claude (LLM_PROVIDER=anthropic),
         # więc SDK anthropic MUSI być zainstalowany (jest optional-dependency).
-        run: uv sync --frozen --extra anthropic
+        run: uv sync --frozen --extra anthropic --no-build --no-install-project
 
       - name: 🧠 Run Agent (LangGraph + XGBoost + LLM)
         # Tu wstrzykujemy WYŁĄCZNIE sekrety. Cały config niewrażliwy (symbole,
@@ -74,4 +74,4 @@ jobs:
           # Email (odbiorca = sekret; nadawca + włącznik w config.toml)
           RESEND_API_KEY:         ${{ secrets.RESEND_API_KEY }}
           DIGEST_TO_EMAIL:        ${{ secrets.DIGEST_TO_EMAIL }}
-        run: uv run --frozen python main_agent.py
+        run: uv run --frozen --no-build --no-sync python main_agent.py
