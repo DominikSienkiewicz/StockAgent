@@ -52,7 +52,7 @@ jobs:
           # Dummy — trener ich nie używa, ale Settings wymaga pól.
           FINNHUB_API_KEY:        unused-in-slow-loop
           ALPHA_VANTAGE_API_KEYS: unused-in-slow-loop
-        run: uv run python main_trainer.py
+        run: uv run --frozen python main_trainer.py
 
       - name: 💾 Commit and push updated model
         run: |

@@ -74,4 +74,4 @@ jobs:
           # Email (odbiorca = sekret; nadawca + włącznik w config.toml)
           RESEND_API_KEY:         ${{ secrets.RESEND_API_KEY }}
           DIGEST_TO_EMAIL:        ${{ secrets.DIGEST_TO_EMAIL }}
-        run: uv run python main_agent.py
+        run: uv run --frozen python main_agent.py
