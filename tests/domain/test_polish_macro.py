@@ -73,15 +73,11 @@ class TestInvariants:
         elevated = Decimal("-0.01")
         critical = Decimal("0.03")
         with pytest.raises(ValueError):
-            snap.evaluate_stress_level(
-                elevated_threshold=elevated, critical_threshold=critical
-            )
+            snap.evaluate_stress_level(elevated_threshold=elevated, critical_threshold=critical)
 
     def test_elevated_must_be_below_critical(self) -> None:
         snap = _snap(eur_change="0.0", usd_change="0.0")
         elevated = Decimal("0.05")
         critical = Decimal("0.02")
         with pytest.raises(ValueError):
-            snap.evaluate_stress_level(
-                elevated_threshold=elevated, critical_threshold=critical
-            )
+            snap.evaluate_stress_level(elevated_threshold=elevated, critical_threshold=critical)
