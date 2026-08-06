@@ -85,7 +85,8 @@ class TestRender:
         )
         html = render_suggestions_html([sug])
         assert "Cyberbezpieczeństwo" in html
-        assert "ZS" in html and "FTNT" in html
+        assert "ZS" in html
+        assert "FTNT" in html
         assert "CRWD" in html
 
     def test_empty_suggestions_render_to_empty_string(self) -> None:

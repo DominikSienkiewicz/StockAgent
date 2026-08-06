@@ -78,20 +78,19 @@ class TestSettings:
     def test_negative_volatility_threshold_rejected(self, env):
         # Ujemny próg sprawia, że abs(delta) >= threshold ZAWSZE prawdziwe →
         # płatne porty (LLM/AV/embeddingi) odpalają co cykl, bez błędu startu.
+        negative = Decimal("-0.01")
         with pytest.raises(ValueError, match="volatility_threshold"):
-            Settings(_env_file=None, volatility_threshold=Decimal("-0.01"))
+            Settings(_env_file=None, volatility_threshold=negative)
 
     def test_negative_council_volatility_threshold_rejected(self, env):
+        negative = Decimal("-0.01")
         with pytest.raises(ValueError, match="council_volatility_threshold"):
-            Settings(
-                _env_file=None, council_volatility_threshold=Decimal("-0.01")
-            )
+            Settings(_env_file=None, council_volatility_threshold=negative)
 
     def test_negative_crypto_volatility_threshold_rejected(self, env):
+        negative = Decimal("-0.01")
         with pytest.raises(ValueError, match="crypto_volatility_threshold"):
-            Settings(
-                _env_file=None, crypto_volatility_threshold=Decimal("-0.01")
-            )
+            Settings(_env_file=None, crypto_volatility_threshold=negative)
 
     def test_council_volatility_threshold_zero_is_accepted(self, env):
         # 0.0 to udokumentowany "always run" disable switch — nie footgun.
@@ -285,5 +284,6 @@ class TestSymbolConcurrency:
         assert s.symbol_concurrency == 4
 
     def test_rejects_below_one(self):
+        kwargs = self._base(symbol_concurrency=0)
         with pytest.raises(ValueError, match="symbol_concurrency must be >= 1"):
-            Settings(**self._base(symbol_concurrency=0))
+            Settings(**kwargs)

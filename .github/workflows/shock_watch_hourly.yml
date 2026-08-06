@@ -37,7 +37,7 @@ jobs:
 
       - name: 📦 Sync dependencies
         # Bez `--extra anthropic`: watch NIE dotyka LLM. Zero płatnych portów.
-        run: uv sync --frozen
+        run: uv sync --frozen --no-build --no-install-project
 
       - name: 🚨 Run shock watch (free sources only)
         env:
@@ -56,4 +56,4 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SLACK_WEBHOOK_URL:  ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: uv run python main_watch.py
+        run: uv run --frozen --no-build --no-sync python main_watch.py

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Mapping
+from typing import Any
 
 from main_agent import build_notifier
 from src.application.quota_monitor import QuotaMonitor
@@ -39,6 +41,125 @@ def build_use_case(settings: Settings) -> TrainModelUseCase:
     )
 
 
+def _refresh_fundamentals_cache(
+    settings: Settings,
+    supabase_repo: SupabaseRepository,
+    quota_monitor: QuotaMonitor,
+) -> None:
+    """Slow loop płaci za Alpha Vantage requesty i odświeża cache fundamentów.
+    Fast loop czyta wyłącznie z cache — nigdy nie woła AV bezpośrednio.
+
+    Odświeżamy tylko spółki (STOCK) — ETF-y nie mają EPS/P/E. Pojedynczy błąd
+    nie wywala całego cyklu.
+    """
+    fundamentals_port = CachedFundamentalsAdapter(
+        repo=supabase_repo,
+        delegate=AlphaVantageFundamentalsAdapter(
+            api_keys=settings.alpha_vantage_api_keys,
+            quota_monitor=quota_monitor,
+        ),
+    )
+    stock_symbols = [s for s in settings.symbols if s not in settings.symbols_etf]
+    for symbol in stock_symbols:
+        try:
+            fundamentals_port.get_fundamentals(symbol)
+        except Exception:
+            logger.exception("Fundamentals refresh failed for %s", symbol)
+
+
+def _persist_quota_alerts(
+    supabase_repo: SupabaseRepository, quota_monitor: QuotaMonitor
+) -> None:
+    """Persystencja alertów kwoty zebranych podczas odświeżania fundamentów
+    (np. wyczerpany dzienny limit AV) — banner w mailu czyta ostatnie 24h,
+    więc wyczerpanie limitu w Slow Loop będzie widoczne w najbliższym raporcie.
+    """
+    for alert in quota_monitor.alerts:
+        try:
+            supabase_repo.save_quota_alert(alert)
+        except Exception:
+            logger.exception("Failed to persist quota alert from %s", alert.source)
+
+
+def _persist_model_scorecard(
+    supabase_repo: SupabaseRepository, symbol: str, result: Mapping[str, Any]
+) -> None:
+    """#12: karta kondycji modelu. Zapis best-effort (wzorzec
+    `save_quota_alert`) — brak migracji 019 nie może wywalić treningu."""
+    try:
+        supabase_repo.save_model_scorecard(symbol, result)
+    except Exception:
+        logger.exception("Failed to persist model scorecard for %s", symbol)
+
+
+def _train_symbols(
+    settings: Settings,
+    supabase_repo: SupabaseRepository,
+    use_case: TrainModelUseCase,
+    trainable: list[str],
+) -> int:
+    """Retrenuje każdy symbol z osobna i zwraca liczbę niepowodzeń. Błąd
+    jednego symbolu nie przerywa treningu pozostałych."""
+    failures = 0
+    for symbol in trainable:
+        try:
+            result = use_case.run(symbol, refresh_view=False)
+            logger.info("%s: %s", symbol, result)
+            if settings.model_scorecard_enabled:
+                _persist_model_scorecard(supabase_repo, symbol, result)
+        except Exception:
+            logger.exception("Training failed for symbol %s", symbol)
+            failures += 1
+    return failures
+
+
+def _run_calibration_judge(
+    settings: Settings, supabase_repo: SupabaseRepository, quota_monitor: QuotaMonitor
+) -> None:
+    """#4: LLM-as-Judge kalibracji pewności (Slow Loop, poza budżetem Fast Loopa)."""
+    try:
+        from main_agent import build_llm_adapter
+        from src.application.use_cases.calibrate_confidence import (
+            CalibrateConfidenceUseCase,
+        )
+
+        cal_result = CalibrateConfidenceUseCase(
+            repository_port=supabase_repo,
+            llm_port=build_llm_adapter(settings, quota_monitor=quota_monitor),
+        ).run(days=30)
+        logger.info("Calibration judge — %s", cal_result.get("status"))
+    except Exception:
+        logger.exception("Calibration judge failed — pomijam")
+
+
+def _send_weekly_recap(
+    settings: Settings, supabase_repo: SupabaseRepository, quota_monitor: QuotaMonitor
+) -> None:
+    """#17: niedzielna retrospektywa. Slow Loop chodzi co tydzień i dotąd NIE
+    WYSYŁAŁ użytkownikowi nic. Koszt: dokładnie jedno wywołanie LLM tygodniowo.
+    Poniżej progu 5 zamkniętych predykcji use case zwraca `skipped_*` i mail
+    NIE wychodzi — przy chudym tygodniu recap robiłby dramat z szumu.
+    """
+    try:
+        from main_agent import build_llm_adapter
+
+        recap_result = WeeklyRecapUseCase(
+            repository_port=supabase_repo,
+            llm_port=build_llm_adapter(settings, quota_monitor=quota_monitor),
+        ).run(days=7)
+        if recap_result["status"] == "recap_ready":
+            recap = recap_result["recap"]
+            narrative = recap_result["narrative"]
+            build_notifier(settings, quota_monitor=quota_monitor).send_report(
+                subject="📅 Tydzień StockAgenta",
+                html_body=render_weekly_recap_html(recap, narrative),
+                plain_text=render_weekly_recap_text(recap, narrative),
+            )
+        logger.info("Weekly recap — %s", recap_result.get("status"))
+    except Exception:
+        logger.exception("Weekly recap failed — pomijam")
+
+
 def main(settings: Settings | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -58,93 +179,20 @@ def main(settings: Settings | None = None) -> int:
         logger.exception("Failed to refresh feature store")
         return 1
 
-    # Slow loop płaci za Alpha Vantage requesty i odświeża cache fundamentów.
-    # Fast loop czyta wyłącznie z cache — nigdy nie woła AV bezpośrednio.
-    fundamentals_port = CachedFundamentalsAdapter(
-        repo=supabase_repo,
-        delegate=AlphaVantageFundamentalsAdapter(
-            api_keys=settings.alpha_vantage_api_keys,
-            quota_monitor=quota_monitor,
-        ),
-    )
-    # Odświeżenie fundamentów dla spółek (STOCK) — ETF-y nie mają EPS/P/E.
-    # Pojedynczy błąd nie wywala całego cyklu.
-    stock_symbols = [s for s in settings.symbols if s not in settings.symbols_etf]
-    for symbol in stock_symbols:
-        try:
-            fundamentals_port.get_fundamentals(symbol)
-        except Exception:
-            logger.exception("Fundamentals refresh failed for %s", symbol)
-
-    # Persystencja alertów kwoty zebranych podczas odświeżania fundamentów
-    # (np. wyczerpany dzienny limit AV) — banner w mailu czyta ostatnie 24h,
-    # więc wyczerpanie limitu w Slow Loop będzie widoczne w najbliższym raporcie.
-    for alert in quota_monitor.alerts:
-        try:
-            supabase_repo.save_quota_alert(alert)
-        except Exception:
-            logger.exception("Failed to persist quota alert from %s", alert.source)
+    _refresh_fundamentals_cache(settings, supabase_repo, quota_monitor)
+    _persist_quota_alerts(supabase_repo, quota_monitor)
 
     # BUG: trener widział tylko `settings.symbols`, więc BTC/ETH NIGDY nie
     # przechodziły retrainu — model krypto zostawał na zawsze przy cold-starcie.
     # `dict.fromkeys` zachowuje kolejność i deduplikuje symbol obecny w obu listach.
     trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
+    failures = _train_symbols(settings, supabase_repo, use_case, trainable)
 
-    failures = 0
-    for symbol in trainable:
-        try:
-            result = use_case.run(symbol, refresh_view=False)
-            logger.info("%s: %s", symbol, result)
-            # #12: karta kondycji modelu. Zapis best-effort (wzorzec
-            # `save_quota_alert`) — brak migracji 019 nie może wywalić treningu.
-            if settings.model_scorecard_enabled:
-                try:
-                    supabase_repo.save_model_scorecard(symbol, result)
-                except Exception:
-                    logger.exception("Failed to persist model scorecard for %s", symbol)
-        except Exception:
-            logger.exception("Training failed for symbol %s", symbol)
-            failures += 1
-
-    # #4: LLM-as-Judge kalibracji pewności (Slow Loop, poza budżetem Fast Loopa).
     if settings.calibration_judge_enabled:
-        try:
-            from main_agent import build_llm_adapter
-            from src.application.use_cases.calibrate_confidence import (
-                CalibrateConfidenceUseCase,
-            )
+        _run_calibration_judge(settings, supabase_repo, quota_monitor)
 
-            cal_result = CalibrateConfidenceUseCase(
-                repository_port=supabase_repo,
-                llm_port=build_llm_adapter(settings, quota_monitor=quota_monitor),
-            ).run(days=30)
-            logger.info("Calibration judge — %s", cal_result.get("status"))
-        except Exception:
-            logger.exception("Calibration judge failed — pomijam")
-
-    # #17: niedzielna retrospektywa. Slow Loop chodzi co tydzień i dotąd NIE
-    # WYSYŁAŁ użytkownikowi nic. Koszt: dokładnie jedno wywołanie LLM tygodniowo.
-    # Poniżej progu 5 zamkniętych predykcji use case zwraca `skipped_*` i mail
-    # NIE wychodzi — przy chudym tygodniu recap robiłby dramat z szumu.
     if settings.weekly_recap_enabled:
-        try:
-            from main_agent import build_llm_adapter
-
-            recap_result = WeeklyRecapUseCase(
-                repository_port=supabase_repo,
-                llm_port=build_llm_adapter(settings, quota_monitor=quota_monitor),
-            ).run(days=7)
-            if recap_result["status"] == "recap_ready":
-                recap = recap_result["recap"]
-                narrative = recap_result["narrative"]
-                build_notifier(settings, quota_monitor=quota_monitor).send_report(
-                    subject="📅 Tydzień StockAgenta",
-                    html_body=render_weekly_recap_html(recap, narrative),
-                    plain_text=render_weekly_recap_text(recap, narrative),
-                )
-            logger.info("Weekly recap — %s", recap_result.get("status"))
-        except Exception:
-            logger.exception("Weekly recap failed — pomijam")
+        _send_weekly_recap(settings, supabase_repo, quota_monitor)
 
     logger.info("Slow Loop done — failures=%d/%d", failures, len(trainable))
     return 1 if failures else 0

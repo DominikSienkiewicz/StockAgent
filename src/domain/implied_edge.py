@@ -39,6 +39,11 @@ from enum import Enum
 # Godziny kalendarzowe w roku — baza annualizacji sqrt-time (patrz ograniczenie #2).
 _HOURS_PER_YEAR = 365.0 * 24.0
 
+# Tolerancja porównań z zerem. Float nie ma dokładnego „== 0" po arytmetyce
+# (zaokrąglenia dają ±1e-16), a tu zero to bramka przed dzieleniem — musi łapać
+# także wartości nieodróżnialne od zera, nie tylko dokładny literał 0.0.
+_ZERO_TOLERANCE = 1e-12
+
 # Progi klasyfikacji jakościowej na skali edge_sigma = |ruch modelu| / implied move.
 # Powyżej: model przewiduje ruch większy, niż rynek wycenia (potencjalny edge).
 _MODEL_AHEAD_SIGMA = 1.5
@@ -104,7 +109,7 @@ def model_move_from_prices(current_price: float, predicted_target_price: float) 
     (ceny bywają `Decimal` w reszcie systemu). Cena bieżąca 0 → 0.0 (brak punktu
     odniesienia, zamiast dzielenia przez zero).
     """
-    if current_price == 0.0:
+    if math.isclose(current_price, 0.0, abs_tol=_ZERO_TOLERANCE):
         return 0.0
     return (predicted_target_price - current_price) / current_price
 

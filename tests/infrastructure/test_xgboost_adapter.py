@@ -286,8 +286,9 @@ class TestPredict:
 
     def test_raises_when_model_not_trained(self, adapter: XGBoostAdapter):
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
+        current_price = Decimal("100")
         with pytest.raises(RuntimeError, match="not trained"):
-            adapter.predict(features, current_price=Decimal("100"))
+            adapter.predict(features, current_price=current_price)
 
 
 class TestPredictFeatureAlignment:
@@ -311,8 +312,9 @@ class TestPredictFeatureAlignment:
     ):
         # Brak wymaganej cechy → jawny błąd, nie ciche NaN wpychane do modelu.
         features = dict.fromkeys(FEATURE_NAMES[:-1], 0.5)
+        current_price = Decimal("100")
         with pytest.raises(KeyError):
-            trained_adapter.predict(features, current_price=Decimal("100"))
+            trained_adapter.predict(features, current_price=current_price)
 
 
 class TestExplain:
@@ -371,8 +373,9 @@ class TestExplain:
         assert "_bias" not in FEATURE_NAMES
 
     def test_raises_when_model_not_trained(self, adapter: XGBoostAdapter):
+        features = self._typical_features()
         with pytest.raises(RuntimeError, match="not trained"):
-            adapter.explain(self._typical_features())
+            adapter.explain(features)
 
     def test_ignores_unknown_extra_features(
         self, trained_adapter: XGBoostAdapter

@@ -42,8 +42,10 @@ class TestBuildChartUrl:
         html = build_delta_chart_html(results)
         assert "quickchart" not in html
         assert "http" not in html  # brak zewnętrznego hosta
-        assert "<div" in html and "<table" in html
-        assert "AAPL" in html and "MSFT" in html
+        assert "<div" in html
+        assert "<table" in html
+        assert "AAPL" in html
+        assert "MSFT" in html
 
     def test_label_uses_cykl_not_12h(self) -> None:
         html = build_delta_chart_html([_saved("AAPL", "0.02"), _saved("MSFT", "0.01")])
@@ -155,7 +157,9 @@ class TestCorrelationChartUrl:
         assert "quickchart" not in html
         assert "scatter" not in html.lower()
         assert "<table" in html
-        assert "A" in html and "B" in html and "C" in html
+        assert "A" in html
+        assert "B" in html
+        assert "C" in html
         # Tabela kwadrantów: osie sentymentu i ceny opisane po polsku.
         assert "Sentyment" in html
         assert "Cena" in html

@@ -147,7 +147,7 @@ def render_user_portfolio_html(
 
     parts: list[str] = [
         "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
-        "💼 Twój portfel</h2>"
+        + "💼 Twój portfel</h2>"
     ]
     if freshness is PortfolioFreshness.STALE:
         parts.append(_render_stale_badge_html(max_age_days))

@@ -782,6 +782,12 @@ def _attach_commitment(
         logger.exception("Attestation commitment publish failed for %s", record["symbol"])
 
 
+# Tolerancja porównań z zerem. Score i wkłady fuzji to wynik ważonej sumy —
+# „zero" wychodzi z niej jako ±1e-17, więc `== 0.0` przepuszczałoby szum
+# arytmetyczny do promptu jako `insider +0.00`.
+_ZERO_TOLERANCE = 1e-12
+
+
 def _format_alpha_fusion(fusion: AlphaFusionScore | None) -> str:
     """#14 — blok promptu z rozbiciem wkładów, np.
     "Alpha Fusion +0.42 (insider +0.30, options +0.20, social -0.08)".
@@ -790,12 +796,12 @@ def _format_alpha_fusion(fusion: AlphaFusionScore | None) -> str:
     a nie tylko sumę — inaczej composite jest nieaudytowalną czarną skrzynką.
     Brak fuzji albo score 0.0 → "" → blok w ogóle nie wchodzi do promptu.
     """
-    if fusion is None or fusion.score == 0.0:
+    if fusion is None or math.isclose(fusion.score, 0.0, abs_tol=_ZERO_TOLERANCE):
         return ""
     parts = ", ".join(
         f"{name} {value:+.2f}"
         for name, value in sorted(fusion.contributions.items())
-        if value != 0.0
+        if not math.isclose(value, 0.0, abs_tol=_ZERO_TOLERANCE)
     )
     head = f"Alpha Fusion {fusion.score:+.2f}"
     return f"{head} ({parts})" if parts else head
