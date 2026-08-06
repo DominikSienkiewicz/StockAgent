@@ -753,6 +753,87 @@ def _fill_text_slots(
     ).replace(_SUGGESTIONS_SLOT, suggestions_text, 1)
 
 
+def _partition_by_status(
+    results: list[SymbolResult],
+) -> tuple[list[SymbolResult], list[SymbolResult], list[SymbolResult]]:
+    """Rozbija wyniki cyklu na `(saved, ignored, errors)` — kolejność zgodna z
+    sekcjami raportu."""
+    return (
+        [r for r in results if r.status == "saved"],
+        [r for r in results if r.status == "ignored"],
+        [r for r in results if r.status == "error"],
+    )
+
+
+def _current_prices_of(results: list[SymbolResult]) -> dict[str, Decimal]:
+    """#15: ceny bieżące biorą się z wyników TEGO cyklu — renderer nie dostaje
+    żadnego portu. Symbol bez ceny (błąd źródła) po prostu nie wchodzi."""
+    return {r.symbol: r.current_price for r in results if r.current_price is not None}
+
+
+def _build_onboarding_blocks(
+    cycle_maturity: CycleMaturity | None,
+    *,
+    instrument_count: int,
+    portfolio_sectors: Mapping[str, int] | None,
+) -> tuple[str, str]:
+    """#4: powitanie pierwszego cyklu jako `(html, text)`. Renderer nigdy nie
+    decyduje o tonie — dostaje gotową klasyfikację z domeny (STEADY_STATE → "")."""
+    maturity = cycle_maturity or CycleMaturity.STEADY_STATE
+    sectors = portfolio_sectors or {}
+    return (
+        render_onboarding_html(
+            maturity, instrument_count=instrument_count, sectors=sectors
+        ),
+        render_onboarding_text(
+            maturity, instrument_count=instrument_count, sectors=sectors
+        ),
+    )
+
+
+def _build_user_portfolio_html(
+    user_portfolio: Portfolio | None,
+    current_prices: Mapping[str, Decimal],
+    *,
+    clusters: Mapping[str, str] | None,
+    macro_risk_report: MacroRiskReport | None,
+    now: datetime,
+) -> str:
+    """#15: sekcja realnego portfela. Kurs USD/PLN pochodzi z `MacroRiskReport`,
+    nie z portu. Brak portfela → "" (sekcja sama się chowa)."""
+    if user_portfolio is None:
+        return ""
+    usd_pln = (
+        macro_risk_report.polish_macro.usd_pln
+        if macro_risk_report is not None and macro_risk_report.polish_macro is not None
+        else None
+    )
+    return render_user_portfolio_html(
+        user_portfolio,
+        current_prices,
+        clusters=clusters,
+        now=now,
+        usd_pln=usd_pln,
+    )
+
+
+def _build_model_scorecard_html(
+    model_scorecard: ModelScorecardView | None, *, now: datetime
+) -> str:
+    """#12: karta kondycji modelu. Brak danych → "" (sekcja sama się chowa)."""
+    if model_scorecard is None:
+        return ""
+    return render_model_scorecard_html(
+        model_scorecard.summary,
+        trained_at=model_scorecard.trained_at,
+        now=now,
+        candidate_rmse=model_scorecard.candidate_rmse,
+        baseline_rmse=model_scorecard.baseline_rmse,
+        directional_hit_rate=model_scorecard.directional_hit_rate,
+        folds=model_scorecard.folds,
+    )
+
+
 def build_html_report(
     results: list[SymbolResult],
     started_at: datetime,
@@ -793,9 +874,11 @@ def build_html_report(
     # do jego watchlisty. Analiza i tak poszła RAZ nad unią; tu tylko re-slicing.
     if symbols_filter is not None:
         results = [r for r in results if r.symbol in symbols_filter]
-    saved = [r for r in results if r.status == "saved"]
-    ignored = [r for r in results if r.status == "ignored"]
-    errors = [r for r in results if r.status == "error"]
+    # Domyślne puste kolekcje liczymy RAZ — każde `or []` w ciele buildera to
+    # kolejna gałąź do przeczytania, a te same dane trafiają do kilku sekcji.
+    resolved = resolved_predictions or []
+    alerts = quota_alerts or []
+    saved, ignored, errors = _partition_by_status(results)
     mood = build_portfolio_mood(results)
     session = market_status(started_at)
     # Q7: hit-rate cyklu (z accuracy_stats) napędza pasmo wielkości pozycji.
@@ -803,11 +886,7 @@ def build_html_report(
     # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
     # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
     # skorygowanej historią. None → surowa pewność, jak przed #9.
-    # #15: realny portfel. Ceny bierzemy z wyników tego cyklu, a kurs USD/PLN
-    # z `MacroRiskReport.polish_macro` — renderer nie dostaje żadnego portu.
-    current_prices = {
-        r.symbol: r.current_price for r in results if r.current_price is not None
-    }
+    current_prices = _current_prices_of(results)
     # #15 faza 2: gdy znamy realny portfel, sizing widzi istniejącą ekspozycję
     # (symbolu i jego klastra) i może zaproponować wyłącznie WĘŻSZĄ bandę.
     portfolio_weights = (
@@ -837,20 +916,13 @@ def build_html_report(
     # #1: lead cyklu. Ranking robi domena; TU jest jedyne miejsce, gdzie DTO
     # warstwy application (SymbolResult / ResolvedPrediction) są mapowane na
     # typy domenowe — `src/domain/digest_lead.py` ich nie importuje.
-    lead_items = build_lead(
-        to_lead_signals(results, resolved_predictions or []),
-        quota_alerts or [],
-    )
+    lead_items = build_lead(to_lead_signals(results, resolved), alerts)
     lead_html = render_lead_html(lead_items)
     lead_text = render_lead_text(lead_items)
-    # #4: powitanie pierwszego cyklu. Renderer nigdy nie decyduje o tonie —
-    # dostaje gotową klasyfikację z domeny (STEADY_STATE → "").
-    maturity = cycle_maturity or CycleMaturity.STEADY_STATE
-    onboarding_html = render_onboarding_html(
-        maturity, instrument_count=len(results), sectors=portfolio_sectors or {}
-    )
-    onboarding_text = render_onboarding_text(
-        maturity, instrument_count=len(results), sectors=portfolio_sectors or {}
+    onboarding_html, onboarding_text = _build_onboarding_blocks(
+        cycle_maturity,
+        instrument_count=len(results),
+        portfolio_sectors=portfolio_sectors,
     )
     # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
     council_history_html = render_council_history_html(council_history or [])
@@ -859,21 +931,12 @@ def build_html_report(
     persona_leaderboard_html = render_persona_leaderboard_html(
         persona_track_record or []
     )
-    usd_pln = (
-        macro_risk_report.polish_macro.usd_pln
-        if macro_risk_report is not None and macro_risk_report.polish_macro is not None
-        else None
-    )
-    user_portfolio_html = (
-        render_user_portfolio_html(
-            user_portfolio,
-            current_prices,
-            clusters=portfolio_clusters,
-            now=started_at,
-            usd_pln=usd_pln,
-        )
-        if user_portfolio is not None
-        else ""
+    user_portfolio_html = _build_user_portfolio_html(
+        user_portfolio,
+        current_prices,
+        clusters=portfolio_clusters,
+        macro_risk_report=macro_risk_report,
+        now=started_at,
     )
     # #8: zmiany nastawienia rady. Render odfiltrowuje STABLE i jawnie oznacza
     # stęchłe porównania — pusta lista → sekcja się chowa.
@@ -881,20 +944,7 @@ def build_html_report(
     # FinOps: koszt cyklu. Cykl darmowy (0 wywołań) renderuje się JAWNIE —
     # to najciekawsza informacja w tej sekcji, nie brak danych.
     finops_html = render_finops_html(cycle_cost)
-    # #12: karta kondycji modelu (render zwraca "" gdy brak danych).
-    model_scorecard_html = (
-        render_model_scorecard_html(
-            model_scorecard.summary,
-            trained_at=model_scorecard.trained_at,
-            now=started_at,
-            candidate_rmse=model_scorecard.candidate_rmse,
-            baseline_rmse=model_scorecard.baseline_rmse,
-            directional_hit_rate=model_scorecard.directional_hit_rate,
-            folds=model_scorecard.folds,
-        )
-        if model_scorecard is not None
-        else ""
-    )
+    model_scorecard_html = _build_model_scorecard_html(model_scorecard, now=started_at)
     # T1/T2/T4: sekcja Track Record (krzywa kapitału, kalibracja, lessons).
     # render zwraca "" gdy wszystkie trzy podsekcje puste.
     track_record_html = render_track_record_html(
@@ -908,8 +958,8 @@ def build_html_report(
     macro_risk_text = (
         render_risk_watch_text(macro_risk_report) if macro_risk_report else ""
     )
-    quota_html = render_quota_banner_html(quota_alerts or [])
-    quota_text = render_quota_banner_text(quota_alerts or [])
+    quota_html = render_quota_banner_html(alerts)
+    quota_text = render_quota_banner_text(alerts)
     suggestions = build_sector_suggestions(results)
     suggestions_html = render_suggestions_html(suggestions)
     suggestions_text = render_suggestions_text(suggestions)
@@ -917,7 +967,7 @@ def build_html_report(
     html = _render_html(
         results, saved, ignored, errors, started_at, duration_seconds,
         mood, session, accuracy_stats, trade_signals, risk_signals,
-        resolved_predictions or [],
+        resolved,
     )
     html = _fill_html_slots(
         html,
@@ -939,7 +989,7 @@ def build_html_report(
     text = _render_plain(
         results, saved, ignored, errors, started_at, duration_seconds,
         mood, session, accuracy_stats, trade_signals, risk_signals,
-        resolved_predictions or [],
+        resolved,
     )
     text = _fill_text_slots(
         text,
@@ -1706,6 +1756,51 @@ def _render_plain(
 # ---------------------------------------------------------------------------
 
 
+def _skip_reason_of(status: str, raw: dict[str, Any]) -> SkipReason | None:
+    """#4: cold-start jest widoczny w stanie końcowym jako previous_price == 0
+    (graf nie miał punktu odniesienia). Symbol odcięty bramką volatility ma
+    poprzednią cenę — to zupełnie inna historia niż pierwszy dzień deploymentu.
+    Status inny niż "ignored" nie niesie powodu pominięcia."""
+    if status != "ignored":
+        return None
+    previous_price = raw.get("previous_price")
+    if previous_price is None or Decimal(str(previous_price)) == 0:
+        return SkipReason.COLD_START
+    return SkipReason.BELOW_THRESHOLD
+
+
+def _asset_class_of(raw: dict[str, Any]) -> str | None:
+    """Klasa aktywa z domeny — graf trzyma Asset w stanie (main_agent klasyfikuje
+    STOCK/ETF/CRYPTO przed wywołaniem). Pozwala raportowi rozpoznać krypto
+    niezawodnie, niezależnie od statusu (saved/ignored)."""
+    asset = raw.get("asset")
+    if asset is None or not hasattr(asset, "asset_type"):
+        return None
+    value: str = asset.asset_type.value
+    return value
+
+
+def _valuation_section_of(raw: dict[str, Any]) -> ValuationSection | None:
+    """Sekcja wyceny powstaje TYLKO przy rozstrzygniętym werdykcie i obecnych
+    fundamentach — UNKNOWN albo brak danych to brak sekcji, nie sekcja pusta."""
+    verdict = raw.get("valuation_verdict")
+    fundamentals = raw.get("fundamentals")
+    if (
+        not isinstance(verdict, ValuationVerdict)
+        or verdict is ValuationVerdict.UNKNOWN
+        or fundamentals is None
+    ):
+        return None
+    return ValuationSection(
+        trailing_pe=fundamentals.trailing_pe,
+        forward_pe=fundamentals.forward_pe,
+        peg_ratio=fundamentals.peg_ratio,
+        eps_growth_yoy=fundamentals.eps_growth_yoy,
+        verdict=verdict,
+        fetched_at=fundamentals.fetched_at,
+    )
+
+
 def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None = None) -> SymbolResult:
     """Mapper z wyjścia AnalyzeMarketUseCase.run() na SymbolResult."""
     if error is not None:
@@ -1717,47 +1812,14 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
     sentiment = raw.get("sentiment") or {}
     llm = raw.get("llm_analysis") or {}
 
-    # #4: cold-start jest widoczny w stanie końcowym jako previous_price == 0
-    # (graf nie miał punktu odniesienia). Symbol odcięty bramką volatility ma
-    # poprzednią cenę — to zupełnie inna historia niż pierwszy dzień deploymentu.
-    skip_reason: SkipReason | None = None
-    if status == "ignored":
-        previous_price = raw.get("previous_price")
-        skip_reason = (
-            SkipReason.COLD_START
-            if previous_price is None or Decimal(str(previous_price)) == 0
-            else SkipReason.BELOW_THRESHOLD
-        )
+    skip_reason = _skip_reason_of(status, raw)
+    asset_class = _asset_class_of(raw)
+    valuation = _valuation_section_of(raw)
+    fundamentals = raw.get("fundamentals")
 
-    # Klasa aktywa z domeny — graf trzyma Asset w stanie (main_agent klasyfikuje
-    # STOCK/ETF/CRYPTO przed wywołaniem). Pozwala raportowi rozpoznać krypto
-    # niezawodnie, niezależnie od statusu (saved/ignored).
-    asset = raw.get("asset")
-    asset_class = (
-        asset.asset_type.value if asset is not None and hasattr(asset, "asset_type")
-        else None
-    )
     confidence = llm.get("confidence_score")
     av_agreement = llm.get("av_agreement")
-
     council_verdict = raw.get("council_verdict")
-
-    valuation: ValuationSection | None = None
-    verdict = raw.get("valuation_verdict")
-    fundamentals = raw.get("fundamentals")
-    if (
-        isinstance(verdict, ValuationVerdict)
-        and verdict is not ValuationVerdict.UNKNOWN
-        and fundamentals is not None
-    ):
-        valuation = ValuationSection(
-            trailing_pe=fundamentals.trailing_pe,
-            forward_pe=fundamentals.forward_pe,
-            peg_ratio=fundamentals.peg_ratio,
-            eps_growth_yoy=fundamentals.eps_growth_yoy,
-            verdict=verdict,
-            fetched_at=fundamentals.fetched_at,
-        )
 
     # Q5: precedent receipts — kompaktowe analogi RAG z bieżącego cyklu.
     similar_precedents = _extract_precedents(raw.get("similar_precedents"))

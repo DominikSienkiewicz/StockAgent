@@ -57,6 +57,48 @@ def _classify(symbol: str, crypto_symbols: set[str]) -> Asset:
     return Asset(symbol=symbol, asset_type=asset_type)
 
 
+def _detect_symbol_shock(
+    symbol: str,
+    *,
+    settings: Settings,
+    repository: RepositoryPort,
+    market: MarketDataPort,
+    crypto: set[str],
+    moment: datetime,
+) -> ShockAlert | None:
+    """Czy symbol kwalifikuje się na alert szoku. Brak snapshotu, brak ceny
+    bieżącej albo cena odniesienia 0 → None (nie ma od czego liczyć delty)."""
+    snapshot = repository.get_last_price_snapshot(symbol)
+    if snapshot is None:
+        return None
+    previous, taken_at = snapshot
+    current = market.get_current_price(symbol)
+    if current is None or previous.amount == 0:
+        return None
+
+    fraction = (current.amount - previous.amount) / previous.amount
+    age_hours = (moment - taken_at).total_seconds() / 3600.0
+    return detect_shock(
+        _classify(symbol, crypto),
+        PriceDelta(fraction),
+        Threshold(settings.volatility_threshold),
+        age_hours,
+    )
+
+
+def _persist_shock_alert(
+    repository: RepositoryPort, symbol: str, today: date, alert: ShockAlert
+) -> None:
+    """Persystencja PO wysyłce — lepiej wysłać dwa razy niż zgubić alert
+    przy padzie bazy. UNIQUE(symbol, alert_date) i tak blokuje duplikat."""
+    try:
+        repository.save_shock_alert(
+            symbol, today, float(alert.delta.fraction), alert.direction.value
+        )
+    except Exception:
+        logger.exception("Failed to persist shock alert for %s", symbol)
+
+
 def run_watch(
     settings: Settings,
     *,
@@ -77,8 +119,10 @@ def run_watch(
     moment = now or datetime.now(UTC)
     today = moment.date()
     crypto = set(settings.crypto_symbols)
-    symbols = [*settings.symbols, *settings.crypto_symbols]
     unsupported = set(settings.symbols_unsupported_price)
+    symbols = [
+        s for s in (*settings.symbols, *settings.crypto_symbols) if s not in unsupported
+    ]
 
     try:
         already_sent: set[tuple[str, date]] = repository.get_sent_shock_alerts(today)
@@ -88,27 +132,16 @@ def run_watch(
 
     sent = 0
     for symbol in symbols:
-        if symbol in unsupported:
-            continue
         try:
             if not should_emit(symbol, today, already_sent):
                 continue
-            snapshot = repository.get_last_price_snapshot(symbol)
-            if snapshot is None:
-                continue
-            previous, taken_at = snapshot
-            current = market.get_current_price(symbol)
-            if current is None or previous.amount == 0:
-                continue
-
-            fraction = (current.amount - previous.amount) / previous.amount
-            delta = PriceDelta(fraction)
-            age_hours = (moment - taken_at).total_seconds() / 3600.0
-            alert = detect_shock(
-                _classify(symbol, crypto),
-                delta,
-                Threshold(settings.volatility_threshold),
-                age_hours,
+            alert = _detect_symbol_shock(
+                symbol,
+                settings=settings,
+                repository=repository,
+                market=market,
+                crypto=crypto,
+                moment=moment,
             )
             if alert is None:
                 continue
@@ -117,14 +150,7 @@ def run_watch(
             push_notifier.send_report(
                 subject=subject, html_body=body, plain_text=body
             )
-            # Persystencja PO wysyłce — lepiej wysłać dwa razy niż zgubić alert
-            # przy padzie bazy. UNIQUE(symbol, alert_date) i tak blokuje duplikat.
-            try:
-                repository.save_shock_alert(
-                    symbol, today, float(alert.delta.fraction), alert.direction.value
-                )
-            except Exception:
-                logger.exception("Failed to persist shock alert for %s", symbol)
+            _persist_shock_alert(repository, symbol, today, alert)
             already_sent.add((symbol, today))
             sent += 1
         except Exception:
