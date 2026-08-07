@@ -8,7 +8,7 @@ bramkę volatility Fast Loopa (delta liczyłaby się względem ceny sprzed godzi
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -36,9 +36,16 @@ def settings() -> Settings:
     )
 
 
-def _repo(price: str, age_hours: float) -> MagicMock:
+def _repo(price: str, age_hours: float, *, now: datetime | None = None) -> MagicMock:
+    """Repo ze snapshotem `age_hours` starszym od `now`.
+
+    `now` musi być tą samą chwilą, którą dostaje `run_watch` — wiek snapshotu
+    liczy się względem niej, a przekroczenie `SNAPSHOT_MAX_AGE_HOURS` tłumi
+    alert. Rozjazd tych dwóch zegarów daje test, który przechodzi z niewłaściwego
+    powodu: stęchłego snapshotu zamiast sprawdzanej reguły.
+    """
     repo = MagicMock(spec=RepositoryPort)
-    stamp = datetime.now(UTC) - timedelta(hours=age_hours)
+    stamp = (now or datetime.now(UTC)) - timedelta(hours=age_hours)
     repo.get_last_price_snapshot.return_value = (Money(Decimal(price)), stamp)
     repo.get_sent_shock_alerts.return_value = set()
     return repo
@@ -91,12 +98,25 @@ class TestWatchCycle:
         ) == 0
 
     def test_debounce_blocks_a_second_alert_the_same_day(self, settings) -> None:
-        repo = _repo("100", age_hours=1.0)
-        repo.get_sent_shock_alerts.return_value = {("AAPL", date.today())}
+        # Zegar zamrożony przez szew `now=`: `run_watch` liczy dzień alertu
+        # w UTC, więc klucz debounce'u musi pochodzić z TEJ SAMEJ chwili.
+        # Wcześniej klucz brał się z `date.today()` (data LOKALNA), przez co test
+        # przechodził tylko wtedy, gdy strefa maszyny akurat zgadzała się z UTC —
+        # w CEST padał między 00:00 a 02:00, a w Australia/Sydney przez
+        # większość doby. Godzina 23:30 UTC jest dobrana celowo: w strefach na
+        # wschód od Greenwich data lokalna jest wtedy o dzień do przodu, więc
+        # gdyby ktoś wrócił do daty lokalnej, test natychmiast zapali się z powrotem.
+        moment = datetime(2026, 5, 14, 23, 30, tzinfo=UTC)
+        repo = _repo("100", age_hours=1.0, now=moment)
+        repo.get_sent_shock_alerts.return_value = {("AAPL", moment.date())}
         push = MagicMock()
 
         assert main_watch.run_watch(
-            settings, repository=repo, market=_market("90"), push_notifier=push
+            settings,
+            repository=repo,
+            market=_market("90"),
+            push_notifier=push,
+            now=moment,
         ) == 0
         push.send_report.assert_not_called()
 
