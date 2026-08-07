@@ -75,15 +75,14 @@ def _log_paid_call(
     poszło w danym cyklu i z którego węzła.
 
     `source` to klucz cennika z `src/domain/finops.py` (`llm`, `council_llm`,
-    `sentiment`, `news`). Gdy wstrzyknięto licznik, inkrementujemy go tutaj —
-    jedno miejsce prawdy o tym, co jest płatne. Licznik jest współdzielony
-    przez wszystkie symbole cyklu, bo raportujemy KOSZT CYKLU, nie symbolu.
+    `sentiment`, `news`). Inkrementujemy licznik tutaj — jedno miejsce prawdy
+    o tym, co jest płatne. Licznik jest współdzielony przez wszystkie symbole
+    cyklu, bo raportujemy KOSZT CYKLU, nie symbolu.
     """
     logger.info(
         "paid call: node=%s symbol=%s %s", node_name, symbol, detail
     )
-    if deps.paid_call_meter is not None:
-        deps.paid_call_meter[source] += 1
+    deps.paid_call_meter[source] += 1
 
 
 class AgentState(TypedDict, total=False):
@@ -405,9 +404,11 @@ class AgentGraphDeps:
     receipts_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
-    # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). None =
-    # brak raportowania kosztu; graf zachowuje się identycznie jak dotąd.
-    paid_call_meter: Counter[str] | None = None
+    # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). Pole jest
+    # NIE-opcjonalne z własnym licznikiem per egzemplarz deps: wołający, który go
+    # nie poda, i tak dostaje działający licznik pod `use_case.paid_calls`, więc
+    # nikt nie musi doszywać go przez `dataclasses.replace` po fakcie.
+    paid_call_meter: Counter[str] = dataclasses.field(default_factory=Counter)
 
 
 def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
