@@ -1,3 +1,4 @@
+from collections import Counter
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -249,6 +250,84 @@ class TestGraphCompiledOnce:
 
         fake_workflow.compile.assert_called_once()
         assert compiled_app.invoke.call_count == 3
+
+
+class TestPaidCallMeter:
+    """`use_case.paid_calls` musi być TYM SAMYM egzemplarzem licznika, który
+    inkrementują węzły grafu.
+
+    To niezmiennik okablowania, nie detal implementacyjny: `main_agent` liczy
+    z niego koszt cyklu (`estimate_cycle_cost(dict(use_case.paid_calls))`).
+    Gdyby graf dostał inny egzemplarz niż ten wystawiony na use case'ie,
+    raport FinOps pokazywałby 0 zł mimo realnych płatnych wywołań — cicho,
+    bez żadnego błędu.
+    """
+
+    def _arrange_paid_cycle(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ) -> None:
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        sentiment_port.get_social_score.return_value = {"galaxy_score": 85}
+        news_port.get_news_context.return_value = [{"title": "Reuters story"}]
+        llm_port.analyze.return_value = {
+            "trend_direction": "BEARISH",
+            "confidence_score": 0.8,
+            "target_price_12h": 88.0,
+            "reasoning": "macro headwinds",
+        }
+        ml_port.predict.return_value = Money(Decimal("89.0"))
+        repository_port.save_prediction.return_value = "new-uuid"
+
+    def test_counts_paid_calls_when_caller_supplied_no_meter(
+        self,
+        use_case,
+        market_port,
+        sentiment_port,
+        news_port,
+        repository_port,
+        ml_port,
+        llm_port,
+    ):
+        self._arrange_paid_cycle(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        use_case.run("AAPL")
+
+        assert use_case.paid_calls["sentiment"] == 1
+        assert use_case.paid_calls["news"] == 1
+        assert use_case.paid_calls["llm"] == 1
+
+    def test_counts_into_the_meter_the_caller_supplied(
+        self,
+        market_port,
+        sentiment_port,
+        news_port,
+        repository_port,
+        ml_port,
+        llm_port,
+    ):
+        meter: Counter[str] = Counter()
+        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            paid_call_meter=meter,
+        ))
+        self._arrange_paid_cycle(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        use_case.run("AAPL")
+
+        # Ten sam obiekt, nie kopia — wołający trzyma referencję i na niej raportuje.
+        assert use_case.paid_calls is meter
+        assert meter["llm"] == 1
 
 
 class TestThresholdInjection:

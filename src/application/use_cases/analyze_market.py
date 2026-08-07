@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 from collections import Counter
 from decimal import Decimal
 from typing import Any
@@ -21,13 +20,11 @@ class AnalyzeMarketUseCase:
     def __init__(self, deps: AgentGraphDeps) -> None:
         self._repository = deps.repository_port
         # Licznik płatnych wywołań CAŁEGO cyklu — jeden na use case, nie na symbol.
-        # Graf dostaje TEN egzemplarz, nie ten z `deps`: gdy wołający nie podał
-        # własnego, licznik musi być współdzielony między use case'em a węzłami,
-        # inaczej `paid_calls` zostałoby puste mimo płatnych wywołań.
-        self.paid_calls: Counter[str] = deps.paid_call_meter or Counter()
-        workflow = create_agent_graph(
-            dataclasses.replace(deps, paid_call_meter=self.paid_calls)
-        )
+        # Wystawiamy TEN SAM egzemplarz, który dostaną węzły grafu (`deps` idzie
+        # do fabryki nietknięty), inaczej `paid_calls` zostałoby puste mimo
+        # płatnych wywołań i raport FinOps pokazałby zerowy koszt cyklu.
+        self.paid_calls: Counter[str] = deps.paid_call_meter
+        workflow = create_agent_graph(deps)
         # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().
         # Inaczej przy 43 symbolach na cykl rekompilowalibyśmy graf 43×.
