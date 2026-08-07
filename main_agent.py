@@ -12,6 +12,7 @@ Użycie:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import sys
 import time
@@ -20,6 +21,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, NamedTuple
 
+from src.application.agent_graph import AgentGraphDeps
 from src.application.alpha_signals import AlphaSignals
 from src.application.ports import (
     AdvisoryCouncilPort,
@@ -41,6 +43,7 @@ from src.application.ports import (
 )
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import (
+    ReportContext,
     SymbolResult,
     build_html_report,
     parse_resolved_predictions,
@@ -79,7 +82,7 @@ from src.domain.digest_lead import LeadItem, build_lead, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
 from src.domain.equity_curve import equity_curve as build_equity_curve
-from src.domain.finops import CycleCost, estimate_cycle_cost
+from src.domain.finops import estimate_cycle_cost
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.peer_group import build_peer_context
@@ -780,7 +783,7 @@ def build_use_case(
         if tool_use_port is not None
         else None
     )
-    return AnalyzeMarketUseCase(
+    return AnalyzeMarketUseCase(AgentGraphDeps(
         market_port=market_port,
         sentiment_port=AlphaVantageSentimentAdapter(av_client),
         news_port=AlphaVantageNewsAdapter(av_client),
@@ -818,7 +821,7 @@ def build_use_case(
             if settings.attestation_enabled
             else None
         ),
-    )
+    ))
 
 
 def _run_risk_watch(
@@ -1207,15 +1210,13 @@ def _classify_cycle_maturity(results: list[SymbolResult]) -> CycleMaturity:
     errors = sum(1 for r in results if r.status == "error")
     cold_start = sum(1 for r in results if r.skip_reason is SkipReason.COLD_START)
     below = sum(1 for r in results if r.skip_reason is SkipReason.BELOW_THRESHOLD)
-    unsupported = sum(
-        1 for r in results if r.skip_reason is SkipReason.UNSUPPORTED_PRICE
-    )
+    # SkipReason.UNSUPPORTED_PRICE celowo nie ma tu swojej liczności — te symbole
+    # wypadają z mianownika przez to, że nie trafiają do ŻADNEJ z powyższych sum.
     return classify_cycle(
         saved_count=saved,
         cold_start_count=cold_start,
         below_threshold_count=below,
         error_count=errors,
-        unsupported_count=unsupported,
     )
 
 
@@ -1503,16 +1504,16 @@ def _dispatch_reports(
     web_publisher: WebPublisherPort,
     subscribers: list[Subscriber],
     all_symbols: list[str],
-    macro_risk_report: MacroRiskReport | None,
-    portfolio_risk_report: PortfolioRiskReport | None,
-    alpha_signals: dict[str, AlphaSignals],
-    alpha_prices: dict[str, Decimal],
-    yield_curve: YieldCurveSnapshot | None,
-    cycle_cost: CycleCost | None = None,
+    context: ReportContext,
 ) -> None:
     """Faza wysyłki: dociągnięcie danych raportu, zbudowanie raportu i rozesłanie
     — pojedynczo albo per subskrybent (raport tnięty do jego watchlisty). Cała
-    faza jest best-effort: błąd wysyłki nie psuje exit-code cyklu."""
+    faza jest best-effort: błąd wysyłki nie psuje exit-code cyklu.
+
+    `context` przynosi sekcje policzone JESZCZE PRZED wysyłką (ryzyko makro,
+    radar portfela, alfa, koszt cyklu); resztę pól dokłada ta funkcja z odczytów
+    repozytorium. Wcześniej te same wartości szły tędy jako osobne argumenty
+    tylko po to, by wylądować w wywołaniu `build_html_report`."""
     try:
         (
             accuracy_stats,
@@ -1543,31 +1544,31 @@ def _dispatch_reports(
             else []
         )
 
+        # Kontekst od wołającego (ryzyko, alfa, koszt) + to, co dociągnęliśmy tutaj.
+        report_context = dataclasses.replace(
+            context,
+            accuracy_stats=accuracy_stats,
+            resolved_predictions=resolved,
+            council_history=council_history,
+            persona_track_record=persona_track_record,
+            quota_alerts=recent_alerts,
+            equity_curve=equity_curve,
+            calibration_buckets=calibration_buckets,
+            lessons=lessons,
+            signal_calibration_buckets=signal_calibration_buckets,
+            cycle_maturity=maturity,
+            portfolio_sectors=sectors,
+            model_scorecard=model_scorecard,
+            consensus_shifts=consensus_shifts,
+            user_portfolio=user_portfolio,
+            portfolio_clusters=_portfolio_clusters(settings),
+        )
+
         def _build(symbols_filter: frozenset[str] | None = None) -> tuple[str, str]:
+            # Jedyne, co różni raport subskrybenta, to filtr symboli.
             return build_html_report(
                 results, started_at, duration,
-                accuracy_stats=accuracy_stats,
-                resolved_predictions=resolved,
-                macro_risk_report=macro_risk_report,
-                portfolio_risk_report=portfolio_risk_report,
-                council_history=council_history,
-                persona_track_record=persona_track_record,
-                quota_alerts=recent_alerts,
-                symbols_filter=symbols_filter,
-                equity_curve=equity_curve,
-                calibration_buckets=calibration_buckets,
-                lessons=lessons,
-                alpha_signals=alpha_signals,
-                yield_curve=yield_curve,
-                alpha_prices=alpha_prices,
-                signal_calibration_buckets=signal_calibration_buckets,
-                cycle_maturity=maturity,
-                portfolio_sectors=sectors,
-                model_scorecard=model_scorecard,
-                consensus_shifts=consensus_shifts,
-                user_portfolio=user_portfolio,
-                portfolio_clusters=_portfolio_clusters(settings),
-                cycle_cost=cycle_cost,
+                dataclasses.replace(report_context, symbols_filter=symbols_filter),
             )
 
         html, text = _build()
@@ -1749,14 +1750,16 @@ def main(settings: Settings | None = None) -> int:
         web_publisher=web_publisher,
         subscribers=subscribers,
         all_symbols=all_symbols,
-        macro_risk_report=macro_risk_report,
-        portfolio_risk_report=portfolio_risk_report,
-        alpha_signals=alpha_signals,
-        alpha_prices=alpha_prices,
-        yield_curve=yield_curve,
-        # FinOps: koszt CAŁEGO cyklu z licznika grafu. Cykl w całości odcięty
-        # bramką volatility ma zerowy licznik → sekcja mówi "cykl darmowy".
-        cycle_cost=estimate_cycle_cost(dict(use_case.paid_calls)),
+        context=ReportContext(
+            macro_risk_report=macro_risk_report,
+            portfolio_risk_report=portfolio_risk_report,
+            alpha_signals=alpha_signals,
+            alpha_prices=alpha_prices,
+            yield_curve=yield_curve,
+            # FinOps: koszt CAŁEGO cyklu z licznika grafu. Cykl w całości odcięty
+            # bramką volatility ma zerowy licznik → sekcja mówi "cykl darmowy".
+            cycle_cost=estimate_cycle_cost(dict(use_case.paid_calls)),
+        ),
     )
 
     # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).

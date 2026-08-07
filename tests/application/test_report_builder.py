@@ -5,6 +5,7 @@ import pytest
 
 from src.application import report_builder
 from src.application.report_builder import (
+    ReportContext,
     ResolvedPrediction,
     RiskSignal,
     SymbolResult,
@@ -496,34 +497,33 @@ class TestReflectionAndTopNews:
 class TestAccuracyStats:
     def test_html_renders_accuracy_when_provided(self):
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            accuracy_stats={
-                "mean_accuracy": 0.72,
-                "sample_count": 50,
-                "correct_count": 38,
-                "days_window": 30,
-            },
-        )
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(
+                         accuracy_stats={
+                    "mean_accuracy": 0.72,
+                    "sample_count": 50,
+                    "correct_count": 38,
+                    "days_window": 30,
+                },
+                     ))
         assert "72.0%" in html or "72%" in html
         assert "50" in html
         assert "30 dni" in html
 
     def test_html_renders_no_data_placeholder(self):
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            accuracy_stats={
-                "mean_accuracy": None,
-                "sample_count": 0,
-                "correct_count": 0,
-                "days_window": 30,
-            },
-        )
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(
+                         accuracy_stats={
+                    "mean_accuracy": None,
+                    "sample_count": 0,
+                    "correct_count": 0,
+                    "days_window": 30,
+                },
+                     ))
         assert "brak ocenionych predykcji" in html.lower()
 
     def test_no_accuracy_section_when_none(self):
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, accuracy_stats=None,
-        )
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(accuracy_stats=None))
         assert "Historia trafności" not in html
 
 
@@ -693,7 +693,7 @@ class TestDayOverDay:
         ]
         html, text = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            resolved_predictions=resolved,
+            ReportContext(resolved_predictions=resolved),
         )
         assert "Zamknięte predykcje" in html
         assert "NVDA" in html
@@ -706,8 +706,7 @@ class TestDayOverDay:
 
     def test_no_section_when_no_resolved(self):
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, resolved_predictions=[],
-        )
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(resolved_predictions=[]))
         assert "Zamknięte predykcje" not in html
 
 
@@ -747,7 +746,7 @@ class TestResolvedPostMortem:
         ]
         html, text = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            resolved_predictions=resolved,
+            ReportContext(resolved_predictions=resolved),
         )
         # (1) dlaczego prognoza mówiła spadek
         assert "Słabe wyniki kwartalne" in html
@@ -771,7 +770,7 @@ class TestResolvedPostMortem:
         ]
         html, _ = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            resolved_predictions=resolved,
+            ReportContext(resolved_predictions=resolved),
         )
         assert "Popyt na GPU do AI rośnie" in html
         assert "+6.00%" in html
@@ -789,7 +788,7 @@ class TestResolvedPostMortem:
         ]
         html, _ = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            resolved_predictions=resolved,
+            ReportContext(resolved_predictions=resolved),
         )
         assert "BTC" in html
         assert "Krypto" in html  # tag klasy aktywa (company_label_with_sector)
@@ -804,7 +803,7 @@ class TestResolvedPostMortem:
         ]
         html, _ = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            resolved_predictions=resolved,
+            ReportContext(resolved_predictions=resolved),
         )
         assert "AMD" in html
         assert "Trafiona" in html
@@ -1014,7 +1013,7 @@ class TestHtmlEscapingRegression:
         ]
         html, _ = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            resolved_predictions=resolved,
+            ReportContext(resolved_predictions=resolved),
         )
         _assert_escaped(html, _XSS_SCRIPT, _XSS_SCRIPT_MARKER)
         _assert_escaped(html, _XSS_IMG, _XSS_IMG_MARKER)
@@ -1466,7 +1465,7 @@ class TestBuildReportWithRiskWatch:
         r = _saved_result()
         html, _ = build_html_report(
             [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            macro_risk_report=self._make_macro_report(),
+            ReportContext(macro_risk_report=self._make_macro_report()),
         )
         assert "Risk Watch" in html
         assert "SH" in html
@@ -1484,7 +1483,7 @@ class TestBuildReportWithRiskWatch:
         r = _saved_result()
         _, text = build_html_report(
             [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            macro_risk_report=self._make_macro_report(),
+            ReportContext(macro_risk_report=self._make_macro_report()),
         )
         assert "Risk Watch" in text
         assert "SH" in text
@@ -1505,7 +1504,7 @@ class TestPersonaLeaderboardSection:
         r = _saved_result()
         html, _ = build_html_report(
             [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            persona_track_record=self._records(),
+            ReportContext(persona_track_record=self._records()),
         )
         assert "ranking wiarygodności" in html
         assert "Buffett" in html
@@ -1524,9 +1523,7 @@ class TestPersonaLeaderboardSection:
     def test_html_suppresses_section_for_empty_track_record(self):
         r = _saved_result()
         html, _ = build_html_report(
-            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            persona_track_record=[],
-        )
+            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(persona_track_record=[]))
         assert "ranking wiarygodności" not in html
         assert "PERSONA_LEADERBOARD_SLOT" not in html
 
@@ -1559,9 +1556,7 @@ class TestLeadSection:
         html, _ = build_html_report(
             [_ignored_result("MSFT")],
             datetime(2026, 5, 14, tzinfo=UTC),
-            1.0,
-            quota_alerts=[self._critical_alert()],
-        )
+            1.0, ReportContext(quota_alerts=[self._critical_alert()]))
 
         assert self._HEADING in html
         assert "Alpha Vantage" in html
@@ -1571,9 +1566,7 @@ class TestLeadSection:
         _, text = build_html_report(
             [_ignored_result("MSFT")],
             datetime(2026, 5, 14, tzinfo=UTC),
-            1.0,
-            quota_alerts=[self._critical_alert()],
-        )
+            1.0, ReportContext(quota_alerts=[self._critical_alert()]))
 
         # Wariant plain-text niesie nagłówek sekcji wersalikami.
         assert self._HEADING.upper() in text
@@ -1585,9 +1578,7 @@ class TestLeadSection:
         html, _ = build_html_report(
             [_saved_result()],
             datetime(2026, 5, 14, tzinfo=UTC),
-            1.0,
-            quota_alerts=[self._critical_alert()],
-        )
+            1.0, ReportContext(quota_alerts=[self._critical_alert()]))
 
         assert html.index(self._HEADING) < html.index("AAPL")
 
@@ -1657,9 +1648,7 @@ class TestUserPortfolioSection:
         html, _ = build_html_report(
             [_saved_result()],
             datetime(2026, 5, 14, tzinfo=UTC),
-            1.0,
-            user_portfolio=self._portfolio(days_old=0),
-        )
+            1.0, ReportContext(user_portfolio=self._portfolio(days_old=0)))
 
         assert "AAPL" in html
         assert "USER_PORTFOLIO_SLOT" not in html
@@ -1669,8 +1658,6 @@ class TestUserPortfolioSection:
         html, _ = build_html_report(
             [_saved_result()],
             datetime(2026, 5, 14, tzinfo=UTC),
-            1.0,
-            user_portfolio=self._portfolio(days_old=30),
-        )
+            1.0, ReportContext(user_portfolio=self._portfolio(days_old=30)))
 
         assert "STALE" in html.upper()

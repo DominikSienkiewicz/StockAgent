@@ -5,6 +5,7 @@ Czysta logika prezentacji — bez I/O, łatwo testowalne.
 
 from __future__ import annotations
 
+import dataclasses
 import html
 import urllib.parse
 from collections.abc import Mapping
@@ -682,43 +683,23 @@ def to_lead_signals(
     return signals
 
 
-def _fill_html_slots(
-    html: str,
-    *,
-    quota_html: str,
-    macro_risk_html: str,
-    portfolio_html: str,
-    user_portfolio_html: str,
-    lead_html: str,
-    onboarding_html: str,
-    council_history_html: str,
-    persona_leaderboard_html: str,
-    consensus_shift_html: str,
-    finops_html: str,
-    model_scorecard_html: str,
-    track_record_html: str,
-    alpha_html: str,
-    suggestions_html: str,
-) -> str:
-    """Wstawia treść w sloty HTML. QUOTA i RISK_WATCH podmieniamy tylko gdy
-    niepuste (pusty komentarz HTML jest nieszkodliwy); pozostałe sloty zawsze
-    (też na ""), żeby znacznik nie został w treści."""
-    if quota_html:
-        html = html.replace(_QUOTA_BANNER_SLOT, quota_html, 1)
-    html = html.replace(_LEAD_SLOT, lead_html, 1)
-    html = html.replace(_ONBOARDING_SLOT, onboarding_html, 1)
-    if macro_risk_html:
-        html = html.replace(_RISK_WATCH_SLOT, macro_risk_html, 1)
-    html = html.replace(_PORTFOLIO_SLOT, portfolio_html, 1)
-    html = html.replace(_USER_PORTFOLIO_SLOT, user_portfolio_html, 1)
-    html = html.replace(_COUNCIL_HISTORY_SLOT, council_history_html, 1)
-    html = html.replace(_PERSONA_LEADERBOARD_SLOT, persona_leaderboard_html, 1)
-    html = html.replace(_CONSENSUS_SHIFT_SLOT, consensus_shift_html, 1)
-    html = html.replace(_TRACK_RECORD_SLOT, track_record_html, 1)
-    html = html.replace(_MODEL_SCORECARD_SLOT, model_scorecard_html, 1)
-    html = html.replace(_FINOPS_SLOT, finops_html, 1)
-    html = html.replace(_ALPHA_SLOT, alpha_html, 1)
-    return html.replace(_SUGGESTIONS_SLOT, suggestions_html, 1)
+# Sloty pomijane przy pustej treści: nagłówek sekcji rysuje się w szablonie, więc
+# podmiana na "" zostawiłaby pustą ramkę. Nieusunięty znacznik jest komentarzem
+# HTML, czyli w mailu niewidoczny — to bezpieczniejszy z dwóch wyników.
+_SKIP_WHEN_EMPTY_SLOTS = frozenset({_QUOTA_BANNER_SLOT, _RISK_WATCH_SLOT})
+
+
+def _fill_html_slots(html: str, sections: Mapping[str, str]) -> str:
+    """Wstawia treść w sloty HTML — klucz to znacznik slotu, wartość to gotowy
+    HTML sekcji.
+
+    Sloty spoza `_SKIP_WHEN_EMPTY_SLOTS` podmieniamy zawsze (też na ""), żeby
+    znacznik nie został w treści maila."""
+    for slot, content in sections.items():
+        if not content and slot in _SKIP_WHEN_EMPTY_SLOTS:
+            continue
+        html = html.replace(slot, content, 1)
+    return html
 
 
 def _fill_text_slots(
@@ -834,55 +815,77 @@ def _build_model_scorecard_html(
     )
 
 
-def build_html_report(
-    results: list[SymbolResult],
-    started_at: datetime,
-    duration_seconds: float,
-    accuracy_stats: dict[str, Any] | None = None,
-    resolved_predictions: list[ResolvedPrediction] | None = None,
-    macro_risk_report: MacroRiskReport | None = None,
-    portfolio_risk_report: PortfolioRiskReport | None = None,
-    council_history: list[InvestorHistory] | None = None,
-    persona_track_record: list[PersonaTrackRecord] | None = None,
-    quota_alerts: list[QuotaAlert] | None = None,
-    symbols_filter: frozenset[str] | None = None,
-    equity_curve: EquityCurve | None = None,
-    calibration_buckets: list[CalibrationBucket] | None = None,
-    lessons: LessonsReport | None = None,
-    alpha_signals: dict[str, AlphaSignals] | None = None,
-    yield_curve: YieldCurveSnapshot | None = None,
-    alpha_prices: dict[str, Decimal] | None = None,
-    signal_calibration_buckets: list[CalibrationBucket] | None = None,
-    cycle_maturity: CycleMaturity | None = None,
-    portfolio_sectors: Mapping[str, int] | None = None,
-    model_scorecard: ModelScorecardView | None = None,
-    consensus_shifts: list[tuple[str, ConsensusShift]] | None = None,
-    user_portfolio: Portfolio | None = None,
-    portfolio_clusters: Mapping[str, str] | None = None,
-    cycle_cost: CycleCost | None = None,
-) -> tuple[str, str]:
-    """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
+@dataclasses.dataclass(frozen=True)
+class ReportContext:
+    """Wszystko, co orkiestrator dociąga OBOK wyników cyklu: statystyki, sekcje
+    ryzyka, historia rady, dane alfa, koszt.
 
-    Parametry opcjonalne:
+    Każde pole jest opcjonalne, bo każda sekcja raportu chowa się sama, gdy jej
+    dane nie dotarły — dociąganie kontekstu jest best-effort i nie może wywalić
+    wysyłki. Zebranie ich w jeden obiekt zdejmuje z `build_html_report` 22
+    argumenty, których przy wywołaniu i tak nie dało się rozróżnić inaczej niż
+    po nazwie.
+
+    Pola:
         accuracy_stats: wynik `RepositoryPort.get_accuracy_stats(days)`.
         resolved_predictions: zamknięte predykcje z ostatnich N godzin
             (do sekcji day-over-day).
         macro_risk_report: wynik `MonitorMacroRiskUseCase.run(...)` — gdy
             podany, w raporcie pojawia się sekcja 🚨 Risk Watch.
+        symbols_filter: watchlista subskrybenta; raport jest do niej tnięty.
     """
+
+    accuracy_stats: dict[str, Any] | None = None
+    resolved_predictions: list[ResolvedPrediction] | None = None
+    macro_risk_report: MacroRiskReport | None = None
+    portfolio_risk_report: PortfolioRiskReport | None = None
+    council_history: list[InvestorHistory] | None = None
+    persona_track_record: list[PersonaTrackRecord] | None = None
+    quota_alerts: list[QuotaAlert] | None = None
+    symbols_filter: frozenset[str] | None = None
+    equity_curve: EquityCurve | None = None
+    calibration_buckets: list[CalibrationBucket] | None = None
+    lessons: LessonsReport | None = None
+    alpha_signals: dict[str, AlphaSignals] | None = None
+    yield_curve: YieldCurveSnapshot | None = None
+    alpha_prices: dict[str, Decimal] | None = None
+    signal_calibration_buckets: list[CalibrationBucket] | None = None
+    cycle_maturity: CycleMaturity | None = None
+    portfolio_sectors: Mapping[str, int] | None = None
+    model_scorecard: ModelScorecardView | None = None
+    consensus_shifts: list[tuple[str, ConsensusShift]] | None = None
+    user_portfolio: Portfolio | None = None
+    portfolio_clusters: Mapping[str, str] | None = None
+    cycle_cost: CycleCost | None = None
+
+
+def build_html_report(
+    results: list[SymbolResult],
+    started_at: datetime,
+    duration_seconds: float,
+    context: ReportContext | None = None,
+) -> tuple[str, str]:
+    """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
+
+    `context` niesie opcjonalne dane sekcji (patrz `ReportContext`). Brak
+    kontekstu = raport z samych wyników cyklu: sekcje bez danych się chowają.
+    """
+    context = context or ReportContext()
     # U2: personalizacja — gdy podany filtr symboli (subskrybent), tniemy wyniki
     # do jego watchlisty. Analiza i tak poszła RAZ nad unią; tu tylko re-slicing.
-    if symbols_filter is not None:
-        results = [r for r in results if r.symbol in symbols_filter]
+    if context.symbols_filter is not None:
+        results = [r for r in results if r.symbol in context.symbols_filter]
     # Domyślne puste kolekcje liczymy RAZ — każde `or []` w ciele buildera to
     # kolejna gałąź do przeczytania, a te same dane trafiają do kilku sekcji.
-    resolved = resolved_predictions or []
-    alerts = quota_alerts or []
+    resolved = context.resolved_predictions or []
+    alerts = context.quota_alerts or []
     saved, ignored, errors = _partition_by_status(results)
     mood = build_portfolio_mood(results)
     session = market_status(started_at)
     # Q7: hit-rate cyklu (z accuracy_stats) napędza pasmo wielkości pozycji.
-    hit_rate = accuracy_stats.get("mean_accuracy") if accuracy_stats else None
+    hit_rate = (
+        context.accuracy_stats.get("mean_accuracy") if context.accuracy_stats else None
+    )
     # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
     # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
     # skorygowanej historią. None → surowa pewność, jak przed #9.
@@ -890,27 +893,27 @@ def build_html_report(
     # #15 faza 2: gdy znamy realny portfel, sizing widzi istniejącą ekspozycję
     # (symbolu i jego klastra) i może zaproponować wyłącznie WĘŻSZĄ bandę.
     portfolio_weights = (
-        user_portfolio.weights(current_prices) if user_portfolio is not None else None
+        context.user_portfolio.weights(current_prices) if context.user_portfolio is not None else None
     )
     cluster_exposures = _cluster_exposure_per_symbol(
-        user_portfolio, portfolio_clusters, current_prices
+        context.user_portfolio, context.portfolio_clusters, current_prices
     )
     trade_signals = build_trade_signals(
         results,
         hit_rate=hit_rate,
-        calibration_buckets=signal_calibration_buckets,
+        calibration_buckets=context.signal_calibration_buckets,
         portfolio_weights=portfolio_weights,
         cluster_exposures=cluster_exposures,
     )
     risk_signals = detect_risk_signals(results)
     macro_risk_html = (
-        render_risk_watch_html(macro_risk_report) if macro_risk_report else ""
+        render_risk_watch_html(context.macro_risk_report) if context.macro_risk_report else ""
     )
     # Q4: sekcja korelacji/koncentracji portfela (render_correlation_html zwraca
     # "" gdy brak klastrów → sekcja sama się chowa).
     portfolio_html = (
-        render_correlation_html(portfolio_risk_report)
-        if portfolio_risk_report
+        render_correlation_html(context.portfolio_risk_report)
+        if context.portfolio_risk_report
         else ""
     )
     # #1: lead cyklu. Ranking robi domena; TU jest jedyne miejsce, gdzie DTO
@@ -920,43 +923,43 @@ def build_html_report(
     lead_html = render_lead_html(lead_items)
     lead_text = render_lead_text(lead_items)
     onboarding_html, onboarding_text = _build_onboarding_blocks(
-        cycle_maturity,
+        context.cycle_maturity,
         instrument_count=len(results),
-        portfolio_sectors=portfolio_sectors,
+        portfolio_sectors=context.portfolio_sectors,
     )
     # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
-    council_history_html = render_council_history_html(council_history or [])
+    council_history_html = render_council_history_html(context.council_history or [])
     # #3: ranking wiarygodności person — ranking (z progiem min_votes) przychodzi
     # gotowy z domeny; render zwraca "" gdy żadna persona nie ma dość głosów.
     persona_leaderboard_html = render_persona_leaderboard_html(
-        persona_track_record or []
+        context.persona_track_record or []
     )
     user_portfolio_html = _build_user_portfolio_html(
-        user_portfolio,
+        context.user_portfolio,
         current_prices,
-        clusters=portfolio_clusters,
-        macro_risk_report=macro_risk_report,
+        clusters=context.portfolio_clusters,
+        macro_risk_report=context.macro_risk_report,
         now=started_at,
     )
     # #8: zmiany nastawienia rady. Render odfiltrowuje STABLE i jawnie oznacza
     # stęchłe porównania — pusta lista → sekcja się chowa.
-    consensus_shift_html = render_consensus_shift_html(consensus_shifts or [])
+    consensus_shift_html = render_consensus_shift_html(context.consensus_shifts or [])
     # FinOps: koszt cyklu. Cykl darmowy (0 wywołań) renderuje się JAWNIE —
     # to najciekawsza informacja w tej sekcji, nie brak danych.
-    finops_html = render_finops_html(cycle_cost)
-    model_scorecard_html = _build_model_scorecard_html(model_scorecard, now=started_at)
+    finops_html = render_finops_html(context.cycle_cost)
+    model_scorecard_html = _build_model_scorecard_html(context.model_scorecard, now=started_at)
     # T1/T2/T4: sekcja Track Record (krzywa kapitału, kalibracja, lessons).
     # render zwraca "" gdy wszystkie trzy podsekcje puste.
     track_record_html = render_track_record_html(
-        equity_curve, calibration_buckets, lessons
+        context.equity_curve, context.calibration_buckets, context.lessons
     )
     # Dane: sekcja Alpha Signals (insider/analitycy/opcje/social/earnings per
     # symbol + krzywa rentowności FRED). render zwraca "" gdy brak danych.
     alpha_html = render_alpha_html(
-        alpha_signals or {}, yield_curve, alpha_prices
+        context.alpha_signals or {}, context.yield_curve, context.alpha_prices
     )
     macro_risk_text = (
-        render_risk_watch_text(macro_risk_report) if macro_risk_report else ""
+        render_risk_watch_text(context.macro_risk_report) if context.macro_risk_report else ""
     )
     quota_html = render_quota_banner_html(alerts)
     quota_text = render_quota_banner_text(alerts)
@@ -966,29 +969,30 @@ def build_html_report(
 
     html = _render_html(
         results, saved, ignored, errors, started_at, duration_seconds,
-        mood, session, accuracy_stats, trade_signals, risk_signals,
+        mood, session, context.accuracy_stats, trade_signals, risk_signals,
         resolved,
     )
-    html = _fill_html_slots(
-        html,
-        quota_html=quota_html,
-        macro_risk_html=macro_risk_html,
-        portfolio_html=portfolio_html,
-        user_portfolio_html=user_portfolio_html,
-        lead_html=lead_html,
-        onboarding_html=onboarding_html,
-        council_history_html=council_history_html,
-        persona_leaderboard_html=persona_leaderboard_html,
-        consensus_shift_html=consensus_shift_html,
-        finops_html=finops_html,
-        model_scorecard_html=model_scorecard_html,
-        track_record_html=track_record_html,
-        alpha_html=alpha_html,
-        suggestions_html=suggestions_html,
-    )
+    # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
+    # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
+    html = _fill_html_slots(html, {
+        _QUOTA_BANNER_SLOT: quota_html,
+        _LEAD_SLOT: lead_html,
+        _ONBOARDING_SLOT: onboarding_html,
+        _RISK_WATCH_SLOT: macro_risk_html,
+        _PORTFOLIO_SLOT: portfolio_html,
+        _USER_PORTFOLIO_SLOT: user_portfolio_html,
+        _COUNCIL_HISTORY_SLOT: council_history_html,
+        _PERSONA_LEADERBOARD_SLOT: persona_leaderboard_html,
+        _CONSENSUS_SHIFT_SLOT: consensus_shift_html,
+        _TRACK_RECORD_SLOT: track_record_html,
+        _MODEL_SCORECARD_SLOT: model_scorecard_html,
+        _FINOPS_SLOT: finops_html,
+        _ALPHA_SLOT: alpha_html,
+        _SUGGESTIONS_SLOT: suggestions_html,
+    })
     text = _render_plain(
         results, saved, ignored, errors, started_at, duration_seconds,
-        mood, session, accuracy_stats, trade_signals, risk_signals,
+        mood, session, context.accuracy_stats, trade_signals, risk_signals,
         resolved,
     )
     text = _fill_text_slots(

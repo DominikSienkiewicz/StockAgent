@@ -3,6 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from src.application.agent_graph import AgentGraphDeps
 from src.application.ports import (
     LLMPort,
     MarketDataPort,
@@ -53,7 +54,7 @@ def llm_port() -> Mock:
 def use_case(
     market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
 ) -> AnalyzeMarketUseCase:
-    return AnalyzeMarketUseCase(
+    return AnalyzeMarketUseCase(AgentGraphDeps(
         market_port=market_port,
         sentiment_port=sentiment_port,
         news_port=news_port,
@@ -61,7 +62,7 @@ def use_case(
         ml_port=ml_port,
         llm_port=llm_port,
         threshold=Threshold(Decimal("0.02")),
-    )
+    ))
 
 
 class TestRun:
@@ -190,7 +191,7 @@ def test_analyze_market_passes_council_port_to_graph():
     )
     council_port.analyze.return_value = verdict
 
-    use_case = AnalyzeMarketUseCase(
+    use_case = AnalyzeMarketUseCase(AgentGraphDeps(
         market_port=market,
         sentiment_port=sentiment,
         news_port=news,
@@ -199,7 +200,7 @@ def test_analyze_market_passes_council_port_to_graph():
         llm_port=llm,
         threshold=Threshold(Decimal("0.02")),
         council_port=council_port,
-    )
+    ))
     # previous_price much lower to trigger volatility gate
     repo.get_last_price.return_value = Money(Decimal("170.00"))
     use_case.run("AAPL")
@@ -230,10 +231,10 @@ class TestGraphCompiledOnce:
         fake_workflow = Mock()
         fake_workflow.compile.return_value = compiled_app
         monkeypatch.setattr(
-            module, "create_agent_graph", lambda **_kw: fake_workflow
+            module, "create_agent_graph", lambda _deps: fake_workflow
         )
 
-        use_case = module.AnalyzeMarketUseCase(
+        use_case = module.AnalyzeMarketUseCase(AgentGraphDeps(
             market_port=market_port,
             sentiment_port=Mock(),
             news_port=Mock(),
@@ -241,7 +242,7 @@ class TestGraphCompiledOnce:
             ml_port=Mock(),
             llm_port=Mock(),
             threshold=Threshold(Decimal("0.02")),
-        )
+        ))
         use_case.run("AAPL")
         use_case.run("MSFT")
         use_case.run("NVDA")
@@ -260,7 +261,7 @@ class TestThresholdInjection:
         ml_port,
         llm_port,
     ):
-        use_case = AnalyzeMarketUseCase(
+        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
             market_port=market_port,
             sentiment_port=sentiment_port,
             news_port=news_port,
@@ -268,7 +269,7 @@ class TestThresholdInjection:
             ml_port=ml_port,
             llm_port=llm_port,
             threshold=Threshold(Decimal("0.20")),  # 20% próg
-        )
+        ))
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
 

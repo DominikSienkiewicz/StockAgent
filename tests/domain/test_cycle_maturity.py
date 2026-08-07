@@ -66,19 +66,6 @@ def test_below_threshold_means_reference_price_existed() -> None:
     assert result is CycleMaturity.STEADY_STATE
 
 
-def test_unsupported_symbols_excluded_from_denominator() -> None:
-    # Symbole nieobsługiwane cenowo (trzecia kategoria "ignored") nie wliczają
-    # się do mianownika cold-startu — nie mogą zepsuć klasyfikacji Dnia 1.
-    result = classify_cycle(
-        saved_count=0,
-        cold_start_count=45,
-        below_threshold_count=0,
-        error_count=0,
-        unsupported_count=10,
-    )
-    assert result is CycleMaturity.FIRST_RUN
-
-
 def test_cold_start_must_dominate_errors() -> None:
     # Garstka cold-startów tonie w masowej awarii → to incydent, nie Dzień 1.
     result = classify_cycle(
@@ -112,13 +99,9 @@ def test_empty_cycle_is_steady_state() -> None:
     assert result is CycleMaturity.STEADY_STATE
 
 
-def test_only_unsupported_is_steady_state() -> None:
-    # Sam nieobsługiwany balast (wykluczony z mianownika) → brak Dnia 1.
-    result = classify_cycle(
-        saved_count=0,
-        cold_start_count=0,
-        below_threshold_count=0,
-        error_count=0,
-        unsupported_count=10,
-    )
-    assert result is CycleMaturity.STEADY_STATE
+# Wykluczenie SkipReason.UNSUPPORTED_PRICE z mianownika NIE jest już testowane
+# tutaj: `classify_cycle` nie przyjmuje ich liczności, więc oba dawne testy
+# ("cold-start + unsupported → FIRST_RUN", "sam unsupported → STEADY_STATE")
+# po usunięciu martwego kwarga stały się dosłownymi duplikatami sąsiadów obok.
+# Filtrowanie robi orkiestrator, więc kontrakt weryfikuje `TestCycleMaturityWiring`
+# w tests/test_main_entrypoints.py — na realnych `SymbolResult`, nie na liczbach.

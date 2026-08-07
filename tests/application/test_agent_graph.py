@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.application.agent_graph import create_agent_graph
+from src.application.agent_graph import AgentGraphDeps, create_agent_graph
 from src.application.ports import (
     EmbeddingPort,
     LLMPort,
@@ -78,7 +78,7 @@ def workflow(
     ml_port: Mock,
     llm_port: Mock,
 ):
-    return create_agent_graph(
+    return create_agent_graph(AgentGraphDeps(
         market_port=market_port,
         sentiment_port=sentiment_port,
         news_port=news_port,
@@ -86,7 +86,7 @@ def workflow(
         ml_port=ml_port,
         llm_port=llm_port,
         threshold=Threshold(Decimal("0.02")),
-    )
+    ))
 
 
 def _initial_state(previous_price: str) -> dict:
@@ -194,7 +194,10 @@ class TestPriceSnapshot:
         graph = workflow.compile()
         initial_state = _initial_state("100.0")
 
-        with pytest.raises(Exception):  # noqa: B017 - dowolny wyjątek z grafu
+        # Konkretny typ i komunikat, nie gołe `Exception`: szeroki raises przechodzi
+        # też wtedy, gdy graf padnie z zupełnie innego powodu (np. TypeError z
+        # literówki w mockach), więc test przestałby pilnować tego, co opisuje.
+        with pytest.raises(RuntimeError, match="XGBoost segfault"):
             graph.invoke(initial_state)
 
         # Sedno naprawy: brak terminala = brak snapshotu = retry reużyje
@@ -480,13 +483,13 @@ class TestReflectMistakeDiagnosisGatedByVolatility:
             predicted_target_price=Decimal("110.0"),
         )
         llm_port.analyze_mistake.return_value = "nie powinno się odpalić"
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
             threshold=Threshold(Decimal("0.02")),
             crypto_threshold=Threshold(Decimal("0.05")),
-        )
+        ))
 
         asset = Asset(symbol="BTC", asset_type=AssetType.CRYPTO)
         workflow.compile().invoke({
@@ -897,7 +900,7 @@ class TestVolatilityBelowThreshold:
         bez tego filtr przedwczesnej oceny nigdy by się nie aktywował."""
         market_port.get_current_price.return_value = Money(Decimal("99.0"))
         repository_port.get_unverified_prediction.return_value = None
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port,
             sentiment_port=sentiment_port,
             news_port=news_port,
@@ -906,7 +909,7 @@ class TestVolatilityBelowThreshold:
             llm_port=llm_port,
             threshold=Threshold(Decimal("0.02")),
             reflection_min_age_hours=6,
-        )
+        ))
 
         workflow.compile().invoke(_initial_state("100.0"))
 
@@ -930,7 +933,7 @@ class TestCustomThreshold:
         ml_port: Mock,
         llm_port: Mock,
     ):
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port,
             sentiment_port=sentiment_port,
             news_port=news_port,
@@ -938,7 +941,7 @@ class TestCustomThreshold:
             ml_port=ml_port,
             llm_port=llm_port,
             threshold=Threshold(Decimal("0.10")),  # 10%
-        )
+        ))
         market_port.get_current_price.return_value = Money(Decimal("95.0"))  # -5%
 
         final = workflow.compile().invoke(_initial_state("100.0"))
@@ -1116,13 +1119,13 @@ class TestEmbeddingPersistence:
     ):
         embedding_port = Mock(spec=EmbeddingPort)
         embedding_port.embed.return_value = [0.1, 0.2, 0.3]
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
             threshold=Threshold(Decimal("0.02")),
             embedding_port=embedding_port,
-        )
+        ))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -1156,13 +1159,13 @@ class TestEmbeddingPersistence:
     ):
         embedding_port = Mock(spec=EmbeddingPort)
         embedding_port.embed.side_effect = RuntimeError("OpenAI down")
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
             threshold=Threshold(Decimal("0.02")),
             embedding_port=embedding_port,
-        )
+        ))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -1197,13 +1200,13 @@ class TestRagRetrieval:
                 "correction_insights": "reaguj na jastrzębi Fed",
             }
         ]
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
             threshold=Threshold(Decimal("0.02")),
             embedding_port=embedding_port,
-        )
+        ))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -1225,13 +1228,13 @@ class TestRagRetrieval:
         repository_port.find_similar_predictions.side_effect = RuntimeError(
             "pgvector RPC missing"
         )
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
             threshold=Threshold(Decimal("0.02")),
             embedding_port=embedding_port,
-        )
+        ))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -1267,13 +1270,13 @@ class TestRagPrecedentReceipts:
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port, embedding_port,
     ):
-        return create_agent_graph(
+        return create_agent_graph(AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
             threshold=Threshold(Decimal("0.02")),
             embedding_port=embedding_port,
-        )
+        ))
 
     def test_precedents_captured_into_node_output(
         self, market_port, sentiment_port, news_port,
@@ -1466,12 +1469,12 @@ class TestProvenanceSignals:
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,
     ):
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
             threshold=Threshold(Decimal("0.02")),
-        )
+        ))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -1519,7 +1522,7 @@ class TestToolUseResearchAgent:
             "av_agreement": 0.3,
             "reasoning": "Po sprawdzeniu fundamentów: pogorszenie.",
         }
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
@@ -1527,7 +1530,7 @@ class TestToolUseResearchAgent:
             tool_use_port=tool_use_port,
             research_tools=self._tools(),
             tool_use_threshold=Threshold(Decimal("0.05")),
-        )
+        ))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -1553,7 +1556,7 @@ class TestToolUseResearchAgent:
         # -3%: główna bramka 2% przepuszcza (analiza leci), ale < 5% próg tool-use
         # → zwykły llm_port.analyze, BEZ kosztownej pętli tool-use.
         tool_use_port = Mock(spec=ToolUseLLMPort)
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
@@ -1561,7 +1564,7 @@ class TestToolUseResearchAgent:
             tool_use_port=tool_use_port,
             research_tools=self._tools(),
             tool_use_threshold=Threshold(Decimal("0.05")),
-        )
+        ))
         market_port.get_current_price.return_value = Money(Decimal("97.0"))  # -3%
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -1581,7 +1584,7 @@ class TestToolUseResearchAgent:
         # degraduje do neutralnej analizy + flagi, jak guard #12. Brak crashu.
         tool_use_port = Mock(spec=ToolUseLLMPort)
         tool_use_port.analyze_with_tools.side_effect = RuntimeError("tool loop boom")
-        workflow = create_agent_graph(
+        workflow = create_agent_graph(AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
@@ -1589,7 +1592,7 @@ class TestToolUseResearchAgent:
             tool_use_port=tool_use_port,
             research_tools=self._tools(),
             tool_use_threshold=Threshold(Decimal("0.05")),
-        )
+        ))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -1625,12 +1628,12 @@ class TestToolUseResearchAgent:
 
 class TestVectorMemory:
     def _make(self, ports: dict, *, enabled: bool, embedding_port: Mock):
-        return create_agent_graph(
+        return create_agent_graph(AgentGraphDeps(
             **ports,
             threshold=Threshold(Decimal("0.02")),
             embedding_port=embedding_port,
             vector_memory_enabled=enabled,
-        )
+        ))
 
     def _state(self) -> dict:
         return {
@@ -1757,11 +1760,11 @@ class TestDecisionReceipts:
     """
 
     def _make(self, ports: dict, *, enabled: bool):
-        return create_agent_graph(
+        return create_agent_graph(AgentGraphDeps(
             **ports,
             threshold=Threshold(Decimal("0.02")),
             receipts_enabled=enabled,
-        )
+        ))
 
     def _record(self, repository_port: Mock) -> dict:
         return repository_port.save_prediction.call_args.args[0]
@@ -1866,11 +1869,11 @@ class TestImpliedEdge:
         return port
 
     def _make(self, ports: dict, options_port):
-        return create_agent_graph(
+        return create_agent_graph(AgentGraphDeps(
             **ports,
             threshold=Threshold(Decimal("0.02")),
             options_port=options_port,
-        )
+        ))
 
     def _ports(self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
         return dict(
@@ -1955,7 +1958,7 @@ class TestAlphaFusionInGraph:
     Bez niego 5 pobieranych źródeł alfa było render-only."""
 
     def _make(self, ports: dict):
-        return create_agent_graph(**ports, threshold=Threshold(Decimal("0.02")))
+        return create_agent_graph(AgentGraphDeps(**ports, threshold=Threshold(Decimal("0.02"))))
 
     def _ports(self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
         return dict(
@@ -2053,11 +2056,11 @@ class TestAttestationCommitment:
         )
 
     def _run(self, ports, publisher):
-        return create_agent_graph(
+        return create_agent_graph(AgentGraphDeps(
             **ports,
             threshold=Threshold(Decimal("0.02")),
             attestation_publisher=publisher,
-        ).compile().invoke(_initial_state("100.0"))
+        )).compile().invoke(_initial_state("100.0"))
 
     def test_without_publisher_no_commitment_columns_are_written(
         self, market_port, sentiment_port, news_port,
@@ -2162,9 +2165,9 @@ class TestPaidCallMeter:
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
         )
 
-        create_agent_graph(
+        create_agent_graph(AgentGraphDeps(
             **ports, threshold=Threshold(Decimal("0.02")), paid_call_meter=meter
-        ).compile().invoke(_initial_state("100.0"))
+        )).compile().invoke(_initial_state("100.0"))
 
         assert sum(meter.values()) == 0
 
@@ -2183,9 +2186,9 @@ class TestPaidCallMeter:
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
         )
 
-        create_agent_graph(
+        create_agent_graph(AgentGraphDeps(
             **ports, threshold=Threshold(Decimal("0.02")), paid_call_meter=meter
-        ).compile().invoke(_initial_state("100.0"))
+        )).compile().invoke(_initial_state("100.0"))
 
         assert meter["llm"] >= 1
         assert meter["sentiment"] == 1
@@ -2204,8 +2207,8 @@ class TestPaidCallMeter:
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
         )
 
-        final = create_agent_graph(
+        final = create_agent_graph(AgentGraphDeps(
             **ports, threshold=Threshold(Decimal("0.02"))
-        ).compile().invoke(_initial_state("100.0"))
+        )).compile().invoke(_initial_state("100.0"))
 
         assert final["status"] == "saved"

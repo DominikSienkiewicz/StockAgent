@@ -38,6 +38,13 @@ domain  ←  application  ←  infrastructure
 Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
 `infrastructure/`. Nigdy nie wstrzykuj konkretnej klasy infrastruktury do `application`.
 
+Podłączenie portu do Fast Loopa = **jedno pole** w `AgentGraphDeps`
+(`application/agent_graph.py`). Ten sam obiekt biorą `create_agent_graph`
+i `AnalyzeMarketUseCase`, więc nie ma już trzech list argumentów do zsynchronizowania.
+Analogicznie nowa sekcja raportu = jedno pole w `ReportContext`
+(`application/report_builder.py`), które `main_agent._dispatch_reports` wypełnia
+przez `dataclasses.replace`.
+
 ## TDD — testy przed implementacją
 
 Pracuj cyklem **Red → Green → Refactor**: najpierw test (który failuje), potem

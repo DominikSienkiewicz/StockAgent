@@ -13,7 +13,7 @@ import logging
 from decimal import Decimal
 from unittest.mock import Mock
 
-from src.application.agent_graph import create_agent_graph
+from src.application.agent_graph import AgentGraphDeps, create_agent_graph
 from src.application.ports import (
     LLMPort,
     MarketDataPort,
@@ -48,7 +48,7 @@ def _make_graph(sentiment_payload: dict, llm_payload: dict | None = None):
         "av_agreement": 0.9,
         "reasoning": "OK",
     }
-    graph = create_agent_graph(
+    graph = create_agent_graph(AgentGraphDeps(
         market_port=market,
         sentiment_port=sentiment,
         news_port=news,
@@ -56,7 +56,7 @@ def _make_graph(sentiment_payload: dict, llm_payload: dict | None = None):
         ml_port=ml,
         llm_port=llm,
         threshold=Threshold(Decimal("0.02")),
-    )
+    ))
     return graph, repo
 
 

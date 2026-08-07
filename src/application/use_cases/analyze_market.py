@@ -1,29 +1,13 @@
 from __future__ import annotations
 
+import dataclasses
 from collections import Counter
-from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
-from src.application.agent_graph import AgentState, create_agent_graph
-from src.application.ports import (
-    AdvisoryCouncilPort,
-    AttestationPublisherPort,
-    EmbeddingPort,
-    FundamentalsPort,
-    LLMPort,
-    MarketDataPort,
-    MLPredictionPort,
-    NewsPort,
-    OptionsFlowPort,
-    RepositoryPort,
-    SentimentPort,
-    Tool,
-    ToolUseLLMPort,
-)
+from src.application.agent_graph import AgentGraphDeps, AgentState, create_agent_graph
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset
-from src.domain.value_objects import Threshold
 
 
 class AnalyzeMarketUseCase:
@@ -34,60 +18,15 @@ class AnalyzeMarketUseCase:
     2. uruchomienie grafu LangGraph (check_price → reflect/sentiment/news/predict/save).
     """
 
-    def __init__(
-        self,
-        *,
-        market_port: MarketDataPort,
-        sentiment_port: SentimentPort,
-        news_port: NewsPort,
-        repository_port: RepositoryPort,
-        ml_port: MLPredictionPort,
-        llm_port: LLMPort,
-        threshold: Threshold,
-        embedding_port: EmbeddingPort | None = None,
-        council_port: AdvisoryCouncilPort | None = None,
-        council_threshold: Threshold | None = None,
-        fundamentals_port: FundamentalsPort | None = None,
-        crypto_threshold: Threshold | None = None,
-        crypto_council_threshold: Threshold | None = None,
-        reflection_min_age_hours: int = 0,
-        rag_outcome_weight: float = 0.0,
-        tool_use_port: ToolUseLLMPort | None = None,
-        research_tools: Sequence[Tool] = (),
-        tool_use_threshold: Threshold | None = None,
-        vector_memory_enabled: bool = False,
-        receipts_enabled: bool = False,
-        options_port: OptionsFlowPort | None = None,
-        attestation_publisher: AttestationPublisherPort | None = None,
-        paid_call_meter: Counter[str] | None = None,
-    ) -> None:
-        self._repository = repository_port
+    def __init__(self, deps: AgentGraphDeps) -> None:
+        self._repository = deps.repository_port
         # Licznik płatnych wywołań CAŁEGO cyklu — jeden na use case, nie na symbol.
-        self.paid_calls: Counter[str] = paid_call_meter or Counter()
+        # Graf dostaje TEN egzemplarz, nie ten z `deps`: gdy wołający nie podał
+        # własnego, licznik musi być współdzielony między use case'em a węzłami,
+        # inaczej `paid_calls` zostałoby puste mimo płatnych wywołań.
+        self.paid_calls: Counter[str] = deps.paid_call_meter or Counter()
         workflow = create_agent_graph(
-            market_port=market_port,
-            sentiment_port=sentiment_port,
-            news_port=news_port,
-            repository_port=repository_port,
-            ml_port=ml_port,
-            llm_port=llm_port,
-            threshold=threshold,
-            embedding_port=embedding_port,
-            council_port=council_port,
-            council_threshold=council_threshold,
-            fundamentals_port=fundamentals_port,
-            crypto_threshold=crypto_threshold,
-            crypto_council_threshold=crypto_council_threshold,
-            reflection_min_age_hours=reflection_min_age_hours,
-            rag_outcome_weight=rag_outcome_weight,
-            tool_use_port=tool_use_port,
-            research_tools=research_tools,
-            tool_use_threshold=tool_use_threshold,
-            vector_memory_enabled=vector_memory_enabled,
-            receipts_enabled=receipts_enabled,
-            options_port=options_port,
-            attestation_publisher=attestation_publisher,
-            paid_call_meter=self.paid_calls,
+            dataclasses.replace(deps, paid_call_meter=self.paid_calls)
         )
         # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().
