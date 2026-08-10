@@ -1,5 +1,5 @@
 # 📈 StockAgent
-**Architected & Developed by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/)** *Principal AI Engineer | Full Stack Architect*
+**Architected & Developed by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/)**
 
 Autonomous financial agent that runs once daily (on trading days, on a cron), monitors a curated portfolio of US stocks and ETFs, **fuses price action with curated financial sentiment** (Alpha Vantage NEWS_SENTIMENT), **detects cross-signal divergences** (LLM ↔ AV agreement < 0.3 = 🚨 fake news / manipulation), **learns from its own mistakes** (Self-Reflection backed by closed predictions in Supabase), and delivers a full Polish-language digest email — with charts, trade signals, accuracy history, and clickable top news straight from your inbox.
 
@@ -16,7 +16,7 @@ Autonomous financial agent that runs once daily (on trading days, on a cron), mo
 
 ## 🧠 The Vision: Signal over Noise
 
-In the era of AI-driven information overload, a single price tick is a useless signal — what matters is the **covariance of sentiment, news, and historical predictions**. This agent treats the market as a system: once a day it pulls clean numerical data, enriches it through a curated financial filter, models hybridly (LLM for reasoning + XGBoost for quantitative inference), and **cyclically confronts itself with reality** through Self-Reflection. It's not a scraper, and it's not another "GPT predict stocks" — it's a **cognitive filter** designed for an aware decision-maker.
+In the era of AI-driven information overload, a single price tick is a useless signal — what matters is the **covariance of sentiment, news, and historical predictions**. This agent treats the market as a system: once a day it pulls clean numerical data, enriches it through a curated financial filter, models hybridly (LLM for reasoning + XGBoost for quantitative inference), and **cyclically confronts itself with reality** through Self-Reflection. It's not a scraper, and it's not another "GPT predict stocks" — every prediction it makes is recorded, closed against the realised price, and fed back into the next run.
 
 ## How it works
 
