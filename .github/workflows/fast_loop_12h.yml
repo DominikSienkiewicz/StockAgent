@@ -1,16 +1,19 @@
 name: 🟢 Fast Loop (12h Agentic RAG)
 
 on:
-  # ▶️ Faza 0: agent startuje automatycznie. Bez tego wszystkie funkcje
-  # polerowały maila, którego nikt nie dostawał.
-  schedule:
-    # 05:30 UTC = 07:30 CEST (lato) / 06:30 CET (zima)
-    # GHA cron jest fixed-UTC i nie ma DST — w październiku przy zmianie czasu
-    # na CET godziny przesuwają się o 1h wstecz w czasie polskim.
-    # Aby zachować 7:30 PL przez cały rok, zmień na '30 6' w CET.
-    # GHA cron to best-effort — opóźnienia 5-60 min są normalne.
-    # Tylko dni robocze (pon-pt) — w weekendy giełda jest zamknięta.
-    - cron: '30 5 * * 1-5'
+  # ⏸️ Codzienne generowanie i wysyłanie raportów WYŁĄCZONE (na razie).
+  # Harmonogram (cron) jest zakomentowany — agent nie startuje automatycznie,
+  # więc nic nie generuje ani nie wysyła. Zostaje wyłącznie ręczne wymuszenie
+  # z panelu Actions (workflow_dispatch). Aby przywrócić codzienne uruchomienia,
+  # odkomentuj blok `schedule` poniżej.
+  # schedule:
+  #   # 05:30 UTC = 07:30 CEST (lato) / 06:30 CET (zima)
+  #   # GHA cron jest fixed-UTC i nie ma DST — w październiku przy zmianie czasu
+  #   # na CET godziny przesuwają się o 1h wstecz w czasie polskim.
+  #   # Aby zachować 7:30 PL przez cały rok, zmień na '30 6' w CET.
+  #   # GHA cron to best-effort — opóźnienia 5-60 min są normalne.
+  #   # Tylko dni robocze (pon-pt) — w weekendy giełda jest zamknięta.
+  #   - cron: '30 5 * * 1-5'
   workflow_dispatch:   # ręczne wymuszenie z panelu Actions
 
 permissions:
