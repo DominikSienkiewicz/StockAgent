@@ -217,7 +217,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 /.idea/
-/docs/
+
+# docs/ jest powierzchnia publikowana: README jest routerem i linkuje tu wzglednie, wiec
+# ignorowany katalog docelowy = router z 404. Backlog produktowy zostaje lokalny.
+/docs/product-backlog.md
 
 # Supabase CLI — artefakty lokalne (link, gałęzie preview). Migracje ZOSTAJĄ w repo.
 supabase/.temp/
