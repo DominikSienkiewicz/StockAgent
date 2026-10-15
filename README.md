@@ -1,12 +1,13 @@
 # 📈 StockAgent
-**Architected & Developed by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/)**
+**Designed and maintained by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/), built with AI coding agents:** I set the architecture, write the specifications, define the quality gates enforced in CI and review every change.
 
-Autonomous financial agent for a curated portfolio of US stocks, ETFs and crypto. It fuses
-price action with curated financial sentiment, cross-checks an LLM against Alpha Vantage to
-flag possible manipulation, scores every past prediction against the realised price, and
-delivers a Polish-language digest email with inline charts, trade signals and its own
-running hit-rate. The daily schedule is **currently paused** — it runs on manual
-`workflow_dispatch`.
+**Educational proof of concept — not investment advice.** A Python and LangGraph agent that
+analyses a fixed watchlist of US stocks, ETFs and crypto. It combines price action with
+curated financial news sentiment, cross-checks the LLM's reading against Alpha Vantage data,
+scores every past prediction against the realised price, and writes a Polish-language report
+email with charts and its own running hit-rate. The daily report run is **paused** and starts
+only on manual `workflow_dispatch`; an hourly price-shock check and a weekly model retraining
+still run on schedule.
 
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.3](https://img.shields.io/badge/LangGraph-1.3-1C3C3C?style=for-the-badge)
