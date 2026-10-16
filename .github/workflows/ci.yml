@@ -56,10 +56,12 @@ jobs:
         run: uv sync --frozen --extra anthropic --no-build --no-install-project
 
       - name: 🔍 Ruff (lint)
-        run: uv run --frozen --no-build --no-sync ruff check src tests main_agent.py main_trainer.py main_backtest.py
+        run: uv run --frozen --no-build --no-sync ruff check .
 
       - name: 🔎 Mypy (strict type check)
-        run: uv run --frozen --no-build --no-sync mypy src main_agent.py main_trainer.py main_backtest.py
+        # Gołe `mypy` = pliki z `[tool.mypy].files` (src + wszystkie main_*.py).
+        # Zgodność z CLAUDE.md / AGENTS.md / docs pilnuje tests/test_quality_gate_sync.py.
+        run: uv run --frozen --no-build --no-sync mypy
 
       - name: 🧪 Pytest (unit tests)
         # Integration tests (-m integration) wymagają prawdziwych kluczy API —

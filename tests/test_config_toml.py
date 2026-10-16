@@ -80,3 +80,31 @@ def test_env_overrides_toml(
     s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
     # env > toml
     assert s.symbol_throttle_seconds == pytest.approx(3.0)
+
+
+def _comment_above(lines: list[str], index: int) -> str:
+    """Ostatnia linia bloku komentarza nad kluczem `lines[index]`.
+
+    Przeskakuje sąsiednie przypisania tej samej grupy (np. trzy flagi pod
+    jednym komentarzem); pusta linia kończy grupę.
+    """
+    for line in reversed(lines[:index]):
+        stripped = line.strip()
+        if not stripped:
+            return ""
+        if stripped.startswith("#"):
+            return stripped
+    return ""
+
+
+def test_no_flag_set_to_true_sits_under_an_off_comment() -> None:
+    # „Off." nad `= true` to config, który kłamie o sobie — a ten plik jest
+    # deklarowanym single source of truth.
+    lines = CONFIG_TOML.read_text(encoding="utf-8").splitlines()
+    contradicted = [
+        line.split("=", 1)[0].strip()
+        for index, line in enumerate(lines)
+        if line.replace(" ", "").endswith("=true")
+        and _comment_above(lines, index).endswith("Off.")
+    ]
+    assert not contradicted, f"flagi = true pod komentarzem „Off.”: {contradicted}"

@@ -56,6 +56,16 @@ def _shock_threshold(asset: Asset, volatility_threshold: Threshold) -> Decimal:
     return volatility_threshold.value * SHOCK_THRESHOLD_MULTIPLIER
 
 
+def is_reference_stale(snapshot_age_hours: float) -> bool:
+    """Czy punkt odniesienia jest za stary, żeby liczyć wobec niego szok.
+
+    Dokładnie `SNAPSHOT_MAX_AGE_HOURS` jest jeszcze świeże. Watch woła ten
+    predykat PRZED pobraniem ceny bieżącej i liczy stęchłe referencje — gdy
+    stęchłe są wszystkie, nie może zgłosić żadnego alertu.
+    """
+    return snapshot_age_hours > SNAPSHOT_MAX_AGE_HOURS
+
+
 def detect_shock(
     asset: Asset,
     delta: PriceDelta,
@@ -70,7 +80,7 @@ def detect_shock(
     odniesienia jest stęchły i alert jest tłumiony niezależnie od wielkości
     delty.
     """
-    if snapshot_age_hours > SNAPSHOT_MAX_AGE_HOURS:
+    if is_reference_stale(snapshot_age_hours):
         return None
 
     if abs(delta.fraction) < _shock_threshold(asset, volatility_threshold):

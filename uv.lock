@@ -2237,6 +2237,7 @@ name = "stock-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anthropic" },
     { name = "jinja2" },
     { name = "langchain" },
     { name = "langchain-openai" },
@@ -2270,7 +2271,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.28.0" },
+    { name = "anthropic", specifier = ">=0.102.0" },
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.102.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "langchain", specifier = ">=0.1.16" },
     { name = "langchain-openai", specifier = ">=0.1.3" },

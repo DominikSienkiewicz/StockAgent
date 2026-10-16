@@ -8,6 +8,7 @@ bramkę volatility Fast Loopa (delta liczyłaby się względem ceny sprzed godzi
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock
@@ -90,6 +91,48 @@ class TestWatchCycle:
         ) == 0
         push.send_report.assert_not_called()
 
+    def test_stale_snapshot_skips_the_price_fetch(self, settings) -> None:
+        # Stęchła referencja i tak tłumi alert, więc pobieranie ceny to czysty
+        # koszt (limit Finnhuba) bez żadnej szansy na wynik.
+        repo = _repo("100", age_hours=48.0)
+        market = _market("90")
+
+        main_watch.run_watch(settings, repository=repo, market=market, push_notifier=MagicMock())
+
+        market.get_current_price.assert_not_called()
+
+    def test_all_stale_snapshots_log_blind_warning(self, settings, caplog) -> None:
+        # Gdy Fast Loop stoi, każda referencja jest stęchła i watch nie może
+        # zgłosić niczego. „0 alertów" na INFO wyglądałoby jak zdrowy przebieg.
+        settings.symbols = ["AAPL", "MSFT"]
+        repo = _repo("100", age_hours=48.0)
+
+        with caplog.at_level(logging.WARNING, logger="main_watch"):
+            sent = main_watch.run_watch(
+                settings, repository=repo, market=_market("90"), push_notifier=MagicMock()
+            )
+
+        assert sent == 0
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("ślepy" in r.getMessage() for r in warnings)
+
+    def test_partly_stale_snapshots_do_not_log_blind_warning(self, settings, caplog) -> None:
+        settings.symbols = ["AAPL", "MSFT"]
+        now = datetime.now(UTC)
+        repo = _repo("100", age_hours=1.0, now=now)
+        repo.get_last_price_snapshot.side_effect = [
+            (Money(Decimal("100")), now - timedelta(hours=48.0)),
+            (Money(Decimal("100")), now - timedelta(hours=1.0)),
+        ]
+
+        with caplog.at_level(logging.WARNING, logger="main_watch"):
+            main_watch.run_watch(
+                settings, repository=repo, market=_market("99"),
+                push_notifier=MagicMock(), now=now,
+            )
+
+        assert not any("ślepy" in r.getMessage() for r in caplog.records)
+
     def test_small_move_is_not_a_shock(self, settings) -> None:
         repo = _repo("100", age_hours=1.0)
 
@@ -138,3 +181,33 @@ class TestWatchCycle:
             settings, repository=repo, market=_market("90"), push_notifier=MagicMock()
         ) == 0
         repo.get_last_price_snapshot.assert_not_called()
+
+
+def test_main_wires_free_adapters_only(settings, mocker) -> None:
+    # `main()` składa adaptery fabrykami z `main_agent` (import lokalny). Rename
+    # buildera przeszedłby przez testy `run_watch`, a wywaliłby sam entry-point.
+    repository = mocker.patch("main_agent.build_repository")
+    market = mocker.patch("main_agent.build_market_port")
+    push = mocker.patch("main_agent.build_push_notifier")
+    paid_builders = [
+        mocker.patch(f"main_agent.{name}")
+        for name in (
+            "build_llm_adapter",
+            "build_council_adapter",
+            "build_embedding_adapter",
+            "build_use_case",
+            "build_alpha_enrichment",
+        )
+    ]
+    run_watch = mocker.patch("main_watch.run_watch", return_value=0)
+
+    assert main_watch.main(settings) == 0
+
+    run_watch.assert_called_once_with(
+        settings,
+        repository=repository.return_value,
+        market=market.return_value,
+        push_notifier=push.return_value,
+    )
+    for builder in paid_builders:
+        builder.assert_not_called()

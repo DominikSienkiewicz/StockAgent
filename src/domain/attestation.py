@@ -6,10 +6,13 @@ sceptyk może samodzielnie policzyć hash i potwierdzić, że commitment odpowia
 dokładnie tej predykcji — a nie wersji dopasowanej po fakcie do ruchu ceny.
 
 UCZCIWOŚĆ CLAIMU (świadomie ograniczona):
-    Niezależny timestamp bierze się z historii commitów GitHuba, a daty commitów
-    Gita SĄ FAŁSZOWALNE (`GIT_COMMITTER_DATE` można ustawić dowolnie). To NIE jest
-    niepodrabialny znacznik czasu. Realny gwarant to *tamper-evidence przy branch
-    protection*: gdy główna gałąź jest chroniona i append-only, cofnięcie lub
+    Niezależny timestamp dałaby historia commitów GitHuba — ale TYLKO wtedy, gdy
+    commitmenty faktycznie są do repo publikowane. Dziś żaden workflow ich nie
+    publikuje (flaga `attestation_enabled` jest wyłączona, publikacja to osobny
+    etap). Nawet po publikacji daty commitów Gita SĄ FAŁSZOWALNE
+    (`GIT_COMMITTER_DATE` można ustawić dowolnie). To NIE jest niepodrabialny
+    znacznik czasu. Realny gwarant to *tamper-evidence przy branch
+    protection*: gdy gałąź jest chroniona i append-only, cofnięcie lub
     podmiana wcześniej opublikowanego commitmentu zostawia widoczny ślad. Nie
     obiecujemy w tym module niczego więcej — mocniejszy dowód czasu (np.
     OpenTimestamps) to opcjonalny, osobny etap.

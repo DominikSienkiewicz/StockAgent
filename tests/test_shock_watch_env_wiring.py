@@ -50,3 +50,21 @@ def test_all_settings_required_secrets_are_mapped() -> None:
         f"kroku watcha — bez nich Settings() rzuca ValueError na starcie i cały "
         f"watch pada, choć nie woła żadnego płatnego portu."
     )
+
+
+def _schedule(workflow: str) -> object:
+    spec = yaml.safe_load((ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8"))
+    # PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True.
+    triggers = spec.get("on", spec.get(True)) or {}
+    return triggers.get("schedule")
+
+
+def test_watch_cron_runs_only_alongside_the_fast_loop_cron() -> None:
+    # Watch nigdy nie zapisuje snapshotu ceny — referencje bierze wyłącznie
+    # z Fast Loopa, a referencja starsza niż 30 h tłumi każdy alert. Cron watcha
+    # bez crona Fast Loopa to co godzinę „0 alertów" bez żadnej szansy na alert.
+    if _schedule("shock_watch_hourly.yml"):
+        assert _schedule("fast_loop_12h.yml"), (
+            "shock_watch_hourly.yml ma aktywny cron, a fast_loop_12h.yml nie — "
+            "watch jest wtedy ślepy (brak świeżych snapshotów cen)."
+        )

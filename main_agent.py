@@ -199,7 +199,7 @@ def build_llm_adapter(
         if not settings.anthropic_api_key:
             raise ValueError(
                 "LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set. "
-                "Install with: uv sync --extra anthropic"
+                "Add it to .env (local) or the repository secrets (CI)."
             )
         from src.infrastructure.llm.anthropic_client import AnthropicAdapter
 
@@ -1263,6 +1263,7 @@ def _sweep_reveals(
 
     `revealed_at` stemplujemy DOPIERO po udanej publikacji. Odwrotna kolejność
     zgubiłaby nietrafienie na zawsze: oznaczone jako ujawnione, nigdy ujawnione.
+    Pusty wynik `publish_reveal` to według kontraktu portu porażka, nie sukces.
     Best-effort per wiersz: jeden błąd nie przerywa sweepu.
     """
     try:
@@ -1274,7 +1275,7 @@ def _sweep_reveals(
     revealed = 0
     for row in rows:
         try:
-            publisher.publish_reveal(
+            location = publisher.publish_reveal(
                 {
                     "symbol": row.get("symbol"),
                     "commitment": row.get("commitment_hash"),
@@ -1290,10 +1291,14 @@ def _sweep_reveals(
         except Exception:
             logger.exception("Failed to publish reveal for %s", row.get("id"))
             continue
+        if not location:
+            logger.warning("Reveal for %s was not published — left unrevealed", row.get("id"))
+            continue
         try:
             repository.mark_commitment_revealed(str(row["id"]))
         except Exception:
             logger.exception("Failed to mark reveal for %s", row.get("id"))
+            continue
         revealed += 1
     return revealed
 

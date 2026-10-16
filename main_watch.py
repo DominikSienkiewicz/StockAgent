@@ -1,8 +1,10 @@
 """Watch entry point — darmowy alert szoku rynkowego poza cyklem (#11).
 
 Czwarty entry point obok `main_agent` (Fast Loop), `main_trainer` (Slow Loop)
-i `main_backtest`. Uruchamiany cronem CO GODZINĘ, 24/7 — nie tylko w sesji NYSE,
-bo BTC/ETH handlują całą dobę.
+i `main_backtest`. Zaprojektowany pod cron CO GODZINĘ, 24/7 — nie tylko w sesji
+NYSE, bo BTC/ETH handlują całą dobę. Cron jest wstrzymany razem z Fast Loopem:
+jedynymi referencjami cen są jego snapshoty, więc bez niego watch jest ślepy
+(i mówi to WARNING-iem zamiast udawać zdrowe „0 alertów").
 
 FinOps: **zero płatnych wywołań**. Watch dotyka wyłącznie darmowych źródeł ceny
 (Finnhub / CoinGecko), odczytu Supabase i darmowych kanałów push. Żadnego LLM,
@@ -32,8 +34,14 @@ from datetime import UTC, date, datetime
 from src.application.ports import MarketDataPort, ReportNotifierPort, RepositoryPort
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
-from src.domain.shock import ShockAlert, detect_shock, should_emit
-from src.domain.value_objects import Threshold
+from src.domain.shock import (
+    SNAPSHOT_MAX_AGE_HOURS,
+    ShockAlert,
+    detect_shock,
+    is_reference_stale,
+    should_emit,
+)
+from src.domain.value_objects import Money, Threshold
 
 logger = logging.getLogger(__name__)
 
@@ -61,23 +69,19 @@ def _detect_symbol_shock(
     symbol: str,
     *,
     settings: Settings,
-    repository: RepositoryPort,
     market: MarketDataPort,
     crypto: set[str],
-    moment: datetime,
+    previous: Money,
+    age_hours: float,
 ) -> ShockAlert | None:
-    """Czy symbol kwalifikuje się na alert szoku. Brak snapshotu, brak ceny
-    bieżącej albo cena odniesienia 0 → None (nie ma od czego liczyć delty)."""
-    snapshot = repository.get_last_price_snapshot(symbol)
-    if snapshot is None:
-        return None
-    previous, taken_at = snapshot
+    """Czy symbol kwalifikuje się na alert szoku wobec świeżej referencji.
+    Brak ceny bieżącej albo cena odniesienia 0 → None (nie ma od czego liczyć
+    delty)."""
     current = market.get_current_price(symbol)
     if current is None or previous.amount == 0:
         return None
 
     fraction = (current.amount - previous.amount) / previous.amount
-    age_hours = (moment - taken_at).total_seconds() / 3600.0
     return detect_shock(
         _classify(symbol, crypto),
         PriceDelta(fraction),
@@ -131,17 +135,29 @@ def run_watch(
         already_sent = set()
 
     sent = 0
+    checked = 0
+    stale = 0
     for symbol in symbols:
         try:
             if not should_emit(symbol, today, already_sent):
                 continue
+            snapshot = repository.get_last_price_snapshot(symbol)
+            if snapshot is None:
+                continue
+            previous, taken_at = snapshot
+            age_hours = (moment - taken_at).total_seconds() / 3600.0
+            checked += 1
+            # Wiek PRZED pobraniem ceny: stęchła referencja i tak tłumi alert.
+            if is_reference_stale(age_hours):
+                stale += 1
+                continue
             alert = _detect_symbol_shock(
                 symbol,
                 settings=settings,
-                repository=repository,
                 market=market,
                 crypto=crypto,
-                moment=moment,
+                previous=previous,
+                age_hours=age_hours,
             )
             if alert is None:
                 continue
@@ -156,6 +172,15 @@ def run_watch(
         except Exception:
             logger.exception("Shock watch failed for symbol %s", symbol)
 
+    if checked and stale == checked:
+        # Jedyne referencje to snapshoty Fast Loopa — gdy on stoi, watch nie
+        # widzi niczego, a samo „0 alertów" wyglądałoby jak zdrowy przebieg.
+        logger.warning(
+            "Shock watch ślepy: wszystkie %d referencje cen są starsze niż %.0f h "
+            "(snapshoty zapisuje wyłącznie Fast Loop) — żaden alert nie jest możliwy.",
+            checked,
+            SNAPSHOT_MAX_AGE_HOURS,
+        )
     logger.info("Shock watch done — %d alert(ów) wysłanych", sent)
     return sent
 

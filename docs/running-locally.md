@@ -6,9 +6,9 @@ Stack, prerequisites, local setup, and CI. Tunables live in [configuration.md](c
 
 - **Python 3.12** with `from __future__ import annotations`
 - **[uv](https://github.com/astral-sh/uv)** (Astral) — dependency manager, `uv sync --frozen` in CI
-- **[LangGraph](https://langchain-ai.github.io/langgraph/) 1.3** — decision graph with `StateGraph[AgentState]`
+- **[LangGraph](https://langchain-ai.github.io/langgraph/) 1.2** — decision graph with `StateGraph[AgentState]`
 - **OpenAI Python SDK** v2 — `gpt-5-mini` advisory council + `text-embedding-3-small` embeddings, JSON mode
-- **Anthropic Python SDK** (extra `anthropic`) — Claude Sonnet 4.6, **default model for the main analysis**
+- **Anthropic Python SDK** (core dependency) — Claude Sonnet 4.6, **default model for the main analysis**
 - **XGBoost 3.2** + scikit-learn — sklearn-style API, native `.ubj` (UBJSON) format
 - **Supabase** (Postgres 16 + pgvector) — REST via `supabase-py`, service_role key
 - **Resend.com** — HTML email, sandbox sender without domain verification
@@ -37,7 +37,7 @@ Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero 
 ```bash
 git clone <repo-url> StockAgent && cd StockAgent
 
-# 1. Sync deps (creates .venv + installs packages + generates uv.lock)
+# 1. Sync deps (creates .venv and installs the locked packages, Anthropic SDK included)
 uv sync
 
 # 2. Configuration
@@ -98,7 +98,7 @@ Config is split in two: **secrets** live in `.env` (gitignored) / GitHub Secrets
 ```env
 # LLM (main analysis = Anthropic; embeddings + council = OpenAI)
 OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...            # needs `uv sync --extra anthropic`
+ANTHROPIC_API_KEY=sk-ant-...            # main analysis + weekly recap (llm_provider = anthropic)
 
 # Market data + News/Sentiment
 FINNHUB_API_KEY=...
@@ -120,8 +120,7 @@ The secrets feed **GitHub Actions Secrets** — local and CI hit the **same Supa
 ## Build commands
 
 ```bash
-uv sync                            # install deps
-uv sync --extra anthropic          # + Anthropic SDK
+uv sync                            # install deps (Anthropic SDK included; `--extra anthropic` is a kept alias)
 uv run python main_agent.py        # one Fast Loop run (analysis + email)
 uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain)
 uv run python main_backtest.py     # offline walk-forward backtest: per-symbol out-of-sample RMSE / hit-rate vs baseline (read-only, no model write)
@@ -131,8 +130,8 @@ uv run pytest                                   # full local suite
 uv run pytest -m "not integration and not containers" # unit only
 uv run pytest -m containers                    # Docker/Postgres schema tests
 uv run pytest -m integration                   # live API tests (requires real keys)
-uv run ruff check src tests main_agent.py main_trainer.py main_watch.py   # lint
-uv run mypy src                    # type check (strict)
+uv run ruff check .                # lint (same command as CI)
+uv run mypy                        # type check (strict) on [tool.mypy].files: src + every main_*.py
 ```
 
 ## GitHub Actions
@@ -144,7 +143,7 @@ Five workflows in [`.github/workflows/`](../.github/workflows/):
 | [`ci.yml`](../.github/workflows/ci.yml) | — (on push / PR) | — | ruff + mypy + pytest, plus a parallel **SonarCloud** scan job (`pytest --cov` → coverage upload) |
 | [`fast_loop_12h.yml`](../.github/workflows/fast_loop_12h.yml) | _disabled_ (manual only) | — | Analysis + email report. **Daily schedule is currently paused** — the cron is commented out, so it runs only via manual `workflow_dispatch`. Re-enable by uncommenting the `schedule` block. |
 | [`slow_loop_weekly.yml`](../.github/workflows/slow_loop_weekly.yml) | `0 3 * * 0` | Sunday 05:00 (summer) | XGBoost retraining + commit new weights |
-| [`shock_watch_hourly.yml`](../.github/workflows/shock_watch_hourly.yml) | `7 * * * *` | hourly at :07, **24/7** | Free shock alerts (`main_watch.py`) — no LLM, no paid API. Runs outside NYSE hours because BTC/ETH trade around the clock. |
+| [`shock_watch_hourly.yml`](../.github/workflows/shock_watch_hourly.yml) | _disabled_ (manual only) | — | Free shock alerts (`main_watch.py`) — no LLM, no paid API. Designed for an hourly 24/7 cron (`7 * * * *`, BTC/ETH trade around the clock), **paused together with the Fast Loop**: its only reference prices are Fast Loop snapshots, and a reference older than 30 h suppresses every alert. A run where every reference is stale logs a `Shock watch ślepy` WARNING. Re-enable both crons together. |
 | [`db_migrate.yml`](../.github/workflows/db_migrate.yml) | — (`workflow_dispatch` only) | — | Applies `supabase/migrations/` via the Supabase CLI. Deliberately manual: a broken migration must never fire on a cron. |
 
 The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.

@@ -11,8 +11,8 @@
 Każda zmiana w kodzie musi przejść **wszystkie trzy**:
 
 ```bash
-uv run ruff check src tests main_agent.py main_trainer.py main_watch.py
-uv run mypy src main_agent.py main_trainer.py main_watch.py   # strict mode
+uv run ruff check .
+uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py)
 uv run pytest
 ```
 
@@ -56,7 +56,8 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - Adaptery HTTP: testy mockują **`requests.Session.get` / `requests.Session.post`**
   (adaptery wołają przez `self._session` z `_http.build_session()`, nie przez gołe `requests`).
 - Testy integracyjne (prawdziwe API): oznaczone `@pytest.mark.integration`,
-  pomijane bez kluczy w env. CI uruchamia `pytest -m "not integration"`.
+  pomijane bez kluczy w env. CI uruchamia `pytest -m "not integration and not containers"`,
+  a testy kontenerowe osobnym krokiem `pytest -m containers`.
 - Mocki portów: `Mock(spec=SomePort)`.
 
 ## Reguły domenowe / FinOps
@@ -124,8 +125,9 @@ z sekretami; każda inna różnica to dryf, który trzeba naprawić.
 
 ## Znane kompromisy
 
-- `agent_graph.py` ma per-file override w `[tool.mypy]` (`disable_error_code = ["arg-type"]`)
-  — typing stubs LangGraph 1.x nie inferują `StateGraph[AgentState]` poprawnie.
-  Runtime jest poprawny; nie usuwaj override'u bez weryfikacji.
+- `agent_graph.py` ma jeden wąski inline `# type: ignore[arg-type]` przy węźle
+  `fetch_fundamentals` (`workflow.add_node`) — typing stubs LangGraph 1.x typują
+  węzły jako `_Node[Never]` i nie inferują `StateGraph[AgentState]`. W `[tool.mypy]`
+  nie ma per-file override'u. Runtime jest poprawny; nie usuwaj ignore'a bez weryfikacji.
 - `report_builder.py` ma `E501` wyłączone (per-file w ruff) — inline HTML
   templating ma naturalnie długie linie.

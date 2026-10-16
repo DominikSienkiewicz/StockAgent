@@ -14,6 +14,7 @@ Ten test pilnuje obu stron:
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -95,4 +96,45 @@ def test_dependency_sync_installs_anthropic_extra() -> None:
     assert sync_cmds, "brak kroku `uv sync` w workflow"
     assert any("--extra anthropic" in cmd for cmd in sync_cmds), (
         "krok `uv sync` musi instalować `--extra anthropic` (LLM_PROVIDER=anthropic)."
+    )
+
+
+# Flagi, które obiecują PUBLICZNY artefakt (commitmenty/revealy, scorecard).
+# Adaptery piszą wyłącznie na dysk runnera, który znika po jobie — bez kroku
+# publikacji włączona flaga to twierdzenie bez pokrycia.
+PUBLIC_ARTIFACT_FLAGS = ("attestation_enabled", "public_scorecard_enabled")
+
+
+def _agent_workflows() -> dict[str, list[dict[str, object]]]:
+    """Kroki wszystkich jobów, które uruchamiają `main_agent.py` (per workflow)."""
+    found: dict[str, list[dict[str, object]]] = {}
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job in spec.get("jobs", {}).values():
+            steps = job.get("steps", [])
+            if any("main_agent.py" in str(s.get("run", "")) for s in steps):
+                found.setdefault(path.name, []).extend(steps)
+    return found
+
+
+def _has_durable_publish_step(steps: list[dict[str, object]]) -> bool:
+    return any(
+        str(s.get("uses", "")).startswith("actions/deploy-pages")
+        or "git push" in str(s.get("run", ""))
+        for s in steps
+    )
+
+
+def test_enabled_public_artifacts_have_a_durable_publish_step() -> None:
+    config = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
+    enabled = [flag for flag in PUBLIC_ARTIFACT_FLAGS if config.get(flag) is True]
+    workflows = _agent_workflows()
+    assert workflows, "żaden workflow nie uruchamia main_agent.py"
+
+    unpublished = [
+        name for name, steps in workflows.items() if not _has_durable_publish_step(steps)
+    ]
+    assert not (enabled and unpublished), (
+        f"config.toml włącza {enabled}, ale {unpublished} nie ma kroku "
+        "`actions/deploy-pages` ani `git push` — artefakt ginie z dyskiem runnera."
     )

@@ -29,7 +29,7 @@ routing_floor = 0.6
 router_cheap_model = "gpt-5-mini"
 router_frontier_provider = "anthropic"
 router_frontier_model = "claude-sonnet-4-6"
-# Reżim rynku (#7): RISK-OFF zacieśnia próg volatility (mnożnik ≤ max). Off.
+# Reżim rynku (#7): RISK-OFF zacieśnia próg volatility (mnożnik ≤ max). Włączone.
 regime_aware_enabled = true
 regime_threshold_max_multiplier = 2.0
 # Contagion (#5): werdykty skorelowanych spółek z tego cyklu do promptu. Off.
@@ -48,44 +48,50 @@ var_confidence = 0.95
 stress_test_enabled = false
 hedge_effectiveness_enabled = false
 # Trust / track-record (render-only, zero płatnych): krzywa kapitału (paper-PnL),
-# krzywa kalibracji (reliability), panel „lessons learned". Off.
+# krzywa kalibracji (reliability), panel „lessons learned". Włączone.
 equity_curve_enabled = true
 calibration_curve_enabled = true
 lessons_enabled = true
 # #9: pewność LLM korygowana historycznym hit-rate'em swojego kubełka kalibracji
-# — przestawia ranking „🎯 Najsilniejsze sygnały". Render-only, zero zapisu. Off.
+# — przestawia ranking „🎯 Najsilniejsze sygnały". Render-only, zero zapisu. Włączone.
 calibrated_confidence_enabled = true
 # #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego raportu —
-# pełny plain-text przekracza limit 4096 znaków Telegrama (400, cichy zgon). Off.
+# pełny plain-text przekracza limit 4096 znaków Telegrama (400, cichy zgon). Włączone.
 messenger_digest_enabled = true
 # #12: karta kondycji modelu (migracja 019) — jawny scorecard walk-forward wraz
-# z odrzutami kandydatów. Zapis w Slow Loopie, render w mailu. Off.
+# z odrzutami kandydatów. Zapis w Slow Loopie, render w mailu. Włączone.
 model_scorecard_enabled = true
 # #8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
-# spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Off.
+# spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Włączone.
 cycle_diff_enabled = true
 # #13: kwity decyzyjne (migracja 020) — persystowany audit trail predykcji.
-# UWAGA: włącz DOPIERO po zaaplikowaniu migracji 020, inaczej PGRST204. Off.
+# UWAGA: włącz DOPIERO po zaaplikowaniu migracji 020, inaczej PGRST204. Włączone.
 receipts_enabled = true
-# #11: darmowy watch szoku rynkowego poza cyklem (main_watch.py, cron co godzinę,
-# migracja 021). Zero płatnych API — tylko Finnhub/CoinGecko + Supabase. Off.
+# #11: darmowy watch szoku rynkowego poza cyklem (main_watch.py, migracja 021).
+# Zero płatnych API — tylko Finnhub/CoinGecko + Supabase. Włączone, ale cron
+# co godzinę jest wstrzymany razem z Fast Loopem (jedyne źródło referencji cen),
+# więc watch rusza wyłącznie z ręcznego dispatchu.
 shock_alerts_enabled = true
 # #14: Alpha Fusion Score (migracja 022) — ważona fuzja insider/opcje/analitycy/
-# social/earnings. Trafia do promptu LLM i jako ósma cecha ML. Off.
+# social/earnings. Trafia do promptu LLM i jako ósma cecha ML. Włączone.
 alpha_fusion_enabled = true
 # #16: commit-reveal (migracja 024) — kryptograficznie weryfikowalny track record.
 # Claim: tamper-evidence przy branch protection, NIE niepodrabialny timestamp.
-# Włącz DOPIERO po zaaplikowaniu migracji 024, inaczej PGRST204. Off.
-attestation_enabled = true
+# Wyłączone: żaden workflow nie publikuje `public/attestation/` (brak kroku
+# deploy/push), więc commitmenty lądowałyby tylko na efemerycznym dysku runnera.
+# Włącz razem z krokiem publikacji i DOPIERO po migracji 024 (inaczej PGRST204).
+attestation_enabled = false
 # #15: realny portfel użytkownika (tabela `positions`, migracja 023) — wagi,
-# P/L i VaR w PLN zamiast fikcji równych wag. Off → Null adapter. Off.
+# P/L i VaR w PLN zamiast fikcji równych wag. Flaga off → Null adapter. Włączone.
 portfolio_positions_enabled = true
 # #17: niedzielna retrospektywa („Tydzień StockAgenta"). Koszt: 1 wywołanie LLM
-# TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Off.
+# TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Włączone.
 weekly_recap_enabled = true
 # #10: publiczny scorecard kalibracji — wyłącznie agregaty (N, hit-rate, ECE),
-# zero PII i zero symboli. Osobna ścieżka niż prywatny web_digest. Off.
-public_scorecard_enabled = true
+# zero PII i zero symboli. Osobna ścieżka niż prywatny web_digest. Wyłączone:
+# workflow nie ma kroku publikacji (Pages), a strażnik w
+# tests/test_workflow_env_wiring.py nie przepuści flagi bez niego.
+public_scorecard_enabled = false
 public_scorecard_path = "public/scorecard/index.html"
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"
