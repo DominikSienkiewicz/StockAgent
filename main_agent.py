@@ -199,7 +199,7 @@ def build_llm_adapter(
         if not settings.anthropic_api_key:
             raise ValueError(
                 "LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set. "
-                "Install with: uv sync --extra anthropic"
+                "Add it to .env (local) or the repository secrets (CI)."
             )
         from src.infrastructure.llm.anthropic_client import AnthropicAdapter
 

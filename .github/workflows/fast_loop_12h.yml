@@ -49,8 +49,8 @@ jobs:
           enable-cache: true   # cache zależności między uruchomieniami
 
       - name: 📦 Sync dependencies
-        # --extra anthropic: analiza główna chodzi na Claude (LLM_PROVIDER=anthropic),
-        # więc SDK anthropic MUSI być zainstalowany (jest optional-dependency).
+        # SDK anthropic jest zależnością rdzeniową (analiza główna chodzi na Claude);
+        # `--extra anthropic` to zachowany alias, pilnowany przez test_workflow_env_wiring.
         run: uv sync --frozen --extra anthropic --no-build --no-install-project
 
       - name: 🧠 Run Agent (LangGraph + XGBoost + LLM)

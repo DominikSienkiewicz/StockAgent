@@ -8,7 +8,7 @@ Stack, prerequisites, local setup, and CI. Tunables live in [configuration.md](c
 - **[uv](https://github.com/astral-sh/uv)** (Astral) — dependency manager, `uv sync --frozen` in CI
 - **[LangGraph](https://langchain-ai.github.io/langgraph/) 1.3** — decision graph with `StateGraph[AgentState]`
 - **OpenAI Python SDK** v2 — `gpt-5-mini` advisory council + `text-embedding-3-small` embeddings, JSON mode
-- **Anthropic Python SDK** (extra `anthropic`) — Claude Sonnet 4.6, **default model for the main analysis**
+- **Anthropic Python SDK** (core dependency) — Claude Sonnet 4.6, **default model for the main analysis**
 - **XGBoost 3.2** + scikit-learn — sklearn-style API, native `.ubj` (UBJSON) format
 - **Supabase** (Postgres 16 + pgvector) — REST via `supabase-py`, service_role key
 - **Resend.com** — HTML email, sandbox sender without domain verification
@@ -37,7 +37,7 @@ Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero 
 ```bash
 git clone <repo-url> StockAgent && cd StockAgent
 
-# 1. Sync deps (creates .venv + installs packages + generates uv.lock)
+# 1. Sync deps (creates .venv and installs the locked packages, Anthropic SDK included)
 uv sync
 
 # 2. Configuration
@@ -98,7 +98,7 @@ Config is split in two: **secrets** live in `.env` (gitignored) / GitHub Secrets
 ```env
 # LLM (main analysis = Anthropic; embeddings + council = OpenAI)
 OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...            # needs `uv sync --extra anthropic`
+ANTHROPIC_API_KEY=sk-ant-...            # main analysis + weekly recap (llm_provider = anthropic)
 
 # Market data + News/Sentiment
 FINNHUB_API_KEY=...
@@ -120,8 +120,7 @@ The secrets feed **GitHub Actions Secrets** — local and CI hit the **same Supa
 ## Build commands
 
 ```bash
-uv sync                            # install deps
-uv sync --extra anthropic          # + Anthropic SDK
+uv sync                            # install deps (Anthropic SDK included; `--extra anthropic` is a kept alias)
 uv run python main_agent.py        # one Fast Loop run (analysis + email)
 uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain)
 uv run python main_backtest.py     # offline walk-forward backtest: per-symbol out-of-sample RMSE / hit-rate vs baseline (read-only, no model write)
