@@ -108,6 +108,7 @@ from src.application.report_user_portfolio import (
 )
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
+from src.domain.asset import PriceDelta
 from src.domain.calibration_curve import CalibrationBucket
 from src.domain.consensus_shift import ConsensusShift
 from src.domain.council import CouncilVerdict
@@ -675,7 +676,8 @@ def to_lead_signals(
         signals.append(
             LeadSignal(
                 symbol=r.symbol,
-                price_delta_pct=r.delta,
+                # `SymbolResult.delta` to ułamek, a lead formatuje PROCENT.
+                price_delta_pct=PriceDelta(r.delta).percent,
                 council_verdict=r.council_verdict,
                 resolved_label=labels.get(r.symbol),
             )

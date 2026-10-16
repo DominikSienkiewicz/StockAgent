@@ -22,6 +22,7 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_formatting import company_label
+from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.cycle_maturity import SkipReason
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.portfolio import Portfolio, Position
@@ -1581,6 +1582,37 @@ class TestLeadSection:
             1.0, ReportContext(quota_alerts=[self._critical_alert()]))
 
         assert html.index(self._HEADING) < html.index("AAPL")
+
+    def test_split_council_lead_renders_fractional_delta_as_percent(self):
+        # Styk mapper ↔ domena: `SymbolResult.delta` to UŁAMEK (-0.042 = -4,2%),
+        # a `LeadSignal.price_delta_pct` to PROCENT. Bez przeliczenia lead i temat
+        # maila pokazywały „NVDA -0.0%" zamiast „NVDA -4.2%".
+        verdict = CouncilVerdict(
+            final_recommendation="HOLD",
+            consensus_strength=0.5,
+            summary="1 BUY / 1 SELL",
+            dissenting_views=(),
+            investor_opinions=(
+                InvestorOpinion(
+                    investor_name="A", recommendation="BUY",
+                    confidence=0.8, reasoning="x", key_factors=(),
+                ),
+                InvestorOpinion(
+                    investor_name="B", recommendation="SELL",
+                    confidence=0.8, reasoning="x", key_factors=(),
+                ),
+            ),
+        )
+        r = SymbolResult(
+            symbol="NVDA", status="saved", delta=Decimal("-0.042"),
+            current_price=Decimal("180.00"), trend="BEARISH",
+            council_verdict=verdict,
+        )
+
+        html, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+        assert "NVDA -4.2%, rada PODZIELONA" in html
+        assert "NVDA -4.2%, rada PODZIELONA" in text
 
 
 class TestSkipReasonMapping:
