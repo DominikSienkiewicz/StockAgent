@@ -6,8 +6,9 @@ analyses a fixed watchlist of US stocks, ETFs and crypto. It combines price acti
 curated financial news sentiment, cross-checks the LLM's reading against Alpha Vantage data,
 scores every past prediction against the realised price, and writes a Polish-language report
 email with charts and its own running hit-rate. The daily report run is **paused** and starts
-only on manual `workflow_dispatch`; an hourly price-shock check and a weekly model retraining
-still run on schedule.
+only on manual `workflow_dispatch`. The hourly price-shock check is paused with it, because
+its only reference prices are the daily run's snapshots. Only the weekly model retraining
+still runs on schedule.
 
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.3](https://img.shields.io/badge/LangGraph-1.3-1C3C3C?style=for-the-badge)

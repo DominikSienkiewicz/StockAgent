@@ -9,6 +9,7 @@ from src.domain.shock import (
     ShockAlert,
     ShockDirection,
     detect_shock,
+    is_reference_stale,
     should_emit,
 )
 from src.domain.value_objects import AssetType, Threshold
@@ -94,6 +95,17 @@ class TestDetectShock:
             )
             is None
         )
+
+
+class TestReferenceStaleness:
+    def test_reference_older_than_max_age_is_stale(self):
+        # Ta sama granica co w `detect_shock`: dokładnie limit jest jeszcze
+        # świeży, wszystko powyżej to stęchły punkt odniesienia.
+        assert is_reference_stale(30.01) is True
+        assert is_reference_stale(SNAPSHOT_MAX_AGE_HOURS) is False
+
+    def test_fresh_reference_is_not_stale(self):
+        assert is_reference_stale(FRESH_SNAPSHOT_HOURS) is False
 
 
 class TestShouldEmit:

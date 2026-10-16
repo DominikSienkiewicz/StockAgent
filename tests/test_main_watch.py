@@ -8,6 +8,7 @@ bramkę volatility Fast Loopa (delta liczyłaby się względem ceny sprzed godzi
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock
@@ -89,6 +90,48 @@ class TestWatchCycle:
             settings, repository=repo, market=_market("90"), push_notifier=push
         ) == 0
         push.send_report.assert_not_called()
+
+    def test_stale_snapshot_skips_the_price_fetch(self, settings) -> None:
+        # Stęchła referencja i tak tłumi alert, więc pobieranie ceny to czysty
+        # koszt (limit Finnhuba) bez żadnej szansy na wynik.
+        repo = _repo("100", age_hours=48.0)
+        market = _market("90")
+
+        main_watch.run_watch(settings, repository=repo, market=market, push_notifier=MagicMock())
+
+        market.get_current_price.assert_not_called()
+
+    def test_all_stale_snapshots_log_blind_warning(self, settings, caplog) -> None:
+        # Gdy Fast Loop stoi, każda referencja jest stęchła i watch nie może
+        # zgłosić niczego. „0 alertów" na INFO wyglądałoby jak zdrowy przebieg.
+        settings.symbols = ["AAPL", "MSFT"]
+        repo = _repo("100", age_hours=48.0)
+
+        with caplog.at_level(logging.WARNING, logger="main_watch"):
+            sent = main_watch.run_watch(
+                settings, repository=repo, market=_market("90"), push_notifier=MagicMock()
+            )
+
+        assert sent == 0
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("ślepy" in r.getMessage() for r in warnings)
+
+    def test_partly_stale_snapshots_do_not_log_blind_warning(self, settings, caplog) -> None:
+        settings.symbols = ["AAPL", "MSFT"]
+        now = datetime.now(UTC)
+        repo = _repo("100", age_hours=1.0, now=now)
+        repo.get_last_price_snapshot.side_effect = [
+            (Money(Decimal("100")), now - timedelta(hours=48.0)),
+            (Money(Decimal("100")), now - timedelta(hours=1.0)),
+        ]
+
+        with caplog.at_level(logging.WARNING, logger="main_watch"):
+            main_watch.run_watch(
+                settings, repository=repo, market=_market("99"),
+                push_notifier=MagicMock(), now=now,
+            )
+
+        assert not any("ślepy" in r.getMessage() for r in caplog.records)
 
     def test_small_move_is_not_a_shock(self, settings) -> None:
         repo = _repo("100", age_hours=1.0)

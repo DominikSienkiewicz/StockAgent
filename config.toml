@@ -67,8 +67,10 @@ cycle_diff_enabled = true
 # #13: kwity decyzyjne (migracja 020) — persystowany audit trail predykcji.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 020, inaczej PGRST204. Off.
 receipts_enabled = true
-# #11: darmowy watch szoku rynkowego poza cyklem (main_watch.py, cron co godzinę,
-# migracja 021). Zero płatnych API — tylko Finnhub/CoinGecko + Supabase. Off.
+# #11: darmowy watch szoku rynkowego poza cyklem (main_watch.py, migracja 021).
+# Zero płatnych API — tylko Finnhub/CoinGecko + Supabase. Włączone, ale cron
+# co godzinę jest wstrzymany razem z Fast Loopem (jedyne źródło referencji cen),
+# więc watch rusza wyłącznie z ręcznego dispatchu.
 shock_alerts_enabled = true
 # #14: Alpha Fusion Score (migracja 022) — ważona fuzja insider/opcje/analitycy/
 # social/earnings. Trafia do promptu LLM i jako ósma cecha ML. Off.
