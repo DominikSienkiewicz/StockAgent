@@ -225,3 +225,6 @@ __marimo__/
 # Supabase CLI — artefakty lokalne (link, gałęzie preview). Migracje ZOSTAJĄ w repo.
 supabase/.temp/
 supabase/.branches/
+
+# Local project concepts
+/docs/concepts/

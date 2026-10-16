@@ -79,3 +79,9 @@ Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
   nie ma per-file override'u. Runtime jest poprawny; nie usuwaj ignore'a bez weryfikacji.
 - `report_builder.py` ma `E501` wyłączone (per-file w ruff) — inline HTML
   templating ma naturalnie długie linie.
+
+## Local project concepts
+
+Keep new feature proposals, plans, audits, and exploratory notes in local
+`docs/concepts/`, which is ignored by Git. Maintained technical documentation
+and accepted architecture decisions remain tracked elsewhere under `docs/`.
