@@ -73,8 +73,7 @@ def test_ci_lints_and_typechecks_every_entrypoint(entrypoint: str) -> None:
     mypy_paths = [token for token in commands["mypy"][1:] if not token.startswith("-")]
     typed = mypy_paths or _mypy_files()
     assert entrypoint in typed, (
-        f"ci.yml nie typuje {entrypoint}: {' '.join(commands['mypy'])} "
-        f"(pliki: {typed})"
+        f"ci.yml nie typuje {entrypoint}: {' '.join(commands['mypy'])} (pliki: {typed})"
     )
 
 
@@ -95,6 +94,5 @@ def test_agent_docs_quote_the_ci_gate(doc: str, tool: str) -> None:
     ]
     assert quoted, f"{doc} nie cytuje komendy `{tool}` z bramki"
     assert all(tokens == ci_command for tokens in quoted), (
-        f"{doc} cytuje {[' '.join(t) for t in quoted]}, a CI uruchamia "
-        f"`{' '.join(ci_command)}`."
+        f"{doc} cytuje {[' '.join(t) for t in quoted]}, a CI uruchamia `{' '.join(ci_command)}`."
     )

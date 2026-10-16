@@ -54,9 +54,7 @@ def test_llm_entrypoints_run_in_some_workflow() -> None:
     assert LLM_JOBS, "żaden workflow nie uruchamia main_agent.py ani main_trainer.py"
 
 
-@pytest.mark.parametrize(
-    "workflow, steps", LLM_JOBS, ids=[workflow for workflow, _ in LLM_JOBS]
-)
+@pytest.mark.parametrize("workflow, steps", LLM_JOBS, ids=[workflow for workflow, _ in LLM_JOBS])
 def test_llm_entrypoint_workflow_installs_anthropic_sdk(
     workflow: str, steps: list[dict[str, object]]
 ) -> None:
