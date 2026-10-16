@@ -11,8 +11,8 @@
 Każda zmiana w kodzie musi przejść **wszystkie trzy**:
 
 ```bash
-uv run ruff check src tests main_agent.py main_trainer.py
-uv run mypy src main_agent.py main_trainer.py      # strict mode
+uv run ruff check .
+uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py)
 uv run pytest
 ```
 
@@ -73,8 +73,9 @@ Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
 
 ## Znane kompromisy
 
-- `agent_graph.py` ma per-file override w `[tool.mypy]` (`disable_error_code = ["arg-type"]`)
-  — typing stubs LangGraph 1.x nie inferują `StateGraph[AgentState]` poprawnie.
-  Runtime jest poprawny; nie usuwaj override'u bez weryfikacji.
+- `agent_graph.py` ma jeden wąski inline `# type: ignore[arg-type]` przy węźle
+  `fetch_fundamentals` (`workflow.add_node`) — typing stubs LangGraph 1.x typują
+  węzły jako `_Node[Never]` i nie inferują `StateGraph[AgentState]`. W `[tool.mypy]`
+  nie ma per-file override'u. Runtime jest poprawny; nie usuwaj ignore'a bez weryfikacji.
 - `report_builder.py` ma `E501` wyłączone (per-file w ruff) — inline HTML
   templating ma naturalnie długie linie.

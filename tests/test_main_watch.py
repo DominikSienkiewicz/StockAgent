@@ -181,3 +181,33 @@ class TestWatchCycle:
             settings, repository=repo, market=_market("90"), push_notifier=MagicMock()
         ) == 0
         repo.get_last_price_snapshot.assert_not_called()
+
+
+def test_main_wires_free_adapters_only(settings, mocker) -> None:
+    # `main()` składa adaptery fabrykami z `main_agent` (import lokalny). Rename
+    # buildera przeszedłby przez testy `run_watch`, a wywaliłby sam entry-point.
+    repository = mocker.patch("main_agent.build_repository")
+    market = mocker.patch("main_agent.build_market_port")
+    push = mocker.patch("main_agent.build_push_notifier")
+    paid_builders = [
+        mocker.patch(f"main_agent.{name}")
+        for name in (
+            "build_llm_adapter",
+            "build_council_adapter",
+            "build_embedding_adapter",
+            "build_use_case",
+            "build_alpha_enrichment",
+        )
+    ]
+    run_watch = mocker.patch("main_watch.run_watch", return_value=0)
+
+    assert main_watch.main(settings) == 0
+
+    run_watch.assert_called_once_with(
+        settings,
+        repository=repository.return_value,
+        market=market.return_value,
+        push_notifier=push.return_value,
+    )
+    for builder in paid_builders:
+        builder.assert_not_called()

@@ -130,8 +130,8 @@ uv run pytest                                   # full local suite
 uv run pytest -m "not integration and not containers" # unit only
 uv run pytest -m containers                    # Docker/Postgres schema tests
 uv run pytest -m integration                   # live API tests (requires real keys)
-uv run ruff check src tests main_agent.py main_trainer.py main_watch.py   # lint
-uv run mypy src                    # type check (strict)
+uv run ruff check .                # lint (same command as CI)
+uv run mypy                        # type check (strict) on [tool.mypy].files: src + every main_*.py
 ```
 
 ## GitHub Actions
