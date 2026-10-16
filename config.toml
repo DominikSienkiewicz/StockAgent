@@ -75,8 +75,10 @@ shock_alerts_enabled = true
 alpha_fusion_enabled = true
 # #16: commit-reveal (migracja 024) — kryptograficznie weryfikowalny track record.
 # Claim: tamper-evidence przy branch protection, NIE niepodrabialny timestamp.
-# Włącz DOPIERO po zaaplikowaniu migracji 024, inaczej PGRST204. Off.
-attestation_enabled = true
+# Wyłączone: żaden workflow nie publikuje `public/attestation/` (brak kroku
+# deploy/push), więc commitmenty lądowałyby tylko na efemerycznym dysku runnera.
+# Włącz razem z krokiem publikacji i DOPIERO po migracji 024 (inaczej PGRST204).
+attestation_enabled = false
 # #15: realny portfel użytkownika (tabela `positions`, migracja 023) — wagi,
 # P/L i VaR w PLN zamiast fikcji równych wag. Off → Null adapter. Off.
 portfolio_positions_enabled = true
@@ -84,8 +86,10 @@ portfolio_positions_enabled = true
 # TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Off.
 weekly_recap_enabled = true
 # #10: publiczny scorecard kalibracji — wyłącznie agregaty (N, hit-rate, ECE),
-# zero PII i zero symboli. Osobna ścieżka niż prywatny web_digest. Off.
-public_scorecard_enabled = true
+# zero PII i zero symboli. Osobna ścieżka niż prywatny web_digest. Wyłączone:
+# workflow nie ma kroku publikacji (Pages), a strażnik w
+# tests/test_workflow_env_wiring.py nie przepuści flagi bez niego.
+public_scorecard_enabled = false
 public_scorecard_path = "public/scorecard/index.html"
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"

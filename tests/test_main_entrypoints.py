@@ -10,7 +10,7 @@ import main_agent
 import main_backtest
 import main_trainer
 from src.application.alpha_signals import AlphaSignals
-from src.application.ports import PreviousVerdict, RepositoryPort
+from src.application.ports import AttestationPublisherPort, PreviousVerdict, RepositoryPort
 from src.config import Settings
 from src.domain.consensus_shift import ShiftKind
 from src.domain.council import CouncilVerdict
@@ -1368,6 +1368,28 @@ class TestAttestationRevealSweep:
         main_agent._sweep_reveals(repo, pub)
 
         repo.mark_commitment_revealed.assert_not_called()
+
+    def test_row_is_not_marked_revealed_when_publisher_returns_empty(self) -> None:
+        # Kontrakt portu: "" = wyłączone albo błąd. Adapter połyka OSError i zwraca
+        # "", więc bez tej gałęzi wiersz dostałby `revealed_at` bez publikacji.
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("p-1")]
+        pub = MagicMock(spec=AttestationPublisherPort)
+        pub.publish_reveal.return_value = ""
+
+        assert main_agent._sweep_reveals(repo, pub) == 0
+        repo.mark_commitment_revealed.assert_not_called()
+
+    def test_reveal_is_not_counted_when_marking_fails(self) -> None:
+        # Wynik sweepu to liczba wierszy z `revealed_at` — nieudany stempel
+        # oznacza, że następny sweep ujawni ten wiersz jeszcze raz.
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("p-1")]
+        repo.mark_commitment_revealed.side_effect = Exception("db down")
+        pub = MagicMock(spec=AttestationPublisherPort)
+        pub.publish_reveal.return_value = "public/attestation/reveals.jsonl"
+
+        assert main_agent._sweep_reveals(repo, pub) == 0
 
     def test_repository_error_degrades_to_no_sweep(self) -> None:
         repo = MagicMock(spec=RepositoryPort)
