@@ -7,7 +7,8 @@ identyfikującego aplikację na każdym żądaniu (inaczej 403). Pipeline:
      (mapa {"0": {"cik_str": 320193, "ticker": "AAPL", ...}}; CIK pad do 10 cyfr),
   2) recent filings przez GET https://data.sec.gov/submissions/CIK{cik}.json
      (równoległe tablice form[]/filingDate[]/accessionNumber[]/primaryDocument[]),
-  3) dla każdego Form 4 w oknie — fetch primary XML i parsowanie transakcji
+  3) dla każdego Form 4 w oknie — fetch surowego XML (primaryDocument bez
+     prefiksu renderera `xsl…/`, patrz `_raw_form4_doc`) i parsowanie transakcji
      nonDerivative: transactionCode 'P' = kupno, 'S' = sprzedaż.
 
 Adapter jest cienki i „graceful": każdy błąd na dowolnym kroku → None, nigdy
@@ -60,6 +61,21 @@ def _find_local(element: ET.Element, name: str) -> ET.Element | None:
 def _findall_local(element: ET.Element, name: str) -> list[ET.Element]:
     """Wszyscy potomkowie o lokalnej nazwie `name` (tolerancja na namespace)."""
     return [d for d in element.iter() if _local_name(d.tag) == name]
+
+
+def _raw_form4_doc(primary_doc: str) -> str:
+    """Ścieżka surowego XML Form 4 zamiast widoku renderowanego przez XSL.
+
+    Submissions API podaje dla Form 4 `primaryDocument` w postaci
+    `xslF345X05/wk-form4_….xml` — pod nią SEC serwuje HTML (XML przepuszczony
+    przez arkusz XSL), którego parser XML nie przeczyta, więc każdy filing
+    wypadałby z agregacji. Surowy XML leży w tym samym katalogu accession pod
+    ostatnim segmentem. Ścieżki bez prefiksu `xsl` (w tym gołe nazwy) bez zmian.
+    """
+    first_segment, separator, _ = primary_doc.partition("/")
+    if separator and first_segment.lower().startswith("xsl"):
+        return primary_doc.rsplit("/", 1)[-1]
+    return primary_doc
 
 
 class EdgarInsiderAdapter(InsiderFlowPort):
@@ -207,7 +223,7 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         url = ARCHIVE_URL.format(
             cik=int(cik),
             accession=accession_no_dashes,
-            doc=primary_doc,
+            doc=_raw_form4_doc(primary_doc),
         )
         try:
             response = self._session.get(url, timeout=self._timeout)
