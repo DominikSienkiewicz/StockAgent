@@ -18,9 +18,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-# Domyślny TTL fundamentów — lustro `FUNDAMENTALS_CACHE_TTL_HOURS` z
-# value_objects.py. Trzymane lokalnie, by build_provenance_badges był
-# samowystarczalny (wywołujący może nadpisać przez `ttl_hours`).
+# TTL odznaki STALE dla wywołań bez jawnego `ttl_hours`. Raport podaje wprost
+# `FUNDAMENTALS_CACHE_TTL_HOURS` (144 h), żeby odznaka zgadzała się z filtrem cache;
+# ta wartość zostaje tylko jako bezpieczny domyślny próg dla pozostałych wywołań.
 DEFAULT_FUNDAMENTALS_TTL_HOURS = 24
 
 

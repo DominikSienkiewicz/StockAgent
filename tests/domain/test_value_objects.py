@@ -116,5 +116,9 @@ def test_fundamentals_allows_none_fields() -> None:
     assert f.trailing_pe is None
 
 
-def test_ttl_constant() -> None:
-    assert FUNDAMENTALS_CACHE_TTL_HOURS == 24
+def test_fundamentals_ttl_spans_weekly_refresh_cadence() -> None:
+    # DAT-05 (decyzja 5): Slow Loop odświeża fundamenty raz w tygodniu. TTL musi
+    # pokryć większość tygodnia (inaczej Fast Loop ich nie widzi), ale być krótszy
+    # niż 7 × 24 h, bo inaczej kolejny przebieg uzna cache za świeży i odświeży
+    # dane dopiero za dwa tygodnie.
+    assert 124 < FUNDAMENTALS_CACHE_TTL_HOURS < 167

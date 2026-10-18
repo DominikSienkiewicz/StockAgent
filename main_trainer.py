@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from main_agent import build_notifier
+from src.application.ports import LLMPort
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_weekly_recap import (
     render_weekly_recap_html,
@@ -29,6 +30,7 @@ from src.infrastructure.adapters.alpha_vantage_fundamentals import (
 from src.infrastructure.adapters.cached_fundamentals import CachedFundamentalsAdapter
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+from src.infrastructure.llm.unavailable import UnavailableLLMAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -113,19 +115,31 @@ def _train_symbols(
     return failures
 
 
+def _build_llm_or_unavailable(settings: Settings, quota_monitor: QuotaMonitor) -> LLMPort:
+    """Adapter LLM dla kroków Slow Loopa z deterministycznym fallbackiem. Błąd BUDOWY
+    (brak SDK albo klucza) nie może wywrócić całego kroku — use case dostaje adapter,
+    który rzuca przy wywołaniu, i idzie ścieżką bez LLM."""
+    from main_agent import build_llm_adapter
+
+    try:
+        return build_llm_adapter(settings, quota_monitor=quota_monitor)
+    except Exception as exc:
+        logger.exception("LLM adapter build failed — krok idzie bez LLM")
+        return UnavailableLLMAdapter(type(exc).__name__)
+
+
 def _run_calibration_judge(
     settings: Settings, supabase_repo: SupabaseRepository, quota_monitor: QuotaMonitor
 ) -> None:
     """#4: LLM-as-Judge kalibracji pewności (Slow Loop, poza budżetem Fast Loopa)."""
     try:
-        from main_agent import build_llm_adapter
         from src.application.use_cases.calibrate_confidence import (
             CalibrateConfidenceUseCase,
         )
 
         cal_result = CalibrateConfidenceUseCase(
             repository_port=supabase_repo,
-            llm_port=build_llm_adapter(settings, quota_monitor=quota_monitor),
+            llm_port=_build_llm_or_unavailable(settings, quota_monitor),
         ).run(days=30)
         logger.info("Calibration judge — %s", cal_result.get("status"))
     except Exception:
@@ -141,11 +155,9 @@ def _send_weekly_recap(
     NIE wychodzi — przy chudym tygodniu recap robiłby dramat z szumu.
     """
     try:
-        from main_agent import build_llm_adapter
-
         recap_result = WeeklyRecapUseCase(
             repository_port=supabase_repo,
-            llm_port=build_llm_adapter(settings, quota_monitor=quota_monitor),
+            llm_port=_build_llm_or_unavailable(settings, quota_monitor),
         ).run(days=7)
         if recap_result["status"] == "recap_ready":
             recap = recap_result["recap"]

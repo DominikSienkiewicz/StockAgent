@@ -138,3 +138,18 @@ def test_enabled_public_artifacts_have_a_durable_publish_step() -> None:
         f"config.toml włącza {enabled}, ale {unpublished} nie ma kroku "
         "`actions/deploy-pages` ani `git push` — artefakt ginie z dyskiem runnera."
     )
+
+
+def _slow_loop_trainer_env() -> dict[str, object]:
+    workflow = ROOT / ".github" / "workflows" / "slow_loop_weekly.yml"
+    spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    steps = [s for job in spec["jobs"].values() for s in job.get("steps", [])]
+    run_step = next(s for s in steps if str(s.get("run", "")).endswith("main_trainer.py"))
+    return run_step.get("env", {})
+
+
+def test_slow_loop_maps_real_alpha_vantage_secret() -> None:
+    # DAT-04: Slow Loop odświeża fundamenty z Alpha Vantage. Z atrapą klucza AV
+    # odrzucał każde żądanie jako wyczerpany limit i `fundamentals_cache` zostawał pusty.
+    expected = "${{ secrets.ALPHA_VANTAGE_API_KEYS }}"
+    assert _slow_loop_trainer_env().get("ALPHA_VANTAGE_API_KEYS") == expected

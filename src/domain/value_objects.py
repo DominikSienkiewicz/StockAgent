@@ -57,8 +57,10 @@ class ValuationVerdict(Enum):
     UNKNOWN = "UNKNOWN"
 
 
-# TTL danych fundamentalnych w cache (slow loop odświeża raz dziennie).
-FUNDAMENTALS_CACHE_TTL_HOURS = 24
+# TTL danych fundamentalnych w cache. Slow Loop odświeża je raz w tygodniu, więc
+# 6 × 24 h: Fast Loop widzi fundamenty przez sześć dni, a niedzielny przebieg
+# zawsze trafia na nieświeży cache i odświeża (TTL ≥ 7 × 24 h odświeżałby co dwa tygodnie).
+FUNDAMENTALS_CACHE_TTL_HOURS = 144
 
 
 @dataclass(frozen=True)

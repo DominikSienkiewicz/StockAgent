@@ -1463,6 +1463,47 @@ class TestWeeklyRecapWiring:
 
         assert main_trainer.main(settings) == 0
 
+    def test_deterministic_recap_sent_when_llm_adapter_cannot_be_built(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # NIEZ-10: brak SDK albo klucza wywracał cały recap przy BUDOWIE adaptera,
+        # choć use case umie wysłać recap bez narracji, gdy samo wywołanie LLM padnie.
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        recap_uc, notifier = self._trainer(settings, mocker, "recap_ready")
+        mocker.patch(
+            "main_agent.build_llm_adapter",
+            side_effect=ModuleNotFoundError("No module named 'anthropic'"),
+        )
+
+        main_trainer.main(settings)
+
+        recap_uc.run.assert_called_once()
+        notifier.send_report.assert_called_once()
+
+    def test_calibration_judge_runs_when_llm_adapter_cannot_be_built(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # Ten sam wzorzec co recap: sędzia zapisuje kalibrację bez wniosku LLM.
+        settings.calibration_judge_enabled = True
+        settings.weekly_recap_enabled = False
+        settings.symbols = ["AAPL"]
+        self._trainer(settings, mocker, "recap_ready")
+        judge_uc = MagicMock()
+        judge_uc.run.return_value = {"status": "calibrated"}
+        mocker.patch(
+            "src.application.use_cases.calibrate_confidence.CalibrateConfidenceUseCase",
+            return_value=judge_uc,
+        )
+        mocker.patch(
+            "main_agent.build_llm_adapter",
+            side_effect=ModuleNotFoundError("No module named 'anthropic'"),
+        )
+
+        main_trainer.main(settings)
+
+        judge_uc.run.assert_called_once()
+
 
 class TestPublicScorecard:
     """#10 — publiczny scorecard. DRUGA instancja publishera (nie ta od

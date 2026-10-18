@@ -38,7 +38,7 @@ jobs:
 
       - name: 📈 Train XGBoost on prediction_logs
         env:
-          # Slow Loop potrzebuje TYLKO dostępu do bazy (least privilege).
+          # Slow Loop: baza, Alpha Vantage (fundamenty), LLM i Resend (recap).
           # Symbole i ml_model_path czyta z config.toml (commitowany).
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -49,9 +49,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           RESEND_API_KEY:    ${{ secrets.RESEND_API_KEY }}
           DIGEST_TO_EMAIL:   ${{ secrets.DIGEST_TO_EMAIL }}
-          # Dummy — trener ich nie używa, ale Settings wymaga pól.
-          FINNHUB_API_KEY:        unused-in-slow-loop
-          ALPHA_VANTAGE_API_KEYS: unused-in-slow-loop
+          # Odświeżanie fundamentów pyta Alpha Vantage — potrzebny prawdziwy klucz.
+          ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
+          # Dummy — trener nie pyta Finnhuba, ale Settings wymaga pola.
+          FINNHUB_API_KEY: unused-in-slow-loop
         run: uv run --frozen --no-build --no-sync python main_trainer.py
 
       - name: 💾 Commit and push updated model
