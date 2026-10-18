@@ -199,11 +199,16 @@ def test_main_wires_free_adapters_only(settings, mocker) -> None:
             "build_alpha_enrichment",
         )
     ]
-    run_watch = mocker.patch("main_watch.run_watch", return_value=0)
+    # Z kanałem push — bez niego `main()` świadomie podaje None (ALR-01).
+    settings.telegram_bot_token = "tg-token"
+    settings.telegram_chat_id = "42"
+    scan_watch = mocker.patch(
+        "main_watch.scan_watch", return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1)
+    )
 
     assert main_watch.main(settings) == 0
 
-    run_watch.assert_called_once_with(
+    scan_watch.assert_called_once_with(
         settings,
         repository=repository.return_value,
         market=market.return_value,
@@ -211,3 +216,42 @@ def test_main_wires_free_adapters_only(settings, mocker) -> None:
     )
     for builder in paid_builders:
         builder.assert_not_called()
+
+
+class TestWatchMain:
+    def test_main_returns_1_when_every_symbol_raises(self, settings, mocker) -> None:
+        # NIEZ-05: padnięta baza dawała zielony run z „0 alertów”.
+        settings.symbols = ["AAPL", "MSFT"]
+        settings.telegram_bot_token = "tg-token"
+        settings.telegram_chat_id = "42"
+        repo = _repo("100", age_hours=1.0)
+        repo.get_last_price_snapshot.side_effect = RuntimeError("Supabase 503")
+        mocker.patch("main_agent.build_repository", return_value=repo)
+        mocker.patch("main_agent.build_market_port", return_value=_market("90"))
+        mocker.patch("main_agent.build_push_notifier", return_value=MagicMock())
+
+        assert main_watch.main(settings) == 1
+
+    def test_main_without_push_channel_persists_no_alert(self, settings, mocker) -> None:
+        # ALR-01: NullNotifier „wysyłał” alert, a zapis blokował debounce na dobę.
+        moment = datetime.now(UTC)
+        repo = _repo("100", age_hours=1.0, now=moment)
+        mocker.patch("main_agent.build_repository", return_value=repo)
+        mocker.patch("main_agent.build_market_port", return_value=_market("90"))
+        build_push = mocker.patch("main_agent.build_push_notifier")
+
+        assert main_watch.main(settings) == 0
+
+        repo.save_shock_alert.assert_not_called()
+        build_push.assert_not_called()
+
+    def test_scan_without_push_channel_sends_and_saves_nothing(self, settings) -> None:
+        moment = datetime.now(UTC)
+        repo = _repo("100", age_hours=1.0, now=moment)
+
+        outcome = main_watch.scan_watch(
+            settings, repository=repo, market=_market("90"), push_notifier=None, now=moment
+        )
+
+        assert outcome.sent == 0 and outcome.failures == 0
+        repo.save_shock_alert.assert_not_called()

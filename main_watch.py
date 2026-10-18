@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from src.application.ports import MarketDataPort, ReportNotifierPort, RepositoryPort
@@ -103,22 +104,38 @@ def _persist_shock_alert(
         logger.exception("Failed to persist shock alert for %s", symbol)
 
 
-def run_watch(
+@dataclass(frozen=True)
+class WatchOutcome:
+    """Wynik przebiegu: wysłane alerty i symbole, które padły (spośród `total`)."""
+
+    sent: int
+    failures: int
+    total: int
+
+    @property
+    def all_failed(self) -> bool:
+        return self.total > 0 and self.failures == self.total
+
+
+def scan_watch(
     settings: Settings,
     *,
     repository: RepositoryPort,
     market: MarketDataPort,
-    push_notifier: ReportNotifierPort,
+    push_notifier: ReportNotifierPort | None,
     now: datetime | None = None,
-) -> int:
-    """Jeden przebieg watcha. Zwraca liczbę WYSŁANYCH alertów.
+) -> WatchOutcome:
+    """Jeden przebieg watcha.
 
     Resilience jak w Fast Loopie: błąd pojedynczego symbolu nie przerywa
     przebiegu. Wyłączona flaga → natychmiastowy zwrot, zero odczytów.
+    `push_notifier=None` (brak kanału push): skan biegnie dalej, żeby sygnał
+    ślepoty nie zniknął, ale wykryty szok nie jest ani wysyłany, ani zapisywany —
+    zapis zablokowałby debounce na dobę dla alertu, którego nikt nie dostał (ALR-01).
     """
     if not settings.shock_alerts_enabled:
         logger.info("Shock watch wyłączony (shock_alerts_enabled=false).")
-        return 0
+        return WatchOutcome(sent=0, failures=0, total=0)
 
     moment = now or datetime.now(UTC)
     today = moment.date()
@@ -135,6 +152,7 @@ def run_watch(
         already_sent = set()
 
     sent = 0
+    failures = 0
     checked = 0
     stale = 0
     for symbol in symbols:
@@ -161,6 +179,9 @@ def run_watch(
             )
             if alert is None:
                 continue
+            if push_notifier is None:
+                logger.error("Shock watch: szok %s wykryty, ale brak kanału push", symbol)
+                continue
 
             subject, body = _render_alert(alert)
             push_notifier.send_report(
@@ -171,6 +192,7 @@ def run_watch(
             sent += 1
         except Exception:
             logger.exception("Shock watch failed for symbol %s", symbol)
+            failures += 1
 
     if checked and stale == checked:
         # Jedyne referencje to snapshoty Fast Loopa — gdy on stoi, watch nie
@@ -182,7 +204,21 @@ def run_watch(
             SNAPSHOT_MAX_AGE_HOURS,
         )
     logger.info("Shock watch done — %d alert(ów) wysłanych", sent)
-    return sent
+    return WatchOutcome(sent=sent, failures=failures, total=len(symbols))
+
+
+def run_watch(
+    settings: Settings,
+    *,
+    repository: RepositoryPort,
+    market: MarketDataPort,
+    push_notifier: ReportNotifierPort,
+    now: datetime | None = None,
+) -> int:
+    """Jeden przebieg watcha. Zwraca liczbę WYSŁANYCH alertów."""
+    return scan_watch(
+        settings, repository=repository, market=market, push_notifier=push_notifier, now=now
+    ).sent
 
 
 def main(settings: Settings | None = None) -> int:
@@ -194,15 +230,30 @@ def main(settings: Settings | None = None) -> int:
 
     # Import lokalny — DI Container Fast Loopa buduje darmowe adaptery ceny
     # i kanały push; watch tylko je składa. Zero płatnych portów.
-    from main_agent import build_market_port, build_push_notifier, build_repository
+    from main_agent import (
+        build_market_port,
+        build_push_channels,
+        build_push_notifier,
+        build_repository,
+    )
 
-    run_watch(
+    push_notifier = build_push_notifier(settings) if build_push_channels(settings) else None
+    if settings.shock_alerts_enabled and push_notifier is None:
+        logger.error(
+            "Shock watch bez kanału push (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID albo "
+            "SLACK_WEBHOOK_URL) — wykryte szoki nie zostaną wysłane ani zapisane."
+        )
+    outcome = scan_watch(
         settings,
         repository=build_repository(settings),
         market=build_market_port(settings),
-        push_notifier=build_push_notifier(settings),
+        push_notifier=push_notifier,
     )
-    # Watch jest best-effort: brak alertów to normalny, zdrowy przebieg.
+    # Brak alertów to normalny, zdrowy przebieg; padnięte WSZYSTKIE symbole (np. baza
+    # nie odpowiada) już nie — jak w Fast Loopie, exit 1 (NIEZ-05).
+    if outcome.all_failed:
+        logger.error("Shock watch: wszystkie %d symbole padły", outcome.total)
+        return 1
     return 0
 
 
