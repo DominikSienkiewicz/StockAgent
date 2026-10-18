@@ -1917,6 +1917,46 @@ class TestHonestTrackRecordWiring:
         assert main_agent._build_track_record_stats(self._settings(), repo) is None
 
 
+class TestBuildTrackRecord:
+    """WIA-06 (G25): repozytorium zwraca zamknięte predykcje od najnowszej
+    (`ORDER BY timestamp DESC`), a sparkline „ostatnie N” czyta ogon serii.
+    Krzywa musi iść chronologicznie niezależnie od ORDER BY adaptera."""
+
+    @staticmethod
+    def _row(day: str, actual: str) -> dict[str, object]:
+        return {
+            "symbol": "NVDA",
+            "predicted_trend": "BULLISH",
+            "is_trend_correct": Decimal(actual) > Decimal("100"),
+            "price_at_prediction": "100",
+            "actual_price_after_12h": actual,
+            "timestamp": f"{day}T14:00:00+00:00",
+        }
+
+    def test_equity_points_are_chronological_when_repo_returns_newest_first(self) -> None:
+        settings = MagicMock()
+        settings.track_record_days = 30
+        settings.equity_curve_enabled = True
+        settings.lessons_enabled = False
+        settings.calibration_curve_enabled = False
+        repo = MagicMock(spec=RepositoryPort)
+        # Najnowszy cykl to strata, najstarszy — zysk; kolejność jak z adaptera.
+        repo.get_resolved_predictions.return_value = [
+            self._row("2026-10-17", "90"),
+            self._row("2026-10-16", "105"),
+            self._row("2026-10-15", "110"),
+        ]
+
+        equity, _, _ = main_agent._build_track_record(settings, repo)
+
+        assert equity is not None
+        assert [p.period_return for p in equity.points] == [
+            pytest.approx(0.10),
+            pytest.approx(0.05),
+            pytest.approx(-0.10),
+        ]
+
+
 class TestAlphaVantageNewsWindowWiring:
     """DAT-09: Fast Loop pyta AV o newsy z ostatnich 24 h (`time_from`), żeby
     `news_volume_24h` znaczyło to, co mówi nazwa — bez dodatkowych requestów."""
