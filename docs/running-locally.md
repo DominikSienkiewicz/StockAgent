@@ -167,3 +167,16 @@ scripts/gh-secrets-sync.sh [--dry-run] [-y]
 ```
 
 Both accept `-R owner/repo` (default: auto-detected from the git remote) and `-f <env-file>` (default: `<repo>/.env`). `.env` keys that no workflow references (e.g. `FRED_API_KEY`, `TELEGRAM_*`, `SLACK_WEBHOOK_URL`) are reported but never pushed. Auth uses your `gh auth login` token, or a `GH_TOKEN` from `.env` if present (a fine-grained PAT needs `Secrets: Read and write`).
+
+A third helper reads the **production state** in one pass, without changing anything:
+
+```bash
+# GitHub: secret names vs. what workflows read, workflow states and last runs, branch
+# protection, Pages, last Slow Loop outcome. Supabase (REST, GET only, the app's
+# SUPABASE_URL/SUPABASE_KEY): key role, migrations 017–025 detected from the OpenAPI
+# description (or per-object GET probes when the key cannot read it), latest
+# prediction/snapshot/fundamentals, training samples per symbol.
+scripts/prod-state-check.sh > docs/concepts/prod-state-$(date +%F).md
+```
+
+It accepts `-R`, `-f`, `--skip-github` and `--skip-supabase`. It is read-only by construction: `gh` is only used to list and view, every Supabase request is `curl --get` with the key passed on stdin (never in argv or the output), and no database function is called; [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py) enforces this on the script text. The output names secrets and counts subscribers, so keep it in the git-ignored `docs/concepts/`. Postgres version and the project plan are not exposed over REST and still need the Supabase dashboard.
