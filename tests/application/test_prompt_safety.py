@@ -278,3 +278,33 @@ class TestMistakeDiagnosisPromptInputs:
         )
         assert "BEARISH" in prompt
         assert "Fed holds" in prompt
+
+
+class TestPredictionPromptHeadlineList:
+    """ML-09: `news_titles` (lista) ma pierwszeństwo przed sklejonym
+    `news_summary` — każdy nagłówek dostaje własny limit długości fence'a."""
+
+    def _data(self, **news: object) -> dict[str, object]:
+        return {"price": 180.0, "delta_percentage": 1.2, **news}
+
+    def test_each_listed_headline_is_its_own_fenced_item(self) -> None:
+        titles = [f"Headline {i} " + "y" * 150 for i in range(1, 6)]
+        prompt = get_prediction_prompt("AAPL", self._data(news_titles=titles), "(brak)")
+        for i in range(1, 6):
+            assert f"  - Headline {i} " in prompt
+        assert "…[truncated]" not in prompt
+
+    def test_list_wins_over_joined_summary(self) -> None:
+        prompt = get_prediction_prompt(
+            "AAPL",
+            self._data(news_titles=["Listed headline"], news_summary="Joined summary"),
+            "(brak)",
+        )
+        assert "Listed headline" in prompt
+        assert "Joined summary" not in prompt
+
+    def test_falls_back_to_summary_without_list(self) -> None:
+        prompt = get_prediction_prompt(
+            "AAPL", self._data(news_titles=[], news_summary="Joined summary"), "(brak)"
+        )
+        assert "Joined summary" in prompt

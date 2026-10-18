@@ -170,10 +170,22 @@ class AgentState(TypedDict, total=False):
     data_quality_flags: list[str]
 
 
+# Ile pierwszych newsów (po relevance filtering) czyta prompt, rada i zapis.
+_NEWS_TITLES_LIMIT = 5
+
+
+def _news_titles(news: list[dict[str, Any]], limit: int) -> list[str]:
+    """Niepuste tytuły z `limit` pierwszych newsów — jedno źródło dla promptu
+    predykcji, rady i `news_summary`.
+
+    ML-09: prompt dostaje LISTĘ, bo fence przycina każdy element do 300 znaków;
+    sklejony string był jednym elementem i gubił nagłówki 4–5."""
+    return [str(title) for title in (item.get("title") for item in news[:limit]) if title]
+
+
 def _summarize_news(news: list[dict[str, Any]]) -> str:
-    """Konkatenacja tytułów najnowszych newsów w jednej linijce (dla promptu)."""
-    titles = [item.get("title", "") for item in news[:5]]
-    return " | ".join(t for t in titles if t)
+    """Konkatenacja tytułów najnowszych newsów w jednej linijce (zapis i embedding)."""
+    return " | ".join(_news_titles(news, _NEWS_TITLES_LIMIT))
 
 
 # Q5: ile analogów wystawiamy jako "precedent receipts" w raporcie. Trzymamy
@@ -953,6 +965,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
             "news_volume_24h": sentiment.get("news_volume_24h"),
             "high_relevance_count": sentiment.get("high_relevance_count"),
             "news_summary": news_summary,
+            "news_titles": _news_titles(news, _NEWS_TITLES_LIMIT),
         },
         reflection_context=state.get("reflection_context", ""),
         similar_context=similar_context,
@@ -1102,11 +1115,7 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         current_price=state["current_price"],
         price_delta_pct=state["delta"] * Decimal("100"),
         sentiment_score=_float_or_default(sentiment.get("av_sentiment_score"), 0.0),
-        news_articles=tuple(
-            item.get("title", "")
-            for item in news[:5]
-            if item.get("title")
-        ),
+        news_articles=tuple(_news_titles(news, _NEWS_TITLES_LIMIT)),
         llm_trend=str(llm_analysis.get("trend_direction", "SIDEWAYS")),
         llm_confidence=_float_or_default(llm_analysis.get("confidence_score"), 0.5),
         ml_price_target=state.get("ml_target_price") or state["current_price"],

@@ -2580,3 +2580,82 @@ class TestPaidCallMeter:
         )).compile().invoke(_initial_state("100.0"))
 
         assert final["status"] == "saved"
+
+
+# ---------------------------------------------------------------------------
+# ML-09 — wszystkie 5 nagłówków w prompcie predykcji
+# ---------------------------------------------------------------------------
+
+
+class TestPredictionPromptNewsHeadlines:
+    """Fence przycina KAŻDY element do 300 znaków. Sklejony `news_summary`
+    był jednym elementem, więc długie nagłówki 4–5 nigdy nie docierały do LLM."""
+
+    @staticmethod
+    def _long_headlines() -> list[dict[str, str]]:
+        # ~110 znaków na nagłówek: sklejone pięć to ~560, czyli prawie dwa
+        # razy limit pojedynczego elementu fence'a.
+        tail = (
+            "with analysts split on guidance, margins and the supply outlook "
+            "for next year as rates stay high"
+        )
+        return [{"title": f"Headline {i} {tail}", "source": "Reuters"} for i in range(1, 6)]
+
+    def test_all_five_long_headlines_reach_prediction_prompt(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        news_port.get_news_context.return_value = self._long_headlines()
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        prompt = llm_port.analyze.call_args_list[0].args[0]
+        start = prompt.index("<<<UNTRUSTED_NEWS_DATA>>>")
+        end = prompt.index("<<<END_UNTRUSTED_NEWS_DATA>>>")
+        for i in range(1, 6):
+            assert start < prompt.index(f"  - Headline {i} with analysts") < end
+        assert "…[truncated]" not in prompt[start:end]
+
+    def test_only_first_five_headlines_reach_the_prompt(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        news_port.get_news_context.return_value = [
+            *self._long_headlines(),
+            {"title": "Headline 6 should stay out", "source": "Reuters"},
+        ]
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        prompt = llm_port.analyze.call_args_list[0].args[0]
+        assert "Headline 5 with analysts" in prompt
+        assert "Headline 6 should stay out" not in prompt
+
+    def test_saved_news_summary_keeps_the_joined_format(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # news_summary (zapis + embedding RAG) zostaje sklejonym stringiem —
+        # zmiana dotyczy wyłącznie tego, jak nagłówki trafiają do fence'a.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        news_port.get_news_context.return_value = [
+            {"title": "Fed holds", "source": "Reuters"},
+            {"title": "", "source": "Reuters"},
+            {"title": "Chips rally", "source": "Reuters"},
+        ]
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        saved = repository_port.save_prediction.call_args.args[0]
+        assert saved["news_summary"] == "Fed holds | Chips rally"

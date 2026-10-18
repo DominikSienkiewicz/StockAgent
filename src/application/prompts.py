@@ -60,7 +60,11 @@ sytuację, w której prognoza się sprawdziła lub zawiodła?
     )
     # Nagłówki newsów to dane nieufne (Alpha Vantage) — ogradzamy je fence'em
     # DATA-ONLY, żeby spreparowany nagłówek nie przejął output_schema.
-    news_fenced = fence_untrusted("NEWS", str(current_data.get("news_summary") or ""))
+    # ML-09: lista `news_titles` ma pierwszeństwo — fence przycina KAŻDY element
+    # do 300 znaków, więc sklejony `news_summary` (fallback dla wołających bez
+    # listy) gubił nagłówki 4–5.
+    news_items = current_data.get("news_titles") or str(current_data.get("news_summary") or "")
+    news_fenced = fence_untrusted("NEWS", news_items)
     return f"""
 <role>
 Jesteś rygorystycznym, algorytmicznym analitykiem ilościowym (Quant).
