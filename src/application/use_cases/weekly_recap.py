@@ -28,7 +28,7 @@ from typing import Any, cast
 from src.application._prompt_safety import fence_untrusted
 from src.application.ports import LLMPort, RepositoryPort
 from src.domain.council import InvestorOpinion
-from src.domain.prediction import Prediction, TrendDirection
+from src.domain.prediction import Prediction, TrendDirection, is_substantive_insight
 from src.domain.weekly_recap import (
     ClosedPrediction,
     WeeklyRecap,
@@ -106,6 +106,9 @@ def _to_closed_prediction(row: dict[str, Any]) -> ClosedPrediction | None:
         return None
 
     opinions, recommendation = _parse_council(row.get("council_verdict"))
+    # WIA-10: placeholder reflect_node („Trafiona predykcja.”, „diagnoza
+    # odłożona/pominięta”) to nie lekcja — ani do narracji LLM, ani do maila.
+    insight = str(row.get("correction_insights") or "")
     prediction = Prediction(
         symbol=str(row.get("symbol") or ""),
         predicted_trend=trend,
@@ -117,7 +120,7 @@ def _to_closed_prediction(row: dict[str, Any]) -> ClosedPrediction | None:
         prediction=prediction,
         actual_price=actual,
         confidence=float(row.get("confidence_score") or 0.0),
-        correction_insight=str(row.get("correction_insights") or ""),
+        correction_insight=insight if is_substantive_insight(insight) else "",
         council_opinions=opinions,
         council_recommendation=cast(Any, recommendation),
     )

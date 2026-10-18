@@ -41,7 +41,13 @@ from src.domain.implied_edge import (
     evaluate_edge,
     model_move_from_prices,
 )
-from src.domain.prediction import CRYPTO_SIDEWAYS_TOLERANCE, Prediction
+from src.domain.prediction import (
+    CORRECT_PREDICTION_INSIGHT,
+    CRYPTO_SIDEWAYS_TOLERANCE,
+    DIAGNOSIS_SKIPPED_INSIGHT,
+    Prediction,
+    is_substantive_insight,
+)
 from src.domain.regime_key import canonical_regime_key
 from src.domain.value_objects import AssetType, Fundamentals, Money, Threshold, ValuationVerdict
 
@@ -188,7 +194,9 @@ def _format_analog(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         outcome = "wynik nieznany"
     insight = str(item.get("correction_insights") or "").strip()
     line = f"  - [{trend}, {outcome}] {summary}"
-    if insight:
+    # WIA-10: placeholder reflect_node (np. historyczne „diagnoza odłożona”)
+    # nie jest wnioskiem — analog zostaje, ale bez fałszywej lekcji.
+    if is_substantive_insight(insight):
         line += f" → wniosek: {insight}"
     # #13: RPC zwraca `id` i `similarity`, a kod je gubił. Bez nich kwit
     # decyzyjny nie pozwala zaudytować, KTÓRY analog stał za predykcją.
@@ -579,7 +587,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
             actual_price=current_price,
             accuracy_score=accuracy,
             is_trend_correct=trend_correct,
-            insight="Trafiona predykcja.",
+            insight=CORRECT_PREDICTION_INSIGHT,
         )
         return {
             "reflection_context": "Ostatnie prognozy były trafne. Kontynuuj strategię."
@@ -619,8 +627,9 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
             insight = llm_port.analyze_mistake(prompt)
     else:
         # Niska zmienność — nie palimy budżetu LLM na diagnozę. Predykcja
-        # i tak zostaje zamknięta z accuracy/trend; diagnozę odkładamy.
-        insight = "Niska zmienność — diagnoza LLM odłożona."
+        # i tak zostaje zamknięta z accuracy/trend, więc diagnoza jest
+        # POMINIĘTA, nie odłożona: nic jej później nie ponawia.
+        insight = DIAGNOSIS_SKIPPED_INSIGHT
 
     repository_port.update_prediction_accuracy(
         prediction_id=last.id,

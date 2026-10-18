@@ -171,3 +171,36 @@ def test_no_clear_recurring_winner_returns_none() -> None:
     report = build_lessons(resolved)
 
     assert report.recurring_theme is None
+
+
+def test_skipped_diagnosis_placeholder_is_not_a_lesson() -> None:
+    """WIA-10: placeholdery reflect_node („diagnoza odłożona/pominięta”,
+    „Trafiona predykcja.”) to nie diagnozy. Historyczne wiersze z nimi zostają
+    w bazie, więc panel musi je odsiać, a nie liczyć jako lekcje i motyw."""
+    resolved = [
+        _resolved("AAA", is_correct=False, insight="Niska zmienność — diagnoza LLM odłożona."),
+        _resolved("BBB", is_correct=False, insight="Niska zmienność — diagnoza LLM odłożona."),
+        _resolved("CCC", is_correct=False, insight="Trafiona predykcja."),
+        _resolved("DDD", is_correct=False, insight="Zignorowałem jastrzębi ton Fed."),
+    ]
+
+    report = build_lessons(resolved)
+
+    assert [item.symbol for item in report.items] == ["DDD"]
+    assert report.total_mistakes == 1
+    # Dwa placeholdery nie mogą wygrać jako „powracający motyw”.
+    assert report.recurring_theme is None
+
+
+def test_new_skipped_placeholder_is_not_a_lesson() -> None:
+    from src.domain.prediction import DIAGNOSIS_SKIPPED_INSIGHT
+
+    resolved = [
+        _resolved("AAA", is_correct=False, insight=DIAGNOSIS_SKIPPED_INSIGHT),
+        _resolved("BBB", is_correct=False, insight="rynek zignorował dane"),
+    ]
+
+    report = build_lessons(resolved)
+
+    assert [item.symbol for item in report.items] == ["BBB"]
+    assert report.total_mistakes == 1

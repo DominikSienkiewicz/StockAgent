@@ -761,6 +761,44 @@ class TestResolvedPostMortem:
         assert "Słabe wyniki kwartalne" in text
         assert "Zignorowałem odbicie całego sektora chmury" in text
 
+    def test_miss_with_placeholder_insight_shows_neutral_why(self):
+        # WIA-10: historyczny placeholder „diagnoza odłożona” to nie diagnoza —
+        # „dlaczego” mówi uczciwie, że kierunek się nie potwierdził.
+        resolved = [
+            ResolvedPrediction(
+                symbol="SAP", predicted_trend="BEARISH", is_correct=False,
+                reasoning="Słabe wyniki kwartalne.",
+                insight="Niska zmienność — diagnoza LLM odłożona.",
+                price_at_prediction=Decimal("100"),
+                actual_price=Decimal("104"),
+            )
+        ]
+        html, text = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(resolved_predictions=resolved),
+        )
+        assert "diagnoza LLM odłożona" not in html
+        assert "diagnoza LLM odłożona" not in text
+        assert "Kierunek się nie potwierdził." in html
+        assert "Kierunek się nie potwierdził." in text
+
+    def test_miss_diagnosis_mentioning_trafiona_is_still_shown(self):
+        # WIA-10: placeholder rozpoznaje predykat, a nie podciąg „trafiona” —
+        # prawdziwa diagnoza o „nietrafionej” prognozie nie może zniknąć.
+        resolved = [
+            ResolvedPrediction(
+                symbol="SAP", predicted_trend="BEARISH", is_correct=False,
+                insight="Prognoza nietrafiona, bo zignorowałem odbicie sektora.",
+                price_at_prediction=Decimal("100"),
+                actual_price=Decimal("104"),
+            )
+        ]
+        html, _ = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(resolved_predictions=resolved),
+        )
+        assert "zignorowałem odbicie sektora" in html
+
     def test_hit_shows_reasoning_and_confirmation(self):
         resolved = [
             ResolvedPrediction(

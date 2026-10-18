@@ -23,6 +23,38 @@ def calibration_score(confidence: float, correct: bool) -> float:
     return 1.0 - abs(confidence - outcome)
 
 
+# Placeholdery, które reflect_node zapisuje w `correction_insights`, gdy nie ma
+# prawdziwej diagnozy LLM. To nie są lekcje: lessons, analogi RAG, „dlaczego”
+# w raporcie i recap odsiewają je przez `is_substantive_insight`.
+CORRECT_PREDICTION_INSIGHT = "Trafiona predykcja."
+# Diagnoza pominięta przy niskiej zmienności NIE jest ponawiana — predykcja
+# zostaje zamknięta w tym samym cyklu.
+DIAGNOSIS_SKIPPED_INSIGHT = "Niska zmienność — diagnoza LLM pominięta (bez ponowienia)."
+# Tekst sprzed WIA-10 obiecywał „odłożenie”, którego nigdy nie było. Wiersze
+# z nim zostają w bazie, więc predykat musi go nadal rozpoznawać.
+LEGACY_DIAGNOSIS_DEFERRED_INSIGHT = "Niska zmienność — diagnoza LLM odłożona."
+
+_PLACEHOLDER_INSIGHTS = frozenset(
+    text.casefold()
+    for text in (
+        CORRECT_PREDICTION_INSIGHT,
+        DIAGNOSIS_SKIPPED_INSIGHT,
+        LEGACY_DIAGNOSIS_DEFERRED_INSIGHT,
+    )
+)
+
+
+def is_substantive_insight(insight: str | None) -> bool:
+    """Czy `correction_insights` niesie prawdziwą diagnozę.
+
+    False dla braku, pustego tekstu i każdego placeholdera reflect_node
+    (także historycznego „odłożona”)."""
+    if insight is None:
+        return False
+    stripped = insight.strip()
+    return bool(stripped) and stripped.casefold() not in _PLACEHOLDER_INSIGHTS
+
+
 class TrendDirection(StrEnum):
     BULLISH = "BULLISH"
     BEARISH = "BEARISH"

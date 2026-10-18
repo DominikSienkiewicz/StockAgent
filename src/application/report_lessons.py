@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from src.application.report_models import ResolvedPrediction
+from src.domain.prediction import is_substantive_insight
 
 # Polskie stopwordy (oraz krótkie spójniki) — nie mogą wygrać jako motyw.
 # Niezależnie od listy odrzucamy też słowa krótsze niż _MIN_KEYWORD_LEN.
@@ -49,11 +50,13 @@ class LessonsReport:
 
 
 def _is_mistake_with_insight(prediction: ResolvedPrediction) -> bool:
-    """Kwalifikuje predykcję jako 'lekcję': błąd + niepusta diagnoza."""
+    """Kwalifikuje predykcję jako 'lekcję': błąd + prawdziwa diagnoza.
+
+    Placeholdery reflect_node (np. historyczne „diagnoza odłożona”) nie są
+    lekcjami, choć są niepustym tekstem."""
     if prediction.is_correct:
         return False
-    insight = prediction.insight
-    return insight is not None and bool(insight.strip())
+    return is_substantive_insight(prediction.insight)
 
 
 def _detect_recurring_theme(insights: Sequence[str]) -> str | None:

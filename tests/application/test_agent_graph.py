@@ -504,6 +504,23 @@ class TestReflectMistakeDiagnosisGatedByVolatility:
         kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
         assert kwargs["is_trend_correct"] is False
 
+    def test_skipped_diagnosis_is_recorded_as_not_retried_placeholder(
+        self, workflow, market_port, repository_port, llm_port,
+    ):
+        # WIA-10: pominięta diagnoza NIE jest ponawiana (predykcja zostaje
+        # zamknięta), więc zapis to wspólny placeholder z domeny, który
+        # konsumenci (lessons, RAG, „dlaczego”, recap) umieją odsiać.
+        from src.domain.prediction import DIAGNOSIS_SKIPPED_INSIGHT, is_substantive_insight
+
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))
+        repository_port.get_unverified_prediction.return_value = self._wrong_prediction()
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["insight"] == DIAGNOSIS_SKIPPED_INSIGHT
+        assert not is_substantive_insight(kwargs["insight"])
+
 
 # ---------------------------------------------------------------------------
 # Path 3 — high volatility, prior prediction CORRECT → reinforcement
@@ -536,6 +553,24 @@ class TestSelfReflectionOnCorrectPrediction:
         repository_port.update_prediction_accuracy.assert_called_once()
         assert "trafn" in final["reflection_context"].lower()
         assert final["status"] == "saved"
+
+    def test_correct_prediction_records_shared_placeholder(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-10: „trafiona” to placeholder z domeny, nie diagnoza.
+        from src.domain.prediction import CORRECT_PREDICTION_INSIGHT
+
+        market_port.get_current_price.return_value = Money(Decimal("110.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["insight"] == CORRECT_PREDICTION_INSIGHT
 
 
 # ---------------------------------------------------------------------------
@@ -1248,6 +1283,55 @@ class TestRagRetrieval:
         prediction_prompt = llm_port.analyze.call_args_list[0].args[0]
         assert "Fed hawkish surprise spooks tech" in prediction_prompt
         repository_port.find_similar_predictions.assert_called_once()
+
+    def test_placeholder_insight_is_not_injected_as_analog_lesson(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-10: historyczne wiersze niosą placeholder zamiast diagnozy. Analog
+        # zostaje (news + wynik są prawdziwe), ale bez fałszywego „wniosku”.
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = [
+            {
+                "news_summary": "Chip export curbs widen",
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": False,
+                "correction_insights": "Niska zmienność — diagnoza LLM odłożona.",
+            },
+            {
+                "news_summary": "Cloud capex beats",
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": True,
+                "correction_insights": "Trafiona predykcja.",
+            },
+            {
+                "news_summary": "Fed hawkish surprise spooks tech",
+                "predicted_trend": "BEARISH",
+                "is_trend_correct": False,
+                "correction_insights": "reaguj na jastrzębi Fed",
+            },
+        ]
+        workflow = create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        ))
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        prediction_prompt = llm_port.analyze.call_args_list[0].args[0]
+        assert "Chip export curbs widen" in prediction_prompt
+        assert "Cloud capex beats" in prediction_prompt
+        assert "diagnoza LLM odłożona" not in prediction_prompt
+        assert "wniosek: Trafiona predykcja." not in prediction_prompt
+        assert "wniosek: reaguj na jastrzębi Fed" in prediction_prompt
 
     def test_retrieval_failure_does_not_break_prediction(
         self, market_port, sentiment_port, news_port,

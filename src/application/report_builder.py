@@ -125,6 +125,7 @@ from src.domain.finops import CycleCost
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.portfolio import Portfolio
+from src.domain.prediction import is_substantive_insight
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
 from src.domain.value_objects import (
@@ -409,11 +410,12 @@ def _render_crypto_section_text(results: list[SymbolResult]) -> str:
 
 def _resolved_why(p: ResolvedPrediction) -> str:
     """Zwięzłe 'dlaczego' werdyktu: dla chybionych — diagnoza z reflect,
-    dla trafionych — potwierdzenie tezy (insight 'Trafiona predykcja.' jest
-    placeholderem, więc go nie pokazujemy dosłownie)."""
+    dla trafionych — potwierdzenie tezy. Placeholdery reflect_node („Trafiona
+    predykcja.”, „diagnoza pominięta/odłożona”) nie są diagnozą, więc ich nie
+    pokazujemy dosłownie (WIA-10)."""
     if p.is_correct:
         return "Teza prognozy się potwierdziła."
-    if p.insight and "trafiona" not in p.insight.lower():
+    if p.insight is not None and is_substantive_insight(p.insight):
         return p.insight
     return "Kierunek się nie potwierdził."
 

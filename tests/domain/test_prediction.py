@@ -162,3 +162,54 @@ class TestCryptoSidewaysTolerance:
 
         assert pred.is_trend_correct(Decimal("100.4"))
         assert not pred.is_trend_correct(Decimal("101"))
+
+
+class TestSubstantiveInsight:
+    """WIA-10: reflect_node zapisuje w `correction_insights` placeholdery, gdy nie
+    ma prawdziwej diagnozy. Predykat odsiewa je (także historyczny tekst
+    „odłożona”), żeby nie trafiały do lessons, analogów RAG, „dlaczego” i recapu."""
+
+    def test_placeholders_are_not_substantive(self) -> None:
+        from src.domain.prediction import (
+            CORRECT_PREDICTION_INSIGHT,
+            DIAGNOSIS_SKIPPED_INSIGHT,
+            LEGACY_DIAGNOSIS_DEFERRED_INSIGHT,
+            is_substantive_insight,
+        )
+
+        for placeholder in (
+            CORRECT_PREDICTION_INSIGHT,
+            DIAGNOSIS_SKIPPED_INSIGHT,
+            LEGACY_DIAGNOSIS_DEFERRED_INSIGHT,
+        ):
+            assert not is_substantive_insight(placeholder)
+            assert not is_substantive_insight(f"  {placeholder}\n")
+
+    def test_historical_placeholder_texts_are_recognised(self) -> None:
+        # Wiersze sprzed WIA-10 niosą dokładnie te literały — zostają w bazie.
+        from src.domain.prediction import is_substantive_insight
+
+        assert not is_substantive_insight("Niska zmienność — diagnoza LLM odłożona.")
+        assert not is_substantive_insight("Trafiona predykcja.")
+
+    def test_empty_and_missing_are_not_substantive(self) -> None:
+        from src.domain.prediction import is_substantive_insight
+
+        assert not is_substantive_insight(None)
+        assert not is_substantive_insight("")
+        assert not is_substantive_insight("   ")
+
+    def test_real_diagnosis_is_substantive(self) -> None:
+        from src.domain.prediction import is_substantive_insight
+
+        assert is_substantive_insight("Zignorowałem jastrzębi ton Fed.")
+        # Diagnoza wspominająca „nietrafioną” prognozę to wciąż diagnoza.
+        assert is_substantive_insight("Prognoza nietrafiona, bo rynek wycenił Fed.")
+
+    def test_skipped_placeholder_says_not_retried(self) -> None:
+        # Diagnoza pominięta przy niskiej zmienności NIE jest ponawiana —
+        # tekst nie może obiecywać „odłożenia”.
+        from src.domain.prediction import DIAGNOSIS_SKIPPED_INSIGHT
+
+        assert "odłożona" not in DIAGNOSIS_SKIPPED_INSIGHT
+        assert "zmienno" in DIAGNOSIS_SKIPPED_INSIGHT.lower()
