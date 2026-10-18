@@ -989,6 +989,36 @@ class TestColdStartBaseline:
         assert final["ml_target_price"] == Decimal("89.5")   # z ml_port.predict
         ml_port.predict.assert_called_once()
 
+    def test_cold_start_is_flagged_in_final_state(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # G03: baseline "cena bez zmian" nie jest prognozą modelu — stan musi
+        # to mówić jawnie, żeby rada i raport nie udawały sygnału XGBoost.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ml_port.is_trained = False
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final.get("ml_cold_start") is True
+
+    def test_trained_model_is_not_flagged_as_cold_start(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ml_port.is_trained = True
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final.get("ml_cold_start") is False
+
 
 # ---------------------------------------------------------------------------
 # Kontrakt cech ML — trening i predykcja muszą używać identycznych nazw
@@ -1933,6 +1963,28 @@ class TestImpliedEdge:
 
         record = repository_port.save_prediction.call_args.args[0]
         assert "edge_sigma" not in record
+
+    def test_cold_start_skips_the_edge_and_the_options_port(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # ML-16: przy cold-starcie ruch modelu to sztuczne 0 — edge z niego
+        # byłby fałszywy, a odczyt opcji wyrzuconym wywołaniem.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ml_port.is_trained = False
+        options = self._options(0.45)
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports, options).compile().invoke(_initial_state("100.0"))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "edge_sigma" not in record
+        options.get_options_flow.assert_not_called()
 
     def test_options_failure_does_not_break_the_prediction(
         self, market_port, sentiment_port, news_port,

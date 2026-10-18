@@ -109,6 +109,9 @@ class AgentState(TypedDict, total=False):
     # Predykcja
     llm_analysis: dict[str, Any]
     ml_target_price: Decimal
+    # G03: True = XGBoost nie ma wag, a `ml_target_price` to baseline "cena bez
+    # zmian", nie prognoza modelu. Rada i raport nie mogą go podawać jako sygnału.
+    ml_cold_start: bool
 
     # Embedding podsumowania newsów — liczony raz w predict_node (RAG retrieval)
     # i reużyty w save_node, żeby nie embedować dwa razy na cykl.
@@ -827,16 +830,22 @@ _EDGE_HORIZON_HOURS = 12.0
 
 
 def _resolve_implied_edge(
-    deps: AgentGraphDeps, symbol: str, current_price: Decimal, ml_target: Decimal
+    deps: AgentGraphDeps,
+    symbol: str,
+    current_price: Decimal,
+    ml_target: Decimal,
+    *,
+    ml_cold_start: bool,
 ) -> ImpliedEdge | None:
     """#18 — dywergencja ruchu modelu od implied move rynku opcji.
 
     Wołane z `_predict_node`, czyli NATURALNIE za bramką volatility: przy niskiej
     zmienności płatny port opcji w ogóle nie rusza. Brak portu
     (`options_flow_enabled=false`) → None → cykl identyczny jak dziś.
+    Cold-start → None: ruch baseline'u to sztuczne 0, nie ruch modelu.
     Graceful: Finnhub 403 na darmowym planie jest normą, nie awarią.
     """
-    if deps.options_port is None:
+    if deps.options_port is None or ml_cold_start:
         return None
     try:
         snapshot = deps.options_port.get_options_flow(symbol)
@@ -955,6 +964,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     features = {name: raw_features[name] for name in ML_FEATURE_COLUMNS}
     # Cold-start guard: dopóki XGBoost nie ma wytrenowanych wag, baseline
     # "cena bez zmian" (helper); gdy model się wytrenuje, przejmuje predykcję.
+    ml_cold_start = not ml_port.is_trained
     ml_target, feature_attribution = _run_ml_prediction(
         ml_port, features, symbol, current_price
     )
@@ -963,11 +973,14 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     elapsed_ms = (time.perf_counter() - predict_start) * 1000.0
     logger.info("node=predict symbol=%s elapsed_ms=%.1f", symbol, elapsed_ms)
 
-    implied_edge = _resolve_implied_edge(deps, symbol, current_price, ml_target)
+    implied_edge = _resolve_implied_edge(
+        deps, symbol, current_price, ml_target, ml_cold_start=ml_cold_start
+    )
 
     return {
         "llm_analysis": llm_analysis,
         "ml_target_price": ml_target,
+        "ml_cold_start": ml_cold_start,
         "data_quality_flags": flags,
         # #18: sygnał INFORMACYJNY (bez roli decyzyjnej) — do walidacji na
         # zamkniętych predykcjach, zanim dostanie jakąkolwiek moc sprawczą.
@@ -1021,6 +1034,7 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         llm_trend=str(llm_analysis.get("trend_direction", "SIDEWAYS")),
         llm_confidence=_float_or_default(llm_analysis.get("confidence_score"), 0.5),
         ml_price_target=state.get("ml_target_price") or state["current_price"],
+        ml_model_active=not state.get("ml_cold_start", False),
         fundamentals=state.get("fundamentals"),
         valuation_verdict=state.get("valuation_verdict", ValuationVerdict.UNKNOWN),
         # #3: typ aktywa napędza dobór wag person (per klasa aktywa).

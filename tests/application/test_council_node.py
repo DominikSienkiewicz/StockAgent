@@ -40,6 +40,8 @@ def _make_verdict() -> CouncilVerdict:
 def _make_graph_with_repo(
     council_port: AdvisoryCouncilPort | None = None,
     council_threshold: Threshold | None = None,
+    *,
+    ml_is_trained: bool = True,
 ):
     market = Mock(spec=MarketDataPort)
     market.get_current_price.return_value = Money(Decimal("180.00"))
@@ -58,7 +60,7 @@ def _make_graph_with_repo(
     repo.get_last_prediction_price.return_value = Money(Decimal("100.0"))
     repo.save_prediction.return_value = "pred-123"
     ml = Mock(spec=MLPredictionPort)
-    ml.is_trained = True
+    ml.is_trained = ml_is_trained
     ml.predict.return_value = Money(Decimal("185.00"))
     llm = Mock(spec=LLMPort)
     llm.analyze.return_value = {
@@ -178,6 +180,24 @@ class TestCouncilNodeIntegration:
         result = app.invoke({"symbol": "AAPL", "previous_price": Decimal("180.00")})
         council_port.analyze.assert_not_called()
         assert result.get("council_verdict") is None
+
+    def test_council_input_marks_ml_inactive_on_cold_start(self):
+        # G03: bez wag XGBoost "cel ML" to bieżąca cena — rada musi o tym wiedzieć.
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = _make_verdict()
+        graph, _ = _make_graph_with_repo(council_port=council_port, ml_is_trained=False)
+        graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("173.00")})
+        data = council_port.analyze.call_args.args[1]
+        assert data.ml_model_active is False
+
+    def test_council_input_marks_ml_active_with_trained_model(self):
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = _make_verdict()
+        graph, _ = _make_graph_with_repo(council_port=council_port, ml_is_trained=True)
+        graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("173.00")})
+        data = council_port.analyze.call_args.args[1]
+        assert data.ml_model_active is True
+        assert data.ml_price_target == Decimal("185.00")
 
 
 class TestCouncilVolatilityThreshold:

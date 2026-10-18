@@ -217,3 +217,24 @@ class TestBuildScorecardView:
     def test_unparsable_timestamp_yields_no_view(self) -> None:
         # Bez daty treningu nie da się orzec o świeżości → sekcja się chowa.
         assert build_scorecard_view([{"symbol": "AAPL", "status": "x"}]) is None
+
+
+class TestColdStartHonesty:
+    """MAIL-01 (G03): bez załadowanego modelu nie ma "sprawdzonego modelu", na
+    którym można by jechać — noga ML to baseline "cena bez zmian"."""
+
+    def test_rejected_run_without_loaded_model_does_not_claim_proven_model(self) -> None:
+        summary = _summary(0, 4, 0)
+        html = render_model_scorecard_html(summary, trained_at=_FRESH, now=_NOW, model_loaded=False)
+        text = render_model_scorecard_text(summary, trained_at=_FRESH, now=_NOW, model_loaded=False)
+        for out in (html, text):
+            assert "sprawdzonym" not in out.lower()
+            assert "odrzucon" in out.lower()
+            assert "cold-start" in out
+
+    def test_skipped_run_without_loaded_model_says_cold_start(self) -> None:
+        # Stan produkcji z 2026-10-11: wszystkie symbole pominięte (za mało próbek).
+        summary = _summary(0, 0, 45)
+        html = render_model_scorecard_html(summary, trained_at=_FRESH, now=_NOW, model_loaded=False)
+        assert "Brak wytrenowanego modelu" in html
+        assert "cold-start" in html

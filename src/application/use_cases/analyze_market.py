@@ -24,11 +24,18 @@ class AnalyzeMarketUseCase:
         # do fabryki nietknięty), inaczej `paid_calls` zostałoby puste mimo
         # płatnych wywołań i raport FinOps pokazałby zerowy koszt cyklu.
         self.paid_calls: Counter[str] = deps.paid_call_meter
+        self._ml_port = deps.ml_port
         workflow = create_agent_graph(deps)
         # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().
         # Inaczej przy 43 symbolach na cykl rekompilowalibyśmy graf 43×.
         self._app = workflow.compile()
+
+    @property
+    def ml_model_loaded(self) -> bool:
+        """G03: czy port ML ma wagi. Raport bierze stąd fakt o cold-starcie,
+        zamiast zgadywać go z porównania ceny docelowej z bieżącą."""
+        return self._ml_port.is_trained
 
     def run(
         self,

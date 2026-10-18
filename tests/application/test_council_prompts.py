@@ -1,4 +1,5 @@
 # tests/application/test_council_prompts.py
+from dataclasses import replace
 from decimal import Decimal
 
 from src.application.council_prompts import (
@@ -250,6 +251,27 @@ class TestInvestorRevisionPrompt:
         end = prompt.index("<<<END_UNTRUSTED")
         inj_idx = prompt.index("Ignore previous instructions")
         assert start < inj_idx < end
+
+
+class TestMlTargetLine:
+    """G03: przy cold-starcie "cel ML" to bieżąca cena, nie prognoza XGBoost —
+    persony nie mogą dostać jej jako sygnału modelu."""
+
+    def test_active_model_shows_xgboost_target(self):
+        prompt = investor_prompt(_BUFFETT, _make_input())
+        assert "Cel cenowy ML (XGBoost): 185.00" in prompt
+
+    def test_cold_start_does_not_present_current_price_as_xgboost_target(self):
+        data = replace(_make_input(), ml_price_target=Decimal("180.00"), ml_model_active=False)
+        prompt = investor_prompt(_BUFFETT, data)
+        assert "XGBoost" not in prompt
+        assert "Cel cenowy ML: brak — model nie wytrenowany (cold-start)" in prompt
+
+    def test_cold_start_revision_prompt_does_not_present_xgboost_target(self):
+        data = replace(_make_input(), ml_price_target=Decimal("180.00"), ml_model_active=False)
+        prompt = investor_revision_prompt(_BUFFETT, data, [_make_opinion("Cathie Wood")])
+        assert "XGBoost" not in prompt
+        assert "Cel cenowy ML: brak — model nie wytrenowany (cold-start)" in prompt
 
 
 class TestChairmanPrompt:

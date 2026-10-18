@@ -86,6 +86,9 @@ class SymbolResult:
     # tuple = brak atrybucji (model nietrenowany / cykl bez predykcji) →
     # wstecznie kompatybilne, renderer pomija sekcję.
     feature_attribution: tuple[FeatureContribution, ...] = ()
+    # G03: True = XGBoost bez wag, `target_price` to baseline "cena bez zmian".
+    # Renderer podpisuje prognozę jako cold-start zamiast pokazywać +0.00%.
+    ml_cold_start: bool = False
 
     @property
     def expected_change(self) -> Decimal | None:

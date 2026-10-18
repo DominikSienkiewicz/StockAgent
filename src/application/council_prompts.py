@@ -42,6 +42,14 @@ def _format_valuation_block(data: CouncilInput) -> str:
     )
 
 
+def _format_ml_target_line(data: CouncilInput) -> str:
+    """Linia celu ML w <dane_rynkowe>. Przy cold-starcie cel to bieżąca cena,
+    więc mówimy wprost, że prognozy modelu nie ma, zamiast podrabiać sygnał."""
+    if not data.ml_model_active:
+        return "Cel cenowy ML: brak — model nie wytrenowany (cold-start)"
+    return f"Cel cenowy ML (XGBoost): {data.ml_price_target}"
+
+
 def investor_prompt(persona: InvestorPersona, data: CouncilInput) -> str:
     """Prompt dla pojedynczego inwestora w radzie.
 
@@ -63,7 +71,7 @@ Cena aktualna: {data.current_price}
 Zmiana 12h: {data.price_delta_pct:+.2f}%
 Sentyment (Alpha Vantage, skala -1.0 do +1.0): {data.sentiment_score:.2f}
 Trend wg głównego analityka agenta: {data.llm_trend} (pewność: {data.llm_confidence:.0%})
-Cel cenowy ML (XGBoost): {data.ml_price_target}
+{_format_ml_target_line(data)}
 </dane_rynkowe>
 
 <newsy>
@@ -118,7 +126,7 @@ Cena aktualna: {data.current_price}
 Zmiana 12h: {data.price_delta_pct:+.2f}%
 Sentyment (Alpha Vantage, skala -1.0 do +1.0): {data.sentiment_score:.2f}
 Trend wg głównego analityka agenta: {data.llm_trend} (pewność: {data.llm_confidence:.0%})
-Cel cenowy ML (XGBoost): {data.ml_price_target}
+{_format_ml_target_line(data)}
 </dane_rynkowe>
 
 <newsy>

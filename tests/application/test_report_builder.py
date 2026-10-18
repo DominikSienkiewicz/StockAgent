@@ -22,8 +22,10 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_formatting import company_label
+from src.application.report_model_scorecard import ModelScorecardView
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.cycle_maturity import SkipReason
+from src.domain.model_scorecard import summarize_run
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.portfolio import Portfolio, Position
 from src.domain.quota import QuotaAlert, QuotaSeverity
@@ -1693,3 +1695,72 @@ class TestUserPortfolioSection:
             1.0, ReportContext(user_portfolio=self._portfolio(days_old=30)))
 
         assert "STALE" in html.upper()
+
+
+def _cold_start_result() -> SymbolResult:
+    # Cold-start: graf zostawia target == bieżąca cena (baseline "bez zmian").
+    return SymbolResult(
+        symbol="AAPL",
+        status="saved",
+        delta=Decimal("0.025"),
+        current_price=Decimal("298.87"),
+        trend="BULLISH",
+        target_price=Decimal("298.87"),
+        confidence_score=0.85,
+        reasoning="Strong macro tailwinds + positive earnings expectations.",
+        sentiment_score=0.42,
+        sentiment_label="Somewhat-Bullish",
+        news_volume=12,
+        ml_cold_start=True,
+    )
+
+
+class TestColdStartForecast:
+    """MAIL-01 (G03): bez wag XGBoost "prognoza" to bieżąca cena. Raport ma to
+    nazwać, a nie pokazywać +0.00% jak wynik modelu."""
+
+    def test_mapper_carries_cold_start_flag(self):
+        raw = {
+            "status": "saved",
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("100"),
+            "ml_cold_start": True,
+        }
+        assert to_symbol_result("AAPL", raw).ml_cold_start is True
+
+    def test_mapper_without_flag_is_not_cold_start(self):
+        raw = {"status": "saved", "current_price": Decimal("100")}
+        assert to_symbol_result("AAPL", raw).ml_cold_start is False
+
+    def test_cold_start_forecast_is_labelled_instead_of_zero_percent(self):
+        html, text = build_html_report(
+            [_cold_start_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+        )
+        assert "— (ML: cold-start)" in html
+        assert "Oczekiwany ruch: — (ML: cold-start)" in html
+        assert "Prognozowana zmiana" not in html
+        # "(+0.00%)" to dotychczasowy format kolumny prognozy i linii ruchu.
+        assert "(+0.00%)" not in html
+        assert "prognoza — (ML: cold-start)" in text
+        assert "(+0.00%)" not in text
+
+    def test_trained_forecast_has_no_cold_start_label(self):
+        html, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+        assert "ML: cold-start" not in html
+        assert "ML: cold-start" not in text
+
+    def test_scorecard_admits_cold_start_when_no_model_is_loaded(self):
+        # ReportContext niesie fakt z portu ML — bez niego karta twierdziłaby,
+        # że "jedziemy na sprawdzonym modelu", którego nie ma.
+        view = ModelScorecardView(
+            summary=summarize_run(["skipped_validation_failed"] * 2),
+            trained_at=datetime(2026, 5, 13, tzinfo=UTC),
+        )
+        html, _ = build_html_report(
+            [_cold_start_result()],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
+            ReportContext(model_scorecard=view, ml_model_loaded=False),
+        )
+        assert "Brak wytrenowanego modelu" in html
+        assert "sprawdzonym" not in html.lower()

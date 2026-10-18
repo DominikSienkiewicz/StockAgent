@@ -475,6 +475,21 @@ class TestCouncilInput:
         )
         assert data.asset_type is AssetType.STOCK
 
+    def test_ml_model_active_defaults_to_true(self):
+        # G03: pole wstecznie kompatybilne — wywołujący bez wiedzy o cold-starcie
+        # zachowują dotychczasowe zachowanie (cel ML traktowany jak prognoza).
+        data = CouncilInput(
+            symbol="AAPL",
+            current_price=Decimal("180.00"),
+            price_delta_pct=Decimal("3.5"),
+            sentiment_score=0.6,
+            news_articles=["x"],
+            llm_trend="BULLISH",
+            llm_confidence=0.82,
+            ml_price_target=Decimal("185.00"),
+        )
+        assert data.ml_model_active is True
+
     def test_asset_type_can_be_overridden(self):
         data = CouncilInput(
             symbol="BTC",

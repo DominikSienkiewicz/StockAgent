@@ -25,6 +25,9 @@ class CouncilInput:
     # Klasa aktywa — pozwala adaptacyjnemu ważeniu person (feature #3) dobrać
     # tabelę wag zależnie od typu (np. inne trafności person dla krypto niż akcji).
     asset_type: AssetType = field(default=AssetType.STOCK)
+    # G03: False = model ML nie ma wag (cold-start) i `ml_price_target` jest tylko
+    # baseline'em "cena bez zmian" — prompt nie może podać go jako celu modelu.
+    ml_model_active: bool = field(default=True)
 
     def __post_init__(self) -> None:
         # Kolekcja jako tuple — frozen=True blokuje tylko rebinding atrybutu, NIE

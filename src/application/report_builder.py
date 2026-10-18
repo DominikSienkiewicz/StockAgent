@@ -267,6 +267,10 @@ def _recommendation(r: SymbolResult) -> str:
     return _DIRECTION_LABEL.get(r.trend or "", "WSTRZYMAJ")
 
 
+# G03: przy cold-starcie target == bieżąca cena, więc "+0.00%" udawałoby prognozę.
+_COLD_START_FORECAST = "— (ML: cold-start)"
+
+
 def _recommendation_reason_html(r: SymbolResult) -> str:
     """Zwraca krótki HTML-owy powód rekomendacji (1–2 zdania)."""
     direction = _recommendation(r)
@@ -279,7 +283,7 @@ def _recommendation_reason_html(r: SymbolResult) -> str:
         else ""
     )
     change_part = ""
-    if r.expected_change is not None:
+    if r.expected_change is not None and not r.ml_cold_start:
         change_part = (
             f" Prognozowana zmiana: "
             f"<strong style='color: {_delta_color(r.expected_change)};'>"
@@ -308,7 +312,7 @@ def _recommendation_reason_text(r: SymbolResult) -> str:
     conf_part = f"pewność {r.confidence_score * 100:.0f}%" if r.confidence_score is not None else ""
     change_part = (
         f"prognoza {_pct(r.expected_change, signed=True)}"
-        if r.expected_change is not None
+        if r.expected_change is not None and not r.ml_cold_start
         else ""
     )
     parts = [p for p in [conf_part, change_part] if p]
@@ -343,7 +347,7 @@ def _render_crypto_section_html(results: list[SymbolResult]) -> str:
             forecast_part = (
                 f" · prognoza <span style='color: {_delta_color(r.expected_change)};'>"
                 f"{_pct(r.expected_change, signed=True)}</span>"
-                if r.expected_change is not None
+                if r.expected_change is not None and not r.ml_cold_start
                 else ""
             )
             conf_part = (
@@ -381,7 +385,7 @@ def _render_crypto_section_text(results: list[SymbolResult]) -> str:
             status = (
                 f"{_trend_label(r.trend)} "
                 f"prognoza {_pct(r.expected_change, signed=True)}"
-                if r.expected_change is not None
+                if r.expected_change is not None and not r.ml_cold_start
                 else _trend_label(r.trend)
             )
         else:
@@ -801,7 +805,10 @@ def _build_user_portfolio_html(
 
 
 def _build_model_scorecard_html(
-    model_scorecard: ModelScorecardView | None, *, now: datetime
+    model_scorecard: ModelScorecardView | None,
+    *,
+    now: datetime,
+    model_loaded: bool,
 ) -> str:
     """#12: karta kondycji modelu. Brak danych → "" (sekcja sama się chowa)."""
     if model_scorecard is None:
@@ -810,6 +817,7 @@ def _build_model_scorecard_html(
         model_scorecard.summary,
         trained_at=model_scorecard.trained_at,
         now=now,
+        model_loaded=model_loaded,
         candidate_rmse=model_scorecard.candidate_rmse,
         baseline_rmse=model_scorecard.baseline_rmse,
         directional_hit_rate=model_scorecard.directional_hit_rate,
@@ -855,6 +863,9 @@ class ReportContext:
     cycle_maturity: CycleMaturity | None = None
     portfolio_sectors: Mapping[str, int] | None = None
     model_scorecard: ModelScorecardView | None = None
+    # G03: czy port ML ma wagi. False → karta kondycji mówi o cold-starcie
+    # zamiast o "sprawdzonym modelu" (którego wtedy nie ma).
+    ml_model_loaded: bool = True
     consensus_shifts: list[tuple[str, ConsensusShift]] | None = None
     user_portfolio: Portfolio | None = None
     portfolio_clusters: Mapping[str, str] | None = None
@@ -949,7 +960,11 @@ def build_html_report(
     # FinOps: koszt cyklu. Cykl darmowy (0 wywołań) renderuje się JAWNIE —
     # to najciekawsza informacja w tej sekcji, nie brak danych.
     finops_html = render_finops_html(context.cycle_cost)
-    model_scorecard_html = _build_model_scorecard_html(context.model_scorecard, now=started_at)
+    model_scorecard_html = _build_model_scorecard_html(
+        context.model_scorecard,
+        now=started_at,
+        model_loaded=context.ml_model_loaded,
+    )
     # T1/T2/T4: sekcja Track Record (krzywa kapitału, kalibracja, lessons).
     # render zwraca "" gdy wszystkie trzy podsekcje puste.
     track_record_html = render_track_record_html(
@@ -1200,13 +1215,16 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
         if r.confidence_score is not None
         else "—"
     )
-    forecast_text = (
-        f"{_money(r.target_price)} "
-        f"<span style='color: {_delta_color(r.expected_change)};'>"
-        f"({_pct(r.expected_change, signed=True)})</span>"
-        if r.target_price is not None
-        else "—"
-    )
+    if r.ml_cold_start:
+        forecast_text = _COLD_START_FORECAST
+    elif r.target_price is not None:
+        forecast_text = (
+            f"{_money(r.target_price)} "
+            f"<span style='color: {_delta_color(r.expected_change)};'>"
+            f"({_pct(r.expected_change, signed=True)})</span>"
+        )
+    else:
+        forecast_text = "—"
     rec = _recommendation(r)
     rec_color = _DIRECTION_COLOR.get(rec, "#737373")
     return f"""
@@ -1247,11 +1265,18 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
             if r.confidence_score is not None
             else ""
         )
+        move_text = (
+            _COLD_START_FORECAST
+            if r.ml_cold_start
+            else (
+                f"{_money(r.current_price)} → {_money(r.target_price)} "
+                f"<span style='color: {_delta_color(r.expected_change)};'>"
+                f"({_pct(r.expected_change, signed=True)})</span>"
+            )
+        )
         move_line = (
             f"<div style='font-size: 11px; color: #6b7280; margin-top: 2px;'>"
-            f"Oczekiwany ruch: {_money(r.current_price)} → {_money(r.target_price)} "
-            f"<span style='color: {_delta_color(r.expected_change)};'>"
-            f"({_pct(r.expected_change, signed=True)})</span>"
+            f"Oczekiwany ruch: {move_text}"
             f"{conf_part}"
             f"</div>"
         )
@@ -1595,12 +1620,14 @@ def _render_prediction_text(r: SymbolResult) -> list[str]:
         if r.confidence_score is not None
         else ""
     )
-    forecast_part = (
-        f"prognoza {_money(r.target_price)} "
-        f"({_pct(r.expected_change, signed=True)})"
-        if r.target_price is not None and r.expected_change is not None
-        else "prognoza —"
-    )
+    if r.ml_cold_start:
+        forecast_part = f"prognoza {_COLD_START_FORECAST}"
+    elif r.target_price is not None and r.expected_change is not None:
+        forecast_part = (
+            f"prognoza {_money(r.target_price)} ({_pct(r.expected_change, signed=True)})"
+        )
+    else:
+        forecast_part = "prognoza —"
     sentiment_part = (
         f"sentyment {r.sentiment_score:+.2f}"
         if r.sentiment_score is not None
@@ -1866,6 +1893,7 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
         provenance_badges=provenance_badges,
         # Q3: atrybucja cech ML (SHAP-lite) — render-only.
         feature_attribution=tuple(raw.get("feature_attribution") or ()),
+        ml_cold_start=bool(raw.get("ml_cold_start", False)),
     )
 
 

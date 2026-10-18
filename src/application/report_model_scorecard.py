@@ -4,7 +4,8 @@ Repo shipuje model tylko, gdy kandydat bije naiwny baseline persystencji
 ("zwrot=0"), ale ta bramka jest dla użytkownika NIEWIDZIALNA. Ta sekcja zdejmuje
 z niej welon: pokazuje procentową poprawę względem baseline'u, świeżość modelu
 (badge STALE), rozkład przebiegu treningu per-symbol oraz — gdy kandydat został
-odrzucony — uczciwie przyznaje, że jedziemy na starym, sprawdzonym modelu.
+odrzucony — uczciwie przyznaje, że jedziemy na starym, sprawdzonym modelu. Gdy
+żadnego modelu nie ma (cold-start), mówi to wprost: noga ML to baseline.
 
 Czysta logika prezentacji — zero I/O, zero płatnych wywołań. Cała reguła biznesu
 (poprawa RMSE, próg świeżości, agregacja outcome'ów) żyje w domenie
@@ -60,12 +61,23 @@ def _improvement(candidate_rmse: float, baseline_rmse: float) -> tuple[float, st
     return pct, (_COLOR_GOOD if pct >= 0 else _COLOR_POOR)
 
 
-def _reject_notice(summary: RunSummary) -> str:
-    """Jawny komunikat o odrzuconych kandydatach albo "" gdy nic nie odrzucono.
+_COLD_START_NOTICE = (
+    "Brak wytrenowanego modelu — noga ML jedzie na baseline'ie „cena bez zmian” (cold-start)."
+)
 
+
+def _model_notice(summary: RunSummary, *, model_loaded: bool) -> str:
+    """Jawny komunikat o stanie modelu albo "" gdy nie ma czego zgłaszać.
+
+    Brak załadowanego modelu — cold-start, niezależnie od wyniku przebiegu
+    (odrzucony kandydat nie zostawia żadnego "sprawdzonego" modelu).
     Gdy WSZYSTKO odrzucono (accepted == 0) — jedziemy na sprawdzonym modelu.
     Gdy odrzuty są częściowe — część symboli zostaje na sprawdzonym modelu.
     """
+    if not model_loaded:
+        if summary.rejected == 0:
+            return _COLD_START_NOTICE
+        return f"Nowy model odrzucony. {_COLD_START_NOTICE}"
     if summary.rejected == 0:
         return ""
     if summary.accepted == 0:
@@ -85,6 +97,7 @@ def render_model_scorecard_html(
     baseline_rmse: float | None = None,
     directional_hit_rate: float | None = None,
     folds: int | None = None,
+    model_loaded: bool = True,
 ) -> str:
     """Renderuje sekcję HTML karty kondycji modelu lub "" gdy brak danych.
 
@@ -110,11 +123,11 @@ def render_model_scorecard_html(
         + f"Przebieg: {_html.escape(summary.summary_line)}</div>",
     ]
 
-    reject_notice = _reject_notice(summary)
-    if reject_notice:
+    notice = _model_notice(summary, model_loaded=model_loaded)
+    if notice:
         rows.append(
             f"<div style='font-size: 12px; color: {_COLOR_POOR}; font-weight: 600; "
-            f"margin-bottom: 4px;'>⚠️ {_html.escape(reject_notice)}</div>"
+            f"margin-bottom: 4px;'>⚠️ {_html.escape(notice)}</div>"
         )
 
     if candidate_rmse is not None and baseline_rmse is not None:
@@ -163,6 +176,7 @@ def render_model_scorecard_text(
     baseline_rmse: float | None = None,
     directional_hit_rate: float | None = None,
     folds: int | None = None,
+    model_loaded: bool = True,
 ) -> str:
     """Renderuje sekcję plain-text karty kondycji modelu lub "" gdy brak danych."""
     if summary is None:
@@ -176,9 +190,9 @@ def render_model_scorecard_text(
         f"  Przebieg: {summary.summary_line}",
     ]
 
-    reject_notice = _reject_notice(summary)
-    if reject_notice:
-        lines.append(f"  ⚠ {reject_notice}")
+    notice = _model_notice(summary, model_loaded=model_loaded)
+    if notice:
+        lines.append(f"  ⚠ {notice}")
 
     if candidate_rmse is not None and baseline_rmse is not None:
         pct, _ = _improvement(candidate_rmse, baseline_rmse)

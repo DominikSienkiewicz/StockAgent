@@ -330,6 +330,19 @@ class TestPaidCallMeter:
         assert meter["llm"] == 1
 
 
+class TestMlModelLoaded:
+    """MAIL-01 (G03): raport pyta use case, czy XGBoost ma wagi — inaczej karta
+    kondycji twierdziłaby, że jedziemy na sprawdzonym modelu, którego nie ma."""
+
+    def test_reports_cold_start_when_model_untrained(self, use_case, ml_port):
+        ml_port.is_trained = False
+        assert use_case.ml_model_loaded is False
+
+    def test_reports_loaded_model_when_trained(self, use_case, ml_port):
+        ml_port.is_trained = True
+        assert use_case.ml_model_loaded is True
+
+
 class TestThresholdInjection:
     def test_respects_custom_threshold(
         self,
