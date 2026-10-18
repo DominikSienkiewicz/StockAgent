@@ -133,12 +133,12 @@ Each signal lands in a dedicated section in the email with a red/yellow accent s
 `build_trade_signals(results)` sorts saved predictions by **signal strength = `confidence × |expected_change| × 100`**. Top 5 surface in the email:
 
 ```
-🟢 BUY      TSM   confidence 92%  forecast +5.05%  strength 4.65
-🟢 BUY      NVDA  confidence 85%  forecast +2.95%  strength 2.51
-🔴 SELL     SAP   confidence 71%  forecast -4.24%  strength 3.01
-🟡 OBSERVE  ORCL  confidence 45%  forecast +0.39%  strength 0.18
+🟢 BUY      TSM   confidence 92%  forecast +5.05%  #1 · move 5.1% × confidence 92%
+🔴 SELL     SAP   confidence 71%  forecast -4.24%  #2 · move 4.2% × confidence 71%
+🟢 BUY      NVDA  confidence 85%  forecast +2.95%  #3 · move 3.0% × confidence 85%
+🟡 OBSERVE  ORCL  confidence 45%  forecast +0.39%  #4 · move 0.4% × confidence 45%
 ```
 
-Gives an immediate actionable view without digging through the table.
+Gives an immediate actionable view without digging through the table. Each card shows its rank and the two factors of its strength rather than the bare product. With `calibrated_confidence_enabled` the ranking runs on the calibrated confidence, so the card shows both values and the sample size of the calibration bucket, e.g. `pewność 85% → 58% po kalibracji (n kubełka: 40)`, and the strength factor reads "calibrated confidence"; `n kubełka: 0` means no bucket matched and no correction was applied. Small buckets swing, which is why n is shown.
 
 **On ML cold start** (no trained XGBoost weights, `SymbolResult.ml_cold_start`) the target equals the current price, so `|expected_change|` is 0 and the formula above would zero every signal and leave the list in processing order. Strength is then the confidence alone — calibrated by its bucket's historical hit rate when `calibrated_confidence_enabled` has a sample — the card shows `— (ML: cold-start)` instead of a forecast, and the section says the ranking is by confidence. The two strengths are on different scales, so model-backed signals always rank ahead of cold-start ones. The forecast chart leaves cold-start symbols out and disappears when every symbol is cold-start.

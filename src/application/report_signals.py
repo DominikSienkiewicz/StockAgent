@@ -13,7 +13,11 @@ from src.application.report_models import (
     SymbolResult,
     TradeSignal,
 )
-from src.domain.calibration_curve import CalibrationBucket, calibrated_confidence
+from src.domain.calibration_curve import (
+    CalibrationBucket,
+    calibrated_confidence,
+    find_bucket,
+)
 from src.domain.sizing import SizeBand, suggest_band
 
 DIVERGENCE_PRICE_THRESHOLD = Decimal("0.02")
@@ -64,6 +68,7 @@ def build_trade_signals(
             if calibration_buckets
             else None
         )
+        bucket_count = _calibration_bucket_count(r.confidence_score, calibration_buckets)
         effective = r.confidence_score if calibrated is None else calibrated
         strength = effective if r.ml_cold_start else effective * float(abs(r.expected_change)) * 100
         signals.append(TradeSignal(
@@ -77,9 +82,20 @@ def build_trade_signals(
             size_band=_size_band_for(r, hit_rate, portfolio_weights, cluster_exposures),
             calibrated_confidence=calibrated,
             ml_cold_start=r.ml_cold_start,
+            calibration_bucket_count=bucket_count,
         ))
     signals.sort(key=lambda s: (not s.ml_cold_start, s.strength), reverse=True)
     return signals[:top_n]
+
+
+def _calibration_bucket_count(
+    confidence: float, buckets: Sequence[CalibrationBucket] | None
+) -> int | None:
+    """n kubełka, którym kalibrujemy pewność; 0 = brak pasującego kubełka."""
+    if not buckets:
+        return None
+    bucket = find_bucket(confidence, buckets)
+    return 0 if bucket is None else bucket.count
 
 
 def _size_band_for(

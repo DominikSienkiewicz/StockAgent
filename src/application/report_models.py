@@ -121,6 +121,10 @@ class TradeSignal:
     # WIA-13 (G03): True = brak prognozy ruchu (XGBoost bez wag), `strength` to
     # sama (skalibrowana) pewność, a `expected_change` = 0 nie jest prognozą.
     ml_cold_start: bool = False
+    # WIA-12: liczność kubełka, którym skalibrowano pewność (0 = kubełek pusty,
+    # pewność bez korekty). None = brak kalibracji. Mała próba skacze, więc
+    # raport pokazuje n obok pewności skalibrowanej.
+    calibration_bucket_count: int | None = None
 
 
 @dataclass(frozen=True)

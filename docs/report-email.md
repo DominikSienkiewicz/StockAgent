@@ -8,7 +8,7 @@ The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallbac
 
 - 🕒 **NYSE session** — open / premarket / after-hours / weekend (`zoneinfo` America/New_York)
 - 📊 **Three summary boxes** — predictions / ignored / errors
-- 🎯 **Strongest signals** — top BUY/SELL, colour-coded (priority 1: actionable); ranked by confidence alone, and labelled so, while the ML model is on cold start
+- 🎯 **Strongest signals** — top BUY/SELL, colour-coded (priority 1: actionable); each card shows its rank and strength factors (`#1 · ruch 3.1% × pewność 85%`) instead of a bare strength number; with `calibrated_confidence_enabled`, raw → calibrated confidence and the calibration bucket's sample size (`85% → 58% po kalibracji (n kubełka: 40)`); ranked by confidence alone, and labelled so, while the ML model is on cold start
 - 🚨 **Warning signals** — divergence + AV/LLM conflict + low signal
 - 📊 **Portfolio mood** — average sentiment, most positive/negative, high-confidence count
 - 📊 **Closed predictions (24h)** — full **post-mortem** per resolved prediction (stocks **and** crypto): the original thesis (*why up/down* — `reasoning_text`), the actual move (`$A → $B (+C%)`), the ✅ Trafiona / ❌ Błędna verdict, and **why** (the `reflect` diagnosis for misses, thesis-confirmed for hits; a miss whose diagnosis was skipped shows that the direction did not hold instead of the placeholder text). All from data already in `prediction_logs` — no extra LLM calls.

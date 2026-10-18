@@ -1058,6 +1058,48 @@ def build_html_report(
 # ---------------------------------------------------------------------------
 
 
+def _calibration_suffix(sig: TradeSignal) -> str:
+    """„ po kalibracji (n kubełka: 12)” — n pomijamy, gdy sygnał go nie niesie."""
+    if sig.calibration_bucket_count is None:
+        return " po kalibracji"
+    return f" po kalibracji (n kubełka: {sig.calibration_bucket_count})"
+
+
+def _confidence_html(sig: TradeSignal) -> str:
+    """WIA-12: „pewność 85% → 58% po kalibracji (n kubełka: 12)” albo sama surowa."""
+    raw = f"pewność <strong>{sig.confidence * 100:.0f}%</strong>"
+    if sig.calibrated_confidence is None:
+        return raw
+    return (
+        f"{raw} → <strong>{sig.calibrated_confidence * 100:.0f}%</strong>"
+        f"{_html(_calibration_suffix(sig))}"
+    )
+
+
+def _confidence_text(sig: TradeSignal) -> str:
+    raw = f"{sig.confidence * 100:.0f}%"
+    if sig.calibrated_confidence is None:
+        return raw
+    return f"{raw} → {sig.calibrated_confidence * 100:.0f}%{_calibration_suffix(sig)}"
+
+
+def _strength_label(rank: int, sig: TradeSignal) -> str:
+    """WIA-12: pozycja w rankingu i składowe siły zamiast gołej liczby.
+
+    Siła to |ruch| × pewność (skalibrowana, gdy jest historia), a przy
+    cold-starcie ML sama pewność — etykieta mówi, z czego wynika kolejność.
+    """
+    calibrated = sig.calibrated_confidence is not None
+    effective = sig.confidence if sig.calibrated_confidence is None else sig.calibrated_confidence
+    confidence_pct = f"{effective * 100:.0f}%"
+    if sig.ml_cold_start:
+        basis = "pewności skalibrowanej" if calibrated else "pewności"
+        return f"#{rank} · wg {basis} {confidence_pct}"
+    basis = "pewność skalibrowana" if calibrated else "pewność"
+    move_pct = f"{abs(sig.expected_change) * 100:.1f}%"
+    return f"#{rank} · ruch {move_pct} × {basis} {confidence_pct}"
+
+
 def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
     """🎯 Najsilniejsze sygnały transakcyjne. Pusty string, gdy brak sygnałów."""
     if not trade_signals:
@@ -1068,7 +1110,7 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
             "<div style='font-size: 12px; color: #6b7280; margin-bottom: 8px;'>"
             f"{_html(_SIGNALS_COLD_START_NOTE)}</div>"
         )
-    for sig in trade_signals:
+    for rank, sig in enumerate(trade_signals, start=1):
         dir_color = {
             "KUP": "#16a34a",
             "SPRZEDAJ": "#dc2626",
@@ -1103,12 +1145,12 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
                 </span>
                 <span style="font-weight: 600; min-width: 60px;">{_html(_company_label(sig.symbol))}</span>
                 <span style="color: #4b5563;">
-                  pewność <strong>{sig.confidence * 100:.0f}%</strong>
+                  {_confidence_html(sig)}
                 </span>
                 {forecast_html}
                 {size_html}
                 <span style="color: #6b7280; margin-left: auto; font-size: 12px;">
-                  siła sygnału: <strong>{sig.strength:.2f}</strong>
+                  {_html(_strength_label(rank, sig))}
                 </span>
               </div>
             """)
@@ -1564,16 +1606,16 @@ def _render_trade_signals_text(trade_signals: list[TradeSignal]) -> list[str]:
     lines = ["NAJSILNIEJSZE SYGNAŁY", "-" * 64]
     if any(sig.ml_cold_start for sig in trade_signals):
         lines.append(f"  {_SIGNALS_COLD_START_NOTE}")
-    for sig in trade_signals:
+    for rank, sig in enumerate(trade_signals, start=1):
         size_txt = f"  [{sig.size_band.label}]" if sig.size_band else ""
         forecast = (
             _COLD_START_FORECAST if sig.ml_cold_start else _pct(sig.expected_change, signed=True)
         )
         lines.append(
             f"  {sig.direction:9s} {_company_label(sig.symbol):40s} "
-            f"pewność {sig.confidence * 100:.0f}%  "
+            f"pewność {_confidence_text(sig)}  "
             f"prognoza {forecast:>8s}  "
-            f"siła {sig.strength:.2f}{size_txt}"
+            f"{_strength_label(rank, sig)}{size_txt}"
         )
     lines.append("")
     return lines

@@ -101,7 +101,7 @@ def expected_calibration_error(buckets: Sequence[CalibrationBucket]) -> float:
     return weighted / total
 
 
-def _find_bucket(
+def find_bucket(
     raw: float, buckets: Sequence[CalibrationBucket]
 ) -> CalibrationBucket | None:
     """Znajduje kubełek, do którego wpada `raw` (semantyka reliability_curve).
@@ -152,7 +152,7 @@ def calibrated_confidence(
     """
     if not buckets or min_count <= 0:
         return raw
-    bucket = _find_bucket(raw, buckets)
+    bucket = find_bucket(raw, buckets)
     if bucket is None:
         return raw
     weight = bucket.count / (bucket.count + min_count)

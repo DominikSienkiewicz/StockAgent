@@ -10,6 +10,7 @@ from src.application.report_builder import (
     RiskSignal,
     SymbolResult,
     TopNewsItem,
+    TradeSignal,
     build_correlation_chart_html,
     build_delta_chart_html,
     build_forecast_chart_html,
@@ -1905,3 +1906,96 @@ class TestResolvedPredictionTimestamp:
         ]
 
         assert parse_resolved_predictions(rows)[0].predicted_at is None
+
+
+def _signal(**overrides: object) -> TradeSignal:
+    fields: dict[str, object] = {
+        "symbol": "AAPL",
+        "direction": "KUP",
+        "confidence": 0.85,
+        "expected_change": Decimal("0.031"),
+        "strength": 0.58 * 3.1,
+        "current_price": Decimal("100"),
+        "target_price": Decimal("103.1"),
+        "calibrated_confidence": 0.58,
+    }
+    fields.update(overrides)
+    return TradeSignal(**fields)  # type: ignore[arg-type]
+
+
+def test_trade_signal_shows_calibrated_confidence():
+    """WIA-12: ranking liczy się na pewności skalibrowanej, a mail pokazywał
+    tylko surową — `TradeSignal` obiecywał format „85% → 58%”."""
+    html = report_builder._render_trade_signals_html([
+        TradeSignal(
+            symbol="AAPL",
+            direction="KUP",
+            confidence=0.85,
+            expected_change=Decimal("0.031"),
+            strength=0.58 * 3.1,
+            current_price=Decimal("100"),
+            target_price=Decimal("103.1"),
+            calibrated_confidence=0.58,
+        )
+    ])
+
+    assert "58%" in html
+
+
+class TestTradeSignalCalibrationAndStrength:
+    """WIA-12: pewność surowa → skalibrowana z n kubełka, a zamiast gołej
+    „siły sygnału” pozycja w rankingu i składowe, z których wynika."""
+
+    def test_html_shows_raw_to_calibrated_with_bucket_n(self):
+        html = report_builder._render_trade_signals_html(
+            [_signal(calibration_bucket_count=12)]
+        )
+
+        assert "85%" in html
+        assert "→" in html
+        assert "58%" in html
+        assert "po kalibracji" in html
+        assert "n kubełka: 12" in html
+
+    def test_html_replaces_bare_strength_with_rank_and_components(self):
+        html = report_builder._render_trade_signals_html([
+            _signal(symbol="AAPL"),
+            _signal(symbol="MSFT", calibrated_confidence=None, strength=0.85 * 3.1),
+        ])
+
+        assert "siła sygnału" not in html
+        assert "#1" in html
+        assert "#2" in html
+        assert "ruch 3.1% × pewność skalibrowana 58%" in html
+        assert "ruch 3.1% × pewność 85%" in html
+
+    def test_html_uncalibrated_signal_shows_raw_confidence_only(self):
+        html = report_builder._render_trade_signals_html(
+            [_signal(calibrated_confidence=None)]
+        )
+
+        assert "pewność <strong>85%</strong>" in html
+        assert "po kalibracji" not in html
+
+    def test_html_cold_start_strength_is_the_confidence_alone(self):
+        html = report_builder._render_trade_signals_html([
+            _signal(
+                expected_change=Decimal("0"),
+                target_price=Decimal("100"),
+                strength=0.58,
+                ml_cold_start=True,
+            )
+        ])
+
+        assert "wg pewności skalibrowanej 58%" in html
+        assert "ruch 0.0%" not in html
+
+    def test_text_shows_calibration_and_rank_components(self):
+        lines = report_builder._render_trade_signals_text(
+            [_signal(calibration_bucket_count=12)]
+        )
+        text = "\n".join(lines)
+
+        assert "pewność 85% → 58% po kalibracji (n kubełka: 12)" in text
+        assert "#1 · ruch 3.1% × pewność skalibrowana 58%" in text
+        assert "siła " not in text

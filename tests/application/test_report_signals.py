@@ -244,3 +244,40 @@ class TestColdStartSignalRanking:
 
         assert [s.symbol for s in signals] == ["NVDA", "AAPL"]
         assert signals[0].ml_cold_start is False
+
+
+class TestCalibrationBucketCountOnSignal:
+    """WIA-12: kubełki z małą próbą skaczą, więc mail pokazuje n kubełka obok
+    pewności skalibrowanej. Sygnał niesie je z tego samego kubełka, którym
+    `calibrated_confidence` skorygowało pewność."""
+
+    @staticmethod
+    def _saved(confidence: float) -> SymbolResult:
+        return SymbolResult(
+            symbol="AAPL",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=confidence,
+            current_price=Decimal("100"),
+            target_price=Decimal("110"),
+        )
+
+    def test_signal_carries_the_count_of_its_calibration_bucket(self) -> None:
+        buckets = [CalibrationBucket(0.8, 0.9, count=12, mean_confidence=0.85, hit_rate=0.5)]
+
+        (signal,) = build_trade_signals([self._saved(0.85)], calibration_buckets=buckets)
+
+        assert signal.calibration_bucket_count == 12
+
+    def test_no_matching_bucket_means_an_empty_bucket(self) -> None:
+        buckets = [CalibrationBucket(0.6, 0.7, count=40, mean_confidence=0.65, hit_rate=0.6)]
+
+        (signal,) = build_trade_signals([self._saved(0.85)], calibration_buckets=buckets)
+
+        assert signal.calibrated_confidence == pytest.approx(0.85)
+        assert signal.calibration_bucket_count == 0
+
+    def test_without_calibration_there_is_no_bucket_count(self) -> None:
+        (signal,) = build_trade_signals([self._saved(0.85)])
+
+        assert signal.calibration_bucket_count is None
