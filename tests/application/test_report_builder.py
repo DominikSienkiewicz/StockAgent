@@ -1765,6 +1765,24 @@ class TestColdStartForecast:
         assert "Brak wytrenowanego modelu" in html
         assert "sprawdzonym" not in html.lower()
 
+    def test_scorecard_names_the_candidate_behind_the_metrics(self):
+        # ML-03: metryki w karcie mówią, którego kandydata dotyczą i na ilu próbkach.
+        view = ModelScorecardView(
+            summary=summarize_run(["trained_successfully"]),
+            trained_at=datetime(2026, 5, 13, tzinfo=UTC),
+            candidate_rmse=0.021,
+            baseline_rmse=0.024,
+            metrics_symbol="ALL",
+            metrics_n_samples=243,
+        )
+        html, _ = build_html_report(
+            [_saved_result()],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
+            ReportContext(model_scorecard=view, ml_model_loaded=True),
+        )
+        assert "n=243" in html
+
 
 class TestColdStartSignalsAndChart:
     """WIA-13 (G03): sekcja „Najsilniejsze sygnały” i wykres prognoz nie mogą

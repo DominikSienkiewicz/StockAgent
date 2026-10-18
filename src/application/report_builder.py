@@ -839,6 +839,8 @@ def _build_model_scorecard_html(
         baseline_rmse=model_scorecard.baseline_rmse,
         directional_hit_rate=model_scorecard.directional_hit_rate,
         folds=model_scorecard.folds,
+        metrics_symbol=model_scorecard.metrics_symbol,
+        n_samples=model_scorecard.metrics_n_samples,
     )
 
 

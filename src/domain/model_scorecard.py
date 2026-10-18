@@ -1,7 +1,7 @@
 # src/domain/model_scorecard.py
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -9,13 +9,19 @@ from enum import Enum
 # Karta kondycji modelu — czysta domena eksponująca dowód rzetelności retreningu.
 # Repo shipuje model tylko, jeśli bije naiwny baseline persystencji („zwrot=0"),
 # ale ta bramka jest niewidzialna dla użytkownika. Ten moduł liczy procentową
-# poprawę względem baseline'u, ocenia świeżość modelu i agreguje PER-SYMBOL
-# przebieg treningu (~43 przebiegi nadpisują jeden `.ubj`) w uczciwy obraz:
-# „zaakceptowano N, odrzucono M, pominięto K". Bez I/O, bez importów z application.
+# poprawę względem baseline'u, ocenia świeżość modelu i agreguje wiersze
+# NAJNOWSZEGO przebiegu treningu (ewaluacje per symbol + model wspólny „ALL")
+# w uczciwy obraz: „zaakceptowano N, odrzucono M, pominięto K". Bez I/O, bez
+# importów z application.
 
 # Model starszy niż tyle dni traktujemy jako nieświeży (STALE). Próg zamrożony
 # jako stała modułu — pojedyncze źródło prawdy dla reguły świeżości.
 MODEL_STALE_AFTER_DAYS = 21
+
+# Wiersze jednego przebiegu Slow Loopa dzielą minuty; kolejne przebiegi — tydzień.
+# Przerwa dłuższa niż ta granica zaczyna poprzedni przebieg (ML-03). Ręczny re-run
+# tego samego dnia skleja się z cronem — rozdzieli je dopiero `run_id` (ML-24).
+RUN_MAX_GAP = timedelta(hours=2)
 
 # Zastrzeżenie do copy sekcji „trust". Spec mówi wprost: sekcja bez tej noty
 # sama byłaby nieuczciwa. Metryki dotyczą KANDYDATA na foldach walk-forward,
@@ -97,6 +103,29 @@ class RunSummary:
     rejected: int
     skipped: int
     summary_line: str
+
+
+def latest_run_indices(
+    stamps: Sequence[datetime | None], max_gap: timedelta = RUN_MAX_GAP
+) -> list[int]:
+    """Indeksy (rosnąco) wierszy należących do najnowszego przebiegu treningu.
+
+    Idąc od najnowszego znacznika wstecz, przebieg kończy się na pierwszej
+    przerwie między sąsiednimi wierszami dłuższej niż `max_gap`. Kolejność
+    wejścia nie ma znaczenia; wiersze bez znacznika (`None`) są pomijane.
+    """
+    dated = sorted(
+        ((stamp, idx) for idx, stamp in enumerate(stamps) if stamp is not None),
+        reverse=True,
+    )
+    run: list[int] = []
+    previous: datetime | None = None
+    for stamp, idx in dated:
+        if previous is not None and previous - stamp > max_gap:
+            break
+        run.append(idx)
+        previous = stamp
+    return sorted(run)
 
 
 def summarize_run(

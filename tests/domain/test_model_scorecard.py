@@ -3,11 +3,13 @@ from datetime import datetime, timedelta
 from src.domain.model_scorecard import (
     METRIC_NOTE,
     MODEL_STALE_AFTER_DAYS,
+    RUN_MAX_GAP,
     RunSummary,
     TrainingOutcome,
     classify_status,
     improvement_pct,
     is_stale,
+    latest_run_indices,
     summarize_run,
 )
 
@@ -149,3 +151,39 @@ class TestMetricNote:
         assert "KANDYDATA" in METRIC_NOTE or "kandydata" in METRIC_NOTE
         assert "walk-forward" in METRIC_NOTE
         assert "refit" in METRIC_NOTE.lower()
+
+
+class TestLatestRunIndices:
+    """ML-03: „przebieg" to wiersze najnowszego treningu, nie całe okno 30 dni —
+    inaczej karta sklejała 4–5 tygodniowych przebiegów w jeden."""
+
+    def test_cuts_at_the_first_gap_longer_than_two_hours(self):
+        latest = datetime(2026, 10, 11, 3, 30)
+        stamps = [
+            latest,
+            latest - timedelta(minutes=20),
+            latest - timedelta(days=7),
+            latest - timedelta(days=7, minutes=10),
+        ]
+
+        assert latest_run_indices(stamps) == [0, 1]
+        assert timedelta(hours=2) == RUN_MAX_GAP
+
+    def test_order_of_input_rows_does_not_matter(self):
+        latest = datetime(2026, 10, 11, 3, 30)
+        stamps = [latest - timedelta(days=7), latest, latest - timedelta(minutes=5)]
+
+        assert latest_run_indices(stamps) == [1, 2]
+
+    def test_gap_is_measured_between_neighbouring_rows(self):
+        # Długi przebieg (45 symboli) nie jest cięty, póki kolejne wiersze dzieli < 2h.
+        latest = datetime(2026, 10, 11, 6, 0)
+        stamps = [latest - timedelta(minutes=90 * i) for i in range(4)]
+
+        assert latest_run_indices(stamps) == [0, 1, 2, 3]
+
+    def test_rows_without_timestamp_are_left_out(self):
+        latest = datetime(2026, 10, 11, 3, 30)
+
+        assert latest_run_indices([None, latest]) == [1]
+        assert latest_run_indices([None]) == []

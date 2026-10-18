@@ -218,6 +218,62 @@ class TestBuildScorecardView:
         # Bez daty treningu nie da się orzec o świeżości → sekcja się chowa.
         assert build_scorecard_view([{"symbol": "AAPL", "status": "x"}]) is None
 
+    def test_counts_only_the_latest_training_run(self) -> None:
+        # ML-03: okno 30 dni niesie kilka tygodniowych przebiegów; karta liczyła
+        # je razem („zaakceptowano 2 z 4"), choć ostatni trening miał 2 wiersze.
+        rows = [
+            {"symbol": "AAPL", "status": "trained_successfully",
+             "timestamp": "2026-10-11T03:40:00+00:00"},
+            {"symbol": "MSFT", "status": "skipped_validation_failed",
+             "timestamp": "2026-10-11T03:35:00+00:00"},
+            {"symbol": "AAPL", "status": "trained_successfully",
+             "timestamp": "2026-10-04T03:40:00+00:00"},
+            {"symbol": "MSFT", "status": "skipped_validation_failed",
+             "timestamp": "2026-10-04T03:35:00+00:00"},
+        ]
+
+        view = build_scorecard_view(rows)
+
+        assert view is not None
+        assert view.summary.total == 2
+        assert view.summary.accepted == 1
+
+    def test_metrics_come_from_the_newest_accepted_row_with_its_symbol_and_n(self) -> None:
+        # Najnowszy wiersz z metrykami to odrzucony kandydat MSFT — dawniej karta
+        # pokazywała jego RMSE bez nazwy, jakby to był wdrożony model.
+        rows = [
+            {"symbol": "MSFT", "status": "skipped_validation_failed",
+             "timestamp": "2026-10-11T03:45:00+00:00",
+             "candidate_holdout_rmse": 0.030, "baseline_rmse": 0.025,
+             "n_folds": 4, "n_samples": 80},
+            {"symbol": "ALL", "status": "trained_successfully",
+             "timestamp": "2026-10-11T03:40:00+00:00",
+             "candidate_holdout_rmse": 0.021, "baseline_rmse": 0.024,
+             "candidate_holdout_directional_hit_rate": 0.58,
+             "n_folds": 4, "n_samples": 243},
+        ]
+
+        view = build_scorecard_view(rows)
+
+        assert view is not None
+        assert view.candidate_rmse == 0.021
+        assert view.metrics_symbol == "ALL"
+        assert view.metrics_n_samples == 243
+
+    def test_rejected_only_run_still_names_the_candidate(self) -> None:
+        rows = [
+            {"symbol": "ALL", "status": "skipped_validation_failed",
+             "timestamp": "2026-10-11T03:45:00+00:00",
+             "candidate_holdout_rmse": 0.030, "baseline_rmse": 0.025, "n_samples": 243},
+        ]
+
+        view = build_scorecard_view(rows)
+
+        assert view is not None
+        assert view.candidate_rmse == 0.030
+        assert view.metrics_symbol == "ALL"
+        assert view.metrics_n_samples == 243
+
 
 class TestColdStartHonesty:
     """MAIL-01 (G03): bez załadowanego modelu nie ma "sprawdzonego modelu", na
@@ -238,3 +294,32 @@ class TestColdStartHonesty:
         html = render_model_scorecard_html(summary, trained_at=_FRESH, now=_NOW, model_loaded=False)
         assert "Brak wytrenowanego modelu" in html
         assert "cold-start" in html
+
+
+class TestMetricsProvenance:
+    """ML-03: metryki kandydata podpisane symbolem i liczbą próbek."""
+
+    def test_html_names_the_symbol_and_sample_size(self) -> None:
+        html = render_model_scorecard_html(
+            _summary(1, 0, 0), trained_at=_FRESH, now=_NOW,
+            candidate_rmse=0.021, baseline_rmse=0.024,
+            metrics_symbol="ALL", n_samples=243,
+        )
+        assert "ALL" in html
+        assert "n=243" in html
+
+    def test_text_names_the_symbol_and_sample_size(self) -> None:
+        text = render_model_scorecard_text(
+            _summary(1, 0, 0), trained_at=_FRESH, now=_NOW,
+            candidate_rmse=0.021, baseline_rmse=0.024,
+            metrics_symbol="ALL", n_samples=243,
+        )
+        assert "ALL" in text
+        assert "n=243" in text
+
+    def test_symbol_is_escaped(self) -> None:
+        html = render_model_scorecard_html(
+            _summary(1, 0, 0), trained_at=_FRESH, now=_NOW,
+            candidate_rmse=0.021, baseline_rmse=0.024, metrics_symbol="<b>X</b>",
+        )
+        assert "<b>X</b>" not in html

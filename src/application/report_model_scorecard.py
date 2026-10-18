@@ -31,6 +31,7 @@ from src.domain.model_scorecard import (
     RunSummary,
     improvement_pct,
     is_stale,
+    latest_run_indices,
     summarize_run,
 )
 
@@ -66,6 +67,16 @@ _COLD_START_NOTICE = (
 )
 
 
+def _provenance(metrics_symbol: str | None, n_samples: int | None) -> str:
+    """Podpis metryk: którego kandydata dotyczą i na ilu próbkach (ML-03)."""
+    bits: list[str] = []
+    if metrics_symbol:
+        bits.append(metrics_symbol)
+    if n_samples is not None:
+        bits.append(f"n={n_samples}")
+    return ", ".join(bits)
+
+
 def _model_notice(summary: RunSummary, *, model_loaded: bool) -> str:
     """Jawny komunikat o stanie modelu albo "" gdy nie ma czego zgłaszać.
 
@@ -98,11 +109,14 @@ def render_model_scorecard_html(
     directional_hit_rate: float | None = None,
     folds: int | None = None,
     model_loaded: bool = True,
+    metrics_symbol: str | None = None,
+    n_samples: int | None = None,
 ) -> str:
     """Renderuje sekcję HTML karty kondycji modelu lub "" gdy brak danych.
 
     `now` jest wstrzykiwane — renderer nie woła zegara. Metryki kandydata są
-    opcjonalne (przebieg z samymi odrzutami/pominięciami może ich nie mieć).
+    opcjonalne (przebieg z samymi odrzutami/pominięciami może ich nie mieć);
+    `metrics_symbol` i `n_samples` podpisują, czyje to metryki.
     """
     if summary is None:
         return ""
@@ -132,12 +146,14 @@ def render_model_scorecard_html(
 
     if candidate_rmse is not None and baseline_rmse is not None:
         pct, color = _improvement(candidate_rmse, baseline_rmse)
+        provenance = _provenance(metrics_symbol, n_samples)
+        provenance_html = f" — {_html.escape(provenance)}" if provenance else ""
         rows.append(
             f"<div style='font-size: 12px; color: #374151; margin-bottom: 4px;'>"
             f"RMSE kandydata <strong>{candidate_rmse:.4f}</strong> vs baseline "
             f"<strong>{baseline_rmse:.4f}</strong> "
             f"(<span style='color: {color}; font-weight: 700;'>{pct:+.1f}%</span>)"
-            f"</div>"
+            f"{provenance_html}</div>"
         )
 
     metric_bits: list[str] = []
@@ -177,6 +193,8 @@ def render_model_scorecard_text(
     directional_hit_rate: float | None = None,
     folds: int | None = None,
     model_loaded: bool = True,
+    metrics_symbol: str | None = None,
+    n_samples: int | None = None,
 ) -> str:
     """Renderuje sekcję plain-text karty kondycji modelu lub "" gdy brak danych."""
     if summary is None:
@@ -196,9 +214,11 @@ def render_model_scorecard_text(
 
     if candidate_rmse is not None and baseline_rmse is not None:
         pct, _ = _improvement(candidate_rmse, baseline_rmse)
+        provenance = _provenance(metrics_symbol, n_samples)
         lines.append(
             f"  RMSE kandydata {candidate_rmse:.4f} vs baseline "
             f"{baseline_rmse:.4f} ({pct:+.1f}%)"
+            + (f" — {provenance}" if provenance else "")
         )
 
     metric_bits: list[str] = []
@@ -216,7 +236,10 @@ def render_model_scorecard_text(
 
 @dataclass(frozen=True)
 class ModelScorecardView:
-    """Widok sekcji: zagregowany przebieg + metryki ostatniego kandydata."""
+    """Widok sekcji: zagregowany przebieg + metryki ostatniego kandydata.
+
+    `metrics_symbol` / `metrics_n_samples` mówią, z którego wiersza pochodzą
+    metryki (np. `ALL` — model wspólny) i na ilu próbkach go oceniono."""
 
     summary: RunSummary
     trained_at: datetime
@@ -224,6 +247,8 @@ class ModelScorecardView:
     baseline_rmse: float | None = None
     directional_hit_rate: float | None = None
     folds: int | None = None
+    metrics_symbol: str | None = None
+    metrics_n_samples: int | None = None
 
 
 def _parse_timestamp(raw: object) -> datetime | None:
@@ -235,30 +260,51 @@ def _parse_timestamp(raw: object) -> datetime | None:
         return None
 
 
-def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | None:
-    """Składa widok z surowych wierszy `model_scorecards` (najnowsze pierwsze).
+def _newest_metrics_row(
+    run: list[tuple[datetime, dict[str, Any]]],
+) -> dict[str, Any] | None:
+    """Najnowszy wdrożony kandydat z metrykami, a gdy go brak — najnowszy wiersz
+    z metrykami (odrzucony kandydat też ma swoje RMSE, tylko podpisane)."""
+    with_metrics = [
+        (stamp, row) for stamp, row in run if row.get("candidate_holdout_rmse") is not None
+    ]
+    accepted = [
+        pair for pair in with_metrics if pair[1].get("status") == "trained_successfully"
+    ]
+    for candidates in (accepted, with_metrics):
+        if candidates:
+            return max(candidates, key=lambda pair: pair[0])[1]
+    return None
 
-    Agreguje CAŁY przebieg (trening leci per-symbol, ~43 wiersze na run), a
-    metryki bierze z najnowszego wiersza, który je niesie. Odrzucony kandydat
-    nie musi mieć metryk — sekcja i tak renderuje rozbicie przebiegu.
+
+def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | None:
+    """Składa widok z surowych wierszy `model_scorecards`.
+
+    Agreguje wyłącznie NAJNOWSZY przebieg (`latest_run_indices`, ML-03) — okno
+    odczytu niesie kilka tygodniowych przebiegów, które dawniej się sklejały.
+    Metryki bierze z najnowszego wdrożonego kandydata tego przebiegu (albo z
+    najnowszego wiersza z metrykami) i podpisuje je symbolem oraz liczbą próbek.
     Brak wierszy albo brak dającej się sparsować daty → None (sekcja się chowa).
     """
-    if not rows:
+    stamps = [_parse_timestamp(r.get("timestamp")) for r in rows]
+    run: list[tuple[datetime, dict[str, Any]]] = []
+    for idx in latest_run_indices(stamps):
+        stamp = stamps[idx]
+        if stamp is not None:
+            run.append((stamp, rows[idx]))
+    if not run:
         return None
-    stamps = [ts for ts in (_parse_timestamp(r.get("timestamp")) for r in rows) if ts]
-    if not stamps:
-        return None
-    summary = summarize_run([str(r.get("status", "")) for r in rows])
-    metrics = next(
-        (r for r in rows if r.get("candidate_holdout_rmse") is not None), None
-    )
+    summary = summarize_run([str(row.get("status", "")) for _, row in run])
+    metrics = _newest_metrics_row(run)
     return ModelScorecardView(
         summary=summary,
-        trained_at=max(stamps),
+        trained_at=max(stamp for stamp, _ in run),
         candidate_rmse=metrics.get("candidate_holdout_rmse") if metrics else None,
         baseline_rmse=metrics.get("baseline_rmse") if metrics else None,
         directional_hit_rate=(
             metrics.get("candidate_holdout_directional_hit_rate") if metrics else None
         ),
         folds=metrics.get("n_folds") if metrics else None,
+        metrics_symbol=str(metrics["symbol"]) if metrics and metrics.get("symbol") else None,
+        metrics_n_samples=metrics.get("n_samples") if metrics else None,
     )
