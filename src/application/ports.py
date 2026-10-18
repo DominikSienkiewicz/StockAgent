@@ -91,7 +91,7 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def get_unverified_prediction(
-        self, symbol: str, min_age_hours: int = 0
+        self, symbol: str, min_age_hours: int = 0, max_age_hours: int | None = None
     ) -> Prediction | None:
         """NAJSTARSZA nierozliczona predykcja (bez rzeczywistej ceny), starsza
         niż `min_age_hours`. Oldest-first, by drenować zaległości — inaczej
@@ -101,7 +101,12 @@ class RepositoryPort(ABC):
         (timestamp ≤ now − min_age_hours). Chroni przed przedwczesną oceną:
         gdy ręczny `workflow_dispatch` nałoży się na scheduled run, świeżo
         zapisana predykcja nie zostanie oceniona po cenie sprzed kilku minut
-        (co zatruwałoby accuracy_score i zawyżało hit-rate raportu)."""
+        (co zatruwałoby accuracy_score i zawyżało hit-rate raportu).
+
+        `max_age_hours` > 0 → pomija predykcje starsze niż próg (timestamp ≥
+        now − max_age_hours; WIA-04). Po przerwie predykcja sprzed tygodni nie
+        jest oceniana bieżącą ceną jak „12h”; zostaje nierozliczona (NULL) i
+        nie wchodzi do hit-rate ani ml_feature_store. None = bez granicy."""
 
     @abstractmethod
     def update_prediction_accuracy(

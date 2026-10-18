@@ -212,7 +212,7 @@ class SupabaseRepository(RepositoryPort):
         return Money(Decimal(str(rows[0]["price_at_prediction"])))
 
     def get_unverified_prediction(
-        self, symbol: str, min_age_hours: int = 0
+        self, symbol: str, min_age_hours: int = 0, max_age_hours: int | None = None
     ) -> Prediction | None:
         query = (
             self._client.table(self._table)
@@ -226,6 +226,11 @@ class SupabaseRepository(RepositoryPort):
         if min_age_hours > 0:
             cutoff = datetime.now(UTC) - timedelta(hours=min_age_hours)
             query = query.lte("timestamp", cutoff.isoformat())
+        # WIA-04: dolna granica znacznika czasu — predykcji sprzed tygodni nie
+        # oceniamy bieżącą ceną. Bez granicy (None) zachowanie bez zmian.
+        if max_age_hours is not None and max_age_hours > 0:
+            oldest = datetime.now(UTC) - timedelta(hours=max_age_hours)
+            query = query.gte("timestamp", oldest.isoformat())
         # ASC (oldest-first) — #19: opróżniamy backlog, rozliczając NAJSTARSZĄ
         # nierozliczoną predykcję, która przekroczyła próg min_age_hours. Przy
         # DESC starsze nierozliczone predykcje nigdy nie stałyby się znów

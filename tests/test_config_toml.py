@@ -39,6 +39,13 @@ def test_real_config_toml_parses_and_has_expected_invariants() -> None:
         assert secret not in data, f"sekret {secret} w config.toml!"
 
 
+def test_real_config_toml_bounds_reflection_settlement_age() -> None:
+    """WIA-04: produkcja rozlicza predykcje w oknie 6 h – 96 h."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["reflection_min_age_hours"] == 6
+    assert data["reflection_max_age_hours"] == 96
+
+
 def test_settings_reads_non_secret_from_toml(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -231,6 +231,44 @@ class TestResilienceSettings:
         settings = Settings(_env_file=None)
         assert settings.reflection_min_age_hours == 12
 
+    def test_reflection_max_age_hours_default_bounds_settlement_age(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        # WIA-04: 96 h obejmuje weekend (piątek → poniedziałek ≈ 72 h) z zapasem,
+        # a predykcja sprzed tygodni nie jest już rozliczana bieżącą ceną.
+        settings = Settings(_env_file=None)
+        assert settings.reflection_max_age_hours == 96
+
+    def test_reflection_max_age_hours_reads_env(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("REFLECTION_MAX_AGE_HOURS", "120")
+        settings = Settings(_env_file=None)
+        assert settings.reflection_max_age_hours == 120
+
+    def test_reflection_max_age_zero_disables_the_bound(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("REFLECTION_MAX_AGE_HOURS", "0")
+        settings = Settings(_env_file=None)
+        assert settings.reflection_max_age_hours == 0
+
+    def test_reflection_max_age_must_exceed_min_age(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        # Okno (min, max] puste → reflect nigdy niczego by nie rozliczył.
+        env.setenv("REFLECTION_MIN_AGE_HOURS", "6")
+        env.setenv("REFLECTION_MAX_AGE_HOURS", "6")
+        with pytest.raises(ValueError, match="reflection_max_age_hours"):
+            Settings(_env_file=None)
+
+    def test_reflection_max_age_negative_rejected(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("REFLECTION_MAX_AGE_HOURS", "-1")
+        with pytest.raises(ValueError, match="reflection_max_age_hours"):
+            Settings(_env_file=None)
+
 
 class TestCryptoSettings:
     def test_crypto_symbols_defaults_empty(

@@ -1957,6 +1957,31 @@ class TestBuildTrackRecord:
         ]
 
 
+class TestReflectionAgeWindowWiring:
+    """WIA-04: `reflection_max_age_hours` z Settings trafia do AgentGraphDeps;
+    0 wyłącza granicę i wtedy deps dostają None (kwarg nie idzie do repo)."""
+
+    def test_build_use_case_passes_max_age_to_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings)
+
+        deps = use_case_cls.call_args.args[0]
+        assert deps.reflection_max_age_hours == 96
+
+    def test_zero_max_age_leaves_the_bound_off(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.reflection_max_age_hours = 0
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].reflection_max_age_hours is None
+
+
 class TestAlphaVantageNewsWindowWiring:
     """DAT-09: Fast Loop pyta AV o newsy z ostatnich 24 h (`time_from`), żeby
     `news_volume_24h` znaczyło to, co mówi nazwa — bez dodatkowych requestów."""

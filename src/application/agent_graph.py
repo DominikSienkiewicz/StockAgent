@@ -468,6 +468,9 @@ class AgentGraphDeps:
     crypto_threshold: Threshold | None = None
     crypto_council_threshold: Threshold | None = None
     reflection_min_age_hours: int = 0
+    # WIA-04: górna granica wieku rozliczanej predykcji. None = bez granicy
+    # (kwarg nie idzie do repozytorium — zachowanie sprzed WIA-04).
+    reflection_max_age_hours: int | None = None
     rag_outcome_weight: float = 0.0
     tool_use_port: ToolUseLLMPort | None = None
     research_tools: Sequence[Tool] = ()
@@ -617,9 +620,17 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     current_price = state["current_price"]
     # min_age_hours odsiewa predykcje zbyt świeże, by je rzetelnie ocenić
     # (nakładające się cykle: manualny dispatch + scheduled). 0 = bez filtra.
-    last = repository_port.get_unverified_prediction(
-        symbol, min_age_hours=reflection_min_age_hours
-    )
+    # max_age_hours (WIA-04) odsiewa predykcje zbyt stare — idzie tylko, gdy ustawione.
+    if deps.reflection_max_age_hours is None:
+        last = repository_port.get_unverified_prediction(
+            symbol, min_age_hours=reflection_min_age_hours
+        )
+    else:
+        last = repository_port.get_unverified_prediction(
+            symbol,
+            min_age_hours=reflection_min_age_hours,
+            max_age_hours=deps.reflection_max_age_hours,
+        )
 
     if last is None:
         return {"reflection_context": "Brak danych historycznych do oceny."}

@@ -816,6 +816,8 @@ def build_use_case(
         crypto_threshold=crypto_threshold,
         crypto_council_threshold=crypto_council_threshold,
         reflection_min_age_hours=settings.reflection_min_age_hours,
+        # 0 = bez granicy wieku → None, żeby repo nie dostało kwarga (WIA-04).
+        reflection_max_age_hours=settings.reflection_max_age_hours or None,
         rag_outcome_weight=settings.rag_outcome_weight,
         tool_use_port=tool_use_port,
         research_tools=research_tools,

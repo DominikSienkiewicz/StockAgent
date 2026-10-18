@@ -1184,6 +1184,32 @@ class TestVolatilityBelowThreshold:
             "AAPL", min_age_hours=6
         )
 
+    def test_reflect_passes_configured_max_age_to_repository(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        """WIA-04 (G09): górna granica wieku rozliczenia trafia z deps do repo —
+        po przerwie predykcja sprzed tygodni nie jest oceniana bieżącą ceną."""
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))
+        repository_port.get_unverified_prediction.return_value = None
+        workflow = create_agent_graph(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            reflection_min_age_hours=6,
+            reflection_max_age_hours=96,
+        ))
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        repository_port.get_unverified_prediction.assert_called_once_with(
+            "AAPL", min_age_hours=6, max_age_hours=96
+        )
+
 
 # ---------------------------------------------------------------------------
 # Threshold injection

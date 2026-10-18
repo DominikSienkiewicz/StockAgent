@@ -456,6 +456,63 @@ class TestGetUnverifiedPrediction:
         )
         lte.assert_not_called()
 
+    def test_max_age_hours_adds_timestamp_lower_bound(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """WIA-04 (G09): po przerwie reflect oceniał predykcję sprzed tygodni
+        bieżącą ceną, jakby to był horyzont „12h”. `max_age_hours` dokłada dolną
+        granicę znacznika czasu — starsze predykcje zostają nierozliczone."""
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "is_", "gte", "order", "limit"],
+            [],
+        )
+        before = datetime.now(UTC)
+
+        repo.get_unverified_prediction("AAPL", max_age_hours=96)
+
+        gte_call = (
+            mock_client.table.return_value.select.return_value.eq.return_value
+            .is_.return_value.gte
+        )
+        column, cutoff = gte_call.call_args.args
+        assert column == "timestamp"
+        expected = before - timedelta(hours=96)
+        assert abs(datetime.fromisoformat(cutoff) - expected) < timedelta(minutes=1)
+
+    def test_min_and_max_age_bound_the_window_from_both_sides(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "is_", "lte", "gte", "order", "limit"],
+            [],
+        )
+
+        repo.get_unverified_prediction("AAPL", min_age_hours=6, max_age_hours=96)
+
+        lte_builder = (
+            mock_client.table.return_value.select.return_value.eq.return_value
+            .is_.return_value.lte
+        )
+        assert lte_builder.call_args.args[0] == "timestamp"
+        assert lte_builder.return_value.gte.call_args.args[0] == "timestamp"
+
+    def test_no_lower_bound_without_max_age(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client, ["table", "select", "eq", "is_", "order", "limit"], []
+        )
+
+        repo.get_unverified_prediction("AAPL")
+
+        gte = (
+            mock_client.table.return_value.select.return_value.eq.return_value
+            .is_.return_value.gte
+        )
+        gte.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # update_prediction_accuracy

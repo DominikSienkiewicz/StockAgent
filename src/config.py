@@ -290,6 +290,13 @@ class Settings(BaseSettings):
     # Ustaw 0, by świadomie wyłączyć filtr (np. backtest / zachowanie wsteczne).
     reflection_min_age_hours: int = Field(default=6)
 
+    # WIA-04: maksymalny wiek (godziny) predykcji, którą reflect_node jeszcze
+    # rozlicza. Po przerwie w cronie predykcja sprzed tygodni byłaby oceniona
+    # bieżącą ceną jak „12h” — taka zostaje nierozliczona i wypada z hit-rate
+    # i ml_feature_store. 96 h = weekend (piątek → poniedziałek ≈ 72 h) z
+    # zapasem. 0 = bez granicy. Musi być większe niż reflection_min_age_hours.
+    reflection_max_age_hours: int = Field(default=96)
+
     # Waga wyniku w outcome-aware reranku analogów RAG (#9). 0.0 = sama
     # kolejność similarity (zachowanie wsteczne); >0 promuje analogi, których
     # prognoza realnie się sprawdziła. Produkcja: 0.3.
@@ -371,6 +378,24 @@ class Settings(BaseSettings):
         if not 0.0 < value < 1.0:
             raise ValueError(f"var_confidence must be in (0,1) (got {value})")
         return value
+
+    @field_validator("reflection_max_age_hours")
+    @classmethod
+    def _validate_reflection_max_age(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(f"reflection_max_age_hours must be >= 0, got {value}")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_reflection_age_window(self) -> Settings:
+        """Okno (min, max] puste → reflect nigdy niczego by nie rozliczył."""
+        max_age = self.reflection_max_age_hours
+        if max_age > 0 and max_age <= self.reflection_min_age_hours:
+            raise ValueError(
+                "reflection_max_age_hours must exceed reflection_min_age_hours "
+                f"({max_age} <= {self.reflection_min_age_hours}); 0 disables the bound"
+            )
+        return self
 
     @field_validator("track_record_days")
     @classmethod
