@@ -91,10 +91,14 @@ def build_delta_chart_html(results: list[SymbolResult]) -> str:
 def build_forecast_chart_html(results: list[SymbolResult]) -> str:
     """Fragment HTML: poziomy bar-chart prognozowanej zmiany ceny.
 
-    Bierze tylko symbole `saved` z policzalnym `expected_change`.
-    Brak takich symboli → "".
+    Bierze tylko symbole `saved` z policzalnym `expected_change` i prognozą
+    modelu — baseline cold-startu (+0.00%) nie jest prognozą. Brak takich → "".
     """
-    saved = [r for r in results if r.status == "saved" and r.expected_change is not None]
+    saved = [
+        r
+        for r in results
+        if r.status == "saved" and r.expected_change is not None and not r.ml_cold_start
+    ]
     if not saved:
         return ""
     saved_sorted = sorted(

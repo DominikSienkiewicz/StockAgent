@@ -48,7 +48,11 @@ def build_trade_signals(
     przepewny kubełek spada, uczciwy rośnie. Brak kubełków → funkcja domenowa
     zwraca surowe `raw` → zachowanie identyczne jak przed #9. Render-only, zero
     persystencji: kolumna `confidence_calibration` z migracji 016 ma INNĄ
-    semantykę (post-hoc score sędziego LLM) i nie wolno jej nadpisać."""
+    semantykę (post-hoc score sędziego LLM) i nie wolno jej nadpisać.
+
+    WIA-13: przy cold-starcie ML (`r.ml_cold_start`) prognozy ruchu nie ma, więc
+    `strength` = sama (skalibrowana) pewność. To inna skala niż pewność × ruch,
+    dlatego sygnały z prognozą modelu stoją w rankingu przed sygnałami cold-start."""
     signals: list[TradeSignal] = []
     for r in results:
         if r.status != "saved":
@@ -61,7 +65,7 @@ def build_trade_signals(
             else None
         )
         effective = r.confidence_score if calibrated is None else calibrated
-        strength = effective * float(abs(r.expected_change)) * 100
+        strength = effective if r.ml_cold_start else effective * float(abs(r.expected_change)) * 100
         signals.append(TradeSignal(
             symbol=r.symbol,
             direction=_trend_to_direction(r.trend),
@@ -72,8 +76,9 @@ def build_trade_signals(
             target_price=r.target_price,
             size_band=_size_band_for(r, hit_rate, portfolio_weights, cluster_exposures),
             calibrated_confidence=calibrated,
+            ml_cold_start=r.ml_cold_start,
         ))
-    signals.sort(key=lambda s: s.strength, reverse=True)
+    signals.sort(key=lambda s: (not s.ml_cold_start, s.strength), reverse=True)
     return signals[:top_n]
 
 

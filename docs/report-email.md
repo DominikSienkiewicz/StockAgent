@@ -8,7 +8,7 @@ The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallbac
 
 - 🕒 **NYSE session** — open / premarket / after-hours / weekend (`zoneinfo` America/New_York)
 - 📊 **Three summary boxes** — predictions / ignored / errors
-- 🎯 **Strongest signals** — top BUY/SELL, colour-coded (priority 1: actionable)
+- 🎯 **Strongest signals** — top BUY/SELL, colour-coded (priority 1: actionable); ranked by confidence alone, and labelled so, while the ML model is on cold start
 - 🚨 **Warning signals** — divergence + AV/LLM conflict + low signal
 - 📊 **Portfolio mood** — average sentiment, most positive/negative, high-confidence count
 - 📊 **Closed predictions (24h)** — full **post-mortem** per resolved prediction (stocks **and** crypto): the original thesis (*why up/down* — `reasoning_text`), the actual move (`$A → $B (+C%)`), the ✅ Trafiona / ❌ Błędna verdict, and **why** (the `reflect` diagnosis for misses, thesis-confirmed for hits). All from data already in `prediction_logs` — no extra LLM calls.
@@ -18,7 +18,7 @@ The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallbac
 - 🧠 **Self-Reflection** — lessons learned per symbol (purple box)
 - 🔮 **Predictions table** — price · Δ (per cycle) · trend · forecast (next cycle) `+X.YZ%` (`— (ML: cold-start)` while XGBoost has no trained weights, instead of presenting the no-change baseline as a `+0.00%` forecast) · confidence · sentiment · news count. Each row is tagged with its **sector** next to the company name (stocks → Polish sector e.g. `Cyberbezpieczeństwo`, ETFs → `ETF`, crypto → `Krypto`); mapping in `report_formatting.SECTORS`.
 - 💡 **Worth a look (sectors in motion)** — peer suggestions computed **from the current cycle only, zero extra API calls**: when a stock sector runs hot (its strongest monitored move `|Δ| ≥ 3%` or mean `|sentiment| ≥ 0.3`), the report suggests notable peers in that sector you don't yet monitor (curated `report_formatting.PEERS`), e.g. *Cyberbezpieczeństwo gorące (CRWD +6.0%, PANW +4.2%) — rozważ: ZS, FTNT, CYBR*. Top 3 sectors, 3 peers each; section hidden when nothing is hot.
-- 📈 **Forecast chart** — inline div bars
+- 📈 **Forecast chart** — inline div bars (model forecasts only; hidden on ML cold start)
 - 💡 **Reasoning** + 📰 **Top news** (clickable `<a href>` links to the original articles)
 - 📈 **Sentiment vs price correlation** (scatter plot)
 - ⏸ **Ignored** (chip list) + ⚠️ **Errors**

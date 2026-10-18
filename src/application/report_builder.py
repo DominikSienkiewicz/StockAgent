@@ -269,6 +269,11 @@ def _recommendation(r: SymbolResult) -> str:
 
 # G03: przy cold-starcie target == bieżąca cena, więc "+0.00%" udawałoby prognozę.
 _COLD_START_FORECAST = "— (ML: cold-start)"
+# WIA-13: przy cold-starcie siła sygnału to sama pewność — sekcja mówi to wprost.
+_SIGNALS_COLD_START_NOTE = (
+    "Model ML bez wag (cold-start): ranking wg pewności LLM, skalibrowanej historią, "
+    "gdy jest próbka — bez prognozy ruchu."
+)
 
 
 def _recommendation_reason_html(r: SymbolResult) -> str:
@@ -1033,6 +1038,11 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
     if not trade_signals:
         return ""
     parts = [_section_h2("🎯 Najsilniejsze sygnały")]
+    if any(sig.ml_cold_start for sig in trade_signals):
+        parts.append(
+            "<div style='font-size: 12px; color: #6b7280; margin-bottom: 8px;'>"
+            f"{_html(_SIGNALS_COLD_START_NOTE)}</div>"
+        )
     for sig in trade_signals:
         dir_color = {
             "KUP": "#16a34a",
@@ -1044,7 +1054,14 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
             "SPRZEDAJ": "#fef2f2",
             "OBSERWUJ": "#f9fafb",
         }[sig.direction]
-        change_color = _delta_color(sig.expected_change)
+        forecast_html = (
+            f'<span style="color: #6b7280;">prognoza <strong>{_COLD_START_FORECAST}</strong></span>'
+            if sig.ml_cold_start
+            else (
+                f'<span style="color: {_delta_color(sig.expected_change)};">'
+                f"prognoza <strong>{_pct(sig.expected_change, signed=True)}</strong></span>"
+            )
+        )
         # Q7: pasmo wielkości pozycji (Kelly-lite z konsensusu rady + hit-rate).
         size_html = (
             f'<span style="color: #6b7280; font-size: 12px;">'
@@ -1063,9 +1080,7 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
                 <span style="color: #4b5563;">
                   pewność <strong>{sig.confidence * 100:.0f}%</strong>
                 </span>
-                <span style="color: {change_color};">
-                  prognoza <strong>{_pct(sig.expected_change, signed=True)}</strong>
-                </span>
+                {forecast_html}
                 {size_html}
                 <span style="color: #6b7280; margin-left: auto; font-size: 12px;">
                   siła sygnału: <strong>{sig.strength:.2f}</strong>
@@ -1520,12 +1535,17 @@ def _render_trade_signals_text(trade_signals: list[TradeSignal]) -> list[str]:
     if not trade_signals:
         return []
     lines = ["NAJSILNIEJSZE SYGNAŁY", "-" * 64]
+    if any(sig.ml_cold_start for sig in trade_signals):
+        lines.append(f"  {_SIGNALS_COLD_START_NOTE}")
     for sig in trade_signals:
         size_txt = f"  [{sig.size_band.label}]" if sig.size_band else ""
+        forecast = (
+            _COLD_START_FORECAST if sig.ml_cold_start else _pct(sig.expected_change, signed=True)
+        )
         lines.append(
             f"  {sig.direction:9s} {_company_label(sig.symbol):40s} "
             f"pewność {sig.confidence * 100:.0f}%  "
-            f"prognoza {_pct(sig.expected_change, signed=True):>8s}  "
+            f"prognoza {forecast:>8s}  "
             f"siła {sig.strength:.2f}{size_txt}"
         )
     lines.append("")
