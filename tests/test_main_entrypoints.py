@@ -1915,3 +1915,23 @@ class TestHonestTrackRecordWiring:
         repo.get_resolved_for_calibration.side_effect = Exception("supabase down")
 
         assert main_agent._build_track_record_stats(self._settings(), repo) is None
+
+
+class TestAlphaVantageNewsWindowWiring:
+    """DAT-09: Fast Loop pyta AV o newsy z ostatnich 24 h (`time_from`), żeby
+    `news_volume_24h` znaczyło to, co mówi nazwa — bez dodatkowych requestów."""
+
+    def test_build_use_case_bounds_news_feed_to_24h(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from datetime import timedelta
+
+        from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
+
+        client_cls = mocker.patch(
+            "main_agent.AlphaVantageClient", wraps=AlphaVantageClient
+        )
+
+        main_agent.build_use_case(settings)
+
+        assert client_cls.call_args.kwargs["news_window"] == timedelta(hours=24)

@@ -1,5 +1,6 @@
 """Testy `AlphaVantageClient` — wspólny klient dla News i Sentiment adapterów."""
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -684,3 +685,83 @@ class TestRateLimitRotationDoesNotSleep:
 
         assert sleep_mock.call_count == 1
         assert sleep_mock.call_args.args[0] >= 1.0
+
+
+class TestNewsWindow:
+    """`news_volume_24h` ma liczyć artykuły z ostatnich 24 h, a nie „ile
+    relevantnych wśród 50 najnowszych" (dla NVDA to godziny, dla IHI miesiące).
+
+    Okno idzie do AV jako `time_from` (ta sama liczba requestów — FinOps 0),
+    a filtr po `time_published` jest drugim bezpiecznikiem po stronie klienta."""
+
+    _NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+
+    @staticmethod
+    def _article(url: str, published: str) -> dict:
+        return {
+            "title": f"AAPL news {url}",
+            "url": url,
+            "time_published": published,
+            "summary": "...",
+            "source": "Reuters",
+            "ticker_sentiment": [
+                {
+                    "ticker": "AAPL",
+                    "relevance_score": "0.9",
+                    "ticker_sentiment_score": "0.4",
+                },
+            ],
+        }
+
+    def _client(self) -> AlphaVantageClient:
+        return AlphaVantageClient(
+            api_keys=["av-test"],
+            symbols=["AAPL"],
+            news_window=timedelta(hours=24),
+            clock=lambda: self._NOW,
+        )
+
+    def test_fetch_sends_time_from_param(self, mocker):
+        mock_get = mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response({"feed": []}),
+        )
+
+        self._client().sentiment_for("AAPL")
+
+        params = mock_get.call_args.kwargs["params"]
+        # Format AV: YYYYMMDDTHHMM, okno = now − 24 h.
+        assert params["time_from"] == "20261017T1200"
+        assert params["sort"] == "LATEST"
+        assert mock_get.call_count == 1
+
+    def test_articles_older_than_window_are_dropped_from_volume(self, mocker):
+        payload = {
+            "feed": [
+                self._article("https://example.com/fresh", "20261018T090000"),
+                self._article("https://example.com/edge", "20261017T120000"),
+                self._article("https://example.com/stale", "20261016T090000"),
+            ]
+        }
+        mocker.patch("requests.Session.get", return_value=_ok_response(payload))
+        client = self._client()
+
+        sentiment = client.sentiment_for("AAPL")
+        urls = [a["url"] for a in client.articles_for("AAPL")]
+
+        assert sentiment["news_volume_24h"] == 2
+        assert urls == ["https://example.com/fresh", "https://example.com/edge"]
+
+    def test_article_without_parsable_timestamp_is_dropped(self, mocker):
+        payload = {
+            "feed": [
+                self._article("https://example.com/fresh", "20261018T090000"),
+                self._article("https://example.com/broken", "yesterday"),
+            ]
+        }
+        mocker.patch("requests.Session.get", return_value=_ok_response(payload))
+
+        sentiment = self._client().sentiment_for("AAPL")
+
+        # Bez znacznika czasu nie da się wykazać, że artykuł jest z okna.
+        assert sentiment["news_volume_24h"] == 1

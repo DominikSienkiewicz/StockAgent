@@ -103,7 +103,7 @@ from src.infrastructure.adapters.alpha_vantage_adapters import (
     AlphaVantageNewsAdapter,
     AlphaVantageSentimentAdapter,
 )
-from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
+from src.infrastructure.adapters.alpha_vantage_client import NEWS_WINDOW, AlphaVantageClient
 from src.infrastructure.adapters.cached_fundamentals import (
     CachedFundamentalsAdapter,
     NullFundamentalsAdapter,
@@ -746,6 +746,8 @@ def build_use_case(
         symbols=all_av_symbols,
         crypto_symbols=settings.crypto_symbols,
         quota_monitor=quota_monitor,
+        # `news_volume_24h` ma liczyć ostatnie 24 h, nie „50 najnowszych".
+        news_window=NEWS_WINDOW,
     )
     llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor)
     council_llm_port = build_council_llm_adapter(

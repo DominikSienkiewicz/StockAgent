@@ -11,8 +11,8 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Iterable
-from datetime import UTC, datetime
+from collections.abc import Callable, Iterable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.application.quota_monitor import QuotaMonitor
@@ -35,6 +35,14 @@ DEFAULT_BATCH_SIZE = 1
 INTER_REQUEST_DELAY_SECONDS = 1.1
 
 HIGH_RELEVANCE_BAR = 0.8
+
+# Okno, które obiecuje nazwa cechy `news_volume_24h`. Bez `time_from` AV zwraca
+# `limit` najnowszych artykułów z dowolnego okresu — dla NVDA to kilka godzin,
+# dla rzadko opisywanego ETF-u miesiące — więc licznik nie mierzył 24 h.
+NEWS_WINDOW = timedelta(hours=24)
+# Format parametru `time_from` w NEWS_SENTIMENT (minuty) i pola `time_published`.
+_TIME_FROM_FORMAT = "%Y%m%dT%H%M"
+_TIME_PUBLISHED_FORMAT = "%Y%m%dT%H%M%S"
 
 # Alpha Vantage akceptuje tylko alphanumeric + ':' '_' '-' (brak kropki!).
 # Symbole z kropką (np. CSPX.L = LSE notation) zostają pominięte z warning.
@@ -60,7 +68,13 @@ class AlphaVantageClient:
         batch_size: int = DEFAULT_BATCH_SIZE,
         crypto_symbols: Iterable[str] | None = None,
         quota_monitor: QuotaMonitor | None = None,
+        news_window: timedelta | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
+        """`news_window` ogranicza feed do artykułów nie starszych niż okno:
+        idzie do AV jako `time_from` (te same requesty) i jest powtórzone
+        filtrem po `time_published`. `None` = bez okna (dotychczasowe zachowanie).
+        """
         # Akceptujemy pojedynczy klucz (str) lub listę — rotacja przy rate-limit.
         if isinstance(api_keys, str):
             self._api_keys = [api_keys]
@@ -84,6 +98,11 @@ class AlphaVantageClient:
         # Indeks aktualnie używanego klucza — przesuwany przy rate-limit.
         self._active_key_idx = 0
         self._quota_monitor = quota_monitor
+        self._news_window = news_window
+        self._clock = clock if clock is not None else _utc_now
+        # Początek okna liczony RAZ na fetch — `time_from` i filtr muszą mieć tę
+        # samą granicę, inaczej artykuł z krawędzi wpadałby tylko do jednego.
+        self._window_start: datetime | None = None
         # Sygnał degradacji wystawiany na zewnątrz: gdy wszystkie klucze
         # zwróciły rate-limit, feed jest (potencjalnie) niekompletny. Bez
         # tego sygnału pusty feed wygląda identycznie jak "spokojny dzień".
@@ -142,6 +161,8 @@ class AlphaVantageClient:
             return self._fetch_locked()
 
     def _fetch_locked(self) -> list[dict[str, Any]]:
+        if self._news_window is not None:
+            self._window_start = self._clock() - self._news_window
         combined: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
         batches = [
@@ -263,14 +284,18 @@ class AlphaVantageClient:
         )
 
     def _fetch_batch(self, tickers: list[str], api_key: str) -> dict[str, Any]:
+        params = {
+            "function": "NEWS_SENTIMENT",
+            "tickers": ",".join(tickers),
+            "limit": str(self._limit),
+            "sort": "LATEST",
+            "apikey": api_key,
+        }
+        if self._window_start is not None:
+            params["time_from"] = self._window_start.strftime(_TIME_FROM_FORMAT)
         response = self._session.get(
             f"{self._base_url}/query",
-            params={
-                "function": "NEWS_SENTIMENT",
-                "tickers": ",".join(tickers),
-                "limit": str(self._limit),
-                "apikey": api_key,
-            },
+            params=params,
             timeout=self._timeout,
         )
         response.raise_for_status()
@@ -298,6 +323,8 @@ class AlphaVantageClient:
         wire_symbol = self._to_wire(symbol)
         out: list[dict[str, Any]] = []
         for item in self._fetch():
+            if not self._within_window(item):
+                continue
             ticker_data = self._ticker_block(item, wire_symbol)
             if ticker_data is None:
                 continue
@@ -353,6 +380,23 @@ class AlphaVantageClient:
     # Helpers
     # -----------------------------------------------------------------------
 
+    def _within_window(self, item: dict[str, Any]) -> bool:
+        """Drugi bezpiecznik okna: AV mógłby zignorować `time_from`.
+
+        Artykuł bez czytelnego `time_published` odpada — nie da się wykazać,
+        że jest z okna, a liczy się do cechy `news_volume_24h`."""
+        if self._window_start is None:
+            return True
+        published = _parse_time_published(item.get("time_published"))
+        if published is None:
+            logger.warning(
+                "Alpha Vantage article without parsable time_published (%r) — "
+                "dropped from the news window.",
+                item.get("time_published"),
+            )
+            return False
+        return published >= self._window_start
+
     @staticmethod
     def _ticker_block(item: dict[str, Any], symbol: str) -> dict[str, float] | None:
         for ts in item.get("ticker_sentiment", []) or []:
@@ -364,6 +408,18 @@ class AlphaVantageClient:
                     }
                 except (TypeError, ValueError):
                     return None
+        return None
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _parse_time_published(raw: object) -> datetime | None:
+    """`20261018T093000` (czas UTC wg AV) → aware datetime; None gdy nieczytelny."""
+    try:
+        return datetime.strptime(str(raw), _TIME_PUBLISHED_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
         return None
 
 
