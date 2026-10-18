@@ -123,6 +123,9 @@ DEFAULT_STRESS_SCENARIOS: tuple[Scenario, ...] = (
 
 ACCURACY_STATS_DAYS = 30
 RESOLVED_PREDICTIONS_HOURS = 24
+# NIEZ-01: banner alertów kwot sięga tydzień + 3 h wstecz, żeby niedzielny CRITICAL
+# ze Slow Loopa (cron raz w tygodniu) był w najbliższym mailu, a nie znikał po 24 h.
+QUOTA_ALERT_LOOKBACK_HOURS = 7 * 24 + 3
 # Okno track recordu person (#3) — 90 dni, tak jak domyślne okno RPC z migracji
 # 018. Dłuższe niż okno accuracy: hit-rate per persona potrzebuje próbki.
 PERSONA_TRACK_RECORD_DAYS = 90
@@ -352,6 +355,7 @@ def _dispatch_push_digest(
     started_at: datetime,
     resolved: list[ResolvedPrediction],
     subject: str,
+    email_delivered: bool = True,
 ) -> None:
     """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
 
@@ -361,7 +365,9 @@ def _dispatch_push_digest(
     Best-effort: błąd kanału nie może wywalić cyklu.
     """
     try:
-        digest = build_messenger_digest(results, started_at, resolved)
+        digest = build_messenger_digest(
+            results, started_at, resolved, email_delivered=email_delivered
+        )
         push_notifier.send_report(
             subject=subject, html_body=digest, plain_text=digest
         )
@@ -1428,6 +1434,15 @@ def _build_track_record(
     return equity_curve, calibration_buckets, lessons
 
 
+def _persist_quota_alerts(repository: RepositoryPort, alerts: list[QuotaAlert]) -> None:
+    """Zapis alertów kwot, każdy osobno — błąd jednego nie gubi pozostałych."""
+    for alert in alerts:
+        try:
+            repository.save_quota_alert(alert)
+        except Exception:
+            logger.exception("Failed to persist quota alert from %s", alert.source)
+
+
 def _fetch_report_context(
     repository: RepositoryPort, quota_monitor: QuotaMonitor, all_symbols: list[str]
 ) -> tuple[
@@ -1438,7 +1453,7 @@ def _fetch_report_context(
     list[PersonaTrackRecord],
 ]:
     """Best-effort dociągnięcie danych do raportu: accuracy, zamknięte predykcje,
-    alerty kwot (persystencja bieżących + odczyt 24h), historia głosów rady
+    alerty kwot (persystencja bieżących + odczyt z ostatniego tygodnia), historia głosów rady
     i ranking wiarygodności person.
     Każdy odczyt osobno owinięty — błąd jednego nie blokuje pozostałych."""
     accuracy_stats: dict[str, Any] | None = None
@@ -1456,14 +1471,10 @@ def _fetch_report_context(
         logger.exception("Failed to fetch resolved predictions")
 
     # Persystencja alertów z BIEŻĄCEGO cyklu (przed odczytem history, żeby też
-    # tu trafiły) + odczyt z ostatnich 24h dla bannera.
-    for alert in quota_monitor.alerts:
-        try:
-            repository.save_quota_alert(alert)
-        except Exception:
-            logger.exception("Failed to persist quota alert from %s", alert.source)
+    # tu trafiły) + odczyt z okna bannera.
+    _persist_quota_alerts(repository, quota_monitor.alerts)
     try:
-        recent_alerts = repository.get_recent_quota_alerts(hours=24)
+        recent_alerts = repository.get_recent_quota_alerts(hours=QUOTA_ALERT_LOOKBACK_HOURS)
     except Exception:
         logger.exception("Failed to fetch recent quota alerts — using cycle-only")
         recent_alerts = list(quota_monitor.alerts)
@@ -1519,6 +1530,10 @@ def _dispatch_reports(
     radar portfela, alfa, koszt cyklu); resztę pól dokłada ta funkcja z odczytów
     repozytorium. Wcześniej te same wartości szły tędy jako osobne argumenty
     tylko po to, by wylądować w wywołaniu `build_html_report`."""
+    # NIEZ-03: alerty do tego miejsca zapisuje `_fetch_report_context`; te, które
+    # powstaną później (np. Resend przy samej wysyłce), dopisuje `finally`.
+    persisted_alerts = len(quota_monitor.alerts)
+    email_delivered = True
     try:
         (
             accuracy_stats,
@@ -1621,8 +1636,14 @@ def _dispatch_reports(
                     )
                 except Exception:
                     logger.exception("Failed to send digest to %s", sub.email)
+                    email_delivered = False
         else:
-            notifier.send_report(subject=subject, html_body=html, plain_text=text)
+            # NIEZ-02: wyjątek Resend nie może wyciąć scorecardu, sweepu i pusha.
+            try:
+                notifier.send_report(subject=subject, html_body=html, plain_text=text)
+            except Exception:
+                logger.exception("Failed to send the email digest — dalsze kroki idą")
+                email_delivered = False
 
         # #10: publiczny scorecard — osobny publisher, osobna ścieżka.
         _publish_public_scorecard(
@@ -1643,9 +1664,12 @@ def _dispatch_reports(
                 started_at=started_at,
                 resolved=resolved,
                 subject=subject,
+                email_delivered=email_delivered,
             )
     except Exception:
         logger.exception("Failed to send report")
+    finally:
+        _persist_quota_alerts(repository, quota_monitor.alerts[persisted_alerts:])
 
 
 def main(settings: Settings | None = None) -> int:

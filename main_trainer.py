@@ -70,17 +70,20 @@ def _refresh_fundamentals_cache(
 
 
 def _persist_quota_alerts(
-    supabase_repo: SupabaseRepository, quota_monitor: QuotaMonitor
-) -> None:
-    """Persystencja alertów kwoty zebranych podczas odświeżania fundamentów
-    (np. wyczerpany dzienny limit AV) — banner w mailu czyta ostatnie 24h,
-    więc wyczerpanie limitu w Slow Loop będzie widoczne w najbliższym raporcie.
+    supabase_repo: SupabaseRepository, quota_monitor: QuotaMonitor, start: int = 0
+) -> int:
+    """Persystencja alertów kwoty od pozycji `start` (np. wyczerpany limit AV przy
+    fundamentach, Resend przy recapie). Banner w mailu sięga tydzień wstecz
+    (`QUOTA_ALERT_LOOKBACK_HOURS`), więc alert z niedzieli trafi do najbliższego
+    raportu. Zwraca liczbę alertów już zapisanych — kolejne wywołanie zaczyna od niej.
     """
-    for alert in quota_monitor.alerts:
+    alerts = quota_monitor.alerts
+    for alert in alerts[start:]:
         try:
             supabase_repo.save_quota_alert(alert)
         except Exception:
             logger.exception("Failed to persist quota alert from %s", alert.source)
+    return len(alerts)
 
 
 def _persist_model_scorecard(
@@ -192,7 +195,7 @@ def main(settings: Settings | None = None) -> int:
         return 1
 
     _refresh_fundamentals_cache(settings, supabase_repo, quota_monitor)
-    _persist_quota_alerts(supabase_repo, quota_monitor)
+    persisted_alerts = _persist_quota_alerts(supabase_repo, quota_monitor)
 
     # BUG: trener widział tylko `settings.symbols`, więc BTC/ETH NIGDY nie
     # przechodziły retrainu — model krypto zostawał na zawsze przy cold-starcie.
@@ -205,6 +208,9 @@ def main(settings: Settings | None = None) -> int:
 
     if settings.weekly_recap_enabled:
         _send_weekly_recap(settings, supabase_repo, quota_monitor)
+
+    # NIEZ-03: alerty z sędziego i recapu (LLM, Resend) powstają po pierwszym zapisie.
+    _persist_quota_alerts(supabase_repo, quota_monitor, start=persisted_alerts)
 
     logger.info("Slow Loop done — failures=%d/%d", failures, len(trainable))
     return 1 if failures else 0

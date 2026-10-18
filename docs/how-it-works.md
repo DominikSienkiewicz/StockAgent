@@ -90,9 +90,9 @@ Every adapter that has a paid / metered quota writes a `QuotaAlert` to a shared 
 | `OpenAIAdapter` | `WARNING` when 429 was retried but eventually succeeded (you're at the TPM edge). `CRITICAL` when retries are exhausted and the call failed. Source field includes the model: `OpenAI (gpt-5-mini)`. |
 | `AnthropicAdapter` (default main LLM) | Same retry/backoff as OpenAI on 429 / 5xx / 529 (Overloaded) / connection errors. `WARNING` after a successful retry, `CRITICAL` when retries are exhausted. Source field includes the model: `Anthropic (claude-sonnet-4-6)`. |
 | `FinnhubAdapter` | `CRITICAL` on 429 (free tier 60 req/min hit). |
-| `ResendNotifier` | `CRITICAL` on 429 (free 100 mails/day) or any other 4xx — email was not delivered. The alert appears in the **next** report once delivery recovers. |
+| `ResendNotifier` | `CRITICAL` on 429 (free 100 mails/day), any other 4xx, any 5xx and a network error or timeout — email was not delivered. The alert appears in the **next** report once delivery recovers, and the push digest says the mail did not arrive. |
 
-All alerts from the current cycle are persisted to the `quota_alerts` table (migration `010_quota_alerts.sql`). The report builder pulls **the last 24 h** of alerts and renders them as a coloured banner at the **very top** of the e-mail (above the NYSE session line). Severity drives the banner colour and ordering — `CRITICAL` rows come first.
+All alerts from the current cycle are persisted to the `quota_alerts` table (migration `010_quota_alerts.sql`) — including the ones raised while the report itself is being sent. The report builder pulls **the last week (7 × 24 + 3 h)** of alerts, so a Sunday Slow Loop alert still reaches Monday's mail, and renders them as a coloured banner at the **very top** of the e-mail (above the NYSE session line). Severity drives the banner colour and ordering — `CRITICAL` rows come first.
 
 If anything `CRITICAL` is in the current cycle, the e-mail subject is prefixed with `⚠️ [QUOTA] ` so the alert is visible directly in the inbox, before opening.
 

@@ -20,6 +20,7 @@ from src.domain.earnings import EarningsEvent
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel
+from src.domain.quota import QuotaAlert, QuotaSeverity
 
 
 @pytest.fixture
@@ -1481,6 +1482,30 @@ class TestWeeklyRecapWiring:
         recap_uc.run.assert_called_once()
         notifier.send_report.assert_called_once()
 
+    def test_resend_alert_raised_during_recap_send_is_persisted(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # NIEZ-03: alerty kwot zapisujemy przed recapem, więc alert z samej wysyłki
+        # recapu (np. Resend 429) przepadał zamiast trafić do poniedziałkowego bannera.
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        _, notifier = self._trainer(settings, mocker, "recap_ready")
+        repository = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repository)
+        alert = _quota_alert()
+        monitors: list[object] = []
+
+        def build_notifier(_settings: object, quota_monitor: object = None) -> MagicMock:
+            monitors.append(quota_monitor)
+            return notifier
+
+        mocker.patch("main_trainer.build_notifier", side_effect=build_notifier)
+        notifier.send_report.side_effect = lambda **_: monitors[-1].record(alert)
+
+        main_trainer.main(settings)
+
+        repository.save_quota_alert.assert_any_call(alert)
+
     def test_calibration_judge_runs_when_llm_adapter_cannot_be_built(
         self, settings, mock_external_clients, mocker
     ) -> None:
@@ -1624,3 +1649,113 @@ class TestCryptoInTrainingLoop:
 
         trained = [c.args[0] for c in fake_uc.run.call_args_list]
         assert trained == ["AAPL", "BTC"]
+
+
+def _quota_alert(source: str = "Resend") -> QuotaAlert:
+    return QuotaAlert(
+        source=source,
+        severity=QuotaSeverity.CRITICAL,
+        message=f"{source} returned 503",
+        action="sprawdź dostawcę",
+        occurred_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+    )
+
+
+class TestDispatchReportsDelivery:
+    """NIEZ-02/MAIL-02/NIEZ-03 — awaria wysyłki maila nie może po cichu wyciąć
+    dalszych kroków (scorecard, push), a alert z samej wysyłki musi dotrwać do
+    następnego raportu."""
+
+    @staticmethod
+    def _dispatch(settings: Settings, mocker, *, notifier, quota_monitor, repository) -> MagicMock:
+        settings.messenger_digest_enabled = True
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch("main_agent._build_user_portfolio", return_value=None)
+        mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        publish_scorecard = mocker.patch("main_agent._publish_public_scorecard")
+        push = MagicMock()
+        mocker.patch("main_agent.build_push_notifier", return_value=push)
+        main_agent._dispatch_reports(
+            results=[],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=repository,
+            quota_monitor=quota_monitor,
+            notifier=notifier,
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL"],
+            context=main_agent.ReportContext(),
+        )
+        push.publish_scorecard = publish_scorecard
+        return push
+
+    def test_push_digest_still_sent_when_resend_fails(self, settings, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        notifier = MagicMock()
+        notifier.send_report.side_effect = RuntimeError("Resend 503")
+
+        push = self._dispatch(
+            settings, mocker, notifier=notifier, quota_monitor=QuotaMonitor(),
+            repository=MagicMock(spec=RepositoryPort),
+        )
+
+        push.send_report.assert_called_once()
+        push.publish_scorecard.assert_called_once()
+
+    def test_push_digest_says_the_email_was_not_delivered(self, settings, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        notifier = MagicMock()
+        notifier.send_report.side_effect = RuntimeError("Resend 503")
+
+        push = self._dispatch(
+            settings, mocker, notifier=notifier, quota_monitor=QuotaMonitor(),
+            repository=MagicMock(spec=RepositoryPort),
+        )
+
+        assert "nie został dostarczony" in push.send_report.call_args.kwargs["plain_text"]
+
+    def test_resend_failure_alert_is_persisted_for_next_report(self, settings, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        monitor = QuotaMonitor()
+        alert = _quota_alert()
+        repository = MagicMock(spec=RepositoryPort)
+        notifier = MagicMock()
+
+        def failing_send(**_: object) -> None:
+            monitor.record(alert)
+            raise RuntimeError("Resend 503")
+
+        notifier.send_report.side_effect = failing_send
+
+        self._dispatch(
+            settings, mocker, notifier=notifier, quota_monitor=monitor, repository=repository
+        )
+
+        repository.save_quota_alert.assert_called_once_with(alert)
+
+
+class TestQuotaAlertBannerLookback:
+    def test_banner_reaches_back_past_a_weekly_slow_loop_alert(self) -> None:
+        # NIEZ-01: niedzielny CRITICAL Alpha Vantage ze Slow Loopa ma być widoczny
+        # w najbliższym mailu, a 24 h okna gubiło go już w poniedziałek rano.
+        from src.application.quota_monitor import QuotaMonitor
+
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_recently_resolved_predictions.return_value = []
+
+        main_agent._fetch_report_context(repository, QuotaMonitor(), ["AAPL"])
+
+        hours = repository.get_recent_quota_alerts.call_args.kwargs["hours"]
+        assert hours >= 7 * 24 + 3

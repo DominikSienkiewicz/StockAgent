@@ -22,6 +22,9 @@ from src.application.report_models import ResolvedPrediction, SymbolResult
 # wiele bajtów.
 MAX_DIGEST_CHARS = 1500
 
+# MAIL-02: linia pod nagłówkiem, gdy mail z raportem nie doszedł.
+UNDELIVERED_EMAIL_LINE = "⚠️ Mail z raportem nie został dostarczony"
+
 # Sufit liczby sygnałów renderowanych imiennie — reszta trafia do overflow.
 # Chroni czytelność i (razem z przycięciem symbolu) gwarantuje mieszczenie się
 # w limicie nawet przy 45+ symbolach.
@@ -92,6 +95,8 @@ def build_messenger_digest(
     results: list[SymbolResult],
     started_at: datetime,
     resolved_predictions: list[ResolvedPrediction] | None = None,
+    *,
+    email_delivered: bool = True,
 ) -> str:
     """Buduje zwięzły digest push (~5 linii) dla Telegrama/Slacka.
 
@@ -106,6 +111,8 @@ def build_messenger_digest(
         results: wyniki analizy symboli w cyklu.
         started_at: moment startu cyklu (do nagłówka).
         resolved_predictions: predykcje zamknięte w tym oknie (do scorecardu).
+        email_delivered: False, gdy wysyłka maila padła — push mówi o tym zaraz
+            pod nagłówkiem, bo przy 401/403 kolejny mail też by nie doszedł.
 
     Returns:
         Gotowy tekst push, ≤ `MAX_DIGEST_CHARS` znaków.
@@ -113,6 +120,7 @@ def build_messenger_digest(
     resolved = resolved_predictions or []
     lines = [
         _header_line(started_at),
+        *([] if email_delivered else [UNDELIVERED_EMAIL_LINE]),
         _cycle_line(results),
         _scorecard_line(resolved),
         _signals_line(results),

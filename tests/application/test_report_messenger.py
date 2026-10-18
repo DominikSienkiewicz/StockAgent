@@ -152,3 +152,15 @@ def test_no_saved_signals_is_explicit() -> None:
     results = [SymbolResult(symbol="AAPL", status="ignored")]
     digest = build_messenger_digest(results, _STARTED_AT, [])
     assert "Sygnały:" in digest
+
+
+def test_digest_warns_when_email_undelivered() -> None:
+    # MAIL-02: przy 401/403 kolejny mail też padnie, więc o niedostarczonym
+    # raporcie mówi kanał niezależny od Resend.
+    started = datetime(2026, 10, 18, 5, 30)
+    undelivered = build_messenger_digest([], started, email_delivered=False)
+    delivered = build_messenger_digest([], started)
+
+    assert "⚠️ Mail z raportem nie został dostarczony" in undelivered
+    assert "nie został dostarczony" not in delivered
+    assert len(undelivered) <= MAX_DIGEST_CHARS

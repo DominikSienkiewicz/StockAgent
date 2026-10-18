@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+import requests
+
 from src.application.ports import ReportNotifierPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
@@ -45,24 +47,34 @@ class ResendNotifier(ReportNotifierPort):
         self._quota_monitor = quota_monitor
 
     def send_report(self, subject: str, html_body: str, plain_text: str) -> None:
-        response = self._session.post(
-            f"{self._base_url}/emails",
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "from": self._sender,
-                "to": [self._recipient],
-                "subject": subject,
-                "html": html_body,
-                "text": plain_text,
-            },
-            timeout=self._timeout,
-        )
+        # Każdy niedostarczony mail kończy się alertem CRITICAL: trafi do bazy i
+        # pojawi się w NASTĘPNYM mailu (ten paradoksalnie nie poszedł).
+        try:
+            response = self._session.post(
+                f"{self._base_url}/emails",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": self._sender,
+                    "to": [self._recipient],
+                    "subject": subject,
+                    "html": html_body,
+                    "text": plain_text,
+                },
+                timeout=self._timeout,
+            )
+        except requests.RequestException as exc:
+            self._emit_quota_alert(
+                severity=QuotaSeverity.CRITICAL,
+                message=(
+                    f"Resend unreachable ({type(exc).__name__}) — email not delivered."
+                ),
+                action="Check Resend status and the runner's network; the next run retries.",
+            )
+            raise
         # Resend zwraca 429 gdy free tier (100 mails/dobę) wyczerpany.
-        # Alert trafi do bazy i pojawi się w NASTĘPNYM mailu (ten paradoksalnie
-        # nie poszedł), gdy quota się zresetuje.
         if response.status_code == 429:
             self._emit_quota_alert(
                 severity=QuotaSeverity.CRITICAL,
@@ -86,6 +98,15 @@ class ResendNotifier(ReportNotifierPort):
                     "Verify RESEND_API_KEY is valid and DIGEST_FROM_EMAIL "
                     "is verified in your Resend domain settings."
                 ),
+            )
+        elif response.status_code >= 500:
+            self._emit_quota_alert(
+                severity=QuotaSeverity.CRITICAL,
+                message=(
+                    f"Resend returned {response.status_code} — email not delivered "
+                    "(provider error)."
+                ),
+                action="Check status.resend.com; the next run retries.",
             )
         response.raise_for_status()
         message_id = response.json().get("id", "<no-id>")

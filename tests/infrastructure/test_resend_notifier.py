@@ -181,6 +181,43 @@ class TestQuotaAlertEmit:
         assert len(monitor.alerts) == 1
         assert "401" in monitor.alerts[0].message
 
+    def test_server_error_emits_critical_alert(self, mocker):
+        # NIEZ-04: docs obiecują, że zablokowany mail nie zniknie w logach — 5xx też.
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+        from src.infrastructure.adapters.resend_notifier import ResendNotifier
+
+        monitor = QuotaMonitor()
+        notifier = ResendNotifier(
+            api_key="re_x", sender="a@x", recipient="b@x",
+            quota_monitor=monitor,
+        )
+        mocker.patch("requests.Session.post", return_value=self._resp(503))
+
+        with pytest.raises(requests.HTTPError):
+            notifier.send_report("subj", "<html>", "text")
+
+        assert len(monitor.alerts) == 1
+        assert monitor.alerts[0].severity is QuotaSeverity.CRITICAL
+        assert "503" in monitor.alerts[0].message
+
+    def test_network_error_emits_critical_alert(self, mocker):
+        from src.application.quota_monitor import QuotaMonitor
+        from src.infrastructure.adapters.resend_notifier import ResendNotifier
+
+        monitor = QuotaMonitor()
+        notifier = ResendNotifier(
+            api_key="re_x", sender="a@x", recipient="b@x",
+            quota_monitor=monitor,
+        )
+        mocker.patch("requests.Session.post", side_effect=requests.ConnectionError("timeout"))
+
+        with pytest.raises(requests.ConnectionError):
+            notifier.send_report("subj", "<html>", "text")
+
+        assert len(monitor.alerts) == 1
+        assert "ConnectionError" in monitor.alerts[0].message
+
     def test_no_alert_on_200(self, mocker):
         from src.application.quota_monitor import QuotaMonitor
         from src.infrastructure.adapters.resend_notifier import ResendNotifier
