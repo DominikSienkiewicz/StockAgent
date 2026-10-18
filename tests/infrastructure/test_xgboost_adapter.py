@@ -471,3 +471,65 @@ class TestDomainGate:
         assert result["n_oos_points"] == 48
         assert not Path(model_path).exists()
         assert adapter.is_trained is False
+
+
+def _hourly_stamps(n: int) -> pd.Series:
+    return pd.Series(pd.date_range("2026-09-01", periods=n, freq="h", tz="UTC"))
+
+
+class TestPooledTrainingSupport:
+    """ML-13: per-symbol pętla tylko ewaluuje (bez zapisu), a model wspólny trenuje
+    na foldach po czasie GLOBALNYM z purgem horyzontu etykiety."""
+
+    def test_evaluation_mode_never_writes_weights(
+        self, adapter: XGBoostAdapter, model_path: str
+    ):
+        features, target = _synthetic_dataset(n=200)
+
+        result = adapter.train(features, target, persist=False)
+
+        assert result["status"] == "evaluated_passed_gate"
+        assert result["candidate_holdout_rmse"] < result["baseline_rmse"]
+        assert not Path(model_path).exists()
+        assert adapter.is_trained is False
+
+    def test_evaluation_mode_reports_a_failed_gate_without_rejecting_a_model(
+        self, adapter: XGBoostAdapter
+    ):
+        features, _ = _synthetic_dataset(n=200)
+
+        result = adapter.train(features, pd.Series([0.0] * 200), persist=False)
+
+        # Status ewaluacji, nie „odrzucony kandydat" — karta nie może sugerować,
+        # że dla symbolu został jakiś osobny, sprawdzony model.
+        assert result["status"] == "evaluated_failed_gate"
+
+    def test_purged_folds_drop_training_rows_inside_the_label_horizon(
+        self, adapter: XGBoostAdapter
+    ):
+        features, target = _synthetic_dataset(n=200)
+
+        folds = adapter._walk_forward_folds_detail(
+            features, target, timestamps=_hourly_stamps(200)
+        )
+
+        # Godzinne wiersze, horyzont 12h → 11 ostatnich wierszy przed walidacją
+        # ma etykietę po jej starcie i wypada z treningu foldu.
+        assert [f["n_train"] for f in folds] == [f["train_end"] - 11 for f in folds]
+
+    def test_timestamps_must_follow_global_time_order(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=200)
+        stamps = _hourly_stamps(200).iloc[::-1].reset_index(drop=True)
+
+        with pytest.raises(ValueError, match="time"):
+            adapter.train(features, target, timestamps=stamps)
+
+    def test_pooled_training_with_timestamps_ships_once(
+        self, adapter: XGBoostAdapter, model_path: str
+    ):
+        features, target = _synthetic_dataset(n=200)
+
+        result = adapter.train(features, target, timestamps=_hourly_stamps(200))
+
+        assert result["status"] == "trained_successfully"
+        assert Path(model_path).exists()

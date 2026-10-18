@@ -1,7 +1,9 @@
 """Slow Loop entry point — uruchamiany przez GHA co tydzień.
 
-Retrenuje model XGBoost na zebranych logach predykcyjnych.
-Po treningu plik wag (.ubj) jest commitowany do repo przez workflow GHA.
+Ewaluuje każdy symbol osobno (bez zapisu wag), a potem trenuje JEDEN wspólny model
+XGBoost na zebranych logach predykcyjnych wszystkich symboli (ML-13). Plik wag
+(.ubj) powstaje tylko, gdy kandydat przejdzie bramkę walk-forward; workflow GHA
+commituje go wtedy do repo.
 
 Użycie:
     uv run python main_trainer.py
@@ -21,7 +23,7 @@ from src.application.report_weekly_recap import (
     render_weekly_recap_html,
     render_weekly_recap_text,
 )
-from src.application.use_cases.train_model import TrainModelUseCase
+from src.application.use_cases.train_model import POOLED_MODEL_SYMBOL, TrainModelUseCase
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
 from src.config import Settings
 from src.infrastructure.adapters.alpha_vantage_fundamentals import (
@@ -103,8 +105,8 @@ def _train_symbols(
     use_case: TrainModelUseCase,
     trainable: list[str],
 ) -> int:
-    """Retrenuje każdy symbol z osobna i zwraca liczbę niepowodzeń. Błąd
-    jednego symbolu nie przerywa treningu pozostałych."""
+    """Ewaluuje każdy symbol z osobna (bez zapisu wag, ML-13) i zwraca liczbę
+    niepowodzeń. Błąd jednego symbolu nie przerywa ewaluacji pozostałych."""
     failures = 0
     for symbol in trainable:
         try:
@@ -116,6 +118,23 @@ def _train_symbols(
             logger.exception("Training failed for symbol %s", symbol)
             failures += 1
     return failures
+
+
+def _train_pooled_model(
+    settings: Settings, use_case: TrainModelUseCase, trainable: list[str]
+) -> int:
+    """ML-13: jeden wspólny model na wszystkich symbolach — jedyny zapis wag w
+    przebiegu. Zwraca liczbę niepowodzeń (0 albo 1); wiersz karty modelu zapisuje
+    use case jako `POOLED_MODEL_SYMBOL`."""
+    try:
+        result = use_case.run_pooled(
+            trainable, record_scorecard=settings.model_scorecard_enabled
+        )
+    except Exception:
+        logger.exception("Pooled training failed")
+        return 1
+    logger.info("%s (%d symbols): %s", POOLED_MODEL_SYMBOL, len(trainable), result)
+    return 0
 
 
 def _build_llm_or_unavailable(settings: Settings, quota_monitor: QuotaMonitor) -> LLMPort:
@@ -202,6 +221,7 @@ def main(settings: Settings | None = None) -> int:
     # `dict.fromkeys` zachowuje kolejność i deduplikuje symbol obecny w obu listach.
     trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
     failures = _train_symbols(settings, supabase_repo, use_case, trainable)
+    failures += _train_pooled_model(settings, use_case, trainable)
 
     if settings.calibration_judge_enabled:
         _run_calibration_judge(settings, supabase_repo, quota_monitor)
@@ -212,7 +232,7 @@ def main(settings: Settings | None = None) -> int:
     # NIEZ-03: alerty z sędziego i recapu (LLM, Resend) powstają po pierwszym zapisie.
     _persist_quota_alerts(supabase_repo, quota_monitor, start=persisted_alerts)
 
-    logger.info("Slow Loop done — failures=%d/%d", failures, len(trainable))
+    logger.info("Slow Loop done — failures=%d/%d", failures, len(trainable) + 1)
     return 1 if failures else 0
 
 

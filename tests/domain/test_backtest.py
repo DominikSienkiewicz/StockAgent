@@ -1,10 +1,14 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from src.domain.backtest import (
+    LABEL_HORIZON,
     MIN_OOS_POINTS,
     MIN_REL_IMPROVEMENT,
     BacktestSummary,
     beats_baseline,
+    purged_train_end,
     summarize_folds,
 )
 
@@ -166,3 +170,24 @@ def test_folds_without_n_valid_skip_the_oos_condition():
 
     assert summary.n_oos_points is None
     assert summary.beats_baseline is True
+
+
+def test_purge_drops_training_rows_whose_label_overlaps_validation():
+    # ML-13: wiersz z chwili t ma etykietę (zwrot 12h) zrealizowaną w t+12h. W modelu
+    # wspólnym wiersz innego symbolu z tej samej godziny w treningu „zna" ruch rynku,
+    # który walidacja ma dopiero przewidzieć — przeciek przekrojowy.
+    start = datetime(2026, 10, 1, tzinfo=UTC)
+    stamps = [start + timedelta(hours=i) for i in range(48)]
+
+    fit_end = purged_train_end(stamps, valid_start=30)
+
+    # Wiersz 18 (etykieta dokładnie w chwili 30) zostaje, 19..29 wypadają.
+    assert fit_end == 19
+    assert timedelta(hours=12) == LABEL_HORIZON
+
+
+def test_purge_keeps_everything_when_labels_settle_before_validation():
+    start = datetime(2026, 10, 1, tzinfo=UTC)
+    stamps = [start + timedelta(days=i) for i in range(10)]
+
+    assert purged_train_end(stamps, valid_start=6) == 6

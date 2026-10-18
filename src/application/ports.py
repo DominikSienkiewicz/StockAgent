@@ -298,9 +298,10 @@ class RepositoryPort(ABC):
     def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
         """#12 — zapisuje jeden przebieg treningu walk-forward (migracja 019).
 
-        Trening jest PER-SYMBOL (~43 przebiegi nadpisują jeden plik .ubj), więc
-        `symbol` jest wymagany — bez niego scorecardy są nierozróżnialne.
-        `result` to surowe wyjście `MLPredictionPort.train()`."""
+        Slow Loop zapisuje wiersz per symbol (ewaluacja bez zapisu wag) i jeden
+        wiersz modelu wspólnego z `symbol = "ALL"` (ML-13), więc `symbol` jest
+        wymagany — bez niego scorecardy są nierozróżnialne.
+        `result` to surowe wyjście `MLPredictionPort.train()` albo wynik `skipped`."""
 
     @abstractmethod
     def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:
@@ -361,9 +362,22 @@ class MLPredictionPort(ABC):
         płatnych wywołań. Rzuca RuntimeError gdy model nietrenowany (jak predict)."""
 
     @abstractmethod
-    def train(self, features: Any, target: Any) -> dict[str, Any]:
+    def train(
+        self,
+        features: Any,
+        target: Any,
+        *,
+        persist: bool = True,
+        timestamps: Any = None,
+    ) -> dict[str, Any]:
         """`features`/`target` to `pandas.DataFrame`/`Series` — typujemy luźno,
-        by nie wprowadzać zależności od pandas w warstwie application."""
+        by nie wprowadzać zależności od pandas w warstwie application.
+
+        `persist=False` to sama ewaluacja walk-forward: wagi nie są zapisywane ani
+        ładowane, a status to `evaluated_passed_gate` / `evaluated_failed_gate`
+        (ML-13 — per-symbol pętla Slow Loopa). `timestamps` (wyrównane z wierszami,
+        rosnąco) włączają foldy po czasie GLOBALNYM z purgem horyzontu etykiety —
+        wymagane dla modelu wspólnego na wielu symbolach."""
 
     @abstractmethod
     def walk_forward_report(

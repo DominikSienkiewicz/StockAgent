@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ import pandas as pd
 import xgboost as xgb
 
 from src.application.ports import MLPredictionPort
-from src.domain.backtest import summarize_folds
+from src.domain.backtest import purged_train_end, summarize_folds
 from src.domain.value_objects import Money
 
 # Hiperparametry dobrane pod dane finansowe (zapobieganie overfittingowi).
@@ -76,16 +77,24 @@ class XGBoostAdapter(MLPredictionPort):
     def is_trained(self) -> bool:
         return self._model is not None
 
-    def train(self, features: Any, target: Any) -> dict[str, Any]:
+    def train(
+        self,
+        features: Any,
+        target: Any,
+        *,
+        persist: bool = True,
+        timestamps: Any = None,
+    ) -> dict[str, Any]:
         feature_frame = pd.DataFrame(features).reset_index(drop=True)
         target_series = pd.Series(target).reset_index(drop=True)
+        stamps = _global_time_order(timestamps, len(target_series))
 
         # Walk-forward (expanding window) zamiast jednego splitu 20%: bramka
         # „pobij baseline" opiera się na ŚREDNIEJ z foldów, nie na jednym
         # hałaśliwym estymatorze z jednego reżimu rynku (finding #23). Sama reguła
         # (margines 2%, min. punktów OOS) żyje w domenie — `summarize_folds`.
         summary = summarize_folds(
-            self._walk_forward_folds_detail(feature_frame, target_series)
+            self._walk_forward_folds_detail(feature_frame, target_series, stamps)
         )
         metrics: dict[str, Any] = {
             "n_samples": len(target_series),
@@ -99,6 +108,19 @@ class XGBoostAdapter(MLPredictionPort):
             "feature_stats": _feature_distribution_stats(feature_frame),
             "metric_note": METRIC_NOTE,
         }
+
+        if not persist:
+            # ML-13: per-symbol ewaluacja — żadnego zapisu ani podmiany modelu w
+            # pamięci; jedyne wagi produkuje model wspólny.
+            return {
+                "status": (
+                    "evaluated_passed_gate"
+                    if summary.beats_baseline
+                    else "evaluated_failed_gate"
+                ),
+                "reason": f"Evaluation only, weights not written: {summary.verdict}.",
+                **metrics,
+            }
 
         if not summary.beats_baseline:
             return {
@@ -127,18 +149,32 @@ class XGBoostAdapter(MLPredictionPort):
         }
 
     def _walk_forward_folds_detail(
-        self, features: pd.DataFrame, target: pd.Series
+        self,
+        features: pd.DataFrame,
+        target: pd.Series,
+        timestamps: list[datetime] | None = None,
     ) -> list[dict[str, float]]:
         """Per-fold metryki walk-forward (expanding window) na danych
         time-ordered. Jedno źródło prawdy dla bramki `train()` (przez domenowe
         `summarize_folds`) i `walk_forward_report` (szczegół). Poniżej
         `MIN_FOLD_SAMPLES` spada do pojedynczego splitu (sane fallback) → jeden fold.
+
+        Z `timestamps` (czas globalny, rosnąco) trening foldu kończy się na
+        `purged_train_end` — bez wierszy, których etykieta 12h dojrzewa po starcie
+        walidacji. Fold bez żadnego wiersza treningowego po purgu jest pomijany.
         """
         folds = _expanding_window_folds(len(target))
         out: list[dict[str, float]] = []
         for train_end, valid_end in folds:
-            train_x = features.iloc[:train_end]
-            train_y = target.iloc[:train_end]
+            fit_end = (
+                train_end
+                if timestamps is None
+                else purged_train_end(timestamps, train_end)
+            )
+            if fit_end < 1:
+                continue
+            train_x = features.iloc[:fit_end]
+            train_y = target.iloc[:fit_end]
             valid_x = features.iloc[train_end:valid_end]
             valid_y = target.iloc[train_end:valid_end]
 
@@ -150,7 +186,7 @@ class XGBoostAdapter(MLPredictionPort):
                 {
                     "train_end": float(train_end),
                     "valid_end": float(valid_end),
-                    "n_train": float(train_end),
+                    "n_train": float(fit_end),
                     "n_valid": float(valid_end - train_end),
                     "candidate_rmse": _rmse(valid_y, preds),
                     # Baseline persystencji: „zwrot = 0" (cena 12h = cena bieżąca).
@@ -239,6 +275,21 @@ class XGBoostAdapter(MLPredictionPort):
                 f"Missing required ML features for prediction: {missing}"
             )
         return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
+
+
+def _global_time_order(timestamps: Any, n_samples: int) -> list[datetime] | None:
+    """Znormalizowane (UTC) znaczniki czasu wierszy albo None (trening bez purgu).
+
+    Walk-forward modelu wspólnego musi iść po czasie GLOBALNYM — nieposortowane
+    wejście (np. bloki per symbol) walidowałoby na chwilach sprzed treningu."""
+    if timestamps is None:
+        return None
+    parsed = pd.to_datetime(pd.Series(timestamps), utc=True).reset_index(drop=True)
+    if len(parsed) != n_samples:
+        raise ValueError("timestamps must align with the training rows")
+    if not parsed.is_monotonic_increasing:
+        raise ValueError("timestamps must be sorted ascending in global time")
+    return [stamp.to_pydatetime() for stamp in parsed]
 
 
 def _expanding_window_folds(n_samples: int) -> list[tuple[int, int]]:

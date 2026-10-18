@@ -743,8 +743,8 @@ class SupabaseRepository(RepositoryPort):
 
     def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
         # Jeden wiersz na przebieg treningu (migracja 019). Kolumna `symbol` jest
-        # kluczowa: trening leci per-symbol, więc bez niej nie wiadomo, który
-        # kandydat przeszedł bramkę, a który został odrzucony.
+        # kluczowa: ewaluacja leci per symbol, a model wspólny ma wiersz "ALL"
+        # (ML-13) — bez niej nie wiadomo, czego dotyczy werdykt bramki.
         payload = {
             "symbol": symbol,
             "status": result.get("status"),

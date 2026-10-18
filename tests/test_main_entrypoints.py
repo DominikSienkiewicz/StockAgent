@@ -1759,3 +1759,50 @@ class TestQuotaAlertBannerLookback:
 
         hours = repository.get_recent_quota_alerts.call_args.kwargs["hours"]
         assert hours >= 7 * 24 + 3
+
+
+class TestPooledTrainingLoop:
+    """ML-13 (decyzja 4): po ewaluacji per symbol Slow Loop trenuje JEDEN wspólny
+    model na wszystkich symbolach — jeden zapis wag zamiast last-writer-wins."""
+
+    def _trainer(self, settings, mocker) -> MagicMock:
+        settings.symbols = ["AAPL", "BTC"]
+        settings.crypto_symbols = ["BTC", "ETH"]
+        settings.weekly_recap_enabled = False
+        settings.calibration_judge_enabled = False
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "skipped", "n_samples": 17}
+        fake_uc.run_pooled.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        return fake_uc
+
+    def test_pooled_model_trains_once_over_every_trainable_symbol(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.model_scorecard_enabled = True
+        fake_uc = self._trainer(settings, mocker)
+
+        assert main_trainer.main(settings) == 0
+
+        fake_uc.run_pooled.assert_called_once_with(
+            ["AAPL", "BTC", "ETH"], record_scorecard=True
+        )
+
+    def test_scorecard_flag_off_reaches_the_pooled_run(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.model_scorecard_enabled = False
+        fake_uc = self._trainer(settings, mocker)
+
+        main_trainer.main(settings)
+
+        assert fake_uc.run_pooled.call_args.kwargs == {"record_scorecard": False}
+
+    def test_pooled_training_failure_fails_the_run(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        fake_uc = self._trainer(settings, mocker)
+        fake_uc.run_pooled.side_effect = RuntimeError("XGBoost boom")
+
+        assert main_trainer.main(settings) == 1

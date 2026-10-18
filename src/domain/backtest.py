@@ -1,8 +1,10 @@
 # src/domain/backtest.py
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 # Werdykt walk-forward backtestu. Czysta domena — agreguje per-fold metryki
 # (RMSE kandydata vs baseline persystencji „zwrot=0", trafność kierunku) w jeden
@@ -17,6 +19,11 @@ MIN_REL_IMPROVEMENT = 0.02
 # ML-06: werdykt wymaga co najmniej tylu punktów out-of-sample łącznie ze
 # wszystkich foldów. Przy 4 foldach expanding-window oznacza to n ≥ 75 próbek.
 MIN_OOS_POINTS = 60
+
+# Horyzont etykiety: target to zwrot 12h, więc wiersz z chwili t „zna" rynek do
+# t + 12h. Wiersz treningowy, którego etykieta dojrzewa po starcie walidacji,
+# przecieka do foldu (ML-13).
+LABEL_HORIZON = timedelta(hours=12)
 
 
 @dataclass(frozen=True)
@@ -50,6 +57,21 @@ def beats_baseline(candidate_rmse: float, baseline_rmse: float) -> bool:
     if baseline_rmse <= 0:
         return False
     return (baseline_rmse - candidate_rmse) / baseline_rmse >= MIN_REL_IMPROVEMENT
+
+
+def purged_train_end(
+    timestamps: Sequence[datetime], valid_start: int, horizon: timedelta = LABEL_HORIZON
+) -> int:
+    """Koniec (wyłącznie) treningu foldu walidowanego od wiersza `valid_start`.
+
+    `timestamps` są posortowane rosnąco po czasie GLOBALNYM (wszystkie symbole
+    razem). Z treningu wypadają wiersze, których etykieta dojrzewa po starcie
+    walidacji: w modelu wspólnym AAPL z 10:00 w treningu i MSFT z 10:01 w walidacji
+    dzielą ten sam ruch rynku — to przeciek przekrojowy (purge). Etykieta dojrzała
+    dokładnie w chwili startu walidacji jest dozwolona.
+    """
+    cutoff = timestamps[valid_start] - horizon
+    return bisect_right(timestamps, cutoff, 0, valid_start)
 
 
 def _oos_points(folds: Sequence[Mapping[str, float]]) -> int | None:

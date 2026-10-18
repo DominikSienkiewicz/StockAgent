@@ -7,6 +7,7 @@ import pytest
 from src.application.ports import MLPredictionPort, RepositoryPort
 from src.application.use_cases.train_model import (
     MIN_SAMPLES_FOR_TRAINING,
+    POOLED_MODEL_SYMBOL,
     TrainModelUseCase,
 )
 
@@ -194,3 +195,140 @@ def test_skip_after_dropna_reports_valid_n_samples(use_case, repository_port, ml
     assert result["status"] == "skipped"
     assert result["n_samples"] == MIN_SAMPLES_FOR_TRAINING - 3
     ml_port.train.assert_not_called()
+
+
+def _stamped_rows(symbol: str, n: int, start_hour: int, step_hours: int) -> list[dict]:
+    """Wiersze widoku z `symbol` i `timestamp` (ISO jak z PostgREST). `target_return`
+    koduje (symbol, kolejność), żeby test widział porządek wierszy w modelu."""
+    rows = _feature_store_rows(n)
+    base = pd.Timestamp("2026-09-01T00:00:00+00:00")
+    for i, row in enumerate(rows):
+        hour = start_hour + i * step_hours
+        row["symbol"] = symbol
+        row["timestamp"] = (base + pd.Timedelta(hours=hour)).isoformat()
+        row["target_return"] = float(hour)
+    return rows
+
+
+def _rows_by_symbol(mapping: dict[str, list[dict]]):
+    return lambda symbol: mapping[symbol]
+
+
+def test_pooled_training_calls_train_once_with_rows_of_all_symbols(
+    use_case, repository_port, ml_port
+):
+    # ML-13 (decyzja 4): JEDEN wspólny model. Dziś trener pomija wszystkie symbole
+    # (max 17 próbek przy progu 50), choć łącznie jest ich kilkaset.
+    repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
+        {
+            "AAPL": _stamped_rows("AAPL", 30, start_hour=0, step_hours=2),
+            "BTC": _stamped_rows("BTC", 30, start_hour=1, step_hours=2),
+        }
+    )
+    ml_port.train.return_value = {"status": "trained_successfully", "n_samples": 60}
+
+    result = use_case.run_pooled(["AAPL", "BTC", "AAPL"])
+
+    ml_port.train.assert_called_once()
+    features, target = ml_port.train.call_args.args
+    assert list(features.columns) == EXPECTED_ML_FEATURES
+    assert len(features) == len(target) == 60
+    # Jeden zapis wag: model wspólny trenuje w trybie domyślnym (persist=True).
+    assert ml_port.train.call_args.kwargs.get("persist", True) is True
+    assert result["status"] == "trained_successfully"
+    # Każdy symbol czytany raz, mimo duplikatu na wejściu.
+    assert repository_port.get_feature_store_data.call_count == 2
+
+
+def test_pooled_rows_follow_global_time_not_symbol_blocks(
+    use_case, repository_port, ml_port
+):
+    # Konkatenacja per symbol dałaby AAPL(0..58h), potem BTC(1..59h) — fold
+    # walidowałby AAPL na chwilach wcześniejszych niż trening na BTC.
+    repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
+        {
+            "AAPL": _stamped_rows("AAPL", 30, start_hour=0, step_hours=2),
+            "BTC": _stamped_rows("BTC", 30, start_hour=1, step_hours=2),
+        }
+    )
+    ml_port.train.return_value = {"status": "trained_successfully"}
+
+    use_case.run_pooled(["AAPL", "BTC"])
+
+    _, target = ml_port.train.call_args.args
+    assert list(target) == [float(h) for h in range(60)]
+    stamps = list(ml_port.train.call_args.kwargs["timestamps"])
+    assert stamps == sorted(stamps)
+    assert len(stamps) == 60
+
+
+def test_pooled_training_skips_below_minimum_and_reports_n_samples(
+    use_case, repository_port, ml_port
+):
+    repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
+        {
+            "AAPL": _stamped_rows("AAPL", 10, start_hour=0, step_hours=1),
+            "BTC": _stamped_rows("BTC", 10, start_hour=0, step_hours=1),
+        }
+    )
+
+    result = use_case.run_pooled(["AAPL", "BTC"])
+
+    assert result["status"] == "skipped"
+    assert result["n_samples"] == 20
+    ml_port.train.assert_not_called()
+
+
+def test_per_symbol_run_is_evaluation_only(use_case, repository_port, ml_port):
+    # Pętla per symbol zostaje do ewaluacji — zapis wag robi wyłącznie model wspólny,
+    # więc kolejne symbole nie nadpisują już jednego pliku .ubj (last-writer-wins).
+    repository_port.get_feature_store_data.return_value = _feature_store_rows(
+        MIN_SAMPLES_FOR_TRAINING + 10
+    )
+    ml_port.train.return_value = {"status": "evaluated_passed_gate"}
+
+    use_case.run("AAPL", refresh_view=False)
+
+    assert ml_port.train.call_args.kwargs["persist"] is False
+
+
+def test_pooled_scorecard_row_is_recorded_as_all(use_case, repository_port, ml_port):
+    repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
+        {"AAPL": _stamped_rows("AAPL", 60, start_hour=0, step_hours=1)}
+    )
+    ml_port.train.return_value = {"status": "skipped_validation_failed", "n_samples": 60}
+
+    result = use_case.run_pooled(["AAPL"], record_scorecard=True)
+
+    repository_port.save_model_scorecard.assert_called_once_with(POOLED_MODEL_SYMBOL, result)
+    assert POOLED_MODEL_SYMBOL == "ALL"
+
+
+def test_pooled_skip_is_recorded_too(use_case, repository_port, ml_port):
+    # Deadman czyta najnowszy wiersz scorecardu — przebieg bez modelu też jest śladem.
+    repository_port.get_feature_store_data.return_value = []
+
+    use_case.run_pooled(["AAPL"], record_scorecard=True)
+
+    saved_symbol, saved = repository_port.save_model_scorecard.call_args.args
+    assert saved_symbol == "ALL"
+    assert saved["status"] == "skipped"
+
+
+def test_pooled_scorecard_write_failure_does_not_fail_training(
+    use_case, repository_port, ml_port
+):
+    repository_port.get_feature_store_data.return_value = []
+    repository_port.save_model_scorecard.side_effect = Exception("no table")
+
+    result = use_case.run_pooled(["AAPL"], record_scorecard=True)
+
+    assert result["status"] == "skipped"
+
+
+def test_pooled_scorecard_is_not_recorded_by_default(use_case, repository_port, ml_port):
+    repository_port.get_feature_store_data.return_value = []
+
+    use_case.run_pooled(["AAPL"])
+
+    repository_port.save_model_scorecard.assert_not_called()

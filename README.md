@@ -9,9 +9,13 @@ email with charts and its own running hit-rate. The daily report run is **paused
 only on manual `workflow_dispatch`. The hourly price-shock check is paused with it, because
 its only reference prices are the daily run's snapshots. Two jobs still run on schedule: the
 weekly model retraining, and a free daily deadman that mails when a job that should run has
-gone quiet. The retraining has not shipped weights yet: no symbol has the 50 settled
-predictions training needs, so the XGBoost leg runs on its no-change baseline and the report
-and the council prompt label it as cold-start.
+gone quiet. The retraining has not shipped weights yet. Its last run (2026-10-11) still
+trained one model per symbol and skipped all 45: the best-covered symbol had 17 settled
+predictions against the 50 required, 288 across all symbols. Training now fits one shared
+model on the pooled predictions of every symbol, so the 50-sample minimum applies to that
+pooled sample, and weights ship only if the shared candidate also passes the walk-forward
+gate against a no-change baseline. Until a run ships them, the XGBoost leg runs on that
+baseline and the report and the council prompt label it as cold-start.
 
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.2](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=for-the-badge)
