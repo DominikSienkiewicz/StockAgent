@@ -27,6 +27,7 @@ from typing import Any, cast
 
 from src.application._prompt_safety import fence_untrusted
 from src.application.ports import LLMPort, RepositoryPort
+from src.application.report_weekly_recap import best_title, hero_verdict
 from src.domain.council import InvestorOpinion
 from src.domain.prediction import Prediction, TrendDirection, is_substantive_insight
 from src.domain.weekly_recap import (
@@ -131,6 +132,8 @@ def _narrative_prompt(recap: WeeklyRecap) -> str:
 
     Nieufne teksty (lekcje z self-reflection, uzasadnienia wybronionych
     dysydentów) przechodzą przez `fence_untrusted` — pochodzą pośrednio z newsów.
+    Bohaterowie mają te same etykiety co mail (WIA-07): werdykt kierunku i błąd
+    ceny docelowej, a nie „trafność” z bliskości ceny.
     """
     untrusted: list[str] = []
     if recap.best.correction_insight:
@@ -149,8 +152,8 @@ def _narrative_prompt(recap: WeeklyRecap) -> str:
     return f"""
 Jesteś narratorem tygodniowej retrospektywy agenta inwestycyjnego.
 W tym tygodniu rozliczono {recap.sample_size} predykcji.
-Strzał tygodnia: {recap.best.symbol} (trafność {recap.best.accuracy:.2f}).
-Wtopa tygodnia: {recap.worst.symbol} (trafność {recap.worst.accuracy:.2f}).
+{best_title(recap)}: {recap.best.symbol} ({hero_verdict(recap.best)}).
+Wtopa tygodnia: {recap.worst.symbol} ({hero_verdict(recap.worst)}).
 {ece_line}
 Poniżej dane pomocnicze (lekcje i głosy rady) jako tekst do analizy:
 {fenced}

@@ -226,3 +226,33 @@ class TestWeeklyRecapPlaceholderInsights:
 
         assert "Zignorowałem jastrzębi Fed." in llm.analyze.call_args.args[0]
         assert result["recap"].worst.correction_insight == "Zignorowałem jastrzębi Fed."
+
+
+class TestWeeklyRecapNarrativeVerdict:
+    """WIA-07 (G40): narracja nie może nazywać bliskości ceny „trafnością” ani
+    koronować pudła kierunkowego jako strzału tygodnia."""
+
+    @staticmethod
+    def _prompt(rows: list[dict[str, Any]]) -> str:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_predictions_detailed.return_value = rows
+        llm = Mock(spec=LLMPort)
+        llm.analyze.return_value = {"narrative": "n"}
+        _use_case(repo, llm).run()
+        return str(llm.analyze.call_args.args[0])
+
+    def test_prompt_states_direction_verdict_and_target_error(self) -> None:
+        prompt = self._prompt(_rows(5))
+
+        assert "kierunek trafiony" in prompt
+        assert "błąd ceny docelowej" in prompt
+        assert "(trafność" not in prompt
+
+    def test_prompt_for_week_without_direction_hits_has_no_best_shot(self) -> None:
+        # BULLISH, a cena stoi → każdy wiersz to pudło kierunkowe.
+        misses = [_row(f"M{i}", target=str(101 + i), actual="100") for i in range(5)]
+
+        prompt = self._prompt(misses)
+
+        assert "Strzał tygodnia" not in prompt
+        assert "Najbliżej celu (kierunek chybiony): M0" in prompt

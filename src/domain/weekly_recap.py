@@ -1,7 +1,9 @@
 """Domena niedzielnej retrospektywy „Tydzień StockAgenta" (roadmap #17).
 
 Deterministyczny wybór bohaterów tygodnia z zamkniętych predykcji:
-- **strzał tygodnia** — predykcja o najwyższym `accuracy_score`,
+- **strzał tygodnia** — trafienie kierunkowe o najwyższym `accuracy_score`
+  (WIA-07); tydzień bez trafień dostaje pudło najbliższe celu, oznaczone jako
+  chybione,
 - **wtopa tygodnia** — najniższy `accuracy_score`, z lekcją z `correction_insight`,
 - **wybroniony dysydent** — reużycie `vindicated_dissenters` z rady
   („Soros miał rację, gdy wszyscy mówili KUP"),
@@ -112,12 +114,18 @@ class ClosedPrediction:
 
 @dataclass(frozen=True)
 class RecapHighlight:
-    """Bohater tygodnia — strzał albo wtopa, z lekcją i wybronieniami."""
+    """Bohater tygodnia — strzał albo wtopa, z lekcją i wybronieniami.
+
+    `accuracy` to bliskość ceny do celu (`accuracy_score`), NIE trafność
+    kierunku — tę niesie `direction_correct` (None = nieznana, np. highlight
+    zbudowany ręcznie bez werdyktu).
+    """
 
     symbol: str
     accuracy: Decimal
     correction_insight: str
     vindicated_dissenters: tuple[InvestorOpinion, ...] = field(default=())
+    direction_correct: bool | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -147,6 +155,7 @@ def _to_highlight(closed: ClosedPrediction) -> RecapHighlight:
         accuracy=closed.accuracy(),
         correction_insight=closed.correction_insight,
         vindicated_dissenters=closed.vindicated(),
+        direction_correct=closed.is_correct(),
     )
 
 
@@ -160,8 +169,10 @@ def build_weekly_recap(
     Zwraca `None` (mail NIE WYCHODZI), gdy liczba zamkniętych predykcji jest
     poniżej `MIN_CLOSED_PREDICTIONS_FOR_RECAP` — twarda reguła domenowa.
 
-    Wybór bohaterów jest deterministyczny: strzał = najwyższy `accuracy_score`,
-    wtopa = najniższy. Remis rozstrzygany alfabetycznie po symbolu (stabilnie,
+    Wybór bohaterów jest deterministyczny. Strzał = klucz leksykograficzny
+    (WIA-07): najpierw trafność kierunku, potem najwyższy `accuracy_score` —
+    pudło kierunkowe bliskie celu nie wygrywa z trafieniem. Wtopa = najniższy
+    `accuracy_score`. Remis rozstrzygany alfabetycznie po symbolu (stabilnie,
     niezależnie od kolejności wejścia).
 
     `current_ece` liczone z par `(confidence, is_correct)` przez krzywą
@@ -174,7 +185,8 @@ def build_weekly_recap(
     # Deterministyczne rozstrzyganie remisów: przy równym accuracy wygrywa
     # symbol wcześniejszy alfabetycznie — dla strzału i wtopy tak samo.
     best = min(
-        closed_predictions, key=lambda c: (-c.accuracy(), c.symbol)
+        closed_predictions,
+        key=lambda c: (not c.is_correct(), -c.accuracy(), c.symbol),
     )
     worst = min(
         closed_predictions, key=lambda c: (c.accuracy(), c.symbol)

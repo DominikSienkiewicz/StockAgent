@@ -131,6 +131,49 @@ class TestHeroSelection:
         # Najwyższe accuracy (1.0) mają AAA i BBB; deterministycznie AAA.
         assert recap.best.symbol == "AAA"
 
+    def test_best_of_week_is_never_a_wrong_direction_call(self) -> None:
+        # WIA-07 (G40): pudło kierunkowe bliskie celu (A, accuracy 0.993) nie
+        # może zostać strzałem tygodnia, gdy jest trafienie kierunkowe (B, 0.985).
+        predictions = [
+            _closed(
+                "A",
+                trend=TrendDirection.BEARISH,
+                base="100",
+                target="99.5",
+                actual="100.2",
+            ),
+            _closed("B", base="100", target="101.5", actual="103"),
+            *_n_closed(3),
+        ]
+        recap = build_weekly_recap(predictions)
+        assert recap is not None
+        assert recap.best.symbol == "B"
+        assert recap.best.direction_correct is True
+
+    def test_week_without_direction_hits_falls_back_to_closest_miss(self) -> None:
+        # Bez trafień kierunkowych bohater to pudło najbliższe celu — oznaczone
+        # jako chybione, żeby render nie nazwał go strzałem.
+        predictions = [
+            _closed("NEAR", base="100", target="100.5", actual="100"),
+            *_n_closed(4),
+        ]
+        recap = build_weekly_recap(predictions)
+        assert recap is not None
+        assert recap.best.symbol == "NEAR"
+        assert recap.best.direction_correct is False
+
+    def test_highlights_carry_direction_verdict(self) -> None:
+        predictions = [
+            _closed("HIT", base="100", target="105", actual="105"),
+            _closed("MISS", base="100", target="150", actual="90"),
+            *_n_closed(3),
+        ]
+        recap = build_weekly_recap(predictions)
+        assert recap is not None
+        assert recap.best.direction_correct is True
+        assert recap.worst.symbol == "MISS"
+        assert recap.worst.direction_correct is False
+
 
 class TestVindicatedDissenters:
     def test_reuses_council_vindicated_dissenters(self) -> None:

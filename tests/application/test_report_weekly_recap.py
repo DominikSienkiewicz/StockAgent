@@ -97,3 +97,61 @@ class TestWeeklyRecapText:
         assert "NVDA" in text
         assert "TSLA" in text
         assert "Podsumowanie tygodnia." in text
+
+
+def _hero_recap(*, best_correct: bool | None) -> WeeklyRecap:
+    best = RecapHighlight(
+        symbol="NVDA",
+        accuracy=Decimal("0.95"),
+        correction_insight="",
+        direction_correct=best_correct,
+    )
+    worst = RecapHighlight(
+        symbol="TSLA",
+        accuracy=Decimal("0.10"),
+        correction_insight="",
+        direction_correct=False,
+    )
+    return WeeklyRecap(
+        sample_size=7,
+        best=best,
+        worst=worst,
+        current_ece=0.15,
+        previous_ece=None,
+        ece_delta=None,
+    )
+
+
+class TestHeroDirectionVerdict:
+    """WIA-07 (G40): `accuracy` to bliskość ceny do celu, nie trafność. Bohater
+    pokazuje werdykt kierunku i błąd ceny docelowej, a tydzień bez trafień
+    kierunkowych nie ma „strzału”, tylko „najbliżej celu”."""
+
+    def test_html_shows_direction_verdict_and_target_error(self) -> None:
+        html = render_weekly_recap_html(_hero_recap(best_correct=True))
+
+        assert "Strzał tygodnia" in html
+        assert "✅ kierunek trafiony" in html
+        assert "❌ kierunek chybiony" in html
+        assert "błąd ceny docelowej 5.0%" in html
+        assert "trafność 95%" not in html
+
+    def test_html_week_without_direction_hits_has_no_best_shot(self) -> None:
+        html = render_weekly_recap_html(_hero_recap(best_correct=False))
+
+        assert "Strzał tygodnia" not in html
+        assert "Najbliżej celu (kierunek chybiony)" in html
+
+    def test_text_shows_direction_verdict_and_target_error(self) -> None:
+        text = render_weekly_recap_text(_hero_recap(best_correct=True))
+
+        assert "Strzał tygodnia: NVDA" in text
+        assert "✅ kierunek trafiony" in text
+        assert "błąd ceny docelowej 5.0%" in text
+        assert "trafność 95%" not in text
+
+    def test_text_week_without_direction_hits_has_no_best_shot(self) -> None:
+        text = render_weekly_recap_text(_hero_recap(best_correct=False))
+
+        assert "Strzał tygodnia" not in text
+        assert "Najbliżej celu (kierunek chybiony): NVDA" in text

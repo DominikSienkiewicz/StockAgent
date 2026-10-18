@@ -11,6 +11,7 @@ Sekcja samosupresująca: `recap is None` (poniżej progu / brak danych) →
 from __future__ import annotations
 
 import html as _html
+from decimal import Decimal
 
 from src.domain.council import InvestorOpinion
 from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
@@ -18,6 +19,9 @@ from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
 _COLOR_GOOD = "#16a34a"
 _COLOR_POOR = "#dc2626"
 _COLOR_MUTED = "#6b7280"
+
+_BEST_TITLE = "Strzał tygodnia"
+_BEST_MISS_TITLE = "Najbliżej celu (kierunek chybiony)"
 
 
 def _ece_delta_label(recap: WeeklyRecap) -> str:
@@ -51,6 +55,34 @@ def _dissenters_html(dissenters: tuple[InvestorOpinion, ...]) -> str:
     )
 
 
+def hero_verdict(highlight: RecapHighlight) -> str:
+    """„✅ kierunek trafiony · błąd ceny docelowej 1.5%” (WIA-07).
+
+    `accuracy` to bliskość ceny do celu, nie trafność — dlatego mail pokazuje
+    błąd ceny docelowej (1 − accuracy, w % ceny wejścia), a trafność kierunku
+    osobno. Werdykt pomijamy, gdy highlight go nie niesie.
+    """
+    error = Decimal("1") - highlight.accuracy
+    error_label = (
+        "błąd ceny docelowej ≥100%"
+        if highlight.accuracy <= 0
+        else f"błąd ceny docelowej {error:.1%}"
+    )
+    if highlight.direction_correct is None:
+        return error_label
+    direction = (
+        "✅ kierunek trafiony" if highlight.direction_correct else "❌ kierunek chybiony"
+    )
+    return f"{direction} · {error_label}"
+
+
+def best_title(recap: WeeklyRecap) -> str:
+    """Tydzień bez trafień kierunkowych nie ma „strzału” — jest „najbliżej celu”."""
+    if recap.best.direction_correct is False:
+        return _BEST_MISS_TITLE
+    return _BEST_TITLE
+
+
 def _hero_html(title: str, emoji: str, highlight: RecapHighlight, color: str) -> str:
     lesson = (
         f"<div style='font-size: 12px; color: #374151; margin-top: 4px;'>"
@@ -64,9 +96,15 @@ def _hero_html(title: str, emoji: str, highlight: RecapHighlight, color: str) ->
         f"<div style='font-size: 15px; font-weight: 600; color: {color};'>"
         f"{_html.escape(highlight.symbol)} "
         f"<span style='color: {_COLOR_MUTED}; font-weight: 400;'>"
-        f"(trafność {highlight.accuracy:.0%})</span></div>"
+        f"({hero_verdict(highlight)})</span></div>"
         f"{lesson}</div>"
     )
+
+
+def _best_hero_html(recap: WeeklyRecap) -> str:
+    if recap.best.direction_correct is False:
+        return _hero_html(best_title(recap), "📏", recap.best, _COLOR_MUTED)
+    return _hero_html(best_title(recap), "🎯", recap.best, _COLOR_GOOD)
 
 
 def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> str:
@@ -87,7 +125,7 @@ def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> 
         "<div style='font-size: 11px; color: #6b7280; margin-bottom: 8px;'>"
         f"Retrospektywa z {recap.sample_size} rozliczonych predykcji.</div>"
         f"{narrative_html}"
-        + _hero_html("Strzał tygodnia", "🎯", recap.best, _COLOR_GOOD)
+        + _best_hero_html(recap)
         + _hero_html("Wtopa tygodnia", "💥", recap.worst, _COLOR_POOR)
         + _dissenters_html(recap.worst.vindicated_dissenters)
         + _dissenters_html(recap.best.vindicated_dissenters)
@@ -97,7 +135,7 @@ def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> 
 
 
 def _hero_text(title: str, highlight: RecapHighlight) -> list[str]:
-    lines = [f"  {title}: {highlight.symbol} (trafność {highlight.accuracy:.0%})"]
+    lines = [f"  {title}: {highlight.symbol} ({hero_verdict(highlight)})"]
     if highlight.correction_insight:
         lines.append(f"    Lekcja: {highlight.correction_insight}")
     for op in highlight.vindicated_dissenters:
@@ -119,7 +157,7 @@ def render_weekly_recap_text(recap: WeeklyRecap | None, narrative: str = "") -> 
     ]
     if narrative:
         lines.append(f"  {narrative}")
-    lines.extend(_hero_text("Strzał tygodnia", recap.best))
+    lines.extend(_hero_text(best_title(recap), recap.best))
     lines.extend(_hero_text("Wtopa tygodnia", recap.worst))
     lines.append(f"  Kalibracja: {_ece_delta_label(recap)}")
     return "\n".join(lines)
