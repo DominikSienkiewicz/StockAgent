@@ -124,7 +124,7 @@ uv sync                            # install deps (Anthropic SDK included; `--ex
 uv run python main_agent.py        # one Fast Loop run (analysis + email)
 uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain)
 uv run python main_backtest.py     # offline walk-forward backtest: per-symbol out-of-sample RMSE / hit-rate vs baseline, plus per-fold rank IC, sign-strategy return and turnover; logs mean IC, its sd and t-stat next to the fold count (read-only, no model write)
-uv run python -m src.tools.evaluate            # offline eval: hit-rate + RMSE vs baseline (read-only)
+uv run python -m src.tools.evaluate            # offline eval: hit-rate + RMSE vs baseline, directional n_eff, naive baselines and binomial-test verdict (read-only)
 uv run python -m src.tools.evaluate --days 60  # custom evaluation window
 uv run pytest                                   # full local suite
 uv run pytest -m "not integration and not containers" # unit only

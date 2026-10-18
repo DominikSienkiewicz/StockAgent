@@ -198,6 +198,7 @@ def parse_resolved_predictions(
             insight=_clean_text(row.get("correction_insights")),
             price_at_prediction=_to_decimal(row.get("price_at_prediction")),
             actual_price=_to_decimal(row.get("actual_price_after_12h")),
+            predicted_at=_to_datetime(row.get("timestamp")),
         ))
     return out
 
@@ -207,6 +208,16 @@ def _clean_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _to_datetime(value: Any) -> datetime | None:
+    """ISO-8601 z PostgREST → datetime; brak albo śmieć → None (bez wyjątku)."""
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
 
 
 def _to_decimal(value: Any) -> Decimal | None:

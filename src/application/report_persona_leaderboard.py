@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import html as _html
 
+from src.application.report_evidence import interval_label
 from src.domain.persona_track_record import PersonaTrackRecord
+from src.domain.statistics import wilson_interval
 
 # Medal dla lidera — tylko dla pierwszego miejsca. Przy 2-3 personach podium
 # z brązem wyglądałoby jak nagroda pocieszenia, nie jak ranking.
@@ -69,7 +71,9 @@ def render_persona_leaderboard_html(records: list[PersonaTrackRecord]) -> str:
         "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
         "🏆 Rada — ranking wiarygodności</h2>"
         "<div style='font-size: 11px; color: #6b7280; margin-bottom: 8px;'>"
-        "Trafność rekomendacji vs realny ruch ceny na rozliczonych predykcjach."
+        "Trafność rekomendacji vs realny ruch ceny na rozliczonych predykcjach. "
+        "W nawiasie 95% przedział Wilsona: przy kilkunastu głosach różnice "
+        "między personami zwykle mieszczą się w szumie."
         "</div>"
         "<table style='width: 100%; border-collapse: collapse; "
         "font-size: 13px; margin-bottom: 16px;'>"
@@ -87,12 +91,14 @@ def _render_row_html(record: PersonaTrackRecord, *, position: int) -> str:
     name = _html.escape(record.investor_name)
     color = _hit_rate_color(record.hit_rate)
     medal = f"{_LEADER_MEDAL} " if position == 1 else ""
+    low, high = wilson_interval(record.hit_rate * record.votes, record.votes)
     return (
         "<tr>"
         f"<td style='padding: 6px 8px; color: #9ca3af;'>{position}</td>"
         f"<td style='padding: 6px 8px;'>{medal}<strong>{name}</strong></td>"
         f"<td style='padding: 6px 8px; color: {color}; font-weight: 600;'>"
-        f"{record.hit_rate_pct}%</td>"
+        f"{record.hit_rate_pct}% <span style='color: #9ca3af; font-weight: 400;'>"
+        f"({interval_label(low, high)})</span></td>"
         f"<td style='padding: 6px 8px; color: #6b7280;'>"
         f"{_votes_label(record.votes)}</td>"
         "</tr>"

@@ -60,6 +60,22 @@ def _paginate(query_builder: Any) -> list[dict[str, Any]]:
     return rows
 
 
+# Flaga, którą predict_node zostawia przy neutralnej atrapie po awarii głównego
+# LLM („SIDEWAYS 50%”). Taki wiersz nie jest predykcją i nie może zasilać
+# hit-rate ani kalibracji (WIA-09).
+_LLM_FALLBACK_FLAG = "llm_analysis_failed"
+
+
+def _without_llm_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Odsiewa wiersze-atrapy po awarii LLM (flaga `llm_analysis_failed`).
+
+    Filtr po stronie Pythona, nie PostgREST: `NOT (flags @> ...)` daje NULL dla
+    wiersza z `data_quality_flags = NULL`, więc filtr w zapytaniu po cichu
+    wyciąłby też takie wiersze. Wymaga `data_quality_flags` w SELECT.
+    """
+    return [row for row in rows if _LLM_FALLBACK_FLAG not in (row.get("data_quality_flags") or [])]
+
+
 def _serialize(value: Any) -> Any:
     """Decimal → str (JSON-safe, zachowuje precyzję) — pozostałe typy bez zmian."""
     if isinstance(value, Decimal):
@@ -272,13 +288,13 @@ class SupabaseRepository(RepositoryPort):
             .select(
                 "symbol, predicted_trend, is_trend_correct, timestamp, "
                 "reasoning_text, correction_insights, price_at_prediction, "
-                "actual_price_after_12h"
+                "actual_price_after_12h, data_quality_flags"
             )
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
         )
-        return _paginate(query)
+        return _without_llm_fallback(_paginate(query))
 
     def get_resolved_predictions(self, days: int) -> list[dict[str, Any]]:
         """Zamknięte predykcje (oceniony kierunek) z ostatnich `days` dni.
@@ -293,13 +309,13 @@ class SupabaseRepository(RepositoryPort):
             .select(
                 "symbol, predicted_trend, is_trend_correct, timestamp, "
                 "reasoning_text, correction_insights, price_at_prediction, "
-                "actual_price_after_12h"
+                "actual_price_after_12h, data_quality_flags"
             )
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
         )
-        return _paginate(query)
+        return _without_llm_fallback(_paginate(query))
 
     def get_resolved_predictions_detailed(self, days: int) -> list[dict[str, Any]]:
         """#17 — zamknięte predykcje z polami, których `get_resolved_predictions`
@@ -349,7 +365,8 @@ class SupabaseRepository(RepositoryPort):
         celu, przy cold-starcie zawsze ~100% niezależnie od kierunku).
 
         Zwraca dict z kluczami: `mean_accuracy`, `sample_count`, `correct_count`,
-        `days_window`. Gdy brak danych → mean_accuracy=None.
+        `days_window`. Gdy brak danych → mean_accuracy=None. Atrapy po awarii
+        LLM (`llm_analysis_failed`) nie są predykcjami i nie wchodzą do próby.
         """
         cutoff = datetime.now(UTC) - timedelta(days=days)
         # Paginacja (#8): hit-rate liczony na PEŁNYM zbiorze, nie obciętych 1000
@@ -357,12 +374,12 @@ class SupabaseRepository(RepositoryPort):
         # bez niego obcięta próbka była losowa przy każdym wywołaniu.
         query = (
             self._client.table(self._table)
-            .select("is_trend_correct")
+            .select("is_trend_correct, data_quality_flags")
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
         )
-        rows = _paginate(query)
+        rows = _without_llm_fallback(_paginate(query))
         flags = [
             bool(r["is_trend_correct"])
             for r in rows
@@ -527,14 +544,14 @@ class SupabaseRepository(RepositoryPort):
         cutoff = datetime.now(UTC) - timedelta(days=days)
         query = (
             self._client.table(self._table)
-            .select("id, confidence_score, is_trend_correct, reasoning_text")
+            .select("id, confidence_score, is_trend_correct, reasoning_text, data_quality_flags")
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .not_.is_("confidence_score", "null")
             .order("timestamp", desc=True)
             .order("id", desc=True)
         )
-        return _paginate(query)
+        return _without_llm_fallback(_paginate(query))
 
     def save_calibration(
         self, prediction_id: str, score: float, insight: str

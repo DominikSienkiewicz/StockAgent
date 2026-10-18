@@ -28,6 +28,7 @@ from src.application.report_council_history import (
     InvestorHistory,
     render_council_history_html,
 )
+from src.application.report_evidence import wilson_label
 from src.application.report_finops import render_finops_html
 from src.application.report_formatting import (
     company_label as _company_label,
@@ -103,7 +104,10 @@ from src.application.report_suggestions import (
     render_suggestions_text,
 )
 from src.application.report_templates import _env, render_template
-from src.application.report_track_record import render_track_record_html
+from src.application.report_track_record import (
+    TrackRecordStats,
+    render_track_record_html,
+)
 from src.application.report_user_portfolio import (
     render_user_portfolio_html,
 )
@@ -889,6 +893,8 @@ class ReportContext:
     user_portfolio: Portfolio | None = None
     portfolio_clusters: Mapping[str, str] | None = None
     cycle_cost: CycleCost | None = None
+    # WIA-17/22/23/31/32/36: dowód trafności i Brier pod sekcją Track Record.
+    track_record_stats: TrackRecordStats | None = None
 
 
 def build_html_report(
@@ -987,7 +993,8 @@ def build_html_report(
     # T1/T2/T4: sekcja Track Record (krzywa kapitału, kalibracja, lessons).
     # render zwraca "" gdy wszystkie trzy podsekcje puste.
     track_record_html = render_track_record_html(
-        context.equity_curve, context.calibration_buckets, context.lessons
+        context.equity_curve, context.calibration_buckets, context.lessons,
+        context.track_record_stats,
     )
     # Dane: sekcja Alpha Signals (insider/analitycy/opcje/social/earnings per
     # symbol + krzywa rentowności FRED). render zwraca "" gdy brak danych.
@@ -1160,6 +1167,8 @@ def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
         n = accuracy_stats["sample_count"]
         correct = accuracy_stats["correct_count"]
         days = accuracy_stats["days_window"]
+        # WIA-32: przedział Wilsona obok procentu — goły % jest nieweryfikowalny.
+        interval = wilson_label(correct, n)
         return f"""
       <div style="padding: 12px 14px; background: #fef3c7; border-left: 3px solid #f59e0b;
                   border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
@@ -1167,7 +1176,7 @@ def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
           🎯 Historia trafności (ostatnie {days} dni)
         </div>
         <div style="color: #78350f;">
-          Średnia trafność: <strong>{acc * 100:.1f}%</strong>
+          Średnia trafność: <strong>{acc * 100:.1f}%</strong> ({interval})
           · Predykcji ocenionych: {n}
           · Poprawnych kierunkowo: {correct}
         </div>
@@ -1628,6 +1637,7 @@ def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list
         f"HISTORIA TRAFNOŚCI (ostatnie {accuracy_stats['days_window']} dni)",
         "-" * 64,
         f"  Średnia trafność: {accuracy_stats['mean_accuracy'] * 100:.1f}%"
+        f" ({wilson_label(accuracy_stats['correct_count'], accuracy_stats['sample_count'])})"
         f"  ·  Predykcji ocenionych: {accuracy_stats['sample_count']}"
         f"  ·  Poprawnych: {accuracy_stats['correct_count']}",
         "",

@@ -51,6 +51,7 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_council_history import InvestorHistory
+from src.application.report_evidence import hit_rate_evidence, portfolio_curve
 from src.application.report_formatting import SECTORS
 from src.application.report_lessons import LessonsReport, build_lessons
 from src.application.report_messenger import build_messenger_digest
@@ -61,6 +62,7 @@ from src.application.report_model_scorecard import (
 from src.application.report_models import ResolvedPrediction
 from src.application.report_onboarding import onboarding_subject
 from src.application.report_public_scorecard import render_public_scorecard_html
+from src.application.report_track_record import TrackRecordStats
 from src.application.tools import build_research_tools
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
@@ -75,13 +77,16 @@ from src.application.use_cases.portfolio_risk import (
 from src.config import Settings
 from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
-from src.domain.calibration_curve import CalibrationBucket, reliability_curve
+from src.domain.calibration_curve import (
+    CalibrationBucket,
+    probability_scores,
+    reliability_curve,
+)
 from src.domain.consensus_shift import ConsensusShift, detect_shift
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.digest_lead import LeadItem, build_lead, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
-from src.domain.equity_curve import equity_curve as build_equity_curve
 from src.domain.finops import estimate_cycle_cost
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
@@ -470,12 +475,14 @@ def build_public_scorecard_publisher(settings: Settings) -> WebPublisherPort:
 def _publish_public_scorecard(
     settings: Settings, repository: RepositoryPort, publisher: WebPublisherPort
 ) -> None:
-    """#10 — publikuje stronę z agregatami (N, hit-rate, ECE, krzywa).
+    """#10 — publikuje stronę z agregatami (N, hit-rate, Brier, ECE, krzywe).
 
     Metryki liczone z `resolved`/`cal_rows` NIEZALEŻNIE od flag
     `equity_curve_enabled` / `calibration_curve_enabled` — tamte sterują
-    sekcjami prywatnego maila, nie publicznym dowodem. Best-effort:
-    błąd odczytu ani `OSError` przy zapisie nie wywalają cyklu.
+    sekcjami prywatnego maila, nie publicznym dowodem. Krzywa kapitału to
+    portfel o równej wadze per cykl (WIA-17); strona ujawnia okno i datę
+    generacji (WIA-33). Best-effort: błąd odczytu ani `OSError` przy zapisie
+    nie wywalają cyklu.
     """
     if not settings.public_scorecard_enabled:
         return
@@ -483,20 +490,16 @@ def _publish_public_scorecard(
         resolved = parse_resolved_predictions(
             repository.get_resolved_predictions(settings.track_record_days)
         )
-        trades = [
-            (r.predicted_trend, float(r.actual_change_pct))
-            for r in resolved
-            if r.actual_change_pct is not None
-        ]
-        equity = build_equity_curve(trades) if trades else None
-        cal_rows = repository.get_resolved_for_calibration(settings.track_record_days)
-        samples = [
-            (float(row["confidence_score"]), bool(row["is_trend_correct"]))
-            for row in cal_rows
-            if row.get("confidence_score") is not None
-            and row.get("is_trend_correct") is not None
-        ]
-        page = render_public_scorecard_html(resolved, equity, samples)
+        samples = _calibration_samples(
+            repository.get_resolved_for_calibration(settings.track_record_days)
+        )
+        page = render_public_scorecard_html(
+            resolved,
+            portfolio_curve(resolved),
+            samples,
+            generated_on=datetime.now(UTC).date(),
+            window_days=settings.track_record_days,
+        )
         if page:
             publisher.publish(page)
     except Exception:
@@ -1391,12 +1394,23 @@ def _build_signal_calibration(
     return reliability_curve(samples) if samples else None
 
 
+def _calibration_samples(rows: list[dict[str, Any]]) -> list[tuple[float, bool]]:
+    """Wiersze kalibracji → próbki `(confidence, was_correct)`; niepełne pomijamy."""
+    return [
+        (float(row["confidence_score"]), bool(row["is_trend_correct"]))
+        for row in rows
+        if row.get("confidence_score") is not None
+        and row.get("is_trend_correct") is not None
+    ]
+
+
 def _build_track_record(
     settings: Settings, repository: RepositoryPort
 ) -> tuple[EquityCurve | None, list[CalibrationBucket] | None, LessonsReport | None]:
     """T1/T2/T4 — krzywa kapitału, kalibracja, lessons (render-only, zero
     płatnych). Każda podsekcja flag-gated; wszystkie czytają zamknięte predykcje
-    z okna track_record_days."""
+    z okna track_record_days. Krzywa kapitału to portfel o równej wadze per
+    cykl (WIA-17), nie szeregowe składanie równoległych trade'ów."""
     equity_curve: EquityCurve | None = None
     calibration_buckets: list[CalibrationBucket] | None = None
     lessons: LessonsReport | None = None
@@ -1409,29 +1423,52 @@ def _build_track_record(
             logger.exception("Failed to fetch resolved predictions for track record")
             tr_resolved = []
         if settings.equity_curve_enabled:
-            trades = [
-                (r.predicted_trend, float(r.actual_change_pct))
-                for r in tr_resolved
-                if r.actual_change_pct is not None
-            ]
-            equity_curve = build_equity_curve(trades)
+            equity_curve = portfolio_curve(tr_resolved)
         if settings.lessons_enabled:
             lessons = build_lessons(tr_resolved)
     if settings.calibration_curve_enabled:
         try:
-            cal_rows = repository.get_resolved_for_calibration(
-                settings.track_record_days
+            samples = _calibration_samples(
+                repository.get_resolved_for_calibration(settings.track_record_days)
             )
-            samples = [
-                (float(row["confidence_score"]), bool(row["is_trend_correct"]))
-                for row in cal_rows
-                if row.get("confidence_score") is not None
-                and row.get("is_trend_correct") is not None
-            ]
             calibration_buckets = reliability_curve(samples) if samples else None
         except Exception:
             logger.exception("Failed to compute calibration curve")
     return equity_curve, calibration_buckets, lessons
+
+
+def _build_track_record_stats(
+    settings: Settings, repository: RepositoryPort
+) -> TrackRecordStats | None:
+    """Dowód trafności (T1) i Brier / BSS (T2) pod sekcją Track Record.
+
+    Te same flagi co podsekcje, które statystyki uzupełniają. Osobna funkcja,
+    bo `_build_track_record` zwraca stały kontrakt trzech podsekcji. Każdy
+    odczyt best-effort: błąd → brak danej statystyki, cykl leci dalej.
+    """
+    evidence = None
+    scores = None
+    if settings.equity_curve_enabled:
+        try:
+            evidence = hit_rate_evidence(
+                parse_resolved_predictions(
+                    repository.get_resolved_predictions(settings.track_record_days)
+                )
+            )
+        except Exception:
+            logger.exception("Failed to compute hit-rate evidence for track record")
+    if settings.calibration_curve_enabled:
+        try:
+            scores = probability_scores(
+                _calibration_samples(
+                    repository.get_resolved_for_calibration(settings.track_record_days)
+                )
+            )
+        except Exception:
+            logger.exception("Failed to compute probability scores for track record")
+    if evidence is None and scores is None:
+        return None
+    return TrackRecordStats(hit_rate=evidence, scores=scores)
 
 
 def _persist_quota_alerts(repository: RepositoryPort, alerts: list[QuotaAlert]) -> None:
@@ -1548,6 +1585,7 @@ def _dispatch_reports(
         equity_curve, calibration_buckets, lessons = _build_track_record(
             settings, repository
         )
+        track_record_stats = _build_track_record_stats(settings, repository)
         # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
         signal_calibration_buckets = _build_signal_calibration(settings, repository)
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
@@ -1575,6 +1613,7 @@ def _dispatch_reports(
             equity_curve=equity_curve,
             calibration_buckets=calibration_buckets,
             lessons=lessons,
+            track_record_stats=track_record_stats,
             signal_calibration_buckets=signal_calibration_buckets,
             cycle_maturity=maturity,
             portfolio_sectors=sectors,

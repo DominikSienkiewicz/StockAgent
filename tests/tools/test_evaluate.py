@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from src.tools.evaluate import EvalReport, summarize_evaluation
+from src.tools.evaluate import EvalReport, format_report, summarize_evaluation
 
 
 def _row(
@@ -126,3 +126,32 @@ class TestDirectionalHitRateSplit:
         assert report.directional_count == 1
         assert report.directional_hit_rate == pytest.approx(1.0)
         assert report.sideways_count == 0
+
+
+class TestSignificanceVerdict:
+    """WIA-22: ewaluacja offline mówi, czy trafność kierunkowa bije najlepszy
+    naiwny baseline na tym samym zbiorze — nie tylko goły procent."""
+
+    def test_report_carries_directional_evidence(self):
+        rows = [
+            {**_row("BULLISH", True, 100, 101, 101), "timestamp": "2026-10-01T14:00:00+00:00"},
+            {**_row("BULLISH", False, 100, 101, 99), "timestamp": "2026-10-02T14:00:00+00:00"},
+        ]
+
+        report = summarize_evaluation(rows)
+
+        assert report.evidence is not None
+        assert report.evidence.hit_rate.directional == 2
+        assert report.evidence.cycles == 2
+
+    def test_formatted_report_states_the_verdict(self):
+        rows = [
+            {**_row("BULLISH", i % 2 == 0, 100, 101, 101 if i % 2 == 0 else 99),
+             "timestamp": f"2026-10-{i + 1:02d}T14:00:00+00:00"}
+            for i in range(6)
+        ]
+
+        text = format_report(summarize_evaluation(rows), 30)
+
+        assert "nieodróżnialne od rzutu monetą" in text
+        assert "zawsze-BULLISH: 50%" in text

@@ -8,37 +8,71 @@ Trzy podsekcje track-recordu agenta, render-only (zero płatnych wywołań):
   - T4: panel „lessons learned" — błędne predykcje z diagnozą i motywem.
 
 Każda podsekcja chowa się, gdy nie ma czego pokazać; cała sekcja znika, gdy
-wszystkie trzy są puste (`render_* → ""`)."""
+wszystkie trzy są puste (`render_* → ""`).
+
+`TrackRecordStats` (opcjonalne) dokłada uczciwe statystyki do istniejących
+podsekcji: pod T1 dowód trafności kierunkowej (Wilson na n_eff, baseline'y,
+werdykt istotności), pod T2 Brier / BSS / log loss i rozkład Murphy'ego. Same
+statystyki nie wskrzeszają schowanej podsekcji."""
 
 from __future__ import annotations
 
 import html as _html
+from dataclasses import dataclass
 
+from src.application.report_evidence import (
+    PORTFOLIO_ASSUMPTIONS_PL,
+    PORTFOLIO_METHOD_CHANGE_PL,
+    baselines_label,
+    hit_rate_detail,
+    hit_rate_value,
+    murphy_label,
+    probability_label,
+    uncertainty_note,
+)
 from src.application.report_lessons import LessonsReport
 from src.domain.calibration_curve import (
     CalibrationBucket,
+    ProbabilityScores,
     expected_calibration_error,
 )
 from src.domain.equity_curve import EquityCurve
+from src.domain.track_record import HitRateEvidence
 
 # Maksymalna liczba słupków sparklini krzywej kapitału (ostatnie N transakcji) —
 # trzymamy zwięźle, by sekcja była czytelna i mailowalna.
 _SPARKLINE_BARS = 24
 _SPARKLINE_MAX_PX = 36
 
+_NOTE_STYLE = "font-size: 12px; color: #6b7280; margin: 0 0 10px 0;"
+
+
+@dataclass(frozen=True)
+class TrackRecordStats:
+    """Statystyki dowodowe do sekcji Track Record (jedno pole `ReportContext`).
+
+    - `hit_rate` — dowód trafności kierunkowej z rozliczonych predykcji okna,
+    - `scores` — Brier / log loss / BSS / Murphy z próbek kalibracji.
+    """
+
+    hit_rate: HitRateEvidence | None = None
+    scores: ProbabilityScores | None = None
+
 
 def render_track_record_html(
     equity_curve: EquityCurve | None,
     calibration_buckets: list[CalibrationBucket] | None,
     lessons: LessonsReport | None,
+    stats: TrackRecordStats | None = None,
 ) -> str:
     """Fragment HTML sekcji Track Record. Pusty string, gdy wszystkie trzy
     podsekcje są puste."""
+    stats = stats or TrackRecordStats()
     subsections: list[str] = []
     if equity_curve is not None and equity_curve.n_trades > 0:
-        subsections.append(_render_equity_html(equity_curve))
+        subsections.append(_render_equity_html(equity_curve, stats.hit_rate))
     if calibration_buckets:
-        subsections.append(_render_calibration_html(calibration_buckets))
+        subsections.append(_render_calibration_html(calibration_buckets, stats.scores))
     if lessons is not None and lessons.items:
         subsections.append(_render_lessons_html(lessons))
 
@@ -52,8 +86,8 @@ def render_track_record_html(
     return header + "".join(subsections)
 
 
-def _render_equity_html(curve: EquityCurve) -> str:
-    """T1 — podsumowanie krzywej kapitału + sparklinia tabelaryczna."""
+def _render_equity_html(curve: EquityCurve, evidence: HitRateEvidence | None) -> str:
+    """T1 — podsumowanie krzywej kapitału, założenia, dowód trafności, sparklinia."""
     total_color = "#059669" if curve.total_return >= 0 else "#dc2626"
     summary = (
         "<div style='padding: 10px 14px; background: #eff6ff; "
@@ -66,7 +100,27 @@ def _render_equity_html(curve: EquityCurve) -> str:
         f"{curve.max_drawdown * 100:.1f}% · transakcji: {curve.n_trades}"
         "</div>"
     )
-    return summary + _render_sparkline_html(curve)
+    assumptions = (
+        f"<p style='{_NOTE_STYLE}'>{_html.escape(PORTFOLIO_ASSUMPTIONS_PL)} "
+        f"{_html.escape(PORTFOLIO_METHOD_CHANGE_PL)}</p>"
+    )
+    return summary + assumptions + _render_evidence_html(evidence) + _render_sparkline_html(curve)
+
+
+def _render_evidence_html(evidence: HitRateEvidence | None) -> str:
+    """Trafność kierunkowa z przedziałem, baseline'ami i werdyktem (lub "")."""
+    if evidence is None or evidence.hit_rate.rate is None:
+        return ""
+    parts = [f"Trafność kierunkowa: {hit_rate_value(evidence)} ({hit_rate_detail(evidence)})"]
+    baselines = baselines_label(evidence)
+    if baselines:
+        parts.append(f"naiwne strategie: {baselines}")
+    if evidence.verdict is not None:
+        parts.append(evidence.verdict)
+    note = uncertainty_note(evidence)
+    if note:
+        parts.append(note)
+    return f"<p style='{_NOTE_STYLE}'>{_html.escape(' · '.join(parts))}</p>"
 
 
 def _render_sparkline_html(curve: EquityCurve) -> str:
@@ -105,8 +159,10 @@ def _severity_color(value: float) -> str:
     return "#16a34a"
 
 
-def _render_calibration_html(buckets: list[CalibrationBucket]) -> str:
-    """T2 — reliability diagram jako tabela: bucket pewności → realny hit-rate."""
+def _render_calibration_html(
+    buckets: list[CalibrationBucket], scores: ProbabilityScores | None
+) -> str:
+    """T2 — Brier / BSS (gdy są próbki) + reliability diagram: pewność → hit-rate."""
     ece = expected_calibration_error(buckets)
     rows: list[str] = []
     for b in buckets:
@@ -124,7 +180,17 @@ def _render_calibration_html(buckets: list[CalibrationBucket]) -> str:
             "</tr>"
         )
     ece_color = _severity_color(ece)
+    scores_html = ""
+    if scores is not None:
+        scores_html = (
+            f"<p style='font-size: 13px; margin: 12px 0 4px 0;'><strong>"
+            f"{_html.escape(probability_label(scores))}</strong></p>"
+            f"<p style='{_NOTE_STYLE}'>Rozkład Murphy'ego: "
+            f"{_html.escape(murphy_label(scores))} — BSS 0% to brak umiejętności "
+            "względem prognozy „zawsze stopa bazowa”.</p>"
+        )
     return (
+        f"{scores_html}"
         "<p style='font-size: 12px; color: #6b7280; margin: 12px 0 6px 0;'>"
         "🎯 Krzywa kalibracji (deklarowana pewność vs realny hit-rate):</p>"
         "<table style='width: 100%; border-collapse: collapse; "
@@ -137,7 +203,7 @@ def _render_calibration_html(buckets: list[CalibrationBucket]) -> str:
         "<th style='padding: 6px 8px; text-align: right;'>Hit-rate</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         "<p style='font-size: 12px; color: #6b7280; margin: 0 0 16px 0;'>"
-        f"Błąd kalibracji (ECE): <strong style='color: {ece_color};'>"
+        f"Pomocniczo — błąd kalibracji (ECE): <strong style='color: {ece_color};'>"
         f"{ece * 100:.1f}%</strong> — im niżej, tym lepiej pewność odpowiada "
         "realnej trafności.</p>"
     )

@@ -1834,3 +1834,84 @@ def test_backtest_log_reports_ic_next_to_rmse(settings, mock_external_clients, m
     assert "ic=0.120" in line
     assert "t=4.80" in line
     assert "folds=4" in line
+
+
+def _same_day_rows() -> list[dict[str, object]]:
+    """Dwie równoległe predykcje BULLISH +10% w jednym cyklu (dniu UTC)."""
+    return [
+        {
+            "symbol": symbol,
+            "predicted_trend": "BULLISH",
+            "is_trend_correct": True,
+            "price_at_prediction": "100",
+            "actual_price_after_12h": "110",
+            "timestamp": "2026-10-17T14:00:00+00:00",
+        }
+        for symbol in ("NVDA", "AMD")
+    ]
+
+
+class TestHonestTrackRecordWiring:
+    """WIA-17/33/36: orkiestrator buduje krzywą portfela (jeden punkt na cykl),
+    ujawnia okno scorecardu i liczy metryki pewności z surowych próbek."""
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.public_scorecard_enabled = True
+        settings.track_record_days = 30
+        settings.equity_curve_enabled = True
+        settings.lessons_enabled = False
+        settings.calibration_curve_enabled = True
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    @staticmethod
+    def _repo() -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_predictions.return_value = _same_day_rows()
+        repo.get_resolved_for_calibration.return_value = [
+            {"confidence_score": 0.6, "is_trend_correct": True},
+            {"confidence_score": 0.6, "is_trend_correct": False},
+        ]
+        return repo
+
+    def test_track_record_equity_is_one_equal_weight_point_per_cycle(self) -> None:
+        equity, _, _ = main_agent._build_track_record(self._settings(), self._repo())
+
+        assert equity is not None
+        assert len(equity.points) == 1
+        assert equity.total_return == pytest.approx(0.10)
+
+    def test_scorecard_uses_the_portfolio_curve_and_discloses_its_window(self) -> None:
+        publisher = MagicMock()
+
+        main_agent._publish_public_scorecard(self._settings(), self._repo(), publisher)
+
+        page = publisher.publish.call_args.args[0]
+        assert "+10.0%" in page
+        assert "+21.0%" not in page
+        assert "Okno: ostatnie 30 dni" in page
+
+    def test_track_record_stats_carry_hit_rate_evidence_and_brier(self) -> None:
+        stats = main_agent._build_track_record_stats(self._settings(), self._repo())
+
+        assert stats is not None
+        assert stats.hit_rate is not None
+        assert stats.hit_rate.hit_rate.directional == 2
+        assert stats.hit_rate.cycles == 1
+        assert stats.scores is not None
+        assert stats.scores.brier == pytest.approx(0.26)
+
+    def test_track_record_stats_follow_the_section_flags(self) -> None:
+        settings = self._settings(equity_curve_enabled=False, calibration_curve_enabled=False)
+
+        assert main_agent._build_track_record_stats(settings, self._repo()) is None
+
+    def test_track_record_stats_survive_a_repository_error(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_predictions.side_effect = Exception("supabase down")
+        repo.get_resolved_for_calibration.side_effect = Exception("supabase down")
+
+        assert main_agent._build_track_record_stats(self._settings(), repo) is None

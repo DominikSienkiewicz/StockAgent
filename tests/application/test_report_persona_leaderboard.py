@@ -92,3 +92,14 @@ class TestRenderPersonaLeaderboardHtml:
 
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
+
+
+class TestPersonaWilsonInterval:
+    """WIA-32: „68% (22 głosy)” bez przedziału nie mówi, czy 68% różni się od 50%."""
+
+    def test_hit_rate_carries_a_95_percent_wilson_interval(self) -> None:
+        # 15/22 ≈ 68% → Wilson 95% ≈ 47–84%.
+        html = render_persona_leaderboard_html([_record("Buffett", 15 / 22, 22)])
+
+        assert "68%" in html
+        assert "95% CI 47–84%" in html

@@ -1475,3 +1475,68 @@ class TestPaginatedSlowLoopReads:
         builder.range.side_effect = Exception("column commitment_hash does not exist")
 
         assert repo.get_unrevealed_commitments() == []
+
+
+class TestLlmFallbackRowsExcludedFromTrackRecord:
+    """WIA-09: po awarii głównego LLM predict_node zapisuje neutralną atrapę
+    („SIDEWAYS 50%”) z flagą `llm_analysis_failed`. Hit-rate i ECE liczyły ją
+    jak prawdziwą predykcję. Każdy odczyt track-recordu musi ją odsiać — i musi
+    pobierać kolumnę flag, inaczej filtr w produkcji nie ma czego sprawdzić."""
+
+    _FALLBACK = {"data_quality_flags": ["llm_analysis_failed"]}
+
+    @staticmethod
+    def _order_builder(mock_client: MagicMock) -> MagicMock:
+        chain = mock_client.table.return_value
+        return chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+
+    def test_accuracy_stats_skip_llm_fallback_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        rows = [
+            {"is_trend_correct": True, "data_quality_flags": []},
+            {"is_trend_correct": True, **self._FALLBACK},
+            {"is_trend_correct": False, "data_quality_flags": None},
+        ]
+        _set_paginated_response(self._order_builder(mock_client), [rows])
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert stats["sample_count"] == 2
+        assert stats["correct_count"] == 1
+        assert "data_quality_flags" in mock_client.table.return_value.select.call_args.args[0]
+
+    def test_resolved_predictions_skip_llm_fallback_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        rows = [
+            {"symbol": "AAPL", "data_quality_flags": ["av_sentiment_score_missing"]},
+            {"symbol": "NVDA", **self._FALLBACK},
+        ]
+        _set_paginated_response(self._order_builder(mock_client), [rows])
+
+        out = repo.get_resolved_predictions(30)
+
+        assert [r["symbol"] for r in out] == ["AAPL"]
+        assert "data_quality_flags" in mock_client.table.return_value.select.call_args.args[0]
+
+    def test_recently_resolved_predictions_skip_llm_fallback_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        rows = [{"symbol": "AAPL"}, {"symbol": "NVDA", **self._FALLBACK}]
+        _set_paginated_response(self._order_builder(mock_client), [rows])
+
+        out = repo.get_recently_resolved_predictions(24)
+
+        assert [r["symbol"] for r in out] == ["AAPL"]
+        assert "data_quality_flags" in mock_client.table.return_value.select.call_args.args[0]
+
+    def test_calibration_samples_skip_llm_fallback_rows(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [[{"id": "p-1"}, {"id": "p-2", **self._FALLBACK}]])
+
+        rows = repo.get_resolved_for_calibration(30)
+
+        assert [r["id"] for r in rows] == ["p-1"]
+        assert "data_quality_flags" in builder.select.call_args.args[0]

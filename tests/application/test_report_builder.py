@@ -1800,3 +1800,55 @@ class TestColdStartSignalsAndChart:
 
     def test_forecast_chart_skips_cold_start_results(self):
         assert build_forecast_chart_html([_cold_start_result()]) == ""
+
+
+class TestAccuracyHistoryInterval:
+    """WIA-32: historia trafności w mailu pokazuje przedział Wilsona obok procentu."""
+
+    _STATS = {
+        "mean_accuracy": 0.72,
+        "sample_count": 50,
+        "correct_count": 36,
+        "days_window": 30,
+    }
+
+    def test_html_shows_wilson_interval(self):
+        html, _ = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(accuracy_stats=self._STATS)
+        )
+
+        # 36/50 → Wilson 95% ≈ 58–83%.
+        assert "95% CI 58–83%" in html
+
+    def test_plain_text_shows_wilson_interval(self):
+        _, text = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(accuracy_stats=self._STATS)
+        )
+
+        assert "95% CI 58–83%" in text
+
+
+class TestResolvedPredictionTimestamp:
+    """WIA-17/23: klucz cyklu (dzień UTC) wymaga znacznika czasu predykcji."""
+
+    def test_parse_keeps_the_prediction_timestamp(self):
+        rows = [
+            {
+                "symbol": "NVDA",
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": True,
+                "timestamp": "2026-10-17T22:30:00+00:00",
+            }
+        ]
+
+        r = parse_resolved_predictions(rows)[0]
+
+        assert r.predicted_at == datetime(2026, 10, 17, 22, 30, tzinfo=UTC)
+
+    def test_unparseable_timestamp_is_none(self):
+        rows = [
+            {"symbol": "NVDA", "predicted_trend": "BULLISH", "is_trend_correct": True,
+             "timestamp": "not-a-date"},
+        ]
+
+        assert parse_resolved_predictions(rows)[0].predicted_at is None

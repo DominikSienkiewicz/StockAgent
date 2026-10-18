@@ -7,9 +7,17 @@ from __future__ import annotations
 from decimal import Decimal
 
 from src.application.report_lessons import LessonItem, LessonsReport
-from src.application.report_track_record import render_track_record_html
-from src.domain.calibration_curve import CalibrationBucket
+from src.application.report_track_record import (
+    TrackRecordStats,
+    render_track_record_html,
+)
+from src.domain.calibration_curve import CalibrationBucket, probability_scores
 from src.domain.equity_curve import EquityCurve, EquityPoint
+from src.domain.track_record import (
+    HitRateEvidence,
+    ScoredCall,
+    assess_directional_hit_rate,
+)
 
 
 def _curve() -> EquityCurve:
@@ -130,3 +138,58 @@ class TestComposition:
         assert "+7.0%" in html
         assert "MSFT" in html
         assert "kalibracj" in html.lower()
+
+
+def _evidence() -> HitRateEvidence:
+    calls = [
+        ScoredCall(
+            cycle=f"2026-10-{day:02d}",
+            predicted_trend="BULLISH",
+            is_correct=day % 2 == 0,
+            realized_change=0.01 if day % 2 == 0 else -0.01,
+        )
+        for day in range(1, 9)
+        for _ in range(3)
+    ]
+    return assess_directional_hit_rate(calls)
+
+
+class TestHonestStats:
+    """WIA-17/22/23/31/32/36: Track Record mówi, na jakich założeniach stoi krzywa
+    i czy trafność w ogóle odróżnia się od naiwnej strategii."""
+
+    def test_equity_summary_states_portfolio_assumptions_and_method_change(self) -> None:
+        html = render_track_record_html(_curve(), None, None)
+
+        assert "równa waga" in html
+        assert "gotówka" in html
+        # Zmiana metodologii przesuwa historyczne liczby — musi być oznaczona.
+        assert "Metodologia zmieniona 2026-10-18" in html
+
+    def test_hit_rate_evidence_line_has_interval_baseline_and_verdict(self) -> None:
+        html = render_track_record_html(
+            _curve(), None, None, TrackRecordStats(hit_rate=_evidence())
+        )
+
+        assert "Trafność kierunkowa: 50.0%" in html
+        assert "95% CI" in html
+        assert "n=24, n_eff≈8" in html
+        assert "zawsze-BULLISH: 50%" in html
+        assert "nieodróżnialne od rzutu monetą" in html
+
+    def test_calibration_block_shows_brier_and_skill(self) -> None:
+        buckets = [
+            CalibrationBucket(lower=0.6, upper=0.7, count=10, mean_confidence=0.6, hit_rate=0.6)
+        ]
+        scores = probability_scores([(0.6, True)] * 6 + [(0.6, False)] * 4)
+
+        html = render_track_record_html(None, buckets, None, TrackRecordStats(scores=scores))
+
+        assert "Brier = 0.24 " in html
+        assert "BSS = +0.0%" in html
+        assert "ECE" in html
+
+    def test_stats_alone_do_not_resurrect_a_hidden_section(self) -> None:
+        stats = TrackRecordStats(hit_rate=_evidence())
+
+        assert render_track_record_html(None, None, None, stats) == ""

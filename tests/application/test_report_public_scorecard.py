@@ -7,6 +7,7 @@ ujawnić. Publikujemy wyłącznie agregaty: N, hit-rate, ECE, krzywą kalibracji
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from src.application.report_models import ResolvedPrediction
@@ -155,3 +156,153 @@ def test_hard_anti_pii_no_symbols_emails_or_amounts_leak() -> None:
     assert "1234" not in html
     assert "1300" not in html
     assert "250" not in html
+
+
+def _dated(
+    trend: str, correct: bool, day: int, *, price_at: str = "100", actual: str = "101"
+) -> ResolvedPrediction:
+    """Zamknięta predykcja z datą (klucz cyklu = dzień UTC) i ruchem ceny."""
+    return ResolvedPrediction(
+        symbol="AAA",
+        predicted_trend=trend,
+        is_correct=correct,
+        price_at_prediction=Decimal(price_at),
+        actual_price=Decimal(actual),
+        predicted_at=datetime(2026, 10, day, 14, 0, tzinfo=UTC),
+    )
+
+
+def _card(value: str, label: str) -> str:
+    """Dokładny markup karty — asercje na podciągach przechodziłyby dzięki CSS."""
+    return (
+        f"<div class='card-value'>{value}</div>"
+        f"<div class='card-label'>{label}</div>"
+    )
+
+
+class TestDirectionalHitRateHeadline:
+    """WIA-05: publiczna „trafność kierunkowa” wliczała SIDEWAYS wbrew własnej
+    metodologii („prognozy bez ruchu nie stawiają zakładu”)."""
+
+    def test_directional_hit_rate_excludes_sideways(self) -> None:
+        resolved = [
+            _resolved("AAA", "BULLISH", True),
+            _resolved("BBB", "BEARISH", False),
+            _resolved("CCC", "SIDEWAYS", True),
+            _resolved("DDD", "SIDEWAYS", True),
+        ]
+
+        html = render_public_scorecard_html(resolved, None, None)
+
+        assert _card("50.0%", "Hit-rate kierunkowy") in html
+
+    def test_sideways_predictions_get_their_own_card(self) -> None:
+        resolved = [
+            _resolved("AAA", "BULLISH", True),
+            _resolved("CCC", "SIDEWAYS", True),
+            _resolved("DDD", "SIDEWAYS", False),
+        ]
+
+        html = render_public_scorecard_html(resolved, None, None)
+
+        assert _card("2", "Prognozy „bez ruchu” (poza hit-rate)") in html
+
+    def test_missing_directional_data_shows_a_dash_not_the_equity_win_rate(self) -> None:
+        # Fallback na `EquityCurve.win_rate` mieszał definicje — brak danych = „—”.
+        curve = equity_curve([("BULLISH", 0.05)])
+
+        html = render_public_scorecard_html([], curve, None)
+
+        assert _card("—", "Hit-rate kierunkowy") in html
+        assert _card("100.0%", "Hit-rate kierunkowy") not in html
+
+
+class TestHonestHeadline:
+    """WIA-31/32/22/23: trafność z przedziałem, n, n_eff, baseline'em i werdyktem."""
+
+    def test_hit_rate_card_carries_wilson_interval_and_n(self) -> None:
+        resolved = [_dated("BULLISH", i % 2 == 0, 1 + i) for i in range(10)]
+
+        html = render_public_scorecard_html(resolved, None, None)
+
+        # 5/10 na 10 niezależnych cyklach → Wilson 95% ≈ 24–76%.
+        assert "95% CI 24–76%, n=10" in html
+
+    def test_effective_n_is_disclosed_when_cycles_are_correlated(self) -> None:
+        # 2 cykle × 5 identycznych wyników → n_eff = 2.
+        resolved = [_dated("BULLISH", day == 1, day) for day in (1, 2) for _ in range(5)]
+
+        html = render_public_scorecard_html(resolved, None, None)
+
+        assert "n=10, n_eff≈2" in html
+
+    def test_naive_baselines_are_shown_next_to_hit_rate(self) -> None:
+        resolved = [
+            _dated("BULLISH", True, 1, actual="102"),
+            _dated("BULLISH", True, 2, actual="101"),
+            _dated("BEARISH", True, 3, actual="99"),
+        ]
+
+        html = render_public_scorecard_html(resolved, None, None)
+
+        assert "zawsze-BULLISH: 67%" in html
+        assert "zawsze-BEARISH: 33%" in html
+
+    def test_significance_verdict_is_stated(self) -> None:
+        resolved = [_dated("BULLISH", i % 2 == 0, 1 + i) for i in range(6)]
+
+        html = render_public_scorecard_html(resolved, None, None)
+
+        assert "nieodróżnialne od rzutu monetą" in html
+
+
+class TestProbabilityScoresOnScorecard:
+    """WIA-36: Brier i Brier Skill Score jako główne metryki pewności; ECE pomocniczo."""
+
+    def test_calibration_section_leads_with_brier_and_skill(self) -> None:
+        samples = [(0.6, True)] * 6 + [(0.6, False)] * 4
+
+        html = render_public_scorecard_html([_resolved("AAA", "BULLISH", True)], None, samples)
+
+        assert "Brier = 0.24 " in html
+        assert "klimatologia 0.24," in html
+        assert "BSS = +0.0%" in html
+        assert "log loss" in html
+        assert "ECE" in html
+
+
+class TestWindowDisclosure:
+    """WIA-33: strona deklaruje brak cherry-pickingu, więc musi mówić, jakie okno pokazuje."""
+
+    def test_page_discloses_window_and_date(self) -> None:
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)],
+            None,
+            None,
+            generated_on=date(2026, 10, 18),
+            window_days=30,
+        )
+
+        assert "Okno: ostatnie 30 dni (2026-09-18 – 2026-10-18)" in html
+        assert "Wygenerowano: 2026-10-18" in html
+        assert "@" not in html
+
+    def test_calibration_sparkline_shows_bucket_counts(self) -> None:
+        samples = [(0.55, True), (0.55, False), (0.95, True)]
+
+        html = render_public_scorecard_html([_resolved("AAA", "BULLISH", True)], None, samples)
+
+        assert "<div class='spark-count'>n=2</div>" in html
+        assert "<div class='spark-count'>n=1</div>" in html
+
+
+class TestPortfolioCurveDisclosure:
+    """WIA-17: krzywa kapitału to portfel o równej wadze per cykl — strona mówi to wprost."""
+
+    def test_equity_section_states_its_assumptions(self) -> None:
+        curve = equity_curve([("BULLISH", 0.03)])
+
+        html = render_public_scorecard_html([_resolved("AAA", "BULLISH", True)], curve, None)
+
+        assert "równa waga" in html
+        assert "gotówka" in html

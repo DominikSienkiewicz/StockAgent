@@ -149,6 +149,9 @@ class ResolvedPrediction:
     # Ceny do policzenia faktycznego ruchu ("co się stało").
     price_at_prediction: Decimal | None = None
     actual_price: Decimal | None = None
+    # Moment predykcji (`prediction_logs.timestamp`). Jego dzień UTC to klucz
+    # cyklu: predykcje jednego cyklu są skorelowane (WIA-17, WIA-23).
+    predicted_at: datetime | None = None
 
     @property
     def actual_change_pct(self) -> Decimal | None:

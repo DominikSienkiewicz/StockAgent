@@ -126,7 +126,11 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def get_accuracy_stats(self, days: int) -> dict[str, Any]:
-        """Statystyki trafności ostatnich `days` dni z prediction_logs."""
+        """Statystyki trafności ostatnich `days` dni z prediction_logs.
+
+        Ten i pozostałe odczyty track-recordu (`get_recently_resolved_predictions`,
+        `get_resolved_predictions`, `get_resolved_for_calibration`) pomijają
+        atrapy po awarii głównego LLM (flaga `llm_analysis_failed`, WIA-09)."""
 
     @abstractmethod
     def get_recently_resolved_predictions(self, hours: int) -> list[dict[str, Any]]:
@@ -141,7 +145,8 @@ class RepositoryPort(ABC):
         Ten sam kształt wierszy co `get_recently_resolved_predictions`
         (symbol, predicted_trend, is_trend_correct, timestamp, reasoning_text,
         correction_insights, price_at_prediction, actual_price_after_12h), więc
-        `parse_resolved_predictions` parsuje oba. JEDEN odczyt zasila krzywą
+        `parse_resolved_predictions` parsuje oba (wiersz niesie też
+        `data_quality_flags`). JEDEN odczyt zasila krzywą
         kapitału (paper-PnL), panel „lessons learned" (correction_insights) i
         inne sekcje track-recordu — bez dublowania zapytań. Pusta lista gdy brak
         danych / błąd po stronie wywołującego."""

@@ -8,7 +8,11 @@ Metryki:
     - hit_rate     — blended trafność (udział is_trend_correct=True po WSZYSTKICH
                      wierszach; SIDEWAYS liczy się jako trafienie na spokojnych dniach),
     - directional_hit_rate — trafność liczona TYLKO po BULLISH/BEARISH (bez „cichych"
-                     trafień SIDEWAYS) + osobne pokrycie SIDEWAYS,
+                     trafień SIDEWAYS) + osobne pokrycie SIDEWAYS; definicja z domeny
+                     (`directional_hit_rate`), ta sama co w mailu i scorecardzie,
+    - evidence     — dowód trafności kierunkowej (WIA-22): naiwne baseline'y na tych
+                     samych predykcjach, n_eff po cyklach (dniach UTC) i werdykt testu
+                     dwumianowego względem lepszego baseline'u kierunkowego,
     - model_rmse   — RMSE prognozy (predicted_target_price) vs cena rzeczywista,
     - baseline_rmse— RMSE naiwnego "last-value" (cena_w_momencie_predykcji),
     - beats_baseline — czy model_rmse < baseline_rmse (czy w ogóle warto).
@@ -25,7 +29,11 @@ import argparse
 import math
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
+
+from src.domain.equity_curve import directional_hit_rate
+from src.domain.track_record import HitRateEvidence, ScoredCall, assess_directional_hit_rate
 
 
 @dataclass(frozen=True)
@@ -41,6 +49,8 @@ class EvalReport:
     directional_hit_rate: float | None  # trafność tylko BULLISH/BEARISH
     directional_count: int              # liczba kierunkowych z flagą
     sideways_count: int                 # liczba SIDEWAYS z flagą
+    # WIA-22: przedział na n_eff, baseline'y i werdykt istotności (None bez wierszy).
+    evidence: HitRateEvidence | None = None
 
 
 def _to_float(value: Any) -> float | None:
@@ -51,6 +61,31 @@ def _to_float(value: Any) -> float | None:
     if math.isnan(result) or math.isinf(result):
         return None
     return result
+
+
+def _cycle_key(value: Any) -> str:
+    """Dzień UTC predykcji jako klucz cyklu; brak/śmieć → wspólny klucz ""."""
+    try:
+        stamp = datetime.fromisoformat(str(value))
+    except ValueError:
+        return ""
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone(UTC)
+    return stamp.date().isoformat()
+
+
+def _scored_call(row: dict[str, Any]) -> ScoredCall:
+    price_at = _to_float(row.get("price_at_prediction"))
+    actual = _to_float(row.get("actual_price_after_12h"))
+    change = None
+    if price_at and actual is not None:
+        change = (actual - price_at) / price_at
+    return ScoredCall(
+        cycle=_cycle_key(row.get("timestamp")),
+        predicted_trend=str(row.get("predicted_trend")),
+        is_correct=bool(row["is_trend_correct"]),
+        realized_change=change,
+    )
 
 
 def _rmse(squared_errors: list[float]) -> float | None:
@@ -76,19 +111,11 @@ def summarize_evaluation(rows: list[dict[str, Any]]) -> EvalReport:
 
     # Directional-only hit-rate: tylko predykcje BULLISH/BEARISH. SIDEWAYS jest
     # raportowane jako osobne pokrycie (count), bo trafienie SIDEWAYS to często
-    # „dzień bez ruchu", a nie realna trafność kierunku.
-    directional_flags = [
-        bool(r["is_trend_correct"])
-        for r in rows
-        if r.get("is_trend_correct") is not None
-        and str(r.get("predicted_trend")).upper() in ("BULLISH", "BEARISH")
-    ]
-    directional_hit_rate = (
-        (sum(directional_flags) / len(directional_flags))
-        if directional_flags
-        else None
+    # „dzień bez ruchu", a nie realna trafność kierunku. Jedna definicja z domeny.
+    flagged = [r for r in rows if r.get("is_trend_correct") is not None]
+    directional = directional_hit_rate(
+        (str(r.get("predicted_trend")), bool(r["is_trend_correct"])) for r in flagged
     )
-    directional_count = len(directional_flags)
     sideways_count = sum(
         1
         for r in rows
@@ -122,9 +149,12 @@ def summarize_evaluation(rows: list[dict[str, Any]]) -> EvalReport:
         model_rmse=model_rmse,
         baseline_rmse=baseline_rmse,
         beats_baseline=beats_baseline,
-        directional_hit_rate=directional_hit_rate,
-        directional_count=directional_count,
+        directional_hit_rate=directional.rate,
+        directional_count=directional.directional,
         sideways_count=sideways_count,
+        evidence=(
+            assess_directional_hit_rate([_scored_call(r) for r in flagged]) if flagged else None
+        ),
     )
 
 
@@ -148,11 +178,28 @@ def format_report(report: EvalReport, days: int) -> str:
         f"  Próbek (zamkniętych predykcji): {report.sample_count}",
         f"  Hit-rate (blended):             {_pct(report.hit_rate)}",
         f"  Hit-rate (kierunkowy):          {directional}",
+        *_evidence_lines(report.evidence),
         f"  RMSE modelu:                    {_num(report.model_rmse)}",
         f"  RMSE baseline (last-value):     {_num(report.baseline_rmse)}",
         f"  Werdykt:                        {verdict}",
     ]
     return "\n".join(lines)
+
+
+def _evidence_lines(evidence: HitRateEvidence | None) -> list[str]:
+    """Baseline'y i werdykt istotności kierunkowej (puste, gdy brak kierunkowych)."""
+    if evidence is None or evidence.hit_rate.rate is None:
+        return []
+    b = evidence.baselines
+    lines = [f"  Efektywna liczność (n_eff):     {evidence.n_eff:.1f} z {evidence.cycles} cykli"]
+    if b.always_bullish is not None and b.always_bearish is not None:
+        lines.append(
+            f"  Naiwne baseline'y:              zawsze-BULLISH: {b.always_bullish * 100:.0f}%"
+            f" · zawsze-BEARISH: {b.always_bearish * 100:.0f}%"
+        )
+    if evidence.verdict is not None:
+        lines.append(f"  Istotność (kierunkowa):         {evidence.verdict}")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
