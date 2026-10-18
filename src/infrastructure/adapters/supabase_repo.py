@@ -95,6 +95,10 @@ def _serialize_record(record: dict[str, Any]) -> dict[str, Any]:
     return {k: _serialize(v) for k, v in record.items()}
 
 
+def _optional_text(value: Any) -> str | None:
+    return None if value is None else str(value)
+
+
 def _rows(response: Any) -> list[dict[str, Any]]:
     """Narrow supabase response.data (JSON union) do list[dict]."""
     data = response.data or []
@@ -238,6 +242,9 @@ class SupabaseRepository(RepositoryPort):
             predicted_trend=TrendDirection(str(row["predicted_trend"])),
             price_at_prediction=Decimal(str(row["price_at_prediction"])),
             predicted_target_price=Decimal(str(row["predicted_target_price"])),
+            # WIA-18: wejście predykcji dla diagnozy błędu (select("*") je zwraca).
+            news_summary=_optional_text(row.get("news_summary")),
+            reasoning=_optional_text(row.get("reasoning_text")),
         )
 
     def get_feature_store_data(self, symbol: str) -> list[dict[str, Any]]:

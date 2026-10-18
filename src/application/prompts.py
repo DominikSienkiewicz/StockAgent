@@ -125,18 +125,49 @@ się wyłącznie poniższego output_schema.
 """.strip()
 
 
+# Separator, którym `_summarize_news` skleja nagłówki w `news_summary`.
+_SAVED_NEWS_SEPARATOR = " | "
+_REASONING_ITEM_PREFIX = "Uzasadnienie prognozy: "
+
+
+def _saved_input_block(news_summary: str, reasoning: str) -> str:
+    """Zapisane wejście predykcji jako JEDEN fence: każdy nagłówek osobnym
+    punktem (z własnym limitem długości), uzasadnienie ostatnim. Jeden fence,
+    nie dwa — druga nota DATA-ONLY to ~80 tokenów na każdą diagnozę. Brak
+    zapisu jest mówiony wprost, a nie udawany pustym fence'em."""
+    headlines = [h for h in news_summary.split(_SAVED_NEWS_SEPARATOR) if h.strip()]
+    items = list(headlines)
+    if reasoning.strip():
+        items.append(_REASONING_ITEM_PREFIX + reasoning)
+    lines = [fence_untrusted("PREDICTION_INPUT", items)] if items else []
+    if not headlines:
+        lines.append("Brak zapisanych newsów dla tej predykcji.")
+    if not reasoning.strip():
+        lines.append("Brak zapisanego uzasadnienia.")
+    return "\n".join(lines)
+
+
 def get_mistake_diagnosis_prompt(
     last_trend: str,
     last_news_summary: str,
     actual_price: str,
     vindicated_context: str = "",
+    *,
+    entry_price: str = "",
+    target_price: str = "",
+    last_reasoning: str = "",
 ) -> str:
     """Prompt dla LLM-a w węźle reflect — diagnoza błędnej predykcji.
 
     `vindicated_context` (opcjonalny) niesie counterfactual dissent-replay:
     informację o członku rady, który głosował przeciw finalnej decyzji, ale
     trafił rzeczywisty ruch. Zmusza diagnozę do rozważenia, czy stłumiony głos
-    mniejszości był trafniejszy."""
+    mniejszości był trafniejszy.
+
+    WIA-18: `last_news_summary` (zapisane nagłówki) i `last_reasoning` pochodzą
+    z bazy, czyli pośrednio z newsów stron trzecich — idą wyłącznie przez
+    `fence_untrusted`. `entry_price` i `target_price` (puste = pominięte)
+    pozwalają ocenić skalę błędu, a nie tylko jego kierunek."""
     dissent_block = (
         f"\nWybroniony dysydent rady (głosował przeciw finalnej decyzji, ale "
         f"trafił ruch): {vindicated_context}. Rozważ, czy jego teza była "
@@ -144,13 +175,20 @@ def get_mistake_diagnosis_prompt(
         if vindicated_context
         else ""
     )
+    price_line = (
+        f"\nCena wejścia: {entry_price}, cel prognozy: {target_price}."
+        if entry_price and target_price
+        else ""
+    )
     return f"""
 Jesteś analitykiem korygującym.
-W poprzednim cyklu przewidziałeś trend: {last_trend}.
-Oparłeś to na newsach: {last_news_summary}.
+W poprzednim cyklu przewidziałeś trend: {last_trend}.{price_line}
 Aktualna cena to {actual_price}, prognoza była błędna.{dissent_block}
 
-Zidentyfikuj, dlaczego te newsy wprowadziły Cię w błąd (np. zignorowałeś
+Nagłówki newsów i Twoje uzasadnienie z tamtej prognozy:
+{_saved_input_block(last_news_summary, last_reasoning)}
+
+Zidentyfikuj, dlaczego te dane wprowadziły Cię w błąd (np. zignorowałeś
 szerszy kontekst rynkowy, news był fake-newsem, sentyment był manipulowany).
 Odpowiedz zwięźle, max 3 zdania.
 """.strip()

@@ -75,6 +75,10 @@ class Prediction:
     price_at_prediction: Decimal
     predicted_target_price: Decimal
     id: str | None = None  # ustawiane przy odczycie z repozytorium
+    # Wejście predykcji (nagłówki złączone " | " i uzasadnienie LLM), czytane
+    # z repozytorium dla diagnozy błędu. None = brak zapisu (stare wiersze).
+    news_summary: str | None = None
+    reasoning: str | None = None
 
     def is_trend_correct(
         self, actual_price: Decimal, tolerance: Decimal | None = None

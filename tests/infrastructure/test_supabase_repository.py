@@ -289,6 +289,58 @@ class TestGetUnverifiedPrediction:
         assert prediction.price_at_prediction == Decimal("100.0")
         assert prediction.predicted_target_price == Decimal("105.0")
 
+    def test_maps_news_summary_and_reasoning_for_mistake_diagnosis(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """WIA-18: diagnoza błędu ma widzieć newsy i uzasadnienie, na których
+        oparto prognozę — `select("*")` je zwraca, mapowanie je gubiło."""
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "is_", "order", "limit"],
+            [
+                {
+                    "id": "uuid-1",
+                    "symbol": "AAPL",
+                    "predicted_trend": "BULLISH",
+                    "price_at_prediction": 100.0,
+                    "predicted_target_price": 105.0,
+                    "news_summary": "Fed holds | Chips rally",
+                    "reasoning_text": "Popyt na GPU rośnie.",
+                }
+            ],
+        )
+
+        prediction = repo.get_unverified_prediction("AAPL")
+
+        assert prediction is not None
+        assert prediction.news_summary == "Fed holds | Chips rally"
+        assert prediction.reasoning == "Popyt na GPU rośnie."
+
+    def test_missing_news_and_reasoning_map_to_none(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "is_", "order", "limit"],
+            [
+                {
+                    "id": "uuid-1",
+                    "symbol": "AAPL",
+                    "predicted_trend": "BULLISH",
+                    "price_at_prediction": 100.0,
+                    "predicted_target_price": 105.0,
+                    "news_summary": None,
+                    "reasoning_text": None,
+                }
+            ],
+        )
+
+        prediction = repo.get_unverified_prediction("AAPL")
+
+        assert prediction is not None
+        assert prediction.news_summary is None
+        assert prediction.reasoning is None
+
     def test_returns_none_when_no_unverified_prediction(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:

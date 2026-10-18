@@ -213,3 +213,33 @@ class TestSubstantiveInsight:
 
         assert "odłożona" not in DIAGNOSIS_SKIPPED_INSIGHT
         assert "zmienno" in DIAGNOSIS_SKIPPED_INSIGHT.lower()
+
+
+class TestPredictionDiagnosisInputs:
+    """WIA-18: diagnoza błędu potrzebuje oryginalnych newsów i uzasadnienia.
+    Pola są opcjonalne — stare wywołania konstruktora działają bez zmian."""
+
+    def test_news_and_reasoning_default_to_none(self) -> None:
+        pred = Prediction(
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100"),
+            predicted_target_price=Decimal("105"),
+        )
+
+        assert pred.news_summary is None
+        assert pred.reasoning is None
+
+    def test_news_and_reasoning_are_carried(self) -> None:
+        pred = Prediction(
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100"),
+            predicted_target_price=Decimal("105"),
+            id="p-1",
+            news_summary="Fed holds | Chips rally",
+            reasoning="Popyt na GPU rośnie.",
+        )
+
+        assert pred.news_summary == "Fed holds | Chips rally"
+        assert pred.reasoning == "Popyt na GPU rośnie."

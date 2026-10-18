@@ -615,11 +615,16 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         vindicated_ctx = _vindicated_context(
             repository_port, last, current_price, symbol
         )
+        # WIA-18: diagnoza widzi prawdziwe wejście predykcji (nagłówki,
+        # uzasadnienie, cenę wejścia i cel). Prompt ogradza dane z bazy.
         prompt = get_mistake_diagnosis_prompt(
             last_trend=str(last.predicted_trend),
-            last_news_summary="(zapisany w prediction_logs)",
+            last_news_summary=last.news_summary or "",
             actual_price=str(current_price),
             vindicated_context=vindicated_ctx,
+            entry_price=str(last.price_at_prediction),
+            target_price=str(last.predicted_target_price),
+            last_reasoning=last.reasoning or "",
         )
         # #14: płatne wywołanie LLM diagnozy — log jawny + timing.
         _log_paid_call(deps, "reflect", symbol, "llm", "llm_port.analyze_mistake")
