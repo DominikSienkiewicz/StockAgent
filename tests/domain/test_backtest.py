@@ -1,6 +1,12 @@
 import pytest
 
-from src.domain.backtest import BacktestSummary, summarize_folds
+from src.domain.backtest import (
+    MIN_OOS_POINTS,
+    MIN_REL_IMPROVEMENT,
+    BacktestSummary,
+    beats_baseline,
+    summarize_folds,
+)
 
 
 class TestSummarizeFolds:
@@ -97,3 +103,66 @@ class TestSummarizeFolds:
             pass
         else:  # pragma: no cover
             raise AssertionError("BacktestSummary should be frozen")
+
+
+def _folds(
+    candidate: float, baseline: float, n_valid: float, n: int = 4
+) -> list[dict[str, float]]:
+    return [
+        {
+            "candidate_rmse": candidate,
+            "baseline_rmse": baseline,
+            "hit_rate": 0.5,
+            "n_valid": n_valid,
+        }
+        for _ in range(n)
+    ]
+
+
+def test_tiny_improvement_does_not_beat_baseline():
+    # ML-05: 0.5% poprawy to szum, nie „lepszy model". Próg 2% ustalony przed
+    # spojrzeniem na wyniki — obniżanie go pod wynik byłoby p-hackingiem.
+    assert beats_baseline(0.0200, 0.0201) is False
+
+    summary = summarize_folds(_folds(0.0200, 0.0201, n_valid=20))
+
+    assert summary.beats_baseline is False
+    assert "nie bije baseline" in summary.verdict
+
+
+def test_improvement_above_the_relative_margin_beats_baseline():
+    assert MIN_REL_IMPROVEMENT == 0.02
+    assert beats_baseline(0.0190, 0.0200) is True
+
+
+def test_zero_baseline_is_never_beaten():
+    # Bezbłędny baseline (zwrot zawsze 0) — nawet idealny kandydat go nie „bije".
+    assert beats_baseline(0.0, 0.0) is False
+
+
+def test_too_few_oos_points_do_not_beat_baseline():
+    # ML-06: 4 foldy × 10 punktów = 40 < 60 — za mało na werdykt, nawet przy
+    # wyraźnej poprawie RMSE.
+    summary = summarize_folds(_folds(0.010, 0.020, n_valid=10))
+
+    assert summary.n_oos_points == 40
+    assert summary.beats_baseline is False
+    assert "za mało punktów OOS" in summary.verdict
+
+
+def test_enough_oos_points_keep_the_verdict():
+    assert MIN_OOS_POINTS == 60
+    summary = summarize_folds(_folds(0.010, 0.020, n_valid=15))
+
+    assert summary.n_oos_points == 60
+    assert summary.beats_baseline is True
+
+
+def test_folds_without_n_valid_skip_the_oos_condition():
+    # Brak klucza `n_valid` = warunek pominięty (kształt foldów sprzed ML-06).
+    summary = summarize_folds(
+        [{"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.6}]
+    )
+
+    assert summary.n_oos_points is None
+    assert summary.beats_baseline is True

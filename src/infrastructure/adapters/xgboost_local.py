@@ -9,6 +9,7 @@ import pandas as pd
 import xgboost as xgb
 
 from src.application.ports import MLPredictionPort
+from src.domain.backtest import summarize_folds
 from src.domain.value_objects import Money
 
 # Hiperparametry dobrane pod dane finansowe (zapobieganie overfittingowi).
@@ -23,7 +24,6 @@ DEFAULT_PARAMS: dict[str, Any] = {
 
 VALIDATION_FRACTION = 0.2
 MIN_VALIDATION_SAMPLES = 10
-MIN_RMSE_IMPROVEMENT = 1e-9
 
 # Walk-forward (expanding window): liczba foldów i minimalna liczba próbek, poniżej
 # której nie ma sensu robić CV (spadamy do pojedynczego splitu). Każdy fold dokłada
@@ -82,28 +82,32 @@ class XGBoostAdapter(MLPredictionPort):
 
         # Walk-forward (expanding window) zamiast jednego splitu 20%: bramka
         # „pobij baseline" opiera się na ŚREDNIEJ z foldów, nie na jednym
-        # hałaśliwym estymatorze z jednego reżimu rynku (finding #23).
-        candidate_rmse, baseline_rmse, directional_hit_rate, n_folds = (
-            self._walk_forward_evaluate(feature_frame, target_series)
+        # hałaśliwym estymatorze z jednego reżimu rynku (finding #23). Sama reguła
+        # (margines 2%, min. punktów OOS) żyje w domenie — `summarize_folds`.
+        summary = summarize_folds(
+            self._walk_forward_folds_detail(feature_frame, target_series)
         )
-        # Per-feature drift stats (mean/std) — obserwowalne niezależnie od
-        # werdyktu bramki, żeby porównać rozkład cech z poprzednim runem.
-        feature_stats = _feature_distribution_stats(feature_frame)
+        metrics: dict[str, Any] = {
+            "n_samples": len(target_series),
+            "n_folds": summary.n_folds,
+            "n_oos_points": summary.n_oos_points,
+            "candidate_holdout_rmse": summary.mean_candidate_rmse,
+            "baseline_rmse": summary.mean_baseline_rmse,
+            "candidate_holdout_directional_hit_rate": summary.mean_hit_rate,
+            # Per-feature drift stats (mean/std) — obserwowalne niezależnie od
+            # werdyktu bramki, żeby porównać rozkład cech z poprzednim runem.
+            "feature_stats": _feature_distribution_stats(feature_frame),
+            "metric_note": METRIC_NOTE,
+        }
 
-        if candidate_rmse >= baseline_rmse - MIN_RMSE_IMPROVEMENT:
+        if not summary.beats_baseline:
             return {
                 "status": "skipped_validation_failed",
                 "reason": (
-                    "Candidate did not beat the zero-return persistence "
-                    "baseline on average across walk-forward folds."
+                    "Candidate did not pass the walk-forward gate against the "
+                    f"zero-return persistence baseline: {summary.verdict}."
                 ),
-                "n_samples": len(target_series),
-                "n_folds": n_folds,
-                "candidate_holdout_rmse": candidate_rmse,
-                "baseline_rmse": baseline_rmse,
-                "candidate_holdout_directional_hit_rate": directional_hit_rate,
-                "feature_stats": feature_stats,
-                "metric_note": METRIC_NOTE,
+                **metrics,
                 "model_path": self._model_path,
             }
 
@@ -118,13 +122,7 @@ class XGBoostAdapter(MLPredictionPort):
         self._model = model
         return {
             "status": "trained_successfully",
-            "n_samples": len(target_series),
-            "n_folds": n_folds,
-            "candidate_holdout_rmse": candidate_rmse,
-            "baseline_rmse": baseline_rmse,
-            "candidate_holdout_directional_hit_rate": directional_hit_rate,
-            "feature_stats": feature_stats,
-            "metric_note": METRIC_NOTE,
+            **metrics,
             "model_path": self._model_path,
         }
 
@@ -132,9 +130,9 @@ class XGBoostAdapter(MLPredictionPort):
         self, features: pd.DataFrame, target: pd.Series
     ) -> list[dict[str, float]]:
         """Per-fold metryki walk-forward (expanding window) na danych
-        time-ordered. Jedno źródło prawdy dla `_walk_forward_evaluate` (średnia)
-        i `walk_forward_report` (szczegół). Poniżej `MIN_FOLD_SAMPLES` spada do
-        pojedynczego splitu (sane fallback) → jeden fold.
+        time-ordered. Jedno źródło prawdy dla bramki `train()` (przez domenowe
+        `summarize_folds`) i `walk_forward_report` (szczegół). Poniżej
+        `MIN_FOLD_SAMPLES` spada do pojedynczego splitu (sane fallback) → jeden fold.
         """
         folds = _expanding_window_folds(len(target))
         out: list[dict[str, float]] = []
@@ -161,22 +159,6 @@ class XGBoostAdapter(MLPredictionPort):
                 }
             )
         return out
-
-    def _walk_forward_evaluate(
-        self, features: pd.DataFrame, target: pd.Series
-    ) -> tuple[float, float, float, int]:
-        """Ewaluacja walk-forward (expanding window) na danych time-ordered.
-
-        Zwraca (avg_candidate_rmse, avg_baseline_rmse, avg_directional_hit_rate,
-        n_folds) uśrednione po foldach z `_walk_forward_folds_detail`.
-        """
-        details = self._walk_forward_folds_detail(features, target)
-        return (
-            float(np.mean([d["candidate_rmse"] for d in details])),
-            float(np.mean([d["baseline_rmse"] for d in details])),
-            float(np.mean([d["hit_rate"] for d in details])),
-            len(details),
-        )
 
     def walk_forward_report(
         self, features: Any, target: Any

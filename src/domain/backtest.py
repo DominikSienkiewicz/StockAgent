@@ -7,6 +7,16 @@ from dataclasses import dataclass
 # Werdykt walk-forward backtestu. Czysta domena — agreguje per-fold metryki
 # (RMSE kandydata vs baseline persystencji „zwrot=0", trafność kierunku) w jeden
 # obraz: czy lokalny model bije naiwny baseline i o ile. Bez I/O, bez pandas.
+# To JEDYNE miejsce reguły „bije baseline" — adapter XGBoost stosuje ten sam
+# werdykt przed zapisem wag (ML-05), zamiast trzymać własny próg.
+
+# ML-05: kandydat musi obniżyć RMSE o co najmniej 2% WZGLĘDNIE. Próg ustalony
+# przed spojrzeniem na wyniki — obniżanie go pod wynik to p-hacking.
+MIN_REL_IMPROVEMENT = 0.02
+
+# ML-06: werdykt wymaga co najmniej tylu punktów out-of-sample łącznie ze
+# wszystkich foldów. Przy 4 foldach expanding-window oznacza to n ≥ 75 próbek.
+MIN_OOS_POINTS = 60
 
 
 @dataclass(frozen=True)
@@ -15,8 +25,10 @@ class BacktestSummary:
 
     `mean_*` to średnie arytmetyczne metryk per-fold. `improvement_pct` to
     procentowa redukcja RMSE względem baseline'u (dodatnia = model lepszy).
-    `beats_baseline` jest True gdy średnie RMSE kandydata < średnie RMSE
-    baseline'u. `verdict` to krótka polska etykieta do raportu.
+    `beats_baseline` jest True gdy średnie RMSE kandydata jest niższe od
+    baseline'u o co najmniej `MIN_REL_IMPROVEMENT` i foldy dały co najmniej
+    `MIN_OOS_POINTS` punktów OOS. `n_oos_points` to suma `n_valid` z foldów
+    (None, gdy foldy nie niosą tego klucza). `verdict` to polska etykieta do raportu.
     """
 
     n_folds: int
@@ -26,16 +38,35 @@ class BacktestSummary:
     improvement_pct: float
     beats_baseline: bool
     verdict: str
+    n_oos_points: int | None = None
+
+
+def beats_baseline(candidate_rmse: float, baseline_rmse: float) -> bool:
+    """Czy kandydat bije baseline persystencji o co najmniej `MIN_REL_IMPROVEMENT`.
+
+    Bezbłędny baseline (`baseline_rmse == 0`, zwrot zawsze 0) jest nie do pobicia —
+    także przez kandydata z RMSE 0, który niczego się nie nauczył.
+    """
+    if baseline_rmse <= 0:
+        return False
+    return (baseline_rmse - candidate_rmse) / baseline_rmse >= MIN_REL_IMPROVEMENT
+
+
+def _oos_points(folds: Sequence[Mapping[str, float]]) -> int | None:
+    if not all("n_valid" in fold for fold in folds):
+        return None
+    return int(sum(fold["n_valid"] for fold in folds))
 
 
 def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
     """Agreguje per-fold metryki walk-forward w `BacktestSummary`.
 
     Każdy fold to mapa z kluczami `candidate_rmse`, `baseline_rmse`, `hit_rate`
-    (kształt z `MLPredictionPort.walk_forward_report`). Średnie są arytmetyczne;
-    `improvement_pct = (baseline - candidate) / baseline * 100` (0.0 gdy
-    baseline == 0, by uniknąć dzielenia przez zero). Pusta sekwencja zwraca
-    sentinel „brak danych".
+    i opcjonalnie `n_valid` (kształt z `MLPredictionPort.walk_forward_report`).
+    Średnie są arytmetyczne; `improvement_pct = (baseline - candidate) / baseline
+    * 100` (0.0 gdy baseline == 0, by uniknąć dzielenia przez zero). Werdykt
+    stosuje `beats_baseline` i — gdy foldy niosą `n_valid` — `MIN_OOS_POINTS`.
+    Pusta sekwencja zwraca sentinel „brak danych".
     """
     if not folds:
         return BacktestSummary(0, 0, 0, 0, 0, False, "brak danych")
@@ -50,10 +81,19 @@ def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
     else:
         improvement_pct = (mean_baseline - mean_candidate) / mean_baseline * 100
 
-    beats_baseline = mean_candidate < mean_baseline
+    n_oos_points = _oos_points(folds)
+    passed = beats_baseline(mean_candidate, mean_baseline)
 
-    if beats_baseline:
+    if n_oos_points is not None and n_oos_points < MIN_OOS_POINTS:
+        passed = False
+        verdict = f"za mało punktów OOS ({n_oos_points} < {MIN_OOS_POINTS})"
+    elif passed:
         verdict = f"model bije baseline o {improvement_pct:.1f}%"
+    elif mean_candidate < mean_baseline:
+        verdict = (
+            f"model nie bije baseline (poprawa {improvement_pct:.1f}% "
+            f"< marginesu {MIN_REL_IMPROVEMENT:.0%})"
+        )
     else:
         verdict = "model nie bije baseline"
 
@@ -63,6 +103,7 @@ def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
         mean_baseline_rmse=mean_baseline,
         mean_hit_rate=mean_hit_rate,
         improvement_pct=improvement_pct,
-        beats_baseline=beats_baseline,
+        beats_baseline=passed,
         verdict=verdict,
+        n_oos_points=n_oos_points,
     )

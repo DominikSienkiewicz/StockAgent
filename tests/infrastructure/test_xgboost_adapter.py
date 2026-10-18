@@ -436,3 +436,38 @@ class TestIsTrained:
 class TestAdapterImplementsPort:
     def test_is_ml_prediction_port(self):
         assert issubclass(XGBoostAdapter, MLPredictionPort)
+
+
+class TestDomainGate:
+    """ML-05/ML-06: bramka „bije baseline" żyje w domenie (`src.domain.backtest`),
+    a adapter tylko ją stosuje przed zapisem wag."""
+
+    def test_noise_level_improvement_is_not_shipped(
+        self, adapter: XGBoostAdapter, model_path: str, monkeypatch: pytest.MonkeyPatch
+    ):
+        # 0.0200 vs 0.0201 = 0.5% poprawy. Stara reguła (próg 1e-9) shipowała szum.
+        folds = [
+            {"candidate_rmse": 0.0200, "baseline_rmse": 0.0201, "hit_rate": 0.5,
+             "n_valid": 30.0}
+            for _ in range(4)
+        ]
+        monkeypatch.setattr(adapter, "_walk_forward_folds_detail", lambda *a, **k: folds)
+        features, target = _synthetic_dataset(n=200)
+
+        result = adapter.train(features, target)
+
+        assert result["status"] == "skipped_validation_failed"
+        assert not Path(model_path).exists()
+
+    def test_too_few_oos_points_are_not_shipped(
+        self, adapter: XGBoostAdapter, model_path: str
+    ):
+        # n=60 → 4 foldy po 12 punktów = 48 < MIN_OOS_POINTS mimo silnego sygnału.
+        features, target = _synthetic_dataset(n=60)
+
+        result = adapter.train(features, target)
+
+        assert result["status"] == "skipped_validation_failed"
+        assert result["n_oos_points"] == 48
+        assert not Path(model_path).exists()
+        assert adapter.is_trained is False
