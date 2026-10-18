@@ -200,6 +200,31 @@ class TestGetSocialVelocity:
 
         assert adapter.get_social_velocity("GME") is None
 
+    def test_saturated_week_returns_none(
+        self, adapter: RedditSocialAdapter, mocker
+    ) -> None:
+        # Tydzień ucięty na `limit` (100) to nie liczba postów, tylko sufit —
+        # baseline 100/7 ≈ 14 przy 60 dziś dawałby fałszywe SURGING.
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=[_ok_response(_listing(60)), _ok_response(_listing(100))],
+        )
+
+        assert adapter.get_social_velocity("NVDA") is None
+
+    def test_week_just_below_limit_is_counted(
+        self, adapter: RedditSocialAdapter, mocker
+    ) -> None:
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=[_ok_response(_listing(20)), _ok_response(_listing(99))],
+        )
+
+        snap = adapter.get_social_velocity("NVDA")
+
+        assert snap is not None
+        assert snap.baseline_mentions == pytest.approx(99 / 7.0)
+
 
 class TestNullAdapter:
     def test_returns_none_without_io(self, mocker) -> None:

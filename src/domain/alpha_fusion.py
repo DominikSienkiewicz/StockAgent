@@ -28,6 +28,9 @@ Zasady konstrukcji:
   Bez renormalizacji symbol z jednym dostępnym źródłem dostałby sztucznie niski
   score (surową wagę zamiast pełnego znaku). Obecne-neutralne źródło ZOSTAJE w
   mianowniku — to realna informacja "brak sygnału", która słusznie rozcieńcza.
+  Wyjątek: social BEZ `avg_sentiment` traktujemy jak brakujące — bez sentymentu
+  nie może mieć kierunku (Reddit search go nie daje), więc byłby martwym głosem
+  z wagą 0.20, który tylko ściąga pozostałe źródła ku zeru.
 
 * Earnings NIE jest kierunkowym głosem (bliskość raportu jest bezkierunkowa),
   lecz DAMPENEREM zaufania: im bliżej raportu, tym mocniej ściągamy magnitudę
@@ -134,7 +137,8 @@ def _social_signal(snapshot: SocialVelocitySnapshot) -> float:
     """Kierunek social: skok wzmianek daje sygnał tylko z sentymentem.
 
     SURGING + sentyment dodatni → +1, ujemny → -1. Skok bez kierunku sentymentu
-    (None / dokładnie 0) oraz NORMAL/QUIET → 0. Reużywa `trend()` (progi surge/
+    (None / dokładnie 0) oraz NORMAL/QUIET → 0. Snapshot z `avg_sentiment=None`
+    w ogóle nie trafia do fuzji (patrz `fuse_alpha_signals`). Reużywa `trend()` (progi surge/
     quiet żyją w social_velocity, nie tutaj)."""
     if snapshot.trend() is not SocialTrend.SURGING:
         return 0.0
@@ -168,7 +172,8 @@ def fuse_alpha_signals(
         raw_signals["options"] = _OPTIONS_SIGNAL[options.sentiment()]
     if analyst is not None:
         raw_signals["analyst"] = _ANALYST_SIGNAL[analyst.rating()]
-    if social is not None:
+    if social is not None and social.avg_sentiment is not None:
+        # Bez sentymentu social nie ma kierunku — nie wchodzi do renormalizacji.
         raw_signals["social"] = _social_signal(social)
 
     if not raw_signals:

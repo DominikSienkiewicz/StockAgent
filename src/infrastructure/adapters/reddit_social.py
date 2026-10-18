@@ -10,6 +10,10 @@ Adapter robi DWA zapytania na symbol:
   * t=week → liczba postów z tygodnia, baseline = week / 7.0.
 Search nie zwraca sentymentu, więc `avg_sentiment` zawsze None.
 
+Jedna strona wyników to najwyżej `DEFAULT_LIMIT` postów. Tydzień, który dobił do
+limitu, jest ucięty — to sufit, nie liczba — i zaniżony baseline dawałby
+fałszywe SURGING, więc wtedy zwracamy None (bez paginacji: +N requestów na symbol).
+
 Cienki I/O — klasyfikacja trendu siedzi w domenie
 (`SocialVelocitySnapshot.trend`). To opcjonalne źródło alpha: każdy błąd
 (non-200, brak pól, parse, sieć) kończy się `None`, nigdy wyjątkiem.
@@ -55,6 +59,14 @@ class RedditSocialAdapter(SocialVelocityPort):
             return None
         week_count = self._count_posts(symbol, period="week")
         if week_count is None:
+            return None
+        if week_count >= DEFAULT_LIMIT:
+            logger.warning(
+                "Reddit week search for %s hit the %d-post page limit — "
+                "baseline unknown, social velocity skipped.",
+                symbol,
+                DEFAULT_LIMIT,
+            )
             return None
 
         baseline = week_count / 7.0

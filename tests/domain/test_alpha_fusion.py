@@ -210,6 +210,31 @@ class TestRenormalizationPartial:
         alone = fuse_alpha_signals(insider=_insider(1_000_000))
         assert with_neutral.score < alone.score
 
+    def test_social_without_sentiment_does_not_dilute(self) -> None:
+        # Reddit search nie daje sentymentu, więc social bez `avg_sentiment` nie
+        # może mieć kierunku — to martwy głos, nie „obecne-neutralne" źródło.
+        # Nie wchodzi do renormalizacji, tak jak brakujące źródło.
+        with_mute_social = fuse_alpha_signals(
+            insider=_insider(1_000_000),
+            social=_social(300, 100, None),
+        )
+        alone = fuse_alpha_signals(insider=_insider(1_000_000))
+
+        assert with_mute_social.score == pytest.approx(alone.score)
+        assert with_mute_social.available_sources == ("insider",)
+        assert "social" not in with_mute_social.contributions
+
+    def test_social_with_neutral_sentiment_still_dilutes(self) -> None:
+        # Sentyment obecny (nawet zerowy) to realna informacja — zostaje w mianowniku.
+        with_social = fuse_alpha_signals(
+            insider=_insider(1_000_000),
+            social=_social(100, 100, 0.0),
+        )
+        alone = fuse_alpha_signals(insider=_insider(1_000_000))
+
+        assert with_social.score < alone.score
+        assert "social" in with_social.available_sources
+
 
 # ---------------------------------------------------------------------------
 # Earnings jako dampener zaufania (reużycie EarningsProximity).
