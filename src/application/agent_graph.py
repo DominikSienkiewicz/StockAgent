@@ -1001,6 +1001,11 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     crypto_council_threshold = deps.crypto_council_threshold
     if council_port is None:
         return {"council_verdict": None}
+    # WIA-08: po awarii głównego LLM analiza jest zastępczym „SIDEWAYS 50%”, a cykl
+    # i tak wypada z track recordu — rada nie płaci 8 wywołań za udawane wejście.
+    if "llm_analysis_failed" in (state.get("data_quality_flags") or []):
+        logger.info("council_node skipped for %s — main LLM analysis failed", state["symbol"])
+        return {"council_verdict": None}
     # Osobny, opcjonalny próg dla rady. Główna bramka volatility już
     # przepuściła (predict_node odpalił) — tu odsiewamy dodatkowo średnie
     # zmienności, dla których N wywołań LLM rady się ekonomicznie nie opłaca.

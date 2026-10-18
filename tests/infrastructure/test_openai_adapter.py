@@ -534,3 +534,43 @@ class TestTemperatureCompatibility:
         client.chat.completions.create.return_value = _completion("{}")
         adapter.analyze("x")
         assert "temperature" not in client.chat.completions.create.call_args.kwargs
+
+
+def _server_error() -> Exception:
+    import httpx
+    from openai import InternalServerError
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(503, request=request)
+    return InternalServerError(message="unavailable", response=response, body=None)
+
+
+class TestSingleRetryLayer:
+    """NIEZ-07: SDK nie retry'uje (max_retries=0), więc pętla adaptera musi sama
+    łapać 5xx i błędy połączenia, a retry-after ma sufit."""
+
+    def test_sdk_level_retries_disabled(self, mock_openai_class):
+        OpenAIAdapter(api_key="sk-test")
+        assert mock_openai_class.call_args.kwargs["max_retries"] == 0
+
+    def test_retries_server_error(self, mock_openai_class, mocker):
+        mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.side_effect = [_server_error(), _completion("{}")]
+
+        assert OpenAIAdapter(api_key="sk-test", backoff_base=0.01).analyze("p") == {}
+        assert client.chat.completions.create.call_count == 2
+
+    def test_retry_after_is_capped(self, mock_openai_class, mocker):
+        sleep = mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.side_effect = [
+            _rate_limit_error(retry_after_seconds=3600),
+            _completion("{}"),
+        ]
+
+        OpenAIAdapter(api_key="sk-test").analyze("p")
+
+        assert sleep.call_args.args[0] <= 20

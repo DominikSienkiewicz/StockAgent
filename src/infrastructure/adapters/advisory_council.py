@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError, as_completed
 from typing import Any, Literal
 
 from src.application.council_prompts import (
@@ -14,6 +14,7 @@ from src.application.council_prompts import (
 from src.application.ports import AdvisoryCouncilPort, LLMPort
 from src.domain.council import (
     CouncilInput,
+    CouncilUnavailableError,
     CouncilVerdict,
     InvestorOpinion,
     InvestorPersona,
@@ -22,6 +23,15 @@ from src.domain.council import (
 from src.domain.value_objects import AssetType
 
 logger = logging.getLogger(__name__)
+
+
+def _log_discarded(name: str) -> Callable[[Future[InvestorOpinion | None]], None]:
+    """Callback spóźnionego wywołania persony: zapłacone, ale odrzucone przez limit czasu."""
+
+    def _log(_future: Future[InvestorOpinion | None]) -> None:
+        logger.info("Advisory council: paid_discarded — %s finished after the timeout", name)
+
+    return _log
 
 _VALID_RECS: frozenset[str] = frozenset({"BUY", "SELL", "HOLD"})
 # Górna granica oczekiwania na CAŁY zestaw wywołań LLM równolegle.
@@ -110,34 +120,27 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         self._personas = personas
         self._max_personas = max_personas
 
-    def _hold_fallback(self, name: str) -> InvestorOpinion:
-        return InvestorOpinion(
-            investor_name=name,
-            recommendation="HOLD",
-            confidence=0.0,
-            reasoning="Błąd analizy.",
-            key_factors=(),
-        )
-
     def _call_investor(
         self, persona: InvestorPersona, data: CouncilInput
-    ) -> InvestorOpinion:
+    ) -> InvestorOpinion | None:
+        # Awaria LLM persony to brak głosu, nie głos HOLD — zastępczy HOLD przy 401
+        # na wszystkich personach dawał „silny konsensus” zmyślony z błędów (NIEZ-09).
         try:
             prompt = investor_prompt(persona, data)
             raw = self._llm.analyze(prompt)
             return _parse_opinion(persona.name, raw)
         except Exception:
             logger.exception(
-                "Advisory council: %s failed — defaulting to HOLD", persona.name
+                "Advisory council: %s failed — vote dropped", persona.name
             )
-            return self._hold_fallback(persona.name)
+            return None
 
     def _call_revision(
         self,
         persona: InvestorPersona,
         data: CouncilInput,
         round1: list[InvestorOpinion],
-    ) -> InvestorOpinion:
+    ) -> InvestorOpinion | None:
         # Pokazujemy personie stanowiska peerów (wszystkie poza nią) z rundy 1.
         peers = [op for op in round1 if op.investor_name != persona.name]
         try:
@@ -150,24 +153,25 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
                 persona.name,
             )
             # Degradacja: trzymamy głos z rundy 1, nie wymyślamy HOLD.
-            for op in round1:
-                if op.investor_name == persona.name:
-                    return op
-            return self._hold_fallback(persona.name)
+            return next((op for op in round1 if op.investor_name == persona.name), None)
 
     def _run_round(
         self,
         personas: tuple[InvestorPersona, ...],
-        call: Callable[[InvestorPersona], InvestorOpinion],
+        call: Callable[[InvestorPersona], InvestorOpinion | None],
     ) -> list[InvestorOpinion]:
         """Uruchamia jedną rundę wywołań person równolegle z budżetem czasowym.
 
         Współdzielone przez rundę 1 i rundę rewizji (debate mode) — ta sama
         maszyneria timeoutu/anulowania. Zwraca opinie, które zdążyły się zwrócić
         (graceful degradation: pojedynczy timeout nie wywala całego cyklu).
+        Executor zamykamy bez czekania (NIEZ-08): `with` blokowałby w `__exit__` na
+        wiszących wywołaniach, więc limit czasu byłby tylko filtrem wyników. Spóźnione
+        wywołania kończą się w tle i jedynie logują — nie piszą do `opinions`.
         """
         opinions: list[InvestorOpinion | None] = [None] * len(personas)
-        with ThreadPoolExecutor(max_workers=max(1, len(personas))) as executor:
+        executor = ThreadPoolExecutor(max_workers=max(1, len(personas)))
+        try:
             future_to_idx = {
                 executor.submit(call, persona): i
                 for i, persona in enumerate(personas)
@@ -190,9 +194,11 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
                     len(pending),
                     pending,
                 )
-                # Anulujemy wiszące future'y (nie czekamy na nie w __exit__).
-                for future in future_to_idx:
-                    future.cancel()
+                for future, i in future_to_idx.items():
+                    if not future.done():
+                        future.add_done_callback(_log_discarded(personas[i].name))
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
         return [op for op in opinions if op is not None]
 
     def _resolve_weights(self, data: CouncilInput) -> Mapping[str, float] | None:
@@ -224,14 +230,18 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         resolved_opinions = self._run_round(
             personas, lambda p: self._call_investor(p, data)
         )
+        if not resolved_opinions:
+            raise CouncilUnavailableError(f"{symbol}: no council persona answered")
 
         # --- Debate mode (feature #1): JEDNA runda rewizji, gdy round-1 split ---
         # Cap = dokładnie jedna runda rewizji; po niej derive_consensus z REVISED.
         if self._debate_mode and self._is_split(resolved_opinions):
             round1 = resolved_opinions
-            resolved_opinions = self._run_round(
+            revised = self._run_round(
                 personas, lambda p: self._call_revision(p, data, round1)
             )
+            # Cała runda rewizji po limicie czasu → zostają głosy z rundy 1.
+            resolved_opinions = revised or round1
 
         try:
             prompt = chairman_prompt(resolved_opinions, data)

@@ -42,6 +42,7 @@ def _make_graph_with_repo(
     council_threshold: Threshold | None = None,
     *,
     ml_is_trained: bool = True,
+    main_llm_fails: bool = False,
 ):
     market = Mock(spec=MarketDataPort)
     market.get_current_price.return_value = Money(Decimal("180.00"))
@@ -70,6 +71,8 @@ def _make_graph_with_repo(
         "target_price_12h": 185.0,
         "reasoning": "Strong momentum.",
     }
+    if main_llm_fails:
+        llm.analyze.side_effect = RuntimeError("Anthropic 529 Overloaded")
     graph = create_agent_graph(AgentGraphDeps(
         market_port=market,
         sentiment_port=sentiment,
@@ -198,6 +201,19 @@ class TestCouncilNodeIntegration:
         data = council_port.analyze.call_args.args[1]
         assert data.ml_model_active is True
         assert data.ml_price_target == Decimal("185.00")
+
+
+    def test_council_skipped_when_main_llm_failed(self):
+        # WIA-08: po awarii głównego LLM rada dostawała zastępcze „SIDEWAYS 50%”
+        # jak prawdziwą analizę i płaciła 8 wywołań za zdegradowany cykl.
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = _make_verdict()
+        graph, _ = _make_graph_with_repo(council_port=council_port, main_llm_fails=True)
+
+        result = graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("173.00")})
+
+        council_port.analyze.assert_not_called()
+        assert result.get("council_verdict") is None
 
 
 class TestCouncilVolatilityThreshold:

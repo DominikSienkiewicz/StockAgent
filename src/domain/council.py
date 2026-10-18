@@ -36,6 +36,11 @@ class CouncilInput:
         object.__setattr__(self, "news_articles", tuple(self.news_articles))
 
 
+class CouncilUnavailableError(RuntimeError):
+    """Żadna persona rady nie odpowiedziała. Werdykt z samych zastępczych HOLD-ów
+    byłby zmyślonym „silnym konsensusem”, więc rada nie zwraca go wcale."""
+
+
 # Próg "wyraźnego konsensusu" w radzie. 0.7 = chairman uznał, że co najmniej
 # 70% siły opinii prze w jedną stronę. Wartość trzymana w domenie, nie w
 # raporcie — żeby logika decyzyjna nie była rozsmarowana po warstwie prezentacji.

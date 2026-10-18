@@ -7,7 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, TypeVar
 
-from openai import OpenAI, RateLimitError
+from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
 
 from src.application.ports import LLMPort
 from src.application.quota_monitor import QuotaMonitor
@@ -47,6 +47,8 @@ DEFAULT_TIMEOUT = 30.0
 # nagłówek `retry-after` → wtedy honorujemy go).
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF_BASE = 2.0
+# Sufit pojedynczego czekania (retry-after albo backoff) — job ma 15 minut limitu.
+MAX_RETRY_WAIT_S = 20.0
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +106,8 @@ class OpenAIAdapter(LLMPort):
     ) -> None:
         # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
         validate_model_id(model)
-        self._client = OpenAI(api_key=api_key, timeout=timeout)
+        # Retry żyje tylko w pętli adaptera — retry SDK mnożyłby płatne próby (NIEZ-07).
+        self._client = OpenAI(api_key=api_key, timeout=timeout, max_retries=0)
         self._model = model
         self._temperature = temperature
         self._max_retries = max_retries
@@ -236,12 +239,13 @@ class OpenAIAdapter(LLMPort):
                         ),
                     )
                 return result
-            except RateLimitError as exc:
+            except (RateLimitError, InternalServerError, APIConnectionError) as exc:
+                reason = "429" if isinstance(exc, RateLimitError) else type(exc).__name__
                 if attempt >= self._max_retries:
                     self._emit_quota_alert(
                         severity=QuotaSeverity.CRITICAL,
                         message=(
-                            f"OpenAI {self._model} returned 429 after "
+                            f"OpenAI {self._model} returned {reason} after "
                             f"{self._max_retries} retries — call failed."
                         ),
                         action=(
@@ -253,7 +257,8 @@ class OpenAIAdapter(LLMPort):
                     raise
                 wait = self._compute_wait(exc, attempt)
                 logger.warning(
-                    "OpenAI 429 (attempt %d/%d) — sleeping %.1fs",
+                    "OpenAI %s (attempt %d/%d) — sleeping %.1fs",
+                    reason,
                     attempt + 1,
                     self._max_retries,
                     wait,
@@ -261,7 +266,7 @@ class OpenAIAdapter(LLMPort):
                 time.sleep(wait)
                 attempt += 1
 
-    def _compute_wait(self, exc: RateLimitError, attempt: int) -> float:
+    def _compute_wait(self, exc: Exception, attempt: int) -> float:
         # Najpierw spróbuj `retry-after` z odpowiedzi serwera — to jego
         # rekomendacja, nie nasze zgadywanie.
         response = getattr(exc, "response", None)
@@ -270,11 +275,11 @@ class OpenAIAdapter(LLMPort):
             raw = headers.get("retry-after")
             if isinstance(raw, str):
                 try:
-                    return float(raw)
+                    return min(float(raw), MAX_RETRY_WAIT_S)
                 except ValueError:
                     pass
         # Fallback: backoff wykładniczy 2s, 4s, 8s.
-        return float(self._backoff_base * (2**attempt))
+        return min(float(self._backoff_base * (2**attempt)), MAX_RETRY_WAIT_S)
 
     def _emit_quota_alert(
         self, severity: QuotaSeverity, message: str, action: str

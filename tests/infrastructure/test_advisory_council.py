@@ -1,13 +1,19 @@
 # tests/infrastructure/test_advisory_council.py
 from __future__ import annotations
 
+import time
 from decimal import Decimal
 from unittest.mock import Mock
 
 import pytest
 
 from src.application.ports import AdvisoryCouncilPort, LLMPort
-from src.domain.council import CouncilInput, CouncilVerdict, InvestorPersona
+from src.domain.council import (
+    CouncilInput,
+    CouncilUnavailableError,
+    CouncilVerdict,
+    InvestorPersona,
+)
 from src.domain.value_objects import AssetType
 from src.infrastructure.adapters.advisory_council import (
     COUNCIL_MAX_PERSONAS,
@@ -549,3 +555,65 @@ class TestDebateMode:
         council = LLMAdvisoryCouncil(llm_port=llm_port, personas=personas)
         council.analyze("AAPL", _make_input())
         assert llm_port.analyze.call_count == n + 1
+
+
+def _routed(
+    failing: set[str] | None = None,
+    slow: set[str] | None = None,
+    everyone_fails: bool = False,
+):
+    """side_effect LLM: chairman zawsze odpowiada, persony wg scenariusza."""
+
+    def side_effect(prompt: str) -> dict:
+        if "final_recommendation" in prompt:
+            return _verdict_json()
+        name = next(n for n in ALL_INVESTORS if f"Wcielasz się w {n}" in prompt)
+        if everyone_fails or name in (failing or set()):
+            raise RuntimeError("401 Unauthorized")
+        if name in (slow or set()):
+            time.sleep(1.0)
+        return _opinion_json()
+
+    return side_effect
+
+
+class TestInvestorFailure:
+    """NIEZ-09: awaria LLM persony to brak głosu, nie głos HOLD. Inaczej 401 na
+    wszystkich personach renderował się jako „SILNY KONSENSUS” HOLD."""
+
+    def test_failed_investor_is_dropped_not_counted_as_hold(
+        self, council: LLMAdvisoryCouncil, llm_port: Mock
+    ):
+        failing = ALL_INVESTORS[0]
+        llm_port.analyze.side_effect = _routed(failing={failing})
+
+        result = council.analyze("AAPL", _make_input())
+
+        assert failing not in {op.investor_name for op in result.investor_opinions}
+        assert len(result.investor_opinions) == COUNCIL_SIZE - 1
+        assert all(op.recommendation == "BUY" for op in result.investor_opinions)
+
+    def test_all_investors_failing_raises_instead_of_unanimous_hold(
+        self, council: LLMAdvisoryCouncil, llm_port: Mock
+    ):
+        llm_port.analyze.side_effect = _routed(everyone_fails=True)
+
+        with pytest.raises(CouncilUnavailableError):
+            council.analyze("AAPL", _make_input())
+
+
+class TestTotalTimeout:
+    def test_total_timeout_bounds_wall_clock(
+        self, council: LLMAdvisoryCouncil, llm_port: Mock, mocker
+    ):
+        # NIEZ-08: `with ThreadPoolExecutor` czekał w __exit__ na wiszące wywołania,
+        # więc limit czasu rady był tylko filtrem wyników, nie limitem czasu.
+        mocker.patch("src.infrastructure.adapters.advisory_council._COUNCIL_TOTAL_TIMEOUT_S", 0.1)
+        slow = ALL_INVESTORS[0]
+        llm_port.analyze.side_effect = _routed(slow={slow})
+
+        start = time.perf_counter()
+        result = council.analyze("AAPL", _make_input())
+
+        assert time.perf_counter() - start < 0.5
+        assert slow not in {op.investor_name for op in result.investor_opinions}

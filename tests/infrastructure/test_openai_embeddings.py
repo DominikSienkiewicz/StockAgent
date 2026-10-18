@@ -261,3 +261,41 @@ class TestOpenAIEmbeddingsLive:
         vector = adapter.embed("Apple Q2 earnings beat expectations")
         # text-embedding-3-small → 1536 wymiarów (pasuje do VECTOR(1536) w schemacie)
         assert len(vector) == 1536
+
+
+class TestSingleRetryLayer:
+    """NIEZ-07: jak w OpenAIAdapter — SDK bez retry, adapter łapie 5xx, sufit czekania."""
+
+    def test_sdk_level_retries_disabled(self, mock_openai_class):
+        OpenAIEmbeddingAdapter(api_key="sk-test")
+        assert mock_openai_class.call_args.kwargs["max_retries"] == 0
+
+    def test_retries_server_error(self, mock_openai_class, mocker):
+        import httpx
+        from openai import InternalServerError
+
+        mocker.patch("src.infrastructure.llm.openai_embeddings.time.sleep")
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
+        error = InternalServerError(
+            message="unavailable", response=httpx.Response(503, request=request), body=None
+        )
+        client.embeddings.create.side_effect = [error, _embedding_response([0.0])]
+
+        OpenAIEmbeddingAdapter(api_key="sk-test", backoff_base=0.01).embed("text")
+
+        assert client.embeddings.create.call_count == 2
+
+    def test_retry_after_is_capped(self, mock_openai_class, mocker):
+        sleep = mocker.patch("src.infrastructure.llm.openai_embeddings.time.sleep")
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.embeddings.create.side_effect = [
+            _rate_limit_error(retry_after="3600"),
+            _embedding_response([0.0]),
+        ]
+
+        OpenAIEmbeddingAdapter(api_key="sk-test").embed("other text")
+
+        assert sleep.call_args.args[0] <= 20

@@ -438,3 +438,25 @@ class TestStripCodeBlockReDoS:
             AnthropicAdapter._strip_code_block('```json\n{"a": 1}\n```') == '{"a": 1}'
         )
         assert AnthropicAdapter._strip_code_block('```{"b": 2}```') == '{"b": 2}'
+
+
+class TestSingleRetryLayer:
+    """NIEZ-07: retry żyje w jednym miejscu — w pętli adaptera. Piętrowe retry SDK
+    mnożyło płatne próby, a nieograniczony retry-after blokował job."""
+
+    def test_sdk_level_retries_disabled(self, mock_anthropic_class):
+        AnthropicAdapter(api_key="sk-ant-test")
+        assert mock_anthropic_class.call_args.kwargs["max_retries"] == 0
+
+    def test_retry_after_is_capped(self, mock_anthropic_class, mocker):
+        sleep = mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
+        client = MagicMock()
+        mock_anthropic_class.return_value = client
+        client.messages.create.side_effect = [
+            _status_error(429, retry_after="3600"),
+            _message_response("{}"),
+        ]
+
+        AnthropicAdapter(api_key="sk-ant-test").analyze("Predict.")
+
+        assert sleep.call_args.args[0] <= 20

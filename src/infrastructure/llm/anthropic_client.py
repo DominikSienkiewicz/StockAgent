@@ -37,6 +37,8 @@ _CACHE_MIN_CHARS = 4096
 # odporność: pojedynczy 529 z przeciążonego API nie może ubijać symbolu.
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF_BASE = 2.0
+# Sufit pojedynczego czekania (retry-after albo backoff) — job ma 15 minut limitu.
+MAX_RETRY_WAIT_S = 20.0
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +106,8 @@ class AnthropicAdapter(LLMPort):
     ) -> None:
         # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
         validate_model_id(model)
-        self._client = Anthropic(api_key=api_key, timeout=timeout)
+        # Retry żyje tylko w pętli adaptera — retry SDK mnożyłby płatne próby (NIEZ-07).
+        self._client = Anthropic(api_key=api_key, timeout=timeout, max_retries=0)
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
@@ -210,11 +213,11 @@ class AnthropicAdapter(LLMPort):
             raw = headers.get("retry-after")
             if isinstance(raw, str):
                 try:
-                    return float(raw)
+                    return min(float(raw), MAX_RETRY_WAIT_S)
                 except ValueError:
                     pass
         # Fallback: backoff wykładniczy (2s, 4s, 8s przy base=2.0).
-        return float(self._backoff_base * (2**attempt))
+        return min(float(self._backoff_base * (2**attempt)), MAX_RETRY_WAIT_S)
 
     def _emit_quota_alert(
         self, severity: QuotaSeverity, message: str, action: str
