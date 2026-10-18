@@ -6,11 +6,22 @@ nazwie, wszystkie klasy aktywów — akcje sektor, ETF→'ETF', krypto→'Krypto
 
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 from src.application.report_formatting import (
+    COMPANY_NAMES,
+    company_label,
     provenance_badges_html,
     sector_label,
 )
 from src.domain.provenance import ProvenanceBadge, ProvenanceLevel
+
+CONFIG_TOML = Path(__file__).resolve().parents[2] / "config.toml"
+# Listy symboli z config.toml, które trafiają do maila (lead, temat, tabele,
+# Risk Watch). Niezmiennik „config ⊆ COMPANY_NAMES", nie zamrożona lista —
+# nowy symbol w configu bez nazwy wywala ten test.
+_CONFIGURED_SYMBOL_LISTS = ("symbols", "symbols_etf", "crypto_symbols", "risk_symbols")
 
 
 class TestSectorLabel:
@@ -107,3 +118,19 @@ class TestProvenanceBadgesHtml:
         out = provenance_badges_html(badges)
         assert "<script>alert(1)</script>" not in out
         assert "&lt;script&gt;alert(1)&lt;/script&gt;" in out
+
+
+class TestCompanyNamesCoverConfig:
+    def test_every_configured_symbol_has_company_name(self) -> None:
+        config = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+        configured = {
+            symbol for key in _CONFIGURED_SYMBOL_LISTS for symbol in config[key]
+        }
+
+        missing = sorted(configured - COMPANY_NAMES.keys())
+
+        assert missing == []
+
+    def test_single_letter_ticker_renders_with_name(self) -> None:
+        # „S" (SentinelOne) jako goły ticker w temacie maila jest nieczytelne.
+        assert company_label("S") == "S (SentinelOne Inc.)"
