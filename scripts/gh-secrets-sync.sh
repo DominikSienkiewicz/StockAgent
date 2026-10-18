@@ -9,8 +9,9 @@
 #
 # Uwaga StockAgent: workflowy odwołują się WYŁĄCZNIE do secrets.* (config niewrażliwy żyje
 # w config.toml), więc realnie skrypt wypycha tylko sekrety; lista variables jest pusta.
-# Klucze z .env, które należą do config.toml (np. TELEGRAM_*, FRED_API_KEY gdy nieużyte
-# w CI), trafiają do "ignored" i nigdy nie są wypychane.
+# Klucze z .env, których żaden workflow nie czyta, trafiają do "ignored" i nigdy nie są
+# wypychane. TELEGRAM_*, SLACK_WEBHOOK_URL i FRED_API_KEY workflowy czytają, więc obecne
+# w .env zostaną wypchnięte.
 #
 # Wartości są przekazywane do gh przez stdin, nigdy jako argumenty (więc nie pojawiają się
 # w `ps`/historii powłoki). Domyślnie plan jest drukowany i potwierdzany przed zastosowaniem.

@@ -74,3 +74,15 @@ jobs:
             git commit -m "chore(ml): update XGBoost model weights [skip ci]"
             git push
           fi
+
+      - name: 📮 Mail o porażce jobu
+        # NIEZ-23: GitHub mailuje o porażce crona tylko autora ostatniej zmiany crona,
+        # a timeout i anulowanie są ciche. Bez Pythona — działa też, gdy padło `uv sync`.
+        if: failure() || cancelled()
+        env:
+          RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO_EMAIL: ${{ secrets.DIGEST_TO_EMAIL }}
+          RUN_URL:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS:      ${{ job.status }}
+          WORKFLOW_NAME:   ${{ github.workflow }}
+        run: scripts/notify-failure.sh "$WORKFLOW_NAME"

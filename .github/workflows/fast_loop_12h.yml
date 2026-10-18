@@ -74,4 +74,21 @@ jobs:
           # Email (odbiorca = sekret; nadawca + włącznik w config.toml)
           RESEND_API_KEY:         ${{ secrets.RESEND_API_KEY }}
           DIGEST_TO_EMAIL:        ${{ secrets.DIGEST_TO_EMAIL }}
+          # Kanały push (skrót digestu, alerty kwot). Brak sekretu = kanał nie powstaje;
+          # bez mapowania włączony `messenger_digest_enabled` milczał po cichu (MAIL-04).
+          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL:      ${{ secrets.SLACK_WEBHOOK_URL }}
         run: uv run --frozen --no-build --no-sync python main_agent.py
+
+      - name: 📮 Mail o porażce jobu
+        # NIEZ-23: GitHub mailuje o porażce crona tylko autora ostatniej zmiany crona,
+        # a timeout i anulowanie są ciche. Bez Pythona — działa też, gdy padło `uv sync`.
+        if: failure() || cancelled()
+        env:
+          RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO_EMAIL: ${{ secrets.DIGEST_TO_EMAIL }}
+          RUN_URL:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS:      ${{ job.status }}
+          WORKFLOW_NAME:   ${{ github.workflow }}
+        run: scripts/notify-failure.sh "$WORKFLOW_NAME"

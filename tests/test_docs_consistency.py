@@ -48,3 +48,18 @@ def test_docs_do_not_claim_committed_weights_when_none_tracked(doc: str) -> None
     text = (ROOT / doc).read_text(encoding="utf-8")
     found = [claim for claim in COMMITTED_WEIGHTS_CLAIMS if re.search(claim, text)]
     assert not found, f"{doc} twierdzi o commitowanych wagach, których nie ma: {found}"
+
+
+def test_keys_called_unused_are_not_referenced_by_any_workflow() -> None:
+    # DOC-03: docs nazywały TELEGRAM_*, SLACK_WEBHOOK_URL i FRED_API_KEY kluczami,
+    # których „żaden workflow nie używa”, choć workflowy je czytają — operator
+    # zostawiał przez to kanały push puste.
+    text = (ROOT / "docs" / "running-locally.md").read_text(encoding="utf-8")
+    workflows = "".join(
+        path.read_text(encoding="utf-8") for path in (ROOT / ".github" / "workflows").glob("*.yml")
+    )
+    # Fraza aż do „are reported” (albo końca zdania) — „e.g.” w środku nie może jej uciąć.
+    claims = re.findall(r"no workflow references(.{0,200}?)(?:are reported|\.\s+[A-Z])", text, re.S)
+    named = {name for claim in claims for name in re.findall(r"`([A-Z][A-Z0-9_]*)\*?`", claim)}
+    referenced = sorted(name for name in named if f"secrets.{name}" in workflows)
+    assert not referenced, f"docs nazywają nieużywanymi klucze z workflowów: {referenced}"

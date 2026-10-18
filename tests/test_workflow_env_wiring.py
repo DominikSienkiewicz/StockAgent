@@ -17,6 +17,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).parent.parent
@@ -153,3 +154,22 @@ def test_slow_loop_maps_real_alpha_vantage_secret() -> None:
     # odrzucał każde żądanie jako wyczerpany limit i `fundamentals_cache` zostawał pusty.
     expected = "${{ secrets.ALPHA_VANTAGE_API_KEYS }}"
     assert _slow_loop_trainer_env().get("ALPHA_VANTAGE_API_KEYS") == expected
+
+
+# MAIL-04: funkcje push w Fast Loopie i sekrety kanałów, bez których milczą.
+PUSH_FEATURE_FLAGS = ("messenger_digest_enabled", "realtime_alerts_enabled")
+PUSH_CHANNEL_SECRETS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "SLACK_WEBHOOK_URL")
+
+
+def test_enabled_push_features_have_channel_secrets_mapped() -> None:
+    config = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
+    enabled = [flag for flag in PUSH_FEATURE_FLAGS if config.get(flag) is True]
+    if not enabled:
+        pytest.skip("żadna funkcja push nie jest włączona")
+    env = _run_agent_env()
+    unmapped = [
+        key for key in PUSH_CHANNEL_SECRETS if env.get(key) != f"${{{{ secrets.{key} }}}}"
+    ]
+    assert not unmapped, (
+        f"{enabled} włączone, ale krok agenta nie mapuje {unmapped} — push nie ma kanału."
+    )
