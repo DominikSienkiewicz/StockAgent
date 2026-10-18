@@ -7,8 +7,9 @@ curated financial news sentiment, cross-checks the LLM's reading against Alpha V
 scores every past prediction against the realised price, and writes a Polish-language report
 email with charts and its own running hit-rate. The daily report run is **paused** and starts
 only on manual `workflow_dispatch`. The hourly price-shock check is paused with it, because
-its only reference prices are the daily run's snapshots. Only the weekly model retraining
-still runs on schedule, and it has not shipped weights yet: no symbol has the 50 settled
+its only reference prices are the daily run's snapshots. Two jobs still run on schedule: the
+weekly model retraining, and a free daily deadman that mails when a job that should run has
+gone quiet. The retraining has not shipped weights yet: no symbol has the 50 settled
 predictions training needs, so the XGBoost leg runs on its no-change baseline and the report
 and the council prompt label it as cold-start.
 

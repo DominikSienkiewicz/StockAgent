@@ -1,0 +1,64 @@
+name: 🫀 Deadman (daily, free)
+
+on:
+  # NIEZ-11: raz dziennie sprawdza ślady życia jobów w bazie i mailuje przez Resend,
+  # gdy job, który powinien chodzić, zamilkł (oczekiwania: `liveness_*_max_gap_h`
+  # w config.toml). Dzienny cron daje najwyżej jeden alert na dobę.
+  schedule:
+    - cron: '17 9 * * *'   # 09:17 UTC — po typowym starcie niedzielnego Slow Loopa
+  workflow_dispatch:
+
+permissions:
+  contents: read       # deadman nic nie zapisuje do repo
+
+concurrency:
+  group: deadman
+  cancel-in-progress: true
+
+jobs:
+  check-liveness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # FinOps: twardy limit minut GHA
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: 📦 Sync dependencies
+        run: uv sync --frozen --no-build --no-install-project
+
+      - name: 🫀 Check job liveness (free)
+        env:
+          # Odczyt śladów życia (price_snapshots, model_scorecards).
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
+          # Alert mailem — ten sam kanał co digest.
+          RESEND_API_KEY:    ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO_EMAIL:   ${{ secrets.DIGEST_TO_EMAIL }}
+          # Settings wymaga tych pól, choć deadman nie woła ani LLM, ani rynku.
+          OPENAI_API_KEY:    unused-in-deadman
+          FINNHUB_API_KEY:   unused-in-deadman
+          ALPHA_VANTAGE_API_KEYS: unused-in-deadman
+        run: uv run --frozen --no-build --no-sync python main_deadman.py
+
+      - name: 📮 Mail o porażce jobu
+        # NIEZ-23: GitHub mailuje o porażce crona tylko autora ostatniej zmiany crona,
+        # a timeout i anulowanie są ciche. Bez Pythona — działa też, gdy padło `uv sync`.
+        if: failure() || cancelled()
+        env:
+          RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO_EMAIL: ${{ secrets.DIGEST_TO_EMAIL }}
+          RUN_URL:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS:      ${{ job.status }}
+          WORKFLOW_NAME:   ${{ github.workflow }}
+        run: scripts/notify-failure.sh "$WORKFLOW_NAME"

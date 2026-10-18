@@ -1376,3 +1376,41 @@ class TestGetResolvedPredictionsDetailed:
             assert field in selected
         assert rows
         assert rows[0]["id"] == "p-1"
+
+
+class TestLivenessHeartbeats:
+    """NIEZ-11 — ślady życia jobów dla deadmana: najnowszy snapshot ceny (Fast Loop)
+    i najnowszy wiersz karty modelu (Slow Loop)."""
+
+    def test_last_scorecard_at_reads_the_newest_row(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "order", "limit"],
+            [{"timestamp": "2026-10-11T09:35:05+00:00"}],
+        )
+
+        stamp = repo.get_last_scorecard_at()
+
+        assert stamp == datetime(2026, 10, 11, 9, 35, 5, tzinfo=UTC)
+        mock_client.table.assert_called_with("model_scorecards")
+
+    def test_latest_snapshot_at_reads_price_snapshots(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "order", "limit"],
+            [{"timestamp": "2026-08-17T05:57:17+00:00"}],
+        )
+
+        assert repo.get_latest_snapshot_at() == datetime(2026, 8, 17, 5, 57, 17, tzinfo=UTC)
+        mock_client.table.assert_called_with("price_snapshots")
+
+    def test_no_rows_means_no_heartbeat(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "select", "order", "limit"], [])
+
+        assert repo.get_last_scorecard_at() is None

@@ -256,6 +256,16 @@ class RepositoryPort(ABC):
         """#16 — stempluje `revealed_at`, żeby sweep nie ujawnił tego dwa razy."""
 
     @abstractmethod
+    def get_latest_snapshot_at(self) -> datetime | None:
+        """NIEZ-11 — znacznik najnowszego snapshotu ceny dowolnego symbolu: ślad
+        życia Fast Loopa dla deadmana. None = brak snapshotów."""
+
+    @abstractmethod
+    def get_last_scorecard_at(self) -> datetime | None:
+        """NIEZ-11 — znacznik najnowszego wiersza `model_scorecards`: ślad życia
+        Slow Loopa (zapisuje wiersz per symbol także przy pominięciu). None = brak."""
+
+    @abstractmethod
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         """#11 — najnowszy snapshot ceny WRAZ ze znacznikiem czasu.
 

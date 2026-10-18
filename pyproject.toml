@@ -109,4 +109,4 @@ strict = true
 ignore_missing_imports = true
 # Gołe `uv run mypy` = bramka CI. `tests/` dochodzi ratchetem po katalogach
 # (np. "tests/domain"), dopiero gdy dany katalog jest czysty pod strict.
-files = ["src", "main_agent.py", "main_backtest.py", "main_trainer.py", "main_watch.py"]
+files = ["src", "main_agent.py", "main_backtest.py", "main_deadman.py", "main_trainer.py", "main_watch.py"]

@@ -146,6 +146,10 @@ class Settings(BaseSettings):
     # #11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
     # migracja 021). Zero płatnych wywołań. Off.
     shock_alerts_enabled: bool = False
+    # NIEZ-11: deadman (main_deadman.py, cron raz dziennie) — maksymalna przerwa
+    # między śladami życia jobu w godzinach; 0 = job świadomie wstrzymany. Off.
+    liveness_fast_loop_max_gap_h: float = 0.0
+    liveness_slow_loop_max_gap_h: float = 0.0
     # #14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
     # Wchodzi do promptu LLM ORAZ jako ósma cecha XGBoost. Wdrożenie cechy
     # rozstrzyga walk-forward gate „pobij baseline", nie intuicja wag. Off.

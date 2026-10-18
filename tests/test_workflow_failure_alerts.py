@@ -25,6 +25,7 @@ ALERTED_WORKFLOWS = (
     "slow_loop_weekly.yml",
     "shock_watch_hourly.yml",
     "db_migrate.yml",
+    "deadman_daily.yml",
 )
 
 FAKE_CURL = """#!/usr/bin/env bash

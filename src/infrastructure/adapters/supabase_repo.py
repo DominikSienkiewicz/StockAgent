@@ -634,6 +634,26 @@ class SupabaseRepository(RepositoryPort):
             {"revealed_at": datetime.now(UTC).isoformat()}
         ).eq("id", prediction_id).execute()
 
+    def _latest_timestamp(self, table: str) -> datetime | None:
+        # Bez łagodzenia błędów: deadman musi odróżnić „job milczy” od „nie da się
+        # sprawdzić” — wyjątek kończy jego przebieg exit 1 i alertem workflowu.
+        response = (
+            self._client.table(table)
+            .select("timestamp")
+            .order("timestamp", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        stamp = rows[0].get("timestamp") if rows else None
+        return datetime.fromisoformat(stamp) if isinstance(stamp, str) else None
+
+    def get_latest_snapshot_at(self) -> datetime | None:
+        return self._latest_timestamp("price_snapshots")
+
+    def get_last_scorecard_at(self) -> datetime | None:
+        return self._latest_timestamp("model_scorecards")
+
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         response = (
             self._client.table("price_snapshots")
