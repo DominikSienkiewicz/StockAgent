@@ -522,17 +522,19 @@ class SupabaseRepository(RepositoryPort):
         return _rows(response)
 
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
+        # NIEZ-15: paginacja + `id` jako drugi klucz — przy równych timestampach
+        # granica strony musi być deterministyczna (bez gubienia/dublowania wierszy).
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        response = (
+        query = (
             self._client.table(self._table)
             .select("id, confidence_score, is_trend_correct, reasoning_text")
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .not_.is_("confidence_score", "null")
             .order("timestamp", desc=True)
-            .execute()
+            .order("id", desc=True)
         )
-        return _rows(response)
+        return _paginate(query)
 
     def save_calibration(
         self, prediction_id: str, score: float, insight: str
@@ -607,7 +609,8 @@ class SupabaseRepository(RepositoryPort):
         # Graceful: brak migracji 024 → [] (sweep nie ma czego ujawnić).
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         try:
-            response = (
+            # NIEZ-15: bez paginacji sweep widział max ~1000 commitmentów.
+            query = (
                 self._client.table(self._table)
                 .select(
                     "id, symbol, predicted_trend, predicted_target_price, "
@@ -618,8 +621,10 @@ class SupabaseRepository(RepositoryPort):
                 .not_.is_("commitment_hash", "null")
                 .not_.is_("actual_price_after_12h", "null")
                 .is_("revealed_at", "null")
-                .execute()
+                .order("timestamp", desc=False)
+                .order("id", desc=False)
             )
+            return _paginate(query)
         except Exception:
             logger.warning(
                 "Attestation columns unavailable — reveal sweep pominięty "
@@ -627,7 +632,6 @@ class SupabaseRepository(RepositoryPort):
                 exc_info=True,
             )
             return []
-        return list(_rows(response))
 
     def mark_commitment_revealed(self, prediction_id: str) -> None:
         self._client.table(self._table).update(

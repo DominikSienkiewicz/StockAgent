@@ -1414,3 +1414,64 @@ class TestLivenessHeartbeats:
         _set_chain_response(mock_client, ["table", "select", "order", "limit"], [])
 
         assert repo.get_last_scorecard_at() is None
+
+
+def _fluent_query(mock_client: MagicMock, pages: list[list[dict[str, Any]]]) -> MagicMock:
+    """Builder, którego każda metoda filtra/sortowania zwraca SAM SIEBIE, a kolejne
+    `.range(...).execute()` dają kolejne strony. Test sprawdza paginację, nie
+    dokładny kształt łańcucha filtrów."""
+    builder = MagicMock()
+    for method in ("select", "eq", "gte", "is_", "in_", "order"):
+        getattr(builder, method).return_value = builder
+    builder.not_ = builder
+    mock_client.table.return_value = builder
+    _set_paginated_response(builder, pages)
+    return builder
+
+
+class TestPaginatedSlowLoopReads:
+    """NIEZ-15: PostgREST tnie SELECT do ~1000 wierszy BEZ błędu. Kalibracja i sweep
+    ujawnień liczyły na obciętym, niedeterministycznym podzbiorze."""
+
+    def test_resolved_for_calibration_paginates_past_1000(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        full_page = [{"id": f"p-{i}"} for i in range(1000)]
+        builder = _fluent_query(mock_client, [full_page, [{"id": f"q-{i}"} for i in range(5)]])
+
+        rows = repo.get_resolved_for_calibration(30)
+
+        assert len(rows) == 1005
+        assert builder.range.call_count == 2
+
+    def test_resolved_for_calibration_breaks_timestamp_ties_by_id(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Bez drugiego klucza sortowania granica strony przy równych timestampach
+        # jest niedeterministyczna — ten sam wiersz może wypaść albo wejść dwa razy.
+        builder = _fluent_query(mock_client, [[]])
+
+        repo.get_resolved_for_calibration(30)
+
+        ordered_by = [c.args[0] for c in builder.order.call_args_list]
+        assert ordered_by == ["timestamp", "id"]
+
+    def test_unrevealed_commitments_paginates_past_1000(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        full_page = [{"id": f"p-{i}"} for i in range(1000)]
+        builder = _fluent_query(mock_client, [full_page, [{"id": f"q-{i}"} for i in range(5)]])
+
+        rows = repo.get_unrevealed_commitments()
+
+        assert len(rows) == 1005
+        assert builder.range.call_count == 2
+        assert [c.args[0] for c in builder.order.call_args_list] == ["timestamp", "id"]
+
+    def test_unrevealed_commitments_stays_graceful_without_migration(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [[]])
+        builder.range.side_effect = Exception("column commitment_hash does not exist")
+
+        assert repo.get_unrevealed_commitments() == []
