@@ -42,7 +42,7 @@ class TelegramNotifier(ReportNotifierPort):
         self._chat_id = chat_id
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._session = build_session()
+        self._session = build_session(retry_post=False)
         self._quota_monitor = quota_monitor
 
     def send_report(self, subject: str, html_body: str, plain_text: str) -> None:

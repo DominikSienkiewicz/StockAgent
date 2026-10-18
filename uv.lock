@@ -2250,6 +2250,7 @@ dependencies = [
     { name = "requests" },
     { name = "scikit-learn" },
     { name = "supabase" },
+    { name = "urllib3" },
     { name = "xgboost" },
 ]
 
@@ -2285,6 +2286,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31.0" },
     { name = "scikit-learn", specifier = ">=1.4.0" },
     { name = "supabase", specifier = ">=2.4.5" },
+    { name = "urllib3", specifier = ">=2.7" },
     { name = "xgboost", specifier = ">=2.0.0" },
 ]
 provides-extras = ["anthropic"]

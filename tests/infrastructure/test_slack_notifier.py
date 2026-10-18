@@ -105,3 +105,9 @@ class TestSlackNotifier:
         notifier.send_report("S", "<p>H</p>", "T")
 
         assert monitor.record.call_count == 1
+
+
+def test_session_does_not_retry_post_on_5xx(notifier: SlackNotifier) -> None:
+    # MAIL-03: webhook Slacka nie jest idempotentny — powtórzony POST to dwa posty.
+    retry = notifier._session.get_adapter("https://hooks.slack.com").max_retries
+    assert "POST" not in retry.allowed_methods

@@ -66,6 +66,16 @@ class TestResendNotifier:
         assert body["html"] == "<p>HTML body</p>"
         assert body["text"] == "Plain body"
 
+    def test_sends_idempotency_key_header(self, notifier, mocker):
+        # MAIL-03: Resend ma retry POST po 5xx — bez klucza idempotencji to dwa maile.
+        mock_post = mocker.patch("requests.Session.post", return_value=_ok_response())
+
+        notifier.send_report("s", "<p>h</p>", "t")
+        notifier.send_report("s", "<p>h</p>", "t")
+
+        keys = [c.kwargs["headers"]["Idempotency-Key"] for c in mock_post.call_args_list]
+        assert all(keys) and keys[0] != keys[1]
+
     def test_logs_message_id_on_success(self, notifier, mocker, caplog):
         caplog.set_level(logging.INFO)
         mocker.patch(

@@ -13,26 +13,33 @@ from urllib3.util.retry import Retry
 
 # Retry dla błędów, które zwykle są przejściowe:
 #   429 — rate limit, 500/502/503/504 — chwilowa awaria po stronie API.
-# backoff_factor=0.5 → przerwy 0.5s, 1s, 2s między próbami.
+# backoff_factor=0.5 → przerwy 0.5s, 1s, 2s między próbami. Retry-After serwera jest
+# respektowany, ale najwyżej RETRY_AFTER_MAX_SECONDS — nagłówek potrafi żądać godzin,
+# a job ma 15 minut limitu.
 RETRY_TOTAL = 3
 RETRY_BACKOFF_FACTOR = 0.5
 RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
+RETRY_AFTER_MAX_SECONDS = 10
 
 
-def build_session() -> requests.Session:
+def build_session(*, retry_post: bool = True) -> requests.Session:
     """Zwraca `requests.Session` z zamontowanym retry na https://.
 
     https-only: wszystkie API agenta (Finnhub, Alpha Vantage, CoinGecko, NBP,
     Resend, Supabase, OpenAI/Anthropic) komunikują się po https, więc montujemy
     retry-adapter wyłącznie na schemacie https:// — nie ma ścieżki http://.
+
+    `retry_post=False` dla API bez klucza idempotencji (Telegram, webhook Slacka):
+    POST powtórzony po 5xx, który serwer jednak przyjął, dubluje wiadomość.
     """
     session = requests.Session()
     retry = Retry(
         total=RETRY_TOTAL,
         backoff_factor=RETRY_BACKOFF_FACTOR,
         status_forcelist=RETRY_STATUS_FORCELIST,
-        allowed_methods=frozenset({"GET", "POST"}),
+        allowed_methods=frozenset({"GET", "POST"} if retry_post else {"GET"}),
         raise_on_status=False,  # status sprawdzamy sami przez raise_for_status()
+        retry_after_max=RETRY_AFTER_MAX_SECONDS,
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)

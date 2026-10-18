@@ -115,3 +115,9 @@ class TestTelegramNotifier:
         notifier.send_report("S", "<p>H</p>", "T")
 
         assert monitor.record.call_count == 1
+
+
+def test_session_does_not_retry_post_on_5xx(notifier: TelegramNotifier) -> None:
+    # MAIL-03: Telegram nie ma klucza idempotencji — powtórzony POST to dwa pushe.
+    retry = notifier._session.get_adapter("https://api.telegram.org").max_retries
+    assert "POST" not in retry.allowed_methods

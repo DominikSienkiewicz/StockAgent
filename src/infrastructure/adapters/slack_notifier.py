@@ -38,7 +38,7 @@ class SlackNotifier(ReportNotifierPort):
     ) -> None:
         self._webhook_url = webhook_url
         self._timeout = timeout
-        self._session = build_session()
+        self._session = build_session(retry_post=False)
         self._quota_monitor = quota_monitor
 
     def send_report(self, subject: str, html_body: str, plain_text: str) -> None:

@@ -28,6 +28,7 @@ dependencies = [
     # LLM — główna analiza na Claude (`llm_provider = "anthropic"` w config.toml),
     # więc SDK jest rdzeniem, nie opcją: Slow Loop (weekly recap) też go buduje.
     "anthropic>=0.102.0",
+    "urllib3>=2.7",
 ]
 
 [dependency-groups]

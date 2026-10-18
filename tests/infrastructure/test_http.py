@@ -49,3 +49,22 @@ class TestBuildSession:
         retry = session.get_adapter("https://x.com").max_retries
         assert "GET" in retry.allowed_methods
         assert "POST" in retry.allowed_methods
+
+
+class TestRetryLimits:
+    def test_retry_post_false_does_not_retry_post(self):
+        # MAIL-03: POST bez klucza idempotencji powtórzony po 5xx dubluje wiadomość.
+        retry = build_session(retry_post=False).get_adapter("https://x.com").max_retries
+        assert "GET" in retry.allowed_methods
+        assert "POST" not in retry.allowed_methods
+
+    def test_retry_after_sleep_is_capped(self, mocker):
+        # NIEZ-06: Retry-After potrafi żądać godzin, a job ma 15 minut limitu.
+        from urllib3.response import HTTPResponse
+
+        retry = build_session().get_adapter("https://x.com").max_retries
+        sleep = mocker.patch("urllib3.util.retry.time.sleep")
+
+        retry.sleep(HTTPResponse(status=429, headers={"Retry-After": "3600"}))
+
+        assert sleep.call_args.args[0] <= 10

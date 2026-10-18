@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 
 import requests
@@ -55,6 +56,8 @@ class ResendNotifier(ReportNotifierPort):
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
+                    # Sesja powtarza POST po 5xx; klucz sprawia, że Resend wyśle mail raz.
+                    "Idempotency-Key": str(uuid.uuid4()),
                 },
                 json={
                     "from": self._sender,
