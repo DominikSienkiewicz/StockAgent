@@ -9,6 +9,7 @@ from src.domain.prediction import (
     TrendDirection,
     calibration_error,
     calibration_score,
+    normalize_trend,
 )
 
 
@@ -162,6 +163,27 @@ class TestCryptoSidewaysTolerance:
 
         assert pred.is_trend_correct(Decimal("100.4"))
         assert not pred.is_trend_correct(Decimal("101"))
+
+
+class TestNormalizeTrend:
+    """Jedna reguła dla nowych odpowiedzi LLM (ML-07) i starych wierszy bazy:
+    lowercase/spacje → kanon, brak → SIDEWAYS bez flagi, śmieć → SIDEWAYS z flagą."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected", "invalid"),
+        [
+            ("BULLISH", TrendDirection.BULLISH, False),
+            ("bullish", TrendDirection.BULLISH, False),
+            (" Bearish ", TrendDirection.BEARISH, False),
+            (None, TrendDirection.SIDEWAYS, False),
+            ("", TrendDirection.SIDEWAYS, False),
+            ("UP", TrendDirection.SIDEWAYS, True),
+        ],
+    )
+    def test_maps_raw_value_to_canonical_trend(
+        self, raw: object, expected: TrendDirection, invalid: bool
+    ) -> None:
+        assert normalize_trend(raw) == (expected, invalid)
 
 
 class TestSubstantiveInsight:

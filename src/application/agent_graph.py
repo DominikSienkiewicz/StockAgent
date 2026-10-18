@@ -47,6 +47,7 @@ from src.domain.prediction import (
     DIAGNOSIS_SKIPPED_INSIGHT,
     Prediction,
     is_substantive_insight,
+    normalize_trend,
 )
 from src.domain.regime_key import canonical_regime_key
 from src.domain.value_objects import (
@@ -307,24 +308,16 @@ _TREND_SIGNALS: dict[str, int] = {"BULLISH": 1, "BEARISH": -1, "SIDEWAYS": 0}
 
 
 def _normalize_trend(value: Any) -> tuple[str, str | None]:
-    """Kanoniczny trend_direction z LLM (strip + upper) i ewentualna flaga.
+    """Kanoniczny trend_direction z LLM i ewentualna flaga `trend_direction_invalid`.
 
-    Genuinely-absent (None / pusty string) może bez flagi default'ować do
-    SIDEWAYS — to nie jest skażony input, tylko brak pola. Wartość OBECNA, ale
-    spoza zbioru {BULLISH, BEARISH, SIDEWAYS} (np. "UP", literówka) → SIDEWAYS
-    + flaga `trend_direction_invalid` (analogicznie do `_validate_float`). Bez
-    tej flagi śmieciowy kierunek udawał prawdziwy SIDEWAYS i model uczył się
-    na cichym zerze. ML-07 (decyzja właściciela 2026-10-18): SIDEWAYS jest też
-    ZAPISYWANY — bez NULL-a i bez pomijania predykcji.
+    Reguła żyje w domenie (`normalize_trend`): brak → SIDEWAYS bez flagi,
+    śmieć (np. "UP") → SIDEWAYS z flagą, analogicznie do `_validate_float`.
+    Bez tej flagi śmieciowy kierunek udawał prawdziwy SIDEWAYS i model uczył
+    się na cichym zerze. ML-07 (decyzja właściciela 2026-10-18): SIDEWAYS jest
+    też ZAPISYWANY — bez NULL-a i bez pomijania predykcji.
     """
-    if value is None:
-        return "SIDEWAYS", None
-    normalized = str(value).strip().upper()
-    if not normalized:
-        return "SIDEWAYS", None
-    if normalized in _TREND_SIGNALS:
-        return normalized, None
-    return "SIDEWAYS", "trend_direction_invalid"
+    trend, invalid = normalize_trend(value)
+    return trend.value, "trend_direction_invalid" if invalid else None
 
 
 def _parse_number(value: Any) -> float | None:

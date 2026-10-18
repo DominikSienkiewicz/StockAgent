@@ -341,6 +341,43 @@ class TestGetUnverifiedPrediction:
         assert prediction.news_summary is None
         assert prediction.reasoning is None
 
+    @pytest.mark.parametrize(
+        ("stored", "expected"),
+        [
+            ("bullish", TrendDirection.BULLISH),
+            (None, TrendDirection.SIDEWAYS),
+            ("UP", TrendDirection.SIDEWAYS),
+        ],
+    )
+    def test_legacy_trend_values_do_not_block_reflection(
+        self,
+        repo: SupabaseRepository,
+        mock_client: MagicMock,
+        stored: str | None,
+        expected: TrendDirection,
+    ) -> None:
+        """A2 (2026-10-19): wiersze sprzed ML-07 mają trend lowercase, NULL albo
+        śmieć. `TrendDirection(...)` rzucał, a kolejka oldest-first podawała ten
+        sam wiersz w każdym cyklu — reflect symbolu stał na zawsze."""
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "is_", "order", "limit"],
+            [
+                {
+                    "id": "uuid-1",
+                    "symbol": "AAPL",
+                    "predicted_trend": stored,
+                    "price_at_prediction": 100.0,
+                    "predicted_target_price": 105.0,
+                }
+            ],
+        )
+
+        prediction = repo.get_unverified_prediction("AAPL")
+
+        assert prediction is not None
+        assert prediction.predicted_trend == expected
+
     def test_returns_none_when_no_unverified_prediction(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:

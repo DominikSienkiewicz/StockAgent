@@ -12,7 +12,7 @@ from supabase import create_client
 from src.application.ports import PreviousVerdict, RepositoryPort
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import CouncilVerdict, InvestorOpinion
-from src.domain.prediction import Prediction, TrendDirection
+from src.domain.prediction import Prediction, normalize_trend
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.regime_key import canonical_regime_key
 from src.domain.value_objects import (
@@ -239,7 +239,9 @@ class SupabaseRepository(RepositoryPort):
         return Prediction(
             id=str(row["id"]),
             symbol=str(row["symbol"]),
-            predicted_trend=TrendDirection(str(row["predicted_trend"])),
+            # Stare wiersze sprzed ML-07 (lowercase, NULL, śmieć) nie mogą blokować
+            # kolejki oldest-first — ta sama reguła co przy zapisie nowych.
+            predicted_trend=normalize_trend(row.get("predicted_trend"))[0],
             price_at_prediction=Decimal(str(row["price_at_prediction"])),
             predicted_target_price=Decimal(str(row["predicted_target_price"])),
             # WIA-18: wejście predykcji dla diagnozy błędu (select("*") je zwraca).

@@ -61,6 +61,23 @@ class TrendDirection(StrEnum):
     SIDEWAYS = "SIDEWAYS"
 
 
+def normalize_trend(value: object) -> tuple[TrendDirection, bool]:
+    """Kanoniczny trend z surowej wartości i flaga „wartość nieprawidłowa”.
+
+    Strip + upper; brak (None, pusty tekst) → SIDEWAYS bez flagi, bo to brak
+    pola, nie skażony input. Wartość obecna spoza zbioru (np. „UP”) → SIDEWAYS
+    z flagą. Ta sama reguła obsługuje odpowiedź LLM (ML-07) i stare wiersze
+    bazy sprzed niej — inaczej `TrendDirection(...)` blokował reflect."""
+    if value is None:
+        return TrendDirection.SIDEWAYS, False
+    normalized = str(value).strip().upper()
+    if not normalized:
+        return TrendDirection.SIDEWAYS, False
+    if normalized in TrendDirection.__members__:
+        return TrendDirection(normalized), False
+    return TrendDirection.SIDEWAYS, True
+
+
 SIDEWAYS_TOLERANCE = Decimal("0.005")  # ±0.5% — pasmo FLAT dla akcji/ETF
 # Krypto natywnie rusza się 3–5% dziennie, więc pasmo ±0.5% uznawałoby niemal
 # każdy dzień za "ruch" i systematycznie zaniżało trafność predykcji SIDEWAYS
