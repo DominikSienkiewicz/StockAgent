@@ -320,7 +320,8 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
     idą do `evaluations` (decyzja 3); bez wiersza `ALL` werdykt agreguje cały
     przebieg jak przed ML-13. Metryki bierze z najnowszego wdrożonego kandydata
     tego przebiegu (albo z najnowszego wiersza z metrykami) i podpisuje je
-    symbolem oraz liczbą próbek.
+    symbolem oraz liczbą próbek; przy wierszu `ALL` wyłącznie z niego — RMSE
+    ewaluacji per symbol nie może udawać metryki modelu wspólnego.
     Brak wierszy albo brak dającej się sparsować daty → None (sekcja się chowa).
     """
     stamps = [_parse_timestamp(r.get("timestamp")) for r in rows]
@@ -341,7 +342,11 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
         )
     else:
         summary = summarize_run(status for _, status in statuses)
-    metrics = _newest_metrics_row(run)
+    metrics = _newest_metrics_row(
+        [(stamp, row) for stamp, row in run if row.get("symbol") == POOLED_MODEL_SYMBOL]
+        if pooled
+        else run
+    )
     return ModelScorecardView(
         summary=summary,
         trained_at=max(stamp for stamp, _ in run),

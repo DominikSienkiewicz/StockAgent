@@ -2261,6 +2261,7 @@ anthropic = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "mypy" },
     { name = "psycopg2-binary" },
     { name = "pytest" },
@@ -2293,6 +2294,7 @@ provides-extras = ["anthropic"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mypy", specifier = ">=1.10.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.12" },
     { name = "pytest", specifier = ">=8.0.0" },

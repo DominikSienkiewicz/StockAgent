@@ -359,6 +359,20 @@ class TestPooledVerdict:
         assert view.evaluations is not None
         assert (view.evaluations.passed, view.evaluations.failed) == (2, 1)
 
+    def test_metrics_come_only_from_the_pooled_row_when_it_exists(self) -> None:
+        # A1c (2026-10-18): przy wierszu ALL bez metryk (trening wspólny pominięty)
+        # nagłówek nie może pokazywać RMSE ewaluacji per symbol jak modelu wspólnego.
+        rows = _pooled_run_rows("skipped")
+        metric_keys = ("candidate_holdout_rmse", "baseline_rmse")
+        rows[-1] = {k: v for k, v in rows[-1].items() if k not in metric_keys}
+        rows[0] = {**rows[0], "candidate_holdout_rmse": 0.011, "baseline_rmse": 0.020}
+
+        view = build_scorecard_view(rows)
+
+        assert view is not None
+        assert view.candidate_rmse is None
+        assert view.metrics_symbol is None
+
     def test_run_without_pooled_row_keeps_the_legacy_aggregate(self) -> None:
         rows = [
             {"symbol": "AAPL", "status": "trained_successfully",
