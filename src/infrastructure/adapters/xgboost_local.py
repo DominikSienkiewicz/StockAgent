@@ -201,15 +201,17 @@ class XGBoostAdapter(MLPredictionPort):
         return out
 
     def walk_forward_report(
-        self, features: Any, target: Any
+        self, features: Any, target: Any, *, timestamps: Any = None
     ) -> list[dict[str, float]]:
         """Per-fold metryki OOS bez persystencji (offline backtest harness).
 
-        Reużywa logikę foldów `train()` (finding #23). Czysto ewaluacyjna —
-        nie zapisuje modelu i nie zmienia stanu adaptera (`self._model`)."""
+        Reużywa logikę foldów `train()` (finding #23), łącznie z purgem horyzontu
+        etykiety przy podanych `timestamps`. Czysto ewaluacyjna — nie zapisuje
+        modelu i nie zmienia stanu adaptera (`self._model`)."""
         feature_frame = pd.DataFrame(features).reset_index(drop=True)
         target_series = pd.Series(target).reset_index(drop=True)
-        return self._walk_forward_folds_detail(feature_frame, target_series)
+        stamps = _global_time_order(timestamps, len(target_series))
+        return self._walk_forward_folds_detail(feature_frame, target_series, stamps)
 
     def predict(
         self, current_features: dict[str, float], current_price: Decimal

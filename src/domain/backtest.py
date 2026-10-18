@@ -75,8 +75,9 @@ def purged_train_end(
 ) -> int:
     """Koniec (wyłącznie) treningu foldu walidowanego od wiersza `valid_start`.
 
-    `timestamps` są posortowane rosnąco po czasie GLOBALNYM (wszystkie symbole
-    razem). Z treningu wypadają wiersze, których etykieta dojrzewa po starcie
+    `timestamps` są posortowane rosnąco — w modelu wspólnym po czasie GLOBALNYM
+    (wszystkie symbole razem), w ewaluacji per symbol i w backteście po czasie
+    symbolu. Z treningu wypadają wiersze, których etykieta dojrzewa po starcie
     walidacji: w modelu wspólnym AAPL z 10:00 w treningu i MSFT z 10:01 w walidacji
     dzielą ten sam ruch rynku — to przeciek przekrojowy (purge). Etykieta dojrzała
     dokładnie w chwili startu walidacji jest dozwolona.

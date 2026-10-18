@@ -6,7 +6,11 @@ from typing import Any
 
 import pandas as pd
 
-from src.application.ml_features import ML_FEATURE_COLUMNS, TARGET_COLUMN
+from src.application.ml_features import (
+    ML_FEATURE_COLUMNS,
+    TARGET_COLUMN,
+    in_label_time_order,
+)
 from src.application.ports import MLPredictionPort, RepositoryPort
 
 logger = logging.getLogger(__name__)
@@ -41,7 +45,10 @@ class TrainModelUseCase:
         self._db_port.refresh_feature_store()
 
     def run(self, symbol: str, refresh_view: bool = True) -> dict[str, Any]:
-        """Per-symbol ewaluacja walk-forward — nigdy nie zapisuje wag (ML-13)."""
+        """Per-symbol ewaluacja walk-forward — nigdy nie zapisuje wag (ML-13).
+
+        Foldy purgują horyzont etykiety po znacznikach czasu wierszy, tak jak model
+        wspólny (decyzja 4 z 2026-10-18)."""
         if refresh_view:
             # Świeży snapshot — wymagane do Continual Learning (model nie może
             # uczyć się na starym MATERIALIZED VIEW z poprzedniego tygodnia).
@@ -57,10 +64,14 @@ class TrainModelUseCase:
         if len(df) < MIN_SAMPLES_FOR_TRAINING:
             return _skipped(f"Not enough valid samples for '{symbol}'", len(df))
 
-        features = df[list(ML_FEATURE_COLUMNS)]
-        target = df[TARGET_COLUMN]
+        df, stamps = in_label_time_order(df)
 
-        return self._ml_port.train(features, target, persist=False)
+        return self._ml_port.train(
+            df[list(ML_FEATURE_COLUMNS)],
+            df[TARGET_COLUMN],
+            persist=False,
+            timestamps=stamps,
+        )
 
     def run_pooled(
         self, symbols: Sequence[str], *, record_scorecard: bool = False

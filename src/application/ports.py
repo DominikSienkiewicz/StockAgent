@@ -386,7 +386,7 @@ class MLPredictionPort(ABC):
 
     @abstractmethod
     def walk_forward_report(
-        self, features: Any, target: Any
+        self, features: Any, target: Any, *, timestamps: Any = None
     ) -> list[dict[str, float]]:
         """Per-fold metryki out-of-sample (walk-forward, expanding window) BEZ
         persystencji — zasila offline backtest harness (`main_backtest.py`).
@@ -396,6 +396,7 @@ class MLPredictionPort(ABC):
         `train_end`, `valid_end`, `n_train`, `n_valid`, `candidate_rmse`,
         `baseline_rmse` (zwrot=0), `hit_rate` (trafność kierunku) oraz (ML-20)
         `ic` (korelacja rang Spearmana), `sign_strategy_return` i `turnover`.
+        `timestamps` działają jak w `train()`: purge horyzontu etykiety w foldach.
         Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
 
 

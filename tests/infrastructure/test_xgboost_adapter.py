@@ -560,3 +560,31 @@ class TestSignalSkillMetrics:
         folds = adapter.walk_forward_report(features, pd.Series([0.0] * 200))
 
         assert all(fold["ic"] == 0.0 for fold in folds)
+
+
+class TestWalkForwardReportPurge:
+    """Decyzja 4 (2026-10-18): offline backtest purguje horyzont etykiety tak jak
+    bramka `train()` modelu wspólnego."""
+
+    def test_report_with_timestamps_drops_rows_inside_the_label_horizon(
+        self, adapter: XGBoostAdapter
+    ):
+        features, target = _synthetic_dataset(n=200)
+
+        folds = adapter.walk_forward_report(features, target, timestamps=_hourly_stamps(200))
+
+        assert [f["n_train"] for f in folds] == [f["train_end"] - 11 for f in folds]
+
+    def test_report_without_timestamps_stays_unpurged(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=200)
+
+        folds = adapter.walk_forward_report(features, target)
+
+        assert [f["n_train"] for f in folds] == [f["train_end"] for f in folds]
+
+    def test_report_rejects_timestamps_out_of_time_order(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=200)
+        stamps = _hourly_stamps(200).iloc[::-1].reset_index(drop=True)
+
+        with pytest.raises(ValueError, match="time"):
+            adapter.walk_forward_report(features, target, timestamps=stamps)

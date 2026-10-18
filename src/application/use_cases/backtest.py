@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.application.ml_features import ML_FEATURE_COLUMNS, TARGET_COLUMN
+from src.application.ml_features import (
+    ML_FEATURE_COLUMNS,
+    TARGET_COLUMN,
+    in_label_time_order,
+)
 from src.application.ports import MLPredictionPort, RepositoryPort
 from src.domain.backtest import BacktestSummary, summarize_folds
 
@@ -46,10 +50,12 @@ class BacktestUseCase:
         if len(df) < MIN_BACKTEST_SAMPLES:
             return _too_few_samples_summary(len(df))
 
-        features = df[list(ML_FEATURE_COLUMNS)]
-        target = df[TARGET_COLUMN]
+        # Decyzja 4 (2026-10-18): purge horyzontu etykiety jak w modelu wspólnym.
+        df, stamps = in_label_time_order(df)
 
-        folds = self._ml_port.walk_forward_report(features, target)
+        folds = self._ml_port.walk_forward_report(
+            df[list(ML_FEATURE_COLUMNS)], df[TARGET_COLUMN], timestamps=stamps
+        )
         return summarize_folds(folds)
 
 

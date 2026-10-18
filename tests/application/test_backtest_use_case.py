@@ -139,3 +139,43 @@ class TestRun:
         summary = use_case.run("AAPL")
 
         assert isinstance(summary, BacktestSummary)
+
+
+def _stamped_rows(n: int) -> list[dict]:
+    """Wiersze z godzinnym `timestamp` (ISO jak z PostgREST); `target_return` koduje
+    godzinę, żeby test widział kolejność wierszy w foldach."""
+    base = pd.Timestamp("2026-09-01T00:00:00+00:00")
+    rows = _feature_store_rows(n)
+    for hour, row in enumerate(rows):
+        row["timestamp"] = (base + pd.Timedelta(hours=hour)).isoformat()
+        row["target_return"] = float(hour)
+    return rows
+
+
+class TestLabelHorizonPurge:
+    """Decyzja 4 (2026-10-18): main_backtest purguje horyzont etykiety tak jak model
+    wspólny — walk-forward dostaje znaczniki czasu wierszy."""
+
+    def test_passes_row_timestamps_to_walk_forward(self, use_case, repository_port, ml_port):
+        repository_port.get_feature_store_data.return_value = _stamped_rows(60)[::-1]
+        ml_port.walk_forward_report.return_value = [
+            {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60}
+        ]
+
+        use_case.run("AAPL")
+
+        _, target = ml_port.walk_forward_report.call_args.args
+        stamps = list(ml_port.walk_forward_report.call_args.kwargs["timestamps"])
+        assert len(stamps) == len(target) == 60
+        assert stamps == sorted(stamps)
+        assert list(target) == [float(hour) for hour in range(60)]
+
+    def test_rows_without_timestamps_run_unpurged(self, use_case, repository_port, ml_port):
+        repository_port.get_feature_store_data.return_value = _feature_store_rows(60)
+        ml_port.walk_forward_report.return_value = [
+            {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60}
+        ]
+
+        use_case.run("AAPL")
+
+        assert ml_port.walk_forward_report.call_args.kwargs.get("timestamps") is None

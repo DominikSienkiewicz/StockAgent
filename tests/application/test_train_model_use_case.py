@@ -332,3 +332,38 @@ def test_pooled_scorecard_is_not_recorded_by_default(use_case, repository_port, 
     use_case.run_pooled(["AAPL"])
 
     repository_port.save_model_scorecard.assert_not_called()
+
+
+def test_per_symbol_run_purges_label_horizon_with_row_timestamps(
+    use_case, repository_port, ml_port
+):
+    # Decyzja 4 (2026-10-18): purge horyzontu etykiety także w ewaluacji per symbol.
+    # Bez znaczników czasu fold uczył się na wierszach, których zwrot 12h dojrzewa
+    # dopiero w oknie walidacji.
+    rows = _stamped_rows("AAPL", MIN_SAMPLES_FOR_TRAINING + 10, start_hour=0, step_hours=1)
+    repository_port.get_feature_store_data.return_value = rows[::-1]
+    ml_port.train.return_value = {"status": "evaluated_passed_gate"}
+
+    use_case.run("AAPL", refresh_view=False)
+
+    _, target = ml_port.train.call_args.args
+    stamps = list(ml_port.train.call_args.kwargs["timestamps"])
+    assert len(stamps) == len(target) == MIN_SAMPLES_FOR_TRAINING + 10
+    assert stamps == sorted(stamps)
+    # `target_return` koduje godzinę wiersza → cechy idą w tej samej kolejności co czas.
+    assert list(target) == sorted(target)
+    assert ml_port.train.call_args.kwargs["persist"] is False
+
+
+def test_per_symbol_run_without_row_timestamps_trains_unpurged(
+    use_case, repository_port, ml_port
+):
+    # Zgodność wstecz: wiersze bez kolumny `timestamp` ewaluują się jak dotąd.
+    repository_port.get_feature_store_data.return_value = _feature_store_rows(
+        MIN_SAMPLES_FOR_TRAINING + 10
+    )
+    ml_port.train.return_value = {"status": "evaluated_passed_gate"}
+
+    use_case.run("AAPL", refresh_view=False)
+
+    assert ml_port.train.call_args.kwargs.get("timestamps") is None
