@@ -173,3 +173,13 @@ def test_enabled_push_features_have_channel_secrets_mapped() -> None:
     assert not unmapped, (
         f"{enabled} włączone, ale krok agenta nie mapuje {unmapped} — push nie ma kanału."
     )
+
+
+def test_slow_loop_commits_weights_even_when_training_step_failed() -> None:
+    # ML-04: trener kończy się exit 1, gdy padł choć jeden symbol. Bez `!cancelled()`
+    # krok commitu był wtedy pomijany i wagi wspólnego modelu przepadały z runnerem.
+    workflow = ROOT / ".github" / "workflows" / "slow_loop_weekly.yml"
+    spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    steps = [s for job in spec["jobs"].values() for s in job.get("steps", [])]
+    commit_step = next(s for s in steps if "git push" in str(s.get("run", "")))
+    assert str(commit_step.get("if", "")).replace(" ", "") == "${{!cancelled()}}"

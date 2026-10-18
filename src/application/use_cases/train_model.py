@@ -37,13 +37,7 @@ class TrainModelUseCase:
         rows = self._db_port.get_feature_store_data(symbol)
 
         if len(rows) < MIN_SAMPLES_FOR_TRAINING:
-            return {
-                "status": "skipped",
-                "reason": (
-                    f"Not enough samples for '{symbol}' "
-                    f"({len(rows)} < {MIN_SAMPLES_FOR_TRAINING})."
-                ),
-            }
+            return _skipped(f"Not enough samples for '{symbol}'", len(rows))
 
         df = pd.DataFrame(rows)
         # price_delta i target_return przychodzą GOTOWE z widoku (NaN-guarded).
@@ -54,15 +48,19 @@ class TrainModelUseCase:
         df = df.dropna(subset=required_columns)
 
         if len(df) < MIN_SAMPLES_FOR_TRAINING:
-            return {
-                "status": "skipped",
-                "reason": (
-                    f"Not enough valid samples for '{symbol}' "
-                    f"({len(df)} < {MIN_SAMPLES_FOR_TRAINING})."
-                ),
-            }
+            return _skipped(f"Not enough valid samples for '{symbol}'", len(df))
 
         features = df[list(ML_FEATURE_COLUMNS)]
         target = df[TARGET_COLUMN]
 
         return self._ml_port.train(features, target)
+
+
+def _skipped(reason: str, n_samples: int) -> dict[str, Any]:
+    """Wynik pominiętego treningu. `n_samples` jest polem (ML-04), nie tylko tekstem
+    powodu — scorecard i logi pokazują, ile próbek brakuje do progu."""
+    return {
+        "status": "skipped",
+        "reason": f"{reason} ({n_samples} < {MIN_SAMPLES_FOR_TRAINING}).",
+        "n_samples": n_samples,
+    }

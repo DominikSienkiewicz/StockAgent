@@ -56,6 +56,9 @@ jobs:
         run: uv run --frozen --no-build --no-sync python main_trainer.py
 
       - name: 💾 Commit and push updated model
+        # ML-04: trener kończy się exit 1, gdy padł choć jeden symbol — wagi wspólnego
+        # modelu, jeśli powstały, i tak trzeba zapisać. Anulowanie (timeout) pomija krok.
+        if: ${{ !cancelled() }}
         run: |
           git config --global user.name "AI Model Trainer"
           git config --global user.email "ml-trainer@users.noreply.github.com"

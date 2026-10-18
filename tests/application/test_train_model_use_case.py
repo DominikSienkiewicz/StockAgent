@@ -169,3 +169,28 @@ class TestRun:
 
         assert result["status"] == "trained_successfully"
         assert result["n_samples"] == 60
+
+
+def test_skip_result_reports_n_samples(use_case, repository_port, ml_port):
+    # ML-04: liczba próbek była tylko w tekście powodu ("3 < 50") — scorecard
+    # i logi nie miały jej jako pola, więc brak wag dało się wyjaśnić tylko z logu GHA.
+    repository_port.get_feature_store_data.return_value = _feature_store_rows(3)
+
+    result = use_case.run("AAPL", refresh_view=False)
+
+    assert result["status"] == "skipped"
+    assert result["n_samples"] == 3
+    ml_port.train.assert_not_called()
+
+
+def test_skip_after_dropna_reports_valid_n_samples(use_case, repository_port, ml_port):
+    rows = _feature_store_rows(MIN_SAMPLES_FOR_TRAINING + 2)
+    for row in rows[:5]:
+        row["price_delta"] = None
+    repository_port.get_feature_store_data.return_value = rows
+
+    result = use_case.run("AAPL", refresh_view=False)
+
+    assert result["status"] == "skipped"
+    assert result["n_samples"] == MIN_SAMPLES_FOR_TRAINING - 3
+    ml_port.train.assert_not_called()
