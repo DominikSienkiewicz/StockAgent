@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from src.domain.model_scorecard import (
     METRIC_NOTE,
     MODEL_STALE_AFTER_DAYS,
+    POOLED_MODEL_SYMBOL,
     RUN_MAX_GAP,
     RunSummary,
     TrainingOutcome,
@@ -10,6 +11,7 @@ from src.domain.model_scorecard import (
     improvement_pct,
     is_stale,
     latest_run_indices,
+    summarize_evaluations,
     summarize_run,
 )
 
@@ -187,3 +189,32 @@ class TestLatestRunIndices:
 
         assert latest_run_indices([None, latest]) == [1]
         assert latest_run_indices([None]) == []
+
+
+class TestSummarizeEvaluations:
+    """Decyzja 3 (2026-10-18): ewaluacje per symbol nigdy nie zapisują wag (ML-13),
+    więc karta liczy je osobno od werdyktu modelu wspólnego."""
+
+    def test_counts_passed_failed_and_skipped_evaluations(self):
+        summary = summarize_evaluations(
+            ["evaluated_passed_gate", "evaluated_passed_gate", "evaluated_failed_gate", "skipped"]
+        )
+
+        assert (summary.total, summary.passed, summary.failed, summary.skipped) == (4, 2, 1, 1)
+
+    def test_summary_line_reports_counts_in_polish(self):
+        summary = summarize_evaluations(["evaluated_passed_gate", "evaluated_failed_gate"])
+
+        assert summary.summary_line == "bramkę przeszło 1, nie przeszło 1, pominięto 0"
+
+    def test_empty_evaluations(self):
+        summary = summarize_evaluations([])
+
+        assert (summary.total, summary.passed, summary.failed, summary.skipped) == (0, 0, 0, 0)
+
+    def test_pooled_symbol_is_shared_with_the_trainer(self):
+        from src.application.use_cases.train_model import (
+            POOLED_MODEL_SYMBOL as TRAINER_POOLED_SYMBOL,
+        )
+
+        assert POOLED_MODEL_SYMBOL == TRAINER_POOLED_SYMBOL == "ALL"

@@ -25,7 +25,7 @@ from src.application.report_formatting import company_label
 from src.application.report_model_scorecard import ModelScorecardView
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.cycle_maturity import SkipReason
-from src.domain.model_scorecard import summarize_run
+from src.domain.model_scorecard import summarize_evaluations, summarize_run
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.portfolio import Portfolio, Position
 from src.domain.quota import QuotaAlert, QuotaSeverity
@@ -1782,6 +1782,21 @@ class TestColdStartForecast:
             ReportContext(model_scorecard=view, ml_model_loaded=True),
         )
         assert "n=243" in html
+
+    def test_scorecard_shows_per_symbol_evaluations_next_to_the_pooled_verdict(self):
+        # Decyzja 3 (2026-10-18): werdykt z wiersza ALL, ewaluacje osobną linią.
+        view = ModelScorecardView(
+            summary=summarize_run(["trained_successfully"]),
+            trained_at=datetime(2026, 5, 13, tzinfo=UTC),
+            evaluations=summarize_evaluations(["evaluated_passed_gate"] * 3),
+        )
+        html, _ = build_html_report(
+            [_saved_result()],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
+            ReportContext(model_scorecard=view, ml_model_loaded=True),
+        )
+        assert "bramkę przeszło 3, nie przeszło 0, pominięto 0" in html
 
 
 class TestColdStartSignalsAndChart:

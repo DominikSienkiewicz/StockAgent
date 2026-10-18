@@ -323,3 +323,68 @@ class TestMetricsProvenance:
             candidate_rmse=0.021, baseline_rmse=0.024, metrics_symbol="<b>X</b>",
         )
         assert "<b>X</b>" not in html
+
+
+def _pooled_run_rows(pooled_status: str) -> list[dict[str, object]]:
+    """Przebieg po ML-13: trzy ewaluacje per symbol, potem wiersz modelu wspólnego."""
+    return [
+        {"symbol": "AAPL", "status": "evaluated_passed_gate",
+         "timestamp": "2026-10-11T03:30:00+00:00"},
+        {"symbol": "MSFT", "status": "evaluated_passed_gate",
+         "timestamp": "2026-10-11T03:31:00+00:00"},
+        {"symbol": "NVDA", "status": "evaluated_failed_gate",
+         "timestamp": "2026-10-11T03:32:00+00:00"},
+        {"symbol": "ALL", "status": pooled_status,
+         "timestamp": "2026-10-11T03:35:00+00:00",
+         "candidate_holdout_rmse": 0.030, "baseline_rmse": 0.025, "n_samples": 243},
+    ]
+
+
+class TestPooledVerdict:
+    """Decyzja 3 (2026-10-18): werdykt główny karty bierze się z wiersza modelu
+    wspólnego `ALL`; ewaluacje per symbol (bez zapisu wag) idą osobną linią.
+    Dawniej liczyły się jako „pominięte” obok jedynego modelu, który shipuje wagi."""
+
+    def test_main_verdict_comes_from_the_pooled_row_only(self) -> None:
+        view = build_scorecard_view(_pooled_run_rows("skipped_validation_failed"))
+
+        assert view is not None
+        assert (view.summary.total, view.summary.accepted, view.summary.rejected) == (1, 0, 1)
+        assert view.summary.skipped == 0
+
+    def test_per_symbol_evaluations_are_counted_separately(self) -> None:
+        view = build_scorecard_view(_pooled_run_rows("trained_successfully"))
+
+        assert view is not None
+        assert view.evaluations is not None
+        assert (view.evaluations.passed, view.evaluations.failed) == (2, 1)
+
+    def test_run_without_pooled_row_keeps_the_legacy_aggregate(self) -> None:
+        rows = [
+            {"symbol": "AAPL", "status": "trained_successfully",
+             "timestamp": "2026-07-09T10:00:00+00:00"},
+        ]
+
+        view = build_scorecard_view(rows)
+
+        assert view is not None
+        assert view.evaluations is None
+
+    def test_html_and_text_show_the_evaluations_line(self) -> None:
+        view = build_scorecard_view(_pooled_run_rows("trained_successfully"))
+        assert view is not None
+
+        for render in (render_model_scorecard_html, render_model_scorecard_text):
+            out = render(
+                view.summary, trained_at=_FRESH, now=_NOW, evaluations=view.evaluations
+            )
+            assert "model wspólny" in out
+            assert "zaakceptowano 1, odrzucono 0, pominięto 0" in out
+            assert "Ewaluacje per symbol" in out
+            assert "bramkę przeszło 2, nie przeszło 1, pominięto 0" in out
+
+    def test_no_evaluations_line_without_pooled_split(self) -> None:
+        for render in (render_model_scorecard_html, render_model_scorecard_text):
+            out = render(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
+            assert "Ewaluacje per symbol" not in out
+            assert "model wspólny" not in out

@@ -13,14 +13,14 @@ from src.application.ml_features import (
 )
 from src.application.ports import MLPredictionPort, RepositoryPort
 
+# Jawny re-eksport: symbol wiersza karty modelu wspólnego żyje w domenie karty.
+from src.domain.model_scorecard import POOLED_MODEL_SYMBOL as POOLED_MODEL_SYMBOL
+
 logger = logging.getLogger(__name__)
 
 # Minimalna liczba próbek, by trening miał sens (zapobiega overfittingowi na 2 rekordach).
 # Dla modelu wspólnego (ML-13) dotyczy ŁĄCZNEJ próbki wszystkich symboli.
 MIN_SAMPLES_FOR_TRAINING = 50
-
-# Symbol wiersza karty modelu (`model_scorecards`) dla modelu wspólnego.
-POOLED_MODEL_SYMBOL = "ALL"
 
 
 class TrainModelUseCase:

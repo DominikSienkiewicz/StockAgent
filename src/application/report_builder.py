@@ -845,6 +845,7 @@ def _build_model_scorecard_html(
         folds=model_scorecard.folds,
         metrics_symbol=model_scorecard.metrics_symbol,
         n_samples=model_scorecard.metrics_n_samples,
+        evaluations=model_scorecard.evaluations,
     )
 
 

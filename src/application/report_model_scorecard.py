@@ -28,10 +28,13 @@ from typing import Any
 
 from src.domain.model_scorecard import (
     METRIC_NOTE,
+    POOLED_MODEL_SYMBOL,
+    EvaluationSummary,
     RunSummary,
     improvement_pct,
     is_stale,
     latest_run_indices,
+    summarize_evaluations,
     summarize_run,
 )
 
@@ -77,6 +80,20 @@ def _provenance(metrics_symbol: str | None, n_samples: int | None) -> str:
     return ", ".join(bits)
 
 
+def _verdict_label(evaluations: EvaluationSummary | None) -> str:
+    """Etykieta werdyktu: z podziałem na model wspólny albo zbiorczy przebieg (legacy)."""
+    if evaluations is None:
+        return "Przebieg"
+    return f"Przebieg — model wspólny ({POOLED_MODEL_SYMBOL})"
+
+
+def _evaluations_line(evaluations: EvaluationSummary | None) -> str:
+    """Linia ewaluacji per symbol albo "" gdy przebieg ich nie ma."""
+    if evaluations is None or evaluations.total == 0:
+        return ""
+    return f"Ewaluacje per symbol (bez zapisu wag): {evaluations.summary_line}"
+
+
 def _model_notice(summary: RunSummary, *, model_loaded: bool) -> str:
     """Jawny komunikat o stanie modelu albo "" gdy nie ma czego zgłaszać.
 
@@ -111,12 +128,14 @@ def render_model_scorecard_html(
     model_loaded: bool = True,
     metrics_symbol: str | None = None,
     n_samples: int | None = None,
+    evaluations: EvaluationSummary | None = None,
 ) -> str:
     """Renderuje sekcję HTML karty kondycji modelu lub "" gdy brak danych.
 
     `now` jest wstrzykiwane — renderer nie woła zegara. Metryki kandydata są
     opcjonalne (przebieg z samymi odrzutami/pominięciami może ich nie mieć);
-    `metrics_symbol` i `n_samples` podpisują, czyje to metryki.
+    `metrics_symbol` i `n_samples` podpisują, czyje to metryki. Z `evaluations`
+    `summary` to werdykt modelu wspólnego, a ewaluacje per symbol idą osobną linią.
     """
     if summary is None:
         return ""
@@ -134,8 +153,15 @@ def render_model_scorecard_html(
         + f"Ostatni trening: <strong>{_html.escape(_fmt_date(trained_at))}</strong>"
         + f"{stale_badge}</div>",
         "<div style='font-size: 13px; color: #374151; margin-bottom: 4px;'>"
-        + f"Przebieg: {_html.escape(summary.summary_line)}</div>",
+        + f"{_html.escape(_verdict_label(evaluations))}: "
+        + f"{_html.escape(summary.summary_line)}</div>",
     ]
+    evaluations_line = _evaluations_line(evaluations)
+    if evaluations_line:
+        rows.append(
+            "<div style='font-size: 12px; color: #374151; margin-bottom: 4px;'>"
+            + f"{_html.escape(evaluations_line)}</div>"
+        )
 
     notice = _model_notice(summary, model_loaded=model_loaded)
     if notice:
@@ -195,6 +221,7 @@ def render_model_scorecard_text(
     model_loaded: bool = True,
     metrics_symbol: str | None = None,
     n_samples: int | None = None,
+    evaluations: EvaluationSummary | None = None,
 ) -> str:
     """Renderuje sekcję plain-text karty kondycji modelu lub "" gdy brak danych."""
     if summary is None:
@@ -205,8 +232,11 @@ def render_model_scorecard_text(
         "KARTA KONDYCJI MODELU",
         "-" * 64,
         f"  Ostatni trening: {_fmt_date(trained_at)}{stale_suffix}",
-        f"  Przebieg: {summary.summary_line}",
+        f"  {_verdict_label(evaluations)}: {summary.summary_line}",
     ]
+    evaluations_line = _evaluations_line(evaluations)
+    if evaluations_line:
+        lines.append(f"  {evaluations_line}")
 
     notice = _model_notice(summary, model_loaded=model_loaded)
     if notice:
@@ -239,7 +269,10 @@ class ModelScorecardView:
     """Widok sekcji: zagregowany przebieg + metryki ostatniego kandydata.
 
     `metrics_symbol` / `metrics_n_samples` mówią, z którego wiersza pochodzą
-    metryki (np. `ALL` — model wspólny) i na ilu próbkach go oceniono."""
+    metryki (np. `ALL` — model wspólny) i na ilu próbkach go oceniono.
+    `evaluations` jest ustawione, gdy przebieg ma wiersz modelu wspólnego: wtedy
+    `summary` to jego werdykt, a ewaluacje per symbol są liczone osobno. None —
+    przebieg sprzed ML-13, `summary` agreguje wszystkie wiersze jak dawniej."""
 
     summary: RunSummary
     trained_at: datetime
@@ -249,6 +282,7 @@ class ModelScorecardView:
     folds: int | None = None
     metrics_symbol: str | None = None
     metrics_n_samples: int | None = None
+    evaluations: EvaluationSummary | None = None
 
 
 def _parse_timestamp(raw: object) -> datetime | None:
@@ -282,8 +316,11 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
 
     Agreguje wyłącznie NAJNOWSZY przebieg (`latest_run_indices`, ML-03) — okno
     odczytu niesie kilka tygodniowych przebiegów, które dawniej się sklejały.
-    Metryki bierze z najnowszego wdrożonego kandydata tego przebiegu (albo z
-    najnowszego wiersza z metrykami) i podpisuje je symbolem oraz liczbą próbek.
+    Werdykt główny to wiersz(e) modelu wspólnego `ALL`, a ewaluacje per symbol
+    idą do `evaluations` (decyzja 3); bez wiersza `ALL` werdykt agreguje cały
+    przebieg jak przed ML-13. Metryki bierze z najnowszego wdrożonego kandydata
+    tego przebiegu (albo z najnowszego wiersza z metrykami) i podpisuje je
+    symbolem oraz liczbą próbek.
     Brak wierszy albo brak dającej się sparsować daty → None (sekcja się chowa).
     """
     stamps = [_parse_timestamp(r.get("timestamp")) for r in rows]
@@ -294,7 +331,16 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
             run.append((stamp, rows[idx]))
     if not run:
         return None
-    summary = summarize_run([str(row.get("status", "")) for _, row in run])
+    statuses = [(row.get("symbol"), str(row.get("status", ""))) for _, row in run]
+    pooled = [status for symbol, status in statuses if symbol == POOLED_MODEL_SYMBOL]
+    evaluations: EvaluationSummary | None = None
+    if pooled:
+        summary = summarize_run(pooled)
+        evaluations = summarize_evaluations(
+            status for symbol, status in statuses if symbol != POOLED_MODEL_SYMBOL
+        )
+    else:
+        summary = summarize_run(status for _, status in statuses)
     metrics = _newest_metrics_row(run)
     return ModelScorecardView(
         summary=summary,
@@ -307,4 +353,5 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
         folds=metrics.get("n_folds") if metrics else None,
         metrics_symbol=str(metrics["symbol"]) if metrics and metrics.get("symbol") else None,
         metrics_n_samples=metrics.get("n_samples") if metrics else None,
+        evaluations=evaluations,
     )

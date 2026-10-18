@@ -10,9 +10,13 @@ from enum import Enum
 # Repo shipuje model tylko, jeśli bije naiwny baseline persystencji („zwrot=0"),
 # ale ta bramka jest niewidzialna dla użytkownika. Ten moduł liczy procentową
 # poprawę względem baseline'u, ocenia świeżość modelu i agreguje wiersze
-# NAJNOWSZEGO przebiegu treningu (ewaluacje per symbol + model wspólny „ALL")
-# w uczciwy obraz: „zaakceptowano N, odrzucono M, pominięto K". Bez I/O, bez
-# importów z application.
+# NAJNOWSZEGO przebiegu treningu w uczciwy obraz: werdykt modelu wspólnego „ALL"
+# („zaakceptowano N, odrzucono M, pominięto K") i osobno ewaluacje per symbol.
+# Bez I/O, bez importów z application.
+
+# Symbol wiersza karty modelu wspólnego (ML-13) — jedynego, który zapisuje wagi.
+# Werdykt główny karty bierze się z tego wiersza (decyzja 3 z 2026-10-18).
+POOLED_MODEL_SYMBOL = "ALL"
 
 # Model starszy niż tyle dni traktujemy jako nieświeży (STALE). Próg zamrożony
 # jako stała modułu — pojedyncze źródło prawdy dla reguły świeżości.
@@ -157,4 +161,46 @@ def summarize_run(
         rejected=rejected,
         skipped=skipped,
         summary_line=summary_line,
+    )
+
+
+# Statusy ewaluacji per symbol z `XGBoostAdapter.train(persist=False)` (ML-13).
+_EVALUATION_PASSED = "evaluated_passed_gate"
+_EVALUATION_FAILED = "evaluated_failed_gate"
+
+
+@dataclass(frozen=True)
+class EvaluationSummary:
+    """Ewaluacje per symbol z jednego przebiegu — osobno od werdyktu modelu wspólnego.
+
+    Ewaluacja nigdy nie zapisuje wag (ML-13), więc nie jest ani „zaakceptowana”,
+    ani „odrzucona”: `passed`/`failed` mówią, czy kandydat na danych symbolu
+    przeszedł bramkę walk-forward, a `skipped` liczy resztę (np. za mało próbek).
+    """
+
+    total: int
+    passed: int
+    failed: int
+    skipped: int
+    summary_line: str
+
+
+def summarize_evaluations(statuses: Iterable[str]) -> EvaluationSummary:
+    """Agreguje statusy ewaluacji per symbol w `EvaluationSummary`."""
+    passed = failed = skipped = 0
+    for status in statuses:
+        if status == _EVALUATION_PASSED:
+            passed += 1
+        elif status == _EVALUATION_FAILED:
+            failed += 1
+        else:
+            skipped += 1
+    return EvaluationSummary(
+        total=passed + failed + skipped,
+        passed=passed,
+        failed=failed,
+        skipped=skipped,
+        summary_line=(
+            f"bramkę przeszło {passed}, nie przeszło {failed}, pominięto {skipped}"
+        ),
     )
