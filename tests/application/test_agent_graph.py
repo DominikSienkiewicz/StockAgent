@@ -911,6 +911,149 @@ class TestTrendDirectionValidation:
         assert features["llm_trend_signal"] == pytest.approx(0.0)  # SIDEWAYS
         assert "trend_direction_invalid" not in final["data_quality_flags"]
 
+    # ML-07: normalizacja całego wyjścia LLM zaraz po analizie — zapis, rada
+    # i raport czytają już kanoniczny dict, nie surowy tekst modelu.
+
+    def _run_with_analysis(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, analysis: dict,
+    ) -> tuple[dict, dict]:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        llm_port.analyze.return_value = analysis
+        final = workflow.compile().invoke(_initial_state("100.0"))
+        return final, repository_port.save_prediction.call_args.args[0]
+
+    def test_lowercase_trend_is_persisted_canonical(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        final, saved = self._run_with_analysis(
+            workflow, market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port,
+            {
+                "trend_direction": "bullish",
+                "confidence_score": 85,
+                "av_agreement": 0.9,
+                "reasoning": "Bull.",
+            },
+        )
+
+        assert saved["predicted_trend"] == "BULLISH"
+        assert saved["confidence_score"] <= 1.0
+        assert saved["confidence_score"] == pytest.approx(1.0)
+        assert final["llm_analysis"]["trend_direction"] == "BULLISH"
+        assert "confidence_score_out_of_range" in saved["data_quality_flags"]
+        assert "trend_direction_invalid" not in saved["data_quality_flags"]
+
+    def test_padded_mixed_case_trend_is_canonical(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        final, saved = self._run_with_analysis(
+            workflow, market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port,
+            {"trend_direction": " Bearish\n", "confidence_score": 0.6, "av_agreement": 0.4},
+        )
+
+        assert saved["predicted_trend"] == "BEARISH"
+        assert ml_port.predict.call_args.args[0]["llm_trend_signal"] == pytest.approx(-1.0)
+        assert "trend_direction_invalid" not in final["data_quality_flags"]
+        assert not [f for f in final["data_quality_flags"] if f.endswith("_out_of_range")]
+
+    def test_unknown_trend_is_persisted_sideways_with_flag(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Decyzja właściciela (2026-10-18): śmieć → SIDEWAYS + istniejąca flaga
+        # `trend_direction_invalid`; nie NULL i nie pominięcie zapisu.
+        final, saved = self._run_with_analysis(
+            workflow, market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port,
+            {"trend_direction": "UP", "confidence_score": 0.7, "av_agreement": 0.5},
+        )
+
+        assert final["status"] == "saved"
+        assert saved["predicted_trend"] == "SIDEWAYS"
+        assert final["llm_analysis"]["trend_direction"] == "SIDEWAYS"
+        assert saved["data_quality_flags"].count("trend_direction_invalid") == 1
+
+    def test_missing_trend_is_persisted_sideways_not_null(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Brak pola → SIDEWAYS bez flagi (reguła #21). NULL w predicted_trend
+        # wywracał później reflect przy TrendDirection(...).
+        _, saved = self._run_with_analysis(
+            workflow, market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port,
+            {"confidence_score": 0.5, "av_agreement": 0.5},
+        )
+
+        assert saved["predicted_trend"] == "SIDEWAYS"
+        assert "trend_direction_invalid" not in saved["data_quality_flags"]
+
+    def test_out_of_range_av_agreement_is_clamped_and_flagged(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        _, saved = self._run_with_analysis(
+            workflow, market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port,
+            {"trend_direction": "BEARISH", "confidence_score": -0.2, "av_agreement": 7.5},
+        )
+
+        features = ml_port.predict.call_args.args[0]
+        assert features["av_llm_agreement"] == pytest.approx(1.0)
+        assert saved["av_llm_agreement"] == pytest.approx(1.0)
+        assert saved["confidence_score"] == pytest.approx(0.0)
+        assert "av_llm_agreement_out_of_range" in saved["data_quality_flags"]
+        assert "confidence_score_out_of_range" in saved["data_quality_flags"]
+
+    def test_in_range_analysis_is_left_untouched(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        final, saved = self._run_with_analysis(
+            workflow, market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port,
+            {
+                "trend_direction": "BEARISH",
+                "confidence_score": 0.85,
+                "av_agreement": 0.25,
+                "target_price_12h": 88.0,
+                "reasoning": "Strong negative sentiment.",
+            },
+        )
+
+        assert final["llm_analysis"] == {
+            "trend_direction": "BEARISH",
+            "confidence_score": 0.85,
+            "av_agreement": 0.25,
+            "target_price_12h": 88.0,
+            "reasoning": "Strong negative sentiment.",
+        }
+        assert not [f for f in saved["data_quality_flags"] if f.endswith("_out_of_range")]
+
+    def test_unparseable_av_agreement_keeps_existing_invalid_flag(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Normalizacja nie przejmuje roli `_validate_float`: śmieć tekstowy
+        # nadal daje `_invalid` i neutralny default, a nie `_out_of_range`.
+        final, _ = self._run_with_analysis(
+            workflow, market_port, sentiment_port, news_port,
+            repository_port, ml_port, llm_port,
+            {"trend_direction": "BEARISH", "confidence_score": 0.6, "av_agreement": "high"},
+        )
+
+        assert "av_llm_agreement_invalid" in final["data_quality_flags"]
+        assert "av_llm_agreement_out_of_range" not in final["data_quality_flags"]
+        features = ml_port.predict.call_args.args[0]
+        assert features["av_llm_agreement"] == pytest.approx(0.5)
+
 
 # ---------------------------------------------------------------------------
 # Path 4 — low volatility → ignore early (FinOps: ZERO płatnych wywołań)

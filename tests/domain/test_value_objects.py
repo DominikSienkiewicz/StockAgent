@@ -122,3 +122,38 @@ def test_fundamentals_ttl_spans_weekly_refresh_cadence() -> None:
     # niż 7 × 24 h, bo inaczej kolejny przebieg uzna cache za świeży i odświeży
     # dane dopiero za dwa tygodnie.
     assert 124 < FUNDAMENTALS_CACHE_TTL_HOURS < 167
+
+
+class TestClampUnit:
+    """ML-07: pewność i zgoda z LLM to skale [0, 1]. „8500%” nie może trafić
+    do bazy ani na szczyt rankingu — przycinamy i zgłaszamy, że było poza skalą."""
+
+    def test_in_range_value_is_unchanged_and_not_flagged(self) -> None:
+        from src.domain.value_objects import clamp_unit
+
+        assert clamp_unit(0.0) == (0.0, False)
+        assert clamp_unit(0.42) == (0.42, False)
+        assert clamp_unit(1.0) == (1.0, False)
+
+    def test_above_one_is_clamped_and_flagged(self) -> None:
+        from src.domain.value_objects import clamp_unit
+
+        assert clamp_unit(85.0) == (1.0, True)
+        assert clamp_unit(1.0001) == (1.0, True)
+
+    def test_below_zero_is_clamped_and_flagged(self) -> None:
+        from src.domain.value_objects import clamp_unit
+
+        assert clamp_unit(-0.3) == (0.0, True)
+
+    def test_infinity_is_clamped_to_the_bound(self) -> None:
+        from src.domain.value_objects import clamp_unit
+
+        assert clamp_unit(float("inf")) == (1.0, True)
+        assert clamp_unit(float("-inf")) == (0.0, True)
+
+    def test_nan_is_rejected(self) -> None:
+        from src.domain.value_objects import clamp_unit
+
+        with pytest.raises(ValueError):
+            clamp_unit(float("nan"))

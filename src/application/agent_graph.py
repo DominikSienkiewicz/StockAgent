@@ -49,7 +49,14 @@ from src.domain.prediction import (
     is_substantive_insight,
 )
 from src.domain.regime_key import canonical_regime_key
-from src.domain.value_objects import AssetType, Fundamentals, Money, Threshold, ValuationVerdict
+from src.domain.value_objects import (
+    AssetType,
+    Fundamentals,
+    Money,
+    Threshold,
+    ValuationVerdict,
+    clamp_unit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -287,24 +294,73 @@ def _validate_float(value: Any, field_name: str, default: float) -> tuple[float,
 _TREND_SIGNALS: dict[str, int] = {"BULLISH": 1, "BEARISH": -1, "SIDEWAYS": 0}
 
 
-def _validate_trend_direction(value: Any) -> tuple[int, str | None]:
-    """Waliduje trend_direction z LLM przed mapowaniem na sygnał ML.
+def _normalize_trend(value: Any) -> tuple[str, str | None]:
+    """Kanoniczny trend_direction z LLM (strip + upper) i ewentualna flaga.
 
-    Zwraca `(signal, flag_or_None)`. Genuinely-absent (None / pusty string)
-    może bez flagi default'ować do SIDEWAYS — to nie jest skażony input, tylko
-    brak pola. Wartość OBECNA, ale spoza zbioru {BULLISH, BEARISH, SIDEWAYS}
-    (np. "UP", literówka) → neutralny sygnał 0 + flaga `trend_direction_invalid`
-    (analogicznie do `_validate_float`). Bez tej flagi śmieciowy kierunek
-    udawał prawdziwy SIDEWAYS i model uczył się na cichym zerze.
+    Genuinely-absent (None / pusty string) może bez flagi default'ować do
+    SIDEWAYS — to nie jest skażony input, tylko brak pola. Wartość OBECNA, ale
+    spoza zbioru {BULLISH, BEARISH, SIDEWAYS} (np. "UP", literówka) → SIDEWAYS
+    + flaga `trend_direction_invalid` (analogicznie do `_validate_float`). Bez
+    tej flagi śmieciowy kierunek udawał prawdziwy SIDEWAYS i model uczył się
+    na cichym zerze. ML-07 (decyzja właściciela 2026-10-18): SIDEWAYS jest też
+    ZAPISYWANY — bez NULL-a i bez pomijania predykcji.
     """
     if value is None:
-        return _TREND_SIGNALS["SIDEWAYS"], None
+        return "SIDEWAYS", None
     normalized = str(value).strip().upper()
     if not normalized:
-        return _TREND_SIGNALS["SIDEWAYS"], None
+        return "SIDEWAYS", None
     if normalized in _TREND_SIGNALS:
-        return _TREND_SIGNALS[normalized], None
-    return _TREND_SIGNALS["SIDEWAYS"], "trend_direction_invalid"
+        return normalized, None
+    return "SIDEWAYS", "trend_direction_invalid"
+
+
+def _parse_number(value: Any) -> float | None:
+    """Liczba z odpowiedzi LLM albo None (brak, nie-liczba, NaN).
+    Nieskończoność zostaje liczbą — `clamp_unit` przytnie ją do granicy."""
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(parsed) else parsed
+
+
+# ML-07: skalary jednostkowe z odpowiedzi LLM → nazwa flagi `*_out_of_range`.
+# Flaga nosi nazwę kolumny prediction_logs / cechy ML (jak `_missing`/`_invalid`).
+_LLM_UNIT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("confidence_score", "confidence_score"),
+    ("av_agreement", "av_llm_agreement"),
+)
+
+
+def _normalize_llm_analysis(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """ML-07: kanonizuje wyjście głównego LLM, zanim ktokolwiek je przeczyta.
+
+    Zwraca dict o tym samym kształcie (z `trend_direction` zawsze obecnym)
+    oraz flagi jakości. Trend → kanon albo SIDEWAYS (`_normalize_trend`);
+    confidence i av_agreement spoza [0, 1] →
+    `clamp_unit` + flaga `*_out_of_range`. Braku i nie-liczb NIE ruszamy:
+    te przypadki flaguje dalej `_validate_float` (`_missing` / `_invalid`).
+    Surowy tekst modelu był wcześniej zapisywany wprost — „bullish” dawał
+    OBSERWUJ zamiast KUP, a później wywracał reflect przy TrendDirection(...).
+    """
+    analysis = dict(raw)
+    flags: list[str] = []
+    trend, trend_flag = _normalize_trend(raw.get("trend_direction"))
+    analysis["trend_direction"] = trend
+    if trend_flag is not None:
+        flags.append(trend_flag)
+    for key, flag_name in _LLM_UNIT_FIELDS:
+        number = _parse_number(raw.get(key))
+        if number is None:
+            continue
+        clamped, out_of_range = clamp_unit(number)
+        if out_of_range:
+            analysis[key] = clamped
+            flags.append(f"{flag_name}_out_of_range")
+    return analysis, flags
 
 
 _TREND_TO_REC: dict[str, Literal["BUY", "SELL", "HOLD"]] = {
@@ -908,23 +964,24 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         # #14: pusty string przy braku fuzji → blok nie wchodzi do promptu.
         alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
     )
-    llm_analysis, llm_failed = _run_llm_analysis(deps, state, prompt, symbol)
+    raw_analysis, llm_failed = _run_llm_analysis(deps, state, prompt, symbol)
+    # ML-07: kanonizacja PRZED pierwszym odczytem — rada, zapis i raport
+    # czytają już ten sam znormalizowany dict, nie surowy tekst modelu.
+    llm_analysis, analysis_flags = _normalize_llm_analysis(raw_analysis)
 
     # 2. ML — twarda predykcja liczbowa (multi-feature)
     # #21: trend_direction walidowany jak pola liczbowe — present-but-invalid
-    # (np. "UP") daje neutralny sygnał, ALE zostawia flagę jakości. Genuinely
-    # -absent default'uje do SIDEWAYS bez flagi.
-    llm_trend_signal, trend_flag = _validate_trend_direction(
-        llm_analysis.get("trend_direction")
-    )
+    # (np. "UP") daje neutralny sygnał, ALE zostawia flagę jakości (z
+    # normalizacji). Genuinely-absent default'uje do SIDEWAYS bez flagi.
+    llm_trend_signal = _TREND_SIGNALS[llm_analysis["trend_direction"]]
 
     # Walidacja pól liczbowych — każdy padły input zostawia ślad w
-    # data_quality_flags (None → _missing, nie-numeryczne/NaN → _invalid).
+    # data_quality_flags (None → _missing, nie-numeryczne/NaN → _invalid,
+    # poza skalą [0, 1] → _out_of_range).
     flags: list[str] = []
     if llm_failed:
         flags.append("llm_analysis_failed")
-    if trend_flag is not None:
-        flags.append(trend_flag)
+    flags.extend(analysis_flags)
     # Adapter sentymentu (AV) może oznaczyć cały feed jako zdegradowany
     # (np. wszystkie klucze wyczerpane). Wtedy 0.0 we wszystkich polach
     # to nie "spokojny dzień" tylko "brak danych" — flaga to rozróżnia.

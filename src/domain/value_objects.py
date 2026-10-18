@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -39,6 +40,20 @@ class Threshold:
             raise ValueError(
                 f"Threshold value must be non-negative (got {self.value})"
             )
+
+
+def clamp_unit(value: float) -> tuple[float, bool]:
+    """Przycina wartość do skali jednostkowej [0, 1] (pewność, zgoda).
+
+    Zwraca `(wartość_w_skali, czy_była_poza_skalą)`. LLM dryfujący na skalę
+    0–100 zwraca np. 85 — bez przycięcia „8500%” trafia do bazy i na szczyt
+    rankingu sygnałów. Nieskończoność przycinamy do granicy; NaN nie ma
+    pozycji na osi, więc to `ValueError` (wołający odsiewa go wcześniej).
+    """
+    if math.isnan(value):
+        raise ValueError("clamp_unit requires a number, got NaN")
+    clamped = min(max(value, 0.0), 1.0)
+    return clamped, clamped != value
 
 
 class AssetType(Enum):
