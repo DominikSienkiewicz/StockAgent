@@ -1764,3 +1764,21 @@ class TestColdStartForecast:
         )
         assert "Brak wytrenowanego modelu" in html
         assert "sprawdzonym" not in html.lower()
+
+
+class TestColdStartSignalsAndChart:
+    """WIA-13 (G03): sekcja „Najsilniejsze sygnały” i wykres prognoz nie mogą
+    pokazywać baseline'u „cena bez zmian” jako prognozy +0.00%."""
+
+    def test_signal_section_names_its_ranking_source_on_cold_start(self):
+        html, text = build_html_report(
+            [_cold_start_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+        )
+        assert "Najsilniejsze sygnały" in html
+        assert "ranking wg pewności" in html
+        assert "+0.00%" not in html
+        assert "ranking wg pewności" in text
+        assert "+0.00%" not in text
+
+    def test_forecast_chart_skips_cold_start_results(self):
+        assert build_forecast_chart_html([_cold_start_result()]) == ""

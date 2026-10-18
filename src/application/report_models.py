@@ -118,6 +118,9 @@ class TradeSignal:
     # (zachowanie identyczne jak przed #9). Surowa `confidence` zostaje obok,
     # żeby raport mógł pokazać "pewność LLM: 85% → skalibrowana historią: 58%".
     calibrated_confidence: float | None = None
+    # WIA-13 (G03): True = brak prognozy ruchu (XGBoost bez wag), `strength` to
+    # sama (skalibrowana) pewność, a `expected_change` = 0 nie jest prognozą.
+    ml_cold_start: bool = False
 
 
 @dataclass(frozen=True)

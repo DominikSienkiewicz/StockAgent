@@ -140,3 +140,5 @@ Each signal lands in a dedicated section in the email with a red/yellow accent s
 ```
 
 Gives an immediate actionable view without digging through the table.
+
+**On ML cold start** (no trained XGBoost weights, `SymbolResult.ml_cold_start`) the target equals the current price, so `|expected_change|` is 0 and the formula above would zero every signal and leave the list in processing order. Strength is then the confidence alone — calibrated by its bucket's historical hit rate when `calibrated_confidence_enabled` has a sample — the card shows `— (ML: cold-start)` instead of a forecast, and the section says the ranking is by confidence. The two strengths are on different scales, so model-backed signals always rank ahead of cold-start ones. The forecast chart leaves cold-start symbols out and disappears when every symbol is cold-start.

@@ -183,3 +183,64 @@ class TestCalibratedConfidenceInSignalRanking:
         )
 
         assert signal.strength == pytest.approx(0.85 * 10.0)
+
+
+class TestColdStartSignalRanking:
+    """WIA-13 (G03): bez wag XGBoost target == bieżąca cena, więc
+    pewność × |expected_change| zeruje każdy sygnał i ranking staje się
+    kolejnością przetwarzania. Przy cold-starcie siła = (skalibrowana) pewność."""
+
+    @staticmethod
+    def _cold(symbol: str, confidence: float) -> SymbolResult:
+        return SymbolResult(
+            symbol=symbol,
+            status="saved",
+            trend="BULLISH",
+            confidence_score=confidence,
+            current_price=Decimal("100"),
+            target_price=Decimal("100"),
+            ml_cold_start=True,
+        )
+
+    def test_ranking_orders_by_calibrated_confidence_when_ml_target_equals_price(
+        self,
+    ) -> None:
+        signals = build_trade_signals([self._cold("AAPL", 0.6), self._cold("MSFT", 0.9)])
+
+        assert [s.symbol for s in signals] == ["MSFT", "AAPL"]
+        assert [s.strength for s in signals] == [pytest.approx(0.9), pytest.approx(0.6)]
+
+    def test_cold_start_strength_uses_calibrated_confidence(self) -> None:
+        buckets = [
+            CalibrationBucket(0.8, 0.9, count=100, mean_confidence=0.85, hit_rate=0.30),
+            CalibrationBucket(0.6, 0.7, count=100, mean_confidence=0.65, hit_rate=0.70),
+        ]
+
+        signals = build_trade_signals(
+            [self._cold("AAPL", 0.85), self._cold("MSFT", 0.65)],
+            calibration_buckets=buckets,
+        )
+
+        assert [s.symbol for s in signals] == ["MSFT", "AAPL"]
+        assert signals[0].strength == pytest.approx(signals[0].calibrated_confidence)
+
+    def test_cold_start_signal_is_flagged(self) -> None:
+        (signal,) = build_trade_signals([self._cold("AAPL", 0.7)])
+
+        assert signal.ml_cold_start is True
+
+    def test_model_backed_signals_rank_before_cold_start_ones(self) -> None:
+        # Siły w dwóch skalach (ruch × pewność vs sama pewność) są nieporównywalne.
+        backed = SymbolResult(
+            symbol="NVDA",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.5,
+            current_price=Decimal("100"),
+            target_price=Decimal("100.5"),
+        )
+
+        signals = build_trade_signals([self._cold("AAPL", 0.95), backed])
+
+        assert [s.symbol for s in signals] == ["NVDA", "AAPL"]
+        assert signals[0].ml_cold_start is False
