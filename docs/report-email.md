@@ -23,4 +23,6 @@ The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallbac
 - 📈 **Sentiment vs price correlation** (scatter plot)
 - ⏸ **Ignored** (chip list) + ⚠️ **Errors**
 
+**Size budget.** Gmail clips messages above ~102 KB and hides the rest, footer and disclaimer included. The HTML is compacted (whitespace between tags collapsed to one space, which renders identically), and a test keeps a typical 8-symbol cycle with a full 7-persona council under 95 KB. A 45-symbol big-move day is still far over budget until council tables and reasoning blocks collapse outside the top signals — tracked as an expected failure until the report snapshot test lands.
+
 All sections are **conditional** — they only render when data exists. The first cold-start cycle produces a concise report; once you have 50+ cycles behind you, accuracy sparklines and history kick in.

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import html
+import re
 import urllib.parse
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -700,6 +701,17 @@ def to_lead_signals(
 _SKIP_WHEN_EMPTY_SLOTS = frozenset({_QUOTA_BANNER_SLOT, _RISK_WATCH_SLOT})
 
 
+# MAIL-06: ciąg białych znaków między tagami — wcięcia szablonów.
+_WHITESPACE_BETWEEN_TAGS = re.compile(r">\s+<")
+
+
+def _compact_markup(markup: str) -> str:
+    """Gmail przycina wiadomości powyżej ~102 KB, a wcięcia szablonów to kilka procent
+    maila. Ciąg białych znaków między tagami zamieniamy na jedną spację: w HTML bez
+    `<pre>` renderuje się identycznie, a sąsiednie elementy inline się nie sklejają."""
+    return _WHITESPACE_BETWEEN_TAGS.sub("> <", markup).strip()
+
+
 def _fill_html_slots(html: str, sections: Mapping[str, str]) -> str:
     """Wstawia treść w sloty HTML — klucz to znacznik slotu, wartość to gotowy
     HTML sekcji.
@@ -1012,6 +1024,7 @@ def build_html_report(
         _ALPHA_SLOT: alpha_html,
         _SUGGESTIONS_SLOT: suggestions_html,
     })
+    html = _compact_markup(html)
     text = _render_plain(
         results, saved, ignored, errors, started_at, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
