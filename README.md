@@ -8,7 +8,9 @@ scores every past prediction against the realised price, and writes a Polish-lan
 email with charts and its own running hit-rate. The daily report run is **paused** and starts
 only on manual `workflow_dispatch`. The hourly price-shock check is paused with it, because
 its only reference prices are the daily run's snapshots. Only the weekly model retraining
-still runs on schedule.
+still runs on schedule, and it has not shipped weights yet: no symbol has the 50 settled
+predictions training needs, so the XGBoost leg runs on its no-change baseline and the report
+and the council prompt label it as cold-start.
 
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.2](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=for-the-badge)
@@ -26,7 +28,8 @@ still runs on schedule.
 In the era of AI-driven information overload, a single price tick is a useless signal — what
 matters is the **covariance of sentiment, news, and historical predictions**. This agent
 treats the market as a system: it pulls clean numerical data, enriches it through a curated
-financial filter, models hybridly (LLM for reasoning + XGBoost for quantitative inference),
+financial filter, is built to model hybridly (LLM for reasoning + XGBoost for quantitative
+inference, once XGBoost has earned its weights against a naive baseline),
 and **cyclically confronts itself with reality** through Self-Reflection. It's not a scraper,
 and it's not another "GPT predict stocks" — every prediction it makes is recorded, closed
 against the realised price, and fed back into the next run.
@@ -34,7 +37,7 @@ against the realised price, and fed back into the next run.
 ## One pass, end to end
 
 `price + snapshot` → `self-reflection on the last prediction` → `fundamentals` →
-**volatility gate** → `sentiment + news` → `LLM cross-validation` → `local XGBoost` →
+**volatility gate** → `sentiment + news` → `LLM cross-validation` → `local XGBoost (baseline until trained)` →
 `7-persona advisory council` → `persist + RAG` → `HTML email`.
 
 The gate is the point: below the threshold no paid API is touched at all. A cycle where

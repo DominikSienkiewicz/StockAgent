@@ -142,7 +142,7 @@ Five workflows in [`.github/workflows/`](../.github/workflows/):
 |---|---|---|---|
 | [`ci.yml`](../.github/workflows/ci.yml) | — (on push / PR) | — | ruff + mypy + pytest, plus a parallel **SonarCloud** scan job (`pytest --cov` → coverage upload) |
 | [`fast_loop_12h.yml`](../.github/workflows/fast_loop_12h.yml) | _disabled_ (manual only) | — | Analysis + email report. **Daily schedule is currently paused** — the cron is commented out, so it runs only via manual `workflow_dispatch`. Re-enable by uncommenting the `schedule` block. |
-| [`slow_loop_weekly.yml`](../.github/workflows/slow_loop_weekly.yml) | `0 3 * * 0` | Sunday 05:00 (summer) | XGBoost retraining + commit new weights |
+| [`slow_loop_weekly.yml`](../.github/workflows/slow_loop_weekly.yml) | `0 3 * * 0` | Sunday 05:00 (summer) | XGBoost retraining; commits `data/models/price_predictor.ubj` only when a candidate beats the naive baseline |
 | [`shock_watch_hourly.yml`](../.github/workflows/shock_watch_hourly.yml) | _disabled_ (manual only) | — | Free shock alerts (`main_watch.py`) — no LLM, no paid API. Designed for an hourly 24/7 cron (`7 * * * *`, BTC/ETH trade around the clock), **paused together with the Fast Loop**: its only reference prices are Fast Loop snapshots, and a reference older than 30 h suppresses every alert. A run where every reference is stale logs a `Shock watch ślepy` WARNING. Re-enable both crons together. |
 | [`db_migrate.yml`](../.github/workflows/db_migrate.yml) | — (`workflow_dispatch` only) | — | Applies `supabase/migrations/` via the Supabase CLI. Deliberately manual: a broken migration must never fire on a cron. |
 

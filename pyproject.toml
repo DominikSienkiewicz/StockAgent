@@ -1,7 +1,7 @@
 [project]
 name = "stock-agent"
 version = "0.1.0"
-description = "Autonomous Financial Agent — Agentic RAG + Continual Learning"
+description = "Autonomous financial agent — agentic RAG, an LLM advisory council and self-reflection against realised prices"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Dominik Sienkiewicz" }]
