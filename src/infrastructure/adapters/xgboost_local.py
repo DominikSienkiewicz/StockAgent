@@ -192,6 +192,10 @@ class XGBoostAdapter(MLPredictionPort):
                     # Baseline persystencji: „zwrot = 0" (cena 12h = cena bieżąca).
                     "baseline_rmse": _rmse(valid_y, np.zeros(len(valid_y))),
                     "hit_rate": _directional_hit_rate(valid_y, preds),
+                    # ML-20: umiejętność sygnału obok RMSE — porządek i znak.
+                    "ic": _rank_ic(valid_y, preds),
+                    "sign_strategy_return": _sign_strategy_return(valid_y, preds),
+                    "turnover": _sign_turnover(preds),
                 }
             )
         return out
@@ -361,3 +365,37 @@ def _directional_hit_rate(actual: pd.Series, predicted: Any) -> float:
     if actual_arr.size == 0:
         return 0.0
     return float(np.mean(np.sign(actual_arr) == np.sign(predicted_arr)))
+
+
+def _rank_ic(actual: pd.Series, predicted: Any) -> float:
+    """IC: korelacja rang Spearmana prognozy z realizacją (Pearson na rangach).
+
+    Stała seria (prognoza albo realizacja) nie ma porządku — korelacja jest
+    wtedy niezdefiniowana i zwracamy 0.0 („brak umiejętności rankingu"), żeby NaN
+    nie zatruł średniej IC w `summarize_folds`."""
+    actual_ranks = pd.Series(np.asarray(actual, dtype=float)).rank()
+    predicted_ranks = pd.Series(np.asarray(predicted, dtype=float)).rank()
+    if actual_ranks.nunique() < 2 or predicted_ranks.nunique() < 2:
+        return 0.0
+    ic = actual_ranks.corr(predicted_ranks)
+    return 0.0 if pd.isna(ic) else float(ic)
+
+
+def _sign_strategy_return(actual: pd.Series, predicted: Any) -> float:
+    """Średni zwrot strategii „pozycja = znak prognozy": mean(sign(pred) × target)."""
+    actual_arr = np.asarray(actual, dtype=float)
+    if actual_arr.size == 0:
+        return 0.0
+    return float(np.mean(np.sign(np.asarray(predicted, dtype=float)) * actual_arr))
+
+
+def _sign_turnover(predicted: Any) -> float:
+    """Średnia zmiana pozycji znakowej między kolejnymi wierszami foldu ∈ [0, 1].
+
+    Odwrócenie long↔short liczy się jako 1, wejście/wyjście z zera jako 0.5.
+    Wiersze idą w kolejności czasu; w modelu wspólnym kolejne wiersze to różne
+    symbole, więc tam to tylko przybliżenie obrotu."""
+    signs = np.sign(np.asarray(predicted, dtype=float))
+    if signs.size < 2:
+        return 0.0
+    return float(np.mean(np.abs(np.diff(signs)) / 2))

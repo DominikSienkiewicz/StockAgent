@@ -1806,3 +1806,31 @@ class TestPooledTrainingLoop:
         fake_uc.run_pooled.side_effect = RuntimeError("XGBoost boom")
 
         assert main_trainer.main(settings) == 1
+
+
+def test_backtest_log_reports_ic_next_to_rmse(settings, mock_external_clients, mocker, caplog):
+    # ML-20: IC i jego t-stat obok RMSE, zawsze z liczbą foldów (4 foldy = mało).
+    from src.domain.backtest import BacktestSummary
+
+    fake_uc = MagicMock()
+    fake_uc.run.return_value = BacktestSummary(
+        n_folds=4,
+        mean_candidate_rmse=0.03,
+        mean_baseline_rmse=0.05,
+        mean_hit_rate=0.6,
+        improvement_pct=40.0,
+        beats_baseline=True,
+        verdict="model bije baseline o 40.0%",
+        mean_ic=0.12,
+        ic_std=0.05,
+        ic_t_stat=4.8,
+    )
+    mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
+
+    with caplog.at_level("INFO", logger="main_backtest"):
+        main_backtest.main(settings)
+
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("AAPL"))
+    assert "ic=0.120" in line
+    assert "t=4.80" in line
+    assert "folds=4" in line

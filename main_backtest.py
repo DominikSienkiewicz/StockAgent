@@ -23,6 +23,11 @@ from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 logger = logging.getLogger(__name__)
 
 
+def _fmt_optional(value: float | None, pattern: str) -> str:
+    """Liczba w logu albo `n/a`, gdy miara jest niezdefiniowana (np. jeden fold)."""
+    return "n/a" if value is None else pattern % value
+
+
 def build_use_case(settings: Settings) -> BacktestUseCase:
     """DI Container — backtest potrzebuje tylko bazy (cechy) + XGBoost (foldy)."""
     return BacktestUseCase(
@@ -59,9 +64,11 @@ def main(settings: Settings | None = None) -> int:
     for symbol in settings.symbols:
         try:
             summary = use_case.run(symbol, refresh_view=False)
+            # ML-20: IC i jego t-stat obok RMSE — zawsze z liczbą foldów, bo przy
+            # 4 foldach t-stat mówi niewiele.
             logger.info(
                 "%s: %s | folds=%d cand_rmse=%.5f base_rmse=%.5f "
-                "hit=%.1f%% impr=%.1f%%",
+                "hit=%.1f%% impr=%.1f%% ic=%s sd=%s t=%s",
                 symbol,
                 summary.verdict,
                 summary.n_folds,
@@ -69,6 +76,9 @@ def main(settings: Settings | None = None) -> int:
                 summary.mean_baseline_rmse,
                 summary.mean_hit_rate * 100.0,
                 summary.improvement_pct,
+                _fmt_optional(summary.mean_ic, "%.3f"),
+                _fmt_optional(summary.ic_std, "%.3f"),
+                _fmt_optional(summary.ic_t_stat, "%.2f"),
             )
         except Exception:
             logger.exception("Backtest failed for %s", symbol)

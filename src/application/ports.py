@@ -389,8 +389,9 @@ class MLPredictionPort(ABC):
         Reużywa tę samą logikę foldów co `train()` (finding #23), ale zwraca
         SZCZEGÓŁ każdego foldu zamiast średniej: lista dictów z kluczami
         `train_end`, `valid_end`, `n_train`, `n_valid`, `candidate_rmse`,
-        `baseline_rmse` (zwrot=0), `hit_rate` (trafność kierunku). Czysto
-        ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
+        `baseline_rmse` (zwrot=0), `hit_rate` (trafność kierunku) oraz (ML-20)
+        `ic` (korelacja rang Spearmana), `sign_strategy_return` i `turnover`.
+        Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
 
 
 class LLMPort(ABC):

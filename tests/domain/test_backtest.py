@@ -191,3 +191,38 @@ def test_purge_keeps_everything_when_labels_settle_before_validation():
     stamps = [start + timedelta(days=i) for i in range(10)]
 
     assert purged_train_end(stamps, valid_start=6) == 6
+
+
+def _ic_folds(ics: list[float]) -> list[dict[str, float]]:
+    return [
+        {"candidate_rmse": 0.01, "baseline_rmse": 0.02, "hit_rate": 0.5, "ic": ic}
+        for ic in ics
+    ]
+
+
+def test_summary_reports_mean_ic_and_t_stat():
+    # ML-20: przy słabym sygnale RMSE nagradza model ściągający prognozy do zera;
+    # o decyzji kierunkowej mówi porządek (IC), raportowany obok RMSE.
+    summary = summarize_folds(_ic_folds([0.1, 0.2, 0.3, 0.2]))
+
+    assert summary.mean_ic == pytest.approx(0.2)
+    assert summary.ic_std == pytest.approx((0.02 / 3) ** 0.5)
+    # t = IC_mean / sd · √folds
+    assert summary.ic_t_stat == pytest.approx(0.2 / (0.02 / 3) ** 0.5 * 2)
+
+
+def test_ic_t_stat_needs_at_least_two_folds():
+    summary = summarize_folds(_ic_folds([0.3]))
+
+    assert summary.mean_ic == pytest.approx(0.3)
+    assert summary.ic_std is None
+    assert summary.ic_t_stat is None
+
+
+def test_ic_fields_stay_empty_when_folds_carry_no_ic():
+    summary = summarize_folds(
+        [{"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.6}]
+    )
+
+    assert summary.mean_ic is None
+    assert summary.ic_t_stat is None

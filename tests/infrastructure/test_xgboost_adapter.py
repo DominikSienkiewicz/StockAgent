@@ -533,3 +533,30 @@ class TestPooledTrainingSupport:
 
         assert result["status"] == "trained_successfully"
         assert Path(model_path).exists()
+
+
+class TestSignalSkillMetrics:
+    """ML-20: obok RMSE fold niesie IC (korelacja rang Spearmana prognozy z
+    realizacją), zwrot strategii znakowej i turnover."""
+
+    def test_fold_detail_contains_ic(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=200)
+
+        folds = adapter.walk_forward_report(features, target)
+
+        for fold in folds:
+            assert {"ic", "sign_strategy_return", "turnover"} <= fold.keys()
+            assert -1.0 <= fold["ic"] <= 1.0
+            assert 0.0 <= fold["turnover"] <= 1.0
+        # Sygnał jest realny → porządek prognoz zgodny z realizacją.
+        assert all(fold["ic"] > 0.3 for fold in folds)
+        assert all(fold["sign_strategy_return"] > 0 for fold in folds)
+
+    def test_constant_target_has_zero_ic_instead_of_nan(self, adapter: XGBoostAdapter):
+        # Stała seria nie ma porządku — korelacja rang jest niezdefiniowana (NaN),
+        # a NaN zatrułby średnią IC w podsumowaniu.
+        features, _ = _synthetic_dataset(n=200)
+
+        folds = adapter.walk_forward_report(features, pd.Series([0.0] * 200))
+
+        assert all(fold["ic"] == 0.0 for fold in folds)

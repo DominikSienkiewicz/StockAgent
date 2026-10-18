@@ -1,6 +1,8 @@
 # src/domain/backtest.py
 from __future__ import annotations
 
+import math
+import statistics
 from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -36,6 +38,12 @@ class BacktestSummary:
     baseline'u o co najmniej `MIN_REL_IMPROVEMENT` i foldy dały co najmniej
     `MIN_OOS_POINTS` punktów OOS. `n_oos_points` to suma `n_valid` z foldów
     (None, gdy foldy nie niosą tego klucza). `verdict` to polska etykieta do raportu.
+
+    ML-20: `mean_ic` to średni IC (korelacja rang prognozy z realizacją) po
+    foldach, `ic_std` jego odchylenie (próbkowe), `ic_t_stat = mean_ic / ic_std ·
+    √n_folds`. None, gdy foldy nie niosą `ic`, a sd/t-stat także przy jednym
+    foldzie albo zerowym rozrzucie. Przy 4 foldach t-stat jest mało informatywny —
+    czytaj go razem z `n_folds`.
     """
 
     n_folds: int
@@ -46,6 +54,9 @@ class BacktestSummary:
     beats_baseline: bool
     verdict: str
     n_oos_points: int | None = None
+    mean_ic: float | None = None
+    ic_std: float | None = None
+    ic_t_stat: float | None = None
 
 
 def beats_baseline(candidate_rmse: float, baseline_rmse: float) -> bool:
@@ -80,6 +91,22 @@ def _oos_points(folds: Sequence[Mapping[str, float]]) -> int | None:
     return int(sum(fold["n_valid"] for fold in folds))
 
 
+def _ic_stats(
+    folds: Sequence[Mapping[str, float]],
+) -> tuple[float | None, float | None, float | None]:
+    """(średni IC, sd, t-stat) po foldach; None tam, gdzie miara niezdefiniowana."""
+    if not all("ic" in fold for fold in folds):
+        return None, None, None
+    ics = [fold["ic"] for fold in folds]
+    mean_ic = statistics.fmean(ics)
+    if len(ics) < 2:
+        return mean_ic, None, None
+    ic_std = statistics.stdev(ics)
+    if ic_std == 0:
+        return mean_ic, ic_std, None
+    return mean_ic, ic_std, mean_ic / ic_std * math.sqrt(len(ics))
+
+
 def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
     """Agreguje per-fold metryki walk-forward w `BacktestSummary`.
 
@@ -104,6 +131,7 @@ def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
         improvement_pct = (mean_baseline - mean_candidate) / mean_baseline * 100
 
     n_oos_points = _oos_points(folds)
+    mean_ic, ic_std, ic_t_stat = _ic_stats(folds)
     passed = beats_baseline(mean_candidate, mean_baseline)
 
     if n_oos_points is not None and n_oos_points < MIN_OOS_POINTS:
@@ -128,4 +156,7 @@ def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
         beats_baseline=passed,
         verdict=verdict,
         n_oos_points=n_oos_points,
+        mean_ic=mean_ic,
+        ic_std=ic_std,
+        ic_t_stat=ic_t_stat,
     )
