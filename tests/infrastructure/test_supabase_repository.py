@@ -1258,6 +1258,48 @@ class TestGetAccuracyStats:
         assert stats["mean_accuracy"] == 1001 / 2001
         assert order_builder.range.call_count == 3
 
+    def test_directional_calls_are_counted_beside_the_total(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """WIA-29 (c): mail pokazuje trafność kierunkową obok łącznej. Liczby
+        łączne (sizing, kalibracja) bez zmian; kierunkowe pomijają SIDEWAYS
+        i nieznany trend — ta sama reguła co `directional_hit_rate`."""
+        rows = [
+            {"is_trend_correct": True, "predicted_trend": "BULLISH"},
+            {"is_trend_correct": False, "predicted_trend": "BEARISH"},
+            {"is_trend_correct": True, "predicted_trend": "SIDEWAYS"},
+            {"is_trend_correct": True, "predicted_trend": None},
+        ]
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [rows])
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert stats["sample_count"] == 4
+        assert stats["correct_count"] == 3
+        assert stats["mean_accuracy"] == 0.75
+        assert stats["directional_count"] == 2
+        assert stats["directional_correct_count"] == 1
+        assert "predicted_trend" in chain.select.call_args.args[0]
+
+    def test_empty_window_has_no_directional_calls(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [[]])
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert stats["mean_accuracy"] is None
+        assert stats["directional_count"] == 0
+        assert stats["directional_correct_count"] == 0
+
 
 class TestGetResolvedPredictionsForEval:
     def test_returns_rows_and_filters_by_window(

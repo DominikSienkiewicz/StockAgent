@@ -12,6 +12,7 @@ from supabase import create_client
 from src.application.ports import PreviousVerdict, RepositoryPort
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.equity_curve import directional_hit_rate
 from src.domain.prediction import Prediction, normalize_trend
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.regime_key import canonical_regime_key
@@ -391,6 +392,12 @@ class SupabaseRepository(RepositoryPort):
         Zwraca dict z kluczami: `mean_accuracy`, `sample_count`, `correct_count`,
         `days_window`. Gdy brak danych → mean_accuracy=None. Atrapy po awarii
         LLM (`llm_analysis_failed`) nie są predykcjami i nie wchodzą do próby.
+
+        WIA-29: `mean_accuracy` liczy też prognozy SIDEWAYS („bez ruchu”) — na
+        nim stoi sizing, więc semantyka zostaje. Obok, z tej samej próby,
+        `directional_count` / `directional_correct_count`: tylko prognozy
+        z zakładem na kierunek (`directional_hit_rate`, ta sama definicja co
+        Track Record), żeby mail pokazał obie liczby z jasnymi etykietami.
         """
         cutoff = datetime.now(UTC) - timedelta(days=days)
         # Paginacja (#8): hit-rate liczony na PEŁNYM zbiorze, nie obciętych 1000
@@ -398,31 +405,36 @@ class SupabaseRepository(RepositoryPort):
         # bez niego obcięta próbka była losowa przy każdym wywołaniu.
         query = (
             self._client.table(self._table)
-            .select("is_trend_correct, data_quality_flags")
+            .select("is_trend_correct, predicted_trend, data_quality_flags")
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
         )
         rows = _without_llm_fallback(_paginate(query))
-        flags = [
-            bool(r["is_trend_correct"])
+        calls = [
+            (str(r.get("predicted_trend") or ""), bool(r["is_trend_correct"]))
             for r in rows
             if r.get("is_trend_correct") is not None
         ]
+        directional = directional_hit_rate(calls)
 
-        if not flags:
+        if not calls:
             return {
                 "mean_accuracy": None,
                 "sample_count": 0,
                 "correct_count": 0,
                 "days_window": days,
+                "directional_count": 0,
+                "directional_correct_count": 0,
             }
-        correct_count = sum(1 for f in flags if f)
+        correct_count = sum(1 for _, correct in calls if correct)
         return {
-            "mean_accuracy": correct_count / len(flags),
-            "sample_count": len(flags),
+            "mean_accuracy": correct_count / len(calls),
+            "sample_count": len(calls),
             "correct_count": correct_count,
             "days_window": days,
+            "directional_count": directional.directional,
+            "directional_correct_count": directional.hits,
         }
 
     def get_cached_fundamentals(self, symbol: str) -> Fundamentals | None:

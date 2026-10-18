@@ -1205,6 +1205,22 @@ def _render_resolved_predictions_html(
     return "".join(parts)
 
 
+# WIA-29 (c): dwie definicje trafności obok siebie, każda nazwana tym, co liczy.
+_DIRECTIONAL_ACCURACY_LABEL = "Trafność kierunkowa (bez prognoz „bez ruchu”)"
+_TOTAL_ACCURACY_LABEL = "Trafność łączna (z prognozami „bez ruchu”)"
+
+
+def _directional_accuracy(accuracy_stats: dict[str, Any]) -> tuple[str, str] | None:
+    """(wartość, dopisek) trafności kierunkowej; None, gdy statystyki jej nie niosą."""
+    n = accuracy_stats.get("directional_count")
+    hits = accuracy_stats.get("directional_correct_count")
+    if n is None or hits is None:
+        return None
+    if n == 0:
+        return "—", "brak prognoz kierunkowych"
+    return f"{hits / n * 100:.1f}%", wilson_label(hits, n)
+
+
 def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
     """🎯 Historia trafności. Pusty string, gdy brak danych statystyk."""
     if accuracy_stats and accuracy_stats.get("mean_accuracy") is not None:
@@ -1214,6 +1230,13 @@ def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
         days = accuracy_stats["days_window"]
         # WIA-32: przedział Wilsona obok procentu — goły % jest nieweryfikowalny.
         interval = wilson_label(correct, n)
+        directional = _directional_accuracy(accuracy_stats)
+        directional_html = (
+            f"{_DIRECTIONAL_ACCURACY_LABEL}: <strong>{directional[0]}</strong>"
+            f" ({directional[1]})<br/>"
+            if directional is not None
+            else ""
+        )
         return f"""
       <div style="padding: 12px 14px; background: #fef3c7; border-left: 3px solid #f59e0b;
                   border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
@@ -1221,9 +1244,10 @@ def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
           🎯 Historia trafności (ostatnie {days} dni)
         </div>
         <div style="color: #78350f;">
-          Średnia trafność: <strong>{acc * 100:.1f}%</strong> ({interval})
+          {directional_html}
+          {_TOTAL_ACCURACY_LABEL}: <strong>{acc * 100:.1f}%</strong> ({interval})
           · Predykcji ocenionych: {n}
-          · Poprawnych kierunkowo: {correct}
+          · Poprawnych: {correct}
         </div>
       </div>
         """
@@ -1678,15 +1702,21 @@ def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list
     """Sekcja 'Historia trafności' (plain). Pusta lista, gdy brak danych."""
     if not (accuracy_stats and accuracy_stats.get("mean_accuracy") is not None):
         return []
-    return [
+    lines = [
         f"HISTORIA TRAFNOŚCI (ostatnie {accuracy_stats['days_window']} dni)",
         "-" * 64,
-        f"  Średnia trafność: {accuracy_stats['mean_accuracy'] * 100:.1f}%"
+    ]
+    directional = _directional_accuracy(accuracy_stats)
+    if directional is not None:
+        lines.append(f"  {_DIRECTIONAL_ACCURACY_LABEL}: {directional[0]} ({directional[1]})")
+    lines.extend([
+        f"  {_TOTAL_ACCURACY_LABEL}: {accuracy_stats['mean_accuracy'] * 100:.1f}%"
         f" ({wilson_label(accuracy_stats['correct_count'], accuracy_stats['sample_count'])})"
         f"  ·  Predykcji ocenionych: {accuracy_stats['sample_count']}"
         f"  ·  Poprawnych: {accuracy_stats['correct_count']}",
         "",
-    ]
+    ])
+    return lines
 
 
 def _render_reflections_text(saved: list[SymbolResult]) -> list[str]:

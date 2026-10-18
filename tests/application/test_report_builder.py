@@ -1999,3 +1999,66 @@ class TestTradeSignalCalibrationAndStrength:
         assert "pewność 85% → 58% po kalibracji (n kubełka: 12)" in text
         assert "#1 · ruch 3.1% × pewność skalibrowana 58%" in text
         assert "siła " not in text
+
+
+class TestAccuracyHistoryBothDefinitions:
+    """WIA-29 (c): „Historia trafności” liczyła SIDEWAYS do trafności, a Track
+    Record pokazuje trafność kierunkową — dwie różne liczby pod jedną nazwą.
+    Mail pokazuje obie obok siebie, z etykietami mówiącymi, co liczą."""
+
+    _STATS = {
+        "mean_accuracy": 0.72,
+        "sample_count": 50,
+        "correct_count": 36,
+        "days_window": 30,
+        "directional_count": 40,
+        "directional_correct_count": 26,
+    }
+
+    def _html(self, stats: dict[str, object]) -> str:
+        html, _ = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(accuracy_stats=stats)
+        )
+        return html
+
+    def _text(self, stats: dict[str, object]) -> str:
+        _, text = build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(accuracy_stats=stats)
+        )
+        return text
+
+    def test_html_shows_directional_next_to_total(self):
+        html = self._html(self._STATS)
+
+        assert "Trafność kierunkowa (bez prognoz „bez ruchu”)" in html
+        assert "65.0%" in html
+        assert "n=40" in html
+        assert "Trafność łączna (z prognozami „bez ruchu”)" in html
+        assert "72.0%" in html
+        assert "95% CI 58–83%, n=50" in html
+        assert "Średnia trafność" not in html
+
+    def test_text_shows_directional_next_to_total(self):
+        text = self._text(self._STATS)
+
+        assert "Trafność kierunkowa (bez prognoz „bez ruchu”): 65.0%" in text
+        assert "Trafność łączna (z prognozami „bez ruchu”): 72.0%" in text
+        assert "Średnia trafność" not in text
+
+    def test_no_directional_calls_is_said_plainly(self):
+        stats = {**self._STATS, "directional_count": 0, "directional_correct_count": 0}
+
+        assert "brak prognoz kierunkowych" in self._html(stats)
+        assert "brak prognoz kierunkowych" in self._text(stats)
+
+    def test_stats_without_directional_counts_show_the_labelled_total_only(self):
+        stats = {
+            key: value
+            for key, value in self._STATS.items()
+            if not key.startswith("directional")
+        }
+
+        html = self._html(stats)
+
+        assert "Trafność łączna (z prognozami „bez ruchu”)" in html
+        assert "Trafność kierunkowa" not in html

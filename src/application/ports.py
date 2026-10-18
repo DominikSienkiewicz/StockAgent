@@ -133,6 +133,11 @@ class RepositoryPort(ABC):
     def get_accuracy_stats(self, days: int) -> dict[str, Any]:
         """Statystyki trafności ostatnich `days` dni z prediction_logs.
 
+        `mean_accuracy` / `sample_count` / `correct_count` liczą wszystkie
+        rozliczone predykcje, także SIDEWAYS („bez ruchu”) — z nich korzysta
+        sizing. `directional_count` / `directional_correct_count` (WIA-29) to
+        ta sama próba zawężona do prognoz z zakładem na kierunek.
+
         Ten i pozostałe odczyty track-recordu (`get_recently_resolved_predictions`,
         `get_resolved_predictions`, `get_resolved_for_calibration`) pomijają
         atrapy po awarii głównego LLM (flaga `llm_analysis_failed`, WIA-09)."""
