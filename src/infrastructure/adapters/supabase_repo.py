@@ -47,10 +47,18 @@ def _paginate(query_builder: Any) -> list[dict[str, Any]]:
 
     `query_builder` to gotowy builder (po .order/.gte/...), na którym wywołanie
     .range(...).execute() zwraca kolejną stronę. Dla zbiorów <_PAGE_SIZE
-    zachowanie jest identyczne jak pojedynczy select (jedna iteracja)."""
+    zachowanie jest identyczne jak pojedynczy select (jedna iteracja).
+
+    postgrest-py `.range()` DOKLEJA `offset`/`limit` do parametrów tego samego
+    buildera (`QueryParams.add`), więc bez resetu druga strona szłaby jako
+    `offset=0&offset=1000&limit=1000&limit=1000` (NIEZ-15). Każda strona startuje
+    od parametrów zapytania bazowego (filtry + sortowanie) i dostaje dokładnie
+    jedną parę offset/limit."""
+    base_params = query_builder.request.params
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
+        query_builder.request.params = base_params
         response = query_builder.range(offset, offset + _PAGE_SIZE - 1).execute()
         page = _rows(response)
         rows.extend(page)

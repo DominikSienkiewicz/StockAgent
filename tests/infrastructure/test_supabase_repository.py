@@ -1,8 +1,10 @@
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from src.application.ports import RepositoryPort
@@ -1540,3 +1542,81 @@ class TestLlmFallbackRowsExcludedFromTrackRecord:
 
         assert [r["id"] for r in rows] == ["p-1"]
         assert "data_quality_flags" in builder.select.call_args.args[0]
+
+
+# ---------------------------------------------------------------------------
+# NIEZ-15: każda strona paginacji = jedna para offset/limit. Prawdziwy builder
+# postgrest-py, mock wyłącznie na warstwie HTTP (httpx) — MagicMock-owy łańcuch
+# nie odwzoruje tego, że `.range()` DOKLEJA parametry do tego samego buildera.
+# ---------------------------------------------------------------------------
+
+_PAGINATED_READS: dict[str, Callable[[SupabaseRepository], object]] = {
+    "recently_resolved": lambda repo: repo.get_recently_resolved_predictions(24),
+    "resolved": lambda repo: repo.get_resolved_predictions(30),
+    "resolved_detailed": lambda repo: repo.get_resolved_predictions_detailed(7),
+    "resolved_for_eval": lambda repo: repo.get_resolved_predictions_for_eval(30),
+    "accuracy_stats": lambda repo: repo.get_accuracy_stats(30),
+    "resolved_for_calibration": lambda repo: repo.get_resolved_for_calibration(30),
+    "unrevealed_commitments": lambda repo: repo.get_unrevealed_commitments(30),
+}
+
+
+class TestPaginationSendsOneRangePerPage:
+    @staticmethod
+    def _serve_rows(mocker: Any, total: int) -> list[httpx.QueryParams]:
+        """Udaje PostgREST: zwraca wycinek `total` wierszy wg OSTATNIEGO offsetu
+        i limitu z zapytania, a każde zapytanie zapisuje do listy."""
+        rows = [
+            {
+                "id": f"p-{i}",
+                "symbol": "NVDA",
+                "is_trend_correct": True,
+                "data_quality_flags": None,
+                "investor_name": "Soros",
+                "recommendation": "BUY",
+            }
+            for i in range(total)
+        ]
+        sent: list[httpx.QueryParams] = []
+
+        def fake_request(
+            _client: httpx.Client, method: str, url: str, **kwargs: Any
+        ) -> httpx.Response:
+            params = httpx.QueryParams(kwargs.get("params"))
+            sent.append(params)
+            offset = int(params.get_list("offset")[-1])
+            limit = int(params.get_list("limit")[-1])
+            page = rows[offset : offset + limit]
+            return httpx.Response(200, json=page, request=httpx.Request(method, url))
+
+        mocker.patch.object(httpx.Client, "request", autospec=True, side_effect=fake_request)
+        return sent
+
+    @pytest.mark.parametrize("read", _PAGINATED_READS.values(), ids=_PAGINATED_READS.keys())
+    def test_second_page_replaces_offset_instead_of_appending(
+        self, mocker: Any, read: Callable[[SupabaseRepository], object]
+    ) -> None:
+        sent = self._serve_rows(mocker, total=1005)
+        repo = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
+
+        read(repo)
+
+        # Bez naprawy druga strona szła jako offset=0&offset=1000&limit=1000&limit=1000.
+        assert [p.get_list("offset") for p in sent] == [["0"], ["1000"]]
+        assert [p.get_list("limit") for p in sent] == [["1000"], ["1000"]]
+
+    @pytest.mark.parametrize("read", _PAGINATED_READS.values(), ids=_PAGINATED_READS.keys())
+    def test_every_page_keeps_the_same_filters_and_order(
+        self, mocker: Any, read: Callable[[SupabaseRepository], object]
+    ) -> None:
+        sent = self._serve_rows(mocker, total=1005)
+        repo = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
+
+        read(repo)
+
+        def without_range(params: httpx.QueryParams) -> list[tuple[str, str]]:
+            return [(k, v) for k, v in params.multi_items() if k not in ("offset", "limit")]
+
+        assert len(sent) == 2
+        assert without_range(sent[0]) == without_range(sent[1])
+        assert any(key == "order" for key, _ in without_range(sent[1]))
