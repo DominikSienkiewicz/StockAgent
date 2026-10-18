@@ -20,9 +20,12 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from src.domain.equity_curve import (
+    DirectionalHitRate,
     EquityCurve,
     EquityPoint,
+    directional_hit_rate,
     equity_curve,
+    portfolio_equity_curve,
     signal_of,
 )
 
@@ -180,3 +183,84 @@ class TestImmutability:
         curve = equity_curve([("BULLISH", 0.05)])
         with pytest.raises(FrozenInstanceError):
             curve.total_return = 0.0  # type: ignore[misc]
+
+
+class TestDirectionalHitRate:
+    """WIA-05: jedna domenowa definicja hit-rate kierunkowego — SIDEWAYS (sygnał 0)
+    nie stawia zakładu, więc nie wchodzi do mianownika."""
+
+    def test_sideways_calls_are_excluded_from_the_denominator(self) -> None:
+        result = directional_hit_rate(
+            [
+                ("BULLISH", True),
+                ("BEARISH", False),
+                ("SIDEWAYS", True),
+                ("SIDEWAYS", True),
+            ]
+        )
+
+        assert result == DirectionalHitRate(hits=1, directional=2, sideways=2)
+        assert result.rate == pytest.approx(0.5)
+
+    def test_unknown_trend_counts_as_no_bet(self) -> None:
+        # Spójnie z `signal_of`: nieznana etykieta = brak ekspozycji.
+        result = directional_hit_rate([("WHATEVER", True), ("bullish", True)])
+
+        assert result.directional == 1
+        assert result.sideways == 1
+        assert result.rate == pytest.approx(1.0)
+
+    def test_no_directional_calls_has_no_rate(self) -> None:
+        # Brak zakładów to brak wyniku — nie 0% i nie 100%.
+        assert directional_hit_rate([("SIDEWAYS", True)]).rate is None
+        assert directional_hit_rate([]).rate is None
+
+
+class TestPortfolioEquityCurve:
+    """WIA-17: jeden punkt na cykl, równa waga trade'ów w cyklu, SIDEWAYS = gotówka.
+    Szeregowe składanie równoległych trade'ów na 100% kapitału nie ma sensu."""
+
+    def test_portfolio_curve_averages_trades_within_cycle(self) -> None:
+        cycles = [[("BULLISH", 0.10), ("BULLISH", 0.10)]]
+
+        curve = portfolio_equity_curve(cycles)
+
+        assert curve.total_return == pytest.approx(0.10)
+        # Ten sam zestaw szeregowo dałby 1.1 * 1.1 - 1 = 0.21.
+        assert equity_curve(cycles[0]).total_return == pytest.approx(0.21)
+
+    def test_one_point_per_cycle(self) -> None:
+        cycles = [
+            [("BULLISH", 0.10), ("BEARISH", 0.02)],
+            [("BEARISH", -0.04)],
+        ]
+
+        curve = portfolio_equity_curve(cycles)
+
+        # Cykl 1: (0.10 + (-1 * 0.02)) / 2 = 0.04; cykl 2: 0.04.
+        assert [p.index for p in curve.points] == [0, 1]
+        assert curve.points[0].period_return == pytest.approx(0.04)
+        assert curve.points[1].equity == pytest.approx(1.04 * 1.04)
+        assert curve.n_trades == 3
+
+    def test_sideways_is_cash_with_equal_weight(self) -> None:
+        # SIDEWAYS nie stawia zakładu, ale zajmuje swoją 1/N kapitału jako gotówka.
+        curve = portfolio_equity_curve([[("BULLISH", 0.10), ("SIDEWAYS", 0.30)]])
+
+        assert curve.total_return == pytest.approx(0.05)
+
+    def test_win_rate_and_drawdown_use_the_same_rules_as_serial_curve(self) -> None:
+        cycles = [
+            [("BULLISH", 0.20)],
+            [("BULLISH", -0.25), ("SIDEWAYS", 0.0)],
+        ]
+
+        curve = portfolio_equity_curve(cycles)
+
+        assert curve.win_rate == pytest.approx(0.5)
+        # 1.2 → 1.2 * (1 - 0.125) = 1.05; obsunięcie (1.2 - 1.05) / 1.2 = 0.125.
+        assert curve.max_drawdown == pytest.approx(0.125)
+
+    def test_empty_cycles_are_skipped_and_empty_input_is_all_zeros(self) -> None:
+        assert portfolio_equity_curve([]) == equity_curve([])
+        assert portfolio_equity_curve([[], [("BULLISH", 0.1)]]).points[0].index == 0

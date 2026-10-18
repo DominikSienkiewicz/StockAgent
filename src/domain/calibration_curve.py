@@ -8,10 +8,16 @@ ważoną licznością średnią rozjazdu |hit_rate − mean_confidence|.
 
 To NIE jest sędzia LLM z `domain/prediction.py` — tu nie ma żadnej oceny
 jakościowej, wyłącznie liczbowy diagram niezawodności predykcji.
+
+ECE jest tylko metryką POMOCNICZĄ (WIA-36): prognoza „zawsze 55%” przy 55%
+trafień ma ECE = 0, a zerową umiejętność. Główne metryki pewności to Brier
+score, log loss i Brier Skill Score względem prognozy klimatologicznej
+(stała stopa bazowa), plus rozkład Murphy'ego BS = REL − RES + UNC.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -153,3 +159,101 @@ def calibrated_confidence(
     calibrated = raw + weight * (bucket.hit_rate - raw)
     # Przycięcie do [0, 1] — zabezpieczenie przed zdegenerowanymi danymi.
     return max(0.0, min(1.0, calibrated))
+
+
+def brier_score(samples: Sequence[tuple[float, bool]]) -> float:
+    """Brier score — średni kwadrat różnicy pewności i wyniku (0/1).
+
+    0.0 to prognoza idealna; brak próbek → 0.0 (spójnie z ECE).
+    """
+    if not samples:
+        return 0.0
+    squared_errors = [(confidence - (1.0 if hit else 0.0)) ** 2 for confidence, hit in samples]
+    return sum(squared_errors) / len(squared_errors)
+
+
+def log_loss(samples: Sequence[tuple[float, bool]], eps: float = 1e-6) -> float:
+    """Średnia ujemna log-wiarygodność; pewność przycięta do [eps, 1 − eps].
+
+    Bez przycięcia pewność 1.0 przy pudle dawałaby nieskończoność. Brak
+    próbek → 0.0.
+    """
+    if not samples:
+        return 0.0
+    total = 0.0
+    for confidence, hit in samples:
+        clipped = min(1.0 - eps, max(eps, confidence))
+        total -= math.log(clipped if hit else 1.0 - clipped)
+    return total / len(samples)
+
+
+def murphy_decomposition(
+    buckets: Sequence[CalibrationBucket],
+) -> tuple[float, float, float]:
+    """Rozkład Murphy'ego Briera na kubełkach: `(reliability, resolution, uncertainty)`.
+
+    - reliability (REL) = Σ n_k (f_k − o_k)² / N — kara za rozjazd pewności
+      i trafności (im niżej, tym lepiej),
+    - resolution (RES) = Σ n_k (o_k − ō)² / N — na ile kubełki ODRÓŻNIAJĄ się
+      trafnością od stopy bazowej (im wyżej, tym lepiej),
+    - uncertainty (UNC) = ō (1 − ō) — trudność zadania; to zarazem Brier
+      prognozy klimatologicznej.
+
+    BS = REL − RES + UNC dokładnie, gdy pewność jest stała w kubełku; przy
+    pewnościach rozrzuconych w kubełku to przybliżenie. Pewności skupione
+    w 0.6–0.85 dają RES bliskie 0 — to prawda do pokazania, nie do ukrycia.
+    """
+    total = sum(b.count for b in buckets)
+    if total == 0:
+        return 0.0, 0.0, 0.0
+    base_rate = sum(b.count * b.hit_rate for b in buckets) / total
+    reliability = sum(b.count * (b.mean_confidence - b.hit_rate) ** 2 for b in buckets) / total
+    resolution = sum(b.count * (b.hit_rate - base_rate) ** 2 for b in buckets) / total
+    return reliability, resolution, base_rate * (1.0 - base_rate)
+
+
+@dataclass(frozen=True)
+class ProbabilityScores:
+    """Metryki jakości deklarowanej pewności na jednym zbiorze próbek.
+
+    `climatology_brier` to Brier prognozy „zawsze stopa bazowa”; `skill`
+    (Brier Skill Score) = 1 − brier / climatology_brier — 0 to brak
+    umiejętności, wartości ujemne są gorsze od klimatologii. None, gdy wyniki
+    się nie różnią (klimatologia ma Brier 0 i nie ma czego bić).
+    """
+
+    n: int
+    brier: float
+    log_loss: float
+    climatology_brier: float
+    skill: float | None
+    reliability: float
+    resolution: float
+    uncertainty: float
+
+
+def probability_scores(
+    samples: Sequence[tuple[float, bool]], n_buckets: int = 10
+) -> ProbabilityScores | None:
+    """Brier, log loss, BSS i rozkład Murphy'ego z próbek `(confidence, was_correct)`.
+
+    Brak próbek → None (sekcja raportu sama się chowa).
+    """
+    if not samples:
+        return None
+    brier = brier_score(samples)
+    base_rate = sum(1 for _, hit in samples if hit) / len(samples)
+    climatology = base_rate * (1.0 - base_rate)
+    reliability, resolution, uncertainty = murphy_decomposition(
+        reliability_curve(samples, n_buckets)
+    )
+    return ProbabilityScores(
+        n=len(samples),
+        brier=brier,
+        log_loss=log_loss(samples),
+        climatology_brier=climatology,
+        skill=None if climatology == 0.0 else 1.0 - brier / climatology,
+        reliability=reliability,
+        resolution=resolution,
+        uncertainty=uncertainty,
+    )

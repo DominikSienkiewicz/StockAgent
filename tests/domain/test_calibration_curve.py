@@ -10,12 +10,18 @@ diagram niezawodności predykcji.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from src.domain.calibration_curve import (
     CalibrationBucket,
+    brier_score,
     calibrated_confidence,
     expected_calibration_error,
+    log_loss,
+    murphy_decomposition,
+    probability_scores,
     reliability_curve,
 )
 
@@ -195,3 +201,62 @@ class TestCalibratedConfidence:
         buckets = [_bucket(0.9, 1.0, 100, hit_rate=1.0)]
         result = calibrated_confidence(1.0, buckets, min_count=10)
         assert 0.0 <= result <= 1.0
+
+
+class TestProbabilityScores:
+    """WIA-36: Brier, log loss i rozkład Murphy'ego. ECE jest 0 dla prognozy
+    „zawsze 55%” przy 55% trafień — czyli przy ZEROWEJ umiejętności — więc nie
+    może być główną metryką pewności."""
+
+    def test_brier_of_perfect_forecast_is_zero(self) -> None:
+        assert brier_score([(1.0, True), (0.0, False), (1.0, True)]) == pytest.approx(0.0)
+
+    def test_brier_is_mean_squared_error_of_confidence(self) -> None:
+        # (0.8 - 1)² = 0.04, (0.6 - 0)² = 0.36 → średnia 0.2.
+        assert brier_score([(0.8, True), (0.6, False)]) == pytest.approx(0.2)
+
+    def test_log_loss_clips_certain_misses(self) -> None:
+        # Pewność 1.0 przy pudle dałaby nieskończoność — eps ją ogranicza.
+        loss = log_loss([(1.0, False)], eps=1e-6)
+
+        assert loss == pytest.approx(-math.log(1e-6))
+
+    def test_log_loss_of_coin_flip_is_ln_two(self) -> None:
+        assert log_loss([(0.5, True), (0.5, False)]) == pytest.approx(math.log(2))
+
+    def test_murphy_components_reconstruct_brier_when_forecasts_constant_within_bucket(
+        self,
+    ) -> None:
+        samples = (
+            [(0.85, True)] * 3 + [(0.85, False)]
+            + [(0.35, True)] + [(0.35, False)] * 3
+        )
+        reliability, resolution, uncertainty = murphy_decomposition(
+            reliability_curve(samples)
+        )
+
+        assert reliability - resolution + uncertainty == pytest.approx(brier_score(samples))
+        assert uncertainty == pytest.approx(0.25)
+
+    def test_constant_base_rate_forecast_has_zero_skill(self) -> None:
+        # „Zawsze 60%” przy 60% trafień: ECE = 0, a umiejętności brak (BSS = 0).
+        samples = [(0.6, True)] * 6 + [(0.6, False)] * 4
+
+        scores = probability_scores(samples)
+
+        assert scores is not None
+        assert scores.skill == pytest.approx(0.0)
+        assert scores.brier == pytest.approx(scores.climatology_brier)
+        assert expected_calibration_error(reliability_curve(samples)) < 1e-9
+
+    def test_skill_is_undefined_when_outcomes_never_vary(self) -> None:
+        scores = probability_scores([(0.7, True), (0.9, True)])
+
+        assert scores is not None
+        assert scores.climatology_brier == pytest.approx(0.0)
+        assert scores.skill is None
+
+    def test_no_samples_no_scores(self) -> None:
+        assert probability_scores([]) is None
+        assert brier_score([]) == pytest.approx(0.0)
+        assert murphy_decomposition([]) == (0.0, 0.0, 0.0)

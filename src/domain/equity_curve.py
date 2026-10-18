@@ -9,11 +9,20 @@ ułamkiem (np. 0.03 = +3%). Sygnał kierunku: BULLISH→+1, BEARISH→-1,
 SIDEWAYS/inne→0. Zwrot okresu = sygnał * zmiana ceny, więc trafiony short
 (cena spadła) daje zysk, a chybiony long — stratę. Kapitał składa się
 procentowo: equity_i = equity_{i-1} * (1 + period_return).
+
+Dwie krzywe:
+  - `equity_curve` — każdy trade to osobny okres na 100% kapitału (szeregowo),
+  - `portfolio_equity_curve` (WIA-17) — jeden okres na CYKL: kapitał dzielony
+    po równo między predykcje cyklu, SIDEWAYS trzyma swoją część w gotówce.
+    Równoległe trade'y jednego dnia nie składają się więc jak kolejne zakłady.
+
+Tu mieszka też jedyna definicja hit-rate kierunkowego (`directional_hit_rate`,
+WIA-05): SIDEWAYS nie stawia zakładu, więc nie wchodzi do mianownika.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 
@@ -30,6 +39,46 @@ def signal_of(predicted_trend: str) -> int:
     if normalized == "BEARISH":
         return -1
     return 0
+
+
+@dataclass(frozen=True)
+class DirectionalHitRate:
+    """Hit-rate kierunkowy: trafienia wśród predykcji BULLISH/BEARISH.
+
+    `directional` to mianownik (predykcje z sygnałem != 0), `sideways` to
+    predykcje bez zakładu (SIDEWAYS i nieznane etykiety) — liczone osobno,
+    żeby raport mógł pokazać, ile ich było, zamiast po cichu je pominąć.
+    """
+
+    hits: int
+    directional: int
+    sideways: int
+
+    @property
+    def rate(self) -> float | None:
+        """Odsetek trafień kierunkowych; None, gdy nie było żadnego zakładu."""
+        if self.directional == 0:
+            return None
+        return self.hits / self.directional
+
+
+def directional_hit_rate(calls: Iterable[tuple[str, bool]]) -> DirectionalHitRate:
+    """Liczy hit-rate kierunkowy z par `(predicted_trend, is_correct)`.
+
+    Kierunkowość rozstrzyga `signal_of`: sygnał 0 (SIDEWAYS, nieznany trend)
+    nie wchodzi do mianownika, bo nie stawia zakładu na kierunek.
+    """
+    hits = 0
+    directional = 0
+    sideways = 0
+    for trend, is_correct in calls:
+        if signal_of(trend) == 0:
+            sideways += 1
+            continue
+        directional += 1
+        if is_correct:
+            hits += 1
+    return DirectionalHitRate(hits=hits, directional=directional, sideways=sideways)
 
 
 @dataclass(frozen=True)
@@ -80,27 +129,53 @@ def equity_curve(
       ułamek (monotoniczny wzrost → 0.0),
     - pusta historia → krzywa z samymi zerami.
     """
+    period_returns = [signal_of(trend) * change_pct for trend, change_pct in trades]
+    return _compound(period_returns, trades, starting_equity)
+
+
+def portfolio_equity_curve(
+    cycles: Sequence[Sequence[tuple[str, float]]],
+    starting_equity: float = 1.0,
+) -> EquityCurve:
+    """Krzywa kapitału portfela o równej wadze — jeden punkt na cykl (WIA-17).
+
+    `cycles` to kolejne cykle w porządku chronologicznym, każdy z listą trade'ów
+    `(predicted_trend, realized_change_pct)`. Zwrot cyklu to ŚREDNIA
+    `signal_of(trend) * change` po wszystkich trade'ach cyklu: każda predykcja
+    dostaje 1/N kapitału, a SIDEWAYS (sygnał 0) trzyma swoją część w gotówce.
+    Puste cykle są pomijane. `win_rate`, `max_drawdown` i `n_trades` liczone
+    są tymi samymi regułami co w `equity_curve` (n_trades = wszystkie trade'y,
+    `points` = cykle).
+    """
+    non_empty = [cycle for cycle in cycles if cycle]
+    period_returns = [
+        sum(signal_of(trend) * change for trend, change in cycle) / len(cycle)
+        for cycle in non_empty
+    ]
+    trades = [trade for cycle in non_empty for trade in cycle]
+    return _compound(period_returns, trades, starting_equity)
+
+
+def _compound(
+    period_returns: Sequence[float],
+    trades: Sequence[tuple[str, float]],
+    starting_equity: float,
+) -> EquityCurve:
+    """Składa zwroty okresów w krzywą; win-rate liczy z pojedynczych trade'ów.
+
+    Okres to trade (`equity_curve`) albo cykl (`portfolio_equity_curve`), więc
+    punkty krzywej i trade'y win-rate'u to osobne sekwencje.
+    """
     points: list[EquityPoint] = []
     equity = starting_equity
     peak = starting_equity
     max_drawdown = 0.0
-    directional_count = 0
-    wins = 0
 
-    for index, (trend, change_pct) in enumerate(trades):
-        signal = signal_of(trend)
-        period_return = signal * change_pct
+    for index, period_return in enumerate(period_returns):
         equity = equity * (1.0 + period_return)
         points.append(
             EquityPoint(index=index, period_return=period_return, equity=equity)
         )
-
-        # Win-rate liczymy tylko z trade'ów kierunkowych (sygnał != 0) —
-        # SIDEWAYS / nieznany trend nie stawia zakładu, więc nie zaniża trafień.
-        if signal != 0:
-            directional_count += 1
-            if period_return > 0:
-                wins += 1
 
         # Obsunięcie liczone na bieżącym szczycie kapitału (peak-to-trough).
         if equity > peak:
@@ -119,13 +194,19 @@ def equity_curve(
             n_trades=0,
         )
 
+    # Win-rate liczymy tylko z trade'ów kierunkowych (sygnał != 0) —
+    # SIDEWAYS / nieznany trend nie stawia zakładu, więc nie zaniża trafień.
+    directional_returns = [
+        signal_of(trend) * change for trend, change in trades if signal_of(trend) != 0
+    ]
+    wins = sum(1 for trade_return in directional_returns if trade_return > 0)
     total_return = equity / starting_equity - 1.0 if starting_equity != 0 else 0.0
-    win_rate = wins / directional_count if directional_count > 0 else 0.0
+    win_rate = wins / len(directional_returns) if directional_returns else 0.0
 
     return EquityCurve(
         points=tuple(points),
         total_return=total_return,
         win_rate=win_rate,
         max_drawdown=max_drawdown,
-        n_trades=len(points),
+        n_trades=len(trades),
     )
