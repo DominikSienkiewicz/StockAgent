@@ -441,7 +441,7 @@ class TestGetFeatureStoreData:
             {"price_current": 102.0, "sentiment_score": 80.0, "llm_trend_signal": 1},
         ]
         _set_chain_response(
-            mock_client, ["table", "select", "eq", "order"], rows
+            mock_client, ["table", "select", "eq", "order", "order", "range"], rows
         )
 
         result = repo.get_feature_store_data("AAPL")
@@ -731,7 +731,7 @@ class TestGetCouncilVoteHistory:
     ) -> None:
         _set_chain_response(
             mock_client,
-            ["table", "select", "in_", "gte", "order"],
+            ["table", "select", "in_", "gte", "order", "order", "range"],
             [
                 {"investor_name": "Soros", "symbol": "NVDA",
                  "recommendation": "SELL", "timestamp": "2026-06-10T00:00:00+00:00"},
@@ -1478,6 +1478,31 @@ class TestPaginatedSlowLoopReads:
 
         assert repo.get_unrevealed_commitments() == []
 
+    def test_get_feature_store_data_paginates_past_1000(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Trening czytał max ~1000 wierszy widoku — reszta historii znikała po cichu.
+        full_page = [{"id": f"p-{i}"} for i in range(1000)]
+        builder = _fluent_query(mock_client, [full_page, [{"id": f"q-{i}"} for i in range(5)]])
+
+        rows = repo.get_feature_store_data("AAPL")
+
+        assert len(rows) == 1005
+        assert builder.range.call_count == 2
+        assert [c.args[0] for c in builder.order.call_args_list] == ["timestamp", "id"]
+
+    def test_council_vote_history_paginates_past_1000(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        vote = {"investor_name": "Soros", "symbol": "NVDA", "recommendation": "BUY"}
+        builder = _fluent_query(mock_client, [[vote] * 1000, [vote] * 5])
+
+        history = repo.get_council_vote_history(["NVDA"])
+
+        assert len(history[0].recommendations) == 1005
+        assert builder.range.call_count == 2
+        assert [c.args[0] for c in builder.order.call_args_list] == ["timestamp", "id"]
+
 
 class TestLlmFallbackRowsExcludedFromTrackRecord:
     """WIA-09: po awarii głównego LLM predict_node zapisuje neutralną atrapę
@@ -1558,6 +1583,8 @@ _PAGINATED_READS: dict[str, Callable[[SupabaseRepository], object]] = {
     "accuracy_stats": lambda repo: repo.get_accuracy_stats(30),
     "resolved_for_calibration": lambda repo: repo.get_resolved_for_calibration(30),
     "unrevealed_commitments": lambda repo: repo.get_unrevealed_commitments(30),
+    "feature_store": lambda repo: repo.get_feature_store_data("NVDA"),
+    "council_vote_history": lambda repo: repo.get_council_vote_history(["NVDA"]),
 }
 
 

@@ -241,14 +241,16 @@ class SupabaseRepository(RepositoryPort):
         )
 
     def get_feature_store_data(self, symbol: str) -> list[dict[str, Any]]:
-        response = (
+        # NIEZ-15: paginacja — bez niej trening widział max ~1000 wierszy widoku.
+        # `id` jako drugi klucz: granica strony deterministyczna przy równych timestampach.
+        query = (
             self._client.table(self._view)
             .select("*")
             .eq("symbol", symbol)
             .order("timestamp", desc=False)
-            .execute()
+            .order("id", desc=False)
         )
-        return _rows(response)
+        return _paginate(query)
 
     def refresh_feature_store(self) -> None:
         """Wywołuje RPC `refresh_ml_feature_store` (zdef. w migrations/001_init.sql).
@@ -821,11 +823,12 @@ class SupabaseRepository(RepositoryPort):
         )
         if investors:
             query = query.in_("investor_name", investors)
-        response = query.order("timestamp", desc=True).execute()
+        # NIEZ-15: paginacja z `id` jako drugim kluczem (jak w odczytach Slow Loopa).
+        rows = _paginate(query.order("timestamp", desc=True).order("id", desc=True))
         # Grupowanie per (inwestor, symbol); kolejność malejąca po czasie
         # zachowana (rekomendacje od najnowszej).
         grouped: dict[tuple[str, str], list[Literal["BUY", "SELL", "HOLD"]]] = {}
-        for row in _rows(response):
+        for row in rows:
             name = str(row.get("investor_name") or "")
             sym = str(row.get("symbol") or "")
             rec_raw = row.get("recommendation")
