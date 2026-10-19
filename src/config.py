@@ -91,6 +91,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # ML-34: zapis kolumn przedziału + pokrycie w Track Record. Przedział opisuje
     # niepewność prognozy, nie zmienia trendu, celu ani rekomendacji.
     "interval_coverage_enabled",
+    # EXP-01: sam zapis delty bramki; test echa liczy ją offline w `evaluate`.
+    "gate_delta_enabled",
     "model_scorecard_baselines_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
@@ -311,6 +313,11 @@ class Settings(BaseSettings):
     # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz
     # przed migracją → PGRST204 i śmierć zapisu całej predykcji.
     interval_coverage_enabled: bool = False
+    # EXP-01: delta ceny, która otworzyła bramkę, w `prediction_logs.gate_delta`
+    # (migracja 034) — test echa momentum w `evaluate --echo`. Zero nowych
+    # wywołań, prognoza bez zmian. Off: nowy klucz przed migracją → PGRST204
+    # i śmierć zapisu całej predykcji.
+    gate_delta_enabled: bool = False
     # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
     # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr

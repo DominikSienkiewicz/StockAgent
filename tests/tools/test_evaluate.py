@@ -457,3 +457,146 @@ class TestSegmentationCli:
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
             days=30, extra_fields=("confidence_score", "regime")
         )
+
+
+def _gated(trend: str, gate_delta: float | None, actual: float, day: int = 0) -> dict:
+    """Rozliczona predykcja z deltą bramki (EXP-01); cena przy predykcji 100."""
+    return {
+        **_row(trend, _trend_correct(trend, actual), 100, 100, actual),
+        "gate_delta": gate_delta,
+        "timestamp": _day(day),
+    }
+
+
+def _trend_correct(trend: str, actual: float) -> bool:
+    if trend == "BULLISH":
+        return actual > 100
+    if trend == "BEARISH":
+        return actual < 100
+    return abs(actual - 100) <= 0.5
+
+
+def test_echo_rate_counts_trend_matching_gate_delta_sign():
+    # EXP-01: dwa z trzech trendów powtarzają znak ruchu, który otworzył bramkę.
+    from src.tools.evaluate import summarize_echo
+
+    rows = [
+        _gated("BULLISH", 0.031, 101, day=0),
+        _gated("BEARISH", -0.022, 99, day=1),
+        _gated("BULLISH", -0.050, 101, day=2),
+    ]
+
+    echo = summarize_echo(rows)
+
+    assert echo.with_delta == 3
+    assert echo.echo_rate == pytest.approx(2 / 3)
+    assert echo.reversal_rate == pytest.approx(1 / 3)
+
+
+def test_momentum_baseline_hit_rate_uses_gate_delta_sign():
+    # „Znak ruchu” trafia, gdy ruch po predykcji ma znak delty bramki;
+    # „przeciwny znak” — gdy odwrotny. Te same wiersze co hit-rate LLM.
+    from src.tools.evaluate import summarize_echo
+
+    rows = [
+        _gated("BULLISH", 0.030, 101, day=0),   # momentum ✓, LLM ✓ (echo)
+        _gated("BULLISH", -0.030, 101, day=1),  # momentum ✗, LLM ✓ (odwrócenie)
+        _gated("BEARISH", -0.025, 98, day=2),   # momentum ✓, LLM ✓ (echo)
+        _gated("BEARISH", 0.040, 101, day=3),   # momentum ✓, LLM ✗ (odwrócenie)
+    ]
+
+    echo = summarize_echo(rows)
+
+    assert echo.compared == 4
+    assert echo.momentum_rate == pytest.approx(3 / 4)
+    assert echo.contrarian_rate == pytest.approx(1 / 4)
+    assert echo.llm_rate == pytest.approx(3 / 4)
+
+
+class TestMomentumEcho:
+    """EXP-01: test echa liczony WYŁĄCZNIE w `evaluate` (nie w recapie ani mailu)."""
+
+    def test_llm_hit_rate_where_it_disagrees_with_momentum(self):
+        from src.tools.evaluate import summarize_echo
+
+        rows = [
+            _gated("BULLISH", 0.030, 101, day=0),
+            _gated("BULLISH", -0.030, 101, day=1),
+            _gated("BEARISH", 0.040, 101, day=2),
+        ]
+
+        echo = summarize_echo(rows)
+
+        assert echo.disagreement == 2
+        assert echo.disagreement_rate == pytest.approx(1 / 2)
+
+    def test_rows_without_gate_delta_or_directional_call_are_not_compared(self):
+        from src.tools.evaluate import summarize_echo
+
+        rows = [
+            _gated("BULLISH", None, 101, day=0),
+            _gated("SIDEWAYS", 0.030, 100.2, day=1),
+            _gated("BULLISH", 0.030, 101, day=2),
+        ]
+
+        echo = summarize_echo(rows)
+
+        assert echo.with_delta == 2
+        assert echo.echo_rate == pytest.approx(1 / 2)
+        assert echo.compared == 1
+
+    def test_formatted_echo_prints_n_n_eff_and_bh(self):
+        from src.tools.evaluate import format_echo, summarize_echo
+
+        rows = [
+            _gated("BULLISH", 0.030, 101, day=0),
+            _gated("BULLISH", -0.030, 101, day=1),
+            _gated("BEARISH", 0.040, 101, day=2),
+        ]
+
+        text = format_echo(summarize_echo(rows))
+
+        assert "Echo momentum" in text
+        assert "66.7%" in text
+        assert "n=3" in text
+        assert "n_eff" in text
+        assert "BH" in text
+
+    def test_echo_flag_reads_the_gate_delta_column(self, mocker, capsys):
+        from src.tools import evaluate
+
+        mocker.patch("src.config.Settings.from_env")
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        repo_cls.return_value.get_resolved_predictions_for_eval.return_value = [
+            _gated("BULLISH", 0.030, 101),
+        ]
+
+        evaluate.main(["--echo"])
+
+        repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
+            days=30, extra_fields=("gate_delta",)
+        )
+        assert "Echo momentum" in capsys.readouterr().out
+
+    def test_missing_gate_delta_column_prints_the_migration_instead_of_failing(
+        self, mocker, capsys
+    ):
+        from src.infrastructure.adapters.supabase_repo import MissingColumnError
+        from src.tools import evaluate
+
+        mocker.patch("src.config.Settings.from_env")
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        read = repo_cls.return_value.get_resolved_predictions_for_eval
+        read.side_effect = [
+            MissingColumnError("gate_delta"),
+            [_row("BULLISH", True, 100, 101, 101)],
+        ]
+
+        code = evaluate.main(["--echo", "--by", "regime"])
+
+        assert code == 0
+        assert read.call_args_list[1].kwargs == {"days": 30, "extra_fields": ("regime",)}
+        out = capsys.readouterr().out
+        assert "kolumna gate_delta niedostępna — uruchom migrację 034" in out
+        assert "Próbek (zamkniętych predykcji): 1" in out
+        assert "Echo momentum" not in out

@@ -3265,3 +3265,27 @@ class TestResolveRegimeHysteresis:
         kwargs = resolve.call_args.kwargs
         assert isinstance(kwargs["repository"], RepositoryPort)
         assert kwargs["cycle_at"].tzinfo is not None
+
+
+class TestGateDeltaWiring:
+    """EXP-01 — flaga z Settings trafia do `AgentGraphDeps`; off (domyślnie) =
+    rekord predykcji nie niesie `gate_delta`, którego przed migracją 034 nie ma."""
+
+    def test_flag_defaults_off_in_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].gate_delta_enabled is False
+
+    def test_flag_reaches_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.gate_delta_enabled = True
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].gate_delta_enabled is True

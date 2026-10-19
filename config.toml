@@ -98,6 +98,10 @@ feature_snapshots_enabled = false
 # i pokrycie zrealizowane vs nominalne w Track Record. UWAGA: włącz DOPIERO po
 # migracji 032 (inaczej PGRST204 i przepadły zapis predykcji).
 interval_coverage_enabled = false
+# EXP-01: delta ceny, która otworzyła bramkę volatility, w `prediction_logs.gate_delta`
+# — test echa momentum w `uv run python -m src.tools.evaluate --echo` (offline, nie
+# w mailu). Historia z backfillu migracji. UWAGA: włącz DOPIERO po migracji 034 (PGRST204).
+gate_delta_enabled = false
 # WIA-19: okna „zamknięte predykcje” po chwili rozliczenia (`settled_at`, migracja
 # 029): sekcja maila = rozliczone w tym cyklu, recap = rozliczone w ostatnich 7 dniach.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 029 (inaczej 400 i sekcja znika).

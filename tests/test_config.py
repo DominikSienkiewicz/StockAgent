@@ -578,3 +578,21 @@ class TestRegimeHysteresisSettings:
         baseline = self._settings().config_hash()
         assert self._settings(regime_hysteresis_enabled=True).config_hash() != baseline
         assert self._settings(regime_exit_confirmations=3).config_hash() != baseline
+
+
+class TestGateDeltaFlag:
+    """EXP-01: zapis delty bramki (migracja 034) — flaga samego zapisu, więc
+    domyślnie off i poza przepisem (`config_hash` się nie rusza)."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).gate_delta_enabled is False
+
+    def test_is_a_write_only_flag_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "gate_delta_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, gate_delta_enabled=True
+        ).config_hash()
+        assert flipped == baseline

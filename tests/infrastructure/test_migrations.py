@@ -55,6 +55,7 @@ MIGRATION_FILES = [
     "031_feature_snapshots.sql",
     "032_move_interval.sql",
     "033_regime_history.sql",
+    "034_gate_delta.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -905,6 +906,25 @@ class TestMigrations:
             with pytest.raises(psycopg2.errors.CheckViolation):
                 cur.execute(insert, ("2026-10-19T14:30:00+00:00", "RISK_ON", "RISK_OFF", -1))
 
+    # -- Migracja 034: delta bramki volatility (EXP-01) ------------------------
+
+    def test_gate_delta_column_is_a_nullable_fraction(self, pg_conn) -> None:
+        """Zapis bez flagi `gate_delta_enabled` zostawia NULL; delta to ułamek."""
+        assert "gate_delta" in _columns(pg_conn, "prediction_logs")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('GD_NULL', '2026-10-19T05:30:00+00:00', 100.0) "
+                "RETURNING gate_delta"
+            )
+            assert cur.fetchone() == (None,)
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction, gate_delta) "
+                "VALUES ('GD_SET', '2026-10-19T05:30:00+00:00', 100.0, -0.0312345) "
+                "RETURNING gate_delta"
+            )
+            assert cur.fetchone()[0] == pytest.approx(-0.0312345)
+
 
 @pytest.fixture
 def fresh_pg():
@@ -1091,6 +1111,61 @@ class TestMigration029BackfillsSettledAt:
             "BF_NONE": datetime(2026, 10, 16, 17, 30, tzinfo=UTC),
             "BF_OPEN": None,
         }
+
+
+@pytest.mark.containers
+class TestMigration034BackfillsGateDelta:
+    """EXP-01: bramka liczyła deltę względem NAJNOWSZEGO snapshotu ceny z chwili
+    startu cyklu, a snapshot cyklu predykcji powstaje dopiero w węźle
+    terminalnym, PO zapisie predykcji. Dlatego backfill bierze najnowszy
+    snapshot symbolu sprzed `timestamp` predykcji; bez niego (albo z ceną 0)
+    zostaje NULL."""
+
+    def _apply_up_to_033(self, conn: psycopg2.extensions.connection) -> None:
+        idx = MIGRATION_FILES.index("034_gate_delta.sql")
+        with conn.cursor() as cur:
+            for filename in MIGRATION_FILES[:idx]:
+                cur.execute((MIGRATIONS_DIR / filename).read_text())
+
+    def _gate_deltas(self, cur: psycopg2.extensions.cursor) -> dict[str, float | None]:
+        cur.execute("SELECT symbol, gate_delta FROM prediction_logs WHERE symbol LIKE 'GB_%'")
+        return dict(cur.fetchall())
+
+    def test_034_backfills_the_delta_against_the_previous_cycle_snapshot(
+        self, fresh_pg
+    ) -> None:
+        conn = fresh_pg
+        self._apply_up_to_033(conn)
+        migration = (MIGRATIONS_DIR / "034_gate_delta.sql").read_text()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) VALUES "
+                "('GB_PREV', '2026-10-16T17:30:00+00:00', 103.1), "
+                "('GB_FIRST', '2026-10-16T17:30:00+00:00', 50.0), "
+                "('GB_ZERO', '2026-10-16T17:30:00+00:00', 10.0)"
+            )
+            cur.execute(
+                "INSERT INTO price_snapshots (symbol, price, timestamp) VALUES "
+                # Starszy i najnowszy snapshot sprzed predykcji — liczy się najnowszy.
+                "('GB_PREV', 90.0, '2026-10-15T17:30:05+00:00'), "
+                "('GB_PREV', 100.0, '2026-10-16T05:30:05+00:00'), "
+                # Snapshot cyklu predykcji (po zapisie predykcji) nie jest referencją.
+                "('GB_PREV', 103.1, '2026-10-16T17:30:05+00:00'), "
+                "('GB_FIRST', 50.0, '2026-10-16T17:30:05+00:00'), "
+                "('GB_ZERO', 0.0, '2026-10-16T05:30:05+00:00')"
+            )
+
+            cur.execute(migration)
+            deltas = self._gate_deltas(cur)
+
+            assert deltas["GB_PREV"] == pytest.approx(0.031)
+            assert deltas["GB_FIRST"] is None
+            assert deltas["GB_ZERO"] is None
+
+            # Idempotencja: ponowny przebieg nie nadpisuje zapisanej wartości.
+            cur.execute("UPDATE prediction_logs SET gate_delta = 0.5 WHERE symbol = 'GB_PREV'")
+            cur.execute(migration)
+            assert self._gate_deltas(cur)["GB_PREV"] == pytest.approx(0.5)
 
 
 def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:

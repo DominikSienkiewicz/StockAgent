@@ -5,8 +5,9 @@ import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
+from postgrest.exceptions import APIError
 from supabase import create_client
 
 from src.application.ports import PreviousVerdict, RepositoryPort
@@ -74,18 +75,50 @@ def _paginate(query_builder: Any) -> list[dict[str, Any]]:
     return rows
 
 
-# WIA-55: pola segmentów ewaluacji (`src.tools.evaluate --by`) → wyrażenie
-# selecta PostgREST. Czytane tylko na żądanie: każda kolumna istnieje dopiero
-# po swojej migracji (w nawiasie), a domyślny przebieg ma działać na każdej bazie.
-_EVAL_EXTRA_FIELDS: dict[str, str] = {
-    "symbol": "symbol",
+class _EvalField(NamedTuple):
+    column: str  # kolumna `prediction_logs` (do rozpoznania braku migracji)
+    select: str  # wyrażenie selecta PostgREST
+
+
+# WIA-55 / EXP-01: pola opcjonalne ewaluacji (`src.tools.evaluate --by/--echo`).
+# Czytane tylko na żądanie: każda kolumna istnieje dopiero po swojej migracji
+# (w komentarzu), a domyślny przebieg ma działać na każdej bazie.
+_EVAL_EXTRA_FIELDS: dict[str, _EvalField] = {
+    "symbol": _EvalField("symbol", "symbol"),
     # 005 — sama rekomendacja z JSONB, bez głosów i uzasadnień person.
-    "council_recommendation": "council_recommendation:council_verdict->>final_recommendation",
-    "confidence_score": "confidence_score",  # 016
-    "regime": "regime",  # 017
-    "alpha_fusion_score": "alpha_fusion_score",  # 022
-    "edge_sigma": "edge_sigma",  # 025
+    "council_recommendation": _EvalField(
+        "council_verdict", "council_recommendation:council_verdict->>final_recommendation"
+    ),
+    "confidence_score": _EvalField("confidence_score", "confidence_score"),  # 016
+    "regime": _EvalField("regime", "regime"),  # 017
+    "alpha_fusion_score": _EvalField("alpha_fusion_score", "alpha_fusion_score"),  # 022
+    "edge_sigma": _EvalField("edge_sigma", "edge_sigma"),  # 025
+    "gate_delta": _EvalField("gate_delta", "gate_delta"),  # 034
 }
+
+# Kody PostgREST/Postgres dla kolumny, której nie ma w bazie (select → 42703).
+_MISSING_COLUMN_CODES = frozenset({"42703", "PGRST204"})
+
+
+class MissingColumnError(RuntimeError):
+    """Odczyt prosił o kolumnę, której baza jeszcze nie ma — migracja nie
+    została zaaplikowana. `column` to nazwa kolumny `prediction_logs`."""
+
+    def __init__(self, column: str) -> None:
+        super().__init__(f"column prediction_logs.{column} does not exist")
+        self.column = column
+
+
+def _missing_eval_column(exc: APIError, fields: Sequence[str]) -> str | None:
+    """Kolumna z `fields`, której brak zgłasza błąd PostgREST; None, gdy to inny błąd."""
+    if exc.code not in _MISSING_COLUMN_CODES:
+        return None
+    message = exc.message or ""
+    for name in fields:
+        column = _EVAL_EXTRA_FIELDS[name].column
+        if column in message:
+            return column
+    return None
 
 
 # Flaga, którą predict_node zostawia przy neutralnej atrapie po awarii głównego
@@ -439,9 +472,9 @@ class SupabaseRepository(RepositoryPort):
         JSON po `decision_receipts` (migracja 020) — bez nowej kolumny; wiersze
         bez kwitu v2 mają tu None.
 
-        `extra_fields` (WIA-55) to pola segmentów ewaluacji z
-        `_EVAL_EXTRA_FIELDS`, czytane tylko na żądanie: każde istnieje dopiero
-        po swojej migracji. Nieznana nazwa → ValueError.
+        `extra_fields` (WIA-55, EXP-01) to pola z `_EVAL_EXTRA_FIELDS`, czytane
+        tylko na żądanie: każde istnieje dopiero po swojej migracji. Nieznana
+        nazwa → ValueError; brak kolumny w bazie → `MissingColumnError`.
 
         Metoda concrete-only (nie część `RepositoryPort`) — to narzędzie
         offline-analizy, nie część runtime'owego kontraktu use case'ów."""
@@ -457,7 +490,7 @@ class SupabaseRepository(RepositoryPort):
         for name in extra_fields:
             if name not in _EVAL_EXTRA_FIELDS:
                 raise ValueError(f"unknown evaluation field: {name}")
-            columns += f", {_EVAL_EXTRA_FIELDS[name]}"
+            columns += f", {_EVAL_EXTRA_FIELDS[name].select}"
         # Paginacja (#8) — ewaluacja musi widzieć pełen zbiór, nie obcięte 1000.
         query = (
             self._client.table(self._table)
@@ -466,7 +499,13 @@ class SupabaseRepository(RepositoryPort):
             .not_.is_("actual_price_after_12h", "null")
             .order("timestamp", desc=True)
         )
-        return _paginate(query)
+        try:
+            return _paginate(query)
+        except APIError as exc:
+            missing = _missing_eval_column(exc, extra_fields)
+            if missing is None:
+                raise
+            raise MissingColumnError(missing) from exc
 
     def get_settled_moves(
         self, days: int, *, with_intervals: bool = False

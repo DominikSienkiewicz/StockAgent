@@ -3304,3 +3304,62 @@ class TestRegimeTagging:
         assert saved["regime"] == "UCIECZKA_OD_RYZYKA"
         _, kwargs = repository_port.find_similar_predictions.call_args
         assert kwargs.get("regime") == "Ucieczka od ryzyka"
+
+
+class TestGateDeltaColumn:
+    """EXP-01: delta, która otworzyła bramkę, w `prediction_logs.gate_delta`
+    (migracja 034) za flagą `gate_delta_enabled` — nowy klucz przed migracją to
+    PGRST204 i śmierć zapisu całej predykcji."""
+
+    def _record(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, enabled: bool, previous_price: str = "100.0", threshold: str = "0.02",
+    ) -> dict:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal(threshold)),
+            gate_delta_enabled=enabled,
+        )).compile().invoke(_initial_state(previous_price))
+        return repository_port.save_prediction.call_args.args[0]
+
+    def test_flag_off_omits_the_column(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=False,
+        )
+
+        assert "gate_delta" not in record
+
+    def test_flag_on_stores_the_delta_that_opened_the_gate(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )
+
+        assert record["gate_delta"] == pytest.approx(-0.1)
+        assert isinstance(record["gate_delta"], float)
+
+    def test_cold_start_without_a_previous_snapshot_omits_the_column(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Bez poprzedniego snapshotu delta 0 to brak punktu odniesienia, nie ruch
+        # — jak w backfillu migracji 034 kolumna zostaje NULL.
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True, previous_price="0", threshold="0",
+        )
+
+        assert "gate_delta" not in record

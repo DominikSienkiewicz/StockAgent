@@ -31,12 +31,20 @@ trafność LLM po kontekście. Każdy segment ma n, Wilsona na n_eff, naiwny
 baseline i korektę BH-FDR w rodzinie segmentów; n < 10 → „za mało danych”.
 Kolumny segmentu czytane są tylko na żądanie (każda istnieje od swojej migracji).
 
+Test echa (EXP-01): `--echo` sprawdza, czy trend LLM to tylko znak delty, która
+otworzyła bramkę (`prediction_logs.gate_delta`, WYMAGA migracji 034): odsetek
+echa i odwrócenia, hit-rate baseline'ów „znak ruchu” / „przeciwny znak” na tych
+samych wierszach i hit-rate LLM tam, gdzie nie zgadza się z momentum — z n,
+n_eff i BH-FDR. Bez migracji drukuje komunikat zamiast wyjątku. Wynik żyje
+WYŁĄCZNIE tu (decyzja właściciela) — nie w recapie ani w mailu.
+
 Uruchom:
     uv run python -m src.tools.evaluate
     uv run python -m src.tools.evaluate --days 60
     uv run python -m src.tools.evaluate --by-recipe
     uv run python -m src.tools.evaluate --by-universe
     uv run python -m src.tools.evaluate --by component --by regime
+    uv run python -m src.tools.evaluate --echo
 
 Exit code: 0 zawsze (narzędzie raportujące, nie bramka CI).
 """
@@ -48,10 +56,11 @@ import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.domain.equity_curve import DirectionalHitRate, directional_hit_rate
 from src.domain.implied_edge import edge_label_for_sigma
+from src.domain.momentum_echo import EchoCall, EchoReport, HeadToHead, assess_momentum_echo
 from src.domain.recipe import hit_rate_by_version
 from src.domain.regime_key import canonical_regime_key
 from src.domain.segment_evidence import (
@@ -73,6 +82,9 @@ from src.domain.segment_evidence import (
 from src.domain.significance import DEFAULT_FDR_Q
 from src.domain.track_record import HitRateEvidence, ScoredCall, assess_directional_hit_rate
 from src.domain.value_objects import AssetType
+
+if TYPE_CHECKING:
+    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
 # Prefiks wersji w raporcie CLI — pełny sha256 nic nie mówi człowiekowi.
 _VERSION_PREFIX = 12
@@ -98,6 +110,10 @@ _SEGMENT_LABELS = {
     "edge_label": "edge vs opcje",
 }
 _SEGMENT_KEY_WIDTH = 14
+
+# EXP-01: pole delty bramki i komunikat, gdy migracja 034 jeszcze nie poszła.
+GATE_DELTA_FIELD = "gate_delta"
+GATE_DELTA_UNAVAILABLE = "kolumna gate_delta niedostępna — uruchom migrację 034"
 
 
 @dataclass(frozen=True)
@@ -417,6 +433,64 @@ def _p_text(p: float) -> str:
     return "p<0.001" if p < 0.001 else f"p={p:.3f}"
 
 
+def summarize_echo(rows: list[dict[str, Any]]) -> EchoReport:
+    """Test echa momentum (EXP-01) z zamkniętych predykcji z `gate_delta`.
+
+    Bierze te same wiersze co reszta raportu (z oceną kierunku); wiersz bez
+    delty bramki (sprzed backfillu albo cold-start) nie wchodzi wcale."""
+    calls = []
+    for row in rows:
+        gate_delta = _to_float(row.get(GATE_DELTA_FIELD))
+        if row.get("is_trend_correct") is None or gate_delta is None:
+            continue
+        scored = _scored_call(row)
+        calls.append(
+            EchoCall(
+                cycle=scored.cycle,
+                predicted_trend=scored.predicted_trend,
+                gate_delta=gate_delta,
+                realized_change=scored.realized_change,
+            )
+        )
+    return assess_momentum_echo(calls)
+
+
+def format_echo(report: EchoReport) -> str:
+    """Sekcja CLI testu echa: (a) echo/odwrócenie, (b) baseline'y na tych samych
+    wierszach, (c) LLM na rozbieżnych i sparowane testy znaków po BH-FDR."""
+
+    def _share(rate: float | None, n: int) -> str:
+        return f"{'—' if rate is None else f'{rate * 100:.1f}%'} (n={n})"
+
+    lines = [
+        f"  Echo momentum (delta bramki, EXP-01; BH-FDR q={DEFAULT_FDR_Q:.2f}):",
+        f"    Echo (trend = znak delty):      {_share(report.echo_rate, report.with_delta)}",
+        f"    Odwrócenie (trend = −znak):     {_share(report.reversal_rate, report.with_delta)}",
+        f"    Porównanie na tych samych wierszach: n={report.compared}, "
+        f"n_eff≈{report.n_eff:.1f}",
+        f"      LLM:                          {_share(report.llm_rate, report.compared)}",
+        f"      Baseline „znak ruchu”:        {_share(report.momentum_rate, report.compared)}",
+        f"      Baseline „przeciwny znak”:    {_share(report.contrarian_rate, report.compared)}",
+        f"    LLM tam, gdzie odwraca momentum: "
+        f"{_share(report.disagreement_rate, report.disagreement)}",
+        f"    LLM vs „znak ruchu”:            {_head_to_head(report.vs_momentum)}",
+        f"    LLM vs „przeciwny znak”:        {_head_to_head(report.vs_contrarian)}",
+    ]
+    if report.compared < MIN_SEGMENT_N:
+        lines.append(f"    ⚠️ {INSUFFICIENT_DATA_PL} (n < {MIN_SEGMENT_N})")
+    return "\n".join(lines)
+
+
+def _head_to_head(result: HeadToHead) -> str:
+    if result.p_value is None:
+        return "brak rozbieżnych wierszy (n=0)"
+    verdict = "istotne po BH" if result.fdr_significant else "nieistotne po BH"
+    return (
+        f"{result.wins}/{result.n} wygranych na rozbieżnych, n_eff≈{result.n_eff:.1f}, "
+        f"{_p_text(result.p_value)}, {verdict}"
+    )
+
+
 def _evidence_lines(evidence: HitRateEvidence | None) -> list[str]:
     """Baseline'y i werdykt istotności kierunkowej (puste, gdy brak kierunkowych)."""
     if evidence is None or evidence.hit_rate.rate is None:
@@ -431,6 +505,34 @@ def _evidence_lines(evidence: HitRateEvidence | None) -> list[str]:
     if evidence.verdict is not None:
         lines.append(f"  Istotność (kierunkowa):         {evidence.verdict}")
     return lines
+
+
+def _read_rows(
+    repo: SupabaseRepository, days: int, reads: dict[str, Any], fields: set[str]
+) -> tuple[list[dict[str, Any]], bool]:
+    """Odczyt wierszy ewaluacji i to, czy niosą `gate_delta`.
+
+    Bez migracji 034 reszta raportu ma zostać: komunikat zamiast wyjątku
+    i ponowny odczyt bez delty bramki (test echa wtedy pomijamy jawnie)."""
+    from src.infrastructure.adapters.supabase_repo import MissingColumnError
+
+    try:
+        rows = repo.get_resolved_predictions_for_eval(days=days, **reads, **_fields_kwarg(fields))
+    except MissingColumnError as exc:
+        if exc.column != GATE_DELTA_FIELD:
+            raise
+        print(GATE_DELTA_UNAVAILABLE)
+        remaining = fields - {GATE_DELTA_FIELD}
+        return (
+            repo.get_resolved_predictions_for_eval(days=days, **reads, **_fields_kwarg(remaining)),
+            False,
+        )
+    return rows, GATE_DELTA_FIELD in fields
+
+
+def _fields_kwarg(fields: set[str]) -> dict[str, Any]:
+    """Kwarg `extra_fields` tylko, gdy coś zamówiono — domyślny odczyt bez zmian."""
+    return {"extra_fields": tuple(sorted(fields))} if fields else {}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -463,6 +565,11 @@ def main(argv: list[str] | None = None) -> int:
             "Każda kolumna segmentu wymaga swojej migracji."
         ),
     )
+    parser.add_argument(
+        "--echo",
+        action="store_true",
+        help="Test echa momentum (EXP-01): trend LLM vs znak delty bramki — wymaga migracji 034.",
+    )
     args = parser.parse_args(argv)
     segmentations = tuple(dict.fromkeys(args.by))
 
@@ -480,10 +587,10 @@ def main(argv: list[str] | None = None) -> int:
         for name, wanted in (("with_recipe", args.by_recipe), ("with_universe", args.by_universe))
         if wanted
     }
-    extra_fields = sorted({name for s in segmentations for name in SEGMENT_FIELDS[s]})
-    if extra_fields:
-        segment_reads["extra_fields"] = tuple(extra_fields)
-    rows = repo.get_resolved_predictions_for_eval(days=args.days, **segment_reads)
+    extra_fields = {name for s in segmentations for name in SEGMENT_FIELDS[s]}
+    if args.echo:
+        extra_fields.add(GATE_DELTA_FIELD)
+    rows, echo = _read_rows(repo, args.days, segment_reads, extra_fields)
     if "asset_class" in segmentations:
         rows = with_asset_class(rows, settings.crypto_symbols, settings.symbols_etf)
     report = summarize_evaluation(rows, segment_by=segmentations)
@@ -494,6 +601,8 @@ def main(argv: list[str] | None = None) -> int:
         print(format_segments(summarize_by_version(rows, "universe_version"), "uniwersum"))
     for name in segmentations:
         print(format_segment_evidence(name, report.segments[name]))
+    if echo:
+        print(format_echo(summarize_echo(rows)))
     return 0
 
 

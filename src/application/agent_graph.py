@@ -513,6 +513,9 @@ class AgentGraphDeps:
     # ML-34: kolumny `interval_low/high` (migracja 032). Off = klucza nie ma
     # w rekordzie — przed migracją dałby PGRST204.
     interval_columns_enabled: bool = False
+    # EXP-01: delta, która otworzyła bramkę, w `gate_delta` (migracja 034). Off =
+    # klucza nie ma w rekordzie — przed migracją dałby PGRST204.
+    gate_delta_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
     # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). Pole jest
@@ -1393,6 +1396,11 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     ):
         record["interval_low"] = _interval_price(state["current_price"], interval.low)
         record["interval_high"] = _interval_price(state["current_price"], interval.high)
+
+    # EXP-01: delta bramki do testu echa momentum. Cold-start (brak snapshotu,
+    # previous_price 0) to brak punktu odniesienia, nie ruch — klucza nie ma.
+    if deps.gate_delta_enabled and state["previous_price"] != 0:
+        record["gate_delta"] = float(state["delta"])
 
     # #16: commit-reveal (migracja 024).
     _attach_commitment(deps, record)

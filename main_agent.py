@@ -987,6 +987,8 @@ def build_use_case(
         # ML-34: przedział w mailu zawsze; kolumny `interval_*` (migracja 032) za flagą.
         move_calibration=build_move_calibration(settings, supabase_repo),
         interval_columns_enabled=settings.interval_coverage_enabled,
+        # EXP-01: kolumna `gate_delta` (migracja 034) za flagą.
+        gate_delta_enabled=settings.gate_delta_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings),

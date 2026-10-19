@@ -2322,3 +2322,50 @@ class TestResolvedForEvalExtraFields:
     ) -> None:
         with pytest.raises(ValueError, match="persona"):
             repo.get_resolved_predictions_for_eval(30, extra_fields=("persona",))
+
+
+class TestResolvedForEvalGateDelta:
+    """EXP-01: `gate_delta` (migracja 034) czytane tylko na żądanie `--echo`;
+    przed migracją PostgREST zwraca 42703, a repozytorium tłumaczy to na
+    `MissingColumnError`, żeby CLI wypisało brakującą migrację zamiast wyjątku."""
+
+    def _order_builder(self, mock_client: MagicMock) -> MagicMock:
+        chain = mock_client.table.return_value
+        return chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+
+    def test_gate_delta_is_an_eval_field(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_paginated_response(self._order_builder(mock_client), [[]])
+
+        repo.get_resolved_predictions_for_eval(30, extra_fields=("gate_delta",))
+
+        assert ", gate_delta" in mock_client.table.return_value.select.call_args.args[0]
+
+    def test_undefined_column_becomes_missing_column_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.infrastructure.adapters.supabase_repo import MissingColumnError
+
+        self._order_builder(mock_client).range.return_value.execute.side_effect = APIError(
+            {"code": "42703", "message": "column prediction_logs.gate_delta does not exist"}
+        )
+
+        with pytest.raises(MissingColumnError) as raised:
+            repo.get_resolved_predictions_for_eval(30, extra_fields=("regime", "gate_delta"))
+
+        assert raised.value.column == "gate_delta"
+
+    def test_other_api_errors_propagate_unchanged(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        self._order_builder(mock_client).range.return_value.execute.side_effect = APIError(
+            {"code": "57014", "message": "canceling statement due to statement timeout"}
+        )
+
+        with pytest.raises(APIError):
+            repo.get_resolved_predictions_for_eval(30, extra_fields=("gate_delta",))
