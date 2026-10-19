@@ -2225,3 +2225,45 @@ def test_held_price_outside_the_watchlist_prices_the_position():
 
     assert "Bez wyceny" not in html
     assert "$820.00" in html
+
+
+def test_lead_warns_about_a_council_signal_against_a_large_position():
+    # PORT-10: rada SPRZEDAJ na pozycji ważącej ≥ 10% wyprzedza silny konsensus
+    # na spółce, której użytkownik nie ma.
+    def verdict(rec: str) -> CouncilVerdict:
+        return CouncilVerdict(
+            final_recommendation=rec, consensus_strength=0.9, summary=f"Rada: {rec}.",
+            dissenting_views=(),
+            investor_opinions=tuple(
+                InvestorOpinion(investor_name=n, recommendation=rec,
+                                confidence=0.9, reasoning="x", key_factors=())
+                for n in ("A", "B")
+            ),
+        )
+
+    as_of = datetime(2026, 5, 14, tzinfo=UTC)
+    results = [
+        SymbolResult(symbol="NVDA", status="saved", delta=Decimal("-0.042"),
+                     current_price=Decimal("100"), council_verdict=verdict("SELL")),
+        SymbolResult(symbol="AMD", status="saved", delta=Decimal("0.08"),
+                     current_price=Decimal("50"), council_verdict=verdict("BUY")),
+    ]
+    portfolio = Portfolio(
+        positions=(
+            Position(symbol="NVDA", quantity=Decimal("10"),
+                     purchase_price=Decimal("90"), purchase_date=as_of.date()),
+            Position(symbol="AAPL", quantity=Decimal("1"),
+                     purchase_price=Decimal("3000"), purchase_date=as_of.date()),
+        ),
+        as_of=as_of,
+    )
+
+    html, text = build_html_report(
+        results, as_of, 1.0,
+        ReportContext(user_portfolio=portfolio, held_prices={"AAPL": Decimal("3000")}),
+    )
+
+    headline = "Sygnał przeciw Twojej pozycji: rada SPRZEDAJ na NVDA (25% portfela) -4.2%"
+    assert headline in html
+    assert html.index(headline) < html.index("AMD +8.0%, rada zgodna")
+    assert headline in text

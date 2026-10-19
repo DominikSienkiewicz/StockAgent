@@ -231,3 +231,98 @@ class TestLeadItem:
         item = LeadItem(icon="⚠️", headline="h", detail="d")
         with pytest.raises(FrozenInstanceError):
             item.headline = "other"  # type: ignore[misc]
+
+
+class TestPortfolioAwareLead:
+    """PORT-10: `build_lead` nie wiedział o portfelu, więc największy ruch spółki,
+    której nie masz, wygrywał z ruchem 25% Twojego kapitału. Kolejność (decyzja
+    2026-10-19): CRITICAL quota > sygnał przeciw Twojej pozycji > ruch Twojej
+    pozycji > dotychczasowe tiery."""
+
+    @staticmethod
+    def _held(
+        symbol: str = "NVDA",
+        delta: str = "-4.2",
+        weight: str = "0.24",
+        verdict: CouncilVerdict | None = None,
+        crossed: bool = True,
+    ) -> LeadSignal:
+        return LeadSignal(
+            symbol=symbol,
+            price_delta_pct=Decimal(delta),
+            council_verdict=verdict,
+            position_weight=Decimal(weight),
+            crossed_volatility_gate=crossed,
+        )
+
+    def test_signal_against_large_position_outranks_strong_consensus(self) -> None:
+        against = self._held(verdict=_consensus_verdict("SELL"))
+        consensus = LeadSignal("AAA", Decimal("8.0"), _consensus_verdict("BUY"))
+
+        items = build_lead([consensus, against])
+
+        assert "przeciw Twojej pozycji" in items[0].headline
+        assert "SPRZEDAJ" in items[0].headline
+        assert "NVDA" in items[0].headline
+        assert "24%" in items[0].headline
+        assert "AAA" in items[1].headline
+
+    def test_critical_quota_still_outranks_a_signal_against_your_position(self) -> None:
+        against = self._held(verdict=_consensus_verdict("SELL"))
+
+        items = build_lead([against], [_critical_alert()])
+
+        assert "Alpha Vantage" in items[0].headline
+        assert "przeciw Twojej pozycji" in items[1].headline
+
+    def test_signal_against_position_outranks_a_move_of_another_position(self) -> None:
+        move = self._held(symbol="AMD", delta="-9.0", weight="0.40")
+        against = self._held(verdict=_consensus_verdict("SELL"))
+
+        items = build_lead([move, against])
+
+        assert "przeciw Twojej pozycji" in items[0].headline
+        assert items[1].headline == "AMD (40% portfela) -9.0%"
+
+    def test_position_move_outranks_a_split_council(self) -> None:
+        move = self._held()
+        split = LeadSignal("AAA", Decimal("6.0"), _split_verdict())
+
+        items = build_lead([split, move])
+
+        assert items[0].icon == "💼"
+        assert items[0].headline == "NVDA (24% portfela) -4.2%"
+        assert "PODZIELONA" in items[1].headline
+
+    def test_position_moves_rank_by_their_impact_on_capital(self) -> None:
+        small = self._held(symbol="AMD", delta="-6.0", weight="0.10")
+        large = self._held(symbol="NVDA", delta="-3.0", weight="0.30")
+
+        items = build_lead([small, large])
+
+        assert "NVDA" in items[0].headline
+        assert "AMD" in items[1].headline
+
+    def test_buy_verdict_on_a_held_position_is_a_move_not_a_warning(self) -> None:
+        items = build_lead([self._held(verdict=_consensus_verdict("BUY"))])
+
+        assert items[0].icon == "💼"
+        assert "przeciw" not in items[0].headline
+
+    def test_move_below_the_volatility_gate_is_not_a_position_lead(self) -> None:
+        # Anti-sensacja zostaje: ruch pod bramką nic nie znaczy, także na pozycji.
+        assert build_lead([self._held(crossed=False)]) == []
+
+    def test_small_position_keeps_the_previous_tiers(self) -> None:
+        small = self._held(weight="0.05", verdict=_consensus_verdict("SELL"))
+
+        items = build_lead([small])
+
+        assert items[0].headline == "NVDA -4.2%, rada zgodna: SELL"
+
+    def test_without_a_portfolio_the_lead_is_unchanged(self) -> None:
+        signal = LeadSignal(
+            "NVDA", Decimal("-4.2"), _consensus_verdict("SELL"), crossed_volatility_gate=True
+        )
+
+        assert build_lead([signal])[0].headline == "NVDA -4.2%, rada zgodna: SELL"

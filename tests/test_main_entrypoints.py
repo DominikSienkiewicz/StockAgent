@@ -2187,3 +2187,58 @@ class TestHeldPositionsOutsideWatchlist:
         )
 
         market_factory.assert_not_called()
+
+
+class TestPortfolioAwareSubject:
+    """PORT-10: temat maila dziedziczy po leadzie — także po tierach portfela."""
+
+    def test_subject_carries_the_signal_against_your_position(self, settings, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.council import InvestorOpinion
+
+        verdict = CouncilVerdict(
+            final_recommendation="SELL", consensus_strength=0.9, summary="Rada: SELL.",
+            dissenting_views=(),
+            investor_opinions=(
+                InvestorOpinion(investor_name="A", recommendation="SELL",
+                                confidence=0.9, reasoning="x", key_factors=()),
+            ),
+        )
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(
+            "main_agent._build_user_portfolio",
+            return_value=TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
+        )
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+        notifier = MagicMock()
+
+        main_agent._dispatch_reports(
+            results=[
+                main_agent.SymbolResult(
+                    symbol="AAPL", status="saved", delta=Decimal("-0.05"),
+                    current_price=Decimal("95"), council_verdict=verdict,
+                ),
+            ],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=QuotaMonitor(),
+            notifier=notifier,
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL", "VOO"],
+            context=main_agent.ReportContext(),
+        )
+
+        subject = notifier.send_report.call_args.kwargs["subject"]
+        assert "Sygnał przeciw Twojej pozycji: rada SPRZEDAJ na AAPL (100% portfela)" in subject

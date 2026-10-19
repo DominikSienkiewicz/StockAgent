@@ -121,7 +121,7 @@ from src.domain.calibration_curve import CalibrationBucket
 from src.domain.consensus_shift import ConsensusShift
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
-from src.domain.digest_lead import LeadSignal, build_lead
+from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
 from src.domain.equity_curve import EquityCurve, directional_hit_rate
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.finops import CycleCost
@@ -145,6 +145,7 @@ __all__ = [
     "TradeSignal",
     "ValuationSection",
     "build_correlation_chart_html",
+    "build_cycle_lead",
     "build_delta_chart_html",
     "build_forecast_chart_html",
     "build_html_report",
@@ -689,13 +690,19 @@ def _cluster_exposure_per_symbol(
 
 
 def to_lead_signals(
-    results: list[SymbolResult], resolved: list[ResolvedPrediction]
+    results: list[SymbolResult],
+    resolved: list[ResolvedPrediction],
+    portfolio_weights: Mapping[str, Decimal] | None = None,
 ) -> list[LeadSignal]:
     """Mapuje DTO raportu na domenowe `LeadSignal` (#1).
 
     Granica architektury: `src/domain/digest_lead.py` bierze wyłącznie typy
     domenowe i prymitywy, więc `resolved_label` powstaje TU jako gotowy string.
     Symbole bez zmiany ceny nie wnoszą nic do rankingu i są pomijane.
+
+    PORT-10: `portfolio_weights` (z `Portfolio.weights`) daje sygnałom wagę
+    pozycji. Status "saved" znaczy, że ruch przeszedł bramkę volatility (graf
+    poszedł do analizy) — tylko taki ruch pozycji może być leadem.
     """
     labels = {
         r.symbol: (
@@ -716,9 +723,38 @@ def to_lead_signals(
                 price_delta_pct=PriceDelta(r.delta).percent,
                 council_verdict=r.council_verdict,
                 resolved_label=labels.get(r.symbol),
+                position_weight=(
+                    portfolio_weights.get(r.symbol) if portfolio_weights else None
+                ),
+                crossed_volatility_gate=r.status == "saved",
             )
         )
     return signals
+
+
+def _report_prices(
+    results: list[SymbolResult], context: ReportContext
+) -> dict[str, Decimal]:
+    """#15/PORT-07: ceny raportu — z wyników cyklu, uzupełnione cenami pozycji
+    spoza watchlisty (`held_prices`). Cena z cyklu ma pierwszeństwo."""
+    return {**(context.held_prices or {}), **_current_prices_of(results)}
+
+
+def build_cycle_lead(
+    results: list[SymbolResult], context: ReportContext
+) -> list[LeadItem]:
+    """#1/PORT-10: lead cyklu — jedno źródło dla treści maila i jego tematu.
+
+    Gdy znamy realny portfel, sygnały niosą wagi pozycji, więc ruch i sygnał
+    na Twojej pozycji wyprzedzają ruch spółki, której nie masz.
+    """
+    weights = (
+        context.user_portfolio.weights(_report_prices(results, context))
+        if context.user_portfolio is not None
+        else None
+    )
+    signals = to_lead_signals(results, context.resolved_predictions or [], weights)
+    return build_lead(signals, context.quota_alerts or [])
 
 
 # Sloty pomijane przy pustej treści: nagłówek sekcji rysuje się w szablonie, więc
@@ -957,7 +993,7 @@ def build_html_report(
     # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
     # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
     # skorygowanej historią. None → surowa pewność, jak przed #9.
-    current_prices = {**(context.held_prices or {}), **_current_prices_of(results)}
+    current_prices = _report_prices(results, context)
     # #15 faza 2: gdy znamy realny portfel, sizing widzi istniejącą ekspozycję
     # (symbolu i jego klastra) i może zaproponować wyłącznie WĘŻSZĄ bandę.
     portfolio_weights = (
@@ -993,7 +1029,7 @@ def build_html_report(
     # #1: lead cyklu. Ranking robi domena; TU jest jedyne miejsce, gdzie DTO
     # warstwy application (SymbolResult / ResolvedPrediction) są mapowane na
     # typy domenowe — `src/domain/digest_lead.py` ich nie importuje.
-    lead_items = build_lead(to_lead_signals(results, resolved), alerts)
+    lead_items = build_cycle_lead(results, context)
     lead_html = render_lead_html(lead_items)
     lead_text = render_lead_text(lead_items)
     onboarding_html, onboarding_text = _build_onboarding_blocks(

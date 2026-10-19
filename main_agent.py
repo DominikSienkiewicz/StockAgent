@@ -45,9 +45,9 @@ from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import (
     ReportContext,
     SymbolResult,
+    build_cycle_lead,
     build_html_report,
     parse_resolved_predictions,
-    to_lead_signals,
     to_symbol_result,
 )
 from src.application.report_council_history import InvestorHistory
@@ -84,7 +84,7 @@ from src.domain.calibration_curve import (
 )
 from src.domain.consensus_shift import ConsensusShift, detect_shift
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
-from src.domain.digest_lead import LeadItem, build_lead, lead_headline
+from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
 from src.domain.finops import estimate_cycle_cost
@@ -1675,10 +1675,9 @@ def _dispatch_reports(
         prefix = "⚠️ [QUOTA] " if max_sev is QuotaSeverity.CRITICAL else ""
         # #1: temat z leadu, liczony nad PEŁNYMI wynikami cyklu (nie per
         # subskrybent) — sekcje są re-slicowane, ale temat jest współdzielony.
+        # PORT-10: ten sam lead co w treści, więc też świadomy portfela.
         subject = _build_subject(
-            lead_items=build_lead(
-                to_lead_signals(results, resolved), recent_alerts
-            ),
+            lead_items=build_cycle_lead(results, report_context),
             analyzed=analyzed,
             failures=failures,
             started_at=started_at,
