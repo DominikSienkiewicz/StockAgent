@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from src.domain.value_objects import (
@@ -14,6 +15,11 @@ PEG_UNDERVALUED_THRESHOLD = 1.0
 PEG_OVERVALUED_THRESHOLD = 2.0
 FORWARD_PE_HIGH = 30.0
 EPS_GROWTH_LOW = 0.10
+
+# FIN-14 (decyzja 2026-10-19: re-baseline): referencja ceny starsza niż tyle
+# godzin to stan sprzed pauzy, nie poprzedni cykl. 96 h mieści weekend (~60 h)
+# z jednym opuszczonym cyklem, a odcina tygodnie wstrzymanego crona.
+REFERENCE_MAX_AGE_HOURS = 96
 
 
 @dataclass(frozen=True)
@@ -47,14 +53,42 @@ class PriceDelta:
         return PriceDelta(delta)
 
 
+def is_reference_stale(
+    reference_at: datetime | None,
+    now: datetime,
+    *,
+    max_age_hours: int = REFERENCE_MAX_AGE_HOURS,
+) -> bool:
+    """FIN-14: czy referencja ceny (snapshot poprzedniego cyklu) jest stęchła.
+
+    Stęchła = starsza niż `max_age_hours` (próg rozłączny: dokładnie 96 h to
+    jeszcze poprzedni cykl). `None` (brak snapshotu) → False: cold-start ma
+    własną ścieżkę (previous_price 0 → delta 0). Naiwną datę czytamy jako UTC,
+    tak jak zapisuje czas całe repo. `now` jest wstrzykiwane — domena nie woła
+    zegara."""
+    if reference_at is None:
+        return False
+    aware_reference = (
+        reference_at if reference_at.tzinfo is not None else reference_at.replace(tzinfo=UTC)
+    )
+    aware_now = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+    return aware_now - aware_reference > timedelta(hours=max_age_hours)
+
+
 @dataclass(frozen=True)
 class Asset:
     symbol: str
     asset_type: AssetType = field(default=AssetType.STOCK)
 
-    def evaluate_volatility(self, delta: PriceDelta, threshold: Threshold) -> bool:
+    def evaluate_volatility(
+        self, delta: PriceDelta, threshold: Threshold, *, reference_stale: bool = False
+    ) -> bool:
         # Bramka operuje na UŁAMKU (fraction), nie procencie — próg też jest
         # ułamkiem (np. 0.02 = 2%).
+        # FIN-14: ruch od stęchłej referencji to skumulowana zmiana wielu dni,
+        # nie ruch cyklu — bramka zostaje zamknięta niezależnie od jego wielkości.
+        if reference_stale:
+            return False
         return abs(delta.fraction) >= threshold.value
 
     def evaluate_valuation(

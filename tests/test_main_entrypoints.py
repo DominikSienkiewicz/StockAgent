@@ -3470,3 +3470,41 @@ class TestGateDeltaWiring:
         main_agent.build_use_case(settings)
 
         assert use_case_cls.call_args.args[0].gate_delta_enabled is True
+
+
+class TestStaleReferenceWiring:
+    """FIN-14 — zegar cyklu dociera do use case'u (wiek referencji ceny liczy się
+    od startu cyklu, jak nagłówek maila), a stęchłe referencje dowodzą historii."""
+
+    def test_cycle_clock_reaches_the_use_case(self) -> None:
+        use_case = MagicMock()
+        use_case.run.return_value = {"status": "ignored", "delta": "0.001"}
+        cycle_at = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+        main_agent._process_one_symbol(
+            "AAPL",
+            peer_ctx=(),
+            use_case=use_case,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=False,
+            alpha_use_case=MagicMock(),
+            cycle_at=cycle_at,
+        )
+
+        assert use_case.run.call_args.kwargs["now"] == cycle_at
+
+    def test_stale_references_keep_new_symbols_from_a_first_run(self) -> None:
+        results = [
+            main_agent.SymbolResult(symbol=f"S{i}", status="ignored",
+                                    skip_reason=SkipReason.STALE_REFERENCE)
+            for i in range(10)
+        ]
+        results.append(
+            main_agent.SymbolResult(symbol="NEW", status="ignored",
+                                    skip_reason=SkipReason.COLD_START)
+        )
+
+        assert main_agent._classify_cycle_maturity(results) is CycleMaturity.STEADY_STATE

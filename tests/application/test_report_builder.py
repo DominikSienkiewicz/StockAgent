@@ -2849,3 +2849,64 @@ class TestResolvedSectionWhenNothingSettled:
 
         assert "Zamknięte predykcje" not in html
         assert "ZAMKNIĘTE PREDYKCJE" not in text
+
+
+class TestStaleReferenceReport:
+    """FIN-14 — symbol z referencją sprzed pauzy nie jest „poniżej progu”: cykl
+    zapisał nowy punkt odniesienia bez analizy, a raport mówi to wprost."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    _REFERENCE_AT = datetime(2026, 9, 19, 17, 30, tzinfo=UTC)
+
+    def _raw(self, *, stale: bool) -> dict[str, object]:
+        return {
+            "status": "ignored",
+            "delta": Decimal("-0.10"),
+            "previous_price": Decimal("100"),
+            "current_price": Decimal("90"),
+            "reference_at": self._REFERENCE_AT,
+            "stale_reference": stale,
+        }
+
+    def test_mapper_marks_stale_reference_and_keeps_its_date(self):
+        result = to_symbol_result("AAPL", self._raw(stale=True), now=self._STARTED)
+
+        assert result.skip_reason is SkipReason.STALE_REFERENCE
+        assert result.reference_at == self._REFERENCE_AT
+
+    def test_mapper_keeps_below_threshold_for_a_fresh_reference(self):
+        result = to_symbol_result("AAPL", self._raw(stale=False), now=self._STARTED)
+
+        assert result.skip_reason is SkipReason.BELOW_THRESHOLD
+        assert result.reference_at == self._REFERENCE_AT
+
+    def test_report_says_new_reference_point_with_the_reference_date(self):
+        result = to_symbol_result("AAPL", self._raw(stale=True), now=self._STARTED)
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        expected = "referencja sprzed 19.09.2026 — nowy punkt odniesienia"
+        assert expected in html
+        assert expected in text
+
+    def test_stale_symbol_is_not_listed_below_the_volatility_threshold(self):
+        result = to_symbol_result("AAPL", self._raw(stale=True), now=self._STARTED)
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "poniżej progu zmienności" not in html
+        assert "poniżej progu zmienności" not in text
+
+    def test_crypto_section_calls_a_stale_symbol_a_new_reference_point(self):
+        result = SymbolResult(
+            symbol="BTC", status="ignored", delta=Decimal("0.12"),
+            current_price=Decimal("65000"), asset_class="CRYPTO",
+            skip_reason=SkipReason.STALE_REFERENCE, reference_at=self._REFERENCE_AT,
+        )
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "poniżej progu" not in html
+        assert "poniżej progu" not in text
+        assert "nowy punkt odniesienia" in html.split("🪙 Krypto")[1]
+        assert "nowy punkt odniesienia" in text.split("KRYPTO")[1]

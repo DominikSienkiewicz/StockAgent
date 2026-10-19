@@ -59,6 +59,10 @@ class SymbolResult:
     # niewspieranych cenowo. None = nie pominięto (saved) albo błąd.
     # Bez tego rozdziału powitalny ton "Dzień 1" przykryłby masową awarię źródeł.
     skip_reason: SkipReason | None = None
+    # FIN-14: moment zapisu referencji ceny, od której liczy się `delta`. None =
+    # brak referencji (cold-start) albo wynik spoza grafu. Przy STALE_REFERENCE
+    # raport pisze „referencja sprzed <data> — nowy punkt odniesienia”.
+    reference_at: datetime | None = None
     # Klasa aktywa ("STOCK" | "ETF" | "CRYPTO" | ...) — z domeny (Asset.asset_type).
     # Pozwala raportowi rozpoznać krypto niezawodnie (nie przez słownik SECTORS)
     # i wyświetlić je w dedykowanej sekcji, też gdy cykl był "ignored".

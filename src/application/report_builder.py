@@ -34,6 +34,7 @@ from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
     INVESTMENT_DISCLAIMER,
     format_local,
+    format_local_date,
 )
 from src.application.report_formatting import (
     company_label as _company_label,
@@ -126,7 +127,7 @@ from src.application.report_user_portfolio import (
 from src.application.run_context import RunContext
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
-from src.domain.asset import PriceDelta
+from src.domain.asset import REFERENCE_MAX_AGE_HOURS, PriceDelta
 from src.domain.calibration_curve import CalibrationBucket
 from src.domain.conformal import MoveInterval
 from src.domain.consensus_shift import ConsensusShift
@@ -377,7 +378,16 @@ def _is_crypto(r: SymbolResult) -> bool:
     return r.asset_class == "CRYPTO"
 
 
-def _render_crypto_section_html(results: list[SymbolResult]) -> str:
+def _crypto_skip_label(r: SymbolResult, display_timezone: str, *, short: bool) -> str:
+    """Status pominiętego krypto: „poniżej progu…” albo (FIN-14) nowy punkt odniesienia."""
+    if _is_rebaselined(r) and r.reference_at is not None:
+        return _rebaseline_label(format_local_date(r.reference_at, display_timezone))
+    return "poniżej progu" if short else "poniżej progu zmienności"
+
+
+def _render_crypto_section_html(
+    results: list[SymbolResult], display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
+) -> str:
     """Dedykowana sekcja 🪙 Krypto — widoczna NIEZALEŻNIE od bramki volatility.
 
     Krypto ma osobny próg (5%) i 24/7 rynek, więc często ląduje jako 'ignored'
@@ -407,7 +417,8 @@ def _render_crypto_section_html(results: list[SymbolResult]) -> str:
             status_html = f"{trend_part}{forecast_part}{conf_part}"
         else:
             status_html = (
-                "<span style='color: #6b7280;'>poniżej progu zmienności</span>"
+                "<span style='color: #6b7280;'>"
+                f"{_html(_crypto_skip_label(r, display_timezone, short=False))}</span>"
             )
         rows.append(f"""
           <div style="margin-bottom: 6px; padding: 8px 12px; background: #fdf4ff;
@@ -424,7 +435,9 @@ def _render_crypto_section_html(results: list[SymbolResult]) -> str:
     )
 
 
-def _render_crypto_section_text(results: list[SymbolResult]) -> str:
+def _render_crypto_section_text(
+    results: list[SymbolResult], display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
+) -> str:
     cryptos = [r for r in results if _is_crypto(r) and r.status != "error"]
     if not cryptos:
         return ""
@@ -438,7 +451,7 @@ def _render_crypto_section_text(results: list[SymbolResult]) -> str:
                 else _trend_label(r.trend)
             )
         else:
-            status = "poniżej progu"
+            status = _crypto_skip_label(r, display_timezone, short=True)
         lines.append(
             f"  {_company_label(r.symbol):40s} {_money(r.current_price):>12s}  "
             f"Δ {_pct(r.delta, signed=True):>8s}  {status}"
@@ -1229,6 +1242,7 @@ def build_html_report(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
         resolved, resolved_window=resolved_window, resolved_note=resolved_note,
+        display_timezone=context.display_timezone,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1255,6 +1269,7 @@ def build_html_report(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
         resolved, resolved_window=resolved_window, resolved_note=resolved_note,
+        display_timezone=context.display_timezone,
     )
     text = _fill_text_slots(
         text,
@@ -1570,8 +1585,74 @@ def _render_reflections_html(saved: list[SymbolResult]) -> str:
     return "".join(parts)
 
 
+def _is_rebaselined(r: SymbolResult) -> bool:
+    """FIN-14: referencja sprzed pauzy — cykl zapisał nowy punkt odniesienia.
+    Bez daty referencji nie ma czego napisać, więc symbol zostaje w „Pominięte”."""
+    return r.skip_reason is SkipReason.STALE_REFERENCE and r.reference_at is not None
+
+
+_REBASELINE_NOTE = (
+    "Ostatnia zapisana cena była starsza niż {hours} h (pauza), więc ruch od niej "
+    "nie jest ruchem cyklu. Ten cykl zapisał nową cenę bez analizy — prognozy "
+    "wracają od następnego cyklu."
+)
+
+
+def _rebaseline_lines(ignored: list[SymbolResult], display_timezone: str) -> list[str]:
+    """„AAPL, MSFT: referencja sprzed 19.09.2026 — nowy punkt odniesienia”,
+    jedna linia na dzień referencji (rosnąco), symbole w kolejności cyklu."""
+    by_day: dict[str, list[str]] = {}
+    oldest: dict[str, datetime] = {}
+    for r in ignored:
+        if not _is_rebaselined(r) or r.reference_at is None:
+            continue
+        day = format_local_date(r.reference_at, display_timezone)
+        by_day.setdefault(day, []).append(r.symbol)
+        oldest[day] = min(oldest.get(day, r.reference_at), r.reference_at)
+    return [
+        f"{', '.join(by_day[day])}: {_rebaseline_label(day)}"
+        for day in sorted(by_day, key=lambda d: oldest[d])
+    ]
+
+
+def _rebaseline_label(day: str) -> str:
+    return f"referencja sprzed {day} — nowy punkt odniesienia"
+
+
+def _render_rebaselined_html(ignored: list[SymbolResult], display_timezone: str) -> str:
+    """🔄 FIN-14: symbole z referencją sprzed pauzy. Pusty string, gdy brak."""
+    lines = _rebaseline_lines(ignored, display_timezone)
+    if not lines:
+        return ""
+    rows = "".join(
+        f"<div style='font-size: 13px; margin: 2px 0;'>{_html(line)}</div>" for line in lines
+    )
+    return (
+        _section_h2("🔄 Nowy punkt odniesienia")
+        + "<div style='font-size: 12px; color: #6b7280; margin: 0 0 6px 0;'>"
+        + _html(_REBASELINE_NOTE.format(hours=REFERENCE_MAX_AGE_HOURS))
+        + f"</div>{rows}"
+    )
+
+
+def _render_rebaselined_text(ignored: list[SymbolResult], display_timezone: str) -> list[str]:
+    """Sekcja 'Nowy punkt odniesienia' (plain). Pusta lista, gdy brak."""
+    lines = _rebaseline_lines(ignored, display_timezone)
+    if not lines:
+        return []
+    return [
+        "NOWY PUNKT ODNIESIENIA",
+        "-" * 64,
+        *(f"  {line}" for line in lines),
+        f"  {_REBASELINE_NOTE.format(hours=REFERENCE_MAX_AGE_HOURS)}",
+        "",
+    ]
+
+
 def _render_ignored_html(ignored: list[SymbolResult]) -> str:
-    """⏸ Symbole pominięte poniżej progu zmienności. Pusty string, gdy brak."""
+    """⏸ Symbole pominięte poniżej progu zmienności. Pusty string, gdy brak.
+    FIN-14: symbole z nowym punktem odniesienia mają własną sekcję."""
+    ignored = [r for r in ignored if not _is_rebaselined(r)]
     if not ignored:
         return ""
     rows = "".join(
@@ -1770,6 +1851,7 @@ def _render_html(
     *,
     resolved_window: str = _RESOLVED_WINDOW_24H,
     resolved_note: str | None = None,
+    display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
 ) -> str:
     sections = []
 
@@ -1838,7 +1920,7 @@ def _render_html(
     sections.append(_ALPHA_SLOT)
 
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
-    crypto_html = _render_crypto_section_html(results)
+    crypto_html = _render_crypto_section_html(results, display_timezone)
     if crypto_html:
         sections.append(crypto_html)
 
@@ -1904,6 +1986,9 @@ def _render_html(
             "📈 Korelacja sentymentu z ruchem ceny</h3>"
         )
         sections.append(correlation_chart)
+
+    # FIN-14: nowy punkt odniesienia po pauzie (przed „Pominięte”)
+    sections.append(_render_rebaselined_html(ignored, display_timezone))
 
     # Pominięte
     sections.append(_render_ignored_html(ignored))
@@ -2119,7 +2204,9 @@ def _render_saved_section_text(saved: list[SymbolResult]) -> list[str]:
 
 
 def _render_ignored_text(ignored: list[SymbolResult]) -> list[str]:
-    """Sekcja 'Pominięte' (plain). Pusta lista, gdy brak."""
+    """Sekcja 'Pominięte' (plain). Pusta lista, gdy brak. FIN-14: bez symboli
+    z nowym punktem odniesienia (mają własną sekcję)."""
+    ignored = [r for r in ignored if not _is_rebaselined(r)]
     if not ignored:
         return []
     ignored_str = ", ".join(f"{r.symbol}({_pct(r.delta)})" for r in ignored)
@@ -2152,6 +2239,7 @@ def _render_plain(
     *,
     resolved_window: str = _RESOLVED_WINDOW_24H,
     resolved_note: str | None = None,
+    display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
@@ -2177,7 +2265,7 @@ def _render_plain(
     lines.append(_USER_PORTFOLIO_SLOT)
 
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
-    crypto_text = _render_crypto_section_text(results)
+    crypto_text = _render_crypto_section_text(results, display_timezone)
     if crypto_text:
         lines.append(crypto_text)
         lines.append("")
@@ -2220,6 +2308,8 @@ def _render_plain(
 
     lines.append(_SUGGESTIONS_SLOT)
 
+    lines.extend(_render_rebaselined_text(ignored, display_timezone))
+
     lines.extend(_render_ignored_text(ignored))
 
     lines.extend(_render_errors_text(errors))
@@ -2245,7 +2335,16 @@ def _skip_reason_of(status: str, raw: dict[str, Any]) -> SkipReason | None:
     previous_price = raw.get("previous_price")
     if previous_price is None or Decimal(str(previous_price)) == 0:
         return SkipReason.COLD_START
+    # FIN-14: werdykt stęchłości wydała domena przy odczycie referencji.
+    if raw.get("stale_reference") is True:
+        return SkipReason.STALE_REFERENCE
     return SkipReason.BELOW_THRESHOLD
+
+
+def _reference_at_of(raw: dict[str, Any]) -> datetime | None:
+    """FIN-14: moment referencji ceny ze stanu grafu albo None (brak / zniekształcony)."""
+    reference_at = raw.get("reference_at")
+    return reference_at if isinstance(reference_at, datetime) else None
 
 
 def _asset_class_of(raw: dict[str, Any]) -> str | None:
@@ -2331,6 +2430,7 @@ def to_symbol_result(
         symbol=symbol,
         status=status,
         skip_reason=skip_reason,
+        reference_at=_reference_at_of(raw),
         delta=_as_decimal(raw.get("delta")),
         current_price=_as_decimal(raw.get("current_price")),
         trend=llm.get("trend_direction"),

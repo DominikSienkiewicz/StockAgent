@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal, TypedDict
 
@@ -110,6 +111,10 @@ def _log_paid_call(
 class AgentState(TypedDict, total=False):
     symbol: str
     previous_price: Decimal
+    # FIN-14: moment zapisu referencji ceny i werdykt domeny o jej stęchłości
+    # (`is_reference_stale`). Stęchła referencja zamyka bramkę volatility.
+    reference_at: datetime | None
+    stale_reference: bool
     current_price: Decimal
     delta: Decimal
     status: str
@@ -701,22 +706,31 @@ def _pick_threshold(
 
 
 
+def _reference_is_stale(state: AgentState) -> bool:
+    """FIN-14: werdykt domeny policzony przez use case przy odczycie referencji.
+    Brak klucza (graf wołany bez use case'u) = referencja świeża, jak przed FIN-14."""
+    return bool(state.get("stale_reference", False))
+
+
 def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
     threshold = deps.threshold
     crypto_threshold = deps.crypto_threshold
     asset = state.get("asset") or Asset(symbol=state["symbol"])
     delta = PriceDelta(state["delta"])
     chosen = _pick_threshold(state, threshold, crypto_threshold)
-    passes = asset.evaluate_volatility(delta, chosen)
+    stale = _reference_is_stale(state)
+    passes = asset.evaluate_volatility(delta, chosen, reference_stale=stale)
     decision = "analyze" if passes else "ignore"
     # #13: decyzja bramki volatility musi być widoczna w logach — bez tego
     # nie dało się odróżnić zamierzonego "ignore" (FinOps) od cichego buga.
     logger.info(
-        "volatility gate for %s: |Δ|=%.4f threshold=%.4f asset_type=%s → %s",
+        "volatility gate for %s: |Δ|=%.4f threshold=%.4f asset_type=%s "
+        "stale_reference=%s → %s",
         state["symbol"],
         abs(float(state["delta"])),
         float(chosen.value),
         asset.asset_type.value,
+        stale,
         decision,
     )
     return "analyze_sentiment" if passes else "ignore"
@@ -787,7 +801,10 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     gate_asset = state.get("asset") or Asset(symbol=symbol)
     gate_delta = PriceDelta(state["delta"])
     gate_threshold = _pick_threshold(state, threshold, crypto_threshold)
-    diagnose_paid = gate_asset.evaluate_volatility(gate_delta, gate_threshold)
+    # FIN-14: ta sama bramka — ruch od stęchłej referencji nie płaci za diagnozę.
+    diagnose_paid = gate_asset.evaluate_volatility(
+        gate_delta, gate_threshold, reference_stale=_reference_is_stale(state)
+    )
 
     if diagnose_paid:
         # Counterfactual dissent-replay (#8): który dysydent rady trafił ruch,

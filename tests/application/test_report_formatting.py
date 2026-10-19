@@ -22,6 +22,7 @@ from src.application.report_formatting import (
     company_label,
     delta_color,
     format_local,
+    format_local_date,
     money,
     number,
     number_exact,
@@ -180,6 +181,23 @@ class TestFormatLocal:
 
     def test_default_display_timezone_is_warsaw(self) -> None:
         assert DEFAULT_DISPLAY_TIMEZONE == "Europe/Warsaw"
+
+
+class TestFormatLocalDate:
+    """FIN-14: data referencji ceny w mailu — lokalna, z rokiem."""
+
+    def test_local_date_carries_the_year(self) -> None:
+        assert format_local_date(datetime(2026, 9, 19, 17, 30, tzinfo=UTC), "Europe/Warsaw") == (
+            "19.09.2026"
+        )
+
+    def test_local_date_can_be_the_next_day(self) -> None:
+        assert format_local_date(datetime(2026, 5, 14, 23, 30, tzinfo=UTC), "Europe/Warsaw") == (
+            "15.05.2026"
+        )
+
+    def test_naive_datetime_is_read_as_utc(self) -> None:
+        assert format_local_date(datetime(2026, 5, 14, 23, 30), "Europe/Warsaw") == "15.05.2026"
 
 
 class TestPluralPl:

@@ -279,6 +279,13 @@ def format_local(moment: datetime, tz: str) -> str:
     return f"{_WEEKDAYS_PL[local.weekday()]} {local:%d.%m %H:%M}"
 
 
+def format_local_date(moment: datetime, tz: str) -> str:
+    """Dzień chwili w strefie `tz` jako „19.09.2026” (naiwny `datetime` = UTC,
+    jak w `format_local`). Rok jest jawny: daty sprzed pauzy bywają odległe."""
+    aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    return f"{aware.astimezone(ZoneInfo(tz)):%d.%m.%Y}"
+
+
 def _decimal(value: Decimal | float) -> Decimal:
     """Float ze statystyk → Decimal przez najkrótszy zapis (0.0125 → „0.0125”), żeby
     remis zaokrąglał się jak w zapisie dziesiętnym, a nie jak w binarnym."""

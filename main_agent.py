@@ -1233,6 +1233,8 @@ def _process_one_symbol(
             earnings_multiplier=earnings_multiplier,
             alpha_fusion=alpha_fusion,
             peer_context=peer_ctx,
+            # FIN-14: wiek referencji ceny liczy się od startu cyklu.
+            now=cycle_at,
         )
         logger.info(
             "%s: status=%s delta=%s prediction_id=%s",
@@ -1468,6 +1470,7 @@ def _classify_cycle_maturity(results: list[SymbolResult]) -> CycleMaturity:
     errors = sum(1 for r in results if r.status == "error")
     cold_start = sum(1 for r in results if r.skip_reason is SkipReason.COLD_START)
     below = sum(1 for r in results if r.skip_reason is SkipReason.BELOW_THRESHOLD)
+    stale = sum(1 for r in results if r.skip_reason is SkipReason.STALE_REFERENCE)
     # SkipReason.UNSUPPORTED_PRICE celowo nie ma tu swojej liczności — te symbole
     # wypadają z mianownika przez to, że nie trafiają do ŻADNEJ z powyższych sum.
     return classify_cycle(
@@ -1475,6 +1478,7 @@ def _classify_cycle_maturity(results: list[SymbolResult]) -> CycleMaturity:
         cold_start_count=cold_start,
         below_threshold_count=below,
         error_count=errors,
+        stale_reference_count=stale,
     )
 
 

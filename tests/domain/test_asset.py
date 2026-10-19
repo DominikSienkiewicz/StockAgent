@@ -1,6 +1,12 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from src.domain.asset import Asset, PriceDelta
+from src.domain.asset import (
+    REFERENCE_MAX_AGE_HOURS,
+    Asset,
+    PriceDelta,
+    is_reference_stale,
+)
 from src.domain.value_objects import Money, Threshold
 
 
@@ -68,3 +74,48 @@ class TestAssetEvaluateVolatility:
         delta = PriceDelta(Decimal("0.05"))  # ułamek = 5%
         assert delta.fraction == Decimal("0.05")
         assert asset.evaluate_volatility(delta, Threshold(Decimal("0.02"))) is True
+
+
+class TestStaleReference:
+    """FIN-14: referencja ceny sprzed pauzy nie jest „poprzednim cyklem”.
+
+    Ruch liczony od snapshotu sprzed tygodni to skumulowana zmiana wielu dni —
+    otworzyłby bramkę dla wszystkich symboli naraz. Decyzja 2026-10-19:
+    re-baseline (cykl zapisuje nowy punkt odniesienia bez analizy)."""
+
+    _NOW = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def test_max_age_is_frozen_at_96_hours(self):
+        # Decyzja właściciela (FIN-14): zmiana progu ma świadomie łamać ten test.
+        assert REFERENCE_MAX_AGE_HOURS == 96
+
+    def test_reference_from_30_days_ago_is_stale(self):
+        assert is_reference_stale(self._NOW - timedelta(days=30), self._NOW) is True
+
+    def test_reference_from_previous_cycle_is_fresh(self):
+        assert is_reference_stale(self._NOW - timedelta(hours=24), self._NOW) is False
+
+    def test_weekend_gap_is_still_fresh(self):
+        # Piątek wieczór → poniedziałek rano: ~60 h, to nadal poprzedni cykl.
+        assert is_reference_stale(self._NOW - timedelta(hours=60), self._NOW) is False
+
+    def test_exactly_max_age_is_fresh_and_one_minute_more_is_stale(self):
+        limit = timedelta(hours=REFERENCE_MAX_AGE_HOURS)
+        assert is_reference_stale(self._NOW - limit, self._NOW) is False
+        assert is_reference_stale(self._NOW - limit - timedelta(minutes=1), self._NOW) is True
+
+    def test_missing_reference_is_not_stale(self):
+        # Cold-start (brak snapshotu) ma własną ścieżkę — reguła go nie dotyka.
+        assert is_reference_stale(None, self._NOW) is False
+
+    def test_naive_reference_is_read_as_utc(self):
+        naive = (self._NOW - timedelta(days=30)).replace(tzinfo=None)
+        assert is_reference_stale(naive, self._NOW) is True
+
+    def test_stale_reference_closes_the_gate_despite_a_big_move(self):
+        asset = Asset(symbol="AAPL")
+        delta = PriceDelta(Decimal("-0.10"))
+        threshold = Threshold(Decimal("0.02"))
+
+        assert asset.evaluate_volatility(delta, threshold) is True
+        assert asset.evaluate_volatility(delta, threshold, reference_stale=True) is False

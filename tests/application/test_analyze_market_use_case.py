@@ -1,4 +1,5 @@
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -6,6 +7,7 @@ import pytest
 
 from src.application.agent_graph import AgentGraphDeps
 from src.application.ports import (
+    EmbeddingPort,
     LLMPort,
     MarketDataPort,
     MLPredictionPort,
@@ -14,6 +16,7 @@ from src.application.ports import (
     SentimentPort,
 )
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
+from src.domain.prediction import Prediction, TrendDirection
 from src.domain.value_objects import Money, Threshold
 
 
@@ -369,3 +372,144 @@ class TestThresholdInjection:
 
         assert result["status"] == "ignored"
         sentiment_port.get_social_score.assert_not_called()
+
+
+class TestStaleReferenceRebaseline:
+    """FIN-14 (decyzja 2026-10-19: re-baseline): referencja ceny starsza niż
+    `REFERENCE_MAX_AGE_HOURS` to nie poprzedni cykl, tylko stan sprzed pauzy.
+    Ruch od niej otworzyłby bramkę wszystkim symbolom naraz — cykl zapisuje
+    więc nowy snapshot BEZ analizy: zero LLM, Alpha Vantage i embeddingów."""
+
+    _NOW = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def _use_case(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        embedding_port,
+    ) -> AnalyzeMarketUseCase:
+        return AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        ))
+
+    def _arrange_big_move(self, market_port, repository_port, *, reference_age: timedelta) -> None:
+        reference = Money(Decimal("100.0"))
+        repository_port.get_last_price.return_value = reference
+        repository_port.get_last_price_snapshot.return_value = (
+            reference, self._NOW - reference_age,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10% ≥ próg
+
+    def test_month_old_reference_saves_snapshot_without_paid_calls(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            embedding_port,
+        )
+        self._arrange_big_move(market_port, repository_port, reference_age=timedelta(days=30))
+
+        result = use_case.run("AAPL", now=self._NOW)
+
+        assert result["status"] == "ignored"
+        assert result["stale_reference"] is True
+        assert result["reference_at"] == self._NOW - timedelta(days=30)
+        sentiment_port.get_social_score.assert_not_called()
+        news_port.get_news_context.assert_not_called()
+        llm_port.analyze.assert_not_called()
+        llm_port.analyze_mistake.assert_not_called()
+        embedding_port.embed.assert_not_called()
+        ml_port.predict.assert_not_called()
+        repository_port.save_prediction.assert_not_called()
+        assert sum(use_case.paid_calls.values()) == 0
+        # Nowy punkt odniesienia: następny cykl porówna się do dzisiejszej ceny.
+        repository_port.save_price_snapshot.assert_called_once_with(
+            "AAPL", Money(Decimal("90.0"))
+        )
+
+    def test_month_old_reference_skips_paid_diagnosis_but_still_scores_prior(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        # Błędna wcześniejsza predykcja + ruch ≥ progu od stęchłej referencji:
+        # tania ocena leci, płatna diagnoza LLM — nie (ta sama bramka).
+        repository_port.get_unverified_prediction.return_value = Prediction(
+            id="prior-uuid",
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100.0"),
+            predicted_target_price=Decimal("105.0"),
+        )
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            None,
+        )
+        self._arrange_big_move(market_port, repository_port, reference_age=timedelta(days=30))
+
+        use_case.run("AAPL", now=self._NOW)
+
+        llm_port.analyze_mistake.assert_not_called()
+        repository_port.update_prediction_accuracy.assert_called_once()
+
+    def test_reference_from_previous_cycle_still_opens_the_gate(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        sentiment_port.get_social_score.return_value = {"galaxy_score": 85}
+        news_port.get_news_context.return_value = [{"title": "Reuters story"}]
+        llm_port.analyze.return_value = {
+            "trend_direction": "BEARISH",
+            "confidence_score": 0.8,
+            "target_price_12h": 88.0,
+            "reasoning": "macro headwinds",
+        }
+        ml_port.predict.return_value = Money(Decimal("89.0"))
+        repository_port.save_prediction.return_value = "new-uuid"
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            None,
+        )
+        self._arrange_big_move(market_port, repository_port, reference_age=timedelta(hours=24))
+
+        result = use_case.run("AAPL", now=self._NOW)
+
+        assert result["status"] == "saved"
+        assert result["stale_reference"] is False
+        sentiment_port.get_social_score.assert_called_once_with("AAPL")
+
+    def test_cold_start_reads_no_reference_age(
+        self, use_case, market_port, repository_port
+    ):
+        # Cold-start bez zmian: brak ceny → brak referencji → brak odczytu wieku.
+        repository_port.get_last_price.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("100.0"))
+
+        result = use_case.run("AAPL", now=self._NOW)
+
+        assert result["status"] == "ignored"
+        assert result["stale_reference"] is False
+        assert result["reference_at"] is None
+        repository_port.get_last_price_snapshot.assert_not_called()
+
+    def test_unreadable_reference_age_keeps_the_gate_as_before(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        # Odczyt wieku jest best-effort: błąd Supabase nie wywala symbolu,
+        # a bramka działa jak przed FIN-14 (sam próg volatility).
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_last_price_snapshot.side_effect = RuntimeError("Supabase 503")
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))  # +0.5%
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            None,
+        )
+
+        result = use_case.run("AAPL", now=self._NOW)
+
+        assert result["status"] == "ignored"
+        assert result["stale_reference"] is False
+        assert result["reference_at"] is None

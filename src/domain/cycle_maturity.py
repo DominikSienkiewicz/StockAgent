@@ -34,11 +34,15 @@ class SkipReason(Enum):
     - `UNSUPPORTED_PRICE` — symbol nieobsługiwany przez bieżący adapter cen
       (np. EU-listed na Finnhub free); pre-filtrowany wyżej, wykluczony
       z mianownika cold-startu.
+    - `STALE_REFERENCE` (FIN-14) — poprzednia cena istniała, ale jest starsza
+      niż `asset.REFERENCE_MAX_AGE_HOURS` (pauza crona). Cykl zapisał nowy
+      punkt odniesienia bez analizy (re-baseline, zero płatnych wywołań).
     """
 
     COLD_START = "COLD_START"
     BELOW_THRESHOLD = "BELOW_THRESHOLD"
     UNSUPPORTED_PRICE = "UNSUPPORTED_PRICE"
+    STALE_REFERENCE = "STALE_REFERENCE"
 
 
 class CycleMaturity(Enum):
@@ -61,6 +65,7 @@ def classify_cycle(
     cold_start_count: int,
     below_threshold_count: int,
     error_count: int,
+    stale_reference_count: int = 0,
 ) -> CycleMaturity:
     """Klasyfikuje dojrzałość cyklu na podstawie zliczeń jego wyników.
 
@@ -82,6 +87,8 @@ def classify_cycle(
     - nic jeszcze nie zapisano (`saved_count == 0` → nie istnieje historia),
     - nic nie było "poniżej progu" (`below_threshold_count == 0` → gdyby było,
       istniałaby poprzednia cena, więc punkt odniesienia już był),
+    - nie było stęchłych referencji (`stale_reference_count == 0`, FIN-14) —
+      po pauzie stary snapshot też dowodzi, że historia istnieje,
     - są realne cold-starty (`cold_start_count > 0`),
     - cold-start PRZEWAŻA nad błędami (`cold_start_count > error_count`) — to
       rozdzielenie zamraża największe ryzyko: cykl zdominowany przez awarie
@@ -90,7 +97,7 @@ def classify_cycle(
     W każdym innym przypadku → `STEADY_STATE` (normalny raport / incydent /
     cykl pusty), którego ton nie udaje powitania.
     """
-    has_history = saved_count > 0 or below_threshold_count > 0
+    has_history = saved_count > 0 or below_threshold_count > 0 or stale_reference_count > 0
     cold_start_dominates = cold_start_count > 0 and cold_start_count > error_count
 
     if not has_history and cold_start_dominates:

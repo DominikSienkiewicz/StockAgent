@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+import logging
 from collections import Counter
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from src.application.agent_graph import AgentGraphDeps, AgentState, create_agent_graph
 from src.domain.alpha_fusion import AlphaFusionScore
-from src.domain.asset import Asset
+from src.domain.asset import Asset, is_reference_stale
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyzeMarketUseCase:
     """Fast Loop — pełen cykl decyzyjny dla pojedynczego symbolu.
 
     Spina:
-    1. odczyt poprzedniej ceny z repozytorium,
+    1. odczyt poprzedniej ceny z repozytorium (FIN-14: wraz z jej wiekiem),
     2. uruchomienie grafu LangGraph (check_price → reflect/sentiment/news/predict/save).
     """
 
@@ -47,13 +51,24 @@ class AnalyzeMarketUseCase:
         earnings_multiplier: float = 1.0,
         alpha_fusion: AlphaFusionScore | None = None,
         peer_context: tuple[tuple[str, str], ...] = (),
+        now: datetime | None = None,
     ) -> dict[str, Any]:
+        """`now` to zegar cyklu (orkiestrator podaje `started_at`); od niego liczy
+        się wiek referencji ceny (FIN-14). None = bieżący czas."""
         previous = self._repository.get_last_price(symbol)
+        reference_at = self._reference_at(symbol) if previous else None
+        stale_reference = is_reference_stale(
+            reference_at, now if now is not None else datetime.now(UTC)
+        )
 
         # Cold start: brak historii → previous=0 → delta=0 (guard w domenie) → ignore.
         initial_state: AgentState = {
             "symbol": symbol,
             "previous_price": previous.amount if previous else Decimal("0"),
+            # FIN-14: stęchła referencja (pauza) zamyka bramkę w domenie — cykl
+            # zapisuje nowy punkt odniesienia bez płatnych wywołań.
+            "reference_at": reference_at,
+            "stale_reference": stale_reference,
             # #7 reżim (label + mnożnik progu) i #5 contagion (peery z tego cyklu).
             "regime_context": regime_context,
             "regime_multiplier": regime_multiplier,
@@ -69,3 +84,21 @@ class AnalyzeMarketUseCase:
 
         result: dict[str, Any] = self._app.invoke(initial_state)
         return result
+
+    def _reference_at(self, symbol: str) -> datetime | None:
+        """FIN-14: moment zapisu referencji ceny (darmowy odczyt `price_snapshots`).
+
+        Best-effort jak reszta odczytów pomocniczych: błąd odczytu nie wywala
+        symbolu, tylko zostawia wiek nieznany — bramka działa wtedy jak przed
+        FIN-14 (sam próg volatility)."""
+        try:
+            snapshot = self._repository.get_last_price_snapshot(symbol)
+            return snapshot[1] if snapshot is not None else None
+        except Exception:
+            logger.warning(
+                "FIN-14: nie odczytano wieku referencji ceny %s — bramka bez "
+                "reguły stęchłej referencji",
+                symbol,
+                exc_info=True,
+            )
+            return None
