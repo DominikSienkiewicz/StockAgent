@@ -291,3 +291,33 @@ class TestConfiguration:
 
         with pytest.raises(ValueError, match="JSON"):
             adapter.analyze_with_tools("Predict.", [tool])
+
+
+def test_tool_error_returned_to_model_omits_secrets(mock_openai_class) -> None:
+    # Runda 2 BEZ-07: błąd narzędzia wraca do modelu jako `{"error": ...}`, więc
+    # URL z `?apikey=` i dosłowny klucz z Settings muszą z niego zniknąć wcześniej.
+    client = MagicMock()
+    mock_openai_class.return_value = client
+    adapter = ToolCallingOpenAIAdapter(
+        api_key="sk-test", model="gpt-4o", secret_values=("Lit3ral~odd#key",)
+    )
+
+    def leaky(_args: dict) -> dict:
+        raise RuntimeError(
+            "fetch failed for url https://www.alphavantage.co/query?apikey=SECRET-URL-1 "
+            "(provider echoed Lit3ral~odd#key)"
+        )
+
+    client.chat.completions.create.side_effect = [
+        _tool_request_message([_tool_call("call_s", "get_fundamentals", {"symbol": "AAPL"})]),
+        _final_message("{}"),
+    ]
+
+    adapter.analyze_with_tools("Predict.", [_make_tool(leaky)])
+
+    second_call = client.chat.completions.create.call_args_list[1]
+    tool_message = next(m for m in second_call.kwargs["messages"] if m.get("role") == "tool")
+    error = json.loads(tool_message["content"])["error"]
+    assert "fetch failed" in error
+    assert "SECRET-URL-1" not in error
+    assert "Lit3ral~odd#key" not in error

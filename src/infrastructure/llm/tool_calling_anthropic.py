@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from anthropic import Anthropic
 
 from src.application.ports import Tool, ToolUseLLMPort
 from src.application.quota_monitor import QuotaMonitor
+from src.infrastructure.adapters._http import redact_secrets
 from src.infrastructure.llm.anthropic_client import (
     DEFAULT_TIMEOUT,
     AnthropicAdapter,
@@ -55,7 +56,10 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
         quota_monitor: QuotaMonitor | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        secret_values: Iterable[str] = (),
     ) -> None:
+        """`secret_values` (z `Settings.secret_values()`, wstrzykiwane przez DI)
+        redagują błąd narzędzia, zanim wróci do modelu jako `{"error": ...}`."""
         # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
         validate_model_id(model)
         self._client = Anthropic(api_key=api_key, timeout=timeout)
@@ -63,6 +67,7 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
         self._max_rounds = max_rounds
         self._quota_monitor = quota_monitor
         self._max_tokens = max_tokens
+        self._secret_values = tuple(secret_values)
 
     @staticmethod
     def _map_tools(tools: Sequence[Tool]) -> list[dict[str, Any]]:
@@ -76,8 +81,7 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
             for tool in tools
         ]
 
-    @staticmethod
-    def _execute_tool(tool: Tool, tool_input: Any) -> dict[str, Any]:
+    def _execute_tool(self, tool: Tool, tool_input: Any) -> dict[str, Any]:
         """Wykonuje `tool.func` na wejściu od modelu.
 
         Każdy wyjątek funkcji zamienia na `{"error": ...}` — pętla nigdy nie
@@ -86,8 +90,10 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
         try:
             return tool.func(args)
         except Exception as exc:  # noqa: BLE001 — celowo łapiemy wszystko
-            logger.warning("Tool %s raised: %s", tool.name, exc)
-            return {"error": str(exc)}
+            # Treść wyjątku (URL z kluczem, echo klucza) idzie do płatnego modelu.
+            message = redact_secrets(str(exc), self._secret_values)
+            logger.warning("Tool %s raised: %s", tool.name, message)
+            return {"error": message}
 
     def analyze_with_tools(
         self, prompt: str, tools: Sequence[Tool]

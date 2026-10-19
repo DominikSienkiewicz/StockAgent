@@ -345,3 +345,35 @@ class TestConfiguration:
         kwargs = client.messages.create.call_args.kwargs
         assert kwargs["model"] == "claude-sonnet-4-6"
         assert kwargs["messages"][0] == {"role": "user", "content": "Custom prompt"}
+
+
+def test_tool_error_returned_to_model_omits_secrets(mock_anthropic_class) -> None:
+    # Runda 2 BEZ-07: błąd narzędzia wraca do modelu jako `{"error": ...}`, więc
+    # URL z `?apikey=` i dosłowny klucz z Settings muszą z niego zniknąć wcześniej.
+    client = MagicMock()
+    mock_anthropic_class.return_value = client
+    adapter = ToolCallingAnthropicAdapter(
+        api_key="sk-ant-test",
+        model="claude-sonnet-4-6",
+        secret_values=("Lit3ral~odd#key",),
+    )
+
+    def leaky(_args: dict) -> dict:
+        raise RuntimeError(
+            "fetch failed for url https://www.alphavantage.co/query?apikey=SECRET-URL-1 "
+            "(provider echoed Lit3ral~odd#key)"
+        )
+
+    client.messages.create.side_effect = [
+        _tool_use_response([_tool_use_block("tu_s", "get_fundamentals", {"symbol": "AAPL"})]),
+        _final_response("{}"),
+    ]
+
+    adapter.analyze_with_tools("Predict.", [_make_tool(leaky)])
+
+    last = client.messages.create.call_args_list[1].kwargs["messages"][-1]
+    tool_result = next(b for b in last["content"] if b.get("type") == "tool_result")
+    error = json.loads(tool_result["content"])["error"]
+    assert "fetch failed" in error
+    assert "SECRET-URL-1" not in error
+    assert "Lit3ral~odd#key" not in error

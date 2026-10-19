@@ -4221,3 +4221,31 @@ class TestExperimentWiring:
         deps = use_case_cls.call_args.args[0]
         assert deps.experiment_arms_enabled is True
         assert [experiment.id for experiment in deps.experiments] == ["EXP-03"]
+
+
+class TestToolUseAdapterGetsSettingsSecrets:
+    """Runda 2 BEZ-07: adapter tool-use redaguje błąd narzędzia wartościami
+    sekretów, które składa mu DI Container (adapter nie czyta Settings)."""
+
+    @pytest.mark.parametrize(
+        ("provider", "client_path"),
+        [
+            ("openai", "src.infrastructure.llm.tool_calling_openai.OpenAI"),
+            ("anthropic", "src.infrastructure.llm.tool_calling_anthropic.Anthropic"),
+        ],
+    )
+    def test_factory_injects_secret_values(self, settings, mocker, provider, client_path):
+        mocker.patch(client_path)
+        s = settings.model_copy(
+            update={
+                "tool_use_enabled": True,
+                "llm_provider": provider,
+                "anthropic_api_key": "sk-ant-factory-test",
+            }
+        )
+
+        adapter = main_agent.build_tool_use_adapter(s)
+
+        assert adapter is not None
+        assert adapter._secret_values == s.secret_values()
+

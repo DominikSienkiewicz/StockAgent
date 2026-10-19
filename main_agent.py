@@ -278,6 +278,7 @@ def build_tool_use_adapter(
             api_key=settings.anthropic_api_key,
             max_rounds=settings.tool_use_max_rounds,
             quota_monitor=quota_monitor,
+            secret_values=settings.secret_values(),
         )
     from src.infrastructure.llm.tool_calling_openai import ToolCallingOpenAIAdapter
 
@@ -285,6 +286,7 @@ def build_tool_use_adapter(
         api_key=settings.openai_api_key,
         max_rounds=settings.tool_use_max_rounds,
         quota_monitor=quota_monitor,
+        secret_values=settings.secret_values(),
     )
 
 
