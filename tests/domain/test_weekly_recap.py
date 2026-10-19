@@ -13,6 +13,7 @@ from decimal import Decimal
 
 from src.domain.council import InvestorOpinion
 from src.domain.prediction import Prediction, TrendDirection
+from src.domain.value_objects import AssetType
 from src.domain.weekly_recap import (
     MIN_CLOSED_PREDICTIONS_FOR_RECAP,
     ClosedPrediction,
@@ -222,6 +223,45 @@ class TestRecordedDirectionVerdict:
         assert recap is not None
         assert recap.best.symbol == "BTC"
         assert recap.best.direction_correct is True
+
+
+def _crypto(closed: ClosedPrediction) -> ClosedPrediction:
+    return dataclasses.replace(closed, asset_type=AssetType.CRYPTO)
+
+
+def _btc_up_1_5pct_council_buy() -> ClosedPrediction:
+    # Rada: BUY; Soros głosował HOLD. Ruch +1.5%: dla akcji UP, dla krypto FLAT.
+    return _closed(
+        "BTC",
+        trend=TrendDirection.SIDEWAYS,
+        base="100",
+        target="100",
+        actual="101.5",
+        opinions=(_opinion("Buffett", "BUY"), _opinion("Soros", "HOLD")),
+        council_rec="BUY",
+    )
+
+
+class TestAssetClassFlatBand:
+    """Decyzja 2026-10-19 (a): pasmo FLAT recapu zależy od klasy aktywa, ta sama
+    reguła co w reflect — krypto ±2.5%, reszta ±0.5%. Bez klasy → ±0.5%."""
+
+    def test_crypto_move_within_band_is_flat(self) -> None:
+        assert _crypto(_btc_up_1_5pct_council_buy()).actual_direction() == "FLAT"
+
+    def test_unknown_asset_class_keeps_the_equity_band(self) -> None:
+        assert _btc_up_1_5pct_council_buy().actual_direction() == "UP"
+
+    def test_crypto_hold_dissenter_is_vindicated(self) -> None:
+        names = [op.investor_name for op in _crypto(_btc_up_1_5pct_council_buy()).vindicated()]
+        assert names == ["Soros"]
+
+    def test_equity_band_vindicates_nobody_on_the_same_move(self) -> None:
+        assert _btc_up_1_5pct_council_buy().vindicated() == ()
+
+    def test_crypto_price_fallback_uses_the_crypto_band(self) -> None:
+        # Bez zapisanego werdyktu ceny decydują — też pasmem klasy aktywa.
+        assert _crypto(_btc_sideways_up_1_5pct()).is_correct() is True
 
 
 class TestVindicatedDissenters:

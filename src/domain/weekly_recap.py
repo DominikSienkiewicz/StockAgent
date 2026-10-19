@@ -34,7 +34,12 @@ from src.domain.calibration_curve import (
     reliability_curve,
 )
 from src.domain.council import InvestorOpinion, vindicated_dissenters
-from src.domain.prediction import SIDEWAYS_TOLERANCE, Prediction
+from src.domain.prediction import (
+    CRYPTO_SIDEWAYS_TOLERANCE,
+    SIDEWAYS_TOLERANCE,
+    Prediction,
+)
+from src.domain.value_objects import AssetType
 
 # Twardy próg próbki jako jawna stała modułu (reguła domenowa, nie opcja).
 # N >= 5 zamkniętych predykcji, inaczej recap nie powstaje i mail nie wychodzi.
@@ -58,7 +63,10 @@ class ClosedPrediction:
     - `council_recommendation` — finalna rekomendacja rady (do wybronień),
     - `recorded_trend_correct` — werdykt kierunku zapisany przez reflect_node
       (`is_trend_correct`; pasmo SIDEWAYS zależne od klasy aktywa, krypto
-      ±2.5%). None = brak zapisu → liczymy z cen pasmem akcyjnym.
+      ±2.5%). None = brak zapisu → liczymy z cen pasmem klasy aktywa,
+    - `asset_type` — klasa aktywa wyznaczająca pasmo FLAT/SIDEWAYS, ta sama
+      reguła co w reflect: CRYPTO → ±2.5%, reszta → ±0.5%. None = nieznana
+      (pasmo akcyjne, zachowanie sprzed rozróżnienia).
     """
 
     prediction: Prediction
@@ -68,6 +76,7 @@ class ClosedPrediction:
     council_opinions: tuple[InvestorOpinion, ...] = ()
     council_recommendation: Literal["BUY", "SELL", "HOLD"] = "HOLD"
     recorded_trend_correct: bool | None = None
+    asset_type: AssetType | None = None
 
     def __post_init__(self) -> None:
         # Koercja do tuple — realna niezmienność frozen value objectu (frozen=True
@@ -92,14 +101,24 @@ class ClosedPrediction:
         """
         if self.recorded_trend_correct is not None:
             return self.recorded_trend_correct
-        return self.prediction.is_trend_correct(self.actual_price)
+        return self.prediction.is_trend_correct(
+            self.actual_price, tolerance=self.flat_band()
+        )
+
+    def flat_band(self) -> Decimal:
+        """Pasmo „bez ruchu” klasy aktywa — ta sama reguła co w reflect."""
+        if self.asset_type is AssetType.CRYPTO:
+            return CRYPTO_SIDEWAYS_TOLERANCE
+        return SIDEWAYS_TOLERANCE
 
     def actual_direction(self) -> Literal["UP", "DOWN", "FLAT"]:
         """Rzeczywisty kierunek ruchu ceny (UP/DOWN/FLAT).
 
         Pasmo FLAT liczone tą samą tolerancją co predykcja SIDEWAYS
-        (`SIDEWAYS_TOLERANCE`) — spójność z domeną. Guard na cenę bazową 0
-        (skażony rekord): bez punktu odniesienia nie liczymy błędu względnego.
+        (`flat_band`: krypto ±2.5%, reszta ±0.5%) — spójność z reflect, więc
+        wybronieni dysydenci krypto nie zależą od pasma akcyjnego. Guard na
+        cenę bazową 0 (skażony rekord): bez punktu odniesienia nie liczymy
+        błędu względnego.
         """
         base = self.prediction.price_at_prediction
         delta = self.actual_price - base
@@ -107,7 +126,7 @@ class ClosedPrediction:
             if delta == 0:
                 return "FLAT"
             return "UP" if delta > 0 else "DOWN"
-        if abs(delta / base) <= SIDEWAYS_TOLERANCE:
+        if abs(delta / base) <= self.flat_band():
             return "FLAT"
         return "UP" if delta > 0 else "DOWN"
 

@@ -180,6 +180,7 @@ def _send_weekly_recap(
         recap_result = WeeklyRecapUseCase(
             repository_port=supabase_repo,
             llm_port=_build_llm_or_unavailable(settings, quota_monitor),
+            crypto_symbols=settings.crypto_symbols,
         ).run(days=7)
         if recap_result["status"] == "recap_ready":
             recap = recap_result["recap"]

@@ -297,3 +297,49 @@ class TestWeeklyRecapNarrativeMirrorTitle:
         prompt = str(llm.analyze.call_args.args[0])
         assert "Wtopa tygodnia" not in prompt
         assert "Najdalej od celu (kierunek trafiony): SYM4" in prompt
+
+
+class TestWeeklyRecapCryptoFlatBand:
+    """Decyzja 2026-10-19 (a): use case zna symbole krypto (DI z
+    `settings.crypto_symbols`), więc ruch +1.5% BTC to FLAT, a dysydent HOLD
+    wbrew radzie BUY zostaje wybroniony."""
+
+    @staticmethod
+    def _rows() -> list[dict[str, Any]]:
+        btc = {
+            **_row(
+                "BTC",
+                trend="SIDEWAYS",
+                target="100",
+                actual="101.5",
+                verdict=_verdict(
+                    final="BUY",
+                    opinions=(
+                        ("Buffett", "BUY", 0.7, "momentum"),
+                        ("Soros", "HOLD", 0.8, "konsolidacja"),
+                    ),
+                ),
+            ),
+            "is_trend_correct": True,
+        }
+        misses = [_row(f"M{i}", target=str(101 + i), actual="100") for i in range(4)]
+        return [btc, *misses]
+
+    def _recap(self, **kwargs: Any) -> Any:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_predictions_detailed.return_value = self._rows()
+        llm = Mock(spec=LLMPort)
+        llm.analyze.return_value = {"narrative": "n"}
+        return WeeklyRecapUseCase(repository_port=repo, llm_port=llm, **kwargs).run()["recap"]
+
+    def test_crypto_hold_dissenter_is_vindicated(self) -> None:
+        recap = self._recap(crypto_symbols=["BTC"])
+
+        assert recap.best.symbol == "BTC"
+        assert [op.investor_name for op in recap.best.vindicated_dissenters] == ["Soros"]
+
+    def test_without_crypto_symbols_the_equity_band_applies(self) -> None:
+        recap = self._recap()
+
+        assert recap.best.symbol == "BTC"
+        assert recap.best.vindicated_dissenters == ()

@@ -22,6 +22,7 @@ bo mogą nieść prompt-injection.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
@@ -30,6 +31,7 @@ from src.application.ports import LLMPort, RepositoryPort
 from src.application.report_weekly_recap import best_title, hero_verdict, worst_title
 from src.domain.council import InvestorOpinion
 from src.domain.prediction import Prediction, TrendDirection, is_substantive_insight
+from src.domain.value_objects import AssetType
 from src.domain.weekly_recap import (
     ClosedPrediction,
     WeeklyRecap,
@@ -88,11 +90,14 @@ def _parse_council(
     return tuple(opinions), final
 
 
-def _to_closed_prediction(row: dict[str, Any]) -> ClosedPrediction | None:
+def _to_closed_prediction(
+    row: dict[str, Any], crypto_symbols: frozenset[str] = frozenset()
+) -> ClosedPrediction | None:
     """Mapuje surowy wiersz repozytorium na domenowy `ClosedPrediction`.
 
     Zwraca None dla wierszy bez kompletu pól cenowych albo z nieznanym trendem —
-    lepiej odsiać skażony rekord niż zatruć wybór bohaterów tygodnia.
+    lepiej odsiać skażony rekord niż zatruć wybór bohaterów tygodnia. Symbol
+    z `crypto_symbols` dostaje klasę CRYPTO (pasmo FLAT ±2.5%, jak w reflect).
     """
     base = _to_decimal(row.get("price_at_prediction"))
     target = _to_decimal(row.get("predicted_target_price"))
@@ -110,8 +115,9 @@ def _to_closed_prediction(row: dict[str, Any]) -> ClosedPrediction | None:
     # WIA-10: placeholder reflect_node („Trafiona predykcja.”, „diagnoza
     # odłożona/pominięta”) to nie lekcja — ani do narracji LLM, ani do maila.
     insight = str(row.get("correction_insights") or "")
+    symbol = str(row.get("symbol") or "")
     prediction = Prediction(
-        symbol=str(row.get("symbol") or ""),
+        symbol=symbol,
         predicted_trend=trend,
         price_at_prediction=base,
         predicted_target_price=target,
@@ -125,6 +131,7 @@ def _to_closed_prediction(row: dict[str, Any]) -> ClosedPrediction | None:
         council_opinions=opinions,
         council_recommendation=cast(Any, recommendation),
         recorded_trend_correct=_recorded_verdict(row.get("is_trend_correct")),
+        asset_type=AssetType.CRYPTO if symbol.upper() in crypto_symbols else None,
     )
 
 
@@ -180,14 +187,23 @@ def _extract_narrative(result: Any) -> str:
 class WeeklyRecapUseCase:
     """Slow-Loopowa niedzielna retrospektywa z jedną narracją LLM."""
 
-    def __init__(self, repository_port: RepositoryPort, llm_port: LLMPort) -> None:
+    def __init__(
+        self,
+        repository_port: RepositoryPort,
+        llm_port: LLMPort,
+        crypto_symbols: Collection[str] = (),
+    ) -> None:
         self._repo = repository_port
         self._llm = llm_port
+        # Symbole krypto (DI z `settings.crypto_symbols`) wyznaczają pasmo FLAT.
+        self._crypto_symbols = frozenset(s.upper() for s in crypto_symbols)
 
     def run(self, days: int = 7) -> dict[str, Any]:
         rows = self._repo.get_resolved_predictions_detailed(days)
         closed = [
-            cp for cp in (_to_closed_prediction(r) for r in rows) if cp is not None
+            cp
+            for cp in (_to_closed_prediction(r, self._crypto_symbols) for r in rows)
+            if cp is not None
         ]
 
         recap = build_weekly_recap(closed)

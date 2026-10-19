@@ -1444,6 +1444,20 @@ class TestWeeklyRecapWiring:
 
         notifier.send_report.assert_not_called()
 
+    def test_recap_knows_the_crypto_symbols(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # Decyzja 2026-10-19 (a): pasmo FLAT recapu zależy od klasy aktywa.
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        settings.crypto_symbols = ["BTC", "ETH"]
+        self._trainer(settings, mocker, "recap_ready")
+
+        main_trainer.main(settings)
+
+        call = main_trainer.WeeklyRecapUseCase.call_args
+        assert list(call.kwargs["crypto_symbols"]) == ["BTC", "ETH"]
+
     def test_flag_off_never_builds_the_recap(self, settings, mock_external_clients, mocker) -> None:
         settings.weekly_recap_enabled = False
         settings.symbols = ["AAPL"]
