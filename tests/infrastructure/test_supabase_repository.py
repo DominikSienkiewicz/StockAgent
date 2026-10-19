@@ -1681,6 +1681,61 @@ class TestLivenessHeartbeats:
         assert repo.get_last_scorecard_at() is None
 
 
+class TestDatabaseProbe:
+    """NIEZ-28 — jawny monitor bazy: deadman czyta raz dziennie jeden wiersz
+    `price_snapshots` przez PostgREST, tylko do odczytu. Błąd musi wyjść na zewnątrz,
+    bo to on oznacza „baza nie odpowiada” (np. wstrzymany projekt Supabase Free)."""
+
+    def test_probe_reads_one_price_snapshot_row(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "limit"],
+            [{"timestamp": "2026-08-17T05:57:17+00:00"}],
+        )
+
+        repo.probe_database()
+
+        mock_client.table.assert_called_with("price_snapshots")
+        mock_client.table.return_value.select.return_value.limit.assert_called_with(1)
+
+    def test_probe_accepts_an_empty_table(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "select", "limit"], [])
+
+        repo.probe_database()
+
+    def test_probe_never_writes(self, repo: SupabaseRepository, mock_client: MagicMock) -> None:
+        _set_chain_response(mock_client, ["table", "select", "limit"], [])
+
+        repo.probe_database()
+
+        table = mock_client.table.return_value
+        for write in ("insert", "upsert", "update", "delete"):
+            getattr(table, write).assert_not_called()
+        mock_client.rpc.assert_not_called()
+
+    def test_probe_propagates_an_unreachable_database(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        chain = mock_client.table.return_value.select.return_value.limit.return_value
+        chain.execute.side_effect = RuntimeError("Supabase 540: project paused")
+
+        with pytest.raises(RuntimeError):
+            repo.probe_database()
+
+    def test_probe_rejects_a_response_that_is_not_a_row_list(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        response = _set_chain_response(mock_client, ["table", "select", "limit"], [])
+        response.data = "<html>Project paused</html>"
+
+        with pytest.raises(RuntimeError):
+            repo.probe_database()
+
+
 def _fluent_query(mock_client: MagicMock, pages: list[list[dict[str, Any]]]) -> MagicMock:
     """Builder, którego każda metoda filtra/sortowania zwraca SAM SIEBIE, a kolejne
     `.range(...).execute()` dają kolejne strony. Test sprawdza paginację, nie

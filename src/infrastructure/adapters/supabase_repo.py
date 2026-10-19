@@ -943,6 +943,13 @@ class SupabaseRepository(RepositoryPort):
     def get_last_scorecard_at(self) -> datetime | None:
         return self._latest_timestamp("model_scorecards")
 
+    def probe_database(self) -> None:
+        # Bez łagodzenia błędów: wyjątek to dla deadmana „baza nie odpowiada”.
+        # Wstrzymany projekt potrafi odpowiedzieć stroną HTML zamiast listy wierszy.
+        response = self._client.table("price_snapshots").select("timestamp").limit(1).execute()
+        if not isinstance(response.data, list):
+            raise RuntimeError("Supabase: odpowiedź bez listy wierszy price_snapshots")
+
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         response = (
             self._client.table("price_snapshots")

@@ -348,6 +348,12 @@ class RepositoryPort(ABC):
         Slow Loopa (zapisuje wiersz per symbol także przy pominięciu). None = brak."""
 
     @abstractmethod
+    def probe_database(self) -> None:
+        """NIEZ-28 — odczyt jednego wiersza (tylko do odczytu): dowód, że baza
+        odpowiada. Projekt Supabase na planie Free jest wstrzymywany po 7 dniach bez
+        aktywności, a wtedy każdy job pada na połączeniu. Wyjątek = baza nie odpowiada."""
+
+    @abstractmethod
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         """#11 — najnowszy snapshot ceny WRAZ ze znacznikiem czasu.
 

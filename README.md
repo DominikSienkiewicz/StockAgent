@@ -18,6 +18,15 @@ gate against the strongest of three baselines: no change, the mean drift and the
 direction alone. Until a run ships them, the XGBoost leg runs on the no-change baseline
 and the report and the council prompt label it as cold-start.
 
+**Database risk: the Supabase Free plan.** The Supabase project is on the Free plan, which
+pauses a project after 7 days without activity. While the daily run and the shock check are
+paused, the only job that writes to the database is the weekly retraining, so one late
+GitHub cron run can be enough for a pause; until the project is restored in the Supabase
+dashboard, every job fails on connect. The daily deadman therefore starts each run with a
+read-only query of one `price_snapshots` row through PostgREST, with no paid keys, and mails
+when the database does not answer. It is a monitor, not a keepalive: it reports a pause that
+has already happened, and it does not guarantee that Supabase will not pause the project.
+
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.2](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=for-the-badge)
 ![Anthropic](https://img.shields.io/badge/Anthropic-Claude_Sonnet_4.6-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
