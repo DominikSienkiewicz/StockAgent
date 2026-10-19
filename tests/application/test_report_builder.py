@@ -711,9 +711,7 @@ class TestDayOverDay:
         assert "Trafiona" in text
         assert "Błędna" in text
 
-    def test_no_section_when_no_resolved(self):
-        # MAIL-25 (zgoda właściciela 2026-10-19): pusta lista = nic się nie
-        # rozliczyło, więc sekcja mówi to wprost zamiast zostawiać puste miejsce.
+    def test_empty_settlements_say_so(self):
         html, _ = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(resolved_predictions=[]))
         assert "Brak rozliczeń predykcji z ostatnich 24h." in html
