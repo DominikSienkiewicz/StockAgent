@@ -1124,7 +1124,8 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     sentiment = state.get("sentiment") or {}
     news = state.get("news", [])
     news_summary = _summarize_news(news)
-    # EXP-03: ramię `no_memory` — bez lekcji z reflect i bez RAG (zero embeddingów).
+    # EXP-03: ramię `no_memory` — bez lekcji z reflect i bez zapytania RAG. Embedding
+    # newsów powstaje wtedy w save_node (fallback), więc koszt jak w status quo.
     memory = _uses_memory(state)
 
     news_embedding: list[float] | None = None
@@ -1344,9 +1345,9 @@ def _resolve_news_vector(
     """Wektor newsów do zapisu w pgvector. predict_node zwykle już go policzył
     (RAG) — reużywamy; fallback: embedujemy tu, jeśli predict go nie dostarczył.
     Graceful: brak portu / pusty tekst / błąd API → None (zapis bez wektora).
-    EXP-03: ramię `no_memory` nie woła embeddingów wcale — predykcja zapisuje się
-    bez wektora, więc nie trafi później do RAG jako analog."""
-    if deps.embedding_port is None or not news_summary or not _uses_memory(state):
+    EXP-03: ramię `no_memory` nie robi zapytania RAG, więc wektor powstaje tutaj —
+    predykcja trafia do korpusu analogów jak w status quo, bez dziury po eksperymencie."""
+    if deps.embedding_port is None or not news_summary:
         return None
     vector = state.get("news_embedding")
     if vector:

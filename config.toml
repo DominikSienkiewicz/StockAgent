@@ -302,8 +302,9 @@ experiments.EXP-02.primary_metric = "council_hit_rate"
 experiments.EXP-02.enabled = false
 
 # EXP-03: A/B pamięci — ramię `no_memory` bez lekcji z reflect (`reflection_context`)
-# i bez analogów RAG (`similar_context`) w prompcie predykcji; nie woła embeddingów
-# (oszczędza), więc jego predykcje nie trafiają do RAG jako analogi. Rozliczenie
+# i bez analogów RAG (`similar_context`) w prompcie predykcji; bez zapytania RAG,
+# ale embeduje newsy przy zapisie jak status quo, więc jego predykcje trafiają do
+# korpusu analogów (koszt bez zmian, brak dziury po eksperymencie). Rozliczenie
 # poprzedniej predykcji (reflect) bez zmian. RAG biegnie zawsze, gdy jest adapter
 # embeddingów (vector_memory_enabled dokłada tylko filtr reżimu); dzień bez analogu
 # mierzy same lekcje. NIEAKTYWNY do wznowienia Fast Loopa — okno ustaw przy wznowieniu.

@@ -3546,8 +3546,9 @@ class TestBlindCouncilArm:
 
 class TestNoMemoryArm:
     """EXP-03: ramię `no_memory` — prompt predykcji bez `reflection_context`
-    i `similar_context`. Ramię nie woła embeddingów (ani do RAG, ani do zapisu),
-    a rozliczenie poprzedniej predykcji w reflect biegnie jak zawsze."""
+    i `similar_context`. Ramię nie robi zapytania RAG, ale embeduje newsy przy
+    zapisie jak status quo (decyzja 2026-10-20), więc predykcja trafia do
+    korpusu analogów; rozliczenie poprzedniej predykcji w reflect bez zmian."""
 
     def _run(
         self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -3597,7 +3598,7 @@ class TestNoMemoryArm:
         # Rozliczenie poprzedniej predykcji nie zależy od ramienia.
         repository_port.update_prediction_accuracy.assert_called_once()
 
-    def test_no_memory_arm_calls_no_embedding_and_saves_no_vector(
+    def test_no_memory_arm_skips_rag_but_embeds_at_save(
         self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
     ):
         embedding_port, _ = self._run(
@@ -3605,9 +3606,9 @@ class TestNoMemoryArm:
             arms={"EXP-03": "no_memory"},
         )
 
-        embedding_port.embed.assert_not_called()
         repository_port.find_similar_predictions.assert_not_called()
-        assert "embedding" not in repository_port.save_prediction.call_args.args[0]
+        embedding_port.embed.assert_called_once()
+        assert repository_port.save_prediction.call_args.args[0]["embedding"] == [0.1] * 8
 
     @pytest.mark.parametrize("arms", [None, {"EXP-03": "memory"}])
     def test_memory_arm_and_no_experiment_keep_lessons_and_analogs(
@@ -3639,4 +3640,5 @@ class TestNoMemoryArm:
             embeds.append(embedding_port.embed.call_count)
 
         assert meters[0] == meters[1]
-        assert embeds == [1, 0]
+        # Jeden embedding na cykl w obu ramionach: RAG-zapytanie albo zapis.
+        assert embeds == [1, 1]
