@@ -1,9 +1,14 @@
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
 from src.application.report_models import SymbolResult, TradeSignal
-from src.application.report_signals import build_trade_signals
+from src.application.report_signals import (
+    build_trade_signals,
+    forecast_horizon_label,
+    market_status,
+)
 from src.domain.calibration_curve import CalibrationBucket
 from src.domain.council import CouncilVerdict, InvestorOpinion
 
@@ -321,3 +326,84 @@ class TestBuildTradeSignalsPortfolioRisk:
 
     def test_ineffective_hedge_lowers_the_band(self) -> None:
         assert self._tier(hedge_effective=False) == "standard"
+
+
+class TestMarketStatusCalendar:
+    """ALR-15: status sesji w nagłówku maila zna święta i skrócone sesje NYSE.
+    Wcześniej był „uproszczony — bez świąt”, więc w Boże Narodzenie mail pisał „Otwarta”."""
+
+    def test_christmas_is_a_named_holiday_not_an_open_session(self) -> None:
+        # 2026-12-25 15:00 UTC = 10:00 ET, piątek — dawniej „🟢 Otwarta”.
+        status = market_status(datetime(2026, 12, 25, 15, 0, tzinfo=UTC))
+
+        assert "święto" in status["label"]
+        assert "Boże Narodzenie" in status["label"]
+        assert "Otwarta" not in status["label"]
+        assert status["detail"] == "Najbliższe otwarcie: pon 28.12 09:30 ET"
+
+    def test_thanksgiving_is_closed(self) -> None:
+        status = market_status(datetime(2026, 11, 26, 15, 0, tzinfo=UTC))
+
+        assert "święto" in status["label"]
+        assert status["detail"] == "Najbliższe otwarcie: pt 27.11 09:30 ET"
+
+    def test_early_close_session_is_named_with_its_close(self) -> None:
+        # Piątek po Thanksgiving: 10:00 ET, zamknięcie 13:00 ET zamiast 16:00.
+        status = market_status(datetime(2026, 11, 27, 15, 0, tzinfo=UTC))
+
+        assert "Otwarta" in status["label"]
+        assert "skrócona sesja do 13:00 ET" in status["label"]
+        assert status["detail"] == "Zamknięcie za 3h 0min"
+
+    def test_after_an_early_close_the_market_is_closed(self) -> None:
+        # 14:00 ET po skróconej sesji — dawniej „Otwarta” do 16:00.
+        status = market_status(datetime(2026, 11, 27, 19, 0, tzinfo=UTC))
+
+        assert "After-hours" in status["label"]
+        assert "skrócona sesja do 13:00 ET" in status["label"]
+        assert status["detail"] == "Najbliższe otwarcie: pon 30.11 09:30 ET"
+
+    def test_premarket_on_an_early_close_day_says_so(self) -> None:
+        status = market_status(datetime(2026, 12, 24, 13, 0, tzinfo=UTC))
+
+        assert "Premarket" in status["label"]
+        assert "skrócona sesja do 13:00 ET" in status["label"]
+        assert status["detail"] == "Otwarcie za 1h 30min"
+
+    def test_friday_after_hours_points_to_monday_not_tomorrow(self) -> None:
+        status = market_status(datetime(2026, 10, 16, 21, 0, tzinfo=UTC))
+
+        assert "After" in status["label"]
+        assert status["detail"] == "Najbliższe otwarcie: pon 19.10 09:30 ET"
+
+    def test_weekday_after_hours_keeps_the_tomorrow_wording(self) -> None:
+        status = market_status(datetime(2026, 10, 15, 22, 0, tzinfo=UTC))
+
+        assert status["detail"] == "Otwarcie jutro 09:30 ET"
+
+    def test_weekend_before_a_monday_holiday_points_to_tuesday(self) -> None:
+        # Sobota przed Dniem Martina Luthera Kinga (pon 19.01.2026).
+        status = market_status(datetime(2026, 1, 17, 18, 0, tzinfo=UTC))
+
+        assert "weekend" in status["label"].lower()
+        assert status["detail"] == "Najbliższe otwarcie: wt 20.01 09:30 ET"
+
+
+class TestForecastHorizonLabel:
+    """ALR-15: etykieta horyzontu predykcji nazywa najbliższe zamknięcie sesji NYSE —
+    cykl rozlicza prognozę ceną z następnego przebiegu, czyli po tej sesji."""
+
+    def test_premarket_cycle_names_the_same_day_close(self) -> None:
+        label = forecast_horizon_label(datetime(2026, 10, 15, 10, 30, tzinfo=UTC))
+
+        assert label == "najbliższe zamknięcie NYSE: czw 15.10 16:00 ET"
+
+    def test_cycle_before_a_holiday_skips_to_the_early_close(self) -> None:
+        label = forecast_horizon_label(datetime(2026, 11, 26, 10, 30, tzinfo=UTC))
+
+        assert label == "najbliższe zamknięcie NYSE: pt 27.11 13:00 ET (skrócona sesja)"
+
+    def test_weekend_cycle_names_monday(self) -> None:
+        label = forecast_horizon_label(datetime(2026, 10, 17, 10, 30, tzinfo=UTC))
+
+        assert label == "najbliższe zamknięcie NYSE: pon 19.10 16:00 ET"

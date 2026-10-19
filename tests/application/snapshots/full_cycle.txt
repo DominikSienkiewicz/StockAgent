@@ -61,6 +61,7 @@ SYGNAŁY OSTRZEGAWCZE
 
 PREDYKCJE
 ----------------------------------------------------------------
+  Horyzont prognozy: następny cykl · najbliższe zamknięcie NYSE: czw 15.10 16:00 ET
   NVDA (NVIDIA Corporation) · Półprzewodniki/AI              $140,00  Δ   +4,20%  →  Wzrostowy   prognoza $143,50 (+2,50%) · pewność 82%
          sentyment +0,41
          Sygnał modelu: KUP (pewność 82%, prognoza +2,50%)

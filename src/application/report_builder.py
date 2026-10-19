@@ -111,6 +111,7 @@ from src.application.report_signals import (
     build_portfolio_mood,
     build_trade_signals,
     detect_risk_signals,
+    forecast_horizon_label,
     market_status,
     parse_resolved_predictions,
 )
@@ -1337,6 +1338,7 @@ def build_html_report(
     saved, ignored, errors = _partition_by_status(results)
     mood = build_portfolio_mood(results)
     session = market_status(started_at)
+    forecast_horizon = forecast_horizon_label(started_at)
     # Q7: hit-rate cyklu (z accuracy_stats) napędza pasmo wielkości pozycji.
     hit_rate, hit_sample = _sizing_track_record(context.accuracy_stats)
     # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
@@ -1515,6 +1517,7 @@ def build_html_report(
         settlements_unavailable=context.resolved_unavailable,
         full_detail=full_detail,
         sector_map=sector_map,
+        forecast_horizon=forecast_horizon,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1545,6 +1548,7 @@ def build_html_report(
         portfolio_change_line=portfolio_change_line,
         settlements_unavailable=context.resolved_unavailable,
         sector_map=sector_map,
+        forecast_horizon=forecast_horizon,
     )
     text = _fill_text_slots(
         text,
@@ -2071,16 +2075,19 @@ def _render_saved_section_html(
     full_detail: frozenset[str] | None = None,
     *,
     sector_map: Mapping[str, str],
+    forecast_horizon: str = "",
 ) -> str:
     """🔮 Sekcja wygenerowanych predykcji: tabela + wykres prognozy +
     uzasadnienia. Pusty string, gdy w tym cyklu nic nie zapisano.
 
     `full_detail` (MAIL-06): symbole z pełnym blokiem uzasadnień; reszta trafia
-    do skrótu (jedna linia rady, zawsze widoczni dysydenci). None = każdy symbol."""
+    do skrótu (jedna linia rady, zawsze widoczni dysydenci). None = każdy symbol.
+    `forecast_horizon` (ALR-15): najbliższe zamknięcie NYSE z kalendarza sesji."""
     if not saved:
         return ""
     parts = [
         _section_h2("🔮 Wygenerowane predykcje"),
+        _render_forecast_horizon_html(forecast_horizon),
         "<table class='pt'>",
         f"""
           <tr class="pr">
@@ -2118,6 +2125,19 @@ def _render_saved_section_html(
         _render_compact_predictions_html([r for r in saved if not has_full_block(r)])
     )
     return "".join(parts)
+
+
+_FORECAST_HORIZON_PREFIX = "Horyzont prognozy: następny cykl · "
+
+
+def _render_forecast_horizon_html(forecast_horizon: str) -> str:
+    """Linia horyzontu nad tabelą predykcji (ALR-15). Pusty string bez etykiety."""
+    if not forecast_horizon:
+        return ""
+    return (
+        "<div style='font-size: 12px; color: #6b7280; margin: 0 0 6px 0;'>"
+        f"{_FORECAST_HORIZON_PREFIX}{_html(forecast_horizon)}</div>"
+    )
 
 
 _COMPACT_PREDICTIONS_NOTE = (
@@ -2348,6 +2368,7 @@ def _render_html(
     settlements_unavailable: bool = False,
     full_detail: frozenset[str] | None = None,
     sector_map: Mapping[str, str],
+    forecast_horizon: str = "",
 ) -> str:
     sections = []
 
@@ -2415,7 +2436,11 @@ def _render_html(
     sections.append(_render_rebaselined_html(ignored, display_timezone))
     sections.append(_render_trade_signals_html(trade_signals))
     sections.append(_render_risk_signals_html(risk_signals))
-    sections.append(_render_saved_section_html(saved, full_detail, sector_map=sector_map))
+    sections.append(
+        _render_saved_section_html(
+            saved, full_detail, sector_map=sector_map, forecast_horizon=forecast_horizon
+        )
+    )
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
     sections.append(_render_crypto_section_html(results, display_timezone))
 
@@ -2676,12 +2701,14 @@ def _render_prediction_text(r: SymbolResult, sector_map: Mapping[str, str]) -> l
 
 
 def _render_saved_section_text(
-    saved: list[SymbolResult], sector_map: Mapping[str, str]
+    saved: list[SymbolResult], sector_map: Mapping[str, str], forecast_horizon: str = ""
 ) -> list[str]:
     """Sekcja 'Predykcje' (plain). Pusta lista, gdy nic nie zapisano."""
     if not saved:
         return []
     lines = ["PREDYKCJE", "-" * 64]
+    if forecast_horizon:
+        lines.append(f"  {_FORECAST_HORIZON_PREFIX}{forecast_horizon}")
     for r in saved:
         lines.extend(_render_prediction_text(r, sector_map))
     lines.append("")
@@ -2728,6 +2755,7 @@ def _render_plain(
     portfolio_change_line: str = "",
     settlements_unavailable: bool = False,
     sector_map: Mapping[str, str],
+    forecast_horizon: str = "",
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
@@ -2766,7 +2794,7 @@ def _render_plain(
     lines.extend(_render_rebaselined_text(ignored, display_timezone))
     lines.extend(_render_trade_signals_text(trade_signals))
     lines.extend(_render_risk_signals_text(risk_signals))
-    lines.extend(_render_saved_section_text(saved, sector_map))
+    lines.extend(_render_saved_section_text(saved, sector_map, forecast_horizon))
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
     crypto_text = _render_crypto_section_text(results, display_timezone)
     if crypto_text:

@@ -3374,3 +3374,31 @@ class TestPortfolioInOneCurrency:
 
         # Bez kursów zostaje stara ścieżka: kwoty w walucie notowania.
         assert "Twój portfel od ostatniego maila: +2,5% (+$204,76)" in text
+
+
+class TestForecastHorizonInPredictions:
+    """ALR-15: sekcja predykcji mówi, po zamknięciu której sesji NYSE następny cykl
+    rozliczy prognozę — kalendarz zna święta i skrócone sesje."""
+
+    # Thanksgiving (czw 26.11.2026), 05:30 ET — najbliższa sesja to skrócony piątek.
+    _STARTED = datetime(2026, 11, 26, 10, 30, tzinfo=UTC)
+    _HORIZON = (
+        "Horyzont prognozy: następny cykl · najbliższe zamknięcie NYSE: "
+        "pt 27.11 13:00 ET (skrócona sesja)"
+    )
+
+    def test_html_names_the_next_session_close(self):
+        html, _ = build_html_report([_saved_result()], self._STARTED, 1.0)
+
+        assert self._HORIZON in html
+
+    def test_plain_text_names_the_next_session_close(self):
+        _, text = build_html_report([_saved_result()], self._STARTED, 1.0)
+
+        assert self._HORIZON in text
+
+    def test_cycle_without_predictions_has_no_horizon_line(self):
+        html, text = build_html_report([_ignored_result()], self._STARTED, 1.0)
+
+        assert "Horyzont prognozy" not in html
+        assert "Horyzont prognozy" not in text
