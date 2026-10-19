@@ -299,6 +299,97 @@ class TestUtcDayAlignment:
         assert report.matrix[("AMD", "NVDA")] == pytest.approx(1.0)
 
 
+class TestMinimumSamples:
+    """PORT-22: VaR z kilku obserwacji to najgorszy dzień próbki, a korelacja
+    z dwóch zwrotów to ±1. Poniżej progów z `risk_sample` statystyka nie
+    powstaje, a raport mówi, ile historii brakuje."""
+
+    @staticmethod
+    def _history(days: int) -> dict[str, list[tuple[datetime, Money]]]:
+        nvda = [100.0]
+        for i in range(1, days):
+            nvda.append(nvda[-1] * (1.03 if i % 3 else 0.96))
+
+        def series(scale: float) -> list[tuple[datetime, Money]]:
+            return [
+                (_BASE + timedelta(days=i), Money(Decimal(str(round(p * scale, 4)))))
+                for i, p in enumerate(nvda)
+            ]
+
+        gld = [
+            (_BASE + timedelta(days=i), Money(Decimal(str(100 + (i % 4)))))
+            for i in range(days)
+        ]
+        return {"NVDA": series(1.0), "MSFT": series(0.5), "GLD": gld}
+
+    def _run(self, repo: Mock, days: int, **kwargs: object) -> PortfolioRiskReport:
+        history = self._history(days)
+        repo.get_price_history.side_effect = lambda sym, days: history[sym]
+        return PortfolioRiskUseCase(
+            repository_port=repo, require_min_samples=True, **kwargs
+        ).run(["NVDA", "MSFT", "GLD"])
+
+    def test_var_is_none_below_min_observations(self, repository_port: Mock) -> None:
+        report = self._run(repository_port, 10, var_enabled=True)
+
+        assert report.var is None
+        assert report.cvar is None
+        assert ("var", 9, 60) in report.insufficient
+
+    def test_var_is_computed_from_60_observations(self, repository_port: Mock) -> None:
+        report = self._run(repository_port, 61, var_enabled=True)
+
+        assert report.var is not None
+        assert all(stat != "var" for stat, _, _ in report.insufficient)
+
+    def test_correlations_are_skipped_below_min_paired_returns(
+        self, repository_port: Mock
+    ) -> None:
+        report = self._run(repository_port, 10)
+
+        assert report.matrix == {}
+        assert report.clusters == []
+        assert report.verdict == ""
+        assert ("correlation", 9, 20) in report.insufficient
+
+    def test_correlations_are_kept_on_20_paired_returns(
+        self, repository_port: Mock
+    ) -> None:
+        report = self._run(repository_port, 21)
+
+        assert report.clusters == [("MSFT", "NVDA")]
+        assert report.insufficient == ()
+
+    def test_stress_betas_are_skipped_below_min_paired_returns(
+        self, repository_port: Mock
+    ) -> None:
+        from src.domain.scenarios import Scenario
+
+        report = self._run(
+            repository_port, 10,
+            stress_enabled=True,
+            scenarios=(Scenario(name="Krach -20%", market_shock=-0.20),),
+        )
+
+        assert report.scenarios == ()
+        assert ("beta", 9, 20) in report.insufficient
+
+    def test_disabled_var_is_not_reported_as_insufficient(
+        self, repository_port: Mock
+    ) -> None:
+        report = self._run(repository_port, 10)
+
+        assert all(stat != "var" for stat, _, _ in report.insufficient)
+
+    def test_history_window_covers_60_trading_days(self, repository_port: Mock) -> None:
+        from src.application.use_cases.portfolio_risk import PRICE_HISTORY_DAYS
+
+        self._run(repository_port, 10)
+
+        assert PRICE_HISTORY_DAYS == 90
+        assert {c.args[1] for c in repository_port.get_price_history.call_args_list} == {90}
+
+
 class TestReportImmutability:
     def test_report_is_frozen(self, repository_port: Mock) -> None:
         repository_port.get_price_history.return_value = _series(["100", "110"])

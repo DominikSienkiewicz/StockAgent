@@ -3,7 +3,11 @@
 Czysta logika prezentacji — bierze PortfolioRiskReport z use case'a i
 produkuje fragment HTML: werdykt o koncentracji + lista klastrów symboli,
 które poruszają się razem ("43 symbole = 3 zakłady"). Sekcja pomijana w
-całości, gdy brak klastrów (`render_*` → "").
+całości, gdy nie ma czego pokazać (`render_*` → "").
+
+PORT-22: statystyka pominięta z braku historii (`PortfolioRiskReport.insufficient`)
+renderuje się jawnie jako „za mało historii (n/wymagane)” — pustka albo liczba
+z kilku obserwacji byłyby gorsze niż ta informacja.
 
 Nazwy symboli i tekst werdyktu pochodzą z konfiguracji/obliczeń, ale i tak
 escapujemy je przez `html.escape` — sekcja raportu musi być HTML-safe
@@ -15,6 +19,24 @@ from __future__ import annotations
 import html as _html
 
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
+from src.domain.risk_sample import RiskStat
+
+_HEADING = "🎯 Portfolio Radar — koncentracja i ryzyko"
+
+# Nazwy statystyk w adnotacji „za mało historii”.
+_STAT_LABELS: dict[RiskStat, str] = {
+    "correlation": "Klastry korelacji",
+    "var": "Value-at-Risk",
+    "beta": "Stress-test (β-to-portfel)",
+}
+
+
+def _insufficient_notes(report: PortfolioRiskReport) -> list[str]:
+    """Adnotacje „<statystyka>: za mało historii (n/wymagane)” w kolejności raportu."""
+    return [
+        f"{_STAT_LABELS[stat]}: za mało historii ({n}/{required})"
+        for stat, n, required in report.insufficient
+    ]
 
 
 def render_correlation_html(report: PortfolioRiskReport) -> str:
@@ -30,15 +52,63 @@ def render_correlation_html(report: PortfolioRiskReport) -> str:
         subsections.append(_render_var_html(report))
     if report.scenarios:
         subsections.append(_render_stress_html(report))
+    if report.insufficient:
+        subsections.append(_render_insufficient_html(report))
 
     if not subsections:
         return ""
 
     header = (
         "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
-        "🎯 Portfolio Radar — koncentracja i ryzyko</h2>"
+        f"{_HEADING}</h2>"
     )
     return header + "".join(subsections)
+
+
+def _render_insufficient_html(report: PortfolioRiskReport) -> str:
+    """PORT-22: lista statystyk pominiętych z braku historii."""
+    items = "".join(
+        f"<li style='padding: 2px 0;'>{_html.escape(note)}</li>"
+        for note in _insufficient_notes(report)
+    )
+    return (
+        "<div style='padding: 10px 14px; background: #f9fafb; "
+        "border-left: 3px solid #9ca3af; border-radius: 4px; "
+        "margin-bottom: 12px; font-size: 13px; color: #4b5563;'>"
+        "⏳ Liczby z kilku obserwacji udawałyby wiedzę — pokażemy je, "
+        "gdy zbierze się historia:"
+        f"<ul style='margin: 4px 0 0 18px; padding: 0;'>{items}</ul>"
+        "</div>"
+    )
+
+
+def render_correlation_text(report: PortfolioRiskReport) -> str:
+    """Wariant plain-text sekcji Portfolio Radar; "" gdy nie ma czego pokazać."""
+    lines: list[str] = []
+    if report.clusters:
+        if report.verdict:
+            lines.append(f"  Werdykt: {report.verdict}")
+        for idx, cluster in enumerate(report.clusters, start=1):
+            lines.append(
+                f"  Klaster {idx} ({len(cluster)} symboli): {' · '.join(cluster)}"
+            )
+    if report.var is not None:
+        conf_pct = round(report.var_confidence * 100)
+        lines.append(
+            f"  📉 Value-at-Risk ({conf_pct}%): {report.var * 100:.1f}% "
+            f"(CVaR {(report.cvar or 0.0) * 100:.1f}%)"
+        )
+    for impact in report.scenarios:
+        worst = impact.worst_symbol if impact.worst_symbol is not None else "—"
+        lines.append(
+            f"  🧪 {impact.scenario_name} ({impact.market_shock * 100:+.0f}%): "
+            f"portfel {impact.portfolio_pnl * 100:+.1f}%, najsłabszy {worst} "
+            f"({impact.worst_pnl * 100:+.1f}%)"
+        )
+    lines.extend(f"  ⏳ {note}" for note in _insufficient_notes(report))
+    if not lines:
+        return ""
+    return "\n".join([f"=== {_HEADING.upper()} ===", *lines, ""])
 
 
 def _render_clusters_block_html(report: PortfolioRiskReport) -> str:

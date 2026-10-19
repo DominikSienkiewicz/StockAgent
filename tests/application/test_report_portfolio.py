@@ -7,7 +7,10 @@ Wszystkie nazwy symboli i tekst werdyktu MUSZĄ być escapowane (HTML-safe).
 
 from __future__ import annotations
 
-from src.application.report_portfolio import render_correlation_html
+from src.application.report_portfolio import (
+    render_correlation_html,
+    render_correlation_text,
+)
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.scenarios import ScenarioImpact
 
@@ -127,3 +130,39 @@ class TestRenderVarAndStress:
 
     def test_no_var_no_stress_no_clusters_renders_nothing(self) -> None:
         assert render_correlation_html(PortfolioRiskReport()) == ""
+
+
+class TestInsufficientHistory:
+    """PORT-22: przy zbyt krótkiej historii mail mówi „za mało historii (n/60)”
+    zamiast pustki albo liczby z kilku obserwacji."""
+
+    _SHORT = PortfolioRiskReport(
+        watchlist_size=3,
+        insufficient=(("correlation", 9, 20), ("var", 9, 60), ("beta", 9, 20)),
+    )
+
+    def test_html_says_how_much_history_is_missing(self) -> None:
+        html = render_correlation_html(self._SHORT)
+
+        assert "Value-at-Risk" in html
+        assert "za mało historii (9/60)" in html
+        assert "za mało historii (9/20)" in html
+
+    def test_text_says_how_much_history_is_missing(self) -> None:
+        text = render_correlation_text(self._SHORT)
+
+        assert "za mało historii (9/60)" in text
+        assert "za mało historii (9/20)" in text
+
+    def test_text_carries_the_var_when_it_exists(self) -> None:
+        report = PortfolioRiskReport(
+            watchlist_size=3, var=0.021, cvar=0.034, var_confidence=0.95
+        )
+
+        text = render_correlation_text(report)
+
+        assert "2.1%" in text
+        assert "3.4%" in text
+
+    def test_text_is_empty_when_nothing_to_show(self) -> None:
+        assert render_correlation_text(PortfolioRiskReport()) == ""

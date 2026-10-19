@@ -82,7 +82,10 @@ from src.application.report_onboarding import (
 from src.application.report_persona_leaderboard import (
     render_persona_leaderboard_html,
 )
-from src.application.report_portfolio import render_correlation_html
+from src.application.report_portfolio import (
+    render_correlation_html,
+    render_correlation_text,
+)
 from src.application.report_quota_banner import (
     render_quota_banner_html,
     render_quota_banner_text,
@@ -756,13 +759,19 @@ def _fill_text_slots(
     lead_text: str,
     onboarding_text: str,
     suggestions_text: str,
+    portfolio_text: str = "",
 ) -> str:
     """Wstawia treść w sloty plain-text. QUOTA/RISK_WATCH tylko gdy niepuste;
-    LEAD i SUGGESTIONS usuwają cały wiersz znacznika, gdy pusto."""
+    LEAD, PORTFOLIO i SUGGESTIONS usuwają cały wiersz znacznika, gdy pusto."""
     if quota_text:
         text = text.replace(_QUOTA_BANNER_SLOT, quota_text, 1)
     if macro_risk_text:
         text = text.replace(_RISK_WATCH_SLOT, macro_risk_text, 1)
+    text = text.replace(
+        f"{_PORTFOLIO_SLOT}\n",
+        f"{portfolio_text}\n" if portfolio_text else "",
+        1,
+    ).replace(_PORTFOLIO_SLOT, portfolio_text, 1)
     text = text.replace(
         f"{_LEAD_SLOT}\n",
         f"{lead_text}\n\n" if lead_text else "",
@@ -973,6 +982,11 @@ def build_html_report(
         if context.portfolio_risk_report
         else ""
     )
+    portfolio_text = (
+        render_correlation_text(context.portfolio_risk_report)
+        if context.portfolio_risk_report
+        else ""
+    )
     # #1: lead cyklu. Ranking robi domena; TU jest jedyne miejsce, gdzie DTO
     # warstwy application (SymbolResult / ResolvedPrediction) są mapowane na
     # typy domenowe — `src/domain/digest_lead.py` ich nie importuje.
@@ -1062,6 +1076,7 @@ def build_html_report(
         text,
         quota_text=quota_text,
         macro_risk_text=macro_risk_text,
+        portfolio_text=portfolio_text,
         lead_text=lead_text,
         onboarding_text=onboarding_text,
         suggestions_text=suggestions_text,
@@ -1888,6 +1903,8 @@ def _render_plain(
 
     # Slot na sekcję Risk Watch w wariancie plain text — analogicznie do HTML.
     lines.append(_RISK_WATCH_SLOT)
+    # PORT-22: radar portfela (klastry, VaR, stress, „za mało historii”).
+    lines.append(_PORTFOLIO_SLOT)
 
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
     crypto_text = _render_crypto_section_text(results)

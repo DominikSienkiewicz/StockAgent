@@ -25,16 +25,17 @@ from src.domain.correlation import (
     detect_clusters,
     returns_from_prices,
 )
+from src.domain.risk_sample import RiskStat, sample_sufficiency
 from src.domain.scenarios import Scenario, ScenarioImpact, stress_test
 from src.domain.value_objects import Money
 from src.domain.var import conditional_var, historical_var
 
 logger = logging.getLogger(__name__)
 
-# Okno historii cen czytane z price_snapshots (dni). Dłuższe = stabilniejsza
-# korelacja, ale wolniejszy odczyt. 30 dni daje sensowną próbkę dziennych
-# snapshotów bez sięgania po stare, nieaktualne reżimy rynkowe.
-PRICE_HISTORY_DAYS = 30
+# Okno historii cen czytane z price_snapshots (dni). PORT-22: VaR wymaga
+# `MIN_VAR_OBSERVATIONS` (60) dziennych zwrotów, a 30 dni kalendarzowych daje
+# ~21 sesji. 90 dni to ~63 sesje — minimum, przy którym VaR w ogóle może powstać.
+PRICE_HISTORY_DAYS = 90
 
 # Próg korelacji, powyżej którego para symboli trafia do jednego klastra.
 # 0.7 łapie silne współzależności (np. mega-cap tech + BTC w risk-on), nie
@@ -66,6 +67,9 @@ class PortfolioRiskReport:
     # R2: wyniki scenariuszy stress-test (β-to-portfel × szok). Pusta krotka =
     # wyłączone / brak scenariuszy.
     scenarios: tuple[ScenarioImpact, ...] = ()
+    # PORT-22: statystyki pominięte z braku historii jako `(stat, n, wymagane)`,
+    # np. `("var", 9, 60)`. Raport mówi wtedy „za mało historii (9/60)”.
+    insufficient: tuple[tuple[RiskStat, int, int], ...] = ()
 
 
 class PortfolioRiskUseCase:
@@ -73,6 +77,11 @@ class PortfolioRiskUseCase:
 
     Opcjonalnie (flagi) dokłada VaR/CVaR (R1) i stress-test (R2) — oba liczone
     z tych SAMYCH darmowych zwrotów co macierz korelacji, zero nowych odczytów.
+
+    PORT-22: `require_min_samples=True` (produkcja, `main_agent`) liczy VaR/CVaR
+    dopiero od `MIN_VAR_OBSERVATIONS` zwrotów, a korelacje, klastry i bety od
+    `MIN_PAIRED_RETURNS` sparowanych zwrotów; pominięte statystyki lądują w
+    `PortfolioRiskReport.insufficient`.
     """
 
     def __init__(
@@ -83,8 +92,10 @@ class PortfolioRiskUseCase:
         stress_enabled: bool = False,
         var_confidence: float = 0.95,
         scenarios: Sequence[Scenario] = (),
+        require_min_samples: bool = False,
     ) -> None:
         self._repository = repository_port
+        self._require_min_samples = require_min_samples
         self._var_enabled = var_enabled
         self._stress_enabled = stress_enabled
         self._var_confidence = var_confidence
@@ -96,26 +107,46 @@ class PortfolioRiskUseCase:
             # <2 symbole z historią — nie ma czego korelować ani liczyć VaR.
             return PortfolioRiskReport()
 
-        matrix = correlation_matrix(returns_by_symbol)
         usable_symbols = sorted(returns_by_symbol.keys())
-        clusters = detect_clusters(matrix, usable_symbols, CLUSTER_THRESHOLD)
         watchlist_size = len(usable_symbols)
-        verdict = self._build_verdict(matrix, clusters, watchlist_size)
+        # Po wyrównaniu po dniu UTC wszystkie szeregi mają tę samą długość.
+        paired = min(len(rets) for rets in returns_by_symbol.values())
+        shortfalls: list[tuple[RiskStat, int, int]] = []
+
+        matrix: dict[tuple[str, str], float] = {}
+        clusters: list[tuple[str, ...]] = []
+        verdict = ""
+        correlation_gap = self._shortfall("correlation", paired)
+        if correlation_gap is not None:
+            shortfalls.append(correlation_gap)
+        else:
+            matrix = correlation_matrix(returns_by_symbol)
+            clusters = detect_clusters(matrix, usable_symbols, CLUSTER_THRESHOLD)
+            verdict = self._build_verdict(matrix, clusters, watchlist_size)
 
         # R1/R2 — VaR/CVaR i stress-test z równoważonych zwrotów portfela.
         # Liczone tylko gdy włączone (flagi); ten sam szereg zwrotów napędza oba.
         var: float | None = None
         cvar: float | None = None
         scenarios_out: tuple[ScenarioImpact, ...] = ()
-        if self._var_enabled or (self._stress_enabled and self._scenarios):
+        stress_wanted = self._stress_enabled and bool(self._scenarios)
+        if self._var_enabled or stress_wanted:
             market_returns = self._equal_weight_returns(returns_by_symbol)
             if self._var_enabled and market_returns:
-                var = historical_var(market_returns, self._var_confidence)
-                cvar = conditional_var(market_returns, self._var_confidence)
-            if self._stress_enabled and self._scenarios and market_returns:
-                scenarios_out = tuple(
-                    stress_test(returns_by_symbol, market_returns, self._scenarios)
-                )
+                var_gap = self._shortfall("var", len(market_returns))
+                if var_gap is None:
+                    var = historical_var(market_returns, self._var_confidence)
+                    cvar = conditional_var(market_returns, self._var_confidence)
+                else:
+                    shortfalls.append(var_gap)
+            if stress_wanted and market_returns:
+                beta_gap = self._shortfall("beta", paired)
+                if beta_gap is None:
+                    scenarios_out = tuple(
+                        stress_test(returns_by_symbol, market_returns, self._scenarios)
+                    )
+                else:
+                    shortfalls.append(beta_gap)
 
         return PortfolioRiskReport(
             matrix=matrix,
@@ -127,7 +158,18 @@ class PortfolioRiskUseCase:
             cvar=cvar,
             var_confidence=self._var_confidence,
             scenarios=scenarios_out,
+            insufficient=tuple(shortfalls),
         )
+
+    def _shortfall(self, stat: RiskStat, n: int) -> tuple[RiskStat, int, int] | None:
+        """`(stat, n, wymagane)` gdy próba jest za mała; None gdy wystarcza albo
+        bramka minimalnych prób jest wyłączona."""
+        if not self._require_min_samples:
+            return None
+        sufficiency = sample_sufficiency(n, stat)
+        if sufficiency.ok:
+            return None
+        return stat, sufficiency.n, sufficiency.required
 
     @staticmethod
     def _equal_weight_returns(

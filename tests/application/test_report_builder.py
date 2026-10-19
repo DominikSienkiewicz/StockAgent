@@ -2162,3 +2162,18 @@ def test_full_band_suggested_on_a_sufficient_effective_sample():
     })
 
     assert "Pozycja pełna 4-5% portfela" in html
+
+
+def test_plain_text_report_says_var_lacks_history():
+    # PORT-22: wariant tekstowy też mówi, ile historii brakuje.
+    from src.application.use_cases.portfolio_risk import PortfolioRiskReport
+
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(portfolio_risk_report=PortfolioRiskReport(
+            watchlist_size=3, insufficient=(("var", 9, 60),),
+        )),
+    )
+
+    assert "za mało historii (9/60)" in html
+    assert "za mało historii (9/60)" in text

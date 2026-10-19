@@ -2014,3 +2014,32 @@ class TestAlphaVantageNewsWindowWiring:
         main_agent.build_use_case(settings)
 
         assert client_cls.call_args.kwargs["news_window"] == timedelta(hours=24)
+
+
+class TestPortfolioRadarMinimumSamples:
+    """PORT-22: produkcyjny radar egzekwuje minimalne próby — VaR z dziewięciu
+    zwrotów nie trafia do maila jako „VaR 95%”."""
+
+    def test_short_history_reports_missing_var_instead_of_a_number(self, settings) -> None:
+        from datetime import timedelta
+
+        from src.domain.value_objects import Money
+
+        base = datetime(2026, 6, 1, tzinfo=UTC)
+
+        def history(symbol: str, days: int) -> list:
+            scale = {"AAPL": 1.0, "VOO": 2.0}[symbol]
+            return [
+                (base + timedelta(days=i), Money(Decimal(str(100 * scale + i * (i % 3)))))
+                for i in range(10)
+            ]
+
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_price_history.side_effect = history
+        settings.portfolio_var_enabled = True
+
+        report = main_agent._build_portfolio_radar(settings, repository, ["AAPL", "VOO"])
+
+        assert report is not None
+        assert report.var is None
+        assert ("var", 9, 60) in report.insufficient
