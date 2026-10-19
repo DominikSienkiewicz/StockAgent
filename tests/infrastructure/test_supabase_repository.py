@@ -1301,6 +1301,59 @@ class TestGetAccuracyStats:
         assert stats["directional_correct_count"] == 0
 
 
+    def test_effective_sample_groups_rows_by_utc_day(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """PORT-01: sizing potrzebuje liczby NIEZALEŻNYCH zakładów. Trzy dni,
+        w których wszystkie predykcje dnia trafiły albo chybiły razem, to trzy
+        zakłady (n_eff = 3), nie dziewięć. Pozostałe pola bez zmian."""
+        rows = [
+            {"is_trend_correct": day_ok, "predicted_trend": "BULLISH",
+             "timestamp": f"2026-10-{day:02d}T{hour:02d}:00:00+00:00"}
+            for day, day_ok in ((14, True), (15, False), (16, True))
+            for hour in (9, 13, 17)
+        ]
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [rows])
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert stats["n_eff"] == pytest.approx(3.0)
+        assert stats["sample_count"] == 9
+        assert stats["correct_count"] == 6
+        assert "timestamp" in chain.select.call_args.args[0]
+
+    def test_effective_sample_of_independent_days_equals_the_count(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        rows = [
+            {"is_trend_correct": i % 2 == 0, "predicted_trend": "BEARISH",
+             "timestamp": f"2026-10-{i + 1:02d}T12:00:00+00:00"}
+            for i in range(5)
+        ]
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [rows])
+
+        assert repo.get_accuracy_stats(days=30)["n_eff"] == pytest.approx(5.0)
+
+    def test_empty_window_has_zero_effective_sample(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [[]])
+
+        assert repo.get_accuracy_stats(days=30)["n_eff"] == 0.0
+
+
 class TestGetResolvedPredictionsForEval:
     def test_returns_rows_and_filters_by_window(
         self, repo: SupabaseRepository, mock_client: MagicMock

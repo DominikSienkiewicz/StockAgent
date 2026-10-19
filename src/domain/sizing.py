@@ -10,6 +10,12 @@ from dataclasses import dataclass
 STRONG_CONSENSUS_THRESHOLD = 0.7
 LOW_DISSENT_THRESHOLD = 0.34
 GOOD_HIT_RATE_THRESHOLD = 0.55
+# PORT-01 (G31): minimalna EFEKTYWNA próba (n_eff, `significance.effective_n`),
+# od której hit-rate w ogóle coś mówi. Predykcje jednego dnia ruszają się razem,
+# więc liczy się liczba niezależnych zakładów, nie wierszy. Poniżej progu
+# hit-rate traktujemy jak cold-start — „Pozycja pełna” po jednym trafieniu to
+# porada z szumu.
+MIN_HIT_SAMPLE = 20
 
 # #15 faza 2 — istniejąca ekspozycja. Banda może zostać wyłącznie ZWĘŻONA:
 # sizing nie ma prawa podbić słabego sygnału tylko dlatego, że portfel jest pusty.
@@ -60,6 +66,7 @@ def suggest_band(
     hit_rate: float | None,
     current_weight: float | None = None,
     cluster_exposure: float | None = None,
+    hit_sample: float | None = None,
 ) -> SizeBand:
     """Mapuje konsensus rady + track record agenta na sugerowaną bandę pozycji.
 
@@ -79,9 +86,16 @@ def suggest_band(
     „pełnej bandy 4-5%" komuś, kto ma już 40% kapitału w tym symbolu, było
     poradą liczoną na pustym portfelu. Oba argumenty domyślnie `None` →
     zachowanie identyczne jak przed fazą 2.
+
+    PORT-01: `hit_sample` to efektywna liczność (n_eff) próby, z której policzono
+    `hit_rate`. Przy `hit_sample < MIN_HIT_SAMPLE` hit-rate traktujemy jak
+    cold-start (None), więc pełna banda jest wtedy nieosiągalna. `None` = wołający
+    nie podaje próby (zachowanie sprzed PORT-01); raport podaje ją zawsze.
     """
     consensus = _clamp(consensus_strength, 0.0, 1.0)
     dissent = _clamp(dissent_ratio, 0.0, 1.0)
+    if hit_sample is not None and hit_sample < MIN_HIT_SAMPLE:
+        hit_rate = None
     clamped_hit_rate = _clamp(hit_rate, 0.0, 1.0) if hit_rate is not None else None
 
     strong_consensus = consensus >= STRONG_CONSENSUS_THRESHOLD

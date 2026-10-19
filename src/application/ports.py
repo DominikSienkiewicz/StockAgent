@@ -136,7 +136,9 @@ class RepositoryPort(ABC):
         `mean_accuracy` / `sample_count` / `correct_count` liczą wszystkie
         rozliczone predykcje, także SIDEWAYS („bez ruchu”) — z nich korzysta
         sizing. `directional_count` / `directional_correct_count` (WIA-29) to
-        ta sama próba zawężona do prognoz z zakładem na kierunek.
+        ta sama próba zawężona do prognoz z zakładem na kierunek. `n_eff`
+        (PORT-01) to efektywna liczność całej próby po dniach UTC
+        (`significance.effective_n`) — sizing wymaga jej do pełnej bandy.
 
         Ten i pozostałe odczyty track-recordu (`get_recently_resolved_predictions`,
         `get_resolved_predictions`, `get_resolved_for_calibration`) pomijają

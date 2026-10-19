@@ -16,6 +16,8 @@ from src.domain.equity_curve import directional_hit_rate
 from src.domain.prediction import Prediction, normalize_trend
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.regime_key import canonical_regime_key
+from src.domain.significance import effective_n
+from src.domain.track_record import group_by_cycle
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
     AssetType,
@@ -83,6 +85,22 @@ def _without_llm_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     wyciąłby też takie wiersze. Wymaga `data_quality_flags` w SELECT.
     """
     return [row for row in rows if _LLM_FALLBACK_FLAG not in (row.get("data_quality_flags") or [])]
+
+
+def _utc_day_key(stamp: Any) -> str:
+    """Klucz cyklu predykcji: dzień UTC w ISO (jak `report_evidence.cycle_key`).
+
+    Brak albo nieczytelny znacznik → wspólny klucz "" — na niekorzyść dowodu,
+    bo takie wiersze lądują w jednym cyklu."""
+    if not isinstance(stamp, str):
+        return ""
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except ValueError:
+        return ""
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(UTC)
+    return moment.date().isoformat()
 
 
 def _serialize(value: Any) -> Any:
@@ -398,6 +416,10 @@ class SupabaseRepository(RepositoryPort):
         `directional_count` / `directional_correct_count`: tylko prognozy
         z zakładem na kierunek (`directional_hit_rate`, ta sama definicja co
         Track Record), żeby mail pokazał obie liczby z jasnymi etykietami.
+
+        PORT-01: `n_eff` to efektywna liczność tej samej próby (`effective_n`
+        po dniach UTC, jak w Track Record): predykcje jednego dnia ruszają się
+        razem, więc sizing patrzy na liczbę niezależnych zakładów, nie wierszy.
         """
         cutoff = datetime.now(UTC) - timedelta(days=days)
         # Paginacja (#8): hit-rate liczony na PEŁNYM zbiorze, nie obciętych 1000
@@ -405,18 +427,27 @@ class SupabaseRepository(RepositoryPort):
         # bez niego obcięta próbka była losowa przy każdym wywołaniu.
         query = (
             self._client.table(self._table)
-            .select("is_trend_correct, predicted_trend, data_quality_flags")
+            .select("is_trend_correct, predicted_trend, data_quality_flags, timestamp")
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
         )
-        rows = _without_llm_fallback(_paginate(query))
+        rows = [
+            r
+            for r in _without_llm_fallback(_paginate(query))
+            if r.get("is_trend_correct") is not None
+        ]
         calls = [
             (str(r.get("predicted_trend") or ""), bool(r["is_trend_correct"]))
             for r in rows
-            if r.get("is_trend_correct") is not None
         ]
         directional = directional_hit_rate(calls)
+        n_eff = effective_n(
+            group_by_cycle(
+                (_utc_day_key(r.get("timestamp")), bool(r["is_trend_correct"]))
+                for r in rows
+            )
+        )
 
         if not calls:
             return {
@@ -426,6 +457,7 @@ class SupabaseRepository(RepositoryPort):
                 "days_window": days,
                 "directional_count": 0,
                 "directional_correct_count": 0,
+                "n_eff": 0.0,
             }
         correct_count = sum(1 for _, correct in calls if correct)
         return {
@@ -435,6 +467,7 @@ class SupabaseRepository(RepositoryPort):
             "days_window": days,
             "directional_count": directional.directional,
             "directional_correct_count": directional.hits,
+            "n_eff": n_eff,
         }
 
     def get_cached_fundamentals(self, symbol: str) -> Fundamentals | None:

@@ -37,6 +37,7 @@ def build_trade_signals(
     calibration_buckets: Sequence[CalibrationBucket] | None = None,
     portfolio_weights: Mapping[str, Decimal] | None = None,
     cluster_exposures: Mapping[str, Decimal] | None = None,
+    hit_sample: float | None = None,
 ) -> list[TradeSignal]:
     """Top sygnały transakcyjne — posortowane po sile sygnału.
 
@@ -45,6 +46,8 @@ def build_trade_signals(
     podany — historycznego hit-rate agenta). `hit_rate` jest wspólny dla
     całego cyklu (np. `accuracy_stats["mean_accuracy"]`); None = cold-start →
     sizing konserwatywny. Brak werdyktu rady → `size_band` None.
+    PORT-01: `hit_sample` (n_eff próby hit-rate) trafia do `suggest_band` —
+    próba poniżej `MIN_HIT_SAMPLE` nie odblokuje pełnej bandy.
 
     #9: gdy podano `calibration_buckets`, `strength` liczymy na pewności
     SKALIBROWANEJ historycznym hit-rate'em jej kubełka (shrinkage przy małej
@@ -79,7 +82,9 @@ def build_trade_signals(
             strength=strength,
             current_price=r.current_price,
             target_price=r.target_price,
-            size_band=_size_band_for(r, hit_rate, portfolio_weights, cluster_exposures),
+            size_band=_size_band_for(
+                r, hit_rate, portfolio_weights, cluster_exposures, hit_sample
+            ),
             calibrated_confidence=calibrated,
             ml_cold_start=r.ml_cold_start,
             calibration_bucket_count=bucket_count,
@@ -103,6 +108,7 @@ def _size_band_for(
     hit_rate: float | None,
     weights: Mapping[str, Decimal] | None = None,
     cluster_exposures: Mapping[str, Decimal] | None = None,
+    hit_sample: float | None = None,
 ) -> SizeBand | None:
     """Wylicza bandę pozycji z werdyktu rady symbolu; None gdy brak werdyktu.
 
@@ -121,6 +127,7 @@ def _size_band_for(
         hit_rate=hit_rate,
         current_weight=float(weight) if weight is not None else None,
         cluster_exposure=float(cluster) if cluster is not None else None,
+        hit_sample=hit_sample,
     )
 
 

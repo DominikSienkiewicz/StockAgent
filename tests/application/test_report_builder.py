@@ -2096,3 +2096,69 @@ class TestResolvedSummaryBothDefinitions:
 
         assert "brak prognoz kierunkowych" in html
         assert "brak prognoz kierunkowych" in text
+
+
+def _strong_buy_result() -> SymbolResult:
+    """Saved BUY z jednogłośną radą — jedyną brakującą przesłanką pełnej bandy
+    jest track record."""
+    verdict = CouncilVerdict(
+        final_recommendation="BUY",
+        consensus_strength=0.9,
+        summary="Rada zgodna.",
+        dissenting_views=(),
+        investor_opinions=(
+            InvestorOpinion(
+                investor_name="A", recommendation="BUY",
+                confidence=0.9, reasoning="x", key_factors=(),
+            ),
+            InvestorOpinion(
+                investor_name="B", recommendation="BUY",
+                confidence=0.9, reasoning="x", key_factors=(),
+            ),
+        ),
+    )
+    return SymbolResult(
+        symbol="NVDA", status="saved", delta=Decimal("0.04"),
+        current_price=Decimal("100"), trend="BULLISH",
+        target_price=Decimal("106"), confidence_score=0.85,
+        council_verdict=verdict,
+    )
+
+
+def _sizing_report(accuracy_stats: dict[str, object]) -> tuple[str, str]:
+    return build_html_report(
+        [_strong_buy_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(accuracy_stats=accuracy_stats),
+    )
+
+
+def test_full_band_not_suggested_on_tiny_accuracy_sample():
+    # PORT-01 (G31): jedno trafienie (100%, n_eff = 1) nie jest track recordem.
+    html, text = _sizing_report({
+        "mean_accuracy": 1.0, "sample_count": 1, "correct_count": 1,
+        "days_window": 30, "n_eff": 1.0,
+    })
+
+    assert "Pozycja pełna" not in html
+    assert "Pozycja pełna" not in text
+    assert "Pozycja standardowa" in html
+
+
+def test_full_band_not_suggested_when_accuracy_stats_have_no_effective_sample():
+    # Bez n_eff nie wiadomo, ile niezależnych zakładów stoi za hit-rate —
+    # 40 trafień jednego dnia spadku NASDAQ to jeden zakład.
+    html, _ = _sizing_report({
+        "mean_accuracy": 0.9, "sample_count": 40, "correct_count": 36,
+        "days_window": 30,
+    })
+
+    assert "Pozycja pełna" not in html
+
+
+def test_full_band_suggested_on_a_sufficient_effective_sample():
+    html, _ = _sizing_report({
+        "mean_accuracy": 0.7, "sample_count": 200, "correct_count": 140,
+        "days_window": 30, "n_eff": 25.0,
+    })
+
+    assert "Pozycja pełna 4-5% portfela" in html

@@ -126,3 +126,28 @@ class TestSizingKnowsExistingExposure:
 
     def test_full_exposure_forces_the_most_conservative_band(self) -> None:
         assert suggest_band(0.9, 0.0, 0.7, current_weight=0.95).tier == "starter"
+
+
+# PORT-01 (G31): „Pozycja pełna 4–5%” po jednym trafieniu. Pełna banda wymaga
+# efektywnej próby n_eff ≥ MIN_HIT_SAMPLE; mniejsza próba = hit-rate nieznany.
+
+
+def test_hit_rate_below_min_sample_is_treated_as_unknown() -> None:
+    from src.domain.sizing import MIN_HIT_SAMPLE
+
+    tiny = suggest_band(0.9, 0.0, 1.0, hit_sample=MIN_HIT_SAMPLE - 1)
+
+    assert tiny.tier != "full"
+    assert tiny == suggest_band(0.9, 0.0, None)
+
+
+def test_hit_rate_on_min_sample_can_reach_the_full_band() -> None:
+    from src.domain.sizing import MIN_HIT_SAMPLE
+
+    assert suggest_band(0.9, 0.0, 0.7, hit_sample=MIN_HIT_SAMPLE).tier == "full"
+
+
+def test_min_hit_sample_is_twenty_effective_bets() -> None:
+    from src.domain.sizing import MIN_HIT_SAMPLE
+
+    assert MIN_HIT_SAMPLE == 20

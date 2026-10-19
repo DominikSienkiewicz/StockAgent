@@ -646,6 +646,23 @@ def _render_attribution_block_html(
     )
 
 
+def _sizing_track_record(
+    accuracy_stats: Mapping[str, Any] | None,
+) -> tuple[float | None, float | None]:
+    """PORT-01: `(hit_rate, n_eff)` dla sizingu z `get_accuracy_stats`.
+
+    Bez `n_eff` nie wiadomo, ile niezależnych zakładów stoi za hit-rate (40
+    trafień jednego dnia spadku NASDAQ to jeden zakład), więc hit-rate idzie
+    jako nieznany — jak przy cold-starcie.
+    """
+    if not accuracy_stats:
+        return None, None
+    n_eff = accuracy_stats.get("n_eff")
+    if n_eff is None:
+        return None, None
+    return accuracy_stats.get("mean_accuracy"), float(n_eff)
+
+
 def _cluster_exposure_per_symbol(
     portfolio: Portfolio | None,
     clusters: Mapping[str, str] | None,
@@ -924,9 +941,7 @@ def build_html_report(
     mood = build_portfolio_mood(results)
     session = market_status(started_at)
     # Q7: hit-rate cyklu (z accuracy_stats) napędza pasmo wielkości pozycji.
-    hit_rate = (
-        context.accuracy_stats.get("mean_accuracy") if context.accuracy_stats else None
-    )
+    hit_rate, hit_sample = _sizing_track_record(context.accuracy_stats)
     # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
     # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
     # skorygowanej historią. None → surowa pewność, jak przed #9.
@@ -942,6 +957,7 @@ def build_html_report(
     trade_signals = build_trade_signals(
         results,
         hit_rate=hit_rate,
+        hit_sample=hit_sample,
         calibration_buckets=context.signal_calibration_buckets,
         portfolio_weights=portfolio_weights,
         cluster_exposures=cluster_exposures,
