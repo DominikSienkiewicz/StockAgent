@@ -47,7 +47,7 @@ def test_priced_cycle_shows_breakdown_and_total_html() -> None:
     html = render_finops_html(cost)
     assert "szacunkow" in html.lower()
     # Suma sformatowana jest obecna w treści.
-    assert f"{cost.total_usd:.4f}" in html
+    assert f"{cost.total_usd:.4f}".replace(".", ",") in html
     # Liczba płatnych wywołań widoczna.
     assert "3" in html
 
@@ -56,7 +56,7 @@ def test_priced_cycle_shows_breakdown_and_total_text() -> None:
     cost = estimate_cycle_cost({"llm": 2, "council_llm": 1})
     text = render_finops_text(cost)
     assert "szacunkow" in text.lower()
-    assert f"{cost.total_usd:.4f}" in text
+    assert f"{cost.total_usd:.4f}".replace(".", ",") in text
 
 
 def test_unknown_source_is_signalled_and_does_not_crash_html() -> None:

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import html as _html
 
+from src.application.report_formatting import number
 from src.domain.finops import CycleCost
 
 _HEADING = "💸 Koszt cyklu"
@@ -59,8 +60,8 @@ def _source_label(source: str) -> str:
 
 
 def _fmt_usd(amount: float) -> str:
-    """Formatuje kwotę USD z 4 miejscami — kwoty są rzędu centów lub mniej."""
-    return f"${amount:.4f}"
+    """Kwota USD z 4 miejscami po przecinku („$0,0123”) — koszty są rzędu centów."""
+    return f"${number(amount, decimals=4)}"
 
 
 def render_finops_html(cost: CycleCost | None) -> str:
