@@ -32,6 +32,13 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
+      - name: 🙈 Mask each Alpha Vantage key
+        # BEZ-03: GitHub maskuje sekret CSV tylko w całości — pojedynczy klucz z listy
+        # wyszedłby w logu jawnie. Maskujemy każdy osobno, zanim ruszy Python.
+        env:
+          ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
+        run: scripts/mask-csv-secret.sh ALPHA_VANTAGE_API_KEYS
+
       - name: 🐍 Set up Python 3.12
         uses: actions/setup-python@v5
         with:

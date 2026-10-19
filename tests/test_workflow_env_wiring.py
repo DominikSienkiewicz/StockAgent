@@ -14,6 +14,8 @@ Ten test pilnuje obu stron:
 
 from __future__ import annotations
 
+import os
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -183,3 +185,87 @@ def test_slow_loop_commits_weights_even_when_training_step_failed() -> None:
     steps = [s for job in spec["jobs"].values() for s in job.get("steps", [])]
     commit_step = next(s for s in steps if "git push" in str(s.get("run", "")))
     assert str(commit_step.get("if", "")).replace(" ", "") == "${{!cancelled()}}"
+
+
+# BEZ-03: GitHub maskuje sekret tylko w całości. Element sekretu CSV (jeden klucz
+# z `ALPHA_VANTAGE_API_KEYS=k1,k2`) wyszedłby w logu jawnie, więc każdy job, który
+# wstrzykuje ten sekret, rejestruje `::add-mask::` per klucz, zanim ruszy Python.
+CSV_SECRET = "ALPHA_VANTAGE_API_KEYS"
+CSV_SECRET_REF = f"${{{{ secrets.{CSV_SECRET} }}}}"
+MASK_SCRIPT = ROOT / "scripts" / "mask-csv-secret.sh"
+
+
+def _jobs_injecting_csv_secret() -> list[tuple[str, list[dict[str, object]]]]:
+    """(workflow/job, kroki) dla każdego jobu, który mapuje prawdziwy sekret CSV."""
+    found: list[tuple[str, list[dict[str, object]]]] = []
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in spec.get("jobs", {}).items():
+            steps = job.get("steps", [])
+            if any(dict(s.get("env") or {}).get(CSV_SECRET) == CSV_SECRET_REF for s in steps):
+                found.append((f"{path.name}/{job_name}", steps))
+    return found
+
+
+def _is_mask_step(step: dict[str, object]) -> bool:
+    env = dict(step.get("env") or {})
+    run = str(step.get("run", ""))
+    return env.get(CSV_SECRET) == CSV_SECRET_REF and (
+        f"scripts/mask-csv-secret.sh {CSV_SECRET}" in run
+    )
+
+
+def test_guard_sees_every_workflow_injecting_the_alpha_vantage_secret() -> None:
+    workflows = {name.split("/")[0] for name, _ in _jobs_injecting_csv_secret()}
+
+    assert {"fast_loop_12h.yml", "slow_loop_weekly.yml", "shock_watch_hourly.yml"} <= workflows
+
+
+def test_every_alpha_vantage_key_is_masked_before_python_runs() -> None:
+    unmasked: list[str] = []
+    for name, steps in _jobs_injecting_csv_secret():
+        mask = next((i for i, s in enumerate(steps) if _is_mask_step(s)), None)
+        python = [i for i, s in enumerate(steps) if "python" in str(s.get("run", ""))]
+        if mask is None or (python and mask > min(python)):
+            unmasked.append(name)
+
+    assert not unmasked, (
+        f"{unmasked} wstrzykują {CSV_SECRET} bez kroku `scripts/mask-csv-secret.sh "
+        f"{CSV_SECRET}` przed Pythonem — pojedynczy klucz z listy wyjdzie w logu jawnie."
+    )
+
+
+def _run_mask_script(value: str | None) -> subprocess.CompletedProcess[str]:
+    env = {"PATH": os.environ["PATH"]}
+    if value is not None:
+        env[CSV_SECRET] = value
+    return subprocess.run(
+        [str(MASK_SCRIPT), CSV_SECRET], env=env, capture_output=True, text=True, check=False
+    )
+
+
+def test_mask_script_is_executable() -> None:
+    assert MASK_SCRIPT.is_file()
+    assert os.access(MASK_SCRIPT, os.X_OK)
+
+
+def test_mask_script_masks_each_trimmed_key_and_prints_nothing_else() -> None:
+    # Split i trim jak `Settings._parse_av_keys`: przecinek, spacje, puste elementy, CR.
+    result = _run_mask_script(" av-key-one , av-key-two,,\tav-key-three\r")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "::add-mask::av-key-one",
+        "::add-mask::av-key-two",
+        "::add-mask::av-key-three",
+    ]
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize("value", [None, "", " , "])
+def test_mask_script_without_keys_is_a_quiet_no_op(value: str | None) -> None:
+    # Fork / brak sekretu: krok nie może wywalić jobu ani niczego wypisać.
+    result = _run_mask_script(value)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
