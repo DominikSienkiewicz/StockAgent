@@ -4,7 +4,7 @@ What lands in the inbox and why each section is there. The pipeline that produce
 
 ## Email anatomy
 
-The subject and the header carry the cycle start in local time (`display_timezone`, `Europe/Warsaw` by default, e.g. `pt 16.10 07:30`), not UTC; the push digest header and the shock-alert push use the same format.
+The subject and the header carry the cycle start in local time (`display_timezone`, `Europe/Warsaw` by default, e.g. `pt 16.10 07:30`), not UTC; the push digest header and the shock-alert push use the same format. The provenance chips measure the age of cached fundamentals (`Dane z cache` past the 144 h TTL) from that same cycle start, not from the moment each symbol finished, so one email judges every row against one clock and the same inputs always render the same email.
 
 The inbox preview comes from a hidden preheader, the first element of the HTML: the detail of the top lead item (HTML-escaped, since it comes from the council and the news), or `Brak sygnałów ponad próg · N zamkniętych predykcji` when the cycle has no lead. Invisible filler (`&zwnj;&nbsp;`, about 1.4 KB) follows it, so the mail client does not pull the header (`Czas rozpoczęcia…`) into the preview. The plain-text email has no preheader.
 

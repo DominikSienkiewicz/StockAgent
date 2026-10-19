@@ -2214,8 +2214,19 @@ def _valuation_section_of(raw: dict[str, Any]) -> ValuationSection | None:
     )
 
 
-def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None = None) -> SymbolResult:
-    """Mapper z wyjścia AnalyzeMarketUseCase.run() na SymbolResult."""
+def to_symbol_result(
+    symbol: str,
+    raw: dict[str, Any] | None,
+    error: str | None = None,
+    *,
+    now: datetime | None = None,
+) -> SymbolResult:
+    """Mapper z wyjścia AnalyzeMarketUseCase.run() na SymbolResult.
+
+    `now` (ARCH-26) to zegar cyklu — orkiestrator podaje `started_at`, ten sam,
+    który `build_html_report` drukuje w nagłówku — od niego liczy się wiek
+    fundamentów w odznakach proweniencji. None = bieżący czas, jak przed ARCH-26.
+    """
     if error is not None:
         return SymbolResult(symbol=symbol, status="error", error_message=error)
     if raw is None:
@@ -2246,7 +2257,7 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
         degraded_reason=sentiment.get("degraded_reason"),
         fundamentals_fetched_at=fundamentals_fetched_at,
         data_quality_flags=raw.get("data_quality_flags") or [],
-        now=datetime.now(UTC),
+        now=now if now is not None else datetime.now(UTC),
         ttl_hours=FUNDAMENTALS_CACHE_TTL_HOURS,
     )
 

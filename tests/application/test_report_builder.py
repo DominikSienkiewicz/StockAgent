@@ -1328,6 +1328,72 @@ class TestProvenanceBadgesInReport:
         assert "Dane zdegradowane" in text
 
 
+def _wall_clock_at(moment: datetime) -> type[datetime]:
+    """Podmiana `datetime` w module raportu: `now()` zwraca `moment`."""
+
+    class _WallClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment
+
+    return _WallClock
+
+
+class TestInjectedClock:
+    """ARCH-26 — wiek fundamentów w odznakach liczy się od zegara cyklu
+    (`now`), nie od chwili, w której mapper akurat się wykonał."""
+
+    _NOW = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+
+    def _raw(self, fundamentals_age: timedelta) -> dict:
+        from src.domain.value_objects import Fundamentals
+
+        return {
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("103"),
+            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
+                             "reasoning": "r"},
+            "sentiment": {"av_sentiment_score": 0.2},
+            "data_quality_flags": [],
+            "fundamentals": Fundamentals(
+                trailing_pe=None, forward_pe=None, peg_ratio=None, eps_growth_yoy=None,
+                fetched_at=self._NOW - fundamentals_age,
+            ),
+        }
+
+    def test_to_symbol_result_uses_injected_now(self):
+        # 24 h względem wstrzykniętego zegara = świeże; wobec zegara rzeczywistego
+        # (dowolna data po 2026-01-16) te same fundamenty przekraczają TTL 144 h.
+        raw = self._raw(timedelta(hours=24))
+        first = to_symbol_result("AAPL", raw, now=self._NOW)
+        second = to_symbol_result("AAPL", raw, now=self._NOW)
+        assert first.provenance_badges == second.provenance_badges
+        assert [b.level.value for b in first.provenance_badges] == ["FRESH"]
+
+    def test_stale_age_is_measured_from_injected_now(self):
+        result = to_symbol_result("AAPL", self._raw(timedelta(hours=200)), now=self._NOW)
+        details = [b.detail for b in result.provenance_badges if b.level.value == "STALE"]
+        assert details == ["fundamenty: 200h (TTL 144h)"]
+
+    def test_same_now_gives_identical_report_whatever_the_wall_clock(self, monkeypatch):
+        raw = self._raw(timedelta(hours=100))
+        reports = []
+        for wall_clock in (self._NOW, self._NOW + timedelta(days=30)):
+            monkeypatch.setattr(report_builder, "datetime", _wall_clock_at(wall_clock))
+            result = to_symbol_result("AAPL", raw, now=self._NOW)
+            reports.append(build_html_report([result], self._NOW, 1.0))
+        assert reports[0] == reports[1]
+
+    def test_without_now_the_mapper_falls_back_to_the_wall_clock(self, monkeypatch):
+        monkeypatch.setattr(
+            report_builder, "datetime", _wall_clock_at(self._NOW + timedelta(days=30))
+        )
+        result = to_symbol_result("AAPL", self._raw(timedelta(hours=100)))
+        assert "STALE" in [b.level.value for b in result.provenance_badges]
+
+
 class TestCompanyLabel:
     def test_known_symbol_returns_name(self):
         assert company_label("AAPL") == "AAPL (Apple Inc.)"

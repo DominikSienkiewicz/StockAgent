@@ -298,6 +298,21 @@ class TestMainAgent:
         called_symbol = fake_uc.run.call_args_list[0].args[0]
         assert called_symbol == "AAPL"
 
+    def test_main_maps_results_with_the_cycle_start(
+        self, settings, mock_external_clients, mocker
+    ):
+        """ARCH-26: odznaki proweniencji i nagłówek maila biorą ten sam zegar
+        — `started_at` cyklu, przekazany do mappera wyników."""
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        analyze = mocker.spy(main_agent, "_analyze_symbols")
+        dispatch = mocker.spy(main_agent, "_dispatch_reports")
+
+        main_agent.main(settings)
+
+        assert analyze.call_args.kwargs["cycle_at"] == dispatch.call_args.kwargs["started_at"]
+
 
 class TestMainTrainer:
     def test_build_use_case_wires_supabase_and_xgboost(self, settings, mock_external_clients):
@@ -529,6 +544,26 @@ class TestProcessOneSymbol:
         kwargs["alpha_use_case"].enrich.assert_called_once_with("AAPL")
         assert proc.alpha_signal is not None
 
+    def test_provenance_is_measured_against_the_cycle_clock(self, settings):
+        # ARCH-26: fundamenty sprzed 24 h względem startu cyklu są świeże, choć
+        # wobec zegara rzeczywistego dawno przekroczyły TTL 144 h.
+        from src.domain.value_objects import Fundamentals
+
+        cycle_at = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+        uc = MagicMock()
+        uc.run.return_value = {
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "fundamentals": Fundamentals(
+                trailing_pe=None, forward_pe=None, peg_ratio=None, eps_growth_yoy=None,
+                fetched_at=cycle_at - timedelta(hours=24),
+            ),
+        }
+        proc = main_agent._process_one_symbol(
+            "AAPL", peer_ctx=(), cycle_at=cycle_at, **self._kwargs(settings, uc)
+        )
+        assert [b.level.value for b in proc.result.provenance_badges] == ["FRESH"]
+
 
 class TestAnalyzeSymbolsParallel:
     def _kwargs(self, settings, use_case):
@@ -611,6 +646,19 @@ class TestAnalyzeSymbolsParallel:
         spy = mocker.spy(main_agent, "ThreadPoolExecutor")
         main_agent._analyze_symbols(["AAPL", "MSFT"], **self._kwargs(s, uc))
         spy.assert_not_called()
+
+    @pytest.mark.parametrize("concurrency", [1, 4])
+    def test_cycle_clock_reaches_every_symbol(self, settings, mocker, concurrency):
+        # ARCH-26: obie ścieżki (sekwencyjna i równoległa) mapują wynik z zegarem cyklu.
+        s = settings.model_copy(update={"symbol_concurrency": concurrency})
+        uc = MagicMock()
+        uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        spy = mocker.spy(main_agent, "to_symbol_result")
+        cycle_at = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+        main_agent._analyze_symbols(
+            ["AAPL", "MSFT"], cycle_at=cycle_at, **self._kwargs(s, uc)
+        )
+        assert [c.kwargs.get("now") for c in spy.call_args_list] == [cycle_at, cycle_at]
 
 
 class TestFetchReportContextPersonaTrackRecord:

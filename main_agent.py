@@ -1166,6 +1166,7 @@ def _process_one_symbol(
     alpha_use_case: AlphaEnrichmentUseCase,
     earnings_gate_enabled: bool = False,
     alpha_fusion_enabled: bool = False,
+    cycle_at: datetime | None = None,
 ) -> _ProcessedSymbol:
     """Przetwarza jeden symbol. NIGDY nie rzuca — łapie wyjątek i zwraca wynik
     z `is_failure=True`. Dzięki temu pula wątków (ścieżka równoległa
@@ -1238,7 +1239,7 @@ def _process_one_symbol(
             raw.get("delta"),
             raw.get("prediction_id"),
         )
-        sr = to_symbol_result(symbol, raw)
+        sr = to_symbol_result(symbol, raw, now=cycle_at)
         alpha_price: Decimal | None = None
         if collect_alpha and sr.current_price is not None:
             alpha_price = sr.current_price
@@ -1263,6 +1264,7 @@ def _analyze_symbols_parallel(
     alpha_use_case: AlphaEnrichmentUseCase,
     earnings_gate_enabled: bool = False,
     alpha_fusion_enabled: bool = False,
+    cycle_at: datetime | None = None,
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy
     od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
@@ -1282,6 +1284,7 @@ def _analyze_symbols_parallel(
                     alpha_use_case=alpha_use_case,
                     earnings_gate_enabled=earnings_gate_enabled,
                     alpha_fusion_enabled=alpha_fusion_enabled,
+                    cycle_at=cycle_at,
                 ),
                 eligible,
             )
@@ -1313,6 +1316,7 @@ def _analyze_symbols_sequential(
     regime_multiplier: float,
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
+    cycle_at: datetime | None = None,
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Ścieżka sekwencyjna: zachowuje kolejność, buduje peer_context dla contagion
     (#5) i throttluje między symbolami (ochrona OpenAI TPM)."""
@@ -1340,6 +1344,7 @@ def _analyze_symbols_sequential(
             alpha_use_case=alpha_use_case,
             earnings_gate_enabled=settings.earnings_calendar_enabled,
             alpha_fusion_enabled=settings.alpha_fusion_enabled,
+            cycle_at=cycle_at,
         )
         results.append(proc.result)
         if proc.is_failure:
@@ -1367,6 +1372,7 @@ def _analyze_symbols(
     regime_multiplier: float,
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
+    cycle_at: datetime | None = None,
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Dispatcher: wybiera ścieżkę równoległą lub sekwencyjną.
     Zwraca (wyniki, liczba_błędów, alpha_signals, alpha_prices)."""
@@ -1385,6 +1391,7 @@ def _analyze_symbols(
             alpha_use_case=alpha_use_case,
             earnings_gate_enabled=settings.earnings_calendar_enabled,
             alpha_fusion_enabled=settings.alpha_fusion_enabled,
+            cycle_at=cycle_at,
         )
 
     if settings.symbol_concurrency > 1 and settings.contagion_enabled:
@@ -1404,6 +1411,7 @@ def _analyze_symbols(
         regime_multiplier=regime_multiplier,
         collect_alpha=collect_alpha,
         alpha_use_case=alpha_use_case,
+        cycle_at=cycle_at,
     )
 
 
@@ -2136,6 +2144,9 @@ def main(settings: Settings | None = None) -> int:
         regime_multiplier=regime_multiplier,
         collect_alpha=collect_alpha,
         alpha_use_case=alpha_use_case,
+        # ARCH-26: odznaki proweniencji liczą wiek danych od startu cyklu —
+        # tego samego zegara, który mail drukuje w nagłówku.
+        cycle_at=started_at,
     )
     results.extend(loop_results)
 
