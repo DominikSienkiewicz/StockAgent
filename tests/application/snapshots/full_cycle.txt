@@ -23,12 +23,12 @@ Wiarygodność modelu: trafność kierunkowa 57,5% (n=40, ostatnie 30 dni) — s
 
 === 💼 Twój portfel ===
 
-  NVDA     waga  36,8% wart.      $1 400,00 P/L     +$220,00 (+18,6%) | +810,04 zł
-  AMD      waga  63,2% wart.      $2 400,00 P/L     -$180,00 (-7,0%) | -662,76 zł
+  NVDA     waga  36,8% wart.      $1 400,00 P/L     +$220,00 (+18,6%) | P/L zł — (brak kursu NBP z dnia zakupu)
+  AMD      waga  63,2% wart.      $2 400,00 P/L     -$180,00 (-7,0%) | P/L zł — (brak kursu NBP z dnia zakupu)
   ⚠️ Bez wyceny w tym cyklu: XDWD.DE (≈ 19,0% kosztu)
 
   Łącznie (bez pozycji niewycenionych): $3 800,00 · P/L +$40,00 (+1,1%)
-  W PLN (USD/PLN 3,6820): wartość 13 991,60 zł, P/L +147,28 zł
+  W PLN (kursy NBP: USD 3,6820): wartość 13 991,60 zł; bez P/L w zł: AMD, NVDA
   Zmiana od ostatniego maila: -$30,62 (-0,8%) · -112,73 zł · najwięcej: AMD -$87,05, NVDA +$56,43 · bez punktu odniesienia: XDWD.DE
 
   ⚠️ Twoje 2 pozycji (AMD, NVDA) to jeden sektor «Półprzewodniki» — 100,0% kapitału.

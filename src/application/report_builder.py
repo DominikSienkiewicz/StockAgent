@@ -161,7 +161,7 @@ from src.domain.polish_labels import (
     model_signal_label,
     trend_forecast_label,
 )
-from src.domain.portfolio import Portfolio, PortfolioChange
+from src.domain.portfolio import PlnRates, Portfolio, PortfolioChange
 from src.domain.prediction import is_substantive_insight
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
@@ -1062,10 +1062,12 @@ def _build_user_portfolio_html(
     macro_risk_report: MacroRiskReport | None,
     now: datetime,
     change: _PortfolioChangeView | None = None,
+    pln_rates: PlnRates | None = None,
 ) -> str:
-    """#15: sekcja realnego portfela. Kurs USD/PLN pochodzi z `MacroRiskReport`,
-    nie z portu. Brak portfela → "" (sekcja sama się chowa). PORT-06: linia
-    zmiany od ostatniego maila, gdy da się ją policzyć."""
+    """#15: sekcja realnego portfela. Kursy przychodzą jako wartości (PORT-11:
+    `pln_rates`, inaczej USD/PLN z `MacroRiskReport`), nie z portu. Brak
+    portfela → "" (sekcja sama się chowa). PORT-06: linia zmiany od ostatniego
+    maila, gdy da się ją policzyć."""
     if user_portfolio is None:
         return ""
     return render_user_portfolio_html(
@@ -1074,6 +1076,7 @@ def _build_user_portfolio_html(
         clusters=clusters,
         now=now,
         usd_pln=_usd_pln_of(macro_risk_report),
+        pln_rates=pln_rates,
         **_change_kwargs(change),
     )
 
@@ -1093,6 +1096,7 @@ def _build_user_portfolio_text(
     macro_risk_report: MacroRiskReport | None,
     now: datetime,
     change: _PortfolioChangeView | None = None,
+    pln_rates: PlnRates | None = None,
 ) -> str:
     """Wariant plain-text sekcji portfela (decyzja 2026-10-19) — te same dane co HTML."""
     if user_portfolio is None:
@@ -1103,8 +1107,25 @@ def _build_user_portfolio_text(
         clusters=clusters,
         now=now,
         usd_pln=_usd_pln_of(macro_risk_report),
+        pln_rates=pln_rates,
         **_change_kwargs(change),
     )
+
+
+def _pln_rates_of(context: ReportContext) -> PlnRates | None:
+    """PORT-11: kursy do „P/L zł” — z orkiestratora (bieżące i z dni zakupu).
+
+    Bez nich (np. zbieranie kursów padło) bierzemy bieżące USD/PLN i EUR/PLN
+    z `MacroRiskReport.polish_macro` BEZ kursów z dni zakupu: sekcja mówi wtedy
+    wprost „brak kursu NBP z dnia zakupu” zamiast liczyć koszt bieżącym kursem.
+    Bez żadnego kursu → None (sekcja bez kwot w zł)."""
+    if context.portfolio_fx is not None:
+        return context.portfolio_fx
+    report = context.macro_risk_report
+    if report is None or report.polish_macro is None:
+        return None
+    macro = report.polish_macro
+    return PlnRates(current={"USD": macro.usd_pln, "EUR": macro.eur_pln})
 
 
 def _usd_pln_of(macro_risk_report: MacroRiskReport | None) -> Decimal | None:
@@ -1192,6 +1213,9 @@ class ReportContext:
     ml_model_loaded: bool = True
     consensus_shifts: list[tuple[str, ConsensusShift]] | None = None
     user_portfolio: Portfolio | None = None
+    # PORT-11: kursy NBP do „P/L zł” (bieżące i z dni zakupu) — tylko z portfelem
+    # właściciela; obcy subskrybent (BEZ-01) dostaje None jak resztę portfela.
+    portfolio_fx: PlnRates | None = None
     # PORT-07: ceny pozycji spoza watchlisty (sam darmowy /quote, bez snapshotu).
     # Cena z cyklu ma pierwszeństwo, gdy symbol jest w obu.
     held_prices: Mapping[str, Decimal] | None = None
@@ -1376,6 +1400,7 @@ def build_html_report(
         if portfolio_change is not None and context.user_portfolio_in_text
         else ""
     )
+    pln_rates = _pln_rates_of(context)
     user_portfolio_html = _build_user_portfolio_html(
         context.user_portfolio,
         current_prices,
@@ -1383,6 +1408,7 @@ def build_html_report(
         macro_risk_report=context.macro_risk_report,
         now=started_at,
         change=portfolio_change,
+        pln_rates=pln_rates,
     )
     user_portfolio_text = (
         _build_user_portfolio_text(
@@ -1392,6 +1418,7 @@ def build_html_report(
             macro_risk_report=context.macro_risk_report,
             now=started_at,
             change=portfolio_change,
+            pln_rates=pln_rates,
         )
         if context.user_portfolio_in_text
         else ""

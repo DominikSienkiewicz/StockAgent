@@ -22,11 +22,14 @@ from src.domain.portfolio import (
     DEFAULT_POSITION_CURRENCY,
     TOP_CHANGE_CONTRIBUTORS,
     ClusterExposure,
+    PlnPnlGap,
+    PlnRates,
     PlnValuation,
     Portfolio,
     PortfolioFreshness,
     PortfolioPnL,
     Position,
+    PositionPlnPnL,
     SymbolChange,
     freshness,
     is_stale,
@@ -476,3 +479,135 @@ class TestMarketValueInPln:
         valuation = portfolio.market_value_pln({}, {"EUR": Decimal("4.30")})
 
         assert valuation == PlnValuation(value=Decimal("0"), unrated_symbols=())
+
+
+# --- PORT-11: P/L w PLN z kursem z dnia zakupu i rozbiciem efektu walutowego --
+
+_BOUGHT = date(2025, 3, 3)
+
+
+def _dated(symbol: str, qty: str, price: str, currency: str = "USD",
+           day: date | None = _BOUGHT) -> Position:
+    return Position(
+        symbol=symbol,
+        quantity=Decimal(qty),
+        purchase_price=Decimal(price),
+        purchase_date=day,
+        currency=currency,
+    )
+
+
+class TestPlnPnl:
+    def test_pln_pnl_splits_instrument_and_fx_effect(self) -> None:
+        # Zakup 10 × 100 USD przy 4,00; dziś 100 USD przy 4,40 → +400 zł, w całości
+        # efekt walutowy, 0 zł instrumentu.
+        portfolio = _portfolio(_dated("AAPL", "10", "100"))
+        rates = PlnRates(
+            current={"USD": Decimal("4.40")},
+            on_purchase={("USD", _BOUGHT): Decimal("4.00")},
+        )
+
+        pnl = portfolio.pln_pnl({"AAPL": Decimal("100")}, rates)
+
+        assert pnl.positions == (
+            PositionPlnPnL(
+                symbol="AAPL",
+                currency="USD",
+                value_pln=Decimal("4400.00"),
+                cost_pln=Decimal("4000.00"),
+                pnl_pln=Decimal("400.00"),
+                instrument_pln=Decimal("0.00"),
+                fx_pln=Decimal("400.00"),
+                gap=None,
+            ),
+        )
+        assert pnl.total_pnl_pln == Decimal("400")
+        assert pnl.total_fx_pln == Decimal("400")
+        assert pnl.total_instrument_pln == Decimal("0")
+
+    def test_instrument_and_fx_effects_add_up_to_the_pln_pnl(self) -> None:
+        # Cena 100 → 120 USD, kurs 4,00 → 3,80: instrument +760 zł, kurs −200 zł.
+        portfolio = _portfolio(_dated("NVDA", "10", "100"))
+        rates = PlnRates(
+            current={"USD": Decimal("3.80")},
+            on_purchase={("USD", _BOUGHT): Decimal("4.00")},
+        )
+
+        row = portfolio.pln_pnl({"NVDA": Decimal("120")}, rates).positions[0]
+
+        assert row.instrument_pln == Decimal("760")
+        assert row.fx_pln == Decimal("-200")
+        assert row.pnl_pln == Decimal("560")
+        assert row.value_pln is not None and row.cost_pln is not None
+        assert row.pnl_pln == row.value_pln - row.cost_pln
+
+    def test_eur_position_uses_the_eur_rates(self) -> None:
+        portfolio = _portfolio(_dated("SAP.DE", "4", "200", "EUR"))
+        rates = PlnRates(
+            current={"USD": Decimal("4.00"), "EUR": Decimal("4.30")},
+            on_purchase={("EUR", _BOUGHT): Decimal("4.20"), ("USD", _BOUGHT): Decimal("3.90")},
+        )
+
+        row = portfolio.pln_pnl({"SAP.DE": Decimal("200")}, rates).positions[0]
+
+        assert (row.value_pln, row.cost_pln, row.fx_pln) == (
+            Decimal("3440.00"),
+            Decimal("3360.00"),
+            Decimal("80.00"),
+        )
+
+    def test_unknown_purchase_date_is_reported_not_approximated(self) -> None:
+        portfolio = _portfolio(_dated("AAPL", "10", "100", day=None))
+        rates = PlnRates(current={"USD": Decimal("4.40")})
+
+        pnl = portfolio.pln_pnl({"AAPL": Decimal("110")}, rates)
+
+        row = pnl.positions[0]
+        assert row.value_pln == Decimal("4840.00")
+        assert (row.cost_pln, row.pnl_pln, row.instrument_pln, row.fx_pln) == (
+            None, None, None, None,
+        )
+        assert row.gap is PlnPnlGap.PURCHASE_DATE_UNKNOWN
+        assert pnl.incomplete_symbols == ("AAPL",)
+        assert pnl.total_pnl_pln == Decimal("0")
+
+    def test_missing_purchase_rate_is_its_own_gap(self) -> None:
+        portfolio = _portfolio(_dated("AAPL", "10", "100"))
+
+        row = portfolio.pln_pnl(
+            {"AAPL": Decimal("110")}, PlnRates(current={"USD": Decimal("4.40")})
+        ).positions[0]
+
+        assert row.gap is PlnPnlGap.PURCHASE_RATE_MISSING
+        assert row.pnl_pln is None
+
+    def test_missing_current_rate_leaves_the_position_unvalued_in_pln(self) -> None:
+        portfolio = _portfolio(_dated("VUSA.L", "4", "80", "GBP"), _dated("AAPL", "1", "100"))
+        rates = PlnRates(
+            current={"USD": Decimal("4.00")},
+            on_purchase={("GBP", _BOUGHT): Decimal("5.00"), ("USD", _BOUGHT): Decimal("4.00")},
+        )
+
+        pnl = portfolio.pln_pnl({"VUSA.L": Decimal("90"), "AAPL": Decimal("100")}, rates)
+
+        gbp = next(row for row in pnl.positions if row.symbol == "VUSA.L")
+        assert (gbp.value_pln, gbp.gap) == (None, PlnPnlGap.CURRENT_RATE_MISSING)
+        assert pnl.total_value_pln == Decimal("400")
+        assert pnl.incomplete_symbols == ("VUSA.L",)
+
+    def test_pln_position_has_no_fx_effect(self) -> None:
+        portfolio = _portfolio(_dated("PKN.WA", "3", "60", "PLN"))
+
+        row = portfolio.pln_pnl({"PKN.WA": Decimal("70")}, PlnRates()).positions[0]
+
+        assert (row.pnl_pln, row.instrument_pln, row.fx_pln) == (
+            Decimal("30"), Decimal("30"), Decimal("0"),
+        )
+
+    def test_unpriced_positions_are_left_out(self) -> None:
+        portfolio = _portfolio(_dated("XDWD.DE", "8", "110", "EUR"))
+
+        pnl = portfolio.pln_pnl({}, PlnRates(current={"EUR": Decimal("4.30")}))
+
+        assert pnl.positions == ()
+        assert pnl.total_value_pln == Decimal("0")

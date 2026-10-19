@@ -3761,3 +3761,140 @@ class TestPositionsPortCurrencyColumns:
         main_agent.build_positions_port(settings)
 
         assert adapter_cls.call_args.kwargs["currency_columns"] is enabled
+
+
+class TestPortfolioFxWiring:
+    """PORT-11: kursy NBP (bieżące i z dni zakupu) do „P/L zł” — darmowe, za
+    `nbp_enabled`, tylko z portfelem właściciela; cache `fx_rates` za flagą."""
+
+    def test_fx_port_without_the_cache_flag_is_plain_nbp(self, settings, mocker) -> None:
+        from src.infrastructure.adapters.nbp_client import NbpFxRateClient
+
+        create = mocker.patch("src.infrastructure.adapters.fx_rates_cache.create_client")
+
+        port = main_agent.build_fx_port(settings)
+
+        assert isinstance(port, NbpFxRateClient)
+        create.assert_not_called()
+
+    def test_fx_port_with_the_cache_flag_reads_through_fx_rates(self, settings, mocker) -> None:
+        from src.infrastructure.adapters.fx_rates_cache import SupabaseCachedFxRates
+
+        mocker.patch("src.infrastructure.adapters.fx_rates_cache.create_client")
+        settings = settings.model_copy(update={"fx_rates_cache_enabled": True})
+
+        assert isinstance(main_agent.build_fx_port(settings), SupabaseCachedFxRates)
+
+    def test_rates_are_collected_for_the_owner_portfolio(self, settings, mocker) -> None:
+        from datetime import date
+
+        from src.application.ports import FxRatePort, MarketDataPort
+        from src.domain.fx import FxRate
+        from src.domain.portfolio import PlnRates
+
+        settings.nbp_enabled = True
+        fx = MagicMock(spec=FxRatePort)
+        fx.get_rate.side_effect = lambda currency, day: FxRate(
+            currency=currency, on_date=day, effective_date=day, rate=Decimal("3.70")
+        )
+        build_fx = mocker.patch("main_agent.build_fx_port", return_value=fx)
+        portfolio = TestHeldPositionsOutsideWatchlist._portfolio("AAPL")
+
+        report, _, _, _ = TestHeldPositionsOutsideWatchlist()._dispatch(
+            settings, mocker, portfolio, MagicMock(spec=MarketDataPort)
+        )
+
+        build_fx.assert_called_once_with(settings)
+        # 05:30 UTC 18.10 to 18.10 w Warszawie — dzień kursu bieżącego.
+        assert report.call_args_list[0].args[3].portfolio_fx == PlnRates(
+            current={"USD": Decimal("3.70")},
+            on_purchase={("USD", date(2026, 10, 1)): Decimal("3.70")},
+        )
+
+    def test_no_rates_without_nbp(self, settings, mocker) -> None:
+        from src.application.ports import MarketDataPort
+
+        build_fx = mocker.patch("main_agent.build_fx_port")
+        report, _, _, _ = TestHeldPositionsOutsideWatchlist()._dispatch(
+            settings, mocker, TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
+            MagicMock(spec=MarketDataPort),
+        )
+
+        build_fx.assert_not_called()
+        assert report.call_args_list[0].args[3].portfolio_fx is None
+
+    def test_no_rates_without_a_portfolio(self, settings, mocker) -> None:
+        from src.application.ports import MarketDataPort
+
+        settings.nbp_enabled = True
+        build_fx = mocker.patch("main_agent.build_fx_port")
+        report, _, _, _ = TestHeldPositionsOutsideWatchlist()._dispatch(
+            settings, mocker, None, MagicMock(spec=MarketDataPort)
+        )
+
+        build_fx.assert_not_called()
+        assert report.call_args_list[0].args[3].portfolio_fx is None
+
+    def test_failed_rate_collection_leaves_the_report_without_rates(
+        self, settings, mocker
+    ) -> None:
+        from src.application.ports import MarketDataPort
+
+        settings.nbp_enabled = True
+        mocker.patch("main_agent.build_fx_port", side_effect=RuntimeError("boom"))
+        report, _, _, _ = TestHeldPositionsOutsideWatchlist()._dispatch(
+            settings, mocker, TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
+            MagicMock(spec=MarketDataPort),
+        )
+
+        assert report.call_args_list[0].args[3].portfolio_fx is None
+
+    def test_non_owner_context_drops_the_rates(self) -> None:
+        from src.domain.portfolio import PlnRates
+
+        context = main_agent.ReportContext(portfolio_fx=PlnRates(current={"USD": Decimal("4")}))
+
+        assert main_agent._without_owner_portfolio(context).portfolio_fx is None
+
+
+class TestUserPortfolioPurchaseDates:
+    """PORT-11: bez migracji 035 adapter podaje `as_of` jako datę — to data
+    aktualizacji tabeli, nie zakupu, więc portfel raportu jej nie dostaje."""
+
+    def _build(self, settings, mocker, *, currency_columns: bool):
+        from datetime import date
+
+        from src.domain.portfolio import Position
+
+        port = MagicMock()
+        port.get_positions.return_value = [
+            Position(
+                symbol="AAPL",
+                quantity=Decimal("1"),
+                purchase_price=Decimal("10"),
+                purchase_date=date(2026, 7, 10),
+            )
+        ]
+        port.get_as_of.return_value = datetime(2026, 7, 10, tzinfo=UTC)
+        mocker.patch("main_agent.build_positions_port", return_value=port)
+        settings = settings.model_copy(
+            update={
+                "portfolio_positions_enabled": True,
+                "positions_currency_enabled": currency_columns,
+            }
+        )
+        return main_agent._build_user_portfolio(settings)
+
+    def test_without_the_migration_purchase_dates_are_unknown(self, settings, mocker) -> None:
+        portfolio = self._build(settings, mocker, currency_columns=False)
+
+        assert portfolio is not None
+        assert portfolio.positions[0].purchase_date is None
+
+    def test_with_the_migration_purchase_dates_are_kept(self, settings, mocker) -> None:
+        from datetime import date
+
+        portfolio = self._build(settings, mocker, currency_columns=True)
+
+        assert portfolio is not None
+        assert portfolio.positions[0].purchase_date == date(2026, 7, 10)

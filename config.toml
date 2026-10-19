@@ -134,6 +134,10 @@ portfolio_positions_enabled = true
 # (`main_tools.py import-positions`). UWAGA: włącz DOPIERO po migracji 035
 # (inaczej PGRST204 przy imporcie).
 positions_currency_enabled = false
+# PORT-11: P/L w zł po kursie NBP z dnia zakupu — kursy z NBP (darmowe) idą za
+# `nbp_enabled`; ta flaga dokłada tylko cache kursów z minionych dni w tabeli
+# `fx_rates`. UWAGA: włącz DOPIERO po migracji 036 (inaczej błędy w logu).
+fx_rates_cache_enabled = false
 # #17: niedzielna retrospektywa („Tydzień StockAgenta"). Koszt: 1 wywołanie LLM
 # TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Włączone.
 weekly_recap_enabled = true

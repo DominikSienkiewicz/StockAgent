@@ -11,6 +11,7 @@ from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.earnings import EarningsEvent
+from src.domain.fx import FxRate
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.options_flow import OptionsFlowSnapshot
@@ -544,6 +545,18 @@ class MacroIndicatorsPort(ABC):
 
     @abstractmethod
     def fetch_polish_macro(self) -> PolishMacroSnapshot | None: ...
+
+
+class FxRatePort(ABC):
+    """PORT-11 — kurs średni waluty do PLN z danego dnia (NBP, tabela A).
+
+    Dzień bez tabeli (weekend, święto, przed publikacją) → kurs z poprzedniego
+    dnia roboczego (`FxRate.effective_date`). None = źródło niedostępne albo
+    waluta spoza tabeli; wołający pokazuje wtedy brak kursu, nigdy kurs innej
+    waluty. Darmowe (NBP bez klucza), poza bramką volatility."""
+
+    @abstractmethod
+    def get_rate(self, currency: str, on_date: date) -> FxRate | None: ...
 
 
 class SubscriberRepositoryPort(ABC):

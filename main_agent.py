@@ -31,12 +31,14 @@ from src.application.move_interval import (
     calibration_windows,
     interval_coverage,
 )
+from src.application.portfolio_fx import collect_pln_rates, nbp_today
 from src.application.ports import (
     AdvisoryCouncilPort,
     AnalystConsensusPort,
     AttestationPublisherPort,
     EarningsCalendarPort,
     EmbeddingPort,
+    FxRatePort,
     InsiderFlowPort,
     LLMPort,
     MacroRatesPort,
@@ -108,7 +110,7 @@ from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
-from src.domain.portfolio import Portfolio
+from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
 from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis
@@ -129,7 +131,7 @@ from src.infrastructure.adapters.cached_fundamentals import (
 from src.infrastructure.adapters.coingecko import CoinGeckoAdapter
 from src.infrastructure.adapters.composite_notifier import CompositeNotifier
 from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
-from src.infrastructure.adapters.nbp_client import NbpClient
+from src.infrastructure.adapters.nbp_client import NbpClient, NbpFxRateClient
 from src.infrastructure.adapters.resend_notifier import NullNotifier, ResendNotifier
 from src.infrastructure.adapters.routing_market_data import RoutingMarketDataPort
 from src.infrastructure.adapters.subscriber_repo import SupabaseSubscriberRepository
@@ -462,7 +464,44 @@ def _build_user_portfolio(settings: Settings) -> Portfolio | None:
         return None
     if not positions or as_of is None:
         return None
+    if not settings.positions_currency_enabled:
+        # PORT-11: bez migracji 035 adapter podaje `as_of` jako datę — to data
+        # aktualizacji tabeli, nie zakupu. Nie udajemy kursu z dnia zakupu.
+        positions = [dataclasses.replace(p, purchase_date=None) for p in positions]
     return Portfolio(positions=tuple(positions), as_of=as_of)
+
+
+def build_fx_port(settings: Settings) -> FxRatePort:
+    """PORT-11 — kurs NBP z dnia (darmowe). Cache `fx_rates` tylko za flagą
+    `fx_rates_cache_enabled` (migracja 036); bez niej żadnego zapytania do tabeli."""
+    nbp = NbpFxRateClient()
+    if not settings.fx_rates_cache_enabled:
+        return nbp
+    from src.infrastructure.adapters.fx_rates_cache import SupabaseCachedFxRates
+
+    return SupabaseCachedFxRates(
+        url=settings.supabase_url,
+        key=settings.supabase_key,
+        delegate=nbp,
+        today=lambda: nbp_today(datetime.now(UTC)),
+    )
+
+
+def _collect_portfolio_fx(
+    settings: Settings, portfolio: Portfolio | None, now: datetime
+) -> PlnRates | None:
+    """PORT-11 — kursy NBP do „P/L zł”: bieżące i z dni zakupu pozycji.
+
+    Darmowe, w fazie raportu (poza grafem i bramką volatility), za `nbp_enabled`.
+    Błąd → None: sekcja bierze wtedy same kursy bieżące z Risk Watch i mówi
+    wprost, że kursu z dnia zakupu nie ma."""
+    if portfolio is None or not settings.nbp_enabled:
+        return None
+    try:
+        return collect_pln_rates(portfolio, build_fx_port(settings), today=nbp_today(now))
+    except Exception:
+        logger.exception("Failed to collect NBP rates for the portfolio")
+        return None
 
 
 def _quote_held_positions(
@@ -1877,6 +1916,7 @@ def _without_owner_portfolio(context: ReportContext) -> ReportContext:
         portfolio_clusters=None,
         held_prices=None,
         position_risk=None,
+        portfolio_fx=None,
     )
 
 
@@ -1942,6 +1982,8 @@ def _dispatch_reports(
         user_portfolio = _build_user_portfolio(settings)
         # PORT-07: pozycje spoza watchlisty dostają sam darmowy /quote.
         held_prices = _quote_held_positions(settings, user_portfolio, all_symbols)
+        # PORT-11: kursy NBP do „P/L zł” (darmowe, poza bramką volatility).
+        portfolio_fx = _collect_portfolio_fx(settings, user_portfolio, started_at)
         # PORT-04: ryzyko realnego portfela do sizingu (flaga + pozycje).
         position_risk = _build_position_risk(settings, repository, user_portfolio)
         # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
@@ -1972,6 +2014,7 @@ def _dispatch_reports(
             consensus_shifts=consensus_shifts,
             user_portfolio=user_portfolio,
             held_prices=held_prices,
+            portfolio_fx=portfolio_fx,
             portfolio_clusters=_portfolio_clusters(settings),
             position_risk=position_risk,
             sector_map=sector_map,

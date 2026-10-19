@@ -57,6 +57,7 @@ MIGRATION_FILES = [
     "033_regime_history.sql",
     "034_gate_delta.sql",
     "035_positions_currency.sql",
+    "036_fx_rates.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -950,6 +951,35 @@ class TestMigrations:
                     "INSERT INTO positions (symbol, quantity, avg_cost, currency) "
                     "VALUES ('CUR_BAD', 1, 10, 'usd')"
                 )
+
+    # -- Migracja 036: cache kursów NBP z dnia (PORT-11) -----------------------
+
+    def test_fx_rates_cache_one_rate_per_currency_and_day(self, pg_conn) -> None:
+        """Klucz (currency, on_date); kurs dodatni, z tabeli nie późniejszej niż dzień."""
+        assert {"currency", "on_date", "effective_date", "rate", "source", "fetched_at"} <= (
+            _columns(pg_conn, "fx_rates")
+        )
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO fx_rates (currency, on_date, effective_date, rate) "
+                "VALUES ('USD', '2025-03-02', '2025-02-28', 3.9725) RETURNING source"
+            )
+            assert cur.fetchone() == ("NBP_A",)
+            with pytest.raises(psycopg2.errors.UniqueViolation):
+                cur.execute(
+                    "INSERT INTO fx_rates (currency, on_date, effective_date, rate) "
+                    "VALUES ('USD', '2025-03-02', '2025-02-28', 3.99)"
+                )
+            for values in (
+                "('usd', '2025-03-03', '2025-03-03', 3.9)",
+                "('EUR', '2025-03-03', '2025-03-03', 0)",
+                "('EUR', '2025-03-03', '2025-03-04', 4.1)",
+            ):
+                with pytest.raises(psycopg2.errors.CheckViolation):
+                    cur.execute(
+                        "INSERT INTO fx_rates (currency, on_date, effective_date, rate) "
+                        f"VALUES {values}"
+                    )
 
 
 @pytest.fixture

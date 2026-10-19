@@ -84,6 +84,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "portfolio_positions_enabled",
     # PORT-18: waluta i data zakupu pozycji (odczyt + zapis importu) — tylko raport.
     "positions_currency_enabled",
+    # PORT-11: cache kursów NBP z dnia (P/L w zł) — tylko raport.
+    "fx_rates_cache_enabled",
     # Flagi samego zapisu i publikacji.
     "receipts_enabled",
     "feature_set_version_enabled",
@@ -362,6 +364,11 @@ class Settings(BaseSettings):
     # nowy klucz w zapisie przed migracją → PGRST204; odczyt zostaje przy USD
     # i dotychczasowym mapowaniu.
     positions_currency_enabled: bool = False
+    # PORT-11: cache kursów NBP z minionych dni w tabeli `fx_rates` (migracja 036)
+    # pod P/L w zł po kursie z dnia zakupu. Same kursy idą z NBP za `nbp_enabled`
+    # (darmowe) także bez cache'u. Off: przed migracją tabeli nie ma, więc każdy
+    # odczyt i zapis kończyłby się błędem w logu.
+    fx_rates_cache_enabled: bool = False
     # #17: niedzielna retrospektywa narracyjna (Slow Loop). JEDYNA pozycja
     # z niezerowym kosztem FinOps: DOKŁADNIE 1 wywołanie LLM tygodniowo
     # (nie per symbol, nie per cykl). Poniżej 5 zamkniętych predykcji mail

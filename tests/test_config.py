@@ -697,3 +697,21 @@ class TestPositionsCurrencyFlag:
             _env_file=None, **REQUIRED_ENV_KWARGS, positions_currency_enabled=True
         ).config_hash()
         assert flipped == baseline
+
+
+class TestFxRatesCacheFlag:
+    """PORT-11: cache kursów NBP z dnia w `fx_rates` (migracja 036) — przed migracją
+    tabeli nie ma, więc domyślnie off; kursy nie zmieniają prognozy."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).fx_rates_cache_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "fx_rates_cache_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, fx_rates_cache_enabled=True
+        ).config_hash()
+        assert flipped == baseline

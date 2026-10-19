@@ -13,7 +13,7 @@ zero portów. Kluczowe wymagania sprawdzane tu:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from src.application.report_user_portfolio import (
@@ -24,7 +24,7 @@ from src.application.report_user_portfolio import (
     render_user_portfolio_html,
     render_user_portfolio_text,
 )
-from src.domain.portfolio import Portfolio, PortfolioChange, Position
+from src.domain.portfolio import PlnRates, Portfolio, PortfolioChange, Position
 
 _NOW = datetime(2026, 7, 10, 12, 0, 0)
 
@@ -376,3 +376,129 @@ class TestPortfolioChange:
         reference = datetime(2026, 9, 19, 17, 30, tzinfo=UTC)
 
         assert portfolio_change_label(reference, now, "Europe/Warsaw") == "od 19.09.2026"
+
+
+# --- PORT-11: „P/L zł” i „w tym kurs” po kursie NBP z dnia zakupu -------------
+
+_BOUGHT = date(2025, 3, 3)
+
+
+def _lot(symbol: str, qty: str, price: str, currency: str = "USD",
+         day: date | None = _BOUGHT) -> Position:
+    return Position(
+        symbol=symbol,
+        quantity=Decimal(qty),
+        purchase_price=Decimal(price),
+        purchase_date=day,
+        currency=currency,
+    )
+
+
+_RATES = PlnRates(
+    current={"USD": Decimal("4.40"), "EUR": Decimal("4.30")},
+    on_purchase={("USD", _BOUGHT): Decimal("4.00"), ("EUR", _BOUGHT): Decimal("4.20")},
+)
+
+
+class TestPlnPnlColumns:
+    def test_columns_show_pnl_in_zloty_and_the_fx_part(self) -> None:
+        # 10 × 100 USD przy 4,00 → dziś 100 USD przy 4,40: +400 zł, w całości z kursu.
+        portfolio = _portfolio((_lot("AAPL", "10", "100"),), as_of_days_ago=0)
+
+        html = render_user_portfolio_html(
+            portfolio, {"AAPL": Decimal("100")}, now=_NOW, pln_rates=_RATES
+        )
+        text = render_user_portfolio_text(
+            portfolio, {"AAPL": Decimal("100")}, now=_NOW, pln_rates=_RATES
+        )
+
+        assert ">P/L zł</th>" in html
+        assert ">w tym kurs</th>" in html
+        assert "P/L (PLN)" not in html
+        assert "+400,00\u00a0zł" in html
+        assert "| P/L zł +400,00\u00a0zł (w tym kurs +400,00\u00a0zł)" in text
+
+    def test_unknown_purchase_date_is_said_out_loud(self) -> None:
+        portfolio = _portfolio((_lot("AAPL", "10", "100", day=None),), as_of_days_ago=0)
+
+        html = render_user_portfolio_html(
+            portfolio, {"AAPL": Decimal("110")}, now=_NOW, pln_rates=_RATES
+        )
+        text = render_user_portfolio_text(
+            portfolio, {"AAPL": Decimal("110")}, now=_NOW, pln_rates=_RATES
+        )
+
+        assert "kurs z dnia zakupu nieznany" in html
+        assert "| P/L zł — (kurs z dnia zakupu nieznany)" in text
+        # Brak cichego przybliżenia bieżącym kursem: (110 − 100) × 10 × 4,40 = 440 zł.
+        assert "+440,00\u00a0zł" not in html
+        assert "+440,00\u00a0zł" not in text
+
+    def test_missing_nbp_rate_of_the_purchase_day_has_its_own_note(self) -> None:
+        portfolio = _portfolio((_lot("AAPL", "10", "100", day=date(2024, 1, 2)),),
+                               as_of_days_ago=0)
+
+        text = render_user_portfolio_text(
+            portfolio, {"AAPL": Decimal("110")}, now=_NOW, pln_rates=_RATES
+        )
+
+        assert "(brak kursu NBP z dnia zakupu)" in text
+
+    def test_eur_position_is_valued_in_euro_and_converted_at_eur_rates(self) -> None:
+        portfolio = _portfolio((_lot("SAP.DE", "4", "200", "EUR"),), as_of_days_ago=0)
+
+        html = render_user_portfolio_html(
+            portfolio, {"SAP.DE": Decimal("200")}, now=_NOW, pln_rates=_RATES
+        )
+
+        assert "800,00 EUR" in html
+        assert "$800,00" not in html
+        # 4 × 200 × (4,30 − 4,20) = +80 zł, w całości z kursu.
+        assert "+80,00\u00a0zł" in html
+
+    def test_totals_in_zloty_name_the_rates_and_the_fx_part(self) -> None:
+        portfolio = _portfolio(
+            (_lot("AAPL", "10", "100"), _lot("SAP.DE", "4", "200", "EUR")), as_of_days_ago=0
+        )
+        prices = {"AAPL": Decimal("100"), "SAP.DE": Decimal("200")}
+
+        text = render_user_portfolio_text(portfolio, prices, now=_NOW, pln_rates=_RATES)
+
+        assert (
+            "  W PLN (kursy NBP: EUR 4,30 · USD 4,40): wartość 7\u00a0840,00\u00a0zł, "
+            "P/L +480,00\u00a0zł (w tym kurs +480,00\u00a0zł)"
+        ) in text.splitlines()
+
+    def test_totals_list_the_positions_left_out_of_the_pnl_in_zloty(self) -> None:
+        portfolio = _portfolio(
+            (_lot("AAPL", "10", "100"), _lot("NVDA", "1", "100", day=None)), as_of_days_ago=0
+        )
+        prices = {"AAPL": Decimal("100"), "NVDA": Decimal("100")}
+
+        html = render_user_portfolio_html(portfolio, prices, now=_NOW, pln_rates=_RATES)
+        text = render_user_portfolio_text(portfolio, prices, now=_NOW, pln_rates=_RATES)
+
+        assert "bez P/L w zł: NVDA" in html
+        assert text.splitlines()[-1].endswith("; bez P/L w zł: NVDA")
+
+    def test_mixed_currencies_have_no_single_native_total(self) -> None:
+        portfolio = _portfolio(
+            (_lot("AAPL", "10", "100"), _lot("SAP.DE", "4", "200", "EUR")), as_of_days_ago=0
+        )
+        prices = {"AAPL": Decimal("100"), "SAP.DE": Decimal("200")}
+
+        text = render_user_portfolio_text(portfolio, prices, now=_NOW, pln_rates=_RATES)
+
+        assert "  Łącznie: pozycje w różnych walutach (EUR, USD)" in text.splitlines()
+        assert "$1 800,00" not in text
+
+    def test_pln_rates_win_over_the_legacy_usd_rate(self) -> None:
+        portfolio = _portfolio((_lot("AAPL", "10", "100"),), as_of_days_ago=0)
+
+        html = render_user_portfolio_html(
+            portfolio, {"AAPL": Decimal("100")}, now=_NOW,
+            usd_pln=Decimal("3.00"), pln_rates=_RATES,
+        )
+
+        assert "USD/PLN 3,00" not in html
+        assert "kursy NBP: USD 4,40" in html

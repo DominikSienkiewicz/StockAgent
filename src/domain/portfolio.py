@@ -16,6 +16,10 @@ miał po 2.3% w 43 tickerach. Ten agregat liczy prawdę:
   - `market_value_pln()` (PORT-18) — wartość w PLN kursem waluty KAŻDEJ pozycji
     (pozycja EUR kursem EUR/PLN, nie USD/PLN); pozycja bez kursu swojej waluty
     jest wymieniona, a nie wyceniona cudzym kursem.
+  - `pln_pnl()` (PORT-11) — P/L w złotych: koszt po kursie NBP z dnia zakupu,
+    wartość po kursie bieżącym, rozbicie na wynik instrumentu i wynik walutowy.
+    Bez daty zakupu (albo kursu z tego dnia) P/L w zł jest jawnie nieznany —
+    nigdy liczony bieżącym kursem po obu stronach, bo to ukrywa efekt walutowy.
 
 Osobno żyje reguła świeżości: ręcznie aktualizowana tabela pozycji potrafi
 się zestarzeć, a stęchły portfel daje FAŁSZYWY P/L — gorszy niż brak sekcji.
@@ -29,7 +33,7 @@ domena nigdy nie woła zegara. Pieniądze na `Decimal` (jak `Money`).
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -146,6 +150,79 @@ class PlnValuation:
 
 
 @dataclass(frozen=True)
+class PlnRates:
+    """PORT-11: kursy NBP (PLN za 1 jednostkę) do P/L w złotych.
+
+    `current` — kurs bieżący per waluta; `on_purchase` — kurs z dnia zakupu per
+    (waluta, data zakupu). PLN nie potrzebuje kursu (zawsze 1). Brak klucza =
+    kurs nieznany; domena nigdy nie podstawia w zamian innego kursu.
+    """
+
+    current: Mapping[str, Decimal] = field(default_factory=dict)
+    on_purchase: Mapping[tuple[str, date], Decimal] = field(default_factory=dict)
+
+    def current_rate(self, currency: str) -> Decimal | None:
+        return pln_rate(currency, self.current)
+
+    def purchase_rate(self, currency: str, day: date) -> Decimal | None:
+        if currency == HOME_CURRENCY:
+            return Decimal("1")
+        return self.on_purchase.get((currency, day))
+
+
+class PlnPnlGap(Enum):
+    """PORT-11: dlaczego pozycja nie ma pełnego P/L w złotych.
+
+    CURRENT_RATE_MISSING — brak bieżącego kursu waluty (nie ma nawet wartości zł).
+    PURCHASE_DATE_UNKNOWN — brak daty zakupu, więc i kursu z tego dnia.
+    PURCHASE_RATE_MISSING — data jest, ale źródło nie dało kursu z tego dnia.
+    """
+
+    CURRENT_RATE_MISSING = "CURRENT_RATE_MISSING"
+    PURCHASE_DATE_UNKNOWN = "PURCHASE_DATE_UNKNOWN"
+    PURCHASE_RATE_MISSING = "PURCHASE_RATE_MISSING"
+
+
+@dataclass(frozen=True)
+class PositionPlnPnL:
+    """PORT-11: P/L jednej pozycji w złotych z rozbiciem.
+
+    `cost_pln` = ilość × cena zakupu × kurs z dnia zakupu; `value_pln` = ilość ×
+    cena bieżąca × kurs bieżący; `pnl_pln` = wartość − koszt. Rozbicie:
+    `instrument_pln` = ilość × (cena bieżąca − cena zakupu) × kurs bieżący (ruch
+    samego instrumentu), `fx_pln` = ilość × cena zakupu × (kurs bieżący − kurs
+    z dnia zakupu) (zmiana kursu na zainwestowanym kapitale); suma = `pnl_pln`.
+    `gap` niepusty → kwoty bez pełnego kursu są None.
+    """
+
+    symbol: str
+    currency: str
+    value_pln: Decimal | None
+    cost_pln: Decimal | None
+    pnl_pln: Decimal | None
+    instrument_pln: Decimal | None
+    fx_pln: Decimal | None
+    gap: PlnPnlGap | None
+
+
+@dataclass(frozen=True)
+class PortfolioPlnPnL:
+    """PORT-11: P/L portfela w złotych — wiersze w kolejności `unrealized_pnl`.
+
+    `total_value_pln` sumuje pozycje z kursem bieżącym; `total_pnl_pln`,
+    `total_instrument_pln` i `total_fx_pln` — tylko pozycje z pełnym rozbiciem.
+    `incomplete_symbols` (posortowane) to pozycje, których P/L zł nie znamy.
+    """
+
+    positions: tuple[PositionPlnPnL, ...]
+    total_value_pln: Decimal
+    total_pnl_pln: Decimal
+    total_instrument_pln: Decimal
+    total_fx_pln: Decimal
+    incomplete_symbols: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class PortfolioPnL:
     """Zagregowany P/L portfela — pozycje policzalne + sumy łączne.
 
@@ -215,6 +292,43 @@ class PortfolioFreshness(Enum):
 
     FRESH = "FRESH"
     STALE = "STALE"
+
+
+def _position_pln_pnl(position: Position, price: Decimal, rates: PlnRates) -> PositionPlnPnL:
+    """PORT-11: jeden wiersz P/L w złotych (patrz `PositionPlnPnL`)."""
+    current_rate = rates.current_rate(position.currency)
+    if current_rate is None:
+        return _incomplete(position, None, PlnPnlGap.CURRENT_RATE_MISSING)
+    value = position.market_value(price) * current_rate
+    if position.purchase_date is None:
+        return _incomplete(position, value, PlnPnlGap.PURCHASE_DATE_UNKNOWN)
+    purchase_rate = rates.purchase_rate(position.currency, position.purchase_date)
+    if purchase_rate is None:
+        return _incomplete(position, value, PlnPnlGap.PURCHASE_RATE_MISSING)
+    cost = position.cost_basis() * purchase_rate
+    return PositionPlnPnL(
+        symbol=position.symbol,
+        currency=position.currency,
+        value_pln=value,
+        cost_pln=cost,
+        pnl_pln=value - cost,
+        instrument_pln=position.unrealized_pnl(price) * current_rate,
+        fx_pln=position.cost_basis() * (current_rate - purchase_rate),
+        gap=None,
+    )
+
+
+def _incomplete(position: Position, value: Decimal | None, gap: PlnPnlGap) -> PositionPlnPnL:
+    return PositionPlnPnL(
+        symbol=position.symbol,
+        currency=position.currency,
+        value_pln=value,
+        cost_pln=None,
+        pnl_pln=None,
+        instrument_pln=None,
+        fx_pln=None,
+        gap=gap,
+    )
 
 
 def _age_days(as_of: datetime, now: datetime) -> float:
@@ -381,6 +495,32 @@ class Portfolio:
                 continue
             value += pos.market_value(price) * rate
         return PlnValuation(value=value, unrated_symbols=tuple(sorted(unrated)))
+
+    def pln_pnl(
+        self, current_prices: Mapping[str, Decimal], rates: PlnRates
+    ) -> PortfolioPlnPnL:
+        """PORT-11: P/L w złotych per pozycja i łącznie (pozycje bez ceny pomijane).
+
+        Kurs z dnia zakupu bierze `purchase_date` pozycji — bez niej P/L zł jest
+        nieznany (`PlnPnlGap.PURCHASE_DATE_UNKNOWN`), a nie przybliżony."""
+        rows = tuple(
+            _position_pln_pnl(pos, price, rates)
+            for pos in self.positions
+            if (price := current_prices.get(pos.symbol)) is not None
+        )
+        complete = [row for row in rows if row.gap is None]
+        return PortfolioPlnPnL(
+            positions=rows,
+            total_value_pln=sum(
+                (row.value_pln for row in rows if row.value_pln is not None), Decimal("0")
+            ),
+            total_pnl_pln=sum((row.pnl_pln or Decimal("0") for row in complete), Decimal("0")),
+            total_instrument_pln=sum(
+                (row.instrument_pln or Decimal("0") for row in complete), Decimal("0")
+            ),
+            total_fx_pln=sum((row.fx_pln or Decimal("0") for row in complete), Decimal("0")),
+            incomplete_symbols=tuple(sorted({row.symbol for row in rows if row.gap is not None})),
+        )
 
     def change_since(
         self,
