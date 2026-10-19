@@ -34,11 +34,7 @@ from src.domain.calibration_curve import (
     reliability_curve,
 )
 from src.domain.council import InvestorOpinion, vindicated_dissenters
-from src.domain.prediction import (
-    CRYPTO_SIDEWAYS_TOLERANCE,
-    SIDEWAYS_TOLERANCE,
-    Prediction,
-)
+from src.domain.prediction import Prediction, sideways_tolerance_for
 from src.domain.value_objects import AssetType
 
 # Twardy próg próbki jako jawna stała modułu (reguła domenowa, nie opcja).
@@ -107,9 +103,7 @@ class ClosedPrediction:
 
     def flat_band(self) -> Decimal:
         """Pasmo „bez ruchu” klasy aktywa — ta sama reguła co w reflect."""
-        if self.asset_type is AssetType.CRYPTO:
-            return CRYPTO_SIDEWAYS_TOLERANCE
-        return SIDEWAYS_TOLERANCE
+        return sideways_tolerance_for(self.asset_type)
 
     def actual_direction(self) -> Literal["UP", "DOWN", "FLAT"]:
         """Rzeczywisty kierunek ruchu ceny (UP/DOWN/FLAT).

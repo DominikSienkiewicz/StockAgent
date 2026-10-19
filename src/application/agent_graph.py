@@ -43,11 +43,11 @@ from src.domain.implied_edge import (
 )
 from src.domain.prediction import (
     CORRECT_PREDICTION_INSIGHT,
-    CRYPTO_SIDEWAYS_TOLERANCE,
     DIAGNOSIS_SKIPPED_INSIGHT,
     Prediction,
     is_substantive_insight,
     normalize_trend,
+    sideways_tolerance_for,
 )
 from src.domain.regime_key import canonical_regime_key
 from src.domain.value_objects import (
@@ -646,11 +646,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # akcji, ale przy dziennej zmienności BTC 3–5% uznawałoby niemal każdy dzień
     # za ruch i systematycznie zaniżało trafność krypto. Korekta POMIARU.
     asset = state.get("asset")
-    tolerance = (
-        CRYPTO_SIDEWAYS_TOLERANCE
-        if asset is not None and asset.asset_type is AssetType.CRYPTO
-        else None
-    )
+    tolerance = sideways_tolerance_for(asset.asset_type if asset is not None else None)
     trend_correct = last.is_trend_correct(current_price, tolerance=tolerance)
 
     if trend_correct:

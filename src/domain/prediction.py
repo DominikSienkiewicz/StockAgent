@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 
+from src.domain.value_objects import AssetType
+
 
 def calibration_error(samples: Sequence[tuple[float, bool]]) -> float:
     """#4 — luka kalibracji: |śr. deklarowana pewność − realna trafność| ∈ [0,1].
@@ -83,6 +85,16 @@ SIDEWAYS_TOLERANCE = Decimal("0.005")  # ±0.5% — pasmo FLAT dla akcji/ETF
 # każdy dzień za "ruch" i systematycznie zaniżało trafność predykcji SIDEWAYS
 # na BTC/ETH. Osobny próg jest korektą POMIARU, nie poluzowaniem oceny.
 CRYPTO_SIDEWAYS_TOLERANCE = Decimal("0.025")  # ±2.5%
+
+
+def sideways_tolerance_for(asset_type: AssetType | None) -> Decimal:
+    """Pasmo „bez ruchu” klasy aktywa: krypto ±2.5%, reszta (i brak klasy) ±0.5%.
+
+    Jedno źródło reguły dla reflect (`is_trend_correct`) i recapu tygodniowego
+    (`ClosedPrediction.flat_band`) — wcześniej każdy wybierał pasmo sam."""
+    if asset_type is AssetType.CRYPTO:
+        return CRYPTO_SIDEWAYS_TOLERANCE
+    return SIDEWAYS_TOLERANCE
 
 
 @dataclass(frozen=True)

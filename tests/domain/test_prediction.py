@@ -10,7 +10,9 @@ from src.domain.prediction import (
     calibration_error,
     calibration_score,
     normalize_trend,
+    sideways_tolerance_for,
 )
+from src.domain.value_objects import AssetType
 
 
 class TestCalibration:
@@ -163,6 +165,17 @@ class TestCryptoSidewaysTolerance:
 
         assert pred.is_trend_correct(Decimal("100.4"))
         assert not pred.is_trend_correct(Decimal("101"))
+
+
+class TestSidewaysToleranceFor:
+    """Jedna reguła pasma „bez ruchu” dla reflect i recapu tygodniowego."""
+
+    def test_crypto_uses_the_wide_band(self) -> None:
+        assert sideways_tolerance_for(AssetType.CRYPTO) == CRYPTO_SIDEWAYS_TOLERANCE
+
+    @pytest.mark.parametrize("asset_type", [AssetType.STOCK, AssetType.ETF, AssetType.OTHER, None])
+    def test_everything_else_uses_the_equity_band(self, asset_type: AssetType | None) -> None:
+        assert sideways_tolerance_for(asset_type) == SIDEWAYS_TOLERANCE
 
 
 class TestNormalizeTrend:
