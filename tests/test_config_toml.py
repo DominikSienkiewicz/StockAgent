@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
 from src.config import Settings
 
 CONFIG_TOML = Path(__file__).parent.parent / "config.toml"
+# TEST-21 (G79): dozwolony zbiór providerów bierzemy z kontraktu `Settings`
+# (Literal), nie z bieżącej konfiguracji produkcji.
+_LLM_PROVIDERS = frozenset(get_args(Settings.model_fields["llm_provider"].annotation))
 
 _REQUIRED_SECRETS = {
     "openai_api_key": "sk-test",
@@ -24,15 +28,37 @@ _REQUIRED_SECRETS = {
 }
 
 
+def _model_provider(model: str) -> str:
+    """Rodzina modelu po nazwie — tylko na potrzeby niezmiennika spójności."""
+    return "anthropic" if model.startswith("claude") else "openai"
+
+
+def _assert_unique_tickers(name: str, values: list[str]) -> None:
+    assert all(isinstance(v, str) and v.strip() for v in values), f"pusty ticker w {name}"
+    assert len(values) == len(set(values)), f"duplikat w {name}"
+
+
 def test_real_config_toml_parses_and_has_expected_invariants() -> None:
+    # TEST-21 (G79): niezmienniki struktury i spójności, nie dane produkcji —
+    # dopisanie tickera albo zmiana modelu nie może czerwienić tego testu.
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["llm_provider"] == "anthropic"
-    assert data["council_llm_provider"] == "openai"
-    assert data["council_llm_model"] == "gpt-5-mini"
-    assert len(data["symbols"]) == 43
-    assert "SSNLF" in data["symbols_unsupported_price"]
-    assert data["crypto_symbols"] == ["BTC", "ETH"]
-    assert data["symbol_concurrency"] == 4
+    assert data["llm_provider"] in _LLM_PROVIDERS
+    assert data["council_llm_provider"] in _LLM_PROVIDERS
+    # Model rady musi należeć do providera rady — inaczej rada dziedziczy
+    # providera z innym modelem i cykl pada (komentarz w config.toml).
+    council_model = data["council_llm_model"]
+    assert isinstance(council_model, str) and council_model.strip()
+    assert _model_provider(council_model) == data["council_llm_provider"]
+    assert len(data["symbols"]) > 0
+    for name in ("symbols", "symbols_etf", "symbols_unsupported_price", "crypto_symbols"):
+        _assert_unique_tickers(name, data[name])
+    # Krypto idzie osobnym routingiem (CoinGecko) i jest doklejane do `symbols`
+    # w cyklu — symbol w obu listach byłby analizowany dwa razy.
+    crypto = set(data["crypto_symbols"])
+    assert not crypto & set(data["symbols"]), "krypto także w symbols"
+    assert not crypto & set(data["symbols_etf"]), "krypto także w symbols_etf"
+    assert isinstance(data["symbol_concurrency"], int)
+    assert data["symbol_concurrency"] >= 1
     # Sekrety NIE mogą wyciec do commitowanego pliku.
     for secret in ("openai_api_key", "anthropic_api_key", "supabase_key",
                    "finnhub_api_key", "digest_to_email"):
@@ -72,8 +98,9 @@ def test_config_toml_found_regardless_of_cwd(
     monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
     monkeypatch.chdir(tmp_path)  # CWD != root repo
     s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
-    assert len(s.symbols) == 43, "config.toml nie został znaleziony spoza roota"
-    assert s.notifications_enabled is True
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert s.symbols == data["symbols"], "config.toml nie został znaleziony spoza roota"
+    assert s.notifications_enabled is data["notifications_enabled"]
 
 
 def test_env_overrides_toml(
