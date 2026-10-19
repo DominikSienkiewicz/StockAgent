@@ -3160,3 +3160,68 @@ def test_trade_signals_precede_track_record():
     )
 
     assert html.index("Najsilniejsze sygnały") < html.index("Track Record")
+
+
+# PORT-04: VaR / obsunięcie / hedge zwężają bandę WYŁĄCZNIE przy realnych
+# pozycjach. Orkiestrator podaje `position_risk` tylko za `portfolio_var_enabled`.
+
+_SUFFICIENT_ACCURACY = {
+    "mean_accuracy": 0.7, "sample_count": 200, "correct_count": 140,
+    "days_window": 30, "n_eff": 25.0,
+}
+
+
+def _owner_portfolio() -> Portfolio:
+    # Pozycja w innym symbolu niż sygnał — ekspozycja NVDA nie zwęża bandy.
+    return Portfolio(
+        positions=(Position("AAPL", Decimal("1"), Decimal("100"), datetime(2026, 1, 2).date()),),
+        as_of=datetime(2026, 5, 14, tzinfo=UTC),
+    )
+
+
+def _risk_sizing_report(**context: object) -> str:
+    html, _ = build_html_report(
+        [_strong_buy_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(accuracy_stats=_SUFFICIENT_ACCURACY, **context),  # type: ignore[arg-type]
+    )
+    return html
+
+
+def test_portfolio_var_of_real_positions_narrows_the_band():
+    from src.application.use_cases.portfolio_risk import PositionRisk
+
+    html = _risk_sizing_report(
+        user_portfolio=_owner_portfolio(), position_risk=PositionRisk(var=0.05)
+    )
+
+    assert "Pozycja pełna" not in html
+    assert "Pozycja standardowa 2-3% portfela" in html
+
+
+def test_deep_portfolio_drawdown_forces_the_starter_band():
+    from src.application.use_cases.portfolio_risk import PositionRisk
+
+    html = _risk_sizing_report(
+        user_portfolio=_owner_portfolio(), position_risk=PositionRisk(drawdown=0.2)
+    )
+
+    assert "Pozycja startowa 1-2% portfela" in html
+
+
+def test_position_risk_without_real_positions_leaves_the_band():
+    from src.application.use_cases.portfolio_risk import PositionRisk
+
+    html = _risk_sizing_report(position_risk=PositionRisk(var=0.05, drawdown=0.2))
+
+    assert "Pozycja pełna 4-5% portfela" in html
+
+
+def test_equal_weight_radar_var_never_narrows_the_band():
+    from src.application.use_cases.portfolio_risk import PortfolioRiskReport
+
+    html = _risk_sizing_report(
+        user_portfolio=_owner_portfolio(),
+        portfolio_risk_report=PortfolioRiskReport(watchlist_size=3, var=0.2),
+    )
+
+    assert "Pozycja pełna 4-5% portfela" in html

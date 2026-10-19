@@ -294,3 +294,30 @@ def test_divergence_signal_writes_the_numbers_the_polish_way() -> None:
     descriptions = [s.description for s in detect_risk_signals([result])]
 
     assert "cena rośnie 3,00% ale sentyment -0,45 -> możliwa korekta lub pump" in descriptions
+
+
+class TestBuildTradeSignalsPortfolioRisk:
+    """PORT-04: ryzyko realnego portfela (VaR, obsunięcie, hedge) trafia do
+    `suggest_band` i może bandę wyłącznie zwęzić."""
+
+    @staticmethod
+    def _tier(**risk: object) -> str:
+        council = _verdict(consensus=0.9, opinions=(_opinion("BUY"), _opinion("BUY")))
+        signals = build_trade_signals(
+            [_saved_result(council=council)], hit_rate=0.7, **risk  # type: ignore[arg-type]
+        )
+        band = signals[0].size_band
+        assert band is not None
+        return band.tier
+
+    def test_without_risk_the_band_is_unchanged(self) -> None:
+        assert self._tier() == "full"
+
+    def test_high_var_lowers_the_band(self) -> None:
+        assert self._tier(portfolio_var=0.05) == "standard"
+
+    def test_deep_drawdown_forces_the_starter_band(self) -> None:
+        assert self._tier(drawdown=0.2) == "starter"
+
+    def test_ineffective_hedge_lowers_the_band(self) -> None:
+        assert self._tier(hedge_effective=False) == "standard"

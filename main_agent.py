@@ -85,6 +85,7 @@ from src.application.use_cases.monitor_macro_risk import (
 from src.application.use_cases.portfolio_risk import (
     PortfolioRiskReport,
     PortfolioRiskUseCase,
+    PositionRisk,
 )
 from src.config import Settings
 from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
@@ -1447,6 +1448,26 @@ def _build_portfolio_radar(
         return None
 
 
+def _build_position_risk(
+    settings: Settings, repository: RepositoryPort, portfolio: Portfolio | None
+) -> PositionRisk | None:
+    """PORT-04 — VaR, obsunięcie i hedge REALNEGO portfela do sizingu.
+
+    Tylko za `portfolio_var_enabled` i tylko przy realnych pozycjach: bez nich
+    banda zostaje jak dotąd, a VaR radaru (równe wagi watchlisty) nigdy jej nie
+    zwęża. Trzymane instrumenty z `risk_symbols` liczą się jako hedge, tak jak
+    w Risk Watch. Darmowa historia cen; błąd → None (banda bez zmian)."""
+    if not settings.portfolio_var_enabled or portfolio is None:
+        return None
+    try:
+        return PortfolioRiskUseCase(repository_port=repository).position_risk(
+            portfolio, hedge_symbols=frozenset(settings.risk_symbols)
+        )
+    except Exception:
+        logger.exception("Position risk failed — banda bez ryzyka portfela")
+        return None
+
+
 def _portfolio_sectors(results: list[SymbolResult]) -> dict[str, int]:
     """#4 — skład portfela wg sektorów (sektor → liczba instrumentów).
 
@@ -1832,7 +1853,11 @@ def _without_owner_portfolio(context: ReportContext) -> ReportContext:
     bez pozycji, klastrów i cen pozycji spoza watchlisty. Bez portfela lead
     (a więc i preheader) nie dostaje tierów „Twojej pozycji”."""
     return dataclasses.replace(
-        context, user_portfolio=None, portfolio_clusters=None, held_prices=None
+        context,
+        user_portfolio=None,
+        portfolio_clusters=None,
+        held_prices=None,
+        position_risk=None,
     )
 
 
@@ -1897,6 +1922,8 @@ def _dispatch_reports(
         user_portfolio = _build_user_portfolio(settings)
         # PORT-07: pozycje spoza watchlisty dostają sam darmowy /quote.
         held_prices = _quote_held_positions(settings, user_portfolio, all_symbols)
+        # PORT-04: ryzyko realnego portfela do sizingu (flaga + pozycje).
+        position_risk = _build_position_risk(settings, repository, user_portfolio)
         # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
         consensus_shifts = (
             _build_consensus_shifts(repository, results, now=started_at)
@@ -1926,6 +1953,7 @@ def _dispatch_reports(
             user_portfolio=user_portfolio,
             held_prices=held_prices,
             portfolio_clusters=_portfolio_clusters(settings),
+            position_risk=position_risk,
             display_timezone=settings.display_timezone,
         )
 

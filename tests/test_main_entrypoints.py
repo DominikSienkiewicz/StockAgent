@@ -3610,3 +3610,85 @@ class TestPortfolioClustersFromConfigSectors:
         assert clusters["AMD"] == clusters["NVDA"]
         assert "VT" not in clusters
         assert "BTC" not in clusters
+
+
+class TestPositionRiskWiring:
+    """PORT-04: VaR, obsunięcie i hedge realnego portfela zwężają bandę — tylko
+    za flagą `portfolio_var_enabled` i tylko przy realnych pozycjach. Odczyt
+    darmowej historii cen, zero płatnych portów."""
+
+    @staticmethod
+    def _portfolio() -> "main_agent.Portfolio":
+        return TestHeldPositionsOutsideWatchlist._portfolio("NVDA", "SH")
+
+    def test_flag_off_reads_nothing(self, settings) -> None:
+        repository = MagicMock(spec=RepositoryPort)
+
+        risk = main_agent._build_position_risk(settings, repository, self._portfolio())
+
+        assert risk is None
+        repository.get_price_history.assert_not_called()
+
+    def test_no_real_positions_give_no_risk(self, settings) -> None:
+        settings.portfolio_var_enabled = True
+        repository = MagicMock(spec=RepositoryPort)
+
+        assert main_agent._build_position_risk(settings, repository, None) is None
+        repository.get_price_history.assert_not_called()
+
+    def test_flag_on_uses_held_positions_and_risk_symbols_as_hedges(
+        self, settings, mocker
+    ) -> None:
+        from src.application.use_cases.portfolio_risk import PositionRisk
+
+        settings.portfolio_var_enabled = True
+        settings.risk_symbols = ["SH", "GLD"]
+        computed = mocker.patch.object(
+            main_agent.PortfolioRiskUseCase,
+            "position_risk",
+            return_value=PositionRisk(var=0.04),
+        )
+        portfolio = self._portfolio()
+
+        risk = main_agent._build_position_risk(
+            settings, MagicMock(spec=RepositoryPort), portfolio
+        )
+
+        assert risk == PositionRisk(var=0.04)
+        computed.assert_called_once_with(portfolio, hedge_symbols=frozenset({"SH", "GLD"}))
+
+    def test_failure_degrades_to_no_risk(self, settings, mocker) -> None:
+        settings.portfolio_var_enabled = True
+        mocker.patch.object(
+            main_agent.PortfolioRiskUseCase,
+            "position_risk",
+            side_effect=RuntimeError("supabase down"),
+        )
+
+        risk = main_agent._build_position_risk(
+            settings, MagicMock(spec=RepositoryPort), self._portfolio()
+        )
+
+        assert risk is None
+
+    def test_dispatch_hands_position_risk_to_the_report(self, settings, mocker) -> None:
+        from src.application.ports import MarketDataPort
+        from src.application.use_cases.portfolio_risk import PositionRisk
+
+        expected = PositionRisk(var=0.05)
+        build = mocker.patch("main_agent._build_position_risk", return_value=expected)
+        portfolio = self._portfolio()
+
+        report, repository, _, _ = TestHeldPositionsOutsideWatchlist()._dispatch(
+            settings, mocker, portfolio, MagicMock(spec=MarketDataPort)
+        )
+
+        build.assert_called_once_with(settings, repository, portfolio)
+        assert report.call_args_list[0].args[3].position_risk == expected
+
+    def test_non_owner_context_drops_position_risk(self) -> None:
+        from src.application.use_cases.portfolio_risk import PositionRisk
+
+        context = main_agent.ReportContext(position_risk=PositionRisk(var=0.05))
+
+        assert main_agent._without_owner_portfolio(context).position_risk is None

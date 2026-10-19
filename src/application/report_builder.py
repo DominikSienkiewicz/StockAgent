@@ -142,7 +142,7 @@ from src.application.report_user_portfolio import (
 )
 from src.application.run_context import RunContext
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
-from src.application.use_cases.portfolio_risk import PortfolioRiskReport
+from src.application.use_cases.portfolio_risk import PortfolioRiskReport, PositionRisk
 from src.domain.asset import REFERENCE_MAX_AGE_HOURS, PriceDelta
 from src.domain.calibration_curve import CalibrationBucket
 from src.domain.conformal import MoveInterval
@@ -1196,6 +1196,10 @@ class ReportContext:
     # False = tekst dla starego pushu (Telegram/Slack) — bez kwot P/L.
     user_portfolio_in_text: bool = True
     portfolio_clusters: Mapping[str, str] | None = None
+    # PORT-04: ryzyko realnego portfela (VaR, obsunięcie, hedge) do sizingu.
+    # Orkiestrator podaje je tylko za `portfolio_var_enabled`; bez
+    # `user_portfolio` jest ignorowane (nigdy VaR na równych wagach).
+    position_risk: PositionRisk | None = None
     cycle_cost: CycleCost | None = None
     # WIA-17/22/23/31/32/36: dowód trafności i Brier pod sekcją Track Record.
     track_record_stats: TrackRecordStats | None = None
@@ -1281,6 +1285,11 @@ def build_html_report(
     cluster_exposures = _cluster_exposure_per_symbol(
         context.user_portfolio, context.portfolio_clusters, current_prices
     )
+    sizing_risk = (
+        context.position_risk
+        if context.user_portfolio is not None and context.position_risk is not None
+        else PositionRisk()
+    )
     rank_signals = functools.partial(
         build_trade_signals,
         results,
@@ -1289,6 +1298,9 @@ def build_html_report(
         calibration_buckets=context.signal_calibration_buckets,
         portfolio_weights=portfolio_weights,
         cluster_exposures=cluster_exposures,
+        portfolio_var=sizing_risk.var,
+        drawdown=sizing_risk.drawdown,
+        hedge_effective=sizing_risk.hedge_effective,
     )
     trade_signals = rank_signals()
     risk_signals = detect_risk_signals(results)

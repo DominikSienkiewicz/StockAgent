@@ -28,6 +28,16 @@ SATURATED_WEIGHT_THRESHOLD = 0.30
 CROWDED_CLUSTER_THRESHOLD = 0.40
 SATURATED_CLUSTER_THRESHOLD = 0.60
 
+# PORT-04 (decyzja 2026-10-19) — ryzyko całego portfela działa jak nadmierna
+# ekspozycja i też może bandę wyłącznie zwęzić. Każdy sygnał to osobny stopień.
+# 1-dniowy VaR na tym poziomie ufności (dodatnia magnituda straty) ≥ progu
+# zdejmuje stopień.
+RISK_VAR_CONFIDENCE = 0.95
+VAR_TIGHTEN_THRESHOLD = 0.03
+# Bieżące obsunięcie portfela od szczytu (dodatnia głębokość) ≥ progu → banda
+# startowa: w głębokim dołku nie dokładamy ryzyka.
+DEEP_DRAWDOWN_THRESHOLD = 0.15
+
 # Bandy alokacji (% portfela). Świadomie konserwatywne — to sugestia magnitudy,
 # nie rekomendacja inwestycyjna.
 _STARTER = (1.0, 2.0)
@@ -67,6 +77,9 @@ def suggest_band(
     current_weight: float | None = None,
     cluster_exposure: float | None = None,
     hit_sample: float | None = None,
+    portfolio_var: float | None = None,
+    drawdown: float | None = None,
+    hedge_effective: bool | None = None,
 ) -> SizeBand:
     """Mapuje konsensus rady + track record agenta na sugerowaną bandę pozycji.
 
@@ -91,6 +104,13 @@ def suggest_band(
     `hit_rate`. Przy `hit_sample < MIN_HIT_SAMPLE` hit-rate traktujemy jak
     cold-start (None), więc pełna banda jest wtedy nieosiągalna. `None` = wołający
     nie podaje próby (zachowanie sprzed PORT-01); raport podaje ją zawsze.
+
+    PORT-04: ryzyko portfela z realnych pozycji, stosowane PO ekspozycji —
+    `portfolio_var` (1-dniowy VaR, dodatnia strata) ≥ `VAR_TIGHTEN_THRESHOLD`
+    zdejmuje stopień, `drawdown` (bieżąca głębokość od szczytu) ≥
+    `DEEP_DRAWDOWN_THRESHOLD` wymusza bandę startową, a `hedge_effective=False`
+    zdejmuje stopień. Ryzyko nigdy nie poszerza bandy; wszystkie trzy `None` →
+    wynik identyczny jak przed PORT-04.
     """
     consensus = _clamp(consensus_strength, 0.0, 1.0)
     dissent = _clamp(dissent_ratio, 0.0, 1.0)
@@ -114,6 +134,7 @@ def suggest_band(
     # #15 faza 2: dopiero TERAZ patrzymy na to, co już mamy. Ekspozycja może
     # bandę wyłącznie zwęzić — nigdy poszerzyć.
     tier = _apply_exposure(tier, current_weight, cluster_exposure)
+    tier = _apply_risk(tier, portfolio_var, drawdown, hedge_effective)
     return _band(tier, _SPANS[tier])
 
 
@@ -137,6 +158,26 @@ def _apply_exposure(
         return "starter"
     if weight >= CROWDED_WEIGHT_THRESHOLD or cluster >= CROWDED_CLUSTER_THRESHOLD:
         return _DOWNGRADE[tier]
+    return tier
+
+
+def _apply_risk(
+    tier: str,
+    portfolio_var: float | None,
+    drawdown: float | None,
+    hedge_effective: bool | None,
+) -> str:
+    """PORT-04: zwęża bandę o stopień za każdy sygnał ryzyka portfela.
+
+    Jak `_apply_exposure` — wyłącznie w dół. Brak danych (`None`) to brak
+    informacji, nie zielone światło: nie zmienia bandy.
+    """
+    if drawdown is not None and drawdown >= DEEP_DRAWDOWN_THRESHOLD:
+        return "starter"
+    if portfolio_var is not None and portfolio_var >= VAR_TIGHTEN_THRESHOLD:
+        tier = _DOWNGRADE[tier]
+    if hedge_effective is False:
+        tier = _DOWNGRADE[tier]
     return tier
 
 

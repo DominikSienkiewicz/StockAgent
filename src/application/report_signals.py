@@ -38,6 +38,9 @@ def build_trade_signals(
     portfolio_weights: Mapping[str, Decimal] | None = None,
     cluster_exposures: Mapping[str, Decimal] | None = None,
     hit_sample: float | None = None,
+    portfolio_var: float | None = None,
+    drawdown: float | None = None,
+    hedge_effective: bool | None = None,
 ) -> list[TradeSignal]:
     """Top sygnały transakcyjne — posortowane po sile sygnału.
 
@@ -48,6 +51,9 @@ def build_trade_signals(
     sizing konserwatywny. Brak werdyktu rady → `size_band` None.
     PORT-01: `hit_sample` (n_eff próby hit-rate) trafia do `suggest_band` —
     próba poniżej `MIN_HIT_SAMPLE` nie odblokuje pełnej bandy.
+    PORT-04: `portfolio_var`, `drawdown` i `hedge_effective` (ryzyko realnego
+    portfela, wspólne dla cyklu) idą wprost do `suggest_band` i mogą bandę
+    wyłącznie zwęzić. None → banda jak przed PORT-04.
 
     #9: gdy podano `calibration_buckets`, `strength` liczymy na pewności
     SKALIBROWANEJ historycznym hit-rate'em jej kubełka (shrinkage przy małej
@@ -83,7 +89,14 @@ def build_trade_signals(
             current_price=r.current_price,
             target_price=r.target_price,
             size_band=_size_band_for(
-                r, hit_rate, portfolio_weights, cluster_exposures, hit_sample
+                r,
+                hit_rate,
+                portfolio_weights,
+                cluster_exposures,
+                hit_sample,
+                portfolio_var=portfolio_var,
+                drawdown=drawdown,
+                hedge_effective=hedge_effective,
             ),
             calibrated_confidence=calibrated,
             ml_cold_start=r.ml_cold_start,
@@ -109,6 +122,10 @@ def _size_band_for(
     weights: Mapping[str, Decimal] | None = None,
     cluster_exposures: Mapping[str, Decimal] | None = None,
     hit_sample: float | None = None,
+    *,
+    portfolio_var: float | None = None,
+    drawdown: float | None = None,
+    hedge_effective: bool | None = None,
 ) -> SizeBand | None:
     """Wylicza bandę pozycji z werdyktu rady symbolu; None gdy brak werdyktu.
 
@@ -128,6 +145,9 @@ def _size_band_for(
         current_weight=float(weight) if weight is not None else None,
         cluster_exposure=float(cluster) if cluster is not None else None,
         hit_sample=hit_sample,
+        portfolio_var=portfolio_var,
+        drawdown=drawdown,
+        hedge_effective=hedge_effective,
     )
 
 

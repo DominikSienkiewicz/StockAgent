@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import FrozenInstanceError
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -20,7 +20,9 @@ from src.application.ports import RepositoryPort
 from src.application.use_cases.portfolio_risk import (
     PortfolioRiskReport,
     PortfolioRiskUseCase,
+    PositionRisk,
 )
+from src.domain.portfolio import Portfolio, Position
 from src.domain.value_objects import Money
 
 _BASE = datetime(2026, 6, 1, tzinfo=UTC)
@@ -445,3 +447,164 @@ class TestReportImmutability:
 
         with pytest.raises(FrozenInstanceError):
             report.verdict = "tampered"  # type: ignore[misc]
+
+
+class TestPositionRisk:
+    """PORT-04: ryzyko do sizingu liczone z REALNYCH wag pozycji (wartość
+    rynkowa z ostatniego snapshotu), nie z równych wag watchlisty. Tylko
+    trzymane symbole, tylko darmowa historia `price_snapshots`."""
+
+    @staticmethod
+    def _portfolio(*holdings: tuple[str, str]) -> Portfolio:
+        return Portfolio(
+            positions=tuple(
+                Position(
+                    symbol=symbol,
+                    quantity=Decimal(quantity),
+                    purchase_price=Decimal("1"),
+                    purchase_date=date(2026, 1, 2),
+                )
+                for symbol, quantity in holdings
+            ),
+            as_of=_BASE,
+        )
+
+    @staticmethod
+    def _flat_series(price: str) -> list[tuple[datetime, Money]]:
+        return _series([price] * _LONG_DAYS)
+
+    @staticmethod
+    def _uc(repo: Mock, history: dict[str, list[tuple[datetime, Money]]]) -> PortfolioRiskUseCase:
+        repo.get_price_history.side_effect = lambda sym, days: history[sym]
+        return PortfolioRiskUseCase(repository_port=repo)
+
+    def test_var_uses_real_position_weights(self, repository_port: Mock) -> None:
+        from src.domain.correlation import returns_from_prices
+        from src.domain.var import historical_var
+
+        volatile = _long_series(100)
+        history = {"NVDA": volatile, "GLD": self._flat_series("100")}
+        portfolio = self._portfolio(("NVDA", "10"), ("GLD", "900"))
+
+        risk = self._uc(repository_port, history).position_risk(portfolio)
+
+        # Waga = wartość rynkowa z ostatniego snapshotu; GLD stoi (zwroty 0).
+        nvda_value = 10 * float(volatile[-1][1].amount)
+        nvda_weight = nvda_value / (nvda_value + 900 * 100)
+        nvda_returns = returns_from_prices([float(m.amount) for _, m in volatile])
+        expected = historical_var([nvda_weight * r for r in nvda_returns], 0.95)
+        assert risk.var == pytest.approx(expected)
+        # Równe wagi watchlisty dałyby wyraźnie większy VaR.
+        assert risk.var < historical_var([0.5 * r for r in nvda_returns], 0.95)
+
+    def test_reads_only_held_symbols(self, repository_port: Mock) -> None:
+        history = {"NVDA": _long_series(100), "GLD": self._flat_series("100")}
+
+        self._uc(repository_port, history).position_risk(self._portfolio(("NVDA", "1")))
+
+        assert [c.args[0] for c in repository_port.get_price_history.call_args_list] == [
+            "NVDA"
+        ]
+
+    def test_var_is_none_below_min_observations(self, repository_port: Mock) -> None:
+        history = {"NVDA": _series(["100", "90", "95", "80", "85"])}
+
+        risk = self._uc(repository_port, history).position_risk(
+            self._portfolio(("NVDA", "1"))
+        )
+
+        assert risk.var is None
+
+    def test_drawdown_is_the_current_depth_below_the_peak(
+        self, repository_port: Mock
+    ) -> None:
+        history = {"NVDA": _series(["100", "120", "110", "96"])}
+
+        risk = self._uc(repository_port, history).position_risk(
+            self._portfolio(("NVDA", "1"))
+        )
+
+        assert risk.drawdown == pytest.approx(0.2)
+
+    def test_drawdown_is_zero_at_a_new_high(self, repository_port: Mock) -> None:
+        history = {"NVDA": _series(["100", "90", "95", "130"])}
+
+        risk = self._uc(repository_port, history).position_risk(
+            self._portfolio(("NVDA", "1"))
+        )
+
+        assert risk.drawdown == pytest.approx(0.0)
+
+    def test_symbols_without_history_drop_out_and_weights_renormalise(
+        self, repository_port: Mock
+    ) -> None:
+        history = {"NVDA": _series(["100", "120", "110", "96"]), "XDWD.DE": []}
+
+        risk = self._uc(repository_port, history).position_risk(
+            self._portfolio(("NVDA", "1"), ("XDWD.DE", "100"))
+        )
+
+        assert risk.drawdown == pytest.approx(0.2)
+
+    def test_no_usable_history_gives_no_risk(self, repository_port: Mock) -> None:
+        risk = self._uc(repository_port, {"NVDA": []}).position_risk(
+            self._portfolio(("NVDA", "1"))
+        )
+
+        assert risk == PositionRisk()
+
+    def test_failed_history_read_drops_the_symbol(self, repository_port: Mock) -> None:
+        def history(sym: str, days: int) -> list[tuple[datetime, Money]]:
+            if sym == "XDWD.DE":
+                raise RuntimeError("supabase down")
+            return _series(["100", "120", "110", "96"])
+
+        repository_port.get_price_history.side_effect = history
+        risk = PortfolioRiskUseCase(repository_port=repository_port).position_risk(
+            self._portfolio(("NVDA", "1"), ("XDWD.DE", "1"))
+        )
+
+        assert risk.drawdown == pytest.approx(0.2)
+
+    def test_held_inverse_hedge_moving_against_the_book_is_effective(
+        self, repository_port: Mock
+    ) -> None:
+        history = {"NVDA": _long_series(100), "SH": _long_series(40, mirror=True)}
+
+        risk = self._uc(repository_port, history).position_risk(
+            self._portfolio(("NVDA", "10"), ("SH", "5")), hedge_symbols={"SH"}
+        )
+
+        assert risk.hedge_effective is True
+
+    def test_held_hedge_moving_with_the_book_is_ineffective(
+        self, repository_port: Mock
+    ) -> None:
+        history = {"NVDA": _long_series(100), "SH": _long_series(40)}
+
+        risk = self._uc(repository_port, history).position_risk(
+            self._portfolio(("NVDA", "10"), ("SH", "5")), hedge_symbols={"SH"}
+        )
+
+        assert risk.hedge_effective is False
+
+    def test_no_held_hedge_means_unknown(self, repository_port: Mock) -> None:
+        history = {"NVDA": _long_series(100)}
+
+        risk = self._uc(repository_port, history).position_risk(
+            self._portfolio(("NVDA", "10")), hedge_symbols={"SH"}
+        )
+
+        assert risk.hedge_effective is None
+
+    def test_hedge_needs_min_paired_returns(self, repository_port: Mock) -> None:
+        history = {
+            "NVDA": _series(["100", "110", "99", "120", "108"]),
+            "SH": _series(["40", "36", "40", "33", "37"]),
+        }
+
+        risk = self._uc(repository_port, history).position_risk(
+            self._portfolio(("NVDA", "10"), ("SH", "5")), hedge_symbols={"SH"}
+        )
+
+        assert risk.hedge_effective is None

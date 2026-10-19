@@ -14,7 +14,7 @@ pusty, łagodny raport.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -26,9 +26,13 @@ from src.domain.correlation import (
     detect_clusters,
     returns_from_prices,
 )
+from src.domain.drawdown import drawdown_from_returns
+from src.domain.hedge import assess_hedge
 from src.domain.number_format import format_number_pl
+from src.domain.portfolio import Portfolio
 from src.domain.risk_sample import RiskStat, sample_sufficiency
 from src.domain.scenarios import Scenario, ScenarioImpact, stress_test
+from src.domain.sizing import RISK_VAR_CONFIDENCE
 from src.domain.value_objects import Money
 from src.domain.var import conditional_var, historical_var
 
@@ -72,6 +76,25 @@ class PortfolioRiskReport:
     # PORT-22: statystyki pominięte z braku historii jako `(stat, n, wymagane)`,
     # np. `("var", 9, 60)`. Raport mówi wtedy „za mało historii (9/60)”.
     insufficient: tuple[tuple[RiskStat, int, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class PositionRisk:
+    """PORT-04: ryzyko REALNEGO portfela, wejście sizingu (nie sekcja maila).
+
+    Wagi to wartość rynkowa pozycji z ostatniego snapshotu, renormalizowana po
+    trzymanych symbolach z historią — nigdy równe wagi watchlisty.
+
+    - var: 1-dniowy VaR (`RISK_VAR_CONFIDENCE`) jako dodatnia strata; None
+      poniżej `MIN_VAR_OBSERVATIONS` zwrotów.
+    - drawdown: bieżąca głębokość pod szczytem okna `PRICE_HISTORY_DAYS`.
+    - hedge_effective: czy trzymane instrumenty ryzyka poruszają się przeciw
+      reszcie portfela; None bez trzymanego hedge'a albo za krótkiej próby.
+    """
+
+    var: float | None = None
+    drawdown: float | None = None
+    hedge_effective: bool | None = None
 
 
 class PortfolioRiskUseCase:
@@ -164,6 +187,79 @@ class PortfolioRiskUseCase:
             insufficient=tuple(shortfalls),
         )
 
+    def position_risk(
+        self, portfolio: Portfolio, *, hedge_symbols: Collection[str] = ()
+    ) -> PositionRisk:
+        """PORT-04: VaR, obsunięcie i skuteczność hedge'a trzymanych pozycji.
+
+        Czyta wyłącznie historię trzymanych symboli (darmowe `price_snapshots`).
+        Symbol bez historii albo z błędem odczytu wypada, a wagi pozostałych się
+        renormalizują. `hedge_symbols` to instrumenty ryzyka: trzymane liczą się
+        jako hedge reszty portfela (oczekiwany ruch przeciwny)."""
+        held = sorted({position.symbol for position in portfolio.positions})
+        history = self._collect_history(held)
+        returns_by_symbol = self._aligned_returns(history)
+        last_prices = {
+            symbol: max(history[symbol], key=lambda point: point[0])[1].amount
+            for symbol in returns_by_symbol
+        }
+        # Granica Decimal → float: matematyka ryzyka liczy na floatach.
+        weights = {
+            symbol: float(weight)
+            for symbol, weight in portfolio.weights(last_prices).items()
+        }
+        portfolio_returns = self._weighted_returns(returns_by_symbol, weights)
+        if not portfolio_returns:
+            return PositionRisk()
+        var_gap = self._shortfall("var", len(portfolio_returns))
+        return PositionRisk(
+            var=(
+                historical_var(portfolio_returns, RISK_VAR_CONFIDENCE)
+                if var_gap is None
+                else None
+            ),
+            drawdown=drawdown_from_returns(portfolio_returns),
+            hedge_effective=self._hedge_effective(
+                returns_by_symbol, weights, frozenset(hedge_symbols)
+            ),
+        )
+
+    def _hedge_effective(
+        self,
+        returns_by_symbol: dict[str, list[float]],
+        weights: Mapping[str, float],
+        hedge_symbols: frozenset[str],
+    ) -> bool | None:
+        """Noga hedge'y (trzymane instrumenty ryzyka) vs noga książki (reszta),
+        obie ważone wartością pozycji. None, gdy brakuje którejś nogi albo
+        sparowanych zwrotów jest mniej niż `MIN_PAIRED_RETURNS`."""
+        hedges = {s: r for s, r in returns_by_symbol.items() if s in hedge_symbols}
+        book = {s: r for s, r in returns_by_symbol.items() if s not in hedge_symbols}
+        hedge_returns = self._weighted_returns(hedges, weights)
+        book_returns = self._weighted_returns(book, weights)
+        paired = min(len(hedge_returns), len(book_returns))
+        if paired == 0 or self._shortfall("correlation", paired) is not None:
+            return None
+        assessment = assess_hedge(
+            "+".join(sorted(hedges)), book_returns, hedge_returns, expect_inverse=True
+        )
+        return assessment.label == "skuteczny"
+
+    @staticmethod
+    def _weighted_returns(
+        returns_by_symbol: dict[str, list[float]], weights: Mapping[str, float]
+    ) -> list[float]:
+        """Zwroty koszyka ważone `weights` (renormalizowanymi po symbolach
+        koszyka). Pusty koszyk albo zerowa suma wag → []."""
+        series = {s: r for s, r in returns_by_symbol.items() if weights.get(s, 0.0) > 0}
+        total = sum(weights[s] for s in series)
+        if not series or total <= 0:
+            return []
+        n = min(len(r) for r in series.values())
+        return [
+            sum(weights[s] * r[t] for s, r in series.items()) / total for t in range(n)
+        ]
+
     def _shortfall(self, stat: RiskStat, n: int) -> tuple[RiskStat, int, int] | None:
         """`(stat, n, wymagane)` gdy próba jest za mała; None gdy wystarcza albo
         bramka minimalnych prób jest wyłączona."""
@@ -194,6 +290,12 @@ class PortfolioRiskUseCase:
         Symbole z za krótką/pustą historią (mniej niż 2 zwroty) są pomijane.
         Pojedynczy błąd odczytu nie wywala całego passu.
         """
+        return self._aligned_returns(self._collect_history(symbols))
+
+    def _collect_history(
+        self, symbols: list[str]
+    ) -> dict[str, list[tuple[datetime, Money]]]:
+        """Historia cen per symbol z ≥3 snapshotami; błąd odczytu → pominięty."""
         raw: dict[str, list[tuple[datetime, Money]]] = {}
         for symbol in symbols:
             try:
@@ -208,7 +310,13 @@ class PortfolioRiskUseCase:
             # zawęziłyby wspólny przekrój i wyzerowały korelacje pozostałych.
             if len(history) >= 3:
                 raw[symbol] = history
+        return raw
 
+    @staticmethod
+    def _aligned_returns(
+        raw: dict[str, list[tuple[datetime, Money]]],
+    ) -> dict[str, list[float]]:
+        """Wyrównuje historię po wspólnych dniach UTC i liczy zwroty (≥2)."""
         aligned = align_by_utc_day(
             {
                 symbol: [(ts, float(price.amount)) for ts, price in series]
