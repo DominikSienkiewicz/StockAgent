@@ -2058,3 +2058,27 @@ class TestSettledAtWindows:
         assert all("settled_at" not in str(params) for params in sent)
         assert sent[0].get("timestamp", "").startswith("gte.")
         assert sent[0].get("order") == "timestamp.desc"
+
+
+class TestResolvedForEvalRecipeColumn:
+    """WIA-20: kolumna `recipe_version` (migracja 030) trafia do selecta TYLKO na
+    żądanie — przed migracją select po niej to 400 i pusta ewaluacja."""
+
+    def _select_columns(self, repo: SupabaseRepository, mock_client: MagicMock, **kwargs) -> str:
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [[]])
+        repo.get_resolved_predictions_for_eval(30, **kwargs)
+        return chain.select.call_args.args[0]
+
+    def test_default_select_has_no_recipe_column(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        assert "recipe_version" not in self._select_columns(repo, mock_client)
+
+    def test_with_recipe_selects_the_recipe_column(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        assert "recipe_version" in self._select_columns(repo, mock_client, with_recipe=True)

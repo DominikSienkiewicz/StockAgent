@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from decimal import Decimal
 from pathlib import Path
@@ -22,6 +24,28 @@ from src.domain.macro_risk import MacroRiskInstrumentType
 # config niewrażliwy po cichu spada do defaultów (np. notifications_enabled=False).
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_TOML_FILE = str(_REPO_ROOT / "config.toml")
+
+# WIA-20: pola, które NIE wchodzą do `Settings.config_hash()` — sekrety (klucze
+# API, tokeny, poświadczenia bazy), adresy e-mail i adresy docelowe kanałów
+# push. Hash ląduje w kwicie predykcji w bazie, więc sekret nie może go zmieniać.
+# Test pilnuje, że każde pole o „sekretnej” nazwie jest na tej liście.
+SECRET_SETTINGS_FIELDS: frozenset[str] = frozenset({
+    "openai_api_key",
+    "anthropic_api_key",
+    "fred_api_key",
+    "finnhub_api_key",
+    "alpha_vantage_api_keys",
+    "supabase_url",
+    "supabase_key",
+    "resend_api_key",
+    "digest_from_email",
+    "digest_to_email",
+    "telegram_bot_token",
+    "telegram_chat_id",
+    "slack_webhook_url",
+    # Nagłówek SEC niesie adres kontaktowy.
+    "edgar_user_agent",
+})
 
 
 class Settings(BaseSettings):
@@ -155,6 +179,11 @@ class Settings(BaseSettings):
     # kolumnie przed migracją 027 → PGRST204/400 (zapis predykcji albo trening).
     feature_set_version_enabled: bool = False
     feature_set_filter_enabled: bool = False
+    # WIA-20: kolumna `prediction_logs.recipe_version` (migracja 030) — wersja
+    # przepisu predykcji (model, szablon promptu, persony, config, wagi ML). Pola
+    # przepisu w kwicie v2 idą za `receipts_enabled` (JSONB, bez migracji). Off:
+    # nowy klucz przed migracją 030 → PGRST204 i śmierć zapisu całej predykcji.
+    recipe_version_enabled: bool = False
     # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
     # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr
@@ -534,6 +563,17 @@ class Settings(BaseSettings):
                 "(comma-separated) or legacy ALPHA_VANTAGE_API_KEY in env."
             )
         return self
+
+    def config_hash(self) -> str:
+        """WIA-20: sha256 posortowanych NIESEKRETNYCH pól (progi, flagi, modele,
+        symbole) — składnik wersji przepisu predykcji.
+
+        Sekrety z `SECRET_SETTINGS_FIELDS` są wycięte, zanim cokolwiek zostanie
+        zserializowane. Zmienia się przy KAŻDEJ zmianie configu niewrażliwego,
+        także takiej, która nie dotyka prognozy (np. strefa czasu maila)."""
+        payload = self.model_dump(mode="json", exclude=set(SECRET_SETTINGS_FIELDS))
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     @classmethod
     def from_env(cls) -> Settings:

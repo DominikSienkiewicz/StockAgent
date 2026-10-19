@@ -12,6 +12,7 @@ from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from src.application.decision_receipt import RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2
 from src.application.ml_features import FEATURE_SET_VERSION, ML_FEATURE_COLUMNS
 from src.application.ports import (
     AdvisoryCouncilPort,
@@ -49,6 +50,7 @@ from src.domain.prediction import (
     normalize_trend,
     sideways_tolerance_for,
 )
+from src.domain.recipe import PredictionRecipe
 from src.domain.regime_key import canonical_regime_key
 from src.domain.value_objects import (
     AssetType,
@@ -480,6 +482,12 @@ class AgentGraphDeps:
     # DAT-09: stempel `feature_set_version` na predykcji (migracja 027). Off =
     # klucza nie ma w rekordzie — przed migracją dałby PGRST204.
     feature_set_version_enabled: bool = False
+    # WIA-20: przepis predykcji policzony RAZ na cykl w DI. Jest → kwit v2 (pola
+    # przepisu w JSONB, za `receipts_enabled`); None → kwit v1 jak przed WIA-20.
+    recipe: PredictionRecipe | None = None
+    # WIA-20: stempel `recipe_version` (migracja 030). Off = klucza nie ma
+    # w rekordzie — przed migracją dałby PGRST204.
+    recipe_version_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
     # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). Pole jest
@@ -537,7 +545,10 @@ def _build_decision_receipts(deps: AgentGraphDeps, state: AgentState) -> dict[st
 
     MVP celowo bez odznak proweniencji: `AgentState` ich nie niesie (liczy je
     dopiero `to_symbol_result` z innych wejść), a dokładanie ich tutaj byłoby
-    duplikacją logiki. Kwit rośnie w `schema_version: 2`.
+    duplikacją logiki. WIA-66 dołoży je w v2 jako opcjonalny klucz.
+
+    WIA-20: z przepisem w deps kwit ma `schema_version: 2` — wszystkie klucze v1
+    plus płaskie pola przepisu i `recipe_version` (czytnik: `decision_receipt`).
 
     Wszystkie wartości muszą być JSON-serializowalne: `_serialize` w adapterze
     konwertuje Decimal TYLKO na najwyższym poziomie, więc zagnieżdżony Decimal
@@ -546,8 +557,8 @@ def _build_decision_receipts(deps: AgentGraphDeps, state: AgentState) -> dict[st
     threshold = _pick_threshold(state, deps.threshold, deps.crypto_threshold)
     attribution: tuple[FeatureContribution, ...] = state.get("feature_attribution", ())
     precedents: list[dict[str, Any]] = list(state.get("similar_precedents") or [])
-    return {
-        "schema_version": 1,
+    receipt: dict[str, Any] = {
+        "schema_version": RECEIPT_SCHEMA_V1,
         # Próg EFEKTYWNY (po mnożnikach reżimu i earnings), nie surowy z configu
         # — inaczej post-mortem nie wyjaśni, czemu symbol przeszedł bramkę.
         "effective_threshold": str(threshold.value),
@@ -557,6 +568,10 @@ def _build_decision_receipts(deps: AgentGraphDeps, state: AgentState) -> dict[st
             for c in attribution
         ],
     }
+    if deps.recipe is not None:
+        receipt["schema_version"] = RECEIPT_SCHEMA_V2
+        receipt.update(deps.recipe.receipt_fields())
+    return receipt
 
 
 def _pick_threshold(
@@ -1234,6 +1249,10 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # trening oddziela nią wiersze sprzed zmiany znaczenia `news_volume_24h`.
     if deps.feature_set_version_enabled:
         record["feature_set_version"] = FEATURE_SET_VERSION
+
+    # WIA-20: wersja przepisu — track record segmentuje się po niej.
+    if deps.recipe_version_enabled and deps.recipe is not None:
+        record["recipe_version"] = deps.recipe.version
 
     # #18: `edge_sigma` (migracja 025) tylko gdy sygnał realnie powstał —
     # bez portu opcji klucz nie istnieje, więc stary schemat zapisuje się jak dotąd.

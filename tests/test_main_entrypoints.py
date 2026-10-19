@@ -2824,3 +2824,112 @@ class TestRunContextWiring:
 
         assert context.run_context.git_sha == "local"
         assert context.run_context.run_url is None
+
+
+class TestPredictionRecipeWiring:
+    """WIA-20: przepis predykcji liczony RAZ na cykl w DI i wstrzykiwany jednym
+    polem `AgentGraphDeps.recipe`; kolumna `recipe_version` za własną flagą."""
+
+    def test_recipe_names_the_models_the_run_and_the_config(self, settings) -> None:
+        from src.application.run_context import RunContext
+
+        settings.llm_provider = "anthropic"
+        settings.anthropic_api_key = "sk-ant-test"
+        settings.council_llm_provider = "openai"
+        settings.council_llm_model = "gpt-5-mini"
+
+        recipe = main_agent.build_prediction_recipe(
+            settings, RunContext(run_id="77", git_sha="abc1234def")
+        )
+
+        assert (recipe.llm_provider, recipe.llm_model) == ("anthropic", "claude-sonnet-4-6")
+        assert (recipe.council_provider, recipe.council_model) == ("openai", "gpt-5-mini")
+        assert (recipe.git_sha, recipe.run_id) == ("abc1234def", "77")
+        assert recipe.config_hash == settings.config_hash()
+        # `ml_model_path` fixture'a nie istnieje → cold start.
+        assert recipe.model_version == "cold_start"
+        assert len(recipe.prompt_sha256) == 64
+        assert len(recipe.personas_sha256) == 64
+
+    def test_council_without_overrides_is_the_main_llm(self, settings) -> None:
+        from src.application.run_context import RunContext
+
+        recipe = main_agent.build_prediction_recipe(settings, RunContext())
+
+        assert (recipe.llm_provider, recipe.llm_model) == ("openai", "gpt-4o")
+        assert (recipe.council_provider, recipe.council_model) == ("openai", "gpt-4o")
+
+    def test_model_routing_names_both_models(self, settings) -> None:
+        from src.application.run_context import RunContext
+
+        settings.model_routing_enabled = True
+
+        recipe = main_agent.build_prediction_recipe(settings, RunContext())
+
+        assert recipe.llm_provider == "routing"
+        assert recipe.llm_model == "openai:gpt-5-mini|anthropic:claude-sonnet-4-6"
+
+    def test_recipe_never_carries_a_secret(self, settings) -> None:
+        import json
+
+        from src.application.run_context import RunContext
+
+        settings.openai_api_key = "sk-SECRET-openai"
+        settings.supabase_key = "SECRET-supabase"
+        settings.digest_to_email = "SECRET-owner@example.com"
+
+        fields = main_agent.build_prediction_recipe(settings, RunContext()).receipt_fields()
+
+        assert "SECRET" not in json.dumps(fields)
+
+    def test_flags_off_build_no_recipe(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings)
+
+        deps = use_case_cls.call_args.args[0]
+        assert deps.recipe is None
+        assert deps.recipe_version_enabled is False
+
+    def test_receipts_on_inject_the_recipe_of_this_run(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.application.run_context import RunContext
+
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.receipts_enabled = True
+
+        main_agent.build_use_case(settings, run_context=RunContext(git_sha="abc"))
+
+        deps = use_case_cls.call_args.args[0]
+        assert deps.recipe is not None
+        assert deps.recipe.git_sha == "abc"
+        assert deps.recipe_version_enabled is False
+
+    def test_column_flag_reaches_graph_deps_with_a_recipe(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.recipe_version_enabled = True
+
+        main_agent.build_use_case(settings)
+
+        deps = use_case_cls.call_args.args[0]
+        assert deps.recipe is not None
+        assert deps.recipe_version_enabled is True
+
+    def test_main_builds_the_recipe_from_the_run_context(
+        self, settings, mock_external_clients, mocker, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("GITHUB_SHA", "abc1234def")
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        build = mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings)
+
+        assert build.call_args.kwargs["run_context"].git_sha == "abc1234def"

@@ -17,6 +17,7 @@ from src.application.ports import (
     ToolUseLLMPort,
 )
 from src.domain.prediction import Prediction, TrendDirection
+from src.domain.recipe import PredictionRecipe
 from src.domain.value_objects import Money, Threshold
 
 EXPECTED_ML_FEATURES = [
@@ -87,6 +88,24 @@ def workflow(
         llm_port=llm_port,
         threshold=Threshold(Decimal("0.02")),
     ))
+
+
+def _recipe(**overrides: str) -> PredictionRecipe:
+    """WIA-20: przepis z kompletem pól; testy nadpisują tylko to, co sprawdzają."""
+    fields: dict[str, str] = {
+        "llm_provider": "anthropic",
+        "llm_model": "claude-sonnet-4-6",
+        "council_provider": "openai",
+        "council_model": "gpt-5-mini",
+        "prompt_sha256": "a" * 64,
+        "personas_sha256": "b" * 64,
+        "config_hash": "c" * 64,
+        "model_version": "cold_start",
+        "git_sha": "local",
+        "run_id": "local",
+    }
+    fields.update(overrides)
+    return PredictionRecipe(**fields)
 
 
 def _initial_state(previous_price: str) -> dict:
@@ -2131,15 +2150,85 @@ class TestDecisionReceipts:
     Off = klucza nie ma w ogóle.
     """
 
-    def _make(self, ports: dict, *, enabled: bool):
+    def _make(
+        self,
+        ports: dict,
+        *,
+        enabled: bool,
+        recipe: PredictionRecipe | None = None,
+        recipe_version_enabled: bool = False,
+    ):
         return create_agent_graph(AgentGraphDeps(
             **ports,
             threshold=Threshold(Decimal("0.02")),
             receipts_enabled=enabled,
+            recipe=recipe,
+            recipe_version_enabled=recipe_version_enabled,
         ))
 
     def _record(self, repository_port: Mock) -> dict:
         return repository_port.save_prediction.call_args.args[0]
+
+    def _invoke_full_analysis(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        **make_kwargs,
+    ) -> dict:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+        self._make(ports, **make_kwargs).compile().invoke(_initial_state("100.0"))
+        return self._record(repository_port)
+
+    def test_receipt_v2_carries_model_prompt_and_code_version(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-20: przepis (model, hash szablonu promptu, kod) w kwicie v2.
+        recipe = _recipe(llm_model="claude-sonnet-4-6", git_sha="abc")
+
+        record = self._invoke_full_analysis(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True, recipe=recipe,
+        )
+
+        receipts = record["decision_receipts"]
+        assert receipts["schema_version"] == 2
+        assert receipts["llm_model"] == "claude-sonnet-4-6"
+        assert len(receipts["prompt_sha256"]) == 64
+        assert receipts["git_sha"] == "abc"
+        assert receipts["recipe_version"] == recipe.version
+        # v2 to nadzbiór v1 — czytnik v1 nie traci żadnego klucza.
+        assert {"effective_threshold", "precedents", "feature_attribution"} <= set(receipts)
+
+    def test_receipt_v2_is_json_serialisable(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        import json
+
+        record = self._invoke_full_analysis(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True, recipe=_recipe(),
+        )
+
+        json.dumps(record["decision_receipts"])
+
+    def test_recipe_without_receipts_flag_writes_no_receipt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        record = self._invoke_full_analysis(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=False, recipe=_recipe(),
+        )
+
+        assert "decision_receipts" not in record
 
     def test_flag_off_omits_the_column_entirely(
         self, market_port, sentiment_port, news_port,
@@ -2201,6 +2290,65 @@ class TestDecisionReceipts:
         self._make(ports, enabled=True).compile().invoke(_initial_state("100.0"))
 
         json.dumps(self._record(repository_port)["decision_receipts"])
+
+
+class TestRecipeVersionColumn:
+    """WIA-20: kolumna `recipe_version` (migracja 030) za flagą
+    `recipe_version_enabled` — nowy klucz przed migracją to PGRST204 i śmierć
+    zapisu całej predykcji."""
+
+    def _record(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, recipe: PredictionRecipe | None, enabled: bool,
+    ) -> dict:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            recipe=recipe,
+            recipe_version_enabled=enabled,
+        )).compile().invoke(_initial_state("100.0"))
+        return repository_port.save_prediction.call_args.args[0]
+
+    def test_flag_off_omits_the_column_even_with_a_recipe(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            recipe=_recipe(), enabled=False,
+        )
+
+        assert "recipe_version" not in record
+
+    def test_flag_on_stamps_the_recipe_version(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        recipe = _recipe()
+
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            recipe=recipe, enabled=True,
+        )
+
+        assert record["recipe_version"] == recipe.version
+
+    def test_flag_on_without_a_recipe_omits_the_column(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            recipe=None, enabled=True,
+        )
+
+        assert "recipe_version" not in record
 
 
 class TestFormatAnalogCarriesIdentity:

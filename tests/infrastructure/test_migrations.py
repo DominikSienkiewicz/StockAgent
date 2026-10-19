@@ -51,6 +51,7 @@ MIGRATION_FILES = [
     "027_feature_set_version.sql",
     "028_model_scorecard_baselines.sql",
     "029_prediction_settled_at.sql",
+    "030_recipe_version.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -780,6 +781,29 @@ class TestMigrations:
             unchanged = cur.fetchone()[0]
 
         assert unchanged is True
+
+    # -- Migracja 030: wersja przepisu predykcji (WIA-20) ---------------------
+
+    def test_recipe_version_column_is_nullable_and_indexed(self, pg_conn) -> None:
+        """Track record segmentuje się po przepisie; stare wiersze i zapis bez
+        flagi `recipe_version_enabled` zostają NULL („przepis nieznany”)."""
+        assert "recipe_version" in _columns(pg_conn, "prediction_logs")
+        assert "idx_prediction_logs_recipe_version" in _indexes(pg_conn, "prediction_logs")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('RCP_NULL', '2026-10-19T05:30:00+00:00', 100.0) "
+                "RETURNING recipe_version"
+            )
+            assert cur.fetchone() == (None,)
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, recipe_version) "
+                "VALUES ('RCP_SET', '2026-10-19T05:30:00+00:00', 100.0, %s) "
+                "RETURNING recipe_version",
+                ("a" * 64,),
+            )
+            assert cur.fetchone() == ("a" * 64,)
 
 
 @pytest.fixture

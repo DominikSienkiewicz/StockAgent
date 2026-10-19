@@ -20,6 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from src.application.agent_graph import AgentGraphDeps
@@ -100,6 +101,7 @@ from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
 from src.domain.portfolio import Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.recipe import PredictionRecipe
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
@@ -123,6 +125,8 @@ from src.infrastructure.adapters.routing_market_data import RoutingMarketDataPor
 from src.infrastructure.adapters.subscriber_repo import SupabaseSubscriberRepository
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+from src.infrastructure.persona_loader import personas_sha256
+from src.infrastructure.recipe_fingerprints import ml_model_version, prompt_templates_sha256
 
 # R2: domyślne scenariusze stress-testu (szok rynku jako ułamek). Szok stosowany
 # do portfela równoważonego przez β-to-portfel każdego symbolu (domena liczy resztę).
@@ -792,16 +796,71 @@ def build_macro_rates_port(settings: Settings) -> MacroRatesPort:
     return NullMacroRatesAdapter()
 
 
+def _provider_default_model(provider: str) -> str:
+    """Model, którego adapter danego providera używa bez jawnego `model=`."""
+    if provider == "anthropic":
+        from src.infrastructure.llm.anthropic_client import DEFAULT_MODEL as ANTHROPIC_DEFAULT
+
+        return ANTHROPIC_DEFAULT
+    from src.infrastructure.llm.openai_client import DEFAULT_MODEL as OPENAI_DEFAULT
+
+    return OPENAI_DEFAULT
+
+
+def _main_llm_identity(settings: Settings) -> tuple[str, str]:
+    """(provider, model) głównego LLM — te same reguły co `build_llm_adapter`."""
+    if settings.model_routing_enabled:
+        return "routing", (
+            f"openai:{settings.router_cheap_model}"
+            f"|{settings.router_frontier_provider}:{settings.router_frontier_model}"
+        )
+    return settings.llm_provider, _provider_default_model(settings.llm_provider)
+
+
+def _council_llm_identity(
+    settings: Settings, main_identity: tuple[str, str]
+) -> tuple[str, str]:
+    """(provider, model) rady — te same reguły co `build_council_llm_adapter`."""
+    if settings.council_llm_provider is None and settings.council_llm_model is None:
+        return main_identity
+    provider = settings.council_llm_provider or settings.llm_provider
+    return provider, settings.council_llm_model or _provider_default_model(provider)
+
+
+def build_prediction_recipe(settings: Settings, run_context: RunContext) -> PredictionRecipe:
+    """WIA-20: przepis predykcji tego cyklu — liczony RAZ, wstrzykiwany do grafu
+    jednym polem `AgentGraphDeps.recipe`. Czyta pliki promptów, person i wag,
+    zero płatnych wywołań. Sekrety nie wchodzą (`Settings.config_hash`)."""
+    main_identity = _main_llm_identity(settings)
+    council_provider, council_model = _council_llm_identity(settings, main_identity)
+    return PredictionRecipe(
+        llm_provider=main_identity[0],
+        llm_model=main_identity[1],
+        council_provider=council_provider,
+        council_model=council_model,
+        prompt_sha256=prompt_templates_sha256(),
+        personas_sha256=personas_sha256(Path(settings.council_personas_dir)),
+        config_hash=settings.config_hash(),
+        model_version=ml_model_version(settings.ml_model_path),
+        git_sha=run_context.git_sha,
+        run_id=run_context.run_id,
+    )
+
+
 def build_use_case(
     settings: Settings,
     repository: RepositoryPort | None = None,
     quota_monitor: QuotaMonitor | None = None,
+    run_context: RunContext | None = None,
 ) -> AnalyzeMarketUseCase:
     """DI Container — buduje wszystkie adaptery i wstrzykuje do Use Case'a.
 
     SYMBOLS przekazujemy do AlphaVantageClient jako sumę akcji + krypto,
     z osobną listą crypto_symbols → adapter wewnętrznie prefiksuje BTC →
     CRYPTO:BTC w requestach NEWS_SENTIMENT.
+
+    `run_context` (MAIL-42) wchodzi do przepisu predykcji (WIA-20); brak = run
+    lokalny.
     """
     all_av_symbols = list(settings.symbols) + list(settings.crypto_symbols)
     av_client = AlphaVantageClient(
@@ -888,6 +947,14 @@ def build_use_case(
         vector_memory_enabled=settings.vector_memory_enabled,
         receipts_enabled=settings.receipts_enabled,
         feature_set_version_enabled=settings.feature_set_version_enabled,
+        # WIA-20: przepis liczymy tylko, gdy ktoś go zapisze (kwit v2 albo
+        # kolumna `recipe_version`); obie flagi off → zero nowych odczytów plików.
+        recipe=(
+            build_prediction_recipe(settings, run_context or RunContext())
+            if settings.receipts_enabled or settings.recipe_version_enabled
+            else None
+        ),
+        recipe_version_enabled=settings.recipe_version_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings),
@@ -1882,7 +1949,10 @@ def main(settings: Settings | None = None) -> int:
     quota_monitor = QuotaMonitor(alert_notifier=alert_notifier)
     repository = build_repository(settings)
     use_case = build_use_case(
-        settings, repository=repository, quota_monitor=quota_monitor
+        settings,
+        repository=repository,
+        quota_monitor=quota_monitor,
+        run_context=run_context,
     )
     # Mail i stary push osobno: tekst pushu nie niesie sekcji portfela.
     notifier = build_notifier(settings, quota_monitor=quota_monitor, include_push=False)

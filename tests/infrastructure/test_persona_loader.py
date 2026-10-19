@@ -194,3 +194,44 @@ class TestRealPersonaFiles:
         # Usunięci doradcy nie mogą wrócić przez przypadkowy plik.
         assert "Joel Greenblatt" not in names
         assert "Michael Burry" not in names
+
+
+class TestPersonasSha256:
+    """WIA-20: hash zestawu person do przepisu predykcji — nowa, usunięta albo
+    zmieniona persona to inny przepis."""
+
+    def test_same_files_give_the_same_hash(self, tmp_path: Path) -> None:
+        from src.infrastructure.persona_loader import personas_sha256
+
+        _write_persona(tmp_path, "Warren Buffett")
+        _write_persona(tmp_path, "Cathie Wood")
+
+        assert personas_sha256(tmp_path) == personas_sha256(tmp_path)
+        assert len(personas_sha256(tmp_path)) == 64
+
+    def test_changed_style_changes_the_hash(self, tmp_path: Path) -> None:
+        from src.infrastructure.persona_loader import personas_sha256
+
+        _write_persona(tmp_path, "Warren Buffett", style="Value investing with a margin " * 3)
+        before = personas_sha256(tmp_path)
+        _write_persona(tmp_path, "Warren Buffett", style="Growth at any price, momentum " * 3)
+
+        assert personas_sha256(tmp_path) != before
+
+    def test_added_persona_changes_the_hash(self, tmp_path: Path) -> None:
+        from src.infrastructure.persona_loader import personas_sha256
+
+        _write_persona(tmp_path, "Warren Buffett")
+        before = personas_sha256(tmp_path)
+        _write_persona(tmp_path, "Cathie Wood")
+
+        assert personas_sha256(tmp_path) != before
+
+    def test_non_json_files_do_not_count(self, tmp_path: Path) -> None:
+        from src.infrastructure.persona_loader import personas_sha256
+
+        _write_persona(tmp_path, "Warren Buffett")
+        before = personas_sha256(tmp_path)
+        (tmp_path / "README.md").write_text("notatki", encoding="utf-8")
+
+        assert personas_sha256(tmp_path) == before

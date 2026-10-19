@@ -155,3 +155,76 @@ class TestSignificanceVerdict:
 
         assert "nieodróżnialne od rzutu monetą" in text
         assert "zawsze-BULLISH: 50%" in text
+
+
+class TestRecipeSegments:
+    """WIA-20: ewaluacja segmentuje trafność po wersji przepisu — inaczej wynik
+    miesza prompty, modele i persony, a zmiana przepisu udaje umiejętność."""
+
+    def test_segments_directional_hit_rate_by_recipe_version(self):
+        from src.domain.equity_curve import DirectionalHitRate
+        from src.tools.evaluate import summarize_by_version
+
+        rows = [
+            {**_row("BULLISH", True, 100, 101, 101), "recipe_version": "r1" * 32},
+            {**_row("BEARISH", False, 100, 99, 101), "recipe_version": "r1" * 32},
+            {**_row("BULLISH", True, 100, 101, 101), "recipe_version": "r2" * 32},
+            {**_row("BULLISH", None, 100, 101, 101), "recipe_version": "r2" * 32},
+        ]
+
+        segments = summarize_by_version(rows, "recipe_version")
+
+        assert segments == {
+            "r1" * 32: DirectionalHitRate(hits=1, directional=2, sideways=0),
+            "r2" * 32: DirectionalHitRate(hits=1, directional=1, sideways=0),
+        }
+
+    def test_rows_without_a_version_are_reported_as_unversioned(self):
+        from src.domain.recipe import UNVERSIONED
+        from src.tools.evaluate import summarize_by_version
+
+        segments = summarize_by_version([_row("BULLISH", True, 100, 101, 101)], "recipe_version")
+
+        assert list(segments) == [UNVERSIONED]
+
+    def test_formatted_segments_show_short_versions_and_counts(self):
+        from src.tools.evaluate import format_segments, summarize_by_version
+
+        rows = [
+            {**_row("BULLISH", True, 100, 101, 101), "recipe_version": "abcdef123456" + "0" * 52},
+            {**_row("BULLISH", False, 100, 101, 99), "recipe_version": "abcdef123456" + "0" * 52},
+        ]
+
+        text = format_segments(summarize_by_version(rows, "recipe_version"), "przepis")
+
+        assert "abcdef123456" in text
+        assert "0" * 52 not in text
+        assert "50.0%" in text
+        assert "n=2" in text
+
+    def test_by_recipe_flag_reads_the_recipe_column(self, mocker, capsys):
+        from src.tools import evaluate
+
+        mocker.patch("src.config.Settings.from_env")
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        repo_cls.return_value.get_resolved_predictions_for_eval.return_value = [
+            {**_row("BULLISH", True, 100, 101, 101), "recipe_version": "f" * 64},
+        ]
+
+        evaluate.main(["--by-recipe"])
+
+        repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
+            days=30, with_recipe=True
+        )
+        assert "f" * 12 in capsys.readouterr().out
+
+    def test_default_run_does_not_touch_the_recipe_column(self, mocker):
+        from src.tools import evaluate
+
+        mocker.patch("src.config.Settings.from_env")
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        repo_cls.return_value.get_resolved_predictions_for_eval.return_value = []
+
+        evaluate.main([])
+
+        repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(days=30)

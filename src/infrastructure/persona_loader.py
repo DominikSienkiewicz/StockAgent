@@ -9,6 +9,7 @@ literówki przed runtime'em.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -62,6 +63,17 @@ def load_council_personas(directory: Path) -> tuple[InvestorPersona, ...]:
         personas.append(persona)
 
     return tuple(sorted(personas, key=lambda p: p.name))
+
+
+def personas_sha256(directory: Path) -> str:
+    """WIA-20: sha256 zestawu person do przepisu predykcji — nazwy i bajty plików
+    *.json w stałej kolejności. Dodanie, usunięcie albo edycja persony (także
+    samo formatowanie JSON-a) to inny przepis."""
+    digest = hashlib.sha256()
+    for path in sorted(directory.glob("*.json")):
+        digest.update(path.name.encode("utf-8") + b"\0")
+        digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()
 
 
 def _load_persona_file(path: Path) -> InvestorPersona:

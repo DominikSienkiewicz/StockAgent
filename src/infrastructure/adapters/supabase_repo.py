@@ -405,20 +405,28 @@ class SupabaseRepository(RepositoryPort):
         )
         return _paginate(query)
 
-    def get_resolved_predictions_for_eval(self, days: int) -> list[dict[str, Any]]:
+    def get_resolved_predictions_for_eval(
+        self, days: int, *, with_recipe: bool = False
+    ) -> list[dict[str, Any]]:
         """Zamknięte predykcje z ostatnich `days` dni z polami do ewaluacji
         (ceny + kierunek). Read-only; używane przez `src.tools.evaluate`.
+
+        `with_recipe` (WIA-20) dokłada kolumnę `recipe_version` do segmentacji
+        po przepisie — WYMAGA migracji 030 (inaczej PostgREST zwraca 400).
 
         Metoda concrete-only (nie część `RepositoryPort`) — to narzędzie
         offline-analizy, nie część runtime'owego kontraktu use case'ów."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
+        columns = (
+            "predicted_trend, is_trend_correct, price_at_prediction, "
+            "predicted_target_price, actual_price_after_12h, timestamp"
+        )
+        if with_recipe:
+            columns += ", recipe_version"
         # Paginacja (#8) — ewaluacja musi widzieć pełen zbiór, nie obcięte 1000.
         query = (
             self._client.table(self._table)
-            .select(
-                "predicted_trend, is_trend_correct, price_at_prediction, "
-                "predicted_target_price, actual_price_after_12h, timestamp"
-            )
+            .select(columns)
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("actual_price_after_12h", "null")
             .order("timestamp", desc=True)

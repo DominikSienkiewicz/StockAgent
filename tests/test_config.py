@@ -12,6 +12,15 @@ REQUIRED_ENV = {
     "SUPABASE_KEY": "supa-key",
 }
 
+# Te same wartości jako kwargi `Settings` (bez czytania env).
+REQUIRED_ENV_KWARGS = {
+    "openai_api_key": "sk-test",
+    "finnhub_api_key": "fh-test",
+    "alpha_vantage_api_keys": ["av-test"],
+    "supabase_url": "https://test.supabase.co",
+    "supabase_key": "supa-key",
+}
+
 
 @pytest.fixture
 def env(monkeypatch):
@@ -345,3 +354,63 @@ class TestDisplayTimezone:
         # Literówka ma zatrzymać start, a nie wysłać godzinę UTC podpisaną jako lokalna.
         with pytest.raises(ValueError, match="display_timezone"):
             Settings(_env_file=None, display_timezone=bad)
+
+
+class TestConfigHash:
+    """WIA-20: `config_hash` identyfikuje konfigurację przepisu predykcji.
+
+    Liczony WYŁĄCZNIE z niesekretnych pól: sekret (klucz API, poświadczenia
+    bazy, adres e-mail, adres kanału push) nie może zmienić hasha ani trafić
+    do kwitu, który żyje w bazie."""
+
+    _SECRET_VALUES = {
+        "openai_api_key": "sk-SECRET-openai",
+        "anthropic_api_key": "sk-ant-SECRET",
+        "fred_api_key": "fred-SECRET",
+        "finnhub_api_key": "fh-SECRET",
+        "alpha_vantage_api_keys": ["av-SECRET-1", "av-SECRET-2"],
+        "supabase_url": "https://SECRET.supabase.co",
+        "supabase_key": "supa-SECRET",
+        "resend_api_key": "re_SECRET",
+        "digest_from_email": "secret-sender@example.com",
+        "digest_to_email": "secret-owner@example.com",
+        "telegram_bot_token": "123:SECRET",
+        "telegram_chat_id": "SECRET-chat",
+        "slack_webhook_url": "https://hooks.slack.com/services/SECRET",
+        "edgar_user_agent": "StockAgent/1.0 (secret-contact@example.com)",
+    }
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_hash_is_a_stable_sha256(self, env):
+        assert self._settings().config_hash() == self._settings().config_hash()
+        assert len(self._settings().config_hash()) == 64
+
+    def test_threshold_change_changes_the_hash(self, env):
+        assert (
+            self._settings(volatility_threshold=Decimal("0.02")).config_hash()
+            != self._settings(volatility_threshold=Decimal("0.03")).config_hash()
+        )
+
+    def test_no_secret_moves_the_hash(self, env):
+        baseline = self._settings().config_hash()
+
+        for field, value in self._SECRET_VALUES.items():
+            assert self._settings(**{field: value}).config_hash() == baseline, field
+
+    def test_every_secret_looking_field_is_excluded(self, env):
+        # Nowe pole z kluczem/tokenem/adresem w nazwie musi trafić na listę
+        # wykluczeń — inaczej po cichu wejdzie do hasha (i do kwitu w bazie).
+        import re
+
+        from src.config import SECRET_SETTINGS_FIELDS
+
+        secret_like = re.compile(
+            r"key|token|secret|password|email|webhook|chat_id|user_agent|supabase"
+        )
+        named_like_secrets = {name for name in Settings.model_fields if secret_like.search(name)}
+
+        assert named_like_secrets <= SECRET_SETTINGS_FIELDS
+        assert set(self._SECRET_VALUES) <= SECRET_SETTINGS_FIELDS
+        assert set(Settings.model_fields) >= SECRET_SETTINGS_FIELDS

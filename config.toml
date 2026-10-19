@@ -77,6 +77,10 @@ receipts_enabled = true
 # treningu, Slow Loop jawnie pomija model wspólny (status skipped + n_samples).
 feature_set_version_enabled = false
 feature_set_filter_enabled = false
+# WIA-20: kolumna `recipe_version` (migracja 030) — wersja przepisu predykcji
+# (modele, szablon promptu, persony, config, wagi ML). Pola przepisu w kwicie v2
+# idą już z `receipts_enabled`. UWAGA: włącz DOPIERO po migracji 030 (PGRST204).
+recipe_version_enabled = false
 # WIA-19: okna „zamknięte predykcje” po chwili rozliczenia (`settled_at`, migracja
 # 029): sekcja maila = rozliczone w tym cyklu, recap = rozliczone w ostatnich 7 dniach.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 029 (inaczej 400 i sekcja znika).

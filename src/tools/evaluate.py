@@ -17,9 +17,15 @@ Metryki:
     - baseline_rmse— RMSE naiwnego "last-value" (cena_w_momencie_predykcji),
     - beats_baseline — czy model_rmse < baseline_rmse (czy w ogóle warto).
 
+Segmentacja (WIA-20): `--by-recipe` dokłada trafność kierunkową per wersja
+przepisu predykcji (`prediction_logs.recipe_version`, WYMAGA migracji 030).
+Wiersze bez wersji (sprzed WIA-20 albo zapisane bez flagi) to segment
+`unversioned`.
+
 Uruchom:
     uv run python -m src.tools.evaluate
     uv run python -m src.tools.evaluate --days 60
+    uv run python -m src.tools.evaluate --by-recipe
 
 Exit code: 0 zawsze (narzędzie raportujące, nie bramka CI).
 """
@@ -32,8 +38,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from src.domain.equity_curve import directional_hit_rate
+from src.domain.equity_curve import DirectionalHitRate, directional_hit_rate
+from src.domain.recipe import hit_rate_by_version
 from src.domain.track_record import HitRateEvidence, ScoredCall, assess_directional_hit_rate
+
+# Prefiks wersji w raporcie CLI — pełny sha256 nic nie mówi człowiekowi.
+_VERSION_PREFIX = 12
 
 
 @dataclass(frozen=True)
@@ -186,6 +196,36 @@ def format_report(report: EvalReport, days: int) -> str:
     return "\n".join(lines)
 
 
+def summarize_by_version(
+    rows: list[dict[str, Any]], version_key: str
+) -> dict[str, DirectionalHitRate]:
+    """Trafność kierunkowa per wartość `version_key` (np. `recipe_version`).
+
+    Bierze tylko wiersze z oceną kierunku; wiersz bez wersji trafia do segmentu
+    `UNVERSIONED`. Definicja trafności ta sama co w całym raporcie."""
+    return hit_rate_by_version(
+        (
+            None if r.get(version_key) is None else str(r[version_key]),
+            str(r.get("predicted_trend")),
+            bool(r["is_trend_correct"]),
+        )
+        for r in rows
+        if r.get("is_trend_correct") is not None
+    )
+
+
+def format_segments(segments: dict[str, DirectionalHitRate], label: str) -> str:
+    """Tabela segmentów do CLI: skrócona wersja, n kierunkowych, trafność."""
+    lines = [f"  Trafność kierunkowa per {label}:"]
+    for version, hit_rate in segments.items():
+        rate = "—" if hit_rate.rate is None else f"{hit_rate.rate * 100:.1f}%"
+        lines.append(
+            f"    {version[:_VERSION_PREFIX]:<{_VERSION_PREFIX}}  {rate:>6}  "
+            f"(n={hit_rate.directional}, SIDEWAYS={hit_rate.sideways})"
+        )
+    return "\n".join(lines)
+
+
 def _evidence_lines(evidence: HitRateEvidence | None) -> list[str]:
     """Baseline'y i werdykt istotności kierunkowej (puste, gdy brak kierunkowych)."""
     if evidence is None or evidence.hit_rate.rate is None:
@@ -212,6 +252,11 @@ def main(argv: list[str] | None = None) -> int:
         default=30,
         help="Okno (dni) zamkniętych predykcji do ewaluacji (default: 30).",
     )
+    parser.add_argument(
+        "--by-recipe",
+        action="store_true",
+        help="Trafność per wersja przepisu (recipe_version) — wymaga migracji 030.",
+    )
     args = parser.parse_args(argv)
 
     # Import lokalnie — narzędzie nie powinno wymagać konfiguracji do testów
@@ -221,9 +266,14 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = Settings.from_env()
     repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
-    rows = repo.get_resolved_predictions_for_eval(days=args.days)
+    if args.by_recipe:
+        rows = repo.get_resolved_predictions_for_eval(days=args.days, with_recipe=True)
+    else:
+        rows = repo.get_resolved_predictions_for_eval(days=args.days)
     report = summarize_evaluation(rows)
     print(format_report(report, args.days))
+    if args.by_recipe:
+        print(format_segments(summarize_by_version(rows, "recipe_version"), "przepis"))
     return 0
 
 
