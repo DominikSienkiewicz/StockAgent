@@ -33,27 +33,37 @@ def _render(rounded: Decimal, *, decimals: int, signed: bool) -> str:
     return english.replace(",", NBSP).replace(".", ",")
 
 
-def format_pct_pl(value: Decimal, signed: bool, decimals: int = 1) -> str:
-    """Procent (4.2 = 4,2%, nie ułamek) po polsku, np. „-4,2%” albo „+1 234,5%”.
+def format_number_pl(value: Decimal, signed: bool, decimals: int) -> str:
+    """Liczba po polsku z `decimals` miejscami, np. „+0,42” albo „65 040,0”.
 
-    `signed` dokleja „+” przed wartością dodatnią i przed zerem („+0,0%”);
-    ujemna zawsze ma „-”. Wartość zaokrąglona do zera traci minus („-0,04” →
-    „+0,0%”), bo „-0,0%” sugerowałoby spadek, którego w zapisie nie ma.
+    `signed` dokleja „+” przed wartością dodatnią i przed zerem; ujemna zawsze
+    ma „-”. Wartość zaokrąglona do zera traci minus („-0,001” → „0,00”), bo
+    „-0,00” sugerowałoby spadek, którego w zapisie nie ma.
     """
     rounded = _round_half_up(value, decimals)
     if rounded.is_zero():
         rounded = rounded.copy_abs()
-    return f"{_render(rounded, decimals=decimals, signed=signed)}%"
+    return _render(rounded, decimals=decimals, signed=signed)
 
 
-def format_money_pl(value: Decimal, currency: str) -> str:
+def format_pct_pl(value: Decimal, signed: bool, decimals: int = 1) -> str:
+    """Procent (4.2 = 4,2%, nie ułamek) po polsku, np. „-4,2%” albo „+1 234,5%”.
+
+    Znak i zero jak w `format_number_pl`: „+0,0%” ze znakiem, nigdy „-0,0%”.
+    """
+    return f"{format_number_pl(value, signed, decimals)}%"
+
+
+def format_money_pl(value: Decimal, currency: str, *, signed: bool = False) -> str:
     """Kwota z groszami po polsku: „12 345,50 zł”, „$12 345,50”, „-$5,00”.
 
-    Waluta spoza PLN/USD dostaje kod ISO po kwocie („99,90 EUR”).
+    `signed` dokleja „+” przed zyskiem i zerem („+$0,00”), znak stoi przed „$”.
+    Kwota zaokrąglona do zera traci minus. Waluta spoza PLN/USD dostaje kod ISO
+    po kwocie („99,90 EUR”).
     """
     code = currency.upper()
-    number = _render(_round_half_up(value, 2), decimals=2, signed=False)
+    number = format_number_pl(value, signed, 2)
     if code in _CURRENCY_PREFIX:
-        sign, digits = ("-", number[1:]) if number.startswith("-") else ("", number)
+        sign, digits = (number[0], number[1:]) if number[0] in "+-" else ("", number)
         return f"{sign}{_CURRENCY_PREFIX[code]}{digits}"
     return f"{number}{NBSP}{_CURRENCY_SUFFIX.get(code, code)}"

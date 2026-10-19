@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from src.domain.number_format import format_money_pl, format_pct_pl
+from src.domain.number_format import format_money_pl, format_number_pl, format_pct_pl
 
 NBSP = " "
 
@@ -83,3 +83,32 @@ class TestFormatMoneyPl:
 
     def test_other_currency_code_follows_the_amount(self) -> None:
         assert format_money_pl(Decimal("99.9"), "EUR") == f"99,90{NBSP}EUR"
+
+    def test_amount_rounded_to_zero_has_no_minus(self) -> None:
+        assert format_money_pl(Decimal("-0.004"), "PLN") == f"0,00{NBSP}zł"
+        assert format_money_pl(Decimal("-0.004"), "USD") == "$0,00"
+
+    def test_signed_amount_shows_a_plus_before_the_currency_sign(self) -> None:
+        assert format_money_pl(Decimal("1234.5"), "USD", signed=True) == f"+$1{NBSP}234,50"
+        assert format_money_pl(Decimal("-200"), "USD", signed=True) == "-$200,00"
+        assert format_money_pl(Decimal("800"), "PLN", signed=True) == f"+800,00{NBSP}zł"
+
+    def test_signed_zero_amount_keeps_the_plus(self) -> None:
+        assert format_money_pl(Decimal("0"), "USD", signed=True) == "+$0,00"
+        assert format_money_pl(Decimal("-0.004"), "USD", signed=True) == "+$0,00"
+
+
+class TestFormatNumberPl:
+    def test_plain_decimal_uses_a_comma(self) -> None:
+        assert format_number_pl(Decimal("0.42"), signed=True, decimals=2) == "+0,42"
+        assert format_number_pl(Decimal("48.2"), signed=False, decimals=2) == "48,20"
+
+    def test_thousands_are_grouped_with_a_hard_space(self) -> None:
+        assert format_number_pl(Decimal("65040"), signed=False, decimals=1) == f"65{NBSP}040,0"
+
+    def test_rounds_half_up(self) -> None:
+        assert format_number_pl(Decimal("0.125"), signed=False, decimals=2) == "0,13"
+
+    def test_value_rounded_to_zero_has_no_minus(self) -> None:
+        assert format_number_pl(Decimal("-0.001"), signed=True, decimals=2) == "+0,00"
+        assert format_number_pl(Decimal("-0.001"), signed=False, decimals=2) == "0,00"
