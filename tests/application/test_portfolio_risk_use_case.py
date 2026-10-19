@@ -32,6 +32,25 @@ def _series(values: list[str]) -> list[tuple[datetime, Money]]:
     ]
 
 
+# PORT-22: radar liczy korelacje, klastry i bety od 20 sparowanych zwrotów,
+# a VaR od 60 obserwacji — testy wyników potrzebują ≥ 61 dni historii.
+_LONG_DAYS = 61
+_RETURN_PATTERN = (0.03, -0.02, 0.05, -0.04, 0.01)
+
+
+def _long_series(start: float, *, mirror: bool = False) -> list[tuple[datetime, Money]]:
+    """`_LONG_DAYS` dziennych cen o niestałych zwrotach z `_RETURN_PATTERN`.
+
+    Ten sam wzorzec przy innym `start` daje identyczne zwroty (korelacja 1.0),
+    `mirror=True` — zwroty przeciwne (korelacja -1.0)."""
+    sign = -1.0 if mirror else 1.0
+    prices = [start]
+    for i in range(1, _LONG_DAYS):
+        step = _RETURN_PATTERN[i % len(_RETURN_PATTERN)]
+        prices.append(prices[-1] * (1.0 + sign * step))
+    return _series([str(p) for p in prices])
+
+
 @pytest.fixture
 def repository_port() -> Mock:
     return Mock(spec=RepositoryPort)
@@ -45,13 +64,13 @@ class TestBuildsReport:
     def test_builds_matrix_and_clusters_from_history(
         self, repository_port: Mock
     ) -> None:
-        # NVDA: zwroty zmienne (+10%, -5%, +20%); MSFT identyczne (perfect corr);
+        # NVDA: zwroty zmienne (`_RETURN_PATTERN`); MSFT identyczne (perfect corr);
         # GLD lustrzane (anti-corr). Zwroty MUSZĄ się różnić, inaczej zerowa
         # wariancja zerowałaby korelację.
         history = {
-            "NVDA": _series(["100", "110", "104.5", "125.4"]),
-            "MSFT": _series(["50", "55", "52.25", "62.7"]),  # = 0.5 * NVDA → corr 1.0
-            "GLD": _series(["100", "90", "94.5", "75.6"]),  # lustro NVDA → corr -1.0
+            "NVDA": _long_series(100),
+            "MSFT": _long_series(50),  # = 0.5 * NVDA → corr 1.0
+            "GLD": _long_series(100, mirror=True),  # lustro NVDA → corr -1.0
         }
         repository_port.get_price_history.side_effect = lambda sym, days: history[sym]
 
@@ -76,9 +95,9 @@ class TestBuildsReport:
 
     def test_verdict_mentions_cluster_and_share(self, repository_port: Mock) -> None:
         history = {
-            "NVDA": _series(["100", "110", "104.5", "125.4"]),
-            "MSFT": _series(["50", "55", "52.25", "62.7"]),
-            "AAPL": _series(["10", "11", "10.45", "12.54"]),
+            "NVDA": _long_series(100),
+            "MSFT": _long_series(50),
+            "AAPL": _long_series(10),
         }
         repository_port.get_price_history.side_effect = lambda sym, days: history[sym]
 
@@ -101,6 +120,13 @@ class TestVarAndStress:
             "GLD": _series(["100", "90", "94.5", "75.6", "80.0"]),
         }
 
+    def _long_history(self) -> dict[str, list[tuple[datetime, Money]]]:
+        return {
+            "NVDA": _long_series(100),
+            "MSFT": _long_series(50),
+            "GLD": _long_series(100, mirror=True),
+        }
+
     def test_var_disabled_by_default(self, repository_port: Mock) -> None:
         repository_port.get_price_history.side_effect = (
             lambda sym, days: self._history()[sym]
@@ -116,7 +142,7 @@ class TestVarAndStress:
         self, repository_port: Mock
     ) -> None:
         repository_port.get_price_history.side_effect = (
-            lambda sym, days: self._history()[sym]
+            lambda sym, days: self._long_history()[sym]
         )
         report = PortfolioRiskUseCase(
             repository_port=repository_port,
@@ -136,7 +162,7 @@ class TestVarAndStress:
         from src.domain.scenarios import Scenario
 
         repository_port.get_price_history.side_effect = (
-            lambda sym, days: self._history()[sym]
+            lambda sym, days: self._long_history()[sym]
         )
         scenarios = (
             Scenario(name="Korekta -10%", market_shock=-0.10),
@@ -184,8 +210,8 @@ class TestGracefulDegradation:
         self, repository_port: Mock
     ) -> None:
         history = {
-            "A": _series(["100", "110", "121"]),
-            "B": _series(["50", "55", "60.5"]),
+            "A": _long_series(100),
+            "B": _long_series(50),
             "C": _series(["10"]),  # za krótka — brak zwrotów, pomijana
         }
         repository_port.get_price_history.side_effect = lambda sym, days: history[sym]
@@ -202,7 +228,7 @@ class TestGracefulDegradation:
         def get_history(sym: str, days: int) -> list[tuple[datetime, Money]]:
             if sym == "BROKEN":
                 raise RuntimeError("DB timeout")
-            return _series(["100", "110", "121"])
+            return _long_series(100)
 
         repository_port.get_price_history.side_effect = get_history
 
@@ -231,10 +257,8 @@ class TestTimestampAlignment:
     def test_aligns_on_common_timestamps(self, repository_port: Mock) -> None:
         # B ma jeden timestamp więcej z przodu — wyrównanie po wspólnych datach
         # musi dać identyczny kształt zwrotów, więc korelacja = 1.0.
-        a = _series(["100", "110", "104.5", "125.4"])
-        b_full = [(_BASE - timedelta(days=1), Money(Decimal("999")))] + _series(
-            ["100", "110", "104.5", "125.4"]
-        )
+        a = _long_series(100)
+        b_full = [(_BASE - timedelta(days=1), Money(Decimal("999")))] + _long_series(100)
         history = {"A": a, "B": b_full}
         repository_port.get_price_history.side_effect = lambda sym, days: history[sym]
 
@@ -380,6 +404,18 @@ class TestMinimumSamples:
         report = self._run(repository_port, 10)
 
         assert all(stat != "var" for stat, _, _ in report.insufficient)
+
+    def test_min_samples_are_enforced_by_default(self, repository_port: Mock) -> None:
+        # Nowy wołający nie może przypadkiem dostać VaR z dziewięciu zwrotów.
+        history = self._history(10)
+        repository_port.get_price_history.side_effect = lambda sym, days: history[sym]
+
+        report = PortfolioRiskUseCase(
+            repository_port=repository_port, var_enabled=True
+        ).run(["NVDA", "MSFT", "GLD"])
+
+        assert report.var is None
+        assert ("var", 9, 60) in report.insufficient
 
     def test_history_window_covers_60_trading_days(self, repository_port: Mock) -> None:
         from src.application.use_cases.portfolio_risk import PRICE_HISTORY_DAYS

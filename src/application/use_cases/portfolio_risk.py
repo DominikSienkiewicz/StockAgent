@@ -78,10 +78,11 @@ class PortfolioRiskUseCase:
     Opcjonalnie (flagi) dokłada VaR/CVaR (R1) i stress-test (R2) — oba liczone
     z tych SAMYCH darmowych zwrotów co macierz korelacji, zero nowych odczytów.
 
-    PORT-22: `require_min_samples=True` (produkcja, `main_agent`) liczy VaR/CVaR
-    dopiero od `MIN_VAR_OBSERVATIONS` zwrotów, a korelacje, klastry i bety od
+    PORT-22: domyślnie (`require_min_samples=True`) VaR/CVaR powstaje dopiero
+    od `MIN_VAR_OBSERVATIONS` zwrotów, a korelacje, klastry i bety od
     `MIN_PAIRED_RETURNS` sparowanych zwrotów; pominięte statystyki lądują w
-    `PortfolioRiskReport.insufficient`.
+    `PortfolioRiskReport.insufficient`. `False` wyłącza bramkę (sama matematyka
+    na dowolnie krótkiej próbie) — produkcja z tego nie korzysta.
     """
 
     def __init__(
@@ -92,7 +93,7 @@ class PortfolioRiskUseCase:
         stress_enabled: bool = False,
         var_confidence: float = 0.95,
         scenarios: Sequence[Scenario] = (),
-        require_min_samples: bool = False,
+        require_min_samples: bool = True,
     ) -> None:
         self._repository = repository_port
         self._require_min_samples = require_min_samples

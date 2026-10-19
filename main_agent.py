@@ -1216,8 +1216,6 @@ def _build_portfolio_radar(
             scenarios=(
                 DEFAULT_STRESS_SCENARIOS if settings.stress_test_enabled else ()
             ),
-            # PORT-22: VaR od 60 obserwacji, korelacje/bety od 20 par zwrotów.
-            require_min_samples=True,
         ).run(all_symbols)
         logger.info(
             "Portfolio Radar — clusters=%d watchlist=%d",
