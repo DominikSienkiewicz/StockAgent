@@ -3,12 +3,22 @@ resztę pod „[Wiadomość przycięta]” — razem ze stopką i zastrzeżeniem
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from src.application.report_builder import SymbolResult, TopNewsItem, build_html_report
+from src.application.report_builder import (
+    ReportContext,
+    SymbolResult,
+    TopNewsItem,
+    build_html_report,
+)
+from src.application.report_evidence import PaperCosts
+from src.application.report_track_record import TrackRecordStats
+from src.domain.benchmark import compare_with_benchmarks
 from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.equity_curve import PaperTrade
 
 PERSONAS = ("Buffett", "Graham", "Lynch", "Dalio", "Soros", "Wood", "Marks")
 STARTED = datetime(2026, 10, 18, 5, 30, tzinfo=UTC)
@@ -75,6 +85,53 @@ def test_typical_cycle_with_council_stays_under_the_budget() -> None:
 
 def test_big_move_day_stays_under_gmail_clipping() -> None:
     assert _size([_saved(i) for i in range(45)]) < 100_000
+
+
+def _track_record_context() -> ReportContext:
+    """WIA-21: pełny Track Record — 30 cykli, koszty, koszyk i IVV w sparkline."""
+    cycles = [
+        [
+            PaperTrade(
+                f"SYM{i}",
+                "BULLISH" if (day + i) % 3 else "BEARISH",
+                0.004 * ((day * 7 + i) % 5 - 2),
+                10,
+                benchmark_change=0.001 * (day % 4 - 1),
+            )
+            for i in range(8)
+        ]
+        for day in range(30)
+    ]
+    comparison = compare_with_benchmarks(cycles, index_symbol="IVV", index_cost_bps=10)
+    return ReportContext(
+        equity_curve=comparison.agent,
+        track_record_stats=TrackRecordStats(costs=PaperCosts(cost_bps=10), benchmark=comparison),
+    )
+
+
+def test_typical_cycle_with_the_benchmark_track_record_stays_under_the_budget() -> None:
+    html, _ = build_html_report(
+        [_saved(i) for i in range(8)], STARTED, 60.0, _track_record_context()
+    )
+
+    assert len(html.encode("utf-8")) <= 95_000
+
+
+def test_benchmark_line_and_second_sparkline_row_stay_within_4_kb() -> None:
+    # Druga linia sparklini i linia „na tle rynku” nie mogą przewrócić budżetu
+    # dużego dnia — ich koszt mierzymy wprost, niezależnie od reszty maila.
+    with_benchmark = _track_record_context()
+    stats = with_benchmark.track_record_stats
+    assert stats is not None
+    without = dataclasses.replace(
+        with_benchmark, track_record_stats=dataclasses.replace(stats, benchmark=None)
+    )
+    results = [_saved(i) for i in range(45)]
+
+    html, _ = build_html_report(results, STARTED, 60.0, with_benchmark)
+    baseline, _ = build_html_report(results, STARTED, 60.0, without)
+
+    assert len(html.encode("utf-8")) - len(baseline.encode("utf-8")) <= 4_000
 
 
 # ---------------------------------------------------------------------------

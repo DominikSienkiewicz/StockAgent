@@ -19,7 +19,7 @@ import sys
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -61,7 +61,13 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_council_history import InvestorHistory
-from src.application.report_evidence import PaperCosts, hit_rate_evidence, portfolio_curve
+from src.application.report_evidence import (
+    BENCHMARK_SYMBOL,
+    PaperCosts,
+    benchmark_comparison,
+    hit_rate_evidence,
+    portfolio_curve,
+)
 from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
     build_sector_map,
@@ -93,6 +99,7 @@ from src.application.use_cases.portfolio_risk import (
 from src.config import Settings
 from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
+from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
     probability_scores,
@@ -605,6 +612,41 @@ def _paper_costs(settings: Settings) -> PaperCosts:
     )
 
 
+def _benchmark_comparison(
+    settings: Settings,
+    repository: RepositoryPort,
+    resolved: list[ResolvedPrediction],
+    costs: PaperCosts,
+) -> BenchmarkComparison | None:
+    """WIA-21: agent obok koszyka i IVV — te same okna, te same koszty.
+
+    IVV czytamy z darmowych `price_snapshots` (zero płatnych portów), o dzień
+    dłużej niż okno predykcji: snapshot startu najstarszego cyklu bywa zapisany
+    minuty przed predykcją, czyli tuż przed odcięciem okna. Błąd odczytu IVV
+    zostawia koszyk i jawny brak danych benchmarku.
+    """
+    try:
+        history = [
+            (stamp, float(price.amount))
+            for stamp, price in repository.get_price_history(
+                BENCHMARK_SYMBOL, settings.track_record_days + 1
+            )
+        ]
+    except Exception:
+        logger.exception("Failed to read %s snapshots for the benchmark", BENCHMARK_SYMBOL)
+        history = []
+    try:
+        return benchmark_comparison(
+            resolved,
+            costs,
+            history,
+            settle_after=timedelta(hours=settings.reflection_min_age_hours),
+        )
+    except Exception:
+        logger.exception("Failed to compare the equity curve with benchmarks")
+        return None
+
+
 def _publish_public_scorecard(
     settings: Settings,
     repository: RepositoryPort,
@@ -629,6 +671,11 @@ def _publish_public_scorecard(
         samples = _calibration_samples(
             repository.get_resolved_for_calibration(settings.track_record_days)
         )
+        benchmark = (
+            None
+            if costs is None
+            else _benchmark_comparison(settings, repository, resolved, costs)
+        )
         page = render_public_scorecard_html(
             resolved,
             portfolio_curve(resolved, costs),
@@ -636,6 +683,7 @@ def _publish_public_scorecard(
             generated_on=datetime.now(UTC).date(),
             window_days=settings.track_record_days,
             costs=costs,
+            benchmark=benchmark,
         )
         if page:
             publisher.publish(page)
@@ -1804,19 +1852,23 @@ def _build_track_record_stats(
     bo `_build_track_record` zwraca stały kontrakt trzech podsekcji. Każdy
     odczyt best-effort: błąd → brak danej statystyki, cykl leci dalej.
     `costs` (WIA-50) to te same założenia, z którymi `_build_track_record`
-    liczy krzywą — jadą do etykiety „paper-PnL (koszt X bps)”.
+    liczy krzywą — jadą do etykiety „paper-PnL (koszt X bps)” i do porównania
+    z koszykiem i IVV (WIA-21), które bez kosztów nie powstaje.
     """
     evidence = None
     scores = None
+    benchmark = None
     if settings.equity_curve_enabled:
+        resolved: list[ResolvedPrediction] = []
         try:
-            evidence = hit_rate_evidence(
-                parse_resolved_predictions(
-                    repository.get_resolved_predictions(settings.track_record_days)
-                )
+            resolved = parse_resolved_predictions(
+                repository.get_resolved_predictions(settings.track_record_days)
             )
+            evidence = hit_rate_evidence(resolved)
         except Exception:
             logger.exception("Failed to compute hit-rate evidence for track record")
+        if resolved and costs is not None:
+            benchmark = _benchmark_comparison(settings, repository, resolved, costs)
     if settings.calibration_curve_enabled:
         try:
             scores = probability_scores(
@@ -1837,10 +1889,14 @@ def _build_track_record_stats(
         except Exception:
             logger.exception("Failed to measure interval coverage for track record")
     paper_costs = costs if settings.equity_curve_enabled else None
-    if evidence is None and scores is None and coverage is None and paper_costs is None:
+    if all(part is None for part in (evidence, scores, coverage, paper_costs, benchmark)):
         return None
     return TrackRecordStats(
-        hit_rate=evidence, scores=scores, coverage=coverage, costs=paper_costs
+        hit_rate=evidence,
+        scores=scores,
+        coverage=coverage,
+        costs=paper_costs,
+        benchmark=benchmark,
     )
 
 

@@ -363,3 +363,50 @@ class TestPaperCostDisclosure:
         html = render_public_scorecard_html([_resolved("AAA", "BULLISH", True)], curve, None)
 
         assert "bez kosztów transakcyjnych" in html
+
+
+class TestBenchmarkDisclosure:
+    """WIA-21: strona publiczna stawia krzywą agenta obok koszyka i IVV —
+    z kropką dziesiętną i bez symboli watchlisty."""
+
+    @staticmethod
+    def _comparison(*, with_index: bool = True):
+        from src.domain.benchmark import compare_with_benchmarks
+        from src.domain.equity_curve import PaperTrade
+
+        cycles = [
+            [PaperTrade("NVDA", "BEARISH", c, benchmark_change=0.008 if with_index else None)]
+            for c in (0.01, -0.005, 0.02)
+        ]
+        return compare_with_benchmarks(cycles, index_symbol="IVV", index_cost_bps=0)
+
+    def test_equity_section_compares_with_basket_and_ivv(self) -> None:
+        comparison = self._comparison()
+
+        html = render_public_scorecard_html(
+            [_resolved("NVDA", "BEARISH", False)], comparison.agent, None, benchmark=comparison
+        )
+
+        assert "agent -2.5% · koszyk +2.5% · IVV +2.4%" in html
+        assert "Zwrot nadwyżkowy vs koszyk: -5.0 p.p." in html
+        assert "hit-rate względem rynku (IVV): 33.3% (n=3)" in html
+        assert "spark-bar bench" in html
+        assert ".spark-bar.bench{" in html
+        assert "NVDA" not in html
+
+    def test_missing_ivv_data_is_stated_explicitly(self) -> None:
+        comparison = self._comparison(with_index=False)
+
+        html = render_public_scorecard_html(
+            [_resolved("NVDA", "BEARISH", False)], comparison.agent, None, benchmark=comparison
+        )
+
+        assert "IVV: brak danych benchmarku" in html
+
+    def test_without_a_comparison_the_page_says_there_is_no_benchmark(self) -> None:
+        curve = equity_curve([("BULLISH", 0.03)])
+
+        html = render_public_scorecard_html([_resolved("AAA", "BULLISH", True)], curve, None)
+
+        assert "Na tle rynku: brak danych benchmarku" in html
+        assert "spark-bar bench" not in html

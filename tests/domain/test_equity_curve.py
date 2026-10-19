@@ -16,16 +16,21 @@ Reguły metryk:
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from src.domain.benchmark import index_curve, window_change
 from src.domain.equity_curve import (
     DirectionalHitRate,
     EquityCurve,
     EquityPoint,
     PaperTrade,
+    buy_and_hold_curve,
     directional_hit_rate,
     equity_curve,
+    excess_return,
+    market_relative_hit_rate,
     paper_portfolio_curve,
     portfolio_equity_curve,
     signal_of,
@@ -376,3 +381,60 @@ class TestPaperPortfolioCurve:
         ]
 
         assert paper_portfolio_curve(paper) == portfolio_equity_curve(cycles)
+
+
+def test_benchmark_curve_compounds_long_only_changes() -> None:
+    """WIA-21: koszyk to buy&hold tych samych symboli w tych samych oknach —
+    long niezależnie od prognozy agenta."""
+    cycles = [
+        [PaperTrade("AAA", "BEARISH", 0.02)],
+        [PaperTrade("AAA", "SIDEWAYS", -0.01)],
+    ]
+
+    basket = buy_and_hold_curve(cycles)
+
+    assert [p.period_return for p in basket.points] == [
+        pytest.approx(0.02),
+        pytest.approx(-0.01),
+    ]
+    assert basket.total_return == pytest.approx(1.02 * 0.99 - 1)
+    # Agent na tych samych oknach: short traci 2%, gotówka stoi.
+    assert paper_portfolio_curve(cycles).total_return == pytest.approx(-0.02)
+
+
+def test_bullish_counts_as_market_relative_hit_when_stock_falls_less_than_benchmark() -> None:
+    """WIA-21: akcja −1% przy IVV −3% to zwrot nadwyżkowy +2% — BULLISH trafił
+    względem rynku, choć kierunkowo chybił."""
+    result = market_relative_hit_rate([("BULLISH", -0.01, -0.03)])
+
+    assert result == DirectionalHitRate(hits=1, directional=1, sideways=0)
+    assert excess_return(-0.01, -0.03) == pytest.approx(0.02)
+
+
+def test_benchmark_curve_aligned_to_same_days() -> None:
+    """WIA-21: okno benchmarku zaczyna się snapshotem z TEGO SAMEGO cyklu co
+    predykcja i kończy w cyklu rozliczenia (≥ 6 h później) — nie od wczorajszego
+    snapshotu, nawet gdy benchmark zapisano kilka minut po predykcji."""
+    history = [
+        (datetime(2026, 10, 1, 5, 31, tzinfo=UTC), 100.0),
+        (datetime(2026, 10, 2, 5, 40, tzinfo=UTC), 102.0),  # po predykcji z 05:35
+        (datetime(2026, 10, 3, 5, 31, tzinfo=UTC), 101.0),
+        (datetime(2026, 10, 4, 5, 31, tzinfo=UTC), 104.0),
+    ]
+    stamps = [datetime(2026, 10, day, 5, 35, tzinfo=UTC) for day in (1, 2, 3)]
+
+    changes = [window_change(history, stamp, timedelta(hours=6)) for stamp in stamps]
+    curve = index_curve(
+        [[PaperTrade("AAA", "BULLISH", 0.0, benchmark_change=change)] for change in changes],
+        symbol="IVV",
+        cost_bps=0,
+    )
+
+    assert changes == [
+        pytest.approx(0.02),
+        pytest.approx(101 / 102 - 1),
+        pytest.approx(104 / 101 - 1),
+    ]
+    assert curve is not None
+    assert [p.index for p in curve.points] == [0, 1, 2]
+    assert curve.total_return == pytest.approx(0.04)

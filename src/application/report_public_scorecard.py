@@ -6,11 +6,13 @@ produkuje osobny, PUBLICZNY artefakt: kompletną, samodzielną stronę HTML
 zawierającą WYŁĄCZNIE agregaty — liczbę predykcji, hit-rate kierunkowy z
 przedziałem Wilsona, n_eff, naiwnymi baseline'ami i werdyktem istotności,
 Brier / BSS / ECE, krzywą kalibracji jako div-sparkline (z n per kubełek),
-krzywą kapitału portfela oraz okno i datę generacji.
+krzywą kapitału portfela (po kosztach obrotu, obok koszyka i IVV — WIA-50/21)
+oraz okno i datę generacji.
 
 Bezwzględne inwarianty prywatności:
   - ZERO PII (adresy e-mail, dane odbiorców),
-  - ZERO symboli watchlisty,
+  - ZERO symboli watchlisty (koszyk to agregat; jedyna nazwa instrumentu to
+    benchmark IVV z porównania „agent · koszyk · IVV”, decyzja 2026-10-19),
   - ZERO kwot (ceny, waluty).
 
 `render_public_scorecard_html` jest CZYSTĄ funkcją — nie przyjmuje żadnego
@@ -28,9 +30,13 @@ from collections.abc import Sequence
 from datetime import date, timedelta
 
 from src.application.report_evidence import (
+    BENCHMARK_METHOD_PL,
+    NO_BENCHMARK_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
     PaperCosts,
     baselines_label,
+    benchmark_detail,
+    benchmark_line,
     hit_rate_detail,
     hit_rate_evidence,
     hit_rate_value,
@@ -42,6 +48,7 @@ from src.application.report_evidence import (
 )
 from src.application.report_formatting import DOT_NUMBERS
 from src.application.report_models import ResolvedPrediction
+from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
     expected_calibration_error,
@@ -65,6 +72,7 @@ def render_public_scorecard_html(
     generated_on: date | str = "",
     window_days: int | None = None,
     costs: PaperCosts | None = None,
+    benchmark: BenchmarkComparison | None = None,
 ) -> str:
     """Renderuje publiczny scorecard kalibracji jako samodzielną stronę HTML.
 
@@ -82,6 +90,9 @@ def render_public_scorecard_html(
       - `window_days` — długość okna track-recordu ujawniana na stronie.
       - `costs` — założenia kosztowe krzywej (WIA-50); None = krzywa brutto.
         Strona podaje same koszty w bps, nigdy symbole z `crypto_symbols`.
+      - `benchmark` — agent obok koszyka i IVV (WIA-21); sparkline dostaje
+        drugą linię (koszyk). Koszyk to agregat — symbole koszyka nie trafiają
+        na stronę. None = „Na tle rynku: brak danych benchmarku”.
 
     Samosupresja: brak jakichkolwiek danych → `""` (nie publikujemy pustej
     strony). Wszystko, co idzie do outputu, jest escapowane.
@@ -99,7 +110,7 @@ def render_public_scorecard_html(
     sections: list[str] = [
         _render_headline(predictions, generated_on, window_days),
         _render_calibration_section(buckets, samples),
-        _render_equity_section(equity, costs),
+        _render_equity_section(equity, costs, benchmark),
         _render_methodology_section(),
     ]
     body = "".join(section for section in sections if section)
@@ -245,7 +256,11 @@ def _render_calibration_sparkline(buckets: Sequence[CalibrationBucket]) -> str:
     )
 
 
-def _render_equity_section(equity: EquityCurve | None, costs: PaperCosts | None) -> str:
+def _render_equity_section(
+    equity: EquityCurve | None,
+    costs: PaperCosts | None,
+    benchmark: BenchmarkComparison | None,
+) -> str:
     """Sekcja krzywej kapitału: agregaty z PÓL EquityCurve + div-sparkline.
 
     Czyta `total_return`, `win_rate`, `max_drawdown`, `n_trades` oraz `points`.
@@ -275,32 +290,56 @@ def _render_equity_section(equity: EquityCurve | None, costs: PaperCosts | None)
         f"{_html.escape(assumptions)} "
         f"{_html.escape(PORTFOLIO_METHOD_CHANGE_PL)}</p>"
         f"<div class='cards'>{stats}</div>"
-        f"<div class='equity-{sign}'>{_render_equity_sparkline(equity)}</div>"
+        f"{_render_benchmark(benchmark)}"
+        f"<div class='equity-{sign}'>{_render_equity_sparkline(equity, benchmark)}</div>"
         "</section>"
     )
 
 
-def _render_equity_sparkline(equity: EquityCurve) -> str:
+def _render_benchmark(benchmark: BenchmarkComparison | None) -> str:
+    """WIA-21 — agent obok koszyka i IVV (kropka dziesiętna) albo jawny brak danych."""
+    if benchmark is None:
+        return f"<p class='evidence'>Na tle rynku: {NO_BENCHMARK_PL}</p>"
+    line = benchmark_line(benchmark, numbers=DOT_NUMBERS)
+    detail = benchmark_detail(benchmark, numbers=DOT_NUMBERS)
+    return (
+        f"<p class='evidence'>Na tle rynku: <strong>{_html.escape(line)}</strong></p>"
+        f"<p class='evidence'>{_html.escape(detail)}. {_html.escape(BENCHMARK_METHOD_PL)} "
+        "Na wykresie: agent (kolor), koszyk (szary).</p>"
+    )
+
+
+def _render_equity_sparkline(
+    equity: EquityCurve, benchmark: BenchmarkComparison | None = None
+) -> str:
     """Div-sparkline serii kapitału (technika z `_render_sparkline_html`).
 
-    Słupki skalowane do zakresu [min, max] equity z ostatnich N punktów.
+    Słupki skalowane do zakresu [min, max] equity z ostatnich N punktów. Z
+    benchmarkiem (WIA-21) drugi wiersz to koszyk we wspólnej skali.
     """
     points = list(equity.points)[-_EQUITY_BARS:]
     if not points:
         return ""
-    equities = [p.equity for p in points]
+    bench = [] if benchmark is None else list(benchmark.basket.points)[-_EQUITY_BARS:]
+    equities = [p.equity for p in points] + [p.equity for p in bench]
     lo, hi = min(equities), max(equities)
     span = (hi - lo) or 1.0
-    cells: list[str] = []
-    for point in points:
-        height = 2 + int((point.equity - lo) / span * (_SPARKLINE_MAX_PX - 2))
-        tone = "up" if point.period_return >= 0 else "down"
-        cells.append(
+
+    def bar(value: float, tone: str) -> str:
+        height = 2 + int((value - lo) / span * (_SPARKLINE_MAX_PX - 2))
+        return (
             "<td class='spark-cell'>"
             f"<div class='spark-bar {tone}' style='height: {height}px;'></div>"
             "</td>"
         )
-    return "<table class='sparkline'><tr>" + "".join(cells) + "</tr></table>"
+
+    agent = "".join(
+        bar(point.equity, "up" if point.period_return >= 0 else "down") for point in points
+    )
+    rows = f"<tr>{agent}</tr>"
+    if bench:
+        rows += "<tr>" + "".join(bar(point.equity, "bench") for point in bench) + "</tr>"
+    return f"<table class='sparkline'>{rows}</table>"
 
 
 def _render_methodology_section() -> str:
@@ -401,6 +440,7 @@ def _page_css() -> str:
         "margin:0 auto}"
         ".spark-bar.up{background:#10b981}"
         ".spark-bar.down{background:#f97316}"
+        ".spark-bar.bench{background:#94a3b8}"
         ".spark-label{font-size:9px;color:#94a3b8;margin-top:3px}"
         ".ece{font-size:13px;color:#334155;margin:8px 0 0}"
         ".card-note{font-size:11px;color:#64748b;margin-top:6px}"

@@ -73,6 +73,10 @@ companies had already risen, so a long bias on it is not skill. The track record
 public scorecard show the naive "always BULLISH" baseline on the same predictions for that
 reason, and each prediction's recipe records a `universe_version` (a hash of the sorted
 watchlist), so adding symbols starts a new segment instead of passing for better accuracy.
+Their paper-PnL equity curve is net of trading costs charged on turnover (10 bps, crypto
+25 bps) and sits next to two buy&hold benchmarks with the same costs: a basket of the same
+symbols in the same windows and IVV, together with a market-relative hit rate (did the
+direction get the sign of the return over IVV right).
 
 ## License
 

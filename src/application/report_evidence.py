@@ -14,16 +14,22 @@ Predykcje bez znacznika czasu lądują w jednym wspólnym cyklu — to zaniża n
 WIA-50: krzywa portfela może być liczona po kosztach transakcyjnych
 (`PaperCosts`, koszt jednostronny od obrotu per symbol). Bez podanych kosztów
 krzywa jest brutto, a copy założeń mówi to wprost.
+
+WIA-21: `benchmark_comparison` stawia krzywą agenta obok koszyka (buy&hold tych
+samych symboli w tych samych oknach) i IVV (buy&hold w oknach predykcji, ze
+snapshotów `price_snapshots`), z tymi samymi kosztami. Brak danych IVV to jawne
+„brak danych benchmarku”, nie pusta liczba.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from src.application.report_formatting import POLISH_NUMBERS, NumberStyle
 from src.application.report_models import ResolvedPrediction
+from src.domain.benchmark import BenchmarkComparison, compare_with_benchmarks, window_change
 from src.domain.calibration_curve import ProbabilityScores
 from src.domain.equity_curve import EquityCurve, PaperTrade, paper_portfolio_curve
 from src.domain.significance import MIN_BOOTSTRAP_CYCLES
@@ -50,6 +56,17 @@ PORTFOLIO_METHOD_CHANGE_PL = (
     "składano szeregowo na 100% kapitału, więc starsze wyniki nie są porównywalne."
 )
 _EPOCH = datetime.min.replace(tzinfo=UTC)
+
+# WIA-21: benchmark rynku — ETF S&P 500 z watchlisty, więc ma snapshot w każdym
+# cyklu (`price_snapshots`, odczyt darmowy).
+BENCHMARK_SYMBOL = "IVV"
+NO_BENCHMARK_PL = "brak danych benchmarku"
+BENCHMARK_METHOD_PL = (
+    "Koszyk = buy&hold tych samych symboli w tych samych oknach (long-only), "
+    f"{BENCHMARK_SYMBOL} = buy&hold w oknach predykcji; agent i benchmarki płacą "
+    "ten sam koszt od obrotu. Okna z tych samych snapshotów cyklu co predykcje "
+    "(snapshot 05:30 UTC to zamknięcie poprzedniej sesji)."
+)
 
 
 @dataclass(frozen=True)
@@ -112,19 +129,42 @@ def _moment(prediction: ResolvedPrediction) -> datetime:
     return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
 
 
+def _benchmark_change(
+    prediction: ResolvedPrediction,
+    history: Sequence[tuple[datetime, float]],
+    settle_after: timedelta | None,
+) -> float | None:
+    """Zmiana benchmarku w oknie predykcji; None bez historii albo znacznika."""
+    if settle_after is None or not history or prediction.predicted_at is None:
+        return None
+    return window_change(history, prediction.predicted_at, settle_after)
+
+
 def paper_cycles(
-    resolved: Sequence[ResolvedPrediction], costs: PaperCosts | None = None
+    resolved: Sequence[ResolvedPrediction],
+    costs: PaperCosts | None = None,
+    *,
+    benchmark_history: Sequence[tuple[datetime, float]] = (),
+    settle_after: timedelta | None = None,
 ) -> list[list[PaperTrade]]:
     """Predykcje z ruchem ceny jako cykle trade'ów, chronologicznie.
 
     Repozytorium oddaje predykcje od najnowszej, a obrót per symbol (WIA-50)
     wymaga kolejności czasu także wewnątrz cyklu. Bez `costs` koszt jest 0.
+    Z `benchmark_history` i `settle_after` (WIA-21) każdy trade niesie zmianę
+    benchmarku w swoim oknie.
     """
     costs = costs or PaperCosts()
     keyed = [
         (
             cycle_key(p),
-            PaperTrade(p.symbol, p.predicted_trend, change, costs.for_symbol(p.symbol)),
+            PaperTrade(
+                p.symbol,
+                p.predicted_trend,
+                change,
+                costs.for_symbol(p.symbol),
+                benchmark_change=_benchmark_change(p, benchmark_history, settle_after),
+            ),
         )
         for p in sorted(resolved, key=_moment)
         if (change := _realized_change(p)) is not None
@@ -141,6 +181,64 @@ def portfolio_curve(
     if not cycles:
         return None
     return paper_portfolio_curve(cycles)
+
+
+def benchmark_comparison(
+    resolved: Sequence[ResolvedPrediction],
+    costs: PaperCosts,
+    benchmark_history: Sequence[tuple[datetime, float]],
+    *,
+    settle_after: timedelta,
+    index_symbol: str = BENCHMARK_SYMBOL,
+) -> BenchmarkComparison | None:
+    """WIA-21: agent, koszyk i indeks z tych samych okien i kosztów; None bez ruchów cen.
+
+    `benchmark_history` to chronologiczne `(znacznik, cena)` indeksu, a
+    `settle_after` — wiek, po którym `reflect_node` rozlicza predykcję. Indeks
+    płaci koszt akcji/ETF (`costs.for_symbol`).
+    """
+    cycles = paper_cycles(
+        resolved, costs, benchmark_history=benchmark_history, settle_after=settle_after
+    )
+    if not cycles:
+        return None
+    return compare_with_benchmarks(
+        cycles, index_symbol=index_symbol, index_cost_bps=costs.for_symbol(index_symbol)
+    )
+
+
+def benchmark_line(
+    comparison: BenchmarkComparison, *, numbers: NumberStyle = POLISH_NUMBERS
+) -> str:
+    """„agent +1,2% · koszyk +3,4% · IVV +2,1%”; bez danych IVV — jawny brak."""
+    index = (
+        f"{comparison.index_symbol}: {NO_BENCHMARK_PL}"
+        if comparison.index is None
+        else f"{comparison.index_symbol} "
+        f"{numbers.pct(comparison.index.total_return, decimals=1, signed=True)}"
+    )
+    return (
+        f"agent {numbers.pct(comparison.agent.total_return, decimals=1, signed=True)} · "
+        f"koszyk {numbers.pct(comparison.basket.total_return, decimals=1, signed=True)} · "
+        f"{index}"
+    )
+
+
+def benchmark_detail(
+    comparison: BenchmarkComparison, *, numbers: NumberStyle = POLISH_NUMBERS
+) -> str:
+    """Zwrot nadwyżkowy vs koszyk (p.p.) i hit-rate względem rynku z liczbą zakładów."""
+    excess = numbers.pct(comparison.excess_vs_basket, decimals=1, signed=True)
+    hit_rate = comparison.market_hit_rate
+    market = (
+        NO_BENCHMARK_PL
+        if hit_rate.rate is None
+        else f"{numbers.pct(hit_rate.rate, decimals=1)} (n={hit_rate.directional})"
+    )
+    return (
+        f"Zwrot nadwyżkowy vs koszyk: {excess.removesuffix('%')} p.p. · "
+        f"hit-rate względem rynku ({comparison.index_symbol}): {market}"
+    )
 
 
 def bps_label(value: float, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:

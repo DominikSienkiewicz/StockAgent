@@ -18,7 +18,13 @@ Dwie krzywe:
     `paper_portfolio_curve` (WIA-50) to ta sama krzywa z kosztem od obrotu
     per symbol (`trading_costs`): trade niesie symbol i własny koszt w bps.
 
-Koszt zmienia PnL, nie trafność: `win_rate` liczy się z zwrotu brutto.
+Koszt zmienia PnL, nie trafność: `win_rate` liczy się ze zwrotu brutto.
+
+WIA-21: `buy_and_hold_curve` to benchmark „koszyk” (long-only te same symbole
+w tych samych oknach, ten sam koszt), `excess_return` — zwrot nadwyżkowy nad
+benchmarkiem, a `market_relative_hit_rate` — czy kierunek zgadł znak tego
+zwrotu (trafność względem rynku). Wyrównanie benchmarku (IVV) do okien
+predykcji żyje w `benchmark.py`.
 
 Tu mieszka też jedyna definicja hit-rate kierunkowego (`directional_hit_rate`,
 WIA-05): SIDEWAYS nie stawia zakładu, więc nie wchodzi do mianownika.
@@ -27,9 +33,12 @@ WIA-05): SIDEWAYS nie stawia zakładu, więc nie wchodzi do mianownika.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from src.domain.trading_costs import net_return
+
+# Trend pozycji long benchmarku buy&hold — `signal_of` mapuje go na +1.
+LONG_TREND = "BULLISH"
 
 
 def signal_of(predicted_trend: str) -> int:
@@ -85,6 +94,27 @@ def directional_hit_rate(calls: Iterable[tuple[str, bool]]) -> DirectionalHitRat
         if is_correct:
             hits += 1
     return DirectionalHitRate(hits=hits, directional=directional, sideways=sideways)
+
+
+def excess_return(change: float, benchmark_change: float) -> float:
+    """Zwrot nadwyżkowy nad benchmarkiem w tym samym oknie (różnica ułamków)."""
+    return change - benchmark_change
+
+
+def market_relative_hit_rate(
+    calls: Iterable[tuple[str, float, float]],
+) -> DirectionalHitRate:
+    """Hit-rate względem rynku z trójek `(predicted_trend, change, benchmark_change)`.
+
+    Trafienie = kierunek zgadł znak zwrotu nadwyżkowego: BULLISH trafia, gdy
+    symbol pobił benchmark (także spadając mniej od niego), BEARISH — gdy wypadł
+    gorzej. W hossie „zawsze BULLISH” trafia kierunkowo bez żadnej umiejętności,
+    a tu już nie. SIDEWAYS poza mianownikiem, jak w `directional_hit_rate`.
+    """
+    return directional_hit_rate(
+        (trend, signal_of(trend) * excess_return(change, benchmark_change) > 0)
+        for trend, change, benchmark_change in calls
+    )
 
 
 @dataclass(frozen=True)
@@ -154,12 +184,15 @@ class PaperTrade:
     `change` to zrealizowana zmiana ceny w oknie predykcji (ułamek), a
     `cost_bps` to jednostronny koszt obrotu tego symbolu (np. wyższy dla krypto).
     Symbol służy wyłącznie do śledzenia pozycji między cyklami.
+    `benchmark_change` (WIA-21) to zmiana benchmarku (IVV) w TYM SAMYM oknie;
+    None, gdy benchmark nie ma snapshotów okna.
     """
 
     symbol: str
     predicted_trend: str
     change: float
     cost_bps: float = 0.0
+    benchmark_change: float | None = None
 
 
 def portfolio_equity_curve(
@@ -210,6 +243,22 @@ def paper_portfolio_curve(
         period_returns.append(sum(returns) / len(returns))
     trades = [(trade.predicted_trend, trade.change) for cycle in non_empty for trade in cycle]
     return _compound(period_returns, trades, starting_equity)
+
+
+def buy_and_hold_curve(
+    cycles: Sequence[Sequence[PaperTrade]],
+    starting_equity: float = 1.0,
+) -> EquityCurve:
+    """Benchmark „koszyk” (WIA-21): long-only te same symbole w tych samych oknach.
+
+    Każda predykcja staje się pozycją long niezależnie od prognozy, z tą samą
+    wagą i tym samym kosztem co u agenta — buy&hold płaci więc tylko wejście
+    symbolu. Punkty to te same cykle co w `paper_portfolio_curve`.
+    """
+    long_only = [
+        [replace(trade, predicted_trend=LONG_TREND) for trade in cycle] for cycle in cycles
+    ]
+    return paper_portfolio_curve(long_only, starting_equity)
 
 
 def _compound(

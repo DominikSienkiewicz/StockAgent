@@ -13,8 +13,9 @@ from src.application.report_track_record import (
     TrackRecordStats,
     render_track_record_html,
 )
+from src.domain.benchmark import BenchmarkComparison, compare_with_benchmarks
 from src.domain.calibration_curve import CalibrationBucket, probability_scores
-from src.domain.equity_curve import EquityCurve, EquityPoint
+from src.domain.equity_curve import EquityCurve, EquityPoint, PaperTrade
 from src.domain.track_record import (
     HitRateEvidence,
     ScoredCall,
@@ -258,3 +259,61 @@ class TestPaperCostLabel:
 
         assert "bez kosztów transakcyjnych" in html
         assert "koszt 10 bps" not in html
+
+
+def _benchmark(*, with_index: bool = True) -> BenchmarkComparison:
+    """Agent short na trzech cyklach, koszyk i IVV long w tych samych oknach."""
+    changes = (0.01, -0.005, 0.02)
+    cycles = [
+        [PaperTrade("AAA", "BEARISH", change, benchmark_change=0.008 if with_index else None)]
+        for change in changes
+    ]
+    return compare_with_benchmarks(cycles, index_symbol="IVV", index_cost_bps=0)
+
+
+class TestBenchmarkLine:
+    """WIA-21: krzywa agenta obok koszyka (buy&hold tych samych symboli) i IVV."""
+
+    def test_line_compares_agent_basket_and_ivv(self) -> None:
+        comparison = _benchmark()
+
+        html = render_track_record_html(
+            comparison.agent, None, None, TrackRecordStats(benchmark=comparison)
+        )
+
+        assert "agent -2,5% · koszyk +2,5% · IVV +2,4%" in html
+        assert "Zwrot nadwyżkowy vs koszyk: -5,0 p.p." in html
+        assert "hit-rate względem rynku (IVV): 33,3% (n=3)" in html
+        assert "buy&amp;hold" in html
+
+    def test_missing_ivv_data_is_stated_explicitly(self) -> None:
+        comparison = _benchmark(with_index=False)
+
+        html = render_track_record_html(
+            comparison.agent, None, None, TrackRecordStats(benchmark=comparison)
+        )
+
+        assert "IVV: brak danych benchmarku" in html
+
+    def test_without_a_comparison_the_section_says_there_is_no_benchmark(self) -> None:
+        html = render_track_record_html(_curve(), None, None)
+
+        assert "Na tle rynku: brak danych benchmarku" in html
+
+    def test_sparkline_draws_the_basket_as_a_second_row(self) -> None:
+        comparison = _benchmark()
+
+        html = render_track_record_html(
+            comparison.agent, None, None, TrackRecordStats(benchmark=comparison)
+        )
+
+        sparkline = html[html.index("<table role='presentation'") :]
+        assert sparkline.count("<tr>") == 2
+        assert sparkline.count("background:#9ca3af") == 3
+
+    def test_sparkline_without_a_benchmark_keeps_one_row(self) -> None:
+        html = render_track_record_html(_curve(), None, None)
+
+        sparkline = html[html.index("<table role='presentation'") :]
+        assert sparkline.count("<tr>") == 1
+        assert "#9ca3af" not in sparkline

@@ -1,7 +1,8 @@
 """Render sekcji 📈 Track Record w raporcie e-mail.
 
 Trzy podsekcje track-recordu agenta, render-only (zero płatnych wywołań):
-  - T1: krzywa kapitału (paper-PnL ze zrealizowanych predykcji) — podsumowanie
+  - T1: krzywa kapitału (paper-PnL ze zrealizowanych predykcji, po kosztach
+    obrotu — WIA-50) — podsumowanie, linia „na tle rynku” (koszyk i IVV, WIA-21)
     + zwięzła sparklinia tabelaryczna (email-safe, bez zewnętrznych obrazków),
   - T2: krzywa kalibracji (reliability diagram) — bucket pewności → realny
     hit-rate + ECE,
@@ -22,9 +23,13 @@ import html as _html
 from dataclasses import dataclass
 
 from src.application.report_evidence import (
+    BENCHMARK_METHOD_PL,
+    NO_BENCHMARK_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
     PaperCosts,
     baselines_label,
+    benchmark_detail,
+    benchmark_line,
     hit_rate_detail,
     hit_rate_value,
     murphy_label,
@@ -35,6 +40,7 @@ from src.application.report_evidence import (
 )
 from src.application.report_formatting import pct, pct_range
 from src.application.report_lessons import LessonsReport
+from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
     ProbabilityScores,
@@ -51,6 +57,8 @@ _SPARKLINE_BARS = 24
 _SPARKLINE_MAX_PX = 36
 
 _NOTE_STYLE = "font-size: 12px; color: #6b7280; margin: 0 0 10px 0;"
+# WIA-21: druga linia sparklini — koszyk buy&hold, neutralny szary.
+_BENCHMARK_BAR_COLOR = "#9ca3af"
 
 
 @dataclass(frozen=True)
@@ -61,13 +69,16 @@ class TrackRecordStats:
     - `scores` — Brier / log loss / BSS / Murphy z próbek kalibracji,
     - `coverage` — pokrycie zrealizowane przedziałów 80% (ML-34, migracja 032),
     - `costs` — założenia kosztowe, z którymi policzono krzywą kapitału (WIA-50);
-      None = krzywa brutto i copy „bez kosztów transakcyjnych”.
+      None = krzywa brutto i copy „bez kosztów transakcyjnych”,
+    - `benchmark` — krzywa agenta obok koszyka i IVV (WIA-21); None = linia
+      „Na tle rynku: brak danych benchmarku”.
     """
 
     hit_rate: HitRateEvidence | None = None
     scores: ProbabilityScores | None = None
     coverage: IntervalCoverage | None = None
     costs: PaperCosts | None = None
+    benchmark: BenchmarkComparison | None = None
 
 
 def render_track_record_html(
@@ -124,11 +135,28 @@ def _render_equity_html(curve: EquityCurve, stats: TrackRecordStats) -> str:
         f"<p style='{_NOTE_STYLE}'>{_html.escape(portfolio_assumptions(stats.costs))} "
         f"{_html.escape(PORTFOLIO_METHOD_CHANGE_PL)}</p>"
     )
+    basket = None if stats.benchmark is None else stats.benchmark.basket
     return (
         summary
         + assumptions
+        + _render_benchmark_html(stats.benchmark)
         + _render_evidence_html(stats.hit_rate)
-        + _render_sparkline_html(curve)
+        + _render_sparkline_html(curve, basket)
+    )
+
+
+def _render_benchmark_html(benchmark: BenchmarkComparison | None) -> str:
+    """WIA-21 — agent obok koszyka i IVV, zwrot nadwyżkowy, hit-rate względem rynku."""
+    if benchmark is None:
+        return f"<p style='{_NOTE_STYLE}'>Na tle rynku: {NO_BENCHMARK_PL}</p>"
+    note = (
+        f"{benchmark_detail(benchmark)}. {BENCHMARK_METHOD_PL} "
+        "Sparklinia: agent (kolor), koszyk (szary)."
+    )
+    return (
+        "<p style='font-size: 13px; margin: 0 0 4px 0;'>Na tle rynku: "
+        f"<strong>{_html.escape(benchmark_line(benchmark))}</strong></p>"
+        f"<p style='{_NOTE_STYLE}'>{_html.escape(note)}</p>"
     )
 
 
@@ -149,31 +177,53 @@ def _render_evidence_html(evidence: HitRateEvidence | None) -> str:
     return f"<p style='{_NOTE_STYLE}'>{_html.escape(' · '.join(parts))}</p>"
 
 
-def _render_sparkline_html(curve: EquityCurve) -> str:
+def _render_sparkline_html(curve: EquityCurve, basket: EquityCurve | None = None) -> str:
     """Zwięzła sparklinia equity jako tabela słupków (email-safe, bez SVG/obrazków).
 
-    Słupki skalowane do zakresu [min, max] equity w oknie ostatnich N punktów."""
+    Słupki skalowane do zakresu [min, max] equity w oknie ostatnich N punktów.
+    Z koszykiem (WIA-21) drugi wiersz rysuje go szarymi słupkami we wspólnej
+    skali, więc wysokości obu wierszy da się porównać."""
     points = list(curve.points)[-_SPARKLINE_BARS:]
     if not points:
         return ""
-    equities = [p.equity for p in points]
+    bench = [] if basket is None else list(basket.points)[-_SPARKLINE_BARS:]
+    equities = [p.equity for p in points] + [p.equity for p in bench]
     lo, hi = min(equities), max(equities)
     span = (hi - lo) or 1.0
+
+    def height(equity: float) -> int:
+        # Wysokość ≥2px, by nawet płaski odcinek był widoczny.
+        return 2 + int((equity - lo) / span * (_SPARKLINE_MAX_PX - 2))
+
     cells: list[str] = []
     for p in points:
-        # Wysokość ≥2px, by nawet płaski odcinek był widoczny.
-        height = 2 + int((p.equity - lo) / span * (_SPARKLINE_MAX_PX - 2))
         color = "#0ea5e9" if p.period_return >= 0 else "#f97316"
         cells.append(
             "<td style='vertical-align: bottom; padding: 0 1px;'>"
-            f"<div style='width: 6px; height: {height}px; "
+            f"<div style='width: 6px; height: {height(p.equity)}px; "
             f"background: {color}; border-radius: 1px;'></div>"
             "</td>"
         )
+    if not bench:
+        return (
+            "<table role='presentation' style='border-collapse: collapse; "
+            f"height: {_SPARKLINE_MAX_PX}px; margin: 0 0 16px 0;'><tr>"
+            + "".join(cells)
+            + "</tr></table>"
+        )
+    # Zwięzły inline styl drugiego wiersza — każdy bajt maila idzie do budżetu MAIL-06.
+    bench_cells = "".join(
+        "<td style='vertical-align:bottom;padding:0 1px'>"
+        f"<div style='width:6px;height:{height(p.equity)}px;"
+        f"background:{_BENCHMARK_BAR_COLOR}'></div></td>"
+        for p in bench
+    )
     return (
         "<table role='presentation' style='border-collapse: collapse; "
-        f"height: {_SPARKLINE_MAX_PX}px; margin: 0 0 16px 0;'><tr>"
+        f"height: {2 * _SPARKLINE_MAX_PX}px; margin: 0 0 16px 0;'><tr>"
         + "".join(cells)
+        + "</tr><tr>"
+        + bench_cells
         + "</tr></table>"
     )
 

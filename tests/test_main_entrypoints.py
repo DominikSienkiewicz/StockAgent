@@ -4081,3 +4081,84 @@ def test_backtest_uses_the_paper_cost_and_logs_net_return(
     assert "net=0.00120" in line
     assert "turnover=0.25" in line
     assert f"cost={settings.paper_cost_bps:g}bps" in line
+
+
+class TestBenchmarkWiring:
+    """WIA-21: koszyk i IVV z darmowych snapshotów (`price_snapshots`), w tych
+    samych oknach i z tymi samymi kosztami co krzywa agenta — zero płatnych."""
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = TestHonestTrackRecordWiring._settings(**overrides)
+        settings.reflection_min_age_hours = 6
+        return settings
+
+    @staticmethod
+    def _repo() -> MagicMock:
+        from src.domain.value_objects import Money
+
+        repo = TestHonestTrackRecordWiring._repo()
+        # Predykcje z 2026-10-17 14:00 UTC; IVV z tego cyklu i z cyklu rozliczenia.
+        repo.get_price_history.return_value = [
+            (datetime(2026, 10, 17, 13, 58, tzinfo=UTC), Money(Decimal("500"))),
+            (datetime(2026, 10, 18, 5, 31, tzinfo=UTC), Money(Decimal("510"))),
+        ]
+        return repo
+
+    @staticmethod
+    def _costs() -> "main_agent.PaperCosts":
+        return main_agent.PaperCosts(cost_bps=10.0, crypto_cost_bps=25.0)
+
+    def test_stats_carry_the_comparison_from_free_snapshots(self) -> None:
+        repo = self._repo()
+
+        stats = main_agent._build_track_record_stats(self._settings(), repo, self._costs())
+
+        assert stats is not None
+        assert stats.benchmark is not None
+        assert stats.benchmark.index_symbol == "IVV"
+        assert stats.benchmark.index is not None
+        assert stats.benchmark.index.total_return == pytest.approx(0.02 - 0.001)
+        # Okno IVV o dzień dłuższe: snapshot startu bywa sprzed odcięcia okna predykcji.
+        repo.get_price_history.assert_called_once_with("IVV", 31)
+
+    def test_without_costs_no_benchmark_is_read(self) -> None:
+        repo = self._repo()
+
+        stats = main_agent._build_track_record_stats(self._settings(), repo)
+
+        assert stats is not None
+        assert stats.benchmark is None
+        repo.get_price_history.assert_not_called()
+
+    def test_benchmark_read_error_keeps_the_basket(self) -> None:
+        repo = self._repo()
+        repo.get_price_history.side_effect = Exception("supabase down")
+
+        stats = main_agent._build_track_record_stats(self._settings(), repo, self._costs())
+
+        assert stats is not None
+        assert stats.benchmark is not None
+        assert stats.benchmark.index is None
+        assert stats.benchmark.basket.total_return == pytest.approx(0.099)
+
+    def test_equity_flag_off_reads_no_benchmark(self) -> None:
+        repo = self._repo()
+        settings = self._settings(equity_curve_enabled=False)
+
+        stats = main_agent._build_track_record_stats(settings, repo, self._costs())
+
+        assert stats is None or stats.benchmark is None
+        repo.get_price_history.assert_not_called()
+
+    def test_scorecard_shows_the_comparison(self) -> None:
+        publisher = MagicMock()
+
+        main_agent._publish_public_scorecard(
+            self._settings(), self._repo(), publisher, self._costs()
+        )
+
+        page = publisher.publish.call_args.args[0]
+        assert "agent +9.9% · koszyk +9.9% · IVV +1.9%" in page
+        assert "NVDA" not in page
+        assert "AMD" not in page
