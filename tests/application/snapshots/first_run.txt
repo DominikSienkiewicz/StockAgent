@@ -7,9 +7,10 @@ Startuję dla 3 instrumenty. Ten cykl zapisuje pierwsze ceny jako punkt odniesie
 STOCKAGENT — RAPORT CYKLU
 ================================================================
 Czas rozpoczęcia:  czw 15.10 12:30
-Czas trwania:      74,2s
 Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
-Symboli:           3 (predykcji=0, pominiętych=3, błędów=0)
+
+Sygnały ponad próg: 0
+Rozliczone: brak (ostatnie 24h)
 
 KRYPTO
 ----------------------------------------------------------------
@@ -26,5 +27,6 @@ POMINIĘTE (poniżej progu zmienności)
 
 ----------------------------------------------------------------
 Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.
+Symboli: 3 · predykcji: 0 · pominiętych: 3 · błędów: 0 · czas trwania: 74,2s
 ----------------------------------------------------------------
 przebieg #local · commit local

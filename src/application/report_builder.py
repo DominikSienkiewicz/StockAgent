@@ -1336,6 +1336,7 @@ def build_html_report(
         resolved, resolved_window=resolved_window, resolved_note=resolved_note,
         display_timezone=context.display_timezone,
         portfolio_change_box=portfolio_change_box,
+        settlements_unavailable=context.resolved_unavailable,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1364,6 +1365,7 @@ def build_html_report(
         resolved, resolved_window=resolved_window, resolved_note=resolved_note,
         display_timezone=context.display_timezone,
         portfolio_change_line=portfolio_change_line,
+        settlements_unavailable=context.resolved_unavailable,
     )
     text = _fill_text_slots(
         text,
@@ -1929,6 +1931,102 @@ def _render_saved_section_html(saved: list[SymbolResult]) -> str:
     return "".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# MAIL-16: pierwszy ekran — liczby dla czytelnika, liczniki do stopki
+# ---------------------------------------------------------------------------
+
+# Okno rozliczeń w boxie pierwszego ekranu — krócej niż w nagłówku sekcji.
+_SETTLEMENT_WINDOW_SHORT = {
+    _RESOLVED_WINDOW_24H: "ostatnie 24h",
+    _RESOLVED_WINDOW_THIS_CYCLE: "w tym cyklu",
+}
+
+
+def _signals_above_threshold(saved: list[SymbolResult]) -> int:
+    """MAIL-16: zapisane predykcje z kierunkiem (≠ SIDEWAYS) — sygnały, które
+    przeszły bramkę volatility i coś mówią. „Bez ruchu” nie jest sygnałem."""
+    return sum(1 for r in saved if r.trend is not None and r.trend != "SIDEWAYS")
+
+
+@dataclasses.dataclass(frozen=True)
+class _SettlementTally:
+    """MAIL-16: „X/Y trafionych” z rozliczeń okna — albo jawny brak / awaria
+    odczytu (MAIL-25: awaria nie może udawać „brak rozliczeń”)."""
+
+    value: str
+    note: str
+    text: str
+
+
+def _settlement_tally(
+    resolved: list[ResolvedPrediction], *, unavailable: bool, window: str
+) -> _SettlementTally:
+    short_window = _SETTLEMENT_WINDOW_SHORT.get(window, window)
+    if resolved:
+        hits = f"{sum(1 for p in resolved if p.is_correct)}/{len(resolved)}"
+        return _SettlementTally(
+            value=hits,
+            note=f"trafionych · {short_window}",
+            text=f"{hits} trafionych ({short_window})",
+        )
+    if unavailable:
+        return _SettlementTally(
+            value="—", note="rozliczenia niedostępne", text="niedostępne (błąd odczytu)"
+        )
+    return _SettlementTally(
+        value="—", note=f"brak rozliczeń · {short_window}", text=f"brak ({short_window})"
+    )
+
+
+def _render_reader_box_html(
+    label: str, value: str, note: str, *, accent: str, background: str
+) -> str:
+    return (
+        f'<div style="flex: 1; padding: 12px; background: {background}; '
+        f'border-left: 3px solid {accent}; border-radius: 4px;">'
+        '<div style="font-size: 11px; color: #4b5563; text-transform: uppercase;">'
+        f"{_html(label)}</div>"
+        '<div style="font-size: 24px; font-weight: 600; color: #1f2937;">'
+        f"{_html(value)}</div>"
+        f'<div style="font-size: 12px; color: #6b7280;">{_html(note)}</div>'
+        "</div>"
+    )
+
+
+def _render_technical_footer_html(
+    results: list[SymbolResult],
+    saved: list[SymbolResult],
+    ignored: list[SymbolResult],
+    errors: list[SymbolResult],
+    duration_seconds: float,
+) -> str:
+    """MAIL-16: liczniki pracy pipeline'u w stopce — błąd nadal jest czerwony."""
+    errors_color = "#dc2626" if errors else "#6b7280"
+    return (
+        '<div style="margin-bottom: 8px; color: #6b7280;">'
+        f"Symboli: <strong>{len(results)}</strong>"
+        f" · Predykcje: <strong>{len(saved)}</strong>"
+        f" · Pominięte: <strong>{len(ignored)}</strong>"
+        f' · <span style="color: {errors_color};">Błędy: <strong>{len(errors)}</strong></span>'
+        f" · Czas trwania: {_number(duration_seconds, decimals=1)}s"
+        "</div>"
+    )
+
+
+def _technical_footer_text(
+    results: list[SymbolResult],
+    saved: list[SymbolResult],
+    ignored: list[SymbolResult],
+    errors: list[SymbolResult],
+    duration_seconds: float,
+) -> str:
+    return (
+        f"Symboli: {len(results)} · predykcji: {len(saved)} · "
+        f"pominiętych: {len(ignored)} · błędów: {len(errors)} · "
+        f"czas trwania: {_number(duration_seconds, decimals=1)}s"
+    )
+
+
 def _render_html(
     results: list[SymbolResult],
     saved: list[SymbolResult],
@@ -1947,6 +2045,7 @@ def _render_html(
     resolved_note: str | None = None,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     portfolio_change_box: str = "",
+    settlements_unavailable: bool = False,
 ) -> str:
     sections = []
 
@@ -1956,8 +2055,6 @@ def _render_html(
       <h1 style="font-size: 22px; margin: 0 0 4px 0;">📊 StockAgent — raport cyklu</h1>
       <div style="font-size: 13px; color: #6b7280; margin-bottom: 24px;">
         Czas rozpoczęcia: {started_local}
-        · Czas trwania: {_number(duration_seconds, decimals=1)}s
-        · Liczba symboli: {len(results)}
       </div>
     """)
 
@@ -1977,24 +2074,30 @@ def _render_html(
       </div>
     """)
 
-    # Summary boxes — PORT-06: pierwszy box to zmiana portfela (gdy jest).
-    sections.append(f"""
-      <div style="display: flex; gap: 8px; margin-bottom: 16px;">
-        {portfolio_change_box}
-        <div style="flex: 1; padding: 12px; background: #f0fdf4; border-left: 3px solid #16a34a; border-radius: 4px;">
-          <div style="font-size: 11px; color: #15803d; text-transform: uppercase;">Predykcje</div>
-          <div style="font-size: 24px; font-weight: 600; color: #14532d;">{len(saved)}</div>
-        </div>
-        <div style="flex: 1; padding: 12px; background: #f9fafb; border-left: 3px solid #9ca3af; border-radius: 4px;">
-          <div style="font-size: 11px; color: #4b5563; text-transform: uppercase;">Pominięte</div>
-          <div style="font-size: 24px; font-weight: 600; color: #1f2937;">{len(ignored)}</div>
-        </div>
-        <div style="flex: 1; padding: 12px; background: {'#fef2f2' if errors else '#f9fafb'}; border-left: 3px solid {'#dc2626' if errors else '#9ca3af'}; border-radius: 4px;">
-          <div style="font-size: 11px; color: {'#991b1b' if errors else '#4b5563'}; text-transform: uppercase;">Błędy</div>
-          <div style="font-size: 24px; font-weight: 600; color: {'#7f1d1d' if errors else '#1f2937'};">{len(errors)}</div>
-        </div>
-      </div>
-    """)
+    # MAIL-16: pierwszy ekran — trzy liczby dla czytelnika: zmiana portfela
+    # (tylko właściciel z pozycjami, PORT-06; inaczej box się chowa), sygnały
+    # ponad próg i trafność rozliczeń. Liczniki operacyjne są w stopce.
+    settlements = _settlement_tally(
+        resolved_predictions, unavailable=settlements_unavailable, window=resolved_window
+    )
+    signals_box = _render_reader_box_html(
+        "Sygnały ponad próg",
+        str(_signals_above_threshold(saved)),
+        "wzrost lub spadek",
+        accent="#16a34a",
+        background="#f0fdf4",
+    )
+    settlements_box = _render_reader_box_html(
+        "Rozliczone",
+        settlements.value,
+        settlements.note,
+        accent="#2563eb",
+        background="#eff6ff",
+    )
+    sections.append(
+        '<div style="display: flex; gap: 8px; margin-bottom: 16px;">'
+        f"{portfolio_change_box}{signals_box}{settlements_box}</div>"
+    )
 
     # Slot na sekcję Risk Watch — wypełniany przez build_html_report,
     # gdy wywołujący przekaże MacroRiskReport. Bez slotu sekcja jest pomijana.
@@ -2097,6 +2200,7 @@ def _render_html(
     sections.append(f"""
       <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #9ca3af;">
         <div style="margin-bottom: 8px; color: #6b7280;">{_html(INVESTMENT_DISCLAIMER)}</div>
+        {_render_technical_footer_html(results, saved, ignored, errors, duration_seconds)}
         StockAgent · Agentic RAG + Continual Learning · raport automatyczny
         {_RUN_FOOTER_SLOT}
       </div>
@@ -2337,6 +2441,7 @@ def _render_plain(
     resolved_note: str | None = None,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     portfolio_change_line: str = "",
+    settlements_unavailable: bool = False,
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
@@ -2346,15 +2451,17 @@ def _render_plain(
     lines.append("STOCKAGENT — RAPORT CYKLU")
     lines.append("=" * 64)
     lines.append(f"Czas rozpoczęcia:  {started_local}")
-    lines.append(f"Czas trwania:      {_number(duration_seconds, decimals=1)}s")
     lines.append(f"Sesja NYSE:        {session['label']} — {session['detail']}")
-    lines.append(
-        f"Symboli:           {len(results)} "
-        f"(predykcji={len(saved)}, pominiętych={len(ignored)}, błędów={len(errors)})"
-    )
-    # PORT-06: zmiana portfela od ostatniego maila — na pierwszym ekranie tekstu.
+    lines.append("")
+    # MAIL-16: trzy liczby dla czytelnika (portfel tylko u właściciela, PORT-06);
+    # liczniki operacyjne są w stopce technicznej.
     if portfolio_change_line:
         lines.append(portfolio_change_line)
+    lines.append(f"Sygnały ponad próg: {_signals_above_threshold(saved)}")
+    settlements = _settlement_tally(
+        resolved_predictions, unavailable=settlements_unavailable, window=resolved_window
+    )
+    lines.append(f"Rozliczone: {settlements.text}")
     lines.append("")
 
     # Slot na sekcję Risk Watch w wariancie plain text — analogicznie do HTML.
@@ -2414,8 +2521,13 @@ def _render_plain(
 
     lines.extend(_render_errors_text(errors))
 
-    # MAIL-08: zastrzeżenie zamyka treść; stopka przebiegu (MAIL-42) idzie za nim.
-    lines.extend(["-" * 64, INVESTMENT_DISCLAIMER])
+    # MAIL-08: zastrzeżenie zamyka treść; stopka techniczna (MAIL-16) i stopka
+    # przebiegu (MAIL-42) idą za nim.
+    lines.extend([
+        "-" * 64,
+        INVESTMENT_DISCLAIMER,
+        _technical_footer_text(results, saved, ignored, errors, duration_seconds),
+    ])
 
     return "\n".join(lines)
 

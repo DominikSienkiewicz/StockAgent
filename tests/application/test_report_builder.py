@@ -3012,3 +3012,132 @@ class TestPortfolioChangeInReport:
         assert "Twój portfel od ostatniego maila" in html
         assert "od ostatniego maila" not in text
         assert "$70,00" not in text
+
+
+class TestFirstScreenReaderNumbers:
+    """MAIL-16: pierwszy ekran odpowiada na pytania czytelnika — co z moim
+    portfelem, ile sygnałów ponad próg, czy model ostatnio trafiał. Liczniki
+    pracy pipeline'u (pominięte, błędy, czas trwania, liczba symboli) są
+    w stopce technicznej, w HTML i w tekście."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    _DISCLAIMER = "nie stanowi rekomendacji inwestycyjnej"
+
+    @staticmethod
+    def _resolved(correct: int, wrong: int) -> list[ResolvedPrediction]:
+        return [
+            ResolvedPrediction(symbol=f"C{i}", predicted_trend="BULLISH", is_correct=True)
+            for i in range(correct)
+        ] + [
+            ResolvedPrediction(symbol=f"W{i}", predicted_trend="BEARISH", is_correct=False)
+            for i in range(wrong)
+        ]
+
+    @staticmethod
+    def _saved(symbol: str, trend: str) -> SymbolResult:
+        return SymbolResult(
+            symbol=symbol, status="saved", delta=Decimal("0.03"),
+            current_price=Decimal("100"), trend=trend, target_price=Decimal("102"),
+            confidence_score=0.7,
+        )
+
+    def test_first_screen_shows_resolved_hit_count_before_counters(self):
+        results = [_saved_result(), _ignored_result(), _error_result()]
+        context = ReportContext(resolved_predictions=self._resolved(3, 2))
+
+        html, text = build_html_report(results, self._STARTED, 1.0, context)
+
+        assert "3/5" in html
+        assert html.index("3/5") < html.index("Pominięte")
+        assert text.index("Rozliczone: 3/5 trafionych") < text.index("pominiętych")
+
+    def test_signals_box_counts_saved_predictions_with_a_direction(self):
+        results = [
+            self._saved("AAPL", "BULLISH"),
+            self._saved("MSFT", "BEARISH"),
+            self._saved("GOOGL", "SIDEWAYS"),
+            _ignored_result("NVDA"),
+        ]
+
+        html, text = build_html_report(results, self._STARTED, 1.0)
+
+        signals_box = html.split("Sygnały ponad próg")[1][:200]
+        assert ">2</div>" in signals_box
+        assert "Sygnały ponad próg: 2" in text
+
+    def test_reader_boxes_come_in_order_portfolio_signals_settlements(self):
+        portfolio = Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("2"), purchase_price=Decimal("90"),
+                         purchase_date=datetime(2026, 3, 2).date()),
+            ),
+            as_of=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+        context = ReportContext(
+            user_portfolio=portfolio, resolved_predictions=self._resolved(1, 1)
+        )
+
+        html, text = build_html_report(
+            [self._saved("AAPL", "BULLISH")], self._STARTED, 1.0, context
+        )
+
+        assert (
+            html.index("Twój portfel od ostatniego maila")
+            < html.index("Sygnały ponad próg")
+            < html.index("Rozliczone")
+        )
+        assert (
+            text.index("Twój portfel od ostatniego maila")
+            < text.index("Sygnały ponad próg")
+            < text.index("Rozliczone: 1/2 trafionych")
+        )
+
+    def test_without_a_portfolio_the_portfolio_box_is_hidden(self):
+        html, text = build_html_report(
+            [self._saved("AAPL", "BULLISH")], self._STARTED, 1.0,
+            ReportContext(resolved_predictions=self._resolved(1, 0)),
+        )
+
+        assert "Twój portfel" not in html
+        assert "Twój portfel" not in text
+        assert "Sygnały ponad próg" in html
+        assert "1/1" in html
+
+    def test_operational_counters_move_to_the_technical_footer(self):
+        results = [_saved_result(), _ignored_result(), _ignored_result("GOOGL"), _error_result()]
+
+        html, text = build_html_report(results, self._STARTED, 12.5)
+
+        header = html[: html.index("Sygnały ponad próg")]
+        assert "Czas trwania" not in header
+        assert "Liczba symboli" not in header
+        footer = html[html.index(self._DISCLAIMER):]
+        assert "Symboli: <strong>4</strong>" in footer
+        assert "Predykcje: <strong>1</strong>" in footer
+        assert "Pominięte: <strong>2</strong>" in footer
+        assert "Błędy: <strong>1</strong>" in footer
+        assert "Czas trwania: 12,5s" in footer
+        text_footer = text[text.index(self._DISCLAIMER):]
+        assert (
+            "Symboli: 4 · predykcji: 1 · pominiętych: 2 · błędów: 1 · czas trwania: 12,5s"
+            in text_footer
+        )
+        assert "Czas trwania" not in text[: text.index(self._DISCLAIMER)]
+
+    def test_no_settlements_box_says_none_instead_of_zero_of_zero(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(resolved_predictions=[])
+        )
+
+        assert "0/0" not in html
+        assert "Rozliczone: brak" in text
+
+    def test_unreadable_settlements_box_says_unavailable(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0,
+            ReportContext(resolved_predictions=None, resolved_unavailable=True),
+        )
+
+        settlements_box = html.split("Rozliczone")[1][:300]
+        assert "niedostępne" in settlements_box
+        assert "Rozliczone: niedostępne" in text
