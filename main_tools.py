@@ -18,6 +18,7 @@ Użycie:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -41,6 +42,7 @@ from src.tools.import_positions import (
 )
 
 if TYPE_CHECKING:
+    from src.config import Settings
     from src.domain.experiment import Experiment
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
@@ -50,6 +52,17 @@ Handler = Callable[[argparse.Namespace], int]
 def _now() -> datetime:
     """Zegar narzędzi (UTC) — jedno miejsce do podmiany w testach."""
     return datetime.now(UTC)
+
+
+def _load_settings() -> Settings:
+    """`Settings` z env plus logi z redakcją jego sekretów (BEZ-02). Poziom
+    WARNING jak dotąd: narzędzie pisze wynik na stdout, logi tylko przy kłopocie."""
+    from src.config import Settings
+    from src.infrastructure.logging_redaction import configure_logging
+
+    settings = Settings.from_env()
+    configure_logging(settings.secret_values(), level=logging.WARNING)
+    return settings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -114,11 +127,10 @@ def _add_evaluate(subcommands: argparse._SubParsersAction[argparse.ArgumentParse
 
 def _run_evaluate(args: argparse.Namespace) -> int:
     """Ewaluacja offline (read-only, zero płatnych wywołań); exit 0 zawsze."""
-    from src.config import Settings
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
     segmentations = tuple(dict.fromkeys(args.by))
-    settings = Settings.from_env()
+    settings = _load_settings()
     experiment: Experiment | None = None
     if args.experiment is not None:
         experiment = _find_experiment(settings.experiment_definitions(), args.experiment)
@@ -225,10 +237,9 @@ def _run_import_positions(args: argparse.Namespace) -> int:
             print(f"   · {error}", file=sys.stderr)
         return 1
 
-    from src.config import Settings
     from src.infrastructure.adapters.positions_repo import SupabasePositionsAdapter
 
-    settings = Settings.from_env()
+    settings = _load_settings()
     currency_columns = settings.positions_currency_enabled
     adapter = SupabasePositionsAdapter(
         url=settings.supabase_url,

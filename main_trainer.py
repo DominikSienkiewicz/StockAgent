@@ -35,6 +35,7 @@ from src.infrastructure.adapters.cached_fundamentals import CachedFundamentalsAd
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 from src.infrastructure.llm.unavailable import UnavailableLLMAdapter
+from src.infrastructure.logging_redaction import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -225,11 +226,8 @@ def _send_weekly_recap(
 
 
 def main(settings: Settings | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-    )
     settings = settings or Settings.from_env()
+    configure_logging(settings.secret_values())
     quota_monitor = QuotaMonitor()
     supabase_repo = build_repository(settings)
     use_case = build_use_case(settings)

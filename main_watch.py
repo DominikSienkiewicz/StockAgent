@@ -45,6 +45,7 @@ from src.domain.shock import (
     should_emit,
 )
 from src.domain.value_objects import Money, Threshold
+from src.infrastructure.logging_redaction import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -231,11 +232,10 @@ def run_watch(
 
 
 def main(settings: Settings | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
     settings = settings or Settings()  # type: ignore[call-arg]
+    configure_logging(
+        settings.secret_values(), fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
 
     # Import lokalny — DI Container Fast Loopa buduje darmowe adaptery ceny
     # i kanały push; watch tylko je składa. Zero płatnych portów.

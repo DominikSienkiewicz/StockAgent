@@ -33,6 +33,7 @@ from datetime import UTC, datetime, time
 
 from src.config import Settings
 from src.domain.liveness import LivenessExpectation, overdue_jobs
+from src.infrastructure.logging_redaction import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +84,10 @@ def _send_alert(settings: Settings, subject: str, body: str) -> int:
 
 def main(settings: Settings | None = None, now: datetime | None = None) -> int:
     """`now` — chwila sprawdzenia (testy); None = bieżący czas UTC."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
     settings = settings or Settings()  # type: ignore[call-arg]
+    configure_logging(
+        settings.secret_values(), fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
 
     # Import lokalny — fabryki z DI Containera Fast Loopa; tylko darmowe adaptery
     # (repozytorium tutaj, notifier w `_send_alert`).

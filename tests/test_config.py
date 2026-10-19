@@ -818,3 +818,48 @@ class TestExperimentSettings:
         baseline = self._settings().config_hash()
         assert self._settings(experiments={"EXP-02": self._DEFINITION}).config_hash() != baseline
         assert self._settings(experiment_arms_enabled=True).config_hash() == baseline
+
+
+class TestSecretValues:
+    """BEZ-02: wartości sekretów, które formatter logów redaguje dosłownie."""
+
+    _VALUES = {
+        "openai_api_key": "sk-openai-0001",
+        "anthropic_api_key": "sk-ant-0002",
+        "fred_api_key": "fred-key-0003",
+        "finnhub_api_key": "finnhub-0004",
+        "alpha_vantage_api_keys": ["av-key-0005", "av-key-0006"],
+        "supabase_url": "https://ref0007.supabase.co",
+        "supabase_key": "supa-key-0008",
+        "resend_api_key": "re_key_0009",
+        "digest_from_email": "sender-0010@example.com",
+        "digest_to_email": "owner-0011@example.com",
+        "telegram_bot_token": "123:bot-0012",
+        "telegram_chat_id": "chat-0013",
+        "slack_webhook_url": "https://hooks.slack.com/services/0014",
+        "edgar_user_agent": "StockAgent/1.0 (contact-0015@example.com)",
+    }
+
+    def test_fixture_covers_every_secret_field(self):
+        from src.config import SECRET_SETTINGS_FIELDS
+
+        assert set(self._VALUES) == SECRET_SETTINGS_FIELDS
+
+    def test_lists_every_secret_with_each_alpha_vantage_key_separately(self, env):
+        settings = Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **self._VALUES})
+
+        values = settings.secret_values()
+
+        expected = {
+            item
+            for value in self._VALUES.values()
+            for item in (value if isinstance(value, list) else [value])
+        }
+        assert set(values) == expected
+        assert "av-key-0005,av-key-0006" not in values
+
+    def test_skips_unset_optional_secrets(self, env):
+        values = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).secret_values()
+
+        assert all(values)
+        assert {"sk-test", "av-test", "supa-key"} <= set(values)

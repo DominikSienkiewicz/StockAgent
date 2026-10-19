@@ -854,6 +854,16 @@ class Settings(BaseSettings):
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    def secret_values(self) -> tuple[str, ...]:
+        """BEZ-02: wartości pól `SECRET_SETTINGS_FIELDS` dla formattera logów —
+        każdy klucz z `alpha_vantage_api_keys` osobno, nieustawione pominięte."""
+        values: list[str] = []
+        for name in sorted(SECRET_SETTINGS_FIELDS):
+            value = getattr(self, name)
+            items = value if isinstance(value, list) else [value]
+            values.extend(str(item) for item in items if item)
+        return tuple(values)
+
     @classmethod
     def from_env(cls) -> Settings:
         """Mypy-friendly entry point — pydantic-settings ładuje pola z env/.env.
