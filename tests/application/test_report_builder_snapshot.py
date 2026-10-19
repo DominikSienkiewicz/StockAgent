@@ -20,6 +20,7 @@ Zamierzona zmiana maila — odśwież snapshoty jawną komendą i przejrzyj diff
 
 from __future__ import annotations
 
+import dataclasses
 import difflib
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
@@ -38,6 +39,7 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_council_history import InvestorHistory
+from src.application.report_evidence import PaperCosts
 from src.application.report_formatting import build_sector_map
 from src.application.report_lessons import LessonItem, LessonsReport
 from src.application.report_model_scorecard import ModelScorecardView
@@ -47,13 +49,14 @@ from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.asset import Asset
+from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import CalibrationBucket
 from src.domain.conformal import MoveInterval
 from src.domain.consensus_shift import ConsensusShift, ShiftKind
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.drawdown import DrawdownSignal
-from src.domain.equity_curve import EquityCurve, EquityPoint
+from src.domain.equity_curve import DirectionalHitRate, EquityCurve, EquityPoint
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.finops import estimate_cycle_cost
 from src.domain.insider_flow import InsiderFlowSnapshot
@@ -402,6 +405,44 @@ def _track_record_stats() -> TrackRecordStats:
     return TrackRecordStats(hit_rate=assess_directional_hit_rate(calls))
 
 
+def _paper_costs() -> PaperCosts:
+    """WIA-50: koszty jak w config.toml (10 bps, krypto 25 bps)."""
+    return PaperCosts(cost_bps=10, crypto_cost_bps=25, crypto_symbols=frozenset({"BTC", "ETH"}))
+
+
+def _benchmark() -> BenchmarkComparison:
+    """WIA-21: agent z `_equity_curve()` obok koszyka i IVV na tych samych cyklach."""
+    return BenchmarkComparison(
+        agent=_equity_curve(),
+        basket=EquityCurve(
+            points=(
+                EquityPoint(index=0, period_return=0.009, equity=1.009),
+                EquityPoint(index=1, period_return=0.004, equity=1.0130),
+                EquityPoint(index=2, period_return=0.011, equity=1.0242),
+                EquityPoint(index=3, period_return=0.010, equity=1.0344),
+            ),
+            total_return=0.0344,
+            win_rate=0.7,
+            max_drawdown=0.0,
+            n_trades=10,
+        ),
+        index=EquityCurve(
+            points=(
+                EquityPoint(index=0, period_return=0.006, equity=1.006),
+                EquityPoint(index=1, period_return=0.003, equity=1.0090),
+                EquityPoint(index=2, period_return=0.007, equity=1.0161),
+                EquityPoint(index=3, period_return=0.005, equity=1.0212),
+            ),
+            total_return=0.0212,
+            win_rate=1.0,
+            max_drawdown=0.0,
+            n_trades=4,
+        ),
+        index_symbol="IVV",
+        market_hit_rate=DirectionalHitRate(hits=5, directional=9, sideways=1),
+    )
+
+
 def _model_scorecard() -> ModelScorecardView:
     return ModelScorecardView(
         summary=summarize_run(["trained_successfully"]),
@@ -530,7 +571,9 @@ def _full_context() -> ReportContext:
         cycle_cost=estimate_cycle_cost(
             {"llm": 3, "council_llm": 2, "sentiment": 3, "news": 3, "embedding": 6}
         ),
-        track_record_stats=_track_record_stats(),
+        track_record_stats=dataclasses.replace(
+            _track_record_stats(), costs=_paper_costs(), benchmark=_benchmark()
+        ),
         display_timezone=DISPLAY_TIMEZONE,
         run_context=RUN,
         sector_map=SECTOR_MAP,
