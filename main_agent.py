@@ -103,6 +103,7 @@ from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
 from src.domain.finops import estimate_cycle_cost
+from src.domain.hedge import equity_hedge_symbols
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.peer_group import build_peer_context
@@ -1455,13 +1456,14 @@ def _build_position_risk(
 
     Tylko za `portfolio_var_enabled` i tylko przy realnych pozycjach: bez nich
     banda zostaje jak dotąd, a VaR radaru (równe wagi watchlisty) nigdy jej nie
-    zwęża. Trzymane instrumenty z `risk_symbols` liczą się jako hedge, tak jak
-    w Risk Watch. Darmowa historia cen; błąd → None (banda bez zmian)."""
+    zwęża. Hedge'em są wyłącznie trzymane instrumenty typu INVERSE_EQUITY
+    i VOLATILITY z `risk_symbol_types` (`EQUITY_HEDGE_TYPES`) — GLD czy EPOL to
+    inwestycja. Darmowa historia cen; błąd → None (banda bez zmian)."""
     if not settings.portfolio_var_enabled or portfolio is None:
         return None
     try:
         return PortfolioRiskUseCase(repository_port=repository).position_risk(
-            portfolio, hedge_symbols=frozenset(settings.risk_symbols)
+            portfolio, hedge_symbols=equity_hedge_symbols(settings.risk_symbol_types)
         )
     except Exception:
         logger.exception("Position risk failed — banda bez ryzyka portfela")

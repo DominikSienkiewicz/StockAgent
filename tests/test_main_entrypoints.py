@@ -3636,13 +3636,20 @@ class TestPositionRiskWiring:
         assert main_agent._build_position_risk(settings, repository, None) is None
         repository.get_price_history.assert_not_called()
 
-    def test_flag_on_uses_held_positions_and_risk_symbols_as_hedges(
+    def test_flag_on_uses_held_positions_and_equity_hedges_only(
         self, settings, mocker
     ) -> None:
         from src.application.use_cases.portfolio_risk import PositionRisk
+        from src.domain.macro_risk import MacroRiskInstrumentType as T
 
         settings.portfolio_var_enabled = True
-        settings.risk_symbols = ["SH", "GLD"]
+        settings.risk_symbols = ["SH", "GLD", "VIXY", "EPOL"]
+        settings.risk_symbol_types = {
+            "SH": T.INVERSE_EQUITY,
+            "GLD": T.SAFE_HAVEN,
+            "VIXY": T.VOLATILITY,
+            "EPOL": T.SOVEREIGN_PROXY,
+        }
         computed = mocker.patch.object(
             main_agent.PortfolioRiskUseCase,
             "position_risk",
@@ -3655,7 +3662,8 @@ class TestPositionRiskWiring:
         )
 
         assert risk == PositionRisk(var=0.04)
-        computed.assert_called_once_with(portfolio, hedge_symbols=frozenset({"SH", "GLD"}))
+        # GLD i EPOL to inwestycja, nie hedge — nie mogą obniżać bandy.
+        computed.assert_called_once_with(portfolio, hedge_symbols=frozenset({"SH", "VIXY"}))
 
     def test_failure_degrades_to_no_risk(self, settings, mocker) -> None:
         settings.portfolio_var_enabled = True
