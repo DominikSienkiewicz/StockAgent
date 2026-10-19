@@ -34,7 +34,7 @@ class TestYieldCurve:
         assert "<h2" in html
         assert "rentown" in html.lower()
         # Inwersja (spread ujemny) zaznaczona.
-        assert "-0.55" in html or "INWERSJA" in html.upper() or "INVERTED" in html
+        assert "-0,55" in html or "INWERSJA" in html.upper() or "INVERTED" in html
 
 
 class TestPerSymbol:
