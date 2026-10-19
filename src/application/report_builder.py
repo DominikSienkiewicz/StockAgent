@@ -6,6 +6,7 @@ Czysta logika prezentacji — bez I/O, łatwo testowalne.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import html
 import re
 import urllib.parse
@@ -551,6 +552,39 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
             "strong_consensus": verdict.has_strong_consensus(),
             "dissenting_views": verdict.dissenting_views,
         },
+    )
+
+
+# MAIL-06 (b): rada spoza top N sygnałów i spoza leadu — jedna linia (werdykt,
+# rozkład głosów, podsumowanie) i zawsze widoczne głosy niezgodne. Pełna tabela
+# person to ~4 KB na symbol, a Gmail przycina mail powyżej ~102 KB. Summary i
+# dysydenci pochodzą z LLM-a, więc linia idzie przez autoescapowany `_env`.
+_COUNCIL_LINE_TEMPLATE = _env.from_string(
+    "<div style='margin-top: 8px; padding: 6px 10px; border: 1px solid #e5e7eb; "
+    "border-radius: 4px; font-size: 12px; color: #374151;'>"
+    "<strong>Rada doradcza:</strong> "
+    "<span style='color: {{ color }}; font-weight: 700;'>{{ label }}</span>"
+    " · zgodność {{ strength_pct }}%"
+    "{% if is_split %} · ⚠️ podzielona{% endif %} · "
+    "🟢 {{ dist['BUY'] }} KUP · 🔴 {{ dist['SELL'] }} SPRZEDAJ · 🟡 {{ dist['HOLD'] }} TRZYMAJ"
+    " — „{{ summary }}”"
+    "{% if dissent %}<div style='margin-top: 4px; color: #92400e;'>"
+    "⚠️ Głosy niezgodne: {{ dissent | join('; ') }}</div>{% endif %}"
+    "</div>"
+)
+
+
+def _render_council_line(verdict: CouncilVerdict) -> str:
+    """MAIL-06 (b): zwinięta rada — jedna linia zamiast tabeli person."""
+    final = verdict.final_recommendation
+    return _COUNCIL_LINE_TEMPLATE.render(
+        label=council_recommendation_label(final),
+        color=_COUNCIL_REC_COLOR.get(final, "#737373"),
+        strength_pct=int(verdict.consensus_strength * 100),
+        is_split=verdict.is_split_decision(),
+        dist=verdict.vote_distribution(),
+        summary=verdict.summary,
+        dissent=verdict.dissenting_views,
     )
 
 
@@ -1170,6 +1204,28 @@ def _resolved_note(context: ReportContext, window: str) -> str | None:
     return None
 
 
+# MAIL-06: tyle symboli (wg siły sygnału) dostaje pełny blok uzasadnień z radą.
+_FULL_DETAIL_TOP_N = 10
+
+
+def _full_detail_symbols(
+    saved: list[SymbolResult],
+    ranked_signals: list[TradeSignal],
+    lead_items: list[LeadItem],
+) -> frozenset[str] | None:
+    """MAIL-06: symbole z pełnym blokiem — top N wg siły sygnału (kolejność
+    „🎯 Najsilniejsze sygnały”) i symbole z leadu. Symbole bez sygnału (brak
+    pewności albo prognozy) idą za rankingiem w kolejności cyklu. None = cykl
+    mieści się w top N, więc pełny blok dostaje każdy symbol."""
+    if len(saved) <= _FULL_DETAIL_TOP_N:
+        return None
+    ranked = [sig.symbol for sig in ranked_signals]
+    ranked_set = set(ranked)
+    ranked.extend(r.symbol for r in saved if r.symbol not in ranked_set)
+    lead = {item.symbol for item in lead_items if item.symbol is not None}
+    return frozenset(ranked[:_FULL_DETAIL_TOP_N]) | lead
+
+
 def build_html_report(
     results: list[SymbolResult],
     started_at: datetime,
@@ -1207,7 +1263,8 @@ def build_html_report(
     cluster_exposures = _cluster_exposure_per_symbol(
         context.user_portfolio, context.portfolio_clusters, current_prices
     )
-    trade_signals = build_trade_signals(
+    rank_signals = functools.partial(
+        build_trade_signals,
         results,
         hit_rate=hit_rate,
         hit_sample=hit_sample,
@@ -1215,6 +1272,7 @@ def build_html_report(
         portfolio_weights=portfolio_weights,
         cluster_exposures=cluster_exposures,
     )
+    trade_signals = rank_signals()
     risk_signals = detect_risk_signals(results)
     macro_risk_html = (
         render_risk_watch_html(context.macro_risk_report) if context.macro_risk_report else ""
@@ -1235,6 +1293,10 @@ def build_html_report(
     # warstwy application (SymbolResult / ResolvedPrediction) są mapowane na
     # typy domenowe — `src/domain/digest_lead.py` ich nie importuje.
     lead_items = build_cycle_lead(results, context)
+    # MAIL-06: pełna rada dla top N wg siły sygnału i symboli z leadu.
+    full_detail = _full_detail_symbols(
+        saved, rank_signals(top_n=len(results)), lead_items
+    )
     lead_html = render_lead_html(lead_items)
     lead_text = render_lead_text(lead_items)
     onboarding_html, onboarding_text = _build_onboarding_blocks(
@@ -1337,6 +1399,7 @@ def build_html_report(
         display_timezone=context.display_timezone,
         portfolio_change_box=portfolio_change_box,
         settlements_unavailable=context.resolved_unavailable,
+        full_detail=full_detail,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1818,9 +1881,11 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
             """
 
 
-def _render_reasoning_block_html(r: SymbolResult) -> str:
+def _render_reasoning_block_html(r: SymbolResult, *, full_council: bool = True) -> str:
     """Blok 'Uzasadnienia' dla jednej predykcji. Pusty string, gdy nie ma
-    czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji)."""
+    czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji).
+
+    `full_council=False` (MAIL-06 b) zwija radę do jednej linii."""
     # Q5/Q6: blok renderujemy też, gdy są analogi (precedent receipts)
     # lub odznaki proweniencji — nawet bez reasoning/rady.
     badges_html = _provenance_badges_html(r.provenance_badges)
@@ -1867,11 +1932,12 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
     # (finding #35). Escapowanie title/source jest tu domyślne.
     news_block = _render_news_block_html(r.top_news)
     rec_block = _model_signal_reason_html(r)
-    council_block = (
-        _render_council_section(r.council_verdict)
-        if r.council_verdict is not None
-        else ""
-    )
+    if r.council_verdict is None:
+        council_block = ""
+    elif full_council:
+        council_block = _render_council_section(r.council_verdict)
+    else:
+        council_block = _render_council_line(r.council_verdict)
     valuation_block = _render_valuation(r.valuation)
     _sector = _sector_label(r.symbol)
     sector_tag = (
@@ -1894,9 +1960,13 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
             """
 
 
-def _render_saved_section_html(saved: list[SymbolResult]) -> str:
+def _render_saved_section_html(
+    saved: list[SymbolResult], full_detail: frozenset[str] | None = None
+) -> str:
     """🔮 Sekcja wygenerowanych predykcji: tabela + wykres prognozy +
-    uzasadnienia. Pusty string, gdy w tym cyklu nic nie zapisano."""
+    uzasadnienia. Pusty string, gdy w tym cyklu nic nie zapisano.
+
+    `full_detail` (MAIL-06): symbole z pełną radą; None = każdy symbol."""
     if not saved:
         return ""
     parts = [
@@ -1927,7 +1997,12 @@ def _render_saved_section_html(saved: list[SymbolResult]) -> str:
 
     # Uzasadnienia
     parts.append("<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>💡 Uzasadnienia</h3>")
-    parts.extend(_render_reasoning_block_html(r) for r in saved)
+    parts.extend(
+        _render_reasoning_block_html(
+            r, full_council=full_detail is None or r.symbol in full_detail
+        )
+        for r in saved
+    )
     return "".join(parts)
 
 
@@ -2121,6 +2196,7 @@ def _render_html(
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     portfolio_change_box: str = "",
     settlements_unavailable: bool = False,
+    full_detail: frozenset[str] | None = None,
 ) -> str:
     sections = []
 
@@ -2186,7 +2262,7 @@ def _render_html(
     sections.append(_render_rebaselined_html(ignored, display_timezone))
     sections.append(_render_trade_signals_html(trade_signals))
     sections.append(_render_risk_signals_html(risk_signals))
-    sections.append(_render_saved_section_html(saved))
+    sections.append(_render_saved_section_html(saved, full_detail))
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
     sections.append(_render_crypto_section_html(results, display_timezone))
 

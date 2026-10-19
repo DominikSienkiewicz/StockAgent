@@ -69,11 +69,14 @@ class LeadItem:
 
     `icon` + `headline` to jednolinijkowy punch (headline nadaje się też na
     temat maila), `detail` to jedno zdanie kontekstu (może być puste).
+    `symbol` (MAIL-06) wskazuje ticker pozycji — raport daje mu pełny blok
+    uzasadnień; None = pozycja bez symbolu (alert limitu).
     """
 
     icon: str
     headline: str
     detail: str
+    symbol: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +164,7 @@ def _position_candidate(signal: LeadSignal) -> _Candidate | None:
                 f"({_format_weight(weight)} portfela) {delta_label}"
             ),
             detail=verdict.summary,
+            symbol=signal.symbol,
         )
         return _Candidate(score=_AGAINST_POSITION_SCORE + impact, item=item)
 
@@ -173,6 +177,7 @@ def _position_candidate(signal: LeadSignal) -> _Candidate | None:
                 if verdict is not None
                 else signal.resolved_label or "Twoja pozycja ruszyła się ponad próg bramki."
             ),
+            symbol=signal.symbol,
         )
         return _Candidate(score=_POSITION_MOVE_SCORE + impact, item=item)
     return None
@@ -201,6 +206,7 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
             icon="⚖️",
             headline=f"{signal.symbol} {delta_label}, rada PODZIELONA",
             detail=verdict.summary,
+            symbol=signal.symbol,
         )
         return _Candidate(score=_SPLIT_SCORE + magnitude, item=item)
 
@@ -213,6 +219,7 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
                 f"rada zgodna: {council_recommendation_label(verdict.final_recommendation)}"
             ),
             detail=verdict.summary,
+            symbol=signal.symbol,
         )
         return _Candidate(score=_STRONG_CONSENSUS_SCORE + magnitude, item=item)
 
@@ -222,6 +229,7 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
             icon="📊",
             headline=f"{signal.symbol} {delta_label}: {signal.resolved_label}",
             detail=signal.resolved_label,
+            symbol=signal.symbol,
         )
         return _Candidate(score=_CLOSED_VERDICT_SCORE + magnitude, item=item)
 

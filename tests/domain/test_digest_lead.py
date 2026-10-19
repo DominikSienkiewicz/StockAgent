@@ -400,3 +400,18 @@ class TestPolishNumbers:
         signal = LeadSignal("NVDA", Decimal("-0.04"), resolved_label="trafiona prognoza spadku")
 
         assert build_lead([signal])[0].headline == "NVDA +0,0%: trafiona prognoza spadku"
+
+
+class TestLeadItemSymbol:
+    """MAIL-06: raport daje symbolom z leadu pełny blok uzasadnień, więc pozycja
+    leadu mówi, którego tickera dotyczy; alert limitu nie dotyczy żadnego."""
+
+    def test_signal_item_carries_its_symbol(self) -> None:
+        signal = LeadSignal(
+            symbol="AAA", price_delta_pct=Decimal("2.0"), council_verdict=_split_verdict()
+        )
+
+        assert [item.symbol for item in build_lead([signal])] == ["AAA"]
+
+    def test_quota_item_has_no_symbol(self) -> None:
+        assert [item.symbol for item in build_lead([], [_critical_alert()])] == [None]

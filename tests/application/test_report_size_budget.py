@@ -81,3 +81,97 @@ def test_typical_cycle_with_council_stays_under_the_budget() -> None:
 )
 def test_big_move_day_stays_under_gmail_clipping() -> None:
     assert _size([_saved(i) for i in range(45)]) < 100_000
+
+
+# ---------------------------------------------------------------------------
+# MAIL-06 (b): rada spoza top 10 sygnałów (i spoza leadu) zwinięta do jednej linii
+# ---------------------------------------------------------------------------
+
+
+def _ranked(i: int, *, split: bool = False, summary: str | None = None) -> SymbolResult:
+    """Symbol o sile sygnału malejącej z `i` (prognoza +(20 - i)%, ta sama pewność).
+
+    Rada bez silnego konsensusu i bez sprzecznych głosów nie trafia do leadu;
+    `split=True` dokłada głos SELL, więc rada jest podzielona i symbol wchodzi do leadu."""
+    symbol = f"R{i:02d}"
+    opinions = [
+        InvestorOpinion(
+            investor_name=persona,
+            recommendation="BUY",
+            confidence=0.6,
+            reasoning="Przewaga skali.",
+            key_factors=(f"czynnik-{symbol}",),
+        )
+        for persona in ("Buffett", "Lynch")
+    ]
+    if split:
+        opinions.append(
+            InvestorOpinion(
+                investor_name="Soros",
+                recommendation="SELL",
+                confidence=0.6,
+                reasoning="Przegrzanie.",
+                key_factors=(f"czynnik-{symbol}",),
+            )
+        )
+    council = CouncilVerdict(
+        final_recommendation="BUY",
+        consensus_strength=0.6,
+        summary=summary or f"Podsumowanie rady {symbol}.",
+        dissenting_views=(f"Soros o {symbol}: za drogo.",),
+        investor_opinions=tuple(opinions),
+    )
+    return SymbolResult(
+        symbol=symbol,
+        status="saved",
+        delta=Decimal("0.03"),
+        current_price=Decimal("100"),
+        trend="BULLISH",
+        target_price=Decimal(120 - i),
+        confidence_score=0.7,
+        reasoning=f"Teza modelu dla {symbol}.",
+        council_verdict=council,
+    )
+
+
+def _html_of(results: list[SymbolResult]) -> str:
+    html, _ = build_html_report(results, STARTED, 60.0)
+    return html
+
+
+def test_council_outside_the_top_signals_collapses_to_one_line() -> None:
+    html = _html_of([_ranked(i) for i in range(12)])
+
+    # #10 w rankingu ma pełną tabelę person, #11 tylko jedną linię rady.
+    assert "czynnik-R09" in html
+    assert "czynnik-R10" not in html
+    assert "🟢 2 KUP · 🔴 0 SPRZEDAJ · 🟡 0 TRZYMAJ — „Podsumowanie rady R10.”" in html
+
+
+def test_collapsed_council_keeps_the_dissenting_views_visible() -> None:
+    html = _html_of([_ranked(i) for i in range(12)])
+
+    assert "⚠️ Głosy niezgodne: Soros o R11: za drogo." in html
+
+
+def test_lead_symbol_keeps_the_full_council_outside_the_top_signals() -> None:
+    html = _html_of([*(_ranked(i) for i in range(11)), _ranked(11, split=True)])
+
+    assert "czynnik-R11" in html
+    assert "czynnik-R10" not in html
+
+
+def test_cycle_within_the_top_signals_keeps_every_full_council() -> None:
+    html = _html_of([_ranked(i) for i in range(10)])
+
+    assert all(f"czynnik-R{i:02d}" in html for i in range(10))
+
+
+def test_collapsed_council_escapes_the_llm_summary() -> None:
+    payload = "<img src=x onerror=alert(1)>"
+    results = [*(_ranked(i) for i in range(11)), _ranked(11, summary=payload)]
+
+    html = _html_of(results)
+
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
+    assert "<img" not in html
