@@ -110,7 +110,7 @@ _SEGMENT_LABELS = {
     "alpha_fusion_sign": "znak Alpha Fusion",
     "edge_label": "edge vs opcje",
 }
-_SEGMENT_KEY_WIDTH = 14
+_SEGMENT_KEY_WIDTH = 16
 
 # EXP-01: pole delty bramki i komunikat, gdy migracja 034 jeszcze nie poszła.
 GATE_DELTA_FIELD = "gate_delta"

@@ -642,3 +642,17 @@ class TestLlmFallbackRowsAreSkipped:
         assert report.sideways_count == 0
         llm = {s.key: s for s in report.segments["component"]}["llm"]
         assert (llm.n, llm.evidence.hit_rate.sideways) == (1, 0)
+
+
+def test_default_confidence_is_segmented_apart_from_the_low_band():
+    # Pewność 0.5 to wartość domyślna przy braku pewności — nie zaniża pasma 0.00-0.60.
+    rows = [
+        {**_row("BULLISH", False, 100, 100, 99), "confidence_score": 0.5},
+        {**_row("BULLISH", True, 100, 100, 101), "confidence_score": 0.55},
+    ]
+
+    report = summarize_evaluation(rows, segment_by="confidence_bucket")
+
+    segments = {s.key: s for s in report.segments["confidence_bucket"]}
+    assert (segments["0.50 (domyślna)"].n, segments["0.50 (domyślna)"].rate) == (1, 0.0)
+    assert (segments["0.00-0.60"].n, segments["0.00-0.60"].rate) == (1, 1.0)

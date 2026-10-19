@@ -150,3 +150,18 @@ class TestAssessSegments:
         assert alone[0].fdr_significant is True
         assert in_family["a"].fdr_significant is False
         assert not any(s.fdr_significant for s in in_family.values())
+
+
+class TestDefaultConfidenceBucket:
+    """Brak pewności zapisuje się jako 0.5 — osobny kubełek, żeby domyślna
+    wartość nie mieszała się z prawdziwie niską pewnością w paśmie 0.00-0.60."""
+
+    def test_exactly_the_default_has_its_own_bucket(self) -> None:
+        from src.domain.segment_evidence import DEFAULT_CONFIDENCE_BUCKET
+
+        assert DEFAULT_CONFIDENCE_BUCKET == "0.50 (domyślna)"
+        assert confidence_bucket(0.5) == DEFAULT_CONFIDENCE_BUCKET
+
+    @pytest.mark.parametrize("score", [0.49, 0.51])
+    def test_neighbours_of_the_default_stay_in_the_low_band(self, score) -> None:
+        assert confidence_bucket(score) == "0.00-0.60"

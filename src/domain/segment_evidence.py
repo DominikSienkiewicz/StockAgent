@@ -40,9 +40,14 @@ COMPONENTS: tuple[str, ...] = (COMPONENT_LLM, COMPONENT_COUNCIL, COMPONENT_MODEL
 
 _COUNCIL_TRENDS = {"BUY": "BULLISH", "SELL": "BEARISH", "HOLD": "SIDEWAYS"}
 
+# Brak pewności zapisuje się jako 0.5 (`_save_node`), więc dokładnie ta wartość
+# ma własny kubełek — inaczej domyślna mieszałaby się z niską pewnością. Trafia
+# tu też rzadka, prawdziwa deklaracja 0.5: w bazie są nieodróżnialne.
+DEFAULT_CONFIDENCE = 0.5
+DEFAULT_CONFIDENCE_BUCKET = "0.50 (domyślna)"
+
 # Kubełki deklarowanej pewności LLM: (etykieta, górna granica wyłączna).
 # Szersze niż 10 kubełków krzywej kalibracji, bo segment ma mieć sensowne n.
-# Brak pewności zapisuje się jako 0.5, więc ląduje w najniższym kubełku.
 _CONFIDENCE_BUCKETS: tuple[tuple[str, float], ...] = (
     ("0.00-0.60", 0.6),
     ("0.60-0.70", 0.7),
@@ -87,10 +92,13 @@ def trend_hit(trend: str, realized_change: float, tolerance: float = DEFAULT_TOL
 
 
 def confidence_bucket(score: float | None) -> str:
-    """Kubełek deklarowanej pewności; brak, NaN albo wartość spoza [0, 1] →
+    """Kubełek deklarowanej pewności; dokładnie `DEFAULT_CONFIDENCE` →
+    `DEFAULT_CONFIDENCE_BUCKET`; brak, NaN albo wartość spoza [0, 1] →
     `UNKNOWN_SEGMENT`."""
     if score is None or math.isnan(score) or not 0.0 <= score <= 1.0:
         return UNKNOWN_SEGMENT
+    if score == DEFAULT_CONFIDENCE:
+        return DEFAULT_CONFIDENCE_BUCKET
     for label, upper in _CONFIDENCE_BUCKETS:
         if score < upper:
             return label
