@@ -24,6 +24,7 @@ from src.application.report_builder import (
 )
 from src.application.report_formatting import company_label
 from src.application.report_model_scorecard import ModelScorecardView
+from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.cycle_maturity import SkipReason
 from src.domain.model_scorecard import summarize_evaluations, summarize_run
@@ -2303,3 +2304,44 @@ def test_plain_text_without_user_portfolio_keeps_the_html_section():
     assert "$2,988.70" not in text
     assert "USER_PORTFOLIO_SLOT" not in text
     assert "Twój portfel" in html
+
+
+@pytest.mark.parametrize(
+    "context",
+    [None, ReportContext(macro_risk_report=MacroRiskReport())],
+    ids=["no-risk-watch-report", "empty-risk-watch-report"],
+)
+def test_plain_text_without_risk_watch_data_has_no_slot_marker(context):
+    # Pusty slot = brak sekcji. Komentarz HTML jest w mailu HTML niewidoczny,
+    # ale w wersji tekstowej był dosłowną linią „<!-- RISK_WATCH_SLOT -->”.
+    _, text = build_html_report(
+        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0, context
+    )
+
+    assert "RISK_WATCH_SLOT" not in text
+    assert "<!--" not in text
+
+
+def test_plain_text_without_quota_alerts_has_no_slot_marker():
+    # Ten sam mechanizm co Risk Watch: bez alertów kwot tekst zaczynał się od
+    # dosłownego „<!-- QUOTA_BANNER_SLOT -->”.
+    _, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+    assert "QUOTA_BANNER_SLOT" not in text
+    assert text.startswith("=" * 64)
+
+
+def test_plain_text_with_quota_alert_still_starts_with_the_banner():
+    alert = QuotaAlert(
+        source="OpenAI", severity=QuotaSeverity.CRITICAL,
+        message="OpenAI 429: insufficient_quota", action="Doładuj konto OpenAI.",
+        occurred_at=datetime(2026, 5, 14, tzinfo=UTC),
+    )
+
+    _, text = build_html_report(
+        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(quota_alerts=[alert]),
+    )
+
+    assert "QUOTA_BANNER_SLOT" not in text
+    assert "OpenAI 429" in text.split("STOCKAGENT — RAPORT CYKLU")[0]

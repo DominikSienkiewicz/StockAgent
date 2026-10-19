@@ -799,13 +799,19 @@ def _fill_text_slots(
     portfolio_text: str = "",
     user_portfolio_text: str = "",
 ) -> str:
-    """Wstawia treść w sloty plain-text. QUOTA/RISK_WATCH tylko gdy niepuste;
-    LEAD, PORTFOLIO, USER_PORTFOLIO i SUGGESTIONS usuwają cały wiersz znacznika,
-    gdy pusto."""
-    if quota_text:
-        text = text.replace(_QUOTA_BANNER_SLOT, quota_text, 1)
-    if macro_risk_text:
-        text = text.replace(_RISK_WATCH_SLOT, macro_risk_text, 1)
+    """Wstawia treść w sloty plain-text. Pusty slot usuwa cały wiersz znacznika —
+    tekst nie ma komentarzy HTML, więc znacznik byłby w nim dosłowną linią.
+    W HTML QUOTA/RISK_WATCH zostają przy pustej treści (`_SKIP_WHEN_EMPTY_SLOTS`)."""
+    text = text.replace(
+        f"{_QUOTA_BANNER_SLOT}\n",
+        f"{quota_text}\n" if quota_text else "",
+        1,
+    ).replace(_QUOTA_BANNER_SLOT, quota_text, 1)
+    text = text.replace(
+        f"{_RISK_WATCH_SLOT}\n",
+        f"{macro_risk_text}\n" if macro_risk_text else "",
+        1,
+    ).replace(_RISK_WATCH_SLOT, macro_risk_text, 1)
     text = text.replace(
         f"{_PORTFOLIO_SLOT}\n",
         f"{portfolio_text}\n" if portfolio_text else "",
