@@ -414,3 +414,81 @@ class TestConfigHash:
         assert named_like_secrets <= SECRET_SETTINGS_FIELDS
         assert set(self._SECRET_VALUES) <= SECRET_SETTINGS_FIELDS
         assert set(Settings.model_fields) >= SECRET_SETTINGS_FIELDS
+
+
+class TestConfigHashScope:
+    """WIA-20 (decyzja 2026-10-19): `config_hash` obejmuje tylko pola przepisu.
+
+    Każde pole `Settings` jest sklasyfikowane DOKŁADNIE raz: sekret, poza
+    przepisem (prezentacja, dostarczanie, flagi samego zapisu, inne joby) albo
+    przepis. Nowe pole bez klasyfikacji = czerwony test, zanim po cichu wejdzie
+    do hasha albo z niego wypadnie."""
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_every_field_is_classified_exactly_once(self):
+        from src.config import (
+            NON_RECIPE_SETTINGS_FIELDS,
+            RECIPE_SETTINGS_FIELDS,
+            SECRET_SETTINGS_FIELDS,
+        )
+
+        groups = (SECRET_SETTINGS_FIELDS, NON_RECIPE_SETTINGS_FIELDS, RECIPE_SETTINGS_FIELDS)
+        classified = [name for group in groups for name in group]
+
+        assert len(classified) == len(set(classified)), "pole w dwóch grupach naraz"
+        assert set(classified) == set(Settings.model_fields)
+
+    def test_presentation_and_write_only_fields_do_not_move_the_hash(self, env):
+        baseline = self._settings().config_hash()
+
+        for field, value in {
+            "display_timezone": "America/New_York",
+            "notifications_enabled": True,
+            "web_digest_path": "elsewhere/index.html",
+            "receipts_enabled": True,
+            "recipe_version_enabled": True,
+            "track_record_days": 90,
+        }.items():
+            assert self._settings(**{field: value}).config_hash() == baseline, field
+
+    def test_flipping_any_non_recipe_flag_keeps_the_hash(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        baseline = self._settings().config_hash()
+        flags = [
+            name for name in NON_RECIPE_SETTINGS_FIELDS
+            if Settings.model_fields[name].annotation is bool
+        ]
+
+        assert flags
+        for flag in flags:
+            flipped = not Settings.model_fields[flag].default
+            assert self._settings(**{flag: flipped}).config_hash() == baseline, flag
+
+    def test_flipping_any_recipe_flag_moves_the_hash(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        baseline = self._settings().config_hash()
+        flags = [
+            name for name in RECIPE_SETTINGS_FIELDS
+            if Settings.model_fields[name].annotation is bool
+        ]
+
+        assert flags
+        for flag in flags:
+            flipped = not Settings.model_fields[flag].default
+            assert self._settings(**{flag: flipped}).config_hash() != baseline, flag
+
+    def test_prediction_inputs_move_the_hash(self, env):
+        baseline = self._settings().config_hash()
+
+        for field, value in {
+            "tool_use_max_rounds": 5,
+            "symbols": ["AAPL", "PLTR"],
+            "llm_provider": "anthropic",
+            "council_llm_model": "gpt-5-mini",
+            "rag_outcome_weight": 0.3,
+        }.items():
+            assert self._settings(**{field: value}).config_hash() != baseline, field

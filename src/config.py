@@ -47,6 +47,106 @@ SECRET_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "edgar_user_agent",
 })
 
+# WIA-20: pola niesekretne, które NIE zmieniają prognozy, więc nie wchodzą do
+# `config_hash` — inaczej zmiana strefy czasu maila albo włączenie zapisu
+# kolumny cięłyby track record na sztuczne segmenty. Wpływ na prognozę, który
+# idzie wyłącznie przez wagi ML (filtr wersji cech, bramka karty), łapie
+# `model_version`. Pole niejednoznaczne zostaje w `RECIPE_SETTINGS_FIELDS`:
+# lepiej uciąć segment niż skleić dwa różne przepisy.
+NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
+    # Prezentacja i dostarczanie raportu.
+    "display_timezone",
+    "notifications_enabled",
+    "messenger_digest_enabled",
+    "realtime_alerts_enabled",
+    "subscriptions_enabled",
+    "web_digest_enabled",
+    "web_digest_path",
+    "public_scorecard_enabled",
+    "public_scorecard_path",
+    "weekly_recap_enabled",
+    # Sekcje maila liczone po predykcji (render-only, bez wpływu na prognozę).
+    "portfolio_var_enabled",
+    "var_confidence",
+    "stress_test_enabled",
+    "hedge_effectiveness_enabled",
+    "equity_curve_enabled",
+    "calibration_curve_enabled",
+    "lessons_enabled",
+    "calibrated_confidence_enabled",
+    "model_scorecard_enabled",
+    "cycle_diff_enabled",
+    "settled_at_windows_enabled",
+    "track_record_days",
+    "portfolio_positions_enabled",
+    # Flagi samego zapisu i publikacji.
+    "receipts_enabled",
+    "feature_set_version_enabled",
+    "recipe_version_enabled",
+    "model_scorecard_baselines_enabled",
+    "attestation_enabled",
+    "attestation_commitments_path",
+    "attestation_reveals_path",
+    # Inne joby i trening (wagi → `model_version`).
+    "shock_alerts_enabled",
+    "liveness_fast_loop_max_gap_h",
+    "liveness_slow_loop_max_gap_h",
+    "calibration_judge_enabled",
+    "feature_set_filter_enabled",
+})
+
+# WIA-20: pola przepisu — progi, modele, providerzy, symbole, źródła danych
+# i flagi zmieniające ścieżkę predykcji. Razem z dwiema listami wyżej dzielą
+# `Settings.model_fields` dokładnie na trzy części (test strażnik).
+RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
+    "llm_provider",
+    "council_llm_provider",
+    "council_llm_model",
+    "persona_weighting_enabled",
+    "debate_mode_enabled",
+    "model_routing_enabled",
+    "routing_floor",
+    "router_cheap_model",
+    "router_frontier_provider",
+    "router_frontier_model",
+    "regime_aware_enabled",
+    "regime_threshold_max_multiplier",
+    "contagion_enabled",
+    "peer_groups",
+    "alpha_fusion_enabled",
+    "insider_flow_enabled",
+    "earnings_calendar_enabled",
+    "options_flow_enabled",
+    "social_velocity_enabled",
+    "yield_curve_enabled",
+    "analyst_consensus_enabled",
+    "vector_memory_enabled",
+    "tool_use_enabled",
+    "tool_use_volatility_threshold",
+    "tool_use_max_rounds",
+    "council_personas_dir",
+    "volatility_threshold",
+    "council_volatility_threshold",
+    "symbols",
+    "symbols_etf",
+    "crypto_symbols",
+    "crypto_volatility_threshold",
+    # Risk Watch zasila reżim rynku (#7), który zacieśnia próg.
+    "risk_symbols",
+    "risk_symbol_types",
+    "nbp_enabled",
+    "symbols_unsupported_price",
+    # Tempo i równoległość: przy > 1 wyłączają contagion, a throttle chroni
+    # radę przed 429 (rada bez głosów to inna prognoza).
+    "symbol_throttle_seconds",
+    "symbol_concurrency",
+    # Okno rozliczeń decyduje, które wnioski z pomyłek trafiają do promptu.
+    "reflection_min_age_hours",
+    "reflection_max_age_hours",
+    "rag_outcome_weight",
+    "ml_model_path",
+})
+
 
 class Settings(BaseSettings):
     """Konfiguracja runtime — dwa rozłączne źródła:
@@ -565,13 +665,15 @@ class Settings(BaseSettings):
         return self
 
     def config_hash(self) -> str:
-        """WIA-20: sha256 posortowanych NIESEKRETNYCH pól (progi, flagi, modele,
-        symbole) — składnik wersji przepisu predykcji.
+        """WIA-20: sha256 posortowanych pól przepisu (progi, modele, providerzy,
+        symbole, flagi ścieżki predykcji) — składnik wersji przepisu predykcji.
 
-        Sekrety z `SECRET_SETTINGS_FIELDS` są wycięte, zanim cokolwiek zostanie
-        zserializowane. Zmienia się przy KAŻDEJ zmianie configu niewrażliwego,
-        także takiej, która nie dotyka prognozy (np. strefa czasu maila)."""
-        payload = self.model_dump(mode="json", exclude=set(SECRET_SETTINGS_FIELDS))
+        Sekrety (`SECRET_SETTINGS_FIELDS`) i pola poza przepisem
+        (`NON_RECIPE_SETTINGS_FIELDS`: prezentacja, dostarczanie, flagi samego
+        zapisu) są wycięte, zanim cokolwiek zostanie zserializowane. Pole spoza
+        obu list zostaje w hashu."""
+        excluded = SECRET_SETTINGS_FIELDS | NON_RECIPE_SETTINGS_FIELDS
+        payload = self.model_dump(mode="json", exclude=set(excluded))
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
