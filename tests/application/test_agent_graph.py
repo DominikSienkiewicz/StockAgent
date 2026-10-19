@@ -2685,3 +2685,43 @@ class TestPredictionPromptNewsHeadlines:
 
         saved = repository_port.save_prediction.call_args.args[0]
         assert saved["news_summary"] == "Fed holds | Chips rally"
+
+
+class TestFeatureSetVersionStamp:
+    """DAT-09 — wersja zestawu cech na predykcji (migracja 027). Off = klucza nie
+    ma w rekordzie, bo przed migracją nowy klucz kładzie zapis całej predykcji."""
+
+    def _record(self, ports: dict, repository_port: Mock, *, enabled: bool) -> dict:
+        create_agent_graph(AgentGraphDeps(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            feature_set_version_enabled=enabled,
+        )).compile().invoke(_initial_state("100.0"))
+        return repository_port.save_prediction.call_args.args[0]
+
+    @pytest.fixture
+    def ports(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ) -> dict:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        return dict(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+        )
+
+    def test_flag_off_omits_the_column_entirely(self, ports, repository_port):
+        record = self._record(ports, repository_port, enabled=False)
+
+        assert "feature_set_version" not in record
+
+    def test_flag_on_stamps_the_current_feature_set_version(self, ports, repository_port):
+        from src.application.ml_features import FEATURE_SET_VERSION
+
+        record = self._record(ports, repository_port, enabled=True)
+
+        # Okno newsów 24 h (3738ef2) zmieniło znaczenie `news_volume_24h` → wersja 2.
+        assert record["feature_set_version"] == FEATURE_SET_VERSION == 2

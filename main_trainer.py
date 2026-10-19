@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from main_agent import build_notifier
+from src.application.ml_features import FEATURE_SET_VERSION
 from src.application.ports import LLMPort
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_weekly_recap import (
@@ -38,10 +39,16 @@ logger = logging.getLogger(__name__)
 
 
 def build_use_case(settings: Settings) -> TrainModelUseCase:
-    """DI Container — Slow Loop potrzebuje tylko bazy + XGBoost."""
+    """DI Container — Slow Loop potrzebuje tylko bazy + XGBoost.
+
+    DAT-09: z `feature_set_filter_enabled` trening bierze wyłącznie wiersze
+    bieżącej wersji zestawu cech (kolumna z migracji 027)."""
     return TrainModelUseCase(
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
         db_port=SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key),
+        feature_set_version=(
+            FEATURE_SET_VERSION if settings.feature_set_filter_enabled else None
+        ),
     )
 
 

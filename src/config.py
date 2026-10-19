@@ -144,6 +144,13 @@ class Settings(BaseSettings):
     # (migracja 020). Flaga to WARUNEK graceful degradation, nie opcja: nowy
     # klucz przed migracją → PGRST204 i śmierć zapisu całej predykcji. Off.
     receipts_enabled: bool = False
+    # DAT-09: wersja zestawu cech (migracja 027). `feature_set_version_enabled`
+    # stempluje `feature_set_version` na każdej predykcji, a
+    # `feature_set_filter_enabled` każe Slow Loopowi trenować tylko na wierszach
+    # bieżącej wersji (`FEATURE_SET_VERSION`). Obie off: nowy klucz albo filtr po
+    # kolumnie przed migracją 027 → PGRST204/400 (zapis predykcji albo trening).
+    feature_set_version_enabled: bool = False
+    feature_set_filter_enabled: bool = False
     # #11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
     # migracja 021). Zero płatnych wywołań. Off.
     shock_alerts_enabled: bool = False

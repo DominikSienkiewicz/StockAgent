@@ -367,3 +367,61 @@ def test_per_symbol_run_without_row_timestamps_trains_unpurged(
     use_case.run("AAPL", refresh_view=False)
 
     assert ml_port.train.call_args.kwargs.get("timestamps") is None
+
+
+# -- DAT-09: trening tylko na bieżącej wersji zestawu cech -------------------
+
+
+def test_without_feature_set_filter_training_reads_the_whole_history(
+    use_case, repository_port, ml_port
+):
+    # Bez flagi (i bez migracji 027) odczyt nie może dotknąć kolumny wersji.
+    repository_port.get_feature_store_data.return_value = []
+
+    use_case.run_pooled(["AAPL"])
+    use_case.run("AAPL", refresh_view=False)
+
+    assert [c.args for c in repository_port.get_feature_store_data.call_args_list] == [
+        ("AAPL",),
+        ("AAPL",),
+    ]
+    assert all(not c.kwargs for c in repository_port.get_feature_store_data.call_args_list)
+
+
+def test_feature_set_filter_reads_only_the_current_version(repository_port, ml_port):
+    use_case = TrainModelUseCase(
+        ml_port=ml_port, db_port=repository_port, feature_set_version=2
+    )
+    repository_port.get_feature_store_data.return_value = []
+
+    use_case.run_pooled(["AAPL", "BTC"])
+    use_case.run("AAPL", refresh_view=False)
+
+    calls = repository_port.get_feature_store_data.call_args_list
+    assert [c.args for c in calls] == [("AAPL",), ("BTC",), ("AAPL",)]
+    assert all(c.kwargs == {"feature_set_version": 2} for c in calls)
+
+
+def test_version_cut_below_the_minimum_skips_the_pooled_model_explicitly(
+    repository_port, ml_port, caplog
+):
+    # Odcięcie historii po wersji zmniejsza próbkę — pominięcie ma mówić, ile
+    # próbek zostało i dlaczego, a nie wyglądać jak zwykły brak danych.
+    use_case = TrainModelUseCase(
+        ml_port=ml_port, db_port=repository_port, feature_set_version=2
+    )
+    repository_port.get_feature_store_data.return_value = _stamped_rows(
+        "AAPL", 12, start_hour=0, step_hours=1
+    )
+
+    with caplog.at_level("WARNING"):
+        result = use_case.run_pooled(["AAPL"], record_scorecard=True)
+
+    assert result["status"] == "skipped"
+    assert result["n_samples"] == 12
+    assert result["feature_set_version"] == 2
+    assert "feature set version 2" in result["reason"]
+    assert "feature set version 2 leaves 12 samples" in caplog.text
+    ml_port.train.assert_not_called()
+    _, saved = repository_port.save_model_scorecard.call_args.args
+    assert saved["n_samples"] == 12

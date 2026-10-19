@@ -12,7 +12,7 @@ from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from src.application.ml_features import ML_FEATURE_COLUMNS
+from src.application.ml_features import FEATURE_SET_VERSION, ML_FEATURE_COLUMNS
 from src.application.ports import (
     AdvisoryCouncilPort,
     AttestationPublisherPort,
@@ -477,6 +477,9 @@ class AgentGraphDeps:
     tool_use_threshold: Threshold | None = None
     vector_memory_enabled: bool = False
     receipts_enabled: bool = False
+    # DAT-09: stempel `feature_set_version` na predykcji (migracja 027). Off =
+    # klucza nie ma w rekordzie — przed migracją dałby PGRST204.
+    feature_set_version_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
     # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). Pole jest
@@ -1226,6 +1229,11 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # całej predykcji (dokładnie ten sam gate co `vector_memory_enabled`).
     if deps.receipts_enabled:
         record["decision_receipts"] = _build_decision_receipts(deps, state)
+
+    # DAT-09: wersja zestawu cech, z którą policzono wejścia tej predykcji —
+    # trening oddziela nią wiersze sprzed zmiany znaczenia `news_volume_24h`.
+    if deps.feature_set_version_enabled:
+        record["feature_set_version"] = FEATURE_SET_VERSION
 
     # #18: `edge_sigma` (migracja 025) tylko gdy sygnał realnie powstał —
     # bez portu opcji klucz nie istnieje, więc stary schemat zapisuje się jak dotąd.

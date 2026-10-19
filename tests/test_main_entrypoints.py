@@ -2535,3 +2535,43 @@ class TestDispatchReports:
         assert "Twojej pozycji" not in friend_subject
         assert "portfela" not in friend_subject
         assert "AAPL -5.0%, rada zgodna: SELL" in friend_subject
+
+
+class TestFeatureSetVersionWiring:
+    """DAT-09 — flagi z Settings sterują stemplem wersji w Fast Loopie i filtrem
+    wersji w Slow Loopie; obie domyślnie off (kolumna dopiero po migracji 027)."""
+
+    def test_flags_default_off(self, settings) -> None:
+        assert settings.feature_set_version_enabled is False
+        assert settings.feature_set_filter_enabled is False
+
+    def test_fast_loop_passes_the_stamp_flag_to_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.feature_set_version_enabled = True
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].feature_set_version_enabled is True
+
+    def test_slow_loop_trains_on_the_current_version_only_when_enabled(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.application.ml_features import FEATURE_SET_VERSION
+
+        use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")
+        settings.feature_set_filter_enabled = True
+
+        main_trainer.build_use_case(settings)
+
+        assert use_case_cls.call_args.kwargs["feature_set_version"] == FEATURE_SET_VERSION
+
+    def test_slow_loop_reads_the_whole_history_when_disabled(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")
+
+        main_trainer.build_use_case(settings)
+
+        assert use_case_cls.call_args.kwargs["feature_set_version"] is None

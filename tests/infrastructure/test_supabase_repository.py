@@ -1911,3 +1911,55 @@ class TestPaginationSendsOneRangePerPage:
         assert len(sent) == 2
         assert without_range(sent[0]) == without_range(sent[1])
         assert any(key == "order" for key, _ in without_range(sent[1]))
+
+
+class TestFeatureStoreFeatureSetVersion:
+    """DAT-09: trening może czytać tylko bieżącą wersję zestawu cech (migracja
+    027). Bez wersji zapytanie nie dotyka kolumny, której przed migracją nie ma."""
+
+    @staticmethod
+    def _serve_view(mocker: Any, rows: list[dict[str, Any]]) -> list[httpx.QueryParams]:
+        """Udaje PostgREST nad widokiem: filtr `feature_set_version=eq.N` działa
+        jak w bazie (NULL i inne wersje odpadają), a każde zapytanie trafia do listy."""
+        sent: list[httpx.QueryParams] = []
+
+        def fake_request(
+            _client: httpx.Client, method: str, url: str, **kwargs: Any
+        ) -> httpx.Response:
+            params = httpx.QueryParams(kwargs.get("params"))
+            sent.append(params)
+            wanted = params.get("feature_set_version")
+            page = [
+                row
+                for row in rows
+                if wanted is None or f"eq.{row['feature_set_version']}" == wanted
+            ]
+            return httpx.Response(200, json=page, request=httpx.Request(method, url))
+
+        mocker.patch.object(httpx.Client, "request", autospec=True, side_effect=fake_request)
+        return sent
+
+    _ROWS: list[dict[str, Any]] = [
+        {"id": "old", "symbol": "NVDA", "feature_set_version": 1},
+        {"id": "unknown", "symbol": "NVDA", "feature_set_version": None},
+        {"id": "current", "symbol": "NVDA", "feature_set_version": 2},
+    ]
+
+    def test_read_skips_rows_of_an_older_feature_set_version(self, mocker: Any) -> None:
+        sent = self._serve_view(mocker, self._ROWS)
+        repo = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
+
+        rows = repo.get_feature_store_data("NVDA", feature_set_version=2)
+
+        assert [row["id"] for row in rows] == ["current"]
+        assert sent[0].get("feature_set_version") == "eq.2"
+
+    def test_read_without_a_version_sends_no_version_filter(self, mocker: Any) -> None:
+        # Przed migracją 027 filtr po nieistniejącej kolumnie to 400 i padły trening.
+        sent = self._serve_view(mocker, self._ROWS)
+        repo = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
+
+        rows = repo.get_feature_store_data("NVDA")
+
+        assert len(rows) == 3
+        assert "feature_set_version" not in sent[0]

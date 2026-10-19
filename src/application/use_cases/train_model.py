@@ -37,9 +37,18 @@ class TrainModelUseCase:
     3. Separacja X / Y i wywołanie ml_port.train().
     """
 
-    def __init__(self, ml_port: MLPredictionPort, db_port: RepositoryPort) -> None:
+    def __init__(
+        self,
+        ml_port: MLPredictionPort,
+        db_port: RepositoryPort,
+        *,
+        feature_set_version: int | None = None,
+    ) -> None:
+        """`feature_set_version` (DAT-09) zawęża próbkę do wierszy tej wersji
+        zestawu cech; None = cała historia (bez migracji 027)."""
         self._ml_port = ml_port
         self._db_port = db_port
+        self._feature_set_version = feature_set_version
 
     def refresh_feature_store(self) -> None:
         self._db_port.refresh_feature_store()
@@ -54,15 +63,15 @@ class TrainModelUseCase:
             # uczyć się na starym MATERIALIZED VIEW z poprzedniego tygodnia).
             self._db_port.refresh_feature_store()
 
-        rows = self._db_port.get_feature_store_data(symbol)
+        rows = self._feature_rows(symbol)
 
         if len(rows) < MIN_SAMPLES_FOR_TRAINING:
-            return _skipped(f"Not enough samples for '{symbol}'", len(rows))
+            return self._skipped(f"Not enough samples for '{symbol}'", len(rows))
 
         df = _valid_rows(rows)
 
         if len(df) < MIN_SAMPLES_FOR_TRAINING:
-            return _skipped(f"Not enough valid samples for '{symbol}'", len(df))
+            return self._skipped(f"Not enough valid samples for '{symbol}'", len(df))
 
         df, stamps = in_label_time_order(df)
 
@@ -84,6 +93,16 @@ class TrainModelUseCase:
         trafia do `model_scorecards` jako `POOLED_MODEL_SYMBOL`, best-effort.
         """
         result = self._train_pooled(symbols)
+        if self._feature_set_version is not None and result.get("status") == "skipped":
+            # DAT-09: odcięcie historii po wersji zestawu cech nie może cicho
+            # zatrzymać jedynego zapisu wag — ostrzeżenie z liczbą próbek.
+            logger.warning(
+                "Pooled model skipped: feature set version %d leaves %s samples "
+                "(minimum %d)",
+                self._feature_set_version,
+                result.get("n_samples"),
+                MIN_SAMPLES_FOR_TRAINING,
+            )
         if record_scorecard:
             try:
                 self._db_port.save_model_scorecard(POOLED_MODEL_SYMBOL, result)
@@ -95,16 +114,18 @@ class TrainModelUseCase:
         rows = [
             row
             for symbol in dict.fromkeys(symbols)
-            for row in self._db_port.get_feature_store_data(symbol)
+            for row in self._feature_rows(symbol)
         ]
 
         if len(rows) < MIN_SAMPLES_FOR_TRAINING:
-            return _skipped("Not enough samples for the pooled model", len(rows))
+            return self._skipped("Not enough samples for the pooled model", len(rows))
 
         df = _valid_rows(rows)
 
         if len(df) < MIN_SAMPLES_FOR_TRAINING:
-            return _skipped("Not enough valid samples for the pooled model", len(df))
+            return self._skipped(
+                "Not enough valid samples for the pooled model", len(df)
+            )
 
         stamps = pd.to_datetime(df["timestamp"], utc=True)
         df = df.assign(_global_time=stamps).sort_values(
@@ -116,6 +137,27 @@ class TrainModelUseCase:
             df[TARGET_COLUMN],
             timestamps=df["_global_time"],
         )
+
+
+    def _feature_rows(self, symbol: str) -> list[dict[str, Any]]:
+        if self._feature_set_version is None:
+            return self._db_port.get_feature_store_data(symbol)
+        return self._db_port.get_feature_store_data(
+            symbol, feature_set_version=self._feature_set_version
+        )
+
+    def _skipped(self, reason: str, n_samples: int) -> dict[str, Any]:
+        """Pominięcie treningu; przy filtrze wersji (DAT-09) wynik mówi wprost, że
+        próbkę obcięto do bieżącej wersji zestawu cech."""
+        if self._feature_set_version is None:
+            return _skipped(reason, n_samples)
+        return {
+            **_skipped(
+                f"{reason} at feature set version {self._feature_set_version}",
+                n_samples,
+            ),
+            "feature_set_version": self._feature_set_version,
+        }
 
 
 def _valid_rows(rows: list[dict[str, Any]]) -> pd.DataFrame:

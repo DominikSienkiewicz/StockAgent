@@ -21,6 +21,15 @@ ML_FEATURE_COLUMNS = (
 #   ostatniej zalogowanej predykcji), NIE ostatni snapshot ceny (ten napędza
 #   wyłącznie bramkę volatility). Obie ścieżki muszą używać tej samej referencji.
 
+# Wersja zestawu cech (DAT-09) — rośnie, gdy cecha o TEJ SAMEJ nazwie zmienia
+# znaczenie (nowa kolumna to osobna zmiana kontraktu). Historia:
+#   1 — `news_volume_24h` liczyło trafne artykuły wśród 50 najnowszych w dowolnym
+#       wieku (feed Alpha Vantage bez `time_from`, przed commitem 3738ef2);
+#   2 — feed ograniczony do ostatnich 24 h (`time_from` = now − 24 h).
+# Fast Loop stempluje nią `prediction_logs.feature_set_version` (migracja 027),
+# a Slow Loop może trenować wyłącznie na wierszach bieżącej wersji.
+FEATURE_SET_VERSION = 2
+
 # Target = ZWROT 12h `(cena_po_12h - cena) / cena`, nie cena bezwzględna.
 # Baseline persystencji (cena bez zmian) to wtedy „zwrot = 0", więc bramka
 # „pobij baseline" jest sensowna; XGBoost uczy się RUCHU, nie poziomu ceny.

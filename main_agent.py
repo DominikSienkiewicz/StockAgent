@@ -885,6 +885,7 @@ def build_use_case(
         tool_use_threshold=tool_use_threshold,
         vector_memory_enabled=settings.vector_memory_enabled,
         receipts_enabled=settings.receipts_enabled,
+        feature_set_version_enabled=settings.feature_set_version_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings),

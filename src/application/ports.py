@@ -122,8 +122,14 @@ class RepositoryPort(ABC):
         trafność raportu — to dwie różne miary, nie wolno ich mylić."""
 
     @abstractmethod
-    def get_feature_store_data(self, symbol: str) -> list[dict[str, Any]]:
-        """Zwraca rekordy ze zmaterializowanego widoku ml_feature_store."""
+    def get_feature_store_data(
+        self, symbol: str, feature_set_version: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Zwraca rekordy ze zmaterializowanego widoku ml_feature_store.
+
+        `feature_set_version` (DAT-09, migracja 027) zawęża odczyt do wierszy tej
+        wersji zestawu cech — wiersze innej i nieznanej (NULL) wersji odpadają.
+        None = bez filtra (zachowanie sprzed DAT-09; działa bez migracji)."""
 
     @abstractmethod
     def refresh_feature_store(self) -> None:

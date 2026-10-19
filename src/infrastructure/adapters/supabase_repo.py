@@ -274,17 +274,17 @@ class SupabaseRepository(RepositoryPort):
             reasoning=_optional_text(row.get("reasoning_text")),
         )
 
-    def get_feature_store_data(self, symbol: str) -> list[dict[str, Any]]:
+    def get_feature_store_data(
+        self, symbol: str, feature_set_version: int | None = None
+    ) -> list[dict[str, Any]]:
         # NIEZ-15: paginacja — bez niej trening widział max ~1000 wierszy widoku.
         # `id` jako drugi klucz: granica strony deterministyczna przy równych timestampach.
-        query = (
-            self._client.table(self._view)
-            .select("*")
-            .eq("symbol", symbol)
-            .order("timestamp", desc=False)
-            .order("id", desc=False)
-        )
-        return _paginate(query)
+        query = self._client.table(self._view).select("*").eq("symbol", symbol)
+        if feature_set_version is not None:
+            # DAT-09: filtr po stronie PostgREST — `eq` odrzuca też NULL (wersja
+            # nieznana). Kolumna istnieje dopiero po migracji 027.
+            query = query.eq("feature_set_version", feature_set_version)
+        return _paginate(query.order("timestamp", desc=False).order("id", desc=False))
 
     def refresh_feature_store(self) -> None:
         """Wywołuje RPC `refresh_ml_feature_store` (zdef. w migrations/001_init.sql).

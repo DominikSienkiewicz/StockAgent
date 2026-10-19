@@ -47,6 +47,7 @@ MIGRATION_FILES = [
     "024_attestation.sql",
     "025_implied_edge.sql",
     "026_feature_store_clean_rows.sql",
+    "027_feature_set_version.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -683,6 +684,31 @@ class TestMigrations:
         with pg_conn.cursor() as cur:
             cur.execute("SELECT refresh_ml_feature_store()")
 
+    # -- Migracja 027: feature_set_version (wersja zestawu cech, DAT-09) ------
+
+    def test_feature_set_version_reaches_the_feature_store(self, pg_conn) -> None:
+        """Trening filtruje po `feature_set_version` z widoku — kolumna musi być
+        w obu miejscach, a NULL („wersja nieznana") nie może udawać wersji 1."""
+        assert "feature_set_version" in _columns(pg_conn, "prediction_logs")
+        assert "feature_set_version" in _columns(pg_conn, "ml_feature_store")
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM prediction_logs WHERE symbol LIKE 'FSV_%'")
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, actual_price_after_12h, "
+                " feature_set_version) VALUES "
+                "('FSV_V2', '2026-11-02T10:00:00+00:00', 100.0, 101.0, 2), "
+                "('FSV_NULL', '2026-11-02T10:00:00+00:00', 100.0, 101.0, NULL)"
+            )
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute(
+                "SELECT symbol, feature_set_version FROM ml_feature_store "
+                "WHERE symbol LIKE 'FSV_%'"
+            )
+            versions = dict(cur.fetchall())
+
+        assert versions == {"FSV_V2": 2, "FSV_NULL": None}
+
 
 @pytest.fixture
 def fresh_pg():
@@ -773,6 +799,43 @@ class TestMigration013DedupesPreexistingDuplicates:
             kept = cur.fetchone()
             assert kept[0] == "BULLISH"
             assert kept[1] is True
+
+
+@pytest.mark.containers
+class TestMigration027BackfillsFeatureSetVersion:
+    """DAT-09: wiersze sprzed okna 24 h (3738ef2, 2026-10-18 21:47:22 UTC) to
+    pewna wersja 1; późniejsze bez stempla zostają NULL, bo moment wdrożenia
+    nie jest zapisany w bazie i taki wiersz mógł powstać ze starego kodu."""
+
+    def _apply_up_to_026(self, conn: psycopg2.extensions.connection) -> None:
+        idx = MIGRATION_FILES.index("027_feature_set_version.sql")
+        with conn.cursor() as cur:
+            for filename in MIGRATION_FILES[:idx]:
+                cur.execute((MIGRATIONS_DIR / filename).read_text())
+
+    def test_027_backfills_only_rows_before_the_news_window_change(
+        self, fresh_pg
+    ) -> None:
+        conn = fresh_pg
+        self._apply_up_to_026(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, actual_price_after_12h) "
+                "VALUES "
+                "('FSV_OLD', '2026-10-18T21:47:21+00:00', 100.0, 101.0), "
+                "('FSV_NEW', '2026-10-18T21:47:22+00:00', 100.0, 101.0)"
+            )
+
+            cur.execute((MIGRATIONS_DIR / "027_feature_set_version.sql").read_text())
+
+            cur.execute(
+                "SELECT symbol, feature_set_version FROM prediction_logs "
+                "WHERE symbol LIKE 'FSV_%'"
+            )
+            versions = dict(cur.fetchall())
+
+        assert versions == {"FSV_OLD": 1, "FSV_NEW": None}
 
 
 def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:
