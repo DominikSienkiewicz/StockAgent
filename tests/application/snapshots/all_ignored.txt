@@ -8,7 +8,7 @@ Symboli:           4 (predykcji=0, pominiętych=4, błędów=0)
 
 KRYPTO
 ----------------------------------------------------------------
-  ETH (Ethereum)                               $3164.80  Δ   -1.10%  poniżej progu
+  ETH (Ethereum)                              $3 164,80  Δ   -1,10%  poniżej progu
 
 NASTROJE PORTFELA
 ----------------------------------------------------------------
@@ -22,7 +22,7 @@ HISTORIA TRAFNOŚCI (ostatnie 30 dni)
 
 POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------
-  NVDA(0.40%), AMD(-0.70%), VOO(0.20%), ETH(-1.10%)
+  NVDA(0,40%), AMD(-0,70%), VOO(0,20%), ETH(-1,10%)
 
 ----------------------------------------------------------------
 Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.

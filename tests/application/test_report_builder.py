@@ -113,7 +113,7 @@ class TestCryptoSection:
             datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0,
         )
         assert "🪙" in html
-        assert "$3200.00" in html
+        assert "$3\u00a0200,00" in html
 
     def test_crypto_section_in_plain_text(self):
         _, text = build_html_report(
@@ -242,8 +242,8 @@ class TestBuildHtmlReport:
         _, text = build_html_report(
             [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
         )
-        assert "$298.87" in text
-        assert "2.50%" in text
+        assert "$298,87" in text
+        assert "2,50%" in text
 
     def test_handles_empty_results(self):
         html, text = build_html_report(
@@ -349,8 +349,8 @@ class TestForecastDetails:
             [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
         )
         # Prognoza pokazana jako "$305.00 (+2.05%)"
-        assert "$305.00" in html
-        assert "+2.05%" in html or "+2.04%" in html
+        assert "$305,00" in html
+        assert "+2,05%" in html or "+2,04%" in html
 
     def test_html_shows_confidence_percent(self):
         html, _ = build_html_report(
@@ -371,7 +371,7 @@ class TestForecastDetails:
             [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
         )
         assert "Oczekiwany ruch" in html
-        assert "$298.87 → $305.00" in html
+        assert "$298,87 → $305,00" in html
 
 
 class TestForecastChart:
@@ -758,7 +758,7 @@ class TestResolvedPostMortem:
         # (1) dlaczego prognoza mówiła spadek
         assert "Słabe wyniki kwartalne" in html
         # (2) co się faktycznie stało — ruch ceny
-        assert "+4.00%" in html
+        assert "+4,00%" in html
         # (3) dlaczego się NIE potwierdziła — diagnoza
         assert "Zignorowałem odbicie całego sektora chmury" in html
         # plain text też niesie pełen post-mortem
@@ -818,7 +818,7 @@ class TestResolvedPostMortem:
             ReportContext(resolved_predictions=resolved),
         )
         assert "Popyt na GPU do AI rośnie" in html
-        assert "+6.00%" in html
+        assert "+6,00%" in html
         assert "Trafiona" in html
 
     def test_crypto_closed_prediction_is_covered_and_tagged(self):
@@ -1550,7 +1550,7 @@ class TestRecommendationInReport:
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         # Powinien być powód (pewność / prognoza zmiana)
         assert "80%" in html  # pewność
-        assert "+6.00%" in html  # prognozowana zmiana
+        assert "+6,00%" in html  # prognozowana zmiana
 
     def test_plain_text_includes_recommendation(self):
         r = SymbolResult(
@@ -1863,9 +1863,9 @@ class TestColdStartForecast:
         assert "Oczekiwany ruch: — (ML: cold-start)" in html
         assert "Prognozowana zmiana" not in html
         # "(+0.00%)" to dotychczasowy format kolumny prognozy i linii ruchu.
-        assert "(+0.00%)" not in html
+        assert "(+0,00%)" not in html
         assert "prognoza — (ML: cold-start)" in text
-        assert "(+0.00%)" not in text
+        assert "(+0,00%)" not in text
 
     def test_trained_forecast_has_no_cold_start_label(self):
         html, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1932,9 +1932,9 @@ class TestColdStartSignalsAndChart:
         )
         assert "Najsilniejsze sygnały" in html
         assert "ranking wg pewności" in html
-        assert "+0.00%" not in html
+        assert "+0,00%" not in html
         assert "ranking wg pewności" in text
-        assert "+0.00%" not in text
+        assert "+0,00%" not in text
 
     def test_forecast_chart_skips_cold_start_results(self):
         assert build_forecast_chart_html([_cold_start_result()]) == ""

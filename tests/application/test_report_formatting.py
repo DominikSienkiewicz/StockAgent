@@ -20,6 +20,8 @@ from src.application.report_formatting import (
     company_label,
     delta_color,
     format_local,
+    money,
+    number,
     pct,
     plural_pl,
     provenance_badges_html,
@@ -221,14 +223,35 @@ class TestPalette:
 
 
 class TestPct:
-    """ARCH-28: `pct` dostaje liczbę miejsc po przecinku. Sekcje maila zostają przy
-    dotychczasowym zapisie, dopóki etap MAIL-58 nie przeniesie ich na polski."""
+    """ARCH-28: `pct` to jeden formater procentów sekcji maila — po polsku, przez
+    domenowy `format_pct_pl` (MAIL-58 etap 2)."""
 
     def test_pct_takes_the_number_of_decimals(self) -> None:
-        assert pct(Decimal("0.01234"), signed=True, decimals=1) == "+1.2%"
+        assert pct(Decimal("0.01234"), signed=True, decimals=1) == "+1,2%"
         assert pct(Decimal("0.24"), decimals=0) == "24%"
 
-    def test_pct_defaults_keep_the_current_section_format(self) -> None:
-        assert pct(Decimal("0.01234")) == "1.23%"
-        assert pct(Decimal("-0.042"), signed=True) == "-4.20%"
+    def test_pct_defaults_write_two_decimals_the_polish_way(self) -> None:
+        assert pct(Decimal("0.01234")) == "1,23%"
+        assert pct(Decimal("-0.042"), signed=True) == "-4,20%"
         assert pct(None) == "—"
+
+    def test_pct_rounds_a_float_tie_half_up(self) -> None:
+        # Binarnie 0.0125 * 100 to 1.25 „w dół od połowy” — format dałby „1.2%”.
+        assert pct(0.0125, decimals=1) == "1,3%"
+
+    def test_pct_drops_the_minus_from_a_value_rounded_to_zero(self) -> None:
+        assert pct(Decimal("-0.00001"), signed=True) == "+0,00%"
+
+
+class TestNumberAndMoney:
+    """MAIL-58 etap 2: liczby i kwoty sekcji maila po polsku."""
+
+    def test_number_uses_a_decimal_comma(self) -> None:
+        assert number(0.42, decimals=2, signed=True) == "+0,42"
+        assert number(Decimal("4.2710"), decimals=4) == "4,2710"
+        assert number(None, decimals=2) == "—"
+
+    def test_money_writes_dollars_the_polish_way(self) -> None:
+        assert money(Decimal("3200")) == "$3\u00a0200,00"
+        assert money(Decimal("-200"), signed=True) == "-$200,00"
+        assert money(None) == "—"

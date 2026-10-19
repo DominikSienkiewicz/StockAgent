@@ -8,6 +8,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from src.domain import polish_labels
+from src.domain.number_format import format_money_pl, format_number_pl, format_pct_pl
 from src.domain.provenance import ProvenanceBadge, ProvenanceLevel
 
 COMPANY_NAMES: dict[str, str] = {
@@ -278,17 +279,28 @@ def format_local(moment: datetime, tz: str) -> str:
     return f"{_WEEKDAYS_PL[local.weekday()]} {local:%d.%m %H:%M}"
 
 
-def pct(value: Decimal | None, signed: bool = False, decimals: int = 2) -> str:
-    """Ułamek jako procent z `decimals` miejscami po kropce (0.0123 → „1.23%”).
+def _decimal(value: Decimal | float) -> Decimal:
+    """Float ze statystyk → Decimal przez najkrótszy zapis (0.0125 → „0.0125”), żeby
+    remis zaokrąglał się jak w zapisie dziesiętnym, a nie jak w binarnym."""
+    return value if isinstance(value, Decimal) else Decimal(str(value))
 
-    ARCH-28: sekcje maila zostają przy tym zapisie i zaokrągleniu; na polski
-    (`src.domain.number_format`, przecinek i ROUND_HALF_UP) przechodzą etapami
-    MAIL-58, moduł po module, każdy z listą zmienionych asercji.
+
+def pct(value: Decimal | float | None, signed: bool = False, decimals: int = 2) -> str:
+    """Ułamek jako procent po polsku (0.0123 → „1,23%”), przez `format_pct_pl`.
+
+    ARCH-28: jeden formater procentów sekcji maila — przecinek, ROUND_HALF_UP,
+    minus ASCII, zero bez minusa. None → „—”.
     """
     if value is None:
         return "—"
-    sign = "+" if signed else ""
-    return f"{value * 100:{sign}.{decimals}f}%"
+    return format_pct_pl(_decimal(value) * 100, signed, decimals)
+
+
+def number(value: Decimal | float | None, decimals: int, signed: bool = False) -> str:
+    """Liczba po polsku (sentyment „+0,42”, kurs „4,27”), przez `format_number_pl`."""
+    if value is None:
+        return "—"
+    return format_number_pl(_decimal(value), signed, decimals)
 
 
 def plural_pl(n: int, one: str, few: str, many: str) -> str:
@@ -324,10 +336,11 @@ class ReportPalette:
 PALETTE = ReportPalette()
 
 
-def money(value: Decimal | None) -> str:
+def money(value: Decimal | None, signed: bool = False) -> str:
+    """Kwota w USD po polsku („$1 234,50”), przez `format_money_pl`. None → „—”."""
     if value is None:
         return "—"
-    return f"${value:.2f}"
+    return format_money_pl(value, "USD", signed=signed)
 
 
 def trend_color(trend: str | None) -> str:

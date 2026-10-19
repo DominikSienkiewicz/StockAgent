@@ -64,8 +64,8 @@ class TestBuildChartUrl:
 
     def test_value_label_carried_in_body(self) -> None:
         html = build_delta_chart_html([_saved("AAPL", "0.025"), _saved("MSFT", "-0.015")])
-        assert "+2.50%" in html
-        assert "-1.50%" in html
+        assert "+2,50%" in html
+        assert "-1,50%" in html
 
     def test_small_move_not_visually_equal_to_large_move(self) -> None:
         """NAJWIĘKSZE RYZYKO zamrożone: -0.5% NIE może wyglądać jak -8%.
@@ -82,8 +82,8 @@ class TestBuildChartUrl:
         # Wyraźnie szerszy: co najmniej dwukrotnie (w praktyce dużo więcej).
         assert w_big > w_small * 2
         # Oba niosą wartość liczbową.
-        assert "-8.00%" in html
-        assert "-0.50%" in html
+        assert "-8,00%" in html
+        assert "-0,50%" in html
 
     def test_bar_has_minimum_width(self) -> None:
         """Nawet mikroskopijny ruch renderuje widoczny słupek (>=1px)."""
@@ -116,7 +116,7 @@ class TestForecastChartUrl:
         assert "quickchart" not in html
         assert "<table" in html
         assert "AAPL" in html
-        assert "+5.00%" in html
+        assert "+5,00%" in html
 
     def test_ignored_yield_empty_string(self) -> None:
         results = [SymbolResult(symbol="X", status="ignored", delta=Decimal("0.005"))]
