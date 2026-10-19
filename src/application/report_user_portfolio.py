@@ -42,6 +42,11 @@ dnia komórka mówi to wprost — bez cichego przybliżenia bieżącym kursem. K
 pozycji są w ich walucie (PORT-18); sumy w walucie natywnej tylko, gdy wszystkie
 pozycje mają tę samą. `pln_rates` wygrywa z `usd_pln`, które zostaje dla
 wołających bez kursów z dnia zakupu (stara kolumna „P/L (PLN)”).
+
+Jedna waluta: z `pln_rates` kolumna „Waga”, ostrzeżenie o koncentracji sektora
+i udział niewycenionych w koszcie liczą się w złotych (`Portfolio.pln_prices`),
+a pozycja bez kursu NBP wypada z nich z notą „Bez kursu NBP: …”. Linia zmiany
+dostaje walutę od wołającego (`change_currency`, w zł gdy znane są kursy).
 """
 
 from __future__ import annotations
@@ -56,9 +61,11 @@ from src.domain.asset import is_reference_stale
 from src.domain.number_format import format_money_pl, format_pct_pl
 from src.domain.portfolio import (
     DEFAULT_MAX_POSITION_AGE_DAYS,
+    DEFAULT_POSITION_CURRENCY,
     HOME_CURRENCY,
     ClusterExposure,
     PlnPnlGap,
+    PlnPrices,
     PlnRates,
     Portfolio,
     PortfolioChange,
@@ -84,19 +91,9 @@ def _pnl_color(value: Decimal) -> str:
     return _COLOR_LOSS if value < 0 else _COLOR_GAIN
 
 
-def _format_usd(value: Decimal) -> str:
-    """Kwota w USD, znak przed symbolem waluty (np. „-$200,00”, MAIL-58)."""
-    return format_money_pl(value, "USD")
-
-
 def _format_pln(value: Decimal) -> str:
     """Kwota w PLN (np. „-800,00 zł”)."""
     return format_money_pl(value, "PLN")
-
-
-def _format_signed_usd(value: Decimal) -> str:
-    """P/L w USD z jawnym znakiem (+/-) — zysk i strata zawsze rozróżnialne."""
-    return format_money_pl(value, "USD", signed=True)
 
 
 def _format_signed_pln(value: Decimal) -> str:
@@ -187,6 +184,30 @@ def _row_weight(row: PositionPnL, total_market_value: Decimal) -> Decimal:
     return row.market_value / total_market_value
 
 
+def _row_weights(pnl: PortfolioPnL, valuation: PlnPrices | None) -> list[str]:
+    """Kolumna „Waga” per wiersz: natywnie bez kursów, w złotych z kursami.
+
+    W złotych lot waży ilość × cena w zł / suma; pozycja bez kursu NBP nie ma
+    wagi („—”) i nie wchodzi do mianownika — jak w `Portfolio.weights`."""
+    if valuation is None:
+        return [_format_pct(_row_weight(row, pnl.total_market_value)) for row in pnl.positions]
+    values = [
+        None if (price := valuation.prices.get(row.symbol)) is None else row.quantity * price
+        for row in pnl.positions
+    ]
+    total = sum((value for value in values if value is not None), Decimal("0"))
+    return [
+        "—" if value is None or total == 0 else _format_pct(value / total) for value in values
+    ]
+
+
+def _unrated_note(valuation: PlnPrices | None) -> str:
+    """„Bez kursu NBP: SAP.DE — poza wagami i sumami w zł” albo ""."""
+    if valuation is None or not valuation.unrated_symbols:
+        return ""
+    return f"Bez kursu NBP: {', '.join(valuation.unrated_symbols)} — poza wagami i sumami w zł"
+
+
 def _dominant_cluster(exposures: list[ClusterExposure]) -> ClusterExposure | None:
     """Największa grupa (sektor, ≥2 symbole) przekraczająca próg, albo None.
 
@@ -215,50 +236,78 @@ def portfolio_change_label(
     return PORTFOLIO_CHANGE_DEFAULT_LABEL
 
 
-def _change_amount(change: PortfolioChange) -> str:
-    """„+$70,00 (+7,0%)” — kwota i procent zmiany portfela."""
-    return f"{_format_signed_usd(change.change)} ({_format_pct(change.change_pct, signed=True)})"
+def _change_amount(change: PortfolioChange, currency: str = DEFAULT_POSITION_CURRENCY) -> str:
+    """„+$70,00 (+7,0%)” albo „+280,00 zł (+7,0%)” — kwota i procent zmiany."""
+    amount = _format_money(change.change, currency, signed=True)
+    return f"{amount} ({_format_pct(change.change_pct, signed=True)})"
 
 
-def _contributors(change: PortfolioChange) -> str:
+def _contributors(change: PortfolioChange, currency: str = DEFAULT_POSITION_CURRENCY) -> str:
     """„NVDA +$75,00, AAPL -$5,00” — top kontrybutorzy w kolejności domeny."""
     return ", ".join(
-        f"{c.symbol} {_format_signed_usd(c.change)}" for c in change.top_contributors
+        f"{c.symbol} {_format_money(c.change, currency, signed=True)}"
+        for c in change.top_contributors
     )
 
 
-def _change_details(change: PortfolioChange, usd_pln: Decimal | None) -> list[str]:
+def _usd_extra(usd_pln: Decimal | None, currency: str) -> Decimal | None:
+    """Dopisek „w zł” po kursie USD/PLN ma sens tylko dla zmiany liczonej w USD."""
+    return usd_pln if currency == DEFAULT_POSITION_CURRENCY else None
+
+
+def _change_details(
+    change: PortfolioChange,
+    usd_pln: Decimal | None,
+    currency: str = DEFAULT_POSITION_CURRENCY,
+) -> list[str]:
     """Człony linii zmiany po kwocie: PLN, kontrybutorzy, pozycje bez odniesienia."""
     details: list[str] = []
-    if usd_pln is not None:
-        details.append(_format_signed_pln(change.change * usd_pln))
+    extra = _usd_extra(usd_pln, currency)
+    if extra is not None:
+        details.append(_format_signed_pln(change.change * extra))
     if change.top_contributors:
-        details.append(f"najwięcej: {_contributors(change)}")
+        details.append(f"najwięcej: {_contributors(change, currency)}")
     if change.unmeasured_symbols:
         details.append(f"bez punktu odniesienia: {', '.join(change.unmeasured_symbols)}")
     return details
 
 
 def _render_change_html(
-    change: PortfolioChange, label: str, usd_pln: Decimal | None
+    change: PortfolioChange,
+    label: str,
+    usd_pln: Decimal | None,
+    currency: str = DEFAULT_POSITION_CURRENCY,
 ) -> str:
     color = _pnl_color(change.change)
     details = "".join(
-        f" · {_html.escape(detail)}" for detail in _change_details(change, usd_pln)
+        f" · {_html.escape(detail)}" for detail in _change_details(change, usd_pln, currency)
     )
     return (
         "<div style='padding: 10px 14px; background: #f9fafb; "
         "border-radius: 4px; font-size: 13px; margin-bottom: 12px;'>"
         f"Zmiana {_html.escape(label)}: <strong style='color: {color};'>"
-        f"{_change_amount(change)}</strong>{details}</div>"
+        f"{_change_amount(change, currency)}</strong>{details}</div>"
     )
 
 
 def _render_change_text(
-    change: PortfolioChange, label: str, usd_pln: Decimal | None
+    change: PortfolioChange,
+    label: str,
+    usd_pln: Decimal | None,
+    currency: str = DEFAULT_POSITION_CURRENCY,
 ) -> str:
-    details = "".join(f" · {detail}" for detail in _change_details(change, usd_pln))
-    return f"  Zmiana {label}: {_change_amount(change)}{details}"
+    details = "".join(f" · {detail}" for detail in _change_details(change, usd_pln, currency))
+    return f"  Zmiana {label}: {_change_amount(change, currency)}{details}"
+
+
+def _change_amounts(
+    change: PortfolioChange, usd_pln: Decimal | None, currency: str
+) -> list[str]:
+    amounts = [_format_money(change.change, currency, signed=True)]
+    extra = _usd_extra(usd_pln, currency)
+    if extra is not None:
+        amounts.append(_format_signed_pln(change.change * extra))
+    return amounts
 
 
 def render_portfolio_change_box_html(
@@ -266,13 +315,13 @@ def render_portfolio_change_box_html(
     *,
     label: str = PORTFOLIO_CHANGE_DEFAULT_LABEL,
     usd_pln: Decimal | None = None,
+    currency: str = DEFAULT_POSITION_CURRENCY,
 ) -> str:
     """PORT-06: box pierwszego ekranu „Twój portfel od ostatniego maila” —
-    procent dużą cyfrą, pod nim kwota (i PLN, gdy znamy kurs)."""
+    procent dużą cyfrą, pod nim kwota (i PLN, gdy znamy kurs). `currency` to
+    waluta, w której policzono zmianę (PLN przy kursach NBP)."""
     color = _pnl_color(change.change)
-    amounts = [_format_signed_usd(change.change)]
-    if usd_pln is not None:
-        amounts.append(_format_signed_pln(change.change * usd_pln))
+    amounts = _change_amounts(change, usd_pln, currency)
     return (
         '<div style="flex: 1; padding: 12px; background: #f9fafb; '
         f'border-left: 3px solid {color}; border-radius: 4px;">'
@@ -290,12 +339,11 @@ def render_portfolio_change_text_line(
     *,
     label: str = PORTFOLIO_CHANGE_DEFAULT_LABEL,
     usd_pln: Decimal | None = None,
+    currency: str = DEFAULT_POSITION_CURRENCY,
 ) -> str:
     """PORT-06: linia pierwszego ekranu wersji tekstowej:
     „Twój portfel od ostatniego maila: +7,0% (+$70,00)”."""
-    amounts = [_format_signed_usd(change.change)]
-    if usd_pln is not None:
-        amounts.append(_format_signed_pln(change.change * usd_pln))
+    amounts = _change_amounts(change, usd_pln, currency)
     return (
         f"Twój portfel {label}: {_format_pct(change.change_pct, signed=True)} "
         f"({' · '.join(amounts)})"
@@ -313,14 +361,18 @@ def render_user_portfolio_html(
     change: PortfolioChange | None = None,
     change_label: str = PORTFOLIO_CHANGE_DEFAULT_LABEL,
     pln_rates: PlnRates | None = None,
+    change_currency: str = DEFAULT_POSITION_CURRENCY,
 ) -> str:
     """Renderuje sekcję HTML portfela lub "" gdy brak policzalnych pozycji."""
     pnl = portfolio.unrealized_pnl(current_prices)
     if not pnl.positions:
         return ""
     pln = portfolio.pln_pnl(current_prices, pln_rates) if pln_rates is not None else None
+    valuation = portfolio.pln_prices(current_prices, pln_rates) if pln_rates is not None else None
 
-    exposures = portfolio.cluster_exposure(clusters or {}, current_prices)
+    exposures = portfolio.cluster_exposure(
+        clusters or {}, current_prices if valuation is None else valuation.prices
+    )
     freshness = portfolio.freshness(now, max_age_days)
 
     parts: list[str] = [
@@ -329,20 +381,21 @@ def render_user_portfolio_html(
     ]
     if freshness is PortfolioFreshness.STALE:
         parts.append(_render_stale_badge_html(max_age_days))
-    parts.append(_render_table_html(pnl, usd_pln, pln))
-    unpriced_note = _unpriced_note(portfolio, current_prices)
-    if unpriced_note:
-        parts.append(
-            "<p style='font-size: 12px; color: #92400e; margin: 0 0 8px 0;'>"
-            f"⚠️ {_html.escape(unpriced_note)}</p>"
-        )
+    parts.append(_render_table_html(pnl, usd_pln, pln, _row_weights(pnl, valuation)))
+    unpriced_note = _unpriced_note(portfolio, current_prices, pln_rates)
+    for note in (unpriced_note, _unrated_note(valuation)):
+        if note:
+            parts.append(
+                "<p style='font-size: 12px; color: #92400e; margin: 0 0 8px 0;'>"
+                f"⚠️ {_html.escape(note)}</p>"
+            )
     parts.append(
         _render_totals_html(
             pnl, usd_pln, partial=bool(unpriced_note), pln=pln, pln_rates=pln_rates
         )
     )
     if change is not None:
-        parts.append(_render_change_html(change, change_label, usd_pln))
+        parts.append(_render_change_html(change, change_label, usd_pln, change_currency))
 
     cluster = _dominant_cluster(exposures)
     if cluster is not None:
@@ -366,19 +419,22 @@ _TH_RIGHT = "<th scope='col' style='padding: 6px 8px; text-align: right;'>"
 
 
 def _render_table_html(
-    pnl: PortfolioPnL, usd_pln: Decimal | None, pln: PortfolioPlnPnL | None = None
+    pnl: PortfolioPnL,
+    usd_pln: Decimal | None,
+    pln: PortfolioPlnPnL | None,
+    weights: list[str],
 ) -> str:
     if pln is not None:
         pln_header = f"{_TH_RIGHT}P/L zł</th>{_TH_RIGHT}w tym kurs</th>"
         rows = [
-            _render_row_html(row, pnl.total_market_value, None, pln_row)
-            for row, pln_row in zip(pnl.positions, pln.positions, strict=True)
+            _render_row_html(row, weight, None, pln_row)
+            for row, weight, pln_row in zip(pnl.positions, weights, pln.positions, strict=True)
         ]
     else:
         pln_header = f"{_TH_RIGHT}P/L (PLN)</th>" if usd_pln is not None else ""
         rows = [
-            _render_row_html(row, pnl.total_market_value, usd_pln)
-            for row in pnl.positions
+            _render_row_html(row, weight, usd_pln)
+            for row, weight in zip(pnl.positions, weights, strict=True)
         ]
     return (
         "<table style='width: 100%; border-collapse: collapse; "
@@ -396,13 +452,12 @@ def _render_table_html(
 
 def _render_row_html(
     row: PositionPnL,
-    total_market_value: Decimal,
+    weight: str,
     usd_pln: Decimal | None,
     pln_row: PositionPlnPnL | None = None,
 ) -> str:
     symbol = _html.escape(row.symbol)
     color = _pnl_color(row.unrealized_pnl)
-    weight = _format_pct(_row_weight(row, total_market_value))
     pnl_cell = (
         f"{_format_money(row.unrealized_pnl, row.currency, signed=True)} "
         f"({_format_return_pct(row.return_pct)})"
@@ -450,14 +505,18 @@ def _render_pln_cells_html(row: PositionPlnPnL) -> str:
 _PARTIAL_TOTALS_LABEL = "bez pozycji niewycenionych"
 
 
-def _unpriced_note(portfolio: Portfolio, current_prices: Mapping[str, Decimal]) -> str:
+def _unpriced_note(
+    portfolio: Portfolio,
+    current_prices: Mapping[str, Decimal],
+    rates: PlnRates | None = None,
+) -> str:
     """PORT-03: „Bez wyceny w tym cyklu: A, B (≈ X% kosztu)” albo "" gdy wszystko
     wycenione."""
     symbols = portfolio.unpriced_symbols(current_prices)
     if not symbols:
         return ""
     note = f"Bez wyceny w tym cyklu: {', '.join(symbols)}"
-    share = portfolio.unpriced_cost_share(current_prices)
+    share = portfolio.unpriced_cost_share(current_prices, rates=rates)
     if share is not None:
         note += f" (≈ {_format_pct(share)} kosztu)"
     return note
@@ -554,6 +613,7 @@ def render_user_portfolio_text(
     change: PortfolioChange | None = None,
     change_label: str = PORTFOLIO_CHANGE_DEFAULT_LABEL,
     pln_rates: PlnRates | None = None,
+    change_currency: str = DEFAULT_POSITION_CURRENCY,
 ) -> str:
     """Renderuje sekcję plain-text portfela lub "" gdy brak policzalnych pozycji."""
     pnl = portfolio.unrealized_pnl(current_prices)
@@ -561,8 +621,11 @@ def render_user_portfolio_text(
         return ""
     pln = portfolio.pln_pnl(current_prices, pln_rates) if pln_rates is not None else None
     pln_rows = pln.positions if pln is not None else (None,) * len(pnl.positions)
+    valuation = portfolio.pln_prices(current_prices, pln_rates) if pln_rates is not None else None
 
-    exposures = portfolio.cluster_exposure(clusters or {}, current_prices)
+    exposures = portfolio.cluster_exposure(
+        clusters or {}, current_prices if valuation is None else valuation.prices
+    )
     freshness = portfolio.freshness(now, max_age_days)
 
     lines: list[str] = ["=== 💼 Twój portfel ==="]
@@ -573,8 +636,8 @@ def render_user_portfolio_text(
         )
     lines.append("")
 
-    for row, pln_row in zip(pnl.positions, pln_rows, strict=True):
-        weight = _format_pct(_row_weight(row, pnl.total_market_value))
+    weights = _row_weights(pnl, valuation)
+    for row, weight, pln_row in zip(pnl.positions, weights, pln_rows, strict=True):
         line = (
             f"  {row.symbol:8s} "
             f"waga {weight:>6s} "
@@ -588,9 +651,10 @@ def render_user_portfolio_text(
             line += f" | {_format_signed_pln(row.unrealized_pnl * usd_pln)}"
         lines.append(line)
 
-    unpriced_note = _unpriced_note(portfolio, current_prices)
-    if unpriced_note:
-        lines.append(f"  ⚠️ {unpriced_note}")
+    unpriced_note = _unpriced_note(portfolio, current_prices, pln_rates)
+    for note in (unpriced_note, _unrated_note(valuation)):
+        if note:
+            lines.append(f"  ⚠️ {note}")
 
     lines.append("")
     lines.append(_totals_text(pnl, partial=bool(unpriced_note)))
@@ -608,7 +672,7 @@ def render_user_portfolio_text(
             f"P/L {_format_signed_pln(pnl.total_unrealized_pnl * usd_pln)}"
         )
     if change is not None:
-        lines.append(_render_change_text(change, change_label, usd_pln))
+        lines.append(_render_change_text(change, change_label, usd_pln, change_currency))
 
     cluster = _dominant_cluster(exposures)
     if cluster is not None:

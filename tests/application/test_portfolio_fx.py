@@ -101,3 +101,21 @@ def test_failed_rate_is_left_out_not_raised() -> None:
 def test_nbp_day_is_the_warsaw_calendar_day() -> None:
     # 23:30 UTC 18.10 to już 19.10 w Warszawie (CEST).
     assert nbp_today(datetime(2026, 10, 18, 23, 30, tzinfo=UTC)) == date(2026, 10, 19)
+
+
+def test_rates_collected_for_the_portfolio_win_over_risk_watch() -> None:
+    from src.application.portfolio_fx import effective_pln_rates
+    from src.domain.polish_macro import PolishMacroSnapshot
+
+    collected = PlnRates(current={"USD": Decimal("3.70")})
+    macro = PolishMacroSnapshot(
+        eur_pln=Decimal("4.27"), usd_pln=Decimal("3.68"),
+        eur_pln_30d_change_pct=Decimal("0"), usd_pln_30d_change_pct=Decimal("0"),
+        fetched_at=datetime(2026, 10, 19, tzinfo=UTC),
+    )
+
+    assert effective_pln_rates(collected, macro) is collected
+    assert effective_pln_rates(None, macro) == PlnRates(
+        current={"USD": Decimal("3.68"), "EUR": Decimal("4.27")}
+    )
+    assert effective_pln_rates(None, None) is None

@@ -22,7 +22,7 @@ from src.application.use_cases.portfolio_risk import (
     PortfolioRiskUseCase,
     PositionRisk,
 )
-from src.domain.portfolio import Portfolio, Position
+from src.domain.portfolio import PlnRates, Portfolio, Position
 from src.domain.value_objects import Money
 
 _BASE = datetime(2026, 6, 1, tzinfo=UTC)
@@ -608,3 +608,55 @@ class TestPositionRisk:
         )
 
         assert risk.hedge_effective is None
+
+
+class TestPositionRiskInPln:
+    """Wagi ryzyka pozycji w JEDNEJ walucie: wartość z ostatniego snapshotu × kurs
+    NBP waluty pozycji, a nie suma dolarów z euro. Pozycja bez kursu wypada."""
+
+    @staticmethod
+    def _portfolio() -> Portfolio:
+        # NVDA 43 × 96 USD × 4,00 = 16 512 zł = SAP.DE 40 × 100 EUR × 4,128.
+        return Portfolio(
+            positions=(
+                Position(symbol="NVDA", quantity=Decimal("43"), purchase_price=Decimal("1")),
+                Position(
+                    symbol="SAP.DE",
+                    quantity=Decimal("40"),
+                    purchase_price=Decimal("1"),
+                    currency="EUR",
+                ),
+            ),
+            as_of=_BASE,
+        )
+
+    @staticmethod
+    def _risk(repo: Mock, rates: PlnRates) -> PositionRisk:
+        history = {
+            "NVDA": _series(["100", "120", "110", "96"]),
+            "SAP.DE": _series(["100", "100", "100", "100"]),
+        }
+        repo.get_price_history.side_effect = lambda sym, days: history[sym]
+        return PortfolioRiskUseCase(repository_port=repo).position_risk(
+            TestPositionRiskInPln._portfolio(), rates=rates
+        )
+
+    def test_equal_pln_values_weigh_half_each(self, repository_port: Mock) -> None:
+        from src.domain.correlation import returns_from_prices
+        from src.domain.drawdown import drawdown_from_returns
+
+        risk = self._risk(
+            repository_port,
+            PlnRates(current={"USD": Decimal("4.00"), "EUR": Decimal("4.128")}),
+        )
+
+        nvda = returns_from_prices([100.0, 120.0, 110.0, 96.0])
+        assert risk.drawdown == pytest.approx(drawdown_from_returns([0.5 * r for r in nvda]))
+
+    def test_position_without_its_rate_drops_out_of_the_weights(
+        self, repository_port: Mock
+    ) -> None:
+        risk = self._risk(repository_port, PlnRates(current={"USD": Decimal("4.00")}))
+
+        # Zostaje samo NVDA: obsunięcie 96 vs szczyt 120.
+        assert risk.drawdown == pytest.approx(0.2)

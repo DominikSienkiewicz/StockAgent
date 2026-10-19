@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from src.application.ports import FxRatePort
 from src.domain.fx import FxRate
+from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import HOME_CURRENCY, PlnRates, Portfolio
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,22 @@ def collect_pln_rates(portfolio: Portfolio, fx: FxRatePort, *, today: date) -> P
         if rate is not None:
             on_purchase[(currency, day)] = rate.rate
     return PlnRates(current=current, on_purchase=on_purchase)
+
+
+def effective_pln_rates(
+    portfolio_fx: PlnRates | None, polish_macro: PolishMacroSnapshot | None
+) -> PlnRates | None:
+    """Kursy, którymi raport i ryzyko przeliczają portfel na złote.
+
+    Pierwszeństwo mają kursy zebrane dla portfela (bieżące i z dni zakupu). Bez
+    nich (zbieranie padło) — bieżące USD/PLN i EUR/PLN z Risk Watch, BEZ kursów
+    z dni zakupu: sekcja mówi wtedy wprost „brak kursu NBP z dnia zakupu”, a inne
+    waluty wypadają z wag z notą. Bez żadnego kursu → None (kwoty natywne)."""
+    if portfolio_fx is not None:
+        return portfolio_fx
+    if polish_macro is None:
+        return None
+    return PlnRates(current={"USD": polish_macro.usd_pln, "EUR": polish_macro.eur_pln})
 
 
 def _rate(fx: FxRatePort, currency: str, day: date) -> FxRate | None:

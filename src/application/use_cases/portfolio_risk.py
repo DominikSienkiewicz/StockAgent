@@ -29,7 +29,7 @@ from src.domain.correlation import (
 from src.domain.drawdown import drawdown_from_returns
 from src.domain.hedge import assess_hedge
 from src.domain.number_format import format_number_pl
-from src.domain.portfolio import Portfolio
+from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.risk_sample import RiskStat, sample_sufficiency
 from src.domain.scenarios import Scenario, ScenarioImpact, stress_test
 from src.domain.sizing import RISK_VAR_CONFIDENCE
@@ -188,14 +188,22 @@ class PortfolioRiskUseCase:
         )
 
     def position_risk(
-        self, portfolio: Portfolio, *, hedge_symbols: Collection[str] = ()
+        self,
+        portfolio: Portfolio,
+        *,
+        hedge_symbols: Collection[str] = (),
+        rates: PlnRates | None = None,
     ) -> PositionRisk:
         """PORT-04: VaR, obsunięcie i skuteczność hedge'a trzymanych pozycji.
 
         Czyta wyłącznie historię trzymanych symboli (darmowe `price_snapshots`).
         Symbol bez historii albo z błędem odczytu wypada, a wagi pozostałych się
         renormalizują. `hedge_symbols` to instrumenty ryzyka: trzymane liczą się
-        jako hedge reszty portfela (oczekiwany ruch przeciwny)."""
+        jako hedge reszty portfela (oczekiwany ruch przeciwny).
+
+        Z `rates` wagi są w złotych (wartość z ostatniego snapshotu × kurs NBP
+        waluty pozycji), a pozycja bez kursu wypada jak symbol bez historii.
+        Zwroty zostają w walucie notowania: ruch kursu nie wchodzi do VaR."""
         held = sorted({position.symbol for position in portfolio.positions})
         history = self._collect_history(held)
         returns_by_symbol = self._aligned_returns(history)
@@ -203,10 +211,13 @@ class PortfolioRiskUseCase:
             symbol: max(history[symbol], key=lambda point: point[0])[1].amount
             for symbol in returns_by_symbol
         }
+        weight_prices = (
+            last_prices if rates is None else portfolio.pln_prices(last_prices, rates).prices
+        )
         # Granica Decimal → float: matematyka ryzyka liczy na floatach.
         weights = {
             symbol: float(weight)
-            for symbol, weight in portfolio.weights(last_prices).items()
+            for symbol, weight in portfolio.weights(weight_prices).items()
         }
         portfolio_returns = self._weighted_returns(returns_by_symbol, weights)
         if not portfolio_returns:

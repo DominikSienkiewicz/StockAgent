@@ -502,3 +502,50 @@ class TestPlnPnlColumns:
 
         assert "USD/PLN 3,00" not in html
         assert "kursy NBP: USD 4,40" in html
+
+
+class TestChangeInPln:
+    """Zmiana portfela policzona w złotych: kwoty w zł, bez dopisku po kursie USD/PLN."""
+
+    @staticmethod
+    def _change() -> PortfolioChange:
+        # Ceny już w zł (cena × kurs): 400 → 440 zł × 10 sztuk = +400 zł.
+        portfolio = Portfolio(positions=(_lot("NVDA", "10", "100"),), as_of=_NOW)
+        change = portfolio.change_since({"NVDA": Decimal("400")}, {"NVDA": Decimal("440")})
+        assert change is not None
+        return change
+
+    def test_box_and_line_show_zloty_once(self) -> None:
+        change = self._change()
+
+        box = render_portfolio_change_box_html(change, usd_pln=Decimal("4.00"), currency="PLN")
+        line = render_portfolio_change_text_line(
+            change, usd_pln=Decimal("4.00"), currency="PLN"
+        )
+
+        assert "+400,00 zł" in box
+        assert "1 600,00" not in box
+        assert line == "Twój portfel od ostatniego maila: +10,0% (+400,00 zł)"
+
+    def test_section_line_lists_contributors_in_zloty(self) -> None:
+        portfolio = _portfolio((_lot("NVDA", "10", "100"),), as_of_days_ago=0)
+
+        text = render_user_portfolio_text(
+            portfolio, {"NVDA": Decimal("110")}, now=_NOW, pln_rates=_RATES,
+            change=self._change(), change_currency="PLN",
+        )
+
+        assert (
+            "  Zmiana od ostatniego maila: +400,00 zł (+10,0%) · najwięcej: NVDA +400,00 zł"
+        ) in text.splitlines()
+
+    def test_unrated_position_is_named_under_the_table(self) -> None:
+        portfolio = _portfolio(
+            (_lot("NVDA", "10", "100"), _lot("VUSA.L", "4", "80", "GBP")), as_of_days_ago=0
+        )
+        prices = {"NVDA": Decimal("110"), "VUSA.L": Decimal("90")}
+
+        html = render_user_portfolio_html(portfolio, prices, now=_NOW, pln_rates=_RATES)
+
+        assert "Bez kursu NBP: VUSA.L — poza wagami i sumami w zł" in html
+        assert "100,0%" in html

@@ -20,6 +20,11 @@ miał po 2.3% w 43 tickerach. Ten agregat liczy prawdę:
     wartość po kursie bieżącym, rozbicie na wynik instrumentu i wynik walutowy.
     Bez daty zakupu (albo kursu z tego dnia) P/L w zł jest jawnie nieznany —
     nigdy liczony bieżącym kursem po obu stronach, bo to ukrywa efekt walutowy.
+  - `pln_prices()` — ceny trzymanych symboli w złotych (cena × kurs bieżący
+    waluty pozycji). Podane do `weights`, `cluster_exposure` i `change_since`
+    dają wagi, ekspozycję sektora i zmianę portfela w JEDNEJ walucie zamiast
+    sumy dolarów z euro. Symbol bez kursu wypada (`unrated_symbols`), nigdy nie
+    jest liczony jak USD.
 
 Osobno żyje reguła świeżości: ręcznie aktualizowana tabela pozycji potrafi
 się zestarzeć, a stęchły portfel daje FAŁSZYWY P/L — gorszy niż brak sekcji.
@@ -32,7 +37,7 @@ domena nigdy nie woła zegara. Pieniądze na `Decimal` (jak `Money`).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
@@ -168,6 +173,19 @@ class PlnRates:
         if currency == HOME_CURRENCY:
             return Decimal("1")
         return self.on_purchase.get((currency, day))
+
+
+@dataclass(frozen=True)
+class PlnPrices:
+    """Ceny trzymanych symboli w złotych i symbole, których nie da się przeliczyć.
+
+    `prices` — symbol → cena × kurs bieżący waluty pozycji (PLN to 1); tylko
+    symbole portfela z ceną. `unrated_symbols` (posortowane) — wycenione, ale bez
+    kursu swojej waluty albo trzymane w dwóch walutach naraz: poza wagami i sumami.
+    """
+
+    prices: Mapping[str, Decimal]
+    unrated_symbols: tuple[str, ...]
 
 
 class PlnPnlGap(Enum):
@@ -420,20 +438,58 @@ class Portfolio:
         )
 
     def unpriced_cost_share(
-        self, current_prices: Mapping[str, Decimal]
+        self, current_prices: Mapping[str, Decimal], *, rates: PlnRates | None = None
     ) -> Decimal | None:
         """PORT-03: udział pozycji bez ceny w koszcie CAŁEGO portfela.
 
         Koszt, nie wartość rynkowa — bez ceny wartości nie znamy. Portfel bez
-        żadnego kosztu (pusty albo same zerowe ceny zakupu) → None."""
-        total = sum((pos.cost_basis() for pos in self.positions), Decimal("0"))
+        żadnego kosztu (pusty albo same zerowe ceny zakupu) → None.
+
+        Z `rates` koszty liczymy w złotych po kursie bieżącym waluty pozycji
+        (udział, nie kwota). Wyceniona pozycja bez kursu wypada z mianownika;
+        niewyceniona bez kursu → None, bo jej udziału nie znamy."""
+        costs: list[tuple[Position, Decimal]] = []
+        for pos in self.positions:
+            rate = Decimal("1") if rates is None else rates.current_rate(pos.currency)
+            if rate is None:
+                if pos.symbol not in current_prices:
+                    return None
+                continue
+            costs.append((pos, pos.cost_basis() * rate))
+        total = sum((cost for _, cost in costs), Decimal("0"))
         if total == 0:
             return None
         unpriced = sum(
-            (pos.cost_basis() for pos in self.positions if pos.symbol not in current_prices),
-            Decimal("0"),
+            (cost for pos, cost in costs if pos.symbol not in current_prices), Decimal("0")
         )
         return unpriced / total
+
+    def pln_prices(
+        self, current_prices: Mapping[str, Decimal], rates: PlnRates
+    ) -> PlnPrices:
+        """Ceny trzymanych symboli w złotych (patrz `PlnPrices`)."""
+        currencies: dict[str, set[str]] = {}
+        for pos in self.positions:
+            currencies.setdefault(pos.symbol, set()).add(pos.currency)
+        converted: dict[str, Decimal] = {}
+        unrated: list[str] = []
+        for symbol, codes in currencies.items():
+            price = current_prices.get(symbol)
+            if price is None:
+                continue
+            rate = rates.current_rate(next(iter(codes))) if len(codes) == 1 else None
+            if rate is None:
+                unrated.append(symbol)
+                continue
+            converted[symbol] = price * rate
+        return PlnPrices(prices=converted, unrated_symbols=tuple(sorted(unrated)))
+
+    def excluding(self, symbols: Collection[str]) -> Portfolio:
+        """Ten sam portfel (i ta sama świeżość) bez pozycji w `symbols`."""
+        return Portfolio(
+            positions=tuple(pos for pos in self.positions if pos.symbol not in symbols),
+            as_of=self.as_of,
+        )
 
     def unrealized_pnl(
         self, current_prices: Mapping[str, Decimal]

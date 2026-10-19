@@ -23,6 +23,7 @@ from src.domain.portfolio import (
     TOP_CHANGE_CONTRIBUTORS,
     ClusterExposure,
     PlnPnlGap,
+    PlnPrices,
     PlnRates,
     PlnValuation,
     Portfolio,
@@ -611,3 +612,118 @@ class TestPlnPnl:
 
         assert pnl.positions == ()
         assert pnl.total_value_pln == Decimal("0")
+
+
+# --- Wagi, ekspozycja i zmiana portfela w PLN (jedna waluta, kursy NBP) --------
+
+_RATES_USD_EUR = PlnRates(current={"USD": Decimal("4.00"), "EUR": Decimal("4.30")})
+
+
+class TestPlnPrices:
+    def test_usd_and_eur_positions_of_equal_pln_value_weigh_half_each(self) -> None:
+        # 43 × 100 USD × 4,00 = 17 200 zł = 40 × 100 EUR × 4,30. Natywnie 4300 vs 4000
+        # — suma dolarów z euro dawała 51,8% / 48,2%.
+        portfolio = _portfolio(_lot("AAPL", "43", "90", "USD"), _lot("SAP.DE", "40", "90", "EUR"))
+        prices = {"AAPL": Decimal("100"), "SAP.DE": Decimal("100")}
+
+        pln = portfolio.pln_prices(prices, _RATES_USD_EUR)
+
+        assert portfolio.weights(pln.prices) == {
+            "AAPL": Decimal("0.5"),
+            "SAP.DE": Decimal("0.5"),
+        }
+        assert pln.unrated_symbols == ()
+
+    def test_position_without_its_rate_drops_out_of_the_weights_and_is_listed(self) -> None:
+        portfolio = _portfolio(_lot("AAPL", "43", "90", "USD"), _lot("SAP.DE", "40", "90", "EUR"))
+        prices = {"AAPL": Decimal("100"), "SAP.DE": Decimal("100")}
+
+        pln = portfolio.pln_prices(prices, PlnRates(current={"USD": Decimal("4.00")}))
+
+        assert pln.prices == {"AAPL": Decimal("400.00")}
+        assert pln.unrated_symbols == ("SAP.DE",)
+        assert portfolio.weights(pln.prices) == {"AAPL": Decimal("1")}
+
+    def test_pln_position_needs_no_rate_and_unpriced_stay_out(self) -> None:
+        portfolio = _portfolio(_lot("PKN.WA", "3", "60", "PLN"), _lot("XDWD.DE", "8", "110", "EUR"))
+
+        pln = portfolio.pln_prices({"PKN.WA": Decimal("70")}, PlnRates())
+
+        assert pln == PlnPrices(prices={"PKN.WA": Decimal("70")}, unrated_symbols=())
+
+    def test_symbol_held_in_two_currencies_is_unrated(self) -> None:
+        portfolio = _portfolio(_lot("ASML", "1", "600", "USD"), _lot("ASML", "1", "550", "EUR"))
+
+        pln = portfolio.pln_prices({"ASML": Decimal("700")}, _RATES_USD_EUR)
+
+        assert pln.unrated_symbols == ("ASML",)
+        assert pln.prices == {}
+
+    def test_only_held_symbols_are_converted(self) -> None:
+        portfolio = _portfolio(_lot("AAPL", "1", "100", "USD"))
+
+        pln = portfolio.pln_prices(
+            {"AAPL": Decimal("100"), "MSFT": Decimal("400")}, _RATES_USD_EUR
+        )
+
+        assert set(pln.prices) == {"AAPL"}
+
+    def test_sector_exposure_is_measured_in_pln(self) -> None:
+        portfolio = _portfolio(
+            _lot("NVDA", "43", "90", "USD"),
+            _lot("ASML.AS", "40", "90", "EUR"),
+            _lot("AAPL", "86", "90", "USD"),
+        )
+        prices = {"NVDA": Decimal("100"), "ASML.AS": Decimal("100"), "AAPL": Decimal("100")}
+
+        exposure = portfolio.cluster_exposure(
+            {"NVDA": "Chipy", "ASML.AS": "Chipy"},
+            portfolio.pln_prices(prices, _RATES_USD_EUR).prices,
+        )
+
+        # AAPL 86 × 100 × 4,00 = 34 400 zł; NVDA + ASML.AS = 17 200 + 17 200 zł.
+        assert sorted((e.cluster, e.weight) for e in exposure) == [
+            ("AAPL", Decimal("0.5")),
+            ("Chipy", Decimal("0.5")),
+        ]
+
+    def test_unpriced_cost_share_is_measured_in_pln(self) -> None:
+        # Koszt XDWD.DE 1000 EUR × 4,30 = 4300 zł, AAPL 1000 USD × 4,00 = 4000 zł.
+        portfolio = _portfolio(
+            _lot("XDWD.DE", "10", "100", "EUR"), _lot("AAPL", "10", "100", "USD")
+        )
+        prices = {"AAPL": Decimal("110")}
+
+        assert portfolio.unpriced_cost_share(prices, rates=_RATES_USD_EUR) == (
+            Decimal("4300") / Decimal("8300")
+        )
+        assert portfolio.unpriced_cost_share(prices) == Decimal("0.5")
+
+    def test_cost_share_is_unknown_when_an_unpriced_position_has_no_rate(self) -> None:
+        # Bez kursu GBP nie wiemy, ile VUSA.L waży w koszcie — nie zgadujemy 0%.
+        portfolio = _portfolio(_lot("VUSA.L", "10", "100", "GBP"), _lot("AAPL", "10", "100", "USD"))
+
+        share = portfolio.unpriced_cost_share({"AAPL": Decimal("110")}, rates=_RATES_USD_EUR)
+
+        assert share is None
+
+    def test_cost_share_leaves_out_a_priced_position_without_its_rate(self) -> None:
+        portfolio = _portfolio(
+            _lot("XDWD.DE", "10", "100", "EUR"),
+            _lot("AAPL", "10", "100", "USD"),
+            _lot("VUSA.L", "10", "100", "GBP"),
+        )
+        prices = {"AAPL": Decimal("110"), "VUSA.L": Decimal("90")}
+
+        share = portfolio.unpriced_cost_share(prices, rates=_RATES_USD_EUR)
+
+        assert share == Decimal("4300") / Decimal("8300")
+
+
+def test_excluding_drops_the_symbols_and_keeps_the_freshness() -> None:
+    portfolio = _portfolio(_lot("AAPL", "1", "100", "USD"), _lot("SAP.DE", "1", "100", "EUR"))
+
+    rest = portfolio.excluding(("SAP.DE",))
+
+    assert [p.symbol for p in rest.positions] == ["AAPL"]
+    assert rest.as_of == portfolio.as_of

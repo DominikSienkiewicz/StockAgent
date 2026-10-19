@@ -33,7 +33,7 @@ from src.domain.cycle_maturity import SkipReason
 from src.domain.equity_curve import EquityCurve, EquityPoint
 from src.domain.model_scorecard import summarize_evaluations, summarize_run
 from src.domain.persona_track_record import PersonaTrackRecord
-from src.domain.portfolio import Portfolio, Position
+from src.domain.portfolio import PlnRates, Portfolio, Position
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
 
@@ -3266,3 +3266,111 @@ def test_renamed_sector_keeps_its_suggestions():
     assert "Warte uwagi" in html
     assert "Cyber" in html
     assert "ZS" in html
+
+
+class TestPortfolioInOneCurrency:
+    """Wagi portfela (lead, sizing, sekcja 💼) i zmiana od ostatniego maila liczone
+    w złotych kursami NBP — nie suma dolarów z euro. Pozycja bez kursu wypada
+    z wag i sum z jawną notą, nigdy nie jest liczona jak USD."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    _RATES = PlnRates(current={"USD": Decimal("4.00"), "EUR": Decimal("4.30")})
+
+    @staticmethod
+    def _portfolio() -> Portfolio:
+        # AAPL 43 × 100 USD × 4,00 = 17 200 zł = SAP.DE 40 × 100 EUR × 4,30.
+        # Natywnie 4300 „+” 4000 dawało AAPL 52% portfela.
+        return Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("43"), purchase_price=Decimal("90")),
+                Position(
+                    symbol="SAP.DE",
+                    quantity=Decimal("40"),
+                    purchase_price=Decimal("90"),
+                    currency="EUR",
+                ),
+            ),
+            as_of=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+
+    @staticmethod
+    def _results(aapl_delta: str = "0.05") -> list[SymbolResult]:
+        return [
+            SymbolResult(symbol="AAPL", status="saved", delta=Decimal(aapl_delta),
+                         current_price=Decimal("100")),
+            SymbolResult(symbol="SAP.DE", status="ignored",
+                         skip_reason=SkipReason.BELOW_THRESHOLD, delta=Decimal("0"),
+                         current_price=Decimal("100")),
+        ]
+
+    def _context(self, rates: PlnRates | None = None) -> ReportContext:
+        return ReportContext(user_portfolio=self._portfolio(), portfolio_fx=rates or self._RATES)
+
+    def test_lead_weight_of_a_position_is_its_share_in_pln(self) -> None:
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, self._context())
+
+        assert "AAPL (50% portfela)" in html
+        assert "AAPL (50% portfela)" in text
+
+    def test_sizing_sees_weights_and_sector_exposure_in_pln(self, mocker) -> None:
+        signals = mocker.patch(
+            "src.application.report_builder.build_trade_signals", return_value=[]
+        )
+        context = dataclasses.replace(
+            self._context(), portfolio_clusters={"AAPL": "Mix", "SAP.DE": "Mix"}
+        )
+
+        build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        kwargs = signals.call_args.kwargs
+        assert kwargs["portfolio_weights"] == {"AAPL": Decimal("0.5"), "SAP.DE": Decimal("0.5")}
+        assert kwargs["cluster_exposures"] == {"AAPL": Decimal("1"), "SAP.DE": Decimal("1")}
+
+    def test_section_weights_are_shares_in_pln(self) -> None:
+        _, text = build_html_report(self._results(), self._STARTED, 1.0, self._context())
+
+        rows = [line for line in text.splitlines() if " waga " in line]
+        assert len(rows) == 2
+        assert all("waga  50,0%" in row for row in rows), rows
+
+    def test_position_without_its_rate_is_out_of_the_weights_with_a_note(self) -> None:
+        context = self._context(PlnRates(current={"USD": Decimal("4.00")}))
+
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        assert "AAPL (100% portfela)" in html
+        assert "Bez kursu NBP: SAP.DE — poza wagami i sumami w zł" in html
+        assert "Bez kursu NBP: SAP.DE — poza wagami i sumami w zł" in text
+        sap_row = next(line for line in text.splitlines() if line.startswith("  SAP.DE   waga"))
+        assert "waga      —" in sap_row
+
+    def test_change_since_the_last_email_is_measured_in_pln(self) -> None:
+        # AAPL 95 → 100 USD (Δ 5,26%) po 4,00, SAP.DE bez zmian po 4,30:
+        # 43 × 5 × 4,00 = +860 zł na 16 340 + 17 200 zł → +2,6% (natywnie +2,7%).
+        results = self._results(aapl_delta=str(Decimal("100") / Decimal("95") - 1))
+
+        html, text = build_html_report(results, self._STARTED, 1.0, self._context())
+
+        assert "Zmiana od ostatniego maila: +860,00 zł (+2,6%)" in text
+        assert "najwięcej: AAPL +860,00 zł" in text
+        assert "Twój portfel od ostatniego maila: +2,6% (+860,00 zł)" in text
+        assert "+860,00 zł" in html
+        assert "$215" not in text
+
+    def test_change_leaves_out_a_position_without_its_rate(self) -> None:
+        results = self._results(aapl_delta=str(Decimal("100") / Decimal("95") - 1))
+        context = self._context(PlnRates(current={"USD": Decimal("4.00")}))
+
+        _, text = build_html_report(results, self._STARTED, 1.0, context)
+
+        # Samo AAPL: +860 zł na 16 340 zł → +5,3%; SAP.DE nie udaje „bez zmian”.
+        assert "Zmiana od ostatniego maila: +860,00 zł (+5,3%)" in text
+        assert "bez punktu odniesienia: SAP.DE" not in text
+
+    def test_without_any_rate_the_report_keeps_native_amounts(self) -> None:
+        context = ReportContext(user_portfolio=self._portfolio())
+
+        _, text = build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        # Bez kursów zostaje stara ścieżka: kwoty w walucie notowania.
+        assert "Twój portfel od ostatniego maila: +2,5% (+$204,76)" in text

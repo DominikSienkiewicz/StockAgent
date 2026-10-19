@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from src.application.alpha_signals import AlphaSignals
+from src.application.portfolio_fx import effective_pln_rates
 from src.application.report_alpha import render_alpha_html
 from src.application.report_charts import (
     build_correlation_chart_html,
@@ -161,7 +162,13 @@ from src.domain.polish_labels import (
     model_signal_label,
     trend_forecast_label,
 )
-from src.domain.portfolio import PlnRates, Portfolio, PortfolioChange
+from src.domain.portfolio import (
+    DEFAULT_POSITION_CURRENCY,
+    HOME_CURRENCY,
+    PlnRates,
+    Portfolio,
+    PortfolioChange,
+)
 from src.domain.prediction import is_substantive_insight
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
@@ -812,6 +819,16 @@ def to_lead_signals(
     return signals
 
 
+def _weight_prices(
+    portfolio: Portfolio, prices: Mapping[str, Decimal], rates: PlnRates | None
+) -> Mapping[str, Decimal]:
+    """Ceny do wag i ekspozycji: w złotych, gdy znamy kursy NBP (jedna waluta
+    zamiast sumy dolarów z euro; pozycja bez kursu wypada), inaczej natywne."""
+    if rates is None:
+        return prices
+    return portfolio.pln_prices(prices, rates).prices
+
+
 def _report_prices(
     results: list[SymbolResult], context: ReportContext
 ) -> dict[str, Decimal]:
@@ -829,7 +846,11 @@ def build_cycle_lead(
     na Twojej pozycji wyprzedzają ruch spółki, której nie masz.
     """
     weights = (
-        context.user_portfolio.weights(_report_prices(results, context))
+        context.user_portfolio.weights(
+            _weight_prices(
+                context.user_portfolio, _report_prices(results, context), _pln_rates_of(context)
+            )
+        )
         if context.user_portfolio is not None
         else None
     )
@@ -1003,6 +1024,7 @@ class _PortfolioChangeView:
 
     change: PortfolioChange
     label: str
+    currency: str = DEFAULT_POSITION_CURRENCY
 
 
 def _portfolio_change_view(
@@ -1012,13 +1034,26 @@ def _portfolio_change_view(
     *,
     now: datetime,
     display_timezone: str,
+    rates: PlnRates | None = None,
 ) -> _PortfolioChangeView | None:
     """PORT-06: Δ portfela od referencji cyklu. Okno zaczyna się od NAJSTARSZEJ
     referencji zmierzonych pozycji — po pauzie podpis mówi „od <data>”.
-    Brak portfela (np. obcy subskrybent, BEZ-01) → None, sekcje się chowają."""
+    Brak portfela (np. obcy subskrybent, BEZ-01) → None, sekcje się chowają.
+
+    Z kursami NBP zmiana jest w złotych: obie ceny po BIEŻĄCYM kursie waluty
+    pozycji (ruch kursu między mailami nie wchodzi), a pozycja bez kursu wypada
+    z obu stron — sekcja 💼 wymienia ją w nocie „Bez kursu NBP”."""
     if portfolio is None:
         return None
-    change = portfolio.change_since(_previous_prices_of(results), current_prices)
+    previous = _previous_prices_of(results)
+    currency = DEFAULT_POSITION_CURRENCY
+    if rates is not None:
+        valuation = portfolio.pln_prices(current_prices, rates)
+        portfolio = portfolio.excluding(valuation.unrated_symbols)
+        previous = dict(portfolio.pln_prices(previous, rates).prices)
+        current_prices = valuation.prices
+        currency = HOME_CURRENCY
+    change = portfolio.change_since(previous, current_prices)
     if change is None:
         return None
     measured = {p.symbol for p in portfolio.positions} - set(change.unmeasured_symbols)
@@ -1027,7 +1062,9 @@ def _portfolio_change_view(
     ]
     since = min(references) if references else None
     return _PortfolioChangeView(
-        change=change, label=portfolio_change_label(since, now, display_timezone)
+        change=change,
+        label=portfolio_change_label(since, now, display_timezone),
+        currency=currency,
     )
 
 
@@ -1085,7 +1122,11 @@ def _change_kwargs(change: _PortfolioChangeView | None) -> dict[str, Any]:
     """PORT-06: opcjonalne argumenty linii zmiany dla rendererów sekcji 💼."""
     if change is None:
         return {}
-    return {"change": change.change, "change_label": change.label}
+    return {
+        "change": change.change,
+        "change_label": change.label,
+        "change_currency": change.currency,
+    }
 
 
 def _build_user_portfolio_text(
@@ -1113,19 +1154,11 @@ def _build_user_portfolio_text(
 
 
 def _pln_rates_of(context: ReportContext) -> PlnRates | None:
-    """PORT-11: kursy do „P/L zł” — z orkiestratora (bieżące i z dni zakupu).
-
-    Bez nich (np. zbieranie kursów padło) bierzemy bieżące USD/PLN i EUR/PLN
-    z `MacroRiskReport.polish_macro` BEZ kursów z dni zakupu: sekcja mówi wtedy
-    wprost „brak kursu NBP z dnia zakupu” zamiast liczyć koszt bieżącym kursem.
-    Bez żadnego kursu → None (sekcja bez kwot w zł)."""
-    if context.portfolio_fx is not None:
-        return context.portfolio_fx
+    """PORT-11: kursy do „P/L zł”, wag i zmiany portfela (`effective_pln_rates`)."""
     report = context.macro_risk_report
-    if report is None or report.polish_macro is None:
-        return None
-    macro = report.polish_macro
-    return PlnRates(current={"USD": macro.usd_pln, "EUR": macro.eur_pln})
+    return effective_pln_rates(
+        context.portfolio_fx, report.polish_macro if report is not None else None
+    )
 
 
 def _usd_pln_of(macro_risk_report: MacroRiskReport | None) -> Decimal | None:
@@ -1312,11 +1345,17 @@ def build_html_report(
     current_prices = _report_prices(results, context)
     # #15 faza 2: gdy znamy realny portfel, sizing widzi istniejącą ekspozycję
     # (symbolu i jego klastra) i może zaproponować wyłącznie WĘŻSZĄ bandę.
+    pln_rates = _pln_rates_of(context)
+    weight_prices = (
+        _weight_prices(context.user_portfolio, current_prices, pln_rates)
+        if context.user_portfolio is not None
+        else current_prices
+    )
     portfolio_weights = (
-        context.user_portfolio.weights(current_prices) if context.user_portfolio is not None else None
+        context.user_portfolio.weights(weight_prices) if context.user_portfolio is not None else None
     )
     cluster_exposures = _cluster_exposure_per_symbol(
-        context.user_portfolio, context.portfolio_clusters, current_prices
+        context.user_portfolio, context.portfolio_clusters, weight_prices
     )
     sizing_risk = (
         context.position_risk
@@ -1383,11 +1422,15 @@ def build_html_report(
         current_prices,
         now=started_at,
         display_timezone=context.display_timezone,
+        rates=pln_rates,
     )
     usd_pln = _usd_pln_of(context.macro_risk_report)
     portfolio_change_box = (
         render_portfolio_change_box_html(
-            portfolio_change.change, label=portfolio_change.label, usd_pln=usd_pln
+            portfolio_change.change,
+            label=portfolio_change.label,
+            usd_pln=usd_pln,
+            currency=portfolio_change.currency,
         )
         if portfolio_change is not None
         else ""
@@ -1395,12 +1438,14 @@ def build_html_report(
     # Stary push (Telegram/Slack) dostaje tekst bez kwot portfela.
     portfolio_change_line = (
         render_portfolio_change_text_line(
-            portfolio_change.change, label=portfolio_change.label, usd_pln=usd_pln
+            portfolio_change.change,
+            label=portfolio_change.label,
+            usd_pln=usd_pln,
+            currency=portfolio_change.currency,
         )
         if portfolio_change is not None and context.user_portfolio_in_text
         else ""
     )
-    pln_rates = _pln_rates_of(context)
     user_portfolio_html = _build_user_portfolio_html(
         context.user_portfolio,
         current_prices,
