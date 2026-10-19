@@ -1732,17 +1732,21 @@ def _dispatch_reports(
         prefix = "⚠️ [QUOTA] " if max_sev is QuotaSeverity.CRITICAL else ""
         # #1: temat z leadu, liczony nad PEŁNYMI wynikami cyklu (nie per
         # subskrybent) — sekcje są re-slicowane, ale temat jest współdzielony.
-        # PORT-10: ten sam lead co w treści, więc też świadomy portfela.
-        subject = _build_subject(
-            lead_items=build_cycle_lead(results, report_context),
-            analyzed=analyzed,
-            failures=failures,
-            started_at=started_at,
-            prefix=prefix,
-            maturity=maturity,
-            analyzed_total=len(results),
-            display_timezone=settings.display_timezone,
-        )
+        # PORT-10: ten sam lead co w treści, więc też świadomy portfela; obcy
+        # subskrybenci dostają jeden wspólny wariant bez portfela (BEZ-01).
+        def _subject(context: ReportContext) -> str:
+            return _build_subject(
+                lead_items=build_cycle_lead(results, context),
+                analyzed=analyzed,
+                failures=failures,
+                started_at=started_at,
+                prefix=prefix,
+                maturity=maturity,
+                analyzed_total=len(results),
+                display_timezone=settings.display_timezone,
+            )
+
+        subject = _subject(report_context)
 
         # U3: publikacja statycznego digestu web (read-only dashboard).
         try:
@@ -1757,6 +1761,9 @@ def _dispatch_reports(
         # subskrybentów → dotychczasowa pojedyncza wysyłka.
         if subscribers and settings.resend_api_key:
             all_syms = frozenset(all_symbols)
+            # BEZ-01: temat obcego subskrybenta z leadu bez portfela — inaczej
+            # niósłby „… na AAPL (25% portfela)” właściciela.
+            public_subject = _subject(_without_owner_portfolio(report_context))
             for sub in subscribers:
                 owner = is_owner(sub, settings.digest_to_email)
                 if not owner and user_portfolio is not None:
@@ -1774,7 +1781,9 @@ def _dispatch_reports(
                         recipient=sub.email,
                         quota_monitor=quota_monitor,
                     ).send_report(
-                        subject=subject, html_body=sub_html, plain_text=sub_text
+                        subject=subject if owner else public_subject,
+                        html_body=sub_html,
+                        plain_text=sub_text,
                     )
                 except Exception:
                     logger.exception("Failed to send digest to %s", masked_email(sub.email))

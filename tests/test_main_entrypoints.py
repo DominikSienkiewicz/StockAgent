@@ -2425,7 +2425,9 @@ class TestDispatchReports:
     OWNER = "owner@example.com"
     FRIEND = "friend@example.com"
 
-    def _fan_out(self, settings: Settings, mocker) -> dict[str, dict[str, str]]:
+    def _fan_out(
+        self, settings: Settings, mocker, results: list | None = None
+    ) -> dict[str, dict[str, str]]:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.subscriber import Subscriber
 
@@ -2454,7 +2456,7 @@ class TestDispatchReports:
         mocker.patch("main_agent.ResendNotifier", side_effect=resend)
 
         main_agent._dispatch_reports(
-            results=[
+            results=results or [
                 main_agent.SymbolResult(
                     symbol="AAPL", status="saved", current_price=Decimal("230")
                 ),
@@ -2504,3 +2506,32 @@ class TestDispatchReports:
         messages = [r.getMessage() for r in caplog.records]
         assert any("f***@example.com" in m and "portfel" in m for m in messages)
         assert not any(self.FRIEND in m for m in messages)
+
+    def test_subscriber_subject_does_not_reveal_the_owner_position(self, settings, mocker) -> None:
+        # PORT-10 robi temat z leadu świadomego portfela („… na AAPL (100% portfela)”);
+        # temat obcego subskrybenta liczony jest z leadu bez portfela.
+        from src.domain.council import InvestorOpinion
+
+        verdict = CouncilVerdict(
+            final_recommendation="SELL", consensus_strength=0.9, summary="Rada: SELL.",
+            dissenting_views=(),
+            investor_opinions=tuple(
+                InvestorOpinion(investor_name=n, recommendation="SELL",
+                                confidence=0.9, reasoning="x", key_factors=())
+                for n in ("A", "B")
+            ),
+        )
+        results = [
+            main_agent.SymbolResult(
+                symbol="AAPL", status="saved", delta=Decimal("-0.05"),
+                current_price=Decimal("95"), council_verdict=verdict,
+            ),
+        ]
+
+        sent = self._fan_out(settings, mocker, results)
+
+        assert "Twojej pozycji" in sent["Owner@Example.com"]["subject"]
+        friend_subject = sent[self.FRIEND]["subject"]
+        assert "Twojej pozycji" not in friend_subject
+        assert "portfela" not in friend_subject
+        assert "AAPL -5.0%, rada zgodna: SELL" in friend_subject
