@@ -917,13 +917,13 @@ class TestGetPriceHistory:
     def test_maps_rows_to_timestamp_price_pairs(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        _set_chain_response(
-            mock_client,
-            ["table", "select", "eq", "gte", "order"],
-            [
+        chain = mock_client.table.return_value
+        _set_paginated_response(
+            chain.select.return_value.eq.return_value.gte.return_value.order.return_value,
+            [[
                 {"timestamp": "2026-06-01T00:00:00+00:00", "price": 100.0},
                 {"timestamp": "2026-06-02T00:00:00+00:00", "price": 110.0},
-            ],
+            ]],
         )
 
         result = repo.get_price_history("AAPL", days=30)
@@ -950,6 +950,28 @@ class TestGetPriceHistory:
         )
         repo.get_price_history("VOO", days=7)
         mock_client.table.assert_called_with("price_snapshots")
+
+    def test_history_longer_than_one_page_is_read_in_full(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # PORT-22: radar czyta 90 dni; PostgREST tnie SELECT do ~1000 wierszy bez
+        # błędu, więc bez paginacji najstarsze snapshoty znikały po cichu.
+        base = datetime(2026, 6, 1, tzinfo=UTC)
+        rows = [
+            {"timestamp": (base + timedelta(hours=i)).isoformat(), "price": 100.0 + i}
+            for i in range(1005)
+        ]
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.eq.return_value.gte.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [rows[:1000], rows[1000:]])
+
+        result = repo.get_price_history("AAPL", days=90)
+
+        assert len(result) == 1005
+        assert result[-1][1].amount == Decimal("1104.0")
+        assert order_builder.range.call_count == 2
 
 
 class TestGetCouncilVotesForPrediction:
@@ -1826,6 +1848,7 @@ _PAGINATED_READS: dict[str, Callable[[SupabaseRepository], object]] = {
     "unrevealed_commitments": lambda repo: repo.get_unrevealed_commitments(30),
     "feature_store": lambda repo: repo.get_feature_store_data("NVDA"),
     "council_vote_history": lambda repo: repo.get_council_vote_history(["NVDA"]),
+    "price_history": lambda repo: repo.get_price_history("NVDA", 90),
 }
 
 

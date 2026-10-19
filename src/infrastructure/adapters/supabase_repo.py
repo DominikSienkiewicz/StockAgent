@@ -194,16 +194,17 @@ class SupabaseRepository(RepositoryPort):
         self, symbol: str, days: int
     ) -> list[tuple[datetime, Money]]:
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        response = (
+        # PORT-22: radar czyta 90 dni — paginacja (#8), bo PostgREST tnie SELECT
+        # do ~1000 wierszy bez błędu i najstarsze snapshoty znikałyby po cichu.
+        query = (
             self._client.table(self._snapshot_table)
             .select("timestamp, price")
             .eq("symbol", symbol)
             .gte("timestamp", cutoff.isoformat())
             .order("timestamp", desc=False)
-            .execute()
         )
         out: list[tuple[datetime, Money]] = []
-        for row in _rows(response):
+        for row in _paginate(query):
             ts = row.get("timestamp")
             price = row.get("price")
             if not isinstance(ts, str) or price is None:
