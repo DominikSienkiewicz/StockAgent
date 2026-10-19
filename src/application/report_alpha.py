@@ -126,12 +126,12 @@ def _render_signals_table_html(
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Symbol</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Insiderzy</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Analitycy</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Opcje</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Social</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Earnings</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Symbol</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Insiderzy</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Analitycy</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Opcje</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Social</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Earnings</th>"
         "</tr></thead><tbody>" + "".join(body) + "</tbody></table>"
     )
 

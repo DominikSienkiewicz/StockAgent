@@ -154,8 +154,10 @@ def _render_sparkline_html(curve: EquityCurve) -> str:
             "</td>"
         )
     return (
-        f"<table style='border-collapse: collapse; height: {_SPARKLINE_MAX_PX}px; "
-        "margin: 0 0 16px 0;'><tr>" + "".join(cells) + "</tr></table>"
+        "<table role='presentation' style='border-collapse: collapse; "
+        f"height: {_SPARKLINE_MAX_PX}px; margin: 0 0 16px 0;'><tr>"
+        + "".join(cells)
+        + "</tr></table>"
     )
 
 
@@ -206,10 +208,10 @@ def _render_calibration_html(
         "font-size: 13px; margin-bottom: 8px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Pewność</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>N</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Śr. pewność</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Hit-rate</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Pewność</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>N</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Śr. pewność</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Hit-rate</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         "<p style='font-size: 12px; color: #6b7280; margin: 0 0 16px 0;'>"
         f"Pomocniczo — błąd kalibracji (ECE): <strong style='color: {ece_color};'>"

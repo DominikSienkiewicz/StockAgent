@@ -20,7 +20,7 @@ from __future__ import annotations
 import html as _html
 from decimal import Decimal
 
-from src.application.report_formatting import pct
+from src.application.report_formatting import direction_pct, pct
 from src.application.report_models import SymbolResult
 from src.application.report_signals import (
     DIVERGENCE_PRICE_THRESHOLD,
@@ -67,7 +67,7 @@ def _render_bar_chart_html(title: str, rows: list[tuple[str, Decimal]]) -> str:
         "<div style='margin: 16px 0;'>"
         "<div style='font-size: 14px; font-weight: 600; margin-bottom: 8px; "
         f"color: #1f2937;'>{_html.escape(title)}</div>"
-        "<table style='border-collapse: collapse; width: 100%;'><tbody>"
+        "<table role='presentation' style='border-collapse: collapse; width: 100%;'><tbody>"
         + "".join(cells)
         + "</tbody></table></div>"
     )
@@ -115,13 +115,13 @@ def _render_quadrant_chip(symbol: str, delta: Decimal, is_divergence: bool) -> s
     warn = "⚠ " if is_divergence else ""
     return (
         f"<span class='qc {delta_tone(delta)}'>"
-        f"{warn}{_html.escape(symbol)} {pct(delta, signed=True)}</span>"
+        f"{warn}{_html.escape(symbol)} {direction_pct(delta)}</span>"
     )
 
 
 def _quadrant_cell(chips: list[str]) -> str:
     """Komórka jednego kwadrantu — chipy symboli albo '—', gdy pusto."""
-    inner = "".join(chips) if chips else "<span style='color: #9ca3af;'>—</span>"
+    inner = "".join(chips) if chips else "<span style='color: #6b7280;'>—</span>"
     return (
         "<td style='padding: 8px; border: 1px solid #e5e7eb; "
         "vertical-align: top; width: 40%;'>" + inner + "</td>"

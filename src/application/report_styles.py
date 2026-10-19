@@ -73,7 +73,7 @@ EMAIL_STYLESHEET = (
     ".cn{padding:6px 10px;font-weight:500}"
     ".co{padding:6px 10px;font-weight:700}"
     ".cc{padding:6px 10px;text-align:center}"
-    ".cl{font-size:0.7em;color:#9ca3af}"
+    f".cl{{font-size:0.7em;color:{PALETTE.muted}}}"
     ".cf{padding:6px 10px;font-size:0.85em;color:#555}"
     ".cd{padding:8px 10px;font-size:0.85em;color:#92400e;background:#fffbeb}"
     ".dv{margin-top:4px;color:#92400e}"

@@ -303,6 +303,17 @@ def pct(value: Decimal | float | None, signed: bool = False, decimals: int = 2) 
     return format_pct_pl(_decimal(value) * 100, signed, decimals)
 
 
+def direction_pct(value: Decimal | float | None, decimals: int = 2) -> str:
+    """MAIL-57: zmiana ze strzałką i znakiem („▲ +0,42%”, „▼ -0,42%”) — kierunek
+    czytelny bez koloru. Ruch zaokrąglony do zera nie dostaje strzałki. None → „—”."""
+    if value is None:
+        return "—"
+    text = pct(value, signed=True, decimals=decimals)
+    if text == pct(0, signed=True, decimals=decimals):
+        return text
+    return f"{'▲' if value > 0 else '▼'} {text}"
+
+
 def pct_range(low: Decimal | float, high: Decimal | float, decimals: int = 0) -> str:
     """Przedział ułamków jako procenty z jednym „%” na końcu: „41–63%”."""
     return f"{pct(low, decimals=decimals).removesuffix('%')}–{pct(high, decimals=decimals)}"
@@ -370,21 +381,46 @@ def plural_pl(n: int, one: str, few: str, many: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ReportPalette:
-    """Kolory raportu w jednym miejscu (ARCH-28); sekcje przechodzą na nie stopniowo."""
+    """Kolory raportu w jednym miejscu (ARCH-28); sekcje przechodzą na nie stopniowo.
+
+    MAIL-57: kolory tekstu mają mieć ≥ 4.5:1 na białym i na `surface` (WCAG AA dla
+    tekstu 11–13 px, `contrast_ratio`). `caution` i `subtle` ściemnione z #ca8a04
+    (2.9:1) i #9ca3af (2.5:1) — jaśniejszy szary tekst niż `muted` nie przechodzi
+    AA, więc `subtle` mu równy. `positive` (#16a34a, 3.3:1) czeka na decyzję
+    właściciela (test ARCH-28 przypina obecną wartość)."""
 
     positive: str = "#16a34a"
     negative: str = "#dc2626"
     neutral: str = "#737373"
-    caution: str = "#ca8a04"
+    caution: str = "#a16207"
     text: str = "#111827"
     text_secondary: str = "#374151"
     muted: str = "#6b7280"
-    subtle: str = "#9ca3af"
+    subtle: str = "#6b7280"
     border: str = "#e5e7eb"
     surface: str = "#f9fafb"
 
 
 PALETTE = ReportPalette()
+
+
+def _relative_luminance(color: str) -> float:
+    """Luminancja względna sRGB koloru `#rrggbb` albo `#rgb` (WCAG 2.x)."""
+    hex_digits = color.removeprefix("#")
+    if len(hex_digits) == 3:
+        hex_digits = "".join(digit * 2 for digit in hex_digits)
+    channels = [int(hex_digits[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+    linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    """MAIL-57: kontrast dwóch kolorów wg WCAG 2.x — od 1 (ten sam kolor) do 21
+    (czarny na białym). Kolejność argumentów nie ma znaczenia."""
+    lighter, darker = sorted(
+        (_relative_luminance(foreground), _relative_luminance(background)), reverse=True
+    )
+    return (lighter + 0.05) / (darker + 0.05)
 
 
 def number_exact(value: Decimal) -> str:

@@ -152,10 +152,10 @@ def _render_hedges_table_html(hedges: list[HedgeAssessment]) -> str:
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Hedge</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Korelacja</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Skuteczność</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Ocena</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Hedge</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Korelacja</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Skuteczność</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Ocena</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + _TABLE_CLOSE
@@ -184,10 +184,10 @@ def _render_signals_table_html(signals: list[MacroRiskSignal]) -> str:
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Ticker</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Typ</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Δ vs poprz.</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Alert</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Ticker</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Typ</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Δ vs poprz.</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Alert</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + _TABLE_CLOSE
@@ -220,11 +220,11 @@ def _render_drawdowns_table_html(drawdowns: list[DrawdownSignal]) -> str:
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Ticker</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Ticker</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>"
         "Spadek od 30d szczytu</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Szczyt</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Alert</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Szczyt</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Alert</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + _TABLE_CLOSE

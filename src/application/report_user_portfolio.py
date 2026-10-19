@@ -280,7 +280,7 @@ def _render_stale_badge_html(max_age_days: int) -> str:
 
 def _render_table_html(pnl: PortfolioPnL, usd_pln: Decimal | None) -> str:
     pln_header = (
-        "<th style='padding: 6px 8px; text-align: right;'>P/L (PLN)</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>P/L (PLN)</th>"
         if usd_pln is not None
         else ""
     )
@@ -293,10 +293,10 @@ def _render_table_html(pnl: PortfolioPnL, usd_pln: Decimal | None) -> str:
         "font-size: 13px; margin-bottom: 8px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Symbol</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Waga</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Wartość</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>P/L</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Symbol</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Waga</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Wartość</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>P/L</th>"
         f"{pln_header}"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
     )

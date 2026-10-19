@@ -2458,7 +2458,9 @@ def _consensus(summary: str) -> CouncilVerdict:
 
 
 def _first_element(html: str) -> str:
-    return html[: html.index("</div>") + len("</div>")]
+    # MAIL-57: mail jest kompletnym dokumentem — preheader to pierwszy element <body>.
+    body = html[html.index("<body>") + len("<body>"):]
+    return body[: body.index("</div>") + len("</div>")]
 
 
 def test_html_starts_with_hidden_preheader_from_lead():

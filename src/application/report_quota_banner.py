@@ -76,7 +76,7 @@ def render_quota_banner_html(alerts: list[QuotaAlert]) -> str:
         f"margin-bottom: 8px;'>"
         f"🚨 ALERTY SUBSKRYPCJI / LIMITÓW ({len(deduped)})"
         f"</div>"
-        f"<table style='width: 100%; border-collapse: collapse; "
+        f"<table role='presentation' style='width: 100%; border-collapse: collapse; "
         f"font-size: 12px;'>"
         f"<tbody>{''.join(rows)}</tbody>"
         f"</table>"

@@ -79,10 +79,10 @@ def render_persona_leaderboard_html(records: list[PersonaTrackRecord]) -> str:
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>#</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Inwestor</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Trafność</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Próbka</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>#</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Inwestor</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Trafność</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Próbka</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
     )
 

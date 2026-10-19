@@ -34,6 +34,8 @@ from src.application.report_finops import render_finops_html
 from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
     INVESTMENT_DISCLAIMER,
+    PALETTE,
+    direction_pct,
     format_local,
     format_local_date,
 )
@@ -221,7 +223,7 @@ _SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
 # MAIL-42: linia proweniencji w stopce (przebieg · commit · logi).
 _RUN_FOOTER_SLOT = "<!-- RUN_FOOTER_SLOT -->"
 
-_COUNCIL_REC_COLOR = {"BUY": "#16a34a", "SELL": "#dc2626", "HOLD": "#ca8a04"}
+_COUNCIL_REC_COLOR = {"BUY": PALETTE.positive, "SELL": PALETTE.negative, "HOLD": PALETTE.caution}
 _COUNCIL_REC_BG = {"BUY": "#f0fdf4", "SELL": "#fef2f2", "HOLD": "#fefce8"}
 _COUNCIL_REC_EMOJI = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}
 
@@ -339,7 +341,7 @@ def _model_signal_reason_html(r: SymbolResult) -> str:
         change_part = (
             f" Prognozowana zmiana: "
             f"<strong class='{delta_tone(r.expected_change)}'>"
-            f"{_pct(r.expected_change, signed=True)}</strong>."
+            f"{direction_pct(r.expected_change)}</strong>."
         )
     sentiment_part = ""
     if r.sentiment_score is not None:
@@ -406,7 +408,7 @@ def _render_crypto_section_html(
             )
             forecast_part = (
                 f" · prognoza <span style='color: {_delta_color(r.expected_change)};'>"
-                f"{_pct(r.expected_change, signed=True)}</span>"
+                f"{direction_pct(r.expected_change)}</span>"
                 if r.expected_change is not None and not r.ml_cold_start
                 else ""
             )
@@ -426,7 +428,7 @@ def _render_crypto_section_html(
                       border-left: 3px solid #a855f7; border-radius: 4px; font-size: 13px;">
             <strong>{_html(_company_label(r.symbol))}</strong>
             <span style="color: #4b5563;">· {_money(r.current_price)}
-              · Δ <span style="color: {_delta_color(r.delta)};">{_pct(r.delta, signed=True)}</span>
+              · Δ <span style="color: {_delta_color(r.delta)};">{direction_pct(r.delta)}</span>
               · {status_html}</span>
           </div>
         """)
@@ -474,7 +476,7 @@ def _resolved_why(p: ResolvedPrediction) -> str:
 
 def _render_resolved_item_html(p: ResolvedPrediction) -> str:
     mark = "✅" if p.is_correct else "❌"
-    color = "#16a34a" if p.is_correct else "#dc2626"
+    color = PALETTE.positive if p.is_correct else PALETTE.negative
     verdict = "Trafiona" if p.is_correct else "Błędna"
     reason_line = (
         f"<div style='font-size: 11px; color: #4b5563; margin-top: 3px;'>"
@@ -485,7 +487,7 @@ def _render_resolved_item_html(p: ResolvedPrediction) -> str:
     )
     move_line = ""
     if p.actual_change_pct is not None:
-        move_txt = _pct(p.actual_change_pct, signed=True)
+        move_txt = direction_pct(p.actual_change_pct)
         prices = (
             f"{_money(p.price_at_prediction)} → {_money(p.actual_price)} "
             if p.price_at_prediction is not None and p.actual_price is not None
@@ -666,8 +668,8 @@ def _render_news_block_html(top_news: list[TopNewsItem]) -> str:
 
 # Q5: etykieta wyniku analogu (kierunkowo trafiony / chybiony / nieoceniony).
 _PRECEDENT_OUTCOME = {
-    True: ("✅ trafił", "#16a34a"),
-    False: ("❌ chybił", "#dc2626"),
+    True: ("✅ trafił", PALETTE.positive),
+    False: ("❌ chybił", PALETTE.negative),
 }
 
 
@@ -713,7 +715,7 @@ def _render_attribution_block_html(
     chips = []
     for c in contribs:
         positive = c.contribution >= 0
-        color = "#16a34a" if positive else "#dc2626"
+        color = PALETTE.positive if positive else PALETTE.negative
         chips.append(
             f"<span style='display:inline-block; margin-right:10px;'>"
             f"{_html(c.feature)} "
@@ -884,6 +886,17 @@ def _compact_markup(markup: str) -> str:
     między tagami struktury tabeli usuwamy w ogóle."""
     collapsed = _WHITESPACE_RUN.sub(" ", markup).strip()
     return _SPACE_BETWEEN_TABLE_TAGS.sub(r"\1", collapsed)
+
+
+def _email_document(body: str) -> str:
+    """MAIL-57: kompletny dokument — `lang="pl"` (czytnik ekranu czyta polską
+    fonetyką zamiast angielskiej), kodowanie i arkusz klas (MAIL-06 c) w `<head>`.
+    Preheader zostaje pierwszym elementem `<body>`, więc podgląd w skrzynce się
+    nie zmienia."""
+    return (
+        '<!DOCTYPE html><html lang="pl"><head><meta charset="utf-8">'
+        f"{EMAIL_STYLESHEET}</head><body>{body}</body></html>"
+    )
 
 
 def _fill_html_slots(html: str, sections: Mapping[str, str]) -> str:
@@ -1426,10 +1439,7 @@ def build_html_report(
         _RUN_FOOTER_SLOT: _render_run_footer_html(context.run_context),
     })
     closed_count = None if context.resolved_unavailable and not resolved else len(resolved)
-    # MAIL-06 (c): arkusz klas za preheaderem — preheader zostaje pierwszym elementem.
-    html = _compact_markup(
-        _render_preheader_html(lead_items, closed_count) + EMAIL_STYLESHEET + html
-    )
+    html = _email_document(_compact_markup(_render_preheader_html(lead_items, closed_count) + html))
     text = _render_plain(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
@@ -1471,7 +1481,7 @@ def _render_run_footer_html(run_context: RunContext | None) -> str:
     label = _html(_run_footer_label(run_context))
     url = _safe_news_url(run_context.run_url)
     logs = (
-        f' · <a href="{_html(url)}" style="color: #9ca3af;">logi</a>'
+        f' · <a href="{_html(url)}" style="color: {PALETTE.muted};">logi</a>'
         if url is not None
         else ""
     )
@@ -1545,9 +1555,9 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
         )
     for rank, sig in enumerate(trade_signals, start=1):
         dir_color = {
-            "KUP": "#16a34a",
-            "SPRZEDAJ": "#dc2626",
-            "OBSERWUJ": "#737373",
+            "KUP": PALETTE.positive,
+            "SPRZEDAJ": PALETTE.negative,
+            "OBSERWUJ": PALETTE.neutral,
         }[sig.direction]
         dir_bg = {
             "KUP": "#f0fdf4",
@@ -1559,7 +1569,7 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
             if sig.ml_cold_start
             else (
                 f'<span style="color: {_delta_color(sig.expected_change)};">'
-                f"prognoza <strong>{_pct(sig.expected_change, signed=True)}</strong></span>"
+                f"prognoza <strong>{direction_pct(sig.expected_change)}</strong></span>"
             )
         )
         # Q7: pasmo wielkości pozycji (Kelly-lite z konsensusu rady + hit-rate).
@@ -1824,7 +1834,7 @@ def _render_ignored_html(ignored: list[SymbolResult]) -> str:
         return ""
     rows = "".join(
         f"<span style='display: inline-block; padding: 2px 8px; margin: 2px; background: #f3f4f6; border-radius: 3px; font-size: 12px;'>"
-        f"<strong>{_html(r.symbol)}</strong> <span style='color: {_delta_color(r.delta)}'>{_pct(r.delta)}</span></span>"
+        f"<strong>{_html(r.symbol)}</strong> <span style='color: {_delta_color(r.delta)}'>{direction_pct(r.delta)}</span></span>"
         for r in ignored
     )
     return (
@@ -1868,7 +1878,7 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
         forecast_text = (
             f"{_money(r.target_price)} "
             f"<span class='{delta_tone(r.expected_change)}'>"
-            f"({_pct(r.expected_change, signed=True)})</span>"
+            f"({direction_pct(r.expected_change)})</span>"
         )
     else:
         forecast_text = "—"
@@ -1878,7 +1888,7 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
               <tr>
                 <td class="pc b6">{_html(_company_label(r.symbol))}</td>
                 <td class="pc">{_money(r.current_price)}</td>
-                <td class="pc {delta_tone(r.delta)}">{_pct(r.delta)}</td>
+                <td class="pc {delta_tone(r.delta)}">{direction_pct(r.delta)}</td>
                 <td class="pc b6 {trend_tone(r.trend)}">{_html(_trend_label(r.trend))}</td>
                 <td class="pc">{forecast_text}</td>
                 <td class="pc">{confidence_text}</td>
@@ -1919,7 +1929,7 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
             else (
                 f"{_money(r.current_price)} → {_money(r.target_price)} "
                 f"<span class='{delta_tone(r.expected_change)}'>"
-                f"({_pct(r.expected_change, signed=True)})</span>"
+                f"({direction_pct(r.expected_change)})</span>"
             )
         )
         move_line = f'<div class="rm">Oczekiwany ruch: {move_text}{conf_part}</div>'
@@ -1971,15 +1981,15 @@ def _render_saved_section_html(
         "<table style='width: 100%; border-collapse: collapse; font-size: 13px;'>",
         f"""
           <tr style="background: #f3f4f6; text-align: left;">
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Symbol</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Cena</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Zmiana (cykl)</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Trend</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Prognoza (nast. cykl)</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Pewność</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Sentyment</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Newsy</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">{MODEL_SIGNAL_TITLE}</th>
+            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Symbol</th>
+            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Cena</th>
+            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Zmiana (cykl)</th>
+            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Trend</th>
+            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Prognoza (nast. cykl)</th>
+            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Pewność</th>
+            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Sentyment</th>
+            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Newsy</th>
+            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">{MODEL_SIGNAL_TITLE}</th>
           </tr>
         """,
     ]
@@ -2033,9 +2043,9 @@ def _render_compact_predictions_html(rest: list[SymbolResult]) -> str:
         f"<div style='font-size: 12px; color: #6b7280; margin-bottom: 6px;'>{_html(_COMPACT_PREDICTIONS_NOTE)}</div>"
         "<table style='width: 100%; border-collapse: collapse; font-size: 12px;'>"
         '<tr style="background: #f3f4f6; text-align: left;">'
-        '<th class="pk">Symbol</th>'
-        f'<th class="pk">{MODEL_SIGNAL_TITLE}</th>'
-        '<th class="pk">Rada</th></tr>'
+        '<th scope="col" class="pk">Symbol</th>'
+        f'<th scope="col" class="pk">{MODEL_SIGNAL_TITLE}</th>'
+        '<th scope="col" class="pk">Rada</th></tr>'
         + "".join(rows)
         + "</table>"
     )
@@ -2111,7 +2121,7 @@ def _render_technical_footer_html(
     duration_seconds: float,
 ) -> str:
     """MAIL-16: liczniki pracy pipeline'u w stopce — błąd nadal jest czerwony."""
-    errors_color = "#dc2626" if errors else "#6b7280"
+    errors_color = PALETTE.negative if errors else PALETTE.muted
     return (
         '<div style="margin-bottom: 8px; color: #6b7280;">'
         f"Symboli: <strong>{len(results)}</strong>"
@@ -2340,7 +2350,7 @@ def _render_html(
     # MAIL-08: zastrzeżenie w stałej stopce, nie w sekcji warunkowej — sekcja,
     # która się chowa, zabrałaby je ze sobą.
     sections.append(f"""
-      <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #9ca3af;">
+      <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 11px; color: {PALETTE.muted};">
         <div style="margin-bottom: 8px; color: #6b7280;">{_html(INVESTMENT_DISCLAIMER)}</div>
         {_render_technical_footer_html(results, saved, ignored, errors, duration_seconds)}
         StockAgent · Agentic RAG + Continual Learning · raport automatyczny
