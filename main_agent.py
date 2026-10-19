@@ -99,7 +99,7 @@ from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
 from src.domain.portfolio import Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.scenarios import Scenario
-from src.domain.subscriber import Subscriber, symbols_for
+from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
 from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
 from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
@@ -1611,6 +1611,15 @@ def _fetch_report_context(
     )
 
 
+def _without_owner_portfolio(context: ReportContext) -> ReportContext:
+    """BEZ-01: kontekst maila dla subskrybenta, który nie jest właścicielem —
+    bez pozycji, klastrów i cen pozycji spoza watchlisty. Bez portfela lead
+    (a więc i preheader) nie dostaje tierów „Twojej pozycji”."""
+    return dataclasses.replace(
+        context, user_portfolio=None, portfolio_clusters=None, held_prices=None
+    )
+
+
 def _dispatch_reports(
     *,
     results: list[SymbolResult],
@@ -1696,17 +1705,24 @@ def _dispatch_reports(
         )
 
         def _build(
-            symbols_filter: frozenset[str] | None = None, *, user_portfolio_in_text: bool = True
+            symbols_filter: frozenset[str] | None = None,
+            *,
+            user_portfolio_in_text: bool = True,
+            include_portfolio: bool = True,
         ) -> tuple[str, str]:
-            # Raport subskrybenta różni się filtrem symboli; stary push — brakiem
-            # sekcji portfela w tekście (kwoty P/L nie idą do komunikatorów).
+            # Raport subskrybenta różni się filtrem symboli (i bez portfela, gdy to
+            # nie właściciel — BEZ-01); stary push — brakiem sekcji portfela
+            # w tekście (kwoty P/L nie idą do komunikatorów).
+            recipient_context = dataclasses.replace(
+                report_context,
+                symbols_filter=symbols_filter,
+                user_portfolio_in_text=user_portfolio_in_text,
+            )
             return build_html_report(
                 results, started_at, duration,
-                dataclasses.replace(
-                    report_context,
-                    symbols_filter=symbols_filter,
-                    user_portfolio_in_text=user_portfolio_in_text,
-                ),
+                recipient_context
+                if include_portfolio
+                else _without_owner_portfolio(recipient_context),
             )
 
         html, text = _build()
@@ -1742,7 +1758,15 @@ def _dispatch_reports(
         if subscribers and settings.resend_api_key:
             all_syms = frozenset(all_symbols)
             for sub in subscribers:
-                sub_html, sub_text = _build(symbols_for(sub, all_syms))
+                owner = is_owner(sub, settings.digest_to_email)
+                if not owner and user_portfolio is not None:
+                    logger.info(
+                        "Digest dla %s bez portfela właściciela (adres ≠ DIGEST_TO_EMAIL)",
+                        masked_email(sub.email),
+                    )
+                sub_html, sub_text = _build(
+                    symbols_for(sub, all_syms), include_portfolio=owner
+                )
                 try:
                     ResendNotifier(
                         api_key=settings.resend_api_key,
@@ -1753,7 +1777,7 @@ def _dispatch_reports(
                         subject=subject, html_body=sub_html, plain_text=sub_text
                     )
                 except Exception:
-                    logger.exception("Failed to send digest to %s", sub.email)
+                    logger.exception("Failed to send digest to %s", masked_email(sub.email))
                     email_delivered = False
         else:
             # NIEZ-02: wyjątek Resend nie może wyciąć scorecardu, sweepu i pusha.

@@ -8,7 +8,9 @@ więc cała ta domena operuje WYŁĄCZNIE na stdlib (brak płatnych portów).
 
 from __future__ import annotations
 
-from src.domain.subscriber import Subscriber, symbols_for
+import pytest
+
+from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 
 
 class TestSubscriberWatches:
@@ -65,3 +67,34 @@ class TestSubscriberIsFrozen:
         # frozen VO — bezpieczny jako element zbioru / klucz słownika.
         sub = Subscriber(email="a@example.com", symbols=frozenset({"AAPL"}))
         assert sub in {sub}
+
+
+class TestIsOwner:
+    """BEZ-01: portfel właściciela trafia wyłącznie do jego własnego maila."""
+
+    def test_matching_address_is_the_owner(self) -> None:
+        sub = Subscriber(email="owner@example.com", symbols=frozenset())
+        assert is_owner(sub, "owner@example.com") is True
+
+    def test_match_ignores_case_and_surrounding_whitespace(self) -> None:
+        sub = Subscriber(email="  Owner@Example.COM ", symbols=frozenset())
+        assert is_owner(sub, "owner@example.com\n") is True
+
+    def test_other_address_is_not_the_owner(self) -> None:
+        sub = Subscriber(email="friend@example.com", symbols=frozenset())
+        assert is_owner(sub, "owner@example.com") is False
+
+    @pytest.mark.parametrize("owner_email", [None, "", "   "])
+    def test_unknown_owner_matches_nobody(self, owner_email: str | None) -> None:
+        # Fail-closed: bez DIGEST_TO_EMAIL nikt nie jest właścicielem — także
+        # subskrybent z pustym adresem nie „dopasuje się” do pustego właściciela.
+        sub = Subscriber(email="", symbols=frozenset())
+        assert is_owner(sub, owner_email) is False
+
+
+class TestMaskedEmail:
+    def test_keeps_the_first_letter_and_the_domain(self) -> None:
+        assert masked_email("friend@example.com") == "f***@example.com"
+
+    def test_address_without_at_sign_is_fully_masked(self) -> None:
+        assert masked_email("not-an-email") == "***"

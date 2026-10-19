@@ -10,6 +10,9 @@ watchlisty dostaje pełny union symboli cyklu (zachowanie zgodne z dotychczasowy
 pojedynczym `DIGEST_TO_EMAIL`). Zbiór niepusty zawęża raport do przecięcia z
 symbolami cyklu — `symbols_for` nigdy nie "wymyśla" symboli spoza unii.
 
+BEZ-01: portfel właściciela (`DIGEST_TO_EMAIL`) idzie wyłącznie do niego —
+`is_owner` jest fail-closed: brak adresu właściciela = nikt nim nie jest.
+
 Wyłącznie stdlib + inne moduły domeny — zero importów zewnętrznych.
 """
 
@@ -52,3 +55,27 @@ def symbols_for(subscriber: Subscriber, all_symbols: frozenset[str]) -> frozense
     if not subscriber.symbols:
         return all_symbols
     return subscriber.symbols & all_symbols
+
+
+def _normalized(email: str) -> str:
+    return email.strip().casefold()
+
+
+def is_owner(subscriber: Subscriber, owner_email: str | None) -> bool:
+    """Czy `subscriber` to właściciel portfela (adres `DIGEST_TO_EMAIL`).
+
+    Porównanie bez wielkości liter i białych znaków na brzegach. Fail-closed:
+    pusty albo brakujący adres właściciela nie dopasowuje nikogo, więc portfel
+    nie trafia do żadnego subskrybenta.
+    """
+    if owner_email is None or not _normalized(owner_email):
+        return False
+    return _normalized(subscriber.email) == _normalized(owner_email)
+
+
+def masked_email(email: str) -> str:
+    """Adres do logów bez pełnej skrzynki: `f***@example.com`. Bez `@` → `***`."""
+    local, at, domain = email.strip().partition("@")
+    if not at or not local:
+        return "***"
+    return f"{local[0]}***@{domain}"

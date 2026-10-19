@@ -2416,3 +2416,91 @@ class TestDisplayTimezone:
         assert email.send_report.call_args.kwargs["subject"].endswith("(nd 18.10 01:30)")
         digest = push.send_report.call_args.kwargs["plain_text"]
         assert digest.splitlines()[0] == "📊 StockAgent — nd 18.10 01:30"
+
+
+class TestDispatchReports:
+    """BEZ-01 (G22): fan-out per subskrybent nie wysyła portfela właściciela
+    (`DIGEST_TO_EMAIL`) nikomu poza nim — ani w HTML, ani w tekście."""
+
+    OWNER = "owner@example.com"
+    FRIEND = "friend@example.com"
+
+    def _fan_out(self, settings: Settings, mocker) -> dict[str, dict[str, str]]:
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.subscriber import Subscriber
+
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        settings.resend_api_key = "re_test"
+        settings.digest_to_email = self.OWNER
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(
+            "main_agent._build_user_portfolio",
+            return_value=TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
+        )
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        sent: dict[str, dict[str, str]] = {}
+
+        def resend(*, recipient: str, **_: object) -> MagicMock:
+            channel = MagicMock()
+            channel.send_report.side_effect = lambda **mail: sent.__setitem__(recipient, mail)
+            return channel
+
+        mocker.patch("main_agent.ResendNotifier", side_effect=resend)
+
+        main_agent._dispatch_reports(
+            results=[
+                main_agent.SymbolResult(
+                    symbol="AAPL", status="saved", current_price=Decimal("230")
+                ),
+            ],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=QuotaMonitor(),
+            notifier=MagicMock(),
+            web_publisher=MagicMock(),
+            subscribers=[
+                Subscriber(email="Owner@Example.com", symbols=frozenset()),
+                Subscriber(email=self.FRIEND, symbols=frozenset()),
+            ],
+            all_symbols=["AAPL", "VOO"],
+            context=main_agent.ReportContext(),
+        )
+        return sent
+
+    def test_subscriber_digest_omits_owner_portfolio(self, settings, mocker) -> None:
+        sent = self._fan_out(settings, mocker)
+
+        friend = sent[self.FRIEND]
+        assert "Twój portfel" not in friend["html_body"]
+        assert "$460.00" not in friend["html_body"]
+        assert "Twój portfel" not in friend["plain_text"]
+        assert "$460.00" not in friend["plain_text"]
+
+    def test_owner_digest_keeps_the_portfolio(self, settings, mocker) -> None:
+        # Adres z innym wielkościami liter to nadal właściciel (casefold).
+        sent = self._fan_out(settings, mocker)
+
+        owner = sent["Owner@Example.com"]
+        assert "Twój portfel" in owner["html_body"]
+        assert "$460.00" in owner["plain_text"]
+
+    def test_withheld_portfolio_is_logged_with_a_masked_address(
+        self, settings, mocker, caplog
+    ) -> None:
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="main_agent"):
+            self._fan_out(settings, mocker)
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("f***@example.com" in m and "portfel" in m for m in messages)
+        assert not any(self.FRIEND in m for m in messages)
