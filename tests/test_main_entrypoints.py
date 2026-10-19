@@ -3743,3 +3743,21 @@ class TestSectorMapFromConfig:
         assert context.sector_map == {"AAPL": "Big Tech"}
         assert context.sector_peers == {"Big Tech": ["NFLX"]}
         assert context.portfolio_sectors == {"Big Tech": 1}
+
+
+class TestPositionsPortCurrencyColumns:
+    """PORT-18: `positions_currency_enabled` przełącza adapter pozycji na kolumny
+    migracji 035 (waluta + prawdziwa data zakupu); bez flagi zostaje stary odczyt."""
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_flag_reaches_the_positions_adapter(self, settings, mocker, enabled):
+        adapter_cls = mocker.patch(
+            "src.infrastructure.adapters.positions_repo.SupabasePositionsAdapter"
+        )
+        settings = settings.model_copy(
+            update={"portfolio_positions_enabled": True, "positions_currency_enabled": enabled}
+        )
+
+        main_agent.build_positions_port(settings)
+
+        assert adapter_cls.call_args.kwargs["currency_columns"] is enabled

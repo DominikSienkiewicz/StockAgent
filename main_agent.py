@@ -440,7 +440,12 @@ def build_positions_port(settings: Settings) -> PortfolioPositionsPort:
 
     if not settings.portfolio_positions_enabled:
         return NullPositionsAdapter()
-    return SupabasePositionsAdapter(url=settings.supabase_url, key=settings.supabase_key)
+    # PORT-18: waluta i prawdziwa data zakupu dopiero po migracji 035 (flaga).
+    return SupabasePositionsAdapter(
+        url=settings.supabase_url,
+        key=settings.supabase_key,
+        currency_columns=settings.positions_currency_enabled,
+    )
 
 
 def _build_user_portfolio(settings: Settings) -> Portfolio | None:

@@ -676,3 +676,24 @@ class TestSectorPeers:
             self._settings(sectors=sectors, sector_peers={"Big Tech": ["NFLX"]}).config_hash()
             == self._settings(sectors=sectors).config_hash()
         )
+
+
+class TestPositionsCurrencyFlag:
+    """PORT-18: odczyt i zapis `positions.currency` / `purchase_date` (migracja 035).
+    Przed migracją nowy klucz w zapisie → PGRST204, więc domyślnie off; waluta
+    pozycji nie zmienia prognozy, więc flaga jest poza przepisem."""
+
+    def test_defaults_off(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.positions_currency_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "positions_currency_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, positions_currency_enabled=True
+        ).config_hash()
+        assert flipped == baseline

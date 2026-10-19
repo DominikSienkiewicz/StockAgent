@@ -19,8 +19,10 @@ import pytest
 
 from src.domain.portfolio import (
     DEFAULT_MAX_POSITION_AGE_DAYS,
+    DEFAULT_POSITION_CURRENCY,
     TOP_CHANGE_CONTRIBUTORS,
     ClusterExposure,
+    PlnValuation,
     Portfolio,
     PortfolioFreshness,
     PortfolioPnL,
@@ -28,6 +30,7 @@ from src.domain.portfolio import (
     SymbolChange,
     freshness,
     is_stale,
+    pln_rate,
 )
 
 
@@ -404,3 +407,72 @@ class TestChangeSince:
 
     def test_top_contributor_limit_is_three(self) -> None:
         assert TOP_CHANGE_CONTRIBUTORS == 3
+
+
+# --- PORT-18: waluta pozycji i wycena w PLN właściwym kursem -----------------
+
+
+def _lot(symbol: str, qty: str, price: str, currency: str) -> Position:
+    return Position(
+        symbol=symbol,
+        quantity=Decimal(qty),
+        purchase_price=Decimal(price),
+        currency=currency,
+    )
+
+
+class TestPositionCurrency:
+    def test_position_defaults_to_usd_and_an_unknown_purchase_date(self) -> None:
+        position = Position(symbol="AAPL", quantity=Decimal("1"), purchase_price=Decimal("10"))
+
+        assert position.currency == DEFAULT_POSITION_CURRENCY == "USD"
+        assert position.purchase_date is None
+
+    @pytest.mark.parametrize("currency", ["usd", "US", "USDT", "", "U$D", "ŁÓŻ"])
+    def test_position_rejects_a_currency_outside_iso_4217_format(self, currency: str) -> None:
+        with pytest.raises(ValueError, match="currency"):
+            _lot("AAPL", "1", "10", currency)
+
+    def test_pnl_rows_carry_the_position_currency(self) -> None:
+        portfolio = _portfolio(_lot("SAP.DE", "2", "90", "EUR"))
+
+        pnl = portfolio.unrealized_pnl({"SAP.DE": Decimal("100")})
+
+        assert pnl.positions[0].currency == "EUR"
+
+
+class TestMarketValueInPln:
+    def test_eur_position_is_valued_at_the_eur_pln_rate(self) -> None:
+        portfolio = _portfolio(_lot("SAP.DE", "10", "90", "EUR"), _lot("AAPL", "2", "150", "USD"))
+
+        valuation = portfolio.market_value_pln(
+            {"SAP.DE": Decimal("100"), "AAPL": Decimal("200")},
+            {"EUR": Decimal("4.30"), "USD": Decimal("4.00")},
+        )
+
+        # 10 × 100 EUR × 4,30 + 2 × 200 USD × 4,00 — nie 1000 × 4,00 za euro.
+        assert valuation == PlnValuation(value=Decimal("5900"), unrated_symbols=())
+
+    def test_pln_position_needs_no_rate(self) -> None:
+        portfolio = _portfolio(_lot("PKN.WA", "3", "60", "PLN"))
+
+        valuation = portfolio.market_value_pln({"PKN.WA": Decimal("70")}, {})
+
+        assert valuation.value == Decimal("210")
+        assert pln_rate("PLN", {}) == Decimal("1")
+
+    def test_position_without_its_rate_is_listed_not_valued_in_another_currency(self) -> None:
+        portfolio = _portfolio(_lot("VUSA.L", "4", "80", "GBP"), _lot("AAPL", "1", "100", "USD"))
+
+        valuation = portfolio.market_value_pln(
+            {"VUSA.L": Decimal("90"), "AAPL": Decimal("110")}, {"USD": Decimal("4.00")}
+        )
+
+        assert valuation == PlnValuation(value=Decimal("440"), unrated_symbols=("VUSA.L",))
+
+    def test_unpriced_position_stays_out_of_the_valuation(self) -> None:
+        portfolio = _portfolio(_lot("XDWD.DE", "8", "110", "EUR"))
+
+        valuation = portfolio.market_value_pln({}, {"EUR": Decimal("4.30")})
+
+        assert valuation == PlnValuation(value=Decimal("0"), unrated_symbols=())

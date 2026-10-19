@@ -263,3 +263,237 @@ class TestNullPositionsAdapter:
         adapter.get_as_of()
 
         create.assert_not_called()
+
+
+# --- PORT-18: waluta i prawdziwa data zakupu (migracja 035, flaga) -----------
+
+
+@pytest.fixture
+def currency_repo(mock_client: MagicMock) -> SupabasePositionsAdapter:
+    return SupabasePositionsAdapter(
+        url="https://test.supabase.co", key="anon-key", currency_columns=True
+    )
+
+
+class TestCurrencyColumns:
+    def test_purchase_date_comes_from_its_column_not_from_as_of(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "order"],
+            [
+                {
+                    **_row(symbol="SAP.DE", quantity="10", avg_cost="120.50",
+                           as_of="2026-07-10T12:00:00+00:00"),
+                    "currency": "EUR",
+                    "purchase_date": "2025-03-01",
+                }
+            ],
+        )
+
+        positions = currency_repo.get_positions()
+
+        assert positions == [
+            Position(
+                symbol="SAP.DE",
+                quantity=Decimal("10"),
+                purchase_price=Decimal("120.50"),
+                purchase_date=date(2025, 3, 1),
+                currency="EUR",
+            )
+        ]
+
+    def test_null_purchase_date_stays_unknown(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        # `as_of` to data aktualizacji tabeli — nie udaje daty zakupu.
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "order"],
+            [{**_row(symbol="NVDA"), "currency": "USD", "purchase_date": None}],
+        )
+
+        assert currency_repo.get_positions()[0].purchase_date is None
+
+    def test_row_without_the_new_columns_reads_as_usd_with_unknown_date(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        # Flaga włączona przed migracją 035: `select("*")` nie zwraca kolumn —
+        # odczyt łagodny, bez wyjątku.
+        _set_chain_response(mock_client, ["table", "select", "order"], [_row(symbol="AAPL")])
+
+        position = currency_repo.get_positions()[0]
+
+        assert (position.currency, position.purchase_date) == ("USD", None)
+
+    def test_skips_row_with_a_currency_outside_iso_format(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "order"],
+            [
+                {**_row(symbol="BAD"), "currency": "EURO"},
+                {**_row(symbol="LOW"), "currency": " eur "},
+                {**_row(symbol="OK"), "currency": "GBP"},
+            ],
+        )
+
+        positions = currency_repo.get_positions()
+
+        assert [(p.symbol, p.currency) for p in positions] == [("LOW", "EUR"), ("OK", "GBP")]
+
+    def test_unparseable_purchase_date_is_unknown_not_a_dropped_position(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "order"],
+            [{**_row(symbol="NVDA"), "purchase_date": "01.03.2025"}],
+        )
+
+        assert currency_repo.get_positions()[0].purchase_date is None
+
+    def test_flag_off_ignores_the_new_columns(
+        self, repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "order"],
+            [{**_row(symbol="SAP.DE"), "currency": "EUR", "purchase_date": "2025-03-01"}],
+        )
+
+        assert repo.get_positions()[0].currency == "USD"
+
+
+def _lot(symbol: str, currency: str = "USD", day: date | None = None) -> Position:
+    return Position(
+        symbol=symbol,
+        quantity=Decimal("2.5"),
+        purchase_price=Decimal("101.25"),
+        purchase_date=day,
+        currency=currency,
+    )
+
+
+_IMPORTED_AT = datetime.fromisoformat("2026-10-19T08:00:00+00:00")
+
+
+class TestReplacePositions:
+    """Import CSV zastępuje całą tabelę: najpierw INSERT nowych lotów, potem DELETE
+    starych po `id` — błąd zapisu zostawia stary portfel zamiast pustej tabeli."""
+
+    def _existing_ids(self, client: MagicMock, ids: list[int]) -> None:
+        _set_chain_response(client, ["table", "select"], [{"id": i} for i in ids])
+
+    def test_flag_off_payload_has_no_currency_or_purchase_date(
+        self, repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        self._existing_ids(mock_client, [])
+
+        repo.replace_positions([_lot("AAPL")], as_of=_IMPORTED_AT)
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload == [
+            {
+                "symbol": "AAPL",
+                "quantity": "2.5",
+                "avg_cost": "101.25",
+                "as_of": "2026-10-19T08:00:00+00:00",
+            }
+        ]
+
+    def test_flag_on_payload_carries_currency_and_purchase_date(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        self._existing_ids(mock_client, [])
+
+        currency_repo.replace_positions(
+            [_lot("SAP.DE", "EUR", date(2025, 3, 1)), _lot("NVDA")], as_of=_IMPORTED_AT
+        )
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert [(row["currency"], row["purchase_date"]) for row in payload] == [
+            ("EUR", "2025-03-01"),
+            ("USD", None),
+        ]
+
+    def test_flag_off_refuses_a_lot_it_cannot_store(
+        self, repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        self._existing_ids(mock_client, [])
+
+        with pytest.raises(ValueError, match="035"):
+            repo.replace_positions([_lot("SAP.DE", "EUR")], as_of=_IMPORTED_AT)
+
+        mock_client.table.return_value.insert.assert_not_called()
+
+    def test_inserts_new_lots_before_deleting_the_old_rows(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        self._existing_ids(mock_client, [7, 9])
+        table = mock_client.table.return_value
+        calls: list[str] = []
+        table.insert.side_effect = lambda *_: calls.append("insert") or MagicMock()
+        table.delete.side_effect = lambda *_: calls.append("delete") or MagicMock()
+
+        currency_repo.replace_positions([_lot("AAPL")], as_of=_IMPORTED_AT)
+
+        assert calls == ["insert", "delete"]
+
+    def test_deletes_exactly_the_rows_that_existed_before(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        self._existing_ids(mock_client, [7, 9])
+
+        currency_repo.replace_positions([_lot("AAPL")], as_of=_IMPORTED_AT)
+
+        mock_client.table.return_value.delete.return_value.in_.assert_called_once_with(
+            "id", [7, 9]
+        )
+
+    def test_empty_table_needs_no_delete(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        self._existing_ids(mock_client, [])
+
+        currency_repo.replace_positions([_lot("AAPL")], as_of=_IMPORTED_AT)
+
+        mock_client.table.return_value.delete.assert_not_called()
+
+    def test_insert_error_propagates_and_keeps_the_old_rows(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        self._existing_ids(mock_client, [7])
+        table = mock_client.table.return_value
+        table.insert.return_value.execute.side_effect = Exception("PGRST204")
+
+        with pytest.raises(Exception, match="PGRST204"):
+            currency_repo.replace_positions([_lot("AAPL")], as_of=_IMPORTED_AT)
+
+        table.delete.assert_not_called()
+
+
+class TestCurrentPositions:
+    def test_reads_the_same_rows_as_the_report(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "order"],
+            [{**_row(symbol="SAP.DE"), "currency": "EUR", "purchase_date": "2025-03-01"}],
+        )
+
+        assert [(p.symbol, p.currency) for p in currency_repo.current_positions()] == [
+            ("SAP.DE", "EUR")
+        ]
+
+    def test_query_error_is_raised_not_hidden_as_an_empty_table(
+        self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock
+    ) -> None:
+        # Dry-run importu na pustej liście pokazałby „wszystko nowe” — fałsz.
+        mock_client.table.side_effect = Exception("relation does not exist")
+
+        with pytest.raises(Exception, match="relation"):
+            currency_repo.current_positions()

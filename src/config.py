@@ -82,6 +82,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "settled_at_windows_enabled",
     "track_record_days",
     "portfolio_positions_enabled",
+    # PORT-18: waluta i data zakupu pozycji (odczyt + zapis importu) — tylko raport.
+    "positions_currency_enabled",
     # Flagi samego zapisu i publikacji.
     "receipts_enabled",
     "feature_set_version_enabled",
@@ -354,6 +356,12 @@ class Settings(BaseSettings):
     # Nazwa CELOWO nie `portfolio_enabled` — kolidowałaby z `portfolio_var_enabled`
     # i z sekcją watchlisty. Off → Null adapter → dotychczasowe równe wagi.
     portfolio_positions_enabled: bool = False
+    # PORT-18: kolumny `positions.currency` i `purchase_date` (migracja 035) —
+    # adapter czyta z nich walutę i PRAWDZIWĄ datę zakupu (zamiast `as_of`),
+    # a import CSV (`main_tools.py import-positions --apply`) je zapisuje. Off:
+    # nowy klucz w zapisie przed migracją → PGRST204; odczyt zostaje przy USD
+    # i dotychczasowym mapowaniu.
+    positions_currency_enabled: bool = False
     # #17: niedzielna retrospektywa narracyjna (Slow Loop). JEDYNA pozycja
     # z niezerowym kosztem FinOps: DOKŁADNIE 1 wywołanie LLM tygodniowo
     # (nie per symbol, nie per cykl). Poniżej 5 zamkniętych predykcji mail

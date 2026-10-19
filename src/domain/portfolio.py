@@ -13,6 +13,9 @@ miał po 2.3% w 43 tickerach. Ten agregat liczy prawdę:
     symbol→klaster; korelacji NIE liczymy tutaj.
   - `change_since()` (PORT-06) — zmiana wartości portfela między dwoma zestawami
     cen (poprzedni cykl → bieżący) z top kontrybutorami.
+  - `market_value_pln()` (PORT-18) — wartość w PLN kursem waluty KAŻDEJ pozycji
+    (pozycja EUR kursem EUR/PLN, nie USD/PLN); pozycja bez kursu swojej waluty
+    jest wymieniona, a nie wyceniona cudzym kursem.
 
 Osobno żyje reguła świeżości: ręcznie aktualizowana tabela pozycji potrafi
 się zestarzeć, a stęchły portfel daje FAŁSZYWY P/L — gorszy niż brak sekcji.
@@ -41,6 +44,11 @@ _SECONDS_PER_DAY = 86_400.0
 # PORT-06: ilu kontrybutorów zmiany portfela pokazuje raport.
 TOP_CHANGE_CONTRIBUTORS = 3
 
+# PORT-18: waluta kwot „zł” w raporcie i waluta pozycji, gdy źródło jej nie podaje
+# (tabela `positions` przed migracją 035 nie ma kolumny `currency`).
+HOME_CURRENCY = "PLN"
+DEFAULT_POSITION_CURRENCY = "USD"
+
 
 def _require_finite(name: str, value: Decimal) -> None:
     """Odrzuca NaN/Inf, które cicho zatruwają porównania i sumy w domenie."""
@@ -48,23 +56,42 @@ def _require_finite(name: str, value: Decimal) -> None:
         raise ValueError(f"{name} must be a finite number (got {value})")
 
 
+def is_iso_currency(code: str) -> bool:
+    """Czy `code` ma format kodu ISO 4217: trzy wielkie litery ASCII."""
+    return len(code) == 3 and code.isascii() and code.isalpha() and code.isupper()
+
+
+def pln_rate(currency: str, rates: Mapping[str, Decimal]) -> Decimal | None:
+    """PORT-18: kurs PLN za 1 jednostkę `currency` — PLN to 1, inna waluta
+    z mapy `rates` albo None (nigdy kurs innej waluty w zastępstwie)."""
+    if currency == HOME_CURRENCY:
+        return Decimal("1")
+    return rates.get(currency)
+
+
 @dataclass(frozen=True)
 class Position:
     """Pojedyncza pozycja (lot) w portfelu.
 
     `quantity` — liczba jednostek (musi być dodatnia; short poza zakresem
-    MVP retail). `purchase_price` — cena zakupu za jednostkę (nieujemna).
-    `purchase_date` — data nabycia (do FIFO/podatków w przyszłości).
+    MVP retail). `purchase_price` — cena zakupu za jednostkę (nieujemna),
+    w walucie `currency`. `purchase_date` — prawdziwa data nabycia lotu
+    (PORT-18); None = nieznana — wtedy kurs z dnia zakupu też jest nieznany,
+    a nie przybliżany datą aktualizacji tabeli. `currency` — waluta notowania
+    (kod ISO 4217); ceny zakupu i bieżąca są w tej walucie.
     """
 
     symbol: str
     quantity: Decimal
     purchase_price: Decimal
-    purchase_date: date
+    purchase_date: date | None = None
+    currency: str = DEFAULT_POSITION_CURRENCY
 
     def __post_init__(self) -> None:
         _require_finite("quantity", self.quantity)
         _require_finite("purchase_price", self.purchase_price)
+        if not is_iso_currency(self.currency):
+            raise ValueError(f"currency must be an ISO 4217 code (got {self.currency!r})")
         if self.quantity <= 0:
             raise ValueError(f"quantity must be positive (got {self.quantity})")
         if self.purchase_price < 0:
@@ -101,6 +128,21 @@ class PositionPnL:
     market_value: Decimal
     unrealized_pnl: Decimal
     return_pct: Decimal | None
+    # PORT-18: waluta, w której są ceny i kwoty tego wiersza.
+    currency: str = DEFAULT_POSITION_CURRENCY
+
+
+@dataclass(frozen=True)
+class PlnValuation:
+    """PORT-18: wartość rynkowa w PLN kursem waluty każdej pozycji.
+
+    `value` sumuje wycenione pozycje z kursem swojej waluty. `unrated_symbols`
+    — wycenione pozycje bez kursu swojej waluty (posortowane, bez duplikatów):
+    nie wchodzą do sumy, bo cudzy kurs dałby fałszywą kwotę.
+    """
+
+    value: Decimal
+    unrated_symbols: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -303,6 +345,7 @@ class Portfolio:
                     market_value=value,
                     unrealized_pnl=pnl,
                     return_pct=(pnl / cost) if cost != 0 else None,
+                    currency=pos.currency,
                 )
             )
             total_cost += cost
@@ -315,6 +358,29 @@ class Portfolio:
             total_unrealized_pnl=total_pnl,
             total_return_pct=(total_pnl / total_cost) if total_cost != 0 else None,
         )
+
+    def market_value_pln(
+        self,
+        current_prices: Mapping[str, Decimal],
+        rates: Mapping[str, Decimal],
+    ) -> PlnValuation:
+        """PORT-18: wartość wycenionych pozycji w PLN kursem ich waluty.
+
+        `rates` — kurs PLN za 1 jednostkę waluty (np. {"USD": 4.00, "EUR": 4.30});
+        PLN nie potrzebuje kursu. Pozycja bez ceny wypada (jak w `weights`),
+        pozycja bez kursu swojej waluty trafia do `unrated_symbols`."""
+        value = Decimal("0")
+        unrated: set[str] = set()
+        for pos in self.positions:
+            price = current_prices.get(pos.symbol)
+            if price is None:
+                continue
+            rate = pln_rate(pos.currency, rates)
+            if rate is None:
+                unrated.add(pos.symbol)
+                continue
+            value += pos.market_value(price) * rate
+        return PlnValuation(value=value, unrated_symbols=tuple(sorted(unrated)))
 
     def change_since(
         self,

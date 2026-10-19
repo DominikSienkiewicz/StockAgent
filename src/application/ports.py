@@ -572,6 +572,20 @@ class PortfolioPositionsPort(ABC):
         brak sekcji, więc świeżość jest wymaganiem, nie ozdobnikiem."""
 
 
+class PositionsImportPort(ABC):
+    """PORT-18 — zapis tabeli `positions` z importu CSV (`main_tools.py
+    import-positions`). W przeciwieństwie do odczytu dla raportu jest ŚCISŁY:
+    błąd to wyjątek, bo dry-run na pustej liście pokazałby „wszystko nowe”."""
+
+    @abstractmethod
+    def current_positions(self) -> list[Position]:
+        """Bieżące loty z tabeli (te same, które czyta raport)."""
+
+    @abstractmethod
+    def replace_positions(self, positions: Sequence[Position], as_of: datetime) -> None:
+        """Zastępuje całą zawartość tabeli podanymi lotami z jednym `as_of`."""
+
+
 class AttestationPublisherPort(ABC):
     """#16 — publikacja commitmentów i revealów (append-only JSONL).
 

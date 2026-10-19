@@ -56,6 +56,7 @@ MIGRATION_FILES = [
     "032_move_interval.sql",
     "033_regime_history.sql",
     "034_gate_delta.sql",
+    "035_positions_currency.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -925,6 +926,31 @@ class TestMigrations:
             )
             assert cur.fetchone()[0] == pytest.approx(-0.0312345)
 
+    # -- Migracja 035: waluta i data zakupu pozycji (PORT-18) ------------------
+
+    def test_positions_have_an_iso_currency_and_an_optional_purchase_date(
+        self, pg_conn
+    ) -> None:
+        """Wiersz bez waluty to USD, bez daty zakupu — NULL; waluta spoza ISO odpada."""
+        assert {"currency", "purchase_date"} <= _columns(pg_conn, "positions")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO positions (symbol, quantity, avg_cost) "
+                "VALUES ('CUR_DEFAULT', 1, 10) RETURNING currency, purchase_date"
+            )
+            assert cur.fetchone() == ("USD", None)
+            cur.execute(
+                "INSERT INTO positions (symbol, quantity, avg_cost, currency, purchase_date) "
+                "VALUES ('CUR_SET', 1, 10, 'EUR', '2025-03-01') "
+                "RETURNING currency, purchase_date::TEXT"
+            )
+            assert cur.fetchone() == ("EUR", "2025-03-01")
+            with pytest.raises(psycopg2.errors.CheckViolation):
+                cur.execute(
+                    "INSERT INTO positions (symbol, quantity, avg_cost, currency) "
+                    "VALUES ('CUR_BAD', 1, 10, 'usd')"
+                )
+
 
 @pytest.fixture
 def fresh_pg():
@@ -1166,6 +1192,56 @@ class TestMigration034BackfillsGateDelta:
             cur.execute("UPDATE prediction_logs SET gate_delta = 0.5 WHERE symbol = 'GB_PREV'")
             cur.execute(migration)
             assert self._gate_deltas(cur)["GB_PREV"] == pytest.approx(0.5)
+
+
+@pytest.mark.containers
+class TestMigration035BackfillsPositionCurrency:
+    """PORT-18: waluta istniejących pozycji z sufiksu tickera — .DE/.AS/.PA/.MI/.MC
+    → EUR, .L → GBP (bez przeliczania GBX), reszta → USD. Data zakupu zostaje NULL,
+    bo `as_of` to data aktualizacji tabeli, nie zakupu."""
+
+    def _apply_up_to_034(self, conn: psycopg2.extensions.connection) -> None:
+        idx = MIGRATION_FILES.index("035_positions_currency.sql")
+        with conn.cursor() as cur:
+            for filename in MIGRATION_FILES[:idx]:
+                cur.execute((MIGRATIONS_DIR / filename).read_text())
+
+    def _currencies(self, cur: psycopg2.extensions.cursor) -> dict[str, str]:
+        cur.execute("SELECT symbol, currency FROM positions")
+        return dict(cur.fetchall())
+
+    def test_035_derives_the_currency_from_the_ticker_suffix(self, fresh_pg) -> None:
+        conn = fresh_pg
+        self._apply_up_to_034(conn)
+        migration = (MIGRATIONS_DIR / "035_positions_currency.sql").read_text()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO positions (symbol, quantity, avg_cost) VALUES "
+                "('SAP.DE', 1, 1), ('ASML.AS', 1, 1), ('AIR.PA', 1, 1), "
+                "('ENI.MI', 1, 1), ('ITX.MC', 1, 1), ('VUSA.L', 1, 1), "
+                "('xdwd.de', 1, 1), ('AAPL', 1, 1), ('BRK.B', 1, 1)"
+            )
+
+            cur.execute(migration)
+
+            assert self._currencies(cur) == {
+                "SAP.DE": "EUR",
+                "ASML.AS": "EUR",
+                "AIR.PA": "EUR",
+                "ENI.MI": "EUR",
+                "ITX.MC": "EUR",
+                "VUSA.L": "GBP",
+                "xdwd.de": "EUR",
+                "AAPL": "USD",
+                "BRK.B": "USD",
+            }
+            cur.execute("SELECT count(*) FROM positions WHERE purchase_date IS NOT NULL")
+            assert cur.fetchone() == (0,)
+
+            # Idempotencja: ponowny przebieg nie nadpisuje waluty ustawionej importem.
+            cur.execute("UPDATE positions SET currency = 'USD' WHERE symbol = 'VUSA.L'")
+            cur.execute(migration)
+            assert self._currencies(cur)["VUSA.L"] == "USD"
 
 
 def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:

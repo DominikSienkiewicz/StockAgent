@@ -6,9 +6,16 @@ czystą logikę. Każde narzędzie to podkomenda argparse.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
+
 import pytest
 
 import main_tools
+from src.domain.portfolio import Position
 
 
 def test_main_tools_requires_a_subcommand(capsys: pytest.CaptureFixture[str]) -> None:
@@ -25,3 +32,108 @@ def test_main_tools_help_names_the_composition_root(capsys: pytest.CaptureFixtur
 
     assert exit_info.value.code == 0
     assert "main_tools.py" in capsys.readouterr().out
+
+
+# --- PORT-18: import-positions ------------------------------------------------
+
+_CSV = (
+    "symbol,quantity,avg_cost,currency,purchase_date\n"
+    "NVDA,10,118.50,USD,2025-03-01\n"
+    "SAP.DE,4,182.10,EUR,\n"
+)
+_NOW = datetime(2026, 10, 19, 8, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def positions_adapter(mocker: Any) -> MagicMock:
+    mocker.patch("main_tools._now", return_value=_NOW)
+    settings = mocker.patch("src.config.Settings.from_env").return_value
+    settings.positions_currency_enabled = True
+    adapter_cls = mocker.patch(
+        "src.infrastructure.adapters.positions_repo.SupabasePositionsAdapter"
+    )
+    adapter_cls.return_value.current_positions.return_value = [
+        Position(symbol="NVDA", quantity=Decimal("8"), purchase_price=Decimal("118"))
+    ]
+    return adapter_cls
+
+
+def _csv_file(tmp_path: Path, text: str = _CSV) -> str:
+    path = tmp_path / "positions.csv"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_import_positions_is_a_dry_run_without_apply(
+    positions_adapter: MagicMock, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main_tools.main(["import-positions", "--csv", _csv_file(tmp_path)])
+
+    assert code == 0
+    positions_adapter.return_value.replace_positions.assert_not_called()
+    out = capsys.readouterr().out
+    assert "+ NVDA       10 × 118.5 USD, zakup 2025-03-01" in out
+    assert "- NVDA       8 × 118 USD, zakup nieznany" in out
+    assert "dry-run" in out
+
+
+def test_import_positions_composes_the_adapter_from_settings(
+    positions_adapter: MagicMock, tmp_path: Path
+) -> None:
+    main_tools.main(["import-positions", "--csv", _csv_file(tmp_path)])
+
+    positions_adapter.assert_called_once()
+    assert positions_adapter.call_args.kwargs["currency_columns"] is True
+
+
+def test_import_positions_apply_replaces_the_table_with_as_of_now(
+    positions_adapter: MagicMock, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main_tools.main(["import-positions", "--csv", _csv_file(tmp_path), "--apply"])
+
+    assert code == 0
+    replace = positions_adapter.return_value.replace_positions
+    replace.assert_called_once()
+    lots, as_of = replace.call_args.args[0], replace.call_args.kwargs["as_of"]
+    assert [(lot.symbol, lot.currency, lot.purchase_date) for lot in lots] == [
+        ("NVDA", "USD", date(2025, 3, 1)),
+        ("SAP.DE", "EUR", None),
+    ]
+    assert as_of == _NOW
+    assert "zapisano 2 lot(ów)" in capsys.readouterr().out
+
+
+def test_import_positions_apply_refuses_what_the_schema_cannot_store(
+    positions_adapter: MagicMock, mocker: Any, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    mocker.patch("src.config.Settings.from_env").return_value.positions_currency_enabled = False
+
+    code = main_tools.main(["import-positions", "--csv", _csv_file(tmp_path), "--apply"])
+
+    assert code == 1
+    positions_adapter.return_value.replace_positions.assert_not_called()
+    assert "migracji 035" in capsys.readouterr().err
+
+
+def test_import_positions_rejects_an_invalid_file_before_touching_the_database(
+    positions_adapter: MagicMock, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = _csv_file(tmp_path, "symbol,quantity,avg_cost,currency\nNVDA,-1,118,usd1\n")
+
+    code = main_tools.main(["import-positions", "--csv", bad, "--apply"])
+
+    assert code == 1
+    positions_adapter.assert_not_called()
+    err = capsys.readouterr().err
+    assert "linia 2: quantity -1" in err
+    assert "linia 2: currency USD1" in err
+
+
+def test_import_positions_reports_a_missing_file(
+    positions_adapter: MagicMock, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main_tools.main(["import-positions", "--csv", str(tmp_path / "missing.csv")])
+
+    assert code == 1
+    assert "missing.csv" in capsys.readouterr().err
