@@ -271,3 +271,18 @@ def test_alert_carries_the_detection_time_in_the_display_timezone(settings) -> N
     body = push.send_report.call_args.kwargs["plain_text"]
     assert "pt 16.10 07:30" in body
     assert "05:30" not in body
+
+
+def test_alert_writes_the_move_with_a_polish_decimal_comma(settings) -> None:
+    # MAIL-58 etap 1b: push szoku to temat i treść dla czytelnika — „-5,2%”, nie „-5.2%”.
+    moment = datetime(2026, 10, 16, 5, 30, tzinfo=UTC)
+    repo = _repo("100", age_hours=1.0, now=moment)
+    push = MagicMock()
+
+    main_watch.run_watch(
+        settings, repository=repo, market=_market("94.8"), push_notifier=push, now=moment
+    )
+
+    sent = push.send_report.call_args.kwargs
+    assert sent["subject"] == "📉 Szok rynkowy: AAPL -5,2%"
+    assert sent["plain_text"].startswith("📉 AAPL -5,2% od ostatniego snapshotu ceny")

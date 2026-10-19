@@ -36,6 +36,7 @@ from src.application.ports import MarketDataPort, ReportNotifierPort, Repository
 from src.application.report_formatting import format_local
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
+from src.domain.number_format import format_pct_pl
 from src.domain.shock import (
     SNAPSHOT_MAX_AGE_HOURS,
     ShockAlert,
@@ -51,13 +52,14 @@ logger = logging.getLogger(__name__)
 def _render_alert(
     alert: ShockAlert, *, detected_at: datetime, display_timezone: str
 ) -> tuple[str, str]:
-    """Treść pusha — krótka i jednoznaczna (temat, ciało). Po polsku. Chwila
-    wykrycia w strefie odbiorcy (MAIL-14) — logi watcha zostają w UTC."""
+    """Treść pusha — krótka i jednoznaczna (temat, ciało). Po polsku, także liczby
+    („-5,2%”, MAIL-58). Chwila wykrycia w strefie odbiorcy (MAIL-14) — logi watcha
+    zostają w UTC."""
     arrow = "📉" if alert.direction.name == "DOWN" else "📈"
-    pct = alert.delta.fraction * 100
-    subject = f"{arrow} Szok rynkowy: {alert.symbol} {pct:+.1f}%"
+    move = format_pct_pl(alert.delta.percent, signed=True)
+    subject = f"{arrow} Szok rynkowy: {alert.symbol} {move}"
     body = (
-        f"{arrow} {alert.symbol} {pct:+.1f}% od ostatniego snapshotu ceny "
+        f"{arrow} {alert.symbol} {move} od ostatniego snapshotu ceny "
         f"(stan na {format_local(detected_at, display_timezone)}).\n"
         "Alert poza cyklem — pełna analiza w najbliższym dziennym digeście."
     )
