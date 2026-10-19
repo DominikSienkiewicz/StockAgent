@@ -46,6 +46,7 @@ MIGRATION_FILES = [
     "023_positions.sql",
     "024_attestation.sql",
     "025_implied_edge.sql",
+    "026_feature_store_clean_rows.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -591,6 +592,96 @@ class TestMigrations:
         assert "edge_sigma" in cols, (
             "Brak kolumny edge_sigma w prediction_logs (migracja 025)"
         )
+
+    # -- Migracja 026: ml_feature_store bez atrap (ML-12, EXP-07) -------------
+
+    @staticmethod
+    def _settled_rows(
+        cur: psycopg2.extensions.cursor,
+        symbol: str,
+        flags_json: list[str | None],
+    ) -> list[int]:
+        """Rozliczone predykcje `symbol` w odstępach dobowych (cena 100 + dzień),
+        z podanymi flagami jakości jako JSON (None = kolumna NULL). Zwraca id
+        w kolejności czasu."""
+        cur.execute("DELETE FROM prediction_logs WHERE symbol = %s", (symbol,))
+        ids: list[int] = []
+        for day, flags in enumerate(flags_json, start=1):
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, actual_price_after_12h, "
+                " data_quality_flags) "
+                "VALUES (%s, %s, %s, %s, %s::jsonb) RETURNING id",
+                (
+                    symbol,
+                    f"2026-07-{day:02d}T10:00:00+00:00",
+                    100.0 + day,
+                    101.0 + day,
+                    flags,
+                ),
+            )
+            ids.append(cur.fetchone()[0])
+        return ids
+
+    def test_feature_store_excludes_llm_failed_and_av_exhausted_rows(
+        self, pg_conn
+    ) -> None:
+        """Atrapa po awarii LLM i wyczerpane klucze AV nie trenują modelu, a
+        `price_delta_no_prior_prediction`, wiersz czysty i wiersz z flagami NULL
+        zostają (NULL nie może po cichu wypaść przez `NOT NULL`)."""
+        with pg_conn.cursor() as cur:
+            clean, llm_failed, av_exhausted, no_prior, null_flags = self._settled_rows(
+                cur,
+                "QF_EXCL",
+                [
+                    "[]",
+                    '["llm_analysis_failed"]',
+                    '["news_volume_24h_missing", "av_keys_exhausted"]',
+                    '["price_delta_no_prior_prediction"]',
+                    None,
+                ],
+            )
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute(
+                "SELECT id FROM ml_feature_store WHERE symbol = 'QF_EXCL'"
+            )
+            in_view = {row[0] for row in cur.fetchall()}
+
+        assert in_view == {clean, no_prior, null_flags}
+        assert not in_view & {llm_failed, av_exhausted}
+
+    def test_feature_store_lag_runs_over_the_full_sequence(self, pg_conn) -> None:
+        """Filtr jest PO LAG: wiersz po atrapie liczy `price_prev_12h` od ceny
+        atrapy — tak jak inference (`get_last_prediction_price`), która flag
+        nie czyta. Filtr w CTE dałby train/serve skew."""
+        with pg_conn.cursor() as cur:
+            _, _, after = self._settled_rows(
+                cur, "QF_LAG", ["[]", '["llm_analysis_failed"]', "[]"]
+            )
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute(
+                "SELECT price_prev_12h, price_prev_24h FROM ml_feature_store "
+                "WHERE id = %s",
+                (after,),
+            )
+            row = cur.fetchone()
+
+        assert row is not None
+        # Ceny: dzień 1 → 101, dzień 2 (atrapa) → 102, dzień 3 → 103.
+        assert float(row[0]) == pytest.approx(102.0)
+        assert float(row[1]) == pytest.approx(101.0)
+
+    def test_feature_store_rebuild_keeps_indexes_for_concurrent_refresh(
+        self, pg_conn
+    ) -> None:
+        """DROP MATERIALIZED VIEW kasuje indeksy; bez unikalnego po `id`
+        `refresh_ml_feature_store` (REFRESH ... CONCURRENTLY) pada w Slow Loopie."""
+        assert {
+            "idx_ml_feature_store_id",
+            "idx_ml_feature_store_symbol_timestamp",
+        } <= _indexes(pg_conn, "ml_feature_store")
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT refresh_ml_feature_store()")
 
 
 @pytest.fixture
