@@ -476,12 +476,16 @@ class SupabaseRepository(RepositoryPort):
         tylko na żądanie: każde istnieje dopiero po swojej migracji. Nieznana
         nazwa → ValueError; brak kolumny w bazie → `MissingColumnError`.
 
+        Atrapy po awarii LLM (`llm_analysis_failed`) są pomijane tym samym
+        filtrem co mail i Track Record — to nie są predykcje.
+
         Metoda concrete-only (nie część `RepositoryPort`) — to narzędzie
         offline-analizy, nie część runtime'owego kontraktu use case'ów."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
         columns = (
             "predicted_trend, is_trend_correct, price_at_prediction, "
-            "predicted_target_price, actual_price_after_12h, timestamp"
+            "predicted_target_price, actual_price_after_12h, timestamp, "
+            "data_quality_flags"
         )
         if with_recipe:
             columns += ", recipe_version"
@@ -500,7 +504,7 @@ class SupabaseRepository(RepositoryPort):
             .order("timestamp", desc=True)
         )
         try:
-            return _paginate(query)
+            return _without_llm_fallback(_paginate(query))
         except APIError as exc:
             missing = _missing_eval_column(exc, extra_fields)
             if missing is None:

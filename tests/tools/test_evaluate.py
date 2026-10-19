@@ -600,3 +600,45 @@ class TestMomentumEcho:
         assert "kolumna gate_delta niedostępna — uruchom migrację 034" in out
         assert "Próbek (zamkniętych predykcji): 1" in out
         assert "Echo momentum" not in out
+
+
+class TestLlmFallbackRowsAreSkipped:
+    """Atrapa SIDEWAYS po awarii LLM (`llm_analysis_failed`) nie wchodzi do
+    wyniku nagłówkowego, segmentów ani mianownika testu echa — odczyt z prawdziwego
+    repozytorium (mock wyłącznie klienta Supabase), jak mail i Track Record."""
+
+    def _rows_from_repo(self, mocker) -> list[dict]:
+        from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+        create_client = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+        client = create_client.return_value
+        order = (
+            client.table.return_value.select.return_value.gte.return_value
+            .not_.is_.return_value.order.return_value
+        )
+        order.range.return_value.execute.return_value.data = [
+            {**_gated("BULLISH", 0.030, 101, day=0), "council_recommendation": "BUY",
+             "data_quality_flags": []},
+            {**_gated("SIDEWAYS", 0.030, 101, day=1), "council_recommendation": "HOLD",
+             "data_quality_flags": ["llm_analysis_failed"]},
+        ]
+        repo = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
+        return repo.get_resolved_predictions_for_eval(
+            30, extra_fields=("council_recommendation", "gate_delta")
+        )
+
+    def test_fallback_row_is_not_in_the_echo_denominator(self, mocker):
+        from src.tools.evaluate import summarize_echo
+
+        echo = summarize_echo(self._rows_from_repo(mocker))
+
+        assert echo.with_delta == 1
+        assert echo.echo_rate == pytest.approx(1.0)
+
+    def test_fallback_row_is_not_in_the_headline_or_a_segment(self, mocker):
+        report = summarize_evaluation(self._rows_from_repo(mocker), segment_by="component")
+
+        assert report.sample_count == 1
+        assert report.sideways_count == 0
+        llm = {s.key: s for s in report.segments["component"]}["llm"]
+        assert (llm.n, llm.evidence.hit_rate.sideways) == (1, 0)

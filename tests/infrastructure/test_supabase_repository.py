@@ -2369,3 +2369,33 @@ class TestResolvedForEvalGateDelta:
 
         with pytest.raises(APIError):
             repo.get_resolved_predictions_for_eval(30, extra_fields=("gate_delta",))
+
+
+class TestResolvedForEvalSkipsLlmFallback:
+    """Atrapa po awarii LLM („SIDEWAYS 50%”, flaga `llm_analysis_failed`) nie jest
+    predykcją — ewaluacja pomija ją tym samym filtrem co mail i Track Record."""
+
+    def _order_builder(self, mock_client: MagicMock) -> MagicMock:
+        chain = mock_client.table.return_value
+        return chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+
+    def test_select_reads_the_quality_flags(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_paginated_response(self._order_builder(mock_client), [[]])
+
+        repo.get_resolved_predictions_for_eval(30)
+
+        assert "data_quality_flags" in mock_client.table.return_value.select.call_args.args[0]
+
+    def test_llm_fallback_rows_are_dropped(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        real = {"predicted_trend": "BULLISH", "data_quality_flags": ["av_keys_exhausted"]}
+        unflagged = {"predicted_trend": "BEARISH", "data_quality_flags": None}
+        fallback = {"predicted_trend": "SIDEWAYS", "data_quality_flags": ["llm_analysis_failed"]}
+        _set_paginated_response(self._order_builder(mock_client), [[real, fallback, unflagged]])
+
+        out = repo.get_resolved_predictions_for_eval(30)
+
+        assert out == [real, unflagged]

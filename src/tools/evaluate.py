@@ -2,7 +2,8 @@
 
 Mierzy OFFLINE, czy agent faktycznie bije naiwny baseline — zanim zmiana
 (próg, model rady, hiperparametry) trafi na produkcję. Read-only, bez kosztów
-API: czyta tylko zamknięte (ocenione) predykcje z Supabase.
+API: czyta tylko zamknięte (ocenione) predykcje z Supabase. Atrapy po awarii LLM
+(`llm_analysis_failed`) odsiewa repozytorium, tak jak dla maila i Track Record.
 
 Metryki:
     - hit_rate     — blended trafność (udział is_trend_correct=True po WSZYSTKICH
