@@ -3542,3 +3542,101 @@ class TestBlindCouncilArm:
 
         assert meters[0] == meters[1]
         assert meters[0]["council_llm"] == 1
+
+
+class TestNoMemoryArm:
+    """EXP-03: ramię `no_memory` — prompt predykcji bez `reflection_context`
+    i `similar_context`. Ramię nie woła embeddingów (ani do RAG, ani do zapisu),
+    a rozliczenie poprzedniej predykcji w reflect biegnie jak zawsze."""
+
+    def _run(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, arms: dict[str, str] | None,
+    ) -> tuple[Mock, AgentGraphDeps]:
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = [
+            {
+                "news_summary": "Fed hawkish surprise spooks tech",
+                "predicted_trend": "BEARISH",
+                "is_trend_correct": True,
+                "correction_insights": "reaguj na jastrzębi Fed",
+            }
+        ]
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        deps = AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        )
+        state = _initial_state("100.0")
+        if arms is not None:
+            state["experiment_arms"] = arms
+        create_agent_graph(deps).compile().invoke(state)
+        return embedding_port, deps
+
+    def test_no_memory_arm_prompt_has_no_reflection_or_analogs(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms={"EXP-03": "no_memory"},
+        )
+
+        prompt = llm_port.analyze.call_args_list[0].args[0]
+        assert "reflection_context" not in prompt
+        assert "Zignorowałem szerszy kontekst makro." not in prompt
+        assert "similar_past_situations" not in prompt
+        assert "Fed hawkish surprise spooks tech" not in prompt
+        # Rozliczenie poprzedniej predykcji nie zależy od ramienia.
+        repository_port.update_prediction_accuracy.assert_called_once()
+
+    def test_no_memory_arm_calls_no_embedding_and_saves_no_vector(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        embedding_port, _ = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms={"EXP-03": "no_memory"},
+        )
+
+        embedding_port.embed.assert_not_called()
+        repository_port.find_similar_predictions.assert_not_called()
+        assert "embedding" not in repository_port.save_prediction.call_args.args[0]
+
+    @pytest.mark.parametrize("arms", [None, {"EXP-03": "memory"}])
+    def test_memory_arm_and_no_experiment_keep_lessons_and_analogs(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port, arms,
+    ):
+        embedding_port, _ = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=arms,
+        )
+
+        prompt = llm_port.analyze.call_args_list[0].args[0]
+        assert "Zignorowałem szerszy kontekst makro." in prompt
+        assert "Fed hawkish surprise spooks tech" in prompt
+        embedding_port.embed.assert_called_once()
+
+    def test_no_memory_arm_adds_no_paid_calls(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        meters = []
+        embeds = []
+        for arms in ({"EXP-03": "memory"}, {"EXP-03": "no_memory"}):
+            for port in (market_port, sentiment_port, news_port, repository_port, llm_port):
+                port.reset_mock()
+            embedding_port, deps = self._run(
+                market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+                arms=arms,
+            )
+            meters.append(dict(deps.paid_call_meter))
+            embeds.append(embedding_port.embed.call_count)
+
+        assert meters[0] == meters[1]
+        assert embeds == [1, 0]

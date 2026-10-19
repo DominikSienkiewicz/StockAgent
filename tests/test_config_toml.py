@@ -232,3 +232,12 @@ def test_real_config_toml_defines_the_blind_council_experiment_inactive() -> Non
     assert experiment["arms"] == ["sighted", "blind"]
     assert experiment["primary_metric"] == "council_hit_rate"
     assert experiment["enabled"] is False
+
+
+def test_real_config_toml_defines_the_memory_experiment_inactive() -> None:
+    """EXP-03: zdefiniowany, ale nieaktywny do wznowienia Fast Loopa."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    experiment = data["experiments"]["EXP-03"]
+    assert experiment["arms"] == ["memory", "no_memory"]
+    assert experiment["primary_metric"] == "hit_rate"
+    assert experiment["enabled"] is False

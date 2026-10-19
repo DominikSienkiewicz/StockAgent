@@ -43,7 +43,12 @@ from src.domain.attestation import commit as attestation_commit
 from src.domain.attestation import new_salt
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
-from src.domain.experiment import ARM_BLIND_COUNCIL, Experiment, has_treatment
+from src.domain.experiment import (
+    ARM_BLIND_COUNCIL,
+    ARM_NO_MEMORY,
+    Experiment,
+    has_treatment,
+)
 from src.domain.feature_attribution import FeatureContribution, top_contributions
 from src.domain.implied_edge import (
     ImpliedEdge,
@@ -1119,10 +1124,16 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     sentiment = state.get("sentiment") or {}
     news = state.get("news", [])
     news_summary = _summarize_news(news)
+    # EXP-03: ramię `no_memory` — bez lekcji z reflect i bez RAG (zero embeddingów).
+    memory = _uses_memory(state)
 
-    news_embedding, similar_context, similar_precedents = _compute_rag_context(
-        deps, state, news_summary
-    )
+    news_embedding: list[float] | None = None
+    similar_context = ""
+    similar_precedents: list[dict[str, Any]] = []
+    if memory:
+        news_embedding, similar_context, similar_precedents = _compute_rag_context(
+            deps, state, news_summary
+        )
 
     # 1. LLM — analiza jakościowa z cross-validation pre-computed AV sentymentu
     prompt = get_prediction_prompt(
@@ -1137,7 +1148,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
             "news_summary": news_summary,
             "news_titles": _news_titles(news, _NEWS_TITLES_LIMIT),
         },
-        reflection_context=state.get("reflection_context", ""),
+        reflection_context=state.get("reflection_context", "") if memory else "",
         similar_context=similar_context,
         # #7 reżim + #5 contagion (oba z bieżącego cyklu, przekazane w state).
         regime_context=state.get("regime_context", ""),
@@ -1146,6 +1157,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         ),
         # #14: pusty string przy braku fuzji → blok nie wchodzi do promptu.
         alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
+        include_memory=memory,
     )
     raw_analysis, llm_failed = _run_llm_analysis(deps, state, prompt, symbol)
     # ML-07: kanonizacja PRZED pierwszym odczytem — rada, zapis i raport
@@ -1320,13 +1332,21 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
+def _uses_memory(state: AgentState) -> bool:
+    """EXP-03: czy prompt predykcji dostaje pamięć (lekcje z reflect i analogi
+    RAG). Fałsz tylko w ramieniu `no_memory` aktywnego eksperymentu."""
+    return not has_treatment(state.get("experiment_arms") or {}, ARM_NO_MEMORY)
+
+
 def _resolve_news_vector(
     deps: AgentGraphDeps, state: AgentState, news_summary: str
 ) -> list[float] | None:
     """Wektor newsów do zapisu w pgvector. predict_node zwykle już go policzył
     (RAG) — reużywamy; fallback: embedujemy tu, jeśli predict go nie dostarczył.
-    Graceful: brak portu / pusty tekst / błąd API → None (zapis bez wektora)."""
-    if deps.embedding_port is None or not news_summary:
+    Graceful: brak portu / pusty tekst / błąd API → None (zapis bez wektora).
+    EXP-03: ramię `no_memory` nie woła embeddingów wcale — predykcja zapisuje się
+    bez wektora, więc nie trafi później do RAG jako analog."""
+    if deps.embedding_port is None or not news_summary or not _uses_memory(state):
         return None
     vector = state.get("news_embedding")
     if vector:
