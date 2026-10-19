@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from src.application.report_formatting import build_sector_map
 from src.application.report_models import SymbolResult
 from src.application.report_suggestions import (
     SectorSuggestion,
@@ -17,6 +18,27 @@ from src.application.report_suggestions import (
     render_suggestions_html,
     render_suggestions_text,
 )
+
+# PORT-05: sektory i peerzy idą z config.toml — testy podają je jawnie, z tymi
+# samymi nazwami i peerami, które dawały dawne `SECTORS`/`PEERS` w kodzie.
+_SECTOR_MAP = build_sector_map(
+    {
+        "Big Tech": ["AAPL"],
+        "Cyberbezpieczeństwo": ["CRWD", "PANW"],
+        "Mobilność": ["UBER"],
+    },
+    etf_symbols=("VT",),
+    crypto_symbols=("BTC",),
+)
+_SECTOR_PEERS = {
+    "Big Tech": ["NFLX", "DIS"],
+    "Cyberbezpieczeństwo": ["ZS", "FTNT", "CYBR", "TENB", "QLYS"],
+    "Mobilność": ["LYFT", "RIVN", "LCID", "GM", "F"],
+}
+
+
+def _suggest(results: list[SymbolResult]) -> list[SectorSuggestion]:
+    return build_sector_suggestions(results, _SECTOR_MAP, _SECTOR_PEERS)
 
 
 def _saved(symbol: str, delta: str, sentiment: float = 0.0) -> SymbolResult:
@@ -31,7 +53,7 @@ def _saved(symbol: str, delta: str, sentiment: float = 0.0) -> SymbolResult:
 class TestBuildSectorSuggestions:
     def test_hot_sector_by_price_move_yields_peers(self) -> None:
         results = [_saved("CRWD", "0.06"), _saved("PANW", "0.042")]
-        out = build_sector_suggestions(results)
+        out = _suggest(results)
         cyber = [s for s in out if s.sector == "Cyberbezpieczeństwo"]
         assert cyber, "gorący sektor cyber powinien dać sugestię"
         sug = cyber[0]
@@ -42,37 +64,37 @@ class TestBuildSectorSuggestions:
     def test_candidates_exclude_already_monitored(self) -> None:
         # ZS to peer cyber; jeśli już monitorowany, nie może być sugerowany.
         results = [_saved("CRWD", "0.06"), _saved("ZS", "0.01")]
-        out = build_sector_suggestions(results)
+        out = _suggest(results)
         cyber = next(s for s in out if s.sector == "Cyberbezpieczeństwo")
         assert "ZS" not in cyber.candidates
 
     def test_cold_sector_is_not_suggested(self) -> None:
         # Mały ruch i neutralny sentyment → brak sugestii dla Big Tech.
         results = [_saved("AAPL", "0.004", sentiment=0.05)]
-        out = build_sector_suggestions(results)
+        out = _suggest(results)
         assert all(s.sector != "Big Tech" for s in out)
 
     def test_hot_by_sentiment_only(self) -> None:
         # Ruch ceny mały, ale silny sentyment → sektor kwalifikuje się.
         results = [_saved("CRWD", "0.005", sentiment=0.45)]
-        out = build_sector_suggestions(results)
+        out = _suggest(results)
         assert any(s.sector == "Cyberbezpieczeństwo" for s in out)
 
     def test_etf_and_crypto_never_suggested(self) -> None:
         results = [_saved("VT", "0.06"), _saved("BTC", "0.10")]
-        out = build_sector_suggestions(results)
+        out = _suggest(results)
         assert all(s.sector not in ("ETF", "Krypto") for s in out)
 
     def test_empty_results_returns_empty(self) -> None:
-        assert build_sector_suggestions([]) == []
+        assert _suggest([]) == []
 
     def test_unknown_symbol_ignored(self) -> None:
-        assert build_sector_suggestions([_saved("ZZZZ", "0.20")]) == []
+        assert _suggest([_saved("ZZZZ", "0.20")]) == []
 
     def test_sectors_capped_and_sorted_by_intensity(self) -> None:
         # Cyber mocniejszy (0.09) niż mobilność (0.04) → cyber pierwszy.
         results = [_saved("CRWD", "0.09"), _saved("UBER", "0.04")]
-        out = build_sector_suggestions(results)
+        out = _suggest(results)
         assert out[0].sector == "Cyberbezpieczeństwo"
 
 
@@ -107,7 +129,7 @@ class TestRender:
 def test_drivers_are_written_with_a_decimal_comma() -> None:
     # MAIL-58: „CRWD +6,0%, PANW +4,2%”, jak reszta maila, nie „+6.0%”.
     html = render_suggestions_html(
-        build_sector_suggestions([_saved("CRWD", "0.06"), _saved("PANW", "0.042")])
+        _suggest([_saved("CRWD", "0.06"), _saved("PANW", "0.042")])
     )
 
     assert "CRWD +6,0%, PANW +4,2%" in html

@@ -10,7 +10,7 @@ import functools
 import html
 import re
 import urllib.parse
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -474,7 +474,7 @@ def _resolved_why(p: ResolvedPrediction) -> str:
     return "Kierunek się nie potwierdził."
 
 
-def _render_resolved_item_html(p: ResolvedPrediction) -> str:
+def _render_resolved_item_html(p: ResolvedPrediction, sector_map: Mapping[str, str]) -> str:
     mark = "✅" if p.is_correct else "❌"
     color = PALETTE.positive if p.is_correct else PALETTE.negative
     verdict = "Trafiona" if p.is_correct else "Błędna"
@@ -508,7 +508,7 @@ def _render_resolved_item_html(p: ResolvedPrediction) -> str:
       <div style="margin-bottom: 8px; padding: 8px 10px; background: #fafafa;
                   border-left: 3px solid {color}; border-radius: 4px;
                   font-size: 12px;">
-        {mark} <strong>{_html(_company_label_with_sector(p.symbol))}</strong>
+        {mark} <strong>{_html(_company_label_with_sector(p.symbol, sector_map))}</strong>
         <span style="color: {color}; font-weight: 600;">· {verdict}</span>
         {reason_line}
         {move_line}
@@ -1036,17 +1036,20 @@ def _build_onboarding_blocks(
     *,
     instrument_count: int,
     portfolio_sectors: Mapping[str, int] | None,
+    sector_map: Mapping[str, str],
 ) -> tuple[str, str]:
     """#4: powitanie pierwszego cyklu jako `(html, text)`. Renderer nigdy nie
-    decyduje o tonie — dostaje gotową klasyfikację z domeny (STEADY_STATE → "")."""
+    decyduje o tonie — dostaje gotową klasyfikację z domeny (STEADY_STATE → "").
+    Kolejność sektorów: kolejność wstawienia mapy sektorów z configu."""
     maturity = cycle_maturity or CycleMaturity.STEADY_STATE
     sectors = portfolio_sectors or {}
+    order = tuple(dict.fromkeys(sector_map.values()))
     return (
         render_onboarding_html(
-            maturity, instrument_count=instrument_count, sectors=sectors
+            maturity, instrument_count=instrument_count, sectors=sectors, sector_order=order
         ),
         render_onboarding_text(
-            maturity, instrument_count=instrument_count, sectors=sectors
+            maturity, instrument_count=instrument_count, sectors=sectors, sector_order=order
         ),
     )
 
@@ -1196,6 +1199,11 @@ class ReportContext:
     # False = tekst dla starego pushu (Telegram/Slack) — bez kwot P/L.
     user_portfolio_in_text: bool = True
     portfolio_clusters: Mapping[str, str] | None = None
+    # PORT-05: symbol → etykieta sektora (sektory akcji z `sectors`, ETF, Krypto)
+    # i sektor → peerzy sekcji 💡 Warte uwagi — oba z config.toml, jedno źródło.
+    # None = brak etykiet sektorów i brak sekcji sugestii.
+    sector_map: Mapping[str, str] | None = None
+    sector_peers: Mapping[str, Sequence[str]] | None = None
     # PORT-04: ryzyko realnego portfela (VaR, obsunięcie, hedge) do sizingu.
     # Orkiestrator podaje je tylko za `portfolio_var_enabled`; bez
     # `user_portfolio` jest ignorowane (nigdy VaR na równych wagach).
@@ -1268,6 +1276,7 @@ def build_html_report(
     # kolejna gałąź do przeczytania, a te same dane trafiają do kilku sekcji.
     resolved = context.resolved_predictions or []
     alerts = context.quota_alerts or []
+    sector_map = context.sector_map or {}
     saved, ignored, errors = _partition_by_status(results)
     mood = build_portfolio_mood(results)
     session = market_status(started_at)
@@ -1333,6 +1342,7 @@ def build_html_report(
         context.cycle_maturity,
         instrument_count=len(results),
         portfolio_sectors=context.portfolio_sectors,
+        sector_map=sector_map,
     )
     # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
     council_history_html = render_council_history_html(context.council_history or [])
@@ -1413,7 +1423,7 @@ def build_html_report(
     )
     quota_html = render_quota_banner_html(alerts)
     quota_text = render_quota_banner_text(alerts)
-    suggestions = build_sector_suggestions(results)
+    suggestions = build_sector_suggestions(results, sector_map, context.sector_peers or {})
     suggestions_html = render_suggestions_html(suggestions)
     suggestions_text = render_suggestions_text(suggestions)
 
@@ -1430,6 +1440,7 @@ def build_html_report(
         portfolio_change_box=portfolio_change_box,
         settlements_unavailable=context.resolved_unavailable,
         full_detail=full_detail,
+        sector_map=sector_map,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1459,6 +1470,7 @@ def build_html_report(
         display_timezone=context.display_timezone,
         portfolio_change_line=portfolio_change_line,
         settlements_unavailable=context.resolved_unavailable,
+        sector_map=sector_map,
     )
     text = _fill_text_slots(
         text,
@@ -1659,6 +1671,8 @@ def _render_resolved_predictions_html(
     resolved_predictions: list[ResolvedPrediction],
     window: str = _RESOLVED_WINDOW_24H,
     note: str | None = None,
+    *,
+    sector_map: Mapping[str, str],
 ) -> str:
     """📊 Zamknięte predykcje z okna `window`. Bez predykcji: nagłówek z linią
     `note` (MAIL-25) albo pusty string, gdy `note` None."""
@@ -1672,7 +1686,7 @@ def _render_resolved_predictions_html(
     correct = [p for p in resolved_predictions if p.is_correct]
     wrong = [p for p in resolved_predictions if not p.is_correct]
     parts = [_section_h2(f"📊 Zamknięte predykcje ({window})")]
-    parts.extend(_render_resolved_item_html(p) for p in resolved_predictions)
+    parts.extend(_render_resolved_item_html(p, sector_map) for p in resolved_predictions)
     parts.append(
         "<div style='font-size: 11px; color: #6b7280; margin: 4px 0 16px 0;'>"
         f"Suma: {len(correct)} trafionych / {len(wrong)} błędnych · "
@@ -1911,7 +1925,7 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
             """
 
 
-def _render_reasoning_block_html(r: SymbolResult) -> str:
+def _render_reasoning_block_html(r: SymbolResult, sector_map: Mapping[str, str]) -> str:
     """Blok 'Uzasadnienia' dla jednej predykcji. Pusty string, gdy nie ma
     czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji)."""
     # Q5/Q6: blok renderujemy też, gdy są analogi (precedent receipts)
@@ -1957,7 +1971,7 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
         else ""
     )
     valuation_block = _render_valuation(r.valuation)
-    _sector = _sector_label(r.symbol)
+    _sector = _sector_label(r.symbol, sector_map)
     sector_tag = (
         f' <span style="color: #6b7280; font-weight: 500;">· {_html(_sector)}</span>'
         if _sector
@@ -1979,7 +1993,10 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
 
 
 def _render_saved_section_html(
-    saved: list[SymbolResult], full_detail: frozenset[str] | None = None
+    saved: list[SymbolResult],
+    full_detail: frozenset[str] | None = None,
+    *,
+    sector_map: Mapping[str, str],
 ) -> str:
     """🔮 Sekcja wygenerowanych predykcji: tabela + wykres prognozy +
     uzasadnienia. Pusty string, gdy w tym cyklu nic nie zapisano.
@@ -2020,7 +2037,9 @@ def _render_saved_section_html(
     def has_full_block(r: SymbolResult) -> bool:
         return full_detail is None or r.symbol in full_detail
 
-    parts.extend(_render_reasoning_block_html(r) for r in saved if has_full_block(r))
+    parts.extend(
+        _render_reasoning_block_html(r, sector_map) for r in saved if has_full_block(r)
+    )
     parts.append(
         _render_compact_predictions_html([r for r in saved if not has_full_block(r)])
     )
@@ -2254,6 +2273,7 @@ def _render_html(
     portfolio_change_box: str = "",
     settlements_unavailable: bool = False,
     full_detail: frozenset[str] | None = None,
+    sector_map: Mapping[str, str],
 ) -> str:
     sections = []
 
@@ -2313,13 +2333,15 @@ def _render_html(
     sections.append(_USER_PORTFOLIO_SLOT)
     # Zmiany od wczoraj: rozliczenia, zmiany nastawienia, nowy punkt odniesienia.
     sections.append(
-        _render_resolved_predictions_html(resolved_predictions, resolved_window, resolved_note)
+        _render_resolved_predictions_html(
+            resolved_predictions, resolved_window, resolved_note, sector_map=sector_map
+        )
     )
     sections.append(_CONSENSUS_SHIFT_SLOT)
     sections.append(_render_rebaselined_html(ignored, display_timezone))
     sections.append(_render_trade_signals_html(trade_signals))
     sections.append(_render_risk_signals_html(risk_signals))
-    sections.append(_render_saved_section_html(saved, full_detail))
+    sections.append(_render_saved_section_html(saved, full_detail, sector_map=sector_map))
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
     sections.append(_render_crypto_section_html(results, display_timezone))
 
@@ -2423,6 +2445,8 @@ def _render_resolved_predictions_text(
     resolved_predictions: list[ResolvedPrediction],
     window: str = _RESOLVED_WINDOW_24H,
     note: str | None = None,
+    *,
+    sector_map: Mapping[str, str],
 ) -> list[str]:
     """Sekcja 'Zamknięte predykcje' (plain). Bez predykcji: nagłówek z linią
     `note` (MAIL-25) albo pusta lista, gdy `note` None."""
@@ -2436,7 +2460,7 @@ def _render_resolved_predictions_text(
         mark = "✅" if p.is_correct else "❌"
         verdict = "Trafiona" if p.is_correct else "Błędna"
         lines.append(
-            f"  {mark} {_company_label_with_sector(p.symbol)}  "
+            f"  {mark} {_company_label_with_sector(p.symbol, sector_map)}  "
             f"prognoza {_trend_label(p.predicted_trend)} — {verdict}"
         )
         if p.reasoning:
@@ -2514,7 +2538,7 @@ def _render_reflections_text(saved: list[SymbolResult]) -> list[str]:
     return lines
 
 
-def _render_prediction_text(r: SymbolResult) -> list[str]:
+def _render_prediction_text(r: SymbolResult, sector_map: Mapping[str, str]) -> list[str]:
     """Linie jednej predykcji (plain): nagłówek + sentyment + sygnał modelu +
     proweniencja + reasoning + analogi + newsy + wycena."""
     conf_part = (
@@ -2537,7 +2561,7 @@ def _render_prediction_text(r: SymbolResult) -> list[str]:
     )
     rec_text = _model_signal_reason_text(r)
     lines = [
-        f"  {_company_label_with_sector(r.symbol):55s} {_money(r.current_price):>10s}  "
+        f"  {_company_label_with_sector(r.symbol, sector_map):55s} {_money(r.current_price):>10s}  "
         f"Δ {_pct(r.delta, signed=True):>8s}  →  "
         f"{_trend_label(r.trend):11s} {forecast_part}{conf_part}",
         f"         {sentiment_part}",
@@ -2577,13 +2601,15 @@ def _render_prediction_text(r: SymbolResult) -> list[str]:
     return lines
 
 
-def _render_saved_section_text(saved: list[SymbolResult]) -> list[str]:
+def _render_saved_section_text(
+    saved: list[SymbolResult], sector_map: Mapping[str, str]
+) -> list[str]:
     """Sekcja 'Predykcje' (plain). Pusta lista, gdy nic nie zapisano."""
     if not saved:
         return []
     lines = ["PREDYKCJE", "-" * 64]
     for r in saved:
-        lines.extend(_render_prediction_text(r))
+        lines.extend(_render_prediction_text(r, sector_map))
     lines.append("")
     return lines
 
@@ -2627,6 +2653,7 @@ def _render_plain(
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     portfolio_change_line: str = "",
     settlements_unavailable: bool = False,
+    sector_map: Mapping[str, str],
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
@@ -2658,12 +2685,14 @@ def _render_plain(
     lines.append(_USER_PORTFOLIO_SLOT)
     # Zmiany od wczoraj: rozliczenia i nowy punkt odniesienia.
     lines.extend(
-        _render_resolved_predictions_text(resolved_predictions, resolved_window, resolved_note)
+        _render_resolved_predictions_text(
+            resolved_predictions, resolved_window, resolved_note, sector_map=sector_map
+        )
     )
     lines.extend(_render_rebaselined_text(ignored, display_timezone))
     lines.extend(_render_trade_signals_text(trade_signals))
     lines.extend(_render_risk_signals_text(risk_signals))
-    lines.extend(_render_saved_section_text(saved))
+    lines.extend(_render_saved_section_text(saved, sector_map))
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
     crypto_text = _render_crypto_section_text(results, display_timezone)
     if crypto_text:

@@ -17,6 +17,7 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -61,7 +62,7 @@ from src.application.report_council_history import InvestorHistory
 from src.application.report_evidence import hit_rate_evidence, portfolio_curve
 from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
-    SECTORS,
+    build_sector_map,
     format_local,
 )
 from src.application.report_lessons import LessonsReport, build_lessons
@@ -658,7 +659,6 @@ def build_council_adapter(
     wag person (cache per asset_type, jeden odczyt na klasę aktywa/cykl).
     #1: `debate_mode` z configu — jedna runda rewizji przy podzielonym round-1.
     """
-    from collections.abc import Mapping
     from pathlib import Path
 
     from src.infrastructure.persona_loader import load_council_personas
@@ -1468,15 +1468,27 @@ def _build_position_risk(
         return None
 
 
-def _portfolio_sectors(results: list[SymbolResult]) -> dict[str, int]:
+def _sector_map(settings: Settings) -> dict[str, str]:
+    """PORT-05 — symbol → etykieta sektora z jednego źródła: `sectors`,
+    `symbols_etf` i `crypto_symbols` z config.toml."""
+    return build_sector_map(
+        settings.sectors,
+        etf_symbols=settings.symbols_etf,
+        crypto_symbols=settings.crypto_symbols,
+    )
+
+
+def _portfolio_sectors(
+    results: list[SymbolResult], sector_map: Mapping[str, str]
+) -> dict[str, int]:
     """#4 — skład portfela wg sektorów (sektor → liczba instrumentów).
 
-    Reużywa istniejący słownik `SECTORS`; symbole spoza mapy trafiają do
+    Etykiety z mapy sektorów configu (PORT-05); symbole spoza mapy trafiają do
     "Inne", żeby licznik zawsze sumował się do liczby instrumentów.
     """
     counts: dict[str, int] = {}
     for r in results:
-        sector = SECTORS.get(r.symbol, "Inne")
+        sector = sector_map.get(r.symbol, "Inne")
         counts[sector] = counts.get(sector, 0) + 1
     return counts
 
@@ -1915,7 +1927,8 @@ def _dispatch_reports(
         signal_calibration_buckets = _build_signal_calibration(settings, repository)
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
         maturity = _classify_cycle_maturity(results)
-        sectors = _portfolio_sectors(results)
+        sector_map = _sector_map(settings)
+        sectors = _portfolio_sectors(results, sector_map)
         # #12: karta kondycji modelu (flaga + migracja 019).
         model_scorecard = _build_model_scorecard(settings, repository)
         # #15: realny portfel użytkownika (flaga + migracja 023).
@@ -1954,6 +1967,8 @@ def _dispatch_reports(
             held_prices=held_prices,
             portfolio_clusters=_portfolio_clusters(settings),
             position_risk=position_risk,
+            sector_map=sector_map,
+            sector_peers=settings.sector_peers,
             display_timezone=settings.display_timezone,
         )
 

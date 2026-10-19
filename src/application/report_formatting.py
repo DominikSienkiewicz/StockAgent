@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import html
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -162,70 +162,46 @@ def company_label(symbol: str) -> str:
     return symbol
 
 
-# Mapowanie symbol → sektor (PL), używane w sekcji PREDYKCJE maila. Membership
-# w słowniku pełni też rolę klasyfikacji klasy aktywa: ETF-y → "ETF",
-# krypto → "Krypto", akcje → konkretny sektor. Symbol spoza słownika nie
-# dostaje etykiety (po cichu, tak jak company_label pomija nieznaną nazwę).
-# Pokrywa domyślne portfolio (43) + krypto; rozszerzaj wraz z SYMBOLS.
-# Klasyfikacja zgrupowana per sektor — każda nazwa sektora pada raz (łatwiej
-# rozszerzać niż płaską mapę symbol→sektor z powtarzaną etykietą). `SECTORS`
-# spłaszczamy do symbol→sektor dla szybkiego lookupu.
-_SECTOR_SYMBOLS: dict[str, list[str]] = {
-    "Big Tech": ["AAPL", "AMZN", "GOOGL", "GOOG", "META"],
-    "Półprzewodniki/AI": [
-        "NVDA", "AMD", "TSM", "ASML", "ASMIY", "MU", "QCOM", "INTC", "SNDK",
-    ],
-    "Chmura/Software": [
-        "MSFT", "ORCL", "NET", "SAP", "PLTR", "IBM", "TEAM", "FROG", "SNOW", "DDOG",
-    ],
-    "Cyberbezpieczeństwo": ["CRWD", "PANW", "OKTA", "S", "SAIL"],
-    "Hardware": ["DELL", "SSNLF"],
-    "Mobilność": ["TSLA", "UBER"],
-    "Przemysł/Pharma": ["SIEGY", "NVO"],
-    "Finanse": ["BLK"],
-    "ETF": ["VT", "QUAL", "IHI", "VB", "EWY", "IVV", "XDWD.DE", "IUSN.DE"],
-    "Krypto": ["BTC", "ETH"],
-}
-SECTORS: dict[str, str] = {
-    symbol: sector
-    for sector, symbols in _SECTOR_SYMBOLS.items()
-    for symbol in symbols
-}
+# PORT-05: etykiety klas aktywów bez sektora akcji. Sektory akcji idą z
+# `sectors` w config.toml — w kodzie nie ma już żadnej kopii tej mapy.
+ETF_SECTOR = "ETF"
+CRYPTO_SECTOR = "Krypto"
 
 
-# Kuratorowana pula peerów per sektor akcji — nadzbiór monitorowanych. Służy
-# sekcji 💡 WARTE UWAGI: gdy sektor jest "gorący" w bieżącym cyklu, sugerujemy
-# stąd tickery, których jeszcze nie monitorujemy. Tylko sektory akcji
-# (ETF/Krypto mają inną dynamikę i nie są tu uwzględniane).
-PEERS: dict[str, list[str]] = {
-    "Big Tech": ["NFLX", "DIS"],
-    "Półprzewodniki/AI": ["AVGO", "TXN", "AMAT", "KLAC", "LRCX", "ARM", "MRVL"],
-    "Chmura/Software": ["CRM", "ADBE", "NOW", "MDB", "WDAY", "HUBS"],
-    "Cyberbezpieczeństwo": ["ZS", "FTNT", "CYBR", "TENB", "QLYS"],
-    "Hardware": ["HPQ", "HPE", "WDC", "STX", "SMCI", "LOGI"],
-    "Mobilność": ["LYFT", "RIVN", "LCID", "GM", "F"],
-    "Przemysł/Pharma": ["LLY", "MRK", "PFE", "ABBV", "NVS"],
-    "Finanse": ["JPM", "GS", "MS", "V", "MA"],
-}
+def build_sector_map(
+    sectors: Mapping[str, Sequence[str]],
+    *,
+    etf_symbols: Iterable[str],
+    crypto_symbols: Iterable[str],
+) -> dict[str, str]:
+    """symbol → etykieta sektora (PL) z jednego źródła konfiguracji.
+
+    Akcje dostają sektor z `sectors`, ETF-y „ETF”, krypto „Krypto” (klasa
+    aktywa wygrywa z sektorem). Kolejność wstawienia — sektory w kolejności
+    configu, potem ETF i Krypto — wyznacza kanoniczną kolejność sektorów."""
+    mapping = {symbol: sector for sector, symbols in sectors.items() for symbol in symbols}
+    mapping.update(dict.fromkeys(etf_symbols, ETF_SECTOR))
+    mapping.update(dict.fromkeys(crypto_symbols, CRYPTO_SECTOR))
+    return mapping
 
 
-def sector_label(symbol: str) -> str | None:
-    """Zwraca sektor (PL) dla symbolu lub None, gdy nieznany.
+def sector_label(symbol: str, sector_map: Mapping[str, str] | None = None) -> str | None:
+    """Zwraca sektor (PL) dla symbolu z `sector_map` lub None, gdy nieznany.
 
     None → renderer pomija etykietę (brak '—'), analogicznie do company_label.
     """
-    if not symbol:
+    if not symbol or sector_map is None:
         return None
-    return SECTORS.get(symbol)
+    return sector_map.get(symbol)
 
 
-def company_label_with_sector(symbol: str) -> str:
+def company_label_with_sector(symbol: str, sector_map: Mapping[str, str]) -> str:
     """'SYMBOL (Nazwa) · Sektor' lub 'SYMBOL (Nazwa)' gdy sektor nieznany.
 
     Używane w sekcji PREDYKCJE — sektor doklejony przy nazwie spółki.
     """
     label = company_label(symbol)
-    sector = sector_label(symbol)
+    sector = sector_label(symbol, sector_map)
     return f"{label} · {sector}" if sector else label
 
 

@@ -178,13 +178,15 @@ class TestBuildHtmlReport:
     def test_html_shows_sector_in_predictions(self):
         # AAPL → Big Tech, doklejony przy nazwie spółki w sekcji PREDYKCJE.
         html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(sector_map={"AAPL": "Big Tech"}),
         )
         assert "Big Tech" in html
 
     def test_plain_text_shows_sector_in_predictions(self):
         _, text = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(sector_map={"AAPL": "Big Tech"}),
         )
         assert "Big Tech" in text
 
@@ -197,7 +199,11 @@ class TestBuildHtmlReport:
             sentiment_score=0.3, sentiment_label="Bullish",
         )
         html, text = build_html_report(
-            [hot], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+            [hot], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(
+                sector_map={"CRWD": "Cyberbezpieczeństwo"},
+                sector_peers={"Cyberbezpieczeństwo": ["ZS", "FTNT", "CYBR", "TENB", "QLYS"]},
+            ),
         )
         assert "Warte uwagi" in html
         assert "WARTE UWAGI" in text
@@ -214,7 +220,11 @@ class TestBuildHtmlReport:
             sentiment_score=0.05, sentiment_label="Neutral",
         )
         html, text = build_html_report(
-            [cold], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+            [cold], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(
+                sector_map={"AAPL": "Big Tech"},
+                sector_peers={"Big Tech": ["NFLX", "DIS"]},
+            ),
         )
         assert "Warte uwagi" not in html
         assert "WARTE UWAGI" not in text
@@ -835,7 +845,7 @@ class TestResolvedPostMortem:
         ]
         html, _ = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            ReportContext(resolved_predictions=resolved),
+            ReportContext(resolved_predictions=resolved, sector_map={"BTC": "Krypto"}),
         )
         assert "BTC" in html
         assert "Krypto" in html  # tag klasy aktywa (company_label_with_sector)
@@ -3225,3 +3235,34 @@ def test_equal_weight_radar_var_never_narrows_the_band():
     )
 
     assert "Pozycja pełna 4-5% portfela" in html
+
+
+
+# PORT-05: etykiety sektorów i peerzy Warte uwagi idą wyłącznie z mapy configu
+# w `ReportContext` — w kodzie nie ma zapasowej kopii.
+
+
+def test_sector_label_comes_only_from_the_context_map():
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+    )
+
+    assert "Big Tech" not in html
+    assert "Big Tech" not in text
+
+
+def test_renamed_sector_keeps_its_suggestions():
+    hot = SymbolResult(
+        symbol="CRWD", status="saved", delta=Decimal("0.06"),
+        current_price=Decimal("769"), trend="BULLISH",
+        target_price=Decimal("780"), confidence_score=0.75,
+    )
+
+    html, _ = build_html_report(
+        [hot], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(sector_map={"CRWD": "Cyber"}, sector_peers={"Cyber": ["ZS"]}),
+    )
+
+    assert "Warte uwagi" in html
+    assert "Cyber" in html
+    assert "ZS" in html

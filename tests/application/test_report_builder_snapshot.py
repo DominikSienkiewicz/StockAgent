@@ -38,6 +38,7 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_council_history import InvestorHistory
+from src.application.report_formatting import build_sector_map
 from src.application.report_lessons import LessonItem, LessonsReport
 from src.application.report_model_scorecard import ModelScorecardView
 from src.application.report_track_record import TrackRecordStats
@@ -80,6 +81,18 @@ RUN = RunContext(
     trigger="schedule",
     run_url="https://github.com/example/StockAgent/actions/runs/18234567890",
 )
+# PORT-05: sektory i peerzy idą z config.toml przez `ReportContext`. Fixture
+# podaje dla symboli scenariuszy te same etykiety i peerów, co dawna mapa w kodzie
+# (VOO i SPY nie miały w niej sektora, więc tu też go nie mają).
+SECTOR_MAP = build_sector_map(
+    {"Półprzewodniki/AI": ["NVDA", "AMD", "ASML"], "Chmura/Software": ["MSFT"]},
+    etf_symbols=("XDWD.DE",),
+    crypto_symbols=("BTC", "ETH"),
+)
+SECTOR_PEERS = {
+    "Półprzewodniki/AI": ["AVGO", "TXN", "AMAT", "KLAC", "LRCX", "ARM", "MRVL"],
+    "Chmura/Software": ["CRM", "ADBE", "NOW", "MDB", "WDAY", "HUBS"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +533,8 @@ def _full_context() -> ReportContext:
         track_record_stats=_track_record_stats(),
         display_timezone=DISPLAY_TIMEZONE,
         run_context=RUN,
+        sector_map=SECTOR_MAP,
+        sector_peers=SECTOR_PEERS,
     )
 
 
@@ -565,6 +580,8 @@ def _all_ignored_cycle() -> tuple[str, str]:
         cycle_cost=estimate_cycle_cost({}),
         display_timezone=DISPLAY_TIMEZONE,
         run_context=RUN,
+        sector_map=SECTOR_MAP,
+        sector_peers=SECTOR_PEERS,
     )
     return build_html_report(results, STARTED, DURATION_SECONDS, context)
 
@@ -582,6 +599,8 @@ def _first_run_cycle() -> tuple[str, str]:
         cycle_cost=estimate_cycle_cost({}),
         display_timezone=DISPLAY_TIMEZONE,
         run_context=RunContext(),
+        sector_map=SECTOR_MAP,
+        sector_peers=SECTOR_PEERS,
     )
     return build_html_report(results, STARTED, DURATION_SECONDS, context)
 

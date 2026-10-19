@@ -202,17 +202,11 @@ def test_settings_derive_peer_groups_from_config_sectors(
     assert s.contagion_enabled is False
 
 
-def test_email_sector_labels_match_config_sectors() -> None:
-    """PORT-05: etykieta sektora w mailu i klaster w sizingu/ostrzeżeniu muszą
-    mówić to samo. Dopóki etykiety czyta `report_formatting`, ten test pilnuje,
-    że nie rozjechały się z `sectors` z config.toml."""
-    from src.application.report_formatting import sector_label
-
+def test_real_config_toml_peers_are_keyed_by_its_sectors() -> None:
+    """PORT-05: peerzy sekcji 💡 Warte uwagi są kluczowani nazwą sektora z
+    `sectors` — zmiana nazwy sektora bez peerów nie może ich wyłączyć po cichu."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    mismatched = {
-        symbol: (sector, sector_label(symbol))
-        for sector, symbols in data["sectors"].items()
-        for symbol in symbols
-        if sector_label(symbol) != sector
-    }
-    assert not mismatched, f"etykieta maila ≠ sektor z config.toml: {mismatched}"
+    peers: dict[str, list[str]] = data["sector_peers"]
+    assert peers
+    assert set(peers) <= set(data["sectors"])
+    assert all(candidates for candidates in peers.values()), "sektor bez peerów"

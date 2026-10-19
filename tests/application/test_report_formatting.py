@@ -19,6 +19,7 @@ from src.application.report_formatting import (
     DOT_NUMBERS,
     PALETTE,
     POLISH_NUMBERS,
+    build_sector_map,
     company_label,
     delta_color,
     format_local,
@@ -41,25 +42,38 @@ CONFIG_TOML = Path(__file__).resolve().parents[2] / "config.toml"
 # nowy symbol w configu bez nazwy wywala ten test.
 _CONFIGURED_SYMBOL_LISTS = ("symbols", "symbols_etf", "crypto_symbols", "risk_symbols")
 
+# PORT-05: mapa sektorów nie żyje już w kodzie — testy podają ją jawnie,
+# z tymi samymi etykietami, które dawała dawna mapa w `report_formatting`.
+_SECTOR_MAP = build_sector_map(
+    {
+        "Big Tech": ["AAPL"],
+        "Półprzewodniki/AI": ["NVDA"],
+        "Chmura/Software": ["MSFT"],
+        "Cyberbezpieczeństwo": ["CRWD", "PANW", "OKTA", "S", "SAIL"],
+    },
+    etf_symbols=("VT", "QUAL", "IHI", "VB", "EWY", "IVV", "XDWD.DE", "IUSN.DE"),
+    crypto_symbols=("BTC", "ETH"),
+)
+
 
 class TestSectorLabel:
     def test_stock_returns_polish_sector(self) -> None:
-        assert sector_label("AAPL") == "Big Tech"
-        assert sector_label("NVDA") == "Półprzewodniki/AI"
-        assert sector_label("MSFT") == "Chmura/Software"
+        assert sector_label("AAPL", _SECTOR_MAP) == "Big Tech"
+        assert sector_label("NVDA", _SECTOR_MAP) == "Półprzewodniki/AI"
+        assert sector_label("MSFT", _SECTOR_MAP) == "Chmura/Software"
 
     def test_cybersecurity_bucket(self) -> None:
         # Nowo dodane spółki cyber muszą mieć sektor.
         for sym in ("CRWD", "PANW", "OKTA", "S", "SAIL"):
-            assert sector_label(sym) == "Cyberbezpieczeństwo", sym
+            assert sector_label(sym, _SECTOR_MAP) == "Cyberbezpieczeństwo", sym
 
     def test_etf_maps_to_etf(self) -> None:
         for sym in ("VT", "QUAL", "IHI", "VB", "EWY", "IVV", "XDWD.DE", "IUSN.DE"):
-            assert sector_label(sym) == "ETF", sym
+            assert sector_label(sym, _SECTOR_MAP) == "ETF", sym
 
     def test_crypto_maps_to_krypto(self) -> None:
-        assert sector_label("BTC") == "Krypto"
-        assert sector_label("ETH") == "Krypto"
+        assert sector_label("BTC", _SECTOR_MAP) == "Krypto"
+        assert sector_label("ETH", _SECTOR_MAP) == "Krypto"
 
     def test_unknown_symbol_returns_none(self) -> None:
         assert sector_label("ZZZZ") is None
@@ -68,18 +82,59 @@ class TestSectorLabel:
         assert sector_label("") is None
 
     def test_every_configured_symbol_has_a_sector(self) -> None:
-        # Każdy ticker z domyślnego portfolio (43) + krypto MUSI mieć sektor —
+        # Każdy ticker z config.toml (akcje, ETF-y, krypto) MUSI mieć sektor —
         # inaczej w mailu pojawi się symbol bez etykiety mimo że jest w SYMBOLS.
-        portfolio = [
-            "AAPL", "AMZN", "GOOGL", "MSFT", "META", "NVDA", "TSLA", "AMD",
-            "NET", "PLTR", "ORCL", "UBER", "TSM", "ASML", "ASMIY", "SAP",
-            "SIEGY", "NVO", "DELL", "IBM", "MU", "QCOM", "CRWD", "INTC",
-            "SNDK", "BLK", "SSNLF", "TEAM", "FROG", "SNOW", "DDOG", "SAIL",
-            "OKTA", "S", "PANW", "VT", "QUAL", "IHI", "VB", "EWY", "IVV",
-            "XDWD.DE", "IUSN.DE", "BTC", "ETH",
+        # Niezmiennik na mapie z configu, nie zamrożona lista (TEST-21, G79).
+        config = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+        sector_map = build_sector_map(
+            config["sectors"],
+            etf_symbols=config["symbols_etf"],
+            crypto_symbols=config["crypto_symbols"],
+        )
+        configured = [
+            *config["symbols"], *config["symbols_etf"], *config["crypto_symbols"]
         ]
-        missing = [s for s in portfolio if sector_label(s) is None]
+        missing = [s for s in configured if sector_label(s, sector_map) is None]
         assert not missing, f"brak sektora dla: {missing}"
+
+
+class TestBuildSectorMap:
+    """PORT-05: jedno źródło etykiet — sektory akcji z configu, ETF-y i krypto
+    z list klas aktywów."""
+
+    def test_stock_symbols_get_their_config_sector(self) -> None:
+        sector_map = build_sector_map(
+            {"Big Tech": ["AAPL"], "Finanse": ["BLK"]}, etf_symbols=(), crypto_symbols=()
+        )
+
+        assert sector_map == {"AAPL": "Big Tech", "BLK": "Finanse"}
+
+    def test_etfs_and_crypto_get_their_asset_class(self) -> None:
+        sector_map = build_sector_map({}, etf_symbols=("VT",), crypto_symbols=("BTC",))
+
+        assert sector_map == {"VT": "ETF", "BTC": "Krypto"}
+
+    def test_asset_class_wins_over_a_stock_sector(self) -> None:
+        sector_map = build_sector_map(
+            {"Big Tech": ["AAPL", "VT"]}, etf_symbols=("VT",), crypto_symbols=()
+        )
+
+        assert sector_map["VT"] == "ETF"
+
+    def test_insertion_order_is_config_sectors_then_etf_then_crypto(self) -> None:
+        sector_map = build_sector_map(
+            {"Mobilność": ["TSLA"], "Big Tech": ["AAPL"]},
+            etf_symbols=("VT",),
+            crypto_symbols=("BTC",),
+        )
+
+        assert list(dict.fromkeys(sector_map.values())) == [
+            "Mobilność", "Big Tech", "ETF", "Krypto"
+        ]
+
+    def test_label_without_a_map_is_none(self) -> None:
+        # Bez mapy z configu nie ma żadnej zapasowej mapy w kodzie.
+        assert sector_label("AAPL") is None
 
 
 class TestProvenanceBadgesHtml:

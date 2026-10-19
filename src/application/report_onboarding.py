@@ -18,9 +18,8 @@ Sekcja samosupresująca: `CycleMaturity.STEADY_STATE` → obie `render_*` zwraca
 from __future__ import annotations
 
 import html as _html
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
-from src.application.report_formatting import SECTORS
 from src.domain.cycle_maturity import CycleMaturity
 
 
@@ -40,15 +39,17 @@ def _instruments_label(count: int) -> str:
     return f"{count} instrumentów"
 
 
-def _ordered_sectors(sectors: Mapping[str, int]) -> list[tuple[str, int]]:
-    """Porządkuje sektory portfela wg kanonicznej kolejności z `SECTORS`.
+def _ordered_sectors(
+    sectors: Mapping[str, int], sector_order: Sequence[str] = ()
+) -> list[tuple[str, int]]:
+    """Porządkuje sektory portfela wg kanonicznej kolejności `sector_order`.
 
-    `SECTORS` (single source of truth: symbol → sektor) wyznacza też kolejność
-    sektorów — bierzemy unikalne etykiety w kolejności wstawienia. Sektory
-    obecne w portfelu, ale spoza mapy (defensywnie) dostawiamy na końcu w
-    kolejności podanej przez wołającego. Sektory z zerową liczebnością pomijamy.
+    `sector_order` to unikalne etykiety mapy sektorów z configu w kolejności
+    wstawienia (PORT-05). Sektory obecne w portfelu, ale spoza tej kolejności
+    (defensywnie) dostawiamy na końcu w kolejności podanej przez wołającego.
+    Sektory z zerową liczebnością pomijamy.
     """
-    canonical = list(dict.fromkeys(SECTORS.values()))
+    canonical = list(dict.fromkeys(sector_order))
     ordered_names = [name for name in canonical if name in sectors]
     ordered_names += [name for name in sectors if name not in canonical]
     return [(name, sectors[name]) for name in ordered_names if sectors[name] > 0]
@@ -59,11 +60,13 @@ def render_onboarding_html(
     *,
     instrument_count: int,
     sectors: Mapping[str, int],
+    sector_order: Sequence[str] = (),
 ) -> str:
     """Renderuje sekcję HTML powitania "Dzień 1" lub "" dla STEADY_STATE.
 
     `sectors` to gotowe zliczenie sektor → liczba instrumentów (agregat
-    orkiestratora). Wszystkie etykiety idące do HTML są escapowane.
+    orkiestratora), `sector_order` — kanoniczna kolejność sektorów z configu.
+    Wszystkie etykiety idące do HTML są escapowane.
     """
     if maturity is CycleMaturity.STEADY_STATE:
         return ""
@@ -73,7 +76,7 @@ def render_onboarding_html(
         "<li style='margin: 2px 0;'>"
         f"<strong>{_html.escape(name)}</strong>"
         f" — {count}</li>"
-        for name, count in _ordered_sectors(sectors)
+        for name, count in _ordered_sectors(sectors, sector_order)
     )
     composition = (
         "<ul style='margin: 8px 0 0 0; padding-left: 18px; "
@@ -103,6 +106,7 @@ def render_onboarding_text(
     *,
     instrument_count: int,
     sectors: Mapping[str, int],
+    sector_order: Sequence[str] = (),
 ) -> str:
     """Renderuje tekstowy wariant powitania "Dzień 1" lub "" dla STEADY_STATE."""
     if maturity is CycleMaturity.STEADY_STATE:
@@ -118,7 +122,7 @@ def render_onboarding_text(
         ),
     ]
     lines += [
-        f"  • {name} — {count}" for name, count in _ordered_sectors(sectors)
+        f"  • {name} — {count}" for name, count in _ordered_sectors(sectors, sector_order)
     ]
     return "\n".join(lines)
 

@@ -3692,3 +3692,46 @@ class TestPositionRiskWiring:
         context = main_agent.ReportContext(position_risk=PositionRisk(var=0.05))
 
         assert main_agent._without_owner_portfolio(context).position_risk is None
+
+
+
+class TestSectorMapFromConfig:
+    """PORT-05: etykiety sektorów i peerzy Warte uwagi idą z Settings (config.toml)
+    do `ReportContext` — jedno źródło z `peer_groups`."""
+
+    def test_sector_map_combines_sectors_etfs_and_crypto(self, settings) -> None:
+        settings.sectors = {"Półprzewodniki/AI": ["NVDA"]}
+        settings.symbols_etf = ["VT"]
+        settings.crypto_symbols = ["BTC"]
+
+        assert main_agent._sector_map(settings) == {
+            "NVDA": "Półprzewodniki/AI", "VT": "ETF", "BTC": "Krypto"
+        }
+
+    def test_portfolio_sectors_count_by_the_config_map(self) -> None:
+        results = [
+            main_agent.SymbolResult(symbol=symbol, status="ignored")
+            for symbol in ("NVDA", "AMD", "BTC", "ZZZZ")
+        ]
+        sector_map = {"NVDA": "Półprzewodniki/AI", "AMD": "Półprzewodniki/AI", "BTC": "Krypto"}
+
+        assert main_agent._portfolio_sectors(results, sector_map) == {
+            "Półprzewodniki/AI": 2, "Krypto": 1, "Inne": 1
+        }
+
+    def test_dispatch_hands_the_config_map_and_peers_to_the_report(
+        self, settings, mocker
+    ) -> None:
+        from src.application.ports import MarketDataPort
+
+        settings.sectors = {"Big Tech": ["AAPL"]}
+        settings.sector_peers = {"Big Tech": ["NFLX"]}
+
+        report, _, _, _ = TestHeldPositionsOutsideWatchlist()._dispatch(
+            settings, mocker, None, MagicMock(spec=MarketDataPort)
+        )
+
+        context = report.call_args_list[0].args[3]
+        assert context.sector_map == {"AAPL": "Big Tech"}
+        assert context.sector_peers == {"Big Tech": ["NFLX"]}
+        assert context.portfolio_sectors == {"Big Tech": 1}

@@ -75,6 +75,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "calibration_curve_enabled",
     "lessons_enabled",
     "calibrated_confidence_enabled",
+    # PORT-05: peerzy sekcji 💡 Warte uwagi — sugestie liczone po predykcji.
+    "sector_peers",
     "model_scorecard_enabled",
     "cycle_diff_enabled",
     "settled_at_windows_enabled",
@@ -257,6 +259,10 @@ class Settings(BaseSettings):
     # z sektorów bez ETF-ów i krypto; jawnie podane `peer_groups` wygrywają.
     sectors: dict[str, list[str]] = Field(default_factory=dict)
     peer_groups: dict[str, list[str]] = Field(default_factory=dict)
+    # PORT-05: sektor → kuratorowani peerzy spoza watchlisty (sekcja 💡 Warte
+    # uwagi). Klucze MUSZĄ być sektorami z `sectors` — inaczej start pada, żeby
+    # zmiana nazwy sektora nie wyłączyła sugestii po cichu.
+    sector_peers: dict[str, list[str]] = Field(default_factory=dict)
     # LLM-as-Judge kalibracji pewności (Slow Loop, migracja 016).
     calibration_judge_enabled: bool = False
 
@@ -590,6 +596,18 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError(f"reflection_max_age_hours must be >= 0, got {value}")
         return value
+
+    @model_validator(mode="after")
+    def _validate_sector_peers(self) -> Settings:
+        """PORT-05: peerzy są kluczowani nazwą sektora z `sectors`. Nieznana
+        nazwa (np. po zmianie nazwy sektora) zatrzymuje start zamiast po cichu
+        wyłączyć sugestie tego sektora."""
+        unknown = sorted(set(self.sector_peers) - set(self.sectors))
+        if unknown:
+            raise ValueError(
+                f"sector_peers has sectors missing from sectors: {unknown}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _derive_peer_groups_from_sectors(self) -> Settings:

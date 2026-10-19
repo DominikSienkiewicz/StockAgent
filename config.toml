@@ -212,7 +212,7 @@ web_digest_path = "public/digest/index.html"
 # --- NBP (kursy do raportu) ---
 nbp_enabled = true
 
-# --- Portfolio (43) ---
+# --- Portfolio ---
 symbols = [
   "AAPL", "AMZN", "GOOGL", "MSFT", "META", "NVDA", "TSLA", "AMD", "NET",
   "PLTR", "ORCL", "UBER", "TSM", "ASML", "ASMIY", "SAP", "SIEGY", "NVO",
@@ -232,7 +232,8 @@ crypto_symbols = ["BTC", "ETH"]
 # Sektor → akcje z `symbols` (bez ETF-ów i krypto — test spójności). Z tej mapy
 # powstaje `peer_groups`: ekspozycja sektora w sizingu, ostrzeżenie o koncentracji
 # w sekcji portfela i (gdy contagion włączony) peery w prompcie. To sektor, NIE
-# klaster policzonej korelacji. Etykiety w mailu muszą się z nią zgadzać (test).
+# klaster policzonej korelacji. Ta sama mapa daje etykiety sektorów w mailu
+# (ETF-y z `symbols_etf` → „ETF”, `crypto_symbols` → „Krypto”).
 sectors."Big Tech" = ["AAPL", "AMZN", "GOOGL", "META"]
 sectors."Półprzewodniki/AI" = [
   "NVDA", "AMD", "TSM", "ASML", "ASMIY", "MU", "QCOM", "INTC", "SNDK",
@@ -245,6 +246,18 @@ sectors."Hardware" = ["DELL", "SSNLF"]
 sectors."Mobilność" = ["TSLA", "UBER"]
 sectors."Przemysł/Pharma" = ["SIEGY", "NVO"]
 sectors."Finanse" = ["BLK"]
+
+# Kuratorowani peerzy spoza watchlisty per sektor akcji — sekcja 💡 Warte uwagi
+# podsuwa ich, gdy sektor jest „gorący” w cyklu. Klucze to nazwy z `sectors`
+# (nieznana nazwa zatrzymuje start). Render-only, zero płatnych wywołań.
+sector_peers."Big Tech" = ["NFLX", "DIS"]
+sector_peers."Półprzewodniki/AI" = ["AVGO", "TXN", "AMAT", "KLAC", "LRCX", "ARM", "MRVL"]
+sector_peers."Chmura/Software" = ["CRM", "ADBE", "NOW", "MDB", "WDAY", "HUBS"]
+sector_peers."Cyberbezpieczeństwo" = ["ZS", "FTNT", "CYBR", "TENB", "QLYS"]
+sector_peers."Hardware" = ["HPQ", "HPE", "WDC", "STX", "SMCI", "LOGI"]
+sector_peers."Mobilność" = ["LYFT", "RIVN", "LCID", "GM", "F"]
+sector_peers."Przemysł/Pharma" = ["LLY", "MRK", "PFE", "ABBV", "NVS"]
+sector_peers."Finanse" = ["JPM", "GS", "MS", "V", "MA"]
 
 # --- Risk Watch (osobny use case) ---
 risk_symbols = ["EPOL", "SH", "PSQ", "RWM", "EUM", "SQQQ", "TBT", "GLD", "VIXY", "UVXY"]

@@ -641,3 +641,38 @@ class TestSectorsDrivePeerGroups:
         assert "sectors" in RECIPE_SETTINGS_FIELDS
         baseline = self._settings().config_hash()
         assert self._settings(sectors={"A": ["NVDA"]}).config_hash() != baseline
+
+
+class TestSectorPeers:
+    """PORT-05: peerzy 💡 Warte uwagi kluczowani sektorami z `sectors`."""
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_defaults_are_empty(self, env):
+        assert self._settings().sector_peers == {}
+
+    def test_peers_of_a_known_sector_are_accepted(self, env):
+        settings = self._settings(
+            sectors={"Big Tech": ["AAPL"]}, sector_peers={"Big Tech": ["NFLX"]}
+        )
+
+        assert settings.sector_peers == {"Big Tech": ["NFLX"]}
+
+    def test_renamed_sector_without_its_peers_stops_the_start(self, env):
+        # Sektor przemianowany w `sectors`, peerzy zostali pod starą nazwą.
+        with pytest.raises(ValueError, match="Big Tech"):
+            self._settings(
+                sectors={"Wielka technologia": ["AAPL"]},
+                sector_peers={"Big Tech": ["NFLX"]},
+            )
+
+    def test_peers_are_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "sector_peers" in NON_RECIPE_SETTINGS_FIELDS
+        sectors = {"Big Tech": ["AAPL"]}
+        assert (
+            self._settings(sectors=sectors, sector_peers={"Big Tech": ["NFLX"]}).config_hash()
+            == self._settings(sectors=sectors).config_hash()
+        )

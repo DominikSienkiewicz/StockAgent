@@ -64,7 +64,7 @@ class SymbolResult:
     # raport pisze „referencja sprzed <data> — nowy punkt odniesienia”.
     reference_at: datetime | None = None
     # Klasa aktywa ("STOCK" | "ETF" | "CRYPTO" | ...) — z domeny (Asset.asset_type).
-    # Pozwala raportowi rozpoznać krypto niezawodnie (nie przez słownik SECTORS)
+    # Pozwala raportowi rozpoznać krypto niezawodnie (nie przez mapę sektorów)
     # i wyświetlić je w dedykowanej sekcji, też gdy cykl był "ignored".
     asset_class: str | None = None
     trend: str | None = None
