@@ -2062,3 +2062,37 @@ class TestAccuracyHistoryBothDefinitions:
 
         assert "Trafność łączna (z prognozami „bez ruchu”)" in html
         assert "Trafność kierunkowa" not in html
+
+
+class TestResolvedSummaryBothDefinitions:
+    """Decyzja 2026-10-19 (a): podsumowanie „Zamknięte predykcje (24h)” mówiło
+    „(X% accuracy)” z SIDEWAYS w mianowniku. Teraz ta sama para etykiet co
+    Historia trafności: kierunkowa obok łącznej."""
+
+    @staticmethod
+    def _resolved(symbol: str, trend: str, correct: bool) -> ResolvedPrediction:
+        return ResolvedPrediction(symbol=symbol, predicted_trend=trend, is_correct=correct)
+
+    def _report(self, resolved: list[ResolvedPrediction]) -> tuple[str, str]:
+        return build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(resolved_predictions=resolved),
+        )
+
+    def test_summary_shows_directional_next_to_total(self):
+        html, text = self._report([
+            self._resolved("NVDA", "BULLISH", True),
+            self._resolved("AMD", "BEARISH", False),
+            self._resolved("SPY", "SIDEWAYS", True),
+        ])
+
+        for body in (html, text):
+            assert "Trafność kierunkowa (bez prognoz „bez ruchu”): 50% (n=2)" in body
+            assert "Trafność łączna (z prognozami „bez ruchu”): 67% (n=3)" in body
+            assert "% accuracy" not in body
+
+    def test_summary_without_directional_calls_says_so(self):
+        html, text = self._report([self._resolved("SPY", "SIDEWAYS", True)])
+
+        assert "brak prognoz kierunkowych" in html
+        assert "brak prognoz kierunkowych" in text

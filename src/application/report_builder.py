@@ -119,7 +119,7 @@ from src.domain.consensus_shift import ConsensusShift
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadSignal, build_lead
-from src.domain.equity_curve import EquityCurve
+from src.domain.equity_curve import EquityCurve, directional_hit_rate
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.finops import CycleCost
 from src.domain.macro_rates import YieldCurveSnapshot
@@ -1198,11 +1198,29 @@ def _render_resolved_predictions_html(
     parts.extend(_render_resolved_item_html(p) for p in resolved_predictions)
     parts.append(
         "<div style='font-size: 11px; color: #6b7280; margin: 4px 0 16px 0;'>"
-        f"Suma: {len(correct)} trafionych / {len(wrong)} błędnych "
-        f"({len(correct) / max(1, len(resolved_predictions)) * 100:.0f}% accuracy)"
+        f"Suma: {len(correct)} trafionych / {len(wrong)} błędnych · "
+        f"{_resolved_accuracy_pair(resolved_predictions)}"
         "</div>"
     )
     return "".join(parts)
+
+
+def _resolved_accuracy_pair(resolved_predictions: list[ResolvedPrediction]) -> str:
+    """Kierunkowa obok łącznej — te same etykiety co Historia trafności (WIA-29)."""
+    directional = directional_hit_rate(
+        (p.predicted_trend, p.is_correct) for p in resolved_predictions
+    )
+    directional_txt = (
+        "— (brak prognoz kierunkowych)"
+        if directional.rate is None
+        else f"{directional.rate * 100:.0f}% (n={directional.directional})"
+    )
+    total = len(resolved_predictions)
+    correct = sum(1 for p in resolved_predictions if p.is_correct)
+    return (
+        f"{_DIRECTIONAL_ACCURACY_LABEL}: {directional_txt} · "
+        f"{_TOTAL_ACCURACY_LABEL}: {correct / total * 100:.0f}% (n={total})"
+    )
 
 
 # WIA-29 (c): dwie definicje trafności obok siebie, każda nazwana tym, co liczy.
@@ -1691,8 +1709,8 @@ def _render_resolved_predictions_text(
             )
         lines.append(f"        dlaczego: {_resolved_why(p)}")
     lines.append(
-        f"  Suma: {correct}/{len(resolved_predictions)} "
-        f"({correct / max(1, len(resolved_predictions)) * 100:.0f}% accuracy)"
+        f"  Suma: {correct}/{len(resolved_predictions)} · "
+        f"{_resolved_accuracy_pair(resolved_predictions)}"
     )
     lines.append("")
     return lines
