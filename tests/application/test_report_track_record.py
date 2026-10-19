@@ -317,3 +317,74 @@ class TestBenchmarkLine:
         sparkline = html[html.index("<table role='presentation'") :]
         assert sparkline.count("<tr>") == 1
         assert "#9ca3af" not in sparkline
+
+
+class TestCompactTrackRecord:
+    """Decyzja 2026-10-19 (budżet MAIL-06): w duży dzień Track Record ma wersję
+    zwartą — same kluczowe liczby, bez sparklinii, kalibracji i lekcji."""
+
+    @staticmethod
+    def _render(*, compact: bool) -> str:
+        comparison = _benchmark()
+        buckets = [
+            CalibrationBucket(lower=0.6, upper=0.7, count=10, mean_confidence=0.6, hit_rate=0.6)
+        ]
+        lessons = LessonsReport(
+            items=(
+                LessonItem(
+                    symbol="MSFT",
+                    predicted_trend="BEARISH",
+                    insight="zaskoczenie wynikami",
+                    actual_change_pct=Decimal("0.05"),
+                ),
+            ),
+            total_mistakes=1,
+            recurring_theme=None,
+        )
+        stats = TrackRecordStats(
+            hit_rate=_evidence(),
+            scores=probability_scores([(0.6, True)] * 6 + [(0.6, False)] * 4),
+            costs=PaperCosts(cost_bps=10),
+            benchmark=comparison,
+        )
+        return render_track_record_html(
+            comparison.agent, buckets, lessons, stats, compact=compact
+        )
+
+    def test_compact_keeps_the_key_numbers(self) -> None:
+        html = self._render(compact=True)
+
+        assert "Track Record" in html
+        assert "paper-PnL (koszt 10 bps)" in html
+        assert "agent -2,5% · koszyk +2,5% · IVV +2,4%" in html
+        assert "Trafność kierunkowa: " in html
+        assert "95% CI" in html
+        assert "n=" in html
+
+    def test_compact_drops_sparklines_calibration_and_lessons(self) -> None:
+        html = self._render(compact=True)
+
+        assert "<table" not in html
+        assert "Lessons learned" not in html
+        assert "zaskoczenie wynikami" not in html
+        assert "Krzywa kalibracji" not in html
+        assert "Założenia:" not in html
+
+    def test_compact_says_where_the_rest_went(self) -> None:
+        assert "wersja zwarta" in self._render(compact=True)
+
+    def test_compact_is_much_smaller_than_the_full_section(self) -> None:
+        full = self._render(compact=False)
+        compact = self._render(compact=True)
+
+        assert "Lessons learned" in full
+        assert len(compact.encode("utf-8")) < len(full.encode("utf-8")) / 2
+
+    def test_compact_without_data_renders_nothing(self) -> None:
+        assert render_track_record_html(None, None, None, compact=True) == ""
+
+    def test_compact_without_a_comparison_states_the_missing_benchmark(self) -> None:
+        html = render_track_record_html(_curve(), None, None, compact=True)
+
+        assert "Na tle rynku: brak danych benchmarku" in html
+        assert "Krzywa kapitału (paper-PnL)" in html

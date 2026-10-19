@@ -1480,10 +1480,12 @@ def build_html_report(
         model_loaded=context.ml_model_loaded,
     )
     # T1/T2/T4: sekcja Track Record (krzywa kapitału, kalibracja, lessons).
-    # render zwraca "" gdy wszystkie trzy podsekcje puste.
+    # render zwraca "" gdy wszystkie trzy podsekcje puste. Duży dzień (próg
+    # MAIL-06) dostaje wersję zwartą — zastrzeżenie musi zmieścić się w 100 KB.
     track_record_html = render_track_record_html(
         context.equity_curve, context.calibration_buckets, context.lessons,
         context.track_record_stats,
+        compact=len(saved) > _FULL_DETAIL_TOP_N,
     )
     # Dane: sekcja Alpha Signals (insider/analitycy/opcje/social/earnings per
     # symbol + krzywa rentowności FRED). render zwraca "" gdy brak danych.

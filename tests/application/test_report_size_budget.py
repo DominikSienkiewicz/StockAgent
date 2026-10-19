@@ -306,3 +306,96 @@ def test_first_screen_and_signals_keep_inline_styles() -> None:
     assert "class=" not in first_screen
     footer = html[html.index("nie stanowi rekomendacji") - 300 :]
     assert "class=" not in footer
+
+
+def _full_track_record_context() -> ReportContext:
+    """Pełny Track Record: krzywa z kosztem, benchmark, dowód trafności, Brier,
+    pokrycie przedziałów, kalibracja i lekcje."""
+    from decimal import Decimal
+
+    from src.application.report_lessons import LessonItem, LessonsReport
+    from src.domain.calibration_curve import CalibrationBucket, probability_scores
+    from src.domain.conformal import IntervalCoverage
+    from src.domain.track_record import ScoredCall, assess_directional_hit_rate
+
+    base = _track_record_context()
+    assert base.track_record_stats is not None
+    calls = [
+        ScoredCall(
+            cycle=f"2026-09-{day + 1:02d}",
+            predicted_trend="BULLISH" if (day + i) % 3 else "BEARISH",
+            is_correct=(day + i) % 2 == 0,
+            realized_change=0.01 if (day + i) % 2 == 0 else -0.01,
+        )
+        for day in range(30)
+        for i in range(8)
+    ]
+    stats = dataclasses.replace(
+        base.track_record_stats,
+        hit_rate=assess_directional_hit_rate(calls),
+        scores=probability_scores([(0.6, True)] * 120 + [(0.6, False)] * 120),
+        coverage=IntervalCoverage(hits=150, n=200),
+    )
+    return dataclasses.replace(
+        base,
+        track_record_stats=stats,
+        calibration_buckets=[
+            CalibrationBucket(
+                lower=k / 10, upper=(k + 1) / 10, count=24, mean_confidence=k / 10 + 0.05,
+                hit_rate=0.5,
+            )
+            for k in range(5, 10)
+        ],
+        lessons=LessonsReport(
+            items=tuple(
+                LessonItem(
+                    symbol=f"SYM{i}",
+                    predicted_trend="BULLISH",
+                    insight="Rynek wycenił słabszy popyt w segmencie klienckim. " * 2,
+                    actual_change_pct=Decimal("-0.0247"),
+                )
+                for i in range(5)
+            ),
+            total_mistakes=5,
+            recurring_theme="popyt",
+        ),
+    )
+
+
+def test_big_move_day_with_the_full_track_record_stays_under_gmail_clipping() -> None:
+    # Decyzja 2026-10-19: w duży dzień Track Record jest zwarty, a zastrzeżenie
+    # inwestycyjne mieści się w pierwszych 100 KB, przed przycięciem Gmaila.
+    html, _ = build_html_report(
+        [_saved(i) for i in range(45)], STARTED, 60.0, _full_track_record_context()
+    )
+
+    assert len(html.encode("utf-8")) < 100_000
+    assert len(html[: html.index("nie stanowi rekomendacji")].encode("utf-8")) < 100_000
+
+
+def test_big_move_day_renders_the_compact_track_record() -> None:
+    html, _ = build_html_report(
+        [_saved(i) for i in range(11)], STARTED, 60.0, _full_track_record_context()
+    )
+
+    assert "wersja zwarta" in html
+    assert "paper-PnL (koszt 10 bps)" in html
+    assert "Na tle rynku: <strong>agent " in html
+    assert "Trafność kierunkowa" in html
+    # Bez sparklinii (druga linia koszyka), kalibracji i lekcji.
+    assert "background:#9ca3af" not in html
+    assert "Krzywa kalibracji" not in html
+    assert "Lessons learned" not in html
+
+
+def test_typical_day_keeps_the_full_track_record() -> None:
+    # Próg jak w MAIL-06: do 10 zapisanych predykcji mail ma pełną wersję.
+    html, _ = build_html_report(
+        [_saved(i) for i in range(10)], STARTED, 60.0, _full_track_record_context()
+    )
+
+    assert "wersja zwarta" not in html
+    assert "background:#9ca3af" in html
+    assert "Lessons learned" in html
+    assert "Krzywa kalibracji" in html
+    assert len(html.encode("utf-8")) <= 95_000
