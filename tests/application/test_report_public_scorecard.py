@@ -316,7 +316,9 @@ def test_scorecard_states_universe_selection_caveat() -> None:
     html = render_public_scorecard_html(resolved, None, [(0.8, True)])
 
     assert "Uniwersum wybrane ręcznie" in html
-    assert "2026-05" in html
+    # Decyzja właściciela 2026-10-19: lista z gita powstała w czerwcu 2026.
+    assert "2026-06" in html
+    assert "2026-05" not in html
     assert "long-bias" in html
     assert "nie jest umiejętnością" in html
     # Zastrzeżenie nie może łamać inwariantu „zero symboli watchlisty”.
