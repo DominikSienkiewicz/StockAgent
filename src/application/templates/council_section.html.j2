@@ -3,7 +3,7 @@
     Kontekst:
       verdict           — CouncilVerdict | None (None ⇒ pusty render)
       label             — etykieta PL final_recommendation (KUP/SPRZEDAJ/TRZYMAJ)
-      color, bg         — kolory CSS dla final_recommendation
+      fill, row_tone    — klasy tonu (report_styles) dla final_recommendation
       opinion_rows      — list[dict]: {name, label, emoji, tone, row_tone,
                                        confidence_pct, factors,
                                        confidence_label}
@@ -18,10 +18,10 @@
 {%- else -%}
 {#- MAIL-06 (c): układ w klasach arkusza (report_styles); kolory werdyktu inline. -#}
 <div class="cx">
-  <div class="cy" style="background:{{ bg }}">
+  <div class="cy {{ row_tone }}">
     <span class="ck">RADA DORADCZA</span>
     &nbsp;&nbsp;
-    <span class="cv" style="background:{{ color }}">{{ label }}</span>
+    <span class="cv {{ fill }}">{{ label }}</span>
     &nbsp;&nbsp;
     <span class="cs">Zgodność: {{ strength_pct }}%</span>
     {% if strong_consensus %}
@@ -41,10 +41,10 @@
   </div>
   <table class="ct">
     <thead>
-      <tr style="background:#f3f4f6">
+      <tr class="gh">
         <th scope="col" class="ch">Inwestor</th>
         <th scope="col" class="ch">Opinia</th>
-        <th scope="col" class="ch" style="text-align:center">Pewność</th>
+        <th scope="col" class="ch tc">Pewność</th>
         <th scope="col" class="ch">Kluczowe czynniki</th>
       </tr>
     </thead>

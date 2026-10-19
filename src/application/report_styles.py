@@ -29,10 +29,14 @@ _TONE_RULES = (
     f".fu{{background:{PALETTE.positive}}}"
     f".fd{{background:{PALETTE.negative}}}"
     f".fn{{background:{PALETTE.neutral}}}"
+    f".fc{{background:{PALETTE.caution}}}"
     ".gu{background:#f0fdf4}"
     ".gd{background:#fef2f2}"
     ".gc{background:#fefce8}"
     f".gn{{background:{PALETTE.surface}}}"
+    f".lu{{border-left:3px solid {PALETTE.positive}}}"
+    f".ld{{border-left:3px solid {PALETTE.negative}}}"
+    f".ln{{border-left:3px solid {PALETTE.neutral}}}"
 )
 
 # Selektory wyłącznie klasowe: obsługują je i Gmail, i Outlook desktop.
@@ -40,7 +44,12 @@ EMAIL_STYLESHEET = (
     "<style>"
     + _TONE_RULES
     # Tabela predykcji (🔮) i skrót pozostałych predykcji (📋).
-    + ".pc{padding:6px 8px;border-bottom:1px solid #f3f4f6}"
+    + ".pt{width:100%;border-collapse:collapse;font-size:13px}"
+    ".kt{width:100%;border-collapse:collapse;font-size:12px}"
+    ".pr{background:#f3f4f6;text-align:left}"
+    ".ph{padding:6px 8px;border-bottom:1px solid #e5e7eb}"
+    ".kn{font-size:12px;color:#6b7280;margin-bottom:6px}"
+    ".pc{padding:6px 8px;border-bottom:1px solid #f3f4f6}"
     ".pk{padding:4px 8px;border-bottom:1px solid #f3f4f6;vertical-align:top}"
     ".b6{font-weight:600}"
     ".b7{font-weight:700}"
@@ -69,6 +78,8 @@ EMAIL_STYLESHEET = (
     ".cz{margin-top:6px;font-size:0.85em;color:#4b5563}"
     ".cq{margin-top:6px;font-size:0.9em;color:#374151;font-style:italic}"
     ".ct{width:100%;border-collapse:collapse;font-size:0.9em}"
+    ".gh{background:#f3f4f6}"
+    ".tc{text-align:center}"
     ".ch{padding:6px 10px;font-weight:600;text-align:left}"
     ".cn{padding:6px 10px;font-weight:500}"
     ".co{padding:6px 10px;font-weight:700}"
@@ -77,7 +88,16 @@ EMAIL_STYLESHEET = (
     ".cf{padding:6px 10px;font-size:0.85em;color:#555}"
     ".cd{padding:8px 10px;font-size:0.85em;color:#92400e;background:#fffbeb}"
     ".dv{margin-top:4px;color:#92400e}"
-    # Wykresy słupkowe (Δ, prognoza) i chipy kwadrantów.
+    # Wykresy słupkowe (Δ, prognoza) i tabela kwadrantów.
+    ".gw{margin:16px 0}"
+    ".gt{font-size:14px;font-weight:600;margin-bottom:8px;color:#1f2937}"
+    ".bt{border-collapse:collapse;width:100%}"
+    ".qt{border-collapse:collapse;width:100%;table-layout:fixed}"
+    ".qh{padding:6px 8px;font-size:11px;color:#6b7280;text-transform:uppercase;"
+    "border:1px solid #e5e7eb;background:#f9fafb}"
+    ".ql{padding:8px;font-size:12px;font-weight:600;color:#374151;"
+    "border:1px solid #e5e7eb;background:#f9fafb;white-space:nowrap}"
+    ".qd{padding:8px;border:1px solid #e5e7eb;vertical-align:top;width:40%}"
     ".bl{padding:2px 8px 2px 0;font-size:12px;white-space:nowrap;color:#374151}"
     ".bv{padding:2px 0}"
     ".br{display:inline-block;height:12px;border-radius:2px;vertical-align:middle}"
@@ -109,3 +129,6 @@ def fill_tone(delta: Decimal | None) -> str:
 SIGNAL_TONE = {"KUP": "up", "SPRZEDAJ": "dn", "TRZYMAJ": "nt", "OBSERWUJ": "nt"}
 COUNCIL_TONE = {"BUY": "up", "SELL": "dn", "HOLD": "cu"}
 COUNCIL_ROW_TONE = {"BUY": "gu", "SELL": "gd", "HOLD": "gc"}
+COUNCIL_FILL = {"BUY": "fu", "SELL": "fd", "HOLD": "fc"}
+# Lewa krawędź bloku uzasadnień w kolorze trendu.
+EDGE_TONE = {"up": "lu", "dn": "ld", "nt": "ln"}

@@ -114,8 +114,10 @@ from src.application.report_signals import (
     parse_resolved_predictions,
 )
 from src.application.report_styles import (
+    COUNCIL_FILL,
     COUNCIL_ROW_TONE,
     COUNCIL_TONE,
+    EDGE_TONE,
     EMAIL_STYLESHEET,
     SIGNAL_TONE,
     delta_tone,
@@ -223,8 +225,6 @@ _SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
 # MAIL-42: linia proweniencji w stopce (przebieg · commit · logi).
 _RUN_FOOTER_SLOT = "<!-- RUN_FOOTER_SLOT -->"
 
-_COUNCIL_REC_COLOR = {"BUY": PALETTE.positive, "SELL": PALETTE.negative, "HOLD": PALETTE.caution}
-_COUNCIL_REC_BG = {"BUY": "#f0fdf4", "SELL": "#fef2f2", "HOLD": "#fefce8"}
 _COUNCIL_REC_EMOJI = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}
 
 _VERDICT_COLOR = {
@@ -542,8 +542,8 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
         {
             "verdict": verdict,
             "label": council_recommendation_label(final),
-            "color": _COUNCIL_REC_COLOR.get(final, "#737373"),
-            "bg": _COUNCIL_REC_BG.get(final, "#f9fafb"),
+            "fill": COUNCIL_FILL.get(final, "fn"),
+            "row_tone": COUNCIL_ROW_TONE.get(final, "gn"),
             "strength_pct": int(verdict.consensus_strength * 100),
             "opinion_rows": opinion_rows,
             "vote_dist": verdict.vote_distribution(),
@@ -1952,7 +1952,7 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
         else ""
     )
     return f"""
-              <div class="rb" style="border-left: 3px solid {_trend_color(r.trend)};">
+              <div class="rb {EDGE_TONE[trend_tone(r.trend)]}">
                 <div class="rh">{_html(_company_label(r.symbol))}{sector_tag} <span class="{trend_tone(r.trend)}">{_html(_trend_label(r.trend))}</span>{badges_html}</div>
                 {move_line}
                 {rec_block}
@@ -1978,18 +1978,18 @@ def _render_saved_section_html(
         return ""
     parts = [
         _section_h2("🔮 Wygenerowane predykcje"),
-        "<table style='width: 100%; border-collapse: collapse; font-size: 13px;'>",
+        "<table class='pt'>",
         f"""
-          <tr style="background: #f3f4f6; text-align: left;">
-            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Symbol</th>
-            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Cena</th>
-            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Zmiana (cykl)</th>
-            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Trend</th>
-            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Prognoza (nast. cykl)</th>
-            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Pewność</th>
-            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Sentyment</th>
-            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Newsy</th>
-            <th scope="col" style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">{MODEL_SIGNAL_TITLE}</th>
+          <tr class="pr">
+            <th scope="col" class="ph">Symbol</th>
+            <th scope="col" class="ph">Cena</th>
+            <th scope="col" class="ph">Zmiana (cykl)</th>
+            <th scope="col" class="ph">Trend</th>
+            <th scope="col" class="ph">Prognoza (nast. cykl)</th>
+            <th scope="col" class="ph">Pewność</th>
+            <th scope="col" class="ph">Sentyment</th>
+            <th scope="col" class="ph">Newsy</th>
+            <th scope="col" class="ph">{MODEL_SIGNAL_TITLE}</th>
           </tr>
         """,
     ]
@@ -2040,9 +2040,9 @@ def _render_compact_predictions_html(rest: list[SymbolResult]) -> str:
         )
     return (
         "<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>📋 Pozostałe predykcje (skrót)</h3>"
-        f"<div style='font-size: 12px; color: #6b7280; margin-bottom: 6px;'>{_html(_COMPACT_PREDICTIONS_NOTE)}</div>"
-        "<table style='width: 100%; border-collapse: collapse; font-size: 12px;'>"
-        '<tr style="background: #f3f4f6; text-align: left;">'
+        f"<div class='kn'>{_html(_COMPACT_PREDICTIONS_NOTE)}</div>"
+        "<table class='kt'>"
+        '<tr class="pr">'
         '<th scope="col" class="pk">Symbol</th>'
         f'<th scope="col" class="pk">{MODEL_SIGNAL_TITLE}</th>'
         '<th scope="col" class="pk">Rada</th></tr>'
