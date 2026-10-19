@@ -87,6 +87,22 @@ def _without_llm_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [row for row in rows if _LLM_FALLBACK_FLAG not in (row.get("data_quality_flags") or [])]
 
 
+def _resolved_window(query: Any, cutoff: datetime, since: datetime | None) -> Any:
+    """Okno zamkniętych predykcji (ocenionych kierunkowo), od najświeższej.
+
+    Bez `since` — po dacie UTWORZENIA od `cutoff`, jak przed WIA-19. Z `since` —
+    po chwili ROZLICZENIA (`settled_at`, migracja 029) od `since`: piątkowa
+    predykcja rozliczona w poniedziałek wpada do poniedziałkowego okna. Kolumny
+    przed migracją nie ma (filtr po niej → 400), więc bez `since` zapytanie jej
+    nie dotyka."""
+    column, start = ("timestamp", cutoff) if since is None else ("settled_at", since)
+    return (
+        query.gte(column, start.isoformat())
+        .not_.is_("is_trend_correct", "null")
+        .order(column, desc=True)
+    )
+
+
 def _utc_day_key(stamp: Any) -> str:
     """Klucz cyklu predykcji: dzień UTC w ISO (jak `report_evidence.cycle_key`).
 
@@ -321,8 +337,11 @@ class SupabaseRepository(RepositoryPort):
         assert last_exc is not None  # for type narrowing
         raise last_exc
 
-    def get_recently_resolved_predictions(self, hours: int) -> list[dict[str, Any]]:
-        """Predykcje zamknięte (z oceną kierunku) w ostatnich `hours` godzinach.
+    def get_recently_resolved_predictions(
+        self, hours: int, since: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """Predykcje zamknięte (z oceną kierunku) utworzone w ostatnich `hours`
+        godzinach — albo, z `since`, rozliczone od `since` (WIA-19).
 
         Filtr po `is_trend_correct` (nie `accuracy_score`) — to ono napędza
         trafność raportu i naturalnie odsiewa wiersze sprzed migracji 009."""
@@ -332,16 +351,14 @@ class SupabaseRepository(RepositoryPort):
         # prognoza się potwierdziła".
         # Paginacja (#8) — bez niej raport pokazałby max ~1000 zamkniętych
         # predykcji (cichy cap PostgREST).
-        query = (
-            self._client.table(self._table)
-            .select(
+        query = _resolved_window(
+            self._client.table(self._table).select(
                 "symbol, predicted_trend, is_trend_correct, timestamp, "
                 "reasoning_text, correction_insights, price_at_prediction, "
                 "actual_price_after_12h, data_quality_flags"
-            )
-            .gte("timestamp", cutoff.isoformat())
-            .not_.is_("is_trend_correct", "null")
-            .order("timestamp", desc=True)
+            ),
+            cutoff,
+            since,
         )
         return _without_llm_fallback(_paginate(query))
 
@@ -366,23 +383,25 @@ class SupabaseRepository(RepositoryPort):
         )
         return _without_llm_fallback(_paginate(query))
 
-    def get_resolved_predictions_detailed(self, days: int) -> list[dict[str, Any]]:
+    def get_resolved_predictions_detailed(
+        self, days: int, since: datetime | None = None
+    ) -> list[dict[str, Any]]:
         """#17 — zamknięte predykcje z polami, których `get_resolved_predictions`
         nie zwraca: `id`, `predicted_target_price`, `confidence_score` i werdykt
         rady (JSONB). Recap tygodniowy liczy z nich accuracy, ECE i wybronionych
-        dysydentów. Paginacja jak w pozostałych odczytach track-recordu."""
+        dysydentów. Paginacja jak w pozostałych odczytach track-recordu.
+        `since` — okno po chwili rozliczenia (WIA-19), jak w
+        `get_recently_resolved_predictions`."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        query = (
-            self._client.table(self._table)
-            .select(
+        query = _resolved_window(
+            self._client.table(self._table).select(
                 "id, symbol, predicted_trend, is_trend_correct, timestamp, "
                 "reasoning_text, correction_insights, price_at_prediction, "
                 "predicted_target_price, actual_price_after_12h, "
                 "confidence_score, council_verdict"
-            )
-            .gte("timestamp", cutoff.isoformat())
-            .not_.is_("is_trend_correct", "null")
-            .order("timestamp", desc=True)
+            ),
+            cutoff,
+            since,
         )
         return _paginate(query)
 

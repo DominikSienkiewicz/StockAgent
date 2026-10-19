@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from main_agent import build_notifier
@@ -36,6 +37,8 @@ from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 from src.infrastructure.llm.unavailable import UnavailableLLMAdapter
 
 logger = logging.getLogger(__name__)
+
+WEEKLY_RECAP_DAYS = 7
 
 
 def build_repository(settings: Settings) -> SupabaseRepository:
@@ -195,12 +198,19 @@ def _send_weekly_recap(
     Poniżej progu 5 zamkniętych predykcji use case zwraca `skipped_*` i mail
     NIE wychodzi — przy chudym tygodniu recap robiłby dramat z szumu.
     """
+    # WIA-19: za flagą tydzień liczy się po chwili rozliczenia (migracja 029) —
+    # piątkowa predykcja, w niedzielę jeszcze otwarta, trafia do kolejnego recapu.
+    since = (
+        datetime.now(UTC) - timedelta(days=WEEKLY_RECAP_DAYS)
+        if settings.settled_at_windows_enabled
+        else None
+    )
     try:
         recap_result = WeeklyRecapUseCase(
             repository_port=supabase_repo,
             llm_port=_build_llm_or_unavailable(settings, quota_monitor),
             crypto_symbols=settings.crypto_symbols,
-        ).run(days=7)
+        ).run(days=WEEKLY_RECAP_DAYS, since=since)
         if recap_result["status"] == "recap_ready":
             recap = recap_result["recap"]
             narrative = recap_result["narrative"]

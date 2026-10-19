@@ -11,6 +11,7 @@ Zamrażają wiążące wymagania FinOps/UX:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import Mock
 
@@ -343,3 +344,28 @@ class TestWeeklyRecapCryptoFlatBand:
 
         assert recap.best.symbol == "BTC"
         assert recap.best.vindicated_dissenters == ()
+
+
+class TestWeeklyRecapSettledWindow:
+    """WIA-19: recap liczy predykcje ROZLICZONE w tygodniu. Okno po dacie
+    utworzenia gubiło piątkowe predykcje: w niedzielę jeszcze otwarte, tydzień
+    później już poza oknem 7 dni."""
+
+    def test_since_reaches_the_repository(self) -> None:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_predictions_detailed.return_value = _rows(5)
+        llm = Mock(spec=LLMPort)
+        llm.analyze.return_value = {"narrative": "n"}
+        since = datetime(2026, 10, 18, 3, 0, tzinfo=UTC)
+
+        _use_case(repo, llm).run(days=7, since=since)
+
+        repo.get_resolved_predictions_detailed.assert_called_once_with(7, since=since)
+
+    def test_without_since_the_window_stays_by_creation_date(self) -> None:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_predictions_detailed.return_value = _rows(4)
+
+        _use_case(repo, Mock(spec=LLMPort)).run()
+
+        repo.get_resolved_predictions_detailed.assert_called_once_with(7, since=None)

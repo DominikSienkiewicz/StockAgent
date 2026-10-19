@@ -155,6 +155,11 @@ class Settings(BaseSettings):
     # kolumnie przed migracją 027 → PGRST204/400 (zapis predykcji albo trening).
     feature_set_version_enabled: bool = False
     feature_set_filter_enabled: bool = False
+    # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
+    # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
+    # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr
+    # po kolumnie przed migracją 029 → 400 i mail bez sekcji, tydzień bez recapu.
+    settled_at_windows_enabled: bool = False
     # #11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
     # migracja 021). Zero płatnych wywołań. Off.
     shock_alerts_enabled: bool = False

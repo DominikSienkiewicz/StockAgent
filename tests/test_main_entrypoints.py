@@ -1,8 +1,8 @@
 """Smoke testy entry pointów — DI wiring oraz top-level main() z mockami sieci."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -2644,3 +2644,137 @@ def test_backtest_log_reports_the_drift_and_llm_baselines(
     assert "base_rmse=0.05000" in line
     assert "drift_rmse=0.04500" in line
     assert "llm_rmse=0.02900" in line
+
+
+class TestSettledAtWindowsWiring:
+    """WIA-19 — `settled_at_windows_enabled` przełącza okna „zamknięte w oknie”
+    z daty utworzenia na chwilę rozliczenia (migracja 029): sekcja maila bierze
+    predykcje rozliczone od startu cyklu, recap — rozliczone w ostatnich 7 dniach.
+    Off = zapytania i nagłówek dokładnie jak przed migracją."""
+
+    _STARTED_AT = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def test_flag_defaults_off(self, settings) -> None:
+        assert settings.settled_at_windows_enabled is False
+
+    @staticmethod
+    def _repo() -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_accuracy_stats.return_value = None
+        repo.get_recently_resolved_predictions.return_value = []
+        repo.get_recent_quota_alerts.return_value = []
+        repo.get_council_vote_history.return_value = []
+        repo.get_persona_track_record.return_value = {}
+        return repo
+
+    def test_report_context_reads_by_creation_date_without_since(self) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        repo = self._repo()
+
+        main_agent._fetch_report_context(repo, QuotaMonitor(), ["AAPL"])
+
+        assert repo.get_recently_resolved_predictions.call_args == call(
+            main_agent.RESOLVED_PREDICTIONS_HOURS
+        )
+
+    def test_report_context_reads_settled_since_the_cycle_start(self) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        repo = self._repo()
+
+        main_agent._fetch_report_context(
+            repo, QuotaMonitor(), ["AAPL"], resolved_since=self._STARTED_AT
+        )
+
+        assert repo.get_recently_resolved_predictions.call_args == call(
+            main_agent.RESOLVED_PREDICTIONS_HOURS, since=self._STARTED_AT
+        )
+
+    def _dispatch(self, settings: Settings, mocker) -> tuple[MagicMock, MagicMock]:
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        fetch = mocker.patch(
+            "main_agent._fetch_report_context", return_value=(None, [], [], [], [])
+        )
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch("main_agent._build_user_portfolio", return_value=None)
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        report = mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+        main_agent._dispatch_reports(
+            results=[],
+            started_at=self._STARTED_AT,
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=QuotaMonitor(),
+            notifier=MagicMock(),
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL"],
+            context=main_agent.ReportContext(),
+        )
+        return fetch, report
+
+    def test_flag_on_reads_this_cycle_and_labels_the_section(self, settings, mocker) -> None:
+        settings.settled_at_windows_enabled = True
+
+        fetch, report = self._dispatch(settings, mocker)
+
+        assert fetch.call_args.kwargs["resolved_since"] == self._STARTED_AT
+        assert report.call_args_list[0].args[3].resolved_this_cycle is True
+
+    def test_flag_off_keeps_the_creation_date_window(self, settings, mocker) -> None:
+        settings.settled_at_windows_enabled = False
+
+        fetch, report = self._dispatch(settings, mocker)
+
+        assert fetch.call_args.kwargs["resolved_since"] is None
+        assert report.call_args_list[0].args[3].resolved_this_cycle is False
+
+    def _trainer(self, settings, mocker) -> MagicMock:
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch(
+            "main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort)
+        )
+        recap_uc = MagicMock()
+        recap_uc.run.return_value = {"status": "skipped_below_threshold", "n_closed": 2}
+        mocker.patch("main_trainer.WeeklyRecapUseCase", return_value=recap_uc)
+        mocker.patch("main_trainer.build_notifier", return_value=MagicMock())
+        mocker.patch("main_agent.build_llm_adapter", return_value=MagicMock())
+        return recap_uc
+
+    def test_flag_on_recap_reads_the_week_by_settlement(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.settled_at_windows_enabled = True
+        recap_uc = self._trainer(settings, mocker)
+        before = datetime.now(UTC)
+
+        main_trainer.main(settings)
+
+        kwargs = recap_uc.run.call_args.kwargs
+        assert kwargs["days"] == 7
+        since = kwargs["since"]
+        assert before - timedelta(days=7) <= since <= datetime.now(UTC) - timedelta(days=7)
+
+    def test_flag_off_recap_keeps_the_creation_date_window(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.settled_at_windows_enabled = False
+        recap_uc = self._trainer(settings, mocker)
+
+        main_trainer.main(settings)
+
+        assert recap_uc.run.call_args.kwargs == {"days": 7, "since": None}

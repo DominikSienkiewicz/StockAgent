@@ -1549,7 +1549,11 @@ def _persist_quota_alerts(repository: RepositoryPort, alerts: list[QuotaAlert]) 
 
 
 def _fetch_report_context(
-    repository: RepositoryPort, quota_monitor: QuotaMonitor, all_symbols: list[str]
+    repository: RepositoryPort,
+    quota_monitor: QuotaMonitor,
+    all_symbols: list[str],
+    *,
+    resolved_since: datetime | None = None,
 ) -> tuple[
     dict[str, Any] | None,
     list[ResolvedPrediction],
@@ -1560,7 +1564,10 @@ def _fetch_report_context(
     """Best-effort dociągnięcie danych do raportu: accuracy, zamknięte predykcje,
     alerty kwot (persystencja bieżących + odczyt z ostatniego tygodnia), historia głosów rady
     i ranking wiarygodności person.
-    Każdy odczyt osobno owinięty — błąd jednego nie blokuje pozostałych."""
+    Każdy odczyt osobno owinięty — błąd jednego nie blokuje pozostałych.
+
+    `resolved_since` (WIA-19) — zamknięte predykcje to te ROZLICZONE od tej
+    chwili (start cyklu), a nie utworzone w ostatnich 24 h. None = okno 24 h."""
     accuracy_stats: dict[str, Any] | None = None
     resolved: list[ResolvedPrediction] = []
     try:
@@ -1568,8 +1575,12 @@ def _fetch_report_context(
     except Exception:
         logger.exception("Failed to fetch accuracy stats — report without them")
     try:
-        resolved_rows = repository.get_recently_resolved_predictions(
-            RESOLVED_PREDICTIONS_HOURS
+        resolved_rows = (
+            repository.get_recently_resolved_predictions(RESOLVED_PREDICTIONS_HOURS)
+            if resolved_since is None
+            else repository.get_recently_resolved_predictions(
+                RESOLVED_PREDICTIONS_HOURS, since=resolved_since
+            )
         )
         resolved = parse_resolved_predictions(resolved_rows)
     except Exception:
@@ -1650,13 +1661,20 @@ def _dispatch_reports(
     persisted_alerts = len(quota_monitor.alerts)
     email_delivered = True
     try:
+        # WIA-19: za flagą sekcja zamkniętych predykcji = rozliczone w TYM cyklu
+        # (`settled_at` ≥ start cyklu, migracja 029). Trigger stempluje zegarem
+        # bazy, a start liczy zegar runnera: oba chodzą po NTP, a od startu do
+        # pierwszego rozliczenia mijają sekundy, więc rozjazd zegarów nie gubi wierszy.
+        resolved_since = started_at if settings.settled_at_windows_enabled else None
         (
             accuracy_stats,
             resolved,
             recent_alerts,
             council_history,
             persona_track_record,
-        ) = _fetch_report_context(repository, quota_monitor, all_symbols)
+        ) = _fetch_report_context(
+            repository, quota_monitor, all_symbols, resolved_since=resolved_since
+        )
 
         # T1/T2/T4: Track Record (render-only, zero płatnych). Każda podsekcja
         # flag-gated; wszystkie czytają zamknięte predykcje z okna track_record_days.
@@ -1687,6 +1705,7 @@ def _dispatch_reports(
             context,
             accuracy_stats=accuracy_stats,
             resolved_predictions=resolved,
+            resolved_this_cycle=resolved_since is not None,
             council_history=council_history,
             persona_track_record=persona_track_record,
             quota_alerts=recent_alerts,

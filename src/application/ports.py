@@ -151,9 +151,17 @@ class RepositoryPort(ABC):
         atrapy po awarii głównego LLM (flaga `llm_analysis_failed`, WIA-09)."""
 
     @abstractmethod
-    def get_recently_resolved_predictions(self, hours: int) -> list[dict[str, Any]]:
-        """Predykcje z ocenionym kierunkiem (`is_trend_correct`) z ostatnich
-        `hours` godzin."""
+    def get_recently_resolved_predictions(
+        self, hours: int, since: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """Predykcje z ocenionym kierunkiem (`is_trend_correct`) UTWORZONE
+        w ostatnich `hours` godzinach.
+
+        `since` (WIA-19, migracja 029): okno to predykcje ROZLICZONE
+        (`settled_at`) od `since` — Fast Loop podaje start cyklu, czyli „rozliczone
+        w tym cyklu” — od najświeżej rozliczonej; `hours` nie gra wtedy roli.
+        Przed migracją kolumny nie ma, więc wołający podaje `since` tylko za
+        flagą `settled_at_windows_enabled`. None = okno po dacie utworzenia."""
 
     @abstractmethod
     def get_resolved_predictions(self, days: int) -> list[dict[str, Any]]:
@@ -258,13 +266,19 @@ class RepositoryPort(ABC):
         → sekcja leaderboardu sama się chowa."""
 
     @abstractmethod
-    def get_resolved_predictions_detailed(self, days: int) -> list[dict[str, Any]]:
+    def get_resolved_predictions_detailed(
+        self, days: int, since: datetime | None = None
+    ) -> list[dict[str, Any]]:
         """#17 — jak `get_resolved_predictions`, ale z polami, których tamta NIE
         zwraca: `id`, `price_at_prediction`, `predicted_target_price`,
         `confidence_score`, `actual_price_after_12h` i `council_verdict` (JSONB).
 
         Recap tygodniowy potrzebuje ich, żeby policzyć accuracy, ECE i
-        wybronionych dysydentów rady. Pusta lista = brak danych."""
+        wybronionych dysydentów rady. Pusta lista = brak danych.
+
+        `since` (WIA-19, migracja 029): jak w `get_recently_resolved_predictions`
+        — predykcje ROZLICZONE od `since` zamiast utworzonych w ostatnich `days`
+        dniach. None = okno po dacie utworzenia (działa bez migracji)."""
 
     @abstractmethod
     def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:

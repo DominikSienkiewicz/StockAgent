@@ -1999,3 +1999,62 @@ class TestModelScorecardBaselines:
         assert payload["drift_baseline_rmse"] == 0.023
         assert payload["llm_baseline_rmse"] == 0.020
         assert payload["baseline_rmse"] == 0.024
+
+
+class TestSettledAtWindows:
+    """WIA-19: okno „rozliczone od `since`” filtruje i sortuje po `settled_at`
+    (migracja 029). Bez `since` zapytanie nie dotyka kolumny, której przed
+    migracją nie ma — filtr po niej to 400 i raport bez zamkniętych predykcji."""
+
+    _SINCE = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _capture(mocker: Any) -> list[httpx.QueryParams]:
+        sent: list[httpx.QueryParams] = []
+
+        def fake_request(
+            _client: httpx.Client, method: str, url: str, **kwargs: Any
+        ) -> httpx.Response:
+            sent.append(httpx.QueryParams(kwargs.get("params")))
+            return httpx.Response(200, json=[], request=httpx.Request(method, url))
+
+        mocker.patch.object(httpx.Client, "request", autospec=True, side_effect=fake_request)
+        return sent
+
+    _READS: dict[str, Callable[[SupabaseRepository, datetime | None], object]] = {
+        "recently_resolved": lambda repo, since: repo.get_recently_resolved_predictions(
+            24, since=since
+        ),
+        "resolved_detailed": lambda repo, since: repo.get_resolved_predictions_detailed(
+            7, since=since
+        ),
+    }
+
+    @pytest.mark.parametrize("read", _READS.values(), ids=_READS.keys())
+    def test_since_filters_and_orders_by_settlement_moment(
+        self, mocker: Any, read: Callable[[SupabaseRepository, datetime | None], object]
+    ) -> None:
+        sent = self._capture(mocker)
+        repo = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
+
+        read(repo, self._SINCE)
+
+        params = sent[0]
+        assert params.get("settled_at") == f"gte.{self._SINCE.isoformat()}"
+        assert params.get("order") == "settled_at.desc"
+        # Data UTWORZENIA nie tnie okna — piątkowa predykcja rozliczona w poniedziałek wchodzi.
+        assert "timestamp" not in params
+        assert params.get("is_trend_correct") == "not.is.null"
+
+    @pytest.mark.parametrize("read", _READS.values(), ids=_READS.keys())
+    def test_without_since_the_query_never_touches_settled_at(
+        self, mocker: Any, read: Callable[[SupabaseRepository, datetime | None], object]
+    ) -> None:
+        sent = self._capture(mocker)
+        repo = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
+
+        read(repo, None)
+
+        assert all("settled_at" not in str(params) for params in sent)
+        assert sent[0].get("timestamp", "").startswith("gte.")
+        assert sent[0].get("order") == "timestamp.desc"

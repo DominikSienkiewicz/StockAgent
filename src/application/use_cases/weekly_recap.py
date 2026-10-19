@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
@@ -198,8 +199,11 @@ class WeeklyRecapUseCase:
         # Symbole krypto (DI z `settings.crypto_symbols`) wyznaczają pasmo FLAT.
         self._crypto_symbols = frozenset(s.upper() for s in crypto_symbols)
 
-    def run(self, days: int = 7) -> dict[str, Any]:
-        rows = self._repo.get_resolved_predictions_detailed(days)
+    def run(self, days: int = 7, since: datetime | None = None) -> dict[str, Any]:
+        """`since` (WIA-19) — tydzień liczony po chwili rozliczenia: predykcja
+        z piątku, w niedzielę jeszcze otwarta, wchodzi do następnego recapu.
+        None = okno `days` po dacie utworzenia."""
+        rows = self._repo.get_resolved_predictions_detailed(days, since=since)
         closed = [
             cp
             for cp in (_to_closed_prediction(r, self._crypto_symbols) for r in rows)

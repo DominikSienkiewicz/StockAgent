@@ -11,6 +11,7 @@ Uruchomienie:
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg2
@@ -49,6 +50,7 @@ MIGRATION_FILES = [
     "026_feature_store_clean_rows.sql",
     "027_feature_set_version.sql",
     "028_model_scorecard_baselines.sql",
+    "029_prediction_settled_at.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -727,6 +729,58 @@ class TestMigrations:
             row = cur.fetchone()
         assert row == (None, None)
 
+    # -- Migracja 029: moment rozliczenia predykcji (WIA-19) ------------------
+
+    def test_settling_a_prediction_stamps_settled_at(self, pg_conn) -> None:
+        """Okna „rozliczone w oknie” potrzebują chwili rozliczenia, nie utworzenia:
+        piątkowa predykcja rozliczona w poniedziałek ma wpaść do poniedziałku."""
+        assert "settled_at" in _columns(pg_conn, "prediction_logs")
+        assert "idx_prediction_logs_settled_at" in _indexes(pg_conn, "prediction_logs")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('SET_STAMP', '2026-10-16T15:00:00+00:00', 100.0) "
+                "RETURNING settled_at"
+            )
+            assert cur.fetchone() == (None,)
+
+            cur.execute(
+                "UPDATE prediction_logs SET actual_price_after_12h = 101.0, "
+                "is_trend_correct = true WHERE symbol = 'SET_STAMP' "
+                "RETURNING settled_at, settled_at >= now() - INTERVAL '1 minute'"
+            )
+            settled_at, is_fresh = cur.fetchone()
+
+        assert settled_at is not None
+        assert is_fresh is True
+
+    def test_resettling_does_not_restamp_settled_at(self, pg_conn) -> None:
+        """Druga ocena już rozliczonego wiersza nie przesuwa chwili rozliczenia —
+        inaczej predykcja wracałaby do okna „rozliczone w tym cyklu” co cykl."""
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('SET_RESTAMP', '2026-10-16T15:00:00+00:00', 100.0)"
+            )
+            cur.execute(
+                "UPDATE prediction_logs SET actual_price_after_12h = 101.0 "
+                "WHERE symbol = 'SET_RESTAMP'"
+            )
+            # Znany stempel (osobne UPDATE: trigger go nie nadpisuje), żeby
+            # porównanie nie zależało od rozdzielczości zegara.
+            cur.execute(
+                "UPDATE prediction_logs SET settled_at = '2026-10-19T05:30:00+00:00' "
+                "WHERE symbol = 'SET_RESTAMP'"
+            )
+            cur.execute(
+                "UPDATE prediction_logs SET actual_price_after_12h = 102.0, "
+                "correction_insights = 'druga ocena' WHERE symbol = 'SET_RESTAMP' "
+                "RETURNING settled_at = '2026-10-19T05:30:00+00:00'::timestamptz"
+            )
+            unchanged = cur.fetchone()[0]
+
+        assert unchanged is True
+
 
 @pytest.fixture
 def fresh_pg():
@@ -854,6 +908,65 @@ class TestMigration027BackfillsFeatureSetVersion:
             versions = dict(cur.fetchall())
 
         assert versions == {"FSV_OLD": 1, "FSV_NEW": None}
+
+
+@pytest.mark.containers
+class TestMigration029BackfillsSettledAt:
+    """WIA-19: chwila rozliczenia sprzed triggera nie jest nigdzie zapisana.
+    Cykl, który rozlicza predykcję, zapisuje snapshot ceny po tej samej cenie,
+    więc najlepszym przybliżeniem jest pierwszy taki snapshot po cyklu predykcji;
+    bez niego zostaje dolna granica — `timestamp` predykcji."""
+
+    def _apply_up_to_028(self, conn: psycopg2.extensions.connection) -> None:
+        idx = MIGRATION_FILES.index("029_prediction_settled_at.sql")
+        with conn.cursor() as cur:
+            for filename in MIGRATION_FILES[:idx]:
+                cur.execute((MIGRATIONS_DIR / filename).read_text())
+
+    def test_029_backfills_settled_at_from_the_settling_cycle_snapshot(
+        self, fresh_pg
+    ) -> None:
+        conn = fresh_pg
+        self._apply_up_to_028(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, actual_price_after_12h) "
+                "VALUES "
+                # Piątek → rozliczona w poniedziałek po 105.
+                "('BF_FRI', '2026-10-16T17:30:00+00:00', 100.0, 105.0), "
+                # Cena bez zmian: snapshot cyklu predykcji (ta sama cena) się nie liczy.
+                "('BF_FLAT', '2026-10-16T17:30:00+00:00', 100.0, 100.0), "
+                # Brak snapshotu po cenie rozliczenia → dolna granica.
+                "('BF_NONE', '2026-10-16T17:30:00+00:00', 100.0, 107.0), "
+                "('BF_OPEN', '2026-10-16T17:30:00+00:00', 100.0, NULL)"
+            )
+            cur.execute(
+                "INSERT INTO price_snapshots (symbol, price, timestamp) VALUES "
+                "('BF_FRI', 100.0, '2026-10-16T17:30:05+00:00'), "
+                "('BF_FRI', 103.0, '2026-10-17T05:30:05+00:00'), "
+                "('BF_FRI', 105.0, '2026-10-19T05:30:05+00:00'), "
+                "('BF_FRI', 105.0, '2026-10-19T17:30:05+00:00'), "
+                "('BF_FLAT', 100.0, '2026-10-16T17:30:05+00:00'), "
+                "('BF_FLAT', 100.0, '2026-10-19T05:30:05+00:00'), "
+                "('BF_NONE', 100.0, '2026-10-16T17:30:05+00:00'), "
+                "('BF_NONE', 106.0, '2026-10-19T05:30:05+00:00')"
+            )
+
+            cur.execute((MIGRATIONS_DIR / "029_prediction_settled_at.sql").read_text())
+
+            cur.execute(
+                "SELECT symbol, settled_at FROM prediction_logs WHERE symbol LIKE 'BF_%'"
+            )
+            settled = {symbol: stamp for symbol, stamp in cur.fetchall()}
+
+        monday = datetime(2026, 10, 19, 5, 30, 5, tzinfo=UTC)
+        assert settled == {
+            "BF_FRI": monday,
+            "BF_FLAT": monday,
+            "BF_NONE": datetime(2026, 10, 16, 17, 30, tzinfo=UTC),
+            "BF_OPEN": None,
+        }
 
 
 def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:

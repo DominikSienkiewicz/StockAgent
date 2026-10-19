@@ -2430,3 +2430,32 @@ def test_plain_text_has_no_preheader():
 
     assert "&zwnj;" not in text
     assert "Brak sygnałów ponad próg" not in text
+
+
+class TestResolvedSectionWindowHeading:
+    """WIA-19: za flagą `settled_at_windows_enabled` sekcja pokazuje predykcje
+    rozliczone w TYM cyklu (po `settled_at`), więc nagłówek nie może dalej
+    obiecywać „ostatnich 24h”, których okno już nie liczy."""
+
+    _RESOLVED = [ResolvedPrediction(symbol="NVDA", predicted_trend="BULLISH", is_correct=True)]
+
+    def test_cycle_window_heading(self):
+        html, text = build_html_report(
+            [], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0,
+            ReportContext(resolved_predictions=self._RESOLVED, resolved_this_cycle=True),
+        )
+
+        assert "Zamknięte predykcje (rozliczone w tym cyklu)" in html
+        assert "ZAMKNIĘTE PREDYKCJE (rozliczone w tym cyklu)" in text
+        assert "ostatnie 24h" not in html
+        assert "ostatnie 24h" not in text
+
+    def test_default_heading_keeps_the_24h_window(self):
+        html, text = build_html_report(
+            [], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0,
+            ReportContext(resolved_predictions=self._RESOLVED),
+        )
+
+        assert "Zamknięte predykcje (ostatnie 24h)" in html
+        assert "ZAMKNIĘTE PREDYKCJE (ostatnie 24h)" in text
+        assert "rozliczone w tym cyklu" not in html

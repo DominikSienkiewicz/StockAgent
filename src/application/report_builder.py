@@ -987,6 +987,9 @@ class ReportContext:
         accuracy_stats: wynik `RepositoryPort.get_accuracy_stats(days)`.
         resolved_predictions: zamknięte predykcje z ostatnich N godzin
             (do sekcji day-over-day).
+        resolved_this_cycle: `resolved_predictions` to predykcje rozliczone
+            w TYM cyklu (WIA-19, okno po `settled_at`), nie z ostatnich 24 h —
+            nagłówek sekcji mówi wtedy, jakie okno pokazuje.
         macro_risk_report: wynik `MonitorMacroRiskUseCase.run(...)` — gdy
             podany, w raporcie pojawia się sekcja 🚨 Risk Watch.
         symbols_filter: watchlista subskrybenta; raport jest do niej tnięty.
@@ -994,6 +997,7 @@ class ReportContext:
 
     accuracy_stats: dict[str, Any] | None = None
     resolved_predictions: list[ResolvedPrediction] | None = None
+    resolved_this_cycle: bool = False
     macro_risk_report: MacroRiskReport | None = None
     portfolio_risk_report: PortfolioRiskReport | None = None
     council_history: list[InvestorHistory] | None = None
@@ -1158,10 +1162,13 @@ def build_html_report(
     suggestions_text = render_suggestions_text(suggestions)
 
     started_local = format_local(started_at, context.display_timezone)
+    resolved_window = (
+        _RESOLVED_WINDOW_THIS_CYCLE if context.resolved_this_cycle else _RESOLVED_WINDOW_24H
+    )
     html = _render_html(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
-        resolved,
+        resolved, resolved_window=resolved_window,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1185,7 +1192,7 @@ def build_html_report(
     text = _render_plain(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
-        resolved,
+        resolved, resolved_window=resolved_window,
     )
     text = _fill_text_slots(
         text,
@@ -1333,15 +1340,21 @@ def _render_risk_signals_html(risk_signals: list[RiskSignal]) -> str:
     return "".join(parts)
 
 
+# WIA-19: okno sekcji zamkniętych predykcji w jej nagłówku (HTML i tekst).
+_RESOLVED_WINDOW_24H = "ostatnie 24h"
+_RESOLVED_WINDOW_THIS_CYCLE = "rozliczone w tym cyklu"
+
+
 def _render_resolved_predictions_html(
     resolved_predictions: list[ResolvedPrediction],
+    window: str = _RESOLVED_WINDOW_24H,
 ) -> str:
-    """📊 Zamknięte predykcje z ostatnich 24h. Pusty string, gdy brak."""
+    """📊 Zamknięte predykcje z okna `window`. Pusty string, gdy brak."""
     if not resolved_predictions:
         return ""
     correct = [p for p in resolved_predictions if p.is_correct]
     wrong = [p for p in resolved_predictions if not p.is_correct]
-    parts = [_section_h2("📊 Zamknięte predykcje (ostatnie 24h)")]
+    parts = [_section_h2(f"📊 Zamknięte predykcje ({window})")]
     parts.extend(_render_resolved_item_html(p) for p in resolved_predictions)
     parts.append(
         "<div style='font-size: 11px; color: #6b7280; margin: 4px 0 16px 0;'>"
@@ -1634,6 +1647,8 @@ def _render_html(
     trade_signals: list[TradeSignal],
     risk_signals: list[RiskSignal],
     resolved_predictions: list[ResolvedPrediction],
+    *,
+    resolved_window: str = _RESOLVED_WINDOW_24H,
 ) -> str:
     sections = []
 
@@ -1739,8 +1754,8 @@ def _render_html(
       </div>
     """)
 
-    # 📊 Day-over-day — zamknięte predykcje z ostatnich 24h
-    sections.append(_render_resolved_predictions_html(resolved_predictions))
+    # 📊 Day-over-day — zamknięte predykcje z ostatnich 24h albo z tego cyklu
+    sections.append(_render_resolved_predictions_html(resolved_predictions, resolved_window))
 
     # Historia trafności
     sections.append(_render_accuracy_history_html(accuracy_stats))
@@ -1830,12 +1845,13 @@ def _render_risk_signals_text(risk_signals: list[RiskSignal]) -> list[str]:
 
 def _render_resolved_predictions_text(
     resolved_predictions: list[ResolvedPrediction],
+    window: str = _RESOLVED_WINDOW_24H,
 ) -> list[str]:
     """Sekcja 'Zamknięte predykcje' (plain). Pusta lista, gdy brak."""
     if not resolved_predictions:
         return []
     correct = sum(1 for p in resolved_predictions if p.is_correct)
-    lines = ["ZAMKNIĘTE PREDYKCJE (ostatnie 24h)", "-" * 64]
+    lines = [f"ZAMKNIĘTE PREDYKCJE ({window})", "-" * 64]
     for p in resolved_predictions:
         mark = "✅" if p.is_correct else "❌"
         verdict = "Trafiona" if p.is_correct else "Błędna"
@@ -2000,6 +2016,8 @@ def _render_plain(
     trade_signals: list[TradeSignal],
     risk_signals: list[RiskSignal],
     resolved_predictions: list[ResolvedPrediction],
+    *,
+    resolved_window: str = _RESOLVED_WINDOW_24H,
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
@@ -2037,7 +2055,7 @@ def _render_plain(
     lines.extend(_render_risk_signals_text(risk_signals))
 
     # Zamknięte predykcje
-    lines.extend(_render_resolved_predictions_text(resolved_predictions))
+    lines.extend(_render_resolved_predictions_text(resolved_predictions, resolved_window))
 
     # Nastroje portfela
     lines.append("NASTROJE PORTFELA")
