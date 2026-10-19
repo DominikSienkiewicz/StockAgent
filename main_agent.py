@@ -101,7 +101,7 @@ from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
 from src.domain.portfolio import Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
-from src.domain.recipe import PredictionRecipe
+from src.domain.recipe import PredictionRecipe, universe_version
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
@@ -842,6 +842,7 @@ def build_prediction_recipe(settings: Settings, run_context: RunContext) -> Pred
         personas_sha256=personas_sha256(Path(settings.council_personas_dir)),
         config_hash=settings.config_hash(),
         model_version=ml_model_version(settings.ml_model_path),
+        universe_version=universe_version(settings.symbols, settings.crypto_symbols),
         git_sha=run_context.git_sha,
         run_id=run_context.run_id,
     )

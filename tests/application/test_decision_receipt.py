@@ -32,6 +32,7 @@ def _recipe() -> PredictionRecipe:
         personas_sha256="b" * 64,
         config_hash="c" * 64,
         model_version="cold_start",
+        universe_version="d" * 64,
         git_sha="abc1234",
         run_id="77",
     )

@@ -318,6 +318,14 @@ def _render_methodology_section() -> str:
         "rzutu monetą; taki wynik zostaje na stronie. Uczciwie pokazana "
         "pomyłka jest wiarygodniejsza niż wygładzony wykres — dlatego słabe "
         "okresy traktujemy jak część dowodu, nie jak usterkę do ukrycia.</p>"
+        # WIA-48: survivorship — watchlista to dzisiejsi zwycięzcy. Bez nazw
+        # spółek: strona publiczna nie ujawnia symboli watchlisty.
+        "<p><strong>Uniwersum wybrane ręcznie (2026-05).</strong> Listę "
+        "obserwowanych spółek wybraliśmy ręcznie, z wiedzą o ich wcześniejszych "
+        "wzrostach — to nie losowa próba rynku. Przewaga prognoz wzrostowych "
+        "(long-bias) na takim uniwersum nie jest umiejętnością: dlatego obok "
+        "trafności stoi naiwna strategia „zawsze wzrost” policzona na tych "
+        "samych predykcjach.</p>"
         "<p class='fineprint'>Wynik paper-PnL jest symulacją bez realnych "
         "transakcji i nie stanowi rekomendacji inwestycyjnej.</p>"
         "</section>"

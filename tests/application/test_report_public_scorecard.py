@@ -306,3 +306,18 @@ class TestPortfolioCurveDisclosure:
 
         assert "równa waga" in html
         assert "gotówka" in html
+
+
+def test_scorecard_states_universe_selection_caveat() -> None:
+    """WIA-48: watchlista to dzisiejsi zwycięzcy wybrani ręcznie — strona mówi
+    wprost, że long-bias na takim uniwersum nie jest umiejętnością."""
+    resolved = [_resolved("NVDA", "BULLISH", True)]
+
+    html = render_public_scorecard_html(resolved, None, [(0.8, True)])
+
+    assert "Uniwersum wybrane ręcznie" in html
+    assert "2026-05" in html
+    assert "long-bias" in html
+    assert "nie jest umiejętnością" in html
+    # Zastrzeżenie nie może łamać inwariantu „zero symboli watchlisty”.
+    assert "NVDA" not in html

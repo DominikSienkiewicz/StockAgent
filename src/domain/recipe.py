@@ -41,6 +41,7 @@ class PredictionRecipe:
         personas_sha256: hash zestawu plików person rady.
         config_hash: hash niesekretnych pól konfiguracji (progi, flagi, modele).
         model_version: "cold_start" albo sha256 pliku wag XGBoost.
+        universe_version: wersja uniwersum symboli (`universe_version`, WIA-48).
         git_sha, run_id: commit i przebieg (audyt, poza `version`).
     """
 
@@ -52,6 +53,7 @@ class PredictionRecipe:
     personas_sha256: str
     config_hash: str
     model_version: str
+    universe_version: str
     git_sha: str
     run_id: str
 
@@ -74,10 +76,23 @@ class PredictionRecipe:
 RECIPE_FIELDS: tuple[str, ...] = tuple(f.name for f in fields(PredictionRecipe))
 
 
+def universe_version(symbols: Iterable[str], crypto_symbols: Iterable[str]) -> str:
+    """WIA-48: sha256 posortowanego zbioru tickerów (akcje/ETF + krypto).
+
+    Kolejność i duplikaty nie mają znaczenia — uniwersum to zbiór. Watchlista
+    jest wybrana ręcznie z wiedzą o wcześniejszych wzrostach spółek, więc każda
+    jej zmiana zakłada nowy segment track recordu zamiast udawać zmianę trafności.
+    """
+    universe = sorted({*symbols, *crypto_symbols})
+    canonical = json.dumps(universe, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def hit_rate_by_version(
     calls: Iterable[tuple[str | None, str, bool]],
 ) -> dict[str, DirectionalHitRate]:
-    """Trafność kierunkowa per wersja z trójek `(wersja, predicted_trend, is_correct)`.
+    """Trafność kierunkowa per wersja z trójek `(wersja, predicted_trend, is_correct)`
+    — wersja przepisu (WIA-20) albo wersja uniwersum (WIA-48).
 
     Wersja None trafia do segmentu `UNVERSIONED`. Kolejność segmentów = kolejność
     pierwszego wystąpienia (wołający podaje wiersze w swojej kolejności czasu).

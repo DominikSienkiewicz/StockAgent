@@ -64,6 +64,8 @@ Sector mix: 🤖 AI / semis (NVDA, AMD, TSM, ASML, ASMIY, MU, QCOM, INTC, SNDK) 
 
 Configurable via `SYMBOLS` in `.env` (CSV).
 
+The list was picked by hand (2026-05) with knowledge of how these companies had already risen, so it carries survivorship bias: a long bias on it is not skill. The track record and the public scorecard therefore show the naive "always BULLISH" baseline on the same predictions, and the recipe of every prediction records a `universe_version` (sha256 of the sorted `symbols` + `crypto_symbols`) so that a changed watchlist starts a new segment ([configuration.md](configuration.md), `recipe_version_enabled`).
+
 ## Crypto basket (separate price source, separate threshold)
 
 Crypto tickers live in their **own pool** — `CRYPTO_SYMBOLS=BTC,ETH` — and are routed to a different price adapter (`CoinGeckoAdapter`, not Finnhub). The graph itself doesn't know — `RoutingMarketDataPort` picks the right adapter per symbol behind the `MarketDataPort` interface.

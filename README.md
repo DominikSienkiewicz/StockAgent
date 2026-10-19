@@ -68,6 +68,12 @@ Educational / proof-of-concept project demonstrating expertise in Agentic AI, He
 Architecture, and FinOps. **Generated predictions do not constitute investment advice.**
 Make financial decisions at your own risk, after consulting a licensed advisor.
 
+**Survivorship bias.** The watchlist was hand-picked (2026-05) with knowledge of how those
+companies had already risen, so a long bias on it is not skill. The track record and the
+public scorecard show the naive "always BULLISH" baseline on the same predictions for that
+reason, and each prediction's recipe records a `universe_version` (a hash of the sorted
+watchlist), so adding symbols starts a new segment instead of passing for better accuracy.
+
 ## License
 
 [MIT](LICENSE)

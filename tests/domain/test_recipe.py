@@ -10,6 +10,7 @@ from src.domain.recipe import (
     UNVERSIONED,
     PredictionRecipe,
     hit_rate_by_version,
+    universe_version,
 )
 
 _SHA_A = "a" * 64
@@ -26,6 +27,7 @@ def _recipe(**overrides: str) -> PredictionRecipe:
         "personas_sha256": _SHA_A,
         "config_hash": _SHA_A,
         "model_version": "cold_start",
+        "universe_version": _SHA_A,
         "git_sha": "abc1234",
         "run_id": "77",
     }
@@ -50,6 +52,7 @@ def test_recipe_hash_changes_with_model_personas_config_and_ml_weights() -> None
     assert _recipe(personas_sha256=_SHA_B).version != base
     assert _recipe(config_hash=_SHA_B).version != base
     assert _recipe(model_version=_SHA_B).version != base
+    assert _recipe(universe_version=_SHA_B).version != base
 
 
 def test_run_identity_does_not_change_the_recipe_version() -> None:
@@ -96,3 +99,31 @@ def test_hit_rate_by_version_keeps_first_seen_order() -> None:
     calls = [("v2", "BULLISH", True), ("v1", "BULLISH", True), ("v2", "BEARISH", True)]
 
     assert list(hit_rate_by_version(calls)) == ["v2", "v1"]
+
+
+# -- WIA-48: wersja uniwersum symboli -----------------------------------------
+
+
+def test_universe_hash_independent_of_order() -> None:
+    assert universe_version(["NVDA", "AAPL"], ["BTC"]) == universe_version(
+        ["AAPL", "NVDA"], ["BTC"]
+    )
+    assert universe_version(["AAPL"], ["BTC", "ETH"]) == universe_version(
+        ["AAPL"], ["ETH", "BTC"]
+    )
+    assert len(universe_version(["AAPL"], [])) == 64
+
+
+def test_universe_hash_changes_when_a_symbol_is_added_or_removed() -> None:
+    base = universe_version(["AAPL", "NVDA"], ["BTC"])
+
+    assert universe_version(["AAPL", "NVDA", "PLTR"], ["BTC"]) != base
+    assert universe_version(["AAPL"], ["BTC"]) != base
+    assert universe_version(["AAPL", "NVDA"], ["BTC", "ETH"]) != base
+
+
+def test_universe_is_one_set_of_symbols() -> None:
+    """Uniwersum to zbiór tickerów: duplikat nie tworzy nowej wersji, a ticker
+    przeniesiony między listami akcji i krypto to wciąż to samo uniwersum."""
+    assert universe_version(["AAPL", "AAPL"], []) == universe_version(["AAPL"], [])
+    assert universe_version(["AAPL", "BTC"], []) == universe_version(["AAPL"], ["BTC"])

@@ -19,13 +19,15 @@ Metryki:
 
 Segmentacja (WIA-20): `--by-recipe` dokłada trafność kierunkową per wersja
 przepisu predykcji (`prediction_logs.recipe_version`, WYMAGA migracji 030).
-Wiersze bez wersji (sprzed WIA-20 albo zapisane bez flagi) to segment
-`unversioned`.
+`--by-universe` (WIA-48) — per wersja uniwersum symboli z kwitu v2
+(`decision_receipts`, bez nowej migracji). Wiersze bez wersji (sprzed WIA-20
+albo zapisane bez flagi / bez kwitu v2) to segment `unversioned`.
 
 Uruchom:
     uv run python -m src.tools.evaluate
     uv run python -m src.tools.evaluate --days 60
     uv run python -m src.tools.evaluate --by-recipe
+    uv run python -m src.tools.evaluate --by-universe
 
 Exit code: 0 zawsze (narzędzie raportujące, nie bramka CI).
 """
@@ -257,6 +259,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Trafność per wersja przepisu (recipe_version) — wymaga migracji 030.",
     )
+    parser.add_argument(
+        "--by-universe",
+        action="store_true",
+        help="Trafność per wersja uniwersum symboli (z kwitu decyzyjnego v2).",
+    )
     args = parser.parse_args(argv)
 
     # Import lokalnie — narzędzie nie powinno wymagać konfiguracji do testów
@@ -266,14 +273,20 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = Settings.from_env()
     repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
-    if args.by_recipe:
-        rows = repo.get_resolved_predictions_for_eval(days=args.days, with_recipe=True)
-    else:
-        rows = repo.get_resolved_predictions_for_eval(days=args.days)
+    # Kolumny segmentów tylko na żądanie: `recipe_version` istnieje dopiero po
+    # migracji 030, a domyślny przebieg ma działać na każdej bazie.
+    segment_reads = {
+        name: True
+        for name, wanted in (("with_recipe", args.by_recipe), ("with_universe", args.by_universe))
+        if wanted
+    }
+    rows = repo.get_resolved_predictions_for_eval(days=args.days, **segment_reads)
     report = summarize_evaluation(rows)
     print(format_report(report, args.days))
     if args.by_recipe:
         print(format_segments(summarize_by_version(rows, "recipe_version"), "przepis"))
+    if args.by_universe:
+        print(format_segments(summarize_by_version(rows, "universe_version"), "uniwersum"))
     return 0
 
 

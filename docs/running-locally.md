@@ -127,6 +127,7 @@ uv run python main_backtest.py     # offline walk-forward backtest (folds purge 
 uv run python -m src.tools.evaluate            # offline eval: hit-rate + RMSE vs baseline, directional n_eff, naive baselines and binomial-test verdict (read-only)
 uv run python -m src.tools.evaluate --days 60  # custom evaluation window
 uv run python -m src.tools.evaluate --by-recipe  # + directional hit rate per recipe version (needs migration 030)
+uv run python -m src.tools.evaluate --by-universe  # + directional hit rate per symbol-universe version (from the v2 receipt)
 uv run pytest                                   # full local suite
 uv run pytest -m "not integration and not containers" # unit only
 uv run pytest -m containers                    # Docker/Postgres schema tests

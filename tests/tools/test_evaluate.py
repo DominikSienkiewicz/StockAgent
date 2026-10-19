@@ -228,3 +228,27 @@ class TestRecipeSegments:
         evaluate.main([])
 
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(days=30)
+
+
+class TestUniverseSegments:
+    """WIA-48: trafność per wersja uniwersum — efekt „dodałem symbole” oddzielony
+    od zmiany trafności. Wersja jest w kwicie v2 (`decision_receipts`)."""
+
+    def test_by_universe_flag_reads_the_receipt_universe(self, mocker, capsys):
+        from src.tools import evaluate
+
+        mocker.patch("src.config.Settings.from_env")
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        repo_cls.return_value.get_resolved_predictions_for_eval.return_value = [
+            {**_row("BULLISH", True, 100, 101, 101), "universe_version": "e" * 64},
+            {**_row("BULLISH", False, 100, 101, 99)},
+        ]
+
+        evaluate.main(["--by-universe"])
+
+        repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
+            days=30, with_universe=True
+        )
+        out = capsys.readouterr().out
+        assert "e" * 12 in out
+        assert "unversioned" in out

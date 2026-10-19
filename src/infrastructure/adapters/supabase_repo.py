@@ -406,13 +406,16 @@ class SupabaseRepository(RepositoryPort):
         return _paginate(query)
 
     def get_resolved_predictions_for_eval(
-        self, days: int, *, with_recipe: bool = False
+        self, days: int, *, with_recipe: bool = False, with_universe: bool = False
     ) -> list[dict[str, Any]]:
         """Zamknięte predykcje z ostatnich `days` dni z polami do ewaluacji
         (ceny + kierunek). Read-only; używane przez `src.tools.evaluate`.
 
         `with_recipe` (WIA-20) dokłada kolumnę `recipe_version` do segmentacji
         po przepisie — WYMAGA migracji 030 (inaczej PostgREST zwraca 400).
+        `with_universe` (WIA-48) dokłada `universe_version` z kwitu v2 ścieżką
+        JSON po `decision_receipts` (migracja 020) — bez nowej kolumny; wiersze
+        bez kwitu v2 mają tu None.
 
         Metoda concrete-only (nie część `RepositoryPort`) — to narzędzie
         offline-analizy, nie część runtime'owego kontraktu use case'ów."""
@@ -423,6 +426,8 @@ class SupabaseRepository(RepositoryPort):
         )
         if with_recipe:
             columns += ", recipe_version"
+        if with_universe:
+            columns += ", universe_version:decision_receipts->>universe_version"
         # Paginacja (#8) — ewaluacja musi widzieć pełen zbiór, nie obcięte 1000.
         query = (
             self._client.table(self._table)

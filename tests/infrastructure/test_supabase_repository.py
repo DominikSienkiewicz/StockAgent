@@ -2082,3 +2082,29 @@ class TestResolvedForEvalRecipeColumn:
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
         assert "recipe_version" in self._select_columns(repo, mock_client, with_recipe=True)
+
+
+class TestResolvedForEvalUniverse:
+    """WIA-48: wersja uniwersum siedzi w kwicie v2 (JSONB z migracji 020), więc
+    odczyt idzie ścieżką JSON — bez nowej kolumny i bez nowej migracji."""
+
+    def _select_columns(self, repo: SupabaseRepository, mock_client: MagicMock, **kwargs) -> str:
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [[]])
+        repo.get_resolved_predictions_for_eval(30, **kwargs)
+        return chain.select.call_args.args[0]
+
+    def test_default_select_has_no_universe(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        assert "universe_version" not in self._select_columns(repo, mock_client)
+
+    def test_with_universe_reads_the_receipt_path(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        columns = self._select_columns(repo, mock_client, with_universe=True)
+
+        assert "universe_version:decision_receipts->>universe_version" in columns

@@ -2933,3 +2933,29 @@ class TestPredictionRecipeWiring:
         main_agent.main(settings)
 
         assert build.call_args.kwargs["run_context"].git_sha == "abc1234def"
+
+
+class TestUniverseVersionInRecipe:
+    """WIA-48: przepis niesie wersję uniwersum (symbols + crypto_symbols) —
+    dodanie symbolu to nowy segment track recordu, a nie „zmiana trafności”."""
+
+    def test_recipe_carries_the_universe_of_this_config(self, settings) -> None:
+        from src.application.run_context import RunContext
+        from src.domain.recipe import universe_version
+
+        settings.crypto_symbols = ["BTC"]
+
+        recipe = main_agent.build_prediction_recipe(settings, RunContext())
+
+        assert recipe.universe_version == universe_version(["AAPL", "VOO"], ["BTC"])
+
+    def test_added_symbol_is_a_new_recipe(self, settings) -> None:
+        from src.application.run_context import RunContext
+
+        before = main_agent.build_prediction_recipe(settings, RunContext())
+        settings.symbols = [*settings.symbols, "PLTR"]
+
+        after = main_agent.build_prediction_recipe(settings, RunContext())
+
+        assert after.universe_version != before.universe_version
+        assert after.version != before.version
