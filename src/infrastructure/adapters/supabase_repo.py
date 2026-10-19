@@ -15,6 +15,7 @@ from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.prediction import Prediction, normalize_trend
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.regime import MarketRegime, RegimeState
 from src.domain.regime_key import canonical_regime_key
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
@@ -33,6 +34,7 @@ DEFAULT_SNAPSHOT_TABLE = "price_snapshots"
 DEFAULT_COUNCIL_VOTES_TABLE = "council_votes"
 DEFAULT_QUOTA_ALERTS_TABLE = "quota_alerts"
 DEFAULT_FEATURE_SNAPSHOT_TABLE = "feature_snapshots"
+DEFAULT_REGIME_HISTORY_TABLE = "regime_history"
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -603,6 +605,41 @@ class SupabaseRepository(RepositoryPort):
             .upsert(record, on_conflict="symbol,as_of_hour")
             .execute()
         )
+
+    def get_latest_regime_state(self) -> RegimeState | None:
+        # ALR-03 (migracja 033): `id` rozstrzyga remis dwóch przebiegów o tym
+        # samym `cycle_at`. Kandydata do wyjścia z RISK_OFF tabela nie trzyma
+        # osobno — przy trwającej serii to surowy odczyt tego wiersza.
+        response = (
+            self._client.table(DEFAULT_REGIME_HISTORY_TABLE)
+            .select("raw_regime, regime, streak")
+            .order("cycle_at", desc=True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        streak = int(row["streak"])
+        return RegimeState(
+            regime=MarketRegime(row["regime"]),
+            pending=MarketRegime(row["raw_regime"]) if streak > 0 else None,
+            streak=streak,
+        )
+
+    def save_regime_state(
+        self, cycle_at: datetime, raw: MarketRegime, state: RegimeState
+    ) -> None:
+        self._client.table(DEFAULT_REGIME_HISTORY_TABLE).insert(
+            {
+                "cycle_at": cycle_at.isoformat(),
+                "raw_regime": raw.value,
+                "regime": state.regime.value,
+                "streak": state.streak,
+            }
+        ).execute()
 
     def save_prediction(self, prediction: dict[str, Any]) -> str:
         # Upsert na (symbol, timestamp_hour) (#7) — idempotentny zapis predykcji.

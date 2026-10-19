@@ -18,6 +18,7 @@ from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.quota import QuotaAlert
+from src.domain.regime import MarketRegime, RegimeState
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
 from src.domain.value_objects import AssetType, Fundamentals, Money
@@ -101,6 +102,21 @@ class RepositoryPort(ABC):
         bramkę volatility (wtedy wektor niesie też cechy LLM). Etykiety tu nie ma —
         zwrot dołącza się później z `price_snapshots`. Wołane z węzłów terminalnych
         tylko za flagą `feature_snapshots_enabled`."""
+
+    @abstractmethod
+    def get_latest_regime_state(self) -> RegimeState | None:
+        """ALR-03 — stan histerezy reżimu z najnowszego wiersza `regime_history`
+        (migracja 033, kolejność po `cycle_at`). None = brak historii (pierwszy
+        cykl → surowy reżim). Wołane raz na cykl tylko za flagą
+        `regime_hysteresis_enabled`."""
+
+    @abstractmethod
+    def save_regime_state(
+        self, cycle_at: datetime, raw: MarketRegime, state: RegimeState
+    ) -> None:
+        """ALR-03 — jeden wiersz `regime_history` na cykl: surowy reżim
+        z `classify()`, reżim efektywny po histerezie i seria potwierdzeń
+        wyjścia z RISK_OFF."""
 
     @abstractmethod
     def save_prediction(self, prediction: dict[str, Any]) -> str:

@@ -54,6 +54,7 @@ MIGRATION_FILES = [
     "030_recipe_version.sql",
     "031_feature_snapshots.sql",
     "032_move_interval.sql",
+    "033_regime_history.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -877,6 +878,32 @@ class TestMigrations:
             low, high = cur.fetchone()
 
         assert (float(low), float(high)) == (97.9123, 102.4)
+
+    # -- Migracja 033: stan histerezy reżimu (ALR-03) -------------------------
+
+    def test_regime_history_reads_newest_cycle_first(self, pg_conn) -> None:
+        """Fast Loop czyta najnowszy wiersz po `cycle_at` (indeks malejący);
+        reżimy spoza `MarketRegime` i ujemna seria są odrzucane."""
+        assert {"id", "cycle_at", "raw_regime", "regime", "streak"} <= _columns(
+            pg_conn, "regime_history"
+        )
+        assert "idx_regime_history_cycle_at" in _indexes(pg_conn, "regime_history")
+        insert = (
+            "INSERT INTO regime_history (cycle_at, raw_regime, regime, streak) "
+            "VALUES (%s, %s, %s, %s)"
+        )
+        with pg_conn.cursor() as cur:
+            cur.execute(insert, ("2026-10-19T05:30:00+00:00", "RISK_ON", "RISK_OFF", 1))
+            cur.execute(insert, ("2026-10-19T13:30:00+00:00", "RISK_ON", "RISK_ON", 0))
+            cur.execute(
+                "SELECT raw_regime, regime, streak FROM regime_history "
+                "ORDER BY cycle_at DESC, id DESC LIMIT 1"
+            )
+            assert cur.fetchone() == ("RISK_ON", "RISK_ON", 0)
+            with pytest.raises(psycopg2.errors.CheckViolation):
+                cur.execute(insert, ("2026-10-19T14:30:00+00:00", "PANIC", "RISK_OFF", 0))
+            with pytest.raises(psycopg2.errors.CheckViolation):
+                cur.execute(insert, ("2026-10-19T14:30:00+00:00", "RISK_ON", "RISK_OFF", -1))
 
 
 @pytest.fixture

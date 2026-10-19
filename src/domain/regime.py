@@ -15,6 +15,7 @@ członka, żeby pozostać odporną i wymienną między oboma skalami (stdlib onl
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
@@ -43,6 +44,10 @@ _SEVERITY = {"NORMAL": 0, "ELEVATED": 1, "CRITICAL": 2}
 # Próg liczby sygnałów ELEVATED (bez żadnego CRITICAL), od którego sam ich
 # nawał przeważa na risk-off — pojedynczy ELEVATED to jeszcze szum.
 _ELEVATED_RISK_OFF_COUNT = 2
+
+# ALR-03: ile KOLEJNYCH surowych odczytów poza RISK_OFF potrzeba do wyjścia
+# z RISK_OFF (decyzja właściciela 2026-10-19).
+DEFAULT_EXIT_CONFIRMATIONS = 2
 
 
 class RegimeDetector:
@@ -115,3 +120,47 @@ class RegimeDetector:
     def _severity(level: _AlertLevel) -> int:
         """Ranga severity z nazwy członka enuma (nieznana → 0)."""
         return _SEVERITY.get(level.name, 0)
+
+
+@dataclass(frozen=True)
+class RegimeState:
+    """ALR-03 — stan histerezy reżimu po jednym cyklu.
+
+    `regime` to reżim EFEKTYWNY (steruje mnożnikiem progu i etykietą promptu).
+    `pending` to kandydat do wyjścia z RISK_OFF — ostatni surowy odczyt poza
+    RISK_OFF — a `streak` liczy kolejne takie odczyty. Bez trwającego wyjścia
+    `pending` jest None, a `streak` równy 0.
+    """
+
+    regime: MarketRegime
+    pending: MarketRegime | None = None
+    streak: int = 0
+
+
+def apply_hysteresis(
+    previous: RegimeState | None,
+    raw: MarketRegime,
+    exit_confirmations: int = DEFAULT_EXIT_CONFIRMATIONS,
+) -> RegimeState:
+    """Nakłada histerezę na surowy reżim z `RegimeDetector.classify`.
+
+    Wejście w RISK_OFF jest natychmiastowe, a wyjście wymaga `exit_confirmations`
+    KOLEJNYCH surowych odczytów poza RISK_OFF (NEUTRAL i RISK_ON liczą się
+    jednakowo — oba luzują bramkę tak samo); reżim po wyjściu to ostatni surowy
+    odczyt. Surowy RISK_OFF zeruje serię. Przejścia między NEUTRAL a RISK_ON idą
+    bez opóźnienia. Brak historii (`previous` None) → surowy reżim, jak przed
+    ALR-03; `exit_confirmations` ≤ 1 też daje dzisiejsze natychmiastowe wyjście.
+
+    Niezmiennik FinOps: wynik jest RISK_OFF zawsze, gdy surowy reżim jest
+    RISK_OFF — histereza może tylko przedłużyć wyższy próg, nigdy go obniżyć.
+    """
+    if (
+        raw is MarketRegime.RISK_OFF
+        or previous is None
+        or previous.regime is not MarketRegime.RISK_OFF
+    ):
+        return RegimeState(regime=raw)
+    streak = previous.streak + 1
+    if streak >= exit_confirmations:
+        return RegimeState(regime=raw)
+    return RegimeState(regime=MarketRegime.RISK_OFF, pending=raw, streak=streak)

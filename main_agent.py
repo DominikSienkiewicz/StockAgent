@@ -108,6 +108,7 @@ from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
 from src.domain.portfolio import Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
+from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
@@ -1040,9 +1041,16 @@ def _resolve_regime(
     settings: Settings,
     macro_risk_report: MacroRiskReport | None,
     yield_curve: YieldCurveSnapshot | None = None,
+    *,
+    repository: RepositoryPort | None = None,
+    cycle_at: datetime | None = None,
 ) -> tuple[str, float]:
     """#7: reżim rynku z overall_alert (zacieśnia próg + label do promptu).
     Zwraca (regime_context, regime_multiplier). Off / brak raportu → ("", 1.0).
+
+    ALR-03: z `repository` i flagą `regime_hysteresis_enabled` surowy reżim
+    przechodzi przez histerezę (stan z `regime_history`), patrz
+    `_apply_regime_hysteresis`. Bez repozytorium — surowy reżim jak dotąd.
 
     Inwersja krzywej rentowności wchodzi tu jako GŁOS w liczniku ELEVATED
     (przez `risk_signals`), a NIE przez `_compute_overall_alert` — max dałby złą
@@ -1054,7 +1062,6 @@ def _resolve_regime(
     """
     if not (settings.regime_aware_enabled and macro_risk_report is not None):
         return "", 1.0
-    from src.domain.regime import RegimeDetector
 
     # Głos krzywej wymaga JEDNOCZEŚNIE yield_curve_enabled i regime_aware_enabled.
     risk_signals: list[MacroAlertLevel] = []
@@ -1062,15 +1069,68 @@ def _resolve_regime(
         risk_signals.append(yield_curve_alert_level(yield_curve.state()))
 
     detector = RegimeDetector()
-    regime = detector.classify(macro_risk_report.overall_alert, risk_signals)
+    raw_regime = detector.classify(macro_risk_report.overall_alert, risk_signals)
+    regime = (
+        _apply_regime_hysteresis(
+            settings, repository, raw_regime, cycle_at or datetime.now(UTC)
+        )
+        if repository is not None
+        else raw_regime
+    )
     regime_multiplier = detector.threshold_multiplier(
         regime, settings.regime_threshold_max_multiplier
     )
     regime_context = detector.label(regime)
     logger.info(
-        "Market regime — %s (mnożnik progu %.2f)", regime.value, regime_multiplier
+        "Market regime — %s (surowy %s, mnożnik progu %.2f)",
+        regime.value,
+        raw_regime.value,
+        regime_multiplier,
     )
     return regime_context, regime_multiplier
+
+
+def _apply_regime_hysteresis(
+    settings: Settings,
+    repository: RepositoryPort,
+    raw_regime: MarketRegime,
+    cycle_at: datetime,
+) -> MarketRegime:
+    """ALR-03: reżim efektywny po histerezie — odczyt ostatniego stanu i zapis
+    nowego wiersza `regime_history`, raz na cykl.
+
+    Flaga off albo błąd odczytu (np. brak migracji 033) → surowy reżim, czyli
+    dokładnie zachowanie sprzed ALR-03; po błędzie odczytu nie zapisujemy, żeby
+    stan bez historii nie wyzerował trwającej serii. Błąd zapisu tylko logujemy:
+    następny cykl przeczyta starszy stan, co najwyżej opóźniając wyjście z
+    RISK_OFF (wyższy próg — strona bezpieczna dla FinOps).
+    """
+    if not settings.regime_hysteresis_enabled:
+        return raw_regime
+    try:
+        previous = repository.get_latest_regime_state()
+    except Exception:
+        logger.exception(
+            "regime_history read failed — surowy reżim %s bez histerezy",
+            raw_regime.value,
+        )
+        return raw_regime
+    state = apply_hysteresis(previous, raw_regime, settings.regime_exit_confirmations)
+    try:
+        repository.save_regime_state(cycle_at, raw_regime, state)
+    except Exception:
+        logger.exception(
+            "regime_history write failed — następny cykl użyje starszego stanu"
+        )
+    if state.regime is not raw_regime:
+        logger.info(
+            "Histereza reżimu — trzymam %s (surowy %s, potwierdzenia wyjścia %d/%d)",
+            state.regime.value,
+            raw_regime.value,
+            state.streak,
+            settings.regime_exit_confirmations,
+        )
+    return state.regime
 
 
 def _classify_asset(symbol: str, crypto_set: set[str], etf_set: set[str]) -> AssetType:
@@ -2057,7 +2117,11 @@ def main(settings: Settings | None = None) -> int:
 
     # #7: reżim rynku z overall_alert (zacieśnia próg + label do promptu). Off → neutral.
     regime_context, regime_multiplier = _resolve_regime(
-        settings, macro_risk_report, yield_curve
+        settings,
+        macro_risk_report,
+        yield_curve,
+        repository=repository,
+        cycle_at=started_at,
     )
 
     loop_results, failures, alpha_signals, alpha_prices = _analyze_symbols(

@@ -129,3 +129,10 @@ def test_real_config_toml_tags_predictions_with_the_regime() -> None:
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["regime_aware_enabled"] is True
     assert "regime_tagging_enabled" not in data
+
+
+def test_real_config_toml_ships_regime_hysteresis_off_until_migration() -> None:
+    """ALR-03: bez migracji 033 odczyt/zapis `regime_history` by padał."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["regime_hysteresis_enabled"] is False
+    assert data["regime_exit_confirmations"] == 2

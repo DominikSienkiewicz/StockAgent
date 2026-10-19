@@ -18,6 +18,7 @@ from pydantic_settings import (
 )
 
 from src.domain.macro_risk import MacroRiskInstrumentType
+from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
 
 # Ścieżka do config.toml zakotwiczona w ROOCIE repo (src/config.py → ../config.toml),
 # NIE względem CWD. Inaczej agent odpalony spoza roota nie znajduje pliku i cały
@@ -118,6 +119,9 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "router_frontier_model",
     "regime_aware_enabled",
     "regime_threshold_max_multiplier",
+    # ALR-03: histereza przedłuża RISK_OFF, czyli wyższy efektywny próg bramki.
+    "regime_hysteresis_enabled",
+    "regime_exit_confirmations",
     "contagion_enabled",
     "peer_groups",
     "alpha_fusion_enabled",
@@ -237,6 +241,12 @@ class Settings(BaseSettings):
     # Regime może tylko ZACIEŚNIĆ próg volatility (mnożnik ≥ 1.0).
     regime_aware_enabled: bool = False
     regime_threshold_max_multiplier: float = 2.0
+    # ALR-03: histereza reżimu — wejście w RISK_OFF natychmiast, wyjście dopiero po
+    # `regime_exit_confirmations` KOLEJNYCH surowych odczytach poza RISK_OFF. Stan
+    # w tabeli `regime_history` (migracja 033). Off: przed migracją tabeli nie ma,
+    # więc odczyt i zapis by padały (cykl i tak bierze wtedy surowy reżim).
+    regime_hysteresis_enabled: bool = False
+    regime_exit_confirmations: int = DEFAULT_EXIT_CONFIRMATIONS
     # Contagion: werdykty skorelowanych spółek z tego cyklu do promptu.
     contagion_enabled: bool = False
     peer_groups: dict[str, list[str]] = Field(default_factory=dict)
@@ -585,6 +595,14 @@ class Settings(BaseSettings):
     def _validate_track_record_days(cls, value: int) -> int:
         if value < 1:
             raise ValueError(f"track_record_days must be >= 1 (got {value})")
+        return value
+
+    @field_validator("regime_exit_confirmations")
+    @classmethod
+    def _validate_regime_exit_confirmations(cls, value: int) -> int:
+        """1 = wyjście z RISK_OFF od razu (jak bez histerezy); mniej nie ma sensu."""
+        if value < 1:
+            raise ValueError(f"regime_exit_confirmations must be >= 1 (got {value})")
         return value
 
     @field_validator("tool_use_max_rounds")

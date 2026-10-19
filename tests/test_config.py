@@ -549,3 +549,32 @@ class TestRegimeTaggingFlag:
                 _env_file=None, **REQUIRED_ENV_KWARGS, regime_tagging_enabled=value
             ).config_hash()
             assert flipped == baseline, value
+
+
+class TestRegimeHysteresisSettings:
+    """ALR-03: histereza reżimu (tabela `regime_history`, migracja 033). Flaga
+    domyślnie off — przed migracją tabeli nie ma. Flaga i liczba potwierdzeń
+    zmieniają efektywny próg bramki, więc należą do przepisu (`config_hash`)."""
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_defaults_off_with_two_exit_confirmations(self, env):
+        settings = self._settings()
+
+        assert settings.regime_hysteresis_enabled is False
+        assert settings.regime_exit_confirmations == 2
+
+    def test_exit_confirmations_below_one_rejected(self, env):
+        with pytest.raises(ValueError, match="regime_exit_confirmations"):
+            self._settings(regime_exit_confirmations=0)
+
+    def test_both_fields_belong_to_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert {"regime_hysteresis_enabled", "regime_exit_confirmations"} <= (
+            RECIPE_SETTINGS_FIELDS
+        )
+        baseline = self._settings().config_hash()
+        assert self._settings(regime_hysteresis_enabled=True).config_hash() != baseline
+        assert self._settings(regime_exit_confirmations=3).config_hash() != baseline

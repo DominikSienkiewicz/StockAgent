@@ -2209,3 +2209,75 @@ class TestGetSettledMoves:
         rows, _ = self._call(repo, mock_client, [full, [{"symbol": "MSFT"}]])
 
         assert len(rows) == 1001
+
+
+class TestRegimeHistory:
+    """ALR-03: stan histerezy reżimu w `regime_history` (migracja 033) — jeden
+    wiersz na cykl; odczyt bierze najnowszy po `cycle_at`."""
+
+    _CHAIN = ["table", "select", "order", "order", "limit"]
+
+    def test_no_history_reads_as_none(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, self._CHAIN, [])
+
+        assert repo.get_latest_regime_state() is None
+        mock_client.table.assert_called_with("regime_history")
+
+    def test_reads_the_newest_row_by_cycle_time(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        _set_chain_response(
+            mock_client,
+            self._CHAIN,
+            [{"raw_regime": "RISK_ON", "regime": "RISK_OFF", "streak": 1}],
+        )
+
+        state = repo.get_latest_regime_state()
+
+        assert state == RegimeState(
+            regime=MarketRegime.RISK_OFF, pending=MarketRegime.RISK_ON, streak=1
+        )
+        by_cycle = mock_client.table.return_value.select.return_value.order
+        by_cycle.assert_called_once_with("cycle_at", desc=True)
+        by_cycle.return_value.order.assert_called_once_with("id", desc=True)
+        by_cycle.return_value.order.return_value.limit.assert_called_once_with(1)
+
+    def test_settled_row_has_no_pending_exit(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        _set_chain_response(
+            mock_client,
+            self._CHAIN,
+            [{"raw_regime": "NEUTRAL", "regime": "NEUTRAL", "streak": 0}],
+        )
+
+        assert repo.get_latest_regime_state() == RegimeState(regime=MarketRegime.NEUTRAL)
+
+    def test_saves_one_row_per_cycle(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}])
+        cycle_at = datetime(2026, 10, 19, 13, 30, tzinfo=UTC)
+
+        repo.save_regime_state(
+            cycle_at,
+            MarketRegime.RISK_ON,
+            RegimeState(regime=MarketRegime.RISK_OFF, pending=MarketRegime.RISK_ON, streak=1),
+        )
+
+        mock_client.table.assert_called_with("regime_history")
+        insert = mock_client.table.return_value.insert
+        insert.assert_called_once_with({
+            "cycle_at": "2026-10-19T13:30:00+00:00",
+            "raw_regime": "RISK_ON",
+            "regime": "RISK_OFF",
+            "streak": 1,
+        })

@@ -3115,3 +3115,153 @@ class TestRegimeTaggingWiring:
         )
 
         assert deps.regime_tagging_enabled is True
+
+
+class TestResolveRegimeHysteresis:
+    """ALR-03 — `_resolve_regime` czyta ostatni stan z `regime_history` i zapisuje
+    nowy raz na cykl. Flaga off albo błąd odczytu = dokładnie dzisiejszy surowy
+    reżim; histereza może tylko przedłużyć RISK_OFF (wyższy próg)."""
+
+    _CYCLE_AT = datetime(2026, 10, 19, 13, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.regime_aware_enabled = True
+        settings.yield_curve_enabled = False
+        settings.regime_threshold_max_multiplier = 2.0
+        settings.regime_hysteresis_enabled = True
+        settings.regime_exit_confirmations = 2
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    @staticmethod
+    def _calm_macro() -> MagicMock:
+        # Makro NORMAL bez sygnałów → surowy reżim RISK_ON (mnożnik 1.0).
+        report = MagicMock()
+        report.overall_alert = MacroAlertLevel.NORMAL
+        return report
+
+    @staticmethod
+    def _repo(previous: object = None) -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_latest_regime_state.return_value = previous
+        return repo
+
+    def _resolve(self, settings: MagicMock, repo: MagicMock) -> tuple[str, float]:
+        return main_agent._resolve_regime(
+            settings, self._calm_macro(), None, repository=repo, cycle_at=self._CYCLE_AT
+        )
+
+    def test_flag_off_leaves_the_history_untouched(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        repo = self._repo(RegimeState(regime=MarketRegime.RISK_OFF))
+
+        _, multiplier = self._resolve(self._settings(regime_hysteresis_enabled=False), repo)
+
+        assert multiplier == 1.0
+        repo.get_latest_regime_state.assert_not_called()
+        repo.save_regime_state.assert_not_called()
+
+    def test_regime_off_touches_no_history(self) -> None:
+        repo = self._repo()
+
+        result = self._resolve(self._settings(regime_aware_enabled=False), repo)
+
+        assert result == ("", 1.0)
+        repo.get_latest_regime_state.assert_not_called()
+        repo.save_regime_state.assert_not_called()
+
+    def test_first_cycle_without_history_uses_the_raw_regime(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeDetector, RegimeState
+
+        repo = self._repo(None)
+
+        context, multiplier = self._resolve(self._settings(), repo)
+
+        assert (context, multiplier) == (RegimeDetector().label(MarketRegime.RISK_ON), 1.0)
+        repo.save_regime_state.assert_called_once_with(
+            self._CYCLE_AT, MarketRegime.RISK_ON, RegimeState(regime=MarketRegime.RISK_ON)
+        )
+
+    def test_single_calm_reading_keeps_risk_off_and_the_raised_threshold(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeDetector, RegimeState
+
+        repo = self._repo(RegimeState(regime=MarketRegime.RISK_OFF))
+
+        context, multiplier = self._resolve(self._settings(), repo)
+
+        assert (context, multiplier) == (RegimeDetector().label(MarketRegime.RISK_OFF), 2.0)
+        repo.save_regime_state.assert_called_once_with(
+            self._CYCLE_AT,
+            MarketRegime.RISK_ON,
+            RegimeState(regime=MarketRegime.RISK_OFF, pending=MarketRegime.RISK_ON, streak=1),
+        )
+
+    def test_second_calm_reading_exits_risk_off(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        repo = self._repo(
+            RegimeState(regime=MarketRegime.RISK_OFF, pending=MarketRegime.RISK_ON, streak=1)
+        )
+
+        _, multiplier = self._resolve(self._settings(), repo)
+
+        assert multiplier == 1.0
+        saved_state = repo.save_regime_state.call_args.args[2]
+        assert saved_state == RegimeState(regime=MarketRegime.RISK_ON)
+
+    def test_exit_confirmations_come_from_settings(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        repo = self._repo(
+            RegimeState(regime=MarketRegime.RISK_OFF, pending=MarketRegime.RISK_ON, streak=1)
+        )
+
+        _, multiplier = self._resolve(self._settings(regime_exit_confirmations=3), repo)
+
+        assert multiplier == 2.0
+
+    def test_read_failure_falls_back_to_the_raw_regime_and_logs(self, caplog) -> None:
+        import logging
+
+        repo = self._repo()
+        repo.get_latest_regime_state.side_effect = RuntimeError("PGRST205 no table")
+
+        with caplog.at_level(logging.ERROR, logger="main_agent"):
+            _, multiplier = self._resolve(self._settings(), repo)
+
+        assert multiplier == 1.0
+        repo.save_regime_state.assert_not_called()
+        assert any("regime_history" in rec.message for rec in caplog.records)
+
+    def test_write_failure_keeps_the_hysteresis_result_and_logs(self, caplog) -> None:
+        import logging
+
+        from src.domain.regime import MarketRegime, RegimeState
+
+        repo = self._repo(RegimeState(regime=MarketRegime.RISK_OFF))
+        repo.save_regime_state.side_effect = RuntimeError("timeout")
+
+        with caplog.at_level(logging.ERROR, logger="main_agent"):
+            _, multiplier = self._resolve(self._settings(), repo)
+
+        assert multiplier == 2.0
+        assert any("regime_history" in rec.message for rec in caplog.records)
+
+    def test_main_passes_the_repository_and_cycle_start(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        resolve = mocker.patch("main_agent._resolve_regime", return_value=("", 1.0))
+
+        main_agent.main(settings)
+
+        resolve.assert_called_once()
+        kwargs = resolve.call_args.kwargs
+        assert isinstance(kwargs["repository"], RepositoryPort)
+        assert kwargs["cycle_at"].tzinfo is not None

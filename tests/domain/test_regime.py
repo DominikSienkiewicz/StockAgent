@@ -16,7 +16,12 @@ import pytest
 
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.polish_macro import MacroStressLevel
-from src.domain.regime import MarketRegime, RegimeDetector
+from src.domain.regime import (
+    MarketRegime,
+    RegimeDetector,
+    RegimeState,
+    apply_hysteresis,
+)
 
 
 class TestClassify:
@@ -149,3 +154,125 @@ class TestLabel:
         for label in labels:
             assert isinstance(label, str)
             assert label
+
+
+# ---------------------------------------------------------------------------
+# ALR-03 — histereza reżimu: wejście w RISK_OFF natychmiast, wyjście dopiero
+# po N kolejnych surowych odczytach poza RISK_OFF. `classify()` jest bezstanowe,
+# więc sygnał oscylujący przy progu przełączałby mnożnik progu co cykl.
+# ---------------------------------------------------------------------------
+
+
+def _walk(
+    start: MarketRegime, raws: list[MarketRegime], exit_confirmations: int = 2
+) -> list[RegimeState]:
+    """Przepuszcza kolejne surowe odczyty przez histerezę od stanu `start`."""
+    state = RegimeState(regime=start)
+    states: list[RegimeState] = []
+    for raw in raws:
+        state = apply_hysteresis(state, raw, exit_confirmations)
+        states.append(state)
+    return states
+
+
+class TestApplyHysteresis:
+    def test_oscillating_signal_keeps_risk_off(self) -> None:
+        states = _walk(
+            MarketRegime.RISK_OFF,
+            [MarketRegime.RISK_ON, MarketRegime.RISK_OFF, MarketRegime.RISK_ON],
+        )
+
+        assert [s.regime for s in states] == [MarketRegime.RISK_OFF] * 3
+
+    def test_two_consecutive_readings_exit_on_the_second(self) -> None:
+        first, second = _walk(
+            MarketRegime.RISK_OFF, [MarketRegime.RISK_ON, MarketRegime.RISK_ON]
+        )
+
+        assert first == RegimeState(
+            regime=MarketRegime.RISK_OFF, pending=MarketRegime.RISK_ON, streak=1
+        )
+        assert second == RegimeState(regime=MarketRegime.RISK_ON)
+
+    def test_entering_risk_off_is_immediate(self) -> None:
+        state = apply_hysteresis(
+            RegimeState(regime=MarketRegime.RISK_ON), MarketRegime.RISK_OFF
+        )
+
+        assert state == RegimeState(regime=MarketRegime.RISK_OFF)
+
+    @pytest.mark.parametrize("raw", list(MarketRegime))
+    def test_no_history_returns_the_raw_regime(self, raw: MarketRegime) -> None:
+        assert apply_hysteresis(None, raw) == RegimeState(regime=raw)
+
+    def test_a_risk_off_reading_resets_the_streak(self) -> None:
+        *_, last = _walk(
+            MarketRegime.RISK_OFF,
+            [MarketRegime.RISK_ON, MarketRegime.RISK_OFF, MarketRegime.RISK_ON],
+        )
+
+        assert last.streak == 1
+
+    def test_neutral_and_risk_on_both_count_towards_the_exit(self) -> None:
+        # Kierunek = wyjście z RISK_OFF; reżim po wyjściu to ostatni surowy odczyt.
+        first, second = _walk(
+            MarketRegime.RISK_OFF, [MarketRegime.NEUTRAL, MarketRegime.RISK_ON]
+        )
+
+        assert first.regime is MarketRegime.RISK_OFF
+        assert second == RegimeState(regime=MarketRegime.RISK_ON)
+
+    def test_moves_outside_risk_off_are_not_delayed(self) -> None:
+        state = apply_hysteresis(
+            RegimeState(regime=MarketRegime.NEUTRAL), MarketRegime.RISK_ON
+        )
+
+        assert state == RegimeState(regime=MarketRegime.RISK_ON)
+
+    def test_three_confirmations_need_three_readings(self) -> None:
+        states = _walk(MarketRegime.RISK_OFF, [MarketRegime.RISK_ON] * 3, 3)
+
+        assert [s.regime for s in states] == [
+            MarketRegime.RISK_OFF,
+            MarketRegime.RISK_OFF,
+            MarketRegime.RISK_ON,
+        ]
+
+    @pytest.mark.parametrize("confirmations", [1, 0, -3])
+    def test_one_or_fewer_confirmations_exit_at_once(self, confirmations: int) -> None:
+        # N ≤ 1 = zachowanie sprzed ALR-03 (fail-safe na zły config, bez wyjątku).
+        state = apply_hysteresis(
+            RegimeState(regime=MarketRegime.RISK_OFF), MarketRegime.RISK_ON, confirmations
+        )
+
+        assert state == RegimeState(regime=MarketRegime.RISK_ON)
+
+
+_PREVIOUS_STATES: list[RegimeState | None] = [
+    None,
+    *(RegimeState(regime=regime) for regime in MarketRegime),
+    RegimeState(regime=MarketRegime.RISK_OFF, pending=MarketRegime.RISK_ON, streak=1),
+    RegimeState(regime=MarketRegime.RISK_OFF, pending=MarketRegime.NEUTRAL, streak=5),
+]
+
+
+class TestHysteresisFinOps:
+    """Niezmiennik FinOps: histereza może tylko PRZEDŁUŻYĆ RISK_OFF (wyższy próg),
+    nigdy obniżyć progu względem surowego reżimu z `classify()`."""
+
+    @pytest.mark.parametrize("previous", _PREVIOUS_STATES)
+    @pytest.mark.parametrize("raw", list(MarketRegime))
+    @pytest.mark.parametrize("confirmations", [1, 2, 3])
+    def test_never_lowers_the_threshold_below_the_raw_regime(
+        self,
+        previous: RegimeState | None,
+        raw: MarketRegime,
+        confirmations: int,
+    ) -> None:
+        detector = RegimeDetector()
+
+        effective = apply_hysteresis(previous, raw, confirmations).regime
+
+        assert detector.threshold_multiplier(
+            effective, 2.0
+        ) >= detector.threshold_multiplier(raw, 2.0)
