@@ -3474,3 +3474,71 @@ class TestExperimentArmsRecord:
 
         assert record["experiment_arms"] == self._ARMS
         assert "decision_receipts" not in record
+
+
+class TestBlindCouncilArm:
+    """EXP-02: ramię `blind` przełącza `CouncilInput.blind` — rada leci tymi
+    samymi wywołaniami, a licznik płatnych wywołań jest identyczny w obu ramionach."""
+
+    def _run(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, arms: dict[str, str] | None,
+    ) -> tuple[Mock, AgentGraphDeps]:
+        from src.application.ports import AdvisoryCouncilPort
+
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            council_port=council_port,
+        )
+        state = _initial_state("100.0")
+        if arms is not None:
+            state["experiment_arms"] = arms
+        create_agent_graph(deps).compile().invoke(state)
+        return council_port, deps
+
+    def test_blind_arm_hides_the_llm_verdict_from_the_council(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        council_port, _ = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms={"EXP-02": "blind"},
+        )
+
+        council_port.analyze.assert_called_once()
+        assert council_port.analyze.call_args.args[1].blind is True
+
+    @pytest.mark.parametrize("arms", [None, {"EXP-02": "sighted"}])
+    def test_control_arm_and_no_experiment_keep_the_sighted_council(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port, arms,
+    ):
+        council_port, _ = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=arms,
+        )
+
+        assert council_port.analyze.call_args.args[1].blind is False
+
+    def test_blind_arm_adds_no_paid_calls(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        meters = []
+        for arms in ({"EXP-02": "sighted"}, {"EXP-02": "blind"}):
+            for port in (market_port, sentiment_port, news_port, repository_port, llm_port):
+                port.reset_mock()
+            _, deps = self._run(
+                market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+                arms=arms,
+            )
+            meters.append(dict(deps.paid_call_meter))
+
+        assert meters[0] == meters[1]
+        assert meters[0]["council_llm"] == 1

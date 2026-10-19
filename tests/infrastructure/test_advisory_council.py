@@ -617,3 +617,27 @@ class TestTotalTimeout:
 
         assert time.perf_counter() - start < 0.5
         assert slow not in {op.investor_name for op in result.investor_opinions}
+
+
+class TestBlindCouncilCallCount:
+    """EXP-02 (FinOps): ślepa rada to te same wywołania co rada widząca —
+    zmienia się wyłącznie treść promptu person."""
+
+    def test_blind_arm_makes_the_same_calls_without_the_llm_line(self, llm_port: Mock):
+        from dataclasses import replace
+
+        counts = []
+        for blind in (False, True):
+            llm_port.reset_mock()
+            llm_port.analyze.side_effect = None
+            llm_port.analyze.return_value = _opinion_json()
+            council = LLMAdvisoryCouncil(
+                llm_port=llm_port, personas=_TEST_PERSONAS[:3], max_personas=3
+            )
+            council.analyze("AAPL", replace(_make_input(), blind=blind))
+            counts.append(llm_port.analyze.call_count)
+            persona_prompts = [call.args[0] for call in llm_port.analyze.call_args_list[:3]]
+            sees_llm = ["Trend wg głównego analityka agenta" in p for p in persona_prompts]
+            assert sees_llm == [not blind] * 3
+
+        assert counts[0] == counts[1] == 4

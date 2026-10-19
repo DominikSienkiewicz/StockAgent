@@ -223,3 +223,12 @@ def test_real_config_toml_ships_the_experiment_arms_column_off_until_migration()
     """EXP-05: kolumna `experiment_arms` istnieje dopiero po migracji 037."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["experiment_arms_enabled"] is False
+
+
+def test_real_config_toml_defines_the_blind_council_experiment_inactive() -> None:
+    """EXP-02: zdefiniowany, ale nieaktywny do wznowienia Fast Loopa."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    experiment = data["experiments"]["EXP-02"]
+    assert experiment["arms"] == ["sighted", "blind"]
+    assert experiment["primary_metric"] == "council_hit_rate"
+    assert experiment["enabled"] is False

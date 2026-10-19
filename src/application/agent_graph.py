@@ -43,7 +43,7 @@ from src.domain.attestation import commit as attestation_commit
 from src.domain.attestation import new_salt
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
-from src.domain.experiment import Experiment
+from src.domain.experiment import ARM_BLIND_COUNCIL, Experiment, has_treatment
 from src.domain.feature_attribution import FeatureContribution, top_contributions
 from src.domain.implied_edge import (
     ImpliedEdge,
@@ -1299,6 +1299,8 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         valuation_verdict=state.get("valuation_verdict", ValuationVerdict.UNKNOWN),
         # #3: typ aktywa napędza dobór wag person (per klasa aktywa).
         asset_type=(state.get("asset") or Asset(symbol=state["symbol"])).asset_type,
+        # EXP-02: ramię `blind` — te same wywołania rady, prompt bez werdyktu LLM.
+        blind=has_treatment(state.get("experiment_arms") or {}, ARM_BLIND_COUNCIL),
     )
     # #14: rada to N równoległych wywołań LLM — najdroższy płatny węzeł.
     # Jawny log płatnego wywołania + timing (mierzony też przy błędzie).
