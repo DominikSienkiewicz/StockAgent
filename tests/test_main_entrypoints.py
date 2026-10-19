@@ -973,6 +973,61 @@ class TestDynamicSubject:
         assert "NVDA -4.2%" in subject
 
 
+class TestPolishNumbersInSubjectAndPush:
+    """MAIL-58 etap 1: temat maila i push niosą headline leadu z polskim zapisem
+    liczby („-4,2%”), a nie angielskim („-4.2%”)."""
+
+    def test_email_and_push_subjects_use_a_decimal_comma(self, settings, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.council import InvestorOpinion
+
+        settings.messenger_digest_enabled = True
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch("main_agent._build_user_portfolio", return_value=None)
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        push = MagicMock()
+        mocker.patch("main_agent.build_push_notifier", return_value=push)
+        email = MagicMock()
+        split = CouncilVerdict(
+            final_recommendation="HOLD", consensus_strength=0.5, summary="1 KUP / 1 SPRZEDAJ",
+            dissenting_views=(),
+            investor_opinions=tuple(
+                InvestorOpinion(investor_name=name, recommendation=rec,
+                                confidence=0.8, reasoning="x", key_factors=())
+                for name, rec in (("A", "BUY"), ("B", "SELL"))
+            ),
+        )
+
+        main_agent._dispatch_reports(
+            results=[
+                main_agent.SymbolResult(
+                    symbol="NVDA", status="saved", delta=Decimal("-0.042"),
+                    current_price=Decimal("180"), council_verdict=split,
+                ),
+            ],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=QuotaMonitor(),
+            notifier=email,
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["NVDA"],
+            context=main_agent.ReportContext(),
+        )
+
+        assert "NVDA -4,2%, rada PODZIELONA" in email.send_report.call_args.kwargs["subject"]
+        assert "NVDA -4,2%, rada PODZIELONA" in push.send_report.call_args.kwargs["subject"]
+
+
 class TestMessengerDigestSplit:
     """#5 — push (Telegram/Slack) dostaje 5-linijkowy skrót, nie pełny raport.
 
@@ -2582,7 +2637,7 @@ class TestDispatchReports:
         friend_subject = sent[self.FRIEND]["subject"]
         assert "Twojej pozycji" not in friend_subject
         assert "portfela" not in friend_subject
-        assert "AAPL -5.0%, rada zgodna: SPRZEDAJ" in friend_subject
+        assert "AAPL -5,0%, rada zgodna: SPRZEDAJ" in friend_subject
 
 
 class TestFeatureSetVersionWiring:

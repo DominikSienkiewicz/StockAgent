@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from src.domain.council import CouncilVerdict
+from src.domain.number_format import format_pct_pl
 from src.domain.polish_labels import council_recommendation_label
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
@@ -119,8 +120,8 @@ def _magnitude(delta_pct: Decimal) -> float:
 
 
 def _format_delta(delta_pct: Decimal) -> str:
-    """Delta jako podpisany procent z jednym miejscem po przecinku (np. „-4.2%")."""
-    return f"{delta_pct:+.1f}%"
+    """Delta jako podpisany procent z jednym miejscem po przecinku (np. „-4,2%”, MAIL-58)."""
+    return format_pct_pl(delta_pct, signed=True)
 
 
 def _quota_candidate(alert: QuotaAlert) -> _Candidate:
@@ -134,8 +135,8 @@ def _quota_candidate(alert: QuotaAlert) -> _Candidate:
 
 
 def _format_weight(weight: Decimal) -> str:
-    """Waga pozycji jako procent bez miejsc po przecinku (0.24 → „24%")."""
-    return f"{weight * 100:.0f}%"
+    """Waga pozycji jako procent bez miejsc po przecinku (0.24 → „24%”, MAIL-58)."""
+    return format_pct_pl(weight * 100, signed=False, decimals=0)
 
 
 def _position_candidate(signal: LeadSignal) -> _Candidate | None:

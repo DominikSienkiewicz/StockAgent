@@ -1736,8 +1736,8 @@ class TestLeadSection:
 
         html, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
 
-        assert "NVDA -4.2%, rada PODZIELONA" in html
-        assert "NVDA -4.2%, rada PODZIELONA" in text
+        assert "NVDA -4,2%, rada PODZIELONA" in html
+        assert "NVDA -4,2%, rada PODZIELONA" in text
 
 
 class TestSkipReasonMapping:
@@ -2347,9 +2347,9 @@ def test_lead_warns_about_a_council_signal_against_a_large_position():
         ReportContext(user_portfolio=portfolio, held_prices={"AAPL": Decimal("3000")}),
     )
 
-    headline = "Sygnał przeciw Twojej pozycji: rada SPRZEDAJ na NVDA (25% portfela) -4.2%"
+    headline = "Sygnał przeciw Twojej pozycji: rada SPRZEDAJ na NVDA (25% portfela) -4,2%"
     assert headline in html
-    assert html.index(headline) < html.index("AMD +8.0%, rada zgodna")
+    assert html.index(headline) < html.index("AMD +8,0%, rada zgodna")
     assert headline in text
 
 
@@ -2770,8 +2770,8 @@ class TestLeadInPolish:
             results, self._STARTED, 1.0, ReportContext(resolved_predictions=resolved)
         )
 
-        assert "NVDA +3.0%: trafiona prognoza wzrostu" in html
-        assert "NVDA +3.0%: trafiona prognoza wzrostu" in text
+        assert "NVDA +3,0%: trafiona prognoza wzrostu" in html
+        assert "NVDA +3,0%: trafiona prognoza wzrostu" in text
         assert "BULLISH" not in html
         assert "BULLISH" not in text
 

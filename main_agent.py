@@ -1491,7 +1491,7 @@ def _build_subject(
 ) -> str:
     """#1 — temat maila jak nagłówek gazety, nie jak licznik.
 
-    Gdy cykl ma lead, jego pierwsza pozycja idzie do tematu ("NVDA -4.2%, rada
+    Gdy cykl ma lead, jego pierwsza pozycja idzie do tematu ("NVDA -4,2%, rada
     PODZIELONA"); bez leadu zostaje dotychczasowy temat licznikowy. `prefix`
     (np. "⚠️ [QUOTA] ") jest sygnałem operacyjnym i przetrwa w obu wariantach.
 

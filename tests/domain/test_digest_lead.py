@@ -283,7 +283,7 @@ class TestPortfolioAwareLead:
         items = build_lead([move, against])
 
         assert "przeciw Twojej pozycji" in items[0].headline
-        assert items[1].headline == "AMD (40% portfela) -9.0%"
+        assert items[1].headline == "AMD (40% portfela) -9,0%"
 
     def test_position_move_outranks_a_split_council(self) -> None:
         move = self._held()
@@ -292,7 +292,7 @@ class TestPortfolioAwareLead:
         items = build_lead([split, move])
 
         assert items[0].icon == "💼"
-        assert items[0].headline == "NVDA (24% portfela) -4.2%"
+        assert items[0].headline == "NVDA (24% portfela) -4,2%"
         assert "PODZIELONA" in items[1].headline
 
     def test_position_moves_rank_by_their_impact_on_capital(self) -> None:
@@ -319,14 +319,14 @@ class TestPortfolioAwareLead:
 
         items = build_lead([small])
 
-        assert items[0].headline == "NVDA -4.2%, rada zgodna: SPRZEDAJ"
+        assert items[0].headline == "NVDA -4,2%, rada zgodna: SPRZEDAJ"
 
     def test_without_a_portfolio_the_lead_is_unchanged(self) -> None:
         signal = LeadSignal(
             "NVDA", Decimal("-4.2"), _consensus_verdict("SELL"), crossed_volatility_gate=True
         )
 
-        assert build_lead([signal])[0].headline == "NVDA -4.2%, rada zgodna: SPRZEDAJ"
+        assert build_lead([signal])[0].headline == "NVDA -4,2%, rada zgodna: SPRZEDAJ"
 
 
 class TestLeadPreview:
@@ -369,4 +369,29 @@ def test_strong_consensus_headline_labels_every_verdict_in_polish(
 ) -> None:
     signal = LeadSignal("AMD", Decimal("-3.0"), _consensus_verdict(recommendation))
 
-    assert build_lead([signal])[0].headline == f"AMD -3.0%, rada zgodna: {label}"
+    assert build_lead([signal])[0].headline == f"AMD -3,0%, rada zgodna: {label}"
+
+
+class TestPolishNumbers:
+    """MAIL-58: headline leadu idzie do tematu maila i pushu, więc liczby są po
+    polsku: przecinek dziesiętny, minus ASCII, zaokrąglenie ROUND_HALF_UP."""
+
+    def test_headline_uses_a_decimal_comma(self) -> None:
+        signal = LeadSignal("NVDA", Decimal("-4.2"), _split_verdict())
+
+        assert build_lead([signal])[0].headline == "NVDA -4,2%, rada PODZIELONA"
+
+    def test_delta_rounds_half_up(self) -> None:
+        signal = LeadSignal("NVDA", Decimal("4.25"), _split_verdict())
+
+        assert build_lead([signal])[0].headline == "NVDA +4,3%, rada PODZIELONA"
+
+    def test_position_weight_rounds_half_up(self) -> None:
+        signal = LeadSignal(
+            "NVDA",
+            Decimal("-4.2"),
+            position_weight=Decimal("0.245"),
+            crossed_volatility_gate=True,
+        )
+
+        assert build_lead([signal])[0].headline == "NVDA (25% portfela) -4,2%"

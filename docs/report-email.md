@@ -8,7 +8,9 @@ The subject and the header carry the cycle start in local time (`display_timezon
 
 The inbox preview comes from a hidden preheader, the first element of the HTML: the detail of the top lead item (HTML-escaped, since it comes from the council and the news), or `Brak sygnałów ponad próg · N zamkniętych predykcji` when the cycle has no lead. Invisible filler (`&zwnj;&nbsp;`, about 1.4 KB) follows it, so the mail client does not pull the header (`Czas rozpoczęcia…`) into the preview. The plain-text email has no preheader.
 
-The lead, and therefore the subject, is in Polish end to end: a strong council consensus reads `NVDA +4.2%, rada zgodna: KUP` (KUP / SPRZEDAJ / TRZYMAJ from the shared dictionary in `src/domain/polish_labels.py`), a closed prediction reads `trafiona prognoza wzrostu` / `chybiona prognoza spadku`, and a CRITICAL quota alert carries the Polish text the adapter wrote. The English values (`BULLISH`, `BUY`) stay in the logs and the database.
+The lead, and therefore the subject, is in Polish end to end: a strong council consensus reads `NVDA +4,2%, rada zgodna: KUP` (KUP / SPRZEDAJ / TRZYMAJ from the shared dictionary in `src/domain/polish_labels.py`), a closed prediction reads `trafiona prognoza wzrostu` / `chybiona prognoza spadku`, and a CRITICAL quota alert carries the Polish text the adapter wrote. The English values (`BULLISH`, `BUY`) stay in the logs and the database.
+
+Numbers in the lead, and therefore in the subject and the push subject, are written the Polish way (`src/domain/number_format.py`): a decimal comma (`NVDA -4,2%`, `NVDA (24% portfela)`), a no-break space (U+00A0) between thousands, an ASCII minus `-` so an inbox search for `-4,2%` finds the email, and half-up rounding (`4,25` → `4,3`). The email sections below the lead still use the decimal point; they move to the same formatter module by module.
 
 The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallback):
 
