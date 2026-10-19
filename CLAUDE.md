@@ -59,6 +59,8 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 
 - Adaptery HTTP: testy mockują **`requests.Session.get` / `requests.Session.post`**
   (adaptery wołają przez `self._session` z `_http.build_session()`, nie przez gołe `requests`).
+- Adapter z sekretem w URL-u albo nagłówku woła `safe_get` / `raise_for_status_redacted`
+  z `_http.py`, a jego test sprawdza, że komunikat wyjątku nie zawiera sekretu.
 - Testy integracyjne (prawdziwe API): oznaczone `@pytest.mark.integration`,
   pomijane bez kluczy w env. CI uruchamia `pytest -m "not integration and not containers"`,
   a testy kontenerowe osobnym krokiem `pytest -m containers`.
