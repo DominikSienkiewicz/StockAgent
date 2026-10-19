@@ -20,12 +20,13 @@ from __future__ import annotations
 import html as _html
 from decimal import Decimal
 
-from src.application.report_formatting import delta_color, pct
+from src.application.report_formatting import pct
 from src.application.report_models import SymbolResult
 from src.application.report_signals import (
     DIVERGENCE_PRICE_THRESHOLD,
     DIVERGENCE_SENTIMENT_THRESHOLD,
 )
+from src.application.report_styles import delta_tone, fill_tone
 
 # Minimalna i maksymalna szerokość słupka w px. Minimum > 0, by najmniejszy
 # ruch pozostał widoczny; jednocześnie na tyle małe względem maksimum, żeby
@@ -52,16 +53,14 @@ def _render_bar_chart_html(title: str, rows: list[tuple[str, Decimal]]) -> str:
     for symbol, value in rows:
         frac = float(abs(value) / max_abs)
         width = _BAR_MIN_PX + int(frac * (_BAR_MAX_PX - _BAR_MIN_PX))
-        color = delta_color(value)
+        # MAIL-06 (c): układ i kolor w klasach arkusza (`report_styles`), szerokość
+        # słupka liczona z danych zostaje inline.
         cells.append(
             "<tr>"
-            "<td style='padding: 2px 8px 2px 0; font-size: 12px; "
-            f"white-space: nowrap; color: #374151;'>{_html.escape(symbol)}</td>"
-            "<td style='padding: 2px 0;'>"
-            f"<div style='display: inline-block; width: {width}px; height: 12px; "
-            f"background: {color}; border-radius: 2px; vertical-align: middle;'></div>"
-            "<span style='font-size: 12px; color: #374151; margin-left: 6px;'>"
-            f"{pct(value, signed=True)}</span>"
+            f"<td class='bl'>{_html.escape(symbol)}</td>"
+            "<td class='bv'>"
+            f"<div class='br {fill_tone(value)}' style='width:{width}px'></div>"
+            f"<span class='bn'>{pct(value, signed=True)}</span>"
             "</td></tr>"
         )
     return (
@@ -114,11 +113,8 @@ def _render_quadrant_chip(symbol: str, delta: Decimal, is_divergence: bool) -> s
     Silny rozjazd (przekroczenie OBU progów DIVERGENCE_*) dostaje prefiks ⚠.
     Symbol jest escapowany — może pochodzić z danych zewnętrznych."""
     warn = "⚠ " if is_divergence else ""
-    color = delta_color(delta)
     return (
-        "<span style='display: inline-block; margin: 2px 4px 2px 0; "
-        "padding: 1px 6px; border-radius: 3px; font-size: 12px; "
-        f"background: #f3f4f6; color: {color};'>"
+        f"<span class='qc {delta_tone(delta)}'>"
         f"{warn}{_html.escape(symbol)} {pct(delta, signed=True)}</span>"
     )
 

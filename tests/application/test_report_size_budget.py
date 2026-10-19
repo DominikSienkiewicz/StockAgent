@@ -7,8 +7,6 @@ import re
 from datetime import UTC, datetime
 from decimal import Decimal
 
-import pytest
-
 from src.application.report_builder import SymbolResult, TopNewsItem, build_html_report
 from src.domain.council import CouncilVerdict, InvestorOpinion
 
@@ -75,10 +73,6 @@ def test_typical_cycle_with_council_stays_under_the_budget() -> None:
     assert _size([_saved(i) for i in range(8)]) <= 95_000
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="MAIL-06 (b)/(d): zwinięta rada i degradacja top-N czekają na snapshot TEST-02",
-)
 def test_big_move_day_stays_under_gmail_clipping() -> None:
     assert _size([_saved(i) for i in range(45)]) < 100_000
 
@@ -214,3 +208,44 @@ def test_cycle_within_the_top_signals_has_no_compact_rows() -> None:
 
     assert COMPACT_HEADING not in html
     assert all(f"Teza modelu dla R{i:02d}." in html for i in range(10))
+
+
+# ---------------------------------------------------------------------------
+# MAIL-06 (c): powtarzalne style w klasach arkusza, kluczowe elementy inline
+# ---------------------------------------------------------------------------
+
+
+def test_footer_and_disclaimer_stay_within_the_first_100_kb_on_a_big_day() -> None:
+    html = _html_of([_saved(i) for i in range(45)])
+
+    for marker in ("nie stanowi rekomendacji", "raport automatyczny"):
+        assert len(html[: html.index(marker)].encode("utf-8")) < 100_000
+
+
+def _class_names(html: str) -> set[str]:
+    attributes = re.findall(r"class=[\"']([^\"']+)[\"']", html)
+    return {name for attr in attributes for name in attr.split()}
+
+
+def _stylesheet_classes(html: str) -> set[str]:
+    sheet = html[html.index("<style>") : html.index("</style>")]
+    return set(re.findall(r"\.([a-z][a-z0-9]*)\{", sheet))
+
+
+def test_every_class_in_the_mail_has_a_rule_in_the_stylesheet() -> None:
+    html = _html_of([*(_saved(i) for i in range(45)), _ranked(0, split=True)])
+
+    assert _class_names(html)
+    assert _class_names(html) <= _stylesheet_classes(html)
+
+
+def test_first_screen_and_signals_keep_inline_styles() -> None:
+    # Gmail w aplikacji dla kont spoza Google pomija <style>: pierwszy ekran,
+    # lead i karty sygnałów muszą wyglądać tak samo bez arkusza.
+    html = _html_of([_saved(i) for i in range(12)])
+
+    first_screen = html[html.index("</style>") : html.index("🔮 Wygenerowane predykcje")]
+    assert "Najsilniejsze sygnały" in first_screen
+    assert "class=" not in first_screen
+    footer = html[html.index("nie stanowi rekomendacji") - 300 :]
+    assert "class=" not in footer

@@ -111,6 +111,14 @@ from src.application.report_signals import (
     market_status,
     parse_resolved_predictions,
 )
+from src.application.report_styles import (
+    COUNCIL_ROW_TONE,
+    COUNCIL_TONE,
+    EMAIL_STYLESHEET,
+    SIGNAL_TONE,
+    delta_tone,
+    trend_tone,
+)
 from src.application.report_suggestions import (
     build_sector_suggestions,
     render_suggestions_html,
@@ -182,17 +190,8 @@ __all__ = [
 
 _SAFE_URL_SCHEMES = {"http", "https"}
 
-_DIRECTION_COLOR = {
-    "KUP": "#16a34a",
-    "SPRZEDAJ": "#dc2626",
-    "TRZYMAJ": "#737373",
-}
-
-_DIRECTION_BG = {
-    "KUP": "#f0fdf4",
-    "SPRZEDAJ": "#fef2f2",
-    "TRZYMAJ": "#f9fafb",
-}
+# MAIL-06 (c): tło bloku sygnału modelu jako klasa tonu (report_styles).
+_SIGNAL_FILL = {"up": "gu", "dn": "gd", "nt": "gn"}
 
 # Markery slotów — placeholdery wstawiane przy renderze i podmieniane treścią
 # w build_html_report. Trzymane jako stałe (jedno źródło prawdy), żeby literówka
@@ -328,8 +327,7 @@ def _move_interval_label(interval: MoveInterval) -> str:
 def _model_signal_reason_html(r: SymbolResult) -> str:
     """Zwraca krótki HTML-owy powód sygnału modelu (1–2 zdania)."""
     direction = _model_signal(r)
-    color = _DIRECTION_COLOR.get(direction, "#737373")
-    bg = _DIRECTION_BG.get(direction, "#f9fafb")
+    tone = SIGNAL_TONE.get(direction, "nt")
 
     conf_part = (
         f"Pewność: <strong>{_pct(r.confidence_score, decimals=0)}</strong>."
@@ -340,7 +338,7 @@ def _model_signal_reason_html(r: SymbolResult) -> str:
     if r.expected_change is not None and not r.ml_cold_start:
         change_part = (
             f" Prognozowana zmiana: "
-            f"<strong style='color: {_delta_color(r.expected_change)};'>"
+            f"<strong class='{delta_tone(r.expected_change)}'>"
             f"{_pct(r.expected_change, signed=True)}</strong>."
         )
     sentiment_part = ""
@@ -353,9 +351,8 @@ def _model_signal_reason_html(r: SymbolResult) -> str:
             sentiment_part = " Sentyment neutralny."
 
     return (
-        f"<div style='margin-top: 6px; padding: 6px 10px; background: {bg}; "
-        f"border-radius: 3px; font-size: 12px;'>"
-        f"<span style='font-weight: 700; color: {color};'>➤ {MODEL_SIGNAL_TITLE}: {direction}</span> — "
+        f'<div class="rs {_SIGNAL_FILL[tone]}">'
+        f'<span class="b7 {tone}">➤ {MODEL_SIGNAL_TITLE}: {direction}</span> — '
         f"{conf_part}{change_part}{sentiment_part}"
         f"</div>"
     )
@@ -530,8 +527,8 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
             "name": op.investor_name,
             "label": council_recommendation_label(op.recommendation),
             "emoji": _COUNCIL_REC_EMOJI.get(op.recommendation, "⬜"),
-            "color": _COUNCIL_REC_COLOR.get(op.recommendation, "#737373"),
-            "bg": _COUNCIL_REC_BG.get(op.recommendation, "#f9fafb"),
+            "tone": COUNCIL_TONE.get(op.recommendation, "nt"),
+            "row_tone": COUNCIL_ROW_TONE.get(op.recommendation, "gn"),
             "confidence_pct": int(op.confidence * 100),
             "confidence_label": op.confidence_label(),
             "factors": ", ".join(op.key_factors[:3]),
@@ -560,12 +557,12 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
 # person to ~4 KB na symbol, a Gmail przycina mail powyżej ~102 KB. Summary i
 # dysydenci pochodzą z LLM-a, więc linia idzie przez autoescapowany `_env`.
 _COUNCIL_LINE_TEMPLATE = _env.from_string(
-    "<span style='color: {{ color }}; font-weight: 700;'>{{ label }}</span>"
+    "<span class='b7 {{ tone }}'>{{ label }}</span>"
     " · zgodność {{ strength_pct }}%"
     "{% if is_split %} · ⚠️ podzielona{% endif %} · "
     "🟢 {{ dist['BUY'] }} KUP · 🔴 {{ dist['SELL'] }} SPRZEDAJ · 🟡 {{ dist['HOLD'] }} TRZYMAJ"
     " — „{{ summary }}”"
-    "{% if dissent %}<div style='margin-top: 4px; color: #92400e;'>"
+    "{% if dissent %}<div class='dv'>"
     "⚠️ Głosy niezgodne: {{ dissent | join('; ') }}</div>{% endif %}"
 )
 
@@ -576,7 +573,7 @@ def _render_council_line(verdict: CouncilVerdict) -> str:
     final = verdict.final_recommendation
     return _COUNCIL_LINE_TEMPLATE.render(
         label=council_recommendation_label(final),
-        color=_COUNCIL_REC_COLOR.get(final, "#737373"),
+        tone=COUNCIL_TONE.get(final, "nt"),
         strength_pct=int(verdict.consensus_strength * 100),
         is_split=verdict.is_split_decision(),
         dist=verdict.vote_distribution(),
@@ -615,17 +612,16 @@ def _render_council_line(verdict: CouncilVerdict) -> str:
 # URL (sam autoescape zadba o atrybut, bez podwójnego escapowania).
 _NEWS_BLOCK_TEMPLATE = _env.from_string(
     "{%- if items -%}"
-    "<div style='font-size: 11px; color: #4b5563; margin-top: 8px;'>"
+    "<div class='nw'>"
     "📰 <strong>Top newsy:</strong>"
-    "<ul style='margin: 4px 0 0 20px; padding: 0;'>"
+    "<ul class='nl'>"
     "{%- for n in items -%}"
-    "<li style='margin: 2px 0;'>"
+    "<li class='ni'>"
     "<strong>[{{ n.source_label }}]</strong> "
     "{% if n.href %}"
-    "<a href='{{ n.href }}' target='_blank' "
-    "style='color: #2563eb; text-decoration: none;'>{{ n.title }}</a>"
+    "<a href='{{ n.href }}' target='_blank' class='na'>{{ n.title }}</a>"
     "{% else %}{{ n.title }}{% endif %}"
-    " <span style='color: #6b7280;'>"
+    " <span class='nm'>"
     "(relevance {{ n.relevance_fmt }}, sentyment {{ n.sentiment_fmt }})"
     "</span></li>"
     "{%- endfor -%}"
@@ -867,15 +863,27 @@ def _render_preheader_html(lead_items: list[LeadItem], closed_count: int | None)
 _SKIP_WHEN_EMPTY_SLOTS = frozenset({_QUOTA_BANNER_SLOT, _RISK_WATCH_SLOT})
 
 
-# MAIL-06: ciąg białych znaków między tagami — wcięcia szablonów.
-_WHITESPACE_BETWEEN_TAGS = re.compile(r">\s+<")
+# MAIL-06: ciąg białych znaków ASCII — wcięcia szablonów między tagami, w tekście
+# i w wieloliniowych atrybutach `style`. Twarda spacja (U+00A0) z formatera kwot
+# nie jest wcięciem i zostaje.
+_WHITESPACE_RUN = re.compile(r"\s+", re.ASCII)
+
+
+# Spacja między dwoma tagami struktury tabeli (`</td> <td>`, `<tr> <td>`) nie jest
+# treścią komórki — parser HTML ją pomija.
+_SPACE_BETWEEN_TABLE_TAGS = re.compile(
+    r"(</?(?:table|thead|tbody|tr|td|th)\b[^>]*>) (?=</?(?:table|thead|tbody|tr|td|th)\b)"
+)
 
 
 def _compact_markup(markup: str) -> str:
     """Gmail przycina wiadomości powyżej ~102 KB, a wcięcia szablonów to kilka procent
-    maila. Ciąg białych znaków między tagami zamieniamy na jedną spację: w HTML bez
-    `<pre>` renderuje się identycznie, a sąsiednie elementy inline się nie sklejają."""
-    return _WHITESPACE_BETWEEN_TAGS.sub("> <", markup).strip()
+    maila. Każdy ciąg białych znaków zamieniamy na jedną spację: mail nie ma `<pre>`
+    ani `<textarea>`, więc HTML renderuje się identycznie (tekst i tak zwija białe
+    znaki, CSS w `style` też), a sąsiednie elementy inline się nie sklejają. Spację
+    między tagami struktury tabeli usuwamy w ogóle."""
+    collapsed = _WHITESPACE_RUN.sub(" ", markup).strip()
+    return _SPACE_BETWEEN_TABLE_TAGS.sub(r"\1", collapsed)
 
 
 def _fill_html_slots(html: str, sections: Mapping[str, str]) -> str:
@@ -1418,7 +1426,10 @@ def build_html_report(
         _RUN_FOOTER_SLOT: _render_run_footer_html(context.run_context),
     })
     closed_count = None if context.resolved_unavailable and not resolved else len(resolved)
-    html = _compact_markup(_render_preheader_html(lead_items, closed_count) + html)
+    # MAIL-06 (c): arkusz klas za preheaderem — preheader zostaje pierwszym elementem.
+    html = _compact_markup(
+        _render_preheader_html(lead_items, closed_count) + EMAIL_STYLESHEET + html
+    )
     text = _render_plain(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
@@ -1856,24 +1867,24 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
     elif r.target_price is not None:
         forecast_text = (
             f"{_money(r.target_price)} "
-            f"<span style='color: {_delta_color(r.expected_change)};'>"
+            f"<span class='{delta_tone(r.expected_change)}'>"
             f"({_pct(r.expected_change, signed=True)})</span>"
         )
     else:
         forecast_text = "—"
     rec = _model_signal(r)
-    rec_color = _DIRECTION_COLOR.get(rec, "#737373")
+    # MAIL-06 (c): układ komórki i ton kierunku w klasach arkusza.
     return f"""
               <tr>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; font-weight: 600;">{_html(_company_label(r.symbol))}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{_money(r.current_price)}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; color: {_delta_color(r.delta)};">{_pct(r.delta)}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; color: {_trend_color(r.trend)}; font-weight: 600;">{_html(_trend_label(r.trend))}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{forecast_text}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{confidence_text}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{sentiment_text}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6;">{r.news_volume or 0}</td>
-                <td style="padding: 6px 8px; border-bottom: 1px solid #f3f4f6; font-weight: 700; color: {rec_color};">{rec}</td>
+                <td class="pc b6">{_html(_company_label(r.symbol))}</td>
+                <td class="pc">{_money(r.current_price)}</td>
+                <td class="pc {delta_tone(r.delta)}">{_pct(r.delta)}</td>
+                <td class="pc b6 {trend_tone(r.trend)}">{_html(_trend_label(r.trend))}</td>
+                <td class="pc">{forecast_text}</td>
+                <td class="pc">{confidence_text}</td>
+                <td class="pc">{sentiment_text}</td>
+                <td class="pc">{r.news_volume or 0}</td>
+                <td class="pc b7 {SIGNAL_TONE.get(rec, "nt")}">{rec}</td>
               </tr>
             """
 
@@ -1907,22 +1918,13 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
             if r.ml_cold_start
             else (
                 f"{_money(r.current_price)} → {_money(r.target_price)} "
-                f"<span style='color: {_delta_color(r.expected_change)};'>"
+                f"<span class='{delta_tone(r.expected_change)}'>"
                 f"({_pct(r.expected_change, signed=True)})</span>"
             )
         )
-        move_line = (
-            f"<div style='font-size: 11px; color: #6b7280; margin-top: 2px;'>"
-            f"Oczekiwany ruch: {move_text}"
-            f"{conf_part}"
-            f"</div>"
-        )
+        move_line = f'<div class="rm">Oczekiwany ruch: {move_text}{conf_part}</div>'
     if r.move_interval is not None:
-        move_line += (
-            f"<div style='font-size: 11px; color: #6b7280; margin-top: 2px;'>"
-            f"{_move_interval_label(r.move_interval)}"
-            f"</div>"
-        )
+        move_line += f'<div class="rm">{_move_interval_label(r.move_interval)}</div>'
     # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
     # (finding #35). Escapowanie title/source jest tu domyślne.
     news_block = _render_news_block_html(r.top_news)
@@ -1940,11 +1942,11 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
         else ""
     )
     return f"""
-              <div style="margin-bottom: 10px; padding: 10px 12px; background: #fafafa; border-left: 3px solid {_trend_color(r.trend)}; border-radius: 4px;">
-                <div style="font-weight: 600; font-size: 13px;">{_html(_company_label(r.symbol))}{sector_tag} <span style="color: {_trend_color(r.trend)};">{_html(_trend_label(r.trend))}</span>{badges_html}</div>
+              <div class="rb" style="border-left: 3px solid {_trend_color(r.trend)};">
+                <div class="rh">{_html(_company_label(r.symbol))}{sector_tag} <span class="{trend_tone(r.trend)}">{_html(_trend_label(r.trend))}</span>{badges_html}</div>
                 {move_line}
                 {rec_block}
-                {f'<div style="font-size: 12px; color: #4b5563; margin-top: 6px;">{_html(r.reasoning)}</div>' if r.reasoning else ''}
+                {f'<div class="rt">{_html(r.reasoning)}</div>' if r.reasoning else ''}
                 {attribution_block}
                 {precedents_block}
                 {news_block}
@@ -1992,6 +1994,7 @@ def _render_saved_section_html(
 
     # Uzasadnienia
     parts.append("<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>💡 Uzasadnienia</h3>")
+
     def has_full_block(r: SymbolResult) -> bool:
         return full_detail is None or r.symbol in full_detail
 
@@ -2003,11 +2006,9 @@ def _render_saved_section_html(
 
 
 _COMPACT_PREDICTIONS_NOTE = (
-    f"Pełne uzasadnienie mają top {_FULL_DETAIL_TOP_N} sygnałów i symbole z leadu "
-    "— reszta w skrócie, żeby mail nie przekroczył limitu Gmaila. "
-    "Wersja tekstowa maila ma pełne uzasadnienia."
+    f"Pełne uzasadnienie: top {_FULL_DETAIL_TOP_N} sygnałów i lead. Reszta w skrócie "
+    "(limit rozmiaru Gmaila) — pełne w wersji tekstowej maila."
 )
-_COMPACT_CELL = "padding: 4px 8px; border-bottom: 1px solid #f3f4f6; vertical-align: top;"
 
 
 def _render_compact_predictions_html(rest: list[SymbolResult]) -> str:
@@ -2022,19 +2023,19 @@ def _render_compact_predictions_html(rest: list[SymbolResult]) -> str:
             _render_council_line(r.council_verdict) if r.council_verdict is not None else "—"
         )
         rows.append(
-            f'<tr><td style="{_COMPACT_CELL} font-weight: 600;">{_html(_company_label(r.symbol))}</td>'
-            f'<td style="{_COMPACT_CELL} font-weight: 700; color: {_DIRECTION_COLOR.get(signal, "#737373")};">'
+            f'<tr><td class="pk b6">{_html(_company_label(r.symbol))}</td>'
+            f'<td class="pk b7 {SIGNAL_TONE.get(signal, "nt")}">'
             f"{signal}</td>"
-            f'<td style="{_COMPACT_CELL}">{council}</td></tr>'
+            f'<td class="pk">{council}</td></tr>'
         )
     return (
         "<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>📋 Pozostałe predykcje (skrót)</h3>"
         f"<div style='font-size: 12px; color: #6b7280; margin-bottom: 6px;'>{_html(_COMPACT_PREDICTIONS_NOTE)}</div>"
         "<table style='width: 100%; border-collapse: collapse; font-size: 12px;'>"
         '<tr style="background: #f3f4f6; text-align: left;">'
-        f'<th style="{_COMPACT_CELL}">Symbol</th>'
-        f'<th style="{_COMPACT_CELL}">{MODEL_SIGNAL_TITLE}</th>'
-        f'<th style="{_COMPACT_CELL}">Rada</th></tr>'
+        '<th class="pk">Symbol</th>'
+        f'<th class="pk">{MODEL_SIGNAL_TITLE}</th>'
+        '<th class="pk">Rada</th></tr>'
         + "".join(rows)
         + "</table>"
     )
