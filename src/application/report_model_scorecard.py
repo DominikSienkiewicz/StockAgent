@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from src.application.report_formatting import number as _number
+from src.application.report_formatting import pct as _pct
 from src.domain.backtest import (
     DRIFT_BASELINE_LABEL,
     LLM_BASELINE_LABEL,
@@ -105,7 +107,7 @@ def _baselines_line(
         if value is not None
     ]
     strongest, _ = strongest_baseline(baseline_rmse, drift_baseline_rmse, llm_baseline_rmse)
-    values = " · ".join(f"{label} {value:.4f}" for label, value in labelled)
+    values = " · ".join(f"{label} {_number(value, decimals=4)}" for label, value in labelled)
     return f"Baseline'y bramki (RMSE): {values} — najsilniejszy: {strongest}"
 
 
@@ -207,9 +209,10 @@ def render_model_scorecard_html(
         provenance_html = f" — {_html.escape(provenance)}" if provenance else ""
         rows.append(
             f"<div style='font-size: 12px; color: #374151; margin-bottom: 4px;'>"
-            f"RMSE kandydata <strong>{candidate_rmse:.4f}</strong> vs baseline "
-            f"<strong>{baseline_rmse:.4f}</strong> "
-            f"(<span style='color: {color}; font-weight: 700;'>{pct:+.1f}%</span>)"
+            f"RMSE kandydata <strong>{_number(candidate_rmse, decimals=4)}</strong> vs baseline "
+            f"<strong>{_number(baseline_rmse, decimals=4)}</strong> "
+            f"(<span style='color: {color}; font-weight: 700;'>"
+            f"{_number(pct, decimals=1, signed=True)}%</span>)"
             f"{provenance_html}</div>"
         )
 
@@ -223,7 +226,7 @@ def render_model_scorecard_html(
     metric_bits: list[str] = []
     if directional_hit_rate is not None:
         metric_bits.append(
-            f"trafność kierunkowa <strong>{directional_hit_rate * 100:.0f}%</strong>"
+            f"trafność kierunkowa <strong>{_pct(directional_hit_rate, decimals=0)}</strong>"
         )
     if folds is not None:
         metric_bits.append(f"foldy walk-forward <strong>{folds}</strong>")
@@ -289,8 +292,8 @@ def render_model_scorecard_text(
         pct, _ = _improvement(candidate_rmse, baseline_rmse)
         provenance = _provenance(metrics_symbol, n_samples)
         lines.append(
-            f"  RMSE kandydata {candidate_rmse:.4f} vs baseline "
-            f"{baseline_rmse:.4f} ({pct:+.1f}%)"
+            f"  RMSE kandydata {_number(candidate_rmse, decimals=4)} vs baseline "
+            f"{_number(baseline_rmse, decimals=4)} ({_number(pct, decimals=1, signed=True)}%)"
             + (f" — {provenance}" if provenance else "")
         )
 
@@ -300,7 +303,7 @@ def render_model_scorecard_text(
 
     metric_bits: list[str] = []
     if directional_hit_rate is not None:
-        metric_bits.append(f"trafność kierunkowa {directional_hit_rate * 100:.0f}%")
+        metric_bits.append(f"trafność kierunkowa {_pct(directional_hit_rate, decimals=0)}")
     if folds is not None:
         metric_bits.append(f"foldy walk-forward {folds}")
     if metric_bits:
