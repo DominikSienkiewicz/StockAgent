@@ -384,12 +384,11 @@ class ReportPalette:
     """Kolory raportu w jednym miejscu (ARCH-28); sekcje przechodzą na nie stopniowo.
 
     MAIL-57: kolory tekstu mają mieć ≥ 4.5:1 na białym i na `surface` (WCAG AA dla
-    tekstu 11–13 px, `contrast_ratio`). `caution` i `subtle` ściemnione z #ca8a04
-    (2.9:1) i #9ca3af (2.5:1) — jaśniejszy szary tekst niż `muted` nie przechodzi
-    AA, więc `subtle` mu równy. `positive` (#16a34a, 3.3:1) czeka na decyzję
-    właściciela (test ARCH-28 przypina obecną wartość)."""
+    tekstu 11–13 px, `contrast_ratio`). `positive`, `caution` i `subtle` ściemnione
+    z #16a34a (3.3:1), #ca8a04 (2.9:1) i #9ca3af (2.5:1) — jaśniejszy szary tekst
+    niż `muted` nie przechodzi AA, więc `subtle` mu równy."""
 
-    positive: str = "#16a34a"
+    positive: str = "#15803d"
     negative: str = "#dc2626"
     neutral: str = "#737373"
     caution: str = "#a16207"

@@ -154,20 +154,11 @@ def test_contrast_ratio_matches_the_wcag_reference_values() -> None:
 _TEXT_ROLES = ("positive", "negative", "neutral", "caution", "text", "text_secondary",
                "muted", "subtle")
 _BACKGROUNDS = ("#ffffff", PALETTE.surface)
-_PENDING_POSITIVE = pytest.mark.xfail(
-    strict=True,
-    reason="MAIL-57: zieleń #16a34a ma 3.3:1; zmiana koloru czeka na zgodę właściciela "
-    "na zmianę asercji TestPalette::test_palette_keeps_the_report_colors (ARCH-28)",
-)
 
 
 @pytest.mark.parametrize(
     ("role", "background"),
-    [
-        pytest.param(role, background, marks=_PENDING_POSITIVE if role == "positive" else ())
-        for role in _TEXT_ROLES
-        for background in _BACKGROUNDS
-    ],
+    [(role, background) for role in _TEXT_ROLES for background in _BACKGROUNDS],
 )
 def test_palette_meets_wcag_aa(role: str, background: str) -> None:
     assert contrast_ratio(getattr(PALETTE, role), background) >= 4.5

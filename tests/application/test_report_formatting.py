@@ -229,7 +229,7 @@ class TestPalette:
     """ARCH-28: kolory raportu w jednym miejscu; helpery kolorów biorą je stąd."""
 
     def test_palette_keeps_the_report_colors(self) -> None:
-        assert PALETTE.positive == "#16a34a"
+        assert PALETTE.positive == "#15803d"
         assert PALETTE.negative == "#dc2626"
         assert PALETTE.neutral == "#737373"
         assert PALETTE.muted == "#6b7280"
