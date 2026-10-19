@@ -281,3 +281,16 @@ class TestCalibrationBucketCountOnSignal:
         (signal,) = build_trade_signals([self._saved(0.85)])
 
         assert signal.calibration_bucket_count is None
+
+
+def test_divergence_signal_writes_the_numbers_the_polish_way() -> None:
+    # MAIL-58: opis sygnału ryzyka trafia do maila — „3,00%” i „-0,45”, nie z kropką.
+    from src.application.report_signals import detect_risk_signals
+
+    result = SymbolResult(
+        symbol="NVDA", status="saved", delta=Decimal("0.03"), sentiment_score=-0.45
+    )
+
+    descriptions = [s.description for s in detect_risk_signals([result])]
+
+    assert "cena rośnie 3,00% ale sentyment -0,45 -> możliwa korekta lub pump" in descriptions

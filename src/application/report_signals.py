@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from src.application.report_formatting import pct, score_to_pl_label
+from src.application.report_formatting import number, pct, score_to_pl_label
 from src.application.report_models import (
     ResolvedPrediction,
     RiskSignal,
@@ -143,7 +143,7 @@ def _divergence_signal(r: SymbolResult) -> RiskSignal | None:
             symbol=r.symbol, type="DIVERGENCE", severity="high",
             description=(
                 f"cena rośnie {pct(r.delta)} ale sentyment "
-                f"{r.sentiment_score:+.2f} -> możliwa korekta lub pump"
+                f"{number(r.sentiment_score, decimals=2, signed=True)} -> możliwa korekta lub pump"
             ),
         )
     if (
@@ -154,7 +154,7 @@ def _divergence_signal(r: SymbolResult) -> RiskSignal | None:
             symbol=r.symbol, type="DIVERGENCE", severity="high",
             description=(
                 f"cena spada {pct(r.delta)} ale sentyment "
-                f"{r.sentiment_score:+.2f} -> okazja lub odbicie?"
+                f"{number(r.sentiment_score, decimals=2, signed=True)} -> okazja lub odbicie?"
             ),
         )
     return None
@@ -167,7 +167,7 @@ def _av_llm_conflict_signal(r: SymbolResult) -> RiskSignal | None:
     return RiskSignal(
         symbol=r.symbol, type="AV_LLM_CONFLICT", severity="high",
         description=(
-            f"LLM nie zgadza się z AV (zgoda={r.av_llm_agreement:.2f})"
+            f"LLM nie zgadza się z AV (zgoda={number(r.av_llm_agreement, decimals=2)})"
             " -> potencjalny fake news / manipulacja"
         ),
     )
