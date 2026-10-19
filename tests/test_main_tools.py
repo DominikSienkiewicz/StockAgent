@@ -137,3 +137,26 @@ def test_import_positions_reports_a_missing_file(
 
     assert code == 1
     assert "missing.csv" in capsys.readouterr().err
+
+
+# --- ARCH-39: evaluate jako podkomenda ----------------------------------------
+
+
+def test_evaluate_is_a_main_tools_subcommand(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mocker.patch("src.config.Settings.from_env")
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.get_resolved_predictions_for_eval.return_value = []
+
+    code = main_tools.main(["evaluate", "--days", "7"])
+
+    assert code == 0
+    repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(days=7)
+    assert "ostatnie 7 dni" in capsys.readouterr().out
+
+
+def test_src_tools_evaluate_has_no_entry_point_of_its_own() -> None:
+    from src.tools import evaluate
+
+    assert not hasattr(evaluate, "main")

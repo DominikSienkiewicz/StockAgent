@@ -80,7 +80,7 @@ class _EvalField(NamedTuple):
     select: str  # wyrażenie selecta PostgREST
 
 
-# WIA-55 / EXP-01: pola opcjonalne ewaluacji (`src.tools.evaluate --by/--echo`).
+# WIA-55 / EXP-01: pola opcjonalne ewaluacji (`main_tools.py evaluate --by/--echo`).
 # Czytane tylko na żądanie: każda kolumna istnieje dopiero po swojej migracji
 # (w komentarzu), a domyślny przebieg ma działać na każdej bazie.
 _EVAL_EXTRA_FIELDS: dict[str, _EvalField] = {
@@ -464,7 +464,7 @@ class SupabaseRepository(RepositoryPort):
         extra_fields: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
         """Zamknięte predykcje z ostatnich `days` dni z polami do ewaluacji
-        (ceny + kierunek). Read-only; używane przez `src.tools.evaluate`.
+        (ceny + kierunek). Read-only; używane przez `main_tools.py evaluate`.
 
         `with_recipe` (WIA-20) dokłada kolumnę `recipe_version` do segmentacji
         po przepisie — WYMAGA migracji 030 (inaczej PostgREST zwraca 400).

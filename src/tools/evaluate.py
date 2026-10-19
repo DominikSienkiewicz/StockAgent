@@ -39,25 +39,24 @@ samych wierszach i hit-rate LLM tam, gdzie nie zgadza się z momentum — z n,
 n_eff i BH-FDR. Bez migracji drukuje komunikat zamiast wyjątku. Wynik żyje
 WYŁĄCZNIE tu (decyzja właściciela) — nie w recapie ani w mailu.
 
-Uruchom:
-    uv run python -m src.tools.evaluate
-    uv run python -m src.tools.evaluate --days 60
-    uv run python -m src.tools.evaluate --by-recipe
-    uv run python -m src.tools.evaluate --by-universe
-    uv run python -m src.tools.evaluate --by component --by regime
-    uv run python -m src.tools.evaluate --echo
+Uruchom (ARCH-39: składanie `Settings` i repozytorium żyje w `main_tools.py`,
+tu zostają czyste funkcje):
+    uv run python main_tools.py evaluate
+    uv run python main_tools.py evaluate --days 60
+    uv run python main_tools.py evaluate --by-recipe
+    uv run python main_tools.py evaluate --by-universe
+    uv run python main_tools.py evaluate --by component --by regime
+    uv run python main_tools.py evaluate --echo
 
 Exit code: 0 zawsze (narzędzie raportujące, nie bramka CI).
 """
 from __future__ import annotations
 
-import argparse
 import math
-import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from src.domain.equity_curve import DirectionalHitRate, directional_hit_rate
 from src.domain.implied_edge import edge_label_for_sigma
@@ -83,9 +82,6 @@ from src.domain.segment_evidence import (
 from src.domain.significance import DEFAULT_FDR_Q
 from src.domain.track_record import HitRateEvidence, ScoredCall, assess_directional_hit_rate
 from src.domain.value_objects import AssetType
-
-if TYPE_CHECKING:
-    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
 # Prefiks wersji w raporcie CLI — pełny sha256 nic nie mówi człowiekowi.
 _VERSION_PREFIX = 12
@@ -508,104 +504,49 @@ def _evidence_lines(evidence: HitRateEvidence | None) -> list[str]:
     return lines
 
 
-def _read_rows(
-    repo: SupabaseRepository, days: int, reads: dict[str, Any], fields: set[str]
-) -> tuple[list[dict[str, Any]], bool]:
-    """Odczyt wierszy ewaluacji i to, czy niosą `gate_delta`.
+def evaluation_reads(
+    *, by_recipe: bool, by_universe: bool, segmentations: Sequence[str], echo: bool
+) -> tuple[dict[str, Any], set[str]]:
+    """Co odczytać z repozytorium: flagi segmentów wersji i dodatkowe kolumny.
 
-    Bez migracji 034 reszta raportu ma zostać: komunikat zamiast wyjątku
-    i ponowny odczyt bez delty bramki (test echa wtedy pomijamy jawnie)."""
-    from src.infrastructure.adapters.supabase_repo import MissingColumnError
-
-    try:
-        rows = repo.get_resolved_predictions_for_eval(days=days, **reads, **_fields_kwarg(fields))
-    except MissingColumnError as exc:
-        if exc.column != GATE_DELTA_FIELD:
-            raise
-        print(GATE_DELTA_UNAVAILABLE)
-        remaining = fields - {GATE_DELTA_FIELD}
-        return (
-            repo.get_resolved_predictions_for_eval(days=days, **reads, **_fields_kwarg(remaining)),
-            False,
-        )
-    return rows, GATE_DELTA_FIELD in fields
+    Kolumny segmentów tylko na żądanie: `recipe_version` istnieje dopiero po
+    migracji 030, `gate_delta` po 034, a domyślny przebieg ma działać na każdej
+    bazie. Zwraca (kwargs `with_recipe`/`with_universe`, pola `extra_fields`)."""
+    reads: dict[str, Any] = {
+        name: True
+        for name, wanted in (("with_recipe", by_recipe), ("with_universe", by_universe))
+        if wanted
+    }
+    fields = {name for s in segmentations for name in SEGMENT_FIELDS[s]}
+    if echo:
+        fields.add(GATE_DELTA_FIELD)
+    return reads, fields
 
 
-def _fields_kwarg(fields: set[str]) -> dict[str, Any]:
+def fields_kwarg(fields: set[str]) -> dict[str, Any]:
     """Kwarg `extra_fields` tylko, gdy coś zamówiono — domyślny odczyt bez zmian."""
     return {"extra_fields": tuple(sorted(fields))} if fields else {}
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Evaluate StockAgent prediction quality vs a naive baseline.",
-    )
-    parser.add_argument(
-        "--days",
-        type=int,
-        default=30,
-        help="Okno (dni) zamkniętych predykcji do ewaluacji (default: 30).",
-    )
-    parser.add_argument(
-        "--by-recipe",
-        action="store_true",
-        help="Trafność per wersja przepisu (recipe_version) — wymaga migracji 030.",
-    )
-    parser.add_argument(
-        "--by-universe",
-        action="store_true",
-        help="Trafność per wersja uniwersum symboli (z kwitu decyzyjnego v2).",
-    )
-    parser.add_argument(
-        "--by",
-        action="append",
-        choices=SEGMENTATIONS,
-        default=[],
-        help=(
-            "Ablacja komponentów albo segment kontekstu (WIA-55); można powtórzyć. "
-            "Każda kolumna segmentu wymaga swojej migracji."
-        ),
-    )
-    parser.add_argument(
-        "--echo",
-        action="store_true",
-        help="Test echa momentum (EXP-01): trend LLM vs znak delty bramki — wymaga migracji 034.",
-    )
-    args = parser.parse_args(argv)
-    segmentations = tuple(dict.fromkeys(args.by))
-
-    # Import lokalnie — narzędzie nie powinno wymagać konfiguracji do testów
-    # czystej funkcji `summarize_evaluation`.
-    from src.config import Settings
-    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
-
-    settings = Settings.from_env()
-    repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
-    # Kolumny segmentów tylko na żądanie: `recipe_version` istnieje dopiero po
-    # migracji 030, a domyślny przebieg ma działać na każdej bazie.
-    segment_reads: dict[str, Any] = {
-        name: True
-        for name, wanted in (("with_recipe", args.by_recipe), ("with_universe", args.by_universe))
-        if wanted
-    }
-    extra_fields = {name for s in segmentations for name in SEGMENT_FIELDS[s]}
-    if args.echo:
-        extra_fields.add(GATE_DELTA_FIELD)
-    rows, echo = _read_rows(repo, args.days, segment_reads, extra_fields)
-    if "asset_class" in segmentations:
-        rows = with_asset_class(rows, settings.crypto_symbols, settings.symbols_etf)
+def render_evaluation(
+    rows: list[dict[str, Any]],
+    *,
+    days: int,
+    segmentations: Sequence[str],
+    by_recipe: bool,
+    by_universe: bool,
+    echo: bool,
+) -> str:
+    """Pełny tekst raportu CLI: nagłówek, segmenty wersji, `--by` i test echa."""
     report = summarize_evaluation(rows, segment_by=segmentations)
-    print(format_report(report, args.days))
-    if args.by_recipe:
-        print(format_segments(summarize_by_version(rows, "recipe_version"), "przepis"))
-    if args.by_universe:
-        print(format_segments(summarize_by_version(rows, "universe_version"), "uniwersum"))
-    for name in segmentations:
-        print(format_segment_evidence(name, report.segments[name]))
+    sections = [format_report(report, days)]
+    if by_recipe:
+        sections.append(format_segments(summarize_by_version(rows, "recipe_version"), "przepis"))
+    if by_universe:
+        sections.append(
+            format_segments(summarize_by_version(rows, "universe_version"), "uniwersum")
+        )
+    sections.extend(format_segment_evidence(name, report.segments[name]) for name in segmentations)
     if echo:
-        print(format_echo(summarize_echo(rows)))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+        sections.append(format_echo(summarize_echo(rows)))
+    return "\n".join(sections)

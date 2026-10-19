@@ -99,7 +99,7 @@ feature_snapshots_enabled = false
 # migracji 032 (inaczej PGRST204 i przepadły zapis predykcji).
 interval_coverage_enabled = false
 # EXP-01: delta ceny, która otworzyła bramkę volatility, w `prediction_logs.gate_delta`
-# — test echa momentum w `uv run python -m src.tools.evaluate --echo` (offline, nie
+# — test echa momentum w `uv run python main_tools.py evaluate --echo` (offline, nie
 # w mailu). Historia z backfillu migracji. UWAGA: włącz DOPIERO po migracji 034 (PGRST204).
 gate_delta_enabled = false
 # WIA-19: okna „zamknięte predykcje” po chwili rozliczenia (`settled_at`, migracja

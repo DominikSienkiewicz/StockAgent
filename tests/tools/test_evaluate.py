@@ -203,7 +203,7 @@ class TestRecipeSegments:
         assert "n=2" in text
 
     def test_by_recipe_flag_reads_the_recipe_column(self, mocker, capsys):
-        from src.tools import evaluate
+        import main_tools
 
         mocker.patch("src.config.Settings.from_env")
         repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
@@ -211,7 +211,7 @@ class TestRecipeSegments:
             {**_row("BULLISH", True, 100, 101, 101), "recipe_version": "f" * 64},
         ]
 
-        evaluate.main(["--by-recipe"])
+        main_tools.main(["evaluate", "--by-recipe"])
 
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
             days=30, with_recipe=True
@@ -219,13 +219,13 @@ class TestRecipeSegments:
         assert "f" * 12 in capsys.readouterr().out
 
     def test_default_run_does_not_touch_the_recipe_column(self, mocker):
-        from src.tools import evaluate
+        import main_tools
 
         mocker.patch("src.config.Settings.from_env")
         repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
         repo_cls.return_value.get_resolved_predictions_for_eval.return_value = []
 
-        evaluate.main([])
+        main_tools.main(["evaluate"])
 
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(days=30)
 
@@ -235,7 +235,7 @@ class TestUniverseSegments:
     od zmiany trafności. Wersja jest w kwicie v2 (`decision_receipts`)."""
 
     def test_by_universe_flag_reads_the_receipt_universe(self, mocker, capsys):
-        from src.tools import evaluate
+        import main_tools
 
         mocker.patch("src.config.Settings.from_env")
         repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
@@ -244,7 +244,7 @@ class TestUniverseSegments:
             {**_row("BULLISH", False, 100, 101, 99)},
         ]
 
-        evaluate.main(["--by-universe"])
+        main_tools.main(["evaluate", "--by-universe"])
 
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
             days=30, with_universe=True
@@ -405,7 +405,7 @@ class TestSegmentationCli:
     przebieg nie dotyka żadnej z nich (każda istnieje dopiero po swojej migracji)."""
 
     def test_by_component_reads_the_council_recommendation(self, mocker, capsys):
-        from src.tools import evaluate
+        import main_tools
 
         mocker.patch("src.config.Settings.from_env")
         repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
@@ -413,7 +413,7 @@ class TestSegmentationCli:
             {**_row("BULLISH", True, 100, 100, 101), "council_recommendation": "BUY"},
         ]
 
-        evaluate.main(["--by", "component"])
+        main_tools.main(["evaluate", "--by", "component"])
 
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
             days=30, extra_fields=("council_recommendation",)
@@ -423,7 +423,7 @@ class TestSegmentationCli:
         assert "za mało danych" in out
 
     def test_by_asset_class_classifies_symbols_from_the_config(self, mocker, capsys):
-        from src.tools import evaluate
+        import main_tools
 
         settings = mocker.patch("src.config.Settings.from_env").return_value
         settings.crypto_symbols = ["BTC"]
@@ -435,7 +435,7 @@ class TestSegmentationCli:
             {**_row("BULLISH", True, 100, 100, 101), "symbol": "AAPL"},
         ]
 
-        evaluate.main(["--by", "asset_class"])
+        main_tools.main(["evaluate", "--by", "asset_class"])
 
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
             days=30, extra_fields=("symbol",)
@@ -446,13 +446,15 @@ class TestSegmentationCli:
         assert "STOCK" in out
 
     def test_several_segmentations_read_their_fields_once(self, mocker):
-        from src.tools import evaluate
+        import main_tools
 
         mocker.patch("src.config.Settings.from_env")
         repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
         repo_cls.return_value.get_resolved_predictions_for_eval.return_value = []
 
-        evaluate.main(["--by", "regime", "--by", "confidence_bucket", "--by", "regime"])
+        main_tools.main(
+            ["evaluate", "--by", "regime", "--by", "confidence_bucket", "--by", "regime"]
+        )
 
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
             days=30, extra_fields=("confidence_score", "regime")
@@ -563,7 +565,7 @@ class TestMomentumEcho:
         assert "BH" in text
 
     def test_echo_flag_reads_the_gate_delta_column(self, mocker, capsys):
-        from src.tools import evaluate
+        import main_tools
 
         mocker.patch("src.config.Settings.from_env")
         repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
@@ -571,7 +573,7 @@ class TestMomentumEcho:
             _gated("BULLISH", 0.030, 101),
         ]
 
-        evaluate.main(["--echo"])
+        main_tools.main(["evaluate", "--echo"])
 
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
             days=30, extra_fields=("gate_delta",)
@@ -581,8 +583,8 @@ class TestMomentumEcho:
     def test_missing_gate_delta_column_prints_the_migration_instead_of_failing(
         self, mocker, capsys
     ):
+        import main_tools
         from src.infrastructure.adapters.supabase_repo import MissingColumnError
-        from src.tools import evaluate
 
         mocker.patch("src.config.Settings.from_env")
         repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
@@ -592,7 +594,7 @@ class TestMomentumEcho:
             [_row("BULLISH", True, 100, 101, 101)],
         ]
 
-        code = evaluate.main(["--echo", "--by", "regime"])
+        code = main_tools.main(["evaluate", "--echo", "--by", "regime"])
 
         assert code == 0
         assert read.call_args_list[1].kwargs == {"days": 30, "extra_fields": ("regime",)}
