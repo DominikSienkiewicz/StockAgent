@@ -13,7 +13,7 @@ from __future__ import annotations
 import html as _html
 from decimal import Decimal
 
-from src.application.report_formatting import INVESTMENT_DISCLAIMER
+from src.application.report_formatting import INVESTMENT_DISCLAIMER, number, pct
 from src.domain.council import InvestorOpinion
 from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
 
@@ -35,8 +35,8 @@ def _ece_delta_label(recap: WeeklyRecap) -> str:
     if recap.ece_delta == 0:
         direction = "bez zmian"
     return (
-        f"ECE {recap.current_ece:.3f} "
-        f"({direction} o {abs(recap.ece_delta):.3f} tydzień do tygodnia)"
+        f"ECE {number(recap.current_ece, decimals=3)} "
+        f"({direction} o {number(abs(recap.ece_delta), decimals=3)} tydzień do tygodnia)"
     )
 
 
@@ -59,7 +59,7 @@ def _dissenters_html(dissenters: tuple[InvestorOpinion, ...]) -> str:
 
 
 def hero_verdict(highlight: RecapHighlight) -> str:
-    """„✅ kierunek trafiony · błąd ceny docelowej 1.5%” (WIA-07).
+    """„✅ kierunek trafiony · błąd ceny docelowej 1,5%” (WIA-07).
 
     `accuracy` to bliskość ceny do celu, nie trafność — dlatego mail pokazuje
     błąd ceny docelowej (1 − accuracy, w % ceny wejścia), a trafność kierunku
@@ -69,7 +69,7 @@ def hero_verdict(highlight: RecapHighlight) -> str:
     error_label = (
         "błąd ceny docelowej ≥100%"
         if highlight.accuracy <= 0
-        else f"błąd ceny docelowej {error:.1%}"
+        else f"błąd ceny docelowej {pct(error, decimals=1)}"
     )
     if highlight.direction_correct is None:
         return error_label
