@@ -1285,6 +1285,7 @@ def _process_one_symbol(
     earnings_gate_enabled: bool = False,
     alpha_fusion_enabled: bool = False,
     cycle_at: datetime | None = None,
+    secret_values: tuple[str, ...] = (),
 ) -> _ProcessedSymbol:
     """Przetwarza jeden symbol. NIGDY nie rzuca — łapie wyjątek i zwraca wynik
     z `is_failure=True`. Dzięki temu pula wątków (ścieżka równoległa
@@ -1367,8 +1368,14 @@ def _process_one_symbol(
     except Exception as exc:
         logger.exception("Failed to process symbol %s", symbol)
         return _ProcessedSymbol(
-            # BEZ-07: komunikat idzie do maila — URL z kluczem nie może w nim zostać.
-            to_symbol_result(symbol, None, error=redact_secrets(str(exc))), True, None, None
+            # BEZ-07: komunikat idzie do maila — ani URL z kluczem, ani dosłowna
+            # wartość sekretu z Settings (`secret_values`) nie może w nim zostać.
+            to_symbol_result(
+                symbol, None, error=redact_secrets(str(exc), secret_values)
+            ),
+            True,
+            None,
+            None,
         )
 
 
@@ -1386,6 +1393,7 @@ def _analyze_symbols_parallel(
     earnings_gate_enabled: bool = False,
     alpha_fusion_enabled: bool = False,
     cycle_at: datetime | None = None,
+    secret_values: tuple[str, ...] = (),
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy
     od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
@@ -1406,6 +1414,7 @@ def _analyze_symbols_parallel(
                     earnings_gate_enabled=earnings_gate_enabled,
                     alpha_fusion_enabled=alpha_fusion_enabled,
                     cycle_at=cycle_at,
+                    secret_values=secret_values,
                 ),
                 eligible,
             )
@@ -1438,6 +1447,7 @@ def _analyze_symbols_sequential(
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
     cycle_at: datetime | None = None,
+    secret_values: tuple[str, ...] = (),
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Ścieżka sekwencyjna: zachowuje kolejność, buduje peer_context dla contagion
     (#5) i throttluje między symbolami (ochrona OpenAI TPM)."""
@@ -1466,6 +1476,7 @@ def _analyze_symbols_sequential(
             earnings_gate_enabled=settings.earnings_calendar_enabled,
             alpha_fusion_enabled=settings.alpha_fusion_enabled,
             cycle_at=cycle_at,
+            secret_values=secret_values,
         )
         results.append(proc.result)
         if proc.is_failure:
@@ -1497,6 +1508,7 @@ def _analyze_symbols(
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Dispatcher: wybiera ścieżkę równoległą lub sekwencyjną.
     Zwraca (wyniki, liczba_błędów, alpha_signals, alpha_prices)."""
+    secret_values = settings.secret_values()
     # Ścieżka równoległa: tylko gdy concurrency > 1 ORAZ contagion off (contagion
     # #5 zależy od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
     if settings.symbol_concurrency > 1 and not settings.contagion_enabled:
@@ -1513,6 +1525,7 @@ def _analyze_symbols(
             earnings_gate_enabled=settings.earnings_calendar_enabled,
             alpha_fusion_enabled=settings.alpha_fusion_enabled,
             cycle_at=cycle_at,
+            secret_values=secret_values,
         )
 
     if settings.symbol_concurrency > 1 and settings.contagion_enabled:
@@ -1533,6 +1546,7 @@ def _analyze_symbols(
         collect_alpha=collect_alpha,
         alpha_use_case=alpha_use_case,
         cycle_at=cycle_at,
+        secret_values=secret_values,
     )
 
 

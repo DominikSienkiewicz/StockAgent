@@ -4249,3 +4249,53 @@ class TestToolUseAdapterGetsSettingsSecrets:
         assert adapter is not None
         assert adapter._secret_values == s.secret_values()
 
+
+class TestSymbolErrorRedactsSettingsSecrets:
+    """Runda 2 BEZ-07: błąd symbolu w mailu traci też dosłowne wartości sekretów
+    z Settings — kształt bez wzorca (nie URL, nie nagłówek) przechodził przez regex."""
+
+    ODD_SECRET = "Zx9!odd~shape#secret"
+
+    def _kwargs(self, settings, use_case):
+        return {
+            "use_case": use_case,
+            "settings": settings,
+            "crypto_set": set(),
+            "etf_set": set(),
+            "regime_context": "",
+            "regime_multiplier": 1.0,
+            "collect_alpha": False,
+            "alpha_use_case": MagicMock(),
+        }
+
+    @pytest.mark.parametrize("concurrency", [1, 4], ids=["sequential", "parallel"])
+    def test_error_message_omits_literal_secret(self, settings, concurrency):
+        s = settings.model_copy(
+            update={"finnhub_api_key": self.ODD_SECRET, "symbol_concurrency": concurrency}
+        )
+        uc = MagicMock()
+        uc.run.side_effect = RuntimeError(
+            f"provider rejected credentials {self.ODD_SECRET} (code 7)"
+        )
+
+        results, failures, _s, _p = main_agent._analyze_symbols(["AAPL"], **self._kwargs(s, uc))
+
+        assert failures == 1
+        message = results[0].error_message
+        assert message is not None
+        assert "provider rejected credentials" in message
+        assert self.ODD_SECRET not in message
+
+    def test_process_one_symbol_redacts_passed_secret_values(self, settings):
+        uc = MagicMock()
+        uc.run.side_effect = RuntimeError(f"echo {self.ODD_SECRET}")
+
+        proc = main_agent._process_one_symbol(
+            "AAPL",
+            peer_ctx=(),
+            secret_values=(self.ODD_SECRET,),
+            **{k: v for k, v in self._kwargs(settings, uc).items() if k != "settings"},
+        )
+
+        assert proc.result.error_message is not None
+        assert self.ODD_SECRET not in proc.result.error_message
