@@ -175,3 +175,42 @@ def test_collapsed_council_escapes_the_llm_summary() -> None:
 
     assert "&lt;img src=x onerror=alert(1)&gt;" in html
     assert "<img" not in html
+
+
+# ---------------------------------------------------------------------------
+# MAIL-06 (d): pełne bloki uzasadnień tylko dla top 10 (i leadu), reszta w skrócie
+# ---------------------------------------------------------------------------
+
+COMPACT_HEADING = "📋 Pozostałe predykcje (skrót)"
+
+
+def _compact_section(html: str) -> str:
+    """Skrót od nagłówka do końca jego tabeli — dalej Zaplecze wymienia każdy symbol."""
+    start = html.index(COMPACT_HEADING)
+    return html[start : html.index("</table>", start)]
+
+
+def test_reasoning_outside_the_top_signals_becomes_a_compact_row() -> None:
+    html = _html_of([_ranked(i) for i in range(12)])
+
+    compact = _compact_section(html)
+    assert "Teza modelu dla R09." in html
+    assert "Teza modelu dla R10." not in html
+    assert "R10" in compact
+    assert "Podsumowanie rady R10." in compact
+    assert "⚠️ Głosy niezgodne: Soros o R10: za drogo." in compact
+    assert "R09" not in compact
+
+
+def test_lead_symbol_outside_the_top_signals_keeps_its_reasoning_block() -> None:
+    html = _html_of([*(_ranked(i) for i in range(11)), _ranked(11, split=True)])
+
+    assert "Teza modelu dla R11." in html
+    assert "R11" not in _compact_section(html)
+
+
+def test_cycle_within_the_top_signals_has_no_compact_rows() -> None:
+    html = _html_of([_ranked(i) for i in range(10)])
+
+    assert COMPACT_HEADING not in html
+    assert all(f"Teza modelu dla R{i:02d}." in html for i in range(10))

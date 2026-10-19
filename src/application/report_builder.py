@@ -560,9 +560,6 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
 # person to ~4 KB na symbol, a Gmail przycina mail powyżej ~102 KB. Summary i
 # dysydenci pochodzą z LLM-a, więc linia idzie przez autoescapowany `_env`.
 _COUNCIL_LINE_TEMPLATE = _env.from_string(
-    "<div style='margin-top: 8px; padding: 6px 10px; border: 1px solid #e5e7eb; "
-    "border-radius: 4px; font-size: 12px; color: #374151;'>"
-    "<strong>Rada doradcza:</strong> "
     "<span style='color: {{ color }}; font-weight: 700;'>{{ label }}</span>"
     " · zgodność {{ strength_pct }}%"
     "{% if is_split %} · ⚠️ podzielona{% endif %} · "
@@ -570,12 +567,12 @@ _COUNCIL_LINE_TEMPLATE = _env.from_string(
     " — „{{ summary }}”"
     "{% if dissent %}<div style='margin-top: 4px; color: #92400e;'>"
     "⚠️ Głosy niezgodne: {{ dissent | join('; ') }}</div>{% endif %}"
-    "</div>"
 )
 
 
 def _render_council_line(verdict: CouncilVerdict) -> str:
-    """MAIL-06 (b): zwinięta rada — jedna linia zamiast tabeli person."""
+    """MAIL-06 (b): zwinięta rada — jedna linia zamiast tabeli person (komórka
+    „Rada” w skrócie pozostałych predykcji)."""
     final = verdict.final_recommendation
     return _COUNCIL_LINE_TEMPLATE.render(
         label=council_recommendation_label(final),
@@ -1881,11 +1878,9 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
             """
 
 
-def _render_reasoning_block_html(r: SymbolResult, *, full_council: bool = True) -> str:
+def _render_reasoning_block_html(r: SymbolResult) -> str:
     """Blok 'Uzasadnienia' dla jednej predykcji. Pusty string, gdy nie ma
-    czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji).
-
-    `full_council=False` (MAIL-06 b) zwija radę do jednej linii."""
+    czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji)."""
     # Q5/Q6: blok renderujemy też, gdy są analogi (precedent receipts)
     # lub odznaki proweniencji — nawet bez reasoning/rady.
     badges_html = _provenance_badges_html(r.provenance_badges)
@@ -1932,12 +1927,11 @@ def _render_reasoning_block_html(r: SymbolResult, *, full_council: bool = True) 
     # (finding #35). Escapowanie title/source jest tu domyślne.
     news_block = _render_news_block_html(r.top_news)
     rec_block = _model_signal_reason_html(r)
-    if r.council_verdict is None:
-        council_block = ""
-    elif full_council:
-        council_block = _render_council_section(r.council_verdict)
-    else:
-        council_block = _render_council_line(r.council_verdict)
+    council_block = (
+        _render_council_section(r.council_verdict)
+        if r.council_verdict is not None
+        else ""
+    )
     valuation_block = _render_valuation(r.valuation)
     _sector = _sector_label(r.symbol)
     sector_tag = (
@@ -1966,7 +1960,8 @@ def _render_saved_section_html(
     """🔮 Sekcja wygenerowanych predykcji: tabela + wykres prognozy +
     uzasadnienia. Pusty string, gdy w tym cyklu nic nie zapisano.
 
-    `full_detail` (MAIL-06): symbole z pełną radą; None = każdy symbol."""
+    `full_detail` (MAIL-06): symbole z pełnym blokiem uzasadnień; reszta trafia
+    do skrótu (jedna linia rady, zawsze widoczni dysydenci). None = każdy symbol."""
     if not saved:
         return ""
     parts = [
@@ -1997,13 +1992,52 @@ def _render_saved_section_html(
 
     # Uzasadnienia
     parts.append("<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>💡 Uzasadnienia</h3>")
-    parts.extend(
-        _render_reasoning_block_html(
-            r, full_council=full_detail is None or r.symbol in full_detail
-        )
-        for r in saved
+    def has_full_block(r: SymbolResult) -> bool:
+        return full_detail is None or r.symbol in full_detail
+
+    parts.extend(_render_reasoning_block_html(r) for r in saved if has_full_block(r))
+    parts.append(
+        _render_compact_predictions_html([r for r in saved if not has_full_block(r)])
     )
     return "".join(parts)
+
+
+_COMPACT_PREDICTIONS_NOTE = (
+    f"Pełne uzasadnienie mają top {_FULL_DETAIL_TOP_N} sygnałów i symbole z leadu "
+    "— reszta w skrócie, żeby mail nie przekroczył limitu Gmaila. "
+    "Wersja tekstowa maila ma pełne uzasadnienia."
+)
+_COMPACT_CELL = "padding: 4px 8px; border-bottom: 1px solid #f3f4f6; vertical-align: top;"
+
+
+def _render_compact_predictions_html(rest: list[SymbolResult]) -> str:
+    """MAIL-06 (d): pozostałe predykcje jako zwarte wiersze — symbol, sygnał modelu
+    i jedna linia rady. Pusty string, gdy wszystko ma pełny blok."""
+    if not rest:
+        return ""
+    rows = []
+    for r in rest:
+        signal = _model_signal(r)
+        council = (
+            _render_council_line(r.council_verdict) if r.council_verdict is not None else "—"
+        )
+        rows.append(
+            f'<tr><td style="{_COMPACT_CELL} font-weight: 600;">{_html(_company_label(r.symbol))}</td>'
+            f'<td style="{_COMPACT_CELL} font-weight: 700; color: {_DIRECTION_COLOR.get(signal, "#737373")};">'
+            f"{signal}</td>"
+            f'<td style="{_COMPACT_CELL}">{council}</td></tr>'
+        )
+    return (
+        "<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>📋 Pozostałe predykcje (skrót)</h3>"
+        f"<div style='font-size: 12px; color: #6b7280; margin-bottom: 6px;'>{_html(_COMPACT_PREDICTIONS_NOTE)}</div>"
+        "<table style='width: 100%; border-collapse: collapse; font-size: 12px;'>"
+        '<tr style="background: #f3f4f6; text-align: left;">'
+        f'<th style="{_COMPACT_CELL}">Symbol</th>'
+        f'<th style="{_COMPACT_CELL}">{MODEL_SIGNAL_TITLE}</th>'
+        f'<th style="{_COMPACT_CELL}">Rada</th></tr>'
+        + "".join(rows)
+        + "</table>"
+    )
 
 
 # ---------------------------------------------------------------------------
