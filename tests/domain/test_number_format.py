@@ -41,6 +41,26 @@ class TestFormatPctPl:
     def test_thousands_are_grouped_with_a_hard_space(self) -> None:
         assert format_pct_pl(Decimal("1234.5"), signed=True) == f"+1{NBSP}234,5%"
 
+    def test_zero_keeps_the_plus_when_signed(self) -> None:
+        # Konwencja dotychczasowego `_format_delta`: zero ze znakiem to „+0.0%”.
+        assert format_pct_pl(Decimal("0"), signed=True) == "+0,0%"
+        assert format_pct_pl(Decimal("0"), signed=False) == "0,0%"
+
+    @pytest.mark.parametrize(
+        ("value", "signed", "decimals", "expected"),
+        [
+            ("-0.04", True, 1, "+0,0%"),
+            ("-0.04", False, 1, "0,0%"),
+            ("-0.004", True, 2, "+0,00%"),
+            ("-0.4", True, 0, "+0%"),
+        ],
+    )
+    def test_negative_value_rounded_to_zero_has_no_minus(
+        self, value: str, signed: bool, decimals: int, expected: str
+    ) -> None:
+        # „-0,0%” sugerowało spadek, którego w zapisie nie ma.
+        assert format_pct_pl(Decimal(value), signed=signed, decimals=decimals) == expected
+
 
 class TestFormatMoneyPl:
     def test_pln_puts_the_currency_after_the_amount(self) -> None:

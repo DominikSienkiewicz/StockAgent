@@ -395,3 +395,8 @@ class TestPolishNumbers:
         )
 
         assert build_lead([signal])[0].headline == "NVDA (25% portfela) -4,2%"
+
+    def test_tiny_drop_reads_as_zero_without_a_minus(self) -> None:
+        signal = LeadSignal("NVDA", Decimal("-0.04"), resolved_label="trafiona prognoza spadku")
+
+        assert build_lead([signal])[0].headline == "NVDA +0,0%: trafiona prognoza spadku"

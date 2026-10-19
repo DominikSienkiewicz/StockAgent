@@ -22,9 +22,12 @@ _CURRENCY_PREFIX = {"USD": "$"}
 _CURRENCY_SUFFIX = {"PLN": "zł"}
 
 
-def _format_number(value: Decimal, *, decimals: int, signed: bool) -> str:
-    """Liczba po polsku: zaokrąglona w górę od połowy, z grupowaniem tysięcy."""
-    rounded = value.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
+def _round_half_up(value: Decimal, decimals: int) -> Decimal:
+    return value.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
+
+
+def _render(rounded: Decimal, *, decimals: int, signed: bool) -> str:
+    """Zaokrąglona liczba po polsku, z grupowaniem tysięcy."""
     sign = "+" if signed else ""
     english = f"{rounded:{sign},.{decimals}f}"
     return english.replace(",", NBSP).replace(".", ",")
@@ -33,9 +36,14 @@ def _format_number(value: Decimal, *, decimals: int, signed: bool) -> str:
 def format_pct_pl(value: Decimal, signed: bool, decimals: int = 1) -> str:
     """Procent (4.2 = 4,2%, nie ułamek) po polsku, np. „-4,2%” albo „+1 234,5%”.
 
-    `signed` dokleja „+” przed wartością dodatnią; ujemna zawsze ma „-”.
+    `signed` dokleja „+” przed wartością dodatnią i przed zerem („+0,0%”);
+    ujemna zawsze ma „-”. Wartość zaokrąglona do zera traci minus („-0,04” →
+    „+0,0%”), bo „-0,0%” sugerowałoby spadek, którego w zapisie nie ma.
     """
-    return f"{_format_number(value, decimals=decimals, signed=signed)}%"
+    rounded = _round_half_up(value, decimals)
+    if rounded.is_zero():
+        rounded = rounded.copy_abs()
+    return f"{_render(rounded, decimals=decimals, signed=signed)}%"
 
 
 def format_money_pl(value: Decimal, currency: str) -> str:
@@ -44,7 +52,7 @@ def format_money_pl(value: Decimal, currency: str) -> str:
     Waluta spoza PLN/USD dostaje kod ISO po kwocie („99,90 EUR”).
     """
     code = currency.upper()
-    number = _format_number(value, decimals=2, signed=False)
+    number = _render(_round_half_up(value, 2), decimals=2, signed=False)
     if code in _CURRENCY_PREFIX:
         sign, digits = ("-", number[1:]) if number.startswith("-") else ("", number)
         return f"{sign}{_CURRENCY_PREFIX[code]}{digits}"
