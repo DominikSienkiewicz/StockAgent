@@ -31,6 +31,7 @@ All tunable parameters are a `Settings` Pydantic model in [`src/config.py`](../s
 | `ml_model_path` | `data/models/price_predictor.ubj` | XGBoost weights file |
 | `notifications_enabled` | `false` | Enables email delivery |
 | `digest_from_email` | `onboarding@resend.dev` | Resend sandbox sender |
+| `display_timezone` | `Europe/Warsaw` | IANA time zone for the times people read: the email subject, the HTML and plain-text header, the push digest header and the shock-alert push (e.g. `pt 16.10 07:30`, daylight saving included). Logs, the database and the quota banner stay in UTC. An unknown zone name fails settings validation at startup. |
 
 Plus internal constants in `report_builder.py` (`DIVERGENCE_PRICE_THRESHOLD = 0.02`, `AV_LLM_CONFLICT_THRESHOLD = 0.3`, `LOW_SIGNAL_NEWS_THRESHOLD = 3`, `HIGH_RELEVANCE_BAR = 0.8`) and `xgboost_local.py` (hyperparameters `max_depth=4, eta=0.1, subsample=0.8`).
 

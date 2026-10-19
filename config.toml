@@ -158,6 +158,9 @@ rag_outcome_weight = 0.3
 # --- Powiadomienia (sam nadawca; ODBIORCA = sekret w .env) ---
 notifications_enabled = true
 digest_from_email = "onboarding@resend.dev"
+# MAIL-14: godziny w temacie i nagłówku maila, pushu i alercie szoku — w tej
+# strefie (nazwa IANA, z czasem letnim). Logi zostają w UTC.
+display_timezone = "Europe/Warsaw"
 # Real-time alerty CRITICAL na kanały push (Telegram/Slack) w chwili zdarzenia,
 # out-of-band od dziennego maila. Sekrety kanałów (TELEGRAM_*, SLACK_*) w .env.
 realtime_alerts_enabled = false

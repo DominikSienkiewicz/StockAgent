@@ -115,3 +115,9 @@ def test_no_flag_set_to_true_sits_under_an_off_comment() -> None:
         and _comment_above(lines, index).endswith("Off.")
     ]
     assert not contradicted, f"flagi = true pod komentarzem „Off.”: {contradicted}"
+
+
+def test_real_config_toml_shows_times_in_warsaw() -> None:
+    """MAIL-14: temat, nagłówek i push w czasie lokalnym odbiorcy."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["display_timezone"] == "Europe/Warsaw"

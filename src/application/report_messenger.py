@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from src.application.report_formatting import DEFAULT_DISPLAY_TIMEZONE, format_local
 from src.application.report_models import ResolvedPrediction, SymbolResult
 
 # Twardy limit długości digestu. Ostrzejszy niż 4096 Telegrama — zostawiamy
@@ -55,9 +56,9 @@ def _arrow(trend: str | None) -> str:
     return _TREND_ARROWS.get(trend.strip().upper(), _TREND_NEUTRAL)
 
 
-def _header_line(started_at: datetime) -> str:
-    """Nagłówek: marka + znacznik czasu cyklu."""
-    return f"📊 StockAgent — {started_at.strftime('%d.%m %H:%M')}"
+def _header_line(started_at: datetime, display_timezone: str) -> str:
+    """Nagłówek: marka + czas startu cyklu w strefie odbiorcy (MAIL-14)."""
+    return f"📊 StockAgent — {format_local(started_at, display_timezone)}"
 
 
 def _cycle_line(results: list[SymbolResult]) -> str:
@@ -97,6 +98,7 @@ def build_messenger_digest(
     resolved_predictions: list[ResolvedPrediction] | None = None,
     *,
     email_delivered: bool = True,
+    display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
 ) -> str:
     """Buduje zwięzły digest push (~5 linii) dla Telegrama/Slacka.
 
@@ -113,13 +115,14 @@ def build_messenger_digest(
         resolved_predictions: predykcje zamknięte w tym oknie (do scorecardu).
         email_delivered: False, gdy wysyłka maila padła — push mówi o tym zaraz
             pod nagłówkiem, bo przy 401/403 kolejny mail też by nie doszedł.
+        display_timezone: strefa (IANA) godziny w nagłówku; `started_at` jest w UTC.
 
     Returns:
         Gotowy tekst push, ≤ `MAX_DIGEST_CHARS` znaków.
     """
     resolved = resolved_predictions or []
     lines = [
-        _header_line(started_at),
+        _header_line(started_at, display_timezone),
         *([] if email_delivered else [UNDELIVERED_EMAIL_LINE]),
         _cycle_line(results),
         _scorecard_line(resolved),

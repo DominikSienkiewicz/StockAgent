@@ -325,3 +325,23 @@ class TestSymbolConcurrency:
         kwargs = self._base(symbol_concurrency=0)
         with pytest.raises(ValueError, match="symbol_concurrency must be >= 1"):
             Settings(**kwargs)
+
+
+class TestDisplayTimezone:
+    """MAIL-14: strefa czasu tematu, nagłówka maila i pushu."""
+
+    def test_defaults_to_warsaw(self, env):
+        env.delenv("DISPLAY_TIMEZONE", raising=False)
+
+        assert Settings(_env_file=None).display_timezone == "Europe/Warsaw"
+
+    def test_accepts_any_iana_zone(self, env):
+        env.setenv("DISPLAY_TIMEZONE", "America/New_York")
+
+        assert Settings(_env_file=None).display_timezone == "America/New_York"
+
+    @pytest.mark.parametrize("bad", ["Europe/Warszawa", "CEST+2", ""])
+    def test_rejects_an_unknown_zone(self, env, bad):
+        # Literówka ma zatrzymać start, a nie wysłać godzinę UTC podpisaną jako lokalna.
+        with pytest.raises(ValueError, match="display_timezone"):
+            Settings(_env_file=None, display_timezone=bad)

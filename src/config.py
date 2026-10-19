@@ -4,6 +4,7 @@ import os
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import (
@@ -311,6 +312,9 @@ class Settings(BaseSettings):
     # sandbox sender (działa od razu, bez weryfikacji domeny)
     digest_from_email: str = "onboarding@resend.dev"
     digest_to_email: str | None = None
+    # MAIL-14: strefa (nazwa IANA) godzin w temacie i nagłówku maila, pushu oraz
+    # alercie szoku. Logi zostają w UTC. Niewrażliwe → config.toml.
+    display_timezone: str = "Europe/Warsaw"
 
     # ----- Kanały push (Telegram / Slack — opcjonalne, U1/U4) -----
     # SEKRETY (placeholdery w .env.example): kanał jest budowany, gdy jego
@@ -350,6 +354,19 @@ class Settings(BaseSettings):
         gotową listę przepuszczamy bez zmian."""
         if isinstance(value, str):
             return [s.strip() for s in value.split(",") if s.strip()]
+        return value
+
+    @field_validator("display_timezone")
+    @classmethod
+    def _validate_display_timezone(cls, value: str) -> str:
+        """Literówka w nazwie strefy ma zatrzymać start, a nie wywrócić wysyłkę
+        raportu dopiero przy formatowaniu tematu."""
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(
+                f"display_timezone must be an IANA time zone name (got {value!r})"
+            ) from exc
         return value
 
     @field_validator("symbol_throttle_seconds")

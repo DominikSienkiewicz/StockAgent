@@ -4,6 +4,8 @@ What lands in the inbox and why each section is there. The pipeline that produce
 
 ## Email anatomy
 
+The subject and the header carry the cycle start in local time (`display_timezone`, `Europe/Warsaw` by default, e.g. `pt 16.10 07:30`), not UTC; the push digest header and the shock-alert push use the same format.
+
 The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallback):
 
 - 🕒 **NYSE session** — open / premarket / after-hours / weekend (`zoneinfo` America/New_York)

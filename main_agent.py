@@ -52,7 +52,11 @@ from src.application.report_builder import (
 )
 from src.application.report_council_history import InvestorHistory
 from src.application.report_evidence import hit_rate_evidence, portfolio_curve
-from src.application.report_formatting import SECTORS
+from src.application.report_formatting import (
+    DEFAULT_DISPLAY_TIMEZONE,
+    SECTORS,
+    format_local,
+)
 from src.application.report_lessons import LessonsReport, build_lessons
 from src.application.report_messenger import build_messenger_digest
 from src.application.report_model_scorecard import (
@@ -384,6 +388,7 @@ def _dispatch_push_digest(
     resolved: list[ResolvedPrediction],
     subject: str,
     email_delivered: bool = True,
+    display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
 ) -> None:
     """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
 
@@ -394,7 +399,11 @@ def _dispatch_push_digest(
     """
     try:
         digest = build_messenger_digest(
-            results, started_at, resolved, email_delivered=email_delivered
+            results,
+            started_at,
+            resolved,
+            email_delivered=email_delivered,
+            display_timezone=display_timezone,
         )
         push_notifier.send_report(
             subject=subject, html_body=digest, plain_text=digest
@@ -1294,6 +1303,7 @@ def _build_subject(
     prefix: str,
     maturity: CycleMaturity = CycleMaturity.STEADY_STATE,
     analyzed_total: int = 0,
+    display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
 ) -> str:
     """#1 — temat maila jak nagłówek gazety, nie jak licznik.
 
@@ -1302,9 +1312,10 @@ def _build_subject(
     (np. "⚠️ [QUOTA] ") jest sygnałem operacyjnym i przetrwa w obu wariantach.
 
     Liczone RAZ nad pełnymi danymi cyklu: sekcje raportu są re-slicowane per
-    subskrybent, ale temat jest dla wszystkich ten sam.
+    subskrybent, ale temat jest dla wszystkich ten sam. MAIL-14: znacznik czasu
+    w strefie `display_timezone` (`started_at` jest w UTC).
     """
-    stamp = started_at.strftime("%Y-%m-%d %H:%M UTC")
+    stamp = format_local(started_at, display_timezone)
     # #4: pierwszy cykl ma własny, powitalny temat — lead i tak jest wtedy pusty
     # (brak punktu odniesienia = brak sygnałów).
     welcome = onboarding_subject(maturity, instrument_count=analyzed_total)
@@ -1681,6 +1692,7 @@ def _dispatch_reports(
             user_portfolio=user_portfolio,
             held_prices=held_prices,
             portfolio_clusters=_portfolio_clusters(settings),
+            display_timezone=settings.display_timezone,
         )
 
         def _build(
@@ -1713,6 +1725,7 @@ def _dispatch_reports(
             prefix=prefix,
             maturity=maturity,
             analyzed_total=len(results),
+            display_timezone=settings.display_timezone,
         )
 
         # U3: publikacja statycznego digestu web (read-only dashboard).
@@ -1774,6 +1787,7 @@ def _dispatch_reports(
                 resolved=resolved,
                 subject=subject,
                 email_delivered=email_delivered,
+                display_timezone=settings.display_timezone,
             )
     except Exception:
         logger.exception("Failed to send report")

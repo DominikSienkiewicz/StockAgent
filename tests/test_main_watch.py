@@ -255,3 +255,19 @@ class TestWatchMain:
 
         assert outcome.sent == 0 and outcome.failures == 0
         repo.save_shock_alert.assert_not_called()
+
+
+def test_alert_carries_the_detection_time_in_the_display_timezone(settings) -> None:
+    # MAIL-14: push szoku mówi, KIEDY go wykryto — w czasie lokalnym, nie UTC.
+    moment = datetime(2026, 10, 16, 5, 30, tzinfo=UTC)
+    settings.display_timezone = "Europe/Warsaw"
+    repo = _repo("100", age_hours=1.0, now=moment)
+    push = MagicMock()
+
+    main_watch.run_watch(
+        settings, repository=repo, market=_market("90"), push_notifier=push, now=moment
+    )
+
+    body = push.send_report.call_args.kwargs["plain_text"]
+    assert "pt 16.10 07:30" in body
+    assert "05:30" not in body

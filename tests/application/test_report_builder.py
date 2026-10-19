@@ -2345,3 +2345,16 @@ def test_plain_text_with_quota_alert_still_starts_with_the_banner():
 
     assert "QUOTA_BANNER_SLOT" not in text
     assert "OpenAI 429" in text.split("STOCKAGENT — RAPORT CYKLU")[0]
+
+
+def test_header_shows_the_cycle_start_in_the_display_timezone():
+    # MAIL-14: nagłówek HTML i tekstu w czasie lokalnym, nie „… UTC”.
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(display_timezone="Europe/Warsaw"),
+    )
+
+    assert "Czas rozpoczęcia: pt 16.10 07:30" in html
+    assert "Czas rozpoczęcia:  pt 16.10 07:30" in text
+    assert "05:30" not in html
+    assert "05:30" not in text

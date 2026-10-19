@@ -9,7 +9,7 @@ stały zestaw sekcji. Te testy zamrażają oba niezmienniki.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from src.application.report_messenger import MAX_DIGEST_CHARS, build_messenger_digest
@@ -164,3 +164,17 @@ def test_digest_warns_when_email_undelivered() -> None:
     assert "⚠️ Mail z raportem nie został dostarczony" in undelivered
     assert "nie został dostarczony" not in delivered
     assert len(undelivered) <= MAX_DIGEST_CHARS
+
+
+def test_header_uses_display_timezone() -> None:
+    # MAIL-14: „16.10 05:30” bez strefy wyglądało na godzinę lokalną, a było UTC
+    # (2 h różnicy latem, 1 h zimą).
+    summer = build_messenger_digest(
+        [], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), display_timezone="Europe/Warsaw"
+    )
+    winter = build_messenger_digest(
+        [], datetime(2026, 11, 2, 5, 30, tzinfo=UTC), display_timezone="Europe/Warsaw"
+    )
+
+    assert summer.splitlines()[0] == "📊 StockAgent — pt 16.10 07:30"
+    assert winter.splitlines()[0] == "📊 StockAgent — pon 02.11 06:30"

@@ -31,6 +31,10 @@ from src.application.report_council_history import (
 from src.application.report_evidence import wilson_label
 from src.application.report_finops import render_finops_html
 from src.application.report_formatting import (
+    DEFAULT_DISPLAY_TIMEZONE,
+    format_local,
+)
+from src.application.report_formatting import (
     company_label as _company_label,
 )
 from src.application.report_formatting import (
@@ -1002,6 +1006,8 @@ class ReportContext:
     cycle_cost: CycleCost | None = None
     # WIA-17/22/23/31/32/36: dowód trafności i Brier pod sekcją Track Record.
     track_record_stats: TrackRecordStats | None = None
+    # MAIL-14: strefa (IANA) czasu startu cyklu w nagłówku HTML i tekstu.
+    display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
 
 
 def build_html_report(
@@ -1132,8 +1138,9 @@ def build_html_report(
     suggestions_html = render_suggestions_html(suggestions)
     suggestions_text = render_suggestions_text(suggestions)
 
+    started_local = format_local(started_at, context.display_timezone)
     html = _render_html(
-        results, saved, ignored, errors, started_at, duration_seconds,
+        results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
         resolved,
     )
@@ -1157,7 +1164,7 @@ def build_html_report(
     })
     html = _compact_markup(html)
     text = _render_plain(
-        results, saved, ignored, errors, started_at, duration_seconds,
+        results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
         resolved,
     )
@@ -1600,7 +1607,7 @@ def _render_html(
     saved: list[SymbolResult],
     ignored: list[SymbolResult],
     errors: list[SymbolResult],
-    started_at: datetime,
+    started_local: str,
     duration_seconds: float,
     mood: dict[str, Any],
     session: dict[str, str],
@@ -1616,7 +1623,7 @@ def _render_html(
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 720px; margin: 0 auto; color: #1f2937;">
       <h1 style="font-size: 22px; margin: 0 0 4px 0;">📊 StockAgent — raport cyklu</h1>
       <div style="font-size: 13px; color: #6b7280; margin-bottom: 24px;">
-        Czas rozpoczęcia: {started_at.strftime("%Y-%m-%d %H:%M:%S UTC")}
+        Czas rozpoczęcia: {started_local}
         · Czas trwania: {duration_seconds:.1f}s
         · Liczba symboli: {len(results)}
       </div>
@@ -1966,7 +1973,7 @@ def _render_plain(
     saved: list[SymbolResult],
     ignored: list[SymbolResult],
     errors: list[SymbolResult],
-    started_at: datetime,
+    started_local: str,
     duration_seconds: float,
     mood: dict[str, Any],
     session: dict[str, str],
@@ -1982,7 +1989,7 @@ def _render_plain(
     lines.append("=" * 64)
     lines.append("STOCKAGENT — RAPORT CYKLU")
     lines.append("=" * 64)
-    lines.append(f"Czas rozpoczęcia:  {started_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    lines.append(f"Czas rozpoczęcia:  {started_local}")
     lines.append(f"Czas trwania:      {duration_seconds:.1f}s")
     lines.append(f"Sesja NYSE:        {session['label']} — {session['detail']}")
     lines.append(

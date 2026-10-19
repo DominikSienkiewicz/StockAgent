@@ -7,11 +7,14 @@ nazwie, wszystkie klasy aktywów — akcje sektor, ETF→'ETF', krypto→'Krypto
 from __future__ import annotations
 
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 
 from src.application.report_formatting import (
     COMPANY_NAMES,
+    DEFAULT_DISPLAY_TIMEZONE,
     company_label,
+    format_local,
     provenance_badges_html,
     sector_label,
 )
@@ -134,3 +137,32 @@ class TestCompanyNamesCoverConfig:
     def test_single_letter_ticker_renders_with_name(self) -> None:
         # „S" (SentinelOne) jako goły ticker w temacie maila jest nieczytelne.
         assert company_label("S") == "S (SentinelOne Inc.)"
+
+
+class TestFormatLocal:
+    """MAIL-14: czas w temacie, nagłówku i pushu jest lokalny, nie UTC."""
+
+    def test_summer_time_is_utc_plus_two(self) -> None:
+        moment = datetime(2026, 10, 16, 5, 30, tzinfo=UTC)
+
+        assert format_local(moment, "Europe/Warsaw") == "pt 16.10 07:30"
+
+    def test_winter_time_is_utc_plus_one(self) -> None:
+        moment = datetime(2026, 11, 2, 5, 30, tzinfo=UTC)
+
+        assert format_local(moment, "Europe/Warsaw") == "pon 02.11 06:30"
+
+    def test_local_date_can_be_the_next_day(self) -> None:
+        # 23:30 UTC w czwartek to już piątek w Warszawie — dzień tygodnia i data
+        # liczą się po przeliczeniu, nie z daty UTC.
+        moment = datetime(2026, 5, 14, 23, 30, tzinfo=UTC)
+
+        assert format_local(moment, "Europe/Warsaw") == "pt 15.05 01:30"
+
+    def test_naive_datetime_is_read_as_utc(self) -> None:
+        # Wszystkie znaczniki w repo są w UTC; naiwny datetime nie może zostać
+        # zinterpretowany jako czas lokalny maszyny (runner GHA, laptop).
+        assert format_local(datetime(2026, 10, 16, 5, 30), "Europe/Warsaw") == "pt 16.10 07:30"
+
+    def test_default_display_timezone_is_warsaw(self) -> None:
+        assert DEFAULT_DISPLAY_TIMEZONE == "Europe/Warsaw"

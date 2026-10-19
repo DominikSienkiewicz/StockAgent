@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from src.application.ports import MarketDataPort, ReportNotifierPort, RepositoryPort
+from src.application.report_formatting import format_local
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
 from src.domain.shock import (
@@ -47,13 +48,17 @@ from src.domain.value_objects import Money, Threshold
 logger = logging.getLogger(__name__)
 
 
-def _render_alert(alert: ShockAlert) -> tuple[str, str]:
-    """Treść pusha — krótka i jednoznaczna (temat, ciało). Po polsku."""
+def _render_alert(
+    alert: ShockAlert, *, detected_at: datetime, display_timezone: str
+) -> tuple[str, str]:
+    """Treść pusha — krótka i jednoznaczna (temat, ciało). Po polsku. Chwila
+    wykrycia w strefie odbiorcy (MAIL-14) — logi watcha zostają w UTC."""
     arrow = "📉" if alert.direction.name == "DOWN" else "📈"
     pct = alert.delta.fraction * 100
     subject = f"{arrow} Szok rynkowy: {alert.symbol} {pct:+.1f}%"
     body = (
-        f"{arrow} {alert.symbol} {pct:+.1f}% od ostatniego snapshotu ceny.\n"
+        f"{arrow} {alert.symbol} {pct:+.1f}% od ostatniego snapshotu ceny "
+        f"(stan na {format_local(detected_at, display_timezone)}).\n"
         "Alert poza cyklem — pełna analiza w najbliższym dziennym digeście."
     )
     return subject, body
@@ -183,7 +188,9 @@ def scan_watch(
                 logger.error("Shock watch: szok %s wykryty, ale brak kanału push", symbol)
                 continue
 
-            subject, body = _render_alert(alert)
+            subject, body = _render_alert(
+                alert, detected_at=moment, display_timezone=settings.display_timezone
+            )
             push_notifier.send_report(
                 subject=subject, html_body=body, plain_text=body
             )

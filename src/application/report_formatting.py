@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import html
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from src.domain.provenance import ProvenanceBadge, ProvenanceLevel
 
@@ -245,6 +247,23 @@ def trend_label(trend: str | None) -> str:
 
 def sentiment_label(label: str | None) -> str:
     return _SENTIMENT_PL.get(label or "", label or "—")
+
+
+# MAIL-14: strefa czasu w temacie, nagłówku maila i pushu. Logi zostają w UTC.
+DEFAULT_DISPLAY_TIMEZONE = "Europe/Warsaw"
+
+_WEEKDAYS_PL = ("pon", "wt", "śr", "czw", "pt", "sob", "nd")
+
+
+def format_local(moment: datetime, tz: str) -> str:
+    """Chwila w strefie `tz` (nazwa IANA) jako np. „pt 16.10 07:30”.
+
+    Naiwny `datetime` traktujemy jako UTC — tak zapisuje czas całe repo, a odczyt
+    jako czasu lokalnego maszyny zależałby od strefy runnera.
+    """
+    aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    local = aware.astimezone(ZoneInfo(tz))
+    return f"{_WEEKDAYS_PL[local.weekday()]} {local:%d.%m %H:%M}"
 
 
 def pct(value: Decimal | None, signed: bool = False) -> str:

@@ -2359,3 +2359,60 @@ class TestLegacyPushWithoutPortfolio:
         kwargs = dispatch.call_args.kwargs
         assert isinstance(kwargs["notifier"], ResendNotifier)
         assert isinstance(kwargs["legacy_push_notifier"], TelegramNotifier)
+
+
+class TestDisplayTimezone:
+    """MAIL-14: temat maila i nagłówek pushu w strefie `display_timezone`, nie UTC."""
+
+    def test_subject_stamp_is_local_time(self) -> None:
+        subject = main_agent._build_subject(
+            lead_items=[],
+            analyzed=3,
+            failures=0,
+            started_at=datetime(2026, 10, 16, 5, 30, tzinfo=UTC),
+            prefix="",
+            display_timezone="Europe/Warsaw",
+        )
+
+        assert subject.endswith("(pt 16.10 07:30)")
+        assert "UTC" not in subject
+
+    def test_dispatch_uses_the_configured_zone_everywhere(self, settings, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        # Strefa inna niż domyślna — dowód, że idzie z ustawień, nie ze stałej.
+        settings.display_timezone = "America/New_York"
+        settings.messenger_digest_enabled = True
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch("main_agent._build_user_portfolio", return_value=None)
+        report = mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        push = MagicMock()
+        mocker.patch("main_agent.build_push_notifier", return_value=push)
+        email = MagicMock()
+
+        main_agent._dispatch_reports(
+            results=[],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=QuotaMonitor(),
+            notifier=email,
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL"],
+            context=main_agent.ReportContext(),
+        )
+
+        assert report.call_args.args[3].display_timezone == "America/New_York"
+        assert email.send_report.call_args.kwargs["subject"].endswith("(nd 18.10 01:30)")
+        digest = push.send_report.call_args.kwargs["plain_text"]
+        assert digest.splitlines()[0] == "📊 StockAgent — nd 18.10 01:30"
