@@ -2242,3 +2242,120 @@ class TestPortfolioAwareSubject:
 
         subject = notifier.send_report.call_args.kwargs["subject"]
         assert "Sygnał przeciw Twojej pozycji: rada SPRZEDAJ na AAPL (100% portfela)" in subject
+
+
+class TestLegacyPushWithoutPortfolio:
+    """Decyzja 2026-10-19: mail tekstowy niesie sekcję portfela, ale stary wariant
+    pushu (pełny tekst do Telegram/Slack przy wyłączonym `messenger_digest_enabled`)
+    jej nie dostaje — kwoty P/L nie trafiają do komunikatorów."""
+
+    @staticmethod
+    def _push_settings(settings: Settings, *, messenger_digest: bool) -> Settings:
+        settings.notifications_enabled = True
+        settings.resend_api_key = "re_test"
+        settings.digest_to_email = "you@example.com"
+        settings.telegram_bot_token = "tg-token"
+        settings.telegram_chat_id = "42"
+        settings.messenger_digest_enabled = messenger_digest
+        return settings
+
+    def test_email_text_has_the_portfolio_and_the_full_push_does_not(
+        self, settings, mocker
+    ) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(
+            "main_agent._build_user_portfolio",
+            return_value=TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
+        )
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        email = MagicMock()
+        legacy_push = MagicMock()
+
+        main_agent._dispatch_reports(
+            results=[
+                main_agent.SymbolResult(
+                    symbol="AAPL", status="saved", current_price=Decimal("230")
+                ),
+            ],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=QuotaMonitor(),
+            notifier=email,
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL", "VOO"],
+            context=main_agent.ReportContext(),
+            legacy_push_notifier=legacy_push,
+        )
+
+        email_text = email.send_report.call_args.kwargs["plain_text"]
+        push_text = legacy_push.send_report.call_args.kwargs["plain_text"]
+        assert "Twój portfel" in email_text
+        assert "$460.00" in email_text
+        assert "Twój portfel" not in push_text
+        assert "$460.00" not in push_text
+        assert (
+            legacy_push.send_report.call_args.kwargs["subject"]
+            == email.send_report.call_args.kwargs["subject"]
+        )
+
+    def test_legacy_push_notifier_exists_only_without_the_messenger_digest(
+        self, settings
+    ) -> None:
+        from src.infrastructure.adapters.telegram_notifier import TelegramNotifier
+
+        off = main_agent.build_legacy_push_notifier(
+            self._push_settings(settings, messenger_digest=False)
+        )
+        on = main_agent.build_legacy_push_notifier(
+            self._push_settings(settings, messenger_digest=True)
+        )
+
+        assert isinstance(off, TelegramNotifier)
+        assert on is None
+
+    def test_legacy_push_notifier_is_none_without_push_secrets(self, settings) -> None:
+        settings.messenger_digest_enabled = False
+        settings.telegram_bot_token = None
+        settings.telegram_chat_id = None
+        settings.slack_webhook_url = None
+
+        assert main_agent.build_legacy_push_notifier(settings) is None
+
+    def test_email_notifier_can_leave_push_out(self, settings) -> None:
+        from src.infrastructure.adapters.resend_notifier import ResendNotifier
+
+        notifier = main_agent.build_notifier(
+            self._push_settings(settings, messenger_digest=False), include_push=False
+        )
+
+        assert isinstance(notifier, ResendNotifier)
+
+    def test_main_sends_push_apart_from_the_email(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.infrastructure.adapters.resend_notifier import ResendNotifier
+        from src.infrastructure.adapters.telegram_notifier import TelegramNotifier
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(self._push_settings(settings, messenger_digest=False))
+
+        kwargs = dispatch.call_args.kwargs
+        assert isinstance(kwargs["notifier"], ResendNotifier)
+        assert isinstance(kwargs["legacy_push_notifier"], TelegramNotifier)

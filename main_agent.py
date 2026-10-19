@@ -287,7 +287,10 @@ def build_push_channels(
 
 
 def build_notifier(
-    settings: Settings, quota_monitor: QuotaMonitor | None = None
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    *,
+    include_push: bool = True,
 ) -> ReportNotifierPort:
     """Factory notifier — Resend + kanały push (Telegram/Slack) jako jeden
     `ReportNotifierPort` (CompositeNotifier). Każdy skonfigurowany kanał dostaje
@@ -297,6 +300,10 @@ def build_notifier(
     brakującego sekretu — inaczej "Notifications disabled" nie mówi, czego
     brakuje (typowo: DIGEST_TO_EMAIL / RESEND_API_KEY nie ustawione jako
     GitHub repo *Secret*, nie Variable).
+
+    `include_push=False` (Fast Loop, decyzja 2026-10-19) zostawia sam e-mail:
+    stary push dostaje wtedy osobny tekst bez sekcji portfela
+    (`build_legacy_push_notifier`), bo kwoty P/L nie mają trafiać do komunikatorów.
     """
     channels: list[ReportNotifierPort] = []
     if (
@@ -330,11 +337,27 @@ def build_notifier(
     # — dostaje osobno 5-linijkowy skrót (`_dispatch_push_digest`). Pełny
     # plain-text raportu przekracza limit 4096 znaków Telegrama → 400 i cichy
     # zgon pusha. Z flagą OFF zachowujemy dotychczasowe (wadliwe) sklejenie.
-    if not settings.messenger_digest_enabled:
+    if include_push and not settings.messenger_digest_enabled:
         channels.extend(build_push_channels(settings, quota_monitor=quota_monitor))
 
     if not channels:
         return NullNotifier()
+    if len(channels) == 1:
+        return channels[0]
+    return CompositeNotifier(channels)
+
+
+def build_legacy_push_notifier(
+    settings: Settings, quota_monitor: QuotaMonitor | None = None
+) -> ReportNotifierPort | None:
+    """Stary wariant pushu (`messenger_digest_enabled=false`): pełny tekst raportu
+    do Telegram/Slack, wysyłany OSOBNO od maila, żeby tekst mógł pominąć sekcję
+    portfela. None, gdy działa skrót #5 albo nie ma sekretów żadnego kanału."""
+    if settings.messenger_digest_enabled:
+        return None
+    channels = build_push_channels(settings, quota_monitor=quota_monitor)
+    if not channels:
+        return None
     if len(channels) == 1:
         return channels[0]
     return CompositeNotifier(channels)
@@ -1591,6 +1614,7 @@ def _dispatch_reports(
     subscribers: list[Subscriber],
     all_symbols: list[str],
     context: ReportContext,
+    legacy_push_notifier: ReportNotifierPort | None = None,
 ) -> None:
     """Faza wysyłki: dociągnięcie danych raportu, zbudowanie raportu i rozesłanie
     — pojedynczo albo per subskrybent (raport tnięty do jego watchlisty). Cała
@@ -1659,11 +1683,18 @@ def _dispatch_reports(
             portfolio_clusters=_portfolio_clusters(settings),
         )
 
-        def _build(symbols_filter: frozenset[str] | None = None) -> tuple[str, str]:
-            # Jedyne, co różni raport subskrybenta, to filtr symboli.
+        def _build(
+            symbols_filter: frozenset[str] | None = None, *, user_portfolio_in_text: bool = True
+        ) -> tuple[str, str]:
+            # Raport subskrybenta różni się filtrem symboli; stary push — brakiem
+            # sekcji portfela w tekście (kwoty P/L nie idą do komunikatorów).
             return build_html_report(
                 results, started_at, duration,
-                dataclasses.replace(report_context, symbols_filter=symbols_filter),
+                dataclasses.replace(
+                    report_context,
+                    symbols_filter=symbols_filter,
+                    user_portfolio_in_text=user_portfolio_in_text,
+                ),
             )
 
         html, text = _build()
@@ -1718,6 +1749,10 @@ def _dispatch_reports(
             except Exception:
                 logger.exception("Failed to send the email digest — dalsze kroki idą")
                 email_delivered = False
+            if legacy_push_notifier is not None:
+                _send_legacy_push(
+                    legacy_push_notifier, subject, _build(user_portfolio_in_text=False)
+                )
 
         # #10: publiczny scorecard — osobny publisher, osobna ścieżka.
         _publish_public_scorecard(
@@ -1746,6 +1781,18 @@ def _dispatch_reports(
         _persist_quota_alerts(repository, quota_monitor.alerts[persisted_alerts:])
 
 
+def _send_legacy_push(
+    push: ReportNotifierPort, subject: str, report: tuple[str, str]
+) -> None:
+    """Stary push: pełny raport bez sekcji portfela. Best-effort — błąd kanału
+    nie może zatrzymać scorecardu, sweepu ani zapisu alertów."""
+    html, text = report
+    try:
+        push.send_report(subject=subject, html_body=html, plain_text=text)
+    except Exception:
+        logger.exception("Failed to send the legacy push report")
+
+
 def main(settings: Settings | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -1766,7 +1813,9 @@ def main(settings: Settings | None = None) -> int:
     use_case = build_use_case(
         settings, repository=repository, quota_monitor=quota_monitor
     )
-    notifier = build_notifier(settings, quota_monitor=quota_monitor)
+    # Mail i stary push osobno: tekst pushu nie niesie sekcji portfela.
+    notifier = build_notifier(settings, quota_monitor=quota_monitor, include_push=False)
+    legacy_push_notifier = build_legacy_push_notifier(settings, quota_monitor=quota_monitor)
     web_publisher = build_web_publisher(settings)  # U3
     # U2: lista subskrybentów (każdy z własną watchlistą). Brak / błąd → [].
     subscribers = []
@@ -1853,6 +1902,7 @@ def main(settings: Settings | None = None) -> int:
         web_publisher=web_publisher,
         subscribers=subscribers,
         all_symbols=all_symbols,
+        legacy_push_notifier=legacy_push_notifier,
         context=ReportContext(
             macro_risk_report=macro_risk_report,
             portfolio_risk_report=portfolio_risk_report,

@@ -2267,3 +2267,39 @@ def test_lead_warns_about_a_council_signal_against_a_large_position():
     assert headline in html
     assert html.index(headline) < html.index("AMD +8.0%, rada zgodna")
     assert headline in text
+
+
+def _held_aapl_portfolio() -> Portfolio:
+    as_of = datetime(2026, 5, 14, tzinfo=UTC)
+    return Portfolio(
+        positions=(
+            Position(symbol="AAPL", quantity=Decimal("10"),
+                     purchase_price=Decimal("250"), purchase_date=as_of.date()),
+        ),
+        as_of=as_of,
+    )
+
+
+def test_plain_text_email_carries_the_user_portfolio_section():
+    # Decyzja 2026-10-19: wersja tekstowa maila ma sekcję portfela jak HTML.
+    _, text = build_html_report(
+        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(user_portfolio=_held_aapl_portfolio()),
+    )
+
+    assert "=== 💼 Twój portfel ===" in text
+    assert "$2,988.70" in text
+    assert "USER_PORTFOLIO_SLOT" not in text
+
+
+def test_plain_text_without_user_portfolio_keeps_the_html_section():
+    # Stary push (pełny tekst do Telegram/Slack) dostaje tekst BEZ kwot portfela.
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(user_portfolio=_held_aapl_portfolio(), user_portfolio_in_text=False),
+    )
+
+    assert "Twój portfel" not in text
+    assert "$2,988.70" not in text
+    assert "USER_PORTFOLIO_SLOT" not in text
+    assert "Twój portfel" in html

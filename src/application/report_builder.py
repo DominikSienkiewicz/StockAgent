@@ -113,6 +113,7 @@ from src.application.report_track_record import (
 )
 from src.application.report_user_portfolio import (
     render_user_portfolio_html,
+    render_user_portfolio_text,
 )
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
@@ -796,9 +797,11 @@ def _fill_text_slots(
     onboarding_text: str,
     suggestions_text: str,
     portfolio_text: str = "",
+    user_portfolio_text: str = "",
 ) -> str:
     """Wstawia treść w sloty plain-text. QUOTA/RISK_WATCH tylko gdy niepuste;
-    LEAD, PORTFOLIO i SUGGESTIONS usuwają cały wiersz znacznika, gdy pusto."""
+    LEAD, PORTFOLIO, USER_PORTFOLIO i SUGGESTIONS usuwają cały wiersz znacznika,
+    gdy pusto."""
     if quota_text:
         text = text.replace(_QUOTA_BANNER_SLOT, quota_text, 1)
     if macro_risk_text:
@@ -808,6 +811,11 @@ def _fill_text_slots(
         f"{portfolio_text}\n" if portfolio_text else "",
         1,
     ).replace(_PORTFOLIO_SLOT, portfolio_text, 1)
+    text = text.replace(
+        f"{_USER_PORTFOLIO_SLOT}\n",
+        f"{user_portfolio_text}\n\n" if user_portfolio_text else "",
+        1,
+    ).replace(_USER_PORTFOLIO_SLOT, user_portfolio_text, 1)
     text = text.replace(
         f"{_LEAD_SLOT}\n",
         f"{lead_text}\n\n" if lead_text else "",
@@ -875,18 +883,40 @@ def _build_user_portfolio_html(
     nie z portu. Brak portfela → "" (sekcja sama się chowa)."""
     if user_portfolio is None:
         return ""
-    usd_pln = (
-        macro_risk_report.polish_macro.usd_pln
-        if macro_risk_report is not None and macro_risk_report.polish_macro is not None
-        else None
-    )
     return render_user_portfolio_html(
         user_portfolio,
         current_prices,
         clusters=clusters,
         now=now,
-        usd_pln=usd_pln,
+        usd_pln=_usd_pln_of(macro_risk_report),
     )
+
+
+def _build_user_portfolio_text(
+    user_portfolio: Portfolio | None,
+    current_prices: Mapping[str, Decimal],
+    *,
+    clusters: Mapping[str, str] | None,
+    macro_risk_report: MacroRiskReport | None,
+    now: datetime,
+) -> str:
+    """Wariant plain-text sekcji portfela (decyzja 2026-10-19) — te same dane co HTML."""
+    if user_portfolio is None:
+        return ""
+    return render_user_portfolio_text(
+        user_portfolio,
+        current_prices,
+        clusters=clusters,
+        now=now,
+        usd_pln=_usd_pln_of(macro_risk_report),
+    )
+
+
+def _usd_pln_of(macro_risk_report: MacroRiskReport | None) -> Decimal | None:
+    """Kurs USD/PLN z `MacroRiskReport.polish_macro` (wartość, nie port)."""
+    if macro_risk_report is None or macro_risk_report.polish_macro is None:
+        return None
+    return macro_risk_report.polish_macro.usd_pln
 
 
 def _build_model_scorecard_html(
@@ -959,6 +989,9 @@ class ReportContext:
     # PORT-07: ceny pozycji spoza watchlisty (sam darmowy /quote, bez snapshotu).
     # Cena z cyklu ma pierwszeństwo, gdy symbol jest w obu.
     held_prices: Mapping[str, Decimal] | None = None
+    # Decyzja 2026-10-19: sekcja portfela trafia też do wersji tekstowej maila.
+    # False = tekst dla starego pushu (Telegram/Slack) — bez kwot P/L.
+    user_portfolio_in_text: bool = True
     portfolio_clusters: Mapping[str, str] | None = None
     cycle_cost: CycleCost | None = None
     # WIA-17/22/23/31/32/36: dowód trafności i Brier pod sekcją Track Record.
@@ -1051,6 +1084,17 @@ def build_html_report(
         macro_risk_report=context.macro_risk_report,
         now=started_at,
     )
+    user_portfolio_text = (
+        _build_user_portfolio_text(
+            context.user_portfolio,
+            current_prices,
+            clusters=context.portfolio_clusters,
+            macro_risk_report=context.macro_risk_report,
+            now=started_at,
+        )
+        if context.user_portfolio_in_text
+        else ""
+    )
     # #8: zmiany nastawienia rady. Render odfiltrowuje STABLE i jawnie oznacza
     # stęchłe porównania — pusta lista → sekcja się chowa.
     consensus_shift_html = render_consensus_shift_html(context.consensus_shifts or [])
@@ -1116,6 +1160,7 @@ def build_html_report(
         quota_text=quota_text,
         macro_risk_text=macro_risk_text,
         portfolio_text=portfolio_text,
+        user_portfolio_text=user_portfolio_text,
         lead_text=lead_text,
         onboarding_text=onboarding_text,
         suggestions_text=suggestions_text,
@@ -1944,6 +1989,8 @@ def _render_plain(
     lines.append(_RISK_WATCH_SLOT)
     # PORT-22: radar portfela (klastry, VaR, stress, „za mało historii”).
     lines.append(_PORTFOLIO_SLOT)
+    # 💼 Twój portfel — jak w HTML, zaraz za radarem.
+    lines.append(_USER_PORTFOLIO_SLOT)
 
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
     crypto_text = _render_crypto_section_text(results)
