@@ -2696,3 +2696,22 @@ class TestInvestmentDisclaimer:
 
         assert text.index("Strong macro tailwinds") < text.index(self._DISCLAIMER)
         assert text.index(self._DISCLAIMER) < text.index("przebieg #77")
+
+
+def test_predictions_table_says_model_signal_not_recommendation():
+    # MAIL-27: zastrzeżenie „nie stanowi rekomendacji” obok nagłówka
+    # „Rekomendacja” było sprzeczne — tabela i blok uzasadnień mówią o sygnale.
+    html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+    predictions = html.split("Wygenerowane predykcje")[1]
+    assert ">Sygnał modelu<" in predictions
+    assert "Sygnał modelu: KUP" in predictions
+    assert ">Rekomendacja<" not in html
+    assert "Rekomendacja: KUP" not in html
+
+
+def test_plain_text_says_model_signal_not_recommendation():
+    _, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+    assert "Sygnał modelu: KUP (pewność 85%" in text
+    assert "Rekomendacja" not in text

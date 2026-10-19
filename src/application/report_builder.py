@@ -135,6 +135,11 @@ from src.domain.feature_attribution import FeatureContribution
 from src.domain.finops import CycleCost
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
+from src.domain.polish_labels import (
+    MODEL_SIGNAL_TITLE,
+    council_recommendation_label,
+    model_signal_label,
+)
 from src.domain.portfolio import Portfolio
 from src.domain.prediction import is_substantive_insight
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
@@ -167,12 +172,6 @@ __all__ = [
 ]
 
 _SAFE_URL_SCHEMES = {"http", "https"}
-
-_DIRECTION_LABEL = {
-    "BULLISH": "KUP",
-    "BEARISH": "SPRZEDAJ",
-    "SIDEWAYS": "WSTRZYMAJ",
-}
 
 _DIRECTION_COLOR = {
     "KUP": "#16a34a",
@@ -214,7 +213,6 @@ _SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
 # MAIL-42: linia proweniencji w stopce (przebieg · commit · logi).
 _RUN_FOOTER_SLOT = "<!-- RUN_FOOTER_SLOT -->"
 
-_COUNCIL_REC_LABEL = {"BUY": "KUP", "SELL": "SPRZEDAJ", "HOLD": "TRZYMAJ"}
 _COUNCIL_REC_COLOR = {"BUY": "#16a34a", "SELL": "#dc2626", "HOLD": "#ca8a04"}
 _COUNCIL_REC_BG = {"BUY": "#f0fdf4", "SELL": "#fef2f2", "HOLD": "#fefce8"}
 _COUNCIL_REC_EMOJI = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}
@@ -283,8 +281,10 @@ def _render_valuation_text(section: ValuationSection | None) -> str:
     return "\n".join(lines)
 
 
-def _recommendation(r: SymbolResult) -> str:
-    return _DIRECTION_LABEL.get(r.trend or "", "WSTRZYMAJ")
+def _model_signal(r: SymbolResult) -> str:
+    """MAIL-27: sygnał modelu (KUP/SPRZEDAJ/WSTRZYMAJ) — etykieta ze wspólnego
+    słownika domeny, nie „rekomendacja”."""
+    return model_signal_label(r.trend)
 
 
 # G03: przy cold-starcie target == bieżąca cena, więc "+0.00%" udawałoby prognozę.
@@ -316,9 +316,9 @@ def _move_interval_label(interval: MoveInterval) -> str:
     )
 
 
-def _recommendation_reason_html(r: SymbolResult) -> str:
-    """Zwraca krótki HTML-owy powód rekomendacji (1–2 zdania)."""
-    direction = _recommendation(r)
+def _model_signal_reason_html(r: SymbolResult) -> str:
+    """Zwraca krótki HTML-owy powód sygnału modelu (1–2 zdania)."""
+    direction = _model_signal(r)
     color = _DIRECTION_COLOR.get(direction, "#737373")
     bg = _DIRECTION_BG.get(direction, "#f9fafb")
 
@@ -346,14 +346,14 @@ def _recommendation_reason_html(r: SymbolResult) -> str:
     return (
         f"<div style='margin-top: 6px; padding: 6px 10px; background: {bg}; "
         f"border-radius: 3px; font-size: 12px;'>"
-        f"<span style='font-weight: 700; color: {color};'>➤ {direction}</span> — "
+        f"<span style='font-weight: 700; color: {color};'>➤ {MODEL_SIGNAL_TITLE}: {direction}</span> — "
         f"{conf_part}{change_part}{sentiment_part}"
         f"</div>"
     )
 
 
-def _recommendation_reason_text(r: SymbolResult) -> str:
-    direction = _recommendation(r)
+def _model_signal_reason_text(r: SymbolResult) -> str:
+    direction = _model_signal(r)
     conf_part = f"pewność {r.confidence_score * 100:.0f}%" if r.confidence_score is not None else ""
     change_part = (
         f"prognoza {_pct(r.expected_change, signed=True)}"
@@ -362,7 +362,7 @@ def _recommendation_reason_text(r: SymbolResult) -> str:
     )
     parts = [p for p in [conf_part, change_part] if p]
     detail = ", ".join(parts)
-    return f"Rekomendacja: {direction}" + (f" ({detail})" if detail else "")
+    return f"{MODEL_SIGNAL_TITLE}: {direction}" + (f" ({detail})" if detail else "")
 
 
 def _html(value: object) -> str:
@@ -507,7 +507,7 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
     opinion_rows = [
         {
             "name": op.investor_name,
-            "label": _COUNCIL_REC_LABEL.get(op.recommendation, op.recommendation),
+            "label": council_recommendation_label(op.recommendation),
             "emoji": _COUNCIL_REC_EMOJI.get(op.recommendation, "⬜"),
             "color": _COUNCIL_REC_COLOR.get(op.recommendation, "#737373"),
             "bg": _COUNCIL_REC_BG.get(op.recommendation, "#f9fafb"),
@@ -521,7 +521,7 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
         "council_section.html.j2",
         {
             "verdict": verdict,
-            "label": _COUNCIL_REC_LABEL.get(final, final),
+            "label": council_recommendation_label(final),
             "color": _COUNCIL_REC_COLOR.get(final, "#737373"),
             "bg": _COUNCIL_REC_BG.get(final, "#f9fafb"),
             "strength_pct": int(verdict.consensus_strength * 100),
@@ -1575,7 +1575,7 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
         )
     else:
         forecast_text = "—"
-    rec = _recommendation(r)
+    rec = _model_signal(r)
     rec_color = _DIRECTION_COLOR.get(rec, "#737373")
     return f"""
               <tr>
@@ -1640,7 +1640,7 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
     # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
     # (finding #35). Escapowanie title/source jest tu domyślne.
     news_block = _render_news_block_html(r.top_news)
-    rec_block = _recommendation_reason_html(r)
+    rec_block = _model_signal_reason_html(r)
     council_block = (
         _render_council_section(r.council_verdict)
         if r.council_verdict is not None
@@ -1676,7 +1676,7 @@ def _render_saved_section_html(saved: list[SymbolResult]) -> str:
     parts = [
         _section_h2("🔮 Wygenerowane predykcje"),
         "<table style='width: 100%; border-collapse: collapse; font-size: 13px;'>",
-        """
+        f"""
           <tr style="background: #f3f4f6; text-align: left;">
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Symbol</th>
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Cena</th>
@@ -1686,7 +1686,7 @@ def _render_saved_section_html(saved: list[SymbolResult]) -> str:
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Pewność</th>
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Sentyment</th>
             <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Newsy</th>
-            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">Rekomendacja</th>
+            <th style="padding: 6px 8px; border-bottom: 1px solid #e5e7eb;">{MODEL_SIGNAL_TITLE}</th>
           </tr>
         """,
     ]
@@ -1989,7 +1989,7 @@ def _render_reflections_text(saved: list[SymbolResult]) -> list[str]:
 
 
 def _render_prediction_text(r: SymbolResult) -> list[str]:
-    """Linie jednej predykcji (plain): nagłówek + sentyment + rekomendacja +
+    """Linie jednej predykcji (plain): nagłówek + sentyment + sygnał modelu +
     proweniencja + reasoning + analogi + newsy + wycena."""
     conf_part = (
         f" · pewność {r.confidence_score * 100:.0f}%"
@@ -2009,7 +2009,7 @@ def _render_prediction_text(r: SymbolResult) -> list[str]:
         if r.sentiment_score is not None
         else "sentyment —"
     )
-    rec_text = _recommendation_reason_text(r)
+    rec_text = _model_signal_reason_text(r)
     lines = [
         f"  {_company_label_with_sector(r.symbol):55s} {_money(r.current_price):>10s}  "
         f"Δ {_pct(r.delta, signed=True):>8s}  →  "

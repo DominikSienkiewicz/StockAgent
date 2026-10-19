@@ -99,7 +99,7 @@ PREDYKCJE
 ----------------------------------------------------------------
   NVDA (NVIDIA Corporation) · Półprzewodniki/AI              $140.00  Δ   +4.20%  →  Wzrostowy   prognoza $143.50 (+2.50%) · pewność 82%
          sentyment +0.41
-         Rekomendacja: KUP (pewność 82%, prognoza +2.50%)
+         Sygnał modelu: KUP (pewność 82%, prognoza +2.50%)
          80% przedział: −2.1% … +2.4% (n=57)
         └ Popyt na akceleratory rośnie szybciej niż podaż; marże stabilne.
         🧭 analog [Wzrostowy, trafił]: NVDA +5% po wynikach, sentyment Bullish
@@ -111,14 +111,14 @@ PREDYKCJE
     Werdykt: FAIR
   AMD (Advanced Micro Devices Inc.) · Półprzewodniki/AI      $160.00  Δ   -3.50%  →  Spadkowy    prognoza $157.20 (-1.75%) · pewność 71%
          sentyment -0.18
-         Rekomendacja: SPRZEDAJ (pewność 71%, prognoza -1.75%)
+         Sygnał modelu: SPRZEDAJ (pewność 71%, prognoza -1.75%)
          proweniencja: Dane zdegradowane, Dane z cache, Flagi jakości
         └ Słabsze prognozy segmentu klienckiego i presja na ceny.
         📰 [Reuters] AMD beats quarterly estimates on data-center demand (rel=0.91, sent=+0.42)
         📰 [Bloomberg] Analysts lift AMD price targets after guidance (rel=0.77, sent=+0.31)
   BTC (Bitcoin) · Krypto                                   $65040.00  Δ   +6.10%  →  Wzrostowy   prognoza $66100.00 (+1.63%) · pewność 64%
          sentyment +0.22
-         Rekomendacja: KUP (pewność 64%, prognoza +1.63%)
+         Sygnał modelu: KUP (pewność 64%, prognoza +1.63%)
         └ Napływy do ETF-ów spot i spadająca podaż na giełdach.
 
 WARTE UWAGI (sektory w ruchu)
