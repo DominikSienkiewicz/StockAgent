@@ -279,3 +279,21 @@ class TestWeeklyRecapRecordedVerdict:
 
         assert recap.best.symbol == "BTC"
         assert "Strzał tygodnia: BTC (✅ kierunek trafiony" in render_weekly_recap_text(recap)
+
+
+class TestWeeklyRecapNarrativeMirrorTitle:
+    """Decyzja 2026-10-19 (a): prompt narracji używa lustrzanego tytułu, gdy
+    wtopą tygodnia byłoby trafienie kierunkowe."""
+
+    def test_prompt_for_week_without_direction_misses_has_no_miss_of_week(self) -> None:
+        repo = Mock(spec=RepositoryPort)
+        # BULLISH, cena rośnie do 105 → każdy wiersz trafia kierunek.
+        repo.get_resolved_predictions_detailed.return_value = _rows(5)
+        llm = Mock(spec=LLMPort)
+        llm.analyze.return_value = {"narrative": "n"}
+
+        _use_case(repo, llm).run()
+
+        prompt = str(llm.analyze.call_args.args[0])
+        assert "Wtopa tygodnia" not in prompt
+        assert "Najdalej od celu (kierunek trafiony): SYM4" in prompt

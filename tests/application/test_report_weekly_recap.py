@@ -99,7 +99,7 @@ class TestWeeklyRecapText:
         assert "Podsumowanie tygodnia." in text
 
 
-def _hero_recap(*, best_correct: bool | None) -> WeeklyRecap:
+def _hero_recap(*, best_correct: bool | None, worst_correct: bool | None = False) -> WeeklyRecap:
     best = RecapHighlight(
         symbol="NVDA",
         accuracy=Decimal("0.95"),
@@ -110,7 +110,7 @@ def _hero_recap(*, best_correct: bool | None) -> WeeklyRecap:
         symbol="TSLA",
         accuracy=Decimal("0.10"),
         correction_insight="",
-        direction_correct=False,
+        direction_correct=worst_correct,
     )
     return WeeklyRecap(
         sample_size=7,
@@ -155,3 +155,25 @@ class TestHeroDirectionVerdict:
 
         assert "Strzał tygodnia" not in text
         assert "Najbliżej celu (kierunek chybiony): NVDA" in text
+
+
+class TestWorstHeroMirrorTitle:
+    """Decyzja 2026-10-19 (a): tydzień bez pudeł kierunkowych nie ma „wtopy”,
+    tylko „najdalej od celu” — lustro „Najbliżej celu (kierunek chybiony)”."""
+
+    def test_html_week_without_direction_misses_has_no_miss_of_week(self) -> None:
+        html = render_weekly_recap_html(_hero_recap(best_correct=True, worst_correct=True))
+
+        assert "Wtopa tygodnia" not in html
+        assert "Najdalej od celu (kierunek trafiony)" in html
+
+    def test_text_week_without_direction_misses_has_no_miss_of_week(self) -> None:
+        text = render_weekly_recap_text(_hero_recap(best_correct=True, worst_correct=True))
+
+        assert "Wtopa tygodnia" not in text
+        assert "Najdalej od celu (kierunek trafiony): TSLA" in text
+
+    def test_a_directional_miss_keeps_the_miss_of_week_title(self) -> None:
+        text = render_weekly_recap_text(_hero_recap(best_correct=True))
+
+        assert "Wtopa tygodnia: TSLA" in text

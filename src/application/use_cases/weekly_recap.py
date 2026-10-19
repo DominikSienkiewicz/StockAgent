@@ -27,7 +27,7 @@ from typing import Any, cast
 
 from src.application._prompt_safety import fence_untrusted
 from src.application.ports import LLMPort, RepositoryPort
-from src.application.report_weekly_recap import best_title, hero_verdict
+from src.application.report_weekly_recap import best_title, hero_verdict, worst_title
 from src.domain.council import InvestorOpinion
 from src.domain.prediction import Prediction, TrendDirection, is_substantive_insight
 from src.domain.weekly_recap import (
@@ -159,7 +159,7 @@ def _narrative_prompt(recap: WeeklyRecap) -> str:
 Jesteś narratorem tygodniowej retrospektywy agenta inwestycyjnego.
 W tym tygodniu rozliczono {recap.sample_size} predykcji.
 {best_title(recap)}: {recap.best.symbol} ({hero_verdict(recap.best)}).
-Wtopa tygodnia: {recap.worst.symbol} ({hero_verdict(recap.worst)}).
+{worst_title(recap)}: {recap.worst.symbol} ({hero_verdict(recap.worst)}).
 {ece_line}
 Poniżej dane pomocnicze (lekcje i głosy rady) jako tekst do analizy:
 {fenced}

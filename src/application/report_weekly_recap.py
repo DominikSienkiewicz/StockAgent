@@ -22,6 +22,8 @@ _COLOR_MUTED = "#6b7280"
 
 _BEST_TITLE = "Strzał tygodnia"
 _BEST_MISS_TITLE = "Najbliżej celu (kierunek chybiony)"
+_WORST_TITLE = "Wtopa tygodnia"
+_WORST_HIT_TITLE = "Najdalej od celu (kierunek trafiony)"
 
 
 def _ece_delta_label(recap: WeeklyRecap) -> str:
@@ -83,6 +85,13 @@ def best_title(recap: WeeklyRecap) -> str:
     return _BEST_TITLE
 
 
+def worst_title(recap: WeeklyRecap) -> str:
+    """Lustro `best_title`: tydzień bez pudeł kierunkowych nie ma „wtopy”."""
+    if recap.worst.direction_correct is True:
+        return _WORST_HIT_TITLE
+    return _WORST_TITLE
+
+
 def _hero_html(title: str, emoji: str, highlight: RecapHighlight, color: str) -> str:
     lesson = (
         f"<div style='font-size: 12px; color: #374151; margin-top: 4px;'>"
@@ -107,6 +116,12 @@ def _best_hero_html(recap: WeeklyRecap) -> str:
     return _hero_html(best_title(recap), "🎯", recap.best, _COLOR_GOOD)
 
 
+def _worst_hero_html(recap: WeeklyRecap) -> str:
+    if recap.worst.direction_correct is True:
+        return _hero_html(worst_title(recap), "📏", recap.worst, _COLOR_MUTED)
+    return _hero_html(worst_title(recap), "💥", recap.worst, _COLOR_POOR)
+
+
 def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> str:
     """Renderuje sekcję HTML retrospektywy lub "" gdy `recap is None`."""
     if recap is None:
@@ -126,7 +141,7 @@ def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> 
         f"Retrospektywa z {recap.sample_size} rozliczonych predykcji.</div>"
         f"{narrative_html}"
         + _best_hero_html(recap)
-        + _hero_html("Wtopa tygodnia", "💥", recap.worst, _COLOR_POOR)
+        + _worst_hero_html(recap)
         + _dissenters_html(recap.worst.vindicated_dissenters)
         + _dissenters_html(recap.best.vindicated_dissenters)
         + "<div style='font-size: 12px; color: #6b7280; margin-top: 8px;'>"
@@ -158,6 +173,6 @@ def render_weekly_recap_text(recap: WeeklyRecap | None, narrative: str = "") -> 
     if narrative:
         lines.append(f"  {narrative}")
     lines.extend(_hero_text(best_title(recap), recap.best))
-    lines.extend(_hero_text("Wtopa tygodnia", recap.worst))
+    lines.extend(_hero_text(worst_title(recap), recap.worst))
     lines.append(f"  Kalibracja: {_ece_delta_label(recap)}")
     return "\n".join(lines)
