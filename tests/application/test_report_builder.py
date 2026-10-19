@@ -1512,7 +1512,7 @@ class TestRecommendationInReport:
         )
         assert "SPRZEDAJ" in after_header
 
-    def test_html_shows_wstrzymaj_for_sideways(self):
+    def test_html_shows_trzymaj_for_sideways(self):
         r = SymbolResult(
             symbol="IBM", status="saved", trend="SIDEWAYS",
             confidence_score=0.6, current_price=Decimal("150"),
@@ -1525,7 +1525,22 @@ class TestRecommendationInReport:
             if "Wygenerowane predykcje" in html
             else html
         )
-        assert "WSTRZYMAJ" in after_header
+        assert "TRZYMAJ" in after_header
+
+    def test_sideways_signal_uses_the_council_hold_label(self):
+        # Decyzja 2026-10-19: ruch boczny i HOLD rady to jedna etykieta — TRZYMAJ.
+        r = SymbolResult(
+            symbol="IBM", status="saved", trend="SIDEWAYS",
+            confidence_score=0.6, current_price=Decimal("150"),
+            target_price=Decimal("151"), reasoning="mixed signals",
+            sentiment_score=0.0,
+        )
+        html, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+        assert "Sygnał modelu: TRZYMAJ" in html
+        assert "Sygnał modelu: TRZYMAJ" in text
+        assert "WSTRZYMAJ" not in html
+        assert "WSTRZYMAJ" not in text
 
     def test_html_recommendation_includes_why_reason(self):
         r = SymbolResult(

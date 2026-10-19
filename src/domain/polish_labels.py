@@ -1,7 +1,7 @@
 """Wspólny słownik polskich etykiet sygnałów (MAIL-27, MAIL-15).
 
 Jedno źródło prawdy dla etykiet, które trafiają do maila, leadu i tematu:
-trend modelu jako sygnał akcji (KUP / SPRZEDAJ / WSTRZYMAJ), nazwa trendu
+trend modelu jako sygnał akcji (KUP / SPRZEDAJ / TRZYMAJ), nazwa trendu
 (Wzrostowy / Spadkowy / Boczny), prognoza w zdaniu leadu („trafiona prognoza
 wzrostu”) i werdykt rady (KUP / SPRZEDAJ / TRZYMAJ). Domena (`digest_lead`)
 i renderery warstwy application biorą etykiety stąd — moduł nie zna nic spoza
@@ -16,13 +16,14 @@ from __future__ import annotations
 
 MODEL_SIGNAL_TITLE = "Sygnał modelu"
 
-# Brak / nieznany trend → WSTRZYMAJ: brak kierunku to brak akcji, nie „KUP”.
-_HOLD_SIGNAL = "WSTRZYMAJ"
+# Decyzja 2026-10-19: ruch boczny modelu i HOLD rady to JEDNA etykieta.
+# Brak / nieznany trend też jest „trzymaj”: brak kierunku to brak akcji, nie „KUP”.
+_HOLD_LABEL = "TRZYMAJ"
 
 _MODEL_SIGNAL_PL: dict[str, str] = {
     "BULLISH": "KUP",
     "BEARISH": "SPRZEDAJ",
-    "SIDEWAYS": _HOLD_SIGNAL,
+    "SIDEWAYS": _HOLD_LABEL,
 }
 
 _TREND_PL: dict[str, str] = {
@@ -41,13 +42,13 @@ _TREND_FORECAST_PL: dict[str, str] = {
 _COUNCIL_RECOMMENDATION_PL: dict[str, str] = {
     "BUY": "KUP",
     "SELL": "SPRZEDAJ",
-    "HOLD": "TRZYMAJ",
+    "HOLD": _HOLD_LABEL,
 }
 
 
 def model_signal_label(trend: str | None) -> str:
     """Trend modelu (BULLISH/BEARISH/SIDEWAYS) jako polski sygnał akcji."""
-    return _MODEL_SIGNAL_PL.get(trend or "", _HOLD_SIGNAL)
+    return _MODEL_SIGNAL_PL.get(trend or "", _HOLD_LABEL)
 
 
 def trend_label(trend: str | None) -> str:

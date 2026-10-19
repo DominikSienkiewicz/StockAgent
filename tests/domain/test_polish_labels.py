@@ -22,7 +22,7 @@ from src.domain.polish_labels import (
 
 @pytest.mark.parametrize(
     ("trend", "label"),
-    [("BULLISH", "KUP"), ("BEARISH", "SPRZEDAJ"), ("SIDEWAYS", "WSTRZYMAJ")],
+    [("BULLISH", "KUP"), ("BEARISH", "SPRZEDAJ"), ("SIDEWAYS", "TRZYMAJ")],
 )
 def test_model_signal_maps_the_trend_to_a_polish_action(trend: str, label: str) -> None:
     assert model_signal_label(trend) == label
@@ -30,7 +30,12 @@ def test_model_signal_maps_the_trend_to_a_polish_action(trend: str, label: str) 
 
 @pytest.mark.parametrize("trend", [None, "", "UNKNOWN"])
 def test_unknown_trend_is_a_hold_signal(trend: str | None) -> None:
-    assert model_signal_label(trend) == "WSTRZYMAJ"
+    assert model_signal_label(trend) == "TRZYMAJ"
+
+
+def test_sideways_signal_and_council_hold_share_one_label() -> None:
+    # Decyzja 2026-10-19: jedna etykieta ruchu bocznego w mailu, leadzie i temacie.
+    assert model_signal_label("SIDEWAYS") == council_recommendation_label("HOLD")
 
 
 @pytest.mark.parametrize(

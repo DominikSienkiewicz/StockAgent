@@ -177,13 +177,13 @@ _SAFE_URL_SCHEMES = {"http", "https"}
 _DIRECTION_COLOR = {
     "KUP": "#16a34a",
     "SPRZEDAJ": "#dc2626",
-    "WSTRZYMAJ": "#737373",
+    "TRZYMAJ": "#737373",
 }
 
 _DIRECTION_BG = {
     "KUP": "#f0fdf4",
     "SPRZEDAJ": "#fef2f2",
-    "WSTRZYMAJ": "#f9fafb",
+    "TRZYMAJ": "#f9fafb",
 }
 
 # Markery slotów — placeholdery wstawiane przy renderze i podmieniane treścią
@@ -283,7 +283,7 @@ def _render_valuation_text(section: ValuationSection | None) -> str:
 
 
 def _model_signal(r: SymbolResult) -> str:
-    """MAIL-27: sygnał modelu (KUP/SPRZEDAJ/WSTRZYMAJ) — etykieta ze wspólnego
+    """MAIL-27: sygnał modelu (KUP/SPRZEDAJ/TRZYMAJ) — etykieta ze wspólnego
     słownika domeny, nie „rekomendacja”."""
     return model_signal_label(r.trend)
 
