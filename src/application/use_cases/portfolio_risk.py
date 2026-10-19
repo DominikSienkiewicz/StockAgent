@@ -17,6 +17,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 
 from src.application.ports import RepositoryPort
 from src.domain.correlation import (
@@ -25,6 +26,7 @@ from src.domain.correlation import (
     detect_clusters,
     returns_from_prices,
 )
+from src.domain.number_format import format_number_pl
 from src.domain.risk_sample import RiskStat, sample_sufficiency
 from src.domain.scenarios import Scenario, ScenarioImpact, stress_test
 from src.domain.value_objects import Money
@@ -240,7 +242,7 @@ class PortfolioRiskUseCase:
         avg_corr = PortfolioRiskUseCase._avg_intra_corr(matrix, biggest)
         share_pct = round(len(biggest) / watchlist_size * 100)
         return (
-            f"{members} poruszają się razem {avg_corr:.2f} — "
+            f"{members} poruszają się razem {format_number_pl(Decimal(str(avg_corr)), False, 2)} — "
             f"{share_pct}% watchlisty to jeden zakład"
         )
 

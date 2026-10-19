@@ -35,7 +35,7 @@ Ogólny alert: ELEVATED
 === 🎯 PORTFOLIO RADAR — KONCENTRACJA I RYZYKO ===
   Werdykt: Największy klaster: AMD + NVDA (2 z 3 symboli, 67% watchlisty)
   Klaster 1 (2 symboli): AMD · NVDA
-  📉 Value-at-Risk (95%): 3.1% (CVaR 4.6%)
+  📉 Value-at-Risk (95%): 3,1% (CVaR 4,6%)
 
 === 💼 Twój portfel ===
 

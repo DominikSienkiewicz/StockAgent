@@ -8,6 +8,7 @@ Wyłącznie RepositoryPort (darmowy odczyt) — zero płatnych portów.
 
 from __future__ import annotations
 
+import re
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -107,6 +108,17 @@ class TestBuildsReport:
         assert report.verdict != ""
         assert "%" in report.verdict
         assert "NVDA" in report.verdict
+
+    def test_verdict_writes_the_correlation_with_a_decimal_comma(
+        self, repository_port: Mock
+    ) -> None:
+        # MAIL-58: werdykt trafia do sekcji maila — „razem 1,00”, nie „razem 1.00”.
+        history = {"NVDA": _long_series(100), "MSFT": _long_series(50)}
+        repository_port.get_price_history.side_effect = lambda sym, days: history[sym]
+
+        report = _make_uc(repository_port).run(["NVDA", "MSFT"])
+
+        assert re.search(r"poruszają się razem -?\d,\d\d — ", report.verdict)
 
 
 class TestVarAndStress:
