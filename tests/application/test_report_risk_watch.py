@@ -242,3 +242,52 @@ class TestDrawdownRendering:
         report = MacroRiskReport()
         assert render_risk_watch_html(report) == ""
         assert render_risk_watch_text(report) == ""
+
+
+class TestCompanyNames:
+    """Risk Watch podpisuje instrumenty nazwą z `COMPANY_NAMES`, jak reszta maila —
+    goły ticker („PSQ”, „TBT”) nic nie mówi czytelnikowi."""
+
+    @staticmethod
+    def _report() -> MacroRiskReport:
+        from src.domain.hedge import HedgeAssessment
+
+        return MacroRiskReport(
+            signals=[_signal("PSQ", MacroRiskInstrumentType.INVERSE_EQUITY, "100", "104")],
+            drawdowns=[_drawdown("TSLA", peak="100", current="82")],
+            hedges=[
+                HedgeAssessment(
+                    hedge_symbol="GLD",
+                    correlation=-0.4,
+                    effectiveness=0.4,
+                    label="skuteczny",
+                )
+            ],
+            overall_alert=MacroAlertLevel.ELEVATED,
+        )
+
+    def test_html_labels_signals_drawdowns_and_hedges_with_names(self) -> None:
+        html = render_risk_watch_html(self._report())
+
+        assert "PSQ (ProShares Short QQQ)" in html
+        assert "TSLA (Tesla Inc.)" in html
+        assert "GLD (SPDR Gold Shares)" in html
+
+    def test_text_labels_signals_drawdowns_and_hedges_with_names(self) -> None:
+        text = render_risk_watch_text(self._report())
+
+        assert "PSQ (ProShares Short QQQ)" in text
+        assert "TSLA (Tesla Inc.)" in text
+        assert "GLD (SPDR Gold Shares)" in text
+
+    def test_html_escapes_the_company_name(self) -> None:
+        # „S&P” w nazwie SH musi przejść przez html.escape jak każda inna treść.
+        report = MacroRiskReport(
+            signals=[_signal("SH", MacroRiskInstrumentType.INVERSE_EQUITY, "100", "104")],
+            overall_alert=MacroAlertLevel.ELEVATED,
+        )
+
+        html = render_risk_watch_html(report)
+
+        assert "SH (ProShares Short S&amp;P 500)" in html
+        assert "S&P 500" not in html

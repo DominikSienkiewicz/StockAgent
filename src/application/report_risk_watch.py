@@ -3,6 +3,8 @@
 Czysta logika prezentacji — bierze `MacroRiskReport` z use case'a i
 produkuje fragment HTML oraz wariant plain text. Sekcja pomijana w
 całości, gdy brak sygnałów i brak polskiego makro (`render_*` → "").
+Instrumenty podpisane jak w reszcie maila: `company_label` (ticker + nazwa
+z `COMPANY_NAMES`), nie goły ticker.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import html as _html
 from decimal import Decimal
 
+from src.application.report_formatting import company_label
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.drawdown import DrawdownSignal
 from src.domain.hedge import HedgeAssessment
@@ -134,7 +137,7 @@ def _render_hedges_table_html(hedges: list[HedgeAssessment]) -> str:
         rows.append(
             "<tr>"
             "<td style='padding: 6px 8px;'><strong>"
-            f"{_html.escape(h.hedge_symbol)}</strong></td>"
+            f"{_html.escape(company_label(h.hedge_symbol))}</strong></td>"
             f"<td style='padding: 6px 8px; text-align: right;'>"
             f"{h.correlation:+.2f}</td>"
             f"<td style='padding: 6px 8px; text-align: right;'>"
@@ -167,7 +170,8 @@ def _render_signals_table_html(signals: list[MacroRiskSignal]) -> str:
         color = _ALERT_COLOR[alert]
         rows.append(
             f"<tr>"
-            f"<td style='padding: 6px 8px;'><strong>{_html.escape(sig.symbol)}</strong></td>"
+            f"<td style='padding: 6px 8px;'>"
+            f"<strong>{_html.escape(company_label(sig.symbol))}</strong></td>"
             f"<td style='padding: 6px 8px; color: #6b7280;'>"
             f"{_INSTRUMENT_LABEL[sig.instrument_type]}</td>"
             f"<td style='padding: 6px 8px; text-align: right;'>"
@@ -202,7 +206,7 @@ def _render_drawdowns_table_html(drawdowns: list[DrawdownSignal]) -> str:
         rows.append(
             f"<tr style='background: {row_bg};'>"
             f"<td style='padding: 6px 8px;'>"
-            f"<strong>{_html.escape(dd.symbol)}</strong></td>"
+            f"<strong>{_html.escape(company_label(dd.symbol))}</strong></td>"
             f"<td style='padding: 6px 8px; text-align: right; "
             f"color: {color}; font-weight: 600;'>"
             f"{_format_pct(dd.drawdown_fraction)}</td>"
@@ -264,7 +268,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         for sig in report.signals:
             alert = sig.evaluate_alert()
             lines.append(
-                f"  {sig.symbol:6s} "
+                f"  {company_label(sig.symbol):40s} "
                 f"{_INSTRUMENT_LABEL[sig.instrument_type]:18s} "
                 f"Δ={_format_pct(sig.change_pct):>7s} "
                 f"[{_ALERT_LABEL[alert]}]"
@@ -276,7 +280,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         for dd in report.drawdowns:
             alert = _drawdown_alert(dd)
             lines.append(
-                f"  {dd.symbol:6s} "
+                f"  {company_label(dd.symbol):40s} "
                 f"{_format_pct(dd.drawdown_fraction):>8s} od szczytu "
                 f"(szczyt {dd.peak_price}) "
                 f"[{_ALERT_LABEL[alert]}]"
@@ -287,7 +291,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         lines.append("-- Skuteczność hedge'y (corr vs portfel) --")
         for h in report.hedges:
             lines.append(
-                f"  {h.hedge_symbol:6s} "
+                f"  {company_label(h.hedge_symbol):40s} "
                 f"corr={h.correlation:+.2f} "
                 f"skuteczność={h.effectiveness:+.2f} "
                 f"[{h.label}]"
