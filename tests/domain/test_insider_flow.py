@@ -66,3 +66,26 @@ class TestEvaluateSignal:
         # Próg jest ścisły (>), więc równość = NEUTRAL.
         snap = _snap(net_shares=100.0, buy_count=1, sell_count=0)
         assert snap.evaluate_signal(min_net_shares=100.0) is InsiderSignal.NEUTRAL
+
+
+
+class TestHasEvidence:
+    """DAT-03: snapshot mówi, czy EDGAR dał dowód o insiderach. Niesparsowane Form 4
+    są nieodróżnialne od braku transakcji, jeśli liczniki filingów tego nie powiedzą."""
+
+    def test_defaults_keep_the_snapshot_as_evidence(self) -> None:
+        snap = _snap(net_shares=0.0)
+        assert (snap.filings_seen, snap.filings_parsed) == (0, 0)
+        assert snap.has_evidence()
+
+    def test_seen_but_unparsed_filings_are_no_evidence(self) -> None:
+        snap = InsiderFlowSnapshot("AAPL", 0.0, 0, 0, 90, filings_seen=3, filings_parsed=0)
+        assert not snap.has_evidence()
+
+    def test_one_parsed_filing_is_evidence(self) -> None:
+        snap = InsiderFlowSnapshot("AAPL", -500.0, 0, 1, 90, filings_seen=3, filings_parsed=1)
+        assert snap.has_evidence()
+
+    def test_no_filings_in_the_window_is_evidence_of_no_trades(self) -> None:
+        snap = InsiderFlowSnapshot("AAPL", 0.0, 0, 0, 90, filings_seen=0, filings_parsed=0)
+        assert snap.has_evidence()

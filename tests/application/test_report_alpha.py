@@ -90,3 +90,37 @@ class TestComposition:
         # current price 200 → upside +10%
         html = render_alpha_html(signals, None, current_prices={"AAPL": Decimal("200")})
         assert "+10" in html
+
+
+
+class TestInsiderWithoutEvidence:
+    """DAT-03: przy niesparsowanych Form 4 raport mówi „brak danych EDGAR”, a nie
+    pokazuje kreski jak przy spokojnym oknie bez transakcji."""
+
+    def test_unparsed_filings_render_as_missing_edgar_data(self) -> None:
+        signals = {
+            "AAPL": AlphaSignals(
+                symbol="AAPL",
+                insider=InsiderFlowSnapshot(
+                    "AAPL", 0.0, 0, 0, 90, filings_seen=3, filings_parsed=0
+                ),
+            ),
+        }
+
+        html = render_alpha_html(signals, None)
+
+        assert "brak danych EDGAR" in html
+
+    def test_quiet_window_keeps_the_dash(self) -> None:
+        signals = {
+            "AAPL": AlphaSignals(
+                symbol="AAPL",
+                insider=InsiderFlowSnapshot(
+                    "AAPL", 0.0, 0, 0, 90, filings_seen=0, filings_parsed=0
+                ),
+            ),
+        }
+
+        html = render_alpha_html(signals, None)
+
+        assert "brak danych EDGAR" not in html

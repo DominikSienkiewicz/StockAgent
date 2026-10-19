@@ -19,6 +19,8 @@ from src.domain.options_flow import OptionsSentiment
 from src.domain.social_velocity import SocialTrend
 
 _DASH = "—"
+# DAT-03: Form 4 widziane, ale żaden niesparsowany — to nie jest spokojne okno.
+_INSIDER_NO_EVIDENCE = "brak danych EDGAR"
 
 _INSIDER_LABEL = {
     InsiderSignal.NET_BUYING: "kupno insiderów",
@@ -136,10 +138,16 @@ def _render_signals_table_html(
     )
 
 
+def _insider_text(sig: AlphaSignals) -> str:
+    if sig.insider is None:
+        return _DASH
+    if not sig.insider.has_evidence():
+        return _INSIDER_NO_EVIDENCE
+    return _INSIDER_LABEL[sig.insider.evaluate_signal()]
+
+
 def _render_signal_row_html(sig: AlphaSignals, price: Decimal | None) -> str:
-    insider_txt = (
-        _INSIDER_LABEL[sig.insider.evaluate_signal()] if sig.insider else _DASH
-    )
+    insider_txt = _insider_text(sig)
     analyst_txt = _DASH
     if sig.analyst is not None:
         analyst_txt = _RATING_LABEL[sig.analyst.rating()]
