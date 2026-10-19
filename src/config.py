@@ -83,6 +83,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "receipts_enabled",
     "feature_set_version_enabled",
     "recipe_version_enabled",
+    # ML-38: sam tag reżimu w rekordzie; filtr RAG to `vector_memory_enabled`.
+    "regime_tagging_enabled",
     # ML-14: sam zapis wektora cech; prognoza cyklu jest identyczna z flagą i bez.
     "feature_snapshots_enabled",
     # ML-34: zapis kolumn przedziału + pokrycie w Track Record. Przedział opisuje
@@ -351,6 +353,10 @@ class Settings(BaseSettings):
     # Cross-Asset Vector Memory — tagowanie embeddingów reżimem + filtr w RAG
     # (migracja 017). Bez flagi RAG działa jak dotąd (bez filtra reżimu).
     vector_memory_enabled: bool = False
+    # ML-38: tag reżimu przy KAŻDEJ predykcji (`prediction_logs.regime`, migracja
+    # 017), niezależnie od filtra RAG. None = jak `regime_aware_enabled` (rozstrzyga
+    # DI); jawne false to furtka dla bazy bez migracji 017 (inaczej PGRST204).
+    regime_tagging_enabled: bool | None = None
     # SEC EDGAR wymaga nagłówka User-Agent z kontaktem (polityka SEC). Niewrażliwe
     # — w config.toml realna wartość, nadpisywalna przez env.
     edgar_user_agent: str = "StockAgent/1.0 (contact@example.com)"

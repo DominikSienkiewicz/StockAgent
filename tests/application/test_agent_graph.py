@@ -3223,3 +3223,84 @@ class TestMoveInterval:
 
         record = repository_port.save_prediction.call_args.args[0]
         assert "interval_low" not in record
+
+
+# ---------------------------------------------------------------------------
+# ML-38 — tagowanie reżimem oddzielone od filtra RAG. Tag ląduje w
+# `prediction_logs.regime` (migracja 017) także bez Vector Memory, żeby była
+# historia do segmentacji trafności po reżimie; filtr RAG zostaje za
+# `vector_memory_enabled`.
+# ---------------------------------------------------------------------------
+
+
+class TestRegimeTagging:
+    def _run(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, **deps_overrides,
+    ) -> None:
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = []
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+            **deps_overrides,
+        )).compile().invoke({
+            "symbol": "AAPL",
+            "previous_price": Decimal("100.0"),
+            "regime_context": "Ucieczka od ryzyka",
+        })
+
+    def test_tag_written_without_vector_memory_and_rag_stays_unfiltered(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.domain.regime_key import canonical_regime_key
+
+        self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            vector_memory_enabled=False,
+            regime_tagging_enabled=True,
+        )
+
+        saved = repository_port.save_prediction.call_args.args[0]
+        assert saved["regime"] == canonical_regime_key("Ucieczka od ryzyka")
+        _, kwargs = repository_port.find_similar_predictions.call_args
+        assert kwargs.get("regime") is None
+
+    def test_both_flags_off_write_no_regime_key(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Bez migracji 017 klucz `regime` dałby PGRST204 i śmierć zapisu predykcji.
+        self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            vector_memory_enabled=False,
+            regime_tagging_enabled=False,
+        )
+
+        saved = repository_port.save_prediction.call_args.args[0]
+        assert "regime" not in saved
+
+    def test_vector_memory_still_tags_when_tagging_flag_is_off(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Wstecz zgodnie: Vector Memory nadal taguje i filtruje jak przed ML-38.
+        self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            vector_memory_enabled=True,
+            regime_tagging_enabled=False,
+        )
+
+        saved = repository_port.save_prediction.call_args.args[0]
+        assert saved["regime"] == "UCIECZKA_OD_RYZYKA"
+        _, kwargs = repository_port.find_similar_predictions.call_args
+        assert kwargs.get("regime") == "Ucieczka od ryzyka"

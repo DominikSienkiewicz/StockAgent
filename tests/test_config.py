@@ -529,3 +529,23 @@ class TestIntervalCoverageFlag:
             _env_file=None, **REQUIRED_ENV_KWARGS, interval_coverage_enabled=True
         ).config_hash()
         assert flipped == baseline
+
+
+class TestRegimeTaggingFlag:
+    """ML-38: tag reżimu przy każdej predykcji (kolumna z migracji 017). Brak
+    wartości = jak `regime_aware_enabled` (rozstrzyga DI); flaga samego zapisu,
+    więc poza przepisem (`config_hash` się nie rusza)."""
+
+    def test_defaults_to_unset(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).regime_tagging_enabled is None
+
+    def test_is_a_write_only_flag_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "regime_tagging_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        for value in (True, False):
+            flipped = Settings(
+                _env_file=None, **REQUIRED_ENV_KWARGS, regime_tagging_enabled=value
+            ).config_hash()
+            assert flipped == baseline, value

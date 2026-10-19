@@ -121,3 +121,11 @@ def test_real_config_toml_shows_times_in_warsaw() -> None:
     """MAIL-14: temat, nagłówek i push w czasie lokalnym odbiorcy."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["display_timezone"] == "Europe/Warsaw"
+
+
+def test_real_config_toml_tags_predictions_with_the_regime() -> None:
+    """ML-38: produkcja nie nadpisuje `regime_tagging_enabled`, więc tag reżimu
+    dziedziczy włączony `regime_aware_enabled` (migracja 017 jest na produkcji)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["regime_aware_enabled"] is True
+    assert "regime_tagging_enabled" not in data

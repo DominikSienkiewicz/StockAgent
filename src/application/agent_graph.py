@@ -490,6 +490,10 @@ class AgentGraphDeps:
     research_tools: Sequence[Tool] = ()
     tool_use_threshold: Threshold | None = None
     vector_memory_enabled: bool = False
+    # ML-38: tag reżimu w `prediction_logs.regime` (migracja 017) przy KAŻDEJ
+    # predykcji, niezależnie od filtra RAG. DI ustawia go jak `regime_aware_enabled`;
+    # default False, żeby graf bez DI nie dopisywał klucza (PGRST204 przed 017).
+    regime_tagging_enabled: bool = False
     receipts_enabled: bool = False
     # DAT-09: stempel `feature_set_version` na predykcji (migracja 027). Off =
     # klucza nie ma w rekordzie — przed migracją dałby PGRST204.
@@ -1350,10 +1354,10 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         "alpha_fusion_score": _alpha_fusion_value(state.get("alpha_fusion")),
     }
 
-    # Vector Memory: tagujemy embedding reżimem rynku, w którym powstała
-    # predykcja (migracja 017), żeby przyszły RAG mógł filtrować analogi po
-    # reżimie. Bez flagi kolumna zostaje NULL (RAG działa jak dotąd).
-    if vector_memory_enabled:
+    # Tag reżimu rynku, w którym powstała predykcja (migracja 017): Vector
+    # Memory filtruje po nim analogi, a ML-38 zbiera go także bez RAG — do
+    # segmentacji trafności po reżimie. Bez obu flag kolumna zostaje NULL.
+    if vector_memory_enabled or deps.regime_tagging_enabled:
         record["regime"] = canonical_regime_key(state.get("regime_context"))
 
     # #13: kwit decyzyjny — pełny łańcuch dowodowy predykcji (analogi RAG,

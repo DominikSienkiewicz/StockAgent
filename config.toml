@@ -32,6 +32,9 @@ router_frontier_model = "claude-sonnet-4-6"
 # Reżim rynku (#7): RISK-OFF zacieśnia próg volatility (mnożnik ≤ max). Włączone.
 regime_aware_enabled = true
 regime_threshold_max_multiplier = 2.0
+# ML-38: `regime_tagging_enabled` (tag reżimu w prediction_logs.regime przy każdej
+# predykcji, migracja 017) celowo NIEUSTAWIONE — dziedziczy regime_aware_enabled.
+# `false` wyłącza sam tag (np. deployment bez migracji 017 → inaczej PGRST204).
 # Contagion (#5): werdykty skorelowanych spółek z tego cyklu do promptu. Off.
 contagion_enabled = false
 peer_groups = {}

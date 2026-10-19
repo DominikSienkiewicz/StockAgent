@@ -3067,3 +3067,51 @@ class TestMoveIntervalWiring:
         assert stats is not None
         assert stats.coverage is not None
         assert (stats.coverage.hits, stats.coverage.n) == (1, 2)
+
+
+class TestRegimeTaggingWiring:
+    """ML-38 — `regime_tagging_enabled` w `AgentGraphDeps`. Brak wartości w
+    Settings (None) = dziedziczy `regime_aware_enabled`; jawna wartość wygrywa."""
+
+    @staticmethod
+    def _deps(settings, mocker, **overrides: object):
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+
+        main_agent.build_use_case(settings)
+
+        return use_case_cls.call_args.args[0]
+
+    def test_follows_regime_aware_when_unset(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        deps = self._deps(settings, mocker, regime_aware_enabled=True)
+
+        assert deps.regime_tagging_enabled is True
+
+    def test_off_when_regime_aware_is_off_and_unset(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        deps = self._deps(settings, mocker, regime_aware_enabled=False)
+
+        assert deps.regime_tagging_enabled is False
+
+    def test_explicit_off_overrides_regime_aware(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # Furtka dla deploymentu bez migracji 017 przy włączonym reżimie.
+        deps = self._deps(
+            settings, mocker, regime_aware_enabled=True, regime_tagging_enabled=False
+        )
+
+        assert deps.regime_tagging_enabled is False
+
+    def test_explicit_on_without_regime_aware(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        deps = self._deps(
+            settings, mocker, regime_aware_enabled=False, regime_tagging_enabled=True
+        )
+
+        assert deps.regime_tagging_enabled is True

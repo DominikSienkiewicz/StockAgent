@@ -970,6 +970,7 @@ def build_use_case(
         research_tools=research_tools,
         tool_use_threshold=tool_use_threshold,
         vector_memory_enabled=settings.vector_memory_enabled,
+        regime_tagging_enabled=_regime_tagging_enabled(settings),
         receipts_enabled=settings.receipts_enabled,
         feature_set_version_enabled=settings.feature_set_version_enabled,
         # WIA-20: przepis liczymy tylko, gdy ktoś go zapisze (kwit v2 albo
@@ -996,6 +997,17 @@ def build_use_case(
             else None
         ),
     ))
+
+
+def _regime_tagging_enabled(settings: Settings) -> bool:
+    """ML-38: brak wartości = tag reżimu idzie razem z `regime_aware_enabled`.
+
+    Świadomy wyjątek od „nowy zapis za flagą domyślnie off”: kolumna
+    `prediction_logs.regime` pochodzi z migracji 017, potwierdzonej na produkcji
+    (2026-10-18). Jawne `regime_tagging_enabled` zawsze wygrywa."""
+    if settings.regime_tagging_enabled is None:
+        return settings.regime_aware_enabled
+    return settings.regime_tagging_enabled
 
 
 def _run_risk_watch(
