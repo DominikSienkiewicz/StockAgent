@@ -7,6 +7,7 @@ ujawnić. Publikujemy wyłącznie agregaty: N, hit-rate, ECE, krzywą kalibracji
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -254,6 +255,15 @@ class TestHonestHeadline:
         html = render_public_scorecard_html(resolved, None, None)
 
         assert "nieodróżnialne od rzutu monetą" in html
+
+    def test_significance_verdict_keeps_the_decimal_point(self) -> None:
+        # MAIL-58: polski zapis dotyczy tylko maila — strona publiczna zostaje przy kropce.
+        resolved = [_dated("BULLISH", i % 2 == 0, 1 + i) for i in range(6)]
+
+        html = render_public_scorecard_html(resolved, None, None)
+
+        assert re.search(r"p=\d\.\d", html)
+        assert not re.search(r"p=\d,\d", html)
 
 
 class TestProbabilityScoresOnScorecard:

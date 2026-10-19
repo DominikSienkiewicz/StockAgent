@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.domain.number_format import DecimalMark
 from src.domain.significance import (
     benjamini_hochberg,
     binomial_test_greater,
@@ -80,6 +81,22 @@ class TestVerdictPl:
 
     def test_tiny_p_value_is_not_printed_as_zero(self) -> None:
         assert "p<0.001" in verdict_pl(1e-9, 500, 120.0)
+
+
+class TestVerdictPlDecimalMark:
+    """MAIL-58: mail pisze p-wartość po polsku, publiczny scorecard zostaje przy kropce."""
+
+    def test_default_keeps_the_decimal_point(self) -> None:
+        assert "p=0.41" in verdict_pl(0.41, 37)
+        assert "p=0.003" in verdict_pl(0.003, 412, 61.4)
+
+    def test_comma_mark_writes_the_p_value_the_polish_way(self) -> None:
+        assert "p=0,41" in verdict_pl(0.41, 37, mark=DecimalMark.COMMA)
+        assert "p=0,003" in verdict_pl(0.003, 412, 61.4, mark=DecimalMark.COMMA)
+        assert "p<0,001" in verdict_pl(1e-9, 500, 120.0, mark=DecimalMark.COMMA)
+
+    def test_comma_mark_rounds_half_up(self) -> None:
+        assert "p=0,13" in verdict_pl(0.125, 37, mark=DecimalMark.COMMA)
 
 
 class TestEffectiveN:

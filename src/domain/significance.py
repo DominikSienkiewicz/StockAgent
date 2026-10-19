@@ -18,6 +18,9 @@ from __future__ import annotations
 import math
 import random
 from collections.abc import Sequence
+from decimal import Decimal
+
+from src.domain.number_format import DecimalMark, format_number_pl
 
 # Powyżej tej liczności dokładny ogon przez `math.comb` traci sens numeryczny
 # (iloczyny rzędu 1e±300) — przechodzimy na przybliżenie normalne.
@@ -79,25 +82,38 @@ def benjamini_hochberg(pvalues: Sequence[float], q: float = DEFAULT_FDR_Q) -> li
     return rejected
 
 
-def _format_p(p: float) -> str:
+def _format_decimal(value: float, decimals: int, mark: DecimalMark) -> str:
+    if mark is DecimalMark.COMMA:
+        return format_number_pl(Decimal(str(value)), False, decimals)
+    return f"{value:.{decimals}f}"
+
+
+def _format_p(p: float, mark: DecimalMark) -> str:
     """p-wartość do copy: dwa miejsca, a bardzo małe jako „p<0.001”."""
     if p < 0.001:
-        return "p<0.001"
+        return f"p<{_format_decimal(0.001, 3, mark)}"
     if p < 0.01:
-        return f"p={p:.3f}"
-    return f"p={p:.2f}"
+        return f"p={_format_decimal(p, 3, mark)}"
+    return f"p={_format_decimal(p, 2, mark)}"
 
 
 def verdict_pl(
-    p: float, n: int, n_eff: float | None = None, alpha: float = DEFAULT_ALPHA
+    p: float,
+    n: int,
+    n_eff: float | None = None,
+    alpha: float = DEFAULT_ALPHA,
+    *,
+    mark: DecimalMark = DecimalMark.POINT,
 ) -> str:
     """Polski werdykt istotności, np. „nieodróżnialne od rzutu monetą (p=0.41, n=37)”.
 
     `p` to p-wartość względem najlepszego naiwnego baseline'u. Bez `n_eff`
     werdykt dopisuje, że zakłada niezależne próby (p-wartość jest wtedy zbyt
-    optymistyczna przy skorelowanych predykcjach jednego cyklu).
+    optymistyczna przy skorelowanych predykcjach jednego cyklu). `mark` to znak
+    dziesiętny p-wartości: kropka dla strony publicznej, przecinek dla maila
+    (MAIL-58, zaokrąglenie ROUND_HALF_UP).
     """
-    details = f"{_format_p(p)}, n={n}"
+    details = f"{_format_p(p, mark)}, n={n}"
     if n_eff is not None:
         details += f", n_eff≈{n_eff:.0f}"
     else:

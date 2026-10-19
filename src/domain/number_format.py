@@ -15,11 +15,20 @@ warstwy application. Czyste funkcje, tylko stdlib.
 from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal
+from enum import Enum
 
 NBSP = "\u00a0"
 
 _CURRENCY_PREFIX = {"USD": "$"}
 _CURRENCY_SUFFIX = {"PLN": "zł"}
+
+
+class DecimalMark(Enum):
+    """Znak dziesiętny tekstu domeny, który mail dzieli z publicznym scorecardem:
+    mail pisze przecinek (MAIL-58), strona publiczna zostaje przy kropce."""
+
+    POINT = "."
+    COMMA = ","
 
 
 def _round_half_up(value: Decimal, decimals: int) -> Decimal:

@@ -4,6 +4,7 @@ produkuje fragment HTML. Brak danych → pusty string (sekcja się chowa)."""
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 from src.application.report_lessons import LessonItem, LessonsReport
@@ -176,6 +177,15 @@ class TestHonestStats:
         assert "n=24, n_eff≈8" in html
         assert "zawsze-BULLISH: 50%" in html
         assert "nieodróżnialne od rzutu monetą" in html
+
+    def test_significance_verdict_writes_the_p_value_with_a_comma(self) -> None:
+        # MAIL-58: werdykt w mailu po polsku — „p=0,41”, nie „p=0.41”.
+        html = render_track_record_html(
+            _curve(), None, None, TrackRecordStats(hit_rate=_evidence())
+        )
+
+        assert re.search(r"p=\d,\d", html)
+        assert not re.search(r"p=\d\.\d", html)
 
     def test_calibration_block_shows_brier_and_skill(self) -> None:
         buckets = [

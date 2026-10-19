@@ -40,6 +40,7 @@ from src.domain.calibration_curve import (
 )
 from src.domain.conformal import IntervalCoverage
 from src.domain.equity_curve import EquityCurve
+from src.domain.number_format import DecimalMark
 from src.domain.track_record import HitRateEvidence
 
 # Maksymalna liczba słupków sparklini krzywej kapitału (ostatnie N transakcji) —
@@ -122,8 +123,9 @@ def _render_evidence_html(evidence: HitRateEvidence | None) -> str:
     baselines = baselines_label(evidence)
     if baselines:
         parts.append(f"naiwne strategie: {baselines}")
-    if evidence.verdict is not None:
-        parts.append(evidence.verdict)
+    verdict = evidence.verdict_in(DecimalMark.COMMA)
+    if verdict is not None:
+        parts.append(verdict)
     note = uncertainty_note(evidence)
     if note:
         parts.append(note)
