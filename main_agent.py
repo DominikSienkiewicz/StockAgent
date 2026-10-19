@@ -31,7 +31,7 @@ from src.application.move_interval import (
     calibration_windows,
     interval_coverage,
 )
-from src.application.portfolio_fx import collect_pln_rates, nbp_today
+from src.application.portfolio_fx import collect_pln_rates, effective_pln_rates, nbp_today
 from src.application.ports import (
     AdvisoryCouncilPort,
     AnalystConsensusPort,
@@ -1494,7 +1494,10 @@ def _build_portfolio_radar(
 
 
 def _build_position_risk(
-    settings: Settings, repository: RepositoryPort, portfolio: Portfolio | None
+    settings: Settings,
+    repository: RepositoryPort,
+    portfolio: Portfolio | None,
+    rates: PlnRates | None = None,
 ) -> PositionRisk | None:
     """PORT-04 — VaR, obsunięcie i hedge REALNEGO portfela do sizingu.
 
@@ -1502,12 +1505,16 @@ def _build_position_risk(
     banda zostaje jak dotąd, a VaR radaru (równe wagi watchlisty) nigdy jej nie
     zwęża. Hedge'em są wyłącznie trzymane instrumenty typu INVERSE_EQUITY
     i VOLATILITY z `risk_symbol_types` (`EQUITY_HEDGE_TYPES`) — GLD czy EPOL to
-    inwestycja. Darmowa historia cen; błąd → None (banda bez zmian)."""
+    inwestycja. Darmowa historia cen; błąd → None (banda bez zmian).
+
+    `rates` (kursy NBP) liczą wagi w złotych; pozycja bez kursu wypada."""
     if not settings.portfolio_var_enabled or portfolio is None:
         return None
     try:
         return PortfolioRiskUseCase(repository_port=repository).position_risk(
-            portfolio, hedge_symbols=equity_hedge_symbols(settings.risk_symbol_types)
+            portfolio,
+            hedge_symbols=equity_hedge_symbols(settings.risk_symbol_types),
+            rates=rates,
         )
     except Exception:
         logger.exception("Position risk failed — banda bez ryzyka portfela")
@@ -1984,8 +1991,17 @@ def _dispatch_reports(
         held_prices = _quote_held_positions(settings, user_portfolio, all_symbols)
         # PORT-11: kursy NBP do „P/L zł” (darmowe, poza bramką volatility).
         portfolio_fx = _collect_portfolio_fx(settings, user_portfolio, started_at)
-        # PORT-04: ryzyko realnego portfela do sizingu (flaga + pozycje).
-        position_risk = _build_position_risk(settings, repository, user_portfolio)
+        # PORT-04: ryzyko realnego portfela do sizingu (flaga + pozycje), wagi
+        # w złotych tymi samymi kursami co raport.
+        macro = context.macro_risk_report
+        position_risk = _build_position_risk(
+            settings,
+            repository,
+            user_portfolio,
+            rates=effective_pln_rates(
+                portfolio_fx, macro.polish_macro if macro is not None else None
+            ),
+        )
         # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
         consensus_shifts = (
             _build_consensus_shifts(repository, results, now=started_at)

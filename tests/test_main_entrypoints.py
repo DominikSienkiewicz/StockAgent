@@ -3663,7 +3663,9 @@ class TestPositionRiskWiring:
 
         assert risk == PositionRisk(var=0.04)
         # GLD i EPOL to inwestycja, nie hedge — nie mogą obniżać bandy.
-        computed.assert_called_once_with(portfolio, hedge_symbols=frozenset({"SH", "VIXY"}))
+        computed.assert_called_once_with(
+            portfolio, hedge_symbols=frozenset({"SH", "VIXY"}), rates=None
+        )
 
     def test_failure_degrades_to_no_risk(self, settings, mocker) -> None:
         settings.portfolio_var_enabled = True
@@ -3691,7 +3693,7 @@ class TestPositionRiskWiring:
             settings, mocker, portfolio, MagicMock(spec=MarketDataPort)
         )
 
-        build.assert_called_once_with(settings, repository, portfolio)
+        build.assert_called_once_with(settings, repository, portfolio, rates=None)
         assert report.call_args_list[0].args[3].position_risk == expected
 
     def test_non_owner_context_drops_position_risk(self) -> None:
@@ -3898,3 +3900,53 @@ class TestUserPortfolioPurchaseDates:
 
         assert portfolio is not None
         assert portfolio.positions[0].purchase_date == date(2026, 7, 10)
+
+
+
+class TestPositionRiskInPln:
+    """Wagi VaR/obsunięcia/hedge'a portfela w złotych tymi samymi kursami NBP co raport."""
+
+    def test_dispatch_passes_the_portfolio_rates_to_position_risk(self, settings, mocker) -> None:
+        from src.application.ports import FxRatePort, MarketDataPort
+        from src.domain.fx import FxRate
+
+        settings.nbp_enabled = True
+        fx = MagicMock(spec=FxRatePort)
+        fx.get_rate.side_effect = lambda currency, day: FxRate(
+            currency=currency, on_date=day, effective_date=day, rate=Decimal("3.70")
+        )
+        mocker.patch("main_agent.build_fx_port", return_value=fx)
+        build = mocker.patch("main_agent._build_position_risk", return_value=None)
+
+        report, _, _, _ = TestHeldPositionsOutsideWatchlist()._dispatch(
+            settings, mocker, TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
+            MagicMock(spec=MarketDataPort),
+        )
+
+        assert build.call_args.kwargs["rates"] == report.call_args_list[0].args[3].portfolio_fx
+        assert build.call_args.kwargs["rates"].current == {"USD": Decimal("3.70")}
+
+    def test_position_risk_gets_the_rates(self, settings, mocker) -> None:
+        from datetime import date
+
+        from src.application.use_cases.portfolio_risk import PositionRisk
+        from src.domain.portfolio import PlnRates, Position
+
+        settings.portfolio_var_enabled = True
+        computed = mocker.patch.object(
+            main_agent.PortfolioRiskUseCase, "position_risk", return_value=PositionRisk()
+        )
+        portfolio = main_agent.Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("1"), purchase_price=Decimal("1"),
+                         purchase_date=date(2026, 1, 2)),
+            ),
+            as_of=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+        rates = PlnRates(current={"USD": Decimal("4")})
+
+        main_agent._build_position_risk(
+            settings, MagicMock(spec=RepositoryPort), portfolio, rates=rates
+        )
+
+        assert computed.call_args.kwargs["rates"] is rates
