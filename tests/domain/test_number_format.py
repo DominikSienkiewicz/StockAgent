@@ -8,7 +8,7 @@ import pytest
 
 from src.domain.number_format import format_money_pl, format_number_pl, format_pct_pl
 
-NBSP = " "
+NBSP = "\u00a0"
 
 
 def test_format_pct_pl_uses_decimal_comma() -> None:

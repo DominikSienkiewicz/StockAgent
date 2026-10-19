@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal
 
-NBSP = " "
+NBSP = "\u00a0"
 
 _CURRENCY_PREFIX = {"USD": "$"}
 _CURRENCY_SUFFIX = {"PLN": "zł"}
