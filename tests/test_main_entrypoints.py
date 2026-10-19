@@ -3586,3 +3586,27 @@ class TestPortfolioChangeDispatch:
         assert "Twój portfel od ostatniego maila: +10,0% (+$20,00)" in email_text
         assert "od ostatniego maila" not in push_text
         assert "$20,00" not in push_text
+
+
+class TestPortfolioClustersFromConfigSectors:
+    """PORT-05: `peer_groups = {}` w config.toml wyłączało klastry w sizingu
+    i ostrzeżenie o koncentracji. Teraz grupy idą z `sectors`."""
+
+    def test_production_config_maps_nvda_to_its_sector(self, monkeypatch):
+        monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
+        monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
+        settings = Settings(
+            _env_file=None,
+            openai_api_key="sk-test",
+            finnhub_api_key="fh",
+            alpha_vantage_api_keys=["av1"],
+            supabase_url="https://test.supabase.co",
+            supabase_key="anon",
+        )
+
+        clusters = main_agent._portfolio_clusters(settings)
+
+        assert clusters.get("NVDA")
+        assert clusters["AMD"] == clusters["NVDA"]
+        assert "VT" not in clusters
+        assert "BTC" not in clusters

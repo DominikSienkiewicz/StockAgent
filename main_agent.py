@@ -487,8 +487,9 @@ def _quote_held_positions(
 
 
 def _portfolio_clusters(settings: Settings) -> dict[str, str]:
-    """#15 — mapa symbol → klaster korelacji z `peer_groups` (już w configu).
-    Klastrów nie liczymy tutaj; domena tylko sumuje ekspozycję."""
+    """#15 — mapa symbol → grupa z `peer_groups`, czyli sektor akcji z `sectors`
+    w config.toml (PORT-05) — sektor, nie policzony klaster korelacji. Grup nie
+    liczymy tutaj; domena tylko sumuje ekspozycję."""
     clusters: dict[str, str] = {}
     for cluster, symbols in settings.peer_groups.items():
         for symbol in symbols:

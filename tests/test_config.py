@@ -596,3 +596,48 @@ class TestGateDeltaFlag:
             _env_file=None, **REQUIRED_ENV_KWARGS, gate_delta_enabled=True
         ).config_hash()
         assert flipped == baseline
+
+
+class TestSectorsDrivePeerGroups:
+    """PORT-05: `sectors` (sektor → symbole akcji) to jedno źródło grup.
+
+    `peer_groups` (klastry w sizingu, ostrzeżenie o koncentracji, contagion)
+    wyprowadzamy z sektorów — bez ETF-ów i krypto, które sektora akcji nie mają."""
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_defaults_are_empty(self, env):
+        settings = self._settings()
+
+        assert settings.sectors == {}
+        assert settings.peer_groups == {}
+
+    def test_peer_groups_follow_sectors(self, env):
+        settings = self._settings(sectors={"Półprzewodniki/AI": ["NVDA", "AMD"]})
+
+        assert settings.peer_groups == {"Półprzewodniki/AI": ["NVDA", "AMD"]}
+
+    def test_derived_peer_groups_skip_etfs_and_crypto(self, env):
+        settings = self._settings(
+            sectors={"Mix": ["NVDA", "VOO", "BTC"], "Tylko ETF": ["VT"]},
+            symbols_etf=["VOO", "VT"],
+            crypto_symbols=["BTC"],
+        )
+
+        assert settings.peer_groups == {"Mix": ["NVDA"]}
+
+    def test_explicit_peer_groups_win_over_sectors(self, env):
+        settings = self._settings(
+            sectors={"Półprzewodniki/AI": ["NVDA", "AMD"]},
+            peer_groups={"Własny": ["NVDA", "TSM"]},
+        )
+
+        assert settings.peer_groups == {"Własny": ["NVDA", "TSM"]}
+
+    def test_sectors_belong_to_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert "sectors" in RECIPE_SETTINGS_FIELDS
+        baseline = self._settings().config_hash()
+        assert self._settings(sectors={"A": ["NVDA"]}).config_hash() != baseline

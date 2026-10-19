@@ -125,6 +125,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "regime_hysteresis_enabled",
     "regime_exit_confirmations",
     "contagion_enabled",
+    # PORT-05: sektory → `peer_groups` (contagion w prompcie, ekspozycja w sizingu).
+    "sectors",
     "peer_groups",
     "alpha_fusion_enabled",
     "insider_flow_enabled",
@@ -249,8 +251,11 @@ class Settings(BaseSettings):
     # więc odczyt i zapis by padały (cykl i tak bierze wtedy surowy reżim).
     regime_hysteresis_enabled: bool = False
     regime_exit_confirmations: int = DEFAULT_EXIT_CONFIRMATIONS
-    # Contagion: werdykty skorelowanych spółek z tego cyklu do promptu.
+    # Contagion: werdykty spółek z tej samej grupy z tego cyklu do promptu.
     contagion_enabled: bool = False
+    # PORT-05: sektor → akcje (jedno źródło grup). Puste `peer_groups` wyprowadzamy
+    # z sektorów bez ETF-ów i krypto; jawnie podane `peer_groups` wygrywają.
+    sectors: dict[str, list[str]] = Field(default_factory=dict)
     peer_groups: dict[str, list[str]] = Field(default_factory=dict)
     # LLM-as-Judge kalibracji pewności (Slow Loop, migracja 016).
     calibration_judge_enabled: bool = False
@@ -585,6 +590,22 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError(f"reflection_max_age_hours must be >= 0, got {value}")
         return value
+
+    @model_validator(mode="after")
+    def _derive_peer_groups_from_sectors(self) -> Settings:
+        """PORT-05: grupy sizingu i contagion to sektory akcji. ETF i krypto nie
+        mają sektora, więc wypadają; sektor bez akcji znika."""
+        if self.peer_groups:
+            return self
+        non_stock = set(self.symbols_etf) | set(self.crypto_symbols)
+        derived = {
+            sector: [symbol for symbol in symbols if symbol not in non_stock]
+            for sector, symbols in self.sectors.items()
+        }
+        object.__setattr__(
+            self, "peer_groups", {sector: symbols for sector, symbols in derived.items() if symbols}
+        )
+        return self
 
     @model_validator(mode="after")
     def _validate_reflection_age_window(self) -> Settings:

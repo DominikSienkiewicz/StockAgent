@@ -163,3 +163,56 @@ def test_real_config_toml_ships_regime_hysteresis_off_until_migration() -> None:
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["regime_hysteresis_enabled"] is False
     assert data["regime_exit_confirmations"] == 2
+
+
+def test_real_config_toml_sectors_hold_only_watchlist_stocks() -> None:
+    """PORT-05: sektor to grupa AKCJI z watchlisty — ETF i krypto nie mają
+    sektora, a symbol spoza `symbols` nie dostaje ceny w cyklu. Symbol w dwóch
+    sektorach dawałby niejednoznaczny klaster w sizingu."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    sectors: dict[str, list[str]] = data["sectors"]
+    assert sectors
+    members = [symbol for symbols in sectors.values() for symbol in symbols]
+    assert all(symbols for symbols in sectors.values()), "pusty sektor"
+    assert len(members) == len(set(members)), "symbol w dwóch sektorach"
+    assert set(members) <= set(data["symbols"])
+    assert not set(members) & set(data["symbols_etf"])
+    assert not set(members) & set(data["crypto_symbols"])
+
+
+def test_real_config_toml_keeps_contagion_off() -> None:
+    """PORT-05: `peer_groups` z sektorów zasila też contagion (werdykty peerów
+    do promptu). Ten zostaje wyłączony — sektory mają działać tylko w sizingu
+    i ostrzeżeniu o koncentracji."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["contagion_enabled"] is False
+
+
+def test_settings_derive_peer_groups_from_config_sectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
+    monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+
+    s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+
+    assert s.sectors == data["sectors"]
+    assert s.peer_groups == data["sectors"]
+    assert s.contagion_enabled is False
+
+
+def test_email_sector_labels_match_config_sectors() -> None:
+    """PORT-05: etykieta sektora w mailu i klaster w sizingu/ostrzeżeniu muszą
+    mówić to samo. Dopóki etykiety czyta `report_formatting`, ten test pilnuje,
+    że nie rozjechały się z `sectors` z config.toml."""
+    from src.application.report_formatting import sector_label
+
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    mismatched = {
+        symbol: (sector, sector_label(symbol))
+        for sector, symbols in data["sectors"].items()
+        for symbol in symbols
+        if sector_label(symbol) != sector
+    }
+    assert not mismatched, f"etykieta maila ≠ sektor z config.toml: {mismatched}"

@@ -40,9 +40,9 @@ regime_threshold_max_multiplier = 2.0
 # Stan w tabeli `regime_history`. UWAGA: włącz DOPIERO po migracji 033.
 regime_hysteresis_enabled = false
 regime_exit_confirmations = 2
-# Contagion (#5): werdykty skorelowanych spółek z tego cyklu do promptu. Off.
+# Contagion (#5): werdykty spółek z tego samego sektora z tego cyklu do promptu.
+# Grupy (`peer_groups`) idą z `sectors` niżej. Off.
 contagion_enabled = false
-peer_groups = {}
 # Kalibracja pewności sędzią-LLM (#4, Slow Loop, migracja 016). Off.
 calibration_judge_enabled = false
 # Tool-use research agent (#6): na największych ruchach model dociąga read-only
@@ -227,6 +227,24 @@ symbols_unsupported_price = ["CSPX.L", "XDWD.DE", "IUSN.DE", "SSNLF"]
 
 # --- Krypto (CoinGecko zamiast Finnhub) ---
 crypto_symbols = ["BTC", "ETH"]
+
+# --- Sektory akcji (PORT-05: jedno źródło grup) ---
+# Sektor → akcje z `symbols` (bez ETF-ów i krypto — test spójności). Z tej mapy
+# powstaje `peer_groups`: ekspozycja sektora w sizingu, ostrzeżenie o koncentracji
+# w sekcji portfela i (gdy contagion włączony) peery w prompcie. To sektor, NIE
+# klaster policzonej korelacji. Etykiety w mailu muszą się z nią zgadzać (test).
+sectors."Big Tech" = ["AAPL", "AMZN", "GOOGL", "META"]
+sectors."Półprzewodniki/AI" = [
+  "NVDA", "AMD", "TSM", "ASML", "ASMIY", "MU", "QCOM", "INTC", "SNDK",
+]
+sectors."Chmura/Software" = [
+  "MSFT", "ORCL", "NET", "SAP", "PLTR", "IBM", "TEAM", "FROG", "SNOW", "DDOG",
+]
+sectors."Cyberbezpieczeństwo" = ["CRWD", "PANW", "OKTA", "S", "SAIL"]
+sectors."Hardware" = ["DELL", "SSNLF"]
+sectors."Mobilność" = ["TSLA", "UBER"]
+sectors."Przemysł/Pharma" = ["SIEGY", "NVO"]
+sectors."Finanse" = ["BLK"]
 
 # --- Risk Watch (osobny use case) ---
 risk_symbols = ["EPOL", "SH", "PSQ", "RWM", "EUM", "SQQQ", "TBT", "GLD", "VIXY", "UVXY"]
