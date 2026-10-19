@@ -85,6 +85,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "recipe_version_enabled",
     # ML-14: sam zapis wektora cech; prognoza cyklu jest identyczna z flagą i bez.
     "feature_snapshots_enabled",
+    # ML-34: zapis kolumn przedziału + pokrycie w Track Record. Przedział opisuje
+    # niepewność prognozy, nie zmienia trendu, celu ani rekomendacji.
+    "interval_coverage_enabled",
     "model_scorecard_baselines_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
@@ -291,6 +294,11 @@ class Settings(BaseSettings):
     # za bramką. Zero nowych wywołań zewnętrznych. Off: przed migracją tabeli nie
     # ma, więc każdy cykl kończyłby się błędem zapisu w logu.
     feature_snapshots_enabled: bool = False
+    # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze, liczony
+    # w cyklu bez migracji. Ta flaga dokłada zapis `interval_low/high` (migracja
+    # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz
+    # przed migracją → PGRST204 i śmierć zapisu całej predykcji.
+    interval_coverage_enabled: bool = False
     # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
     # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr

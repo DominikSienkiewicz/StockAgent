@@ -510,3 +510,22 @@ class TestFeatureSnapshotsFlag:
             _env_file=None, **REQUIRED_ENV_KWARGS, feature_snapshots_enabled=True
         ).config_hash()
         assert flipped == baseline
+
+
+class TestIntervalCoverageFlag:
+    """ML-34: zapis kolumn przedziału (migracja 032) i pokrycie w Track Record.
+    Przedział to prezentacja niepewności, nie prognoza — flaga jest poza
+    przepisem, a domyślnie off, bo przed migracją zapis dałby PGRST204."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).interval_coverage_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "interval_coverage_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, interval_coverage_enabled=True
+        ).config_hash()
+        assert flipped == baseline

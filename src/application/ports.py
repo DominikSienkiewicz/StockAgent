@@ -298,6 +298,17 @@ class RepositoryPort(ABC):
         dniach. None = okno po dacie utworzenia (działa bez migracji)."""
 
     @abstractmethod
+    def get_settled_moves(
+        self, days: int, *, with_intervals: bool = False
+    ) -> list[dict[str, Any]]:
+        """ML-34 — rozliczone predykcje z ostatnich `days` dni, ROSNĄCO po czasie:
+        `symbol`, `timestamp`, `price_at_prediction`, `predicted_target_price`,
+        `actual_price_after_12h`. Zasila okno kalibracyjne przedziału ruchu.
+
+        `with_intervals` dokłada `interval_low` / `interval_high` do pomiaru
+        pokrycia — WYMAGA migracji 032 (inaczej PostgREST zwraca 400)."""
+
+    @abstractmethod
     def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
         """#16 — ROZLICZONE predykcje z commitmentem, jeszcze nieujawnione.
 

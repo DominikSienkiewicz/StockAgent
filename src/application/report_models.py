@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
+from src.domain.conformal import MoveInterval
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import SkipReason
 from src.domain.feature_attribution import FeatureContribution
@@ -89,6 +90,9 @@ class SymbolResult:
     # G03: True = XGBoost bez wag, `target_price` to baseline "cena bez zmian".
     # Renderer podpisuje prognozę jako cold-start zamiast pokazywać +0.00%.
     ml_cold_start: bool = False
+    # ML-34: przedział 80% zwrotu do rozliczenia (conformal + ACI). None = cykl
+    # bez przedziału (brak okna kalibracyjnego) → renderer pomija linię.
+    move_interval: MoveInterval | None = None
 
     @property
     def expected_change(self) -> Decimal | None:

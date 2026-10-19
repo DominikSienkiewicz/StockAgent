@@ -124,6 +124,7 @@ from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.asset import PriceDelta
 from src.domain.calibration_curve import CalibrationBucket
+from src.domain.conformal import MoveInterval
 from src.domain.consensus_shift import ConsensusShift
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
@@ -292,6 +293,26 @@ _SIGNALS_COLD_START_NOTE = (
     "Model ML bez wag (cold-start): ranking wg pewności LLM, skalibrowanej historią, "
     "gdy jest próbka — bez prognozy ruchu."
 )
+
+
+def _signed_move(value: float) -> str:
+    """Zwrot jako „+2.4%" / „−2.1%" (typograficzny minus, jedno miejsce)."""
+    return f"{value * 100:+.1f}%".replace("-", "−")
+
+
+def _move_interval_label(interval: MoveInterval) -> str:
+    """ML-34: „80% przedział: −2.1% … +2.4% (n=57)" albo jawne „za mało
+    historii (n/20)" — krótkie okno nie udaje liczby."""
+    level = f"{interval.nominal_coverage * 100:.0f}% przedział"
+    if interval.low is None or interval.high is None:
+        return (
+            f"{level}: za mało historii "
+            f"({interval.calibration_size}/{interval.required_size})"
+        )
+    return (
+        f"{level}: {_signed_move(interval.low)} … {_signed_move(interval.high)} "
+        f"(n={interval.calibration_size})"
+    )
 
 
 def _recommendation_reason_html(r: SymbolResult) -> str:
@@ -1584,6 +1605,7 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
         and not badges_html
         and not precedents_block
         and not attribution_block
+        and r.move_interval is None
     ):
         return ""
     move_line = ""
@@ -1606,6 +1628,12 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
             f"<div style='font-size: 11px; color: #6b7280; margin-top: 2px;'>"
             f"Oczekiwany ruch: {move_text}"
             f"{conf_part}"
+            f"</div>"
+        )
+    if r.move_interval is not None:
+        move_line += (
+            f"<div style='font-size: 11px; color: #6b7280; margin-top: 2px;'>"
+            f"{_move_interval_label(r.move_interval)}"
             f"</div>"
         )
     # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
@@ -1985,6 +2013,8 @@ def _render_prediction_text(r: SymbolResult) -> list[str]:
         f"         {sentiment_part}",
         f"         {rec_text}",
     ]
+    if r.move_interval is not None:
+        lines.append(f"         {_move_interval_label(r.move_interval)}")
     # Q6: odznaki proweniencji (pomijamy FRESH — brak szumu).
     badge_labels = [
         b.label for b in r.provenance_badges
@@ -2244,7 +2274,14 @@ def to_symbol_result(symbol: str, raw: dict[str, Any] | None, error: str | None 
         # Q3: atrybucja cech ML (SHAP-lite) — render-only.
         feature_attribution=tuple(raw.get("feature_attribution") or ()),
         ml_cold_start=bool(raw.get("ml_cold_start", False)),
+        move_interval=_move_interval_of(raw),
     )
+
+
+def _move_interval_of(raw: dict[str, Any]) -> MoveInterval | None:
+    """ML-34: przedział z grafu albo None (brak / zniekształcony)."""
+    interval = raw.get("move_interval")
+    return interval if isinstance(interval, MoveInterval) else None
 
 
 def _extract_precedents(raw_precedents: Any) -> list[SimilarPrecedent]:

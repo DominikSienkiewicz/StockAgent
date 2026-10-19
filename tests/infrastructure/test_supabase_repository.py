@@ -2148,3 +2148,64 @@ class TestSaveFeatureSnapshot:
 
         payload = mock_client.table.return_value.upsert.call_args.args[0]
         assert set(payload) == {"symbol", "features", "gated", "feature_set_version"}
+
+
+class TestGetSettledMoves:
+    """ML-34: okno kalibracyjne przedziału ruchu z ROZLICZONYCH predykcji (kolumny
+    istniejące od 001) i — na żądanie — przedziały do pokrycia (migracja 032)."""
+
+    def _call(
+        self, repo: SupabaseRepository, mock_client: MagicMock, pages: list[list[dict[str, Any]]],
+        **kwargs: Any,
+    ) -> tuple[list[dict[str, Any]], MagicMock]:
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, pages)
+        rows = repo.get_settled_moves(90, **kwargs)
+        return rows, chain
+
+    def test_reads_settled_rows_oldest_first(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        row = {
+            "symbol": "AAPL",
+            "timestamp": "2026-10-16T17:30:00+00:00",
+            "price_at_prediction": 100.0,
+            "predicted_target_price": 100.0,
+            "actual_price_after_12h": 101.0,
+        }
+
+        rows, chain = self._call(repo, mock_client, [[row]])
+
+        assert rows == [row]
+        mock_client.table.assert_called_with("prediction_logs")
+        columns = chain.select.call_args.args[0]
+        assert {c.strip() for c in columns.split(",")} == {
+            "symbol", "timestamp", "price_at_prediction",
+            "predicted_target_price", "actual_price_after_12h",
+        }
+        chain.select.return_value.gte.return_value.not_.is_.assert_called_with(
+            "actual_price_after_12h", "null"
+        )
+        order = chain.select.return_value.gte.return_value.not_.is_.return_value.order
+        order.assert_called_with("timestamp", desc=False)
+
+    def test_interval_columns_only_on_request(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _, chain = self._call(repo, mock_client, [[]], with_intervals=True)
+
+        columns = chain.select.call_args.args[0]
+        assert "interval_low" in columns
+        assert "interval_high" in columns
+
+    def test_paginates_past_the_postgrest_cap(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        full = [{"symbol": "AAPL"}] * 1000
+
+        rows, _ = self._call(repo, mock_client, [full, [{"symbol": "MSFT"}]])
+
+        assert len(rows) == 1001

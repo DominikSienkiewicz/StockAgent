@@ -439,6 +439,27 @@ class SupabaseRepository(RepositoryPort):
         )
         return _paginate(query)
 
+    def get_settled_moves(
+        self, days: int, *, with_intervals: bool = False
+    ) -> list[dict[str, Any]]:
+        # ML-34: rosnąco po czasie, bo replay ACI idzie chronologicznie. Paginacja
+        # (#8) — okno kalibracyjne nie może być po cichu obcięte do ~1000 wierszy.
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        columns = (
+            "symbol, timestamp, price_at_prediction, predicted_target_price, "
+            "actual_price_after_12h"
+        )
+        if with_intervals:
+            columns += ", interval_low, interval_high"
+        query = (
+            self._client.table(self._table)
+            .select(columns)
+            .gte("timestamp", cutoff.isoformat())
+            .not_.is_("actual_price_after_12h", "null")
+            .order("timestamp", desc=False)
+        )
+        return _paginate(query)
+
     def get_accuracy_stats(self, days: int) -> dict[str, Any]:
         """Trafność kierunkowa predykcji z ostatnich `days` dni.
 

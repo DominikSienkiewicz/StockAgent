@@ -2525,3 +2525,68 @@ class TestFooter:
         assert "&lt;script&gt;" in html
         assert "javascript:" not in html
         assert "javascript:" not in text
+
+
+class TestMoveIntervalInReport:
+    """ML-34 — przedział ruchu w mailu od razu (liczony w cyklu, bez migracji):
+    „80% przedział: −2.1% … +2.4% (n=57)", a przy krótkim oknie jawne „za mało
+    historii (n/20)" zamiast liczby."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _with_interval(**interval_fields: object) -> SymbolResult:
+        import dataclasses
+
+        from src.domain.conformal import MoveInterval
+
+        return dataclasses.replace(
+            _saved_result(), move_interval=MoveInterval(**interval_fields)
+        )
+
+    def test_interval_reaches_html_and_text(self):
+        result = self._with_interval(low=-0.021, high=0.024, calibration_size=57)
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "80% przedział: −2.1% … +2.4% (n=57)" in html
+        assert "80% przedział: −2.1% … +2.4% (n=57)" in text
+
+    def test_short_window_says_so_instead_of_a_number(self):
+        result = self._with_interval(low=None, high=None, calibration_size=12)
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "80% przedział: za mało historii (12/20)" in html
+        assert "80% przedział: za mało historii (12/20)" in text
+
+    def test_no_interval_no_line(self):
+        html, text = build_html_report([_saved_result()], self._STARTED, 1.0)
+
+        assert "przedział:" not in html
+        assert "przedział:" not in text
+
+    def test_interval_shows_even_without_reasoning(self):
+        import dataclasses
+
+        result = dataclasses.replace(
+            self._with_interval(low=-0.01, high=0.012, calibration_size=30), reasoning=None
+        )
+
+        html, _ = build_html_report([result], self._STARTED, 1.0)
+
+        assert "80% przedział: −1.0% … +1.2% (n=30)" in html
+
+    def test_to_symbol_result_carries_the_interval_from_the_graph(self):
+        from src.domain.conformal import MoveInterval
+
+        interval = MoveInterval(low=-0.02, high=0.03, calibration_size=40)
+
+        result = to_symbol_result("AAPL", {"status": "saved", "move_interval": interval})
+
+        assert result.move_interval == interval
+
+    def test_to_symbol_result_ignores_a_malformed_interval(self):
+        result = to_symbol_result("AAPL", {"status": "saved", "move_interval": "x"})
+
+        assert result.move_interval is None

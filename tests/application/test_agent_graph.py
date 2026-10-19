@@ -3053,3 +3053,173 @@ class TestFeatureSnapshots:
         features = repository_port.save_feature_snapshot.call_args.args[1]
         assert features["alpha_fusion_score"] is None
         assert features["valuation_verdict"] is None
+
+
+# ---------------------------------------------------------------------------
+# ML-34 — przedział ruchu z conformal prediction (mail od razu, kolumny za flagą)
+# ---------------------------------------------------------------------------
+
+
+class TestMoveInterval:
+    """ML-34 — predict_node liczy przedział zwrotu z okna kalibracyjnego klasy
+    aktywa (wstrzykniętego RAZ na cykl w DI). Zapis `interval_low/high`
+    (migracja 032) idzie tylko za flagą — przed migracją dałby PGRST204."""
+
+    @staticmethod
+    def _window(n: int = 30):
+        from src.domain.conformal import CalibrationPoint
+
+        return tuple(
+            CalibrationPoint(predicted_return=0.0, realized_return=0.004 * (i % 11 - 5))
+            for i in range(n)
+        )
+
+    def _run(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, price: str = "90.0", trained: bool = True, **extra,
+    ) -> dict:
+        market_port.get_current_price.return_value = Money(Decimal(price))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ml_port.is_trained = trained
+        return create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            **extra,
+        )).compile().invoke(_initial_state("100.0"))
+
+    def test_cold_start_interval_comes_from_its_asset_class_window(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.domain.conformal import move_interval
+        from src.domain.value_objects import AssetType
+
+        window = self._window()
+        crypto_window = tuple(reversed(self._window(25)))
+
+        final = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            trained=False,
+            move_calibration={AssetType.STOCK: window, AssetType.CRYPTO: crypto_window},
+        )
+
+        assert final["move_interval"] == move_interval(
+            window, predicted_return=0.0, cold_start=True
+        )
+        assert final["move_interval"].available
+
+    def test_trained_model_centres_the_interval_on_its_forecast(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.domain.conformal import move_interval
+        from src.domain.value_objects import AssetType
+
+        window = self._window()
+
+        final = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            move_calibration={AssetType.STOCK: window},
+        )
+
+        # ML target 89.5 przy cenie 90 → ŷ = −0.5/90.
+        assert final["move_interval"] == move_interval(
+            window, predicted_return=float(Decimal("-0.5") / Decimal("90.0")),
+            cold_start=False,
+        )
+
+    def test_without_calibration_there_is_no_interval(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        final = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        assert final.get("move_interval") is None
+
+    def test_class_without_history_reports_insufficient_history(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.domain.value_objects import AssetType
+
+        final = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            move_calibration={AssetType.CRYPTO: self._window()},
+        )
+
+        interval = final["move_interval"]
+        assert interval.available is False
+        assert (interval.calibration_size, interval.required_size) == (0, 20)
+
+    def test_ignored_cycle_computes_no_interval(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.domain.value_objects import AssetType
+
+        final = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            price="99.5", move_calibration={AssetType.STOCK: self._window()},
+        )
+
+        assert final["status"] == "ignored"
+        assert final.get("move_interval") is None
+
+    def test_flag_off_omits_the_interval_columns(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.domain.value_objects import AssetType
+
+        self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            move_calibration={AssetType.STOCK: self._window()},
+        )
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "interval_low" not in record
+        assert "interval_high" not in record
+
+    def test_flag_on_persists_the_interval_as_prices(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.domain.value_objects import AssetType
+
+        final = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            move_calibration={AssetType.STOCK: self._window()},
+            interval_columns_enabled=True,
+        )
+
+        record = repository_port.save_prediction.call_args.args[0]
+        interval = final["move_interval"]
+        price = Decimal("90.0")
+        assert record["interval_low"] == pytest.approx(
+            price * (1 + Decimal(str(interval.low))), abs=Decimal("0.0001")
+        )
+        assert record["interval_high"] == pytest.approx(
+            price * (1 + Decimal(str(interval.high))), abs=Decimal("0.0001")
+        )
+        assert record["interval_low"] < price < record["interval_high"]
+
+    def test_flag_on_without_enough_history_writes_no_columns(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.domain.value_objects import AssetType
+
+        self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            move_calibration={AssetType.STOCK: self._window(5)},
+            interval_columns_enabled=True,
+        )
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "interval_low" not in record

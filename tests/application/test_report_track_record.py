@@ -193,3 +193,28 @@ class TestHonestStats:
         stats = TrackRecordStats(hit_rate=_evidence())
 
         assert render_track_record_html(None, None, None, stats) == ""
+
+
+class TestIntervalCoverage:
+    """ML-34 — pokrycie zrealizowane vs nominalne przedziałów 80% (kolumny
+    z migracji 032, za flagą). Linia mówi wprost, że gwarancja zakłada
+    wymienność, której rynek nie spełnia."""
+
+    def test_coverage_line_compares_realised_with_nominal(self) -> None:
+        from src.domain.conformal import IntervalCoverage
+
+        html = render_track_record_html(
+            None, None, None, TrackRecordStats(coverage=IntervalCoverage(hits=37, n=50))
+        )
+
+        assert "Track Record" in html
+        assert "Pokrycie przedziałów 80%: zrealizowane 74% (37/50) vs nominalne 80%" in html
+        assert "wymienność" in html
+        assert "ACI" in html
+
+    def test_no_settled_intervals_no_line(self) -> None:
+        from src.domain.conformal import IntervalCoverage
+
+        stats = TrackRecordStats(coverage=IntervalCoverage(hits=0, n=0))
+
+        assert render_track_record_html(None, None, None, stats) == ""

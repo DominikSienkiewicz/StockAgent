@@ -13,7 +13,8 @@ wszystkie trzy są puste (`render_* → ""`).
 `TrackRecordStats` (opcjonalne) dokłada uczciwe statystyki do istniejących
 podsekcji: pod T1 dowód trafności kierunkowej (Wilson na n_eff, baseline'y,
 werdykt istotności), pod T2 Brier / BSS / log loss i rozkład Murphy'ego. Same
-statystyki nie wskrzeszają schowanej podsekcji."""
+statystyki nie wskrzeszają schowanej podsekcji. Pokrycie przedziałów 80% (ML-34)
+to osobna podsekcja: pokazuje się, gdy jest choć jeden rozliczony przedział."""
 
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ from src.domain.calibration_curve import (
     ProbabilityScores,
     expected_calibration_error,
 )
+from src.domain.conformal import IntervalCoverage
 from src.domain.equity_curve import EquityCurve
 from src.domain.track_record import HitRateEvidence
 
@@ -52,11 +54,13 @@ class TrackRecordStats:
     """Statystyki dowodowe do sekcji Track Record (jedno pole `ReportContext`).
 
     - `hit_rate` — dowód trafności kierunkowej z rozliczonych predykcji okna,
-    - `scores` — Brier / log loss / BSS / Murphy z próbek kalibracji.
+    - `scores` — Brier / log loss / BSS / Murphy z próbek kalibracji,
+    - `coverage` — pokrycie zrealizowane przedziałów 80% (ML-34, migracja 032).
     """
 
     hit_rate: HitRateEvidence | None = None
     scores: ProbabilityScores | None = None
+    coverage: IntervalCoverage | None = None
 
 
 def render_track_record_html(
@@ -75,6 +79,8 @@ def render_track_record_html(
         subsections.append(_render_calibration_html(calibration_buckets, stats.scores))
     if lessons is not None and lessons.items:
         subsections.append(_render_lessons_html(lessons))
+    if stats.coverage is not None and stats.coverage.rate is not None:
+        subsections.append(_render_coverage_html(stats.coverage))
 
     if not subsections:
         return ""
@@ -206,6 +212,22 @@ def _render_calibration_html(
         f"Pomocniczo — błąd kalibracji (ECE): <strong style='color: {ece_color};'>"
         f"{ece * 100:.1f}%</strong> — im niżej, tym lepiej pewność odpowiada "
         "realnej trafności.</p>"
+    )
+
+
+def _render_coverage_html(coverage: IntervalCoverage) -> str:
+    """ML-34 — pokrycie zrealizowane vs nominalne z jawnym zastrzeżeniem."""
+    rate = coverage.rate or 0.0
+    gap = abs(rate - coverage.nominal)
+    return (
+        f"<p style='font-size: 13px; margin: 12px 0 4px 0; color: {_severity_color(gap)};'>"
+        f"<strong>Pokrycie przedziałów {coverage.nominal * 100:.0f}%: zrealizowane "
+        f"{rate * 100:.0f}% ({coverage.hits}/{coverage.n}) vs nominalne "
+        f"{coverage.nominal * 100:.0f}%</strong></p>"
+        f"<p style='{_NOTE_STYLE}'>Gwarancja pokrycia zakłada wymienność obserwacji, "
+        "której rynek nie spełnia (zmienność się grupuje, reżimy się zmieniają). "
+        "ACI łagodzi zmianę rozkładu, ale niczego nie gwarantuje — dlatego "
+        "liczymy pokrycie zrealizowane.</p>"
     )
 
 

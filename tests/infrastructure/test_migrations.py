@@ -53,6 +53,7 @@ MIGRATION_FILES = [
     "029_prediction_settled_at.sql",
     "030_recipe_version.sql",
     "031_feature_snapshots.sql",
+    "032_move_interval.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -853,6 +854,29 @@ class TestMigrations:
                 "INSERT INTO feature_snapshots (symbol, features, gated) "
                 "VALUES ('FS_NULL', '{}'::jsonb, false)"
             )
+
+    # -- Migracja 032: przedział ruchu z conformal prediction (ML-34) ---------
+
+    def test_move_interval_columns_are_nullable_prices(self, pg_conn) -> None:
+        """Stare wiersze i zapis bez flagi `interval_coverage_enabled` zostają NULL;
+        przedział ląduje w tej samej skali co `predicted_target_price`."""
+        assert {"interval_low", "interval_high"} <= _columns(pg_conn, "prediction_logs")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('MI_NULL', '2026-10-19T05:30:00+00:00', 100.0) "
+                "RETURNING interval_low, interval_high"
+            )
+            assert cur.fetchone() == (None, None)
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, interval_low, interval_high) "
+                "VALUES ('MI_SET', '2026-10-19T05:30:00+00:00', 100.0, 97.91234, 102.4) "
+                "RETURNING interval_low, interval_high"
+            )
+            low, high = cur.fetchone()
+
+        assert (float(low), float(high)) == (97.9123, 102.4)
 
 
 @pytest.fixture

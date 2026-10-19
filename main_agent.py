@@ -25,6 +25,11 @@ from typing import Any, NamedTuple
 
 from src.application.agent_graph import AgentGraphDeps
 from src.application.alpha_signals import AlphaSignals
+from src.application.move_interval import (
+    CALIBRATION_LOOKBACK_DAYS,
+    calibration_windows,
+    interval_coverage,
+)
 from src.application.ports import (
     AdvisoryCouncilPort,
     AnalystConsensusPort,
@@ -89,6 +94,7 @@ from src.domain.calibration_curve import (
     probability_scores,
     reliability_curve,
 )
+from src.domain.conformal import CalibrationPoint
 from src.domain.consensus_shift import ConsensusShift, detect_shift
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.digest_lead import LeadItem, lead_headline
@@ -848,6 +854,24 @@ def build_prediction_recipe(settings: Settings, run_context: RunContext) -> Pred
     )
 
 
+def build_move_calibration(
+    settings: Settings, repository: RepositoryPort
+) -> dict[AssetType, tuple[CalibrationPoint, ...]] | None:
+    """ML-34 — okna kalibracyjne przedziału ruchu per klasa aktywa, RAZ na cykl.
+
+    Darmowy odczyt rozliczonych predykcji (kolumny istniejące, bez migracji).
+    Błąd → None: cykl leci bez przedziału zamiast bez maila."""
+    crypto_set, etf_set = set(settings.crypto_symbols), set(settings.symbols_etf)
+    try:
+        rows = repository.get_settled_moves(CALIBRATION_LOOKBACK_DAYS)
+    except Exception:
+        logger.exception("Settled moves unavailable — cykl bez przedziałów ruchu")
+        return None
+    return calibration_windows(
+        rows, lambda symbol: _classify_asset(symbol, crypto_set, etf_set)
+    )
+
+
 def build_use_case(
     settings: Settings,
     repository: RepositoryPort | None = None,
@@ -958,6 +982,9 @@ def build_use_case(
         recipe_version_enabled=settings.recipe_version_enabled,
         # ML-14: off → graf nie dotyka tabeli `feature_snapshots` (migracja 031).
         feature_snapshots_enabled=settings.feature_snapshots_enabled,
+        # ML-34: przedział w mailu zawsze; kolumny `interval_*` (migracja 032) za flagą.
+        move_calibration=build_move_calibration(settings, supabase_repo),
+        interval_columns_enabled=settings.interval_coverage_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings),
@@ -1580,9 +1607,11 @@ def _build_track_record(
 def _build_track_record_stats(
     settings: Settings, repository: RepositoryPort
 ) -> TrackRecordStats | None:
-    """Dowód trafności (T1) i Brier / BSS (T2) pod sekcją Track Record.
+    """Dowód trafności (T1), Brier / BSS (T2) i pokrycie przedziałów 80% (ML-34)
+    pod sekcją Track Record.
 
-    Te same flagi co podsekcje, które statystyki uzupełniają. Osobna funkcja,
+    Te same flagi co podsekcje, które statystyki uzupełniają; pokrycie za
+    `interval_coverage_enabled` (kolumny z migracji 032). Osobna funkcja,
     bo `_build_track_record` zwraca stały kontrakt trzech podsekcji. Każdy
     odczyt best-effort: błąd → brak danej statystyki, cykl leci dalej.
     """
@@ -1606,9 +1635,19 @@ def _build_track_record_stats(
             )
         except Exception:
             logger.exception("Failed to compute probability scores for track record")
-    if evidence is None and scores is None:
+    coverage = None
+    if settings.interval_coverage_enabled:
+        try:
+            measured = interval_coverage(
+                repository.get_settled_moves(settings.track_record_days, with_intervals=True)
+            )
+            # Bez rozliczonego przedziału nie ma czego mierzyć — podsekcja się chowa.
+            coverage = measured if measured.n else None
+        except Exception:
+            logger.exception("Failed to measure interval coverage for track record")
+    if evidence is None and scores is None and coverage is None:
         return None
-    return TrackRecordStats(hit_rate=evidence, scores=scores)
+    return TrackRecordStats(hit_rate=evidence, scores=scores, coverage=coverage)
 
 
 def _persist_quota_alerts(repository: RepositoryPort, alerts: list[QuotaAlert]) -> None:

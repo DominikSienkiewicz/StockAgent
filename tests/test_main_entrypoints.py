@@ -2983,3 +2983,87 @@ class TestFeatureSnapshotsWiring:
         main_agent.build_use_case(settings)
 
         assert use_case_cls.call_args.args[0].feature_snapshots_enabled is True
+
+
+class TestMoveIntervalWiring:
+    """ML-34 — okno kalibracyjne przedziału ruchu czytane RAZ na cykl (darmowy
+    odczyt Supabase, kolumny istniejące) i wstrzyknięte jednym polem deps; zapis
+    kolumn i pokrycie w Track Record za flagą `interval_coverage_enabled`."""
+
+    @staticmethod
+    def _settled(symbol: str, actual: float) -> dict[str, object]:
+        return {
+            "symbol": symbol,
+            "timestamp": "2026-10-16T17:30:00+00:00",
+            "price_at_prediction": 100.0,
+            "predicted_target_price": 100.0,
+            "actual_price_after_12h": actual,
+        }
+
+    def test_calibration_windows_are_split_by_asset_class(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.domain.value_objects import AssetType
+
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.crypto_symbols = ["BTC"]
+        settings.symbols_etf = ["VOO"]
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_settled_moves.return_value = [
+            self._settled("AAPL", 101.0),
+            self._settled("VOO", 99.0),
+            self._settled("BTC", 105.0),
+        ]
+
+        main_agent.build_use_case(settings, repository=repo)
+
+        repo.get_settled_moves.assert_called_once_with(90)
+        calibration = use_case_cls.call_args.args[0].move_calibration
+        assert set(calibration) == {AssetType.STOCK, AssetType.ETF, AssetType.CRYPTO}
+        assert calibration[AssetType.CRYPTO][0].realized_return == pytest.approx(0.05)
+
+    def test_calibration_read_failure_leaves_the_cycle_without_intervals(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_settled_moves.side_effect = Exception("supabase down")
+
+        main_agent.build_use_case(settings, repository=repo)
+
+        assert use_case_cls.call_args.args[0].move_calibration is None
+
+    def test_column_flag_defaults_off_and_reaches_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings)
+        assert settings.interval_coverage_enabled is False
+        assert use_case_cls.call_args.args[0].interval_columns_enabled is False
+
+        settings.interval_coverage_enabled = True
+        main_agent.build_use_case(settings)
+        assert use_case_cls.call_args.args[0].interval_columns_enabled is True
+
+    def test_track_record_coverage_only_behind_the_flag(self, settings) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_predictions.return_value = []
+        repo.get_resolved_for_calibration.return_value = []
+        repo.get_settled_moves.return_value = [
+            {"interval_low": 98.0, "interval_high": 102.0, "actual_price_after_12h": 101.0},
+            {"interval_low": 98.0, "interval_high": 102.0, "actual_price_after_12h": 97.0},
+        ]
+
+        assert main_agent._build_track_record_stats(settings, repo) is None
+        repo.get_settled_moves.assert_not_called()
+
+        settings.interval_coverage_enabled = True
+        stats = main_agent._build_track_record_stats(settings, repo)
+
+        repo.get_settled_moves.assert_called_once_with(
+            settings.track_record_days, with_intervals=True
+        )
+        assert stats is not None
+        assert stats.coverage is not None
+        assert (stats.coverage.hits, stats.coverage.n) == (1, 2)

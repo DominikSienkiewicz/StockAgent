@@ -5,7 +5,7 @@ import logging
 import math
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any, Literal, TypedDict
@@ -40,6 +40,7 @@ from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, PriceDelta
 from src.domain.attestation import commit as attestation_commit
 from src.domain.attestation import new_salt
+from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
 from src.domain.feature_attribution import FeatureContribution, top_contributions
 from src.domain.implied_edge import (
@@ -136,6 +137,9 @@ class AgentState(TypedDict, total=False):
     # G03: True = XGBoost nie ma wag, a `ml_target_price` to baseline "cena bez
     # zmian", nie prognoza modelu. Rada i raport nie mogą go podawać jako sygnału.
     ml_cold_start: bool
+    # ML-34: przedział 80% zwrotu do rozliczenia (conformal + ACI) z okna klasy
+    # aktywa. Mail pokazuje go od razu; kolumny `interval_*` idą za flagą.
+    move_interval: MoveInterval | None
 
     # Embedding podsumowania newsów — liczony raz w predict_node (RAG retrieval)
     # i reużyty w save_node, żeby nie embedować dwa razy na cykl.
@@ -499,6 +503,12 @@ class AgentGraphDeps:
     # ML-14: wektor cech w KAŻDYM cyklu do `feature_snapshots` (migracja 031).
     # Off = graf nie dotyka tabeli, której przed migracją nie ma.
     feature_snapshots_enabled: bool = False
+    # ML-34: okna kalibracyjne przedziału ruchu per klasa aktywa (rozliczone
+    # predykcje, rosnąco po czasie), czytane RAZ na cykl w DI. None = bez przedziału.
+    move_calibration: Mapping[AssetType, Sequence[CalibrationPoint]] | None = None
+    # ML-34: kolumny `interval_low/high` (migracja 032). Off = klucza nie ma
+    # w rekordzie — przed migracją dałby PGRST204.
+    interval_columns_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
     # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). Pole jest
@@ -1035,6 +1045,31 @@ def _resolve_implied_edge(
     return evaluate_edge(move, iv, _EDGE_HORIZON_HOURS)
 
 
+def _resolve_move_interval(
+    deps: AgentGraphDeps,
+    state: AgentState,
+    current_price: Decimal,
+    ml_target: Decimal,
+    *,
+    ml_cold_start: bool,
+) -> MoveInterval | None:
+    """ML-34 — przedział zwrotu z okna kalibracyjnego klasy aktywa symbolu.
+
+    Cold-start → predyktor 0 i empiryczne kwantyle zwrotów; model aktywny →
+    jego zwrot ± kwantyl |reszt|. Zero wywołań: okno przyszło w deps."""
+    if deps.move_calibration is None or current_price <= 0:
+        return None
+    asset = state.get("asset") or Asset(symbol=state["symbol"])
+    window = deps.move_calibration.get(asset.asset_type, ())
+    predicted = 0.0 if ml_cold_start else float((ml_target - current_price) / current_price)
+    return move_interval(window, predicted_return=predicted, cold_start=ml_cold_start)
+
+
+def _interval_price(price: Decimal, move_return: float) -> Decimal:
+    """Granica przedziału jako cena (skala `predicted_target_price`, 4 miejsca)."""
+    return (price * (Decimal(1) + Decimal(str(move_return)))).quantize(Decimal("0.0001"))
+
+
 def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     repository_port = deps.repository_port
     ml_port = deps.ml_port
@@ -1156,12 +1191,16 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     implied_edge = _resolve_implied_edge(
         deps, symbol, current_price, ml_target, ml_cold_start=ml_cold_start
     )
+    interval = _resolve_move_interval(
+        deps, state, current_price, ml_target, ml_cold_start=ml_cold_start
+    )
 
     return {
         "llm_analysis": llm_analysis,
         "ml_target_price": ml_target,
         "ml_features": features,
         "ml_cold_start": ml_cold_start,
+        "move_interval": interval,
         "data_quality_flags": flags,
         # #18: sygnał INFORMACYJNY (bez roli decyzyjnej) — do walidacji na
         # zamkniętych predykcjach, zanim dostanie jakąkolwiek moc sprawczą.
@@ -1338,6 +1377,18 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     implied_edge = state.get("implied_edge")
     if implied_edge is not None:
         record["edge_sigma"] = implied_edge.edge_sigma
+
+    # ML-34: przedział 80% jako ceny (migracja 032) — Track Record liczy z nich
+    # pokrycie zrealizowane. Bez przedziału (za mało historii) klucza nie ma.
+    interval = state.get("move_interval")
+    if (
+        deps.interval_columns_enabled
+        and interval is not None
+        and interval.low is not None
+        and interval.high is not None
+    ):
+        record["interval_low"] = _interval_price(state["current_price"], interval.low)
+        record["interval_high"] = _interval_price(state["current_price"], interval.high)
 
     # #16: commit-reveal (migracja 024).
     _attach_commitment(deps, record)
