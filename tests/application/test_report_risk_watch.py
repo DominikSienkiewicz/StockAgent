@@ -156,7 +156,7 @@ class TestHtmlRendering:
         html = render_risk_watch_html(report)
         assert "EUR/PLN" in html
         assert "USD/PLN" in html
-        assert "4.45" in html
+        assert "4,45" in html
 
     def test_skips_polish_macro_block_when_none(self) -> None:
         report = MacroRiskReport(
@@ -193,7 +193,7 @@ class TestPlainTextRendering:
         report = MacroRiskReport(polish_macro=snap, overall_alert=MacroAlertLevel.ELEVATED)
         text = render_risk_watch_text(report)
         assert "EUR/PLN" in text
-        assert "4.45" in text
+        assert "4,45" in text
 
 
 class TestDrawdownRendering:

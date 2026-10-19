@@ -21,15 +21,15 @@ Symboli:           7 (predykcji=3, pominiętych=3, błędów=1)
 === 🚨 Risk Watch — sygnały makro ===
 Ogólny alert: ELEVATED
 
-  SH (ProShares Short S&P 500)             Short equity       Δ= +2.10% [ELEVATED]
-  GLD (SPDR Gold Shares)                   Safe haven         Δ= +1.20% [ELEVATED]
-  VIXY (ProShares VIX Short-Term Futures ETF) Volatility (VIX)   Δ=+12.00% [CRITICAL]
+  SH (ProShares Short S&P 500)             Short equity       Δ= +2,10% [ELEVATED]
+  GLD (SPDR Gold Shares)                   Safe haven         Δ= +1,20% [ELEVATED]
+  VIXY (ProShares VIX Short-Term Futures ETF) Volatility (VIX)   Δ=+12,00% [CRITICAL]
 
 -- Drawdown od 30d szczytu --
-  AMD (Advanced Micro Devices Inc.)         -13.98% od szczytu (szczyt 186.00) [ELEVATED]
+  AMD (Advanced Micro Devices Inc.)         -13,98% od szczytu (szczyt 186.00) [ELEVATED]
 
-  EUR/PLN: 4.2710 (+1.20% / 30d)
-  USD/PLN: 3.6820 (+2.10% / 30d)
+  EUR/PLN: 4,2710 (+1,20% / 30d)
+  USD/PLN: 3,6820 (+2,10% / 30d)
   Stres fiskalny: ELEVATED
 
 === 🎯 PORTFOLIO RADAR — KONCENTRACJA I RYZYKO ===
