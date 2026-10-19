@@ -2358,3 +2358,75 @@ def test_header_shows_the_cycle_start_in_the_display_timezone():
     assert "Czas rozpoczęcia:  pt 16.10 07:30" in text
     assert "05:30" not in html
     assert "05:30" not in text
+
+
+def _consensus(summary: str) -> CouncilVerdict:
+    return CouncilVerdict(
+        final_recommendation="BUY", consensus_strength=0.9, summary=summary,
+        dissenting_views=(),
+        investor_opinions=tuple(
+            InvestorOpinion(investor_name=n, recommendation="BUY",
+                            confidence=0.9, reasoning="x", key_factors=())
+            for n in ("A", "B")
+        ),
+    )
+
+
+def _first_element(html: str) -> str:
+    return html[: html.index("</div>") + len("</div>")]
+
+
+def test_html_starts_with_hidden_preheader_from_lead():
+    # MAIL-13: podgląd w Gmailu/Apple Mail był „📊 StockAgent — raport cyklu Czas
+    # rozpoczęcia: …”. Teraz pierwszy element to ukryty preheader z detail leadu.
+    result = SymbolResult(
+        symbol="AMD", status="saved", delta=Decimal("0.08"),
+        current_price=Decimal("50"), council_verdict=_consensus("Popyt na GPU rośnie."),
+    )
+
+    html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+    first = _first_element(html)
+    assert first.startswith("<div ")
+    assert "display:none" in first
+    assert "mso-hide:all" in first
+    assert "Popyt na GPU rośnie." in first
+    assert "&zwnj;&nbsp;" in first
+
+
+def test_preheader_escapes_the_lead_detail():
+    # Detail pochodzi z rady i newsów — w preheaderze przechodzi przez html.escape.
+    result = SymbolResult(
+        symbol="AMD", status="saved", delta=Decimal("0.08"), current_price=Decimal("50"),
+        council_verdict=_consensus("<img src=x onerror=alert(1)> & marże"),
+    )
+
+    html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+    first = _first_element(html)
+    assert "&lt;img src=x onerror=alert(1)&gt; &amp; marże" in first
+    assert "<img" not in html
+
+
+def test_preheader_without_lead_counts_closed_predictions():
+    # Zamknięte predykcje symboli spoza wyników cyklu nie tworzą leadu.
+    resolved = [
+        ResolvedPrediction(symbol=s, predicted_trend="BULLISH", is_correct=True)
+        for s in ("AAPL", "TSLA")
+    ]
+
+    html, _ = build_html_report(
+        [_ignored_result("MSFT")], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(resolved_predictions=resolved),
+    )
+
+    first = _first_element(html)
+    assert "display:none" in first
+    assert "Brak sygnałów ponad próg · 2 zamkniętych predykcji" in first
+
+
+def test_plain_text_has_no_preheader():
+    _, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+    assert "&zwnj;" not in text
+    assert "Brak sygnałów ponad próg" not in text

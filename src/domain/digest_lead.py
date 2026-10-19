@@ -264,3 +264,15 @@ def lead_headline(items: Sequence[LeadItem]) -> str | None:
     Zwraca None, gdy lead jest pusty (orkiestrator zostawia wtedy domyślny temat).
     """
     return items[0].headline if items else None
+
+
+def lead_preview(items: Sequence[LeadItem]) -> str | None:
+    """MAIL-13: tekst podglądu w skrzynce (preheader) — `detail` najważniejszej
+    pozycji leadu, bo jej headline stoi już w temacie. Pusty detail → headline.
+
+    Zwraca None, gdy lead jest pusty (renderer podstawia wtedy tekst zastępczy).
+    """
+    if not items:
+        return None
+    first = items[0]
+    return first.detail.strip() or first.headline

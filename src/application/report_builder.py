@@ -126,7 +126,7 @@ from src.domain.calibration_curve import CalibrationBucket
 from src.domain.consensus_shift import ConsensusShift
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
-from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
+from src.domain.digest_lead import LeadItem, LeadSignal, build_lead, lead_preview
 from src.domain.equity_curve import EquityCurve, directional_hit_rate
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.finops import CycleCost
@@ -762,6 +762,23 @@ def build_cycle_lead(
     return build_lead(signals, context.quota_alerts or [])
 
 
+# MAIL-13: wypełniacz za treścią preheadera — bez niego klient poczty dociąga do
+# podglądu dalszy tekst maila („📊 StockAgent — raport cyklu Czas rozpoczęcia…”).
+_PREHEADER_FILLER = "&zwnj;&nbsp;" * 100
+
+
+def _render_preheader_html(lead_items: list[LeadItem], closed_count: int) -> str:
+    """MAIL-13: ukryty div na samym początku HTML — klient poczty pokazuje go jako
+    podgląd pod tematem. Treść leadu pochodzi z rady i newsów, więc jest escapowana."""
+    preview = lead_preview(lead_items) or (
+        f"Brak sygnałów ponad próg · {closed_count} zamkniętych predykcji"
+    )
+    return (
+        '<div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">'
+        f"{_html(preview)}{_PREHEADER_FILLER}</div>"
+    )
+
+
 # Sloty pomijane przy pustej treści: nagłówek sekcji rysuje się w szablonie, więc
 # podmiana na "" zostawiłaby pustą ramkę. Nieusunięty znacznik jest komentarzem
 # HTML, czyli w mailu niewidoczny — to bezpieczniejszy z dwóch wyników.
@@ -1162,7 +1179,7 @@ def build_html_report(
         _ALPHA_SLOT: alpha_html,
         _SUGGESTIONS_SLOT: suggestions_html,
     })
-    html = _compact_markup(html)
+    html = _compact_markup(_render_preheader_html(lead_items, len(resolved)) + html)
     text = _render_plain(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,

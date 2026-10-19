@@ -6,6 +6,8 @@ What lands in the inbox and why each section is there. The pipeline that produce
 
 The subject and the header carry the cycle start in local time (`display_timezone`, `Europe/Warsaw` by default, e.g. `pt 16.10 07:30`), not UTC; the push digest header and the shock-alert push use the same format.
 
+The inbox preview comes from a hidden preheader, the first element of the HTML: the detail of the top lead item (HTML-escaped, since it comes from the council and the news), or `Brak sygnałów ponad próg · N zamkniętych predykcji` when the cycle has no lead. Invisible filler (`&zwnj;&nbsp;`, about 1.4 KB) follows it, so the mail client does not pull the header (`Czas rozpoczęcia…`) into the preview. The plain-text email has no preheader.
+
 The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallback):
 
 - 🕒 **NYSE session** — open / premarket / after-hours / weekend (`zoneinfo` America/New_York)

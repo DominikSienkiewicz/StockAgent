@@ -25,6 +25,7 @@ from src.domain.digest_lead import (
     LeadSignal,
     build_lead,
     lead_headline,
+    lead_preview,
 )
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
@@ -326,3 +327,24 @@ class TestPortfolioAwareLead:
         )
 
         assert build_lead([signal])[0].headline == "NVDA -4.2%, rada zgodna: SELL"
+
+
+class TestLeadPreview:
+    """MAIL-13: preheader (podgląd w skrzynce) bierze `detail` pierwszej pozycji —
+    headline stoi już w temacie maila."""
+
+    def test_returns_the_detail_of_the_first_item(self) -> None:
+        items = [
+            LeadItem(icon="🔥", headline="NVDA +4.2%, rada zgodna: BUY", detail="Rada: BUY."),
+            LeadItem(icon="⚖️", headline="AMD -3.0%, rada PODZIELONA", detail="1 BUY / 1 SELL"),
+        ]
+
+        assert lead_preview(items) == "Rada: BUY."
+
+    def test_falls_back_to_the_headline_without_a_detail(self) -> None:
+        items = [LeadItem(icon="🔥", headline="NVDA +4.2%, rada zgodna: BUY", detail="  ")]
+
+        assert lead_preview(items) == "NVDA +4.2%, rada zgodna: BUY"
+
+    def test_none_on_empty(self) -> None:
+        assert lead_preview([]) is None
