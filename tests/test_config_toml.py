@@ -210,3 +210,10 @@ def test_real_config_toml_peers_are_keyed_by_its_sectors() -> None:
     assert peers
     assert set(peers) <= set(data["sectors"])
     assert all(candidates for candidates in peers.values()), "sektor bez peerów"
+
+
+def test_real_config_toml_sets_the_paper_pnl_costs() -> None:
+    """WIA-50 (decyzja 2026-10-19): 10 bps dla akcji/ETF, 25 bps dla krypto."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["paper_cost_bps"] == 10
+    assert data["crypto_paper_cost_bps"] == 25

@@ -81,6 +81,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "cycle_diff_enabled",
     "settled_at_windows_enabled",
     "track_record_days",
+    # WIA-50: koszt paper-PnL / backtestu — parametr oceny, nie prognozy.
+    "paper_cost_bps",
+    "crypto_paper_cost_bps",
     "portfolio_positions_enabled",
     # PORT-18: waluta i data zakupu pozycji (odczyt + zapis importu) — tylko raport.
     "positions_currency_enabled",
@@ -383,6 +386,11 @@ class Settings(BaseSettings):
     attestation_reveals_path: str = "public/attestation/reveals.jsonl"
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
+    # WIA-50: jednostronny koszt transakcyjny (bps od obrotu) w paper-PnL,
+    # benchmarkach i backteście. Naliczany tylko przy zmianie pozycji symbolu:
+    # wejście i wyjście do gotówki 1×, odwrócenie 2×. Krypto ma własny koszt.
+    paper_cost_bps: float = 10.0
+    crypto_paper_cost_bps: float = 25.0
 
     # ----- Dane: nowe źródła alpha (default off → Null adapter, zero płatnych) -----
     # Każde źródło ma adapter (wolne/istniejące API) i Null-fallback. W Fast Loop
@@ -650,6 +658,14 @@ class Settings(BaseSettings):
                 f"({max_age} <= {self.reflection_min_age_hours}); 0 disables the bound"
             )
         return self
+
+    @field_validator("paper_cost_bps", "crypto_paper_cost_bps")
+    @classmethod
+    def _validate_paper_cost_bps(cls, value: float, info: ValidationInfo) -> float:
+        """Ujemny koszt byłby rabatem za obrót — paper-PnL rósłby od samego handlu."""
+        if value < 0:
+            raise ValueError(f"{info.field_name} must be >= 0 (got {value})")
+        return value
 
     @field_validator("track_record_days")
     @classmethod

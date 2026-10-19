@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
+from src.application.report_evidence import PaperCosts
 from src.application.report_lessons import LessonItem, LessonsReport
 from src.application.report_track_record import (
     TrackRecordStats,
@@ -228,3 +229,32 @@ class TestIntervalCoverage:
         stats = TrackRecordStats(coverage=IntervalCoverage(hits=0, n=0))
 
         assert render_track_record_html(None, None, None, stats) == ""
+
+
+class TestPaperCostLabel:
+    """WIA-50: krzywa kapitału mówi, z jakim kosztem transakcyjnym ją liczono."""
+
+    _COSTS = PaperCosts(cost_bps=10, crypto_cost_bps=25, crypto_symbols=frozenset({"BTC"}))
+
+    def test_label_and_assumptions_name_the_cost(self) -> None:
+        html = render_track_record_html(
+            _curve(), None, None, TrackRecordStats(costs=self._COSTS)
+        )
+
+        assert "paper-PnL (koszt 10 bps)" in html
+        assert "krypto 25 bps" in html
+        assert "tylko przy zmianie pozycji" in html
+        assert "bez kosztów transakcyjnych" not in html
+
+    def test_mail_uses_the_polish_decimal_comma_for_bps(self) -> None:
+        html = render_track_record_html(
+            _curve(), None, None, TrackRecordStats(costs=PaperCosts(cost_bps=12.5))
+        )
+
+        assert "paper-PnL (koszt 12,5 bps)" in html
+
+    def test_without_stated_costs_the_curve_says_it_is_gross(self) -> None:
+        html = render_track_record_html(_curve(), None, None)
+
+        assert "bez kosztów transakcyjnych" in html
+        assert "koszt 10 bps" not in html

@@ -28,13 +28,15 @@ from collections.abc import Sequence
 from datetime import date, timedelta
 
 from src.application.report_evidence import (
-    PORTFOLIO_ASSUMPTIONS_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
+    PaperCosts,
     baselines_label,
     hit_rate_detail,
     hit_rate_evidence,
     hit_rate_value,
     murphy_label,
+    paper_pnl_label,
+    portfolio_assumptions,
     probability_label,
     uncertainty_note,
 )
@@ -62,6 +64,7 @@ def render_public_scorecard_html(
     *,
     generated_on: date | str = "",
     window_days: int | None = None,
+    costs: PaperCosts | None = None,
 ) -> str:
     """Renderuje publiczny scorecard kalibracji jako samodzielną stronę HTML.
 
@@ -77,6 +80,8 @@ def render_public_scorecard_html(
       - `generated_on` — data publikacji (escapowana); jako `date` razem z
         `window_days` daje zakres okna „od–do”.
       - `window_days` — długość okna track-recordu ujawniana na stronie.
+      - `costs` — założenia kosztowe krzywej (WIA-50); None = krzywa brutto.
+        Strona podaje same koszty w bps, nigdy symbole z `crypto_symbols`.
 
     Samosupresja: brak jakichkolwiek danych → `""` (nie publikujemy pustej
     strony). Wszystko, co idzie do outputu, jest escapowane.
@@ -94,7 +99,7 @@ def render_public_scorecard_html(
     sections: list[str] = [
         _render_headline(predictions, generated_on, window_days),
         _render_calibration_section(buckets, samples),
-        _render_equity_section(equity),
+        _render_equity_section(equity, costs),
         _render_methodology_section(),
     ]
     body = "".join(section for section in sections if section)
@@ -240,11 +245,12 @@ def _render_calibration_sparkline(buckets: Sequence[CalibrationBucket]) -> str:
     )
 
 
-def _render_equity_section(equity: EquityCurve | None) -> str:
+def _render_equity_section(equity: EquityCurve | None, costs: PaperCosts | None) -> str:
     """Sekcja krzywej kapitału: agregaty z PÓL EquityCurve + div-sparkline.
 
     Czyta `total_return`, `win_rate`, `max_drawdown`, `n_trades` oraz `points`.
     Funkcja `summary` NIE ISTNIEJE — korzystamy wprost z pól dataclassy.
+    Nagłówek i założenia mówią, z jakim kosztem liczono krzywą (WIA-50).
     """
     if equity is None or equity.n_trades == 0:
         return ""
@@ -255,12 +261,18 @@ def _render_equity_section(equity: EquityCurve | None) -> str:
         + _stat_card("Max obsunięcie", f"{equity.max_drawdown * 100:.1f}%")
         + _stat_card("Transakcji", str(equity.n_trades))
     )
+    title = (
+        "Krzywa kapitału (paper-PnL)"
+        if costs is None
+        else f"Krzywa kapitału — {paper_pnl_label(costs, numbers=DOT_NUMBERS)}"
+    )
+    assumptions = portfolio_assumptions(costs, numbers=DOT_NUMBERS)
     return (
         "<section class='block'>"
-        "<h2>Krzywa kapitału (paper-PnL)</h2>"
+        f"<h2>{_html.escape(title)}</h2>"
         "<p class='desc'>Symulacja bez pieniędzy: portfel kierunkowych "
         "ekspozycji wg prognoz. Ilustruje jakość sygnału, nie realne zyski. "
-        f"{_html.escape(PORTFOLIO_ASSUMPTIONS_PL)} "
+        f"{_html.escape(assumptions)} "
         f"{_html.escape(PORTFOLIO_METHOD_CHANGE_PL)}</p>"
         f"<div class='cards'>{stats}</div>"
         f"<div class='equity-{sign}'>{_render_equity_sparkline(equity)}</div>"

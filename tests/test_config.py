@@ -715,3 +715,35 @@ class TestFxRatesCacheFlag:
             _env_file=None, **REQUIRED_ENV_KWARGS, fx_rates_cache_enabled=True
         ).config_hash()
         assert flipped == baseline
+
+
+class TestPaperCostSettings:
+    """WIA-50: koszt jednostronny paper-PnL w bps (akcje/ETF i krypto). To
+    parametry oceny i prezentacji, nie prognozy — poza przepisem."""
+
+    def test_defaults_match_the_decision(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.paper_cost_bps == 10
+        assert settings.crypto_paper_cost_bps == 25
+
+    @pytest.mark.parametrize("field", ["paper_cost_bps", "crypto_paper_cost_bps"])
+    def test_negative_cost_is_rejected(self, env, field):
+        with pytest.raises(ValueError, match=field):
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS, **{field: -1})
+
+    @pytest.mark.parametrize("field", ["paper_cost_bps", "crypto_paper_cost_bps"])
+    def test_zero_cost_is_allowed(self, env, field):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS, **{field: 0})
+
+        assert getattr(settings, field) == 0
+
+    def test_costs_are_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert {"paper_cost_bps", "crypto_paper_cost_bps"} <= NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        changed = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, paper_cost_bps=30, crypto_paper_cost_bps=60
+        ).config_hash()
+        assert changed == baseline

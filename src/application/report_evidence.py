@@ -10,17 +10,22 @@ Kluczem cyklu jest dzień UTC znacznika `prediction_logs.timestamp`: Fast Loop
 rusza najwyżej raz na dzień sesyjny, a predykcje jednego dnia są skorelowane.
 Predykcje bez znacznika czasu lądują w jednym wspólnym cyklu — to zaniża n_eff
 (ostrożnie), zamiast udawać, że są niezależne.
+
+WIA-50: krzywa portfela może być liczona po kosztach transakcyjnych
+(`PaperCosts`, koszt jednostronny od obrotu per symbol). Bez podanych kosztów
+krzywa jest brutto, a copy założeń mówi to wprost.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from src.application.report_formatting import POLISH_NUMBERS, NumberStyle
 from src.application.report_models import ResolvedPrediction
 from src.domain.calibration_curve import ProbabilityScores
-from src.domain.equity_curve import EquityCurve, portfolio_equity_curve
+from src.domain.equity_curve import EquityCurve, PaperTrade, paper_portfolio_curve
 from src.domain.significance import MIN_BOOTSTRAP_CYCLES
 from src.domain.statistics import wilson_interval
 from src.domain.track_record import (
@@ -35,15 +40,33 @@ from src.domain.track_record import (
 SMALL_SAMPLE_N_EFF = 5
 
 PORTFOLIO_METHOD_SINCE = "2026-10-18"
-PORTFOLIO_ASSUMPTIONS_PL = (
+_PORTFOLIO_RULES_PL = (
     "Założenia: jeden punkt na cykl (dzień UTC predykcji), równa waga każdej "
-    "predykcji w cyklu, prognoza „bez ruchu” to gotówka; bez kosztów "
-    "transakcyjnych i poślizgu."
+    "predykcji w cyklu, prognoza „bez ruchu” to gotówka"
 )
+PORTFOLIO_ASSUMPTIONS_PL = f"{_PORTFOLIO_RULES_PL}; bez kosztów transakcyjnych i poślizgu."
 PORTFOLIO_METHOD_CHANGE_PL = (
     f"Metodologia zmieniona {PORTFOLIO_METHOD_SINCE}: wcześniej każdą transakcję "
     "składano szeregowo na 100% kapitału, więc starsze wyniki nie są porównywalne."
 )
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class PaperCosts:
+    """WIA-50: założenia kosztowe paper-PnL — koszt jednostronny w bps od obrotu.
+
+    `crypto_cost_bps` dotyczy symboli z `crypto_symbols`, `cost_bps` — reszty
+    (akcje i ETF-y). Symbole służą tylko do doboru kosztu; nie trafiają do copy.
+    """
+
+    cost_bps: float = 0.0
+    crypto_cost_bps: float = 0.0
+    crypto_symbols: frozenset[str] = frozenset()
+
+    def for_symbol(self, symbol: str) -> float:
+        """Koszt jednostronny dla symbolu (krypto ma własny)."""
+        return self.crypto_cost_bps if symbol in self.crypto_symbols else self.cost_bps
 
 
 def cycle_key(prediction: ResolvedPrediction) -> str:
@@ -81,16 +104,72 @@ def hit_rate_evidence(resolved: Sequence[ResolvedPrediction]) -> HitRateEvidence
     return assess_directional_hit_rate(scored_calls(resolved))
 
 
-def portfolio_curve(resolved: Sequence[ResolvedPrediction]) -> EquityCurve | None:
-    """Krzywa portfela o równej wadze per cykl (WIA-17); None bez ruchów cen."""
+def _moment(prediction: ResolvedPrediction) -> datetime:
+    """Znacznik predykcji w UTC do sortowania; brak znacznika → najwcześniej."""
+    stamp = prediction.predicted_at
+    if stamp is None:
+        return _EPOCH
+    return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+
+
+def paper_cycles(
+    resolved: Sequence[ResolvedPrediction], costs: PaperCosts | None = None
+) -> list[list[PaperTrade]]:
+    """Predykcje z ruchem ceny jako cykle trade'ów, chronologicznie.
+
+    Repozytorium oddaje predykcje od najnowszej, a obrót per symbol (WIA-50)
+    wymaga kolejności czasu także wewnątrz cyklu. Bez `costs` koszt jest 0.
+    """
+    costs = costs or PaperCosts()
     keyed = [
-        (cycle_key(p), (p.predicted_trend, change))
-        for p in resolved
+        (
+            cycle_key(p),
+            PaperTrade(p.symbol, p.predicted_trend, change, costs.for_symbol(p.symbol)),
+        )
+        for p in sorted(resolved, key=_moment)
         if (change := _realized_change(p)) is not None
     ]
-    if not keyed:
+    return group_by_cycle(keyed)
+
+
+def portfolio_curve(
+    resolved: Sequence[ResolvedPrediction], costs: PaperCosts | None = None
+) -> EquityCurve | None:
+    """Krzywa portfela o równej wadze per cykl (WIA-17), po kosztach z `costs`
+    (WIA-50, bez nich brutto); None bez ruchów cen."""
+    cycles = paper_cycles(resolved, costs)
+    if not cycles:
         return None
-    return portfolio_equity_curve(group_by_cycle(keyed))
+    return paper_portfolio_curve(cycles)
+
+
+def bps_label(value: float, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
+    """Koszt w bps: „10”, a ułamkowy w zapisie stylu — „12,5” / „12.5”."""
+    if float(value).is_integer():
+        return str(int(value))
+    return numbers.number(value, decimals=1)
+
+
+def paper_pnl_label(costs: PaperCosts, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
+    """Etykieta krzywej: „paper-PnL (koszt 10 bps)”."""
+    return f"paper-PnL (koszt {bps_label(costs.cost_bps, numbers=numbers)} bps)"
+
+
+def portfolio_assumptions(
+    costs: PaperCosts | None, *, numbers: NumberStyle = POLISH_NUMBERS
+) -> str:
+    """Copy założeń krzywej portfela; bez `costs` — wariant brutto (bez kosztów)."""
+    if costs is None:
+        return PORTFOLIO_ASSUMPTIONS_PL
+    crypto = ""
+    if costs.crypto_symbols and costs.crypto_cost_bps != costs.cost_bps:
+        crypto = f" (krypto {bps_label(costs.crypto_cost_bps, numbers=numbers)} bps)"
+    return (
+        f"{_PORTFOLIO_RULES_PL}; koszt transakcyjny "
+        f"{bps_label(costs.cost_bps, numbers=numbers)} bps{crypto} od obrotu, "
+        "naliczany tylko przy zmianie pozycji symbolu: wejście i wyjście do gotówki "
+        "po 1×, odwrócenie 2×; bez poślizgu."
+    )
 
 
 def interval_label(low: float, high: float, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:

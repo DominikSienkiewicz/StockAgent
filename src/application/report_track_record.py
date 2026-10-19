@@ -22,12 +22,14 @@ import html as _html
 from dataclasses import dataclass
 
 from src.application.report_evidence import (
-    PORTFOLIO_ASSUMPTIONS_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
+    PaperCosts,
     baselines_label,
     hit_rate_detail,
     hit_rate_value,
     murphy_label,
+    paper_pnl_label,
+    portfolio_assumptions,
     probability_label,
     uncertainty_note,
 )
@@ -57,12 +59,15 @@ class TrackRecordStats:
 
     - `hit_rate` — dowód trafności kierunkowej z rozliczonych predykcji okna,
     - `scores` — Brier / log loss / BSS / Murphy z próbek kalibracji,
-    - `coverage` — pokrycie zrealizowane przedziałów 80% (ML-34, migracja 032).
+    - `coverage` — pokrycie zrealizowane przedziałów 80% (ML-34, migracja 032),
+    - `costs` — założenia kosztowe, z którymi policzono krzywą kapitału (WIA-50);
+      None = krzywa brutto i copy „bez kosztów transakcyjnych”.
     """
 
     hit_rate: HitRateEvidence | None = None
     scores: ProbabilityScores | None = None
     coverage: IntervalCoverage | None = None
+    costs: PaperCosts | None = None
 
 
 def render_track_record_html(
@@ -76,7 +81,7 @@ def render_track_record_html(
     stats = stats or TrackRecordStats()
     subsections: list[str] = []
     if equity_curve is not None and equity_curve.n_trades > 0:
-        subsections.append(_render_equity_html(equity_curve, stats.hit_rate))
+        subsections.append(_render_equity_html(equity_curve, stats))
     if calibration_buckets:
         subsections.append(_render_calibration_html(calibration_buckets, stats.scores))
     if lessons is not None and lessons.items:
@@ -94,14 +99,21 @@ def render_track_record_html(
     return header + "".join(subsections)
 
 
-def _render_equity_html(curve: EquityCurve, evidence: HitRateEvidence | None) -> str:
+def _equity_title(costs: PaperCosts | None) -> str:
+    """„Krzywa kapitału (paper-PnL)” albo z kosztem: „… — paper-PnL (koszt 10 bps)”."""
+    if costs is None:
+        return "Krzywa kapitału (paper-PnL)"
+    return f"Krzywa kapitału — {paper_pnl_label(costs)}"
+
+
+def _render_equity_html(curve: EquityCurve, stats: TrackRecordStats) -> str:
     """T1 — podsumowanie krzywej kapitału, założenia, dowód trafności, sparklinia."""
     total_color = "#059669" if curve.total_return >= 0 else "#dc2626"
     summary = (
         "<div style='padding: 10px 14px; background: #eff6ff; "
         "border-left: 3px solid #2563eb; border-radius: 4px; "
         "margin-bottom: 10px; font-size: 13px;'>"
-        "<strong>Krzywa kapitału (paper-PnL):</strong> wynik łączny "
+        f"<strong>{_html.escape(_equity_title(stats.costs))}:</strong> wynik łączny "
         f"<span style='color: {total_color}; font-weight: 600;'>"
         f"{pct(curve.total_return, signed=True, decimals=1)}</span> · trafność "
         f"{pct(curve.win_rate, decimals=1)} · max obsunięcie "
@@ -109,10 +121,15 @@ def _render_equity_html(curve: EquityCurve, evidence: HitRateEvidence | None) ->
         "</div>"
     )
     assumptions = (
-        f"<p style='{_NOTE_STYLE}'>{_html.escape(PORTFOLIO_ASSUMPTIONS_PL)} "
+        f"<p style='{_NOTE_STYLE}'>{_html.escape(portfolio_assumptions(stats.costs))} "
         f"{_html.escape(PORTFOLIO_METHOD_CHANGE_PL)}</p>"
     )
-    return summary + assumptions + _render_evidence_html(evidence) + _render_sparkline_html(curve)
+    return (
+        summary
+        + assumptions
+        + _render_evidence_html(stats.hit_rate)
+        + _render_sparkline_html(curve)
+    )
 
 
 def _render_evidence_html(evidence: HitRateEvidence | None) -> str:

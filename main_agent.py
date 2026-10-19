@@ -61,7 +61,7 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_council_history import InvestorHistory
-from src.application.report_evidence import hit_rate_evidence, portfolio_curve
+from src.application.report_evidence import PaperCosts, hit_rate_evidence, portfolio_curve
 from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
     build_sector_map,
@@ -596,17 +596,29 @@ def build_public_scorecard_publisher(settings: Settings) -> WebPublisherPort:
     return FileWebPublisher(output_path=settings.public_scorecard_path)
 
 
+def _paper_costs(settings: Settings) -> PaperCosts:
+    """WIA-50: założenia kosztowe paper-PnL z config.toml (akcje/ETF i krypto)."""
+    return PaperCosts(
+        cost_bps=settings.paper_cost_bps,
+        crypto_cost_bps=settings.crypto_paper_cost_bps,
+        crypto_symbols=frozenset(settings.crypto_symbols),
+    )
+
+
 def _publish_public_scorecard(
-    settings: Settings, repository: RepositoryPort, publisher: WebPublisherPort
+    settings: Settings,
+    repository: RepositoryPort,
+    publisher: WebPublisherPort,
+    costs: PaperCosts | None = None,
 ) -> None:
     """#10 — publikuje stronę z agregatami (N, hit-rate, Brier, ECE, krzywe).
 
     Metryki liczone z `resolved`/`cal_rows` NIEZALEŻNIE od flag
     `equity_curve_enabled` / `calibration_curve_enabled` — tamte sterują
     sekcjami prywatnego maila, nie publicznym dowodem. Krzywa kapitału to
-    portfel o równej wadze per cykl (WIA-17); strona ujawnia okno i datę
-    generacji (WIA-33). Best-effort: błąd odczytu ani `OSError` przy zapisie
-    nie wywalają cyklu.
+    portfel o równej wadze per cykl (WIA-17), po kosztach `costs` (WIA-50;
+    None = brutto); strona ujawnia okno i datę generacji (WIA-33).
+    Best-effort: błąd odczytu ani `OSError` przy zapisie nie wywalają cyklu.
     """
     if not settings.public_scorecard_enabled:
         return
@@ -619,10 +631,11 @@ def _publish_public_scorecard(
         )
         page = render_public_scorecard_html(
             resolved,
-            portfolio_curve(resolved),
+            portfolio_curve(resolved, costs),
             samples,
             generated_on=datetime.now(UTC).date(),
             window_days=settings.track_record_days,
+            costs=costs,
         )
         if page:
             publisher.publish(page)
@@ -1747,12 +1760,13 @@ def _calibration_samples(rows: list[dict[str, Any]]) -> list[tuple[float, bool]]
 
 
 def _build_track_record(
-    settings: Settings, repository: RepositoryPort
+    settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
 ) -> tuple[EquityCurve | None, list[CalibrationBucket] | None, LessonsReport | None]:
     """T1/T2/T4 — krzywa kapitału, kalibracja, lessons (render-only, zero
     płatnych). Każda podsekcja flag-gated; wszystkie czytają zamknięte predykcje
     z okna track_record_days. Krzywa kapitału to portfel o równej wadze per
-    cykl (WIA-17), nie szeregowe składanie równoległych trade'ów."""
+    cykl (WIA-17), nie szeregowe składanie równoległych trade'ów, po kosztach
+    obrotu `costs` (WIA-50; None = brutto)."""
     equity_curve: EquityCurve | None = None
     calibration_buckets: list[CalibrationBucket] | None = None
     lessons: LessonsReport | None = None
@@ -1765,7 +1779,7 @@ def _build_track_record(
             logger.exception("Failed to fetch resolved predictions for track record")
             tr_resolved = []
         if settings.equity_curve_enabled:
-            equity_curve = portfolio_curve(tr_resolved)
+            equity_curve = portfolio_curve(tr_resolved, costs)
         if settings.lessons_enabled:
             lessons = build_lessons(tr_resolved)
     if settings.calibration_curve_enabled:
@@ -1780,7 +1794,7 @@ def _build_track_record(
 
 
 def _build_track_record_stats(
-    settings: Settings, repository: RepositoryPort
+    settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
 ) -> TrackRecordStats | None:
     """Dowód trafności (T1), Brier / BSS (T2) i pokrycie przedziałów 80% (ML-34)
     pod sekcją Track Record.
@@ -1789,6 +1803,8 @@ def _build_track_record_stats(
     `interval_coverage_enabled` (kolumny z migracji 032). Osobna funkcja,
     bo `_build_track_record` zwraca stały kontrakt trzech podsekcji. Każdy
     odczyt best-effort: błąd → brak danej statystyki, cykl leci dalej.
+    `costs` (WIA-50) to te same założenia, z którymi `_build_track_record`
+    liczy krzywą — jadą do etykiety „paper-PnL (koszt X bps)”.
     """
     evidence = None
     scores = None
@@ -1820,9 +1836,12 @@ def _build_track_record_stats(
             coverage = measured if measured.n else None
         except Exception:
             logger.exception("Failed to measure interval coverage for track record")
-    if evidence is None and scores is None and coverage is None:
+    paper_costs = costs if settings.equity_curve_enabled else None
+    if evidence is None and scores is None and coverage is None and paper_costs is None:
         return None
-    return TrackRecordStats(hit_rate=evidence, scores=scores, coverage=coverage)
+    return TrackRecordStats(
+        hit_rate=evidence, scores=scores, coverage=coverage, costs=paper_costs
+    )
 
 
 def _persist_quota_alerts(repository: RepositoryPort, alerts: list[QuotaAlert]) -> None:
@@ -1973,10 +1992,12 @@ def _dispatch_reports(
 
         # T1/T2/T4: Track Record (render-only, zero płatnych). Każda podsekcja
         # flag-gated; wszystkie czytają zamknięte predykcje z okna track_record_days.
+        # WIA-50: krzywa, jej etykieta i scorecard z tymi samymi kosztami.
+        paper_costs = _paper_costs(settings)
         equity_curve, calibration_buckets, lessons = _build_track_record(
-            settings, repository
+            settings, repository, paper_costs
         )
-        track_record_stats = _build_track_record_stats(settings, repository)
+        track_record_stats = _build_track_record_stats(settings, repository, paper_costs)
         # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
         signal_calibration_buckets = _build_signal_calibration(settings, repository)
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
@@ -2136,7 +2157,7 @@ def _dispatch_reports(
 
         # #10: publiczny scorecard — osobny publisher, osobna ścieżka.
         _publish_public_scorecard(
-            settings, repository, build_public_scorecard_publisher(settings)
+            settings, repository, build_public_scorecard_publisher(settings), paper_costs
         )
 
         # #16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,

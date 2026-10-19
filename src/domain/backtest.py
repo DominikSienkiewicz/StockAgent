@@ -8,6 +8,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from src.domain.trading_costs import trading_cost
+
 # Werdykt walk-forward backtestu. Czysta domena — agreguje per-fold metryki
 # (RMSE kandydata vs baseline persystencji „zwrot=0", trafność kierunku) w jeden
 # obraz: czy lokalny model bije naiwny baseline i o ile. Bez I/O, bez pandas.
@@ -58,6 +60,11 @@ class BacktestSummary:
     baseline'ów „dryf średniej" i „sam LLM" (None, gdy foldy ich nie niosą).
     `beats_baseline` wymaga pobicia najsilniejszego z dostępnych baseline'ów;
     `improvement_pct` zostaje liczone względem „zwrot = 0" (jak w karcie modelu).
+
+    WIA-50: `turnover` to średni obrót foldów (skala ML-20: odwrócenie = 1,
+    wejście/wyjście = 0.5), a `mean_net_return` to średni zwrot strategii
+    „pozycja = znak prognozy" na wiersz po koszcie obrotu. None, gdy foldy nie
+    niosą `sign_strategy_return` i `turnover`. Koszt nie rusza werdyktu RMSE.
     """
 
     n_folds: int
@@ -73,6 +80,8 @@ class BacktestSummary:
     ic_t_stat: float | None = None
     mean_drift_baseline_rmse: float | None = None
     mean_llm_baseline_rmse: float | None = None
+    mean_net_return: float | None = None
+    turnover: float | None = None
 
 
 def beats_baseline(candidate_rmse: float, baseline_rmse: float) -> bool:
@@ -176,7 +185,27 @@ def _ic_stats(
     return mean_ic, ic_std, mean_ic / ic_std * math.sqrt(len(ics))
 
 
-def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
+def _net_strategy_stats(
+    folds: Sequence[Mapping[str, float]], cost_bps: float
+) -> tuple[float | None, float | None]:
+    """(średni zwrot netto strategii znakowej, średni turnover) albo (None, None).
+
+    Turnover foldu (ML-20) liczy odwrócenie jako 1, czyli połowę obróconego
+    kapitału, więc koszt wiersza to `trading_cost(2 × turnover, cost_bps)`.
+    """
+    keys = ("sign_strategy_return", "turnover")
+    if not all(key in fold for fold in folds for key in keys):
+        return None, None
+    net = statistics.fmean(
+        fold["sign_strategy_return"] - trading_cost(2.0 * fold["turnover"], cost_bps)
+        for fold in folds
+    )
+    return net, statistics.fmean(fold["turnover"] for fold in folds)
+
+
+def summarize_folds(
+    folds: Sequence[Mapping[str, float]], *, cost_bps: float = 0.0
+) -> BacktestSummary:
     """Agreguje per-fold metryki walk-forward w `BacktestSummary`.
 
     Każdy fold to mapa z kluczami `candidate_rmse`, `baseline_rmse`, `hit_rate`
@@ -185,7 +214,8 @@ def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
     Średnie są arytmetyczne; `improvement_pct = (baseline - candidate) / baseline
     * 100` (0.0 gdy baseline == 0, by uniknąć dzielenia przez zero). Werdykt
     stosuje `beats_baseline` wobec najsilniejszego baseline'u (ML-10) i — gdy
-    foldy niosą `n_valid` — `MIN_OOS_POINTS`.
+    foldy niosą `n_valid` — `MIN_OOS_POINTS`. `cost_bps` (WIA-50, koszt
+    jednostronny) wchodzi tylko do `mean_net_return`.
     Pusta sekwencja zwraca sentinel „brak danych".
     """
     if not folds:
@@ -207,6 +237,7 @@ def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
     mean_llm = _mean_of(folds, "llm_baseline_rmse")
     binding_label, binding_rmse = strongest_baseline(mean_baseline, mean_drift, mean_llm)
     passed = beats_baseline(mean_candidate, binding_rmse)
+    mean_net_return, turnover = _net_strategy_stats(folds, cost_bps)
 
     if n_oos_points is not None and n_oos_points < MIN_OOS_POINTS:
         passed = False
@@ -234,4 +265,6 @@ def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
         ic_t_stat=ic_t_stat,
         mean_drift_baseline_rmse=mean_drift,
         mean_llm_baseline_rmse=mean_llm,
+        mean_net_return=mean_net_return,
+        turnover=turnover,
     )

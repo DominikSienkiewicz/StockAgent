@@ -3950,3 +3950,134 @@ class TestPositionRiskInPln:
         )
 
         assert computed.call_args.kwargs["rates"] is rates
+
+
+class TestPaperCostWiring:
+    """WIA-50: paper-PnL w mailu, na scorecardzie i w backteście liczony po
+    kosztach z config.toml — naliczanych tylko przy zmianie pozycji symbolu."""
+
+    @staticmethod
+    def _costs() -> "main_agent.PaperCosts":
+        return main_agent.PaperCosts(cost_bps=10.0, crypto_cost_bps=25.0)
+
+    def test_paper_costs_come_from_settings(self, settings) -> None:
+        settings.crypto_symbols = ["BTC"]
+
+        assert main_agent._paper_costs(settings) == main_agent.PaperCosts(
+            cost_bps=10, crypto_cost_bps=25, crypto_symbols=frozenset({"BTC"})
+        )
+
+    def test_track_record_curve_is_net_of_entry_costs(self) -> None:
+        settings = TestHonestTrackRecordWiring._settings()
+
+        equity, _, _ = main_agent._build_track_record(
+            settings, TestHonestTrackRecordWiring._repo(), self._costs()
+        )
+
+        # NVDA i AMD wchodzą w tym samym cyklu: 0.10 − 0.001 na każdej połowie.
+        assert equity is not None
+        assert equity.total_return == pytest.approx(0.099)
+
+    def test_track_record_stats_carry_the_costs_for_the_label(self) -> None:
+        costs = self._costs()
+
+        stats = main_agent._build_track_record_stats(
+            TestHonestTrackRecordWiring._settings(), TestHonestTrackRecordWiring._repo(), costs
+        )
+
+        assert stats is not None
+        assert stats.costs == costs
+
+    def test_costs_alone_follow_the_equity_curve_flag(self) -> None:
+        settings = TestHonestTrackRecordWiring._settings(
+            equity_curve_enabled=False, calibration_curve_enabled=False
+        )
+
+        assert (
+            main_agent._build_track_record_stats(
+                settings, TestHonestTrackRecordWiring._repo(), self._costs()
+            )
+            is None
+        )
+
+    def test_scorecard_is_net_of_costs_and_names_them(self) -> None:
+        publisher = MagicMock()
+
+        main_agent._publish_public_scorecard(
+            TestHonestTrackRecordWiring._settings(),
+            TestHonestTrackRecordWiring._repo(),
+            publisher,
+            self._costs(),
+        )
+
+        page = publisher.publish.call_args.args[0]
+        assert "paper-PnL (koszt 10 bps)" in page
+        assert "+9.9%" in page
+
+    def test_dispatch_passes_the_configured_costs_everywhere(self, settings, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        track_record = mocker.patch(
+            "main_agent._build_track_record", return_value=(None, None, None)
+        )
+        stats = mocker.patch("main_agent._build_track_record_stats", return_value=None)
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch("main_agent._build_user_portfolio", return_value=None)
+        mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        scorecard = mocker.patch("main_agent._publish_public_scorecard")
+        repository = MagicMock(spec=RepositoryPort)
+
+        main_agent._dispatch_reports(
+            results=[],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=repository,
+            quota_monitor=QuotaMonitor(),
+            notifier=MagicMock(),
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL"],
+            context=main_agent.ReportContext(),
+        )
+
+        expected = main_agent._paper_costs(settings)
+        assert track_record.call_args.args[2] == expected
+        assert stats.call_args.args[2] == expected
+        assert scorecard.call_args.args[3] == expected
+
+
+def test_backtest_uses_the_paper_cost_and_logs_net_return(
+    settings, mock_external_clients, mocker, caplog
+):
+    from src.domain.backtest import BacktestSummary
+
+    fake_uc = MagicMock()
+    fake_uc.run.return_value = BacktestSummary(
+        n_folds=4,
+        mean_candidate_rmse=0.03,
+        mean_baseline_rmse=0.05,
+        mean_hit_rate=0.6,
+        improvement_pct=40.0,
+        beats_baseline=True,
+        verdict="model bije baseline o 40.0%",
+        mean_net_return=0.0012,
+        turnover=0.25,
+    )
+    use_case_cls = mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
+
+    with caplog.at_level("INFO", logger="main_backtest"):
+        main_backtest.main(settings)
+
+    assert use_case_cls.call_args.kwargs["cost_bps"] == settings.paper_cost_bps
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("AAPL"))
+    assert "net=0.00120" in line
+    assert "turnover=0.25" in line
+    assert f"cost={settings.paper_cost_bps:g}bps" in line

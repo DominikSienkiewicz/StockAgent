@@ -333,3 +333,33 @@ def test_scorecard_states_universe_selection_caveat() -> None:
     assert "nie jest umiejętnością" in html
     # Zastrzeżenie nie może łamać inwariantu „zero symboli watchlisty”.
     assert "NVDA" not in html
+
+
+class TestPaperCostDisclosure:
+    """WIA-50: strona publiczna podaje koszt paper-PnL z kropką dziesiętną."""
+
+    def test_equity_section_names_the_cost(self) -> None:
+        from src.application.report_evidence import PaperCosts
+
+        curve = equity_curve([("BULLISH", 0.03)], cost_bps=12.5)
+        costs = PaperCosts(
+            cost_bps=12.5, crypto_cost_bps=25, crypto_symbols=frozenset({"ZZCOIN"})
+        )
+
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], curve, None, costs=costs
+        )
+
+        assert "paper-PnL (koszt 12.5 bps)" in html
+        assert "krypto 25 bps" in html
+        assert "12,5" not in html
+        assert "bez kosztów transakcyjnych" not in html
+        # Symbole z założeń kosztowych nie trafiają na stronę.
+        assert "ZZCOIN" not in html
+
+    def test_without_costs_the_page_says_the_curve_is_gross(self) -> None:
+        curve = equity_curve([("BULLISH", 0.03)])
+
+        html = render_public_scorecard_html([_resolved("AAA", "BULLISH", True)], curve, None)
+
+        assert "bez kosztów transakcyjnych" in html

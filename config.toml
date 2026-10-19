@@ -150,6 +150,10 @@ public_scorecard_path = "public/scorecard/index.html"
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"
 track_record_days = 30
+# WIA-50: jednostronny koszt transakcyjny paper-PnL i backtestu (bps od obrotu),
+# naliczany tylko przy zmianie pozycji symbolu (wejście/wyjście 1×, odwrócenie 2×).
+paper_cost_bps = 10
+crypto_paper_cost_bps = 25
 # Dane — nowe źródła alpha. Default off → Null adapter (zero płatnych). Realny
 # adapter włącza flaga (+ ewentualny klucz: FRED_API_KEY dla yield_curve).
 insider_flow_enabled = true

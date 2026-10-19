@@ -126,7 +126,7 @@ uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain)
 uv run python main_tools.py --help # one-off tools: one subcommand per tool (see "One-off tools" below)
 uv run python main_tools.py import-positions --csv positions.csv          # dry-run: diff of the CSV against the positions table (writes nothing)
 uv run python main_tools.py import-positions --csv positions.csv --apply  # replace the positions table with the CSV, as_of = now
-uv run python main_backtest.py     # offline walk-forward backtest (folds purge the 12h label horizon): per-symbol out-of-sample RMSE / hit-rate vs baseline, plus per-fold rank IC, sign-strategy return and turnover; logs mean IC, its sd and t-stat next to the fold count (read-only, no model write)
+uv run python main_backtest.py     # offline walk-forward backtest (folds purge the 12h label horizon): per-symbol out-of-sample RMSE / hit-rate vs baseline, plus per-fold rank IC, sign-strategy return and turnover; logs mean IC, its sd and t-stat next to the fold count, and the sign strategy's mean return per row net of `paper_cost_bps` (`net=`) with the mean turnover (`turnover=`, a flip counts 1) (read-only, no model write)
 uv run python main_tools.py evaluate           # offline eval: hit-rate + RMSE vs baseline, directional n_eff, naive baselines and binomial-test verdict (read-only)
 uv run python main_tools.py evaluate --days 60 # custom evaluation window
 uv run python main_tools.py evaluate --by-recipe  # + directional hit rate per recipe version (needs migration 030)
