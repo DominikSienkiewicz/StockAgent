@@ -492,3 +492,21 @@ class TestConfigHashScope:
             "rag_outcome_weight": 0.3,
         }.items():
             assert self._settings(**{field: value}).config_hash() != baseline, field
+
+
+class TestFeatureSnapshotsFlag:
+    """ML-14: zapis wektora cech w każdym cyklu (migracja 031) — flaga samego
+    zapisu, więc domyślnie off i poza przepisem (`config_hash` się nie rusza)."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).feature_snapshots_enabled is False
+
+    def test_is_a_write_only_flag_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "feature_snapshots_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, feature_snapshots_enabled=True
+        ).config_hash()
+        assert flipped == baseline

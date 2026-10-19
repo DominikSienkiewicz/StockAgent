@@ -2959,3 +2959,27 @@ class TestUniverseVersionInRecipe:
 
         assert after.universe_version != before.universe_version
         assert after.version != before.version
+
+
+class TestFeatureSnapshotsWiring:
+    """ML-14 — flaga z Settings trafia do `AgentGraphDeps`; off (domyślnie) =
+    graf nie dotyka tabeli `feature_snapshots`, której przed migracją 031 nie ma."""
+
+    def test_flag_defaults_off_in_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].feature_snapshots_enabled is False
+
+    def test_flag_reaches_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.feature_snapshots_enabled = True
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].feature_snapshots_enabled is True

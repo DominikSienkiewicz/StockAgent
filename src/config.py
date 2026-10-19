@@ -83,6 +83,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "receipts_enabled",
     "feature_set_version_enabled",
     "recipe_version_enabled",
+    # ML-14: sam zapis wektora cech; prognoza cyklu jest identyczna z flagą i bez.
+    "feature_snapshots_enabled",
     "model_scorecard_baselines_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
@@ -284,6 +286,11 @@ class Settings(BaseSettings):
     # przepisu w kwicie v2 idą za `receipts_enabled` (JSONB, bez migracji). Off:
     # nowy klucz przed migracją 030 → PGRST204 i śmierć zapisu całej predykcji.
     recipe_version_enabled: bool = False
+    # ML-14: tabela `feature_snapshots` (migracja 031) — wektor cech w KAŻDYM
+    # cyklu, także ignored: cechy darmowe ze stanu cyklu zawsze, cechy LLM tylko
+    # za bramką. Zero nowych wywołań zewnętrznych. Off: przed migracją tabeli nie
+    # ma, więc każdy cykl kończyłby się błędem zapisu w logu.
+    feature_snapshots_enabled: bool = False
     # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
     # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr

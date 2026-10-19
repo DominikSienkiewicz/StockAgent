@@ -32,6 +32,7 @@ DEFAULT_FEATURE_VIEW = "ml_feature_store"
 DEFAULT_SNAPSHOT_TABLE = "price_snapshots"
 DEFAULT_COUNCIL_VOTES_TABLE = "council_votes"
 DEFAULT_QUOTA_ALERTS_TABLE = "quota_alerts"
+DEFAULT_FEATURE_SNAPSHOT_TABLE = "feature_snapshots"
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -556,6 +557,29 @@ class SupabaseRepository(RepositoryPort):
         (
             self._client.table(self._snapshot_table)
             .upsert(record, on_conflict="symbol,timestamp_hour")
+            .execute()
+        )
+
+    def save_feature_snapshot(
+        self,
+        symbol: str,
+        features: Mapping[str, Any],
+        *,
+        gated: bool,
+        feature_set_version: int,
+    ) -> None:
+        # ML-14 (migracja 031): upsert na (symbol, as_of_hour) jak snapshot ceny —
+        # re-run w tej samej godzinie aktualizuje wektor zamiast go duplikować.
+        # `as_of` stawia baza (DEFAULT NOW()), etykieta dochodzi później.
+        record: dict[str, Any] = {
+            "symbol": symbol,
+            "features": dict(features),
+            "gated": gated,
+            "feature_set_version": feature_set_version,
+        }
+        (
+            self._client.table(DEFAULT_FEATURE_SNAPSHOT_TABLE)
+            .upsert(record, on_conflict="symbol,as_of_hour")
             .execute()
         )
 

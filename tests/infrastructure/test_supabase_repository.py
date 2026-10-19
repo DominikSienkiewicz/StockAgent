@@ -2108,3 +2108,43 @@ class TestResolvedForEvalUniverse:
         columns = self._select_columns(repo, mock_client, with_universe=True)
 
         assert "universe_version:decision_receipts->>universe_version" in columns
+
+
+class TestSaveFeatureSnapshot:
+    """ML-14: wektor cech point-in-time (migracja 031). Idempotentny jak snapshot
+    ceny — re-run w tej samej godzinie aktualizuje wiersz, nie duplikuje go."""
+
+    def test_upserts_the_vector_on_symbol_and_hour(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": 1}])
+
+        repo.save_feature_snapshot(
+            "AAPL",
+            {"price": 99.0, "regime": "NEUTRAL"},
+            gated=False,
+            feature_set_version=2,
+        )
+
+        mock_client.table.assert_called_with("feature_snapshots")
+        upsert = mock_client.table.return_value.upsert
+        upsert.assert_called_once()
+        assert upsert.call_args.args[0] == {
+            "symbol": "AAPL",
+            "features": {"price": 99.0, "regime": "NEUTRAL"},
+            "gated": False,
+            "feature_set_version": 2,
+        }
+        assert upsert.call_args.kwargs["on_conflict"] == "symbol,as_of_hour"
+
+    def test_payload_carries_no_label(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Etykietę (zwrot 12h) dołącza się później z price_snapshots — w chwili
+        # zapisu przyszłości jeszcze nie ma, a `as_of` stawia baza (DEFAULT NOW()).
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": 1}])
+
+        repo.save_feature_snapshot("AAPL", {}, gated=True, feature_set_version=2)
+
+        payload = mock_client.table.return_value.upsert.call_args.args[0]
+        assert set(payload) == {"symbol", "features", "gated", "feature_set_version"}

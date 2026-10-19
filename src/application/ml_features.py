@@ -30,6 +30,28 @@ ML_FEATURE_COLUMNS = (
 # a Slow Loop może trenować wyłącznie na wierszach bieżącej wersji.
 FEATURE_SET_VERSION = 2
 
+# ML-14: klucze cech DARMOWYCH w `feature_snapshots.features` (migracja 031).
+# Fast Loop zapisuje je w KAŻDYM ukończonym cyklu, także ignored, wyłącznie z
+# danych już obecnych w stanie grafu — bez żadnego nowego wywołania zewnętrznego.
+# `snapshot_delta` to zmiana względem ostatniego snapshotu ceny (ta, która
+# napędza bramkę), a NIE cecha `price_delta` modelu (względem poprzedniej
+# predykcji). Cykl za bramką dokłada wektor `ML_FEATURE_COLUMNS` dokładnie
+# w postaci podanej modelowi oraz `GATED_SNAPSHOT_EXTRAS`.
+FREE_SNAPSHOT_FEATURES = (
+    "price",
+    "previous_price",
+    "snapshot_delta",
+    "abs_snapshot_delta",
+    "effective_threshold",
+    "regime",
+    "regime_multiplier",
+    "earnings_multiplier",
+    "alpha_fusion_score",
+    "asset_type",
+    "valuation_verdict",
+)
+GATED_SNAPSHOT_EXTRAS = ("confidence_score", "data_quality_flags")
+
 # Target = ZWROT 12h `(cena_po_12h - cena) / cena`, nie cena bezwzględna.
 # Baseline persystencji (cena bez zmian) to wtedy „zwrot = 0", więc bramka
 # „pobij baseline" jest sensowna; XGBoost uczy się RUCHU, nie poziomu ceny.

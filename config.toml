@@ -81,6 +81,10 @@ feature_set_filter_enabled = false
 # (modele, szablon promptu, persony, config, wagi ML). Pola przepisu w kwicie v2
 # idą już z `receipts_enabled`. UWAGA: włącz DOPIERO po migracji 030 (PGRST204).
 recipe_version_enabled = false
+# ML-14: wektor cech point-in-time w KAŻDYM cyklu, także ignored (tabela
+# `feature_snapshots`, migracja 031) — cechy darmowe ze stanu cyklu zawsze, cechy
+# LLM tylko za bramką, zero nowych wywołań. UWAGA: włącz DOPIERO po migracji 031.
+feature_snapshots_enabled = false
 # WIA-19: okna „zamknięte predykcje” po chwili rozliczenia (`settled_at`, migracja
 # 029): sekcja maila = rozliczone w tym cyklu, recap = rozliczone w ostatnich 7 dniach.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 029 (inaczej 400 i sekcja znika).

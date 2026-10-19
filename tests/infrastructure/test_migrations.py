@@ -52,6 +52,7 @@ MIGRATION_FILES = [
     "028_model_scorecard_baselines.sql",
     "029_prediction_settled_at.sql",
     "030_recipe_version.sql",
+    "031_feature_snapshots.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -804,6 +805,54 @@ class TestMigrations:
                 ("a" * 64,),
             )
             assert cur.fetchone() == ("a" * 64,)
+
+    # -- Migracja 031: wektor cech point-in-time w każdym cyklu (ML-14) -------
+
+    def test_feature_snapshots_unique_per_symbol_hour(self, pg_conn) -> None:
+        """Re-run cyklu w tej samej godzinie aktualizuje wektor (upsert na
+        `symbol,as_of_hour`), a goły INSERT drugiego wiersza tej godziny rzuca."""
+        assert {
+            "id", "symbol", "as_of", "as_of_hour",
+            "feature_set_version", "features", "gated",
+        } <= _columns(pg_conn, "feature_snapshots")
+        assert {
+            "idx_feature_snapshots_symbol_hour_uniq",
+            "idx_feature_snapshots_as_of",
+            "idx_feature_snapshots_version_gated",
+        } <= _indexes(pg_conn, "feature_snapshots")
+        upsert = (
+            "INSERT INTO feature_snapshots "
+            "(symbol, as_of, feature_set_version, features, gated) "
+            "VALUES (%s, %s, 2, %s::jsonb, %s) "
+            "ON CONFLICT (symbol, as_of_hour) "
+            "DO UPDATE SET features = EXCLUDED.features, gated = EXCLUDED.gated"
+        )
+        with pg_conn.cursor() as cur:
+            cur.execute(upsert, ("FS_HOUR", "2026-10-19T05:10:00+00:00", '{"price": 1}', False))
+            cur.execute(upsert, ("FS_HOUR", "2026-10-19T05:50:00+00:00", '{"price": 2}', True))
+            cur.execute(
+                "SELECT count(*), max((features->>'price')::int), bool_and(gated), "
+                "max(as_of_hour) FROM feature_snapshots WHERE symbol = 'FS_HOUR'"
+            )
+            count, price, gated, hour = cur.fetchone()
+            with pytest.raises(psycopg2.errors.UniqueViolation):
+                cur.execute(
+                    "INSERT INTO feature_snapshots "
+                    "(symbol, as_of, feature_set_version, features, gated) "
+                    "VALUES ('FS_HOUR', '2026-10-19T05:59:00+00:00', 2, '{}'::jsonb, false)"
+                )
+
+        assert (count, price, gated) == (1, 2, True)
+        assert hour == datetime(2026, 10, 19, 5, 0, tzinfo=UTC)
+
+    def test_feature_snapshots_require_version_vector_and_gate(self, pg_conn) -> None:
+        """Wiersz bez wersji zestawu cech, wektora albo decyzji bramki jest
+        bezużyteczny dla treningu i raportu selekcji — baza go odrzuca."""
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.NotNullViolation):
+            cur.execute(
+                "INSERT INTO feature_snapshots (symbol, features, gated) "
+                "VALUES ('FS_NULL', '{}'::jsonb, false)"
+            )
 
 
 @pytest.fixture

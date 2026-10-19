@@ -956,6 +956,8 @@ def build_use_case(
             else None
         ),
         recipe_version_enabled=settings.recipe_version_enabled,
+        # ML-14: off → graf nie dotyka tabeli `feature_snapshots` (migracja 031).
+        feature_snapshots_enabled=settings.feature_snapshots_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings),

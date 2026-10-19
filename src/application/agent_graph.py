@@ -13,7 +13,12 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, StateGraph
 
 from src.application.decision_receipt import RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2
-from src.application.ml_features import FEATURE_SET_VERSION, ML_FEATURE_COLUMNS
+from src.application.ml_features import (
+    FEATURE_SET_VERSION,
+    FREE_SNAPSHOT_FEATURES,
+    GATED_SNAPSHOT_EXTRAS,
+    ML_FEATURE_COLUMNS,
+)
 from src.application.ports import (
     AdvisoryCouncilPort,
     AttestationPublisherPort,
@@ -125,6 +130,9 @@ class AgentState(TypedDict, total=False):
     # Predykcja
     llm_analysis: dict[str, Any]
     ml_target_price: Decimal
+    # ML-14: wektor cech dokładnie w postaci podanej modelowi (`ML_FEATURE_COLUMNS`)
+    # — trafia do `feature_snapshots`, żeby trening nie odtwarzał go widokiem SQL.
+    ml_features: dict[str, float]
     # G03: True = XGBoost nie ma wag, a `ml_target_price` to baseline "cena bez
     # zmian", nie prognoza modelu. Rada i raport nie mogą go podawać jako sygnału.
     ml_cold_start: bool
@@ -488,6 +496,9 @@ class AgentGraphDeps:
     # WIA-20: stempel `recipe_version` (migracja 030). Off = klucza nie ma
     # w rekordzie — przed migracją dałby PGRST204.
     recipe_version_enabled: bool = False
+    # ML-14: wektor cech w KAŻDYM cyklu do `feature_snapshots` (migracja 031).
+    # Off = graf nie dotyka tabeli, której przed migracją nie ma.
+    feature_snapshots_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
     # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). Pole jest
@@ -534,6 +545,73 @@ def _persist_price_snapshot(deps: AgentGraphDeps, state: AgentState) -> None:
             state["symbol"],
         )
 
+
+def _free_snapshot_features(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+    """ML-14 — cechy DARMOWE (`FREE_SNAPSHOT_FEATURES`) wyłącznie ze stanu cyklu.
+
+    Zero wywołań portów: wszystko policzyły już check_price, bramka i DI przed
+    grafem (reżim, mnożniki, Alpha Fusion). Brak źródła → None, nie 0.0 —
+    cisza nie może udawać neutralnego rynku w raporcie selekcji."""
+    asset = state.get("asset") or Asset(symbol=state["symbol"])
+    delta = state["delta"]
+    fusion = state.get("alpha_fusion")
+    verdict = state.get("valuation_verdict")
+    threshold = _pick_threshold(state, deps.threshold, deps.crypto_threshold)
+    raw: dict[str, Any] = {
+        "price": float(state["current_price"]),
+        "previous_price": float(state["previous_price"]),
+        "snapshot_delta": float(delta),
+        "abs_snapshot_delta": abs(float(delta)),
+        "effective_threshold": float(threshold.value),
+        "regime": canonical_regime_key(state.get("regime_context")),
+        "regime_multiplier": float(state.get("regime_multiplier", 1.0) or 1.0),
+        "earnings_multiplier": float(state.get("earnings_multiplier", 1.0) or 1.0),
+        "alpha_fusion_score": fusion.score if fusion is not None else None,
+        "asset_type": asset.asset_type.value,
+        "valuation_verdict": verdict.value if verdict is not None else None,
+    }
+    return {name: raw[name] for name in FREE_SNAPSHOT_FEATURES}
+
+
+def _gated_snapshot_features(state: AgentState) -> dict[str, Any]:
+    """ML-14 — cechy LLM cyklu za bramką: wektor podany modelowi, deklarowana
+    pewność i flagi jakości (trening odsieje nimi np. atrapę po awarii LLM)."""
+    llm_analysis = state.get("llm_analysis") or {}
+    extras: dict[str, Any] = {
+        "confidence_score": _float_or_default(llm_analysis.get("confidence_score"), 0.5),
+        "data_quality_flags": list(state.get("data_quality_flags") or []),
+    }
+    return {
+        **state.get("ml_features", {}),
+        **{name: extras[name] for name in GATED_SNAPSHOT_EXTRAS},
+    }
+
+
+def _persist_feature_snapshot(
+    deps: AgentGraphDeps, state: AgentState, *, gated: bool
+) -> None:
+    """ML-14 — wektor cech point-in-time, wołany z węzłów terminalnych obok
+    snapshotu ceny (także z ignore, więc trening widzi też dni bez ruchu).
+
+    Etykiety nie zapisujemy — zwrot dołącza się później z `price_snapshots`.
+    Błąd zapisu nie wywala cyklu (jak `_persist_price_snapshot`)."""
+    if not deps.feature_snapshots_enabled:
+        return
+    features = _free_snapshot_features(deps, state)
+    if gated:
+        features.update(_gated_snapshot_features(state))
+    try:
+        deps.repository_port.save_feature_snapshot(
+            state["symbol"],
+            features,
+            gated=gated,
+            feature_set_version=FEATURE_SET_VERSION,
+        )
+    except Exception:
+        logger.exception(
+            "save_feature_snapshot failed for %s — cykl kończy się bez wektora cech",
+            state["symbol"],
+        )
 
 
 def _build_decision_receipts(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
@@ -1082,6 +1160,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     return {
         "llm_analysis": llm_analysis,
         "ml_target_price": ml_target,
+        "ml_features": features,
         "ml_cold_start": ml_cold_start,
         "data_quality_flags": flags,
         # #18: sygnał INFORMACYJNY (bez roli decyzyjnej) — do walidacji na
@@ -1292,6 +1371,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
     # #6: węzeł terminalny — zapisujemy snapshot ceny dla następnego cyklu.
     _persist_price_snapshot(deps, state)
+    _persist_feature_snapshot(deps, state, gated=True)
 
     return {"prediction_id": prediction_id, "status": "saved"}
 
@@ -1300,6 +1380,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # #6: węzeł terminalny — zapisujemy snapshot ceny dla następnego cyklu.
     _persist_price_snapshot(deps, state)
+    _persist_feature_snapshot(deps, state, gated=False)
     return {"status": "ignored"}
 
 

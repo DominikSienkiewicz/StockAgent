@@ -86,6 +86,23 @@ class RepositoryPort(ABC):
         cold-start deadlock: następny cykl ma punkt odniesienia do delty)."""
 
     @abstractmethod
+    def save_feature_snapshot(
+        self,
+        symbol: str,
+        features: Mapping[str, Any],
+        *,
+        gated: bool,
+        feature_set_version: int,
+    ) -> None:
+        """ML-14 — wektor cech point-in-time z tego cyklu (tabela
+        `feature_snapshots`, migracja 031), idempotentnie per symbol i godzina.
+
+        `features` musi być JSON-serializowalne. `gated` mówi, czy cykl przeszedł
+        bramkę volatility (wtedy wektor niesie też cechy LLM). Etykiety tu nie ma —
+        zwrot dołącza się później z `price_snapshots`. Wołane z węzłów terminalnych
+        tylko za flagą `feature_snapshots_enabled`."""
+
+    @abstractmethod
     def save_prediction(self, prediction: dict[str, Any]) -> str:
         """Zwraca ID zapisanej predykcji."""
 

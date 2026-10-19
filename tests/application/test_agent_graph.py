@@ -2874,3 +2874,182 @@ class TestFeatureSetVersionStamp:
 
         # Okno newsów 24 h (3738ef2) zmieniło znaczenie `news_volume_24h` → wersja 2.
         assert record["feature_set_version"] == FEATURE_SET_VERSION == 2
+
+
+# ---------------------------------------------------------------------------
+# ML-14 — wektor cech point-in-time w KAŻDYM cyklu (migracja 031)
+# ---------------------------------------------------------------------------
+
+
+class TestFeatureSnapshots:
+    """ML-14 — `feature_snapshots` dostaje wiersz w KAŻDYM ukończonym cyklu, także
+    ignored, za flagą `feature_snapshots_enabled` (tabela dopiero po migracji 031).
+    Cechy darmowe zawsze, wyłącznie ze stanu cyklu; cechy LLM tylko za bramką."""
+
+    def _deps(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, enabled: bool, **extra,
+    ) -> AgentGraphDeps:
+        return AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            feature_snapshots_enabled=enabled,
+            **extra,
+        )
+
+    def test_ignored_cycle_persists_free_feature_snapshot_without_paid_calls(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.application.ml_features import (
+            FEATURE_SET_VERSION,
+            FREE_SNAPSHOT_FEATURES,
+            ML_FEATURE_COLUMNS,
+        )
+
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))  # -1%
+        embedding_port = Mock(spec=EmbeddingPort)
+        tool_use_port = Mock(spec=ToolUseLLMPort)
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True, embedding_port=embedding_port, tool_use_port=tool_use_port,
+        )
+        state = {
+            **_initial_state("100.0"),
+            "regime_context": "risk off",
+            "regime_multiplier": 1.5,
+        }
+
+        final = create_agent_graph(deps).compile().invoke(state)
+
+        assert final["status"] == "ignored"
+        repository_port.save_feature_snapshot.assert_called_once()
+        call = repository_port.save_feature_snapshot.call_args
+        symbol, features = call.args
+        assert symbol == "AAPL"
+        assert call.kwargs == {"gated": False, "feature_set_version": FEATURE_SET_VERSION}
+        # Wyłącznie cechy darmowe — żadnej cechy z LLM ani z płatnego sentymentu.
+        assert set(features) == set(FREE_SNAPSHOT_FEATURES)
+        assert not set(features) & set(ML_FEATURE_COLUMNS)
+        assert features["price"] == pytest.approx(99.0)
+        assert features["previous_price"] == pytest.approx(100.0)
+        assert features["snapshot_delta"] == pytest.approx(-0.01)
+        assert features["abs_snapshot_delta"] == pytest.approx(0.01)
+        # Próg EFEKTYWNY po mnożniku reżimu (2% × 1.5) — to on zdecydował o ignore.
+        assert features["effective_threshold"] == pytest.approx(0.03)
+        assert features["regime"] == "RISK_OFF"
+        assert features["regime_multiplier"] == pytest.approx(1.5)
+        assert features["asset_type"] == "STOCK"
+        # FINOPS: zapis cech nie odpala żadnego płatnego portu.
+        llm_port.analyze.assert_not_called()
+        llm_port.analyze_mistake.assert_not_called()
+        tool_use_port.analyze_with_tools.assert_not_called()
+        sentiment_port.get_social_score.assert_not_called()
+        news_port.get_news_context.assert_not_called()
+        embedding_port.embed.assert_not_called()
+        ml_port.predict.assert_not_called()
+        assert sum(deps.paid_call_meter.values()) == 0
+
+    def test_ignored_snapshot_is_written_next_to_the_price_snapshot(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))
+
+        create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )).compile().invoke(_initial_state("100.0"))
+
+        writes = [
+            name for name, _, _ in repository_port.mock_calls
+            if name in {"save_price_snapshot", "save_feature_snapshot"}
+        ]
+        assert writes == ["save_price_snapshot", "save_feature_snapshot"]
+
+    def test_gated_cycle_adds_the_vector_the_model_was_served(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.application.ml_features import (
+            FREE_SNAPSHOT_FEATURES,
+            GATED_SNAPSHOT_EXTRAS,
+            ML_FEATURE_COLUMNS,
+        )
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        call = repository_port.save_feature_snapshot.call_args
+        features = call.args[1]
+        assert call.kwargs["gated"] is True
+        assert set(features) == (
+            set(FREE_SNAPSHOT_FEATURES) | set(ML_FEATURE_COLUMNS) | set(GATED_SNAPSHOT_EXTRAS)
+        )
+        # Ten sam wektor, który dostał XGBoost — trening nie odtwarza go z widoku.
+        served = ml_port.predict.call_args.args[0]
+        assert {name: features[name] for name in ML_FEATURE_COLUMNS} == served
+        assert features["confidence_score"] == pytest.approx(0.85)
+        assert features["data_quality_flags"] == ["price_delta_no_prior_prediction"]
+        assert features["price"] == pytest.approx(90.0)
+
+    def test_flag_off_writes_no_snapshot_on_either_terminal_node(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        workflow = create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=False,
+        )).compile()
+
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))
+        assert workflow.invoke(_initial_state("100.0"))["status"] == "ignored"
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        assert workflow.invoke(_initial_state("100.0"))["status"] == "saved"
+
+        repository_port.save_feature_snapshot.assert_not_called()
+
+    def test_snapshot_write_failure_does_not_abort_the_cycle(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))
+        repository_port.save_feature_snapshot.side_effect = RuntimeError("PGRST205")
+
+        final = create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "ignored"
+        repository_port.save_price_snapshot.assert_called_once()
+
+    def test_missing_alpha_fusion_is_unknown_not_neutral(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Brak fuzji (flaga off) to brak danych, nie „score 0.0" — inaczej
+        # selekcja gated vs non-gated myliłaby ciszę z neutralnym rynkiem.
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))
+
+        create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )).compile().invoke(_initial_state("100.0"))
+
+        features = repository_port.save_feature_snapshot.call_args.args[1]
+        assert features["alpha_fusion_score"] is None
+        assert features["valuation_verdict"] is None
