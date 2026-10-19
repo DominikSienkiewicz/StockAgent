@@ -249,6 +249,21 @@ def sentiment_label(label: str | None) -> str:
     return _SENTIMENT_PL.get(label or "", label or "—")
 
 
+# MAIL-08 (G21): zastrzeżenie inwestycyjne. Raport podaje sygnały modelu i bandy
+# wielkości pozycji, więc każdy kanał, który je pokazuje, niesie też to zdanie —
+# bezwarunkowo, poza sekcjami, które same się chowają.
+INVESTMENT_DISCLAIMER = (
+    "Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany "
+    "przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie "
+    "stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub "
+    "prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. "
+    "Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie "
+    "gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko."
+)
+# Wariant pushu: ma się zmieścić w budżecie digestu (MAX_DIGEST_CHARS).
+MESSENGER_DISCLAIMER = "ℹ️ Sygnały modelu nie stanowią rekomendacji inwestycyjnej."
+
+
 # MAIL-14: strefa czasu w temacie, nagłówku maila i pushu. Logi zostają w UTC.
 DEFAULT_DISPLAY_TIMEZONE = "Europe/Warsaw"
 

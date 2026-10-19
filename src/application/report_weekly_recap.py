@@ -13,6 +13,7 @@ from __future__ import annotations
 import html as _html
 from decimal import Decimal
 
+from src.application.report_formatting import INVESTMENT_DISCLAIMER
 from src.domain.council import InvestorOpinion
 from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
 
@@ -146,6 +147,10 @@ def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> 
         + _dissenters_html(recap.best.vindicated_dissenters)
         + "<div style='font-size: 12px; color: #6b7280; margin-top: 8px;'>"
         f"📐 Kalibracja: {_html.escape(_ece_delta_label(recap))}</div>"
+        # MAIL-08: recap to osobny mail, więc zamyka go własne zastrzeżenie.
+        + "<div style='font-size: 11px; color: #6b7280; margin-top: 16px; "
+        "padding-top: 8px; border-top: 1px solid #e5e7eb;'>"
+        f"{_html.escape(INVESTMENT_DISCLAIMER)}</div>"
     )
 
 
@@ -175,4 +180,5 @@ def render_weekly_recap_text(recap: WeeklyRecap | None, narrative: str = "") -> 
     lines.extend(_hero_text(best_title(recap), recap.best))
     lines.extend(_hero_text(worst_title(recap), recap.worst))
     lines.append(f"  Kalibracja: {_ece_delta_label(recap)}")
+    lines.extend(["-" * 64, INVESTMENT_DISCLAIMER])
     return "\n".join(lines)

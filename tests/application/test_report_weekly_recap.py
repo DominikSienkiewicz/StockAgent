@@ -177,3 +177,21 @@ class TestWorstHeroMirrorTitle:
         text = render_weekly_recap_text(_hero_recap(best_correct=True))
 
         assert "Wtopa tygodnia: TSLA" in text
+
+
+class TestWeeklyRecapDisclaimer:
+    """MAIL-08: recap wychodzi jako osobny mail, więc niesie własne zastrzeżenie
+    na końcu — HTML i tekst. Recap None nadal jest pusty (samosupresja)."""
+
+    _DISCLAIMER = "nie stanowi rekomendacji inwestycyjnej"
+
+    def test_html_recap_ends_with_disclaimer(self) -> None:
+        html = render_weekly_recap_html(_recap(), narrative="Tydzień pełen zwrotów.")
+
+        assert self._DISCLAIMER in html
+        assert html.index("Kalibracja") < html.index(self._DISCLAIMER)
+
+    def test_text_recap_ends_with_disclaimer(self) -> None:
+        text = render_weekly_recap_text(_recap())
+
+        assert self._DISCLAIMER in text.splitlines()[-1]

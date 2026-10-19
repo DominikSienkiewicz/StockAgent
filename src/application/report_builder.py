@@ -32,6 +32,7 @@ from src.application.report_evidence import wilson_label
 from src.application.report_finops import render_finops_html
 from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
+    INVESTMENT_DISCLAIMER,
     format_local,
 )
 from src.application.report_formatting import (
@@ -1858,8 +1859,11 @@ def _render_html(
     # Błędy
     sections.append(_render_errors_html(errors))
 
+    # MAIL-08: zastrzeżenie w stałej stopce, nie w sekcji warunkowej — sekcja,
+    # która się chowa, zabrałaby je ze sobą.
     sections.append(f"""
       <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #9ca3af;">
+        <div style="margin-bottom: 8px; color: #6b7280;">{_html(INVESTMENT_DISCLAIMER)}</div>
         StockAgent · Agentic RAG + Continual Learning · raport automatyczny
         {_RUN_FOOTER_SLOT}
       </div>
@@ -2160,6 +2164,9 @@ def _render_plain(
     lines.extend(_render_ignored_text(ignored))
 
     lines.extend(_render_errors_text(errors))
+
+    # MAIL-08: zastrzeżenie zamyka treść; stopka przebiegu (MAIL-42) idzie za nim.
+    lines.extend(["-" * 64, INVESTMENT_DISCLAIMER])
 
     return "\n".join(lines)
 

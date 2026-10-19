@@ -178,3 +178,26 @@ def test_header_uses_display_timezone() -> None:
 
     assert summer.splitlines()[0] == "📊 StockAgent — pt 16.10 07:30"
     assert winter.splitlines()[0] == "📊 StockAgent — pon 02.11 06:30"
+
+
+# --- MAIL-08: zastrzeżenie inwestycyjne -----------------------------------
+
+_PUSH_DISCLAIMER = "ℹ️ Sygnały modelu nie stanowią rekomendacji inwestycyjnej."
+
+
+def test_digest_ends_with_short_disclaimer() -> None:
+    digest = build_messenger_digest([_saved("AAPL")], _STARTED_AT, [])
+
+    assert digest.splitlines()[-1] == _PUSH_DISCLAIMER
+
+
+def test_hard_clamp_never_cuts_the_disclaimer() -> None:
+    # Zastrzeżenie jest liczone do budżetu PRZED clampem — patologiczny cykl
+    # ucina sekcje zmienne, ale ogon z zastrzeżeniem zostaje w całości.
+    results = [_saved("Z" * 100 + f"-{i}") for i in range(60)]
+    resolved = [_resolved("X" * 200 + f"-{i}", is_correct=True) for i in range(60)]
+
+    digest = build_messenger_digest(results, _STARTED_AT, resolved)
+
+    assert len(digest) <= MAX_DIGEST_CHARS
+    assert digest.endswith(_PUSH_DISCLAIMER)

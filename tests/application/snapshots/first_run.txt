@@ -25,4 +25,6 @@ POMINIĘTE (poniżej progu zmienności)
   NVDA(0.00%), AMD(0.00%), BTC(0.00%)
 
 ----------------------------------------------------------------
+Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.
+----------------------------------------------------------------
 przebieg #local · commit local

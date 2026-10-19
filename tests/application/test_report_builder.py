@@ -2656,3 +2656,43 @@ class TestMoveIntervalInReport:
         result = to_symbol_result("AAPL", {"status": "saved", "move_interval": "x"})
 
         assert result.move_interval is None
+
+
+class TestInvestmentDisclaimer:
+    """MAIL-08 (G21): „Sygnał modelu: KUP” i bandy % portfela nie mogą iść bez
+    zastrzeżenia. Stopka HTML i koniec tekstu niosą je ZAWSZE — także w raporcie
+    bez predykcji, w raporcie subskrybenta (fan-out) i w HTML-u web digestu."""
+
+    _DISCLAIMER = "nie stanowi rekomendacji inwestycyjnej"
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    _RUN = RunContext(run_id="77", git_sha="abc1234def")
+
+    @pytest.mark.parametrize(
+        ("results", "context"),
+        [
+            ([], ReportContext()),
+            ([_saved_result(), _ignored_result(), _error_result()], ReportContext()),
+            ([_saved_result()], ReportContext(symbols_filter=frozenset({"MSFT"}))),
+            ([_saved_result()], ReportContext(run_context=_RUN)),
+        ],
+        ids=["empty-cycle", "full-cycle", "subscriber-fan-out", "with-run-footer"],
+    )
+    def test_html_and_plain_always_carry_disclaimer(self, results, context):
+        html, text = build_html_report(results, self._STARTED, 1.0, context)
+
+        assert self._DISCLAIMER in html
+        assert self._DISCLAIMER in text
+
+    def test_html_disclaimer_sits_in_the_footer_after_the_predictions(self):
+        html, _ = build_html_report([_saved_result()], self._STARTED, 1.0)
+
+        assert html.index("Wygenerowane predykcje") < html.index(self._DISCLAIMER)
+        assert html.index(self._DISCLAIMER) < html.index("raport automatyczny")
+
+    def test_plain_disclaimer_closes_the_body_before_the_run_footer(self):
+        _, text = build_html_report(
+            [_saved_result()], self._STARTED, 1.0, ReportContext(run_context=self._RUN)
+        )
+
+        assert text.index("Strong macro tailwinds") < text.index(self._DISCLAIMER)
+        assert text.index(self._DISCLAIMER) < text.index("przebieg #77")

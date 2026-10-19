@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from src.application.report_formatting import DEFAULT_DISPLAY_TIMEZONE, format_local
+from src.application.report_formatting import (
+    DEFAULT_DISPLAY_TIMEZONE,
+    MESSENGER_DISCLAIMER,
+    format_local,
+)
 from src.application.report_models import ResolvedPrediction, SymbolResult
 
 # Twardy limit długości digestu. Ostrzejszy niż 4096 Telegrama — zostawiamy
@@ -37,6 +41,10 @@ _MAX_SYMBOL_LEN = 12
 
 # Znak wielokropka (jeden znak zamiast trzech kropek — oszczędza budżet).
 _ELLIPSIS = "…"
+
+# MAIL-08: ogon z zastrzeżeniem doklejany PO clampie, więc jego długość
+# schodzi z budżetu treści — clamp nie może go uciąć.
+_DISCLAIMER_TAIL = f"\n{MESSENGER_DISCLAIMER}"
 
 _TREND_ARROWS = {"BULLISH": "📈", "BEARISH": "📉"}
 _TREND_NEUTRAL = "➡️"
@@ -102,8 +110,8 @@ def build_messenger_digest(
 ) -> str:
     """Buduje zwięzły digest push (~5 linii) dla Telegrama/Slacka.
 
-    Zestaw sekcji jest stały (nagłówek, cykl, scorecard, sygnały) — to zamraża
-    kontrakt formatu przeciw dryfowi. Wynik jest ZAWSZE ≤ `MAX_DIGEST_CHARS`,
+    Zestaw sekcji jest stały (nagłówek, cykl, scorecard, sygnały, zastrzeżenie
+    MAIL-08) — to zamraża kontrakt formatu przeciw dryfowi. Wynik jest ZAWSZE ≤ `MAX_DIGEST_CHARS`,
     także przy patologicznym wejściu (60 symboli, bardzo długie nazwy): sekcje
     zmienne są ucinane, a na końcu działa twardy clamp jako siatka
     bezpieczeństwa. Pusty cykl zwraca krótki, ustrukturyzowany komunikat z
@@ -130,7 +138,9 @@ def build_messenger_digest(
     ]
     digest = "\n".join(lines)
     # Twardy clamp — ostateczna gwarancja kontraktu długości niezależnie od
-    # danych. Sekcje wymagane są na górze, więc przetrwają ewentualne ucięcie.
-    if len(digest) > MAX_DIGEST_CHARS:
-        digest = digest[: MAX_DIGEST_CHARS - 1] + _ELLIPSIS
-    return digest
+    # danych. Sekcje wymagane są na górze, więc przetrwają ewentualne ucięcie;
+    # zastrzeżenie ma zarezerwowane miejsce w budżecie.
+    budget = MAX_DIGEST_CHARS - len(_DISCLAIMER_TAIL)
+    if len(digest) > budget:
+        digest = digest[: budget - 1] + _ELLIPSIS
+    return digest + _DISCLAIMER_TAIL
