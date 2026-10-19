@@ -1,0 +1,28 @@
+👋 Dzień 1 — buduję punkt odniesienia
+Startuję dla 3 instrumenty. Ten cykl zapisuje pierwsze ceny jako punkt odniesienia — pierwsze predykcje pojawią się jutro. Pominięcia poniżej to nie awaria, tylko brak historii.
+  • Krypto — 1
+  • Półprzewodniki — 2
+
+================================================================
+STOCKAGENT — RAPORT CYKLU
+================================================================
+Czas rozpoczęcia:  czw 15.10 12:30
+Czas trwania:      74.2s
+Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
+Symboli:           3 (predykcji=0, pominiętych=3, błędów=0)
+
+KRYPTO
+----------------------------------------------------------------
+  BTC (Bitcoin)                               $65040.00  Δ   +0.00%  poniżej progu
+
+NASTROJE PORTFELA
+----------------------------------------------------------------
+  Średni sentyment: +0.00 (Neutralny)
+  Wysoka pewność (≥70%): 0 / 0  ·  Newsów: 0
+
+POMINIĘTE (poniżej progu zmienności)
+----------------------------------------------------------------
+  NVDA(0.00%), AMD(0.00%), BTC(0.00%)
+
+----------------------------------------------------------------
+przebieg #local · commit local

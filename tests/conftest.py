@@ -12,4 +12,16 @@ zdejmują ją lokalnie przez `monkeypatch.delenv`.
 
 import os
 
+import pytest
+
 os.environ["STOCKAGENT_DISABLE_TOML"] = "1"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    # TEST-02: jawna (i jedyna) droga do przepisania golden snapshotów maila.
+    parser.addoption(
+        "--update-golden",
+        action="store_true",
+        default=False,
+        help="przepisz snapshoty tests/application/snapshots/ zamiast je porównywać",
+    )

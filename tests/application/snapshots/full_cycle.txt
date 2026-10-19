@@ -1,0 +1,138 @@
+=== 🚨 ALERTY SUBSKRYPCJI / LIMITÓW (1) ===
+  [⚠️ WARNING] Alpha Vantage  (2026-10-15 09:40 UTC)
+    Klucz 1 z 3 wyczerpany — rotacja na kolejny.
+    → Sprawdź limit dzienny kluczy AV.
+
+=== ⚡ NAJWAŻNIEJSZE W TYM CYKLU ===
+  ⚠️ Sygnał przeciw Twojej pozycji: rada SPRZEDAJ na AMD (63% portfela) -3.5%
+    → Rada skłania się ku SELL: przewaga skali i rosnące marże.
+  💼 NVDA (37% portfela) +4.2%
+    → Rada skłania się ku BUY: przewaga skali i rosnące marże.
+
+
+================================================================
+STOCKAGENT — RAPORT CYKLU
+================================================================
+Czas rozpoczęcia:  czw 15.10 12:30
+Czas trwania:      74.2s
+Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
+Symboli:           7 (predykcji=3, pominiętych=3, błędów=1)
+
+=== 🚨 Risk Watch — sygnały makro ===
+Ogólny alert: ELEVATED
+
+  SH (ProShares Short S&P 500)             Short equity       Δ= +2.10% [ELEVATED]
+  GLD (SPDR Gold Shares)                   Safe haven         Δ= +1.20% [ELEVATED]
+  VIXY (ProShares VIX Short-Term Futures ETF) Volatility (VIX)   Δ=+12.00% [CRITICAL]
+
+-- Drawdown od 30d szczytu --
+  AMD (Advanced Micro Devices Inc.)         -13.98% od szczytu (szczyt 186.00) [ELEVATED]
+
+  EUR/PLN: 4.2710 (+1.20% / 30d)
+  USD/PLN: 3.6820 (+2.10% / 30d)
+  Stres fiskalny: ELEVATED
+
+=== 🎯 PORTFOLIO RADAR — KONCENTRACJA I RYZYKO ===
+  Werdykt: Największy klaster: AMD + NVDA (2 z 3 symboli, 67% watchlisty)
+  Klaster 1 (2 symboli): AMD · NVDA
+  📉 Value-at-Risk (95%): 3.1% (CVaR 4.6%)
+
+=== 💼 Twój portfel ===
+
+  NVDA     waga  36.8% wart.      $1,400.00 P/L     +$220.00 (+18.6%) | +810.04 zł
+  AMD      waga  63.2% wart.      $2,400.00 P/L     -$180.00 (-7.0%) | -662.76 zł
+  ⚠️ Bez wyceny w tym cyklu: XDWD.DE (≈ 19.0% kosztu)
+
+  Łącznie (bez pozycji niewycenionych): $3,800.00 · P/L +$40.00 (+1.1%)
+  W PLN (USD/PLN 3.6820): wartość 13,991.60 zł, P/L +147.28 zł
+
+  ⚠️ Twoje 2 pozycji (AMD, NVDA) to jeden klaster korelacji «Półprzewodniki» — 100.0% kapitału.
+
+KRYPTO
+----------------------------------------------------------------
+  BTC (Bitcoin)                               $65040.00  Δ   +6.10%  Wzrostowy prognoza +1.63%
+  ETH (Ethereum)                               $3238.40  Δ   +1.20%  poniżej progu
+
+NAJSILNIEJSZE SYGNAŁY
+----------------------------------------------------------------
+  KUP       NVDA (NVIDIA Corporation)                pewność 82%  prognoza   +2.50%  #1 · ruch 2.5% × pewność 82%  [Pozycja startowa 1-2% portfela]
+  SPRZEDAJ  AMD (Advanced Micro Devices Inc.)        pewność 71%  prognoza   -1.75%  #2 · ruch 1.8% × pewność 71%  [Pozycja startowa 1-2% portfela]
+  KUP       BTC (Bitcoin)                            pewność 64%  prognoza   +1.63%  #3 · ruch 1.6% × pewność 64%
+
+SYGNAŁY OSTRZEGAWCZE
+----------------------------------------------------------------
+  ⚠ AMD (Advanced Micro Devices Inc.): [Niezgodność AV↔LLM] LLM nie zgadza się z AV (zgoda=0.25) -> potencjalny fake news / manipulacja
+  ⚠ BTC (Bitcoin): [Słaby sygnał] tylko 2 relevantnych newsów — decyzja na słabych danych
+
+ZAMKNIĘTE PREDYKCJE (ostatnie 24h)
+----------------------------------------------------------------
+  ✅ NVDA (NVIDIA Corporation) · Półprzewodniki/AI  prognoza Wzrostowy — Trafiona
+        bo: Popyt na akceleratory przewyższa podaż.
+        faktycznie: $131.00 → $134.36 (+2.56%)
+        dlaczego: Teza prognozy się potwierdziła.
+  ❌ AMD (Advanced Micro Devices Inc.) · Półprzewodniki/AI  prognoza Wzrostowy — Błędna
+        bo: Odbicie po wyprzedaży.
+        faktycznie: $170.00 → $165.80 (-2.47%)
+        dlaczego: Rynek wycenił słabszy popyt w segmencie klienckim.
+  ✅ SPY (SPDR S&P 500 ETF Trust)  prognoza Boczny — Trafiona
+        faktycznie: $580.00 → $581.10 (+0.19%)
+        dlaczego: Teza prognozy się potwierdziła.
+  Suma: 2/3 · Trafność kierunkowa (bez prognoz „bez ruchu”): 50% (n=2) · Trafność łączna (z prognozami „bez ruchu”): 67% (n=3)
+
+NASTROJE PORTFELA
+----------------------------------------------------------------
+  Średni sentyment: +0.15 (Lekko pozytywny)
+  Najbardziej pozytywny: NVDA (NVIDIA Corporation) (+0.41)
+  Najbardziej negatywny: AMD (Advanced Micro Devices Inc.) (-0.18)
+  Wysoka pewność (≥70%): 2 / 3  ·  Newsów: 29
+
+HISTORIA TRAFNOŚCI (ostatnie 30 dni)
+----------------------------------------------------------------
+  Trafność kierunkowa (bez prognoz „bez ruchu”): 57.5% (95% CI 42–71%, n=40)
+  Trafność łączna (z prognozami „bez ruchu”): 62.0% (95% CI 48–74%, n=50)  ·  Predykcji ocenionych: 50  ·  Poprawnych: 31
+
+WNIOSKI Z POPRZEDNICH CYKLI (Self-Reflection)
+----------------------------------------------------------------
+  NVDA (NVIDIA Corporation): Poprzednia prognoza trafiona — popyt potwierdził tezę.
+
+PREDYKCJE
+----------------------------------------------------------------
+  NVDA (NVIDIA Corporation) · Półprzewodniki/AI              $140.00  Δ   +4.20%  →  Wzrostowy   prognoza $143.50 (+2.50%) · pewność 82%
+         sentyment +0.41
+         Rekomendacja: KUP (pewność 82%, prognoza +2.50%)
+         80% przedział: −2.1% … +2.4% (n=57)
+        └ Popyt na akceleratory rośnie szybciej niż podaż; marże stabilne.
+        🧭 analog [Wzrostowy, trafił]: NVDA +5% po wynikach, sentyment Bullish
+        📰 [Reuters] NVDA beats quarterly estimates on data-center demand (rel=0.91, sent=+0.42)
+        📰 [Bloomberg] Analysts lift NVDA price targets after guidance (rel=0.77, sent=+0.31)
+  Wycena fundamentalna:
+    Trailing P/E: 48.20  · Forward P/E: 31.50
+    PEG ratio: 1.40  · EPS growth YoY: 62.0%
+    Werdykt: FAIR
+  AMD (Advanced Micro Devices Inc.) · Półprzewodniki/AI      $160.00  Δ   -3.50%  →  Spadkowy    prognoza $157.20 (-1.75%) · pewność 71%
+         sentyment -0.18
+         Rekomendacja: SPRZEDAJ (pewność 71%, prognoza -1.75%)
+         proweniencja: Dane zdegradowane, Dane z cache, Flagi jakości
+        └ Słabsze prognozy segmentu klienckiego i presja na ceny.
+        📰 [Reuters] AMD beats quarterly estimates on data-center demand (rel=0.91, sent=+0.42)
+        📰 [Bloomberg] Analysts lift AMD price targets after guidance (rel=0.77, sent=+0.31)
+  BTC (Bitcoin) · Krypto                                   $65040.00  Δ   +6.10%  →  Wzrostowy   prognoza $66100.00 (+1.63%) · pewność 64%
+         sentyment +0.22
+         Rekomendacja: KUP (pewność 64%, prognoza +1.63%)
+        └ Napływy do ETF-ów spot i spadająca podaż na giełdach.
+
+WARTE UWAGI (sektory w ruchu)
+----------------------------------------------------------------
+  Półprzewodniki/AI — gorący (NVDA +4.2%, AMD -3.5%)
+      rozważ: AVGO, TXN, AMAT
+
+POMINIĘTE (poniżej progu zmienności)
+----------------------------------------------------------------
+  ETH(1.20%), MSFT(0.60%), XDWD.DE(—)
+
+BŁĘDY
+----------------------------------------------------------------
+  ASML (ASML Holding N.V.): HTTPError: 429 Too Many Requests
+
+----------------------------------------------------------------
+przebieg #18234567890 · commit 6eff942 · logi: https://github.com/example/StockAgent/actions/runs/18234567890
