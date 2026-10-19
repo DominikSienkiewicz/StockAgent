@@ -296,11 +296,55 @@ def pct(value: Decimal | float | None, signed: bool = False, decimals: int = 2) 
     return format_pct_pl(_decimal(value) * 100, signed, decimals)
 
 
+def pct_range(low: Decimal | float, high: Decimal | float, decimals: int = 0) -> str:
+    """Przedział ułamków jako procenty z jednym „%” na końcu: „41–63%”."""
+    return f"{pct(low, decimals=decimals).removesuffix('%')}–{pct(high, decimals=decimals)}"
+
+
 def number(value: Decimal | float | None, decimals: int, signed: bool = False) -> str:
     """Liczba po polsku (sentyment „+0,42”, kurs „4,27”), przez `format_number_pl`."""
     if value is None:
         return "—"
     return format_number_pl(_decimal(value), signed, decimals)
+
+
+@dataclass(frozen=True, slots=True)
+class NumberStyle:
+    """Zapis liczb w etykietach współdzielonych przez mail i publiczny scorecard.
+
+    MAIL-58: mail pisze po polsku (`POLISH_NUMBERS`), a publiczny scorecard
+    zostaje przy kropce i dotychczasowym zaokrąglaniu (`DOT_NUMBERS`).
+    """
+
+    polish: bool
+
+    @property
+    def decimal_separator(self) -> str:
+        return "," if self.polish else "."
+
+    def pct(self, fraction: float, *, decimals: int, signed: bool = False) -> str:
+        """Ułamek jako procent: „52,0%” (polski) albo „52.0%” (kropka)."""
+        if self.polish:
+            return pct(fraction, signed=signed, decimals=decimals)
+        # `+ 0.0` zamienia ujemne zero z zaokrąglenia na dodatnie — „+0.0%”.
+        rounded = round(fraction * 100, decimals) + 0.0
+        sign = "+" if signed else ""
+        return f"{rounded:{sign}.{decimals}f}%"
+
+    def pct_range(self, low: float, high: float, *, decimals: int = 0) -> str:
+        """Przedział procentów z jednym „%” na końcu: „41–63%”."""
+        low_pct = self.pct(low, decimals=decimals).removesuffix("%")
+        return f"{low_pct}–{self.pct(high, decimals=decimals)}"
+
+    def number(self, value: float, *, decimals: int) -> str:
+        """Liczba: „0,231” (polski) albo „0.231” (kropka)."""
+        if self.polish:
+            return number(value, decimals=decimals)
+        return f"{value:.{decimals}f}"
+
+
+POLISH_NUMBERS = NumberStyle(polish=True)
+DOT_NUMBERS = NumberStyle(polish=False)
 
 
 def plural_pl(n: int, one: str, few: str, many: str) -> str:

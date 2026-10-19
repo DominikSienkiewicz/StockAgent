@@ -38,6 +38,7 @@ from src.application.report_evidence import (
     probability_label,
     uncertainty_note,
 )
+from src.application.report_formatting import DOT_NUMBERS
 from src.application.report_models import ResolvedPrediction
 from src.domain.calibration_curve import (
     CalibrationBucket,
@@ -117,8 +118,8 @@ def _render_headline(
         _stat_card("Predykcji rozliczonych", str(len(predictions)))
         + _stat_card(
             "Hit-rate kierunkowy",
-            hit_rate_value(evidence),
-            "" if evidence is None else hit_rate_detail(evidence),
+            hit_rate_value(evidence, numbers=DOT_NUMBERS),
+            "" if evidence is None else hit_rate_detail(evidence, numbers=DOT_NUMBERS),
         )
         + _stat_card("Prognozy „bez ruchu” (poza hit-rate)", str(sideways))
     )
@@ -150,7 +151,7 @@ def _render_evidence(evidence: HitRateEvidence | None) -> str:
     if evidence is None or evidence.hit_rate.rate is None:
         return ""
     lines: list[str] = []
-    baselines = baselines_label(evidence)
+    baselines = baselines_label(evidence, numbers=DOT_NUMBERS)
     if baselines:
         lines.append(f"Naiwne strategie na tych samych predykcjach: {baselines}.")
     if evidence.verdict is not None:
@@ -158,7 +159,7 @@ def _render_evidence(evidence: HitRateEvidence | None) -> str:
             f"Werdykt: {evidence.verdict} — test dwumianowy względem lepszej z "
             "naiwnych strategii kierunkowych."
         )
-    note = uncertainty_note(evidence)
+    note = uncertainty_note(evidence, numbers=DOT_NUMBERS)
     if note:
         lines.append(f"Niepewność: {note}.")
     return "".join(f"<p class='evidence'>{_html.escape(line)}</p>" for line in lines)
@@ -191,12 +192,14 @@ def _render_calibration_section(
     scores = probability_scores(samples)
     scores_html = ""
     if scores is not None:
+        probability = probability_label(scores, numbers=DOT_NUMBERS)
+        murphy = murphy_label(scores, numbers=DOT_NUMBERS)
         scores_html = (
-            f"<p class='ece'><strong>{_html.escape(probability_label(scores))}</strong>"
+            f"<p class='ece'><strong>{_html.escape(probability)}</strong>"
             " — Brier im niżej, tym lepiej; BSS mówi, o ile bijemy prognozę "
             "„zawsze stopa bazowa” (0% = brak umiejętności).</p>"
             "<p class='ece'>Rozkład Murphy'ego: "
-            f"{_html.escape(murphy_label(scores))} (rzetelność, rozdzielczość, "
+            f"{_html.escape(murphy)} (rzetelność, rozdzielczość, "
             "niepewność).</p>"
         )
     return (

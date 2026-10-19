@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC
 
+from src.application.report_formatting import POLISH_NUMBERS, NumberStyle
 from src.application.report_models import ResolvedPrediction
 from src.domain.calibration_curve import ProbabilityScores
 from src.domain.equity_curve import EquityCurve, portfolio_equity_curve
@@ -92,15 +93,15 @@ def portfolio_curve(resolved: Sequence[ResolvedPrediction]) -> EquityCurve | Non
     return portfolio_equity_curve(group_by_cycle(keyed))
 
 
-def interval_label(low: float, high: float) -> str:
+def interval_label(low: float, high: float, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
     """„95% CI 41–63%” — przedział w pełnych procentach."""
-    return f"95% CI {low * 100:.0f}–{high * 100:.0f}%"
+    return f"95% CI {numbers.pct_range(low, high)}"
 
 
-def wilson_label(successes: float, n: int) -> str:
+def wilson_label(successes: float, n: int, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
     """Przedział Wilsona z liczbą prób, np. „95% CI 41–63%, n=80”."""
     low, high = wilson_interval(successes, n)
-    return f"{interval_label(low, high)}, n={n}"
+    return f"{interval_label(low, high, numbers=numbers)}, n={n}"
 
 
 def sample_label(n: int, n_eff: float) -> str:
@@ -110,39 +111,41 @@ def sample_label(n: int, n_eff: float) -> str:
     return f"n={n}, n_eff≈{n_eff:.0f}"
 
 
-def hit_rate_value(evidence: HitRateEvidence | None) -> str:
-    """Hit-rate kierunkowy jako „52.0%” albo „—”, gdy nie było zakładów."""
+def hit_rate_value(
+    evidence: HitRateEvidence | None, *, numbers: NumberStyle = POLISH_NUMBERS
+) -> str:
+    """Hit-rate kierunkowy jako „52,0%” albo „—”, gdy nie było zakładów."""
     rate = None if evidence is None else evidence.hit_rate.rate
-    return "—" if rate is None else f"{rate * 100:.1f}%"
+    return "—" if rate is None else numbers.pct(rate, decimals=1)
 
 
-def hit_rate_detail(evidence: HitRateEvidence) -> str:
+def hit_rate_detail(evidence: HitRateEvidence, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
     """„95% CI 41–63%, n=412, n_eff≈61” — przedział Wilsona liczony na n_eff."""
     if evidence.interval is None:
         return ""
     low, high = evidence.interval
     sample = sample_label(evidence.hit_rate.directional, evidence.n_eff)
-    return f"{interval_label(low, high)}, {sample}"
+    return f"{interval_label(low, high, numbers=numbers)}, {sample}"
 
 
-def baselines_label(evidence: HitRateEvidence) -> str:
+def baselines_label(evidence: HitRateEvidence, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
     """Naiwne baseline'y na tych samych predykcjach, np. „zawsze-BULLISH: 54% · …”."""
     b = evidence.baselines
     if b.always_bullish is None or b.always_bearish is None or b.always_sideways is None:
         return ""
     return (
-        f"zawsze-BULLISH: {b.always_bullish * 100:.0f}% · "
-        f"zawsze-BEARISH: {b.always_bearish * 100:.0f}% · "
-        f"zawsze-SIDEWAYS: {b.always_sideways * 100:.0f}%"
+        f"zawsze-BULLISH: {numbers.pct(b.always_bullish, decimals=0)} · "
+        f"zawsze-BEARISH: {numbers.pct(b.always_bearish, decimals=0)} · "
+        f"zawsze-SIDEWAYS: {numbers.pct(b.always_sideways, decimals=0)}"
     )
 
 
-def uncertainty_note(evidence: HitRateEvidence) -> str:
+def uncertainty_note(evidence: HitRateEvidence, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
     """Bootstrap po cyklach albo ostrzeżenie, że cykli jest za mało; plus mała próbka."""
     notes: list[str] = []
     if evidence.bootstrap is not None:
         low, high = evidence.bootstrap
-        notes.append(f"bootstrap po cyklach: {low * 100:.0f}–{high * 100:.0f}%")
+        notes.append(f"bootstrap po cyklach: {numbers.pct_range(low, high)}")
     elif evidence.hit_rate.directional:
         notes.append(
             f"za mało cykli ({evidence.cycles} < {MIN_BOOTSTRAP_CYCLES}) na bootstrap — "
@@ -155,32 +158,29 @@ def uncertainty_note(evidence: HitRateEvidence) -> str:
     return "; ".join(notes)
 
 
-def _signed_pct(value: float) -> str:
-    # `+ 0.0` zamienia ujemne zero z zaokrąglenia na dodatnie — „+0.0%”, nie „-0.0%”.
-    return f"{round(value * 100, 1) + 0.0:+.1f}%"
-
-
-def _score(value: float) -> str:
-    """Wynik do 3 miejsc bez zer końcowych: 0.231 → „0.231”, 0.250 → „0.25”.
+def _score(value: float, numbers: NumberStyle) -> str:
+    """Wynik do 3 miejsc bez zer końcowych: 0.231 → „0,231”, 0.250 → „0,25”.
 
     Krótszy zapis jest też bezpieczniejszy dla strony publicznej: test anty-PII
     szuka w niej fragmentów kwot (np. „250”), a „0.250” byłoby fałszywym trafem.
     """
-    return f"{value:.3f}".rstrip("0").rstrip(".")
+    text = numbers.number(value, decimals=3)
+    return text.rstrip("0").rstrip(numbers.decimal_separator)
 
 
-def probability_label(scores: ProbabilityScores) -> str:
-    """„Brier = 0.231 (klimatologia 0.245, BSS = +5.7%) · log loss = 0.66”."""
-    skill = "n/d" if scores.skill is None else _signed_pct(scores.skill)
+def probability_label(scores: ProbabilityScores, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
+    """„Brier = 0,231 (klimatologia 0,245, BSS = +5,7%) · log loss = 0,66”."""
+    skill = "n/d" if scores.skill is None else numbers.pct(scores.skill, decimals=1, signed=True)
     return (
-        f"Brier = {_score(scores.brier)} (klimatologia {_score(scores.climatology_brier)}, "
-        f"BSS = {skill}) · log loss = {_score(scores.log_loss)}"
+        f"Brier = {_score(scores.brier, numbers)} "
+        f"(klimatologia {_score(scores.climatology_brier, numbers)}, "
+        f"BSS = {skill}) · log loss = {_score(scores.log_loss, numbers)}"
     )
 
 
-def murphy_label(scores: ProbabilityScores) -> str:
-    """Rozkład Murphy'ego: „REL 0.01 · RES 0.004 · UNC 0.245”."""
+def murphy_label(scores: ProbabilityScores, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
+    """Rozkład Murphy'ego: „REL 0,01 · RES 0,004 · UNC 0,245”."""
     return (
-        f"REL {_score(scores.reliability)} · RES {_score(scores.resolution)} · "
-        f"UNC {_score(scores.uncertainty)}"
+        f"REL {_score(scores.reliability, numbers)} · RES {_score(scores.resolution, numbers)} · "
+        f"UNC {_score(scores.uncertainty, numbers)}"
     )

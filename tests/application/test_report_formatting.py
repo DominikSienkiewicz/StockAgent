@@ -16,13 +16,16 @@ import pytest
 from src.application.report_formatting import (
     COMPANY_NAMES,
     DEFAULT_DISPLAY_TIMEZONE,
+    DOT_NUMBERS,
     PALETTE,
+    POLISH_NUMBERS,
     company_label,
     delta_color,
     format_local,
     money,
     number,
     pct,
+    pct_range,
     plural_pl,
     provenance_badges_html,
     sector_label,
@@ -255,3 +258,24 @@ class TestNumberAndMoney:
         assert money(Decimal("3200")) == "$3\u00a0200,00"
         assert money(Decimal("-200"), signed=True) == "-$200,00"
         assert money(None) == "—"
+
+    def test_pct_range_puts_one_percent_sign_at_the_end(self) -> None:
+        assert pct_range(0.405, 0.63) == "41–63%"
+
+
+class TestNumberStyle:
+    """MAIL-58: etykiety współdzielone przez mail i publiczny scorecard — mail po
+    polsku, scorecard przy kropce i dotychczasowym zaokrąglaniu."""
+
+    def test_polish_style_matches_the_mail_helpers(self) -> None:
+        assert POLISH_NUMBERS.pct(0.52, decimals=1) == "52,0%"
+        assert POLISH_NUMBERS.pct_range(0.41, 0.63) == "41–63%"
+        assert POLISH_NUMBERS.number(0.231, decimals=3) == "0,231"
+        assert POLISH_NUMBERS.decimal_separator == ","
+
+    def test_dot_style_keeps_the_public_scorecard_format(self) -> None:
+        assert DOT_NUMBERS.pct(0.52, decimals=1) == "52.0%"
+        assert DOT_NUMBERS.pct(0.057, decimals=1, signed=True) == "+5.7%"
+        assert DOT_NUMBERS.pct(-0.0001, decimals=1, signed=True) == "+0.0%"
+        assert DOT_NUMBERS.number(0.231, decimals=3) == "0.231"
+        assert DOT_NUMBERS.decimal_separator == "."

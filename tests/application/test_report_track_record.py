@@ -52,9 +52,9 @@ class TestEquityCurve:
         assert "<h2" in html
         assert "Track Record" in html
         # Wynik łączny, trafność i obsunięcie jako procenty.
-        assert "+7.0%" in html      # total_return
-        assert "66.7%" in html or "67%" in html  # win_rate
-        assert "2.0%" in html       # max_drawdown
+        assert "+7,0%" in html      # total_return
+        assert "66,7%" in html or "67%" in html  # win_rate
+        assert "2,0%" in html       # max_drawdown
 
 
 class TestCalibration:
@@ -135,7 +135,7 @@ class TestComposition:
         )
         html = render_track_record_html(_curve(), buckets, lessons)
         assert "Track Record" in html
-        assert "+7.0%" in html
+        assert "+7,0%" in html
         assert "MSFT" in html
         assert "kalibracj" in html.lower()
 
@@ -171,7 +171,7 @@ class TestHonestStats:
             _curve(), None, None, TrackRecordStats(hit_rate=_evidence())
         )
 
-        assert "Trafność kierunkowa: 50.0%" in html
+        assert "Trafność kierunkowa: 50,0%" in html
         assert "95% CI" in html
         assert "n=24, n_eff≈8" in html
         assert "zawsze-BULLISH: 50%" in html
@@ -185,8 +185,8 @@ class TestHonestStats:
 
         html = render_track_record_html(None, buckets, None, TrackRecordStats(scores=scores))
 
-        assert "Brier = 0.24 " in html
-        assert "BSS = +0.0%" in html
+        assert "Brier = 0,24 " in html
+        assert "BSS = +0,0%" in html
         assert "ECE" in html
 
     def test_stats_alone_do_not_resurrect_a_hidden_section(self) -> None:

@@ -31,6 +31,7 @@ from src.application.report_evidence import (
     probability_label,
     uncertainty_note,
 )
+from src.application.report_formatting import pct, pct_range
 from src.application.report_lessons import LessonsReport
 from src.domain.calibration_curve import (
     CalibrationBucket,
@@ -101,9 +102,9 @@ def _render_equity_html(curve: EquityCurve, evidence: HitRateEvidence | None) ->
         "margin-bottom: 10px; font-size: 13px;'>"
         "<strong>Krzywa kapitału (paper-PnL):</strong> wynik łączny "
         f"<span style='color: {total_color}; font-weight: 600;'>"
-        f"{curve.total_return * 100:+.1f}%</span> · trafność "
-        f"{curve.win_rate * 100:.1f}% · max obsunięcie "
-        f"{curve.max_drawdown * 100:.1f}% · transakcji: {curve.n_trades}"
+        f"{pct(curve.total_return, signed=True, decimals=1)}</span> · trafność "
+        f"{pct(curve.win_rate, decimals=1)} · max obsunięcie "
+        f"{pct(curve.max_drawdown, decimals=1)} · transakcji: {curve.n_trades}"
         "</div>"
     )
     assumptions = (
@@ -177,12 +178,12 @@ def _render_calibration_html(
         color = _severity_color(gap)
         rows.append(
             "<tr>"
-            f"<td style='padding: 6px 8px;'>{b.lower * 100:.0f}–{b.upper * 100:.0f}%</td>"
+            f"<td style='padding: 6px 8px;'>{pct_range(b.lower, b.upper)}</td>"
             f"<td style='padding: 6px 8px; text-align: right;'>{b.count}</td>"
             f"<td style='padding: 6px 8px; text-align: right;'>"
-            f"{b.mean_confidence * 100:.0f}%</td>"
+            f"{pct(b.mean_confidence, decimals=0)}</td>"
             f"<td style='padding: 6px 8px; text-align: right; color: {color}; "
-            f"font-weight: 600;'>{b.hit_rate * 100:.0f}%</td>"
+            f"font-weight: 600;'>{pct(b.hit_rate, decimals=0)}</td>"
             "</tr>"
         )
     ece_color = _severity_color(ece)
@@ -210,7 +211,7 @@ def _render_calibration_html(
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         "<p style='font-size: 12px; color: #6b7280; margin: 0 0 16px 0;'>"
         f"Pomocniczo — błąd kalibracji (ECE): <strong style='color: {ece_color};'>"
-        f"{ece * 100:.1f}%</strong> — im niżej, tym lepiej pewność odpowiada "
+        f"{pct(ece, decimals=1)}</strong> — im niżej, tym lepiej pewność odpowiada "
         "realnej trafności.</p>"
     )
 
@@ -221,9 +222,9 @@ def _render_coverage_html(coverage: IntervalCoverage) -> str:
     gap = abs(rate - coverage.nominal)
     return (
         f"<p style='font-size: 13px; margin: 12px 0 4px 0; color: {_severity_color(gap)};'>"
-        f"<strong>Pokrycie przedziałów {coverage.nominal * 100:.0f}%: zrealizowane "
-        f"{rate * 100:.0f}% ({coverage.hits}/{coverage.n}) vs nominalne "
-        f"{coverage.nominal * 100:.0f}%</strong></p>"
+        f"<strong>Pokrycie przedziałów {pct(coverage.nominal, decimals=0)}: zrealizowane "
+        f"{pct(rate, decimals=0)} ({coverage.hits}/{coverage.n}) vs nominalne "
+        f"{pct(coverage.nominal, decimals=0)}</strong></p>"
         f"<p style='{_NOTE_STYLE}'>Gwarancja pokrycia zakłada wymienność obserwacji, "
         "której rynek nie spełnia (zmienność się grupuje, reżimy się zmieniają). "
         "ACI łagodzi zmianę rozkładu, ale niczego nie gwarantuje — dlatego "
@@ -248,7 +249,7 @@ def _render_lessons_html(lessons: LessonsReport) -> str:
     items: list[str] = []
     for item in lessons.items:
         change = (
-            f" ({item.actual_change_pct * 100:+.1f}%)"
+            f" ({pct(item.actual_change_pct, signed=True, decimals=1)})"
             if item.actual_change_pct is not None
             else ""
         )
