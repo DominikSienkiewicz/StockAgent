@@ -8,6 +8,7 @@ Reguła domenowa: poniżej progu N zamkniętych predykcji recap NIE POWSTAJE
 
 from __future__ import annotations
 
+import dataclasses
 from decimal import Decimal
 
 from src.domain.council import InvestorOpinion
@@ -187,6 +188,40 @@ class TestHeroSelection:
         assert recap.best.symbol == "HIT"
         assert recap.worst.symbol != recap.best.symbol
         assert recap.worst.direction_correct is False
+
+
+def _recorded(closed: ClosedPrediction, verdict: bool) -> ClosedPrediction:
+    return dataclasses.replace(closed, recorded_trend_correct=verdict)
+
+
+def _btc_sideways_up_1_5pct() -> ClosedPrediction:
+    # SIDEWAYS, ruch +1.5%: pasmo akcyjne ±0.5% mówi „pudło”, krypto ±2.5% „trafienie”.
+    return _closed(
+        "BTC", trend=TrendDirection.SIDEWAYS, base="100", target="100", actual="101.5"
+    )
+
+
+class TestRecordedDirectionVerdict:
+    """Decyzja 2026-10-19 (a): werdykt kierunku recapu to zapisany
+    `is_trend_correct` z reflect_node (krypto: pasmo SIDEWAYS ±2.5%), a nie
+    ponowne liczenie z cen pasmem akcyjnym ±0.5%. Bez zapisu → ceny."""
+
+    def test_recorded_crypto_sideways_hit_counts_as_hit(self) -> None:
+        assert _recorded(_btc_sideways_up_1_5pct(), True).is_correct() is True
+
+    def test_recorded_miss_wins_over_the_price_rule(self) -> None:
+        call = _closed("AAPL", base="100", target="105", actual="105")
+        assert _recorded(call, False).is_correct() is False
+
+    def test_without_recorded_verdict_prices_decide(self) -> None:
+        assert _btc_sideways_up_1_5pct().is_correct() is False
+
+    def test_hero_verdict_uses_the_recorded_value(self) -> None:
+        predictions = [_recorded(_btc_sideways_up_1_5pct(), True), *_n_closed(4)]
+        recap = build_weekly_recap(predictions)
+        assert recap is not None
+        assert recap.best.symbol == "BTC"
+        assert recap.best.direction_correct is True
 
 
 class TestVindicatedDissenters:

@@ -124,7 +124,13 @@ def _to_closed_prediction(row: dict[str, Any]) -> ClosedPrediction | None:
         correction_insight=insight if is_substantive_insight(insight) else "",
         council_opinions=opinions,
         council_recommendation=cast(Any, recommendation),
+        recorded_trend_correct=_recorded_verdict(row.get("is_trend_correct")),
     )
+
+
+def _recorded_verdict(value: Any) -> bool | None:
+    """Zapisany `is_trend_correct`; brak albo nie-bool → None (domena liczy z cen)."""
+    return value if isinstance(value, bool) else None
 
 
 def _narrative_prompt(recap: WeeklyRecap) -> str:

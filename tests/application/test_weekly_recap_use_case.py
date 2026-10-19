@@ -256,3 +256,26 @@ class TestWeeklyRecapNarrativeVerdict:
 
         assert "Strzał tygodnia" not in prompt
         assert "Najbliżej celu (kierunek chybiony): M0" in prompt
+
+
+class TestWeeklyRecapRecordedVerdict:
+    """Decyzja 2026-10-19 (a): use case przekazuje zapisany `is_trend_correct`
+    do domeny — krypto SIDEWAYS rozliczone pasmem ±2.5% nie jest w mailu ❌."""
+
+    def test_recorded_crypto_sideways_hit_renders_as_hit(self) -> None:
+        from src.application.report_weekly_recap import render_weekly_recap_text
+
+        btc = {
+            **_row("BTC", trend="SIDEWAYS", target="100", actual="101.5"),
+            "is_trend_correct": True,
+        }
+        misses = [_row(f"M{i}", target=str(101 + i), actual="100") for i in range(4)]
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_predictions_detailed.return_value = [btc, *misses]
+        llm = Mock(spec=LLMPort)
+        llm.analyze.return_value = {"narrative": "n"}
+
+        recap = _use_case(repo, llm).run()["recap"]
+
+        assert recap.best.symbol == "BTC"
+        assert "Strzał tygodnia: BTC (✅ kierunek trafiony" in render_weekly_recap_text(recap)

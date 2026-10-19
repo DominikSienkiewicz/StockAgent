@@ -55,7 +55,10 @@ class ClosedPrediction:
     - `confidence` — deklarowana pewność ∈ [0, 1] (zasila ECE),
     - `correction_insight` — tekstowa lekcja z self-reflection (pusta gdy brak),
     - `council_opinions` — głosy rady zapisane dla tej predykcji (do wybronień),
-    - `council_recommendation` — finalna rekomendacja rady (do wybronień).
+    - `council_recommendation` — finalna rekomendacja rady (do wybronień),
+    - `recorded_trend_correct` — werdykt kierunku zapisany przez reflect_node
+      (`is_trend_correct`; pasmo SIDEWAYS zależne od klasy aktywa, krypto
+      ±2.5%). None = brak zapisu → liczymy z cen pasmem akcyjnym.
     """
 
     prediction: Prediction
@@ -64,6 +67,7 @@ class ClosedPrediction:
     correction_insight: str = ""
     council_opinions: tuple[InvestorOpinion, ...] = ()
     council_recommendation: Literal["BUY", "SELL", "HOLD"] = "HOLD"
+    recorded_trend_correct: bool | None = None
 
     def __post_init__(self) -> None:
         # Koercja do tuple — realna niezmienność frozen value objectu (frozen=True
@@ -81,7 +85,13 @@ class ClosedPrediction:
         return self.prediction.accuracy_score(self.actual_price)
 
     def is_correct(self) -> bool:
-        """Czy kierunek trafiony — reużycie `Prediction.is_trend_correct`."""
+        """Czy kierunek trafiony — jedno źródło prawdy z mailem dziennym.
+
+        Zapisany werdykt reflect_node wygrywa (zna pasmo SIDEWAYS dla krypto);
+        bez zapisu reużywamy `Prediction.is_trend_correct` na cenach.
+        """
+        if self.recorded_trend_correct is not None:
+            return self.recorded_trend_correct
         return self.prediction.is_trend_correct(self.actual_price)
 
     def actual_direction(self) -> Literal["UP", "DOWN", "FLAT"]:
