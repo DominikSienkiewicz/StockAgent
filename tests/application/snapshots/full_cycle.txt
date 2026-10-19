@@ -19,25 +19,7 @@ Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
 Twój portfel od ostatniego maila: -0,8% (-$30,62 · -112,73 zł)
 Sygnały ponad próg: 3
 Rozliczone: 2/3 trafionych (ostatnie 24h)
-
-=== 🚨 Risk Watch — sygnały makro ===
-Ogólny alert: ELEVATED
-
-  SH (ProShares Short S&P 500)             Short equity       Δ= +2,10% [ELEVATED]
-  GLD (SPDR Gold Shares)                   Safe haven         Δ= +1,20% [ELEVATED]
-  VIXY (ProShares VIX Short-Term Futures ETF) Volatility (VIX)   Δ=+12,00% [CRITICAL]
-
--- Drawdown od 30d szczytu --
-  AMD (Advanced Micro Devices Inc.)         -13,98% od szczytu (szczyt 186,00) [ELEVATED]
-
-  EUR/PLN: 4,2710 (+1,20% / 30d)
-  USD/PLN: 3,6820 (+2,10% / 30d)
-  Stres fiskalny: ELEVATED
-
-=== 🎯 PORTFOLIO RADAR — KONCENTRACJA I RYZYKO ===
-  Werdykt: Największy klaster: AMD + NVDA (2 z 3 symboli, 67% watchlisty)
-  Klaster 1 (2 symboli): AMD · NVDA
-  📉 Value-at-Risk (95%): 3,1% (CVaR 4,6%)
+Wiarygodność modelu: trafność kierunkowa 57,5% (n=40, ostatnie 30 dni) — szczegóły w Zapleczu
 
 === 💼 Twój portfel ===
 
@@ -50,22 +32,6 @@ Ogólny alert: ELEVATED
   Zmiana od ostatniego maila: -$30,62 (-0,8%) · -112,73 zł · najwięcej: AMD -$87,05, NVDA +$56,43 · bez punktu odniesienia: XDWD.DE
 
   ⚠️ Twoje 2 pozycji (AMD, NVDA) to jeden klaster korelacji «Półprzewodniki» — 100,0% kapitału.
-
-KRYPTO
-----------------------------------------------------------------
-  BTC (Bitcoin)                              $65 040,00  Δ   +6,10%  Wzrostowy prognoza +1,63%
-  ETH (Ethereum)                              $3 238,40  Δ   +1,20%  poniżej progu
-
-NAJSILNIEJSZE SYGNAŁY
-----------------------------------------------------------------
-  KUP       NVDA (NVIDIA Corporation)                pewność 82%  prognoza   +2,50%  #1 · ruch 2,5% × pewność 82%  [Pozycja startowa 1-2% portfela]
-  SPRZEDAJ  AMD (Advanced Micro Devices Inc.)        pewność 71%  prognoza   -1,75%  #2 · ruch 1,8% × pewność 71%  [Pozycja startowa 1-2% portfela]
-  KUP       BTC (Bitcoin)                            pewność 64%  prognoza   +1,63%  #3 · ruch 1,6% × pewność 64%
-
-SYGNAŁY OSTRZEGAWCZE
-----------------------------------------------------------------
-  ⚠ AMD (Advanced Micro Devices Inc.): [Niezgodność AV↔LLM] LLM nie zgadza się z AV (zgoda=0,25) -> potencjalny fake news / manipulacja
-  ⚠ BTC (Bitcoin): [Słaby sygnał] tylko 2 relevantnych newsów — decyzja na słabych danych
 
 ZAMKNIĘTE PREDYKCJE (ostatnie 24h)
 ----------------------------------------------------------------
@@ -82,21 +48,16 @@ ZAMKNIĘTE PREDYKCJE (ostatnie 24h)
         dlaczego: Teza prognozy się potwierdziła.
   Suma: 2/3 · Trafność kierunkowa (bez prognoz „bez ruchu”): 50% (n=2) · Trafność łączna (z prognozami „bez ruchu”): 67% (n=3)
 
-NASTROJE PORTFELA
+NAJSILNIEJSZE SYGNAŁY
 ----------------------------------------------------------------
-  Średni sentyment: +0,15 (Lekko pozytywny)
-  Najbardziej pozytywny: NVDA (NVIDIA Corporation) (+0,41)
-  Najbardziej negatywny: AMD (Advanced Micro Devices Inc.) (-0,18)
-  Wysoka pewność (≥70%): 2 / 3  ·  Newsów: 29
+  KUP       NVDA (NVIDIA Corporation)                pewność 82%  prognoza   +2,50%  #1 · ruch 2,5% × pewność 82%  [Pozycja startowa 1-2% portfela]
+  SPRZEDAJ  AMD (Advanced Micro Devices Inc.)        pewność 71%  prognoza   -1,75%  #2 · ruch 1,8% × pewność 71%  [Pozycja startowa 1-2% portfela]
+  KUP       BTC (Bitcoin)                            pewność 64%  prognoza   +1,63%  #3 · ruch 1,6% × pewność 64%
 
-HISTORIA TRAFNOŚCI (ostatnie 30 dni)
+SYGNAŁY OSTRZEGAWCZE
 ----------------------------------------------------------------
-  Trafność kierunkowa (bez prognoz „bez ruchu”): 57,5% (95% CI 42–71%, n=40)
-  Trafność łączna (z prognozami „bez ruchu”): 62,0% (95% CI 48–74%, n=50)  ·  Predykcji ocenionych: 50  ·  Poprawnych: 31
-
-WNIOSKI Z POPRZEDNICH CYKLI (Self-Reflection)
-----------------------------------------------------------------
-  NVDA (NVIDIA Corporation): Poprzednia prognoza trafiona — popyt potwierdził tezę.
+  ⚠ AMD (Advanced Micro Devices Inc.): [Niezgodność AV↔LLM] LLM nie zgadza się z AV (zgoda=0,25) -> potencjalny fake news / manipulacja
+  ⚠ BTC (Bitcoin): [Słaby sygnał] tylko 2 relevantnych newsów — decyzja na słabych danych
 
 PREDYKCJE
 ----------------------------------------------------------------
@@ -123,6 +84,51 @@ PREDYKCJE
          sentyment +0,22
          Sygnał modelu: KUP (pewność 64%, prognoza +1,63%)
         └ Napływy do ETF-ów spot i spadająca podaż na giełdach.
+
+KRYPTO
+----------------------------------------------------------------
+  BTC (Bitcoin)                              $65 040,00  Δ   +6,10%  Wzrostowy prognoza +1,63%
+  ETH (Ethereum)                              $3 238,40  Δ   +1,20%  poniżej progu
+
+================================================================
+ZAPLECZE
+Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, pominięte symbole i błędy.
+================================================================
+
+=== 🚨 Risk Watch — sygnały makro ===
+Ogólny alert: ELEVATED
+
+  SH (ProShares Short S&P 500)             Short equity       Δ= +2,10% [ELEVATED]
+  GLD (SPDR Gold Shares)                   Safe haven         Δ= +1,20% [ELEVATED]
+  VIXY (ProShares VIX Short-Term Futures ETF) Volatility (VIX)   Δ=+12,00% [CRITICAL]
+
+-- Drawdown od 30d szczytu --
+  AMD (Advanced Micro Devices Inc.)         -13,98% od szczytu (szczyt 186,00) [ELEVATED]
+
+  EUR/PLN: 4,2710 (+1,20% / 30d)
+  USD/PLN: 3,6820 (+2,10% / 30d)
+  Stres fiskalny: ELEVATED
+
+=== 🎯 PORTFOLIO RADAR — KONCENTRACJA I RYZYKO ===
+  Werdykt: Największy klaster: AMD + NVDA (2 z 3 symboli, 67% watchlisty)
+  Klaster 1 (2 symboli): AMD · NVDA
+  📉 Value-at-Risk (95%): 3,1% (CVaR 4,6%)
+
+HISTORIA TRAFNOŚCI (ostatnie 30 dni)
+----------------------------------------------------------------
+  Trafność kierunkowa (bez prognoz „bez ruchu”): 57,5% (95% CI 42–71%, n=40)
+  Trafność łączna (z prognozami „bez ruchu”): 62,0% (95% CI 48–74%, n=50)  ·  Predykcji ocenionych: 50  ·  Poprawnych: 31
+
+NASTROJE PORTFELA
+----------------------------------------------------------------
+  Średni sentyment: +0,15 (Lekko pozytywny)
+  Najbardziej pozytywny: NVDA (NVIDIA Corporation) (+0,41)
+  Najbardziej negatywny: AMD (Advanced Micro Devices Inc.) (-0,18)
+  Wysoka pewność (≥70%): 2 / 3  ·  Newsów: 29
+
+WNIOSKI Z POPRZEDNICH CYKLI (Self-Reflection)
+----------------------------------------------------------------
+  NVDA (NVIDIA Corporation): Poprzednia prognoza trafiona — popyt potwierdził tezę.
 
 WARTE UWAGI (sektory w ruchu)
 ----------------------------------------------------------------

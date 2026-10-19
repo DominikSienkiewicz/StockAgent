@@ -16,6 +16,11 @@ KRYPTO
 ----------------------------------------------------------------
   BTC (Bitcoin)                              $65 040,00  Δ   +0,00%  poniżej progu
 
+================================================================
+ZAPLECZE
+Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, pominięte symbole i błędy.
+================================================================
+
 NASTROJE PORTFELA
 ----------------------------------------------------------------
   Średni sentyment: +0,00 (Neutralny)

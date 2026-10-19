@@ -6,20 +6,26 @@ Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
 
 Sygnały ponad próg: 0
 Rozliczone: brak (ostatnie 24h)
+Wiarygodność modelu: trafność kierunkowa 57,5% (n=40, ostatnie 30 dni) — szczegóły w Zapleczu
 
 KRYPTO
 ----------------------------------------------------------------
   ETH (Ethereum)                              $3 164,80  Δ   -1,10%  poniżej progu
 
-NASTROJE PORTFELA
-----------------------------------------------------------------
-  Średni sentyment: +0,00 (Neutralny)
-  Wysoka pewność (≥70%): 0 / 0  ·  Newsów: 0
+================================================================
+ZAPLECZE
+Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, pominięte symbole i błędy.
+================================================================
 
 HISTORIA TRAFNOŚCI (ostatnie 30 dni)
 ----------------------------------------------------------------
   Trafność kierunkowa (bez prognoz „bez ruchu”): 57,5% (95% CI 42–71%, n=40)
   Trafność łączna (z prognozami „bez ruchu”): 62,0% (95% CI 48–74%, n=50)  ·  Predykcji ocenionych: 50  ·  Poprawnych: 31
+
+NASTROJE PORTFELA
+----------------------------------------------------------------
+  Średni sentyment: +0,00 (Neutralny)
+  Wysoka pewność (≥70%): 0 / 0  ·  Newsów: 0
 
 POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------

@@ -30,6 +30,7 @@ from src.application.run_context import RunContext
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.cycle_maturity import SkipReason
+from src.domain.equity_curve import EquityCurve, EquityPoint
 from src.domain.model_scorecard import summarize_evaluations, summarize_run
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.portfolio import Portfolio, Position
@@ -3141,3 +3142,19 @@ class TestFirstScreenReaderNumbers:
         settlements_box = html.split("Rozliczone")[1][:300]
         assert "niedostępne" in settlements_box
         assert "Rozliczone: niedostępne" in text
+
+
+def test_trade_signals_precede_track_record():
+    # MAIL-17: Track Record stoi w „Zapleczu” — przy przycięciu przez Gmaila
+    # dolna część maila znika pierwsza, więc akcyjne sygnały muszą być wyżej.
+    curve = EquityCurve(
+        points=(EquityPoint(index=0, period_return=0.01, equity=1.01),),
+        total_return=0.01, win_rate=1.0, max_drawdown=0.0, n_trades=1,
+    )
+
+    html, _ = build_html_report(
+        [_saved_result()], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(equity_curve=curve),
+    )
+
+    assert html.index("Najsilniejsze sygnały") < html.index("Track Record")

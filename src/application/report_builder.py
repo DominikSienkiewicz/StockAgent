@@ -2027,6 +2027,81 @@ def _technical_footer_text(
     )
 
 
+# ---------------------------------------------------------------------------
+# MAIL-17: dwie strefy — „Na dziś” przed „Zapleczem”
+# ---------------------------------------------------------------------------
+
+_BACKOFFICE_TITLE = "🗄️ Zaplecze"
+_BACKOFFICE_NOTE = (
+    "Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, "
+    "pominięte symbole i błędy."
+)
+_BACKOFFICE_SEPARATOR_HTML = (
+    '<div style="margin: 32px 0 8px 0; padding-top: 12px; border-top: 2px solid #d1d5db;">'
+    f'<div style="font-size: 18px; font-weight: 700; color: #374151;">{_BACKOFFICE_TITLE}</div>'
+    f'<div style="font-size: 12px; color: #6b7280;">{_BACKOFFICE_NOTE}</div>'
+    "</div>"
+)
+_CREDIBILITY_TITLE = "Wiarygodność modelu"
+
+
+def _credibility_label(accuracy_stats: Mapping[str, Any] | None) -> str | None:
+    """MAIL-17: jednolinijkowy pasek wiarygodności — trafność kierunkowa i n z tych
+    samych statystyk co „Historia trafności” w Zapleczu. Bez liczników kierunkowych
+    → None (pasek się chowa)."""
+    if not accuracy_stats:
+        return None
+    n = accuracy_stats.get("directional_count")
+    hits = accuracy_stats.get("directional_correct_count")
+    if n is None or hits is None:
+        return None
+    days = accuracy_stats.get("days_window")
+    window = f", ostatnie {days} dni" if days is not None else ""
+    if n == 0:
+        return f"trafność kierunkowa — (brak prognoz kierunkowych{window})"
+    return f"trafność kierunkowa {_pct(hits / n, decimals=1)} (n={n}{window})"
+
+
+def _render_credibility_bar_html(accuracy_stats: Mapping[str, Any] | None) -> str:
+    label = _credibility_label(accuracy_stats)
+    if label is None:
+        return ""
+    return (
+        '<div style="margin: -8px 0 16px 0; font-size: 12px; color: #4b5563;">'
+        f"📏 <strong>{_CREDIBILITY_TITLE}:</strong> {_html(label)}"
+        " · szczegóły w Zapleczu (Track Record)</div>"
+    )
+
+
+def _render_mood_html(mood: dict[str, Any]) -> str:
+    """📊 Nastroje portfela — sentyment cyklu w Zapleczu."""
+    bullish_part = (
+        f"<strong>{_html(_company_label(mood['most_bullish'].symbol))}</strong> "
+        f"({_number(mood['most_bullish'].sentiment_score, decimals=2, signed=True)})"
+        if mood["most_bullish"] else "—"
+    )
+    bearish_part = (
+        f"<strong>{_html(_company_label(mood['most_bearish'].symbol))}</strong> "
+        f"({_number(mood['most_bearish'].sentiment_score, decimals=2, signed=True)})"
+        if mood["most_bearish"] else "—"
+    )
+    return f"""
+      <div style="padding: 12px 14px; background: #eff6ff; border-left: 3px solid #2563eb;
+                  border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
+        <div style="font-weight: 600; margin-bottom: 6px; color: #1e3a8a;">
+          📊 Nastroje portfela
+        </div>
+        <div style="color: #1e40af; line-height: 1.7;">
+          Średni sentyment: <strong>{_number(mood['avg_sentiment'], decimals=2, signed=True)}</strong>
+          ({mood['avg_sentiment_label']})<br/>
+          Najbardziej pozytywny: {bullish_part} · Najbardziej negatywny: {bearish_part}<br/>
+          Predykcje z wysoką pewnością (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}
+          · Łącznie newsów: {mood['total_news']}
+        </div>
+      </div>
+    """
+
+
 def _render_html(
     results: list[SymbolResult],
     saved: list[SymbolResult],
@@ -2099,84 +2174,46 @@ def _render_html(
         f"{portfolio_change_box}{signals_box}{settlements_box}</div>"
     )
 
+    # MAIL-17: strefa „Na dziś” — pasek wiarygodności zamiast Track Recordu na
+    # górze, potem portfel, zmiany od wczoraj, sygnały, predykcje i krypto.
+    sections.append(_render_credibility_bar_html(accuracy_stats))
+    sections.append(_USER_PORTFOLIO_SLOT)
+    # Zmiany od wczoraj: rozliczenia, zmiany nastawienia, nowy punkt odniesienia.
+    sections.append(
+        _render_resolved_predictions_html(resolved_predictions, resolved_window, resolved_note)
+    )
+    sections.append(_CONSENSUS_SHIFT_SLOT)
+    sections.append(_render_rebaselined_html(ignored, display_timezone))
+    sections.append(_render_trade_signals_html(trade_signals))
+    sections.append(_render_risk_signals_html(risk_signals))
+    sections.append(_render_saved_section_html(saved))
+    # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
+    sections.append(_render_crypto_section_html(results, display_timezone))
+
+    # MAIL-17: „Zaplecze” — kontekst i kontrola za separatorem. Przy przycięciu
+    # przez Gmaila znika ta część, nie akcyjna.
+    sections.append(_BACKOFFICE_SEPARATOR_HTML)
     # Slot na sekcję Risk Watch — wypełniany przez build_html_report,
     # gdy wywołujący przekaże MacroRiskReport. Bez slotu sekcja jest pomijana.
     sections.append(_RISK_WATCH_SLOT)
     # Slot na radar korelacji portfela (Q4) — wypełniany przez build_html_report.
     sections.append(_PORTFOLIO_SLOT)
-    sections.append(_USER_PORTFOLIO_SLOT)
-    # Slot na panel historii głosów rady (U5).
-    sections.append(_COUNCIL_HISTORY_SLOT)
-    # Slot na ranking wiarygodności person (#3) — "kto z rady miał rację".
-    # Zaraz po historii głosów: najpierw KTO jak głosował, potem KTO trafiał.
-    sections.append(_PERSONA_LEADERBOARD_SLOT)
-    sections.append(_CONSENSUS_SHIFT_SLOT)
-    # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
-    sections.append(_TRACK_RECORD_SLOT)
-    sections.append(_MODEL_SCORECARD_SLOT)
-    sections.append(_FINOPS_SLOT)
     # Slot na sekcję Alpha Signals (Dane — insider/analitycy/opcje/social/FRED).
     sections.append(_ALPHA_SLOT)
-
-    # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
-    crypto_html = _render_crypto_section_html(results, display_timezone)
-    if crypto_html:
-        sections.append(crypto_html)
-
-    # 🎯 Trade ideas (najsilniejsze sygnały transakcyjne)
-    sections.append(_render_trade_signals_html(trade_signals))
-
-    # 🚨 Risk signals (anomalie / niespójności)
-    sections.append(_render_risk_signals_html(risk_signals))
-
-    # Portfolio mood box
-    bullish_part = (
-        f"<strong>{_html(_company_label(mood['most_bullish'].symbol))}</strong> "
-        f"({_number(mood['most_bullish'].sentiment_score, decimals=2, signed=True)})"
-        if mood["most_bullish"] else "—"
-    )
-    bearish_part = (
-        f"<strong>{_html(_company_label(mood['most_bearish'].symbol))}</strong> "
-        f"({_number(mood['most_bearish'].sentiment_score, decimals=2, signed=True)})"
-        if mood["most_bearish"] else "—"
-    )
-    sections.append(f"""
-      <div style="padding: 12px 14px; background: #eff6ff; border-left: 3px solid #2563eb;
-                  border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
-        <div style="font-weight: 600; margin-bottom: 6px; color: #1e3a8a;">
-          📊 Nastroje portfela
-        </div>
-        <div style="color: #1e40af; line-height: 1.7;">
-          Średni sentyment: <strong>{_number(mood['avg_sentiment'], decimals=2, signed=True)}</strong>
-          ({mood['avg_sentiment_label']})<br/>
-          Najbardziej pozytywny: {bullish_part} · Najbardziej negatywny: {bearish_part}<br/>
-          Predykcje z wysoką pewnością (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}
-          · Łącznie newsów: {mood['total_news']}
-        </div>
-      </div>
-    """)
-
-    # 📊 Day-over-day — zamknięte predykcje z ostatnich 24h albo z tego cyklu
-    sections.append(
-        _render_resolved_predictions_html(resolved_predictions, resolved_window, resolved_note)
-    )
-
-    # Historia trafności
+    # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
+    sections.append(_TRACK_RECORD_SLOT)
     sections.append(_render_accuracy_history_html(accuracy_stats))
-
+    sections.append(_MODEL_SCORECARD_SLOT)
+    # Slot na ranking wiarygodności person (#3) — "kto z rady miał rację".
+    sections.append(_PERSONA_LEADERBOARD_SLOT)
+    # Slot na panel historii głosów rady (U5).
+    sections.append(_COUNCIL_HISTORY_SLOT)
+    sections.append(_render_mood_html(mood))
     # #2: wykres Δ cen jako inline HTML (żadne dane nie opuszczają maila).
-    delta_chart = build_delta_chart_html(results)
-    if delta_chart:
-        sections.append(delta_chart)
-
+    sections.append(build_delta_chart_html(results))
     # Self-Reflection — wnioski z poprzednich cykli
     sections.append(_render_reflections_html(saved))
-
-    # Predykcje (saved)
-    sections.append(_render_saved_section_html(saved))
-
     sections.append(_SUGGESTIONS_SLOT)
-
     # #2: dawny scatter → tabela kwadrantów, inline (≥3 punkty).
     correlation_chart = build_correlation_chart_html(results)
     if correlation_chart:
@@ -2185,14 +2222,8 @@ def _render_html(
             "📈 Korelacja sentymentu z ruchem ceny</h3>"
         )
         sections.append(correlation_chart)
-
-    # FIN-14: nowy punkt odniesienia po pauzie (przed „Pominięte”)
-    sections.append(_render_rebaselined_html(ignored, display_timezone))
-
-    # Pominięte
+    sections.append(_FINOPS_SLOT)
     sections.append(_render_ignored_html(ignored))
-
-    # Błędy
     sections.append(_render_errors_html(errors))
 
     # MAIL-08: zastrzeżenie w stałej stopce, nie w sekcji warunkowej — sekcja,
@@ -2313,6 +2344,27 @@ def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list
         f"  ·  Poprawnych: {accuracy_stats['correct_count']}",
         "",
     ])
+    return lines
+
+
+def _render_mood_text(mood: dict[str, Any]) -> list[str]:
+    """Sekcja 'Nastroje portfela' (plain) — w Zapleczu, jak w HTML."""
+    lines = [
+        "NASTROJE PORTFELA",
+        "-" * 64,
+        f"  Średni sentyment: {_number(mood['avg_sentiment'], decimals=2, signed=True)} ({mood['avg_sentiment_label']})",
+    ]
+    if mood["most_bullish"]:
+        mb = mood["most_bullish"]
+        lines.append(f"  Najbardziej pozytywny: {_company_label(mb.symbol)} ({_number(mb.sentiment_score, decimals=2, signed=True)})")
+    if mood["most_bearish"]:
+        mbe = mood["most_bearish"]
+        lines.append(f"  Najbardziej negatywny: {_company_label(mbe.symbol)} ({_number(mbe.sentiment_score, decimals=2, signed=True)})")
+    lines.append(
+        f"  Wysoka pewność (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}"
+        f"  ·  Newsów: {mood['total_news']}"
+    )
+    lines.append("")
     return lines
 
 
@@ -2462,63 +2514,41 @@ def _render_plain(
         resolved_predictions, unavailable=settlements_unavailable, window=resolved_window
     )
     lines.append(f"Rozliczone: {settlements.text}")
+    # MAIL-17: pasek wiarygodności — te same liczby co Historia trafności w Zapleczu.
+    credibility = _credibility_label(accuracy_stats)
+    if credibility is not None:
+        lines.append(f"{_CREDIBILITY_TITLE}: {credibility} — szczegóły w Zapleczu")
     lines.append("")
 
-    # Slot na sekcję Risk Watch w wariancie plain text — analogicznie do HTML.
-    lines.append(_RISK_WATCH_SLOT)
-    # PORT-22: radar portfela (klastry, VaR, stress, „za mało historii”).
-    lines.append(_PORTFOLIO_SLOT)
-    # 💼 Twój portfel — jak w HTML, zaraz za radarem.
+    # MAIL-17: strefa „Na dziś”, kolejność jak w HTML.
+    # 💼 Twój portfel — zaraz za pierwszym ekranem.
     lines.append(_USER_PORTFOLIO_SLOT)
-
+    # Zmiany od wczoraj: rozliczenia i nowy punkt odniesienia.
+    lines.extend(
+        _render_resolved_predictions_text(resolved_predictions, resolved_window, resolved_note)
+    )
+    lines.extend(_render_rebaselined_text(ignored, display_timezone))
+    lines.extend(_render_trade_signals_text(trade_signals))
+    lines.extend(_render_risk_signals_text(risk_signals))
+    lines.extend(_render_saved_section_text(saved))
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
     crypto_text = _render_crypto_section_text(results, display_timezone)
     if crypto_text:
         lines.append(crypto_text)
         lines.append("")
 
-    # Trade ideas
-    lines.extend(_render_trade_signals_text(trade_signals))
-
-    # Risk signals
-    lines.extend(_render_risk_signals_text(risk_signals))
-
-    # Zamknięte predykcje
-    lines.extend(
-        _render_resolved_predictions_text(resolved_predictions, resolved_window, resolved_note)
-    )
-
-    # Nastroje portfela
-    lines.append("NASTROJE PORTFELA")
-    lines.append("-" * 64)
-    lines.append(
-        f"  Średni sentyment: {_number(mood['avg_sentiment'], decimals=2, signed=True)} ({mood['avg_sentiment_label']})"
-    )
-    if mood["most_bullish"]:
-        mb = mood["most_bullish"]
-        lines.append(f"  Najbardziej pozytywny: {_company_label(mb.symbol)} ({_number(mb.sentiment_score, decimals=2, signed=True)})")
-    if mood["most_bearish"]:
-        mbe = mood["most_bearish"]
-        lines.append(f"  Najbardziej negatywny: {_company_label(mbe.symbol)} ({_number(mbe.sentiment_score, decimals=2, signed=True)})")
-    lines.append(
-        f"  Wysoka pewność (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}"
-        f"  ·  Newsów: {mood['total_news']}"
-    )
-    lines.append("")
-
+    # MAIL-17: „Zaplecze” — kontekst i kontrola za separatorem.
+    lines.extend(["=" * 64, "ZAPLECZE", _BACKOFFICE_NOTE, "=" * 64, ""])
+    # Slot na sekcję Risk Watch w wariancie plain text — analogicznie do HTML.
+    lines.append(_RISK_WATCH_SLOT)
+    # PORT-22: radar portfela (klastry, VaR, stress, „za mało historii”).
+    lines.append(_PORTFOLIO_SLOT)
     lines.extend(_render_accuracy_history_text(accuracy_stats))
-
+    lines.extend(_render_mood_text(mood))
     # Wnioski z poprzednich cykli
     lines.extend(_render_reflections_text(saved))
-
-    lines.extend(_render_saved_section_text(saved))
-
     lines.append(_SUGGESTIONS_SLOT)
-
-    lines.extend(_render_rebaselined_text(ignored, display_timezone))
-
     lines.extend(_render_ignored_text(ignored))
-
     lines.extend(_render_errors_text(errors))
 
     # MAIL-08: zastrzeżenie zamyka treść; stopka techniczna (MAIL-16) i stopka
