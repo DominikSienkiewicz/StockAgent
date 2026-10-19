@@ -512,7 +512,7 @@ class TestAccuracyStats:
                     "days_window": 30,
                 },
                      ))
-        assert "72.0%" in html or "72%" in html
+        assert "72,0%" in html or "72%" in html
         assert "50" in html
         assert "30 dni" in html
 
@@ -2050,8 +2050,8 @@ class TestTradeSignalCalibrationAndStrength:
         assert "siła sygnału" not in html
         assert "#1" in html
         assert "#2" in html
-        assert "ruch 3.1% × pewność skalibrowana 58%" in html
-        assert "ruch 3.1% × pewność 85%" in html
+        assert "ruch 3,1% × pewność skalibrowana 58%" in html
+        assert "ruch 3,1% × pewność 85%" in html
 
     def test_html_uncalibrated_signal_shows_raw_confidence_only(self):
         html = report_builder._render_trade_signals_html(
@@ -2072,7 +2072,7 @@ class TestTradeSignalCalibrationAndStrength:
         ])
 
         assert "wg pewności skalibrowanej 58%" in html
-        assert "ruch 0.0%" not in html
+        assert "ruch 0,0%" not in html
 
     def test_text_shows_calibration_and_rank_components(self):
         lines = report_builder._render_trade_signals_text(
@@ -2081,7 +2081,7 @@ class TestTradeSignalCalibrationAndStrength:
         text = "\n".join(lines)
 
         assert "pewność 85% → 58% po kalibracji (n kubełka: 12)" in text
-        assert "#1 · ruch 3.1% × pewność skalibrowana 58%" in text
+        assert "#1 · ruch 3,1% × pewność skalibrowana 58%" in text
         assert "siła " not in text
 
 
@@ -2115,18 +2115,18 @@ class TestAccuracyHistoryBothDefinitions:
         html = self._html(self._STATS)
 
         assert "Trafność kierunkowa (bez prognoz „bez ruchu”)" in html
-        assert "65.0%" in html
+        assert "65,0%" in html
         assert "n=40" in html
         assert "Trafność łączna (z prognozami „bez ruchu”)" in html
-        assert "72.0%" in html
+        assert "72,0%" in html
         assert "95% CI 58–83%, n=50" in html
         assert "Średnia trafność" not in html
 
     def test_text_shows_directional_next_to_total(self):
         text = self._text(self._STATS)
 
-        assert "Trafność kierunkowa (bez prognoz „bez ruchu”): 65.0%" in text
-        assert "Trafność łączna (z prognozami „bez ruchu”): 72.0%" in text
+        assert "Trafność kierunkowa (bez prognoz „bez ruchu”): 65,0%" in text
+        assert "Trafność łączna (z prognozami „bez ruchu”): 72,0%" in text
         assert "Średnia trafność" not in text
 
     def test_no_directional_calls_is_said_plainly(self):
@@ -2631,8 +2631,8 @@ class TestMoveIntervalInReport:
 
         html, text = build_html_report([result], self._STARTED, 1.0)
 
-        assert "80% przedział: −2.1% … +2.4% (n=57)" in html
-        assert "80% przedział: −2.1% … +2.4% (n=57)" in text
+        assert "80% przedział: -2,1% … +2,4% (n=57)" in html
+        assert "80% przedział: -2,1% … +2,4% (n=57)" in text
 
     def test_short_window_says_so_instead_of_a_number(self):
         result = self._with_interval(low=None, high=None, calibration_size=12)
@@ -2657,7 +2657,7 @@ class TestMoveIntervalInReport:
 
         html, _ = build_html_report([result], self._STARTED, 1.0)
 
-        assert "80% przedział: −1.0% … +1.2% (n=30)" in html
+        assert "80% przedział: -1,0% … +1,2% (n=30)" in html
 
     def test_to_symbol_result_carries_the_interval_from_the_graph(self):
         from src.domain.conformal import MoveInterval

@@ -2,7 +2,7 @@
 STOCKAGENT — RAPORT CYKLU
 ================================================================
 Czas rozpoczęcia:  czw 15.10 12:30
-Czas trwania:      74.2s
+Czas trwania:      74,2s
 Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
 Symboli:           4 (predykcji=0, pominiętych=4, błędów=0)
 
@@ -12,13 +12,13 @@ KRYPTO
 
 NASTROJE PORTFELA
 ----------------------------------------------------------------
-  Średni sentyment: +0.00 (Neutralny)
+  Średni sentyment: +0,00 (Neutralny)
   Wysoka pewność (≥70%): 0 / 0  ·  Newsów: 0
 
 HISTORIA TRAFNOŚCI (ostatnie 30 dni)
 ----------------------------------------------------------------
-  Trafność kierunkowa (bez prognoz „bez ruchu”): 57.5% (95% CI 42–71%, n=40)
-  Trafność łączna (z prognozami „bez ruchu”): 62.0% (95% CI 48–74%, n=50)  ·  Predykcji ocenionych: 50  ·  Poprawnych: 31
+  Trafność kierunkowa (bez prognoz „bez ruchu”): 57,5% (95% CI 42–71%, n=40)
+  Trafność łączna (z prognozami „bez ruchu”): 62,0% (95% CI 48–74%, n=50)  ·  Predykcji ocenionych: 50  ·  Poprawnych: 31
 
 POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------

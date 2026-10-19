@@ -48,6 +48,9 @@ from src.application.report_formatting import (
     money as _money,
 )
 from src.application.report_formatting import (
+    number as _number,
+)
+from src.application.report_formatting import (
     pct as _pct,
 )
 from src.application.report_formatting import (
@@ -298,14 +301,14 @@ _SIGNALS_COLD_START_NOTE = (
 
 
 def _signed_move(value: float) -> str:
-    """Zwrot jako „+2.4%" / „−2.1%" (typograficzny minus, jedno miejsce)."""
-    return f"{value * 100:+.1f}%".replace("-", "−")
+    """Zwrot jako „+2,4%” / „-2,1%” (minus ASCII, jedno miejsce, MAIL-58)."""
+    return _pct(value, signed=True, decimals=1)
 
 
 def _move_interval_label(interval: MoveInterval) -> str:
-    """ML-34: „80% przedział: −2.1% … +2.4% (n=57)" albo jawne „za mało
+    """ML-34: „80% przedział: -2,1% … +2,4% (n=57)” albo jawne „za mało
     historii (n/20)" — krótkie okno nie udaje liczby."""
-    level = f"{interval.nominal_coverage * 100:.0f}% przedział"
+    level = f"{_pct(interval.nominal_coverage, decimals=0)} przedział"
     if interval.low is None or interval.high is None:
         return (
             f"{level}: za mało historii "
@@ -324,7 +327,7 @@ def _model_signal_reason_html(r: SymbolResult) -> str:
     bg = _DIRECTION_BG.get(direction, "#f9fafb")
 
     conf_part = (
-        f"Pewność: <strong>{r.confidence_score * 100:.0f}%</strong>."
+        f"Pewność: <strong>{_pct(r.confidence_score, decimals=0)}</strong>."
         if r.confidence_score is not None
         else ""
     )
@@ -355,7 +358,7 @@ def _model_signal_reason_html(r: SymbolResult) -> str:
 
 def _model_signal_reason_text(r: SymbolResult) -> str:
     direction = _model_signal(r)
-    conf_part = f"pewność {r.confidence_score * 100:.0f}%" if r.confidence_score is not None else ""
+    conf_part = f"pewność {_pct(r.confidence_score, decimals=0)}" if r.confidence_score is not None else ""
     change_part = (
         f"prognoza {_pct(r.expected_change, signed=True)}"
         if r.expected_change is not None and not r.ml_cold_start
@@ -397,7 +400,7 @@ def _render_crypto_section_html(results: list[SymbolResult]) -> str:
                 else ""
             )
             conf_part = (
-                f" · pewność {r.confidence_score * 100:.0f}%"
+                f" · pewność {_pct(r.confidence_score, decimals=0)}"
                 if r.confidence_score is not None
                 else ""
             )
@@ -610,8 +613,8 @@ def _render_news_block_html(top_news: list[TopNewsItem]) -> str:
             "source_label": n.source or "unknown",
             "title": n.title,
             "href": _safe_news_url(n.url),
-            "relevance_fmt": f"{n.relevance:.2f}",
-            "sentiment_fmt": f"{n.sentiment:+.2f}",
+            "relevance_fmt": _number(n.relevance, decimals=2),
+            "sentiment_fmt": _number(n.sentiment, decimals=2, signed=True),
         }
         for n in top_news
     ]
@@ -668,11 +671,11 @@ def _render_attribution_block_html(
     for c in contribs:
         positive = c.contribution >= 0
         color = "#16a34a" if positive else "#dc2626"
-        sign = "+" if positive else ""
         chips.append(
             f"<span style='display:inline-block; margin-right:10px;'>"
             f"{_html(c.feature)} "
-            f"<strong style='color:{color};'>{sign}{c.contribution:.4f}</strong></span>"
+            f"<strong style='color:{color};'>"
+            f"{_number(c.contribution, decimals=4, signed=True)}</strong></span>"
         )
     return (
         "<div style='font-size: 11px; color: #475569; margin-top: 6px; "
@@ -1315,20 +1318,20 @@ def _calibration_suffix(sig: TradeSignal) -> str:
 
 def _confidence_html(sig: TradeSignal) -> str:
     """WIA-12: „pewność 85% → 58% po kalibracji (n kubełka: 12)” albo sama surowa."""
-    raw = f"pewność <strong>{sig.confidence * 100:.0f}%</strong>"
+    raw = f"pewność <strong>{_pct(sig.confidence, decimals=0)}</strong>"
     if sig.calibrated_confidence is None:
         return raw
     return (
-        f"{raw} → <strong>{sig.calibrated_confidence * 100:.0f}%</strong>"
+        f"{raw} → <strong>{_pct(sig.calibrated_confidence, decimals=0)}</strong>"
         f"{_html(_calibration_suffix(sig))}"
     )
 
 
 def _confidence_text(sig: TradeSignal) -> str:
-    raw = f"{sig.confidence * 100:.0f}%"
+    raw = _pct(sig.confidence, decimals=0)
     if sig.calibrated_confidence is None:
         return raw
-    return f"{raw} → {sig.calibrated_confidence * 100:.0f}%{_calibration_suffix(sig)}"
+    return f"{raw} → {_pct(sig.calibrated_confidence, decimals=0)}{_calibration_suffix(sig)}"
 
 
 def _strength_label(rank: int, sig: TradeSignal) -> str:
@@ -1339,12 +1342,12 @@ def _strength_label(rank: int, sig: TradeSignal) -> str:
     """
     calibrated = sig.calibrated_confidence is not None
     effective = sig.confidence if sig.calibrated_confidence is None else sig.calibrated_confidence
-    confidence_pct = f"{effective * 100:.0f}%"
+    confidence_pct = _pct(effective, decimals=0)
     if sig.ml_cold_start:
         basis = "pewności skalibrowanej" if calibrated else "pewności"
         return f"#{rank} · wg {basis} {confidence_pct}"
     basis = "pewność skalibrowana" if calibrated else "pewność"
-    move_pct = f"{abs(sig.expected_change) * 100:.1f}%"
+    move_pct = _pct(abs(sig.expected_change), decimals=1)
     return f"#{rank} · ruch {move_pct} × {basis} {confidence_pct}"
 
 
@@ -1483,13 +1486,13 @@ def _resolved_accuracy_pair(resolved_predictions: list[ResolvedPrediction]) -> s
     directional_txt = (
         "— (brak prognoz kierunkowych)"
         if directional.rate is None
-        else f"{directional.rate * 100:.0f}% (n={directional.directional})"
+        else f"{_pct(directional.rate, decimals=0)} (n={directional.directional})"
     )
     total = len(resolved_predictions)
     correct = sum(1 for p in resolved_predictions if p.is_correct)
     return (
         f"{_DIRECTIONAL_ACCURACY_LABEL}: {directional_txt} · "
-        f"{_TOTAL_ACCURACY_LABEL}: {correct / total * 100:.0f}% (n={total})"
+        f"{_TOTAL_ACCURACY_LABEL}: {_pct(correct / total, decimals=0)} (n={total})"
     )
 
 
@@ -1506,7 +1509,7 @@ def _directional_accuracy(accuracy_stats: dict[str, Any]) -> tuple[str, str] | N
         return None
     if n == 0:
         return "—", "brak prognoz kierunkowych"
-    return f"{hits / n * 100:.1f}%", wilson_label(hits, n)
+    return _pct(hits / n, decimals=1), wilson_label(hits, n)
 
 
 def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
@@ -1533,7 +1536,7 @@ def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
         </div>
         <div style="color: #78350f;">
           {directional_html}
-          {_TOTAL_ACCURACY_LABEL}: <strong>{acc * 100:.1f}%</strong> ({interval})
+          {_TOTAL_ACCURACY_LABEL}: <strong>{_pct(acc, decimals=1)}</strong> ({interval})
           · Predykcji ocenionych: {n}
           · Poprawnych: {correct}
         </div>
@@ -1602,12 +1605,12 @@ def _render_errors_html(errors: list[SymbolResult]) -> str:
 def _render_prediction_row_html(r: SymbolResult) -> str:
     """Pojedynczy wiersz tabeli predykcji (saved)."""
     sentiment_text = (
-        f"{_html(_sentiment_label(r.sentiment_label))} ({r.sentiment_score:+.2f})"
+        f"{_html(_sentiment_label(r.sentiment_label))} ({_number(r.sentiment_score, decimals=2, signed=True)})"
         if r.sentiment_score is not None
         else "—"
     )
     confidence_text = (
-        f"{r.confidence_score * 100:.0f}%"
+        _pct(r.confidence_score, decimals=0)
         if r.confidence_score is not None
         else "—"
     )
@@ -1658,7 +1661,7 @@ def _render_reasoning_block_html(r: SymbolResult) -> str:
     move_line = ""
     if r.current_price is not None and r.target_price is not None:
         conf_part = (
-            f" · Pewność {r.confidence_score * 100:.0f}%"
+            f" · Pewność {_pct(r.confidence_score, decimals=0)}"
             if r.confidence_score is not None
             else ""
         )
@@ -1776,7 +1779,7 @@ def _render_html(
       <h1 style="font-size: 22px; margin: 0 0 4px 0;">📊 StockAgent — raport cyklu</h1>
       <div style="font-size: 13px; color: #6b7280; margin-bottom: 24px;">
         Czas rozpoczęcia: {started_local}
-        · Czas trwania: {duration_seconds:.1f}s
+        · Czas trwania: {_number(duration_seconds, decimals=1)}s
         · Liczba symboli: {len(results)}
       </div>
     """)
@@ -1848,12 +1851,12 @@ def _render_html(
     # Portfolio mood box
     bullish_part = (
         f"<strong>{_html(_company_label(mood['most_bullish'].symbol))}</strong> "
-        f"({mood['most_bullish'].sentiment_score:+.2f})"
+        f"({_number(mood['most_bullish'].sentiment_score, decimals=2, signed=True)})"
         if mood["most_bullish"] else "—"
     )
     bearish_part = (
         f"<strong>{_html(_company_label(mood['most_bearish'].symbol))}</strong> "
-        f"({mood['most_bearish'].sentiment_score:+.2f})"
+        f"({_number(mood['most_bearish'].sentiment_score, decimals=2, signed=True)})"
         if mood["most_bearish"] else "—"
     )
     sections.append(f"""
@@ -1863,7 +1866,7 @@ def _render_html(
           📊 Nastroje portfela
         </div>
         <div style="color: #1e40af; line-height: 1.7;">
-          Średni sentyment: <strong>{mood['avg_sentiment']:+.2f}</strong>
+          Średni sentyment: <strong>{_number(mood['avg_sentiment'], decimals=2, signed=True)}</strong>
           ({mood['avg_sentiment_label']})<br/>
           Najbardziej pozytywny: {bullish_part} · Najbardziej negatywny: {bearish_part}<br/>
           Predykcje z wysoką pewnością (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}
@@ -2019,7 +2022,7 @@ def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list
     if directional is not None:
         lines.append(f"  {_DIRECTIONAL_ACCURACY_LABEL}: {directional[0]} ({directional[1]})")
     lines.extend([
-        f"  {_TOTAL_ACCURACY_LABEL}: {accuracy_stats['mean_accuracy'] * 100:.1f}%"
+        f"  {_TOTAL_ACCURACY_LABEL}: {_pct(accuracy_stats['mean_accuracy'], decimals=1)}"
         f" ({wilson_label(accuracy_stats['correct_count'], accuracy_stats['sample_count'])})"
         f"  ·  Predykcji ocenionych: {accuracy_stats['sample_count']}"
         f"  ·  Poprawnych: {accuracy_stats['correct_count']}",
@@ -2045,7 +2048,7 @@ def _render_prediction_text(r: SymbolResult) -> list[str]:
     """Linie jednej predykcji (plain): nagłówek + sentyment + sygnał modelu +
     proweniencja + reasoning + analogi + newsy + wycena."""
     conf_part = (
-        f" · pewność {r.confidence_score * 100:.0f}%"
+        f" · pewność {_pct(r.confidence_score, decimals=0)}"
         if r.confidence_score is not None
         else ""
     )
@@ -2058,7 +2061,7 @@ def _render_prediction_text(r: SymbolResult) -> list[str]:
     else:
         forecast_part = "prognoza —"
     sentiment_part = (
-        f"sentyment {r.sentiment_score:+.2f}"
+        f"sentyment {_number(r.sentiment_score, decimals=2, signed=True)}"
         if r.sentiment_score is not None
         else "sentyment —"
     )
@@ -2096,7 +2099,7 @@ def _render_prediction_text(r: SymbolResult) -> list[str]:
     for n in r.top_news:
         lines.append(
             f"        📰 [{n.source or '?'}] {n.title[:78]}"
-            f" (rel={n.relevance:.2f}, sent={n.sentiment:+.2f})"
+            f" (rel={_number(n.relevance, decimals=2)}, sent={_number(n.sentiment, decimals=2, signed=True)})"
         )
     valuation_text = _render_valuation_text(r.valuation)
     if valuation_text:
@@ -2158,7 +2161,7 @@ def _render_plain(
     lines.append("STOCKAGENT — RAPORT CYKLU")
     lines.append("=" * 64)
     lines.append(f"Czas rozpoczęcia:  {started_local}")
-    lines.append(f"Czas trwania:      {duration_seconds:.1f}s")
+    lines.append(f"Czas trwania:      {_number(duration_seconds, decimals=1)}s")
     lines.append(f"Sesja NYSE:        {session['label']} — {session['detail']}")
     lines.append(
         f"Symboli:           {len(results)} "
@@ -2194,14 +2197,14 @@ def _render_plain(
     lines.append("NASTROJE PORTFELA")
     lines.append("-" * 64)
     lines.append(
-        f"  Średni sentyment: {mood['avg_sentiment']:+.2f} ({mood['avg_sentiment_label']})"
+        f"  Średni sentyment: {_number(mood['avg_sentiment'], decimals=2, signed=True)} ({mood['avg_sentiment_label']})"
     )
     if mood["most_bullish"]:
         mb = mood["most_bullish"]
-        lines.append(f"  Najbardziej pozytywny: {_company_label(mb.symbol)} ({mb.sentiment_score:+.2f})")
+        lines.append(f"  Najbardziej pozytywny: {_company_label(mb.symbol)} ({_number(mb.sentiment_score, decimals=2, signed=True)})")
     if mood["most_bearish"]:
         mbe = mood["most_bearish"]
-        lines.append(f"  Najbardziej negatywny: {_company_label(mbe.symbol)} ({mbe.sentiment_score:+.2f})")
+        lines.append(f"  Najbardziej negatywny: {_company_label(mbe.symbol)} ({_number(mbe.sentiment_score, decimals=2, signed=True)})")
     lines.append(
         f"  Wysoka pewność (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}"
         f"  ·  Newsów: {mood['total_news']}"

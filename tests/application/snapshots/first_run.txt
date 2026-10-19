@@ -7,7 +7,7 @@ Startuję dla 3 instrumenty. Ten cykl zapisuje pierwsze ceny jako punkt odniesie
 STOCKAGENT — RAPORT CYKLU
 ================================================================
 Czas rozpoczęcia:  czw 15.10 12:30
-Czas trwania:      74.2s
+Czas trwania:      74,2s
 Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
 Symboli:           3 (predykcji=0, pominiętych=3, błędów=0)
 
@@ -17,7 +17,7 @@ KRYPTO
 
 NASTROJE PORTFELA
 ----------------------------------------------------------------
-  Średni sentyment: +0.00 (Neutralny)
+  Średni sentyment: +0,00 (Neutralny)
   Wysoka pewność (≥70%): 0 / 0  ·  Newsów: 0
 
 POMINIĘTE (poniżej progu zmienności)
