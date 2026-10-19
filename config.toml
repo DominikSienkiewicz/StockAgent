@@ -61,6 +61,9 @@ messenger_digest_enabled = true
 # #12: karta kondycji modelu (migracja 019) — jawny scorecard walk-forward wraz
 # z odrzutami kandydatów. Zapis w Slow Loopie, render w mailu. Włączone.
 model_scorecard_enabled = true
+# ML-10: karta zapisuje też baseline'y „dryf średniej" i „sam LLM" (bramka bije
+# najsilniejszy z trzech). UWAGA: włącz DOPIERO po migracji 028 (inaczej PGRST204).
+model_scorecard_baselines_enabled = false
 # #8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
 # spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Włączone.
 cycle_diff_enabled = true

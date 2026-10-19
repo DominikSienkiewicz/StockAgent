@@ -402,3 +402,49 @@ class TestPooledVerdict:
             out = render(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
             assert "Ewaluacje per symbol" not in out
             assert "model wspólny" not in out
+
+
+class TestThreeBaselines:
+    """ML-10: bramka bije najsilniejszy z baseline'ów „zwrot 0", „dryf średniej"
+    i „sam LLM" — karta pokazuje wszystkie trzy, gdy wiersz je ma (migracja 028)."""
+
+    def test_view_reads_the_drift_and_llm_baselines_from_the_pooled_row(self) -> None:
+        rows = _pooled_run_rows("skipped_validation_failed")
+        rows[-1] = {**rows[-1], "drift_baseline_rmse": 0.024, "llm_baseline_rmse": 0.021}
+
+        view = build_scorecard_view(rows)
+
+        assert view is not None
+        assert view.drift_baseline_rmse == 0.024
+        assert view.llm_baseline_rmse == 0.021
+
+    def test_html_and_text_show_all_three_baselines(self) -> None:
+        for render in (render_model_scorecard_html, render_model_scorecard_text):
+            out = render(
+                _summary(1, 0, 0),
+                trained_at=_FRESH,
+                now=_NOW,
+                candidate_rmse=0.0180,
+                baseline_rmse=0.0200,
+                drift_baseline_rmse=0.0195,
+                llm_baseline_rmse=0.0190,
+            )
+            assert "zwrot 0" in out
+            assert "0.0200" in out
+            assert "dryf średniej" in out
+            assert "0.0195" in out
+            assert "sam LLM" in out
+            assert "0.0190" in out
+
+    def test_rows_without_the_new_baselines_render_as_before(self) -> None:
+        # Wiersze sprzed migracji 028 albo zapis bez flagi: brak linii baseline'ów.
+        for render in (render_model_scorecard_html, render_model_scorecard_text):
+            out = render(
+                _summary(1, 0, 0),
+                trained_at=_FRESH,
+                now=_NOW,
+                candidate_rmse=0.0100,
+                baseline_rmse=0.0200,
+            )
+            assert "dryf średniej" not in out
+            assert "sam LLM" not in out

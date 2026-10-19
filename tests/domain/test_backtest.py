@@ -226,3 +226,56 @@ def test_ic_fields_stay_empty_when_folds_carry_no_ic():
 
     assert summary.mean_ic is None
     assert summary.ic_t_stat is None
+
+
+def _baseline_folds(
+    candidate: float, zero: float, drift: float, llm: float
+) -> list[dict[str, float]]:
+    return [
+        {
+            "candidate_rmse": candidate,
+            "baseline_rmse": zero,
+            "drift_baseline_rmse": drift,
+            "llm_baseline_rmse": llm,
+            "hit_rate": 0.5,
+            "n_valid": 20.0,
+        }
+        for _ in range(4)
+    ]
+
+
+def test_candidate_must_also_beat_the_llm_only_baseline():
+    # ML-10: XGBoost dostaje `llm_trend_signal` jako cechę — kandydat, który bije
+    # zero, ale nie bije przeskalowanego samego sygnału LLM, tylko przepisuje LLM.
+    summary = summarize_folds(_baseline_folds(0.0200, 0.0300, 0.0300, 0.0201))
+
+    assert summary.beats_baseline is False
+    assert "nie bije baseline" in summary.verdict
+    assert "sam LLM" in summary.verdict
+
+
+def test_candidate_must_also_beat_the_mean_drift_baseline():
+    summary = summarize_folds(_baseline_folds(0.0200, 0.0300, 0.0202, 0.0300))
+
+    assert summary.beats_baseline is False
+    assert "dryf" in summary.verdict
+
+
+def test_gate_uses_the_same_relative_margin_against_the_strongest_baseline():
+    # 0.0195 vs najsilniejszy 0.0200 = 2.5% ≥ MIN_REL_IMPROVEMENT → przechodzi.
+    summary = summarize_folds(_baseline_folds(0.0195, 0.0300, 0.0250, 0.0200))
+
+    assert summary.beats_baseline is True
+    assert summary.mean_drift_baseline_rmse == pytest.approx(0.0250)
+    assert summary.mean_llm_baseline_rmse == pytest.approx(0.0200)
+    assert "sam LLM" in summary.verdict
+
+
+def test_folds_without_the_extra_baselines_keep_the_zero_return_gate():
+    # Kształt foldów sprzed ML-10 (np. offline harness ze starym adapterem).
+    summary = summarize_folds(_folds(0.010, 0.020, n_valid=15))
+
+    assert summary.mean_drift_baseline_rmse is None
+    assert summary.mean_llm_baseline_rmse is None
+    assert summary.beats_baseline is True
+    assert summary.verdict == "model bije baseline o 50.0%"

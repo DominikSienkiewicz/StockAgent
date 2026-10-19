@@ -137,6 +137,10 @@ class Settings(BaseSettings):
     # Pokazuje bramkę "nie shipuj modelu gorszego od baseline'u", łącznie
     # z odrzutami. Render-only + insert w Slow Loopie. Off.
     model_scorecard_enabled: bool = False
+    # ML-10: karta zapisuje też baseline'y „dryf średniej" i „sam LLM", które
+    # bramka walk-forward musi pobić obok „zwrot = 0" (kolumny z migracji 028).
+    # Off: nowy klucz przed migracją → PGRST204 i przepadły wiersz karty.
+    model_scorecard_baselines_enabled: bool = False
     # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
     # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
     cycle_diff_enabled: bool = False

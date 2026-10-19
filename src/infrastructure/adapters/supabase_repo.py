@@ -162,8 +162,13 @@ class SupabaseRepository(RepositoryPort):
         snapshot_table: str = DEFAULT_SNAPSHOT_TABLE,
         council_votes_table: str = DEFAULT_COUNCIL_VOTES_TABLE,
         quota_alerts_table: str = DEFAULT_QUOTA_ALERTS_TABLE,
+        *,
+        scorecard_baselines_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
+        # ML-10: kolumny baseline'ów dryfu i „sam LLM" istnieją od migracji 028 —
+        # bez flagi payload karty ich nie niesie (PGRST204 zgubiłby cały wiersz).
+        self._scorecard_baselines_enabled = scorecard_baselines_enabled
         self._table = table_name
         self._view = feature_view
         self._snapshot_table = snapshot_table
@@ -843,6 +848,9 @@ class SupabaseRepository(RepositoryPort):
             "n_folds": result.get("n_folds"),
             "n_samples": result.get("n_samples"),
         }
+        if self._scorecard_baselines_enabled:
+            payload["drift_baseline_rmse"] = result.get("drift_baseline_rmse")
+            payload["llm_baseline_rmse"] = result.get("llm_baseline_rmse")
         self._client.table("model_scorecards").insert(payload).execute()
 
     def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:

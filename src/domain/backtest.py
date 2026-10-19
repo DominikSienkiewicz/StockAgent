@@ -22,6 +22,15 @@ MIN_REL_IMPROVEMENT = 0.02
 # wszystkich foldów. Przy 4 foldach expanding-window oznacza to n ≥ 75 próbek.
 MIN_OOS_POINTS = 60
 
+# ML-10: kandydat musi pobić NAJSILNIEJSZY z trzech baseline'ów z tym samym
+# marginesem względnym: persystencję („zwrot = 0"), dryf (średni target części
+# treningowej foldu) i „sam LLM" (`llm_trend_signal` × średni |target| części
+# treningowej). XGBoost dostaje `llm_trend_signal` jako cechę — jeśli nie bije
+# przeskalowanego samego sygnału, noga ML tylko kosztownie przepisuje LLM.
+ZERO_BASELINE_LABEL = "zwrot 0"
+DRIFT_BASELINE_LABEL = "dryf średniej"
+LLM_BASELINE_LABEL = "sam LLM"
+
 # Horyzont etykiety: target to zwrot 12h, więc wiersz z chwili t „zna" rynek do
 # t + 12h. Wiersz treningowy, którego etykieta dojrzewa po starcie walidacji,
 # przecieka do foldu (ML-13).
@@ -44,6 +53,11 @@ class BacktestSummary:
     √n_folds`. None, gdy foldy nie niosą `ic`, a sd/t-stat także przy jednym
     foldzie albo zerowym rozrzucie. Przy 4 foldach t-stat jest mało informatywny —
     czytaj go razem z `n_folds`.
+
+    ML-10: `mean_drift_baseline_rmse` / `mean_llm_baseline_rmse` to średnie RMSE
+    baseline'ów „dryf średniej" i „sam LLM" (None, gdy foldy ich nie niosą).
+    `beats_baseline` wymaga pobicia najsilniejszego z dostępnych baseline'ów;
+    `improvement_pct` zostaje liczone względem „zwrot = 0" (jak w karcie modelu).
     """
 
     n_folds: int
@@ -57,6 +71,8 @@ class BacktestSummary:
     mean_ic: float | None = None
     ic_std: float | None = None
     ic_t_stat: float | None = None
+    mean_drift_baseline_rmse: float | None = None
+    mean_llm_baseline_rmse: float | None = None
 
 
 def beats_baseline(candidate_rmse: float, baseline_rmse: float) -> bool:
@@ -92,6 +108,58 @@ def _oos_points(folds: Sequence[Mapping[str, float]]) -> int | None:
     return int(sum(fold["n_valid"] for fold in folds))
 
 
+def _mean_of(folds: Sequence[Mapping[str, float]], key: str) -> float | None:
+    """Średnia `key` po foldach albo None, gdy choć jeden fold go nie niesie."""
+    if not all(key in fold for fold in folds):
+        return None
+    return statistics.fmean(fold[key] for fold in folds)
+
+
+def strongest_baseline(
+    zero_rmse: float, drift_rmse: float | None, llm_rmse: float | None
+) -> tuple[str, float]:
+    """(etykieta, RMSE) najtrudniejszego do pobicia baseline'u — najniższe RMSE.
+
+    Brakujący baseline (None) nie startuje; przy remisie wygrywa wcześniejszy
+    na liście (zero, dryf, LLM), więc bez dodatkowych baseline'ów to „zwrot 0".
+    """
+    options = [(ZERO_BASELINE_LABEL, zero_rmse)]
+    if drift_rmse is not None:
+        options.append((DRIFT_BASELINE_LABEL, drift_rmse))
+    if llm_rmse is not None:
+        options.append((LLM_BASELINE_LABEL, llm_rmse))
+    return min(options, key=lambda option: option[1])
+
+
+def _verdict(
+    mean_candidate: float,
+    binding_label: str,
+    binding_rmse: float,
+    *,
+    passed: bool,
+    improvement_pct: float,
+) -> str:
+    """Polska etykieta werdyktu względem baseline'u, który rozstrzygnął bramkę."""
+    if binding_label == ZERO_BASELINE_LABEL:
+        if passed:
+            return f"model bije baseline o {improvement_pct:.1f}%"
+        if mean_candidate < binding_rmse:
+            return (
+                f"model nie bije baseline (poprawa {improvement_pct:.1f}% "
+                f"< marginesu {MIN_REL_IMPROVEMENT:.0%})"
+            )
+        return "model nie bije baseline"
+    binding_pct = (binding_rmse - mean_candidate) / binding_rmse * 100 if binding_rmse else 0.0
+    if passed:
+        return f"model bije najsilniejszy baseline „{binding_label}” o {binding_pct:.1f}%"
+    if mean_candidate < binding_rmse:
+        return (
+            f"model nie bije baseline'u „{binding_label}” (poprawa {binding_pct:.1f}% "
+            f"< marginesu {MIN_REL_IMPROVEMENT:.0%})"
+        )
+    return f"model nie bije baseline'u „{binding_label}”"
+
+
 def _ic_stats(
     folds: Sequence[Mapping[str, float]],
 ) -> tuple[float | None, float | None, float | None]:
@@ -112,10 +180,12 @@ def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
     """Agreguje per-fold metryki walk-forward w `BacktestSummary`.
 
     Każdy fold to mapa z kluczami `candidate_rmse`, `baseline_rmse`, `hit_rate`
-    i opcjonalnie `n_valid` (kształt z `MLPredictionPort.walk_forward_report`).
+    i opcjonalnie `n_valid`, `drift_baseline_rmse`, `llm_baseline_rmse` (kształt
+    z `MLPredictionPort.walk_forward_report`).
     Średnie są arytmetyczne; `improvement_pct = (baseline - candidate) / baseline
     * 100` (0.0 gdy baseline == 0, by uniknąć dzielenia przez zero). Werdykt
-    stosuje `beats_baseline` i — gdy foldy niosą `n_valid` — `MIN_OOS_POINTS`.
+    stosuje `beats_baseline` wobec najsilniejszego baseline'u (ML-10) i — gdy
+    foldy niosą `n_valid` — `MIN_OOS_POINTS`.
     Pusta sekwencja zwraca sentinel „brak danych".
     """
     if not folds:
@@ -133,20 +203,22 @@ def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
 
     n_oos_points = _oos_points(folds)
     mean_ic, ic_std, ic_t_stat = _ic_stats(folds)
-    passed = beats_baseline(mean_candidate, mean_baseline)
+    mean_drift = _mean_of(folds, "drift_baseline_rmse")
+    mean_llm = _mean_of(folds, "llm_baseline_rmse")
+    binding_label, binding_rmse = strongest_baseline(mean_baseline, mean_drift, mean_llm)
+    passed = beats_baseline(mean_candidate, binding_rmse)
 
     if n_oos_points is not None and n_oos_points < MIN_OOS_POINTS:
         passed = False
         verdict = f"za mało punktów OOS ({n_oos_points} < {MIN_OOS_POINTS})"
-    elif passed:
-        verdict = f"model bije baseline o {improvement_pct:.1f}%"
-    elif mean_candidate < mean_baseline:
-        verdict = (
-            f"model nie bije baseline (poprawa {improvement_pct:.1f}% "
-            f"< marginesu {MIN_REL_IMPROVEMENT:.0%})"
-        )
     else:
-        verdict = "model nie bije baseline"
+        verdict = _verdict(
+            mean_candidate,
+            binding_label,
+            binding_rmse,
+            passed=passed,
+            improvement_pct=improvement_pct,
+        )
 
     return BacktestSummary(
         n_folds=n,
@@ -160,4 +232,6 @@ def summarize_folds(folds: Sequence[Mapping[str, float]]) -> BacktestSummary:
         mean_ic=mean_ic,
         ic_std=ic_std,
         ic_t_stat=ic_t_stat,
+        mean_drift_baseline_rmse=mean_drift,
+        mean_llm_baseline_rmse=mean_llm,
     )

@@ -2575,3 +2575,72 @@ class TestFeatureSetVersionWiring:
         main_trainer.build_use_case(settings)
 
         assert use_case_cls.call_args.kwargs["feature_set_version"] is None
+
+
+class TestModelScorecardBaselinesWiring:
+    """ML-10 — `model_scorecard_baselines_enabled` dociera do repozytorium, które
+    zapisuje karty: use case'u (wiersz ALL) i kroków per symbol w `main()`."""
+
+    def test_flag_defaults_off(self, settings) -> None:
+        assert settings.model_scorecard_baselines_enabled is False
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_use_case_repository_gets_the_flag(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        settings.model_scorecard_baselines_enabled = enabled
+        repo_cls = mocker.patch("main_trainer.SupabaseRepository")
+
+        main_trainer.build_use_case(settings)
+
+        assert repo_cls.call_args.kwargs["scorecard_baselines_enabled"] is enabled
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_per_symbol_scorecard_repository_gets_the_flag(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        settings.model_scorecard_baselines_enabled = enabled
+        repo_cls = mocker.patch(
+            "main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort)
+        )
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "skipped"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+
+        main_trainer.main(settings)
+
+        assert repo_cls.call_args_list
+        assert all(
+            c.kwargs["scorecard_baselines_enabled"] is enabled
+            for c in repo_cls.call_args_list
+        )
+
+
+def test_backtest_log_reports_the_drift_and_llm_baselines(
+    settings, mock_external_clients, mocker, caplog
+):
+    # ML-10: werdykt offline harnessa liczy się wobec najsilniejszego baseline'u,
+    # więc log pokazuje wszystkie trzy RMSE obok kandydata.
+    from src.domain.backtest import BacktestSummary
+
+    fake_uc = MagicMock()
+    fake_uc.run.return_value = BacktestSummary(
+        n_folds=4,
+        mean_candidate_rmse=0.03,
+        mean_baseline_rmse=0.05,
+        mean_hit_rate=0.6,
+        improvement_pct=40.0,
+        beats_baseline=False,
+        verdict="model nie bije baseline'u „sam LLM”",
+        mean_drift_baseline_rmse=0.045,
+        mean_llm_baseline_rmse=0.029,
+    )
+    mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
+
+    with caplog.at_level("INFO", logger="main_backtest"):
+        main_backtest.main(settings)
+
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("AAPL"))
+    assert "base_rmse=0.05000" in line
+    assert "drift_rmse=0.04500" in line
+    assert "llm_rmse=0.02900" in line

@@ -26,6 +26,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from src.domain.backtest import (
+    DRIFT_BASELINE_LABEL,
+    LLM_BASELINE_LABEL,
+    ZERO_BASELINE_LABEL,
+    strongest_baseline,
+)
 from src.domain.model_scorecard import (
     METRIC_NOTE,
     POOLED_MODEL_SYMBOL,
@@ -80,6 +86,29 @@ def _provenance(metrics_symbol: str | None, n_samples: int | None) -> str:
     return ", ".join(bits)
 
 
+def _baselines_line(
+    baseline_rmse: float | None,
+    drift_baseline_rmse: float | None,
+    llm_baseline_rmse: float | None,
+) -> str:
+    """ML-10: RMSE trzech baseline'ów bramki z najsilniejszym na końcu, albo ""
+    gdy wiersz karty ich nie ma (sprzed migracji 028 / zapis bez flagi)."""
+    if baseline_rmse is None or (drift_baseline_rmse is None and llm_baseline_rmse is None):
+        return ""
+    labelled = [
+        (label, value)
+        for label, value in (
+            (ZERO_BASELINE_LABEL, baseline_rmse),
+            (DRIFT_BASELINE_LABEL, drift_baseline_rmse),
+            (LLM_BASELINE_LABEL, llm_baseline_rmse),
+        )
+        if value is not None
+    ]
+    strongest, _ = strongest_baseline(baseline_rmse, drift_baseline_rmse, llm_baseline_rmse)
+    values = " · ".join(f"{label} {value:.4f}" for label, value in labelled)
+    return f"Baseline'y bramki (RMSE): {values} — najsilniejszy: {strongest}"
+
+
 def _verdict_label(evaluations: EvaluationSummary | None) -> str:
     """Etykieta werdyktu: z podziałem na model wspólny albo zbiorczy przebieg (legacy)."""
     if evaluations is None:
@@ -129,6 +158,8 @@ def render_model_scorecard_html(
     metrics_symbol: str | None = None,
     n_samples: int | None = None,
     evaluations: EvaluationSummary | None = None,
+    drift_baseline_rmse: float | None = None,
+    llm_baseline_rmse: float | None = None,
 ) -> str:
     """Renderuje sekcję HTML karty kondycji modelu lub "" gdy brak danych.
 
@@ -182,6 +213,13 @@ def render_model_scorecard_html(
             f"{provenance_html}</div>"
         )
 
+    baselines = _baselines_line(baseline_rmse, drift_baseline_rmse, llm_baseline_rmse)
+    if baselines:
+        rows.append(
+            "<div style='font-size: 12px; color: #374151; margin-bottom: 4px;'>"
+            + f"{_html.escape(baselines)}</div>"
+        )
+
     metric_bits: list[str] = []
     if directional_hit_rate is not None:
         metric_bits.append(
@@ -222,8 +260,13 @@ def render_model_scorecard_text(
     metrics_symbol: str | None = None,
     n_samples: int | None = None,
     evaluations: EvaluationSummary | None = None,
+    drift_baseline_rmse: float | None = None,
+    llm_baseline_rmse: float | None = None,
 ) -> str:
-    """Renderuje sekcję plain-text karty kondycji modelu lub "" gdy brak danych."""
+    """Renderuje sekcję plain-text karty kondycji modelu lub "" gdy brak danych.
+
+    `drift_baseline_rmse` / `llm_baseline_rmse` (ML-10) dokładają linię z RMSE
+    wszystkich trzech baseline'ów bramki."""
     if summary is None:
         return ""
 
@@ -251,6 +294,10 @@ def render_model_scorecard_text(
             + (f" — {provenance}" if provenance else "")
         )
 
+    baselines = _baselines_line(baseline_rmse, drift_baseline_rmse, llm_baseline_rmse)
+    if baselines:
+        lines.append(f"  {baselines}")
+
     metric_bits: list[str] = []
     if directional_hit_rate is not None:
         metric_bits.append(f"trafność kierunkowa {directional_hit_rate * 100:.0f}%")
@@ -272,7 +319,9 @@ class ModelScorecardView:
     metryki (np. `ALL` — model wspólny) i na ilu próbkach go oceniono.
     `evaluations` jest ustawione, gdy przebieg ma wiersz modelu wspólnego: wtedy
     `summary` to jego werdykt, a ewaluacje per symbol są liczone osobno. None —
-    przebieg sprzed ML-13, `summary` agreguje wszystkie wiersze jak dawniej."""
+    przebieg sprzed ML-13, `summary` agreguje wszystkie wiersze jak dawniej.
+    `drift_baseline_rmse` / `llm_baseline_rmse` (ML-10, migracja 028) pochodzą
+    z tego samego wiersza co metryki kandydata; None = wiersz ich nie ma."""
 
     summary: RunSummary
     trained_at: datetime
@@ -283,6 +332,8 @@ class ModelScorecardView:
     metrics_symbol: str | None = None
     metrics_n_samples: int | None = None
     evaluations: EvaluationSummary | None = None
+    drift_baseline_rmse: float | None = None
+    llm_baseline_rmse: float | None = None
 
 
 def _parse_timestamp(raw: object) -> datetime | None:
@@ -359,4 +410,6 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
         metrics_symbol=str(metrics["symbol"]) if metrics and metrics.get("symbol") else None,
         metrics_n_samples=metrics.get("n_samples") if metrics else None,
         evaluations=evaluations,
+        drift_baseline_rmse=metrics.get("drift_baseline_rmse") if metrics else None,
+        llm_baseline_rmse=metrics.get("llm_baseline_rmse") if metrics else None,
     )

@@ -38,6 +38,18 @@ from src.infrastructure.llm.unavailable import UnavailableLLMAdapter
 logger = logging.getLogger(__name__)
 
 
+def build_repository(settings: Settings) -> SupabaseRepository:
+    """Repozytorium Slow Loopa — jedno źródło dla use case'u i kroków obok niego.
+
+    ML-10: `model_scorecard_baselines_enabled` dokłada do karty baseline'y dryfu
+    i „sam LLM" (kolumny z migracji 028)."""
+    return SupabaseRepository(
+        url=settings.supabase_url,
+        key=settings.supabase_key,
+        scorecard_baselines_enabled=settings.model_scorecard_baselines_enabled,
+    )
+
+
 def build_use_case(settings: Settings) -> TrainModelUseCase:
     """DI Container — Slow Loop potrzebuje tylko bazy + XGBoost.
 
@@ -45,7 +57,7 @@ def build_use_case(settings: Settings) -> TrainModelUseCase:
     bieżącej wersji zestawu cech (kolumna z migracji 027)."""
     return TrainModelUseCase(
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
-        db_port=SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key),
+        db_port=build_repository(settings),
         feature_set_version=(
             FEATURE_SET_VERSION if settings.feature_set_filter_enabled else None
         ),
@@ -209,9 +221,7 @@ def main(settings: Settings | None = None) -> int:
     )
     settings = settings or Settings.from_env()
     quota_monitor = QuotaMonitor()
-    supabase_repo = SupabaseRepository(
-        url=settings.supabase_url, key=settings.supabase_key
-    )
+    supabase_repo = build_repository(settings)
     use_case = build_use_case(settings)
 
     logger.info("Slow Loop start — symbols=%s", settings.symbols)

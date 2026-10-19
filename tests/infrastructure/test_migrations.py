@@ -48,6 +48,7 @@ MIGRATION_FILES = [
     "025_implied_edge.sql",
     "026_feature_store_clean_rows.sql",
     "027_feature_set_version.sql",
+    "028_model_scorecard_baselines.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -708,6 +709,23 @@ class TestMigrations:
             versions = dict(cur.fetchall())
 
         assert versions == {"FSV_V2": 2, "FSV_NULL": None}
+
+    # -- Migracja 028: baseline'y dryfu i „sam LLM" w karcie modelu (ML-10) ---
+
+    def test_model_scorecards_store_the_drift_and_llm_baselines(self, pg_conn) -> None:
+        """Karta pokazuje wszystkie trzy baseline'y bramki; nowe kolumny są
+        nullable, bo przebieg bez metryk (skipped) i stare wiersze ich nie mają."""
+        assert {"drift_baseline_rmse", "llm_baseline_rmse"} <= _columns(
+            pg_conn, "model_scorecards"
+        )
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status) VALUES (%s, %s) "
+                "RETURNING drift_baseline_rmse, llm_baseline_rmse",
+                ("ALL", "skipped"),
+            )
+            row = cur.fetchone()
+        assert row == (None, None)
 
 
 @pytest.fixture

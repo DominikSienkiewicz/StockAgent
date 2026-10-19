@@ -588,3 +588,68 @@ class TestWalkForwardReportPurge:
 
         with pytest.raises(ValueError, match="time"):
             adapter.walk_forward_report(features, target, timestamps=stamps)
+
+
+class TestStrongerBaselines:
+    """ML-10: bramka wymaga pobicia max(zero, dryf, sam LLM) — baseline'y liczone
+    wyłącznie z części treningowej foldu, bez podglądu walidacji."""
+
+    @staticmethod
+    def _llm_driven_dataset(n: int = 200) -> tuple[pd.DataFrame, pd.Series]:
+        """target = 0.01 × llm_trend_signal + szum; pozostałe cechy to szum."""
+        rng = np.random.default_rng(42)
+        features = pd.DataFrame({name: rng.normal(0, 1, n) for name in FEATURE_NAMES})
+        features["llm_trend_signal"] = rng.choice([-1.0, 1.0], size=n)
+        target = pd.Series(0.01 * features["llm_trend_signal"] + rng.normal(0, 0.005, n))
+        return features, target
+
+    def test_candidate_rejected_when_llm_only_baseline_is_better(
+        self, adapter: XGBoostAdapter, model_path: str
+    ):
+        # Dziś kandydat bije zero o ~45% i zostaje wdrożony, choć przeskalowany sam
+        # sygnał LLM ma niższe RMSE — „hybryda" nic by nie dodała.
+        features, target = self._llm_driven_dataset()
+
+        result = adapter.train(features, target)
+
+        assert result["candidate_holdout_rmse"] < result["baseline_rmse"]
+        assert result["llm_baseline_rmse"] < result["candidate_holdout_rmse"]
+        assert result["status"] == "skipped_validation_failed"
+        assert "sam LLM" in result["reason"]
+        assert not Path(model_path).exists()
+
+    def test_result_reports_all_three_baselines(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=200)
+
+        result = adapter.train(features, target)
+
+        assert result["status"] == "trained_successfully"
+        for key in ("baseline_rmse", "drift_baseline_rmse", "llm_baseline_rmse"):
+            assert result[key] > result["candidate_holdout_rmse"]
+
+    def test_fold_baselines_come_from_the_training_part_only(
+        self, adapter: XGBoostAdapter
+    ):
+        # n=15 → jeden split: 5 wierszy treningu (target 0.01), 10 walidacji (0.05).
+        # Z podglądem walidacji oba baseline'y miałyby RMSE 0; z samego treningu
+        # przewidują 0.01, więc RMSE = 0.04.
+        features, _ = _synthetic_dataset(n=15)
+        features["llm_trend_signal"] = 1.0
+        target = pd.Series([0.01] * 5 + [0.05] * 10)
+
+        (fold,) = adapter.walk_forward_report(features, target)
+
+        assert fold["drift_baseline_rmse"] == pytest.approx(0.04)
+        assert fold["llm_baseline_rmse"] == pytest.approx(0.04)
+
+    def test_llm_baseline_is_omitted_without_the_llm_feature(
+        self, adapter: XGBoostAdapter
+    ):
+        features, target = _synthetic_dataset(n=200)
+
+        folds = adapter.walk_forward_report(
+            features.drop(columns=["llm_trend_signal"]), target
+        )
+
+        assert all("llm_baseline_rmse" not in fold for fold in folds)
+        assert all("drift_baseline_rmse" in fold for fold in folds)

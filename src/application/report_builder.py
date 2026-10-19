@@ -967,6 +967,8 @@ def _build_model_scorecard_html(
         metrics_symbol=model_scorecard.metrics_symbol,
         n_samples=model_scorecard.metrics_n_samples,
         evaluations=model_scorecard.evaluations,
+        drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
+        llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
     )
 
 

@@ -14,8 +14,9 @@ trained one model per symbol and skipped all 45: the best-covered symbol had 17 
 predictions against the 50 required, 288 across all symbols. Training now fits one shared
 model on the pooled predictions of every symbol, so the 50-sample minimum applies to that
 pooled sample, and weights ship only if the shared candidate also passes the walk-forward
-gate against a no-change baseline. Until a run ships them, the XGBoost leg runs on that
-baseline and the report and the council prompt label it as cold-start.
+gate against the strongest of three baselines: no change, the mean drift and the LLM
+direction alone. Until a run ships them, the XGBoost leg runs on the no-change baseline
+and the report and the council prompt label it as cold-start.
 
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.2](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=for-the-badge)

@@ -33,6 +33,10 @@ MIN_VALIDATION_SAMPLES = 10
 WALK_FORWARD_FOLDS = 4
 MIN_FOLD_SAMPLES = 50
 
+# ML-10: cecha z kierunkiem LLM (kontrakt `ML_FEATURE_COLUMNS`) — z niej powstaje
+# baseline „sam LLM". Bez tej kolumny w danych baseline jest pomijany.
+LLM_SIGNAL_FEATURE = "llm_trend_signal"
+
 # Komunikat dołączany do wyniku: raportowane metryki dotyczą KANDYDATA na
 # holdoucie (foldach), a shipowany model jest refitowany na WSZYSTKICH danych
 # i nie jest re-walidowany — więc nie traktuj tych liczb jak jakości produkcyjnej.
@@ -102,6 +106,9 @@ class XGBoostAdapter(MLPredictionPort):
             "n_oos_points": summary.n_oos_points,
             "candidate_holdout_rmse": summary.mean_candidate_rmse,
             "baseline_rmse": summary.mean_baseline_rmse,
+            # ML-10: baseline'y „dryf średniej" i „sam LLM" (bramka bije najsilniejszy).
+            "drift_baseline_rmse": summary.mean_drift_baseline_rmse,
+            "llm_baseline_rmse": summary.mean_llm_baseline_rmse,
             "candidate_holdout_directional_hit_rate": summary.mean_hit_rate,
             # Per-feature drift stats (mean/std) — obserwowalne niezależnie od
             # werdyktu bramki, żeby porównać rozkład cech z poprzednim runem.
@@ -127,7 +134,8 @@ class XGBoostAdapter(MLPredictionPort):
                 "status": "skipped_validation_failed",
                 "reason": (
                     "Candidate did not pass the walk-forward gate against the "
-                    f"zero-return persistence baseline: {summary.verdict}."
+                    "strongest baseline (zero return, mean drift, LLM only): "
+                    f"{summary.verdict}."
                 ),
                 **metrics,
                 "model_path": self._model_path,
@@ -162,6 +170,10 @@ class XGBoostAdapter(MLPredictionPort):
         Z `timestamps` (czas globalny, rosnąco) trening foldu kończy się na
         `purged_train_end` — bez wierszy, których etykieta 12h dojrzewa po starcie
         walidacji. Fold bez żadnego wiersza treningowego po purgu jest pomijany.
+
+        ML-10: baseline'y „dryf średniej" i „sam LLM" biorą skalę WYŁĄCZNIE z
+        części treningowej foldu (tej samej, którą widzi kandydat) — żadnego
+        podglądu walidacji.
         """
         folds = _expanding_window_folds(len(target))
         out: list[dict[str, float]] = []
@@ -184,6 +196,7 @@ class XGBoostAdapter(MLPredictionPort):
 
             out.append(
                 {
+                    **_training_part_baselines(train_y, valid_x, valid_y),
                     "train_end": float(train_end),
                     "valid_end": float(valid_end),
                     "n_train": float(fit_end),
@@ -281,6 +294,24 @@ class XGBoostAdapter(MLPredictionPort):
                 f"Missing required ML features for prediction: {missing}"
             )
         return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
+
+
+def _training_part_baselines(
+    train_y: pd.Series, valid_x: pd.DataFrame, valid_y: pd.Series
+) -> dict[str, float]:
+    """ML-10: RMSE baseline'ów „dryf średniej" i „sam LLM" na walidacji foldu.
+
+    Dryf przewiduje stały średni target części treningowej. „Sam LLM" przewiduje
+    `llm_trend_signal` × średni |target| części treningowej — kierunek z LLM,
+    skala z historii. Bez kolumny sygnału LLM zwracamy tylko dryf.
+    """
+    drift = float(train_y.mean())
+    baselines = {"drift_baseline_rmse": _rmse(valid_y, np.full(len(valid_y), drift))}
+    if LLM_SIGNAL_FEATURE in valid_x.columns:
+        scale = float(train_y.abs().mean())
+        llm_preds = np.asarray(valid_x[LLM_SIGNAL_FEATURE], dtype=float) * scale
+        baselines["llm_baseline_rmse"] = _rmse(valid_y, llm_preds)
+    return baselines
 
 
 def _global_time_order(timestamps: Any, n_samples: int) -> list[datetime] | None:

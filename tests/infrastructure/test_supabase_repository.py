@@ -1963,3 +1963,39 @@ class TestFeatureStoreFeatureSetVersion:
 
         assert len(rows) == 3
         assert "feature_set_version" not in sent[0]
+
+
+class TestModelScorecardBaselines:
+    """ML-10: baseline'y „dryf średniej" i „sam LLM" trafiają do karty tylko za
+    flagą — kolumny istnieją od migracji 028, a nowy klucz przed nią to PGRST204."""
+
+    _RESULT: dict[str, Any] = {
+        "status": "skipped_validation_failed",
+        "candidate_holdout_rmse": 0.021,
+        "baseline_rmse": 0.024,
+        "drift_baseline_rmse": 0.023,
+        "llm_baseline_rmse": 0.020,
+        "n_folds": 4,
+        "n_samples": 225,
+    }
+
+    def test_flag_off_payload_has_no_new_columns(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_model_scorecard("ALL", self._RESULT)
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "drift_baseline_rmse" not in payload
+        assert "llm_baseline_rmse" not in payload
+
+    def test_flag_on_payload_carries_both_baselines(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", scorecard_baselines_enabled=True
+        )
+
+        repo.save_model_scorecard("ALL", self._RESULT)
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload["drift_baseline_rmse"] == 0.023
+        assert payload["llm_baseline_rmse"] == 0.020
+        assert payload["baseline_rmse"] == 0.024

@@ -68,12 +68,14 @@ def main(settings: Settings | None = None) -> int:
             # 4 foldach t-stat mówi niewiele.
             logger.info(
                 "%s: %s | folds=%d cand_rmse=%.5f base_rmse=%.5f "
-                "hit=%.1f%% impr=%.1f%% ic=%s sd=%s t=%s",
+                "drift_rmse=%s llm_rmse=%s hit=%.1f%% impr=%.1f%% ic=%s sd=%s t=%s",
                 symbol,
                 summary.verdict,
                 summary.n_folds,
                 summary.mean_candidate_rmse,
                 summary.mean_baseline_rmse,
+                _fmt_optional(summary.mean_drift_baseline_rmse, "%.5f"),
+                _fmt_optional(summary.mean_llm_baseline_rmse, "%.5f"),
                 summary.mean_hit_rate * 100.0,
                 summary.improvement_pct,
                 _fmt_optional(summary.mean_ic, "%.3f"),
