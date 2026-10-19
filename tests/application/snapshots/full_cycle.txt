@@ -106,8 +106,8 @@ PREDYKCJE
         📰 [Reuters] NVDA beats quarterly estimates on data-center demand (rel=0,91, sent=+0,42)
         📰 [Bloomberg] Analysts lift NVDA price targets after guidance (rel=0,77, sent=+0,31)
   Wycena fundamentalna:
-    Trailing P/E: 48.20  · Forward P/E: 31.50
-    PEG ratio: 1.40  · EPS growth YoY: 62.0%
+    Trailing P/E: 48,20  · Forward P/E: 31,50
+    PEG ratio: 1,40  · EPS growth YoY: 62,0%
     Werdykt: FAIR
   AMD (Advanced Micro Devices Inc.) · Półprzewodniki/AI      $160,00  Δ   -3,50%  →  Spadkowy    prognoza $157,20 (-1,75%) · pewność 71%
          sentyment -0,18

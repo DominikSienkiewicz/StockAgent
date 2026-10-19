@@ -240,10 +240,10 @@ def _render_valuation(section: ValuationSection | None) -> str:
         return ""
 
     def fmt(v: float | None) -> str:
-        return f"{v:.2f}" if isinstance(v, (int, float)) else "—"
+        return _number(v, decimals=2) if isinstance(v, (int, float)) else "—"
 
     growth = (
-        f"{section.eps_growth_yoy * 100:.1f}%"
+        _pct(section.eps_growth_yoy, decimals=1)
         if section.eps_growth_yoy is not None
         else "—"
     )
@@ -268,10 +268,10 @@ def _render_valuation_text(section: ValuationSection | None) -> str:
         return ""
 
     def fmt(v: float | None) -> str:
-        return f"{v:.2f}" if isinstance(v, (int, float)) else "—"
+        return _number(v, decimals=2) if isinstance(v, (int, float)) else "—"
 
     growth = (
-        f"{section.eps_growth_yoy * 100:.1f}%"
+        _pct(section.eps_growth_yoy, decimals=1)
         if section.eps_growth_yoy is not None
         else "—"
     )
