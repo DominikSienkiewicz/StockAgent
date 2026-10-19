@@ -920,6 +920,9 @@ class ReportContext:
     ml_model_loaded: bool = True
     consensus_shifts: list[tuple[str, ConsensusShift]] | None = None
     user_portfolio: Portfolio | None = None
+    # PORT-07: ceny pozycji spoza watchlisty (sam darmowy /quote, bez snapshotu).
+    # Cena z cyklu ma pierwszeństwo, gdy symbol jest w obu.
+    held_prices: Mapping[str, Decimal] | None = None
     portfolio_clusters: Mapping[str, str] | None = None
     cycle_cost: CycleCost | None = None
     # WIA-17/22/23/31/32/36: dowód trafności i Brier pod sekcją Track Record.
@@ -954,7 +957,7 @@ def build_html_report(
     # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
     # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
     # skorygowanej historią. None → surowa pewność, jak przed #9.
-    current_prices = _current_prices_of(results)
+    current_prices = {**(context.held_prices or {}), **_current_prices_of(results)}
     # #15 faza 2: gdy znamy realny portfel, sizing widzi istniejącą ekspozycję
     # (symbolu i jego klastra) i może zaproponować wyłącznie WĘŻSZĄ bandę.
     portfolio_weights = (

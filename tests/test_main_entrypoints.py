@@ -2043,3 +2043,147 @@ class TestPortfolioRadarMinimumSamples:
         assert report is not None
         assert report.var is None
         assert ("var", 9, 60) in report.insufficient
+
+
+class TestHeldPositionsOutsideWatchlist:
+    """PORT-07: pozycja w spółce spoza config.toml nie miała ceny i znikała z P/L,
+    a dopisanie jej do `symbols` uruchamiało płatne wywołania przy każdym ruchu
+    ≥ 2%. Teraz dostaje SAM darmowy /quote — bez snapshotu, grafu, LLM, AV
+    i embeddingów."""
+
+    _PAID_FACTORIES = (
+        "build_use_case",
+        "build_llm_adapter",
+        "build_council_adapter",
+        "build_council_llm_adapter",
+        "build_embedding_adapter",
+        "build_alpha_enrichment",
+        "build_tool_use_adapter",
+    )
+
+    @staticmethod
+    def _portfolio(*symbols: str) -> "main_agent.Portfolio":
+        from datetime import date
+
+        from src.domain.portfolio import Position
+
+        return main_agent.Portfolio(
+            positions=tuple(
+                Position(
+                    symbol=symbol,
+                    quantity=Decimal("2"),
+                    purchase_price=Decimal("100"),
+                    purchase_date=date(2026, 10, 1),
+                )
+                for symbol in symbols
+            ),
+            as_of=datetime(2026, 10, 18, 5, 0, tzinfo=UTC),
+        )
+
+    def _dispatch(
+        self, settings: Settings, mocker, portfolio, market,
+        unsupported: tuple[str, ...] = ("XDWD.DE",),
+    ) -> tuple[MagicMock, MagicMock, dict[str, MagicMock], MagicMock]:
+        from src.application.ports import LLMPort
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        settings.symbols_unsupported_price = list(unsupported)
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch("main_agent._build_user_portfolio", return_value=portfolio)
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        report = mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+        market_factory = mocker.patch("main_agent.build_market_port", return_value=market)
+        llm = MagicMock(spec=LLMPort)
+        paid = {
+            name: mocker.patch(f"main_agent.{name}", return_value=llm)
+            for name in self._PAID_FACTORIES
+        }
+        repository = MagicMock(spec=RepositoryPort)
+        main_agent._dispatch_reports(
+            results=[
+                main_agent.SymbolResult(
+                    symbol="AAPL", status="saved", current_price=Decimal("230")
+                )
+            ],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=repository,
+            quota_monitor=QuotaMonitor(),
+            notifier=MagicMock(),
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL", "VOO", "XDWD.DE"],
+            context=main_agent.ReportContext(),
+        )
+        paid["llm"] = llm
+        return report, repository, paid, market_factory
+
+    def test_held_symbol_outside_watchlist_gets_quote_only(self, settings, mocker) -> None:
+        from src.application.ports import MarketDataPort
+        from src.domain.value_objects import Money
+
+        market = MagicMock(spec=MarketDataPort)
+        market.get_current_price.return_value = Money(Decimal("410.50"))
+
+        report, repository, paid, _ = self._dispatch(
+            settings, mocker, self._portfolio("AAPL", "MSFT"), market
+        )
+
+        market.get_current_price.assert_called_once_with("MSFT")
+        repository.save_price_snapshot.assert_not_called()
+        for name in self._PAID_FACTORIES:
+            paid[name].assert_not_called()
+        assert paid["llm"].mock_calls == []
+        context = report.call_args_list[0].args[3]
+        assert context.held_prices == {"MSFT": Decimal("410.50")}
+
+    def test_watchlist_and_unsupported_symbols_are_not_quoted(self, settings, mocker) -> None:
+        from src.application.ports import MarketDataPort
+
+        market = MagicMock(spec=MarketDataPort)
+
+        # AAPL i XDWD.DE są w watchliście (XDWD.DE także w unsupported), IUSN.DE
+        # tylko w unsupported — Finnhub free i tak go nie wyceni.
+        self._dispatch(
+            settings, mocker, self._portfolio("AAPL", "XDWD.DE", "IUSN.DE", "MSFT"),
+            market, unsupported=("XDWD.DE", "IUSN.DE"),
+        )
+
+        market.get_current_price.assert_called_once_with("MSFT")
+
+    def test_quote_failure_leaves_the_symbol_unpriced(self, settings, mocker) -> None:
+        from src.application.ports import MarketDataPort
+        from src.domain.value_objects import Money
+
+        market = MagicMock(spec=MarketDataPort)
+
+        def quote(symbol: str) -> Money:
+            if symbol == "MSFT":
+                raise RuntimeError("Finnhub 429")
+            return Money(Decimal("50"))
+
+        market.get_current_price.side_effect = quote
+
+        report, _, _, _ = self._dispatch(
+            settings, mocker, self._portfolio("MSFT", "TSLA"), market
+        )
+
+        assert report.call_args_list[0].args[3].held_prices == {"TSLA": Decimal("50")}
+
+    def test_no_portfolio_builds_no_market_port(self, settings, mocker) -> None:
+        from src.application.ports import MarketDataPort
+
+        _, _, _, market_factory = self._dispatch(
+            settings, mocker, None, MagicMock(spec=MarketDataPort)
+        )
+
+        market_factory.assert_not_called()

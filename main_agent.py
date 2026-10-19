@@ -410,6 +410,35 @@ def _build_user_portfolio(settings: Settings) -> Portfolio | None:
     return Portfolio(positions=tuple(positions), as_of=as_of)
 
 
+def _quote_held_positions(
+    settings: Settings, portfolio: Portfolio | None, watchlist: list[str]
+) -> dict[str, Decimal]:
+    """PORT-07 — darmowa cena pozycji spoza watchlisty: SAM `/quote` przez
+    `build_market_port` (Finnhub / CoinGecko).
+
+    Bez `save_price_snapshot` (należy wyłącznie do Fast Loopa i bramki), bez
+    grafu, bez LLM, Alpha Vantage i embeddingów — dopisanie symbolu do `symbols`
+    uruchamiałoby płatne wywołania przy każdym ruchu ≥ progu. Symbole z
+    `symbols_unsupported_price` pomijamy (darmowe źródło i tak ich nie wyceni).
+    Zapytania idą sekwencyjnie, żeby nie dokładać równoległego ruchu do limitu
+    Finnhub (60/min). Błąd symbolu → brak ceny; sekcja portfela pokaże go jako
+    niewyceniony (PORT-03)."""
+    if portfolio is None:
+        return {}
+    skipped = set(watchlist) | set(settings.symbols_unsupported_price)
+    held = sorted({position.symbol for position in portfolio.positions} - skipped)
+    if not held:
+        return {}
+    market = build_market_port(settings)
+    prices: dict[str, Decimal] = {}
+    for symbol in held:
+        try:
+            prices[symbol] = market.get_current_price(symbol).amount
+        except Exception:
+            logger.exception("Quote for held position %s failed — left unpriced", symbol)
+    return prices
+
+
 def _portfolio_clusters(settings: Settings) -> dict[str, str]:
     """#15 — mapa symbol → klaster korelacji z `peer_groups` (już w configu).
     Klastrów nie liczymy tutaj; domena tylko sumuje ekspozycję."""
@@ -1601,6 +1630,8 @@ def _dispatch_reports(
         model_scorecard = _build_model_scorecard(settings, repository)
         # #15: realny portfel użytkownika (flaga + migracja 023).
         user_portfolio = _build_user_portfolio(settings)
+        # PORT-07: pozycje spoza watchlisty dostają sam darmowy /quote.
+        held_prices = _quote_held_positions(settings, user_portfolio, all_symbols)
         # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
         consensus_shifts = (
             _build_consensus_shifts(repository, results, now=started_at)
@@ -1626,6 +1657,7 @@ def _dispatch_reports(
             model_scorecard=model_scorecard,
             consensus_shifts=consensus_shifts,
             user_portfolio=user_portfolio,
+            held_prices=held_prices,
             portfolio_clusters=_portfolio_clusters(settings),
         )
 

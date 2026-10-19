@@ -2202,3 +2202,26 @@ def test_user_portfolio_lists_a_position_the_cycle_could_not_price():
     )
 
     assert "Bez wyceny w tym cyklu: XDWD.DE (≈ 44.4% kosztu)" in html
+
+
+def test_held_price_outside_the_watchlist_prices_the_position():
+    # PORT-07: cena z samego /quote (ReportContext.held_prices) wycenia pozycję
+    # spoza watchlisty — trafia do tabeli zamiast do „Bez wyceny”.
+    as_of = datetime(2026, 5, 14, tzinfo=UTC)
+    portfolio = Portfolio(
+        positions=(
+            Position(symbol="AAPL", quantity=Decimal("10"),
+                     purchase_price=Decimal("250"), purchase_date=as_of.date()),
+            Position(symbol="MSFT", quantity=Decimal("2"),
+                     purchase_price=Decimal("400"), purchase_date=as_of.date()),
+        ),
+        as_of=as_of,
+    )
+
+    html, _ = build_html_report(
+        [_saved_result()], as_of, 1.0,
+        ReportContext(user_portfolio=portfolio, held_prices={"MSFT": Decimal("410")}),
+    )
+
+    assert "Bez wyceny" not in html
+    assert "$820.00" in html
