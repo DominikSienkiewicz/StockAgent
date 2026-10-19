@@ -13,7 +13,7 @@ import html as _html_mod
 from dataclasses import dataclass
 from decimal import Decimal
 
-from src.application.report_formatting import PEERS, sector_label
+from src.application.report_formatting import PEERS, pct, sector_label
 from src.application.report_models import SymbolResult
 
 # Progi 'gorącości' — wyższe niż główna bramka volatility (0.02), by sugestie
@@ -89,7 +89,7 @@ def build_sector_suggestions(
 
 
 def _fmt_drivers(drivers: list[tuple[str, Decimal]]) -> str:
-    return ", ".join(f"{sym} {delta * 100:+.1f}%" for sym, delta in drivers)
+    return ", ".join(f"{sym} {pct(delta, signed=True, decimals=1)}" for sym, delta in drivers)
 
 
 def render_suggestions_html(suggestions: list[SectorSuggestion]) -> str:

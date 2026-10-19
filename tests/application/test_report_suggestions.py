@@ -102,3 +102,12 @@ class TestRender:
         text = render_suggestions_text([sug])
         assert "Mobilność" in text
         assert "LYFT" in text
+
+
+def test_drivers_are_written_with_a_decimal_comma() -> None:
+    # MAIL-58: „CRWD +6,0%, PANW +4,2%”, jak reszta maila, nie „+6.0%”.
+    html = render_suggestions_html(
+        build_sector_suggestions([_saved("CRWD", "0.06"), _saved("PANW", "0.042")])
+    )
+
+    assert "CRWD +6,0%, PANW +4,2%" in html

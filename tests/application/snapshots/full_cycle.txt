@@ -123,7 +123,7 @@ PREDYKCJE
 
 WARTE UWAGI (sektory w ruchu)
 ----------------------------------------------------------------
-  Półprzewodniki/AI — gorący (NVDA +4.2%, AMD -3.5%)
+  Półprzewodniki/AI — gorący (NVDA +4,2%, AMD -3,5%)
       rozważ: AVGO, TXN, AMAT
 
 POMINIĘTE (poniżej progu zmienności)
