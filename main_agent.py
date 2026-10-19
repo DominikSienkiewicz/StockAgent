@@ -402,6 +402,7 @@ def _dispatch_push_digest(
     subject: str,
     email_delivered: bool = True,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
+    resolved_unavailable: bool = False,
 ) -> None:
     """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
 
@@ -417,6 +418,7 @@ def _dispatch_push_digest(
             resolved,
             email_delivered=email_delivered,
             display_timezone=display_timezone,
+            resolved_unavailable=resolved_unavailable,
         )
         push_notifier.send_report(
             subject=subject, html_body=digest, plain_text=digest
@@ -1749,7 +1751,7 @@ def _fetch_report_context(
     resolved_since: datetime | None = None,
 ) -> tuple[
     dict[str, Any] | None,
-    list[ResolvedPrediction],
+    list[ResolvedPrediction] | None,
     list[QuotaAlert],
     list[InvestorHistory],
     list[PersonaTrackRecord],
@@ -1760,9 +1762,12 @@ def _fetch_report_context(
     Każdy odczyt osobno owinięty — błąd jednego nie blokuje pozostałych.
 
     `resolved_since` (WIA-19) — zamknięte predykcje to te ROZLICZONE od tej
-    chwili (start cyklu), a nie utworzone w ostatnich 24 h. None = okno 24 h."""
+    chwili (start cyklu), a nie utworzone w ostatnich 24 h. None = okno 24 h.
+
+    MAIL-25: nieudany odczyt zamkniętych predykcji zwraca None, nie pustą listę —
+    pusta lista znaczy w mailu „brak rozliczeń”, czego po awarii nie wiemy."""
     accuracy_stats: dict[str, Any] | None = None
-    resolved: list[ResolvedPrediction] = []
+    resolved: list[ResolvedPrediction] | None = None
     try:
         accuracy_stats = repository.get_accuracy_stats(ACCURACY_STATS_DAYS)
     except Exception:
@@ -1778,6 +1783,7 @@ def _fetch_report_context(
         resolved = parse_resolved_predictions(resolved_rows)
     except Exception:
         logger.exception("Failed to fetch resolved predictions")
+        resolved = None
 
     # Persystencja alertów z BIEŻĄCEGO cyklu (przed odczytem history, żeby też
     # tu trafiły) + odczyt z okna bannera.
@@ -1899,6 +1905,7 @@ def _dispatch_reports(
             accuracy_stats=accuracy_stats,
             resolved_predictions=resolved,
             resolved_this_cycle=resolved_since is not None,
+            resolved_unavailable=resolved is None,
             council_history=council_history,
             persona_track_record=persona_track_record,
             quota_alerts=recent_alerts,
@@ -2030,9 +2037,10 @@ def _dispatch_reports(
                 push_notifier=build_push_notifier(settings, quota_monitor),
                 results=results,
                 started_at=started_at,
-                resolved=resolved,
+                resolved=resolved or [],
                 subject=subject,
                 email_delivered=email_delivered,
+                resolved_unavailable=resolved is None,
                 display_timezone=settings.display_timezone,
             )
     except Exception:

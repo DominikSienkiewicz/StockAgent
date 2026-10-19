@@ -794,12 +794,17 @@ def build_cycle_lead(
 _PREHEADER_FILLER = "&zwnj;&nbsp;" * 100
 
 
-def _render_preheader_html(lead_items: list[LeadItem], closed_count: int) -> str:
+def _render_preheader_html(lead_items: list[LeadItem], closed_count: int | None) -> str:
     """MAIL-13: ukryty div na samym początku HTML — klient poczty pokazuje go jako
-    podgląd pod tematem. Treść leadu pochodzi z rady i newsów, więc jest escapowana."""
-    preview = lead_preview(lead_items) or (
-        f"Brak sygnałów ponad próg · {closed_count} zamkniętych predykcji"
+    podgląd pod tematem. Treść leadu pochodzi z rady i newsów, więc jest escapowana.
+
+    `closed_count` None (MAIL-25) = odczyt rozliczeń padł: podgląd nie mówi „0”."""
+    closed = (
+        "rozliczenia niedostępne"
+        if closed_count is None
+        else f"{closed_count} zamkniętych predykcji"
     )
+    preview = lead_preview(lead_items) or f"Brak sygnałów ponad próg · {closed}"
     return (
         '<div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">'
         f"{_html(preview)}{_PREHEADER_FILLER}</div>"
@@ -1017,6 +1022,10 @@ class ReportContext:
         resolved_this_cycle: `resolved_predictions` to predykcje rozliczone
             w TYM cyklu (WIA-19, okno po `settled_at`), nie z ostatnich 24 h —
             nagłówek sekcji mówi wtedy, jakie okno pokazuje.
+            Pusta lista (udany odczyt) → sekcja mówi „brak rozliczeń” (MAIL-25);
+            None (nie dociągnięto) → brak sekcji.
+        resolved_unavailable: odczyt zamkniętych predykcji padł (MAIL-25) —
+            sekcja ostrzega o awarii zamiast udawać „brak rozliczeń”.
         macro_risk_report: wynik `MonitorMacroRiskUseCase.run(...)` — gdy
             podany, w raporcie pojawia się sekcja 🚨 Risk Watch.
         symbols_filter: watchlista subskrybenta; raport jest do niej tnięty.
@@ -1025,6 +1034,7 @@ class ReportContext:
     accuracy_stats: dict[str, Any] | None = None
     resolved_predictions: list[ResolvedPrediction] | None = None
     resolved_this_cycle: bool = False
+    resolved_unavailable: bool = False
     macro_risk_report: MacroRiskReport | None = None
     portfolio_risk_report: PortfolioRiskReport | None = None
     council_history: list[InvestorHistory] | None = None
@@ -1061,6 +1071,22 @@ class ReportContext:
     # MAIL-42: przebieg, który wygenerował mail — stopka z numerem, krótkim SHA
     # i (tylko w GHA) linkiem do logów. None = stopka jak przed MAIL-42.
     run_context: RunContext | None = None
+
+
+def _resolved_note(context: ReportContext, window: str) -> str | None:
+    """MAIL-25: linia sekcji zamkniętych predykcji, gdy nie ma czego wylistować.
+
+    Awaria odczytu ma pierwszeństwo przed pustą listą — nie może udawać „brak
+    rozliczeń”. None w `resolved_predictions` (wołający nie dociągnął rozliczeń)
+    → brak linii, czyli brak sekcji, jak przed MAIL-25.
+    """
+    if context.resolved_predictions:
+        return None
+    if context.resolved_unavailable:
+        return _RESOLVED_UNAVAILABLE_NOTE
+    if context.resolved_predictions is not None:
+        return _RESOLVED_EMPTY_NOTE[window]
+    return None
 
 
 def build_html_report(
@@ -1195,10 +1221,11 @@ def build_html_report(
     resolved_window = (
         _RESOLVED_WINDOW_THIS_CYCLE if context.resolved_this_cycle else _RESOLVED_WINDOW_24H
     )
+    resolved_note = _resolved_note(context, resolved_window)
     html = _render_html(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
-        resolved, resolved_window=resolved_window,
+        resolved, resolved_window=resolved_window, resolved_note=resolved_note,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1219,11 +1246,12 @@ def build_html_report(
         _SUGGESTIONS_SLOT: suggestions_html,
         _RUN_FOOTER_SLOT: _render_run_footer_html(context.run_context),
     })
-    html = _compact_markup(_render_preheader_html(lead_items, len(resolved)) + html)
+    closed_count = None if context.resolved_unavailable and not resolved else len(resolved)
+    html = _compact_markup(_render_preheader_html(lead_items, closed_count) + html)
     text = _render_plain(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
-        resolved, resolved_window=resolved_window,
+        resolved, resolved_window=resolved_window, resolved_note=resolved_note,
     )
     text = _fill_text_slots(
         text,
@@ -1409,15 +1437,31 @@ def _render_risk_signals_html(risk_signals: list[RiskSignal]) -> str:
 # WIA-19: okno sekcji zamkniętych predykcji w jej nagłówku (HTML i tekst).
 _RESOLVED_WINDOW_24H = "ostatnie 24h"
 _RESOLVED_WINDOW_THIS_CYCLE = "rozliczone w tym cyklu"
+# MAIL-25: linia zamiast pustego miejsca — zgodna z oknem w nagłówku sekcji.
+_RESOLVED_EMPTY_NOTE = {
+    _RESOLVED_WINDOW_24H: "Brak rozliczeń predykcji z ostatnich 24h.",
+    _RESOLVED_WINDOW_THIS_CYCLE: "Brak rozliczeń w tym cyklu.",
+}
+_RESOLVED_UNAVAILABLE_NOTE = (
+    "⚠️ Nie udało się odczytać rozliczeń — w tym mailu ich brakuje "
+    "(szczegóły w logach przebiegu)."
+)
 
 
 def _render_resolved_predictions_html(
     resolved_predictions: list[ResolvedPrediction],
     window: str = _RESOLVED_WINDOW_24H,
+    note: str | None = None,
 ) -> str:
-    """📊 Zamknięte predykcje z okna `window`. Pusty string, gdy brak."""
+    """📊 Zamknięte predykcje z okna `window`. Bez predykcji: nagłówek z linią
+    `note` (MAIL-25) albo pusty string, gdy `note` None."""
     if not resolved_predictions:
-        return ""
+        if note is None:
+            return ""
+        return _section_h2(f"📊 Zamknięte predykcje ({window})") + (
+            "<div style='font-size: 12px; color: #6b7280; margin: 4px 0 16px 0;'>"
+            f"{_html(note)}</div>"
+        )
     correct = [p for p in resolved_predictions if p.is_correct]
     wrong = [p for p in resolved_predictions if not p.is_correct]
     parts = [_section_h2(f"📊 Zamknięte predykcje ({window})")]
@@ -1722,6 +1766,7 @@ def _render_html(
     resolved_predictions: list[ResolvedPrediction],
     *,
     resolved_window: str = _RESOLVED_WINDOW_24H,
+    resolved_note: str | None = None,
 ) -> str:
     sections = []
 
@@ -1828,7 +1873,9 @@ def _render_html(
     """)
 
     # 📊 Day-over-day — zamknięte predykcje z ostatnich 24h albo z tego cyklu
-    sections.append(_render_resolved_predictions_html(resolved_predictions, resolved_window))
+    sections.append(
+        _render_resolved_predictions_html(resolved_predictions, resolved_window, resolved_note)
+    )
 
     # Historia trafności
     sections.append(_render_accuracy_history_html(accuracy_stats))
@@ -1923,10 +1970,14 @@ def _render_risk_signals_text(risk_signals: list[RiskSignal]) -> list[str]:
 def _render_resolved_predictions_text(
     resolved_predictions: list[ResolvedPrediction],
     window: str = _RESOLVED_WINDOW_24H,
+    note: str | None = None,
 ) -> list[str]:
-    """Sekcja 'Zamknięte predykcje' (plain). Pusta lista, gdy brak."""
+    """Sekcja 'Zamknięte predykcje' (plain). Bez predykcji: nagłówek z linią
+    `note` (MAIL-25) albo pusta lista, gdy `note` None."""
     if not resolved_predictions:
-        return []
+        if note is None:
+            return []
+        return [f"ZAMKNIĘTE PREDYKCJE ({window})", "-" * 64, f"  {note}", ""]
     correct = sum(1 for p in resolved_predictions if p.is_correct)
     lines = [f"ZAMKNIĘTE PREDYKCJE ({window})", "-" * 64]
     for p in resolved_predictions:
@@ -2097,6 +2148,7 @@ def _render_plain(
     resolved_predictions: list[ResolvedPrediction],
     *,
     resolved_window: str = _RESOLVED_WINDOW_24H,
+    resolved_note: str | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
@@ -2134,7 +2186,9 @@ def _render_plain(
     lines.extend(_render_risk_signals_text(risk_signals))
 
     # Zamknięte predykcje
-    lines.extend(_render_resolved_predictions_text(resolved_predictions, resolved_window))
+    lines.extend(
+        _render_resolved_predictions_text(resolved_predictions, resolved_window, resolved_note)
+    )
 
     # Nastroje portfela
     lines.append("NASTROJE PORTFELA")

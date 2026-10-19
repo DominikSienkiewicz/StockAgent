@@ -77,8 +77,11 @@ def _cycle_line(results: list[SymbolResult]) -> str:
     return f"Cykl: {saved} zapisane · {ignored} pominięte · {errors} błędów"
 
 
-def _scorecard_line(resolved: list[ResolvedPrediction]) -> str:
-    """Scorecard ✅/❌ zamkniętych predykcji."""
+def _scorecard_line(resolved: list[ResolvedPrediction], *, unavailable: bool) -> str:
+    """Scorecard ✅/❌ zamkniętych predykcji. MAIL-25: awaria odczytu nie udaje
+    „brak zamkniętych predykcji”."""
+    if unavailable and not resolved:
+        return "Scorecard: rozliczenia niedostępne (błąd odczytu)"
     if not resolved:
         return "Scorecard: brak zamkniętych predykcji"
     correct = sum(1 for p in resolved if p.is_correct)
@@ -107,6 +110,7 @@ def build_messenger_digest(
     *,
     email_delivered: bool = True,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
+    resolved_unavailable: bool = False,
 ) -> str:
     """Buduje zwięzły digest push (~5 linii) dla Telegrama/Slacka.
 
@@ -124,6 +128,8 @@ def build_messenger_digest(
         email_delivered: False, gdy wysyłka maila padła — push mówi o tym zaraz
             pod nagłówkiem, bo przy 401/403 kolejny mail też by nie doszedł.
         display_timezone: strefa (IANA) godziny w nagłówku; `started_at` jest w UTC.
+        resolved_unavailable: True, gdy odczyt zamkniętych predykcji padł
+            (MAIL-25) — scorecard mówi o awarii zamiast „brak”.
 
     Returns:
         Gotowy tekst push, ≤ `MAX_DIGEST_CHARS` znaków.
@@ -133,7 +139,7 @@ def build_messenger_digest(
         _header_line(started_at, display_timezone),
         *([] if email_delivered else [UNDELIVERED_EMAIL_LINE]),
         _cycle_line(results),
-        _scorecard_line(resolved),
+        _scorecard_line(resolved, unavailable=resolved_unavailable),
         _signals_line(results),
     ]
     digest = "\n".join(lines)

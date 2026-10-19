@@ -2787,6 +2787,84 @@ class TestSettledAtWindowsWiring:
         assert fetch.call_args.kwargs["resolved_since"] is None
         assert report.call_args_list[0].args[3].resolved_this_cycle is False
 
+    def test_failed_settlement_read_is_reported_as_unavailable(self) -> None:
+        # MAIL-25: awaria odczytu to None, a nie pusta lista — pusta lista
+        # znaczy w mailu „brak rozliczeń”, czego po awarii nie wiemy.
+        from src.application.quota_monitor import QuotaMonitor
+
+        repo = self._repo()
+        repo.get_recently_resolved_predictions.side_effect = Exception("supabase down")
+
+        _, resolved, *_ = main_agent._fetch_report_context(repo, QuotaMonitor(), ["AAPL"])
+
+        assert resolved is None
+
+    def test_dispatch_marks_the_section_unavailable_after_a_failed_read(
+        self, settings, mocker
+    ) -> None:
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, None, [], [], []))
+
+        _, report = self._dispatch_with_fetch_patched(settings, mocker)
+
+        context = report.call_args_list[0].args[3]
+        assert context.resolved_unavailable is True
+
+    def test_dispatch_keeps_an_empty_read_as_nothing_settled(self, settings, mocker) -> None:
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+
+        _, report = self._dispatch_with_fetch_patched(settings, mocker)
+
+        context = report.call_args_list[0].args[3]
+        assert context.resolved_unavailable is False
+        assert context.resolved_predictions == []
+
+    def _dispatch_with_fetch_patched(
+        self, settings: Settings, mocker
+    ) -> tuple[MagicMock, MagicMock]:
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch("main_agent._build_user_portfolio", return_value=None)
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        report = mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+        notifier = MagicMock()
+        main_agent._dispatch_reports(
+            results=[],
+            started_at=self._STARTED_AT,
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=QuotaMonitor(),
+            notifier=notifier,
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL"],
+            context=main_agent.ReportContext(),
+        )
+        return notifier, report
+
+    def test_push_digest_says_settlements_are_unavailable_after_a_failed_read(self) -> None:
+        push = MagicMock()
+
+        main_agent._dispatch_push_digest(
+            push_notifier=push,
+            results=[],
+            started_at=self._STARTED_AT,
+            resolved=[],
+            subject="StockAgent",
+            resolved_unavailable=True,
+        )
+
+        sent = push.send_report.call_args.kwargs["plain_text"]
+        assert "rozliczenia niedostępne" in sent
+
     def _trainer(self, settings, mocker) -> MagicMock:
         settings.weekly_recap_enabled = True
         settings.symbols = ["AAPL"]

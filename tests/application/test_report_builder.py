@@ -712,9 +712,11 @@ class TestDayOverDay:
         assert "Błędna" in text
 
     def test_no_section_when_no_resolved(self):
+        # MAIL-25 (zgoda właściciela 2026-10-19): pusta lista = nic się nie
+        # rozliczyło, więc sekcja mówi to wprost zamiast zostawiać puste miejsce.
         html, _ = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(resolved_predictions=[]))
-        assert "Zamknięte predykcje" not in html
+        assert "Brak rozliczeń predykcji z ostatnich 24h." in html
 
 
 class TestResolvedPostMortem:
@@ -2775,3 +2777,62 @@ class TestLeadInPolish:
         assert "KRYTYCZNY" in text
         assert "CRITICAL" not in html
         assert "CRITICAL" not in text
+
+
+
+class TestResolvedSectionWhenNothingSettled:
+    """MAIL-25: pusta sekcja nie odróżniała „nic się nie zamknęło” od awarii
+    odczytu. Pusta lista rozliczeń → jawna linia zgodna z oknem nagłówka
+    (WIA-19); awaria odczytu → ostrzeżenie, nigdy „brak rozliczeń”."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def test_cycle_window_says_nothing_settled_in_this_cycle(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0,
+            ReportContext(resolved_predictions=[], resolved_this_cycle=True),
+        )
+
+        assert "Zamknięte predykcje (rozliczone w tym cyklu)" in html
+        assert "Brak rozliczeń w tym cyklu." in html
+        assert "ZAMKNIĘTE PREDYKCJE (rozliczone w tym cyklu)" in text
+        assert "Brak rozliczeń w tym cyklu." in text
+        assert "ostatnich 24h" not in html
+
+    def test_24h_window_keeps_its_own_wording(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(resolved_predictions=[])
+        )
+
+        assert "Zamknięte predykcje (ostatnie 24h)" in html
+        assert "ZAMKNIĘTE PREDYKCJE (ostatnie 24h)" in text
+        assert "Brak rozliczeń predykcji z ostatnich 24h." in text
+        assert "w tym cyklu" not in text
+
+    def test_read_failure_is_not_dressed_up_as_no_settlements(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0,
+            ReportContext(resolved_predictions=[], resolved_unavailable=True),
+        )
+
+        assert "Nie udało się odczytać rozliczeń" in html
+        assert "Nie udało się odczytać rozliczeń" in text
+        assert "Brak rozliczeń" not in html
+        assert "Brak rozliczeń" not in text
+
+    def test_preheader_does_not_count_zero_settlements_on_read_failure(self):
+        html, _ = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(resolved_unavailable=True)
+        )
+
+        first = _first_element(html)
+        assert "Brak sygnałów ponad próg · rozliczenia niedostępne" in first
+        assert "0 zamkniętych predykcji" not in first
+
+    def test_report_without_settlement_data_keeps_no_section(self):
+        # Wołający, który nie dociąga rozliczeń (None), nie dostaje fałszywego
+        # „brak rozliczeń” — tylko pusta lista z udanego odczytu jest informacją.
+        html, text = build_html_report([], self._STARTED, 1.0, ReportContext())
+
+        assert "Zamknięte predykcje" not in html
+        assert "ZAMKNIĘTE PREDYKCJE" not in text

@@ -201,3 +201,14 @@ def test_hard_clamp_never_cuts_the_disclaimer() -> None:
 
     assert len(digest) <= MAX_DIGEST_CHARS
     assert digest.endswith(_PUSH_DISCLAIMER)
+
+
+
+# --- MAIL-25: awaria odczytu rozliczeń ------------------------------------
+
+
+def test_scorecard_on_read_failure_does_not_claim_nothing_closed() -> None:
+    digest = build_messenger_digest([], _STARTED_AT, [], resolved_unavailable=True)
+
+    assert "Scorecard: rozliczenia niedostępne (błąd odczytu)" in digest
+    assert "brak zamkniętych predykcji" not in digest
