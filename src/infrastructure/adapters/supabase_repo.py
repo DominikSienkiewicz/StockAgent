@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal, cast
@@ -72,6 +72,20 @@ def _paginate(query_builder: Any) -> list[dict[str, Any]]:
             break
         offset += _PAGE_SIZE
     return rows
+
+
+# WIA-55: pola segmentów ewaluacji (`src.tools.evaluate --by`) → wyrażenie
+# selecta PostgREST. Czytane tylko na żądanie: każda kolumna istnieje dopiero
+# po swojej migracji (w nawiasie), a domyślny przebieg ma działać na każdej bazie.
+_EVAL_EXTRA_FIELDS: dict[str, str] = {
+    "symbol": "symbol",
+    # 005 — sama rekomendacja z JSONB, bez głosów i uzasadnień person.
+    "council_recommendation": "council_recommendation:council_verdict->>final_recommendation",
+    "confidence_score": "confidence_score",  # 016
+    "regime": "regime",  # 017
+    "alpha_fusion_score": "alpha_fusion_score",  # 022
+    "edge_sigma": "edge_sigma",  # 025
+}
 
 
 # Flaga, którą predict_node zostawia przy neutralnej atrapie po awarii głównego
@@ -409,7 +423,12 @@ class SupabaseRepository(RepositoryPort):
         return _paginate(query)
 
     def get_resolved_predictions_for_eval(
-        self, days: int, *, with_recipe: bool = False, with_universe: bool = False
+        self,
+        days: int,
+        *,
+        with_recipe: bool = False,
+        with_universe: bool = False,
+        extra_fields: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
         """Zamknięte predykcje z ostatnich `days` dni z polami do ewaluacji
         (ceny + kierunek). Read-only; używane przez `src.tools.evaluate`.
@@ -419,6 +438,10 @@ class SupabaseRepository(RepositoryPort):
         `with_universe` (WIA-48) dokłada `universe_version` z kwitu v2 ścieżką
         JSON po `decision_receipts` (migracja 020) — bez nowej kolumny; wiersze
         bez kwitu v2 mają tu None.
+
+        `extra_fields` (WIA-55) to pola segmentów ewaluacji z
+        `_EVAL_EXTRA_FIELDS`, czytane tylko na żądanie: każde istnieje dopiero
+        po swojej migracji. Nieznana nazwa → ValueError.
 
         Metoda concrete-only (nie część `RepositoryPort`) — to narzędzie
         offline-analizy, nie część runtime'owego kontraktu use case'ów."""
@@ -431,6 +454,10 @@ class SupabaseRepository(RepositoryPort):
             columns += ", recipe_version"
         if with_universe:
             columns += ", universe_version:decision_receipts->>universe_version"
+        for name in extra_fields:
+            if name not in _EVAL_EXTRA_FIELDS:
+                raise ValueError(f"unknown evaluation field: {name}")
+            columns += f", {_EVAL_EXTRA_FIELDS[name]}"
         # Paginacja (#8) — ewaluacja musi widzieć pełen zbiór, nie obcięte 1000.
         query = (
             self._client.table(self._table)

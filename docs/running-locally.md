@@ -128,6 +128,8 @@ uv run python -m src.tools.evaluate            # offline eval: hit-rate + RMSE v
 uv run python -m src.tools.evaluate --days 60  # custom evaluation window
 uv run python -m src.tools.evaluate --by-recipe  # + directional hit rate per recipe version (needs migration 030)
 uv run python -m src.tools.evaluate --by-universe  # + directional hit rate per symbol-universe version (from the v2 receipt)
+uv run python -m src.tools.evaluate --by component  # + ablation: LLM trend vs council recommendation vs XGBoost direction on the same rows (see below)
+uv run python -m src.tools.evaluate --by regime --by asset_class  # + LLM hit rate per segment; repeatable, also confidence_bucket, alpha_fusion_sign, edge_label
 uv run pytest                                   # full local suite
 uv run pytest -m "not integration and not containers" # unit only
 uv run pytest -m containers                    # Docker/Postgres schema tests
@@ -135,6 +137,8 @@ uv run pytest -m integration                   # live API tests (requires real k
 uv run ruff check .                # lint (same command as CI)
 uv run mypy                        # type check (strict) on [tool.mypy].files: src + every main_*.py
 ```
+
+`--by` segments the offline evaluation (WIA-55). `component` scores, on the same settled rows, the directional hit rate of the LLM trend (the stored `is_trend_correct`), the council's `final_recommendation` (BUY → up, SELL → down, HOLD is no bet; rows without a verdict are left out) and the XGBoost direction (target above or below the price; a target equal to the price is the cold-start "no change" baseline of a model without weights, so no bet). The context segments split the LLM hit rate by `regime` (untagged rows form `UNKNOWN`), `asset_class`, `confidence_bucket` (0.00-0.60, 0.60-0.70, 0.70-0.80, 0.80-1.00), `alpha_fusion_sign` and `edge_label` (the `evaluate_edge` label of the stored `edge_sigma`; no value is `NO_SIGNAL`). Every segment prints its number of directional bets `n`, `n_eff`, a Wilson 95% interval on `n_eff`, the best naive "always BULLISH / BEARISH" baseline on the same rows and the binomial p-value against it, with Benjamini-Hochberg FDR (q = 0.10) across the segments of one `--by`; a segment with fewer than 10 bets is flagged "za mało danych". A segment's column is read only when it is asked for, so the default run works on any database, and each one needs its own migration: `council_verdict` `005`, `confidence_score` `016`, `regime` `017`, `alpha_fusion_score` `022`, `edge_sigma` `025`. `prediction_logs` stores no asset class, so `asset_class` classifies each symbol from the **current** `crypto_symbols` and `symbols_etf`: a ticker moved between lists changes segment retroactively. Read-only, zero paid calls; nothing of it reaches the email.
 
 ## GitHub Actions
 

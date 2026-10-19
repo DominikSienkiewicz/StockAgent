@@ -118,3 +118,23 @@ class TestEvaluateEdge:
         assert public == {"label", "edge_sigma", "implied_move", "model_move"}
         for banned in ("action", "signal", "recommendation", "decision", "gate"):
             assert not hasattr(result, banned)
+
+
+class TestEdgeLabelForSigma:
+    """WIA-55: etykieta z zapisanego `edge_sigma` (migracja 025) tymi samymi
+    progami co `evaluate_edge` — segmentacja ewaluacji nie zna surowych liczb σ."""
+
+    @pytest.mark.parametrize(
+        ("sigma", "label"),
+        [
+            (None, EdgeLabel.NO_SIGNAL),
+            (1.5, EdgeLabel.MODEL_AHEAD),
+            (0.5, EdgeLabel.MARKET_AHEAD),
+            (1.0, EdgeLabel.ALIGNED),
+            (float("nan"), EdgeLabel.NO_SIGNAL),
+        ],
+    )
+    def test_sigma_maps_to_the_evaluate_edge_label(self, sigma, label) -> None:
+        from src.domain.implied_edge import edge_label_for_sigma
+
+        assert edge_label_for_sigma(sigma) is label

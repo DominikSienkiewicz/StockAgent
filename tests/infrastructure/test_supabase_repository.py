@@ -2281,3 +2281,44 @@ class TestRegimeHistory:
             "regime": "RISK_OFF",
             "streak": 1,
         })
+
+
+class TestResolvedForEvalExtraFields:
+    """WIA-55: kolumny segmentów (rada 005, pewność 016, reżim 017, Alpha Fusion
+    022, edge 025) trafiają do selecta TYLKO na żądanie `--by` — domyślny
+    przebieg ewaluacji ma działać na każdej bazie."""
+
+    def _select_columns(self, repo: SupabaseRepository, mock_client: MagicMock, **kwargs) -> str:
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, [[]])
+        repo.get_resolved_predictions_for_eval(30, **kwargs)
+        return chain.select.call_args.args[0]
+
+    def test_default_select_reads_no_segment_column(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        columns = self._select_columns(repo, mock_client)
+
+        for column in ("council_verdict", "regime", "confidence_score", "edge_sigma", "symbol"):
+            assert column not in columns
+
+    def test_council_recommendation_is_read_from_the_verdict_json(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        columns = self._select_columns(
+            repo, mock_client, extra_fields=("council_recommendation", "regime")
+        )
+
+        assert (
+            "council_recommendation:council_verdict->>final_recommendation" in columns
+        )
+        assert ", regime" in columns
+
+    def test_unknown_field_is_rejected(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        with pytest.raises(ValueError, match="persona"):
+            repo.get_resolved_predictions_for_eval(30, extra_fields=("persona",))

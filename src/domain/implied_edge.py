@@ -154,16 +154,26 @@ def evaluate_edge(
         )
 
     edge_sigma = abs(model_move) / implied_move
-    if edge_sigma >= _MODEL_AHEAD_SIGMA:
-        label = EdgeLabel.MODEL_AHEAD
-    elif edge_sigma <= _MARKET_AHEAD_SIGMA:
-        label = EdgeLabel.MARKET_AHEAD
-    else:
-        label = EdgeLabel.ALIGNED
-
     return ImpliedEdge(
-        label=label,
+        label=_label_for(edge_sigma),
         edge_sigma=edge_sigma,
         implied_move=implied_move,
         model_move=model_move,
     )
+
+
+def edge_label_for_sigma(edge_sigma: float | None) -> EdgeLabel:
+    """Etykieta jakościowa z ZAPISANEGO `edge_sigma` (migracja 025), progi jak w
+    `evaluate_edge`. Brak wartości albo NaN → NO_SIGNAL: predykcja bez sygnału
+    opcji nie zapisuje kolumny (WIA-55, segmentacja ewaluacji)."""
+    if edge_sigma is None or math.isnan(edge_sigma):
+        return EdgeLabel.NO_SIGNAL
+    return _label_for(edge_sigma)
+
+
+def _label_for(edge_sigma: float) -> EdgeLabel:
+    if edge_sigma >= _MODEL_AHEAD_SIGMA:
+        return EdgeLabel.MODEL_AHEAD
+    if edge_sigma <= _MARKET_AHEAD_SIGMA:
+        return EdgeLabel.MARKET_AHEAD
+    return EdgeLabel.ALIGNED
