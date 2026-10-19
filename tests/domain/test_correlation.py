@@ -8,10 +8,12 @@ razem. Zero zależności zewnętrznych — wszystko na `statistics`/`math`.
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
 from src.domain.correlation import (
+    align_by_utc_day,
     correlation_matrix,
     detect_clusters,
     pearson,
@@ -124,3 +126,58 @@ class TestDetectClusters:
         matrix = {("X", "A"): 0.99}
         clusters = detect_clusters(matrix, ["X", "A"], threshold=0.9)
         assert clusters == [("A", "X")]
+
+
+class TestAlignByUtcDay:
+    """PORT-02 (G19): snapshoty różnych symboli z jednego cyklu dzielą sekundy,
+    więc przecięcie dokładnych timestampów było puste. Wyrównujemy po dniu UTC:
+    w dniu wygrywa ostatni snapshot, a zostają tylko dni wspólne dla wszystkich."""
+
+    @staticmethod
+    def _at(day: int, hour: int = 5, second: int = 0) -> datetime:
+        return datetime(2026, 6, day, hour, 30, second, tzinfo=UTC)
+
+    def test_snapshots_seconds_apart_share_a_day(self) -> None:
+        aligned = align_by_utc_day({
+            "A": [(self._at(1), 100.0), (self._at(2), 110.0)],
+            "B": [(self._at(1, second=7), 50.0), (self._at(2, second=9), 55.0)],
+        })
+
+        assert aligned == {"A": [100.0, 110.0], "B": [50.0, 55.0]}
+
+    def test_last_snapshot_of_the_day_wins(self) -> None:
+        aligned = align_by_utc_day({
+            "A": [(self._at(1, hour=17), 104.0), (self._at(1, hour=5), 100.0)],
+            "B": [(self._at(1), 50.0)],
+        })
+
+        assert aligned["A"] == [104.0]
+
+    def test_keeps_only_days_common_to_every_series(self) -> None:
+        aligned = align_by_utc_day({
+            "A": [(self._at(1), 1.0), (self._at(2), 2.0), (self._at(3), 3.0)],
+            "B": [(self._at(2), 20.0), (self._at(3), 30.0), (self._at(4), 40.0)],
+        })
+
+        assert aligned == {"A": [2.0, 3.0], "B": [20.0, 30.0]}
+
+    def test_day_is_taken_in_utc(self) -> None:
+        warsaw = timezone(timedelta(hours=2))
+        # 01:00 czasu UTC+2 to jeszcze poprzedni dzień UTC.
+        aligned = align_by_utc_day({
+            "A": [(datetime(2026, 6, 2, 1, 0, tzinfo=warsaw), 9.0)],
+            "B": [(self._at(1), 1.0)],
+        })
+
+        assert aligned == {"A": [9.0], "B": [1.0]}
+
+    def test_no_common_day_yields_empty_series(self) -> None:
+        aligned = align_by_utc_day({
+            "A": [(self._at(1), 1.0)],
+            "B": [(self._at(2), 2.0)],
+        })
+
+        assert aligned == {"A": [], "B": []}
+
+    def test_empty_input_yields_empty_mapping(self) -> None:
+        assert align_by_utc_day({}) == {}

@@ -24,7 +24,7 @@ from src.application.ports import (
     MarketDataPort,
     RepositoryPort,
 )
-from src.domain.correlation import returns_from_prices
+from src.domain.correlation import align_by_utc_day, returns_from_prices
 from src.domain.drawdown import DrawdownSignal, peak_from_history
 from src.domain.hedge import HedgeAssessment, assess_hedge
 from src.domain.macro_risk import (
@@ -120,7 +120,7 @@ class MonitorMacroRiskUseCase:
 
         Dla każdego symbolu ryzyka liczy realized correlation jego zwrotów ze
         zwrotami portfela równoważonego (book_symbols), wyrównanych po wspólnych
-        timestampach. Instrumenty ryzyka traktujemy jak hedge ODWROTNY (mają
+        dniach UTC. Instrumenty ryzyka traktujemy jak hedge ODWROTNY (mają
         rosnąć, gdy book spada → `expect_inverse=True`). Wyłączone / brak booka /
         brak historii → []. Pojedynczy błąd nie wywala cyklu."""
         if not self._hedge_enabled or not self._book_symbols:
@@ -142,7 +142,7 @@ class MonitorMacroRiskUseCase:
         for hedge_symbol in symbol_types:
             if hedge_symbol not in raw:
                 continue
-            # Wyrównujemy book + ten hedge po WSPÓLNYCH timestampach (każdy hedge
+            # Wyrównujemy book + ten hedge po WSPÓLNYCH dniach UTC (każdy hedge
             # może mieć inny przekrój dat z bookiem).
             subset = {b: raw[b] for b in self._book_symbols if b in raw}
             if not subset:
@@ -173,24 +173,21 @@ class MonitorMacroRiskUseCase:
     def _aligned_returns(
         raw: dict[str, list[tuple[datetime, Money]]],
     ) -> dict[str, list[float]]:
-        """Wyrównuje szeregi cen po WSPÓLNYCH timestampach i liczy zwroty.
+        """Wyrównuje szeregi cen po WSPÓLNYCH dniach UTC i liczy zwroty.
 
-        Analogiczne do PortfolioRiskUseCase — po wyrównaniu wszystkie szeregi
-        mają tę samą długość, więc zwroty są sparowane okres-w-okres. Symbol
-        z <2 zwrotami po wyrównaniu jest pomijany."""
-        if not raw:
-            return {}
-        common: set[datetime] | None = None
-        for series in raw.values():
-            stamps = {ts for ts, _ in series}
-            common = stamps if common is None else (common & stamps)
-        if not common:
-            return {}
-        ordered = sorted(common)
+        Ta sama reguła co w PortfolioRiskUseCase (`align_by_utc_day`, PORT-02):
+        snapshoty jednego cyklu dzielą sekundy, więc kluczem jest dzień UTC.
+        Po wyrównaniu szeregi mają tę samą długość, więc zwroty są sparowane
+        okres-w-okres. Symbol z <2 zwrotami po wyrównaniu jest pomijany."""
+        aligned = align_by_utc_day(
+            {
+                symbol: [(ts, float(price.amount)) for ts, price in series]
+                for symbol, series in raw.items()
+            }
+        )
         out: dict[str, list[float]] = {}
-        for symbol, series in raw.items():
-            by_ts = {ts: float(price.amount) for ts, price in series}
-            rets = returns_from_prices([by_ts[ts] for ts in ordered])
+        for symbol, prices in aligned.items():
+            rets = returns_from_prices(prices)
             if len(rets) >= 2:
                 out[symbol] = rets
         return out

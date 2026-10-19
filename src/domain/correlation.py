@@ -11,9 +11,45 @@ Wszystko karmione DARMOWYMI snapshotami cen — żadnych płatnych portów.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
+from datetime import UTC, date, datetime
 
 # Minimalna liczba par zwrotów potrzebna, by korelacja miała sens.
 _MIN_RETURNS = 2
+
+
+def _utc_day(moment: datetime) -> date:
+    """Dzień UTC znacznika; naiwny znacznik traktujemy jak UTC."""
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(UTC)
+    return moment.date()
+
+
+def align_by_utc_day(
+    series: Mapping[str, Sequence[tuple[datetime, float]]],
+) -> dict[str, list[float]]:
+    """Wyrównuje szeregi cen po WSPÓLNYCH dniach UTC (PORT-02, G19).
+
+    Snapshoty różnych symboli z jednego cyklu dzielą sekundy, więc przecięcie
+    dokładnych timestampów bywało puste. Kluczem jest dzień UTC: przy kilku
+    snapshotach w dniu wygrywa najpóźniejszy (stan na koniec dnia), a zostają
+    tylko dni obecne we WSZYSTKICH szeregach, w rosnącej kolejności. Kubełek
+    godzinowy rozciąłby jeden cykl między dwie godziny. Brak wspólnego dnia →
+    puste listy; puste wejście → `{}`.
+    """
+    by_day: dict[str, dict[date, float]] = {}
+    for symbol, points in series.items():
+        days: dict[date, float] = {}
+        for moment, price in sorted(points, key=lambda point: point[0]):
+            days[_utc_day(moment)] = price
+        by_day[symbol] = days
+    if not by_day:
+        return {}
+    common = set.intersection(*(set(days) for days in by_day.values()))
+    ordered = sorted(common)
+    return {
+        symbol: [days[day] for day in ordered] for symbol, days in by_day.items()
+    }
 
 
 def returns_from_prices(prices: list[float]) -> list[float]:

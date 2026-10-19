@@ -8,7 +8,7 @@ opcjonalnym snapshotem polskiego makro i ogólnym poziomem alertu.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -396,3 +396,31 @@ class TestHedgeEffectiveness:
 
     def test_default_hedges_empty_for_backward_compat(self) -> None:
         assert MacroRiskReport().hedges == []
+
+    def test_hedge_pairs_snapshots_seconds_apart_within_a_utc_day(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        # PORT-02 (G19): book i hedge zapisane w jednym cyklu dzielą sekundy —
+        # bez wyrównania po dniu UTC przecięcie było puste i hedge znikał.
+        def shifted(seconds: int, *prices: str) -> list[tuple[datetime, Money]]:
+            return [
+                (ts + timedelta(hours=5, seconds=seconds), price)
+                for ts, price in _history(*prices)
+            ]
+
+        self._wire(
+            market_port, repository_port,
+            {"AAPL": shifted(2, "100", "110", "104.5", "125.4", "118.0"),
+             "SH": shifted(11, "100", "90", "94.5", "75.6", "80.06")},
+        )
+        uc = MonitorMacroRiskUseCase(
+            market_port=market_port,
+            repository_port=repository_port,
+            book_symbols=["AAPL"],
+            hedge_enabled=True,
+        )
+
+        report = uc.run({"SH": MacroRiskInstrumentType.INVERSE_EQUITY})
+
+        assert [h.hedge_symbol for h in report.hedges] == ["SH"]
+        assert report.hedges[0].correlation < 0

@@ -3,7 +3,7 @@
 Osobny pass (analogiczny do MonitorMacroRisk), uruchamiany po głównej
 pętli predykcyjnej. Pobiera DARMOWĄ historię cen per symbol z
 `RepositoryPort.get_price_history`, wyrównuje szeregi po wspólnych
-timestampach, liczy zwroty, buduje macierz korelacji parami i wykrywa
+dniach UTC (`align_by_utc_day`), liczy zwroty, buduje macierz korelacji parami i wykrywa
 klastry symboli poruszających się razem ("43 symbole = 3 zakłady").
 
 ZERO płatnych portów — całość liczona ze snapshotów cen. Pojedynczy
@@ -20,6 +20,7 @@ from datetime import datetime
 
 from src.application.ports import RepositoryPort
 from src.domain.correlation import (
+    align_by_utc_day,
     correlation_matrix,
     detect_clusters,
     returns_from_prices,
@@ -134,7 +135,7 @@ class PortfolioRiskUseCase:
     ) -> list[float]:
         """Szereg zwrotów portfela równoważonego: średnia zwrotów po symbolach
         w każdym okresie. Szeregi są już wyrównane (równe długości) po
-        `_align_by_timestamp`; `min` zabezpiecza na wszelki wypadek."""
+        `align_by_utc_day`; `min` zabezpiecza na wszelki wypadek."""
         series = list(returns_by_symbol.values())
         if not series:
             return []
@@ -143,7 +144,7 @@ class PortfolioRiskUseCase:
         return [sum(s[t] for s in series) / count for t in range(n)]
 
     def _collect_returns(self, symbols: list[str]) -> dict[str, list[float]]:
-        """Pobiera historię per symbol, wyrównuje po timestampie i liczy zwroty.
+        """Pobiera historię per symbol, wyrównuje po dniu UTC i liczy zwroty.
 
         Symbole z za krótką/pustą historią (mniej niż 2 zwroty) są pomijane.
         Pojedynczy błąd odczytu nie wywala całego passu.
@@ -163,7 +164,12 @@ class PortfolioRiskUseCase:
             if len(history) >= 3:
                 raw[symbol] = history
 
-        aligned = self._align_by_timestamp(raw)
+        aligned = align_by_utc_day(
+            {
+                symbol: [(ts, float(price.amount)) for ts, price in series]
+                for symbol, series in raw.items()
+            }
+        )
 
         returns_by_symbol: dict[str, list[float]] = {}
         for symbol, prices in aligned.items():
@@ -171,32 +177,6 @@ class PortfolioRiskUseCase:
             if len(rets) >= 2:
                 returns_by_symbol[symbol] = rets
         return returns_by_symbol
-
-    @staticmethod
-    def _align_by_timestamp(
-        raw: dict[str, list[tuple[datetime, Money]]],
-    ) -> dict[str, list[float]]:
-        """Wyrównuje szeregi cen po WSPÓLNYCH timestampach.
-
-        Snapshoty różnych symboli mogą startować w innych dniach (różny moment
-        dodania do watchlisty). Korelacja wymaga sparowanych obserwacji, więc
-        bierzemy tylko timestampy obecne we WSZYSTKICH szeregach i czytamy ceny
-        w rosnącym porządku czasu. Mniej niż 2 wspólne punkty → pusta lista.
-        """
-        if not raw:
-            return {}
-        common: set[datetime] | None = None
-        for series in raw.values():
-            stamps = {ts for ts, _ in series}
-            common = stamps if common is None else (common & stamps)
-        if not common:
-            return {sym: [] for sym in raw}
-        ordered = sorted(common)
-        out: dict[str, list[float]] = {}
-        for symbol, series in raw.items():
-            by_ts = {ts: float(price.amount) for ts, price in series}
-            out[symbol] = [by_ts[ts] for ts in ordered]
-        return out
 
     @staticmethod
     def _build_verdict(

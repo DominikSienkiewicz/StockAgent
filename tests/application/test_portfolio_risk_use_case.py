@@ -243,6 +243,62 @@ class TestTimestampAlignment:
         assert report.matrix[("A", "B")] == pytest.approx(1.0)
 
 
+class TestUtcDayAlignment:
+    """PORT-02 (G19): snapshoty z jednego cyklu różnią się o sekundy, więc
+    wyrównanie po dokładnym timestampie dawało puste przecięcie, a radar, VaR,
+    stress i hedge znikały. Wyrównujemy po dniu UTC."""
+
+    @staticmethod
+    def _daily(prices: list[float], *, second: int) -> list[tuple[datetime, Money]]:
+        return [
+            (
+                _BASE + timedelta(days=i, hours=5, minutes=30, seconds=second),
+                Money(Decimal(str(round(p, 4)))),
+            )
+            for i, p in enumerate(prices)
+        ]
+
+    @staticmethod
+    def _zigzag(days: int) -> list[float]:
+        prices = [100.0]
+        for i in range(1, days):
+            prices.append(prices[-1] * (1.03 if i % 3 else 0.96))
+        return prices
+
+    def test_aligns_snapshots_differing_by_seconds_within_same_day(
+        self, repository_port: Mock
+    ) -> None:
+        nvda = self._zigzag(25)
+        history = {
+            "NVDA": self._daily(nvda, second=1),
+            "AMD": self._daily([p * 0.5 for p in nvda], second=8),
+        }
+        repository_port.get_price_history.side_effect = lambda sym, days: history[sym]
+
+        report = _make_uc(repository_port).run(["NVDA", "AMD"])
+
+        assert report.clusters == [("AMD", "NVDA")]
+        assert report.matrix[("AMD", "NVDA")] == pytest.approx(1.0)
+
+    def test_last_snapshot_of_a_day_is_the_one_that_counts(
+        self, repository_port: Mock
+    ) -> None:
+        nvda = self._zigzag(25)
+        noise = [
+            (_BASE + timedelta(days=i, hours=1), Money(Decimal("1")))
+            for i in range(25)
+        ]
+        history = {
+            "NVDA": sorted(noise + self._daily(nvda, second=1)),
+            "AMD": self._daily([p * 0.5 for p in nvda], second=8),
+        }
+        repository_port.get_price_history.side_effect = lambda sym, days: history[sym]
+
+        report = _make_uc(repository_port).run(["NVDA", "AMD"])
+
+        assert report.matrix[("AMD", "NVDA")] == pytest.approx(1.0)
+
+
 class TestReportImmutability:
     def test_report_is_frozen(self, repository_port: Mock) -> None:
         repository_port.get_price_history.return_value = _series(["100", "110"])
