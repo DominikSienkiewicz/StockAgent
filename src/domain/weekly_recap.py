@@ -4,7 +4,9 @@ Deterministyczny wybór bohaterów tygodnia z zamkniętych predykcji:
 - **strzał tygodnia** — trafienie kierunkowe o najwyższym `accuracy_score`
   (WIA-07); tydzień bez trafień dostaje pudło najbliższe celu, oznaczone jako
   chybione,
-- **wtopa tygodnia** — najniższy `accuracy_score`, z lekcją z `correction_insight`,
+- **wtopa tygodnia** — pudło kierunkowe o najniższym `accuracy_score` (lustro
+  klucza strzału); tydzień bez pudeł dostaje trafienie najdalsze od celu; z
+  lekcją z `correction_insight`,
 - **wybroniony dysydent** — reużycie `vindicated_dissenters` z rady
   („Soros miał rację, gdy wszyscy mówili KUP"),
 - **delta ECE** — reużycie krzywej kalibracji (`calibration_curve`).
@@ -171,9 +173,10 @@ def build_weekly_recap(
 
     Wybór bohaterów jest deterministyczny. Strzał = klucz leksykograficzny
     (WIA-07): najpierw trafność kierunku, potem najwyższy `accuracy_score` —
-    pudło kierunkowe bliskie celu nie wygrywa z trafieniem. Wtopa = najniższy
-    `accuracy_score`. Remis rozstrzygany alfabetycznie po symbolu (stabilnie,
-    niezależnie od kolejności wejścia).
+    pudło kierunkowe bliskie celu nie wygrywa z trafieniem. Wtopa = lustro:
+    najpierw pudło kierunkowe, potem najniższy `accuracy_score`. Remis
+    rozstrzygany alfabetycznie po symbolu (stabilnie, niezależnie od kolejności
+    wejścia).
 
     `current_ece` liczone z par `(confidence, is_correct)` przez krzywą
     kalibracji. `ece_delta = current_ece − previous_ece` (albo `None`, gdy brak
@@ -188,8 +191,11 @@ def build_weekly_recap(
         closed_predictions,
         key=lambda c: (not c.is_correct(), -c.accuracy(), c.symbol),
     )
+    # Wtopa = lustro klucza strzału: najpierw pudła kierunkowe, potem najniższe
+    # accuracy — jedyne trafienie nie bywa jednocześnie strzałem i wtopą.
     worst = min(
-        closed_predictions, key=lambda c: (c.accuracy(), c.symbol)
+        closed_predictions,
+        key=lambda c: (c.is_correct(), c.accuracy(), c.symbol),
     )
 
     samples = [(c.confidence, c.is_correct()) for c in closed_predictions]

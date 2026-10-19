@@ -174,6 +174,20 @@ class TestHeroSelection:
         assert recap.worst.symbol == "MISS"
         assert recap.worst.direction_correct is False
 
+    def test_lone_hit_with_lowest_accuracy_is_not_also_the_miss_of_week(self) -> None:
+        # Decyzja 2026-10-19 (a): wtopa = lustro klucza strzału — najpierw pudła
+        # kierunkowe, potem najniższe accuracy. Jedyne trafienie (accuracy 0.51)
+        # było strzałem i zarazem wtopą, bo miało najniższe accuracy.
+        predictions = [
+            _closed("HIT", base="100", target="150", actual="101"),
+            *_n_closed(4),
+        ]
+        recap = build_weekly_recap(predictions)
+        assert recap is not None
+        assert recap.best.symbol == "HIT"
+        assert recap.worst.symbol != recap.best.symbol
+        assert recap.worst.direction_correct is False
+
 
 class TestVindicatedDissenters:
     def test_reuses_council_vindicated_dissenters(self) -> None:
