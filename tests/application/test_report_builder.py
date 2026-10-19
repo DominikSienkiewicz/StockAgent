@@ -2285,7 +2285,7 @@ def test_user_portfolio_lists_a_position_the_cycle_could_not_price():
         ReportContext(user_portfolio=portfolio),
     )
 
-    assert "Bez wyceny w tym cyklu: XDWD.DE (≈ 44.4% kosztu)" in html
+    assert "Bez wyceny w tym cyklu: XDWD.DE (≈ 44,4% kosztu)" in html
 
 
 def test_held_price_outside_the_watchlist_prices_the_position():
@@ -2308,7 +2308,7 @@ def test_held_price_outside_the_watchlist_prices_the_position():
     )
 
     assert "Bez wyceny" not in html
-    assert "$820.00" in html
+    assert "$820,00" in html
 
 
 def test_lead_warns_about_a_council_signal_against_a_large_position():
@@ -2372,7 +2372,7 @@ def test_plain_text_email_carries_the_user_portfolio_section():
     )
 
     assert "=== 💼 Twój portfel ===" in text
-    assert "$2,988.70" in text
+    assert "$2\u00a0988,70" in text
     assert "USER_PORTFOLIO_SLOT" not in text
 
 
@@ -2384,7 +2384,7 @@ def test_plain_text_without_user_portfolio_keeps_the_html_section():
     )
 
     assert "Twój portfel" not in text
-    assert "$2,988.70" not in text
+    assert "$2\u00a0988,70" not in text
     assert "USER_PORTFOLIO_SLOT" not in text
     assert "Twój portfel" in html
 

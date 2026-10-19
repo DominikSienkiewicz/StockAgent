@@ -128,7 +128,7 @@ class TestNegativePnl:
         )
 
         assert "AAPL" in text
-        assert "-$200.00" in text
+        assert "-$200,00" in text
 
 
 class TestPlnConversion:
@@ -252,13 +252,13 @@ class TestUnpricedPositions:
 
         assert "Bez wyceny" in html
         assert "XDWD.DE" in html
-        assert "33.3% kosztu" in html
+        assert "33,3% kosztu" in html
         assert "bez pozycji niewycenionych" in html
 
     def test_unpriced_positions_are_listed_in_text(self) -> None:
         text = render_user_portfolio_text(self._portfolio(), self._PRICES, now=_NOW)
 
-        assert "Bez wyceny w tym cyklu: XDWD.DE (≈ 33.3% kosztu)" in text
+        assert "Bez wyceny w tym cyklu: XDWD.DE (≈ 33,3% kosztu)" in text
         assert "bez pozycji niewycenionych" in text
 
     def test_fully_priced_portfolio_has_no_unpriced_note(self) -> None:

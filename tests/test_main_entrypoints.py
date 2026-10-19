@@ -2406,9 +2406,9 @@ class TestLegacyPushWithoutPortfolio:
         email_text = email.send_report.call_args.kwargs["plain_text"]
         push_text = legacy_push.send_report.call_args.kwargs["plain_text"]
         assert "Twój portfel" in email_text
-        assert "$460.00" in email_text
+        assert "$460,00" in email_text
         assert "Twój portfel" not in push_text
-        assert "$460.00" not in push_text
+        assert "$460,00" not in push_text
         assert (
             legacy_push.send_report.call_args.kwargs["subject"]
             == email.send_report.call_args.kwargs["subject"]
@@ -2586,9 +2586,9 @@ class TestDispatchReports:
 
         friend = sent[self.FRIEND]
         assert "Twój portfel" not in friend["html_body"]
-        assert "$460.00" not in friend["html_body"]
+        assert "$460,00" not in friend["html_body"]
         assert "Twój portfel" not in friend["plain_text"]
-        assert "$460.00" not in friend["plain_text"]
+        assert "$460,00" not in friend["plain_text"]
 
     def test_owner_digest_keeps_the_portfolio(self, settings, mocker) -> None:
         # Adres z innym wielkościami liter to nadal właściciel (casefold).
@@ -2596,7 +2596,7 @@ class TestDispatchReports:
 
         owner = sent["Owner@Example.com"]
         assert "Twój portfel" in owner["html_body"]
-        assert "$460.00" in owner["plain_text"]
+        assert "$460,00" in owner["plain_text"]
 
     def test_withheld_portfolio_is_logged_with_a_masked_address(
         self, settings, mocker, caplog

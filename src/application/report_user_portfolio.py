@@ -36,8 +36,9 @@ from __future__ import annotations
 import html as _html
 from collections.abc import Mapping
 from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
+from src.domain.number_format import format_money_pl, format_pct_pl
 from src.domain.portfolio import (
     DEFAULT_MAX_POSITION_AGE_DAYS,
     ClusterExposure,
@@ -56,52 +57,35 @@ _CLUSTER_CONCENTRATION_THRESHOLD = Decimal("0.40")
 _COLOR_GAIN = "#16a34a"
 _COLOR_LOSS = "#dc2626"
 
-_CENT = Decimal("0.01")
-_TENTH = Decimal("0.1")
-
 
 def _pnl_color(value: Decimal) -> str:
     """Zielony dla zysku (i zera), czerwony dla straty."""
     return _COLOR_LOSS if value < 0 else _COLOR_GAIN
 
 
-def _format_amount(value: Decimal) -> str:
-    """Kwota bezwzględna z separatorem tysięcy i dwoma miejscami (bez znaku)."""
-    magnitude = abs(value).quantize(_CENT, rounding=ROUND_HALF_UP)
-    return f"{magnitude:,.2f}"
-
-
 def _format_usd(value: Decimal) -> str:
-    """Kwota w USD ze znakiem przed symbolem waluty (np. "-$200.00")."""
-    sign = "-" if value < 0 else ""
-    return f"{sign}${_format_amount(value)}"
+    """Kwota w USD, znak przed symbolem waluty (np. „-$200,00”, MAIL-58)."""
+    return format_money_pl(value, "USD")
 
 
 def _format_pln(value: Decimal) -> str:
-    """Kwota w PLN ze znakiem (np. "-800.00 zł")."""
-    sign = "-" if value < 0 else ""
-    return f"{sign}{_format_amount(value)} zł"
+    """Kwota w PLN (np. „-800,00 zł”)."""
+    return format_money_pl(value, "PLN")
 
 
 def _format_signed_usd(value: Decimal) -> str:
     """P/L w USD z jawnym znakiem (+/-) — zysk i strata zawsze rozróżnialne."""
-    sign = "+" if value >= 0 else "-"
-    return f"{sign}${_format_amount(value)}"
+    return format_money_pl(value, "USD", signed=True)
 
 
 def _format_signed_pln(value: Decimal) -> str:
     """P/L w PLN z jawnym znakiem (+/-)."""
-    sign = "+" if value >= 0 else "-"
-    return f"{sign}{_format_amount(value)} zł"
+    return format_money_pl(value, "PLN", signed=True)
 
 
 def _format_pct(value: Decimal, *, signed: bool = False) -> str:
-    """Ułamek jako procent z jednym miejscem po przecinku."""
-    pct = (value * 100).quantize(_TENTH, rounding=ROUND_HALF_UP)
-    if signed:
-        sign = "+" if pct >= 0 else "-"
-        return f"{sign}{abs(pct)}%"
-    return f"{pct}%"
+    """Ułamek jako procent z jednym miejscem po przecinku („+12,5%”)."""
+    return format_pct_pl(value * 100, signed, 1)
 
 
 def _format_return_pct(return_pct: Decimal | None) -> str:
