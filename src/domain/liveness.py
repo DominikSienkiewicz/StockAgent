@@ -3,22 +3,34 @@
 Brak maila wygląda identycznie jak spokojny dzień, więc o cichej śmierci jobu mówi
 osobny watchdog. Tu żyje wyłącznie reguła — skąd brać ślady życia i jak alarmować,
 decyduje entry-point.
+
+Dwie reguły: godzinowa (maksymalna przerwa między śladami, np. tygodniowy Slow
+Loop) i dni handlowych NYSE (job dzienny, który w weekend i święto nie chodzi —
+Fast Loop po wznowieniu). Reguła godzinowa przy dziennym Fast Loopie alarmowałaby
+po każdym weekendzie i święcie.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, time, timedelta
+
+from src.domain.market_calendar import NYSE_TZ, is_trading_day, to_nyse_time
 
 
 @dataclass(frozen=True)
 class LivenessExpectation:
     """Oczekiwanie wobec jobu: maksymalna przerwa między śladami życia w godzinach.
-    `max_gap_hours <= 0` oznacza job świadomie wstrzymany — nigdy nie jest spóźniony."""
+    `max_gap_hours <= 0` oznacza job świadomie wstrzymany — nigdy nie jest spóźniony.
+
+    `trading_day_slot` (NIEZ-11) przełącza na regułę dni handlowych NYSE: job ma
+    zostawić ślad w każdy dzień handlowy nie wcześniej niż o tej godzinie (czas ET),
+    a `max_gap_hours` to zapas liczony od niej. None = reguła godzinowa."""
 
     job: str
     max_gap_hours: float
+    trading_day_slot: time | None = None
 
 
 def is_overdue(last_seen: datetime | None, now: datetime, max_gap_hours: float) -> bool:
@@ -30,6 +42,50 @@ def is_overdue(last_seen: datetime | None, now: datetime, max_gap_hours: float) 
     return (now - last_seen).total_seconds() / 3600.0 > max_gap_hours
 
 
+def is_overdue_on_trading_days(
+    last_run_at: datetime | None, now: datetime, slot: time, grace: timedelta
+) -> bool:
+    """Spóźniony job dni handlowych NYSE (NIEZ-11).
+
+    Każdy dzień handlowy D ma termin: `slot` dnia D (czas ET) plus `grace`. Job jest
+    spóźniony, gdy termin ostatniego dnia handlowego już minął, a ostatni ślad jest
+    starszy niż `slot` tego dnia (albo śladu nie ma). Weekend i święto NYSE nie mają
+    terminu, więc nie alarmują. Ślad z późniejszego dnia pokrywa wcześniejszy termin:
+    przy `grace` ≥ 24 h jeden opuszczony dzień nie alarmuje, jeśli następny cykl
+    przyszedł — alarm oznacza job martwy, nie pojedynczy pominięty przebieg.
+    Naiwny `datetime` = UTC."""
+    due_slot = _latest_due_slot(to_nyse_time(now), slot, grace)
+    return last_run_at is None or to_nyse_time(last_run_at) < due_slot
+
+
+def _latest_due_slot(now: datetime, slot: time, grace: timedelta) -> datetime:
+    """`slot` ostatniego dnia handlowego, którego termin (`slot + grace`) już minął.
+    Zapas dodajemy w czasie bezwzględnym (UTC), nie na zegarze ściennym ET — dzień
+    zmiany czasu ma 23 albo 25 godzin."""
+    day = now.date()
+    while True:
+        if is_trading_day(day):
+            slot_at = datetime.combine(day, slot, tzinfo=NYSE_TZ)
+            if slot_at.astimezone(UTC) + grace <= now:
+                return slot_at
+        day -= timedelta(days=1)
+
+
+def _expectation_overdue(
+    expectation: LivenessExpectation, last_seen: datetime | None, now: datetime
+) -> bool:
+    if expectation.max_gap_hours <= 0:
+        return False
+    if expectation.trading_day_slot is None:
+        return is_overdue(last_seen, now, expectation.max_gap_hours)
+    return is_overdue_on_trading_days(
+        last_seen,
+        now,
+        expectation.trading_day_slot,
+        timedelta(hours=expectation.max_gap_hours),
+    )
+
+
 def overdue_jobs(
     expectations: Sequence[LivenessExpectation],
     last_seen: Mapping[str, datetime | None],
@@ -37,5 +93,5 @@ def overdue_jobs(
 ) -> tuple[str, ...]:
     """Nazwy spóźnionych jobów, w kolejności oczekiwań."""
     return tuple(
-        e.job for e in expectations if is_overdue(last_seen.get(e.job), now, e.max_gap_hours)
+        e.job for e in expectations if _expectation_overdue(e, last_seen.get(e.job), now)
     )

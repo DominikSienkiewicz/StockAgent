@@ -119,7 +119,9 @@ shock_alerts_enabled = true
 # NIEZ-11: deadman (main_deadman.py, cron raz dziennie, zero płatnych API) mailuje
 # przez Resend, gdy job zamilkł dłużej niż przerwa w godzinach. 0 = job świadomie
 # wstrzymany: Fast Loop stoi (decyzja 2). Slow Loop chodzi co niedzielę — 192 h to
-# tydzień plus dzień zapasu na opóźnienia crona GitHuba.
+# tydzień plus dzień zapasu na opóźnienia crona GitHuba. Fast Loop liczy się w dniach
+# handlowych NYSE: przerwa to zapas od północy ET każdego dnia handlowego (weekend
+# i święto nie alarmują) — przy wznowieniu np. 26 (alarm po dwóch dniach bez cyklu).
 liveness_fast_loop_max_gap_h = 0
 liveness_slow_loop_max_gap_h = 192
 # #14: Alpha Fusion Score (migracja 022) — ważona fuzja insider/opcje/analitycy/

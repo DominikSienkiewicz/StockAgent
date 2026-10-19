@@ -96,3 +96,41 @@ def test_deadman_builds_no_paid_adapter(settings, mocker) -> None:
 
     for builder in paid_builders:
         builder.assert_not_called()
+
+
+# NIEZ-11 (dni handlowe): po wznowieniu Fast Loopa (`liveness_fast_loop_max_gap_h` > 0)
+# jego oczekiwanie liczy się w dniach handlowych NYSE — weekend i święto nie alarmują.
+FRIDAY_CYCLE = datetime(2026, 10, 16, 5, 35, tzinfo=UTC)
+MONDAY_DEADMAN = datetime(2026, 10, 19, 9, 17, tzinfo=UTC)
+
+
+@pytest.fixture
+def resumed_settings(settings: Settings) -> Settings:
+    return settings.model_copy(update={"liveness_fast_loop_max_gap_h": 26})
+
+
+def _resumed_repo(fast_loop_last_seen: datetime, now: datetime) -> MagicMock:
+    repository = _repo(now - timedelta(days=1))
+    repository.get_latest_snapshot_at.return_value = fast_loop_last_seen
+    return repository
+
+
+def test_resumed_fast_loop_after_a_weekend_sends_nothing(resumed_settings, mocker) -> None:
+    notifier = _wire(mocker, _resumed_repo(FRIDAY_CYCLE, MONDAY_DEADMAN))
+
+    assert main_deadman.main(resumed_settings, now=MONDAY_DEADMAN) == 0
+
+    notifier.send_report.assert_not_called()
+
+
+def test_resumed_fast_loop_silent_for_two_trading_days_sends_one_mail(
+    resumed_settings, mocker
+) -> None:
+    tuesday_cycle = datetime(2026, 10, 13, 5, 35, tzinfo=UTC)
+    thursday_deadman = datetime(2026, 10, 15, 9, 17, tzinfo=UTC)
+    notifier = _wire(mocker, _resumed_repo(tuesday_cycle, thursday_deadman))
+
+    assert main_deadman.main(resumed_settings, now=thursday_deadman) == 0
+
+    notifier.send_report.assert_called_once()
+    assert "Fast Loop" in notifier.send_report.call_args.kwargs["subject"]

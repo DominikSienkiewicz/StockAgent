@@ -383,6 +383,8 @@ class Settings(BaseSettings):
     shock_alerts_enabled: bool = False
     # NIEZ-11: deadman (main_deadman.py, cron raz dziennie) — maksymalna przerwa
     # między śladami życia jobu w godzinach; 0 = job świadomie wstrzymany. Off.
+    # Fast Loop: zapas od północy ET każdego dnia handlowego NYSE (weekend i święto
+    # nie alarmują).
     liveness_fast_loop_max_gap_h: float = 0.0
     liveness_slow_loop_max_gap_h: float = 0.0
     # #14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
