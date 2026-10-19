@@ -197,8 +197,8 @@ class TestClusterWarning:
             portfolio, prices, clusters=clusters, now=_NOW
         )
 
-        assert "klaster korelacji" in html
-        assert "klaster korelacji" in text
+        assert "to jeden sektor «SEMI»" in html
+        assert "to jeden sektor «SEMI»" in text
 
     def test_no_warning_when_cluster_below_threshold(self) -> None:
         # Każdy symbol we własnym klastrze → największy udział poniżej progu.
@@ -214,7 +214,7 @@ class TestClusterWarning:
             portfolio, prices, clusters=clusters, now=_NOW
         )
 
-        assert "klaster korelacji" not in html
+        assert "to jeden sektor" not in html
 
     def test_threshold_is_frozen_constant(self) -> None:
         # Próg zamrożony jako stała modułu — zmiana ma świadomie łamać ten test.

@@ -31,7 +31,7 @@ Wiarygodność modelu: trafność kierunkowa 57,5% (n=40, ostatnie 30 dni) — s
   W PLN (USD/PLN 3,6820): wartość 13 991,60 zł, P/L +147,28 zł
   Zmiana od ostatniego maila: -$30,62 (-0,8%) · -112,73 zł · najwięcej: AMD -$87,05, NVDA +$56,43 · bez punktu odniesienia: XDWD.DE
 
-  ⚠️ Twoje 2 pozycji (AMD, NVDA) to jeden klaster korelacji «Półprzewodniki» — 100,0% kapitału.
+  ⚠️ Twoje 2 pozycji (AMD, NVDA) to jeden sektor «Półprzewodniki» — 100,0% kapitału.
 
 ZAMKNIĘTE PREDYKCJE (ostatnie 24h)
 ----------------------------------------------------------------

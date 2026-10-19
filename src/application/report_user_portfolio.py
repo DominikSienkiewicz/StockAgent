@@ -1,8 +1,9 @@
 """Render sekcji "💼 Twój portfel" w raporcie e-mail (roadmap #15).
 
 Moment "to jest O MNIE": realny P/L per pozycja i łącznie, realne wagi kapitału,
-opcjonalnie kwoty w PLN po kursie USD/PLN oraz ostrzeżenie o klastrze korelacji
-("Twoje 3 największe pozycje to jeden klaster korelacji — 61% kapitału").
+opcjonalnie kwoty w PLN po kursie USD/PLN oraz ostrzeżenie o koncentracji
+sektora ("Twoje 3 pozycji (…) to jeden sektor «…» — 61% kapitału"). Grupy to
+sektory akcji z `sectors` w config.toml (PORT-05), nie policzona korelacja.
 
 Renderer jest CZYSTY (jak `report_persona_leaderboard`): bierze agregat
 `Portfolio` z domeny + bieżące ceny (już pobrane w cyklu) + gotową mapę
@@ -55,7 +56,7 @@ from src.domain.portfolio import (
     PositionPnL,
 )
 
-# Zamrożony próg koncentracji klastra korelacji. Klaster (≥2 symbole) o udziale
+# Zamrożony próg koncentracji grupy (sektora). Grupa (≥2 symbole) o udziale
 # ≥ 40% kapitału wywołuje ostrzeżenie. Wartość celowo stała — zmiana ma łamać
 # `test_threshold_is_frozen_constant`, bo to decyzja o ryzyku, nie kosmetyka.
 _CLUSTER_CONCENTRATION_THRESHOLD = Decimal("0.40")
@@ -110,12 +111,12 @@ def _row_weight(row: PositionPnL, total_market_value: Decimal) -> Decimal:
 
 
 def _dominant_cluster(exposures: list[ClusterExposure]) -> ClusterExposure | None:
-    """Największy klaster korelacji (≥2 symbole) przekraczający próg, albo None.
+    """Największa grupa (sektor, ≥2 symbole) przekraczająca próg, albo None.
 
     `exposures` jest już posortowane malejąco po wadze (kontrakt domeny), więc
     pierwszy kwalifikujący się klaster jest zarazem największy. Klaster
-    jednosymbolowy to koncentracja pojedynczej pozycji, nie "klaster korelacji",
-    więc go pomijamy — ostrzeżenie dotyczy skorelowanych pozycji.
+    jednosymbolowy to koncentracja pojedynczej pozycji, nie sektora, więc go
+    pomijamy — ostrzeżenie dotyczy kilku pozycji z jednego sektora.
     """
     for exp in exposures:
         if len(exp.symbols) >= 2 and exp.weight >= _CLUSTER_CONCENTRATION_THRESHOLD:
@@ -386,7 +387,7 @@ def _cluster_warning_message(cluster: ClusterExposure) -> str:
     symbols = ", ".join(cluster.symbols)
     pct = _format_pct(cluster.weight)
     return (
-        f"Twoje {count} pozycji ({symbols}) to jeden klaster korelacji "
+        f"Twoje {count} pozycji ({symbols}) to jeden sektor "
         f"«{cluster.cluster}» — {pct} kapitału."
     )
 
