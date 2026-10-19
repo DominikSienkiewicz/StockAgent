@@ -380,6 +380,13 @@ class ReportPalette:
 PALETTE = ReportPalette()
 
 
+def number_exact(value: Decimal) -> str:
+    """Decimal po polsku z jego własną precyzją: kurs NBP „4,2710”, cena „186,00”."""
+    exponent = value.as_tuple().exponent
+    decimals = -exponent if isinstance(exponent, int) and exponent < 0 else 0
+    return format_number_pl(value, False, decimals)
+
+
 def money(value: Decimal | None, signed: bool = False) -> str:
     """Kwota w USD po polsku („$1 234,50”), przez `format_money_pl`. None → „—”."""
     if value is None:

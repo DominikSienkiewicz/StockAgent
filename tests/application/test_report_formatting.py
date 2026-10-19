@@ -24,6 +24,7 @@ from src.application.report_formatting import (
     format_local,
     money,
     number,
+    number_exact,
     pct,
     pct_range,
     plural_pl,
@@ -253,6 +254,11 @@ class TestNumberAndMoney:
         assert number(0.42, decimals=2, signed=True) == "+0,42"
         assert number(Decimal("4.2710"), decimals=4) == "4,2710"
         assert number(None, decimals=2) == "—"
+
+    def test_number_exact_keeps_the_precision_of_the_decimal(self) -> None:
+        assert number_exact(Decimal("4.2710")) == "4,2710"
+        assert number_exact(Decimal("186.00")) == "186,00"
+        assert number_exact(Decimal("65040")) == "65\u00a0040"
 
     def test_money_writes_dollars_the_polish_way(self) -> None:
         assert money(Decimal("3200")) == "$3\u00a0200,00"

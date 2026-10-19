@@ -210,6 +210,16 @@ class TestDrawdownRendering:
         # Czerwony kolor wiersza CRITICAL.
         assert "#dc2626" in html
 
+    def test_peak_price_is_written_with_a_decimal_comma(self) -> None:
+        # MAIL-58: szczyt to liczba dla czytelnika — „186,00”, nie „186.00”.
+        report = MacroRiskReport(
+            drawdowns=[_drawdown("AMD", peak="186.00", current="160.00")],
+            overall_alert=MacroAlertLevel.ELEVATED,
+        )
+
+        assert "186,00" in render_risk_watch_html(report)
+        assert "(szczyt 186,00)" in render_risk_watch_text(report)
+
     def test_html_drawdown_present_even_without_signals(self) -> None:
         report = MacroRiskReport(
             drawdowns=[_drawdown("TSLA", peak="200", current="100")],
