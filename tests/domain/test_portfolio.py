@@ -19,11 +19,13 @@ import pytest
 
 from src.domain.portfolio import (
     DEFAULT_MAX_POSITION_AGE_DAYS,
+    TOP_CHANGE_CONTRIBUTORS,
     ClusterExposure,
     Portfolio,
     PortfolioFreshness,
     PortfolioPnL,
     Position,
+    SymbolChange,
     freshness,
     is_stale,
 )
@@ -317,3 +319,88 @@ class TestUnpricedPositions:
         portfolio = _portfolio(_pos("FREE", "10", "0"))
 
         assert portfolio.unpriced_cost_share({}) is None
+
+
+class TestChangeSince:
+    """PORT-06: zmiana wartości portfela od poprzedniego cyklu (zł/$ i %) z top 3
+    kontrybutorami. Ruch symbolu waży tyle, ile jego wartość rynkowa w portfelu."""
+
+    def test_change_since_weights_symbol_moves_by_market_value(self) -> None:
+        # NVDA to 75% kapitału przed zmianą (75 × $10 z $1000), AAPL stoi.
+        portfolio = _portfolio(_pos("NVDA", "75", "8"), _pos("AAPL", "25", "9"))
+        previous = {"NVDA": Decimal("10"), "AAPL": Decimal("10")}
+        current = {"NVDA": Decimal("11"), "AAPL": Decimal("10")}  # NVDA +10%
+
+        change = portfolio.change_since(previous, current)
+
+        assert change is not None
+        assert change.previous_value == Decimal("1000")
+        assert change.current_value == Decimal("1075")
+        assert change.change == Decimal("75")
+        assert change.change_pct == Decimal("0.075")
+        assert change.top_contributors[0] == SymbolChange(
+            symbol="NVDA", change=Decimal("75"), contribution=Decimal("0.075")
+        )
+
+    def test_top_three_contributors_by_absolute_change(self) -> None:
+        portfolio = _portfolio(
+            _pos("A", "10", "1"), _pos("B", "10", "1"), _pos("C", "10", "1"),
+            _pos("D", "10", "1"),
+        )
+        previous = {s: Decimal("10") for s in "ABCD"}
+        current = {
+            "A": Decimal("10.5"),  # +5
+            "B": Decimal("7"),  # -30
+            "C": Decimal("12"),  # +20
+            "D": Decimal("9"),  # -10
+        }
+
+        change = portfolio.change_since(previous, current)
+
+        assert change is not None
+        assert [c.symbol for c in change.top_contributors] == ["B", "C", "D"]
+        assert change.change == Decimal("-15")
+
+    def test_flat_positions_are_not_contributors(self) -> None:
+        portfolio = _portfolio(_pos("NVDA", "1", "1"), _pos("AAPL", "1", "1"))
+        prices = {"NVDA": Decimal("10"), "AAPL": Decimal("10")}
+
+        change = portfolio.change_since(prices, {**prices, "NVDA": Decimal("12")})
+
+        assert change is not None
+        assert [c.symbol for c in change.top_contributors] == ["NVDA"]
+
+    def test_positions_without_both_prices_are_listed_and_left_out(self) -> None:
+        # Pozycja bez punktu odniesienia (np. spoza watchlisty, cold-start) nie
+        # może udawać „bez zmian” — wypada z obu stron i jest wymieniona.
+        portfolio = _portfolio(
+            _pos("NVDA", "10", "1"), _pos("XDWD.DE", "5", "1"), _pos("NEW", "3", "1")
+        )
+        previous = {"NVDA": Decimal("10")}
+        current = {"NVDA": Decimal("11"), "NEW": Decimal("50")}
+
+        change = portfolio.change_since(previous, current)
+
+        assert change is not None
+        assert change.previous_value == Decimal("100")
+        assert change.change_pct == Decimal("0.1")
+        assert change.unmeasured_symbols == ("NEW", "XDWD.DE")
+
+    def test_lots_of_one_symbol_are_aggregated(self) -> None:
+        portfolio = _portfolio(_pos("NVDA", "2", "1"), _pos("NVDA", "3", "1"))
+
+        change = portfolio.change_since({"NVDA": Decimal("10")}, {"NVDA": Decimal("12")})
+
+        assert change is not None
+        assert change.top_contributors == (
+            SymbolChange(symbol="NVDA", change=Decimal("10"), contribution=Decimal("0.2")),
+        )
+
+    def test_no_measurable_position_is_none(self) -> None:
+        portfolio = _portfolio(_pos("NVDA", "1", "1"))
+
+        assert portfolio.change_since({}, {"NVDA": Decimal("10")}) is None
+        assert _portfolio().change_since({}, {}) is None
+
+    def test_top_contributor_limit_is_three(self) -> None:
+        assert TOP_CHANGE_CONTRIBUTORS == 3

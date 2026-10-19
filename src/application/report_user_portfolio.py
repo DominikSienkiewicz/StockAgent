@@ -29,6 +29,10 @@ pozycja nie ma bieżącej ceny) → `render_*` zwraca "".
 PORT-03: pozycje bez ceny w tym cyklu (np. tickery UNSUPPORTED_PRICE) są
 wymienione pod tabelą z udziałem w koszcie, a sumy podpisane „bez pozycji
 niewycenionych” — wagi i P/L liczą się tylko z wycenionych pozycji.
+
+PORT-06: pod sumami linia „Zmiana od ostatniego maila” (kwota, %, top 3
+kontrybutorów) z gotowego `PortfolioChange` z domeny, a na pierwszym ekranie
+box z tą samą liczbą. Po pauzie podpis mówi „od <data>”.
 """
 
 from __future__ import annotations
@@ -38,12 +42,14 @@ from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
 
-from src.application.report_formatting import number_exact
+from src.application.report_formatting import format_local_date, number_exact
+from src.domain.asset import is_reference_stale
 from src.domain.number_format import format_money_pl, format_pct_pl
 from src.domain.portfolio import (
     DEFAULT_MAX_POSITION_AGE_DAYS,
     ClusterExposure,
     Portfolio,
+    PortfolioChange,
     PortfolioFreshness,
     PortfolioPnL,
     PositionPnL,
@@ -117,6 +123,107 @@ def _dominant_cluster(exposures: list[ClusterExposure]) -> ClusterExposure | Non
     return None
 
 
+# PORT-06: podpis zmiany portfela, gdy referencja jest z poprzedniego cyklu.
+PORTFOLIO_CHANGE_DEFAULT_LABEL = "od ostatniego maila"
+
+
+def portfolio_change_label(
+    since: datetime | None, now: datetime, display_timezone: str
+) -> str:
+    """PORT-06: „od ostatniego maila” albo — po pauzie (stęchła referencja wg
+    domeny, FIN-14) — „od 19.09.2026”, bo wtedy Δ obejmuje wiele dni."""
+    if since is not None and is_reference_stale(since, now):
+        return f"od {format_local_date(since, display_timezone)}"
+    return PORTFOLIO_CHANGE_DEFAULT_LABEL
+
+
+def _change_amount(change: PortfolioChange) -> str:
+    """„+$70,00 (+7,0%)” — kwota i procent zmiany portfela."""
+    return f"{_format_signed_usd(change.change)} ({_format_pct(change.change_pct, signed=True)})"
+
+
+def _contributors(change: PortfolioChange) -> str:
+    """„NVDA +$75,00, AAPL -$5,00” — top kontrybutorzy w kolejności domeny."""
+    return ", ".join(
+        f"{c.symbol} {_format_signed_usd(c.change)}" for c in change.top_contributors
+    )
+
+
+def _change_details(change: PortfolioChange, usd_pln: Decimal | None) -> list[str]:
+    """Człony linii zmiany po kwocie: PLN, kontrybutorzy, pozycje bez odniesienia."""
+    details: list[str] = []
+    if usd_pln is not None:
+        details.append(_format_signed_pln(change.change * usd_pln))
+    if change.top_contributors:
+        details.append(f"najwięcej: {_contributors(change)}")
+    if change.unmeasured_symbols:
+        details.append(f"bez punktu odniesienia: {', '.join(change.unmeasured_symbols)}")
+    return details
+
+
+def _render_change_html(
+    change: PortfolioChange, label: str, usd_pln: Decimal | None
+) -> str:
+    color = _pnl_color(change.change)
+    details = "".join(
+        f" · {_html.escape(detail)}" for detail in _change_details(change, usd_pln)
+    )
+    return (
+        "<div style='padding: 10px 14px; background: #f9fafb; "
+        "border-radius: 4px; font-size: 13px; margin-bottom: 12px;'>"
+        f"Zmiana {_html.escape(label)}: <strong style='color: {color};'>"
+        f"{_change_amount(change)}</strong>{details}</div>"
+    )
+
+
+def _render_change_text(
+    change: PortfolioChange, label: str, usd_pln: Decimal | None
+) -> str:
+    details = "".join(f" · {detail}" for detail in _change_details(change, usd_pln))
+    return f"  Zmiana {label}: {_change_amount(change)}{details}"
+
+
+def render_portfolio_change_box_html(
+    change: PortfolioChange,
+    *,
+    label: str = PORTFOLIO_CHANGE_DEFAULT_LABEL,
+    usd_pln: Decimal | None = None,
+) -> str:
+    """PORT-06: box pierwszego ekranu „Twój portfel od ostatniego maila” —
+    procent dużą cyfrą, pod nim kwota (i PLN, gdy znamy kurs)."""
+    color = _pnl_color(change.change)
+    amounts = [_format_signed_usd(change.change)]
+    if usd_pln is not None:
+        amounts.append(_format_signed_pln(change.change * usd_pln))
+    return (
+        '<div style="flex: 1; padding: 12px; background: #f9fafb; '
+        f'border-left: 3px solid {color}; border-radius: 4px;">'
+        '<div style="font-size: 11px; color: #4b5563; text-transform: uppercase;">'
+        f"Twój portfel {_html.escape(label)}</div>"
+        f'<div style="font-size: 24px; font-weight: 600; color: {color};">'
+        f"{_format_pct(change.change_pct, signed=True)}</div>"
+        f'<div style="font-size: 12px; color: {color};">{" · ".join(amounts)}</div>'
+        "</div>"
+    )
+
+
+def render_portfolio_change_text_line(
+    change: PortfolioChange,
+    *,
+    label: str = PORTFOLIO_CHANGE_DEFAULT_LABEL,
+    usd_pln: Decimal | None = None,
+) -> str:
+    """PORT-06: linia pierwszego ekranu wersji tekstowej:
+    „Twój portfel od ostatniego maila: +7,0% (+$70,00)”."""
+    amounts = [_format_signed_usd(change.change)]
+    if usd_pln is not None:
+        amounts.append(_format_signed_pln(change.change * usd_pln))
+    return (
+        f"Twój portfel {label}: {_format_pct(change.change_pct, signed=True)} "
+        f"({' · '.join(amounts)})"
+    )
+
+
 def render_user_portfolio_html(
     portfolio: Portfolio,
     current_prices: Mapping[str, Decimal],
@@ -125,6 +232,8 @@ def render_user_portfolio_html(
     now: datetime,
     usd_pln: Decimal | None = None,
     max_age_days: int = DEFAULT_MAX_POSITION_AGE_DAYS,
+    change: PortfolioChange | None = None,
+    change_label: str = PORTFOLIO_CHANGE_DEFAULT_LABEL,
 ) -> str:
     """Renderuje sekcję HTML portfela lub "" gdy brak policzalnych pozycji."""
     pnl = portfolio.unrealized_pnl(current_prices)
@@ -148,6 +257,8 @@ def render_user_portfolio_html(
             f"⚠️ {_html.escape(unpriced_note)}</p>"
         )
     parts.append(_render_totals_html(pnl, usd_pln, partial=bool(unpriced_note)))
+    if change is not None:
+        parts.append(_render_change_html(change, change_label, usd_pln))
 
     cluster = _dominant_cluster(exposures)
     if cluster is not None:
@@ -298,6 +409,8 @@ def render_user_portfolio_text(
     now: datetime,
     usd_pln: Decimal | None = None,
     max_age_days: int = DEFAULT_MAX_POSITION_AGE_DAYS,
+    change: PortfolioChange | None = None,
+    change_label: str = PORTFOLIO_CHANGE_DEFAULT_LABEL,
 ) -> str:
     """Renderuje sekcję plain-text portfela lub "" gdy brak policzalnych pozycji."""
     pnl = portfolio.unrealized_pnl(current_prices)
@@ -345,6 +458,8 @@ def render_user_portfolio_text(
             f"wartość {_format_pln(pnl.total_market_value * usd_pln)}, "
             f"P/L {_format_signed_pln(pnl.total_unrealized_pnl * usd_pln)}"
         )
+    if change is not None:
+        lines.append(_render_change_text(change, change_label, usd_pln))
 
     cluster = _dominant_cluster(exposures)
     if cluster is not None:

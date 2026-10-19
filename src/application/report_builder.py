@@ -121,6 +121,9 @@ from src.application.report_track_record import (
     render_track_record_html,
 )
 from src.application.report_user_portfolio import (
+    portfolio_change_label,
+    render_portfolio_change_box_html,
+    render_portfolio_change_text_line,
     render_user_portfolio_html,
     render_user_portfolio_text,
 )
@@ -145,7 +148,7 @@ from src.domain.polish_labels import (
     model_signal_label,
     trend_forecast_label,
 )
-from src.domain.portfolio import Portfolio
+from src.domain.portfolio import Portfolio, PortfolioChange
 from src.domain.prediction import is_substantive_insight
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
@@ -926,6 +929,56 @@ def _current_prices_of(results: list[SymbolResult]) -> dict[str, Decimal]:
     return {r.symbol: r.current_price for r in results if r.current_price is not None}
 
 
+def _previous_prices_of(results: list[SymbolResult]) -> dict[str, Decimal]:
+    """PORT-06: cena referencji odtworzona z delty cyklu: prev = current / (1 + Δ).
+
+    Działa dla każdego symbolu z ceną i deltą — także pominiętego bramką albo
+    z referencją sprzed pauzy (FIN-14). Cold-start nie ma referencji (Δ = 0 to
+    brak punktu odniesienia, nie „bez zmian”), więc nie wchodzi."""
+    previous: dict[str, Decimal] = {}
+    for r in results:
+        if r.current_price is None or r.delta is None:
+            continue
+        if r.skip_reason is SkipReason.COLD_START or r.delta == -1:
+            continue
+        previous[r.symbol] = r.current_price / (1 + r.delta)
+    return previous
+
+
+@dataclasses.dataclass(frozen=True)
+class _PortfolioChangeView:
+    """PORT-06: zmiana portfela z domeny + podpis okna („od ostatniego maila”)."""
+
+    change: PortfolioChange
+    label: str
+
+
+def _portfolio_change_view(
+    results: list[SymbolResult],
+    portfolio: Portfolio | None,
+    current_prices: Mapping[str, Decimal],
+    *,
+    now: datetime,
+    display_timezone: str,
+) -> _PortfolioChangeView | None:
+    """PORT-06: Δ portfela od referencji cyklu. Okno zaczyna się od NAJSTARSZEJ
+    referencji zmierzonych pozycji — po pauzie podpis mówi „od <data>”.
+    Brak portfela (np. obcy subskrybent, BEZ-01) → None, sekcje się chowają."""
+    if portfolio is None:
+        return None
+    change = portfolio.change_since(_previous_prices_of(results), current_prices)
+    if change is None:
+        return None
+    measured = {p.symbol for p in portfolio.positions} - set(change.unmeasured_symbols)
+    references = [
+        r.reference_at for r in results if r.symbol in measured and r.reference_at is not None
+    ]
+    since = min(references) if references else None
+    return _PortfolioChangeView(
+        change=change, label=portfolio_change_label(since, now, display_timezone)
+    )
+
+
 def _build_onboarding_blocks(
     cycle_maturity: CycleMaturity | None,
     *,
@@ -953,9 +1006,11 @@ def _build_user_portfolio_html(
     clusters: Mapping[str, str] | None,
     macro_risk_report: MacroRiskReport | None,
     now: datetime,
+    change: _PortfolioChangeView | None = None,
 ) -> str:
     """#15: sekcja realnego portfela. Kurs USD/PLN pochodzi z `MacroRiskReport`,
-    nie z portu. Brak portfela → "" (sekcja sama się chowa)."""
+    nie z portu. Brak portfela → "" (sekcja sama się chowa). PORT-06: linia
+    zmiany od ostatniego maila, gdy da się ją policzyć."""
     if user_portfolio is None:
         return ""
     return render_user_portfolio_html(
@@ -964,7 +1019,15 @@ def _build_user_portfolio_html(
         clusters=clusters,
         now=now,
         usd_pln=_usd_pln_of(macro_risk_report),
+        **_change_kwargs(change),
     )
+
+
+def _change_kwargs(change: _PortfolioChangeView | None) -> dict[str, Any]:
+    """PORT-06: opcjonalne argumenty linii zmiany dla rendererów sekcji 💼."""
+    if change is None:
+        return {}
+    return {"change": change.change, "change_label": change.label}
 
 
 def _build_user_portfolio_text(
@@ -974,6 +1037,7 @@ def _build_user_portfolio_text(
     clusters: Mapping[str, str] | None,
     macro_risk_report: MacroRiskReport | None,
     now: datetime,
+    change: _PortfolioChangeView | None = None,
 ) -> str:
     """Wariant plain-text sekcji portfela (decyzja 2026-10-19) — te same dane co HTML."""
     if user_portfolio is None:
@@ -984,6 +1048,7 @@ def _build_user_portfolio_text(
         clusters=clusters,
         now=now,
         usd_pln=_usd_pln_of(macro_risk_report),
+        **_change_kwargs(change),
     )
 
 
@@ -1184,12 +1249,38 @@ def build_html_report(
     persona_leaderboard_html = render_persona_leaderboard_html(
         context.persona_track_record or []
     )
+    # PORT-06: zmiana portfela od ostatniego maila — sekcja 💼 i pierwszy ekran.
+    # Nie trafia do tematu maila (decyzja 2026-10-19).
+    portfolio_change = _portfolio_change_view(
+        results,
+        context.user_portfolio,
+        current_prices,
+        now=started_at,
+        display_timezone=context.display_timezone,
+    )
+    usd_pln = _usd_pln_of(context.macro_risk_report)
+    portfolio_change_box = (
+        render_portfolio_change_box_html(
+            portfolio_change.change, label=portfolio_change.label, usd_pln=usd_pln
+        )
+        if portfolio_change is not None
+        else ""
+    )
+    # Stary push (Telegram/Slack) dostaje tekst bez kwot portfela.
+    portfolio_change_line = (
+        render_portfolio_change_text_line(
+            portfolio_change.change, label=portfolio_change.label, usd_pln=usd_pln
+        )
+        if portfolio_change is not None and context.user_portfolio_in_text
+        else ""
+    )
     user_portfolio_html = _build_user_portfolio_html(
         context.user_portfolio,
         current_prices,
         clusters=context.portfolio_clusters,
         macro_risk_report=context.macro_risk_report,
         now=started_at,
+        change=portfolio_change,
     )
     user_portfolio_text = (
         _build_user_portfolio_text(
@@ -1198,6 +1289,7 @@ def build_html_report(
             clusters=context.portfolio_clusters,
             macro_risk_report=context.macro_risk_report,
             now=started_at,
+            change=portfolio_change,
         )
         if context.user_portfolio_in_text
         else ""
@@ -1243,6 +1335,7 @@ def build_html_report(
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
         resolved, resolved_window=resolved_window, resolved_note=resolved_note,
         display_timezone=context.display_timezone,
+        portfolio_change_box=portfolio_change_box,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1270,6 +1363,7 @@ def build_html_report(
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
         resolved, resolved_window=resolved_window, resolved_note=resolved_note,
         display_timezone=context.display_timezone,
+        portfolio_change_line=portfolio_change_line,
     )
     text = _fill_text_slots(
         text,
@@ -1852,6 +1946,7 @@ def _render_html(
     resolved_window: str = _RESOLVED_WINDOW_24H,
     resolved_note: str | None = None,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
+    portfolio_change_box: str = "",
 ) -> str:
     sections = []
 
@@ -1882,9 +1977,10 @@ def _render_html(
       </div>
     """)
 
-    # Summary boxes
+    # Summary boxes — PORT-06: pierwszy box to zmiana portfela (gdy jest).
     sections.append(f"""
       <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+        {portfolio_change_box}
         <div style="flex: 1; padding: 12px; background: #f0fdf4; border-left: 3px solid #16a34a; border-radius: 4px;">
           <div style="font-size: 11px; color: #15803d; text-transform: uppercase;">Predykcje</div>
           <div style="font-size: 24px; font-weight: 600; color: #14532d;">{len(saved)}</div>
@@ -2240,6 +2336,7 @@ def _render_plain(
     resolved_window: str = _RESOLVED_WINDOW_24H,
     resolved_note: str | None = None,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
+    portfolio_change_line: str = "",
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
@@ -2255,6 +2352,9 @@ def _render_plain(
         f"Symboli:           {len(results)} "
         f"(predykcji={len(saved)}, pominiętych={len(ignored)}, błędów={len(errors)})"
     )
+    # PORT-06: zmiana portfela od ostatniego maila — na pierwszym ekranie tekstu.
+    if portfolio_change_line:
+        lines.append(portfolio_change_line)
     lines.append("")
 
     # Slot na sekcję Risk Watch w wariancie plain text — analogicznie do HTML.

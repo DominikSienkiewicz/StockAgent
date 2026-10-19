@@ -17,6 +17,7 @@ Czas rozpoczęcia:  czw 15.10 12:30
 Czas trwania:      74,2s
 Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
 Symboli:           7 (predykcji=3, pominiętych=3, błędów=1)
+Twój portfel od ostatniego maila: -0,8% (-$30,62 · -112,73 zł)
 
 === 🚨 Risk Watch — sygnały makro ===
 Ogólny alert: ELEVATED
@@ -45,6 +46,7 @@ Ogólny alert: ELEVATED
 
   Łącznie (bez pozycji niewycenionych): $3 800,00 · P/L +$40,00 (+1,1%)
   W PLN (USD/PLN 3,6820): wartość 13 991,60 zł, P/L +147,28 zł
+  Zmiana od ostatniego maila: -$30,62 (-0,8%) · -112,73 zł · najwięcej: AMD -$87,05, NVDA +$56,43 · bez punktu odniesienia: XDWD.DE
 
   ⚠️ Twoje 2 pozycji (AMD, NVDA) to jeden klaster korelacji «Półprzewodniki» — 100,0% kapitału.
 

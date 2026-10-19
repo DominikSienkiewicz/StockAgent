@@ -3508,3 +3508,81 @@ class TestStaleReferenceWiring:
         )
 
         assert main_agent._classify_cycle_maturity(results) is CycleMaturity.STEADY_STATE
+
+
+class TestPortfolioChangeDispatch:
+    """PORT-06: zmiana portfela od ostatniego maila trafia do właściciela (HTML
+    i tekst), nigdy do obcego subskrybenta ani do starego pushu (BEZ-01, decyzja
+    2026-10-19), i nie wchodzi do tematu maila."""
+
+    _RESULTS = [
+        main_agent.SymbolResult(
+            symbol="AAPL", status="saved", delta=Decimal("0.10"),
+            current_price=Decimal("110"),
+        ),
+    ]
+    _CHANGE = "+$20,00 (+10,0%)"
+
+    def test_owner_sees_the_change_and_a_subscriber_does_not(self, settings, mocker) -> None:
+        sent = TestDispatchReports()._fan_out(settings, mocker, list(self._RESULTS))
+
+        owner = sent["Owner@Example.com"]
+        friend = sent[TestDispatchReports.FRIEND]
+        assert "Twój portfel od ostatniego maila" in owner["html_body"]
+        assert self._CHANGE in owner["html_body"]
+        assert "Twój portfel od ostatniego maila" in owner["plain_text"]
+        assert "$20,00" not in friend["html_body"]
+        assert "$20,00" not in friend["plain_text"]
+        assert "od ostatniego maila" not in friend["html_body"]
+        assert "od ostatniego maila" not in friend["plain_text"]
+
+    def test_change_stays_out_of_the_subject(self, settings, mocker) -> None:
+        sent = TestDispatchReports()._fan_out(settings, mocker, list(self._RESULTS))
+
+        for mail in sent.values():
+            assert "Twój portfel" not in mail["subject"]
+            assert "$20,00" not in mail["subject"]
+
+    def test_legacy_push_text_carries_no_portfolio_change(self, settings, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.notifications_enabled = True
+        settings.resend_api_key = "re_test"
+        settings.digest_to_email = "you@example.com"
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(
+            "main_agent._build_user_portfolio",
+            return_value=TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
+        )
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        email = MagicMock()
+        legacy_push = MagicMock()
+
+        main_agent._dispatch_reports(
+            results=list(self._RESULTS),
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=QuotaMonitor(),
+            notifier=email,
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL"],
+            context=main_agent.ReportContext(),
+            legacy_push_notifier=legacy_push,
+        )
+
+        email_text = email.send_report.call_args.kwargs["plain_text"]
+        push_text = legacy_push.send_report.call_args.kwargs["plain_text"]
+        assert "Twój portfel od ostatniego maila: +10,0% (+$20,00)" in email_text
+        assert "od ostatniego maila" not in push_text
+        assert "$20,00" not in push_text

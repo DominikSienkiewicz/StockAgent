@@ -11,6 +11,8 @@ miał po 2.3% w 43 tickerach. Ten agregat liczy prawdę:
   - `cluster_exposure()` — ekspozycja klastra korelacji ("Twoje 3 największe
     pozycje to jeden klaster — 61% kapitału"). Bierze GOTOWĄ mapę
     symbol→klaster; korelacji NIE liczymy tutaj.
+  - `change_since()` (PORT-06) — zmiana wartości portfela między dwoma zestawami
+    cen (poprzedni cykl → bieżący) z top kontrybutorami.
 
 Osobno żyje reguła świeżości: ręcznie aktualizowana tabela pozycji potrafi
 się zestarzeć, a stęchły portfel daje FAŁSZYWY P/L — gorszy niż brak sekcji.
@@ -35,6 +37,9 @@ from enum import Enum
 DEFAULT_MAX_POSITION_AGE_DAYS = 7
 
 _SECONDS_PER_DAY = 86_400.0
+
+# PORT-06: ilu kontrybutorów zmiany portfela pokazuje raport.
+TOP_CHANGE_CONTRIBUTORS = 3
 
 
 def _require_finite(name: str, value: Decimal) -> None:
@@ -125,6 +130,38 @@ class ClusterExposure:
     cluster: str
     symbols: tuple[str, ...]
     weight: Decimal
+
+
+@dataclass(frozen=True)
+class SymbolChange:
+    """PORT-06: wkład jednego symbolu w zmianę wartości portfela.
+
+    `change` — Δ wartości pozycji (ilość × (cena bieżąca − poprzednia), loty
+    zsumowane). `contribution` — ten Δ jako ułamek wartości portfela PRZED
+    zmianą; wkłady wszystkich symboli sumują się do `PortfolioChange.change_pct`.
+    """
+
+    symbol: str
+    change: Decimal
+    contribution: Decimal
+
+
+@dataclass(frozen=True)
+class PortfolioChange:
+    """PORT-06: zmiana wartości portfela między dwoma zestawami cen.
+
+    Liczona TYLKO z pozycji, które mają cenę poprzednią i bieżącą — pozycja bez
+    punktu odniesienia nie może udawać „bez zmian”. Te wypadnięte są wymienione
+    w `unmeasured_symbols`. `top_contributors` — co najwyżej
+    `TOP_CHANGE_CONTRIBUTORS` symboli o największym |Δ|, bez pozycji stojących.
+    """
+
+    previous_value: Decimal
+    current_value: Decimal
+    change: Decimal
+    change_pct: Decimal
+    top_contributors: tuple[SymbolChange, ...]
+    unmeasured_symbols: tuple[str, ...]
 
 
 class PortfolioFreshness(Enum):
@@ -277,6 +314,50 @@ class Portfolio:
             total_market_value=total_value,
             total_unrealized_pnl=total_pnl,
             total_return_pct=(total_pnl / total_cost) if total_cost != 0 else None,
+        )
+
+    def change_since(
+        self,
+        previous_prices: Mapping[str, Decimal],
+        current_prices: Mapping[str, Decimal],
+    ) -> PortfolioChange | None:
+        """PORT-06: Δ wartości portfela od `previous_prices` do `current_prices`.
+
+        Ruch symbolu waży tyle, ile jego wartość rynkowa: NVDA +10% przy 75%
+        kapitału to +7,5% portfela. Pozycje bez obu cen wypadają z obu stron.
+        None = żadnej mierzalnej pozycji albo zerowa wartość poprzednia (nie
+        dzielimy przez zero)."""
+        quantities: dict[str, Decimal] = {}
+        for pos in self.positions:
+            quantities[pos.symbol] = quantities.get(pos.symbol, Decimal("0")) + pos.quantity
+        measured = [
+            symbol
+            for symbol in quantities
+            if symbol in previous_prices and symbol in current_prices
+        ]
+        previous_value = sum(
+            (quantities[s] * previous_prices[s] for s in measured), Decimal("0")
+        )
+        if not measured or previous_value == 0:
+            return None
+        current_value = sum(
+            (quantities[s] * current_prices[s] for s in measured), Decimal("0")
+        )
+        moves = [
+            SymbolChange(symbol=s, change=change, contribution=change / previous_value)
+            for s in measured
+            if (change := quantities[s] * (current_prices[s] - previous_prices[s])) != 0
+        ]
+        # Malejąco po |Δ|; przy remisie stabilnie po symbolu.
+        moves.sort(key=lambda m: (-abs(m.change), m.symbol))
+        change = current_value - previous_value
+        return PortfolioChange(
+            previous_value=previous_value,
+            current_value=current_value,
+            change=change,
+            change_pct=change / previous_value,
+            top_contributors=tuple(moves[:TOP_CHANGE_CONTRIBUTORS]),
+            unmeasured_symbols=tuple(sorted(set(quantities) - set(measured))),
         )
 
     def cluster_exposure(

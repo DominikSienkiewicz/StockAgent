@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -2910,3 +2911,104 @@ class TestStaleReferenceReport:
         assert "poniżej progu" not in text
         assert "nowy punkt odniesienia" in html.split("🪙 Krypto")[1]
         assert "nowy punkt odniesienia" in text.split("KRYPTO")[1]
+
+
+class TestPortfolioChangeInReport:
+    """PORT-06: zmiana portfela od ostatniego maila w sekcji 💼 i na pierwszym
+    ekranie. Cena poprzednia odtwarzana z delty cyklu (prev = current / (1 + Δ)),
+    także dla symboli pominiętych bramką; cold-start nie ma punktu odniesienia."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _portfolio(*positions: tuple[str, str]) -> Portfolio:
+        return Portfolio(
+            positions=tuple(
+                Position(symbol=symbol, quantity=Decimal(qty), purchase_price=Decimal("5"),
+                         purchase_date=datetime(2026, 3, 2).date())
+                for symbol, qty in positions
+            ),
+            as_of=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+
+    def _results(self, **overrides: object) -> list[SymbolResult]:
+        nvda = SymbolResult(
+            symbol="NVDA", status="saved", delta=Decimal("0.10"),
+            current_price=Decimal("11"), trend="BULLISH", confidence_score=0.7,
+            target_price=Decimal("12"),
+        )
+        aapl = SymbolResult(
+            symbol="AAPL", status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD,
+            delta=Decimal("-0.02"), current_price=Decimal("9.80"),
+        )
+        return [dataclasses.replace(nvda, **overrides), aapl]
+
+    def test_first_screen_box_and_section_show_the_change(self):
+        context = ReportContext(user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25")))
+
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        assert "Twój portfel od ostatniego maila" in html
+        assert "+7,0%" in html
+        assert "Zmiana od ostatniego maila: <strong" in html
+        assert "NVDA +$75,00, AAPL -$5,00" in html
+        assert "Twój portfel od ostatniego maila: +7,0% (+$70,00)" in text
+        assert "Zmiana od ostatniego maila: +$70,00 (+7,0%)" in text
+
+    def test_first_screen_box_comes_before_the_portfolio_section(self):
+        context = ReportContext(user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25")))
+
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        assert html.index("Twój portfel od ostatniego maila") < html.index("💼 Twój portfel")
+        assert text.index("Twój portfel od ostatniego maila") < text.index("=== 💼 Twój portfel")
+
+    def test_cold_start_position_is_left_out_of_the_change(self):
+        context = ReportContext(
+            user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25"), ("NEW", "1"))
+        )
+        new = SymbolResult(
+            symbol="NEW", status="ignored", skip_reason=SkipReason.COLD_START,
+            delta=Decimal("0"), current_price=Decimal("50"),
+        )
+
+        html, _ = build_html_report([*self._results(), new], self._STARTED, 1.0, context)
+
+        assert "+7,0%" in html
+        assert "bez punktu odniesienia: NEW" in html
+
+    def test_after_a_pause_the_change_is_dated(self):
+        reference_at = datetime(2026, 9, 19, 17, 30, tzinfo=UTC)
+        context = ReportContext(user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25")))
+        results = [
+            dataclasses.replace(
+                r, status="ignored", skip_reason=SkipReason.STALE_REFERENCE,
+                reference_at=reference_at,
+            )
+            for r in self._results()
+        ]
+
+        html, text = build_html_report(results, self._STARTED, 1.0, context)
+
+        assert "Twój portfel od 19.09.2026" in html
+        assert "Zmiana od 19.09.2026" in html
+        assert "Twój portfel od 19.09.2026: +7,0%" in text
+        assert "od ostatniego maila" not in html
+
+    def test_no_portfolio_no_change(self):
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, ReportContext())
+
+        assert "od ostatniego maila" not in html
+        assert "od ostatniego maila" not in text
+
+    def test_legacy_push_text_has_no_change_line(self):
+        context = ReportContext(
+            user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25")),
+            user_portfolio_in_text=False,
+        )
+
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        assert "Twój portfel od ostatniego maila" in html
+        assert "od ostatniego maila" not in text
+        assert "$70,00" not in text
