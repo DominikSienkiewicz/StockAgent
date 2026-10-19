@@ -366,8 +366,9 @@ class TestPaperCostDisclosure:
 
 
 class TestBenchmarkDisclosure:
-    """WIA-21: strona publiczna stawia krzywą agenta obok koszyka i IVV —
-    z kropką dziesiętną i bez symboli watchlisty."""
+    """WIA-21: strona publiczna stawia krzywą agenta obok koszyka i indeksu —
+    z kropką dziesiętną i bez symboli watchlisty. Decyzja 2026-10-19: indeks
+    nazywa się „S&P 500”, nie tickerem IVV (który też jest w watchliście)."""
 
     @staticmethod
     def _comparison(*, with_index: bool = True):
@@ -387,9 +388,9 @@ class TestBenchmarkDisclosure:
             [_resolved("NVDA", "BEARISH", False)], comparison.agent, None, benchmark=comparison
         )
 
-        assert "agent -2.5% · koszyk +2.5% · IVV +2.4%" in html
+        assert "agent -2.5% · koszyk +2.5% · S&amp;P 500 +2.4%" in html
         assert "Zwrot nadwyżkowy vs koszyk: -5.0 p.p." in html
-        assert "hit-rate względem rynku (IVV): 33.3% (n=3)" in html
+        assert "hit-rate względem rynku (S&amp;P 500): 33.3% (n=3)" in html
         assert "spark-bar bench" in html
         assert ".spark-bar.bench{" in html
         assert "NVDA" not in html
@@ -401,7 +402,7 @@ class TestBenchmarkDisclosure:
             [_resolved("NVDA", "BEARISH", False)], comparison.agent, None, benchmark=comparison
         )
 
-        assert "IVV: brak danych benchmarku" in html
+        assert "S&amp;P 500: brak danych benchmarku" in html
 
     def test_without_a_comparison_the_page_says_there_is_no_benchmark(self) -> None:
         curve = equity_curve([("BULLISH", 0.03)])
@@ -410,3 +411,25 @@ class TestBenchmarkDisclosure:
 
         assert "Na tle rynku: brak danych benchmarku" in html
         assert "spark-bar bench" not in html
+
+
+def test_benchmark_never_leaks_the_index_ticker_or_basket_symbols() -> None:
+    """Inwariant „zero symboli watchlisty” bez wyjątków — także z benchmarkiem:
+    ticker indeksu (IVV jest w watchliście) i symbole koszyka nie trafiają na stronę."""
+    from src.domain.benchmark import compare_with_benchmarks
+    from src.domain.equity_curve import PaperTrade
+
+    cycles = [
+        [
+            PaperTrade("NVDA", "BULLISH", 0.02, 10, benchmark_change=0.01),
+            PaperTrade("IVV", "BEARISH", 0.01, 10, benchmark_change=0.01),
+        ]
+    ]
+    comparison = compare_with_benchmarks(cycles, index_symbol="IVV", index_cost_bps=10)
+    resolved = [_resolved("NVDA", "BULLISH", True), _resolved("IVV", "BEARISH", False)]
+
+    html = render_public_scorecard_html(resolved, comparison.agent, None, benchmark=comparison)
+
+    assert "S&amp;P 500" in html
+    assert "IVV" not in html
+    assert "NVDA" not in html

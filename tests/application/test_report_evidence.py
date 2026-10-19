@@ -12,12 +12,15 @@ from decimal import Decimal
 import pytest
 
 from src.application.report_evidence import (
+    BENCHMARK_METHOD_PL,
     BENCHMARK_SYMBOL,
     PORTFOLIO_ASSUMPTIONS_PL,
+    PUBLIC_BENCHMARK_LABEL,
     PaperCosts,
     benchmark_comparison,
     benchmark_detail,
     benchmark_line,
+    benchmark_method,
     paper_pnl_label,
     portfolio_assumptions,
     portfolio_curve,
@@ -190,3 +193,24 @@ class TestBenchmarkCopy:
         detail = benchmark_detail(self._comparison(with_index=False))
 
         assert "hit-rate względem rynku (IVV): brak danych benchmarku" in detail
+
+
+def test_public_label_replaces_the_index_ticker() -> None:
+    """Strona publiczna nazywa indeks „S&P 500” — ticker zostaje tylko w mailu."""
+    history = [
+        (datetime(2026, 10, 1, 5, 31, tzinfo=UTC), 100.0),
+        (datetime(2026, 10, 2, 5, 31, tzinfo=UTC), 102.1),
+    ]
+    comparison = benchmark_comparison(
+        [_call("AAPL", "BEARISH", 1, "103.4")], PaperCosts(), history,
+        settle_after=timedelta(hours=6),
+    )
+    assert comparison is not None
+
+    line = benchmark_line(comparison, numbers=DOT_NUMBERS, index_label=PUBLIC_BENCHMARK_LABEL)
+    detail = benchmark_detail(comparison, index_label=PUBLIC_BENCHMARK_LABEL)
+
+    assert line == "agent -3.4% · koszyk +3.4% · S&P 500 +2.1%"
+    assert "hit-rate względem rynku (S&P 500)" in detail
+    assert "IVV" not in benchmark_method(PUBLIC_BENCHMARK_LABEL)
+    assert "IVV" in BENCHMARK_METHOD_PL

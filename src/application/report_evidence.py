@@ -60,13 +60,23 @@ _EPOCH = datetime.min.replace(tzinfo=UTC)
 # WIA-21: benchmark rynku — ETF S&P 500 z watchlisty, więc ma snapshot w każdym
 # cyklu (`price_snapshots`, odczyt darmowy).
 BENCHMARK_SYMBOL = "IVV"
+# Strona publiczna nie podaje symboli watchlisty, także tickera benchmarku —
+# nazywa indeks, który IVV odwzorowuje (decyzja 2026-10-19).
+PUBLIC_BENCHMARK_LABEL = "S&P 500"
 NO_BENCHMARK_PL = "brak danych benchmarku"
-BENCHMARK_METHOD_PL = (
-    "Koszyk = buy&hold tych samych symboli w tych samych oknach (long-only), "
-    f"{BENCHMARK_SYMBOL} = buy&hold w oknach predykcji; agent i benchmarki płacą "
-    "ten sam koszt od obrotu. Okna z tych samych snapshotów cyklu co predykcje "
-    "(snapshot 05:30 UTC to zamknięcie poprzedniej sesji)."
-)
+
+
+def benchmark_method(index_label: str = BENCHMARK_SYMBOL) -> str:
+    """Copy metody porównania z benchmarkami; `index_label` nazywa indeks."""
+    return (
+        "Koszyk = buy&hold tych samych symboli w tych samych oknach (long-only), "
+        f"{index_label} = buy&hold w oknach predykcji; agent i benchmarki płacą "
+        "ten sam koszt od obrotu. Okna z tych samych snapshotów cyklu co predykcje "
+        "(snapshot 05:30 UTC to zamknięcie poprzedniej sesji)."
+    )
+
+
+BENCHMARK_METHOD_PL = benchmark_method()
 
 
 @dataclass(frozen=True)
@@ -208,14 +218,19 @@ def benchmark_comparison(
 
 
 def benchmark_line(
-    comparison: BenchmarkComparison, *, numbers: NumberStyle = POLISH_NUMBERS
+    comparison: BenchmarkComparison,
+    *,
+    numbers: NumberStyle = POLISH_NUMBERS,
+    index_label: str | None = None,
 ) -> str:
-    """„agent +1,2% · koszyk +3,4% · IVV +2,1%”; bez danych IVV — jawny brak."""
+    """„agent +1,2% · koszyk +3,4% · IVV +2,1%”; bez danych IVV — jawny brak.
+
+    `index_label` zastępuje ticker indeksu (strona publiczna: „S&P 500”)."""
+    label = index_label or comparison.index_symbol
     index = (
-        f"{comparison.index_symbol}: {NO_BENCHMARK_PL}"
+        f"{label}: {NO_BENCHMARK_PL}"
         if comparison.index is None
-        else f"{comparison.index_symbol} "
-        f"{numbers.pct(comparison.index.total_return, decimals=1, signed=True)}"
+        else f"{label} {numbers.pct(comparison.index.total_return, decimals=1, signed=True)}"
     )
     return (
         f"agent {numbers.pct(comparison.agent.total_return, decimals=1, signed=True)} · "
@@ -225,7 +240,10 @@ def benchmark_line(
 
 
 def benchmark_detail(
-    comparison: BenchmarkComparison, *, numbers: NumberStyle = POLISH_NUMBERS
+    comparison: BenchmarkComparison,
+    *,
+    numbers: NumberStyle = POLISH_NUMBERS,
+    index_label: str | None = None,
 ) -> str:
     """Zwrot nadwyżkowy vs koszyk (p.p.) i hit-rate względem rynku z liczbą zakładów."""
     excess = numbers.pct(comparison.excess_vs_basket, decimals=1, signed=True)
@@ -237,7 +255,7 @@ def benchmark_detail(
     )
     return (
         f"Zwrot nadwyżkowy vs koszyk: {excess.removesuffix('%')} p.p. · "
-        f"hit-rate względem rynku ({comparison.index_symbol}): {market}"
+        f"hit-rate względem rynku ({index_label or comparison.index_symbol}): {market}"
     )
 
 

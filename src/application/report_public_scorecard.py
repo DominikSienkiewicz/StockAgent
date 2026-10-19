@@ -6,13 +6,12 @@ produkuje osobny, PUBLICZNY artefakt: kompletną, samodzielną stronę HTML
 zawierającą WYŁĄCZNIE agregaty — liczbę predykcji, hit-rate kierunkowy z
 przedziałem Wilsona, n_eff, naiwnymi baseline'ami i werdyktem istotności,
 Brier / BSS / ECE, krzywą kalibracji jako div-sparkline (z n per kubełek),
-krzywą kapitału portfela (po kosztach obrotu, obok koszyka i IVV — WIA-50/21)
-oraz okno i datę generacji.
+krzywą kapitału portfela (po kosztach obrotu, obok koszyka i indeksu S&P 500 —
+WIA-50/21) oraz okno i datę generacji.
 
 Bezwzględne inwarianty prywatności:
   - ZERO PII (adresy e-mail, dane odbiorców),
-  - ZERO symboli watchlisty (koszyk to agregat; jedyna nazwa instrumentu to
-    benchmark IVV z porównania „agent · koszyk · IVV”, decyzja 2026-10-19),
+  - ZERO symboli watchlisty,
   - ZERO kwot (ceny, waluty).
 
 `render_public_scorecard_html` jest CZYSTĄ funkcją — nie przyjmuje żadnego
@@ -30,13 +29,14 @@ from collections.abc import Sequence
 from datetime import date, timedelta
 
 from src.application.report_evidence import (
-    BENCHMARK_METHOD_PL,
     NO_BENCHMARK_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
+    PUBLIC_BENCHMARK_LABEL,
     PaperCosts,
     baselines_label,
     benchmark_detail,
     benchmark_line,
+    benchmark_method,
     hit_rate_detail,
     hit_rate_evidence,
     hit_rate_value,
@@ -90,9 +90,10 @@ def render_public_scorecard_html(
       - `window_days` — długość okna track-recordu ujawniana na stronie.
       - `costs` — założenia kosztowe krzywej (WIA-50); None = krzywa brutto.
         Strona podaje same koszty w bps, nigdy symbole z `crypto_symbols`.
-      - `benchmark` — agent obok koszyka i IVV (WIA-21); sparkline dostaje
-        drugą linię (koszyk). Koszyk to agregat — symbole koszyka nie trafiają
-        na stronę. None = „Na tle rynku: brak danych benchmarku”.
+      - `benchmark` — agent obok koszyka i indeksu (WIA-21); sparkline dostaje
+        drugą linię (koszyk). Koszyk to agregat, a indeks nazywa się „S&P 500”
+        zamiast tickera — żaden symbol nie trafia na stronę. None = „Na tle
+        rynku: brak danych benchmarku”.
 
     Samosupresja: brak jakichkolwiek danych → `""` (nie publikujemy pustej
     strony). Wszystko, co idzie do outputu, jest escapowane.
@@ -297,14 +298,16 @@ def _render_equity_section(
 
 
 def _render_benchmark(benchmark: BenchmarkComparison | None) -> str:
-    """WIA-21 — agent obok koszyka i IVV (kropka dziesiętna) albo jawny brak danych."""
+    """WIA-21 — agent obok koszyka i S&P 500 (kropka dziesiętna) albo jawny brak danych."""
     if benchmark is None:
         return f"<p class='evidence'>Na tle rynku: {NO_BENCHMARK_PL}</p>"
-    line = benchmark_line(benchmark, numbers=DOT_NUMBERS)
-    detail = benchmark_detail(benchmark, numbers=DOT_NUMBERS)
+    label = PUBLIC_BENCHMARK_LABEL
+    line = benchmark_line(benchmark, numbers=DOT_NUMBERS, index_label=label)
+    detail = benchmark_detail(benchmark, numbers=DOT_NUMBERS, index_label=label)
+    method = benchmark_method(label)
     return (
         f"<p class='evidence'>Na tle rynku: <strong>{_html.escape(line)}</strong></p>"
-        f"<p class='evidence'>{_html.escape(detail)}. {_html.escape(BENCHMARK_METHOD_PL)} "
+        f"<p class='evidence'>{_html.escape(detail)}. {_html.escape(method)} "
         "Na wykresie: agent (kolor), koszyk (szary).</p>"
     )
 

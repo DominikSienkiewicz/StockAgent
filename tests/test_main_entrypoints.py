@@ -4159,6 +4159,7 @@ class TestBenchmarkWiring:
         )
 
         page = publisher.publish.call_args.args[0]
-        assert "agent +9.9% · koszyk +9.9% · IVV +1.9%" in page
+        assert "agent +9.9% · koszyk +9.9% · S&amp;P 500 +1.9%" in page
+        assert "IVV" not in page
         assert "NVDA" not in page
         assert "AMD" not in page
