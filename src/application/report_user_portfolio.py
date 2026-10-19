@@ -25,6 +25,10 @@ Prosty, dedykowany badge z `PortfolioFreshness` jest czytelniejszy.
 
 Sekcja samosupresująca: brak policzalnych pozycji (pusty portfel albo żadna
 pozycja nie ma bieżącej ceny) → `render_*` zwraca "".
+
+PORT-03: pozycje bez ceny w tym cyklu (np. tickery UNSUPPORTED_PRICE) są
+wymienione pod tabelą z udziałem w koszcie, a sumy podpisane „bez pozycji
+niewycenionych” — wagi i P/L liczą się tylko z wycenionych pozycji.
 """
 
 from __future__ import annotations
@@ -152,7 +156,13 @@ def render_user_portfolio_html(
     if freshness is PortfolioFreshness.STALE:
         parts.append(_render_stale_badge_html(max_age_days))
     parts.append(_render_table_html(pnl, usd_pln))
-    parts.append(_render_totals_html(pnl, usd_pln))
+    unpriced_note = _unpriced_note(portfolio, current_prices)
+    if unpriced_note:
+        parts.append(
+            "<p style='font-size: 12px; color: #92400e; margin: 0 0 8px 0;'>"
+            f"⚠️ {_html.escape(unpriced_note)}</p>"
+        )
+    parts.append(_render_totals_html(pnl, usd_pln, partial=bool(unpriced_note)))
 
     cluster = _dominant_cluster(exposures)
     if cluster is not None:
@@ -227,10 +237,32 @@ def _render_row_html(
     )
 
 
-def _render_totals_html(pnl: PortfolioPnL, usd_pln: Decimal | None) -> str:
+_PARTIAL_TOTALS_LABEL = "bez pozycji niewycenionych"
+
+
+def _unpriced_note(portfolio: Portfolio, current_prices: Mapping[str, Decimal]) -> str:
+    """PORT-03: „Bez wyceny w tym cyklu: A, B (≈ X% kosztu)” albo "" gdy wszystko
+    wycenione."""
+    symbols = portfolio.unpriced_symbols(current_prices)
+    if not symbols:
+        return ""
+    note = f"Bez wyceny w tym cyklu: {', '.join(symbols)}"
+    share = portfolio.unpriced_cost_share(current_prices)
+    if share is not None:
+        note += f" (≈ {_format_pct(share)} kosztu)"
+    return note
+
+
+def _totals_label(partial: bool) -> str:
+    return f"Łącznie ({_PARTIAL_TOTALS_LABEL})" if partial else "Łącznie"
+
+
+def _render_totals_html(
+    pnl: PortfolioPnL, usd_pln: Decimal | None, *, partial: bool = False
+) -> str:
     color = _pnl_color(pnl.total_unrealized_pnl)
     total_line = (
-        f"Łącznie: <strong>{_format_usd(pnl.total_market_value)}</strong> · "
+        f"{_totals_label(partial)}: <strong>{_format_usd(pnl.total_market_value)}</strong> · "
         f"P/L <strong style='color: {color};'>"
         f"{_format_signed_usd(pnl.total_unrealized_pnl)} "
         f"({_format_return_pct(pnl.total_return_pct)})</strong>"
@@ -311,9 +343,13 @@ def render_user_portfolio_text(
             line += f" | {_format_signed_pln(row.unrealized_pnl * usd_pln)}"
         lines.append(line)
 
+    unpriced_note = _unpriced_note(portfolio, current_prices)
+    if unpriced_note:
+        lines.append(f"  ⚠️ {unpriced_note}")
+
     lines.append("")
     total = (
-        f"  Łącznie: {_format_usd(pnl.total_market_value)} · "
+        f"  {_totals_label(bool(unpriced_note))}: {_format_usd(pnl.total_market_value)} · "
         f"P/L {_format_signed_usd(pnl.total_unrealized_pnl)} "
         f"({_format_return_pct(pnl.total_return_pct)})"
     )

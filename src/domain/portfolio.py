@@ -215,6 +215,33 @@ class Portfolio:
             return {}
         return {symbol: value / total for symbol, value in values.items()}
 
+    def unpriced_symbols(
+        self, current_prices: Mapping[str, Decimal]
+    ) -> tuple[str, ...]:
+        """PORT-03: symbole bez bieżącej ceny, posortowane i bez duplikatów.
+
+        To dokładnie te pozycje, które `weights` i `unrealized_pnl` pomijają —
+        raport musi je wymienić, bo bez nich wagi reszty są zawyżone."""
+        return tuple(
+            sorted({pos.symbol for pos in self.positions if pos.symbol not in current_prices})
+        )
+
+    def unpriced_cost_share(
+        self, current_prices: Mapping[str, Decimal]
+    ) -> Decimal | None:
+        """PORT-03: udział pozycji bez ceny w koszcie CAŁEGO portfela.
+
+        Koszt, nie wartość rynkowa — bez ceny wartości nie znamy. Portfel bez
+        żadnego kosztu (pusty albo same zerowe ceny zakupu) → None."""
+        total = sum((pos.cost_basis() for pos in self.positions), Decimal("0"))
+        if total == 0:
+            return None
+        unpriced = sum(
+            (pos.cost_basis() for pos in self.positions if pos.symbol not in current_prices),
+            Decimal("0"),
+        )
+        return unpriced / total
+
     def unrealized_pnl(
         self, current_prices: Mapping[str, Decimal]
     ) -> PortfolioPnL:

@@ -230,3 +230,43 @@ class TestEscaping:
 
         assert "<b>X</b>" not in html
         assert "&lt;b&gt;X&lt;/b&gt;" in html
+
+
+class TestUnpricedPositions:
+    """PORT-03: pozycja bez ceny w tym cyklu (np. XDWD.DE — UNSUPPORTED_PRICE)
+    znikała z tabeli bez śladu, a sumy podpisane „Twój portfel” zawyżały wagi
+    pozostałych pozycji."""
+
+    _PRICES = {"NVDA": Decimal("120")}
+
+    @staticmethod
+    def _portfolio() -> Portfolio:
+        # NVDA koszt 1000 (z ceną), XDWD.DE koszt 500 (bez ceny) → 33.3% kosztu.
+        return _portfolio(
+            (_pos("NVDA", "10", "100"), _pos("XDWD.DE", "5", "100")),
+            as_of_days_ago=0,
+        )
+
+    def test_unpriced_positions_are_listed_with_cost_share(self) -> None:
+        html = render_user_portfolio_html(self._portfolio(), self._PRICES, now=_NOW)
+
+        assert "Bez wyceny" in html
+        assert "XDWD.DE" in html
+        assert "33.3% kosztu" in html
+        assert "bez pozycji niewycenionych" in html
+
+    def test_unpriced_positions_are_listed_in_text(self) -> None:
+        text = render_user_portfolio_text(self._portfolio(), self._PRICES, now=_NOW)
+
+        assert "Bez wyceny w tym cyklu: XDWD.DE (≈ 33.3% kosztu)" in text
+        assert "bez pozycji niewycenionych" in text
+
+    def test_fully_priced_portfolio_has_no_unpriced_note(self) -> None:
+        portfolio = _portfolio((_pos("NVDA", "10", "100"),), as_of_days_ago=0)
+
+        html = render_user_portfolio_html(portfolio, self._PRICES, now=_NOW)
+        text = render_user_portfolio_text(portfolio, self._PRICES, now=_NOW)
+
+        assert "Bez wyceny" not in html
+        assert "Bez wyceny" not in text
+        assert "niewycenionych" not in html

@@ -2177,3 +2177,28 @@ def test_plain_text_report_says_var_lacks_history():
 
     assert "za mało historii (9/60)" in html
     assert "za mało historii (9/60)" in text
+
+
+def test_user_portfolio_lists_a_position_the_cycle_could_not_price():
+    # PORT-03: XDWD.DE ma status UNSUPPORTED_PRICE, więc cykl nie daje mu ceny —
+    # sekcja portfela mówi to wprost zamiast po cichu zawyżać wagi reszty.
+    as_of = datetime(2026, 5, 14, tzinfo=UTC)
+    portfolio = Portfolio(
+        positions=(
+            Position(symbol="AAPL", quantity=Decimal("10"),
+                     purchase_price=Decimal("250"), purchase_date=as_of.date()),
+            Position(symbol="XDWD.DE", quantity=Decimal("20"),
+                     purchase_price=Decimal("100"), purchase_date=as_of.date()),
+        ),
+        as_of=as_of,
+    )
+    unsupported = SymbolResult(
+        symbol="XDWD.DE", status="ignored", skip_reason=SkipReason.UNSUPPORTED_PRICE,
+    )
+
+    html, _ = build_html_report(
+        [_saved_result(), unsupported], as_of, 1.0,
+        ReportContext(user_portfolio=portfolio),
+    )
+
+    assert "Bez wyceny w tym cyklu: XDWD.DE (≈ 44.4% kosztu)" in html

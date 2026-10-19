@@ -277,3 +277,43 @@ def test_freshness_future_as_of_is_fresh() -> None:
     as_of = datetime(2026, 7, 20)
     now = datetime(2026, 7, 10)
     assert is_stale(as_of, now) is False
+
+
+class TestUnpricedPositions:
+    """PORT-03: `weights` i `unrealized_pnl` po cichu pomijają symbole bez ceny.
+    Raport musi je wymienić i powiedzieć, jaką część kosztu stanowią."""
+
+    def test_lists_symbols_without_a_current_price(self) -> None:
+        portfolio = _portfolio(
+            _pos("NVDA", "10", "100"),
+            _pos("XDWD.DE", "5", "100"),
+            _pos("IUSN.DE", "2", "50"),
+            _pos("XDWD.DE", "1", "100"),
+        )
+
+        unpriced = portfolio.unpriced_symbols({"NVDA": Decimal("120")})
+
+        assert unpriced == ("IUSN.DE", "XDWD.DE")
+
+    def test_fully_priced_portfolio_has_no_unpriced_symbols(self) -> None:
+        portfolio = _portfolio(_pos("NVDA", "10", "100"))
+
+        assert portfolio.unpriced_symbols({"NVDA": Decimal("120")}) == ()
+        assert portfolio.unpriced_cost_share({"NVDA": Decimal("120")}) == Decimal("0")
+
+    def test_cost_share_of_unpriced_lots(self) -> None:
+        # NVDA koszt 1000, XDWD.DE koszt 600 + 100 = 700 → 700 / 1700.
+        portfolio = _portfolio(
+            _pos("NVDA", "10", "100"),
+            _pos("XDWD.DE", "6", "100"),
+            _pos("XDWD.DE", "1", "100"),
+        )
+
+        share = portfolio.unpriced_cost_share({"NVDA": Decimal("120")})
+
+        assert share == Decimal("700") / Decimal("1700")
+
+    def test_cost_share_is_none_without_any_cost(self) -> None:
+        portfolio = _portfolio(_pos("FREE", "10", "0"))
+
+        assert portfolio.unpriced_cost_share({}) is None
