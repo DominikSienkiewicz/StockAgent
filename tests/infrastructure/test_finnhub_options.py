@@ -180,3 +180,23 @@ class TestAdaptersImplementPort:
 
     def test_null_is_options_flow_port(self) -> None:
         assert issubclass(NullOptionsFlowAdapter, OptionsFlowPort)
+
+
+def test_network_error_debug_log_omits_token(mocker, caplog) -> None:
+    # BEZ-07: traceback w logu DEBUG też nie może nieść URL-a z `&token=`.
+    import logging
+
+    adapter = FinnhubOptionsAdapter(api_key="options-secret-token")
+    mocker.patch(
+        "requests.Session.get",
+        side_effect=requests.ConnectionError(
+            "Max retries exceeded with url: "
+            "/api/v1/stock/option-chain?symbol=AAPL&token=options-secret-token"
+        ),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        assert adapter.get_options_flow("AAPL") is None
+
+    assert "Finnhub option-chain failed for AAPL" in caplog.text
+    assert "options-secret-token" not in caplog.text

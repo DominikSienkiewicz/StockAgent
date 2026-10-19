@@ -106,6 +106,39 @@ class TestGetCurrentPrice:
         with pytest.raises(ValueError, match="price"):
             adapter.get_current_price("DELISTED")
 
+    def test_http_error_message_omits_token(self, adapter, mocker):
+        # BEZ-07: prawdziwy Response — `requests` wkleja URL z `&token=` do komunikatu,
+        # który trafia do maila (błąd symbolu) i publicznych logów GHA.
+        import traceback
+
+        response = requests.Response()
+        response.status_code = 401
+        response.reason = "Unauthorized"
+        response.url = "https://finnhub.io/api/v1/quote?symbol=AAPL&token=test-token-123"
+        mocker.patch("requests.Session.get", return_value=response)
+
+        with pytest.raises(requests.HTTPError) as excinfo:
+            adapter.get_current_price("AAPL")
+
+        assert "401 Client Error" in str(excinfo.value)
+        assert "test-token-123" not in str(excinfo.value)
+        assert "test-token-123" not in "".join(traceback.format_exception(excinfo.value))
+
+    def test_network_error_message_omits_token(self, adapter, mocker):
+        # BEZ-07: ConnectionError po wyczerpaniu retry też niesie URL z kluczem.
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=requests.ConnectionError(
+                "Max retries exceeded with url: /api/v1/quote?symbol=AAPL&token=test-token-123"
+            ),
+        )
+
+        with pytest.raises(requests.ConnectionError) as excinfo:
+            adapter.get_current_price("AAPL")
+
+        assert "test-token-123" not in str(excinfo.value)
+        assert excinfo.value.__cause__ is None
+
 
 class TestAdapterImplementsPort:
     def test_is_market_data_port(self):

@@ -14,7 +14,7 @@ import requests
 from src.application.ports import ReportNotifierPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import build_session, raise_for_status_redacted
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ class ResendNotifier(ReportNotifierPort):
                     "(provider error)."
                 ),
             )
-        response.raise_for_status()
+        raise_for_status_redacted(response)
         message_id = response.json().get("id", "<no-id>")
         logger.info(
             "Resend: sent report to %s (id=%s)", self._recipient, message_id

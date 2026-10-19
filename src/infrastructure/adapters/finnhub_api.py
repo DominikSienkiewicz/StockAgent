@@ -8,7 +8,11 @@ from src.application.ports import MarketDataPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Money
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import (
+    build_session,
+    raise_for_status_redacted,
+    safe_get,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,8 @@ class FinnhubAdapter(MarketDataPort):
         self._quota_monitor = quota_monitor
 
     def get_current_price(self, symbol: str) -> Money:
-        response = self._session.get(
+        response = safe_get(
+            self._session,
             f"{self._base_url}/quote",
             params={"symbol": symbol, "token": self._api_key},
             timeout=self._timeout,
@@ -64,7 +69,7 @@ class FinnhubAdapter(MarketDataPort):
                     "limit (60 req/min) exhausted."
                 ),
             )
-        response.raise_for_status()
+        raise_for_status_redacted(response)
 
         payload = response.json()
         price = payload.get("c")

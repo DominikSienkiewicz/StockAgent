@@ -243,3 +243,38 @@ def test_daily_quota_alert_is_polish_and_logged_in_english(caplog) -> None:
     assert "missing" not in alert.message
     assert alert.action.startswith("Dodaj kolejny klucz")
     assert "fundamentals daily quota exhausted" in caplog.text
+
+
+def test_http_error_warning_omits_apikey(caplog) -> None:
+    # BEZ-07: ostrzeżenie wkleja `str(exc)`, a HTTPError z requests niesie URL z kluczem.
+    import logging
+
+    import requests
+
+    response = requests.Response()
+    response.status_code = 401
+    response.reason = "Unauthorized"
+    response.url = "https://www.alphavantage.co/query?function=OVERVIEW&apikey=fund-secret-key"
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["fund-secret-key"])
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = response
+        assert adapter.get_fundamentals("AAPL") is None
+
+    assert "401 Client Error" in caplog.text
+    assert "fund-secret-key" not in caplog.text
+
+
+def test_network_error_warning_omits_apikey(caplog) -> None:
+    import logging
+
+    import requests
+
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["fund-secret-key"])
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = requests.ConnectionError(
+            "Max retries exceeded with url: /query?function=OVERVIEW&apikey=fund-secret-key"
+        )
+        assert adapter.get_fundamentals("AAPL") is None
+
+    assert "fundamentals fetch failed for AAPL" in caplog.text
+    assert "fund-secret-key" not in caplog.text

@@ -17,7 +17,11 @@ from typing import Any
 
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import (
+    build_session,
+    raise_for_status_redacted,
+    safe_get,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -295,12 +299,13 @@ class AlphaVantageClient:
         }
         if self._window_start is not None:
             params["time_from"] = self._window_start.strftime(_TIME_FROM_FORMAT)
-        response = self._session.get(
+        response = safe_get(
+            self._session,
             f"{self._base_url}/query",
             params=params,
             timeout=self._timeout,
         )
-        response.raise_for_status()
+        raise_for_status_redacted(response)
         data: dict[str, Any] = response.json()
         return data
 

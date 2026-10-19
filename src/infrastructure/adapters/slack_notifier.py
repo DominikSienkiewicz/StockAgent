@@ -52,7 +52,8 @@ class SlackNotifier(ReportNotifierPort):
             )
         except requests.RequestException as exc:
             self._emit_quota_alert(
-                message=f"Push Slack nie wyszedł (błąd sieci): {exc}.",
+                # Treść wyjątku niesie URL webhooka — do maila i bazy idzie typ.
+                message=f"Push Slack nie wyszedł (błąd sieci: {type(exc).__name__}).",
                 action=(
                     "Sprawdź SLACK_WEBHOOK_URL i połączenie wychodzące do "
                     "hooks.slack.com."

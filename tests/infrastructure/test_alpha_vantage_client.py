@@ -791,3 +791,37 @@ def test_exhausted_keys_alert_is_polish_and_logged_in_english(mocker, caplog):
     assert "incomplete" not in alert.message
     assert alert.action.startswith("Dodaj kolejny klucz")
     assert "Alpha Vantage API keys exhausted" in caplog.text
+
+
+def test_http_error_message_omits_apikey(mocker) -> None:
+    # BEZ-07: wyjątek wypływa do grafu i dalej do maila / logów — bez `&apikey=`.
+    import traceback
+
+    response = requests.Response()
+    response.status_code = 401
+    response.reason = "Unauthorized"
+    response.url = "https://www.alphavantage.co/query?function=NEWS_SENTIMENT&apikey=news-secret-key"
+    mocker.patch("requests.Session.get", return_value=response)
+    client = AlphaVantageClient(api_keys=["news-secret-key"], symbols=["AAPL"])
+
+    with pytest.raises(requests.HTTPError) as excinfo:
+        client.articles_for("AAPL")
+
+    assert "401 Client Error" in str(excinfo.value)
+    assert "news-secret-key" not in "".join(traceback.format_exception(excinfo.value))
+
+
+def test_network_error_message_omits_apikey(mocker) -> None:
+    mocker.patch(
+        "requests.Session.get",
+        side_effect=requests.ConnectionError(
+            "Max retries exceeded with url: /query?function=NEWS_SENTIMENT&apikey=news-secret-key"
+        ),
+    )
+    client = AlphaVantageClient(api_keys=["news-secret-key"], symbols=["AAPL"])
+
+    with pytest.raises(requests.ConnectionError) as excinfo:
+        client.articles_for("AAPL")
+
+    assert "news-secret-key" not in str(excinfo.value)
+    assert excinfo.value.__cause__ is None

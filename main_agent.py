@@ -124,6 +124,7 @@ from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
+from src.infrastructure.adapters._http import redact_secrets
 from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
 from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
 from src.infrastructure.adapters.alpha_vantage_adapters import (
@@ -1363,7 +1364,8 @@ def _process_one_symbol(
     except Exception as exc:
         logger.exception("Failed to process symbol %s", symbol)
         return _ProcessedSymbol(
-            to_symbol_result(symbol, None, error=str(exc)), True, None, None
+            # BEZ-07: komunikat idzie do maila — URL z kluczem nie może w nim zostać.
+            to_symbol_result(symbol, None, error=redact_secrets(str(exc))), True, None, None
         )
 
 

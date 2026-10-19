@@ -21,7 +21,7 @@ import requests
 
 from src.application.ports import OptionsFlowPort
 from src.domain.options_flow import OptionsFlowSnapshot
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import build_session, safe_get
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10.0
@@ -46,7 +46,8 @@ class FinnhubOptionsAdapter(OptionsFlowPort):
 
     def get_options_flow(self, symbol: str) -> OptionsFlowSnapshot | None:
         try:
-            response = self._session.get(
+            response = safe_get(
+                self._session,
                 f"{self._base_url}/stock/option-chain",
                 params={"symbol": symbol, "token": self._api_key},
                 timeout=self._timeout,

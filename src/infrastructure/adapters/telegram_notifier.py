@@ -58,7 +58,8 @@ class TelegramNotifier(ReportNotifierPort):
         except requests.RequestException as exc:
             # Błąd sieci (timeout, DNS, connection reset) — kanał padł.
             self._emit_quota_alert(
-                message=f"Push Telegram nie wyszedł (błąd sieci): {exc}.",
+                # Treść wyjątku niesie URL `/bot<token>/` — do maila i bazy idzie typ.
+                message=f"Push Telegram nie wyszedł (błąd sieci: {type(exc).__name__}).",
                 action=(
                     "Sprawdź TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID i połączenie "
                     "wychodzące do api.telegram.org."

@@ -139,3 +139,29 @@ def test_alert_text_is_polish_and_english_stays_in_logs(mocker, caplog) -> None:
     assert "not delivered" not in alert.message
     assert alert.action.startswith("Sprawdź")
     assert "Telegram returned 403" in caplog.text
+
+
+def test_network_alert_omits_bot_token(mocker, caplog) -> None:
+    # BEZ-07: treść błędu sieci niesie URL `/bot<token>/sendMessage`; alert idzie do
+    # maila i `quota_alerts`, log do publicznego GHA — żadne z nich nie może mieć tokenu.
+    import logging
+
+    monitor = QuotaMonitor()
+    notifier = TelegramNotifier(
+        bot_token="987654:SECRET-bot-token", chat_id="42", quota_monitor=monitor
+    )
+    mocker.patch(
+        "requests.Session.post",
+        side_effect=requests.ConnectionError(
+            "HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded "
+            "with url: /bot987654:SECRET-bot-token/sendMessage"
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        notifier.send_report("S", "<p>H</p>", "T")
+
+    alert = monitor.alerts[0]
+    assert "ConnectionError" in alert.message
+    for text in (alert.message, alert.action, caplog.text):
+        assert "SECRET-bot-token" not in text

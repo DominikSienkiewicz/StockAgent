@@ -564,6 +564,23 @@ class TestProcessOneSymbol:
         )
         assert [b.level.value for b in proc.result.provenance_badges] == ["FRESH"]
 
+    def test_error_message_omits_secret_query_parameter(self, settings):
+        # BEZ-07: błąd symbolu idzie do maila — URL z kluczem nie może w nim zostać.
+        import requests
+
+        uc = MagicMock()
+        uc.run.side_effect = requests.HTTPError(
+            "401 Client Error: Unauthorized for url: "
+            "https://finnhub.io/api/v1/quote?symbol=AAPL&token=symbol-secret-token"
+        )
+        proc = main_agent._process_one_symbol(
+            "AAPL", peer_ctx=(), **self._kwargs(settings, uc)
+        )
+        assert proc.is_failure is True
+        assert proc.result.error_message is not None
+        assert "401 Client Error" in proc.result.error_message
+        assert "symbol-secret-token" not in proc.result.error_message
+
 
 class TestAnalyzeSymbolsParallel:
     def _kwargs(self, settings, use_case):

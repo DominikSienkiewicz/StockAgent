@@ -19,7 +19,11 @@ from src.application.ports import FundamentalsPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Fundamentals
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import (
+    build_session,
+    raise_for_status_redacted,
+    safe_get,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +112,8 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
                 "symbol": symbol,
                 "apikey": self._current_key(),
             }
-            response = self._session.get(_BASE_URL, params=params, timeout=15)
-            response.raise_for_status()
+            response = safe_get(self._session, _BASE_URL, params=params, timeout=15)
+            raise_for_status_redacted(response)
             data = response.json()
             if not isinstance(data, dict):
                 return {}

@@ -129,3 +129,27 @@ def test_alert_text_is_polish_and_english_stays_in_logs(mocker, caplog) -> None:
     assert "not delivered" not in alert.message
     assert alert.action.startswith("Wygeneruj")
     assert "Slack returned 404" in caplog.text
+
+
+def test_network_alert_omits_webhook_url(mocker, caplog) -> None:
+    # BEZ-07: cały URL webhooka jest sekretem, a treść błędu sieci go niesie; alert
+    # idzie do maila i `quota_alerts`, log do publicznego GHA.
+    import logging
+
+    monitor = QuotaMonitor()
+    notifier = SlackNotifier(webhook_url=WEBHOOK, quota_monitor=monitor)
+    mocker.patch(
+        "requests.Session.post",
+        side_effect=requests.ConnectionError(
+            "HTTPSConnectionPool(host='hooks.slack.com', port=443): Max retries exceeded "
+            "with url: /services/T000/B000/XXXX"
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        notifier.send_report("S", "<p>H</p>", "T")
+
+    alert = monitor.alerts[0]
+    assert "ConnectionError" in alert.message
+    for text in (alert.message, alert.action, caplog.text):
+        assert "T000/B000/XXXX" not in text
