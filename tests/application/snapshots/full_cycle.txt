@@ -44,7 +44,7 @@ Ogólny alert: ELEVATED
   ⚠️ Bez wyceny w tym cyklu: XDWD.DE (≈ 19,0% kosztu)
 
   Łącznie (bez pozycji niewycenionych): $3 800,00 · P/L +$40,00 (+1,1%)
-  W PLN (USD/PLN 3.6820): wartość 13 991,60 zł, P/L +147,28 zł
+  W PLN (USD/PLN 3,6820): wartość 13 991,60 zł, P/L +147,28 zł
 
   ⚠️ Twoje 2 pozycji (AMD, NVDA) to jeden klaster korelacji «Półprzewodniki» — 100,0% kapitału.
 

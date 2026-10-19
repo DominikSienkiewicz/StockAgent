@@ -270,3 +270,15 @@ class TestUnpricedPositions:
         assert "Bez wyceny" not in html
         assert "Bez wyceny" not in text
         assert "niewycenionych" not in html
+
+
+def test_pln_rate_is_written_with_a_decimal_comma() -> None:
+    # MAIL-58: kurs USD/PLN w sekcji portfela po polsku — „4,00”, nie „4.00”.
+    portfolio = _portfolio((_pos("AAPL", "10", "100"),), as_of_days_ago=0)
+    args = (portfolio, {"AAPL": Decimal("110")})
+
+    html = render_user_portfolio_html(*args, now=_NOW, usd_pln=Decimal("4.00"))
+    text = render_user_portfolio_text(*args, now=_NOW, usd_pln=Decimal("4.00"))
+
+    assert "kurs USD/PLN 4,00" in html
+    assert "(USD/PLN 4,00)" in text

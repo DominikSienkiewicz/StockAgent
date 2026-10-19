@@ -38,6 +38,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
 
+from src.application.report_formatting import number_exact
 from src.domain.number_format import format_money_pl, format_pct_pl
 from src.domain.portfolio import (
     DEFAULT_MAX_POSITION_AGE_DAYS,
@@ -255,7 +256,7 @@ def _render_totals_html(
     if usd_pln is not None:
         pln_line = (
             "<br><span style='color: #6b7280;'>"
-            f"W PLN (kurs USD/PLN {usd_pln}): "
+            f"W PLN (kurs USD/PLN {number_exact(usd_pln)}): "
             f"wartość {_format_pln(pnl.total_market_value * usd_pln)}, "
             f"P/L <span style='color: {color};'>"
             f"{_format_signed_pln(pnl.total_unrealized_pnl * usd_pln)}</span>"
@@ -340,7 +341,7 @@ def render_user_portfolio_text(
     lines.append(total)
     if usd_pln is not None:
         lines.append(
-            f"  W PLN (USD/PLN {usd_pln}): "
+            f"  W PLN (USD/PLN {number_exact(usd_pln)}): "
             f"wartość {_format_pln(pnl.total_market_value * usd_pln)}, "
             f"P/L {_format_signed_pln(pnl.total_unrealized_pnl * usd_pln)}"
         )
