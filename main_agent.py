@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -67,6 +68,7 @@ from src.application.report_models import ResolvedPrediction
 from src.application.report_onboarding import onboarding_subject
 from src.application.report_public_scorecard import render_public_scorecard_html
 from src.application.report_track_record import TrackRecordStats
+from src.application.run_context import RunContext
 from src.application.tools import build_research_tools
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
@@ -1866,6 +1868,8 @@ def main(settings: Settings | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
     settings = settings or Settings.from_env()
+    # MAIL-42: przebieg (run, commit, link do logów) — raz na cykl, z env GHA.
+    run_context = RunContext.from_environ(os.environ)
     # Real-time alerty (U4): kanał alertów budujemy BEZ quota_monitora, żeby
     # CRITICAL wyemitowany podczas pushu alertu nie wracał rekurencyjnie do
     # record() → push → record(). Hook montujemy tylko gdy włączony i jest dokąd.
@@ -1980,6 +1984,7 @@ def main(settings: Settings | None = None) -> int:
             # bramką volatility ma zerowy licznik → sekcja mówi "cykl darmowy".
             cycle_cost=estimate_cycle_cost(dict(use_case.paid_calls)),
             ml_model_loaded=use_case.ml_model_loaded,
+            run_context=run_context,
         ),
     )
 

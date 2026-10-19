@@ -2778,3 +2778,49 @@ class TestSettledAtWindowsWiring:
         main_trainer.main(settings)
 
         assert recap_uc.run.call_args.kwargs == {"days": 7, "since": None}
+
+
+class TestRunContextWiring:
+    """MAIL-42: `main()` buduje `RunContext` z env GitHub Actions i oddaje go
+    raportowi — stopka maila wskazuje przebieg, commit i logi."""
+
+    def _dispatched_context(self, settings, mocker):
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings)
+
+        return dispatch.call_args.kwargs["context"]
+
+    def test_github_actions_run_reaches_the_report(
+        self, settings, mock_external_clients, mocker, monkeypatch
+    ) -> None:
+        from src.application.run_context import RunContext
+
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("GITHUB_RUN_ID", "77")
+        monkeypatch.setenv("GITHUB_SHA", "abc1234def")
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+        monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "x/y")
+
+        context = self._dispatched_context(settings, mocker)
+
+        assert context.run_context == RunContext(
+            run_id="77",
+            git_sha="abc1234def",
+            trigger="workflow_dispatch",
+            run_url="https://github.com/x/y/actions/runs/77",
+        )
+
+    def test_local_run_reaches_the_report_without_a_logs_url(
+        self, settings, mock_external_clients, mocker, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+        context = self._dispatched_context(settings, mocker)
+
+        assert context.run_context.git_sha == "local"
+        assert context.run_context.run_url is None

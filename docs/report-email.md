@@ -30,6 +30,8 @@ The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallbac
 - 📈 **Sentiment vs price correlation** (scatter plot)
 - ⏸ **Ignored** (chip list) + ⚠️ **Errors**
 
+**Footer.** The last line of the HTML and the plain-text email says which run and which code produced the mail: `przebieg #1234 · commit 6eff942 · logi`. `main_agent.main()` builds a `RunContext` (`src/application/run_context.py`) once per cycle from the GitHub Actions environment (`GITHUB_RUN_ID`, `GITHUB_SHA`, `GITHUB_EVENT_NAME`, `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`) and passes it as `ReportContext.run_context`. The "logi" link to the run's logs appears only inside GitHub Actions (`GITHUB_ACTIONS=true`); a local run shows `przebieg #local · commit local` and no link. The run logs of a public repository are public, so the footer carries nothing beyond the run number, the short SHA and that link; the web digest (`web_digest_enabled`) and the legacy push get the same line.
+
 **Size budget.** Gmail clips messages above ~102 KB and hides the rest, footer and disclaimer included. The HTML is compacted (whitespace between tags collapsed to one space, which renders identically), and a test keeps a typical 8-symbol cycle with a full 7-persona council under 95 KB. A 45-symbol big-move day is still far over budget until council tables and reasoning blocks collapse outside the top signals — tracked as an expected failure until the report snapshot test lands.
 
 All sections are **conditional** — they only render when data exists. The first cold-start cycle produces a concise report; once you have 50+ cycles behind you, accuracy sparklines and history kick in.

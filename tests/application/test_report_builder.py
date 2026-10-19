@@ -24,6 +24,7 @@ from src.application.report_builder import (
 )
 from src.application.report_formatting import company_label
 from src.application.report_model_scorecard import ModelScorecardView
+from src.application.run_context import RunContext
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.cycle_maturity import SkipReason
@@ -2459,3 +2460,68 @@ class TestResolvedSectionWindowHeading:
         assert "Zamknięte predykcje (ostatnie 24h)" in html
         assert "ZAMKNIĘTE PREDYKCJE (ostatnie 24h)" in text
         assert "rozliczone w tym cyklu" not in html
+
+
+class TestFooter:
+    """MAIL-42: stopka mówi, który przebieg i który commit wygenerował mail,
+    a w GitHub Actions linkuje logi przebiegu. Logi repo są publiczne, więc
+    stopka niesie WYŁĄCZNIE numer przebiegu, krótki SHA i link."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    _GHA = RunContext(
+        run_id="77",
+        git_sha="abc1234def",
+        run_url="https://github.com/x/y/actions/runs/77",
+    )
+
+    def test_footer_links_run_and_commit(self):
+        html, _ = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(run_context=self._GHA)
+        )
+
+        assert 'href="https://github.com/x/y/actions/runs/77"' in html
+        assert "przebieg #77" in html
+        assert "commit abc1234" in html
+        # Krótki SHA, nie pełny.
+        assert "abc1234def" not in html
+
+    def test_plain_text_footer_carries_run_commit_and_logs_url(self):
+        _, text = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(run_context=self._GHA)
+        )
+
+        assert text.rstrip().endswith(
+            "przebieg #77 · commit abc1234 · logi: https://github.com/x/y/actions/runs/77"
+        )
+
+    def test_no_run_context_means_no_link_and_unchanged_text(self):
+        html, text = build_html_report([], self._STARTED, 1.0, ReportContext())
+
+        assert "actions/runs" not in html
+        assert "przebieg #" not in html
+        assert "przebieg #" not in text
+        assert "raport automatyczny" in html
+
+    def test_local_run_has_no_logs_link(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(run_context=RunContext())
+        )
+
+        assert "commit local" in html
+        assert ">logi</a>" not in html
+        assert "commit local" in text
+        assert "logi:" not in text
+
+    def test_footer_escapes_values_and_drops_unsafe_url(self):
+        hostile = RunContext(
+            run_id='<script>1</script>', git_sha="abc1234", run_url="javascript:alert(1)"
+        )
+
+        html, text = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(run_context=hostile)
+        )
+
+        assert "<script>1" not in html
+        assert "&lt;script&gt;" in html
+        assert "javascript:" not in html
+        assert "javascript:" not in text

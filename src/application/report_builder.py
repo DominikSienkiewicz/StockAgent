@@ -119,6 +119,7 @@ from src.application.report_user_portfolio import (
     render_user_portfolio_html,
     render_user_portfolio_text,
 )
+from src.application.run_context import RunContext
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.asset import PriceDelta
@@ -208,6 +209,8 @@ _MODEL_SCORECARD_SLOT = "<!-- MODEL_SCORECARD_SLOT -->"
 _FINOPS_SLOT = "<!-- FINOPS_SLOT -->"
 _ALPHA_SLOT = "<!-- ALPHA_SLOT -->"
 _SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
+# MAIL-42: linia proweniencji w stopce (przebieg · commit · logi).
+_RUN_FOOTER_SLOT = "<!-- RUN_FOOTER_SLOT -->"
 
 _COUNCIL_REC_LABEL = {"BUY": "KUP", "SELL": "SPRZEDAJ", "HOLD": "TRZYMAJ"}
 _COUNCIL_REC_COLOR = {"BUY": "#16a34a", "SELL": "#dc2626", "HOLD": "#ca8a04"}
@@ -1031,6 +1034,9 @@ class ReportContext:
     track_record_stats: TrackRecordStats | None = None
     # MAIL-14: strefa (IANA) czasu startu cyklu w nagłówku HTML i tekstu.
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
+    # MAIL-42: przebieg, który wygenerował mail — stopka z numerem, krótkim SHA
+    # i (tylko w GHA) linkiem do logów. None = stopka jak przed MAIL-42.
+    run_context: RunContext | None = None
 
 
 def build_html_report(
@@ -1187,6 +1193,7 @@ def build_html_report(
         _FINOPS_SLOT: finops_html,
         _ALPHA_SLOT: alpha_html,
         _SUGGESTIONS_SLOT: suggestions_html,
+        _RUN_FOOTER_SLOT: _render_run_footer_html(context.run_context),
     })
     html = _compact_markup(_render_preheader_html(lead_items, len(resolved)) + html)
     text = _render_plain(
@@ -1204,7 +1211,42 @@ def build_html_report(
         onboarding_text=onboarding_text,
         suggestions_text=suggestions_text,
     )
+    run_footer_text = _render_run_footer_text(context.run_context)
+    if run_footer_text:
+        text = f"{text}\n{run_footer_text}"
     return html, text
+
+
+# ---------------------------------------------------------------------------
+# Stopka: proweniencja przebiegu (MAIL-42)
+# ---------------------------------------------------------------------------
+
+
+def _run_footer_label(run_context: RunContext) -> str:
+    """„przebieg #77 · commit abc1234” — logi repo są publiczne, więc stopka nie
+    niesie nic poza numerem przebiegu, krótkim SHA i linkiem."""
+    return f"przebieg #{run_context.run_id} · commit {run_context.short_sha}"
+
+
+def _render_run_footer_html(run_context: RunContext | None) -> str:
+    if run_context is None:
+        return ""
+    label = _html(_run_footer_label(run_context))
+    url = _safe_news_url(run_context.run_url)
+    logs = (
+        f' · <a href="{_html(url)}" style="color: #9ca3af;">logi</a>'
+        if url is not None
+        else ""
+    )
+    return f"<br/>{label}{logs}"
+
+
+def _render_run_footer_text(run_context: RunContext | None) -> str:
+    if run_context is None:
+        return ""
+    url = _safe_news_url(run_context.run_url)
+    logs = f" · logi: {url}" if url is not None else ""
+    return "\n".join(["-" * 64, f"{_run_footer_label(run_context)}{logs}"])
 
 
 # ---------------------------------------------------------------------------
@@ -1788,9 +1830,10 @@ def _render_html(
     # Błędy
     sections.append(_render_errors_html(errors))
 
-    sections.append("""
+    sections.append(f"""
       <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #9ca3af;">
         StockAgent · Agentic RAG + Continual Learning · raport automatyczny
+        {_RUN_FOOTER_SLOT}
       </div>
     </div>
     """)
