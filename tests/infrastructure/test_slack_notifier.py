@@ -111,3 +111,21 @@ def test_session_does_not_retry_post_on_5xx(notifier: SlackNotifier) -> None:
     # MAIL-03: webhook Slacka nie jest idempotentny — powtórzony POST to dwa posty.
     retry = notifier._session.get_adapter("https://hooks.slack.com").max_retries
     assert "POST" not in retry.allowed_methods
+
+
+def test_alert_text_is_polish_and_english_stays_in_logs(mocker, caplog) -> None:
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    monitor = QuotaMonitor()
+    notifier = SlackNotifier(webhook_url=WEBHOOK, quota_monitor=monitor)
+    mocker.patch("requests.Session.post", return_value=_resp(404, "no_service"))
+
+    with caplog.at_level(logging.WARNING):
+        notifier.send_report("S", "<p>H</p>", "T")
+
+    alert = monitor.alerts[0]
+    assert "push nie został dostarczony" in alert.message
+    assert "not delivered" not in alert.message
+    assert alert.action.startswith("Wygeneruj")
+    assert "Slack returned 404" in caplog.text

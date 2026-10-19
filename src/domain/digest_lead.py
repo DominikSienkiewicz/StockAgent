@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from src.domain.council import CouncilVerdict
+from src.domain.polish_labels import council_recommendation_label
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
 # --- Bazy scoringu (ADDYTYWNE, nie multiplikatywne) -------------------------
@@ -85,7 +86,7 @@ class LeadSignal:
       wyżej przelicza ułamek z `PriceDelta` przez `.percent`.
     - `council_verdict` bywa None (cykl bez rady — np. odcięty bramką volatility).
     - `resolved_label` to gotowy, sformatowany tekst werdyktu zamkniętej predykcji
-      (np. „trafiona predykcja BUY") albo None, gdy nic się w tym cyklu nie zamknęło.
+      (np. „trafiona prognoza wzrostu") albo None, gdy nic się w tym cyklu nie zamknęło.
     - `position_weight` (PORT-10) to udział symbolu w realnym portfelu jako UŁAMEK
       (0.24 = 24%), None = symbol spoza portfela albo portfela brak.
     - `crossed_volatility_gate` — ruch przekroczył próg bramki volatility w tym
@@ -208,7 +209,7 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
             icon="🔥",
             headline=(
                 f"{signal.symbol} {delta_label}, "
-                f"rada zgodna: {verdict.final_recommendation}"
+                f"rada zgodna: {council_recommendation_label(verdict.final_recommendation)}"
             ),
             detail=verdict.summary,
         )

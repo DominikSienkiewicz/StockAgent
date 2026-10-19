@@ -52,30 +52,40 @@ class SlackNotifier(ReportNotifierPort):
             )
         except requests.RequestException as exc:
             self._emit_quota_alert(
-                message=f"Slack push failed (network): {exc}.",
+                message=f"Push Slack nie wyszedł (błąd sieci): {exc}.",
                 action=(
-                    "Verify SLACK_WEBHOOK_URL and outbound connectivity to "
+                    "Sprawdź SLACK_WEBHOOK_URL i połączenie wychodzące do "
                     "hooks.slack.com."
                 ),
+                # Tylko nazwa wyjątku: jego treść niesie URL z sekretem
+                # (token / webhook), a logi repo są publiczne.
+                log_message=f"Slack push failed (network): {type(exc).__name__}.",
             )
             return
 
         if response.status_code >= 400:
             self._emit_quota_alert(
                 message=(
-                    f"Slack returned {response.status_code} — push not "
-                    "delivered (revoked / malformed webhook)."
+                    f"Slack zwrócił {response.status_code} — push nie został "
+                    "dostarczony (unieważniony albo błędny webhook)."
                 ),
                 action=(
-                    "Regenerate the Slack incoming webhook and update "
+                    "Wygeneruj nowy incoming webhook Slacka i zaktualizuj "
                     "SLACK_WEBHOOK_URL."
+                ),
+                log_message=(
+                    f"Slack returned {response.status_code} — push not "
+                    "delivered (revoked / malformed webhook)."
                 ),
             )
             return
 
         logger.info("Slack: sent report via incoming webhook")
 
-    def _emit_quota_alert(self, message: str, action: str) -> None:
+    def _emit_quota_alert(self, message: str, action: str, log_message: str) -> None:
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        logger.error("%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(

@@ -2582,7 +2582,7 @@ class TestDispatchReports:
         friend_subject = sent[self.FRIEND]["subject"]
         assert "Twojej pozycji" not in friend_subject
         assert "portfela" not in friend_subject
-        assert "AAPL -5.0%, rada zgodna: SELL" in friend_subject
+        assert "AAPL -5.0%, rada zgodna: SPRZEDAJ" in friend_subject
 
 
 class TestFeatureSetVersionWiring:

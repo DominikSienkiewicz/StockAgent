@@ -169,3 +169,26 @@ class TestQuotaAlertEmit:
         adapter.get_current_price("AAPL")
 
         assert monitor.alerts == []
+
+
+def test_rate_limit_alert_is_polish_and_logged_in_english(mocker, caplog) -> None:
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = FinnhubAdapter(api_key="x", quota_monitor=monitor)
+    response = Mock(spec=requests.Response)
+    response.status_code = 429
+    response.raise_for_status.side_effect = requests.HTTPError("429")
+    mocker.patch("requests.Session.get", return_value=response)
+
+    with caplog.at_level(logging.WARNING), pytest.raises(requests.HTTPError):
+        adapter.get_current_price("AAPL")
+
+    alert = monitor.alerts[0]
+    assert "wyczerpany darmowy limit" in alert.message
+    assert "exhausted" not in alert.message
+    assert "SYMBOL_THROTTLE_SECONDS" in alert.action
+    assert "Finnhub returned 429 for 'AAPL'" in caplog.text

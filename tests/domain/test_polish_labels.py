@@ -66,3 +66,28 @@ def test_dictionary_imports_nothing_outside_the_domain() -> None:
         name for name in imported if name.startswith("src.") and not name.startswith("src.domain")
     ]
     assert outside_domain == []
+
+
+@pytest.mark.parametrize(
+    ("trend", "label"),
+    [
+        ("BULLISH", "prognoza wzrostu"),
+        ("BEARISH", "prognoza spadku"),
+        ("SIDEWAYS", "prognoza ruchu bocznego"),
+    ],
+)
+def test_trend_forecast_reads_as_polish_noun_phrase(trend: str, label: str) -> None:
+    # MAIL-15: „trafiona prognoza wzrostu” zamiast „trafiona predykcja BULLISH”.
+    assert polish_labels.trend_forecast_label(trend) == label
+
+
+def test_unknown_trend_forecast_keeps_the_raw_value_visible() -> None:
+    assert polish_labels.trend_forecast_label("FLAT") == "prognoza FLAT"
+
+
+@pytest.mark.parametrize(
+    ("trend", "label"),
+    [("BULLISH", "Wzrostowy"), ("BEARISH", "Spadkowy"), ("SIDEWAYS", "Boczny"), (None, "—")],
+)
+def test_trend_label_is_the_shared_polish_trend_name(trend: str | None, label: str) -> None:
+    assert polish_labels.trend_label(trend) == label

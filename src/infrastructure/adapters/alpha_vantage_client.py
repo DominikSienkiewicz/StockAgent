@@ -226,14 +226,16 @@ class AlphaVantageClient:
         self._degraded_reason = "av_keys_exhausted"
         self._emit_quota_alert(
             severity=QuotaSeverity.CRITICAL,
+            # MAIL-15: treść alertu idzie do maila po polsku; angielska
+            # diagnoza jest w logger.error powyżej.
             message=(
-                f"All {len(self._api_keys)} Alpha Vantage API keys hit "
-                "the daily 25 req/day limit. News + sentiment feed is "
-                "incomplete for this cycle."
+                f"Wszystkie klucze Alpha Vantage ({len(self._api_keys)}) wyczerpały "
+                "dzienny limit 25 zapytań. Feed newsów i sentymentu jest w tym "
+                "cyklu niepełny."
             ),
             action=(
-                "Add another key in ALPHA_VANTAGE_API_KEYS (free at "
-                "alphavantage.co), or wait for UTC midnight reset."
+                "Dodaj kolejny klucz w ALPHA_VANTAGE_API_KEYS (darmowy na "
+                "alphavantage.co) albo poczekaj na reset o północy UTC."
             ),
         )
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -8,6 +9,8 @@ from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Money
 from src.infrastructure.adapters._http import build_session
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10  # sekundy
@@ -49,12 +52,16 @@ class FinnhubAdapter(MarketDataPort):
             self._emit_quota_alert(
                 severity=QuotaSeverity.CRITICAL,
                 message=(
-                    f"Finnhub returned 429 for '{symbol}' — free tier "
-                    "limit (60 req/min) exhausted."
+                    f"Finnhub zwrócił 429 dla '{symbol}' — wyczerpany darmowy "
+                    "limit (60 zapytań/min)."
                 ),
                 action=(
-                    "Reduce SYMBOLS count or raise SYMBOL_THROTTLE_SECONDS "
-                    "to slow the loop, or upgrade Finnhub plan."
+                    "Zmniejsz liczbę SYMBOLS albo podnieś SYMBOL_THROTTLE_SECONDS, "
+                    "żeby spowolnić pętlę, albo podnieś plan Finnhub."
+                ),
+                log_message=(
+                    f"Finnhub returned 429 for '{symbol}' — free tier "
+                    "limit (60 req/min) exhausted."
                 ),
             )
         response.raise_for_status()
@@ -74,8 +81,12 @@ class FinnhubAdapter(MarketDataPort):
         return Money(Decimal(str(price)))
 
     def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str
+        self, severity: QuotaSeverity, message: str, action: str, log_message: str
     ) -> None:
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
+        logger.log(level, "%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(

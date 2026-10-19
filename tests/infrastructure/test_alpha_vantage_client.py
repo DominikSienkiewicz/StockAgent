@@ -765,3 +765,29 @@ class TestNewsWindow:
 
         # Bez znacznika czasu nie da się wykazać, że artykuł jest z okna.
         assert sentiment["news_volume_24h"] == 1
+
+
+def test_exhausted_keys_alert_is_polish_and_logged_in_english(mocker, caplog):
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    client = AlphaVantageClient(api_keys=["k1", "k2"], symbols=["AAPL"], quota_monitor=monitor)
+    rate_limited = MagicMock(spec=requests.Response)
+    rate_limited.raise_for_status = MagicMock()
+    rate_limited.json.return_value = {
+        "Information": "Thank you for using Alpha Vantage! "
+        "Our standard API rate limit is 25 requests per day."
+    }
+    mocker.patch("requests.Session.get", return_value=rate_limited)
+
+    with caplog.at_level(logging.WARNING):
+        client.articles_for("AAPL")
+
+    alert = monitor.alerts[0]
+    assert "wyczerpały dzienny limit" in alert.message
+    assert "incomplete" not in alert.message
+    assert alert.action.startswith("Dodaj kolejny klucz")
+    assert "Alpha Vantage API keys exhausted" in caplog.text

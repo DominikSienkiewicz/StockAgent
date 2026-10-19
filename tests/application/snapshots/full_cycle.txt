@@ -1,5 +1,5 @@
 === 🚨 ALERTY SUBSKRYPCJI / LIMITÓW (1) ===
-  [⚠️ WARNING] Alpha Vantage  (2026-10-15 09:40 UTC)
+  [⚠️ OSTRZEŻENIE] Alpha Vantage  (2026-10-15 09:40 UTC)
     Klucz 1 z 3 wyczerpany — rotacja na kolejny.
     → Sprawdź limit dzienny kluczy AV.
 

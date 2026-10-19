@@ -460,3 +460,30 @@ class TestSingleRetryLayer:
         AnthropicAdapter(api_key="sk-ant-test").analyze("Predict.")
 
         assert sleep.call_args.args[0] <= 20
+
+
+def test_critical_alert_is_polish_and_logged_in_english(mock_anthropic_class, mocker, caplog):
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    from anthropic import APIStatusError
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
+    client = MagicMock()
+    mock_anthropic_class.return_value = client
+    client.messages.create.side_effect = _status_error(529)
+    monitor = QuotaMonitor()
+    adapter = AnthropicAdapter(
+        api_key="sk-ant-test", backoff_base=0.01, max_retries=2, quota_monitor=monitor
+    )
+
+    with caplog.at_level(logging.WARNING), pytest.raises(APIStatusError):
+        adapter.analyze("Predict.")
+
+    alert = monitor.alerts[0]
+    assert "wywołanie nie powiodło się" in alert.message
+    assert "call failed" not in alert.message
+    assert alert.action.startswith("Sprawdź")
+    assert "failed after 2 retries" in caplog.text

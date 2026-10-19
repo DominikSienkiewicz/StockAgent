@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from src.domain import polish_labels
 from src.domain.provenance import ProvenanceBadge, ProvenanceLevel
 
 COMPANY_NAMES: dict[str, str] = {
@@ -226,12 +227,6 @@ def company_label_with_sector(symbol: str) -> str:
     return f"{label} · {sector}" if sector else label
 
 
-_TREND_PL = {
-    "BULLISH": "Wzrostowy",
-    "BEARISH": "Spadkowy",
-    "SIDEWAYS": "Boczny",
-}
-
 _SENTIMENT_PL = {
     "Bullish": "Pozytywny",
     "Somewhat-Bullish": "Lekko pozytywny",
@@ -242,7 +237,8 @@ _SENTIMENT_PL = {
 
 
 def trend_label(trend: str | None) -> str:
-    return _TREND_PL.get(trend or "", trend or "—")
+    """Nazwa trendu ze wspólnego słownika domeny (MAIL-15)."""
+    return polish_labels.trend_label(trend)
 
 
 def sentiment_label(label: str | None) -> str:

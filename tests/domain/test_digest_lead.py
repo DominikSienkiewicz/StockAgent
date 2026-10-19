@@ -319,14 +319,14 @@ class TestPortfolioAwareLead:
 
         items = build_lead([small])
 
-        assert items[0].headline == "NVDA -4.2%, rada zgodna: SELL"
+        assert items[0].headline == "NVDA -4.2%, rada zgodna: SPRZEDAJ"
 
     def test_without_a_portfolio_the_lead_is_unchanged(self) -> None:
         signal = LeadSignal(
             "NVDA", Decimal("-4.2"), _consensus_verdict("SELL"), crossed_volatility_gate=True
         )
 
-        assert build_lead([signal])[0].headline == "NVDA -4.2%, rada zgodna: SELL"
+        assert build_lead([signal])[0].headline == "NVDA -4.2%, rada zgodna: SPRZEDAJ"
 
 
 class TestLeadPreview:
@@ -348,3 +348,25 @@ class TestLeadPreview:
 
     def test_none_on_empty(self) -> None:
         assert lead_preview([]) is None
+
+
+def test_strong_consensus_headline_uses_polish_label() -> None:
+    # MAIL-15: temat maila powstaje z leadu — „rada zgodna: BUY” mieszało języki.
+    signal = LeadSignal("NVDA", Decimal("4.2"), _consensus_verdict("BUY", strength=0.8))
+
+    headline = build_lead([signal])[0].headline
+
+    assert "KUP" in headline
+    assert "BUY" not in headline
+
+
+@pytest.mark.parametrize(
+    ("recommendation", "label"),
+    [("BUY", "KUP"), ("SELL", "SPRZEDAJ"), ("HOLD", "TRZYMAJ")],
+)
+def test_strong_consensus_headline_labels_every_verdict_in_polish(
+    recommendation: Literal["BUY", "SELL", "HOLD"], label: str
+) -> None:
+    signal = LeadSignal("AMD", Decimal("-3.0"), _consensus_verdict(recommendation))
+
+    assert build_lead([signal])[0].headline == f"AMD -3.0%, rada zgodna: {label}"

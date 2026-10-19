@@ -224,3 +224,22 @@ class TestKeyRotation:
 
         assert result is None
         assert mock_get.call_count == calls_after_first
+
+
+def test_daily_quota_alert_is_polish_and_logged_in_english(caplog) -> None:
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"], quota_monitor=monitor)
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = _mock_response(RATE_LIMITED_JSON)
+        adapter.get_fundamentals("AAPL")
+
+    alert = monitor.alerts[0]
+    assert "dzienny limit" in alert.message
+    assert "missing" not in alert.message
+    assert alert.action.startswith("Dodaj kolejny klucz")
+    assert "fundamentals daily quota exhausted" in caplog.text

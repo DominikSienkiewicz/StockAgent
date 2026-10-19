@@ -13,6 +13,7 @@ przekazać własny `ticker_to_id` przy konstrukcji.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -21,6 +22,8 @@ from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Money
 from src.infrastructure.adapters._http import build_session
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.coingecko.com/api/v3"
 DEFAULT_TIMEOUT = 10
@@ -72,13 +75,17 @@ class CoinGeckoAdapter(MarketDataPort):
             self._emit_quota_alert(
                 severity=QuotaSeverity.CRITICAL,
                 message=(
-                    f"CoinGecko returned 429 for '{symbol}' — free tier "
-                    "rate limit (~5-15 req/min) exhausted."
+                    f"CoinGecko zwrócił 429 dla '{symbol}' — wyczerpany darmowy "
+                    "limit (~5-15 zapytań/min)."
                 ),
                 action=(
-                    "Slow the crypto polling (raise SYMBOL_THROTTLE_SECONDS), "
-                    "reduce crypto SYMBOLS, or add a CoinGecko API key."
+                    "Spowolnij odpytywanie krypto (podnieś SYMBOL_THROTTLE_SECONDS), "
+                    "zmniejsz liczbę krypto w SYMBOLS albo dodaj klucz API CoinGecko."
                     + retry_after
+                ),
+                log_message=(
+                    f"CoinGecko returned 429 for '{symbol}' — free tier "
+                    "rate limit (~5-15 req/min) exhausted."
                 ),
             )
         response.raise_for_status()
@@ -107,13 +114,17 @@ class CoinGeckoAdapter(MarketDataPort):
         headers = getattr(response, "headers", None) or {}
         retry_after = headers.get("Retry-After")
         if retry_after:
-            return f" Retry-After hint: {retry_after}s."
+            return f" Serwer sugeruje odczekać {retry_after} s (Retry-After)."
         return ""
 
     def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str
+        self, severity: QuotaSeverity, message: str, action: str, log_message: str
     ) -> None:
         """Wystawia alert do QuotaMonitor, jeśli ten jest skonfigurowany."""
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
+        logger.log(level, "%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(

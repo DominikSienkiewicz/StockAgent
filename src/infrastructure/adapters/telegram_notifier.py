@@ -58,30 +58,40 @@ class TelegramNotifier(ReportNotifierPort):
         except requests.RequestException as exc:
             # Błąd sieci (timeout, DNS, connection reset) — kanał padł.
             self._emit_quota_alert(
-                message=f"Telegram push failed (network): {exc}.",
+                message=f"Push Telegram nie wyszedł (błąd sieci): {exc}.",
                 action=(
-                    "Verify TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID and "
-                    "outbound connectivity to api.telegram.org."
+                    "Sprawdź TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID i połączenie "
+                    "wychodzące do api.telegram.org."
                 ),
+                # Tylko nazwa wyjątku: jego treść niesie URL z sekretem
+                # (token / webhook), a logi repo są publiczne.
+                log_message=f"Telegram push failed (network): {type(exc).__name__}.",
             )
             return
 
         if response.status_code >= 400:
             self._emit_quota_alert(
                 message=(
-                    f"Telegram returned {response.status_code} — push not "
-                    "delivered (bad token / chat_id / bot blocked)."
+                    f"Telegram zwrócił {response.status_code} — push nie został "
+                    "dostarczony (zły token / chat_id albo zablokowany bot)."
                 ),
                 action=(
-                    "Verify TELEGRAM_BOT_TOKEN is valid and the bot has been "
-                    "started in the target chat (TELEGRAM_CHAT_ID)."
+                    "Sprawdź, czy TELEGRAM_BOT_TOKEN jest ważny i czy bot został "
+                    "uruchomiony w docelowym czacie (TELEGRAM_CHAT_ID)."
+                ),
+                log_message=(
+                    f"Telegram returned {response.status_code} — push not "
+                    "delivered (bad token / chat_id / bot blocked)."
                 ),
             )
             return
 
         logger.info("Telegram: sent report to chat_id=%s", self._chat_id)
 
-    def _emit_quota_alert(self, message: str, action: str) -> None:
+    def _emit_quota_alert(self, message: str, action: str, log_message: str) -> None:
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        logger.error("%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(

@@ -155,15 +155,17 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
             logger.exception(
                 "Alpha Vantage fundamentals daily quota exhausted for %s", symbol
             )
+            # MAIL-15: treść alertu idzie do maila po polsku; angielska
+            # diagnoza jest w logger.exception powyżej.
             self._emit_quota_alert(
                 message=(
-                    "Alpha Vantage fundamentals hit the daily 25 req/day limit; "
-                    "P/E and EPS-growth data is missing for this cycle."
+                    "Fundamenty Alpha Vantage wyczerpały dzienny limit 25 zapytań; "
+                    "w tym cyklu brakuje P/E i wzrostu EPS."
                 ),
                 action=(
-                    "Add another key in ALPHA_VANTAGE_API_KEYS (free at "
-                    "alphavantage.co), reduce the number of fundamentals symbols, "
-                    "or wait for the UTC-midnight reset."
+                    "Dodaj kolejny klucz w ALPHA_VANTAGE_API_KEYS (darmowy na "
+                    "alphavantage.co), zmniejsz liczbę symboli z fundamentami "
+                    "albo poczekaj na reset o północy UTC."
                 ),
             )
             return None

@@ -299,3 +299,26 @@ class TestSingleRetryLayer:
         OpenAIEmbeddingAdapter(api_key="sk-test").embed("other text")
 
         assert sleep.call_args.args[0] <= 20
+
+
+def test_warning_alert_is_polish_and_logged_in_english(mock_openai_class, mocker, caplog):
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    mocker.patch("src.infrastructure.llm.openai_embeddings.time.sleep")
+    client = MagicMock()
+    mock_openai_class.return_value = client
+    client.embeddings.create.side_effect = [_rate_limit_error(), _embedding_response([0.0])]
+    monitor = QuotaMonitor()
+    adapter = OpenAIEmbeddingAdapter(api_key="sk-test", backoff_base=0.01, quota_monitor=monitor)
+
+    with caplog.at_level(logging.WARNING):
+        adapter.embed("some text")
+
+    alert = monitor.alerts[0]
+    assert "ponowienie się udało" in alert.message
+    assert "retry succeeded" not in alert.message
+    assert alert.action.startswith("Podnieś")
+    assert "hit TPM limit 1× during a single call" in caplog.text

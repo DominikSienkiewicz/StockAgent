@@ -139,6 +139,7 @@ from src.domain.polish_labels import (
     MODEL_SIGNAL_TITLE,
     council_recommendation_label,
     model_signal_label,
+    trend_forecast_label,
 )
 from src.domain.portfolio import Portfolio
 from src.domain.prediction import is_substantive_insight
@@ -734,11 +735,12 @@ def to_lead_signals(
     pozycji. Status "saved" znaczy, że ruch przeszedł bramkę volatility (graf
     poszedł do analizy) — tylko taki ruch pozycji może być leadem.
     """
+    # MAIL-15: etykieta trafia do leadu i tematu maila — po polsku, ze wspólnego
+    # słownika domeny („trafiona prognoza wzrostu”), nie „predykcja BULLISH”.
     labels = {
         r.symbol: (
-            f"trafiona predykcja {r.predicted_trend}"
-            if r.is_correct
-            else f"chybiona predykcja {r.predicted_trend}"
+            f"{'trafiona' if r.is_correct else 'chybiona'} "
+            f"{trend_forecast_label(r.predicted_trend)}"
         )
         for r in resolved
     }

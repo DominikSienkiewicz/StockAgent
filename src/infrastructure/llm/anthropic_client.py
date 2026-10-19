@@ -154,13 +154,17 @@ class AnthropicAdapter(LLMPort):
                     self._emit_quota_alert(
                         severity=QuotaSeverity.WARNING,
                         message=(
-                            f"Anthropic {self._model} hit a transient error "
-                            f"{attempt}× during a single call (retry succeeded)."
+                            f"Anthropic {self._model}: przejściowy błąd {attempt}× "
+                            "w jednym wywołaniu (ponowienie się udało)."
                         ),
                         action=(
-                            "Transient 429/5xx — usually self-heals. If frequent, "
-                            "raise COUNCIL_VOLATILITY_THRESHOLD or check Anthropic "
-                            "status / your usage tier."
+                            "Przejściowe 429/5xx zwykle mija samo. Jeśli się "
+                            "powtarza, podnieś COUNCIL_VOLATILITY_THRESHOLD albo "
+                            "sprawdź status Anthropic / tier konta."
+                        ),
+                        log_message=(
+                            f"Anthropic {self._model} hit a transient error "
+                            f"{attempt}× during a single call (retry succeeded)."
                         ),
                     )
                 return result
@@ -171,13 +175,18 @@ class AnthropicAdapter(LLMPort):
                     self._emit_quota_alert(
                         severity=QuotaSeverity.CRITICAL,
                         message=(
+                            f"Anthropic {self._model} nie odpowiedział po "
+                            f"{self._max_retries} ponowieniach "
+                            f"({type(exc).__name__}) — wywołanie nie powiodło się."
+                        ),
+                        action=(
+                            "Sprawdź stronę statusu Anthropic / podnieś tier konta "
+                            "albo ustaw LLM_PROVIDER=openai dla tego przebiegu."
+                        ),
+                        log_message=(
                             f"Anthropic {self._model} failed after "
                             f"{self._max_retries} retries "
                             f"({type(exc).__name__}) — call failed."
-                        ),
-                        action=(
-                            "Check Anthropic status page / upgrade usage tier, or "
-                            "switch LLM_PROVIDER=openai for this run."
                         ),
                     )
                     raise
@@ -220,8 +229,12 @@ class AnthropicAdapter(LLMPort):
         return min(float(self._backoff_base * (2**attempt)), MAX_RETRY_WAIT_S)
 
     def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str
+        self, severity: QuotaSeverity, message: str, action: str, log_message: str
     ) -> None:
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
+        logger.log(level, "%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(

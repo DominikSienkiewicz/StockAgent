@@ -229,13 +229,17 @@ class OpenAIAdapter(LLMPort):
                     self._emit_quota_alert(
                         severity=QuotaSeverity.WARNING,
                         message=(
-                            f"OpenAI {self._model} hit TPM limit "
-                            f"{attempt}× during a single call (retry succeeded)."
+                            f"OpenAI {self._model}: limit TPM trafiony {attempt}× "
+                            "w jednym wywołaniu (ponowienie się udało)."
                         ),
                         action=(
-                            "Council already on a mini model — raise "
-                            "COUNCIL_VOLATILITY_THRESHOLD, drop to gpt-5-nano, "
-                            "or upgrade your OpenAI usage tier."
+                            "Rada działa już na modelu mini — podnieś "
+                            "COUNCIL_VOLATILITY_THRESHOLD, przejdź na gpt-5-nano "
+                            "albo podnieś tier konta OpenAI."
+                        ),
+                        log_message=(
+                            f"OpenAI {self._model} hit TPM limit "
+                            f"{attempt}× during a single call (retry succeeded)."
                         ),
                     )
                 return result
@@ -245,13 +249,17 @@ class OpenAIAdapter(LLMPort):
                     self._emit_quota_alert(
                         severity=QuotaSeverity.CRITICAL,
                         message=(
-                            f"OpenAI {self._model} returned {reason} after "
-                            f"{self._max_retries} retries — call failed."
+                            f"OpenAI {self._model} zwrócił {reason} po "
+                            f"{self._max_retries} ponowieniach — wywołanie nie "
+                            "powiodło się."
                         ),
                         action=(
-                            "Upgrade OpenAI tier or route the advisory "
-                            "council to a higher-TPM model via "
-                            "COUNCIL_LLM_MODEL."
+                            "Podnieś tier konta OpenAI albo skieruj radę doradczą "
+                            "na model z wyższym limitem TPM przez COUNCIL_LLM_MODEL."
+                        ),
+                        log_message=(
+                            f"OpenAI {self._model} returned {reason} after "
+                            f"{self._max_retries} retries — call failed."
                         ),
                     )
                     raise
@@ -282,8 +290,12 @@ class OpenAIAdapter(LLMPort):
         return min(float(self._backoff_base * (2**attempt)), MAX_RETRY_WAIT_S)
 
     def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str
+        self, severity: QuotaSeverity, message: str, action: str, log_message: str
     ) -> None:
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
+        logger.log(level, "%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(

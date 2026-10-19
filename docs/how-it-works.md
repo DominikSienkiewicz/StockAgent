@@ -96,6 +96,8 @@ Every adapter that has a paid / metered quota writes a `QuotaAlert` to a shared 
 
 All alerts from the current cycle are persisted to the `quota_alerts` table (migration `010_quota_alerts.sql`) — including the ones raised while the report itself is being sent. The report builder pulls **the last week (7 × 24 + 3 h)** of alerts, so a Sunday Slow Loop alert still reaches Monday's mail, and renders them as a coloured banner at the **very top** of the e-mail (above the NYSE session line). Severity drives the banner colour and ordering — `CRITICAL` rows come first.
 
+The alert's `message` and `action` are written in Polish, because they are email content: the banner (`🔴 KRYTYCZNY` / `⚠️ OSTRZEŻENIE`), the lead and the subject show them as they are, and so does the `quota_alerts` row they come back from. Each adapter logs the same event in English (`Resend returned 429 — …`), so the run logs keep the English diagnosis; a network failure of the Telegram or Slack push logs only the exception type, since its text carries the bot token or webhook URL and the run logs are public.
+
 If anything `CRITICAL` is in the current cycle, the e-mail subject is prefixed with `⚠️ [QUOTA] ` so the alert is visible directly in the inbox, before opening.
 
 This means: **no exhausted limit, blocked email, or rate-limited API call can silently disappear into the logs**. If the agent saw it, you see it.

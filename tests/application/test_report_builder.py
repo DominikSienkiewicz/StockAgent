@@ -20,6 +20,7 @@ from src.application.report_builder import (
     detect_risk_signals,
     market_status,
     parse_resolved_predictions,
+    to_lead_signals,
     to_symbol_result,
 )
 from src.application.report_formatting import company_label
@@ -2715,3 +2716,62 @@ def test_plain_text_says_model_signal_not_recommendation():
 
     assert "Sygnał modelu: KUP (pewność 85%" in text
     assert "Rekomendacja" not in text
+
+
+
+class TestLeadInPolish:
+    """MAIL-15: lead i temat maila mówią po polsku — angielskie BULLISH/BUY
+    zostają w logach i w bazie, nie w treści."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def test_resolved_label_names_the_forecast_in_polish(self):
+        results = [
+            SymbolResult(symbol="NVDA", status="saved", delta=Decimal("0.03")),
+            SymbolResult(symbol="AMD", status="saved", delta=Decimal("-0.02")),
+            SymbolResult(symbol="IBM", status="saved", delta=Decimal("0.001")),
+        ]
+        resolved = [
+            ResolvedPrediction(symbol="NVDA", predicted_trend="BULLISH", is_correct=True),
+            ResolvedPrediction(symbol="AMD", predicted_trend="BEARISH", is_correct=False),
+            ResolvedPrediction(symbol="IBM", predicted_trend="SIDEWAYS", is_correct=True),
+        ]
+
+        labels = {s.symbol: s.resolved_label for s in to_lead_signals(results, resolved)}
+
+        assert labels == {
+            "NVDA": "trafiona prognoza wzrostu",
+            "AMD": "chybiona prognoza spadku",
+            "IBM": "trafiona prognoza ruchu bocznego",
+        }
+
+    def test_closed_prediction_lead_has_no_english_trend(self):
+        results = [SymbolResult(symbol="NVDA", status="saved", delta=Decimal("0.03"))]
+        resolved = [
+            ResolvedPrediction(symbol="NVDA", predicted_trend="BULLISH", is_correct=True)
+        ]
+
+        html, text = build_html_report(
+            results, self._STARTED, 1.0, ReportContext(resolved_predictions=resolved)
+        )
+
+        assert "NVDA +3.0%: trafiona prognoza wzrostu" in html
+        assert "NVDA +3.0%: trafiona prognoza wzrostu" in text
+        assert "BULLISH" not in html
+        assert "BULLISH" not in text
+
+    def test_quota_banner_severity_is_polish(self):
+        alert = QuotaAlert(
+            source="Resend", severity=QuotaSeverity.CRITICAL,
+            message="Resend zwrócił 429.", action="Poczekaj na reset.",
+            occurred_at=self._STARTED,
+        )
+
+        html, text = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(quota_alerts=[alert])
+        )
+
+        assert "KRYTYCZNY" in html
+        assert "KRYTYCZNY" in text
+        assert "CRITICAL" not in html
+        assert "CRITICAL" not in text

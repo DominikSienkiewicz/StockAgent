@@ -12,9 +12,11 @@ import html as _html
 
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
+# MAIL-15: banner jest treścią maila, więc po polsku; nazwy poziomów w logach
+# i w bazie (`QuotaSeverity.value`) zostają angielskie.
 _SEVERITY_LABEL = {
-    QuotaSeverity.WARNING: "⚠️ WARNING",
-    QuotaSeverity.CRITICAL: "🔴 CRITICAL",
+    QuotaSeverity.WARNING: "⚠️ OSTRZEŻENIE",
+    QuotaSeverity.CRITICAL: "🔴 KRYTYCZNY",
 }
 _SEVERITY_COLOR = {
     QuotaSeverity.WARNING: "#ca8a04",

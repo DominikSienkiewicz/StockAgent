@@ -127,12 +127,16 @@ class OpenAIEmbeddingAdapter(EmbeddingPort):
                     self._emit_quota_alert(
                         severity=QuotaSeverity.WARNING,
                         message=(
-                            f"OpenAI embeddings ({self._model}) hit TPM limit "
-                            f"{attempt}× during a single call (retry succeeded)."
+                            f"Embeddingi OpenAI ({self._model}): limit TPM trafiony "
+                            f"{attempt}× w jednym wywołaniu (ponowienie się udało)."
                         ),
                         action=(
-                            "Raise SYMBOL_THROTTLE_SECONDS to spread embedding "
-                            "calls, or upgrade your OpenAI usage tier."
+                            "Podnieś SYMBOL_THROTTLE_SECONDS, żeby rozłożyć wywołania "
+                            "embeddingów, albo podnieś tier konta OpenAI."
+                        ),
+                        log_message=(
+                            f"OpenAI embeddings ({self._model}) hit TPM limit "
+                            f"{attempt}× during a single call (retry succeeded)."
                         ),
                     )
                 return result
@@ -142,13 +146,17 @@ class OpenAIEmbeddingAdapter(EmbeddingPort):
                     self._emit_quota_alert(
                         severity=QuotaSeverity.CRITICAL,
                         message=(
-                            f"OpenAI embeddings ({self._model}) returned {reason} "
-                            f"after {self._max_retries} retries — call failed."
+                            f"Embeddingi OpenAI ({self._model}) zwróciły {reason} "
+                            f"po {self._max_retries} ponowieniach — wywołanie nie "
+                            "powiodło się."
                         ),
                         action=(
-                            "Upgrade your OpenAI usage tier or raise "
-                            "SYMBOL_THROTTLE_SECONDS to reduce embedding "
-                            "request pressure."
+                            "Podnieś tier konta OpenAI albo SYMBOL_THROTTLE_SECONDS, "
+                            "żeby zmniejszyć presję zapytań o embeddingi."
+                        ),
+                        log_message=(
+                            f"OpenAI embeddings ({self._model}) returned {reason} "
+                            f"after {self._max_retries} retries — call failed."
                         ),
                     )
                     raise
@@ -179,8 +187,12 @@ class OpenAIEmbeddingAdapter(EmbeddingPort):
         return min(float(self._backoff_base * (2**attempt)), MAX_RETRY_WAIT_S)
 
     def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str
+        self, severity: QuotaSeverity, message: str, action: str, log_message: str
     ) -> None:
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
+        logger.log(level, "%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(

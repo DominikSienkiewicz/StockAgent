@@ -574,3 +574,28 @@ class TestSingleRetryLayer:
         OpenAIAdapter(api_key="sk-test").analyze("p")
 
         assert sleep.call_args.args[0] <= 20
+
+
+def test_critical_alert_is_polish_and_logged_in_english(mock_openai_class, mocker, caplog):
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    from openai import RateLimitError
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    mock_client = MagicMock()
+    mock_openai_class.return_value = mock_client
+    adapter = OpenAIAdapter(api_key="sk-test", model="gpt-4o", quota_monitor=monitor)
+    mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
+    mock_client.chat.completions.create.side_effect = _rate_limit_error()
+
+    with caplog.at_level(logging.WARNING), pytest.raises(RateLimitError):
+        adapter.analyze("Predict.")
+
+    alert = monitor.alerts[0]
+    assert "wywołanie nie powiodło się" in alert.message
+    assert "call failed" not in alert.message
+    assert alert.action.startswith("Podnieś")
+    assert "OpenAI gpt-4o returned 429 after" in caplog.text

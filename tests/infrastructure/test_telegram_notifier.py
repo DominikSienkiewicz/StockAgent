@@ -121,3 +121,21 @@ def test_session_does_not_retry_post_on_5xx(notifier: TelegramNotifier) -> None:
     # MAIL-03: Telegram nie ma klucza idempotencji — powtórzony POST to dwa pushe.
     retry = notifier._session.get_adapter("https://api.telegram.org").max_retries
     assert "POST" not in retry.allowed_methods
+
+
+def test_alert_text_is_polish_and_english_stays_in_logs(mocker, caplog) -> None:
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    monitor = QuotaMonitor()
+    notifier = TelegramNotifier(bot_token="123:ABC", chat_id="42", quota_monitor=monitor)
+    mocker.patch("requests.Session.post", return_value=_resp(403))
+
+    with caplog.at_level(logging.WARNING):
+        notifier.send_report("S", "<p>H</p>", "T")
+
+    alert = monitor.alerts[0]
+    assert "push nie został dostarczony" in alert.message
+    assert "not delivered" not in alert.message
+    assert alert.action.startswith("Sprawdź")
+    assert "Telegram returned 403" in caplog.text
