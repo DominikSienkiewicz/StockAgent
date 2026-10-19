@@ -8,15 +8,23 @@ from __future__ import annotations
 
 import tomllib
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 from src.application.report_formatting import (
     COMPANY_NAMES,
     DEFAULT_DISPLAY_TIMEZONE,
+    PALETTE,
     company_label,
+    delta_color,
     format_local,
+    pct,
+    plural_pl,
     provenance_badges_html,
     sector_label,
+    trend_color,
 )
 from src.domain.provenance import ProvenanceBadge, ProvenanceLevel
 
@@ -166,3 +174,61 @@ class TestFormatLocal:
 
     def test_default_display_timezone_is_warsaw(self) -> None:
         assert DEFAULT_DISPLAY_TIMEZONE == "Europe/Warsaw"
+
+
+class TestPluralPl:
+    """ARCH-28: jedna reguła polskiej odmiany przez liczebnik zamiast kopii per sekcja."""
+
+    @pytest.mark.parametrize(
+        ("count", "expected"),
+        [
+            (1, "predykcja"),
+            (2, "predykcje"),
+            (4, "predykcje"),
+            (22, "predykcje"),
+            (104, "predykcje"),
+            (0, "predykcji"),
+            (5, "predykcji"),
+            (11, "predykcji"),
+            (12, "predykcji"),
+            (14, "predykcji"),
+            (21, "predykcji"),
+            (112, "predykcji"),
+            (-3, "predykcje"),
+        ],
+    )
+    def test_plural_pl_matches_polish_rules(self, count: int, expected: str) -> None:
+        assert plural_pl(count, "predykcja", "predykcje", "predykcji") == expected
+
+
+class TestPalette:
+    """ARCH-28: kolory raportu w jednym miejscu; helpery kolorów biorą je stąd."""
+
+    def test_palette_keeps_the_report_colors(self) -> None:
+        assert PALETTE.positive == "#16a34a"
+        assert PALETTE.negative == "#dc2626"
+        assert PALETTE.neutral == "#737373"
+        assert PALETTE.muted == "#6b7280"
+
+    def test_color_helpers_read_the_palette(self) -> None:
+        assert trend_color("BULLISH") == PALETTE.positive
+        assert trend_color("BEARISH") == PALETTE.negative
+        assert trend_color(None) == PALETTE.neutral
+        assert delta_color(Decimal("0.01")) == PALETTE.positive
+        assert delta_color(Decimal("-0.01")) == PALETTE.negative
+        assert delta_color(Decimal("0")) == PALETTE.neutral
+        assert delta_color(None) == PALETTE.neutral
+
+
+class TestPct:
+    """ARCH-28: `pct` dostaje liczbę miejsc po przecinku. Sekcje maila zostają przy
+    dotychczasowym zapisie, dopóki etap MAIL-58 nie przeniesie ich na polski."""
+
+    def test_pct_takes_the_number_of_decimals(self) -> None:
+        assert pct(Decimal("0.01234"), signed=True, decimals=1) == "+1.2%"
+        assert pct(Decimal("0.24"), decimals=0) == "24%"
+
+    def test_pct_defaults_keep_the_current_section_format(self) -> None:
+        assert pct(Decimal("0.01234")) == "1.23%"
+        assert pct(Decimal("-0.042"), signed=True) == "-4.20%"
+        assert pct(None) == "—"

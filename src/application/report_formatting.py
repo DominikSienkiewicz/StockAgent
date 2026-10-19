@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -277,12 +278,50 @@ def format_local(moment: datetime, tz: str) -> str:
     return f"{_WEEKDAYS_PL[local.weekday()]} {local:%d.%m %H:%M}"
 
 
-def pct(value: Decimal | None, signed: bool = False) -> str:
+def pct(value: Decimal | None, signed: bool = False, decimals: int = 2) -> str:
+    """Ułamek jako procent z `decimals` miejscami po kropce (0.0123 → „1.23%”).
+
+    ARCH-28: sekcje maila zostają przy tym zapisie i zaokrągleniu; na polski
+    (`src.domain.number_format`, przecinek i ROUND_HALF_UP) przechodzą etapami
+    MAIL-58, moduł po module, każdy z listą zmienionych asercji.
+    """
     if value is None:
         return "—"
-    if signed:
-        return f"{value * 100:+.2f}%"
-    return f"{value * 100:.2f}%"
+    sign = "+" if signed else ""
+    return f"{value * 100:{sign}.{decimals}f}%"
+
+
+def plural_pl(n: int, one: str, few: str, many: str) -> str:
+    """Polska forma rzeczownika po liczebniku `n` (ARCH-28).
+
+    1 → `one`; końcówka 2–4 poza nastkami 12–14 (2, 22, 104) → `few`; reszta
+    (0, 5–21, 25, 112) → `many`. Liczy się wartość bezwzględna.
+    """
+    count = abs(n)
+    if count == 1:
+        return one
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many
+
+
+@dataclass(frozen=True, slots=True)
+class ReportPalette:
+    """Kolory raportu w jednym miejscu (ARCH-28); sekcje przechodzą na nie stopniowo."""
+
+    positive: str = "#16a34a"
+    negative: str = "#dc2626"
+    neutral: str = "#737373"
+    caution: str = "#ca8a04"
+    text: str = "#111827"
+    text_secondary: str = "#374151"
+    muted: str = "#6b7280"
+    subtle: str = "#9ca3af"
+    border: str = "#e5e7eb"
+    surface: str = "#f9fafb"
+
+
+PALETTE = ReportPalette()
 
 
 def money(value: Decimal | None) -> str:
@@ -293,20 +332,15 @@ def money(value: Decimal | None) -> str:
 
 def trend_color(trend: str | None) -> str:
     return {
-        "BULLISH": "#16a34a",
-        "BEARISH": "#dc2626",
-        "SIDEWAYS": "#737373",
-    }.get(trend or "", "#737373")
+        "BULLISH": PALETTE.positive,
+        "BEARISH": PALETTE.negative,
+    }.get(trend or "", PALETTE.neutral)
 
 
 def delta_color(delta: Decimal | None) -> str:
-    if delta is None:
-        return "#737373"
-    if delta > 0:
-        return "#16a34a"
-    if delta < 0:
-        return "#dc2626"
-    return "#737373"
+    if delta is None or delta == 0:
+        return PALETTE.neutral
+    return PALETTE.positive if delta > 0 else PALETTE.negative
 
 
 def score_to_pl_label(score: float) -> str:
