@@ -1460,7 +1460,11 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # #6: węzeł terminalny — zapisujemy snapshot ceny dla następnego cyklu.
     _persist_price_snapshot(deps, state)
-    _persist_feature_snapshot(deps, state, gated=False)
+    # FIN-14 (decyzja 2026-10-19): cykl re-baseline nie jest obserwacją cyklu —
+    # `snapshot_delta` od stęchłej referencji to ruch z wielu dni, więc wektor
+    # ML-14 nie powstaje. Zapisujemy tylko nowy punkt odniesienia.
+    if not _reference_is_stale(state):
+        _persist_feature_snapshot(deps, state, gated=False)
     return {"status": "ignored"}
 
 

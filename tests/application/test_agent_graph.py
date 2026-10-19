@@ -2952,6 +2952,42 @@ class TestFeatureSnapshots:
         ml_port.predict.assert_not_called()
         assert sum(deps.paid_call_meter.values()) == 0
 
+    def test_rebaseline_cycle_writes_the_price_but_no_feature_vector(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # FIN-14 + decyzja 2026-10-19: po pauzie `snapshot_delta` to ruch z wielu
+        # dni, nie obserwacja cyklu — wektor ML-14 nie powstaje, cena tak.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        state = {**_initial_state("100.0"), "stale_reference": True}
+
+        final = create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )).compile().invoke(state)
+
+        assert final["status"] == "ignored"
+        repository_port.save_price_snapshot.assert_called_once_with(
+            "AAPL", Money(Decimal("90.0"))
+        )
+        repository_port.save_feature_snapshot.assert_not_called()
+
+    def test_ignored_cycle_with_a_fresh_reference_still_writes_the_vector(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))  # -0,5%
+        state = {**_initial_state("100.0"), "stale_reference": False}
+
+        final = create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )).compile().invoke(state)
+
+        assert final["status"] == "ignored"
+        repository_port.save_price_snapshot.assert_called_once()
+        repository_port.save_feature_snapshot.assert_called_once()
+
     def test_ignored_snapshot_is_written_next_to_the_price_snapshot(
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,
