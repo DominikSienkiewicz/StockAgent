@@ -58,6 +58,7 @@ MIGRATION_FILES = [
     "034_gate_delta.sql",
     "035_positions_currency.sql",
     "036_fx_rates.sql",
+    "037_experiment_arms.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -981,6 +982,27 @@ class TestMigrations:
                         f"VALUES {values}"
                     )
 
+    # -- Migracja 037: ramiona eksperymentów (EXP-05) --------------------------
+
+    def test_experiment_arms_column_is_a_nullable_json_object(self, pg_conn) -> None:
+        """Zapis bez flagi `experiment_arms_enabled` zostawia NULL; ramiona to obiekt JSON."""
+        assert "experiment_arms" in _columns(pg_conn, "prediction_logs")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('EA_NULL', '2026-11-02T21:30:00+00:00', 100.0) "
+                "RETURNING experiment_arms"
+            )
+            assert cur.fetchone() == (None,)
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, experiment_arms) "
+                "VALUES ('EA_SET', '2026-11-02T21:30:00+00:00', 100.0, "
+                "'{\"EXP-02\": \"blind\"}') "
+                "RETURNING experiment_arms ->> 'EXP-02'"
+            )
+            assert cur.fetchone() == ("blind",)
+
 
 @pytest.fixture
 def fresh_pg():
@@ -1273,6 +1295,51 @@ class TestMigration035BackfillsPositionCurrency:
             cur.execute(migration)
             assert self._currencies(cur)["VUSA.L"] == "USD"
 
+
+@pytest.mark.containers
+class TestMigration037BackfillsExperimentArms:
+    """EXP-05: ramiona sprzed migracji żyją tylko w kwicie v2
+    (`decision_receipts->'experiment_arms'`); bez kwitu zostaje NULL."""
+
+    def _apply_up_to_036(self, conn: psycopg2.extensions.connection) -> None:
+        idx = MIGRATION_FILES.index("037_experiment_arms.sql")
+        with conn.cursor() as cur:
+            for filename in MIGRATION_FILES[:idx]:
+                cur.execute((MIGRATIONS_DIR / filename).read_text())
+
+    def test_037_copies_the_arms_from_the_v2_receipt(self, fresh_pg) -> None:
+        conn = fresh_pg
+        self._apply_up_to_036(conn)
+        migration = (MIGRATIONS_DIR / "037_experiment_arms.sql").read_text()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, decision_receipts) VALUES "
+                "('EB_ARMS', '2026-11-02T21:30:00+00:00', 100.0, "
+                "'{\"schema_version\": 2, \"experiment_arms\": {\"EXP-03\": \"no_memory\"}}'), "
+                "('EB_NONE', '2026-11-02T21:30:00+00:00', 100.0, '{\"schema_version\": 2}'), "
+                "('EB_BARE', '2026-11-02T21:30:00+00:00', 100.0, NULL)"
+            )
+
+            cur.execute(migration)
+            cur.execute(
+                "SELECT symbol, experiment_arms FROM prediction_logs WHERE symbol LIKE 'EB_%'"
+            )
+            arms = dict(cur.fetchall())
+
+            assert arms == {
+                "EB_ARMS": {"EXP-03": "no_memory"},
+                "EB_NONE": None,
+                "EB_BARE": None,
+            }
+            # Idempotencja: ponowny przebieg nie nadpisuje ramion zapisanych przez Fast Loop.
+            cur.execute(
+                "UPDATE prediction_logs SET experiment_arms = '{\"EXP-03\": \"memory\"}' "
+                "WHERE symbol = 'EB_ARMS'"
+            )
+            cur.execute(migration)
+            cur.execute("SELECT experiment_arms FROM prediction_logs WHERE symbol = 'EB_ARMS'")
+            assert cur.fetchone() == ({"EXP-03": "memory"},)
 
 def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:
     """`supabase db push` czyta wyłącznie `supabase/migrations/`.

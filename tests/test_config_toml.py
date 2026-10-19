@@ -217,3 +217,9 @@ def test_real_config_toml_sets_the_paper_pnl_costs() -> None:
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["paper_cost_bps"] == 10
     assert data["crypto_paper_cost_bps"] == 25
+
+
+def test_real_config_toml_ships_the_experiment_arms_column_off_until_migration() -> None:
+    """EXP-05: kolumna `experiment_arms` istnieje dopiero po migracji 037."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["experiment_arms_enabled"] is False

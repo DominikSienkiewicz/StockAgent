@@ -43,6 +43,7 @@ from src.domain.attestation import commit as attestation_commit
 from src.domain.attestation import new_salt
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
+from src.domain.experiment import Experiment
 from src.domain.feature_attribution import FeatureContribution, top_contributions
 from src.domain.implied_edge import (
     ImpliedEdge,
@@ -175,6 +176,10 @@ class AgentState(TypedDict, total=False):
     # #6 bramka earnings — mnożnik progu (≥1.0) zależny od bliskości raportu
     # kwartalnego. Mnoży się z regime_multiplier w `_pick_threshold`.
     earnings_multiplier: float
+
+    # EXP-05: ramiona AKTYWNYCH eksperymentów tego symbolu-dnia `{id: ramię}`,
+    # przydzielone przez use case. Brak klucza = cykl jak bez eksperymentów.
+    experiment_arms: dict[str, str]
 
     # Persystencja
     prediction_id: str | None
@@ -521,6 +526,12 @@ class AgentGraphDeps:
     # EXP-01: delta, która otworzyła bramkę, w `gate_delta` (migracja 034). Off =
     # klucza nie ma w rekordzie — przed migracją dałby PGRST204.
     gate_delta_enabled: bool = False
+    # EXP-05: definicje eksperymentów; use case liczy z nich ramiona per
+    # symbol-dzień i podaje je w stanie (`experiment_arms`).
+    experiments: tuple[Experiment, ...] = ()
+    # EXP-05: kolumna `experiment_arms` (migracja 037). Off = klucza nie ma
+    # w rekordzie — przed migracją dałby PGRST204.
+    experiment_arms_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
     # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). Pole jest
@@ -671,6 +682,10 @@ def _build_decision_receipts(deps: AgentGraphDeps, state: AgentState) -> dict[st
     if deps.recipe is not None:
         receipt["schema_version"] = RECEIPT_SCHEMA_V2
         receipt.update(deps.recipe.receipt_fields())
+        # EXP-05: opcjonalny klucz v2 — tylko gdy jakiś eksperyment jest aktywny.
+        arms = state.get("experiment_arms")
+        if arms:
+            receipt["experiment_arms"] = dict(arms)
     return receipt
 
 
@@ -1418,6 +1433,12 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # previous_price 0) to brak punktu odniesienia, nie ruch — klucza nie ma.
     if deps.gate_delta_enabled and state["previous_price"] != 0:
         record["gate_delta"] = float(state["delta"])
+
+    # EXP-05: ramiona aktywnych eksperymentów (migracja 037). Bez aktywnego
+    # eksperymentu klucza nie ma — kolumna zostaje NULL.
+    arms = state.get("experiment_arms")
+    if deps.experiment_arms_enabled and arms:
+        record["experiment_arms"] = dict(arms)
 
     # #16: commit-reveal (migracja 024).
     _attach_commitment(deps, record)

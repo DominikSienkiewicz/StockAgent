@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
 from src.application.agent_graph import AgentGraphDeps, AgentState, create_agent_graph
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, is_reference_stale
+from src.domain.experiment import active_arms
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class AnalyzeMarketUseCase:
         # płatnych wywołań i raport FinOps pokazałby zerowy koszt cyklu.
         self.paid_calls: Counter[str] = deps.paid_call_meter
         self._ml_port = deps.ml_port
+        self._experiments = deps.experiments
         workflow = create_agent_graph(deps)
         # Kompilacja jest deterministyczna (zależy tylko od topologii + portów),
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().
@@ -54,12 +56,12 @@ class AnalyzeMarketUseCase:
         now: datetime | None = None,
     ) -> dict[str, Any]:
         """`now` to zegar cyklu (orkiestrator podaje `started_at`); od niego liczy
-        się wiek referencji ceny (FIN-14). None = bieżący czas."""
+        się wiek referencji ceny (FIN-14) i dzień przydziału ramion eksperymentów
+        (EXP-05). None = bieżący czas."""
+        clock = now if now is not None else datetime.now(UTC)
         previous = self._repository.get_last_price(symbol)
         reference_at = self._reference_at(symbol) if previous else None
-        stale_reference = is_reference_stale(
-            reference_at, now if now is not None else datetime.now(UTC)
-        )
+        stale_reference = is_reference_stale(reference_at, clock)
 
         # Cold start: brak historii → previous=0 → delta=0 (guard w domenie) → ignore.
         initial_state: AgentState = {
@@ -81,6 +83,11 @@ class AnalyzeMarketUseCase:
         # Przekazujemy asset z klasyfikacją (STOCK/ETF), gdy dostępny z zewnątrz.
         if asset is not None:
             initial_state["asset"] = asset
+        # EXP-05: ramiona aktywnych eksperymentów per symbol-dzień UTC cyklu.
+        arms = active_arms(self._experiments, symbol, _utc_day(clock))
+        if arms:
+            logger.info("experiment arms for %s: %s", symbol, arms)
+            initial_state["experiment_arms"] = arms
 
         result: dict[str, Any] = self._app.invoke(initial_state)
         return result
@@ -102,3 +109,9 @@ class AnalyzeMarketUseCase:
                 exc_info=True,
             )
             return None
+
+
+def _utc_day(clock: datetime) -> date:
+    """Dzień UTC zegara cyklu — ten sam klucz cyklu co ewaluacja (`timestamp` UTC).
+    Zegar bez strefy traktujemy jak UTC."""
+    return clock.astimezone(UTC).date() if clock.tzinfo is not None else clock.date()

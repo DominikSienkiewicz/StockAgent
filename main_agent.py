@@ -1099,6 +1099,10 @@ def build_use_case(
         interval_columns_enabled=settings.interval_coverage_enabled,
         # EXP-01: kolumna `gate_delta` (migracja 034) za flagą.
         gate_delta_enabled=settings.gate_delta_enabled,
+        # EXP-05: eksperymenty (ramię per symbol-dzień liczy use case); kolumna
+        # `experiment_arms` (migracja 037) za flagą, kwit v2 za `receipts_enabled`.
+        experiments=settings.experiment_definitions(),
+        experiment_arms_enabled=settings.experiment_arms_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings),

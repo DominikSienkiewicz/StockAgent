@@ -4163,3 +4163,44 @@ class TestBenchmarkWiring:
         assert "IVV" not in page
         assert "NVDA" not in page
         assert "AMD" not in page
+
+
+class TestExperimentWiring:
+    """EXP-05 — definicje eksperymentów i flaga kolumny `experiment_arms`
+    (migracja 037) trafiają do `AgentGraphDeps`; flaga domyślnie off."""
+
+    def test_column_flag_defaults_off_and_no_experiments(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings)
+
+        deps = use_case_cls.call_args.args[0]
+        assert deps.experiment_arms_enabled is False
+        assert deps.experiments == ()
+
+    def test_definitions_and_flag_reach_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from datetime import date
+
+        from src.config import ExperimentSettings
+
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.experiment_arms_enabled = True
+        settings.experiments = {
+            "EXP-03": ExperimentSettings(
+                hypothesis="Pamięć pomaga.",
+                arms=["memory", "no_memory"],
+                start=date(2026, 11, 2),
+                end=date(2027, 1, 29),
+                primary_metric="hit_rate",
+            )
+        }
+
+        main_agent.build_use_case(settings)
+
+        deps = use_case_cls.call_args.args[0]
+        assert deps.experiment_arms_enabled is True
+        assert [experiment.id for experiment in deps.experiments] == ["EXP-03"]

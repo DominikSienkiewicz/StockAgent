@@ -2371,6 +2371,47 @@ class TestResolvedForEvalGateDelta:
             repo.get_resolved_predictions_for_eval(30, extra_fields=("gate_delta",))
 
 
+class TestResolvedForEvalExperimentArms:
+    """EXP-05: `evaluate --experiment` czyta ramiona z kolumny (migracja 037)
+    i z kwitu v2 (020) oraz konsensus rady (005) — tylko na żądanie."""
+
+    def _order_builder(self, mock_client: MagicMock) -> MagicMock:
+        chain = mock_client.table.return_value
+        return chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+
+    def test_arms_and_consensus_are_eval_fields(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_paginated_response(self._order_builder(mock_client), [[]])
+
+        repo.get_resolved_predictions_for_eval(
+            30,
+            extra_fields=("council_consensus", "experiment_arms", "receipt_experiment_arms"),
+        )
+
+        columns = mock_client.table.return_value.select.call_args.args[0]
+        assert ", experiment_arms" in columns
+        assert "receipt_experiment_arms:decision_receipts->experiment_arms" in columns
+        assert "council_consensus:council_verdict->>consensus_strength" in columns
+
+    def test_missing_arms_column_becomes_missing_column_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.infrastructure.adapters.supabase_repo import MissingColumnError
+
+        self._order_builder(mock_client).range.return_value.execute.side_effect = APIError(
+            {"code": "42703", "message": "column prediction_logs.experiment_arms does not exist"}
+        )
+
+        with pytest.raises(MissingColumnError) as raised:
+            repo.get_resolved_predictions_for_eval(
+                30, extra_fields=("council_consensus", "experiment_arms", "receipt_experiment_arms")
+            )
+
+        assert raised.value.column == "experiment_arms"
+
 class TestResolvedForEvalSkipsLlmFallback:
     """Atrapa po awarii LLM („SIDEWAYS 50%”, flaga `llm_analysis_failed`) nie jest
     predykcją — ewaluacja pomija ją tym samym filtrem co mail i Track Record."""

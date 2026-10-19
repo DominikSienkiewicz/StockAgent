@@ -12,6 +12,7 @@ Użycie:
     uv run python main_tools.py <podkomenda> [opcje]
     uv run python main_tools.py import-positions --csv pozycje.csv [--apply]
     uv run python main_tools.py evaluate [--days N] [--by-recipe] [--by X] [--echo]
+        [--experiment ID]
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.tools.evaluate import (
     GATE_DELTA_FIELD,
-    GATE_DELTA_UNAVAILABLE,
+    OPTIONAL_COLUMNS,
     SEGMENTATIONS,
     evaluation_reads,
     fields_kwarg,
@@ -40,6 +41,7 @@ from src.tools.import_positions import (
 )
 
 if TYPE_CHECKING:
+    from src.domain.experiment import Experiment
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
 Handler = Callable[[argparse.Namespace], int]
@@ -99,6 +101,14 @@ def _add_evaluate(subcommands: argparse._SubParsersAction[argparse.ArgumentParse
         action="store_true",
         help="Test echa momentum (EXP-01): trend LLM vs znak delty bramki — wymaga migracji 034.",
     )
+    parser.add_argument(
+        "--experiment",
+        metavar="ID",
+        help=(
+            "Porównanie ramion eksperymentu z config.toml (EXP-05): różnica metryk "
+            "z CI blokowym; ramiona z kolumny (migracja 037) albo z kwitu v2."
+        ),
+    )
     parser.set_defaults(handler=_run_evaluate)
 
 
@@ -109,14 +119,20 @@ def _run_evaluate(args: argparse.Namespace) -> int:
 
     segmentations = tuple(dict.fromkeys(args.by))
     settings = Settings.from_env()
+    experiment: Experiment | None = None
+    if args.experiment is not None:
+        experiment = _find_experiment(settings.experiment_definitions(), args.experiment)
+        if experiment is None:
+            return 1
     repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
     reads, fields = evaluation_reads(
         by_recipe=args.by_recipe,
         by_universe=args.by_universe,
         segmentations=segmentations,
         echo=args.echo,
+        experiment=experiment is not None,
     )
-    rows, echo = _read_evaluation_rows(repo, args.days, reads, fields)
+    rows, read_fields = _read_evaluation_rows(repo, args.days, reads, fields)
     if "asset_class" in segmentations:
         rows = with_asset_class(rows, settings.crypto_symbols, settings.symbols_etf)
     print(
@@ -126,33 +142,49 @@ def _run_evaluate(args: argparse.Namespace) -> int:
             segmentations=segmentations,
             by_recipe=args.by_recipe,
             by_universe=args.by_universe,
-            echo=echo,
+            echo=GATE_DELTA_FIELD in read_fields,
+            experiment=experiment,
         )
     )
     return 0
 
 
+def _find_experiment(experiments: Sequence[Experiment], experiment_id: str) -> Experiment | None:
+    """Definicja eksperymentu z configu; nieznane id → komunikat na stderr i None."""
+    for experiment in experiments:
+        if experiment.id == experiment_id:
+            return experiment
+    known = ", ".join(experiment.id for experiment in experiments) or "brak"
+    print(
+        f"❌ nieznany eksperyment {experiment_id} — zdefiniowane w config.toml: {known}",
+        file=sys.stderr,
+    )
+    return None
+
+
 def _read_evaluation_rows(
     repo: SupabaseRepository, days: int, reads: dict[str, Any], fields: set[str]
-) -> tuple[list[dict[str, Any]], bool]:
-    """Odczyt wierszy ewaluacji i to, czy niosą `gate_delta`.
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Odczyt wierszy ewaluacji i zbiór pól, które naprawdę odczytano.
 
-    Bez migracji 034 reszta raportu ma zostać: komunikat zamiast wyjątku
-    i ponowny odczyt bez delty bramki (test echa wtedy pomijamy jawnie)."""
+    Bez migracji kolumny opcjonalnej (`gate_delta` 034, `experiment_arms` 037)
+    reszta raportu ma zostać: komunikat zamiast wyjątku i ponowny odczyt bez
+    tej kolumny (test echa pomijamy wtedy jawnie, ramiona idą z kwitu v2)."""
     from src.infrastructure.adapters.supabase_repo import MissingColumnError
 
-    try:
-        rows = repo.get_resolved_predictions_for_eval(days=days, **reads, **fields_kwarg(fields))
-    except MissingColumnError as exc:
-        if exc.column != GATE_DELTA_FIELD:
-            raise
-        print(GATE_DELTA_UNAVAILABLE)
-        remaining = fields - {GATE_DELTA_FIELD}
-        return (
-            repo.get_resolved_predictions_for_eval(days=days, **reads, **fields_kwarg(remaining)),
-            False,
-        )
-    return rows, GATE_DELTA_FIELD in fields
+    remaining = set(fields)
+    while True:
+        try:
+            rows = repo.get_resolved_predictions_for_eval(
+                days=days, **reads, **fields_kwarg(remaining)
+            )
+        except MissingColumnError as exc:
+            if exc.column not in OPTIONAL_COLUMNS or exc.column not in remaining:
+                raise
+            print(OPTIONAL_COLUMNS[exc.column])
+            remaining.discard(exc.column)
+            continue
+        return rows, remaining
 
 
 def _add_import_positions(

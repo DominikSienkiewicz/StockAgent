@@ -3,12 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     NoDecode,
@@ -17,6 +25,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from src.domain.experiment import Experiment, ExperimentMetric, validate_experiments
 from src.domain.macro_risk import MacroRiskInstrumentType
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
 
@@ -102,6 +111,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "interval_coverage_enabled",
     # EXP-01: sam zapis delty bramki; test echa liczy ją offline w `evaluate`.
     "gate_delta_enabled",
+    # EXP-05: sam zapis ramion w kolumnie; definicje eksperymentów są w przepisie.
+    "experiment_arms_enabled",
     "model_scorecard_baselines_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
@@ -169,7 +180,23 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "reflection_max_age_hours",
     "rag_outcome_weight",
     "ml_model_path",
+    # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
+    "experiments",
 })
+
+
+class ExperimentSettings(BaseModel):
+    """EXP-05: jeden wpis `[experiments.<id>]` z `config.toml`. Domenową
+    walidację (ramiona, metryka, okno) robi `Experiment` przy starcie."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    hypothesis: str
+    arms: list[str]
+    start: date
+    end: date
+    primary_metric: ExperimentMetric
+    enabled: bool = False
 
 
 class Settings(BaseSettings):
@@ -336,6 +363,16 @@ class Settings(BaseSettings):
     # wywołań, prognoza bez zmian. Off: nowy klucz przed migracją → PGRST204
     # i śmierć zapisu całej predykcji.
     gate_delta_enabled: bool = False
+    # EXP-05: eksperymenty w pętli — id → definicja (hipoteza, ramiona, okno,
+    # metryka główna, `enabled`). Ramię przydziela sha256(id|symbol|dzień UTC)
+    # mod liczba ramion; pierwsze ramię to status quo. Walidacja przy starcie:
+    # nieznany zabieg, metryka spoza części promptu albo dwa włączone eksperymenty
+    # na tej samej części w nakładających się oknach zatrzymują start.
+    experiments: dict[str, ExperimentSettings] = Field(default_factory=dict)
+    # EXP-05: kolumna `prediction_logs.experiment_arms` (migracja 037). Ramię
+    # trafia też do kwitu v2 (za `receipts_enabled`, bez migracji). Off: nowy
+    # klucz przed migracją → PGRST204 i śmierć zapisu całej predykcji.
+    experiment_arms_enabled: bool = False
     # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
     # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr
@@ -647,6 +684,28 @@ class Settings(BaseSettings):
             self, "peer_groups", {sector: symbols for sector, symbols in derived.items() if symbols}
         )
         return self
+
+    @model_validator(mode="after")
+    def _validate_experiments(self) -> Settings:
+        """EXP-05: definicja, która nie zadziała zgodnie z zamiarem, zatrzymuje
+        start, zamiast po cichu zbierać dane z testu A/A."""
+        validate_experiments(self.experiment_definitions())
+        return self
+
+    def experiment_definitions(self) -> tuple[Experiment, ...]:
+        """EXP-05: domenowe definicje eksperymentów, posortowane po id."""
+        return tuple(
+            Experiment(
+                id=experiment_id,
+                hypothesis=definition.hypothesis,
+                arms=tuple(definition.arms),
+                start=definition.start,
+                end=definition.end,
+                primary_metric=definition.primary_metric,
+                enabled=definition.enabled,
+            )
+            for experiment_id, definition in sorted(self.experiments.items())
+        )
 
     @model_validator(mode="after")
     def _validate_reflection_age_window(self) -> Settings:

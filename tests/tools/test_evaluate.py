@@ -658,3 +658,164 @@ def test_default_confidence_is_segmented_apart_from_the_low_band():
     segments = {s.key: s for s in report.segments["confidence_bucket"]}
     assert (segments["0.50 (domyślna)"].n, segments["0.50 (domyślna)"].rate) == (1, 0.0)
     assert (segments["0.00-0.60"].n, segments["0.00-0.60"].rate) == (1, 1.0)
+
+
+def _council_experiment():
+    from datetime import date
+
+    from src.domain.experiment import Experiment, ExperimentMetric
+
+    return Experiment(
+        id="EXP-02",
+        hypothesis="Rada bez werdyktu LLM jest trafniejsza.",
+        arms=("sighted", "blind"),
+        start=date(2026, 8, 1),
+        end=date(2026, 8, 31),
+        primary_metric=ExperimentMetric.COUNCIL_HIT_RATE,
+    )
+
+
+def _arm_row(arm: str | None, day: int, *, source: str = "column", **fields) -> dict:
+    """Rozliczona predykcja BULLISH z ramieniem EXP-02 w kolumnie albo w kwicie."""
+    row = {
+        **_row("BULLISH", True, 100, 100, 101),
+        "timestamp": _day(day),
+        "confidence_score": 0.7,
+        "council_recommendation": "BUY",
+        "council_consensus": "0.8",
+        **fields,
+    }
+    if arm is not None:
+        key = "experiment_arms" if source == "column" else "receipt_experiment_arms"
+        row[key] = {"EXP-02": arm}
+    return row
+
+
+class TestExperimentEvaluation:
+    """EXP-05: `evaluate --experiment <id>` — różnica metryk między ramionami
+    (zabieg − kontrola) z n i n_eff per ramię i CI z bootstrapu blokowego po dniach."""
+
+    def test_rows_are_split_by_the_arm_from_column_or_receipt(self):
+        from src.tools.evaluate import summarize_experiment
+
+        rows = [
+            _arm_row("sighted", 0),
+            _arm_row("blind", 0, source="receipt"),
+            _arm_row("blind", 1, council_recommendation="SELL"),
+            _arm_row(None, 2),
+        ]
+
+        report = summarize_experiment(rows, _council_experiment())
+
+        assert report.arm_counts == {"sighted": 1, "blind": 2}
+        hit = {c.metric.value: c for c in report.comparisons}["council_hit_rate"]
+        assert (hit.control.n, hit.treatment.n) == (1, 2)
+        assert hit.control.mean == pytest.approx(1.0)
+        assert hit.treatment.mean == pytest.approx(0.5)
+        assert hit.difference == pytest.approx(-0.5)
+
+    def test_column_wins_over_the_receipt(self):
+        from src.tools.evaluate import summarize_experiment
+
+        row = {**_arm_row("blind", 0), "receipt_experiment_arms": {"EXP-02": "sighted"}}
+
+        assert summarize_experiment([row], _council_experiment()).arm_counts == {
+            "sighted": 0, "blind": 1,
+        }
+
+    def test_council_brier_uses_the_consensus_strength(self):
+        from src.tools.evaluate import summarize_experiment
+
+        report = summarize_experiment([_arm_row("sighted", 0)], _council_experiment())
+
+        brier = {c.metric.value: c for c in report.comparisons}["council_brier"]
+        assert brier.control.mean == pytest.approx((0.8 - 1.0) ** 2)
+
+    def test_formatted_section_names_the_hypothesis_primary_metric_and_n(self):
+        from src.tools.evaluate import format_experiment, summarize_experiment
+
+        rows = [
+            *(_arm_row("sighted", day) for day in range(25)),
+            *(_arm_row("blind", day, council_recommendation="SELL") for day in range(25)),
+        ]
+
+        text = format_experiment(summarize_experiment(rows, _council_experiment()))
+
+        assert "EXP-02" in text
+        assert "Rada bez werdyktu LLM jest trafniejsza." in text
+        assert "★ trafność rady" in text
+        assert "blind − sighted" in text
+        assert "-100.0 pp" in text
+        assert "n=25" in text
+        assert "n_eff" in text
+        assert "CI blokowe" in text
+
+    def test_small_sample_is_flagged(self):
+        from src.tools.evaluate import format_experiment, summarize_experiment
+
+        text = format_experiment(
+            summarize_experiment([_arm_row("sighted", 0)], _council_experiment())
+        )
+
+        assert "za mało danych" in text
+        assert "za mało cykli" in text
+
+    def test_experiment_flag_reads_arms_and_council_fields(self, mocker, capsys):
+        import main_tools
+
+        settings = mocker.patch("src.config.Settings.from_env").return_value
+        settings.experiment_definitions.return_value = (_council_experiment(),)
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        read = repo_cls.return_value.get_resolved_predictions_for_eval
+        read.return_value = [_arm_row("sighted", 0)]
+
+        code = main_tools.main(["evaluate", "--experiment", "EXP-02"])
+
+        assert code == 0
+        assert read.call_args.kwargs == {
+            "days": 30,
+            "extra_fields": (
+                "confidence_score",
+                "council_consensus",
+                "council_recommendation",
+                "experiment_arms",
+                "receipt_experiment_arms",
+            ),
+        }
+        assert "Eksperyment EXP-02" in capsys.readouterr().out
+
+    def test_missing_arms_column_falls_back_to_the_receipt(self, mocker, capsys):
+        import main_tools
+        from src.infrastructure.adapters.supabase_repo import MissingColumnError
+
+        settings = mocker.patch("src.config.Settings.from_env").return_value
+        settings.experiment_definitions.return_value = (_council_experiment(),)
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        read = repo_cls.return_value.get_resolved_predictions_for_eval
+        read.side_effect = [
+            MissingColumnError("experiment_arms"),
+            [_arm_row("blind", 0, source="receipt")],
+        ]
+
+        code = main_tools.main(["evaluate", "--experiment", "EXP-02"])
+
+        assert code == 0
+        assert "experiment_arms" not in read.call_args_list[1].kwargs["extra_fields"]
+        out = capsys.readouterr().out
+        assert "kolumna experiment_arms niedostępna — uruchom migrację 037" in out
+        assert "blind 1" in out
+
+    def test_unknown_experiment_is_reported_without_reading_the_database(
+        self, mocker, capsys
+    ):
+        import main_tools
+
+        settings = mocker.patch("src.config.Settings.from_env").return_value
+        settings.experiment_definitions.return_value = (_council_experiment(),)
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+
+        code = main_tools.main(["evaluate", "--experiment", "EXP-99"])
+
+        assert code == 1
+        repo_cls.return_value.get_resolved_predictions_for_eval.assert_not_called()
+        assert "EXP-99" in capsys.readouterr().err

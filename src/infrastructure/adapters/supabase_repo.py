@@ -94,6 +94,15 @@ _EVAL_EXTRA_FIELDS: dict[str, _EvalField] = {
     "alpha_fusion_score": _EvalField("alpha_fusion_score", "alpha_fusion_score"),  # 022
     "edge_sigma": _EvalField("edge_sigma", "edge_sigma"),  # 025
     "gate_delta": _EvalField("gate_delta", "gate_delta"),  # 034
+    # EXP-05 — konsensus rady (005) i ramiona eksperymentów: kolumna (037)
+    # oraz opcjonalny klucz kwitu v2 (020), z którego CLI czyta przed migracją.
+    "council_consensus": _EvalField(
+        "council_verdict", "council_consensus:council_verdict->>consensus_strength"
+    ),
+    "experiment_arms": _EvalField("experiment_arms", "experiment_arms"),  # 037
+    "receipt_experiment_arms": _EvalField(
+        "decision_receipts", "receipt_experiment_arms:decision_receipts->experiment_arms"
+    ),
 }
 
 # Kody PostgREST/Postgres dla kolumny, której nie ma w bazie (select → 42703).

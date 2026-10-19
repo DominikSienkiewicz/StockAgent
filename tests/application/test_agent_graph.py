@@ -3399,3 +3399,78 @@ class TestGateDeltaColumn:
         )
 
         assert "gate_delta" not in record
+
+
+class TestExperimentArmsRecord:
+    """EXP-05: ramiona aktywnych eksperymentów (stan grafu) trafiają do kwitu v2
+    jako opcjonalny klucz i — za flagą `experiment_arms_enabled` — do kolumny
+    `experiment_arms` (migracja 037). Bez flagi klucza kolumny nie ma wcale:
+    przed migracją to PGRST204 i śmierć zapisu całej predykcji."""
+
+    _ARMS = {"EXP-02": "sighted"}
+
+    def _record(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, arms: dict[str, str] | None, column: bool, receipts: bool = True,
+    ) -> dict:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        state = _initial_state("100.0")
+        if arms is not None:
+            state["experiment_arms"] = arms
+        create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            receipts_enabled=receipts,
+            recipe=_recipe(),
+            experiment_arms_enabled=column,
+        )).compile().invoke(state)
+        return repository_port.save_prediction.call_args.args[0]
+
+    def test_receipt_v2_carries_the_arms(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=self._ARMS, column=False,
+        )
+
+        receipt = record["decision_receipts"]
+        assert receipt["schema_version"] == 2
+        assert receipt["experiment_arms"] == self._ARMS
+
+    def test_without_an_active_experiment_the_receipt_has_no_arms_key(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=None, column=True,
+        )
+
+        assert "experiment_arms" not in record["decision_receipts"]
+        assert "experiment_arms" not in record
+
+    def test_flag_off_omits_the_column_even_with_arms(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=self._ARMS, column=False,
+        )
+
+        assert "experiment_arms" not in record
+
+    def test_flag_on_writes_the_arms_column(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=self._ARMS, column=True, receipts=False,
+        )
+
+        assert record["experiment_arms"] == self._ARMS
+        assert "decision_receipts" not in record

@@ -102,6 +102,11 @@ interval_coverage_enabled = false
 # — test echa momentum w `uv run python main_tools.py evaluate --echo` (offline, nie
 # w mailu). Historia z backfillu migracji. UWAGA: włącz DOPIERO po migracji 034 (PGRST204).
 gate_delta_enabled = false
+# EXP-05: eksperymenty w pętli (definicje `experiments.<id>.*` na końcu pliku) —
+# ramię per symbol-dzień UTC = sha256(id|symbol|dzień) mod liczba ramion. Ramię
+# idzie do kwitu v2 (za receipts_enabled, bez migracji); ta flaga dokłada kolumnę
+# `prediction_logs.experiment_arms`. UWAGA: włącz DOPIERO po migracji 037 (PGRST204).
+experiment_arms_enabled = false
 # WIA-19: okna „zamknięte predykcje” po chwili rozliczenia (`settled_at`, migracja
 # 029): sekcja maila = rozliczone w tym cyklu, recap = rozliczone w ostatnich 7 dniach.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 029 (inaczej 400 i sekcja znika).
@@ -275,3 +280,12 @@ sector_peers."Finanse" = ["JPM", "GS", "MS", "V", "MA"]
 # --- Risk Watch (osobny use case) ---
 risk_symbols = ["EPOL", "SH", "PSQ", "RWM", "EUM", "SQQQ", "TBT", "GLD", "VIXY", "UVXY"]
 risk_symbol_types = { EPOL = "SOVEREIGN_PROXY", SH = "INVERSE_EQUITY", PSQ = "INVERSE_EQUITY", RWM = "INVERSE_EQUITY", EUM = "INVERSE_EQUITY", SQQQ = "INVERSE_EQUITY", TBT = "INVERSE_TREASURY", GLD = "SAFE_HAVEN", VIXY = "VOLATILITY", UVXY = "VOLATILITY" }
+
+# --- Eksperymenty w pętli (EXP-05) ---
+# Klucz = id eksperymentu. Pola: hypothesis, arms (pierwsze = kontrolne, czyli
+# status quo; reszta to zabiegi znane kodowi: `blind` — prompt rady, `no_memory`
+# — prompt predykcji), start i end (dzień UTC cyklu, oba włącznie),
+# primary_metric (z metryk części promptu) i enabled. Aktywny = enabled i dzień
+# cyklu w oknie. Na jedną część promptu działa naraz co najwyżej jeden włączony
+# eksperyment (start pada przy nakładających się oknach). Zero nowych płatnych
+# wywołań. Ocena: `uv run python main_tools.py evaluate --experiment <id>`.

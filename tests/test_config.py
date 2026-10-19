@@ -747,3 +747,74 @@ class TestPaperCostSettings:
             _env_file=None, **REQUIRED_ENV_KWARGS, paper_cost_bps=30, crypto_paper_cost_bps=60
         ).config_hash()
         assert changed == baseline
+
+
+class TestExperimentSettings:
+    """EXP-05: definicje eksperymentów (`[experiments]` w config.toml) zmieniają
+    prompt, więc są w przepisie; flaga samego zapisu kolumny `experiment_arms`
+    (migracja 037) jest poza nim i domyślnie off."""
+
+    _DEFINITION = {
+        "hypothesis": "Rada bez werdyktu LLM jest trafniejsza.",
+        "arms": ["sighted", "blind"],
+        "start": "2026-11-02",
+        "end": "2027-01-29",
+        "primary_metric": "council_hit_rate",
+        "enabled": True,
+    }
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_defaults_to_no_experiments_and_the_column_off(self, env):
+        settings = self._settings()
+
+        assert settings.experiments == {}
+        assert settings.experiment_definitions() == ()
+        assert settings.experiment_arms_enabled is False
+
+    def test_definitions_become_domain_experiments(self, env):
+        from datetime import date
+
+        from src.domain.experiment import ExperimentMetric, PromptPart
+
+        settings = self._settings(experiments={"EXP-02": self._DEFINITION})
+
+        (experiment,) = settings.experiment_definitions()
+        assert experiment.id == "EXP-02"
+        assert experiment.arms == ("sighted", "blind")
+        assert experiment.start == date(2026, 11, 2)
+        assert experiment.primary_metric is ExperimentMetric.COUNCIL_HIT_RATE
+        assert experiment.part is PromptPart.COUNCIL
+        assert experiment.enabled is True
+
+    def test_unknown_treatment_arm_stops_the_start(self, env):
+        broken = {**self._DEFINITION, "arms": ["sighted", "blnd"]}
+
+        with pytest.raises(ValueError, match="unknown treatment arms"):
+            self._settings(experiments={"EXP-02": broken})
+
+    def test_unknown_metric_stops_the_start(self, env):
+        broken = {**self._DEFINITION, "primary_metric": "sharpe"}
+
+        with pytest.raises(ValueError):
+            self._settings(experiments={"EXP-02": broken})
+
+    def test_unknown_key_stops_the_start(self, env):
+        with pytest.raises(ValueError):
+            self._settings(experiments={"EXP-02": {**self._DEFINITION, "enabeld": True}})
+
+    def test_two_enabled_experiments_on_one_prompt_part_stop_the_start(self, env):
+        with pytest.raises(ValueError, match="overlapping"):
+            self._settings(
+                experiments={"EXP-02": self._DEFINITION, "EXP-09": self._DEFINITION}
+            )
+
+    def test_definitions_are_in_the_recipe_and_the_column_flag_is_not(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS, RECIPE_SETTINGS_FIELDS
+
+        assert "experiments" in RECIPE_SETTINGS_FIELDS
+        assert "experiment_arms_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = self._settings().config_hash()
+        assert self._settings(experiments={"EXP-02": self._DEFINITION}).config_hash() != baseline
+        assert self._settings(experiment_arms_enabled=True).config_hash() == baseline

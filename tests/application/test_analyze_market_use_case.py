@@ -513,3 +513,70 @@ class TestStaleReferenceRebaseline:
         assert result["status"] == "ignored"
         assert result["stale_reference"] is False
         assert result["reference_at"] is None
+
+
+class TestExperimentArms:
+    """EXP-05: use case przydziela ramiona AKTYWNYCH eksperymentów per
+    symbol-dzień UTC cyklu i podaje je grafowi w stanie. Bez aktywnego
+    eksperymentu stan jest taki jak przed EXP-05."""
+
+    _NOW = datetime(2026, 11, 2, 21, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _experiment(*, enabled: bool):
+        from datetime import date
+
+        from src.domain.experiment import ARM_NO_MEMORY, Experiment, ExperimentMetric
+
+        return Experiment(
+            id="EXP-03",
+            hypothesis="Lekcje i analogi poprawiają trafność.",
+            arms=("memory", ARM_NO_MEMORY),
+            start=date(2026, 11, 1),
+            end=date(2026, 12, 31),
+            primary_metric=ExperimentMetric.HIT_RATE,
+            enabled=enabled,
+        )
+
+    def _result(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, enabled: bool,
+    ) -> dict:
+        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            experiments=(self._experiment(enabled=enabled),),
+        ))
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))  # +0.5%
+        return use_case.run("AAPL", now=self._NOW)
+
+    def test_active_experiment_puts_the_assigned_arm_into_the_state(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from datetime import date
+
+        from src.domain.experiment import assign_arm
+
+        result = self._result(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )
+
+        expected = assign_arm("EXP-03", "AAPL", date(2026, 11, 2), ("memory", "no_memory"))
+        assert result["experiment_arms"] == {"EXP-03": expected}
+
+    def test_inactive_experiment_leaves_the_state_untouched(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        result = self._result(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=False,
+        )
+
+        assert "experiment_arms" not in result
