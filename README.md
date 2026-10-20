@@ -77,6 +77,28 @@ against the realised price, and fed back into the next run.
 The gate is the point: below the threshold no paid API is touched at all. A cycle where
 every symbol was filtered reports **zero paid calls**, and the report prints that bill.
 
+## What lands in the inbox
+
+One email per cycle, in Polish: the moves that matter first, then every past prediction
+scored against the realised price, the ranked signals, a block per analysed symbol (LLM reading,
+model forecast, advisory council, data-provenance badges, an 80% interval), and a back office
+with risk, the track record, the model scorecard and the cycle's bill. The sample below is
+rendered from fictional data, with English labels added for this screenshot; section by
+section it is described in [the report email](docs/report-email.md).
+
+<details>
+<summary>Annotated sample email (fictional data, rendered 2026-10-20)</summary>
+
+![Annotated sample of the report email, rendered from fictional data](docs/img/report-email.png)
+
+</details>
+
+The same sample as HTML is [docs/img/report-email.html](docs/img/report-email.html) (GitHub
+shows its source; open it locally in a browser). Render it yourself without any key, database
+or network: `uv run python main_tools.py render-sample-report` writes the HTML and the
+plain-text version to `build/sample-report/`. The screenshot is not regenerated
+automatically, so it can lag behind the email after a report change.
+
 ## Documentation
 
 | Document | What's in it |
