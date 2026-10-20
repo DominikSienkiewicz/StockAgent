@@ -242,11 +242,20 @@ def _format_analog(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     else:
         outcome = "wynik nieznany"
     insight = str(item.get("correction_insights") or "").strip()
-    line = f"  - [{trend}, {outcome}] {summary}"
+    # BEZ-06: prompt przycina analog od końca (fence ANALOGS, 900 znaków), więc
+    # symbol źródłowy, wynik i wniosek idą PRZED nagłówkami — limit utnie
+    # najwyżej ostatni nagłówek, nigdy lekcję.
+    source = str(item.get("symbol") or "").strip()
+    tag = ", ".join(part for part in (source, str(trend), outcome) if part)
+    parts = [f"[{tag}]"]
     # WIA-10: placeholder reflect_node (np. historyczne „diagnoza odłożona”)
     # nie jest wnioskiem — analog zostaje, ale bez fałszywej lekcji.
     if is_substantive_insight(insight):
-        line += f" → wniosek: {insight}"
+        parts.append(f"wniosek: {insight} —")
+    parts.append(f"nagłówki: {summary}")
+    # Jeden analog = jedna linia `similar_context` = jeden punkt fence'a, więc
+    # nowe linie z bazy (wieloliniowa diagnoza LLM-a) zwijamy do spacji.
+    line = " ".join(" ".join(parts).split())
     # #13: RPC zwraca `id` i `similarity`, a kod je gubił. Bez nich kwit
     # decyzyjny nie pozwala zaudytować, KTÓRY analog stał za predykcją.
     precedent = {
@@ -270,7 +279,8 @@ def _build_similar_context(
     rerankowane rekordy do reużycia jako precedent receipts (Q5).
 
     Zwraca `(similar_context, precedents)`:
-      - `similar_context` — tekstowy blok wstrzykiwany do promptu (jak dotąd),
+      - `similar_context` — jedna linia na analog; prompt ogradza je fence'em
+        ANALOGS (BEZ-06),
       - `precedents` — zwięzła lista top-N analogów `{summary, predicted_trend,
         is_trend_correct}` dla raportu ("dlaczego ta decyzja").
 

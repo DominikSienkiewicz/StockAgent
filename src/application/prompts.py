@@ -4,6 +4,20 @@ from typing import Any
 
 from src.application._prompt_safety import fence_untrusted
 
+# BEZ-06: analog to kilka nagłówków z wynikiem i wnioskiem, więc dostaje własny
+# limit — domyślne 300 znaków fence'a po cichu ucinało wnioski.
+_ANALOG_MAX_LEN = 900
+
+
+def _fence_analogs(similar_context: str) -> str:
+    """Analogi RAG (nagłówki i wnioski z bazy) jako fence DATA-ONLY: przechowany
+    prompt-injection omijał go, bo blok szedł do promptu wprost. Każda linia
+    `similar_context` to jeden analog i osobny punkt; punktor zdejmujemy, bo
+    fence stawia własny."""
+    lines = (line.strip() for line in similar_context.splitlines())
+    analogs = [line.removeprefix("- ").strip() for line in lines if line]
+    return fence_untrusted("ANALOGS", analogs, max_len=_ANALOG_MAX_LEN)
+
 
 def get_prediction_prompt(
     symbol: str,
@@ -24,7 +38,8 @@ def get_prediction_prompt(
       - cross-validation z Alpha Vantage sentymentem (LLM ocenia czy się zgadza
         z pre-computed sygnałem; rozbieżność = czerwona flaga, fake news?),
       - opcjonalny RAG: podobne historyczne sytuacje (similar_context) wyszukane
-        przez similarity search nad embeddingami newsów (pusty string = brak).
+        przez similarity search nad embeddingami newsów (pusty string = brak);
+        jedna linia = jeden analog w fence'u ANALOGS.
 
     `include_memory=False` (EXP-03, ramię `no_memory`) pomija oba bloki pamięci
     i odwołanie do lekcji w instrukcjach — reszta promptu bez zmian.
@@ -35,7 +50,7 @@ def get_prediction_prompt(
 Najbardziej podobne historyczne sytuacje (RAG po embeddingach newsów) i ich
 rzeczywisty wynik. Użyj ich jako analogii — czy obecny układ przypomina
 sytuację, w której prognoza się sprawdziła lub zawiodła?
-{similar_context}
+{_fence_analogs(similar_context)}
 </similar_past_situations>
 """
         if similar_context and include_memory
