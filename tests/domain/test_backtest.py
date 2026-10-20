@@ -20,7 +20,7 @@ class TestSummarizeFolds:
     względem baseline'u (zwrot=0) i binarny werdykt „bije / nie bije baseline".
     """
 
-    def test_means_are_arithmetic_over_folds(self):
+    def test_means_are_arithmetic_over_folds(self) -> None:
         folds = [
             {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60},
             {"candidate_rmse": 0.30, "baseline_rmse": 0.40, "hit_rate": 0.80},
@@ -33,7 +33,7 @@ class TestSummarizeFolds:
         assert abs(summary.mean_baseline_rmse - 0.30) < 1e-9
         assert abs(summary.mean_hit_rate - 0.70) < 1e-9
 
-    def test_improvement_pct_relative_to_baseline(self):
+    def test_improvement_pct_relative_to_baseline(self) -> None:
         # mean_candidate=0.20, mean_baseline=0.30 → (0.30-0.20)/0.30*100 ≈ 33.33%
         folds = [
             {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60},
@@ -44,7 +44,7 @@ class TestSummarizeFolds:
 
         assert abs(summary.improvement_pct - (10.0 / 30.0 * 100)) < 1e-9
 
-    def test_beats_baseline_true_when_candidate_rmse_lower(self):
+    def test_beats_baseline_true_when_candidate_rmse_lower(self) -> None:
         folds = [
             {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60},
         ]
@@ -54,7 +54,7 @@ class TestSummarizeFolds:
         assert summary.beats_baseline is True
         assert "bije baseline" in summary.verdict
 
-    def test_does_not_beat_baseline_when_candidate_rmse_higher(self):
+    def test_does_not_beat_baseline_when_candidate_rmse_higher(self) -> None:
         folds = [
             {"candidate_rmse": 0.40, "baseline_rmse": 0.20, "hit_rate": 0.30},
         ]
@@ -66,7 +66,7 @@ class TestSummarizeFolds:
         assert abs(summary.improvement_pct - (-100.0)) < 1e-9
         assert "nie bije baseline" in summary.verdict
 
-    def test_improvement_pct_zero_when_baseline_zero(self):
+    def test_improvement_pct_zero_when_baseline_zero(self) -> None:
         # Guard dzielenia przez zero: baseline=0 → improvement_pct=0.0
         folds = [
             {"candidate_rmse": 0.10, "baseline_rmse": 0.0, "hit_rate": 0.50},
@@ -78,7 +78,7 @@ class TestSummarizeFolds:
         # candidate 0.10 > baseline 0.0 → nie bije
         assert summary.beats_baseline is False
 
-    def test_verdict_mentions_improvement_percentage_when_beating(self):
+    def test_verdict_mentions_improvement_percentage_when_beating(self) -> None:
         folds = [
             {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60},
         ]
@@ -88,7 +88,7 @@ class TestSummarizeFolds:
         # Werdykt zawiera liczbę procent poprawy (50%).
         assert "50" in summary.verdict
 
-    def test_empty_folds_returns_brak_danych(self):
+    def test_empty_folds_returns_brak_danych(self) -> None:
         summary = summarize_folds([])
 
         assert summary == BacktestSummary(0, 0, 0, 0, 0, False, "brak danych")
@@ -96,7 +96,7 @@ class TestSummarizeFolds:
         assert summary.beats_baseline is False
         assert summary.verdict == "brak danych"
 
-    def test_summary_is_frozen(self):
+    def test_summary_is_frozen(self) -> None:
         summary = summarize_folds([])
 
         import dataclasses
@@ -123,7 +123,7 @@ def _folds(
     ]
 
 
-def test_tiny_improvement_does_not_beat_baseline():
+def test_tiny_improvement_does_not_beat_baseline() -> None:
     # ML-05: 0.5% poprawy to szum, nie „lepszy model". Próg 2% ustalony przed
     # spojrzeniem na wyniki — obniżanie go pod wynik byłoby p-hackingiem.
     assert beats_baseline(0.0200, 0.0201) is False
@@ -134,17 +134,17 @@ def test_tiny_improvement_does_not_beat_baseline():
     assert "nie bije baseline" in summary.verdict
 
 
-def test_improvement_above_the_relative_margin_beats_baseline():
+def test_improvement_above_the_relative_margin_beats_baseline() -> None:
     assert MIN_REL_IMPROVEMENT == 0.02
     assert beats_baseline(0.0190, 0.0200) is True
 
 
-def test_zero_baseline_is_never_beaten():
+def test_zero_baseline_is_never_beaten() -> None:
     # Bezbłędny baseline (zwrot zawsze 0) — nawet idealny kandydat go nie „bije".
     assert beats_baseline(0.0, 0.0) is False
 
 
-def test_too_few_oos_points_do_not_beat_baseline():
+def test_too_few_oos_points_do_not_beat_baseline() -> None:
     # ML-06: 4 foldy × 10 punktów = 40 < 60 — za mało na werdykt, nawet przy
     # wyraźnej poprawie RMSE.
     summary = summarize_folds(_folds(0.010, 0.020, n_valid=10))
@@ -154,7 +154,7 @@ def test_too_few_oos_points_do_not_beat_baseline():
     assert "za mało punktów OOS" in summary.verdict
 
 
-def test_enough_oos_points_keep_the_verdict():
+def test_enough_oos_points_keep_the_verdict() -> None:
     assert MIN_OOS_POINTS == 60
     summary = summarize_folds(_folds(0.010, 0.020, n_valid=15))
 
@@ -162,7 +162,7 @@ def test_enough_oos_points_keep_the_verdict():
     assert summary.beats_baseline is True
 
 
-def test_folds_without_n_valid_skip_the_oos_condition():
+def test_folds_without_n_valid_skip_the_oos_condition() -> None:
     # Brak klucza `n_valid` = warunek pominięty (kształt foldów sprzed ML-06).
     summary = summarize_folds(
         [{"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.6}]
@@ -172,7 +172,7 @@ def test_folds_without_n_valid_skip_the_oos_condition():
     assert summary.beats_baseline is True
 
 
-def test_purge_drops_training_rows_whose_label_overlaps_validation():
+def test_purge_drops_training_rows_whose_label_overlaps_validation() -> None:
     # ML-13: wiersz z chwili t ma etykietę (zwrot 12h) zrealizowaną w t+12h. W modelu
     # wspólnym wiersz innego symbolu z tej samej godziny w treningu „zna" ruch rynku,
     # który walidacja ma dopiero przewidzieć — przeciek przekrojowy.
@@ -186,7 +186,7 @@ def test_purge_drops_training_rows_whose_label_overlaps_validation():
     assert timedelta(hours=12) == LABEL_HORIZON
 
 
-def test_purge_keeps_everything_when_labels_settle_before_validation():
+def test_purge_keeps_everything_when_labels_settle_before_validation() -> None:
     start = datetime(2026, 10, 1, tzinfo=UTC)
     stamps = [start + timedelta(days=i) for i in range(10)]
 
@@ -200,7 +200,7 @@ def _ic_folds(ics: list[float]) -> list[dict[str, float]]:
     ]
 
 
-def test_summary_reports_mean_ic_and_t_stat():
+def test_summary_reports_mean_ic_and_t_stat() -> None:
     # ML-20: przy słabym sygnale RMSE nagradza model ściągający prognozy do zera;
     # o decyzji kierunkowej mówi porządek (IC), raportowany obok RMSE.
     summary = summarize_folds(_ic_folds([0.1, 0.2, 0.3, 0.2]))
@@ -211,7 +211,7 @@ def test_summary_reports_mean_ic_and_t_stat():
     assert summary.ic_t_stat == pytest.approx(0.2 / (0.02 / 3) ** 0.5 * 2)
 
 
-def test_ic_t_stat_needs_at_least_two_folds():
+def test_ic_t_stat_needs_at_least_two_folds() -> None:
     summary = summarize_folds(_ic_folds([0.3]))
 
     assert summary.mean_ic == pytest.approx(0.3)
@@ -219,7 +219,7 @@ def test_ic_t_stat_needs_at_least_two_folds():
     assert summary.ic_t_stat is None
 
 
-def test_ic_fields_stay_empty_when_folds_carry_no_ic():
+def test_ic_fields_stay_empty_when_folds_carry_no_ic() -> None:
     summary = summarize_folds(
         [{"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.6}]
     )
@@ -244,7 +244,7 @@ def _baseline_folds(
     ]
 
 
-def test_candidate_must_also_beat_the_llm_only_baseline():
+def test_candidate_must_also_beat_the_llm_only_baseline() -> None:
     # ML-10: XGBoost dostaje `llm_trend_signal` jako cechę — kandydat, który bije
     # zero, ale nie bije przeskalowanego samego sygnału LLM, tylko przepisuje LLM.
     summary = summarize_folds(_baseline_folds(0.0200, 0.0300, 0.0300, 0.0201))
@@ -254,14 +254,14 @@ def test_candidate_must_also_beat_the_llm_only_baseline():
     assert "sam LLM" in summary.verdict
 
 
-def test_candidate_must_also_beat_the_mean_drift_baseline():
+def test_candidate_must_also_beat_the_mean_drift_baseline() -> None:
     summary = summarize_folds(_baseline_folds(0.0200, 0.0300, 0.0202, 0.0300))
 
     assert summary.beats_baseline is False
     assert "dryf" in summary.verdict
 
 
-def test_gate_uses_the_same_relative_margin_against_the_strongest_baseline():
+def test_gate_uses_the_same_relative_margin_against_the_strongest_baseline() -> None:
     # 0.0195 vs najsilniejszy 0.0200 = 2.5% ≥ MIN_REL_IMPROVEMENT → przechodzi.
     summary = summarize_folds(_baseline_folds(0.0195, 0.0300, 0.0250, 0.0200))
 
@@ -271,7 +271,7 @@ def test_gate_uses_the_same_relative_margin_against_the_strongest_baseline():
     assert "sam LLM" in summary.verdict
 
 
-def test_folds_without_the_extra_baselines_keep_the_zero_return_gate():
+def test_folds_without_the_extra_baselines_keep_the_zero_return_gate() -> None:
     # Kształt foldów sprzed ML-10 (np. offline harness ze starym adapterem).
     summary = summarize_folds(_folds(0.010, 0.020, n_valid=15))
 
@@ -295,7 +295,7 @@ def _strategy_folds(*pairs: tuple[float, float]) -> list[dict[str, float]]:
     ]
 
 
-def test_summary_reports_mean_net_return_after_turnover_costs():
+def test_summary_reports_mean_net_return_after_turnover_costs() -> None:
     # WIA-50: turnover foldu liczy odwrócenie jako 1, czyli połowę obróconego
     # kapitału (dwie nogi). Turnover 0.5 = jedna noga na wiersz → 10 bps.
     summary = summarize_folds(_strategy_folds((0.002, 0.5), (0.004, 0.0)), cost_bps=10)
@@ -304,14 +304,14 @@ def test_summary_reports_mean_net_return_after_turnover_costs():
     assert summary.mean_net_return == pytest.approx(((0.002 - 0.001) + 0.004) / 2)
 
 
-def test_net_return_equals_the_gross_strategy_return_without_costs():
+def test_net_return_equals_the_gross_strategy_return_without_costs() -> None:
     summary = summarize_folds(_strategy_folds((0.002, 1.0), (0.004, 0.5)))
 
     assert summary.mean_net_return == pytest.approx(0.003)
     assert summary.turnover == pytest.approx(0.75)
 
 
-def test_net_return_and_turnover_stay_empty_without_strategy_metrics():
+def test_net_return_and_turnover_stay_empty_without_strategy_metrics() -> None:
     summary = summarize_folds(
         [{"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.6}], cost_bps=10
     )
@@ -320,7 +320,7 @@ def test_net_return_and_turnover_stay_empty_without_strategy_metrics():
     assert summary.turnover is None
 
 
-def test_costs_do_not_move_the_rmse_verdict():
+def test_costs_do_not_move_the_rmse_verdict() -> None:
     folds = _strategy_folds((0.002, 1.0))
 
     assert summarize_folds(folds, cost_bps=50).verdict == summarize_folds(folds).verdict

@@ -7,6 +7,8 @@ rozbicia. Cennik to stała modułu — jedno źródło prawdy.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any, cast
+
 import pytest
 
 from src.domain.finops import (
@@ -16,6 +18,9 @@ from src.domain.finops import (
     cycle_call_upper_bound,
     estimate_cycle_cost,
 )
+
+if TYPE_CHECKING:
+    from src.domain.finops import ModelPrice
 
 
 def test_zero_calls_is_free() -> None:
@@ -179,7 +184,7 @@ def test_fully_gated_cycle_has_a_zero_bound() -> None:
 )
 def test_upper_bound_rejects_negative_inputs(field: str) -> None:
     with pytest.raises(ValueError, match=field):
-        _bound(**{field: -1})
+        _bound(**cast(dict[str, Any], {field: -1}))
 
 
 # --- FIN-32: niezmiennik dobowego budżetu Alpha Vantage -------------------------
@@ -309,7 +314,7 @@ def test_slow_loop_budget_rejects_negative_inputs(
 # --- FIN-13: koszt z prawdziwych tokenów (cennik per model) ----------------------
 
 
-def _sonnet_rates() -> dict[str, object]:
+def _sonnet_rates() -> dict[str, ModelPrice]:
     from src.domain.finops import ModelPrice
 
     return {

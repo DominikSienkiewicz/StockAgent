@@ -15,37 +15,37 @@ class TestBetaToPortfolio:
     """Beta = cov(asset, market) / var(market), populacyjne kowariancja/wariancja
     (stdlib). Flat market → 0.0, nierówne długości → truncacja do krótszej."""
 
-    def test_identical_series_beta_one(self):
+    def test_identical_series_beta_one(self) -> None:
         market = [0.01, -0.02, 0.03, -0.01, 0.02]
         assert beta_to_portfolio(market, market) == pytest.approx(1.0)
 
-    def test_scaled_series_beta_two(self):
+    def test_scaled_series_beta_two(self) -> None:
         market = [0.01, -0.02, 0.03, -0.01, 0.02]
         asset = [2 * r for r in market]
         assert beta_to_portfolio(asset, market) == pytest.approx(2.0)
 
-    def test_inverse_series_beta_negative_one(self):
+    def test_inverse_series_beta_negative_one(self) -> None:
         market = [0.01, -0.02, 0.03, -0.01, 0.02]
         asset = [-r for r in market]
         assert beta_to_portfolio(asset, market) == pytest.approx(-1.0)
 
-    def test_flat_market_returns_zero(self):
+    def test_flat_market_returns_zero(self) -> None:
         # Wariancja rynku = 0 → beta 0.0 zamiast dzielenia przez zero.
         market = [0.0, 0.0, 0.0, 0.0]
         asset = [0.01, -0.02, 0.03, -0.01]
         assert beta_to_portfolio(asset, market) == pytest.approx(0.0)
 
-    def test_unequal_length_truncates_to_shorter(self):
+    def test_unequal_length_truncates_to_shorter(self) -> None:
         # Asset dłuższy o jeden punkt — liczone tylko na wspólnym prefiksie.
         market = [0.01, -0.02, 0.03, -0.01, 0.02]
         asset = [2 * r for r in market] + [0.5]
         assert beta_to_portfolio(asset, market) == pytest.approx(2.0)
 
-    def test_too_few_paired_points_returns_zero(self):
+    def test_too_few_paired_points_returns_zero(self) -> None:
         assert beta_to_portfolio([0.01], [0.02]) == pytest.approx(0.0)
         assert beta_to_portfolio([], []) == pytest.approx(0.0)
 
-    def test_result_is_finite_float(self):
+    def test_result_is_finite_float(self) -> None:
         beta = beta_to_portfolio([0.02, -0.01, 0.03], [0.01, -0.02, 0.03])
         assert isinstance(beta, float)
         assert math.isfinite(beta)
@@ -54,14 +54,14 @@ class TestBetaToPortfolio:
 class TestScenarioDataclasses:
     """Scenario i ScenarioImpact to mrożone value objects."""
 
-    def test_scenario_is_frozen(self):
+    def test_scenario_is_frozen(self) -> None:
         scenario = Scenario(name="krach", market_shock=-0.10)
         assert scenario.name == "krach"
         assert scenario.market_shock == pytest.approx(-0.10)
         with pytest.raises(FrozenInstanceError):
             scenario.market_shock = -0.20  # type: ignore[misc]
 
-    def test_scenario_impact_is_frozen(self):
+    def test_scenario_impact_is_frozen(self) -> None:
         impact = ScenarioImpact(
             scenario_name="krach",
             market_shock=-0.10,
@@ -81,7 +81,7 @@ class TestStressTest:
     per_symbol = beta*shock, portfolio_pnl = średnia równoważona, worst_symbol
     = najbardziej ujemny per_symbol."""
 
-    def test_per_symbol_pnl_is_beta_times_shock(self):
+    def test_per_symbol_pnl_is_beta_times_shock(self) -> None:
         market = [0.01, -0.02, 0.03, -0.01, 0.02]
         returns_by_symbol = {
             "ONE": list(market),  # beta 1.0
@@ -94,7 +94,7 @@ class TestStressTest:
         assert impact.per_symbol["ONE"] == pytest.approx(-0.10)
         assert impact.per_symbol["TWO"] == pytest.approx(-0.20)
 
-    def test_portfolio_pnl_is_equal_weight_mean(self):
+    def test_portfolio_pnl_is_equal_weight_mean(self) -> None:
         market = [0.01, -0.02, 0.03, -0.01, 0.02]
         returns_by_symbol = {
             "ONE": list(market),  # beta 1.0 → -0.10
@@ -105,7 +105,7 @@ class TestStressTest:
         # Średnia (-0.10, -0.20) = -0.15.
         assert impact.portfolio_pnl == pytest.approx(-0.15)
 
-    def test_worst_symbol_is_most_negative(self):
+    def test_worst_symbol_is_most_negative(self) -> None:
         market = [0.01, -0.02, 0.03, -0.01, 0.02]
         returns_by_symbol = {
             "ONE": list(market),  # beta 1.0
@@ -116,7 +116,7 @@ class TestStressTest:
         assert impact.worst_symbol == "TWO"
         assert impact.worst_pnl == pytest.approx(-0.20)
 
-    def test_positive_shock_flips_worst_symbol(self):
+    def test_positive_shock_flips_worst_symbol(self) -> None:
         # Przy szoku dodatnim najbardziej ujemny per_symbol ma symbol z ujemną betą.
         market = [0.01, -0.02, 0.03, -0.01, 0.02]
         returns_by_symbol = {
@@ -129,7 +129,7 @@ class TestStressTest:
         assert impact.worst_symbol == "SHORT"
         assert impact.worst_pnl == pytest.approx(-0.10)
 
-    def test_multiple_scenarios_one_impact_each(self):
+    def test_multiple_scenarios_one_impact_each(self) -> None:
         market = [0.01, -0.02, 0.03, -0.01, 0.02]
         returns_by_symbol = {"ONE": list(market)}
         scenarios = [
@@ -140,7 +140,7 @@ class TestStressTest:
         assert len(impacts) == 2
         assert [i.scenario_name for i in impacts] == ["krach", "rajd"]
 
-    def test_scenario_metadata_propagated(self):
+    def test_scenario_metadata_propagated(self) -> None:
         market = [0.01, -0.02, 0.03, -0.01, 0.02]
         returns_by_symbol = {"ONE": list(market)}
         scenarios = [Scenario(name="krach", market_shock=-0.10)]
@@ -148,7 +148,7 @@ class TestStressTest:
         assert impact.scenario_name == "krach"
         assert impact.market_shock == pytest.approx(-0.10)
 
-    def test_empty_symbols_yields_empty_per_symbol_and_none_worst(self):
+    def test_empty_symbols_yields_empty_per_symbol_and_none_worst(self) -> None:
         market = [0.01, -0.02, 0.03]
         scenarios = [Scenario(name="krach", market_shock=-0.10)]
         impacts = stress_test({}, market, scenarios)
@@ -158,10 +158,10 @@ class TestStressTest:
         assert impact.worst_symbol is None
         assert impact.portfolio_pnl == pytest.approx(0.0)
 
-    def test_no_scenarios_yields_empty_list(self):
+    def test_no_scenarios_yields_empty_list(self) -> None:
         market = [0.01, -0.02, 0.03]
         returns_by_symbol = {"ONE": list(market)}
         assert stress_test(returns_by_symbol, market, []) == []
 
-    def test_empty_inputs_graceful(self):
+    def test_empty_inputs_graceful(self) -> None:
         assert stress_test({}, [], []) == []

@@ -220,6 +220,6 @@ class TestClusterBootstrapDifference:
     def test_an_arm_without_observations_gives_no_interval(self) -> None:
         from src.domain.significance import cluster_bootstrap_difference_ci
 
-        cycles = [([1.0, 0.0], []) for _ in range(25)]
+        cycles: list[tuple[list[float], list[float]]] = [([1.0, 0.0], []) for _ in range(25)]
 
         assert cluster_bootstrap_difference_ci(cycles, n_boot=100) is None

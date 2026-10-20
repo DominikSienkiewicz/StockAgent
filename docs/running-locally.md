@@ -192,7 +192,7 @@ uv run pytest -m containers                    # Docker/Postgres schema tests
 uv run pytest -m integration                   # live API tests (requires real keys)
 uv run pytest tests/application/test_report_builder_snapshot.py --update-golden  # rewrite the email golden snapshots after an intended email change
 uv run ruff check .                # lint (same command as CI)
-uv run mypy                        # type check (strict) on [tool.mypy].files: src + every main_*.py
+uv run mypy                        # type check (strict) on [tool.mypy].files: src + every main_*.py + tests/domain (tests/ joins directory by directory)
 ```
 
 Every evaluation number (the headline, `--by` segments and `--echo`) skips the placeholder rows saved after a failed main LLM call (`llm_analysis_failed`, the neutral "SIDEWAYS 50%"), with the same filter the email and the Track Record use: they are not predictions.

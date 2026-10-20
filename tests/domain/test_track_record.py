@@ -7,6 +7,8 @@ Hit-rate bez punktu odniesienia nic nie dowodzi: w hossie strategia
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from src.domain.number_format import DecimalMark
@@ -45,7 +47,7 @@ class TestNaiveBaselines:
     def test_best_directional_baseline_is_the_stronger_of_long_and_short(self) -> None:
         best = naive_baselines([0.02, -0.01, 0.03]).best_directional
 
-        assert best == ("BULLISH", pytest.approx(2 / 3))
+        assert best == ("BULLISH", cast(float, pytest.approx(2 / 3)))
 
     def test_empty_changes_have_no_baseline(self) -> None:
         assert naive_baselines([]) == NaiveBaselines(

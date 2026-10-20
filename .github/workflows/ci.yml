@@ -35,7 +35,8 @@ jobs:
         run: uv run --frozen --no-build --no-sync ruff check .
 
       - name: 🔎 Mypy (strict type check)
-        # Gołe `mypy` = pliki z `[tool.mypy].files` (src + wszystkie main_*.py).
+        # Gołe `mypy` = pliki z `[tool.mypy].files` (src + wszystkie main_*.py
+        # + katalogi tests/ dodane ratchetem, od tests/domain).
         # Zgodność z CLAUDE.md / AGENTS.md / docs pilnuje tests/test_quality_gate_sync.py.
         run: uv run --frozen --no-build --no-sync mypy
 

@@ -5,6 +5,8 @@ INVERTED/FLAT/NORMAL oraz graceful obsługę braków (None)."""
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from src.domain.macro_rates import YieldCurveSnapshot, YieldCurveState
@@ -103,4 +105,4 @@ class TestYieldCurveAlertLevel:
         regime = detector.classify(macro_alert=vote, risk_signals=[])
 
         assert regime is MarketRegime.NEUTRAL
-        assert regime is not MarketRegime.RISK_OFF
+        assert cast(MarketRegime, regime) is not MarketRegime.RISK_OFF

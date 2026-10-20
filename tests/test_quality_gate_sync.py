@@ -27,6 +27,8 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 GATE_DOCS = ("CLAUDE.md", "AGENTS.md", "docs/running-locally.md")
 GATE_TOOLS = ("ruff", "mypy")
 AGENT_DOCS = ("CLAUDE.md", "AGENTS.md")
+# TEST-13: katalogi `tests/` już objęte bramką mypy — lista tylko rośnie.
+MYPY_RATCHET = ("tests/domain",)
 
 
 def _entrypoints() -> list[str]:
@@ -144,3 +146,11 @@ def test_agent_docs_pytest_gate_skips_live_api_tests(doc: str) -> None:
         f"{doc}: bramka pytest bez 'not integration' ({quoted}) uruchomi testy na żywym API"
     )
     assert quoted[0] == ci_marker, f"{doc} cytuje -m {quoted[0]!r}, a CI -m {ci_marker!r}"
+
+
+def test_mypy_ratchet_keeps_the_typed_test_directories() -> None:
+    files = _mypy_files()
+
+    assert "tests/domain" in files
+    missing = [directory for directory in MYPY_RATCHET if directory not in files]
+    assert not missing, f"[tool.mypy].files zgubiło katalogi ratchetu: {missing}"

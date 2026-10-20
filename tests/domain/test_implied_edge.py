@@ -134,7 +134,9 @@ class TestEdgeLabelForSigma:
             (float("nan"), EdgeLabel.NO_SIGNAL),
         ],
     )
-    def test_sigma_maps_to_the_evaluate_edge_label(self, sigma, label) -> None:
+    def test_sigma_maps_to_the_evaluate_edge_label(
+        self, sigma: float | None, label: EdgeLabel
+    ) -> None:
         from src.domain.implied_edge import edge_label_for_sigma
 
         assert edge_label_for_sigma(sigma) is label
