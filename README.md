@@ -18,6 +18,36 @@ email with charts and its own running hit-rate.
 ![Quality Gate](https://img.shields.io/sonar/quality_gate/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud&label=Quality%20Gate)
 ![Coverage](https://img.shields.io/sonar/coverage/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud)
 
+## Engineering evidence (10-minute tour)
+
+Each claim links the file that backs it, and each of those runs in CI.
+
+- **The domain is plain Python.** → [`tests/test_architecture.py`](tests/test_architecture.py)
+  → parses every import (local and `TYPE_CHECKING` ones included) and fails when the domain
+  reaches beyond the standard library or the application reaches into the infrastructure.
+- **The schema is tested on a real Postgres with pgvector, not on mocks.** →
+  [`tests/infrastructure/test_migrations.py`](tests/infrastructure/test_migrations.py) →
+  applies every migration in a container, including the regression where `013` met
+  duplicate rows from before idempotency and must deduplicate before its unique index.
+- **A model ships only if it beats naive baselines out of sample.** →
+  [`src/infrastructure/adapters/xgboost_local.py`](src/infrastructure/adapters/xgboost_local.py)
+  → expanding-window walk-forward folds against the no-change, mean-drift and LLM-only
+  baselines; so far it has shipped nothing, and the report says so.
+- **Every external source is a port with a safe fallback.** →
+  [`src/application/ports.py`](src/application/ports.py) (`InsiderFlowPort`) →
+  [`src/infrastructure/adapters/edgar_insider.py`](src/infrastructure/adapters/edgar_insider.py)
+  (EDGAR adapter and `NullInsiderFlowAdapter`) → the composition root picks one, and the
+  graph never knows which.
+- **Untrusted text cannot break the email or leak from the public page.** →
+  [`tests/application/test_report_builder.py`](tests/application/test_report_builder.py)
+  escapes LLM, news and error text and rejects non-http(s) links;
+  [`tests/application/test_report_public_scorecard.py`](tests/application/test_report_public_scorecard.py)
+  feeds the public scorecard a symbol, an email address and prices, and asserts none of them
+  reaches the page.
+- **The docs cannot point at nothing.** → [`tests/test_markdown_links.py`](tests/test_markdown_links.py)
+  → every relative link in tracked Markdown must resolve, in the same pytest gate that runs
+  locally and in CI.
+
 ## Status
 
 **The daily report run is paused** since 2026-08-17, when commit `02fc397` commented out
@@ -56,6 +86,15 @@ dashboard, every job fails on connect. The daily deadman therefore starts each r
 read-only query of one `price_snapshots` row through PostgREST, with no paid keys, and mails
 when the database does not answer. It is a monitor, not a keepalive: it reports a pause that
 has already happened, and it does not guarantee that Supabase will not pause the project.
+
+## Who this is for
+
+For now StockAgent is a portfolio project that has to carry live, verifiable evidence, not a
+subscription product, and that decides the order of work: docs that claim only what the code
+does; public proof (the public scorecard and the commit-reveal log of predictions); a demo
+that renders without any key and the reviewer's tour above; and only then subscriptions, with
+the GDPR and terms-of-service work they need. The public hit rate may turn out weak. It gets
+published anyway: a weak result anyone can check says more than a strong one nobody can.
 
 ## 🧠 The Vision: Signal over Noise
 
@@ -152,6 +191,40 @@ rows through XGBoost walk-forward folds, and
 `tests/test_main_entrypoints.py::TestMainBacktest::test_backtest_builds_no_paid_adapter` fails
 if it ever builds an OpenAI, Anthropic or Alpha Vantage client. The LLM's record is the live
 one: predictions written before the outcome and scored once it is known.
+
+## What this does NOT prove (known limitations)
+
+The rule: a claim in this README links the code or the test behind it, and the limit of a
+claim is written next to the code, where a change has to face it.
+
+1. **Attestation is tamper-evidence, not a timestamp.** The docstring of
+   [`src/domain/attestation.py`](src/domain/attestation.py) says so: Git commit dates can be
+   forged, so commit-reveal only shows that a published commitment was not altered later
+   under branch protection. Today nothing is published: `attestation_enabled` stays off until
+   a workflow has a publish step.
+2. **The model scorecard describes the candidate, not the shipped model.** `METRIC_NOTE` in
+   [`src/domain/model_scorecard.py`](src/domain/model_scorecard.py), printed under every
+   scorecard: the metrics come from walk-forward folds, while the shipped model is refit on
+   all data and not validated again.
+3. **The cycle cost is an estimate.** [`src/application/report_finops.py`](src/application/report_finops.py)
+   marks every amount not priced from tokens as an estimate and ends the section with a note
+   that it is not an invoice; [configuration](docs/configuration.md) lists the requests the
+   meter does not see.
+4. **No trained weights yet.** The XGBoost leg runs on the no-change baseline, and the report
+   and the council prompt label it as cold-start (see [Status](#status)).
+5. **Nothing is public yet, and the daily run is paused.** The public scorecard and the
+   attestation log are implemented and unit-tested but not deployed (see the
+   [resume checklist](docs/resume-checklist.md)), and with the daily run paused since
+   2026-08-17 no live track record is accumulating.
+
+Each channel carries its own honesty note:
+
+| Channel | Honesty note it carries |
+|---|---|
+| Report email, every cycle | The investment disclaimer in the footer, the cost as an estimate, `METRIC_NOTE` under the model scorecard, and a cold-start label while there are no weights |
+| Public scorecard (not deployed yet) | A methodology section, the naive "always BULLISH" baseline next to the hit rate, and no symbols, addresses or amounts (an anti-PII test) |
+| Attestation log (not published yet) | Tamper-evidence under branch protection, not a timestamp; canonicalisation frozen by golden tests |
+| GitHub Actions run summary (public) | Aggregates only: no symbol, address, error text, price or position |
 
 ## Disclaimer
 
