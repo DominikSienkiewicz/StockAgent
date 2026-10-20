@@ -126,6 +126,10 @@ class AlphaVantageClient:
         # zwróciły rate-limit, feed jest (potencjalnie) niekompletny. Bez
         # tego sygnału pusty feed wygląda identycznie jak "spokojny dzień".
         self._degraded_reason: str | None = None
+        # DAT-07: degradacja PER SYMBOL (wire ticker → powód), np. payload bez
+        # `feed` i bez markera limitu. `sentiment_for` dokłada ją tylko temu
+        # symbolowi — flaga cykliczna oflagowałaby wszystkie.
+        self._symbol_degraded_reasons: dict[str, str] = {}
         # DAT-06: ostatni soft-limit przed wyczerpaniem był minutowy (`Note`) —
         # wtedy alert nie może mówić o dziennym limicie 25 zapytań.
         self._exhausted_by_frequency_limit = False
@@ -207,6 +211,8 @@ class AlphaVantageClient:
                 self._mark_keys_exhausted()
                 break
 
+            if "feed" not in payload:
+                self._mark_unexpected_payload(batch, payload)
             self._collect_unique_articles(payload, combined, seen_urls)
 
         self._cached_feed = combined
@@ -226,6 +232,21 @@ class AlphaVantageClient:
             if url:
                 seen_urls.add(url)
             combined.append(article)
+
+    def _mark_unexpected_payload(
+        self, tickers: list[str], payload: dict[str, Any]
+    ) -> None:
+        """Payload bez `feed` i bez markera limitu (`Error Message`, `{}`) —
+        flaga tylko dla tickerów tego batcha. Log niesie same klucze payloadu:
+        wartości bywają długie, a do diagnozy kształtu wystarczą nazwy pól."""
+        logger.error(
+            "Alpha Vantage NEWS_SENTIMENT returned an unexpected payload for %s "
+            "(keys: %s) — no feed and no rate-limit marker.",
+            ",".join(tickers),
+            sorted(payload),
+        )
+        for ticker in tickers:
+            self._symbol_degraded_reasons.setdefault(ticker, "av_unexpected_payload")
 
     def _mark_keys_exhausted(self) -> None:
         """Wystawia sygnał degradacji + CRITICAL alert (idempotentnie).
@@ -397,32 +418,12 @@ class AlphaVantageClient:
         Zwraca multi-feature dict — wszystkie pola są bezpośrednio
         konsumowalne przez warstwę aplikacji i jako features ML.
         """
-        articles = self.articles_for(symbol)
-
-        if not articles:
-            return {
-                "av_sentiment_score": 0.0,
-                "av_relevance_avg": 0.0,
-                "news_volume_24h": 0,
-                "high_relevance_count": 0,
-                "av_sentiment_label": "Neutral",
-            }
-
-        total_weight = sum(a["relevance_score"] for a in articles) or 1.0
-        weighted_sentiment = (
-            sum(a["ticker_sentiment_score"] * a["relevance_score"] for a in articles)
-            / total_weight
-        )
-        avg_relevance = sum(a["relevance_score"] for a in articles) / len(articles)
-        high_rel = sum(1 for a in articles if a["relevance_score"] >= HIGH_RELEVANCE_BAR)
-
-        return {
-            "av_sentiment_score": round(weighted_sentiment, 4),
-            "av_relevance_avg": round(avg_relevance, 4),
-            "news_volume_24h": len(articles),
-            "high_relevance_count": high_rel,
-            "av_sentiment_label": _score_to_label(weighted_sentiment),
-        }
+        features = _sentiment_features(self.articles_for(symbol))
+        # DAT-07: degradacja tego symbolu (nie całego cyklu) jedzie w payloadzie.
+        reason = self._symbol_degraded_reasons.get(self._to_wire(symbol))
+        if reason is not None:
+            features["degraded_reason"] = reason
+        return features
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -469,6 +470,34 @@ def _parse_time_published(raw: object) -> datetime | None:
         return datetime.strptime(str(raw), _TIME_PUBLISHED_FORMAT).replace(tzinfo=UTC)
     except ValueError:
         return None
+
+
+def _sentiment_features(articles: list[dict[str, Any]]) -> dict[str, Any]:
+    """Relevance-weighted agregata artykułów jednego symbolu (cechy ML i promptu)."""
+    if not articles:
+        return {
+            "av_sentiment_score": 0.0,
+            "av_relevance_avg": 0.0,
+            "news_volume_24h": 0,
+            "high_relevance_count": 0,
+            "av_sentiment_label": "Neutral",
+        }
+
+    total_weight = sum(a["relevance_score"] for a in articles) or 1.0
+    weighted_sentiment = (
+        sum(a["ticker_sentiment_score"] * a["relevance_score"] for a in articles)
+        / total_weight
+    )
+    avg_relevance = sum(a["relevance_score"] for a in articles) / len(articles)
+    high_rel = sum(1 for a in articles if a["relevance_score"] >= HIGH_RELEVANCE_BAR)
+
+    return {
+        "av_sentiment_score": round(weighted_sentiment, 4),
+        "av_relevance_avg": round(avg_relevance, 4),
+        "news_volume_24h": len(articles),
+        "high_relevance_count": high_rel,
+        "av_sentiment_label": _score_to_label(weighted_sentiment),
+    }
 
 
 def _score_to_label(score: float) -> str:

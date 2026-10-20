@@ -861,6 +861,56 @@ def test_exhausted_keys_alert_is_polish_and_logged_in_english(mocker, caplog):
     assert "Alpha Vantage API keys exhausted" in caplog.text
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [{"Error Message": "Invalid API call. Please retry or visit the documentation."}, {}],
+    ids=["error_message", "empty"],
+)
+def test_error_message_payload_sets_degraded_reason(mocker, caplog, payload) -> None:
+    # DAT-07: payload bez `feed` i bez markera limitu to nie „spokojny dzień” —
+    # sentyment niesie `degraded_reason`, ale TYLKO symbol z tym payloadem.
+    import logging
+
+    mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+    mocker.patch(
+        "requests.Session.get",
+        side_effect=[_ok_response(payload), _ok_response({"feed": []})],
+    )
+    client = AlphaVantageClient(api_keys=["av-test"], symbols=["AAPL", "AMD"])
+
+    with caplog.at_level(logging.ERROR):
+        aapl = client.sentiment_for("AAPL")
+    amd = client.sentiment_for("AMD")
+
+    assert aapl["degraded_reason"] == "av_unexpected_payload"
+    assert "degraded_reason" not in amd
+    # Flaga cykliczna oflagowałaby wszystkie symbole.
+    assert client.degraded_reason is None
+    assert "AAPL" in caplog.text
+    assert f"keys: {sorted(payload)}" in caplog.text
+
+
+def test_unexpected_payload_reaches_the_sentiment_adapter_for_its_symbol_only(mocker) -> None:
+    from src.infrastructure.adapters.alpha_vantage_adapters import (
+        AlphaVantageSentimentAdapter,
+    )
+
+    mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+    mocker.patch(
+        "requests.Session.get",
+        side_effect=[
+            _ok_response({"Error Message": "Invalid API call."}),
+            _ok_response({"feed": []}),
+        ],
+    )
+    adapter = AlphaVantageSentimentAdapter(
+        AlphaVantageClient(api_keys=["av-test"], symbols=["AAPL", "AMD"])
+    )
+
+    assert adapter.get_social_score("AAPL")["degraded_reason"] == "av_unexpected_payload"
+    assert "degraded_reason" not in adapter.get_social_score("AMD")
+
+
 def test_soft_limit_log_carries_the_marker_without_the_key(mocker, caplog) -> None:
     # DAT-06: diagnoza wymaga treści markera, a AV potrafi wkleić do niej klucz.
     import logging
