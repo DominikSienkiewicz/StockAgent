@@ -26,7 +26,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from src.tools.cost_envelope import EnvelopeInputs, cost_envelope, render_cost_envelope
+from src.tools.cost_envelope import (
+    EnvelopeInputs,
+    cost_envelope,
+    render_cost_envelope,
+    render_weekly_budget,
+)
 from src.tools.evaluate import (
     GATE_DELTA_FIELD,
     OPTIONAL_COLUMNS,
@@ -292,7 +297,8 @@ def _add_cost_envelope(
         help="Print the estimated min/max paid calls and cost of one Fast Loop cycle.",
         description=(
             "FIN-06: worst case = every eligible symbol of config.toml past the volatility "
-            "gate; minimum = every symbol below it. Offline, zero paid calls."
+            "gate; minimum = every symbol below it. WIA-11: plus the worst week at the "
+            "FIN-12 ceiling against fast_loop_weekly_budget_usd. Offline, zero paid calls."
         ),
     )
     parser.set_defaults(handler=_run_cost_envelope)
@@ -318,6 +324,9 @@ def _run_cost_envelope(args: argparse.Namespace) -> int:
         tool_rounds=settings.tool_use_max_rounds if settings.tool_use_enabled else 0,
     )
     print(render_cost_envelope(cost_envelope(inputs)))
+    # WIA-11: tydzień przy suficie FIN-12 — ta sama reguła co kontrola startu Fast Loopa.
+    print()
+    print(render_weekly_budget(settings.fast_loop_weekly_budget(personas=inputs.personas)))
     return 0
 
 

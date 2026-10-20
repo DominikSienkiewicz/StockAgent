@@ -12,7 +12,7 @@ All figures are the estimate of `UNIT_COST_USD` in [`src/domain/finops.py`](../s
 |---|---:|---:|
 | One cycle, every eligible symbol past the volatility gate (`main_tools.py cost-envelope`) | 588 | 1.7237 |
 | One cycle at the FIN-12 ceiling (`max_paid_llm_calls_per_cycle = 100`, 4 symbols at a time) | 383 | 1.2112 |
-| One week at the ceiling: 1 cycle a day × 5 trading days | | 6.06 |
+| One week at the ceiling: 1 cycle a day × 5 trading days (the weekly line of `cost-envelope`) | | 6.06 |
 | Weekly budget `fast_loop_weekly_budget_usd` | | 7.00 |
 
 The ceiling cuts the council (at most 99 + 4 × 8 = 131 requests a cycle), not the predictions: a symbol whose move is below `council_volatility_threshold` spends only its prediction, so the 42 predictions, sentiment, news and embeddings all fit under 100 calls. A cycle where the gate filters every symbol costs nothing. Shock Watch and the deadman make no paid call. How the bound is computed is in [configuration](configuration.md) under **Fast Loop weekly budget**.

@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.domain.finops import UNIT_COST_USD, cycle_call_upper_bound, estimate_cycle_cost
+from src.domain.finops import (
+    TRADING_DAYS_PER_WEEK,
+    UNIT_COST_USD,
+    WeeklyCostBudget,
+    cycle_call_upper_bound,
+    estimate_cycle_cost,
+)
 
 
 @dataclass(frozen=True)
@@ -122,3 +128,20 @@ def render_cost_envelope(envelope: CostEnvelope) -> str:
         "(key quota, not priced).",
     ])
     return "\n".join(lines)
+
+
+def render_weekly_budget(weekly: WeeklyCostBudget) -> str:
+    """WIA-11: wiersz tygodniowy pod tabelą — najgorszy tydzień przy suficie FIN-12
+    i jego porównanie z `fast_loop_weekly_budget_usd`."""
+    cycles_per_day = weekly.cycles_per_week // TRADING_DAYS_PER_WEEK
+    line = (
+        f"Weekly worst case at the FIN-12 ceiling: {weekly.cycles_per_week} cycles "
+        f"({cycles_per_day} a day × {TRADING_DAYS_PER_WEEK} trading days) × "
+        f"{_usd(weekly.cycle_worst_usd)} USD = {_usd(weekly.worst_case_usd)} USD"
+    )
+    if weekly.budget_usd is None:
+        return f"{line}; no `fast_loop_weekly_budget_usd` set."
+    verdict = "within the budget" if weekly.ok else "OVER the budget"
+    return (
+        f"{line}; `fast_loop_weekly_budget_usd` = {weekly.budget_usd:.2f} USD, {verdict}."
+    )

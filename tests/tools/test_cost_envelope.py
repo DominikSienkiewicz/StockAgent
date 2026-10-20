@@ -57,3 +57,32 @@ def test_render_names_debate_and_tool_use_when_on() -> None:
 
     assert "debate on" in text
     assert "tool use up to 3 rounds" in text
+
+
+# --- WIA-11: wiersz tygodniowy ------------------------------------------------
+
+
+def test_weekly_row_names_the_ceiling_the_cycles_and_the_verdict() -> None:
+    from src.domain.finops import WeeklyCostBudget
+    from src.tools.cost_envelope import render_weekly_budget
+
+    within = WeeklyCostBudget(cycle_worst_usd=1.21118, cycles_per_week=5, budget_usd=7.0)
+    over = WeeklyCostBudget(cycle_worst_usd=1.21118, cycles_per_week=10, budget_usd=7.0)
+
+    assert render_weekly_budget(within) == (
+        "Weekly worst case at the FIN-12 ceiling: 5 cycles (1 a day × 5 trading days) × "
+        "1.2112 USD = 6.0559 USD; `fast_loop_weekly_budget_usd` = 7.00 USD, within the budget."
+    )
+    assert "10 cycles (2 a day × 5 trading days)" in render_weekly_budget(over)
+    assert render_weekly_budget(over).endswith("OVER the budget.")
+
+
+def test_weekly_row_without_a_budget_says_so() -> None:
+    from src.domain.finops import WeeklyCostBudget
+    from src.tools.cost_envelope import render_weekly_budget
+
+    text = render_weekly_budget(
+        WeeklyCostBudget(cycle_worst_usd=0.5, cycles_per_week=5, budget_usd=None)
+    )
+
+    assert text.endswith("= 2.5000 USD; no `fast_loop_weekly_budget_usd` set.")

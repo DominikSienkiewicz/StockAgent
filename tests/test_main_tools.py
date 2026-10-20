@@ -212,6 +212,11 @@ def test_cost_envelope_prints_the_bound_for_the_configured_watchlist(
     settings.debate_mode_enabled = False
     settings.tool_use_enabled = True
     settings.tool_use_max_rounds = 3
+    from src.domain.finops import WeeklyCostBudget
+
+    settings.fast_loop_weekly_budget.return_value = WeeklyCostBudget(
+        cycle_worst_usd=0.0, cycles_per_week=5, budget_usd=None
+    )
 
     code = main_tools.main(["cost-envelope"])
 
@@ -223,3 +228,33 @@ def test_cost_envelope_prints_the_bound_for_the_configured_watchlist(
     assert "| `llm` | 0 | 15 |" in out
     # Feed AV: AAPL, MSFT, BTC — CSPX.L odpada na filtrze tickerów AV.
     assert "0–3" in out
+
+
+def test_cost_envelope_prints_the_weekly_worst_case_against_the_budget(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # WIA-11: wiersz tygodniowy liczy `Settings.fast_loop_weekly_budget` z personami
+    # wczytanymi przez narzędzie (7 plików person w repo).
+    from src.config import Settings
+
+    real = Settings(
+        _env_file=None,
+        openai_api_key="sk-test",
+        finnhub_api_key="fh",
+        alpha_vantage_api_keys=["av1"],
+        supabase_url="https://t.supabase.co",
+        supabase_key="anon",
+        symbols=[f"S{i:02d}" for i in range(42)],
+        max_paid_llm_calls_per_cycle=100,
+        symbol_concurrency=4,
+        fast_loop_weekly_budget_usd=7.0,
+    )
+    mocker.patch("src.config.Settings.from_env", return_value=real)
+
+    code = main_tools.main(["cost-envelope"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Weekly worst case at the FIN-12 ceiling: 5 cycles" in out
+    assert "1.2112 USD = 6.0559 USD" in out
+    assert "`fast_loop_weekly_budget_usd` = 7.00 USD, within the budget." in out
