@@ -86,6 +86,7 @@ from src.application.report_model_scorecard import (
 )
 from src.application.report_models import ResolvedPrediction
 from src.application.report_onboarding import onboarding_subject
+from src.application.report_ops import render_cycle_summary_markdown
 from src.application.report_public_scorecard import render_public_scorecard_html
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
@@ -1664,13 +1665,12 @@ def _failed_symbol(
     symbol: str, exc: Exception, secret_values: tuple[str, ...]
 ) -> _ProcessedSymbol:
     logger.exception("Failed to process symbol %s", symbol)
+    # BEZ-07: komunikat idzie do maila — ani URL z kluczem, ani dosłowna
+    # wartość sekretu z Settings (`secret_values`) nie może w nim zostać.
+    result = to_symbol_result(symbol, None, error=redact_secrets(str(exc), secret_values))
+    # NIEZ-22: typ wyjątku osobno — step summary liczy błędy per klasa, bez komunikatu.
     return _ProcessedSymbol(
-        # BEZ-07: komunikat idzie do maila — ani URL z kluczem, ani dosłowna
-        # wartość sekretu z Settings (`secret_values`) nie może w nim zostać.
-        to_symbol_result(symbol, None, error=redact_secrets(str(exc), secret_values)),
-        True,
-        None,
-        None,
+        dataclasses.replace(result, error_type=type(exc).__name__), True, None, None
     )
 
 
@@ -2574,10 +2574,13 @@ def _dispatch_reports(
     context: ReportContext,
     legacy_push_notifier: ReportNotifierPort | None = None,
     cycle_symbols: list[str] | None = None,
-) -> None:
+) -> bool:
     """Faza wysyłki: dociągnięcie danych raportu, zbudowanie raportu i rozesłanie
     — pojedynczo albo per subskrybent (raport tnięty do jego watchlisty). Cała
     faza jest best-effort: błąd wysyłki nie psuje exit-code cyklu.
+
+    Zwraca, czy mail wyszedł bez błędu (NIEZ-22/NIEZ-29: step summary i `cycle_runs`).
+    False także wtedy, gdy raport nie powstał, bo padło coś przed wysyłką.
 
     `cycle_symbols` (FIN-34) to symbole, które TEN cykl wycenił w grafie; None =
     cała watchlista. W dzień zamknięcia NYSE to samo krypto, więc trzymane akcje
@@ -2591,6 +2594,8 @@ def _dispatch_reports(
     # powstaną później (np. Resend przy samej wysyłce), dopisuje `finally`.
     persisted_alerts = len(quota_monitor.alerts)
     email_delivered = True
+    # Wyjątek PRZED wysyłką = raportu nie ma; po wysyłce wynik maila już jest znany.
+    report_sent = False
     try:
         # WIA-19: za flagą sekcja zamkniętych predykcji = rozliczone w TYM cyklu
         # (`settled_at` ≥ start cyklu, migracja 029). Trigger stempluje zegarem
@@ -2773,6 +2778,7 @@ def _dispatch_reports(
                 _send_legacy_push(
                     legacy_push_notifier, subject, _build(user_portfolio_in_text=False)
                 )
+        report_sent = True
 
         # #10: publiczny scorecard — osobny publisher, osobna ścieżka.
         _publish_public_scorecard(
@@ -2801,6 +2807,7 @@ def _dispatch_reports(
         logger.exception("Failed to send report")
     finally:
         _persist_quota_alerts(repository, quota_monitor.alerts[persisted_alerts:])
+    return report_sent and email_delivered
 
 
 def _send_legacy_push(
@@ -2843,6 +2850,78 @@ def _record_av_budget_alert(settings: Settings, quota_monitor: QuotaMonitor) -> 
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+# NIEZ-22: plik podsumowania kroku, który GitHub Actions pokazuje na stronie runu.
+STEP_SUMMARY_ENV = "GITHUB_STEP_SUMMARY"
+
+
+def append_step_summary(markdown: str, environ: Mapping[str, str] | None = None) -> None:
+    """NIEZ-22: dopisuje `markdown` do pliku z env `GITHUB_STEP_SUMMARY`.
+
+    Brak zmiennej (lokalny run) = nic. Błąd zapisu tylko loguje: summary to podgląd
+    przebiegu, nie jego wynik. Wspólne dla Fast Loopa, Slow Loopa i shock watcha."""
+    path = (os.environ if environ is None else environ).get(STEP_SUMMARY_ENV)
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as summary:
+            summary.write(markdown.rstrip("\n") + "\n\n")
+    except OSError:
+        logger.warning("Step summary not written to %s", STEP_SUMMARY_ENV, exc_info=True)
+
+
+def write_step_summary(render: Callable[[], str]) -> None:
+    """NIEZ-22: renderuje i dopisuje summary tylko w GitHub Actions (jest zmienna).
+
+    Wyjątek renderera też tylko loguje — podgląd nie może wywrócić przebiegu."""
+    if not os.environ.get(STEP_SUMMARY_ENV):
+        return
+    try:
+        markdown = render()
+    except Exception:
+        logger.warning("Step summary not rendered", exc_info=True)
+        return
+    append_step_summary(markdown)
+
+
+def _report_delivery(
+    delivered: bool,
+    *,
+    notifier: ReportNotifierPort,
+    subscribers: Sequence[Subscriber],
+    settings: Settings,
+) -> bool | None:
+    """NIEZ-22: czy mail cyklu wyszedł; None = przebieg bez kanału e-mail
+    (`NullNotifier` i brak fan-outu do subskrybentów) — nic nie miało wyjść."""
+    fan_out = bool(subscribers) and bool(settings.resend_api_key)
+    if not fan_out and isinstance(notifier, NullNotifier):
+        return None
+    return delivered
+
+
+def _write_cycle_summary(
+    *,
+    results: Sequence[SymbolResult],
+    telemetry: CycleTelemetry,
+    cost: CycleCost | None,
+    failures: int,
+    duration_s: float,
+    quota_alerts: Sequence[QuotaAlert],
+    delivered: bool | None,
+) -> None:
+    """NIEZ-22: agregaty cyklu na publicznej stronie runu — bez symboli i treści błędów."""
+    write_step_summary(
+        lambda: render_cycle_summary_markdown(
+            results,
+            paid_calls=telemetry.snapshot().paid_calls,
+            cycle_cost=cost,
+            failures=failures,
+            duration_s=duration_s,
+            quota_alerts=quota_alerts,
+            delivered=delivered,
+        )
+    )
 
 
 # FIN-34: wspólny log pominięcia akcji Fast Loopa i shock watcha (`main_watch`).
@@ -3004,9 +3083,10 @@ def main(
         ledger=usage_ledger,
         run_context=run_context,
     )
+    cost = cycle_cost(settings, use_case.telemetry, usage_ledger)
 
     # ---- Wysyłka raportu ----
-    _dispatch_reports(
+    delivered = _dispatch_reports(
         results=results,
         started_at=started_at,
         duration=duration,
@@ -3026,10 +3106,22 @@ def main(
             alpha_signals=alpha_signals,
             alpha_prices=alpha_prices,
             yield_curve=yield_curve,
-            cycle_cost=cycle_cost(settings, use_case.telemetry, usage_ledger),
+            cycle_cost=cost,
             ml_model_loaded=use_case.ml_model_loaded,
             run_context=run_context,
         ),
+    )
+    report_delivery = _report_delivery(
+        delivered, notifier=notifier, subscribers=subscribers, settings=settings
+    )
+    _write_cycle_summary(
+        results=results,
+        telemetry=use_case.telemetry,
+        cost=cost,
+        failures=failures,
+        duration_s=time.perf_counter() - started_perf,
+        quota_alerts=quota_monitor.alerts,
+        delivered=report_delivery,
     )
 
     # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).

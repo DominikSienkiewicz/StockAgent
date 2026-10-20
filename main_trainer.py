@@ -14,7 +14,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -24,12 +26,14 @@ from main_agent import (
     persist_llm_calls,
     refuses_stub_writes,
     warn_if_paid_calls_disabled,
+    write_step_summary,
 )
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort
 from src.application.ml_features import FEATURE_SET_VERSION
 from src.application.ports import LLMPort, RepositoryPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
+from src.application.report_ops import render_trainer_summary_markdown
 from src.application.report_weekly_recap import (
     render_weekly_recap_html,
     render_weekly_recap_text,
@@ -154,11 +158,42 @@ def _persist_model_scorecard(
         logger.exception("Failed to persist model scorecard for %s", symbol)
 
 
+@dataclass
+class _TrainingTally:
+    """NIEZ-22: liczby przebiegu Slow Loopa do step summary — bez symboli.
+
+    `statuses` — status ewaluacji per symbol (ile razy), `pooled` — wynik modelu
+    wspólnego (None = rzucił albo nie ruszył)."""
+
+    statuses: Counter[str] = field(default_factory=Counter)
+    pooled: Mapping[str, Any] | None = None
+    feature_store_refreshed: bool = True
+    failures: int = 0
+    total: int = 0
+
+    def record_symbol(self, result: object) -> None:
+        if isinstance(result, Mapping):
+            self.statuses[str(result.get("status", "unknown"))] += 1
+
+    def render(self) -> str:
+        pooled = self.pooled or {}
+        samples = pooled.get("n_samples")
+        return render_trainer_summary_markdown(
+            symbol_statuses=self.statuses,
+            pooled_status=str(pooled["status"]) if "status" in pooled else None,
+            pooled_samples=samples if isinstance(samples, int) else None,
+            failures=self.failures,
+            total=self.total,
+            feature_store_refreshed=self.feature_store_refreshed,
+        )
+
+
 def _train_symbols(
     settings: Settings,
     repository: RepositoryPort,
     use_case: TrainModelUseCase,
     trainable: list[str],
+    tally: _TrainingTally | None = None,
 ) -> int:
     """Ewaluuje każdy symbol z osobna (bez zapisu wag, ML-13) i zwraca liczbę
     niepowodzeń. Błąd jednego symbolu nie przerywa ewaluacji pozostałych."""
@@ -167,6 +202,8 @@ def _train_symbols(
         try:
             result = use_case.run(symbol, refresh_view=False)
             logger.info("%s: %s", symbol, result)
+            if tally is not None:
+                tally.record_symbol(result)
             if settings.model_scorecard_enabled:
                 _persist_model_scorecard(repository, symbol, result)
         except Exception:
@@ -176,7 +213,10 @@ def _train_symbols(
 
 
 def _train_pooled_model(
-    settings: Settings, use_case: TrainModelUseCase, trainable: list[str]
+    settings: Settings,
+    use_case: TrainModelUseCase,
+    trainable: list[str],
+    tally: _TrainingTally | None = None,
 ) -> int:
     """ML-13: jeden wspólny model na wszystkich symbolach — jedyny zapis wag w
     przebiegu. Zwraca liczbę niepowodzeń (0 albo 1); wiersz karty modelu zapisuje
@@ -189,6 +229,8 @@ def _train_pooled_model(
         logger.exception("Pooled training failed")
         return 1
     logger.info("%s (%d symbols): %s", POOLED_MODEL_SYMBOL, len(trainable), result)
+    if tally is not None and isinstance(result, Mapping):
+        tally.pooled = result
     return 0
 
 
@@ -319,6 +361,15 @@ def main(settings: Settings | None = None) -> int:
     configure_logging(settings.secret_values())
     if refuses_stub_writes(settings):
         return STUB_WRITES_REFUSED_EXIT_CODE
+    tally = _TrainingTally()
+    exit_code = _run_slow_loop(settings, tally)
+    # NIEZ-22: liczby przebiegu na stronie runu (GitHub Actions), także po porażce.
+    write_step_summary(tally.render)
+    return exit_code
+
+
+def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
+    """Jeden przebieg Slow Loopa; `tally` zbiera liczby do step summary (NIEZ-22)."""
     warn_if_paid_calls_disabled(settings)
     quota_monitor = QuotaMonitor()
     repository = build_repository(settings)
@@ -329,6 +380,8 @@ def main(settings: Settings | None = None) -> int:
         use_case.refresh_feature_store()
     except Exception:
         logger.exception("Failed to refresh feature store")
+        tally.feature_store_refreshed = False
+        tally.failures = tally.total = 1
         return 1
 
     _refresh_fundamentals_cache(settings, repository, quota_monitor)
@@ -338,8 +391,9 @@ def main(settings: Settings | None = None) -> int:
     # przechodziły retrainu — model krypto zostawał na zawsze przy cold-starcie.
     # `dict.fromkeys` zachowuje kolejność i deduplikuje symbol obecny w obu listach.
     trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
-    failures = _train_symbols(settings, repository, use_case, trainable)
-    failures += _train_pooled_model(settings, use_case, trainable)
+    failures = _train_symbols(settings, repository, use_case, trainable, tally)
+    failures += _train_pooled_model(settings, use_case, trainable, tally)
+    tally.failures, tally.total = failures, len(trainable) + 1
 
     usage_ledger = UsageLedger()
     paid_llm = _SlowLoopPaidLLM(settings, quota_monitor, usage_ledger)

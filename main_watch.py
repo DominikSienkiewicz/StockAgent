@@ -34,6 +34,7 @@ from datetime import UTC, date, datetime
 
 from src.application.ports import MarketDataPort, ReportNotifierPort, RepositoryPort
 from src.application.report_formatting import format_local
+from src.application.report_ops import render_watch_summary_markdown
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
 from src.domain.number_format import format_pct_pl
@@ -114,11 +115,16 @@ def _persist_shock_alert(
 
 @dataclass(frozen=True)
 class WatchOutcome:
-    """Wynik przebiegu: wysłane alerty i symbole, które padły (spośród `total`)."""
+    """Wynik przebiegu: wysłane alerty i symbole, które padły (spośród `total`).
+
+    `checked` — symbole z referencją ceny, `stale` — z referencją zbyt starą na
+    alert (NIEZ-22: step summary pokazuje ślepotę watcha liczbami)."""
 
     sent: int
     failures: int
     total: int
+    checked: int = 0
+    stale: int = 0
 
     @property
     def all_failed(self) -> bool:
@@ -228,7 +234,9 @@ def scan_watch(
             SNAPSHOT_MAX_AGE_HOURS,
         )
     logger.info("Shock watch done — %d alert(ów) wysłanych", sent)
-    return WatchOutcome(sent=sent, failures=failures, total=len(symbols))
+    return WatchOutcome(
+        sent=sent, failures=failures, total=len(symbols), checked=checked, stale=stale
+    )
 
 
 def run_watch(
@@ -258,6 +266,7 @@ def main(settings: Settings | None = None) -> int:
         build_push_channels,
         build_push_notifier,
         build_repository,
+        write_step_summary,
     )
 
     push_notifier = build_push_notifier(settings) if build_push_channels(settings) else None
@@ -271,6 +280,15 @@ def main(settings: Settings | None = None) -> int:
         repository=build_repository(settings),
         market=build_market_port(settings),
         push_notifier=push_notifier,
+    )
+    write_step_summary(
+        lambda: render_watch_summary_markdown(
+            checked=outcome.checked,
+            stale=outcome.stale,
+            sent=outcome.sent,
+            failures=outcome.failures,
+            total=outcome.total,
+        )
     )
     # Brak alertów to normalny, zdrowy przebieg; padnięte WSZYSTKIE symbole (np. baza
     # nie odpowiada) już nie — jak w Fast Loopie, exit 1 (NIEZ-05).

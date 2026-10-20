@@ -78,6 +78,9 @@ class SymbolResult:
     reflection_insight: str | None = None
     top_news: list[TopNewsItem] = field(default_factory=list)
     error_message: str | None = None
+    # NIEZ-22: nazwa klasy wyjątku symbolu, który padł — agregat w step summary.
+    # Sama nazwa klasy (bez komunikatu), więc może trafić na publiczną stronę runu.
+    error_type: str | None = None
     council_verdict: CouncilVerdict | None = None
     valuation: ValuationSection | None = None
     # Q5: analogi RAG użyte w tym cyklu (precedent receipts). Pusta lista =
