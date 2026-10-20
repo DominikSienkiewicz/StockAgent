@@ -29,6 +29,12 @@ routing_floor = 0.6
 router_cheap_model = "gpt-5-mini"
 router_frontier_provider = "anthropic"
 router_frontier_model = "claude-sonnet-4-6"
+# NIEZ-44: zapasowy dostawca analizy głównej — request idzie do niego tylko, gdy główny
+# padnie po swoich retry (błąd 4xx inny niż 429 nie przełącza). Predykcja od zapasowego
+# dostaje flagę jakości `llm_failover` i faktyczny model w kwicie (osobna wersja
+# przepisu). Wymaga klucza drugiego dostawcy w sekretach. Wyłączony — odkomentuj:
+# llm_fallback_provider = "openai"
+# llm_fallback_model = "gpt-4o"
 # Reżim rynku (#7): RISK-OFF zacieśnia próg volatility (mnożnik ≤ max). Włączone.
 regime_aware_enabled = true
 regime_threshold_max_multiplier = 2.0

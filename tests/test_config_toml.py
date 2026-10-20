@@ -386,3 +386,14 @@ def test_real_config_toml_ships_the_cycle_runs_history_off_until_migration() -> 
     """NIEZ-29: zapis `cycle_runs` dopiero po migracji 041 (ręczny DB Migrate)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["cycle_runs_enabled"] is False
+
+
+def test_real_config_toml_ships_the_llm_failover_off() -> None:
+    """NIEZ-44: zapasowy dostawca LLM gotowy w kodzie, ale wyłączony — w pliku jest
+    tylko zakomentowany przykład, dopóki właściciel nie doda klucza drugiego dostawcy."""
+    text = CONFIG_TOML.read_text(encoding="utf-8")
+    data = tomllib.loads(text)
+
+    assert "llm_fallback_provider" not in data
+    assert "llm_fallback_model" not in data
+    assert "# llm_fallback_provider = " in text

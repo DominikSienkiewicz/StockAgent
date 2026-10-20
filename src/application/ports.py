@@ -519,12 +519,22 @@ class MLPredictionPort(ABC):
         Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
 
 
+# NIEZ-44: klucze, którymi adapter failover znakuje wynik `LLMPort.analyze` od
+# dostawcy ZAPASOWEGO (dostawca i model, który faktycznie odpowiedział). Graf zdejmuje
+# je przed normalizacją analizy i dopisuje flagę jakości `llm_failover`.
+LLM_FAILOVER_PROVIDER_KEY = "_llm_provider"
+LLM_FAILOVER_MODEL_KEY = "_llm_model"
+
+
 class LLMPort(ABC):
     """Model językowy do rozumowania i samokorekty (np. OpenAI, Anthropic)."""
 
     @abstractmethod
     def analyze(self, prompt: str) -> dict[str, Any]:
-        """Główna analiza — zwraca ustrukturyzowany JSON wg output_schema z promptu."""
+        """Główna analiza — zwraca ustrukturyzowany JSON wg output_schema z promptu.
+
+        Wynik od dostawcy zapasowego (NIEZ-44) niesie dodatkowo
+        `LLM_FAILOVER_PROVIDER_KEY` i `LLM_FAILOVER_MODEL_KEY`."""
 
     @abstractmethod
     def analyze_mistake(self, prompt: str) -> str:

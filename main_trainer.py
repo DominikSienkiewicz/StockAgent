@@ -236,15 +236,25 @@ def _train_pooled_model(
 
 
 def _build_llm_or_unavailable(
-    settings: Settings, quota_monitor: QuotaMonitor, usage_sink: UsageSink | None = None
+    settings: Settings,
+    quota_monitor: QuotaMonitor,
+    usage_sink: UsageSink | None = None,
+    telemetry: CycleTelemetry | None = None,
 ) -> LLMPort:
     """Adapter LLM dla kroków Slow Loopa z deterministycznym fallbackiem. Błąd BUDOWY
     (brak SDK albo klucza) nie może wywrócić całego kroku — use case dostaje adapter,
-    który rzuca przy wywołaniu, i idzie ścieżką bez LLM."""
+    który rzuca przy wywołaniu, i idzie ścieżką bez LLM. NIEZ-44: request do
+    zapasowego dostawcy liczy `telemetry` przebiegu."""
     from main_agent import build_llm_adapter
 
     try:
-        return build_llm_adapter(settings, quota_monitor=quota_monitor, usage_sink=usage_sink)
+        if settings.llm_fallback_provider is None:
+            return build_llm_adapter(settings, quota_monitor=quota_monitor, usage_sink=usage_sink)
+        # Telemetria liczy wyłącznie request do zapasowego — bez failovera wywołanie
+        # fabryki zostaje takie jak dotąd.
+        return build_llm_adapter(
+            settings, quota_monitor=quota_monitor, usage_sink=usage_sink, telemetry=telemetry
+        )
     except Exception as exc:
         logger.exception("LLM adapter build failed — krok idzie bez LLM")
         return UnavailableLLMAdapter(type(exc).__name__)
@@ -290,7 +300,7 @@ class _SlowLoopPaidLLM:
         if not self._settings.paid_calls_enabled:
             return LocalStubLLMAdapter()
         provider = _build_llm_or_unavailable(
-            self._settings, self._quota_monitor, usage_sink=self._ledger
+            self._settings, self._quota_monitor, usage_sink=self._ledger, telemetry=self.telemetry
         )
         if isinstance(provider, UnavailableLLMAdapter):
             return provider

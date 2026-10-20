@@ -160,6 +160,11 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "cost_ledger_enabled",
     # NIEZ-29: sam zapis historii przebiegów `cycle_runs` — prognoza ta sama.
     "cycle_runs_enabled",
+    # NIEZ-44 (decyzja 2026-10-20): zapasowy LLM działa tylko po awarii głównego,
+    # a predykcja od niego niesie własny przepis — flagę `llm_failover` i faktyczny
+    # dostawcę/model w kwicie i `recipe_version` — więc track record ją odsieje.
+    "llm_fallback_provider",
+    "llm_fallback_model",
 })
 
 # WIA-20: pola przepisu — progi, modele, providerzy, symbole, źródła danych
@@ -337,6 +342,12 @@ class Settings(BaseSettings):
     llm_provider: Literal["openai", "anthropic"] = "openai"
     openai_api_key: str
     anthropic_api_key: str | None = None
+    # NIEZ-44: zapasowy dostawca głównej analizy — dostaje request tylko, gdy główny
+    # rzuci po swoich retry (4xx poza 429 nie przełącza). Wymaga klucza drugiego
+    # dostawcy; bez niego WARNING i sam główny. None = bez failovera (domyślnie;
+    # config.toml ma tylko zakomentowany przykład). Model None = default providera.
+    llm_fallback_provider: Literal["openai", "anthropic"] | None = None
+    llm_fallback_model: str | None = None
 
     # Heterogeniczna strategia: rada doradcza (N person + chairman × M symboli) może
     # działać na tańszym modelu niż główna analiza, bo persona-acting + JSON

@@ -239,13 +239,64 @@ def build_llm_adapter(
     settings: Settings,
     quota_monitor: QuotaMonitor | None = None,
     usage_sink: UsageSink | None = None,
+    *,
+    telemetry: CycleTelemetry | None = None,
 ) -> LLMPort:
     """Factory LLM — wybiera providera na podstawie konfiguracji.
 
     #2: gdy `model_routing_enabled`, zwraca `CascadingLLMAdapter` — tani model
     domyślnie, eskalacja do frontier tylko gdy `confidence < routing_floor`.
     FIN-13: `usage_sink` dostaje tokeny każdego requestu (oba modele kaskady).
+    NIEZ-44: z `llm_fallback_provider` całość idzie za `FailoverLLMAdapter`
+    (`_with_llm_fallback`); request do zapasowego liczy `telemetry` pod `llm`.
     """
+    primary = _build_primary_llm(settings, quota_monitor, usage_sink)
+    return _with_llm_fallback(settings, primary, quota_monitor, usage_sink, telemetry)
+
+
+def _with_llm_fallback(
+    settings: Settings,
+    primary: LLMPort,
+    quota_monitor: QuotaMonitor | None,
+    usage_sink: UsageSink | None,
+    telemetry: CycleTelemetry | None,
+) -> LLMPort:
+    """NIEZ-44: zapasowy dostawca za głównym — tylko gdy skonfigurowany i ma klucz.
+
+    Zapasowy dostaje ten sam monitor kwot i ten sam `usage_sink` (tokeny z jego
+    dostawcą i modelem), a `MeteredLLMPort` liczy jego request w telemetrii cyklu
+    pod `llm` — więc widzi go sufit FIN-12 i sekcja kosztu. Request do głównego
+    liczy jak dotąd graf (Fast Loop) albo meter joba (Slow Loop)."""
+    provider = settings.llm_fallback_provider
+    if provider is None:
+        return primary
+    key_name, key = (
+        ("ANTHROPIC_API_KEY", settings.anthropic_api_key)
+        if provider == "anthropic"
+        else ("OPENAI_API_KEY", settings.openai_api_key)
+    )
+    if not key:
+        logger.warning(
+            "llm_fallback_provider=%s, ale %s nie jest ustawiony — LLM bez failovera",
+            provider,
+            key_name,
+        )
+        return primary
+    from src.infrastructure.llm.failover import FailoverLLMAdapter
+
+    model = settings.llm_fallback_model or _provider_default_model(provider)
+    secondary = _build_single_llm(settings, provider, model, quota_monitor, usage_sink)
+    if telemetry is not None:
+        secondary = MeteredLLMPort(secondary, telemetry, "llm")
+    return FailoverLLMAdapter(primary, secondary, provider=provider, model=model)
+
+
+def _build_primary_llm(
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None,
+    usage_sink: UsageSink | None,
+) -> LLMPort:
+    """Główny LLM analizy: kaskada modeli (#2) albo adapter `llm_provider`."""
     if settings.model_routing_enabled:
         from src.infrastructure.llm.cascading import CascadingLLMAdapter
         from src.infrastructure.llm.openai_client import OpenAIAdapter
@@ -1089,7 +1140,9 @@ def _production_paid_ports(
         )
         sentiment = AlphaVantageSentimentAdapter(av_client)
         news = AlphaVantageNewsAdapter(av_client)
-    llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor, usage_sink=usage_sink)
+    llm_port = build_llm_adapter(
+        settings, quota_monitor=quota_monitor, usage_sink=usage_sink, telemetry=telemetry
+    )
     # FIN-02: każdy request persony, chairmana i rewizji liczy się u źródła.
     # Osobny obiekt niż `llm_port`, więc główna analiza nie liczy się podwójnie.
     council_llm_port = MeteredLLMPort(

@@ -22,6 +22,8 @@ from src.application.ml_features import (
     ML_FEATURE_COLUMNS,
 )
 from src.application.ports import (
+    LLM_FAILOVER_MODEL_KEY,
+    LLM_FAILOVER_PROVIDER_KEY,
     AdvisoryCouncilPort,
     AttestationPublisherPort,
     EmbeddingPort,
@@ -159,6 +161,9 @@ class AgentState(TypedDict, total=False):
 
     # Predykcja
     llm_analysis: dict[str, Any]
+    # NIEZ-44: (dostawca, model) zapasowego LLM, gdy analizę zrobił on, a nie główny.
+    # Brak klucza = główny LLM. Zmienia przepis zapisany przy predykcji.
+    llm_failover: tuple[str, str]
     ml_target_price: Decimal
     # ML-14: wektor cech dokładnie w postaci podanej modelowi (`ML_FEATURE_COLUMNS`)
     # — trafia do `feature_snapshots`, żeby trening nie odtwarzał go widokiem SQL.
@@ -386,6 +391,43 @@ _LLM_UNIT_FIELDS: tuple[tuple[str, str], ...] = (
     ("confidence_score", "confidence_score"),
     ("av_agreement", "av_llm_agreement"),
 )
+
+
+# NIEZ-44: flaga jakości predykcji od zapasowego dostawcy LLM (track record ją odsiewa).
+LLM_FAILOVER_FLAG = "llm_failover"
+# Znacznik failovera bez modelu — przepis i tak nie może udawać głównego modelu.
+_UNKNOWN_FAILOVER_MODEL = "unknown"
+
+
+def _split_failover_marker(
+    raw: dict[str, Any],
+) -> tuple[tuple[str, str] | None, dict[str, Any]]:
+    """NIEZ-44: zdejmuje znacznik adaptera failover z wyniku LLM, zanim ktokolwiek
+    go przeczyta. Zwraca `(dostawca, model)` zapasowego (None = odpowiedział główny)
+    i analizę bez kluczy znacznika."""
+    analysis = {
+        key: value
+        for key, value in raw.items()
+        if key not in (LLM_FAILOVER_PROVIDER_KEY, LLM_FAILOVER_MODEL_KEY)
+    }
+    provider = raw.get(LLM_FAILOVER_PROVIDER_KEY)
+    if not provider:
+        return None, analysis
+    model = raw.get(LLM_FAILOVER_MODEL_KEY)
+    return (str(provider), str(model) if model else _UNKNOWN_FAILOVER_MODEL), analysis
+
+
+def _effective_recipe(deps: AgentGraphDeps, state: AgentState) -> PredictionRecipe | None:
+    """WIA-20 + NIEZ-44: przepis, z którego FAKTYCZNIE powstała predykcja.
+
+    Po failoverze główny LLM w przepisie podmienia dostawca i model zapasowego,
+    więc kwit i `recipe_version` niosą prawdziwy model, a wersja przepisu wydziela
+    takie predykcje w osobny segment track recordu."""
+    failover = state.get("llm_failover")
+    if deps.recipe is None or failover is None:
+        return deps.recipe
+    provider, model = failover
+    return dataclasses.replace(deps.recipe, llm_provider=provider, llm_model=model)
 
 
 def _normalize_llm_analysis(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -715,9 +757,10 @@ def _build_decision_receipts(deps: AgentGraphDeps, state: AgentState) -> dict[st
             for c in attribution
         ],
     }
-    if deps.recipe is not None:
+    recipe = _effective_recipe(deps, state)
+    if recipe is not None:
         receipt["schema_version"] = RECEIPT_SCHEMA_V2
-        receipt.update(deps.recipe.receipt_fields())
+        receipt.update(recipe.receipt_fields())
         # EXP-05: opcjonalny klucz v2 — tylko gdy jakiś eksperyment jest aktywny.
         arms = state.get("experiment_arms")
         if arms:
@@ -1289,6 +1332,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         include_memory=memory,
     )
     raw_analysis, llm_failed = _run_llm_analysis(deps, state, prompt, symbol)
+    failover, raw_analysis = _split_failover_marker(raw_analysis)
     # ML-07: kanonizacja PRZED pierwszym odczytem — rada, zapis i raport
     # czytają już ten sam znormalizowany dict, nie surowy tekst modelu.
     llm_analysis, analysis_flags = _normalize_llm_analysis(raw_analysis)
@@ -1305,6 +1349,8 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     flags: list[str] = []
     if llm_failed:
         flags.append("llm_analysis_failed")
+    if failover is not None:
+        flags.append(LLM_FAILOVER_FLAG)
     flags.extend(analysis_flags)
     # Adapter sentymentu (AV) może oznaczyć cały feed jako zdegradowany
     # (np. wszystkie klucze wyczerpane). Wtedy 0.0 we wszystkich polach
@@ -1376,7 +1422,9 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         deps, state, current_price, ml_target, ml_cold_start=ml_cold_start
     )
 
+    failover_state: dict[str, Any] = {} if failover is None else {"llm_failover": failover}
     return {
+        **failover_state,
         "llm_analysis": llm_analysis,
         "ml_target_price": ml_target,
         "ml_features": features,
@@ -1565,9 +1613,11 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     if deps.feature_set_version_enabled:
         record["feature_set_version"] = FEATURE_SET_VERSION
 
-    # WIA-20: wersja przepisu — track record segmentuje się po niej.
-    if deps.recipe_version_enabled and deps.recipe is not None:
-        record["recipe_version"] = deps.recipe.version
+    # WIA-20: wersja przepisu — track record segmentuje się po niej. NIEZ-44: po
+    # failoverze to przepis z modelem zapasowego (osobny segment).
+    recipe = _effective_recipe(deps, state)
+    if deps.recipe_version_enabled and recipe is not None:
+        record["recipe_version"] = recipe.version
 
     # #18: `edge_sigma` (migracja 025) tylko gdy sygnał realnie powstał —
     # bez portu opcji klucz nie istnieje, więc stary schemat zapisuje się jak dotąd.

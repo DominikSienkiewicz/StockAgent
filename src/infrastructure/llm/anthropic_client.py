@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -13,6 +12,7 @@ from anthropic import Anthropic, APIConnectionError, APIStatusError
 from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.llm._json_text import strip_code_block
 from src.infrastructure.llm._usage import anthropic_usage, report_usage
 
 # Centralny model id (rodzina Claude 4.x). Świadomie BEZ daty w komentarzu —
@@ -44,11 +44,6 @@ MAX_RETRY_WAIT_S = 20.0
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-# Bez otaczających `\s*` — `\s*(.*?)\s*` na wejściu z dużą ilością białych
-# znaków bez domknięcia fence'a backtrackuje wielomianowo (ReDoS na output LLM).
-# Otaczające białe znaki obcinamy w `_strip_code_block` przez `.strip()`.
-_CODE_BLOCK_RE = re.compile(r"```(?:json)?(.*?)```", re.DOTALL)
 
 
 def validate_model_id(model: str) -> None:
@@ -264,8 +259,7 @@ class AnthropicAdapter(LLMPort):
 
     @staticmethod
     def _strip_code_block(text: str) -> str:
-        match = _CODE_BLOCK_RE.search(text)
-        return match.group(1).strip() if match else text
+        return strip_code_block(text)
 
     @staticmethod
     def _next_string_state(ch: str, escaped: bool) -> tuple[bool, bool]:
