@@ -1163,7 +1163,13 @@ def _run_ml_prediction(
     return ml_target, feature_attribution
 
 
-def _seal_commitment(deps: AgentGraphDeps, record: dict[str, Any]) -> str | None:
+def _seal_commitment(
+    deps: AgentGraphDeps,
+    record: dict[str, Any],
+    *,
+    council: CouncilVerdict | None,
+    recipe: PredictionRecipe | None,
+) -> str | None:
     """#16 — dokleja do rekordu SHA-256 commitment, sól i zahashowany plaintext.
 
     Commit-reveal: publikujemy sam HASH treści predykcji + losowej soli.
@@ -1178,6 +1184,10 @@ def _seal_commitment(deps: AgentGraphDeps, record: dict[str, Any]) -> str | None
     024 i 043 dałyby PGRST204 i zabiły zapis całej predykcji (gate jak
     `receipts_enabled`; DI daje publisher dopiero, gdy kolumny istnieją).
     Zwraca hash do publikacji PO zapisie (WIA-01) albo None, gdy atestacja off.
+
+    WIA-41: werdykt rady powstaje po predict, więc commitment liczymy tutaj,
+    w save_node — razem z pewnością i przepisem, z którego FAKTYCZNIE powstała
+    predykcja (po failoverze to przepis z modelem zapasowym).
     """
     if deps.attestation_publisher is None:
         return None
@@ -1187,6 +1197,10 @@ def _seal_commitment(deps: AgentGraphDeps, record: dict[str, Any]) -> str | None
         predicted_trend=record.get("predicted_trend"),
         predicted_target_price=record.get("predicted_target_price"),
         price_at_prediction=record["price_at_prediction"],
+        confidence_score=record.get("confidence_score"),
+        council_recommendation=None if council is None else council.final_recommendation,
+        council_consensus_strength=None if council is None else council.consensus_strength,
+        recipe_version=None if recipe is None else recipe.version,
     )
     # WIA-70: hash liczony z tych samych bajtów, które zapisujemy i ujawnimy dosłownie.
     plaintext = canonicalize(payload, schema_version=ATTESTATION_SCHEMA_VERSION)
@@ -1684,7 +1698,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         record["experiment_arms"] = dict(arms)
 
     # #16: commit-reveal (migracje 024, 043); publikacja dopiero po zapisie.
-    commitment = _seal_commitment(deps, record)
+    commitment = _seal_commitment(deps, record, council=council_verdict, recipe=recipe)
 
     # Embedding podsumowania newsów → pgvector (reużyty z predict_node lub
     # policzony tu w fallbacku; graceful — przy braku zapisujemy bez wektora).

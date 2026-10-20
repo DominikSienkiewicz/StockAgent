@@ -37,11 +37,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import secrets
 from collections.abc import Mapping
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from src.domain.prediction import PREDICTION_HORIZON_HOURS
 from src.domain.value_objects import Money
 
 # Wersja kontraktu kanonizacji. Wchodzi do KAŻDEGO commitmentu, żeby przyszły
@@ -162,23 +164,61 @@ def prediction_commitment_payload(
     predicted_trend: str | None,
     predicted_target_price: Decimal | None,
     price_at_prediction: Decimal,
+    confidence_score: float | None = None,
+    horizon_hours: int = PREDICTION_HORIZON_HOURS,
+    council_recommendation: str | None = None,
+    council_consensus_strength: float | None = None,
+    recipe_version: str | None = None,
+    protocol_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Payload commitmentu predykcji w schemacie v2 (bez `schema_version`).
 
     Ceny jako tekst kolumny DECIMAL(14,4) — `Money.for_storage()`, cztery
     miejsca, połówki od zera jak NUMERIC w Postgresie. Hash powstaje więc
     z wartości, którą baza przechowa, a nie z pełnej precyzji Pythona (G08).
-    Brak ceny docelowej → null."""
+
+    WIA-41: wiąże też to, co scorecard eksponuje najmocniej — pewność
+    (kalibracja), horyzont, werdykt rady (`council`, null bez rady), wersję
+    przepisu i hash protokołu ewaluacji (WIA-42). Ułamki idą jako string
+    Decimal po quantize do czterech miejsc, nigdy jako float: repr floata
+    i jego błąd binarny nie mogą decydować o hashu. Brak wartości → null."""
+    council = (
+        None
+        if council_recommendation is None
+        else {
+            "final_recommendation": council_recommendation,
+            "consensus_strength": _unit_text(council_consensus_strength),
+        }
+    )
     return {
         "symbol": symbol,
         "predicted_trend": predicted_trend,
         "predicted_target_price": _storage_text(predicted_target_price),
         "price_at_prediction": _storage_text(price_at_prediction),
+        "confidence_score": _unit_text(confidence_score),
+        "horizon_hours": horizon_hours,
+        "council": council,
+        "recipe_version": recipe_version,
+        "protocol_sha256": protocol_sha256,
     }
 
 
 def _storage_text(price: Decimal | None) -> str | None:
     return None if price is None else str(Money(price).for_storage().amount)
+
+
+# Skala ułamków [0, 1] w payloadzie v2 (pewność, siła konsensusu rady).
+_UNIT_SCALE = Decimal("0.0001")
+
+
+def _unit_text(value: float | None) -> str | None:
+    """Ułamek jako string Decimal z czterema miejscami (połówki od zera).
+
+    `str(float)` daje najkrótszy repr, więc 0.85 → "0.8500", a nie binarne
+    rozwinięcie. Wartość nieskończona (spoza kontraktu) → null."""
+    if value is None or not math.isfinite(value):
+        return None
+    return str(Decimal(str(value)).quantize(_UNIT_SCALE, rounding=ROUND_HALF_UP))
 
 
 def new_salt() -> str:

@@ -239,3 +239,83 @@ def test_prediction_payload_keeps_a_missing_target_as_null() -> None:
     )
     assert payload["predicted_target_price"] is None
     assert payload["predicted_trend"] is None
+
+
+# --- Golden v2 (WIA-41): pewność, horyzont, werdykt rady, przepis, protokół ---
+# Hashe policzone osobnym skryptem mirrorującym kontrakt v2 (json.dumps
+# sort_keys + separatory + schema_version 2), NIE przez moduł.
+
+_SALT_E = "e" * 32
+_CANON_V2 = (
+    '{"confidence_score":"0.8500","council":{"consensus_strength":"0.7143",'
+    '"final_recommendation":"BUY"},"horizon_hours":12,"predicted_target_price":"131.2346",'
+    '"predicted_trend":"BULLISH","price_at_prediction":"128.5000",'
+    '"protocol_sha256":"' + "b" * 64 + '","recipe_version":"' + "a" * 64 + '",'
+    '"schema_version":2,"symbol":"NVDA"}'
+)
+_HASH_V2 = "62f0e3d87b5c91662fc688fc59dd3a07e0acc7e7c2779f35e0d37acbec16004c"
+_CANON_V2_BARE = (
+    '{"confidence_score":null,"council":null,"horizon_hours":12,'
+    '"predicted_target_price":null,"predicted_trend":"BULLISH",'
+    '"price_at_prediction":"128.5000","protocol_sha256":null,"recipe_version":null,'
+    '"schema_version":2,"symbol":"NVDA"}'
+)
+_HASH_V2_BARE = "5f97c292e94b4052cddf48a400f2dfda4c1047555649a3996fa00342c331f06d"
+
+
+def _payload_v2(**overrides: object) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "symbol": "NVDA",
+        "predicted_trend": "BULLISH",
+        "predicted_target_price": Decimal("131.23455"),
+        "price_at_prediction": Decimal("128.5"),
+        "confidence_score": 0.85,
+        "horizon_hours": 12,
+        "council_recommendation": "BUY",
+        "council_consensus_strength": 0.714285,
+        "recipe_version": "a" * 64,
+        "protocol_sha256": "b" * 64,
+    }
+    fields.update(overrides)
+    return attestation.prediction_commitment_payload(**fields)
+
+
+def test_canonicalize_golden_v2() -> None:
+    canonical = attestation.canonicalize(_payload_v2(), schema_version=attestation.SCHEMA_VERSION)
+    assert canonical == _CANON_V2
+
+
+def test_golden_hash_v2() -> None:
+    commitment = attestation.commit(
+        _payload_v2(), _SALT_E, schema_version=attestation.SCHEMA_VERSION
+    )
+    assert commitment == _HASH_V2
+    assert attestation.commit_canonical(_CANON_V2, _SALT_E) == _HASH_V2
+    assert attestation.verify_canonical(_CANON_V2, _SALT_E, _HASH_V2.upper()) is True
+
+
+def test_golden_hash_v2_without_council_recipe_or_confidence() -> None:
+    payload = _payload_v2(
+        predicted_target_price=None,
+        confidence_score=None,
+        council_recommendation=None,
+        council_consensus_strength=None,
+        recipe_version=None,
+        protocol_sha256=None,
+    )
+    canonical = attestation.canonicalize(payload, schema_version=attestation.SCHEMA_VERSION)
+    assert canonical == _CANON_V2_BARE
+    assert attestation.commit_canonical(canonical, _SALT_E) == _HASH_V2_BARE
+
+
+def test_confidence_is_a_quantized_decimal_string_not_a_float() -> None:
+    # Float w kanonizacji to binarny szum (0.1 + 0.2) i zależność od repr —
+    # zawsze string Decimal po quantize do czterech miejsc, połówki od zera.
+    payload = _payload_v2(confidence_score=0.1 + 0.2, council_consensus_strength=0.00005)
+    assert payload["confidence_score"] == "0.3000"
+    assert payload["council"] == {"final_recommendation": "BUY", "consensus_strength": "0.0001"}
+
+
+def test_verify_canonical_rejects_a_tampered_confidence() -> None:
+    tampered = _CANON_V2.replace('"confidence_score":"0.8500"', '"confidence_score":"0.9500"')
+    assert attestation.verify_canonical(tampered, _SALT_E, _HASH_V2) is False

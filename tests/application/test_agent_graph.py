@@ -2793,6 +2793,73 @@ class TestAttestationCommitment:
 
         assert "commitment_payload" not in repository_port.save_prediction.call_args.args[0]
 
+    def test_commitment_payload_includes_confidence_and_council(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-41: scorecard eksponuje kalibrację i ranking person — bez pewności
+        # i werdyktu rady w commitmencie dałoby się je zmienić w bazie po fakcie.
+        import json
+
+        from src.application.ports import AdvisoryCouncilPort
+        from src.domain.council import CouncilVerdict
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = CouncilVerdict(
+            final_recommendation="SELL",
+            consensus_strength=0.714285,
+            summary="Rada radzi sprzedać.",
+            dissenting_views=(),
+            investor_opinions=(),
+        )
+        recipe = _recipe()
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        create_agent_graph(AgentGraphDeps(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            council_port=council_port,
+            recipe=recipe,
+            attestation_publisher=self._publisher(),
+        )).compile().invoke(_initial_state("100.0"))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        payload = json.loads(record["commitment_payload"])
+        assert payload["confidence_score"] == "0.8500"
+        assert payload["horizon_hours"] == 12
+        assert payload["council"] == {
+            "final_recommendation": "SELL",
+            "consensus_strength": "0.7143",
+        }
+        assert payload["recipe_version"] == recipe.version
+
+    def test_commitment_without_council_or_recipe_carries_nulls(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        import json
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._run(ports, self._publisher())
+
+        record = repository_port.save_prediction.call_args.args[0]
+        payload = json.loads(record["commitment_payload"])
+        assert payload["council"] is None
+        assert payload["recipe_version"] is None
+
     def test_commitment_not_published_when_save_fails(
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,

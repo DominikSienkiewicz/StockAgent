@@ -80,6 +80,10 @@ def normalize_trend(value: object) -> tuple[TrendDirection, bool]:
     return TrendDirection.SIDEWAYS, True
 
 
+# Horyzont prognozy: cel ceny na 12 h (`target_price_12h`, `actual_price_after_12h`,
+# etykieta modelu ML). Wchodzi do commitmentu v2 i do protokołu ewaluacji.
+PREDICTION_HORIZON_HOURS = 12
+
 SIDEWAYS_TOLERANCE = Decimal("0.005")  # ±0.5% — pasmo FLAT dla akcji/ETF
 # Krypto natywnie rusza się 3–5% dziennie, więc pasmo ±0.5% uznawałoby niemal
 # każdy dzień za "ruch" i systematycznie zaniżało trafność predykcji SIDEWAYS
