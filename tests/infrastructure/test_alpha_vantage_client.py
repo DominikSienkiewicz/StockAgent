@@ -1006,3 +1006,312 @@ def test_supported_tickers_drops_symbols_alpha_vantage_rejects() -> None:
     from src.infrastructure.adapters.alpha_vantage_client import supported_tickers
 
     assert supported_tickers(["AAPL", "CSPX.L", "BTC", "XDWD.DE"]) == ["AAPL", "BTC"]
+
+
+def _article(url: str, tickers: dict[str, str]) -> dict:
+    """Artykuł z `ticker_sentiment` dla podanych tickerów (ticker → relevance)."""
+    return {
+        "title": f"News {url}",
+        "url": url,
+        "time_published": "20261018T090000",
+        "summary": "...",
+        "source": "Reuters",
+        "ticker_sentiment": [
+            {"ticker": ticker, "relevance_score": relevance, "ticker_sentiment_score": "0.3"}
+            for ticker, relevance in tickers.items()
+        ],
+    }
+
+
+class TestLazyPerSymbol:
+    """FIN-04: tryb leniwy — request AV tylko dla symbolu, o który pyta graf
+    (za bramką volatility), z cache per symbol, globalnym pacingiem i rotacją
+    klucza odporną na współbieżność. Wsadowy pierwszy symbol pobierał feed dla
+    WSZYSTKICH tickerów, więc „pod bramką nic płatnego” było fałszem per symbol."""
+
+    _SYMBOLS = ["AAPL", "AMD", "NVDA"]
+
+    def _client(self, **kwargs) -> AlphaVantageClient:
+        options = {"api_keys": ["k1", "k2"], "symbols": self._SYMBOLS, **kwargs}
+        return AlphaVantageClient(lazy_per_symbol=True, **options)
+
+    def test_only_requested_symbol_is_fetched(self, mocker):
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch(
+            "requests.Session.get", return_value=_ok_response(_SAMPLE_PAYLOAD)
+        )
+        client = self._client()
+
+        articles = client.articles_for("AMD")
+        sentiment = client.sentiment_for("AMD")
+
+        assert mock_get.call_count == 1
+        assert mock_get.call_args.kwargs["params"]["tickers"] == "AMD"
+        assert [a["title"] for a in articles] == ["AMD surges on AI chip demand"]
+        assert sentiment["news_volume_24h"] == 1
+
+    def test_feed_is_cached_per_symbol(self, mocker):
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch(
+            "requests.Session.get", return_value=_ok_response({"feed": []})
+        )
+        client = self._client()
+
+        client.sentiment_for("AAPL")
+        client.articles_for("AAPL")
+        client.sentiment_for("AMD")
+        client.articles_for("AAPL")
+
+        tickers_sent = [c.kwargs["params"]["tickers"] for c in mock_get.call_args_list]
+        assert tickers_sent == ["AAPL", "AMD"]
+
+    def test_volume_counts_only_the_symbols_own_feed(self, mocker):
+        # Rozkład `news_volume_24h` się zmienia (FEATURE_SET_VERSION): artykuł
+        # o AAPL z feedu AMD nie dolicza się już do AAPL.
+        feeds = {
+            "AAPL": {"feed": [_article("https://example.com/a1", {"AAPL": "0.9"})]},
+            "AMD": {
+                "feed": [_article("https://example.com/m1", {"AMD": "0.9", "AAPL": "0.9"})]
+            },
+        }
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=lambda *_a, **kw: _ok_response(feeds[kw["params"]["tickers"]]),
+        )
+        client = self._client()
+
+        client.sentiment_for("AMD")
+
+        assert client.sentiment_for("AAPL")["news_volume_24h"] == 1
+
+    def test_unconfigured_or_rejected_ticker_makes_no_request(self, mocker):
+        mock_get = mocker.patch("requests.Session.get")
+        client = self._client(symbols=["AAPL", "CSPX.L"])
+
+        assert client.articles_for("CSPX.L") == []
+        assert client.sentiment_for("TSLA")["news_volume_24h"] == 0
+        assert mock_get.call_count == 0
+
+    def test_requests_are_paced_one_per_interval(self, mocker):
+        from src.infrastructure.adapters.alpha_vantage_client import (
+            INTER_REQUEST_DELAY_SECONDS,
+        )
+
+        sleep_mock = mocker.patch(
+            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
+        )
+        mocker.patch("requests.Session.get", return_value=_ok_response({"feed": []}))
+        client = self._client()
+
+        for symbol in self._SYMBOLS:
+            client.sentiment_for(symbol)
+
+        # Pierwszy request bez czekania, każdy kolejny po ~1 interwale.
+        waits = [c.args[0] for c in sleep_mock.call_args_list]
+        assert waits == [pytest.approx(INTER_REQUEST_DELAY_SECONDS, abs=0.05)] * 2
+
+    def test_parallel_symbols_share_one_pacer(self, mocker):
+        import threading
+
+        sleep_mock = mocker.patch(
+            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
+        )
+        mock_get = mocker.patch(
+            "requests.Session.get", return_value=_ok_response({"feed": []})
+        )
+        client = self._client()
+        barrier = threading.Barrier(len(self._SYMBOLS))
+
+        def worker(symbol: str) -> None:
+            barrier.wait()
+            client.sentiment_for(symbol)
+
+        threads = [threading.Thread(target=worker, args=(s,)) for s in self._SYMBOLS]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert mock_get.call_count == 3
+        assert sleep_mock.call_count == 2
+
+    def test_concurrent_callers_of_one_symbol_fetch_it_once(self, mocker):
+        import threading
+        import time as real_time
+
+        def slow_get(*_args, **_kwargs):
+            real_time.sleep(0.02)  # poszerza okno race'a
+            return _ok_response({"feed": []})
+
+        mock_get = mocker.patch("requests.Session.get", side_effect=slow_get)
+        client = self._client()
+        barrier = threading.Barrier(6)
+
+        def worker() -> None:
+            barrier.wait()
+            client.sentiment_for("AAPL")
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert mock_get.call_count == 1
+
+    def test_concurrent_rate_limits_rotate_the_key_once(self, mocker):
+        # Dwa symbole równolegle dostają limit na key1. Bez locka rotacji oba
+        # przesuwają indeks i przeskakują żywy key2 — cykl kończy się „exhausted”.
+        import threading
+
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        both_in_flight = threading.Barrier(2, timeout=5)
+
+        def get(*_args, **kwargs):
+            if kwargs["params"]["apikey"] == "k1":
+                both_in_flight.wait()
+                return _ok_response({"Information": "rate limit reached"})
+            return _ok_response({"feed": []})
+
+        mock_get = mocker.patch("requests.Session.get", side_effect=get)
+        client = self._client()
+        results: dict[str, dict] = {}
+
+        def worker(symbol: str) -> None:
+            results[symbol] = client.sentiment_for(symbol)
+
+        threads = [threading.Thread(target=worker, args=(s,)) for s in ("AAPL", "AMD")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        keys_used = sorted(c.kwargs["params"]["apikey"] for c in mock_get.call_args_list)
+        assert keys_used == ["k1", "k1", "k2", "k2"]
+        assert client._active_key_idx == 1
+        assert all("degraded_reason" not in r for r in results.values())
+
+    def test_exhausted_keys_return_empty_without_http(self, mocker):
+        from src.application.quota_monitor import QuotaMonitor
+
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response({"Information": "rate limit reached"}),
+        )
+        monitor = QuotaMonitor()
+        client = self._client(quota_monitor=monitor)
+
+        aapl = client.sentiment_for("AAPL")   # key1 + key2 → wyczerpane
+        amd = client.sentiment_for("AMD")     # zero HTTP
+
+        assert mock_get.call_count == 2
+        assert aapl["degraded_reason"] == amd["degraded_reason"] == "av_keys_exhausted"
+        assert len(monitor.alerts) == 1
+
+    def test_symbol_fetched_before_exhaustion_keeps_clean_data(self, mocker):
+        # Flaga cykliczna oflagowałaby też AAPL, który ma pełny feed.
+        from src.infrastructure.adapters.alpha_vantage_adapters import (
+            AlphaVantageSentimentAdapter,
+        )
+
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=[
+                _ok_response({"feed": []}),                          # AAPL / k1
+                _ok_response({"Information": "rate limit reached"}),  # AMD / k1
+                _ok_response({"Information": "rate limit reached"}),  # AMD / k2
+            ],
+        )
+        client = self._client()
+        adapter = AlphaVantageSentimentAdapter(client)
+
+        aapl = adapter.get_social_score("AAPL")
+        amd = adapter.get_social_score("AMD")
+
+        assert "degraded_reason" not in adapter.get_social_score("AAPL")
+        assert "degraded_reason" not in aapl
+        assert amd["degraded_reason"] == "av_keys_exhausted"
+        assert client.degraded_reason is None
+
+    def test_fetch_error_flags_its_symbol_and_is_not_refetched(self, mocker):
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch(
+            "requests.Session.get",
+            side_effect=[requests.ConnectionError("down"), _ok_response({"feed": []})],
+        )
+        client = self._client()
+
+        with pytest.raises(requests.ConnectionError):
+            client.sentiment_for("AAPL")
+        aapl = client.sentiment_for("AAPL")
+        amd = client.sentiment_for("AMD")
+
+        assert mock_get.call_count == 2
+        assert aapl["degraded_reason"] == "av_fetch_error"
+        assert "degraded_reason" not in amd
+
+    def test_fetch_error_does_not_mute_a_later_exhausted_keys_alert(self, mocker):
+        # DAT-08: wcześniejszy `av_fetch_error` nie może wyciszyć CRITICAL o kluczach.
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=[
+                requests.ConnectionError("down"),
+                _ok_response({"Information": "rate limit reached"}),
+                _ok_response({"Information": "rate limit reached"}),
+            ],
+        )
+        monitor = QuotaMonitor()
+        client = self._client(quota_monitor=monitor)
+
+        with pytest.raises(requests.ConnectionError):
+            client.sentiment_for("AAPL")
+        client.sentiment_for("AMD")
+
+        assert [a.severity for a in monitor.alerts] == [QuotaSeverity.CRITICAL]
+
+    def test_unexpected_payload_flags_its_symbol(self, mocker):
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=[_ok_response({"Error Message": "Invalid API call."}),
+                         _ok_response({"feed": []})],
+        )
+        client = self._client()
+
+        assert client.sentiment_for("AAPL")["degraded_reason"] == "av_unexpected_payload"
+        assert "degraded_reason" not in client.sentiment_for("AMD")
+
+    def test_all_symbols_of_a_cycle_share_one_news_window(self, mocker):
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch(
+            "requests.Session.get", return_value=_ok_response({"feed": []})
+        )
+        ticks = iter([
+            datetime(2026, 10, 18, 12, 0, tzinfo=UTC),
+            datetime(2026, 10, 18, 12, 9, tzinfo=UTC),
+        ])
+        client = self._client(news_window=timedelta(hours=24), clock=lambda: next(ticks))
+
+        client.sentiment_for("AAPL")
+        client.sentiment_for("AMD")
+
+        windows = {c.kwargs["params"]["time_from"] for c in mock_get.call_args_list}
+        assert windows == {"20261017T1200"}
+
+    def test_crypto_symbol_is_fetched_with_its_prefix(self, mocker):
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch(
+            "requests.Session.get", return_value=_ok_response({"feed": []})
+        )
+        client = self._client(symbols=["AAPL", "BTC"], crypto_symbols={"BTC"})
+
+        client.sentiment_for("BTC")
+
+        assert mock_get.call_args.kwargs["params"]["tickers"] == "CRYPTO:BTC"
