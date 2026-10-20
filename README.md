@@ -14,7 +14,7 @@ email with charts and its own running hit-rate.
 ![XGBoost](https://img.shields.io/badge/XGBoost-3.2-FF6B35?style=for-the-badge)
 ![Supabase](https://img.shields.io/badge/Supabase-Postgres+pgvector-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
 ![Resend](https://img.shields.io/badge/Resend-Email-000000?style=for-the-badge)
-![Architecture](https://img.shields.io/badge/Architecture-Hexagonal+DDD-orange?style=for-the-badge)
+[![Architecture](https://img.shields.io/badge/Architecture-Hexagonal+DDD-orange?style=for-the-badge)](tests/test_architecture.py)
 ![Quality Gate](https://img.shields.io/sonar/quality_gate/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud&label=Quality%20Gate)
 ![Coverage](https://img.shields.io/sonar/coverage/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud)
 
@@ -90,7 +90,11 @@ every symbol was filtered reports **zero paid calls**, and the report prints tha
 
 Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero deps) →
 Application (ports + use cases + LangGraph) → Infrastructure (adapters for API / DB / LLM /
-ML / email). The dependency arrow flows one way.
+ML / email). The dependency arrow flows one way, and
+[`tests/test_architecture.py`](tests/test_architecture.py) fails when it does not: a domain
+module that imports anything beyond the standard library and `src.domain`, an application
+module that imports the infrastructure or an entry point, or `typing.Any` in the domain
+outside `attestation.py`.
 
 ## Pre-registered parameters
 
