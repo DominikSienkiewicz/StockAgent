@@ -127,3 +127,27 @@ def test_malformed_cache_row_is_a_miss(client: MagicMock, source: Mock) -> None:
 
     assert _cache(source).get_rate("USD", BOUGHT) == FRIDAY_RATE
     source.get_rate.assert_called_once()
+
+
+def test_read_only_cache_reads_but_never_stores(
+    client: MagicMock, source: Mock, caplog: pytest.LogCaptureFixture
+) -> None:
+    # BEZ-08: lokalny run (DB_WRITES_ENABLED=false) czyta wspólny cache, ale nie
+    # dopisuje do niego kursów — tabela należy do produkcyjnych przebiegów.
+    query = _cached_rows(client, [])
+    cache = SupabaseCachedFxRates(
+        url="https://test.supabase.co",
+        key="anon",
+        delegate=source,
+        today=lambda: TODAY,
+        write_through=False,
+    )
+
+    with caplog.at_level("WARNING"):
+        first = cache.get_rate("USD", BOUGHT)
+        second = cache.get_rate("USD", date(2025, 3, 3))
+
+    assert first == second == FRIDAY_RATE
+    assert query.limit.call_count == 2
+    client.table.return_value.upsert.assert_not_called()
+    assert caplog.text.count("DB_WRITES_ENABLED=false") == 1

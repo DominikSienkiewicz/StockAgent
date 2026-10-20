@@ -8,6 +8,9 @@ tabeli NBP to kurs z wczoraj i po południu byłby nieaktualny.
 Cache jest best-effort: błąd odczytu albo zapisu (brak tabeli przed migracją,
 sieć) to WARNING i przejście do źródła, nigdy wyjątek ani brak kursu. Włącza go
 flaga `fx_rates_cache_enabled` — bez niej DI składa samo źródło.
+
+BEZ-08: `write_through=False` (run bez `db_writes_enabled`) czyta tabelę, ale
+kursu ze źródła do niej nie dopisuje — wspólna baza należy do produkcji.
 """
 
 from __future__ import annotations
@@ -39,11 +42,14 @@ class SupabaseCachedFxRates(FxRatePort):
         *,
         today: Callable[[], date],
         table_name: str = DEFAULT_FX_RATES_TABLE,
+        write_through: bool = True,
     ) -> None:
         self._client = create_client(url, key)
         self._delegate = delegate
         self._today = today
         self._table = table_name
+        self._write_through = write_through
+        self._skip_logged = False
 
     def get_rate(self, currency: str, on_date: date) -> FxRate | None:
         code = currency.strip().upper()
@@ -78,6 +84,14 @@ class SupabaseCachedFxRates(FxRatePort):
         return _parse_row(rows[0], currency, on_date) if rows else None
 
     def _write(self, rate: FxRate) -> None:
+        if not self._write_through:
+            if not self._skip_logged:
+                self._skip_logged = True
+                logger.warning(
+                    "DB_WRITES_ENABLED=false — fx_rates: kursy ze źródła nie trafiają "
+                    "do cache (run tylko do odczytu)"
+                )
+            return
         record = {
             "currency": rate.currency,
             "on_date": rate.on_date.isoformat(),
