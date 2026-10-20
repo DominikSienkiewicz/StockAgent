@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from types import MappingProxyType
 
 # FinOps — czysty model kosztu jednego cyklu agenta. "Agent, który raportuje
@@ -244,3 +245,33 @@ def av_daily_budget(
         worst_case=n_av_symbols * requests_per_symbol * cycles_per_day,
         capacity=AV_DAILY_REQUESTS_PER_KEY * n_keys,
     )
+
+
+# FIN-12: źródła cennika liczone do sufitu płatnych wywołań LLM cyklu — predykcja
+# z diagnozą pomyłki (`llm`) i każdy request rady (`council_llm`). Sentyment, newsy
+# i embeddingi mają własne limity (klucze AV, grosze za embedding), nie ten sufit.
+PAID_LLM_SOURCES: frozenset[str] = frozenset({"llm", "council_llm"})
+
+
+def paid_llm_calls(calls: Mapping[str, int]) -> int:
+    """Wywołania LLM cyklu (`PAID_LLM_SOURCES`) z liczników per klucz cennika."""
+    return sum(count for source, count in calls.items() if source in PAID_LLM_SOURCES)
+
+
+def paid_budget_allows(spent_calls: int, cap: int | None) -> bool:
+    """Czy kolejny symbol za bramką volatility może jeszcze płacić za LLM.
+
+    Miękki sufit: wpuszcza, dopóki wydane < `cap`, więc ostatni wpuszczony symbol
+    może go przebić o swoje wywołania (predykcja + rada) — nie przerywamy analizy
+    w połowie. `cap` None = bez limitu."""
+    if spent_calls < 0:
+        raise ValueError(f"spent_calls must be non-negative (got {spent_calls})")
+    return cap is None or spent_calls < cap
+
+
+def rank_by_magnitude(deltas: Mapping[str, Decimal]) -> list[str]:
+    """Symbole malejąco po |Δ|; remis rozstrzyga alfabet.
+
+    Kolejność alfabetyczna (albo z config.toml) systematycznie odcinałaby budżetem
+    te same symbole — największe ruchy mają pierwszeństwo do płatnej analizy."""
+    return sorted(deltas, key=lambda symbol: (-abs(deltas[symbol]), symbol))

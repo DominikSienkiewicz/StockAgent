@@ -133,3 +133,8 @@ def test_stale_reference_count_defaults_to_zero() -> None:
         error_count=0,
     )
     assert result is CycleMaturity.FIRST_RUN
+
+
+def test_budget_exhausted_is_its_own_skip_reason() -> None:
+    # FIN-12: symbol nad progiem odcięty budżetem cyklu nie jest „poniżej progu”.
+    assert SkipReason.BUDGET_EXHAUSTED.value == "BUDGET_EXHAUSTED"

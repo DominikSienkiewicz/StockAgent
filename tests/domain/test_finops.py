@@ -221,3 +221,53 @@ def test_av_budget_rejects_negative_inputs(field: str) -> None:
     arguments = {"n_av_symbols": 1, "requests_per_symbol": 1, "cycles_per_day": 1, "n_keys": 1}
     with pytest.raises(ValueError, match=field):
         av_daily_budget(**{**arguments, field: -1})
+
+
+# --- FIN-12: budżet płatnych wywołań LLM na cykl ---------------------------------
+
+
+def test_paid_budget_allows_until_cap() -> None:
+    from src.domain.finops import paid_budget_allows
+
+    # Miękki sufit: wpuszcza, dopóki wydane < cap (symbol w toku może go przebić).
+    assert paid_budget_allows(0, 10) is True
+    assert paid_budget_allows(9, 10) is True
+    assert paid_budget_allows(10, 10) is False
+    assert paid_budget_allows(18, 10) is False
+    # None = bez limitu (zachowanie sprzed FIN-12).
+    assert paid_budget_allows(18, None) is True
+
+
+def test_paid_budget_rejects_negative_spend() -> None:
+    from src.domain.finops import paid_budget_allows
+
+    with pytest.raises(ValueError, match="spent_calls"):
+        paid_budget_allows(-1, 10)
+
+
+def test_paid_llm_calls_count_the_prediction_and_the_council_only() -> None:
+    from src.domain.finops import PAID_LLM_SOURCES, paid_llm_calls
+
+    calls = {"llm": 2, "council_llm": 8, "sentiment": 1, "news": 1, "embedding": 2}
+
+    assert frozenset({"llm", "council_llm"}) == PAID_LLM_SOURCES
+    assert paid_llm_calls(calls) == 10
+    assert paid_llm_calls({}) == 0
+
+
+def test_rank_by_magnitude_breaks_ties_alphabetically() -> None:
+    from decimal import Decimal
+
+    from src.domain.finops import rank_by_magnitude
+
+    deltas = {
+        "MSFT": Decimal("0.03"),
+        "AAPL": Decimal("-0.05"),
+        "NVDA": Decimal("0.05"),
+        "AMD": Decimal("-0.03"),
+        "BTC": Decimal("0"),
+    }
+
+    # Malejąco po |Δ|; remis po |Δ| rozstrzyga alfabet, nie kolejność z config.toml.
+    assert rank_by_magnitude(deltas) == ["AAPL", "NVDA", "AMD", "MSFT", "BTC"]
+    assert rank_by_magnitude({}) == []

@@ -390,9 +390,12 @@ def _is_crypto(r: SymbolResult) -> bool:
 
 
 def _crypto_skip_label(r: SymbolResult, display_timezone: str, *, short: bool) -> str:
-    """Status pominiętego krypto: „poniżej progu…” albo (FIN-14) nowy punkt odniesienia."""
+    """Status pominiętego krypto: „poniżej progu…”, (FIN-14) nowy punkt odniesienia
+    albo (FIN-12) odcięcie budżetem płatnych wywołań cyklu."""
     if _is_rebaselined(r) and r.reference_at is not None:
         return _rebaseline_label(format_local_date(r.reference_at, display_timezone))
+    if _is_budget_cut(r):
+        return _BUDGET_CUT_SHORT if short else _BUDGET_CUT_LABEL
     return "poniżej progu" if short else "poniżej progu zmienności"
 
 
@@ -1930,10 +1933,44 @@ def _render_rebaselined_text(ignored: list[SymbolResult], display_timezone: str)
     ]
 
 
+def _is_budget_cut(r: SymbolResult) -> bool:
+    """FIN-12: ruch przeszedł bramkę, ale cykl wyczerpał sufit płatnych wywołań LLM."""
+    return r.skip_reason is SkipReason.BUDGET_EXHAUSTED
+
+
+_BUDGET_CUT_TITLE = "Pominięte — wyczerpany budżet cyklu"
+_BUDGET_CUT_LABEL = "pominięte — wyczerpany budżet płatnych wywołań cyklu"
+_BUDGET_CUT_SHORT = "budżet cyklu wyczerpany"
+_BUDGET_CUT_NOTE = (
+    "Ruch przekroczył próg zmienności, ale cykl wyczerpał limit płatnych wywołań "
+    "LLM, więc te symbole nie dostały analizy. Cena odniesienia zostaje bez zmian — "
+    "następny cykl porówna się do niej."
+)
+
+
+def _render_budget_exhausted_html(ignored: list[SymbolResult]) -> str:
+    """💸 FIN-12: symbole odcięte budżetem cyklu, z ruchem. Pusty string, gdy brak."""
+    cut = [r for r in ignored if _is_budget_cut(r)]
+    if not cut:
+        return ""
+    rows = "".join(
+        f"<span style='display: inline-block; padding: 2px 8px; margin: 2px; background: #fef3c7; border-radius: 3px; font-size: 12px;'>"
+        f"<strong>{_html(r.symbol)}</strong> <span style='color: {_delta_color(r.delta)}'>{direction_pct(r.delta)}</span></span>"
+        for r in cut
+    )
+    return (
+        _section_h2(f"💸 {_BUDGET_CUT_TITLE}")
+        + "<div style='font-size: 12px; color: #6b7280; margin: 0 0 6px 0;'>"
+        + _html(_BUDGET_CUT_NOTE)
+        + f"</div><div>{rows}</div>"
+    )
+
+
 def _render_ignored_html(ignored: list[SymbolResult]) -> str:
     """⏸ Symbole pominięte poniżej progu zmienności. Pusty string, gdy brak.
-    FIN-14: symbole z nowym punktem odniesienia mają własną sekcję."""
-    ignored = [r for r in ignored if not _is_rebaselined(r)]
+    FIN-14: symbole z nowym punktem odniesienia mają własną sekcję; FIN-12: symbole
+    odcięte budżetem cyklu też."""
+    ignored = [r for r in ignored if not _is_rebaselined(r) and not _is_budget_cut(r)]
     if not ignored:
         return ""
     rows = "".join(
@@ -2477,6 +2514,7 @@ def _render_html(
         )
         sections.append(correlation_chart)
     sections.append(_FINOPS_SLOT)
+    sections.append(_render_budget_exhausted_html(ignored))
     sections.append(_render_ignored_html(ignored))
     sections.append(_render_errors_html(errors))
 
@@ -2715,10 +2753,19 @@ def _render_saved_section_text(
     return lines
 
 
+def _render_budget_exhausted_text(ignored: list[SymbolResult]) -> list[str]:
+    """Sekcja FIN-12 'Pominięte — wyczerpany budżet cyklu' (plain). Pusta lista, gdy brak."""
+    cut = [r for r in ignored if _is_budget_cut(r)]
+    if not cut:
+        return []
+    cut_str = ", ".join(f"{r.symbol}({_pct(r.delta)})" for r in cut)
+    return [_BUDGET_CUT_TITLE.upper(), "-" * 64, f"  {cut_str}", f"  {_BUDGET_CUT_NOTE}", ""]
+
+
 def _render_ignored_text(ignored: list[SymbolResult]) -> list[str]:
     """Sekcja 'Pominięte' (plain). Pusta lista, gdy brak. FIN-14: bez symboli
-    z nowym punktem odniesienia (mają własną sekcję)."""
-    ignored = [r for r in ignored if not _is_rebaselined(r)]
+    z nowym punktem odniesienia (mają własną sekcję); FIN-12: bez odciętych budżetem."""
+    ignored = [r for r in ignored if not _is_rebaselined(r) and not _is_budget_cut(r)]
     if not ignored:
         return []
     ignored_str = ", ".join(f"{r.symbol}({_pct(r.delta)})" for r in ignored)
@@ -2812,6 +2859,7 @@ def _render_plain(
     # Wnioski z poprzednich cykli
     lines.extend(_render_reflections_text(saved))
     lines.append(_SUGGESTIONS_SLOT)
+    lines.extend(_render_budget_exhausted_text(ignored))
     lines.extend(_render_ignored_text(ignored))
     lines.extend(_render_errors_text(errors))
 
@@ -2838,6 +2886,9 @@ def _skip_reason_of(status: str, raw: dict[str, Any]) -> SkipReason | None:
     Status inny niż "ignored" nie niesie powodu pominięcia."""
     if status != "ignored":
         return None
+    # FIN-12: ruch przeszedł bramkę, odciął go budżet płatnych wywołań cyklu.
+    if raw.get("budget_exhausted") is True:
+        return SkipReason.BUDGET_EXHAUSTED
     previous_price = raw.get("previous_price")
     if previous_price is None or Decimal(str(previous_price)) == 0:
         return SkipReason.COLD_START

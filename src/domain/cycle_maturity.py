@@ -37,12 +37,16 @@ class SkipReason(Enum):
     - `STALE_REFERENCE` (FIN-14) — poprzednia cena istniała, ale jest starsza
       niż `asset.REFERENCE_MAX_AGE_HOURS` (pauza crona). Cykl zapisał nowy
       punkt odniesienia bez analizy (re-baseline, zero płatnych wywołań).
+    - `BUDGET_EXHAUSTED` (FIN-12) — ruch przeszedł bramkę volatility, ale cykl
+      wyczerpał sufit płatnych wywołań LLM. Bez analizy i BEZ nowego snapshotu
+      ceny, więc następny cykl porówna się do tej samej referencji.
     """
 
     COLD_START = "COLD_START"
     BELOW_THRESHOLD = "BELOW_THRESHOLD"
     UNSUPPORTED_PRICE = "UNSUPPORTED_PRICE"
     STALE_REFERENCE = "STALE_REFERENCE"
+    BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
 
 
 class CycleMaturity(Enum):

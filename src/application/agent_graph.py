@@ -55,6 +55,7 @@ from src.domain.experiment import (
     has_treatment,
 )
 from src.domain.feature_attribution import FeatureContribution, top_contributions
+from src.domain.finops import PAID_LLM_SOURCES, paid_budget_allows
 from src.domain.implied_edge import (
     ImpliedEdge,
     evaluate_edge,
@@ -137,6 +138,9 @@ class AgentState(TypedDict, total=False):
     current_price: Decimal
     delta: Decimal
     status: str
+    # FIN-12: ruch przeszedł bramkę volatility, ale cykl wyczerpał sufit płatnych
+    # wywołań LLM — symbol kończy jako 'ignored' bez analizy i bez snapshotu ceny.
+    budget_exhausted: bool
 
     # Opcjonalny obiekt Asset (przekazywany z zewnątrz, gdy dostępny asset_type)
     asset: Asset
@@ -561,6 +565,9 @@ class AgentGraphDeps:
     # po `__post_init__` jest magazynem `telemetry.paid_calls` (podany Counter
     # zostaje przejęty przez telemetrię, brak = Counter telemetrii).
     paid_call_meter: Counter[str] | None = None
+    # FIN-12: sufit płatnych wywołań LLM cyklu (`PAID_LLM_SOURCES`). None = bez
+    # limitu. Decyzję podejmuje domena (`paid_budget_allows`) po bramce volatility.
+    paid_call_cap: int | None = None
 
     def __post_init__(self) -> None:
         if self.paid_call_meter is None:
@@ -763,6 +770,23 @@ def _gate_reason(passes: bool, stale: bool) -> str:
     return "stale_reference" if stale else "below_threshold"
 
 
+def _budget_exhausted(deps: AgentGraphDeps, symbol: str) -> bool:
+    """FIN-12: czy cykl wyczerpał sufit płatnych wywołań LLM. Licznik jest wspólny
+    dla wszystkich symboli cyklu (także równoległych), więc czytamy go pod lockiem
+    telemetrii; reguła miękkiego sufitu żyje w domenie."""
+    spent = deps.telemetry.paid_calls_of(PAID_LLM_SOURCES)
+    if paid_budget_allows(spent, deps.paid_call_cap):
+        return False
+    logger.warning(
+        "paid LLM budget exhausted before %s: %d/%d calls spent this cycle — "
+        "symbol skipped without analysis, price reference kept for the next cycle",
+        symbol,
+        spent,
+        deps.paid_call_cap,
+    )
+    return True
+
+
 def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
     threshold = deps.threshold
     crypto_threshold = deps.crypto_threshold
@@ -771,8 +795,13 @@ def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
     chosen = _pick_threshold(state, threshold, crypto_threshold)
     stale = _reference_is_stale(state)
     passes = asset.evaluate_volatility(delta, chosen, reference_stale=stale)
-    decision = "analyze" if passes else "ignore"
-    deps.telemetry.record_gate(state["symbol"], passes, _gate_reason(passes, stale))
+    over_budget = passes and _budget_exhausted(deps, state["symbol"])
+    if over_budget:
+        decision = "budget_exhausted"
+        deps.telemetry.record_gate(state["symbol"], False, "budget_exhausted")
+    else:
+        decision = "analyze" if passes else "ignore"
+        deps.telemetry.record_gate(state["symbol"], passes, _gate_reason(passes, stale))
     # #13: decyzja bramki volatility musi być widoczna w logach — bez tego
     # nie dało się odróżnić zamierzonego "ignore" (FinOps) od cichego buga.
     logger.info(
@@ -785,6 +814,8 @@ def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
         stale,
         decision,
     )
+    if over_budget:
+        return "budget_exhausted"
     return "analyze_sentiment" if passes else "ignore"
 
 
@@ -1551,6 +1582,15 @@ def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     return {"status": "ignored"}
 
 
+def _budget_exhausted_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+    """FIN-12: węzeł terminalny symbolu odciętego budżetem cyklu — jedyny wyjątek
+    od zapisu snapshotu w każdym cyklu. Snapshot z bieżącą ceną zjadłby ruch ponad
+    progiem: następny cykl liczyłby Δ od nowej ceny i ruch zniknąłby bez analizy.
+    Wektor ML-14 też nie powstaje — ten sam ruch wróci jako obserwacja następnego
+    cyklu, więc zapis tutaj zdublowałby go w treningu."""
+    return {"status": "ignored", "budget_exhausted": True}
+
+
 
 def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     """Fabryka grafu LangGraph — Fast Loop kompletny.
@@ -1558,6 +1598,7 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     Topologia bez fundamentals_port:
         check_price → reflect → [delta ≥ threshold?]
                                   ├── nie → ignore → END
+                                  ├── tak, budżet LLM cyklu wyczerpany → budget_exhausted → END
                                   └── tak → analyze_sentiment → fetch_news
                                                               → predict → save → END
 
@@ -1581,6 +1622,7 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     workflow.add_node("council", lambda s: _council_node(deps, s))
     workflow.add_node("save", lambda s: _save_node(deps, s))
     workflow.add_node("ignore", lambda s: _ignore_node(deps, s))
+    workflow.add_node("budget_exhausted", lambda s: _budget_exhausted_node(deps, s))
 
     workflow.set_entry_point("check_price")
     # check_price → reflect: bezwarunkowo. Ocena przeszłej predykcji odbywa się
@@ -1606,6 +1648,7 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
             {
                 "analyze_sentiment": "analyze_sentiment",
                 "ignore": "ignore",
+                "budget_exhausted": "budget_exhausted",
             },
         )
     else:
@@ -1616,6 +1659,7 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
             {
                 "analyze_sentiment": "analyze_sentiment",
                 "ignore": "ignore",
+                "budget_exhausted": "budget_exhausted",
             },
         )
 
@@ -1625,6 +1669,7 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     workflow.add_edge("council", "save")
     workflow.add_edge("save", END)
     workflow.add_edge("ignore", END)
+    workflow.add_edge("budget_exhausted", END)
 
     return workflow
 

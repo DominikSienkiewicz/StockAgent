@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import threading
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -83,6 +83,12 @@ class CycleTelemetry:
                 return
             counter.update(self._paid_calls)
             self._paid_calls = counter
+
+    def paid_calls_of(self, sources: Set[str]) -> int:
+        """FIN-12: suma płatnych wywołań wskazanych źródeł, odczytana pod lockiem
+        (symbole idą równolegle, a budżet cyklu czyta licznik w trakcie zapisów)."""
+        with self._lock:
+            return sum(self._paid_calls[source] for source in sources)
 
     def record_paid_call(self, source: str) -> None:
         with self._lock:

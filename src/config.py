@@ -133,6 +133,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
     "fast_loop_cycles_per_day",
+    # FIN-12: sufit kosztu cyklu decyduje, KTÓRE symbole dostają analizę, nie jaką —
+    # prognoza przeanalizowanego symbolu jest identyczna z sufitem i bez.
+    "max_paid_llm_calls_per_cycle",
 })
 
 # WIA-20: pola przepisu — progi, modele, providerzy, symbole, źródła danych
@@ -525,6 +528,10 @@ class Settings(BaseSettings):
     # start ręczny; test strażnik pilnuje zgodności). Ręczny dispatch tego samego
     # dnia to kolejny cykl ponad ten rachunek.
     fast_loop_cycles_per_day: int = 1
+    # FIN-12: sufit płatnych wywołań LLM jednego cyklu Fast Loopa (predykcja +
+    # diagnoza pomyłki + każdy request rady). Miękki: symbol za bramką wchodzi,
+    # dopóki wydane < sufit. None = bez limitu (config.toml: 100).
+    max_paid_llm_calls_per_cycle: int | None = None
     # ----- Database -----
     supabase_url: str
     supabase_key: str
@@ -826,6 +833,16 @@ class Settings(BaseSettings):
         """Zero cykli wyzerowałoby worst case i wyłączyło kontrolę budżetu AV."""
         if value < 1:
             raise ValueError(f"fast_loop_cycles_per_day must be >= 1 (got {value})")
+        return value
+
+    @field_validator("max_paid_llm_calls_per_cycle")
+    @classmethod
+    def _validate_max_paid_llm_calls_per_cycle(cls, value: int | None) -> int | None:
+        """Zero zamknęłoby po cichu każdą analizę; brak limitu to None."""
+        if value is not None and value < 1:
+            raise ValueError(
+                f"max_paid_llm_calls_per_cycle must be >= 1 or unset (got {value})"
+            )
         return value
 
     @field_validator("tool_use_max_rounds")

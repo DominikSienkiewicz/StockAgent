@@ -143,3 +143,13 @@ def test_concurrent_records_lose_no_increment() -> None:
 
     metrics = telemetry.snapshot()
     assert metrics.paid_calls["council_llm"] == workers * per_worker
+
+
+def test_paid_calls_of_sums_only_the_requested_sources() -> None:
+    # FIN-12: budżet cyklu czyta licznik spod tego samego locka co zapisy.
+    telemetry = CycleTelemetry()
+    for source in ("llm", "council_llm", "council_llm", "sentiment", "embedding"):
+        telemetry.record_paid_call(source)
+
+    assert telemetry.paid_calls_of(frozenset({"llm", "council_llm"})) == 3
+    assert telemetry.paid_calls_of(frozenset({"news"})) == 0

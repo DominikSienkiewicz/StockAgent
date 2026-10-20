@@ -3913,3 +3913,160 @@ class TestCouncilRequestMetering:
         assert any(
             "paid call: node=council" in rec.message for rec in caplog.records
         )
+
+
+class TestPaidCallBudget:
+    """FIN-12: twardy sufit płatnych wywołań LLM na cykl. Domena decyduje
+    (`paid_budget_allows`, miękki sufit), graf po pozytywnej bramce volatility
+    kieruje symbol ponad budżetem do 'ignore' z flagą `budget_exhausted`."""
+
+    _COUNCIL_REQUESTS = 8
+
+    def _deps(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        **extra,
+    ) -> AgentGraphDeps:
+        from src.application.cycle_telemetry import CycleTelemetry
+        from src.application.ports import AdvisoryCouncilPort
+
+        telemetry = CycleTelemetry()
+        council_port = Mock(spec=AdvisoryCouncilPort)
+
+        def council_requests(symbol, data):
+            # Jak `MeteredLLMPort`: każda persona i chairman to osobny request.
+            for _ in range(self._COUNCIL_REQUESTS):
+                telemetry.record_paid_call("council_llm")
+            return None
+
+        council_port.analyze.side_effect = council_requests
+        return AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            council_port=council_port,
+            telemetry=telemetry,
+            **extra,
+        )
+
+    def _run_cycle(self, deps: AgentGraphDeps, symbols: list[str]) -> list[dict]:
+        app = create_agent_graph(deps).compile()
+        return [
+            app.invoke({"symbol": symbol, "previous_price": Decimal("100.0")})
+            for symbol in symbols
+        ]
+
+    def test_third_symbol_routed_to_ignore_with_budget_exhausted_flag(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=10,
+        )
+
+        # Każdy symbol: 1 predykcja + 8 requestów rady = 9 wywołań LLM.
+        first, second, third = self._run_cycle(deps, ["AAPL", "MSFT", "NVDA"])
+
+        assert [first["status"], second["status"]] == ["saved", "saved"]
+        assert third["status"] == "ignored"
+        assert third["budget_exhausted"] is True
+        assert "budget_exhausted" not in first
+        assert llm_port.analyze.call_count == 2
+
+    def test_cut_symbol_keeps_its_old_price_reference(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        # Snapshot z nową ceną zjadłby ruch: następny cykl liczyłby Δ od 90, nie od 100.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=10, feature_snapshots_enabled=True,
+        )
+
+        self._run_cycle(deps, ["AAPL", "MSFT", "NVDA"])
+
+        snapshot_symbols = [
+            c.args[0] for c in repository_port.save_price_snapshot.call_args_list
+        ]
+        assert snapshot_symbols == ["AAPL", "MSFT"]
+        feature_symbols = [
+            c.args[0] for c in repository_port.save_feature_snapshot.call_args_list
+        ]
+        assert "NVDA" not in feature_symbols
+
+    def test_cut_symbol_pays_for_nothing_past_the_gate(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=9,
+        )
+
+        self._run_cycle(deps, ["AAPL", "MSFT"])
+
+        assert sentiment_port.get_social_score.call_count == 1
+        assert news_port.get_news_context.call_count == 1
+        metrics = deps.telemetry.snapshot()
+        assert metrics.paid_calls["llm"] == 1
+        assert dict(metrics.gate_reasons) == {"above_threshold": 1, "budget_exhausted": 1}
+
+    def test_cutoff_is_logged_as_a_warning(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        caplog,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=9,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="src.application.agent_graph"):
+            self._run_cycle(deps, ["AAPL", "MSFT"])
+
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("MSFT" in m and "budget" in m and "9/9" in m for m in warnings), warnings
+
+    def test_no_cap_analyzes_every_symbol_past_the_gate(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        finals = self._run_cycle(deps, ["AAPL", "MSFT", "NVDA"])
+
+        assert [f["status"] for f in finals] == ["saved", "saved", "saved"]
+        assert llm_port.analyze.call_count == 3
+
+    def test_symbol_below_the_gate_is_never_marked_budget_exhausted(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=0,
+        )
+
+        (final,) = self._run_cycle(deps, ["AAPL"])
+
+        assert final["status"] == "ignored"
+        assert "budget_exhausted" not in final
+        repository_port.save_price_snapshot.assert_called_once()

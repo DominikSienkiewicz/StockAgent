@@ -1149,6 +1149,8 @@ def build_use_case(
             else None
         ),
         telemetry=telemetry,
+        # FIN-12: sufit płatnych wywołań LLM cyklu; None = bez limitu.
+        paid_call_cap=settings.max_paid_llm_calls_per_cycle,
     ))
 
 

@@ -296,3 +296,9 @@ def test_fast_loop_cycles_per_day_matches_the_workflow_schedule() -> None:
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
 
     assert data["fast_loop_cycles_per_day"] == _scheduled_fast_loop_runs_per_day()
+
+
+def test_real_config_toml_caps_paid_llm_calls_per_cycle() -> None:
+    """FIN-12 (decyzja 2026-10-20): sufit 100 płatnych wywołań LLM na cykl."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["max_paid_llm_calls_per_cycle"] == 100

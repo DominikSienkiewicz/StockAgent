@@ -3402,3 +3402,77 @@ class TestForecastHorizonInPredictions:
 
         assert "Horyzont prognozy" not in html
         assert "Horyzont prognozy" not in text
+
+
+class TestBudgetExhaustedReport:
+    """FIN-12 — symbol nad progiem, którego cykl nie przeanalizował, bo skończył
+    się budżet płatnych wywołań LLM. To nie „poniżej progu”: ruch był, analizy nie."""
+
+    _STARTED = datetime(2026, 10, 20, 5, 30, tzinfo=UTC)
+
+    def _raw(self, **overrides: object) -> dict[str, object]:
+        return {
+            "status": "ignored",
+            "delta": Decimal("-0.10"),
+            "previous_price": Decimal("100"),
+            "current_price": Decimal("90"),
+            "budget_exhausted": True,
+            **overrides,
+        }
+
+    def test_mapper_marks_the_budget_cutoff(self):
+        result = to_symbol_result("NVDA", self._raw(), now=self._STARTED)
+
+        assert result.status == "ignored"
+        assert result.skip_reason is SkipReason.BUDGET_EXHAUSTED
+
+    def test_report_names_the_cut_symbols_with_their_move(self):
+        result = to_symbol_result("NVDA", self._raw(), now=self._STARTED)
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "Pominięte — wyczerpany budżet cyklu" in html
+        assert "NVDA" in html.split("Pominięte — wyczerpany budżet cyklu")[1]
+        assert "POMINIĘTE — WYCZERPANY BUDŻET CYKLU" in text
+        assert "NVDA(-10,00%)" in text.split("POMINIĘTE — WYCZERPANY BUDŻET CYKLU")[1]
+
+    def test_cut_symbol_is_not_listed_below_the_volatility_threshold(self):
+        result = to_symbol_result("NVDA", self._raw(), now=self._STARTED)
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "poniżej progu zmienności" not in html
+        assert "poniżej progu zmienności" not in text
+
+    def test_below_threshold_symbols_stay_in_their_own_section(self):
+        cut = to_symbol_result("NVDA", self._raw(), now=self._STARTED)
+        flat = to_symbol_result(
+            "MSFT",
+            self._raw(delta=Decimal("0.005"), budget_exhausted=False),
+            now=self._STARTED,
+        )
+
+        html, text = build_html_report([cut, flat], self._STARTED, 1.0)
+
+        below = html.split("poniżej progu zmienności")[1]
+        assert "MSFT" in below
+        assert "NVDA" not in below
+
+    def test_no_cutoff_no_section(self):
+        html, text = build_html_report([_ignored_result()], self._STARTED, 1.0)
+
+        assert "wyczerpany budżet cyklu" not in html
+        assert "WYCZERPANY BUDŻET CYKLU" not in text
+
+    def test_crypto_section_names_the_budget_cutoff(self):
+        result = SymbolResult(
+            symbol="BTC", status="ignored", delta=Decimal("0.12"),
+            current_price=Decimal("65000"), asset_class="CRYPTO",
+            skip_reason=SkipReason.BUDGET_EXHAUSTED,
+        )
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "poniżej progu" not in html.split("🪙 Krypto")[1]
+        assert "budżet cyklu" in html.split("🪙 Krypto")[1]
+        assert "budżet cyklu" in text.split("KRYPTO")[1]

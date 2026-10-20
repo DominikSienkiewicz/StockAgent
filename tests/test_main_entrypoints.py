@@ -4469,3 +4469,27 @@ class TestCouncilRequestMeteringWiring:
         assert deps.telemetry.snapshot().paid_calls["council_llm"] == 2
         # Główny LLM nie jest owinięty — jego wywołania liczy `_log_paid_call`.
         assert deps.llm_port is not council_llm
+
+
+class TestPaidCallCapWiring:
+    """FIN-12: sufit płatnych wywołań LLM z `Settings` trafia do grafu jednym
+    polem `AgentGraphDeps.paid_call_cap`; brak sufitu to None (bez limitu)."""
+
+    def test_build_use_case_passes_the_cap_to_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.max_paid_llm_calls_per_cycle = 100
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].paid_call_cap == 100
+
+    def test_no_cap_leaves_the_graph_unbounded(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].paid_call_cap is None

@@ -1062,3 +1062,29 @@ class TestFastLoopCyclesPerDay:
         assert "fast_loop_cycles_per_day" in NON_RECIPE_SETTINGS_FIELDS
         baseline = self._settings().config_hash()
         assert self._settings(fast_loop_cycles_per_day=2).config_hash() == baseline
+
+
+class TestMaxPaidLlmCallsPerCycle:
+    """FIN-12: sufit płatnych wywołań LLM na cykl (predykcja + diagnoza + rada).
+    None = bez limitu; produkcyjny `config.toml` ustawia 100."""
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_defaults_to_no_cap(self, env):
+        assert self._settings().max_paid_llm_calls_per_cycle is None
+
+    def test_accepts_a_positive_cap(self, env):
+        assert self._settings(max_paid_llm_calls_per_cycle=100).max_paid_llm_calls_per_cycle == 100
+
+    def test_zero_cap_is_rejected(self, env):
+        # Zero zamknęłoby każdą analizę po cichu; lokalny wyłącznik to PAID_CALLS_ENABLED.
+        with pytest.raises(ValueError, match="max_paid_llm_calls_per_cycle"):
+            self._settings(max_paid_llm_calls_per_cycle=0)
+
+    def test_stays_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "max_paid_llm_calls_per_cycle" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = self._settings().config_hash()
+        assert self._settings(max_paid_llm_calls_per_cycle=50).config_hash() == baseline
