@@ -9,7 +9,9 @@ Deterministyczny wybór bohaterów tygodnia z zamkniętych predykcji:
   lekcją z `correction_insight`,
 - **wybroniony dysydent** — reużycie `vindicated_dissenters` z rady
   („Soros miał rację, gdy wszyscy mówili KUP"),
-- **delta ECE** — reużycie krzywej kalibracji (`calibration_curve`).
+- **delta ECE** — reużycie krzywej kalibracji (`calibration_curve`),
+- **Brier i BSS** (WIA-36) — główne metryki pewności; ECE zostaje pomocniczo,
+  bo „zawsze 55%” przy 55% trafień ma ECE = 0 i zerową umiejętność.
 
 REGUŁA DOMENOWA (roadmap #17, „wymaganie, nie opcja"): recap powstaje wyłącznie
 przy N >= `MIN_CLOSED_PREDICTIONS_FOR_RECAP` zamkniętych predykcjach. Poniżej
@@ -30,7 +32,9 @@ from decimal import Decimal
 from typing import Literal
 
 from src.domain.calibration_curve import (
+    ProbabilityScores,
     expected_calibration_error,
+    probability_scores,
     reliability_curve,
 )
 from src.domain.council import InvestorOpinion, vindicated_dissenters
@@ -164,6 +168,9 @@ class WeeklyRecap:
 
     Zawiera wyłącznie wybór faktów (bohaterowie, statystyki kalibracji).
     Narrację LLM dokleja warstwa application — tu jej NIE ma.
+
+    `scores` (WIA-36) to Brier, Brier klimatologii i BSS z tych samych par
+    `(confidence, is_correct)` co ECE; None = recap zbudowany bez nich.
     """
 
     sample_size: int
@@ -172,6 +179,7 @@ class WeeklyRecap:
     current_ece: float
     previous_ece: float | None
     ece_delta: float | None
+    scores: ProbabilityScores | None = None
 
 
 def _to_highlight(closed: ClosedPrediction) -> RecapHighlight:
@@ -203,7 +211,8 @@ def build_weekly_recap(
 
     `current_ece` liczone z par `(confidence, is_correct)` przez krzywą
     kalibracji. `ece_delta = current_ece − previous_ece` (albo `None`, gdy brak
-    poprzedniego punktu odniesienia).
+    poprzedniego punktu odniesienia). Z tych samych par liczone są Brier, Brier
+    klimatologii i BSS (`scores`, WIA-36).
     """
     if len(closed_predictions) < MIN_CLOSED_PREDICTIONS_FOR_RECAP:
         return None
@@ -234,4 +243,5 @@ def build_weekly_recap(
         current_ece=current_ece,
         previous_ece=previous_ece,
         ece_delta=ece_delta,
+        scores=probability_scores(samples, n_buckets),
     )

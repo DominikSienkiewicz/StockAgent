@@ -1,7 +1,8 @@
 """Render sekcji „Tydzień StockAgenta" (#17) — HTML i plain-text.
 
 Niedzielna retrospektywa jako mail-opowieść: strzał tygodnia, wtopa tygodnia
-z lekcją, wybronieni dysydenci rady i delta ECE. Selekcję robi domena
+z lekcją, wybronieni dysydenci rady, Brier z BSS (WIA-36) i delta ECE
+(pomocniczo). Selekcję robi domena
 (`build_weekly_recap`), narrację dokłada use case (LLM) — tu tylko prezentacja.
 
 Sekcja samosupresująca: `recap is None` (poniżej progu / brak danych) →
@@ -13,6 +14,7 @@ from __future__ import annotations
 import html as _html
 from decimal import Decimal
 
+from src.application.report_evidence import probability_label
 from src.application.report_formatting import INVESTMENT_DISCLAIMER, number, pct
 from src.domain.council import InvestorOpinion
 from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
@@ -37,6 +39,22 @@ def _ece_delta_label(recap: WeeklyRecap) -> str:
     return (
         f"ECE {number(recap.current_ece, decimals=3)} "
         f"({direction} o {number(abs(recap.ece_delta), decimals=3)} tydzień do tygodnia)"
+    )
+
+
+def _scores_label(recap: WeeklyRecap) -> str:
+    """„Brier = 0,168 (klimatologia 0,24, BSS = +30,0%) · log loss = 0,5” albo ""."""
+    return "" if recap.scores is None else probability_label(recap.scores)
+
+
+def _scores_html(recap: WeeklyRecap) -> str:
+    label = _scores_label(recap)
+    if not label:
+        return ""
+    return (
+        "<div style='font-size: 12px; color: #6b7280; margin-top: 8px;'>"
+        f"🎯 Pewność: {_html.escape(label)} — BSS 0% to brak umiejętności "
+        "względem prognozy „zawsze stopa bazowa”.</div>"
     )
 
 
@@ -145,6 +163,7 @@ def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> 
         + _worst_hero_html(recap)
         + _dissenters_html(recap.worst.vindicated_dissenters)
         + _dissenters_html(recap.best.vindicated_dissenters)
+        + _scores_html(recap)
         + "<div style='font-size: 12px; color: #6b7280; margin-top: 8px;'>"
         f"📐 Kalibracja: {_html.escape(_ece_delta_label(recap))}</div>"
         # MAIL-08: recap to osobny mail, więc zamyka go własne zastrzeżenie.
@@ -179,6 +198,9 @@ def render_weekly_recap_text(recap: WeeklyRecap | None, narrative: str = "") -> 
         lines.append(f"  {narrative}")
     lines.extend(_hero_text(best_title(recap), recap.best))
     lines.extend(_hero_text(worst_title(recap), recap.worst))
+    scores = _scores_label(recap)
+    if scores:
+        lines.append(f"  Pewność: {scores}")
     lines.append(f"  Kalibracja: {_ece_delta_label(recap)}")
     lines.extend(["-" * 64, INVESTMENT_DISCLAIMER])
     return "\n".join(lines)

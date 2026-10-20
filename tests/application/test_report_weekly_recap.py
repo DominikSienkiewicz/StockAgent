@@ -6,12 +6,14 @@ wtopa z lekcją, wybronieni dysydenci, delta ECE), escaping HTML i polską treś
 
 from __future__ import annotations
 
+import dataclasses
 from decimal import Decimal
 
 from src.application.report_weekly_recap import (
     render_weekly_recap_html,
     render_weekly_recap_text,
 )
+from src.domain.calibration_curve import ProbabilityScores
 from src.domain.council import InvestorOpinion
 from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
 
@@ -204,3 +206,35 @@ def test_ece_line_uses_a_decimal_comma() -> None:
 
     assert "ECE 0,150 (poprawa o 0,050 tydzień do tygodnia)" in html
     assert "ECE 0,150 (poprawa o 0,050 tydzień do tygodnia)" in text
+
+
+class TestWeeklyRecapProbabilityScores:
+    """WIA-36: Brier i BSS obok ECE — samo ECE nie odróżnia umiejętności od zera."""
+
+    @staticmethod
+    def _scored_recap() -> WeeklyRecap:
+        scores = ProbabilityScores(
+            n=5,
+            brier=0.168,
+            log_loss=0.5,
+            climatology_brier=0.24,
+            skill=0.3,
+            reliability=0.01,
+            resolution=0.08,
+            uncertainty=0.24,
+        )
+        return dataclasses.replace(_recap(), scores=scores)
+
+    def test_html_shows_brier_climatology_and_skill(self) -> None:
+        html = render_weekly_recap_html(self._scored_recap())
+
+        assert "Brier = 0,168 (klimatologia 0,24, BSS = +30,0%)" in html
+
+    def test_text_shows_brier_climatology_and_skill(self) -> None:
+        text = render_weekly_recap_text(self._scored_recap())
+
+        assert "Brier = 0,168 (klimatologia 0,24, BSS = +30,0%)" in text
+
+    def test_recap_without_scores_has_no_brier_line(self) -> None:
+        assert "Brier" not in render_weekly_recap_html(_recap())
+        assert "Brier" not in render_weekly_recap_text(_recap())
