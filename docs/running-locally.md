@@ -216,6 +216,24 @@ SAP.DE,4,182.10,EUR,
 
 **Email golden snapshot (TEST-02).** `tests/application/test_report_builder_snapshot.py` renders three synthetic cycles with a frozen clock and fixed data: a full cycle (saved stocks with council, news and provenance badges, crypto, skipped and unsupported tickers, a source error, plus Risk Watch, your portfolio, Track Record, the model scorecard, cycle cost and the run footer), a quiet day where the volatility gate skips everything, and the day-1 cold start. It compares the HTML and the plain-text email character for character with `tests/application/snapshots/<scenario>.html` and `.txt`, and on a difference prints a unified diff. The HTML is stored one tag per line so a change reads as an ordinary diff; that layout is reversible and the test checks it, so the comparison stays exact. Nothing in it depends on the machine's time zone, locale or hash seed. When the email changes on purpose, rewrite the snapshots with the `--update-golden` command above (the only thing that writes them), review `git diff tests/application/snapshots/` and commit them together with the change; never edit them by hand to turn the test green.
 
+## Branch workflow
+
+Work happens on a feature branch in its own worktree under `.worktrees/`, never on `main`. Three helpers in [`scripts/`](../scripts/) cover the cycle:
+
+```bash
+scripts/worktree-new.sh <type> <description>   # branch <type>/<description>-YYYY-MM-DD from origin/main in .worktrees/<description>-YYYY-MM-DD; prints the path
+# … work and commit in that worktree …
+scripts/worktree-status.sh                     # every worktree with ahead/behind, uncommitted files and a state: ready, dirty, empty or detached
+scripts/merge.sh <branch> "<Conventional Commit message>" --dry-run   # validate and print the plan, change nothing
+scripts/merge.sh <branch> "<Conventional Commit message>"             # merge --no-ff into main, remove the worktree, delete the branch
+```
+
+`<type>` is a Conventional Commit type (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`, …) and `<description>` is kebab-case. The merge message is required. `merge.sh` refuses before merging when the primary or the source worktree has uncommitted work, when `origin/main` is ahead, or when the source is a protected branch.
+
+These three files are canonical copies of the Platform templates (`Platform/templates/<name>`, named on the `CANON:` line of each header). Do not edit them here: a change goes into the template and is copied back byte for byte. [`tests/test_workflow_scripts.py`](../tests/test_workflow_scripts.py) checks that each one exists, is executable, names its template and parses in bash.
+
+`merge.sh` removes regenerable build output with the worktree (`.venv/`, `.pytest_cache/`, `__pycache__/` and similar), but the caches of the lint gate, `.mypy_cache/` and `.ruff_cache/`, are not on that list and block the merge. Check the list it prints (or `git status --short --untracked-files=all --ignored=matching` in the worktree), and only when every entry is disposable, rerun with `--discard-worktree-changes`. That flag also deletes any other ignored file in the worktree, such as a local `.env`.
+
 ## GitHub Actions
 
 Seven workflows in [`.github/workflows/`](../.github/workflows/):
