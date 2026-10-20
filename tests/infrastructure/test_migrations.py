@@ -59,6 +59,7 @@ MIGRATION_FILES = [
     "035_positions_currency.sql",
     "036_fx_rates.sql",
     "037_experiment_arms.sql",
+    "038_enable_rls.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -126,6 +127,20 @@ def _indexes(conn: psycopg2.extensions.connection, table: str) -> set[str]:
             (table,),
         )
         return {row[0] for row in cur.fetchall()}
+
+
+# Tabele `public` aplikacji (relkind r/p, bez obiektów rozszerzeń) z flagą RLS.
+_PUBLIC_TABLES_SQL = """
+    SELECT c.relname, c.relrowsecurity
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'
+      )
+"""
 
 
 @pytest.mark.containers
@@ -1002,6 +1017,22 @@ class TestMigrations:
                 "RETURNING experiment_arms ->> 'EXP-02'"
             )
             assert cur.fetchone() == ("blind",)
+
+    # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
+
+    def test_every_public_table_has_row_level_security(self, pg_conn) -> None:
+        """Przy domyślnych grantach Supabase tabela `public` bez RLS jest czytelna
+        i zapisywalna kluczem publicznym (anon). 038 włącza RLS na wszystkich, a
+        tabela dodana w kolejnej migracji musi włączyć je sama — inaczej ten test
+        padnie. Biegnie po `test_migrations_are_idempotent`, więc sprawdza też, że
+        ponowny przebieg 001/002 (jawne DISABLE) kończy się z RLS włączonym."""
+        with pg_conn.cursor() as cur:
+            cur.execute(_PUBLIC_TABLES_SQL)
+            row_security = dict(cur.fetchall())
+
+        # Strażnik pustego wyniku: bez migracji lista byłaby pusta i test zielony.
+        assert {"subscribers", "positions", "prediction_logs"} <= row_security.keys()
+        assert sorted(name for name, enabled in row_security.items() if not enabled) == []
 
 
 @pytest.fixture

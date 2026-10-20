@@ -84,6 +84,12 @@ cp .env.example .env
 #    if present in your deployment) — the Fast Loop falls back to the cold-start
 #    "no change" baseline (= return 0) until the next Slow Loop retrains from scratch.
 
+# ⚠️ Migration 038 turns on Row Level Security (no policies) on every public table
+#    and revokes the anon / authenticated grants on tables, views, sequences and
+#    functions. Afterwards only the secret key (sb_secret_…) or the legacy
+#    service_role key can read or write. Put that key into GitHub Secrets and .env
+#    BEFORE you run the migration.
+
 # 4. Smoke test (expect 650+ tests passing + ~22 skipped live/Docker tests)
 uv run pytest
 
