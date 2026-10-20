@@ -1012,6 +1012,34 @@ class SupabaseRepository(RepositoryPort):
             sent.add((str(symbol), date.fromisoformat(raw_date)))
         return sent
 
+    def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
+        # Graceful jak `get_sent_shock_alerts`: brak migracji 021 → {} (watch nie
+        # tłumi wtedy krypto oknem 24 h; debounce dnia działa dalej).
+        try:
+            response = (
+                self._client.table("shock_alerts")
+                .select("symbol, created_at")
+                .gte("created_at", since.isoformat())
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "shock_alerts niedostępne — bez okna 24 h dla krypto "
+                "(zaaplikuj migrację 021).",
+                exc_info=True,
+            )
+            return {}
+        latest: dict[str, datetime] = {}
+        for row in _rows(response):
+            symbol, raw_stamp = row.get("symbol"), row.get("created_at")
+            if symbol is None or not isinstance(raw_stamp, str):
+                continue
+            stamp = datetime.fromisoformat(raw_stamp)
+            key = str(symbol)
+            if key not in latest or stamp > latest[key]:
+                latest[key] = stamp
+        return latest
+
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
         # SUROWO, bez try/except — graceful degradation robi caller
         # (`_fetch_report_context`), tak jak reszta odczytów raportowych.

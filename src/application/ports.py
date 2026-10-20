@@ -409,6 +409,13 @@ class RepositoryPort(ABC):
         polega wtedy wyłącznie na pamięci bieżącego przebiegu."""
 
     @abstractmethod
+    def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
+        """ALR-02 — chwila NAJNOWSZEGO alertu szoku per symbol od `since`
+        (`shock_alerts.created_at`, migracja 021). Watch tłumi nią alert krypto
+        ze zmiany 24 h, póki okno zawiera ruch już zaalarmowany. Pusty słownik =
+        brak alertów / brak migracji 021."""
+
+    @abstractmethod
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
         """#8 — ostatni ZAPISANY werdykt rady dla symbolu (JSONB `council_verdict`
         z migracji 005) wraz z sentymentem i znacznikiem czasu tamtego cyklu.

@@ -171,3 +171,13 @@ def test_cycle_run_write_is_skipped_with_a_warning(
     assert delegate.mock_calls == []
     assert "save_cycle_run" in caplog.text
     assert "save_cycle_run" in ReadOnlyRepository.WRITE_METHODS
+
+
+def test_shock_alert_times_are_a_read() -> None:
+    # ALR-02: lokalny watch tylko do odczytu też widzi chwilę poprzedniego alertu krypto.
+    delegate = create_autospec(RepositoryPort, instance=True)
+
+    ReadOnlyRepository(delegate).get_shock_alert_times(sentinel.since)
+
+    delegate.get_shock_alert_times.assert_called_once_with(sentinel.since)
+    assert "get_shock_alert_times" in ReadOnlyRepository.READ_METHODS

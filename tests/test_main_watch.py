@@ -417,6 +417,7 @@ def _no_snapshot_repo() -> MagicMock:
     repo = MagicMock(spec=RepositoryPort)
     repo.get_last_price_snapshot.return_value = None
     repo.get_sent_shock_alerts.return_value = set()
+    repo.get_shock_alert_times.return_value = {}
     return repo
 
 
@@ -639,3 +640,57 @@ def test_main_feeds_the_free_router_as_the_daily_change_source(settings, mocker)
     )
     for builder in paid_builders:
         builder.assert_not_called()
+
+
+class TestCryptoRollingWindowCooldown:
+    """ALR-02, decyzja 2: zmiana 24 h CoinGecko zawiera ruch jeszcze dobę po alercie,
+    więc krypto czeka, aż poprzedni alert symbolu będzie starszy niż 24 h."""
+
+    _AFTER_MIDNIGHT = datetime(2026, 10, 17, 0, 7, tzinfo=UTC)
+
+    def _scan(self, settings, alerted_hours_ago: float) -> tuple[int, MagicMock]:
+        now = self._AFTER_MIDNIGHT
+        alerted_at = now - timedelta(hours=alerted_hours_ago)
+        repo = _no_snapshot_repo()
+        repo.get_sent_shock_alerts.return_value = {
+            (symbol, alerted_at.date()) for symbol in ("AAPL", "BTC")
+        }
+        repo.get_shock_alert_times.return_value = {"AAPL": alerted_at, "BTC": alerted_at}
+        push = MagicMock()
+        sent = main_watch.run_watch(
+            settings,
+            repository=repo,
+            market=_market("90"),
+            push_notifier=push,
+            now=now,
+            daily_change=_daily("-0.09", now - timedelta(minutes=5)),
+        )
+        return sent, push
+
+    def test_crypto_alert_from_23_hours_ago_suppresses_the_daily_change(self, settings) -> None:
+        settings.symbols = []
+        settings.crypto_symbols = ["BTC"]
+
+        sent, push = self._scan(settings, alerted_hours_ago=23)
+
+        assert sent == 0
+        push.send_report.assert_not_called()
+
+    def test_crypto_alert_from_25_hours_ago_does_not_suppress(self, settings) -> None:
+        settings.symbols = []
+        settings.crypto_symbols = ["BTC"]
+
+        sent, push = self._scan(settings, alerted_hours_ago=25)
+
+        assert sent == 1
+        assert "BTC" in push.send_report.call_args.kwargs["subject"]
+
+    def test_stocks_ignore_the_rolling_window(self, settings) -> None:
+        # `dp` akcji liczy się od poprzedniego zamknięcia — świeżość dnia UTC wystarcza.
+        settings.symbols = ["AAPL"]
+        settings.crypto_symbols = ["BTC"]
+
+        sent, push = self._scan(settings, alerted_hours_ago=23)
+
+        assert sent == 1
+        assert "AAPL" in push.send_report.call_args.kwargs["subject"]

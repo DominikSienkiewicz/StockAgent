@@ -15,7 +15,7 @@ wieku) albo dzienna zmiana z darmowego /quote (`DailyChange`, z guardem dnia
 
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 
@@ -35,6 +35,10 @@ CRYPTO_SHOCK_THRESHOLD = Decimal("0.06")
 # tyle godzin, delta liczona jest wobec stęchłej ceny i szok NIE jest zgłaszany
 # (fałszywy alarm). Wartość mieści się w bezpiecznym oknie 24–36h.
 SNAPSHOT_MAX_AGE_HOURS = 30.0
+
+# Okno zmiany 24 h CoinGecko (ALR-02): ruch, za który alert wyszedł mniej niż tyle
+# temu, wciąż siedzi w kolejnym odczycie — także po północy UTC, pod nowym kluczem.
+ROLLING_CHANGE_WINDOW = timedelta(hours=24)
 
 
 class ShockDirection(Enum):
@@ -99,6 +103,17 @@ def is_daily_change_fresh(as_of: datetime, now: datetime) -> bool:
     że jedna sesja daje najwyżej jeden alert.
     """
     return _as_utc(as_of).date() == _as_utc(now).date()
+
+
+def is_move_already_alerted(last_alert_at: datetime | None, now: datetime) -> bool:
+    """Czy zmiana z okna 24 h wciąż zawiera ruch, za który alert już wyszedł.
+
+    Alert sprzed mniej niż `ROLLING_CHANGE_WINDOW` liczył ruch z tego samego okna,
+    więc kolejny alert z niego byłby duplikatem. Dokładnie 24 h to już nowe okno.
+    """
+    if last_alert_at is None:
+        return False
+    return _as_utc(now) - _as_utc(last_alert_at) < ROLLING_CHANGE_WINDOW
 
 
 def classify_shock(

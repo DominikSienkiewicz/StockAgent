@@ -2639,3 +2639,46 @@ class TestSaveCycleRun:
             None,
             None,
         )
+
+
+class TestShockAlertTimes:
+    """ALR-02, decyzja 2: chwila ostatniego alertu per symbol (`created_at` z 021)."""
+
+    def test_returns_the_latest_alert_time_per_symbol(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "gte"],
+            [
+                {"symbol": "BTC", "created_at": "2026-10-16T01:00:00+00:00"},
+                {"symbol": "BTC", "created_at": "2026-10-16T22:00:00+00:00"},
+                {"symbol": "ETH", "created_at": "2026-10-16T05:00:00+00:00"},
+            ],
+        )
+
+        times = repo.get_shock_alert_times(datetime(2026, 10, 16, 0, 0, tzinfo=UTC))
+
+        mock_client.table.assert_called_with("shock_alerts")
+        assert times == {
+            "BTC": datetime(2026, 10, 16, 22, 0, tzinfo=UTC),
+            "ETH": datetime(2026, 10, 16, 5, 0, tzinfo=UTC),
+        }
+
+    def test_filters_by_creation_time(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "select", "gte"], [])
+
+        repo.get_shock_alert_times(datetime(2026, 10, 16, 0, 0, tzinfo=UTC))
+
+        mock_client.table.return_value.select.return_value.gte.assert_called_once_with(
+            "created_at", "2026-10-16T00:00:00+00:00"
+        )
+
+    def test_is_graceful_without_migration(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        mock_client.table.side_effect = Exception("no table")
+
+        assert repo.get_shock_alert_times(datetime(2026, 10, 16, tzinfo=UTC)) == {}

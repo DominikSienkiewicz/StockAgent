@@ -50,12 +50,14 @@ from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
 from src.domain.number_format import format_pct_pl
 from src.domain.shock import (
+    ROLLING_CHANGE_WINDOW,
     SNAPSHOT_MAX_AGE_HOURS,
     DailyChange,
     ShockAlert,
     classify_shock,
     detect_shock,
     is_daily_change_fresh,
+    is_move_already_alerted,
     is_reference_stale,
     should_emit,
 )
@@ -147,6 +149,27 @@ def _fresh_daily_change(
     return reading
 
 
+def _crypto_alert_times(
+    repository: RepositoryPort,
+    daily_change: DailyChangePort | None,
+    symbols: list[str],
+    crypto: set[str],
+    moment: datetime,
+) -> dict[str, datetime]:
+    """Chwile ostatnich alertów z okna 24 h — tylko gdy krypto idzie dzienną zmianą.
+
+    Bez portu dziennej zmiany albo bez krypto na liście nie ma czego tłumić, więc
+    nie ma też odczytu. Błąd odczytu → {} z logiem: lepiej ryzykować powtórzony
+    alert niż zgubić nowy."""
+    if daily_change is None or not crypto.intersection(symbols):
+        return {}
+    try:
+        return repository.get_shock_alert_times(moment - ROLLING_CHANGE_WINDOW)
+    except Exception:
+        logger.exception("Failed to read shock alert times — crypto 24 h window not applied")
+        return {}
+
+
 def _daily_change_basis(asset: Asset) -> str:
     return ROLLING_24H_BASIS if asset.asset_type is AssetType.CRYPTO else PREVIOUS_CLOSE_BASIS
 
@@ -233,6 +256,7 @@ def scan_watch(
     except Exception:
         logger.exception("Failed to read shock alert history — debounce in-memory only")
         already_sent = set()
+    crypto_alert_times = _crypto_alert_times(repository, daily_change, symbols, crypto, moment)
 
     sent = 0
     failures = 0
@@ -246,6 +270,13 @@ def scan_watch(
             if reading is not None:
                 checked += 1
                 asset = _classify(symbol, crypto)
+                # Decyzja 2: zmiana 24 h krypto wciąż zawiera ruch zaalarmowany < 24 h
+                # temu — po północy UTC byłby to drugi alert za ten sam ruch.
+                if asset.asset_type is AssetType.CRYPTO and is_move_already_alerted(
+                    crypto_alert_times.get(symbol), moment
+                ):
+                    logger.info("Shock watch: %s zaalarmowany < 24 h temu — pomijam", symbol)
+                    continue
                 alert = classify_shock(
                     asset, PriceDelta(reading.fraction), Threshold(settings.volatility_threshold)
                 )

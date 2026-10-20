@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from src.domain.asset import Asset, PriceDelta
@@ -205,3 +205,29 @@ class TestDailyChangeFreshness:
         assert is_daily_change_fresh(
             datetime(2026, 10, 16, 23, 0), datetime(2026, 10, 16, 23, 30, tzinfo=UTC)
         ) is True
+
+
+class TestRollingWindowCooldown:
+    """ALR-02, decyzja 2: zmiana 24 h CoinGecko wciąż zawiera ruch, za który alert
+    wyszedł mniej niż 24 h temu — kolejny alert z niej byłby tym samym ruchem."""
+
+    _NOW = datetime(2026, 10, 17, 0, 7, tzinfo=UTC)
+
+    def test_alert_from_23_hours_ago_is_still_in_the_window(self):
+        from datetime import timedelta
+
+        from src.domain.shock import is_move_already_alerted
+
+        assert is_move_already_alerted(self._NOW - timedelta(hours=23), self._NOW) is True
+
+    def test_alert_from_25_hours_ago_left_the_window(self):
+        from datetime import timedelta
+
+        from src.domain.shock import is_move_already_alerted
+
+        assert is_move_already_alerted(self._NOW - timedelta(hours=25), self._NOW) is False
+
+    def test_no_previous_alert_never_blocks(self):
+        from src.domain.shock import is_move_already_alerted
+
+        assert is_move_already_alerted(None, self._NOW) is False

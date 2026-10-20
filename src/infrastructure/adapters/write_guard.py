@@ -104,6 +104,7 @@ class ReadOnlyRepository(RepositoryPort):
         "probe_database",
         "get_last_price_snapshot",
         "get_sent_shock_alerts",
+        "get_shock_alert_times",
         "get_previous_verdict",
         "get_recent_model_scorecards",
         "get_council_vote_history",
@@ -221,6 +222,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
         return self._delegate.get_sent_shock_alerts(since)
+
+    def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
+        return self._delegate.get_shock_alert_times(since)
 
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
         return self._delegate.get_previous_verdict(symbol)
