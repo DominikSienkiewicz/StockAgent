@@ -954,3 +954,20 @@ class TestSupabaseKeyRole:
             Settings(_env_file=None, supabase_key=["sb_secret_list-instead-of-str"])
 
         assert "sb_secret_list-instead-of-str" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["volatility_threshold", "crypto_volatility_threshold", "tool_use_volatility_threshold"],
+)
+def test_zero_volatility_threshold_rejected(env, field: str) -> None:
+    # FIN-07: próg 0 przepuszcza każdy ruch (|Δ| >= 0), więc bramka FinOps
+    # cicho znika i płatne porty odpalają dla wszystkich symboli w każdym cyklu.
+    with pytest.raises(ValueError, match=f"{field} must be positive"):
+        Settings(_env_file=None, **{field: Decimal("0")})
+
+
+def test_zero_council_volatility_threshold_stays_the_always_run_switch(env) -> None:
+    settings = Settings(_env_file=None, council_volatility_threshold=Decimal("0"))
+
+    assert settings.council_volatility_threshold == Decimal("0")

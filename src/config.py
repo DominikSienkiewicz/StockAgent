@@ -188,6 +188,11 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
 })
 
 
+# FIN-07: jedyny próg volatility, dla którego 0 ma znaczenie ("rada zawsze leci,
+# gdy główna bramka przepuści"); pozostałe progi bramek muszą być > 0.
+_ALWAYS_RUN_THRESHOLD_FIELD = "council_volatility_threshold"
+
+
 # BEZ-10: klucze Supabase działające jako role API, które po migracji 038 (RLS bez
 # polityk i REVOKE) nie widzą żadnego wiersza: publishable (nowy format) oraz
 # legacy JWT z rolą anon / authenticated. Aplikacja potrzebuje klucza secret
@@ -819,17 +824,22 @@ class Settings(BaseSettings):
     def _validate_volatility_threshold(
         cls, value: Decimal, info: ValidationInfo
     ) -> Decimal:
-        """Odrzuca ujemne progi volatility.
+        """Odrzuca progi volatility, które wyłączają bramkę FinOps.
 
         Ujemny próg sprawia, że `abs(delta) >= threshold` jest ZAWSZE
         prawdziwe → bramka FinOps cicho znika i każdy płatny port (LLM,
-        Alpha Vantage, embeddingi) odpala co cykl, bez błędu startu.
-        `0` jest dozwolone — `council_volatility_threshold = 0.0` to
-        udokumentowany "always run" disable switch.
+        Alpha Vantage, embeddingi) odpala co cykl, bez błędu startu. Próg 0
+        robi to samo (FIN-07), więc progi bramek płatnych portów muszą być > 0.
+        Wyjątek: `council_volatility_threshold = 0.0` to udokumentowany
+        "always run" disable switch drugiego sita rady — ten próg zostaje ≥ 0.
         """
-        if value < 0:
+        if info.field_name == _ALWAYS_RUN_THRESHOLD_FIELD:
+            if value < 0:
+                raise ValueError(f"{info.field_name} must be non-negative (got {value})")
+        elif value <= 0:
             raise ValueError(
-                f"{info.field_name} must be non-negative (got {value})"
+                f"{info.field_name} must be positive (got {value}) — "
+                "a threshold of 0 or less lets every move through the volatility gate"
             )
         return value
 
