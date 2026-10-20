@@ -15,9 +15,14 @@ Ten test pilnuje obu stron:
 from __future__ import annotations
 
 import os
+import posixpath
+import re
+import shlex
 import subprocess
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -141,6 +146,207 @@ def test_enabled_public_artifacts_have_a_durable_publish_step() -> None:
         f"config.toml włącza {enabled}, ale {unpublished} nie ma kroku "
         "`actions/deploy-pages` ani `git push` — artefakt ginie z dyskiem runnera."
     )
+
+
+# BEZ-09: `web_digest_enabled` zapisuje PEŁNY prywatny digest (watchlista, a przy
+# `portfolio_positions_enabled` sekcja „💼 Twój portfel” z kwotami w zł) do
+# `web_digest_path` pod `public/`. Deploy Pages albo commit `public/` przez git
+# wypchnąłby go publicznie jedną flagą, więc flaga jest zakazana obok każdego
+# takiego kroku, a artefakt Pages to wyłącznie katalog publicznego scorecardu.
+PRIVATE_ARTIFACT_FLAGS = ("web_digest_enabled",)
+PUBLIC_ROOT = "public"
+# Domyślny `path` akcji `actions/upload-pages-artifact`, gdy krok go nie podaje.
+PAGES_ARTIFACT_DEFAULT_PATH = "_site/"
+# `git add` bez listy ścieżek, który zgarnia całe drzewo — `public/` nie jest
+# w `.gitignore`, więc razem z nim leci digest.
+GIT_ADD_SWEEP_FLAGS = ("-A", "--all")
+
+
+def _all_workflow_specs() -> dict[str, dict[str, Any]]:
+    """Każdy plik workflow, nie tylko joby z `main_agent.py` — deploy Pages
+    może siedzieć w osobnym jobie albo pliku."""
+    workflows_dir = ROOT / ".github" / "workflows"
+    paths = sorted([*workflows_dir.glob("*.yml"), *workflows_dir.glob("*.yaml")])
+    return {path.name: yaml.safe_load(path.read_text(encoding="utf-8")) for path in paths}
+
+
+def _workflow_steps(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [step for job in (spec.get("jobs") or {}).values() for step in job.get("steps", [])]
+
+
+def _normalized(path: str) -> str:
+    return posixpath.normpath(path.strip().strip("'\""))
+
+
+def _contains(parent: str, path: str) -> bool:
+    """Czy publikacja `parent` zabiera `path` (ten sam katalog albo jego wnętrze)."""
+    return parent in (".", path) or path.startswith(parent + "/")
+
+
+def _overlaps(first: str, second: str) -> bool:
+    return _contains(first, second) or _contains(second, first)
+
+
+def _git_added_paths(script: str) -> list[str]:
+    """Ścieżki każdego `git add` w skrypcie kroku; zgarnięcie całego drzewa jako "."."""
+    added: list[str] = []
+    for command in re.split(r"&&|\|\||[;\n]", script):
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = command.split()
+        starts = [i for i in range(len(tokens) - 1) if tokens[i : i + 2] == ["git", "add"]]
+        for start in starts:
+            for arg in tokens[start + 2 :]:
+                if arg in GIT_ADD_SWEEP_FLAGS:
+                    added.append(".")
+                elif not arg.startswith("-"):
+                    added.append(_normalized(arg))
+    return added
+
+
+def _is_pages_deploy(step: Mapping[str, Any]) -> bool:
+    return str(step.get("uses", "")).startswith("actions/deploy-pages")
+
+
+def _pages_upload_path(step: Mapping[str, Any]) -> str | None:
+    if not str(step.get("uses", "")).startswith("actions/upload-pages-artifact"):
+        return None
+    inputs = step.get("with") or {}
+    return _normalized(str(inputs.get("path", PAGES_ARTIFACT_DEFAULT_PATH)))
+
+
+def _private_digest_publication_violations(
+    config: Mapping[str, Any], workflows: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
+    """Kroki, które opublikowałyby prywatny digest: deploy Pages albo `git add`
+    katalogu `public/` przy włączonym `web_digest_enabled`, oraz artefakt Pages
+    inny niż katalog publicznego scorecardu (nigdy `public/` ani katalog digestu)."""
+    scorecard_dir = posixpath.dirname(_normalized(str(config["public_scorecard_path"])))
+    digest_dir = posixpath.dirname(_normalized(str(config["web_digest_path"])))
+    private_enabled = [flag for flag in PRIVATE_ARTIFACT_FLAGS if config.get(flag) is True]
+    violations: list[str] = []
+    for name, spec in workflows.items():
+        for step in _workflow_steps(spec):
+            label = f"{name}: {step.get('name') or step.get('uses') or step.get('run')}"
+            git_public = any(
+                _overlaps(path, PUBLIC_ROOT) for path in _git_added_paths(str(step.get("run", "")))
+            )
+            if private_enabled and (_is_pages_deploy(step) or git_public):
+                violations.append(
+                    f"{label} publikuje Pages albo `{PUBLIC_ROOT}/`, a config.toml włącza "
+                    f"{private_enabled} — prywatny digest (watchlista, kwoty portfela) "
+                    f"z `{digest_dir}/` trafiłby publicznie."
+                )
+            upload = _pages_upload_path(step)
+            if upload is None:
+                continue
+            if upload != scorecard_dir:
+                violations.append(
+                    f"{label} wysyła na Pages `{upload}` zamiast `{scorecard_dir}` "
+                    f"(dirname `public_scorecard_path`)."
+                )
+            if _contains(upload, PUBLIC_ROOT) or _overlaps(upload, digest_dir):
+                violations.append(
+                    f"{label} wysyła na Pages `{upload}`, czyli całe `{PUBLIC_ROOT}/` albo "
+                    f"prywatny digest z `{digest_dir}/`."
+                )
+    return violations
+
+
+def _repo_config(**overrides: Any) -> dict[str, Any]:
+    config = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
+    return {**config, **overrides}
+
+
+def _synthetic_workflow(*steps: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Syntetyczny workflow z jednym jobem — Pages dziś nie istnieje (WIA-16)."""
+    job = {"runs-on": "ubuntu-latest", "steps": list(steps)}
+    return {"pages.yml": {"jobs": {"deploy": job}}}
+
+
+def _pages_steps(path: str | None = "public/scorecard") -> tuple[dict[str, Any], ...]:
+    upload: dict[str, Any] = {"uses": "actions/upload-pages-artifact@v3"}
+    if path is not None:
+        upload["with"] = {"path": path}
+    return upload, {"uses": "actions/deploy-pages@v4"}
+
+
+def test_pages_upload_never_includes_private_digest() -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=True), _synthetic_workflow(*_pages_steps())
+    )
+
+    assert any("prywatny digest" in violation for violation in violations), violations
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "git add public/scorecard public/attestation && git commit -m pages && git push",
+        "git add -A\ngit commit -m pages\ngit push",
+        "git add .; git push",
+        'git add -f "public/digest/index.html"',
+    ],
+)
+def test_git_publication_of_public_dir_forbids_private_digest(script: str) -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
+    )
+
+    assert any("prywatny digest" in violation for violation in violations), violations
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'MODEL_PATH="data/models/price_predictor.ubj"\ngit add "$MODEL_PATH"\ngit push',
+        "git add data/models/price_predictor.ubj && git commit -m weights && git push",
+    ],
+)
+def test_git_commit_outside_public_dir_allows_private_digest(script: str) -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
+    )
+
+    assert violations == []
+
+
+@pytest.mark.parametrize("path", ["public/scorecard", "./public/scorecard/"])
+def test_pages_upload_of_the_scorecard_dir_alone_is_allowed(path: str) -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=False), _synthetic_workflow(*_pages_steps(path))
+    )
+
+    assert violations == []
+
+
+@pytest.mark.parametrize("path", ["public", "./public/", "public/digest", ".", None])
+def test_pages_upload_path_must_be_the_scorecard_dir(path: str | None) -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=False), _synthetic_workflow(*_pages_steps(path))
+    )
+
+    assert violations, f"artefakt Pages `{path}` przeszedł strażnika"
+
+
+def test_pages_upload_never_publishes_public_root_even_for_a_scorecard_there() -> None:
+    config = _repo_config(web_digest_enabled=False, public_scorecard_path="public/index.html")
+
+    violations = _private_digest_publication_violations(
+        config, _synthetic_workflow(*_pages_steps("public"))
+    )
+
+    assert violations, "artefakt Pages `public` zabrałby `public/digest/`"
+
+
+def test_real_workflows_never_publish_private_digest() -> None:
+    workflows = _all_workflow_specs()
+    assert {"fast_loop_12h.yml", "slow_loop_weekly.yml"} <= set(workflows)
+
+    violations = _private_digest_publication_violations(_repo_config(), workflows)
+
+    assert not violations, violations
 
 
 def _slow_loop_trainer_env() -> dict[str, object]:
