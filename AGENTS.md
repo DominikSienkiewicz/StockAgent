@@ -13,7 +13,7 @@ Każda zmiana w kodzie musi przejść **wszystkie trzy**:
 ```bash
 uv run ruff check .
 uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py)
-uv run pytest
+uv run pytest -m "not integration and not containers"   # jak CI; kontenerowe: uv run pytest -m containers (Docker)
 ```
 
 Nie zgłaszaj pracy jako ukończonej, dopóki te trzy nie są zielone.
