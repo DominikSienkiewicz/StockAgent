@@ -20,7 +20,8 @@ def test_worst_case_per_cycle_matches_unit_costs() -> None:
     expected = sum(calls * UNIT_COST_USD[source] for source, calls in bound.calls.items())
     assert envelope.max_usd == pytest.approx(expected)
     assert envelope.max_calls == sum(bound.calls.values())
-    assert envelope.av_requests == 42
+    # FIN-04: jeden request AV na symbol za bramką — min(41, 42).
+    assert envelope.av_requests == 41
     for row in envelope.rows:
         assert row.max_calls == bound.calls[row.source]
         assert row.max_usd == pytest.approx(row.max_calls * UNIT_COST_USD[row.source])
@@ -45,7 +46,7 @@ def test_render_prints_an_estimated_markdown_table() -> None:
     assert "| `council_llm` | 0 | 328 | 0.0025 | 0.0000 | 0.8200 |" in text
     assert "| `embedding` | 0 | 82 | 0.00002 | 0.0000 | 0.0016 |" in text
     assert "| **Total** | 0 | 574 |  | 0.0000 | 1.6826 |" in text
-    assert "0–42" in text
+    assert "0–41" in text
     assert "41 symbols" in text
 
 

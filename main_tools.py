@@ -307,7 +307,7 @@ def _run_cost_envelope(args: argparse.Namespace) -> int:
     settings = _load_settings()
     watchlist = [*settings.symbols, *settings.crypto_symbols]
     # Jak `main_agent.main`: bez ceny symbol nie wchodzi do grafu, a feed AV
-    # (`build_use_case`) bierze całą watchlistę, którą AV przyjmuje.
+    # (klient leniwy, FIN-04) pyta tylko o symbole za bramką, które AV przyjmuje.
     unsupported = set(settings.symbols_unsupported_price)
     personas = load_council_personas(Path(settings.council_personas_dir))
     inputs = EnvelopeInputs(

@@ -136,7 +136,8 @@ class CycleCallBound:
                       więc `estimate_cycle_cost(calls)` to najwyższy szacunek,
                       jaki może pokazać sekcja „Koszt cyklu”.
     - `av_requests` — requesty HTTP do Alpha Vantage NEWS_SENTIMENT: limit
-                      kluczy, nie pozycja cennika.
+                      kluczy, nie pozycja cennika. Po jednym na symbol za
+                      bramką, który AV przyjmuje (klient leniwy, FIN-04).
     """
 
     calls: Mapping[str, int]
@@ -162,9 +163,11 @@ def cycle_call_upper_bound(
       - `sentiment`, `news` — po jednym wywołaniu węzła;
       - `embedding`   — embedding RAG w predict i ponowna próba przy zapisie,
                         gdy RAG nie dał wektora.
-    Feed Alpha Vantage pobiera pierwszy symbol za bramką dla wszystkich
-    `n_av_symbols` tickerów, więc `av_requests` nie zależy od liczby symboli
-    za bramką. Cykl, w którym bramka odcina wszystko, ma granicę zero.
+    Fast Loop pyta Alpha Vantage leniwie per symbol (FIN-04): request idzie
+    tylko dla symbolu za bramką, więc `av_requests` = min(`n_gated`,
+    `n_av_symbols`) — ani więcej niż symboli za bramką, ani więcej niż
+    tickerów, które AV przyjmuje. Cykl, w którym bramka odcina wszystko, ma
+    granicę zero.
 
     Wynik to szacunek tak jak cennik: model routing może dołożyć eskalację do
     modelu frontier w `analyze`, a rotacja kluczy AV ponawia request po
@@ -192,7 +195,7 @@ def cycle_call_upper_bound(
         calls=MappingProxyType(
             {source: n_gated * requests for source, requests in per_symbol.items()}
         ),
-        av_requests=n_av_symbols if n_gated > 0 else 0,
+        av_requests=min(n_gated, n_av_symbols),
     )
 
 

@@ -159,9 +159,11 @@ def test_upper_bound_prices_every_source_of_the_price_list() -> None:
     assert set(_bound().calls) == set(UNIT_COST_USD)
 
 
-def test_upper_bound_av_requests_follow_the_feed_not_the_gate() -> None:
-    # Pierwszy symbol za bramką pobiera feed AV dla wszystkich tickerów.
-    assert _bound(n_gated=1, n_av_symbols=42).av_requests == 42
+def test_upper_bound_av_requests_follow_the_gated_symbols() -> None:
+    # FIN-04: klient leniwy — jeden request AV na symbol za bramką, nie feed
+    # wszystkich tickerów przy pierwszym symbolu.
+    assert _bound(n_gated=1, n_av_symbols=42).av_requests == 1
+    assert _bound(n_gated=50, n_av_symbols=42).av_requests == 42
 
 
 def test_fully_gated_cycle_has_a_zero_bound() -> None:
