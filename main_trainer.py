@@ -19,7 +19,7 @@ from typing import Any
 
 from main_agent import build_notifier
 from src.application.ml_features import FEATURE_SET_VERSION
-from src.application.ports import LLMPort
+from src.application.ports import LLMPort, RepositoryPort
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_weekly_recap import (
     render_weekly_recap_html,
@@ -33,6 +33,7 @@ from src.infrastructure.adapters.alpha_vantage_fundamentals import (
 )
 from src.infrastructure.adapters.cached_fundamentals import CachedFundamentalsAdapter
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+from src.infrastructure.adapters.write_guard import ReadOnlyRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 from src.infrastructure.llm.unavailable import UnavailableLLMAdapter
 from src.infrastructure.logging_redaction import configure_logging
@@ -42,16 +43,20 @@ logger = logging.getLogger(__name__)
 WEEKLY_RECAP_DAYS = 7
 
 
-def build_repository(settings: Settings) -> SupabaseRepository:
+def build_repository(settings: Settings) -> RepositoryPort:
     """Repozytorium Slow Loopa — jedno źródło dla use case'u i kroków obok niego.
 
     ML-10: `model_scorecard_baselines_enabled` dokłada do karty baseline'y dryfu
-    i „sam LLM" (kolumny z migracji 028)."""
-    return SupabaseRepository(
+    i „sam LLM" (kolumny z migracji 028). BEZ-08: bez `db_writes_enabled`
+    owinięte w `ReadOnlyRepository` — lokalny trening niczego nie zapisuje."""
+    repository = SupabaseRepository(
         url=settings.supabase_url,
         key=settings.supabase_key,
         scorecard_baselines_enabled=settings.model_scorecard_baselines_enabled,
     )
+    if settings.db_writes_enabled:
+        return repository
+    return ReadOnlyRepository(repository)
 
 
 def build_use_case(settings: Settings) -> TrainModelUseCase:
@@ -70,7 +75,7 @@ def build_use_case(settings: Settings) -> TrainModelUseCase:
 
 def _refresh_fundamentals_cache(
     settings: Settings,
-    supabase_repo: SupabaseRepository,
+    repository: RepositoryPort,
     quota_monitor: QuotaMonitor,
 ) -> None:
     """Slow loop płaci za Alpha Vantage requesty i odświeża cache fundamentów.
@@ -80,7 +85,7 @@ def _refresh_fundamentals_cache(
     nie wywala całego cyklu.
     """
     fundamentals_port = CachedFundamentalsAdapter(
-        repo=supabase_repo,
+        repo=repository,
         delegate=AlphaVantageFundamentalsAdapter(
             api_keys=settings.alpha_vantage_api_keys,
             quota_monitor=quota_monitor,
@@ -95,7 +100,7 @@ def _refresh_fundamentals_cache(
 
 
 def _persist_quota_alerts(
-    supabase_repo: SupabaseRepository, quota_monitor: QuotaMonitor, start: int = 0
+    repository: RepositoryPort, quota_monitor: QuotaMonitor, start: int = 0
 ) -> int:
     """Persystencja alertów kwoty od pozycji `start` (np. wyczerpany limit AV przy
     fundamentach, Resend przy recapie). Banner w mailu sięga tydzień wstecz
@@ -105,26 +110,26 @@ def _persist_quota_alerts(
     alerts = quota_monitor.alerts
     for alert in alerts[start:]:
         try:
-            supabase_repo.save_quota_alert(alert)
+            repository.save_quota_alert(alert)
         except Exception:
             logger.exception("Failed to persist quota alert from %s", alert.source)
     return len(alerts)
 
 
 def _persist_model_scorecard(
-    supabase_repo: SupabaseRepository, symbol: str, result: Mapping[str, Any]
+    repository: RepositoryPort, symbol: str, result: Mapping[str, Any]
 ) -> None:
     """#12: karta kondycji modelu. Zapis best-effort (wzorzec
     `save_quota_alert`) — brak migracji 019 nie może wywalić treningu."""
     try:
-        supabase_repo.save_model_scorecard(symbol, result)
+        repository.save_model_scorecard(symbol, result)
     except Exception:
         logger.exception("Failed to persist model scorecard for %s", symbol)
 
 
 def _train_symbols(
     settings: Settings,
-    supabase_repo: SupabaseRepository,
+    repository: RepositoryPort,
     use_case: TrainModelUseCase,
     trainable: list[str],
 ) -> int:
@@ -136,7 +141,7 @@ def _train_symbols(
             result = use_case.run(symbol, refresh_view=False)
             logger.info("%s: %s", symbol, result)
             if settings.model_scorecard_enabled:
-                _persist_model_scorecard(supabase_repo, symbol, result)
+                _persist_model_scorecard(repository, symbol, result)
         except Exception:
             logger.exception("Training failed for symbol %s", symbol)
             failures += 1
@@ -174,7 +179,7 @@ def _build_llm_or_unavailable(settings: Settings, quota_monitor: QuotaMonitor) -
 
 
 def _run_calibration_judge(
-    settings: Settings, supabase_repo: SupabaseRepository, quota_monitor: QuotaMonitor
+    settings: Settings, repository: RepositoryPort, quota_monitor: QuotaMonitor
 ) -> None:
     """#4: LLM-as-Judge kalibracji pewności (Slow Loop, poza budżetem Fast Loopa)."""
     try:
@@ -183,7 +188,7 @@ def _run_calibration_judge(
         )
 
         cal_result = CalibrateConfidenceUseCase(
-            repository_port=supabase_repo,
+            repository_port=repository,
             llm_port=_build_llm_or_unavailable(settings, quota_monitor),
         ).run(days=30)
         logger.info("Calibration judge — %s", cal_result.get("status"))
@@ -192,7 +197,7 @@ def _run_calibration_judge(
 
 
 def _send_weekly_recap(
-    settings: Settings, supabase_repo: SupabaseRepository, quota_monitor: QuotaMonitor
+    settings: Settings, repository: RepositoryPort, quota_monitor: QuotaMonitor
 ) -> None:
     """#17: niedzielna retrospektywa. Slow Loop chodzi co tydzień i dotąd NIE
     WYSYŁAŁ użytkownikowi nic. Koszt: dokładnie jedno wywołanie LLM tygodniowo.
@@ -208,7 +213,7 @@ def _send_weekly_recap(
     )
     try:
         recap_result = WeeklyRecapUseCase(
-            repository_port=supabase_repo,
+            repository_port=repository,
             llm_port=_build_llm_or_unavailable(settings, quota_monitor),
             crypto_symbols=settings.crypto_symbols,
         ).run(days=WEEKLY_RECAP_DAYS, since=since)
@@ -229,7 +234,7 @@ def main(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
     configure_logging(settings.secret_values())
     quota_monitor = QuotaMonitor()
-    supabase_repo = build_repository(settings)
+    repository = build_repository(settings)
     use_case = build_use_case(settings)
 
     logger.info("Slow Loop start — symbols=%s", settings.symbols)
@@ -239,24 +244,24 @@ def main(settings: Settings | None = None) -> int:
         logger.exception("Failed to refresh feature store")
         return 1
 
-    _refresh_fundamentals_cache(settings, supabase_repo, quota_monitor)
-    persisted_alerts = _persist_quota_alerts(supabase_repo, quota_monitor)
+    _refresh_fundamentals_cache(settings, repository, quota_monitor)
+    persisted_alerts = _persist_quota_alerts(repository, quota_monitor)
 
     # BUG: trener widział tylko `settings.symbols`, więc BTC/ETH NIGDY nie
     # przechodziły retrainu — model krypto zostawał na zawsze przy cold-starcie.
     # `dict.fromkeys` zachowuje kolejność i deduplikuje symbol obecny w obu listach.
     trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
-    failures = _train_symbols(settings, supabase_repo, use_case, trainable)
+    failures = _train_symbols(settings, repository, use_case, trainable)
     failures += _train_pooled_model(settings, use_case, trainable)
 
     if settings.calibration_judge_enabled:
-        _run_calibration_judge(settings, supabase_repo, quota_monitor)
+        _run_calibration_judge(settings, repository, quota_monitor)
 
     if settings.weekly_recap_enabled:
-        _send_weekly_recap(settings, supabase_repo, quota_monitor)
+        _send_weekly_recap(settings, repository, quota_monitor)
 
     # NIEZ-03: alerty z sędziego i recapu (LLM, Resend) powstają po pierwszym zapisie.
-    _persist_quota_alerts(supabase_repo, quota_monitor, start=persisted_alerts)
+    _persist_quota_alerts(repository, quota_monitor, start=persisted_alerts)
 
     logger.info("Slow Loop done — failures=%d/%d", failures, len(trainable) + 1)
     return 1 if failures else 0

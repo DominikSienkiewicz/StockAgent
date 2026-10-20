@@ -61,14 +61,19 @@ jobs:
         run: uv sync --frozen --extra anthropic --no-build --no-install-project
 
       - name: 🧠 Run Agent (LangGraph + XGBoost + LLM)
-        # Tu wstrzykujemy WYŁĄCZNIE sekrety. Cały config niewrażliwy (symbole,
-        # progi, modele, providerzy, throttle, risk watch…) jest w commitowanym
-        # `config.toml` i czytany wprost przez Settings — bez mapowania vars.*,
-        # więc nie ma już driftu .env ↔ workflow ani repo variables do pilnowania.
+        # Tu wstrzykujemy WYŁĄCZNIE sekrety (plus przełącznik DB_WRITES_ENABLED niżej).
+        # Cały config niewrażliwy (symbole, progi, modele, providerzy, throttle, risk
+        # watch…) jest w commitowanym `config.toml` i czytany wprost przez Settings —
+        # bez mapowania vars.*, więc nie ma już driftu .env ↔ workflow ani repo
+        # variables do pilnowania.
         env:
           # Database
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:           ${{ secrets.SUPABASE_KEY }}
+          # BEZ-08: jedyny niesekret w env — Settings domyślnie NIE zapisuje do bazy
+          # (lokalny run tylko do odczytu), więc job produkcyjny włącza zapis jawnie.
+          # Pilnuje tego tests/test_db_writes_wiring.py.
+          DB_WRITES_ENABLED:      "true"
           # LLM — analiza główna na Anthropic, embeddingi + rada na OpenAI
           OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}

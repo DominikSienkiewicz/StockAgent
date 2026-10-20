@@ -144,6 +144,10 @@ from src.infrastructure.adapters.resend_notifier import NullNotifier, ResendNoti
 from src.infrastructure.adapters.routing_market_data import RoutingMarketDataPort
 from src.infrastructure.adapters.subscriber_repo import SupabaseSubscriberRepository
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+from src.infrastructure.adapters.write_guard import (
+    ReadOnlyAttestationPublisher,
+    ReadOnlyRepository,
+)
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 from src.infrastructure.logging_redaction import configure_logging
 from src.infrastructure.persona_loader import personas_sha256
@@ -484,7 +488,9 @@ def _build_user_portfolio(settings: Settings) -> Portfolio | None:
 
 def build_fx_port(settings: Settings) -> FxRatePort:
     """PORT-11 — kurs NBP z dnia (darmowe). Cache `fx_rates` tylko za flagą
-    `fx_rates_cache_enabled` (migracja 036); bez niej żadnego zapytania do tabeli."""
+    `fx_rates_cache_enabled` (migracja 036); bez niej żadnego zapytania do tabeli.
+    BEZ-08: bez `db_writes_enabled` cache jest tylko czytany — kurs z NBP nie
+    trafia do wspólnej tabeli."""
     nbp = NbpFxRateClient()
     if not settings.fx_rates_cache_enabled:
         return nbp
@@ -495,6 +501,7 @@ def build_fx_port(settings: Settings) -> FxRatePort:
         key=settings.supabase_key,
         delegate=nbp,
         today=lambda: nbp_today(datetime.now(UTC)),
+        write_through=settings.db_writes_enabled,
     )
 
 
@@ -556,7 +563,8 @@ def _portfolio_clusters(settings: Settings) -> dict[str, str]:
 
 
 def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
-    """#16 — publisher commit-reveal. Null gdy `attestation_enabled=false`."""
+    """#16 — publisher commit-reveal. Null gdy `attestation_enabled=false`,
+    tylko do odczytu bez `db_writes_enabled` (BEZ-08)."""
     from src.infrastructure.adapters.attestation_publisher import (
         FileAttestationPublisher,
         NullAttestationPublisher,
@@ -564,10 +572,15 @@ def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
 
     if not settings.attestation_enabled:
         return NullAttestationPublisher()
-    return FileAttestationPublisher(
+    publisher = FileAttestationPublisher(
         commitment_path=settings.attestation_commitments_path,
         reveal_path=settings.attestation_reveals_path,
     )
+    if settings.db_writes_enabled:
+        return publisher
+    # BEZ-08: predykcja z runu tylko do odczytu ma id `dry-run-…` i nie istnieje
+    # w bazie — jej commitment byłby fałszywym wpisem w publicznym logu.
+    return ReadOnlyAttestationPublisher(publisher)
 
 
 def build_options_port(settings: Settings) -> OptionsFlowPort | None:
@@ -696,7 +709,14 @@ def _publish_public_scorecard(
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
-    return SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    """Repozytorium Fast Loopa (także `main_watch` i `main_deadman`).
+
+    BEZ-08: bez `db_writes_enabled` owinięte w `ReadOnlyRepository` — lokalny run
+    czyta wspólną bazę, ale niczego do niej nie zapisuje."""
+    repository = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    if settings.db_writes_enabled:
+        return repository
+    return ReadOnlyRepository(repository)
 
 
 def build_web_publisher(settings: Settings) -> WebPublisherPort:

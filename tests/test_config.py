@@ -863,3 +863,29 @@ class TestSecretValues:
 
         assert all(values)
         assert {"sk-test", "av-test", "supa-key"} <= set(values)
+
+
+class TestDbWritesFlag:
+    """BEZ-08: zapis do wspólnej bazy tylko jawnie. Lokalny run i GHA mają ten
+    sam `config.toml` i tę samą bazę, więc przełącznik żyje w środowisku
+    (`DB_WRITES_ENABLED`): domyślnie false, workflowy ustawiają "true"."""
+
+    def test_defaults_off(self, env):
+        env.delenv("DB_WRITES_ENABLED", raising=False)
+
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).db_writes_enabled is False
+
+    def test_reads_the_environment_variable(self, env):
+        env.setenv("DB_WRITES_ENABLED", "true")
+
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).db_writes_enabled is True
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "db_writes_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, db_writes_enabled=True
+        ).config_hash()
+        assert flipped == baseline

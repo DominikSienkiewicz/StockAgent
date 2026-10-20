@@ -139,6 +139,42 @@ def test_import_positions_reports_a_missing_file(
     assert "missing.csv" in capsys.readouterr().err
 
 
+def test_import_positions_apply_says_nothing_was_written_without_db_writes(
+    positions_adapter: MagicMock, mocker: Any, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # BEZ-08: lokalny run jest domyślnie tylko do odczytu — `--apply` nie może
+    # wtedy drukować „✅ zapisano”, skoro tabela positions została nietknięta.
+    settings = mocker.patch("src.config.Settings.from_env").return_value
+    settings.positions_currency_enabled = True
+    settings.db_writes_enabled = False
+
+    code = main_tools.main(["import-positions", "--csv", _csv_file(tmp_path), "--apply"])
+
+    assert code == 1
+    positions_adapter.return_value.replace_positions.assert_not_called()
+    captured = capsys.readouterr()
+    assert "✅" not in captured.out
+    assert "nic nie zapisano" in captured.err
+    assert "DB_WRITES_ENABLED=true" in captured.err
+    # Diff z tabelą i tak wychodzi — to ten sam odczyt co w dry-runie.
+    assert "+ NVDA       10 × 118.5 USD, zakup 2025-03-01" in captured.out
+
+
+def test_import_positions_dry_run_is_unchanged_without_db_writes(
+    positions_adapter: MagicMock, mocker: Any, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = mocker.patch("src.config.Settings.from_env").return_value
+    settings.positions_currency_enabled = True
+    settings.db_writes_enabled = False
+
+    code = main_tools.main(["import-positions", "--csv", _csv_file(tmp_path)])
+
+    assert code == 0
+    assert "dry-run" in capsys.readouterr().out
+
+
 # --- ARCH-39: evaluate jako podkomenda ----------------------------------------
 
 

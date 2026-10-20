@@ -4299,3 +4299,93 @@ class TestSymbolErrorRedactsSettingsSecrets:
 
         assert proc.result.error_message is not None
         assert self.ODD_SECRET not in proc.result.error_message
+
+
+# --- BEZ-08: lokalny run tylko do odczytu wobec wspólnej bazy ----------------
+
+
+def test_build_repository_blocks_writes_when_db_writes_disabled(settings, mocker) -> None:
+    # Lokalny run i GHA piszą do tej samej bazy: bez strażnika każdy lokalny
+    # przebieg nadpisywał snapshot i predykcję z tej samej godziny w produkcji.
+    from src.domain.value_objects import Money
+
+    client = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client").return_value
+    # Jawnie, choć to default (`TestDbWritesFlag`): test nie zależy od env powłoki.
+    settings = settings.model_copy(update={"db_writes_enabled": False})
+
+    repository = main_agent.build_repository(settings)
+    repository.save_price_snapshot("AAPL", Money(Decimal("100")))
+    prediction_id = repository.save_prediction({"symbol": "AAPL"})
+
+    assert client.table.return_value.upsert.call_count == 0
+    assert prediction_id.startswith("dry-run-")
+
+
+def test_build_repository_writes_when_db_writes_enabled(settings, mocker) -> None:
+    from src.domain.value_objects import Money
+    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+    client = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client").return_value
+    settings = settings.model_copy(update={"db_writes_enabled": True})
+
+    repository = main_agent.build_repository(settings)
+    repository.save_price_snapshot("AAPL", Money(Decimal("100")))
+
+    assert isinstance(repository, SupabaseRepository)
+    assert client.table.return_value.upsert.call_count == 1
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_trainer_repository_follows_db_writes_flag(settings, mocker, enabled: bool) -> None:
+    from src.infrastructure.adapters.write_guard import ReadOnlyRepository
+
+    supabase = MagicMock(spec=RepositoryPort)
+    mocker.patch("main_trainer.SupabaseRepository", return_value=supabase)
+    settings = settings.model_copy(update={"db_writes_enabled": enabled})
+
+    repository = main_trainer.build_repository(settings)
+    repository.save_model_scorecard("AAPL", {"status": "skipped"})
+
+    assert isinstance(repository, ReadOnlyRepository) is not enabled
+    assert supabase.save_model_scorecard.call_count == int(enabled)
+
+
+def test_trainer_use_case_gets_the_guarded_repository(settings, mocker) -> None:
+    from src.infrastructure.adapters.write_guard import ReadOnlyRepository
+
+    mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+    use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")
+    settings = settings.model_copy(update={"db_writes_enabled": False})
+
+    main_trainer.build_use_case(settings)
+
+    assert isinstance(use_case_cls.call_args.kwargs["db_port"], ReadOnlyRepository)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_attestation_publisher_follows_db_writes_flag(settings, enabled: bool) -> None:
+    # Commitment predykcji `dry-run-…`, której nie ma w bazie, byłby fałszywym
+    # wpisem w publicznym logu atestacji.
+    from src.infrastructure.adapters.attestation_publisher import FileAttestationPublisher
+    from src.infrastructure.adapters.write_guard import ReadOnlyAttestationPublisher
+
+    settings = settings.model_copy(
+        update={"attestation_enabled": True, "db_writes_enabled": enabled}
+    )
+
+    publisher = main_agent.build_attestation_publisher(settings)
+
+    expected = FileAttestationPublisher if enabled else ReadOnlyAttestationPublisher
+    assert type(publisher) is expected
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_fx_cache_writes_through_only_with_db_writes(settings, mocker, enabled: bool) -> None:
+    cache_cls = mocker.patch("src.infrastructure.adapters.fx_rates_cache.SupabaseCachedFxRates")
+    settings = settings.model_copy(
+        update={"fx_rates_cache_enabled": True, "db_writes_enabled": enabled}
+    )
+
+    main_agent.build_fx_port(settings)
+
+    assert cache_cls.call_args.kwargs["write_through"] is enabled

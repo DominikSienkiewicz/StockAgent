@@ -87,7 +87,8 @@ cp .env.example .env
 # 4. Smoke test (expect 650+ tests passing + ~22 skipped live/Docker tests)
 uv run pytest
 
-# 5. Single Fast Loop run
+# 5. Single Fast Loop run — read-only against the shared database unless
+#    DB_WRITES_ENABLED=true (see "Local runs are read-only by default" below)
 uv run python main_agent.py
 ```
 
@@ -117,15 +118,36 @@ Everything else — `symbols`, `symbols_etf`, `volatility_threshold`, `crypto_sy
 
 The secrets feed **GitHub Actions Secrets** — local and CI hit the **same Supabase database**, guaranteeing "works on my machine == works in prod" parity. `config.toml` is committed, so CI gets the same config without any repo variables.
 
+### Local runs are read-only by default
+
+Because a local run and production share one database, every local cycle used to write into the production track record: a price snapshot per symbol, a prediction that overwrote the one production saved in the same hour (the write is an upsert on `symbol, timestamp_hour`), settlements of production predictions, quota alerts and the regime history. `Settings.db_writes_enabled` now defaults to `false`, and with it off `main_agent.py`, `main_trainer.py`, `main_watch.py` and `main_tools.py` are dry runs against the shared database (BEZ-08; `main_deadman.py` only reads anyway, while `main_backtest.py` still refreshes `ml_feature_store` before its folds):
+
+- reads go to Supabase unchanged, so the email, the Track Record and the RAG analogues look like production;
+- every write method of the repository is skipped with one `WARNING` per method per run (`DB_WRITES_ENABLED=false — SupabaseRepository.save_price_snapshot pominięty …`), and the next calls of the same method log at `DEBUG` only;
+- a saved prediction gets the id `dry-run-<uuid>`, so the council votes and the commitment that depend on it cannot be mistaken for a database row;
+- `refresh_feature_store` counts as a write (it refreshes a view in the shared database), so a local `main_trainer.py` trains on the view as production last refreshed it;
+- the `fx_rates` cache is read but not filled, and attestation commitments and reveals are not published (a commitment of a `dry-run-…` prediction would be a false public entry);
+- `main_tools.py import-positions --apply` prints the diff and then refuses with exit code 1 and "nic nie zapisano"; the dry run without `--apply` is unchanged.
+
+The wrappers live in [`src/infrastructure/adapters/write_guard.py`](../src/infrastructure/adapters/write_guard.py); every abstract method of a guarded port is classified there as a read or a write, and a test fails when a new port method is not. The paid calls are not affected: a read-only Fast Loop still calls the LLM, Alpha Vantage and the embeddings for every symbol past the volatility gate.
+
+To write from a local run on purpose (for example a one-off positions import), set the variable for that one command:
+
+```bash
+DB_WRITES_ENABLED=true uv run python main_tools.py import-positions --csv positions.csv --apply
+```
+
+The switch is read from the environment or `.env` only. It is deliberately not in `config.toml`: that file is shared by local runs and GitHub Actions, so turning writes on there would turn them on for every local run (a test keeps it out). The workflows that write — Fast Loop, Slow Loop and Shock Watch — set `DB_WRITES_ENABLED: "true"` in the step that runs the entry point; the read-only deadman does not. `tests/test_db_writes_wiring.py` checks both, and fails when a new `main_*.py` is not classified as writing or read-only.
+
 ## Build commands
 
 ```bash
 uv sync                            # install deps (Anthropic SDK included; `--extra anthropic` is a kept alias)
-uv run python main_agent.py        # one Fast Loop run (analysis + email)
-uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain)
+uv run python main_agent.py        # one Fast Loop run (analysis + email); no database writes without DB_WRITES_ENABLED=true
+uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain); no database writes without DB_WRITES_ENABLED=true
 uv run python main_tools.py --help # one-off tools: one subcommand per tool (see "One-off tools" below)
 uv run python main_tools.py import-positions --csv positions.csv          # dry-run: diff of the CSV against the positions table (writes nothing)
-uv run python main_tools.py import-positions --csv positions.csv --apply  # replace the positions table with the CSV, as_of = now
+DB_WRITES_ENABLED=true uv run python main_tools.py import-positions --csv positions.csv --apply  # replace the positions table with the CSV, as_of = now (refused without DB_WRITES_ENABLED=true)
 uv run python main_backtest.py     # offline walk-forward backtest (folds purge the 12h label horizon): per-symbol out-of-sample RMSE / hit-rate vs baseline, plus per-fold rank IC, sign-strategy return and turnover; logs mean IC, its sd and t-stat next to the fold count, and the sign strategy's mean return per row net of `paper_cost_bps` (`net=`) with the mean turnover (`turnover=`, a flip counts 1) (read-only, no model write)
 uv run python main_tools.py evaluate           # offline eval: hit-rate + RMSE vs baseline, directional n_eff, naive baselines and binomial-test verdict (read-only)
 uv run python main_tools.py evaluate --days 60 # custom evaluation window
@@ -162,7 +184,7 @@ NVDA,10,118.50,USD,2025-03-01
 SAP.DE,4,182.10,EUR,
 ```
 
-`symbol` is the ticker as in `config.toml` (upper-cased), `quantity` and `avg_cost` are positive numbers with a dot as the decimal separator (`avg_cost` per unit, in `currency`), `currency` is a three-letter ISO 4217 code, and `purchase_date` is an optional column and value in ISO `YYYY-MM-DD`, not in the future; empty means unknown, and the report then says the purchase-date rate is unknown instead of guessing one. Every row is validated before the database is touched, and all errors are printed with their line numbers. A file without a single position is an error, not a request to empty the table. Without `--apply` the command prints the diff against the current table (`+` added, `-` removed, `=` unchanged lots) and writes nothing; reading the table is strict, so a database error stops it instead of showing everything as new. With `--apply` it inserts the file's lots with `as_of` = now and then deletes the rows that existed before, so a failed insert leaves the old portfolio in place. Writing `currency` and `purchase_date` needs migration `035` and `positions_currency_enabled = true` (see [configuration](configuration.md)); until then `--apply` refuses a file with a non-USD currency or a purchase date. The import makes no paid calls.
+`symbol` is the ticker as in `config.toml` (upper-cased), `quantity` and `avg_cost` are positive numbers with a dot as the decimal separator (`avg_cost` per unit, in `currency`), `currency` is a three-letter ISO 4217 code, and `purchase_date` is an optional column and value in ISO `YYYY-MM-DD`, not in the future; empty means unknown, and the report then says the purchase-date rate is unknown instead of guessing one. Every row is validated before the database is touched, and all errors are printed with their line numbers. A file without a single position is an error, not a request to empty the table. Without `--apply` the command prints the diff against the current table (`+` added, `-` removed, `=` unchanged lots) and writes nothing; reading the table is strict, so a database error stops it instead of showing everything as new. With `--apply` it inserts the file's lots with `as_of` = now and then deletes the rows that existed before, so a failed insert leaves the old portfolio in place. `--apply` needs `DB_WRITES_ENABLED=true` (see [Local runs are read-only by default](#local-runs-are-read-only-by-default)); without it the command prints the diff, says that nothing was written and exits with code 1. Writing `currency` and `purchase_date` needs migration `035` and `positions_currency_enabled = true` (see [configuration](configuration.md)); until then `--apply` refuses a file with a non-USD currency or a purchase date. The import makes no paid calls.
 
 **Email golden snapshot (TEST-02).** `tests/application/test_report_builder_snapshot.py` renders three synthetic cycles with a frozen clock and fixed data: a full cycle (saved stocks with council, news and provenance badges, crypto, skipped and unsupported tickers, a source error, plus Risk Watch, your portfolio, Track Record, the model scorecard, cycle cost and the run footer), a quiet day where the volatility gate skips everything, and the day-1 cold start. It compares the HTML and the plain-text email character for character with `tests/application/snapshots/<scenario>.html` and `.txt`, and on a difference prints a unified diff. The HTML is stored one tag per line so a change reads as an ordinary diff; that layout is reversible and the test checks it, so the comparison stays exact. Nothing in it depends on the machine's time zone, locale or hash seed. When the email changes on purpose, rewrite the snapshots with the `--update-golden` command above (the only thing that writes them), review `git diff tests/application/snapshots/` and commit them together with the change; never edit them by hand to turn the test green.
 

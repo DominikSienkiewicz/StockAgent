@@ -49,6 +49,10 @@ jobs:
           # Symbole i ml_model_path czyta z config.toml (commitowany).
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # BEZ-08: Settings domyślnie NIE zapisuje do bazy (lokalny run tylko do
+          # odczytu) — scorecardy, cache fundamentów, kalibracja i alerty kwot
+          # wymagają jawnego włączenia. Pilnuje tego tests/test_db_writes_wiring.py.
+          DB_WRITES_ENABLED: "true"
           # #17: niedzielna retrospektywa woła LLM (dokładnie RAZ) i wysyła mail,
           # więc przy `weekly_recap_enabled = true` te sekrety muszą być realne.
           # Z flagą off recap nie startuje i dummy w zupełności wystarczą.

@@ -99,6 +99,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # PORT-11: cache kursów NBP z dnia (P/L w zł) — tylko raport.
     "fx_rates_cache_enabled",
     # Flagi samego zapisu i publikacji.
+    # BEZ-08: czy przebieg w ogóle zapisuje do bazy; prognoza cyklu ta sama.
+    "db_writes_enabled",
     "receipts_enabled",
     "feature_set_version_enabled",
     "recipe_version_enabled",
@@ -478,6 +480,12 @@ class Settings(BaseSettings):
     # ----- Database -----
     supabase_url: str
     supabase_key: str
+    # BEZ-08: lokalny run i GHA piszą do TEJ SAMEJ bazy. Off = run tylko do odczytu
+    # (`write_guard`): odczyty idą do bazy, zapisy są pomijane, predykcja dostaje
+    # id `dry-run-<uuid>`. Ustawiane z env / `.env` (`DB_WRITES_ENABLED`) — workflowy,
+    # które zapisują, ustawiają "true". Nie w `config.toml` (test strażnik): plik jest
+    # wspólny dla lokalnego runu i produkcji, więc zapis włączony w nim byłby wszędzie.
+    db_writes_enabled: bool = False
 
     # ----- Agent config -----
     volatility_threshold: Decimal = Field(default=Decimal("0.02"))

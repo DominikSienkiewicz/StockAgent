@@ -42,6 +42,7 @@ from src.tools.import_positions import (
 )
 
 if TYPE_CHECKING:
+    from src.application.ports import PositionsImportPort
     from src.config import Settings
     from src.domain.experiment import Experiment
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository
@@ -237,15 +238,9 @@ def _run_import_positions(args: argparse.Namespace) -> int:
             print(f"   · {error}", file=sys.stderr)
         return 1
 
-    from src.infrastructure.adapters.positions_repo import SupabasePositionsAdapter
-
     settings = _load_settings()
     currency_columns = settings.positions_currency_enabled
-    adapter = SupabasePositionsAdapter(
-        url=settings.supabase_url,
-        key=settings.supabase_key,
-        currency_columns=currency_columns,
-    )
+    adapter = _positions_import_port(settings)
     plan = plan_import(adapter.current_positions(), incoming, currency_columns=currency_columns)
     print(format_plan(plan, file_lots=len(incoming)))
     if not args.apply:
@@ -258,9 +253,32 @@ def _run_import_positions(args: argparse.Namespace) -> int:
         for blocker in plan.blockers:
             print(f"❌ --apply odrzucony: {blocker}", file=sys.stderr)
         return 1
+    if not settings.db_writes_enabled:
+        print(
+            "❌ --apply odrzucony: DB_WRITES_ENABLED=false (run tylko do odczytu) — "
+            "nic nie zapisano w positions. Tabela jest we wspólnej bazie produkcyjnej; "
+            "żeby ją zastąpić, uruchom świadomie z DB_WRITES_ENABLED=true.",
+            file=sys.stderr,
+        )
+        return 1
     adapter.replace_positions(incoming, as_of=now)
     print(f"✅ zapisano {len(incoming)} lot(ów) w positions, as_of {now.isoformat()}")
     return 0
+
+
+def _positions_import_port(settings: Settings) -> PositionsImportPort:
+    """Adapter importu pozycji; bez `db_writes_enabled` tylko do odczytu (BEZ-08)."""
+    from src.infrastructure.adapters.positions_repo import SupabasePositionsAdapter
+    from src.infrastructure.adapters.write_guard import ReadOnlyPositionsImport
+
+    adapter = SupabasePositionsAdapter(
+        url=settings.supabase_url,
+        key=settings.supabase_key,
+        currency_columns=settings.positions_currency_enabled,
+    )
+    if settings.db_writes_enabled:
+        return adapter
+    return ReadOnlyPositionsImport(adapter)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -59,6 +59,9 @@ jobs:
           # Database — odczyt snapshotów + dedup alertów (migracja 021).
           SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
+          # BEZ-08: zapis `shock_alerts` (debounce między przebiegami) wymaga jawnego
+          # włączenia — Settings domyślnie nie zapisuje do bazy (lokalny run).
+          DB_WRITES_ENABLED: "true"
           # Darmowe źródło ceny dla akcji (krypto idzie po CoinGecko, bez klucza).
           FINNHUB_API_KEY:   ${{ secrets.FINNHUB_API_KEY }}
           # Settings wymaga OPENAI_API_KEY jako pola obowiązkowego, choć watch
