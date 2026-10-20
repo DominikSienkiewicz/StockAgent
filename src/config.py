@@ -490,8 +490,9 @@ class Settings(BaseSettings):
     liveness_fast_loop_max_gap_h: float = 0.0
     liveness_slow_loop_max_gap_h: float = 0.0
     # #14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
-    # Wchodzi do promptu LLM ORAZ jako ósma cecha XGBoost. Wdrożenie cechy
-    # rozstrzyga walk-forward gate „pobij baseline", nie intuicja wag. Off.
+    # Wchodzi do promptu LLM i do ml_feature_store jako KANDYDAT na cechę —
+    # XGBoost go nie używa (poza `ML_FEATURE_COLUMNS`). Promocję do cech modelu
+    # rozstrzyga porównanie A/B (EXP-19), nie intuicja wag. Off.
     alpha_fusion_enabled: bool = False
     # #16: commit-reveal (migracja 024). W chwili predykcji publikujemy SHA-256
     # commitment; po rozliczeniu sweep ujawnia sól i plaintext. UWAGA: daty

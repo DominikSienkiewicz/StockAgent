@@ -1266,7 +1266,8 @@ def _format_alpha_fusion(fusion: AlphaFusionScore | None) -> str:
 
 
 def _alpha_fusion_value(fusion: AlphaFusionScore | None) -> float:
-    """Ósma cecha ML. Brak fuzji → 0.0, dokładnie jak `COALESCE` w widoku."""
+    """Kandydat na cechę ML (poza `ML_FEATURE_COLUMNS`). Brak fuzji → 0.0,
+    dokładnie jak `COALESCE` w widoku."""
     return fusion.score if fusion is not None else 0.0
 
 
@@ -1641,8 +1642,10 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         "reasoning_text": llm_analysis.get("reasoning"),
         "council_verdict": council_verdict_dict,
         "data_quality_flags": data_quality_flags,
-        # #14: ósma cecha ML (migracja 022). Widok robi COALESCE(...,0.0), więc
-        # historyczne NULL-e nie wypadają przez `dropna` (train/serve-skew).
+        # #14: kandydat na cechę ML (migracja 022) — kolumna widoku, ale poza
+        # `ML_FEATURE_COLUMNS`, więc model jej nie używa; promocja po A/B (EXP-19).
+        # Widok robi COALESCE(...,0.0), żeby po promocji historyczne NULL-e nie
+        # wypadły przez `dropna` (train/serve-skew).
         "alpha_fusion_score": _alpha_fusion_value(state.get("alpha_fusion")),
     }
 

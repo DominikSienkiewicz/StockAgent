@@ -1670,9 +1670,11 @@ def _process_one_symbol(
     wołany dokładnie jak dawniej. Włącza je `settings.earnings_calendar_enabled`.
 
     `alpha_fusion_enabled` (#14) też domyślnie WYŁĄCZONE. Fuzja zmienia prompt
-    LLM i dokłada ósmą cechę ML, więc jej wdrożenie ma być świadomą, odwracalną
-    decyzją — arbitrem jest walk-forward gate „pobij baseline", nie intuicja
-    dobierającego wagi. Off → `alpha_fusion=None` → prompt i cechy jak przed #14.
+    LLM i zapisuje kandydata na cechę ML (`alpha_fusion_score`, poza
+    `ML_FEATURE_COLUMNS` — model go nie widzi), więc jej wdrożenie ma być
+    świadomą, odwracalną decyzją; o promocji do cech modelu rozstrzyga
+    porównanie A/B (EXP-19), nie intuicja dobierającego wagi.
+    Off → `alpha_fusion=None` → prompt i zapis jak przed #14.
     """
     try:
         inputs = _symbol_inputs(

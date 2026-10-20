@@ -63,3 +63,31 @@ def test_keys_called_unused_are_not_referenced_by_any_workflow() -> None:
     named = {name for claim in claims for name in re.findall(r"`([A-Z][A-Z0-9_]*)\*?`", claim)}
     referenced = sorted(name for name in named if f"secrets.{name}" in workflows)
     assert not referenced, f"docs nazywają nieużywanymi klucze z workflowów: {referenced}"
+
+
+# DOC-02: `alpha_fusion_score` trafia do `ml_feature_store` jako KANDYDAT — nie
+# należy do `ML_FEATURE_COLUMNS`, więc nazwanie go „ósmą cechą” to fałsz, który
+# recenzent wyłapie przy przejściu z config.py do ml_features.py. Migracje SQL
+# zostają historyczne i ich nie sprawdzamy.
+EIGHTH_FEATURE_CLAIM = re.compile(r"ósm\w* cech|eighth (?:ML |XGBoost )?feature", re.IGNORECASE)
+EIGHTH_FEATURE_SOURCES = ("src/**/*.py", "main_*.py", "config.toml", "README.md", "docs/*.md")
+
+
+def test_alpha_fusion_score_is_not_called_a_model_feature() -> None:
+    from src.application.ml_features import ML_FEATURE_COLUMNS
+
+    assert "alpha_fusion_score" not in ML_FEATURE_COLUMNS
+    claims = [
+        f"{path.relative_to(ROOT)}:{number}"
+        for pattern in EIGHTH_FEATURE_SOURCES
+        for path in sorted(ROOT.glob(pattern))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if EIGHTH_FEATURE_CLAIM.search(line)
+    ]
+    assert claims == []
+
+
+def test_eighth_feature_pattern_matches_both_languages() -> None:
+    assert EIGHTH_FEATURE_CLAIM.search("dokłada ósmą cechę ML")
+    assert EIGHTH_FEATURE_CLAIM.search("as an eighth feature")
+    assert not EIGHTH_FEATURE_CLAIM.search("kandydat na cechę ML")

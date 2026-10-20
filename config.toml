@@ -131,7 +131,8 @@ shock_alerts_enabled = true
 liveness_fast_loop_max_gap_h = 0
 liveness_slow_loop_max_gap_h = 192
 # #14: Alpha Fusion Score (migracja 022) — ważona fuzja insider/opcje/analitycy/
-# social/earnings. Trafia do promptu LLM i jako ósma cecha ML. Włączone.
+# social/earnings. Trafia do promptu LLM i do ml_feature_store jako KANDYDAT na cechę ML —
+# model go nie używa (nie ma go w ML_FEATURE_COLUMNS); promocja po porównaniu A/B (EXP-19). Włączone.
 alpha_fusion_enabled = true
 # #16: commit-reveal (migracja 024) — kryptograficznie weryfikowalny track record.
 # Claim: tamper-evidence przy branch protection, NIE niepodrabialny timestamp.

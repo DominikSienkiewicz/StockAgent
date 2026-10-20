@@ -194,7 +194,8 @@ class AnalyzeMarketUseCase:
             "regime_multiplier": regime_multiplier,
             # #6 bramka earnings — mnożnik progu z domeny (zawsze >= 1.0).
             "earnings_multiplier": earnings_multiplier,
-            # #14 composite alfa — do promptu LLM i do ósmej cechy ML.
+            # #14 composite alfa — do promptu LLM i jako kandydat na cechę ML
+            # (zapis w prediction_logs, poza `ML_FEATURE_COLUMNS`).
             "alpha_fusion": alpha_fusion,
             "peer_context": peer_context,
         }
