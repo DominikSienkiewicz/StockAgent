@@ -37,6 +37,7 @@ def settings() -> Settings:
         symbols=["AAPL", "VOO"],
         volatility_threshold=Decimal("0.02"),
         ml_model_path="data/models/missing.ubj",
+        db_writes_enabled=True,  # BEZ-08: smoke testy odwzorowują workflowy GHA
     )
 
 
