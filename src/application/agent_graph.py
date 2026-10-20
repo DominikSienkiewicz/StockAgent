@@ -1163,10 +1163,8 @@ def _run_ml_prediction(
     return ml_target, feature_attribution
 
 
-def _attach_commitment(
-    deps: AgentGraphDeps, record: dict[str, Any]
-) -> None:
-    """#16 — dokleja SHA-256 commitment do rekordu i publikuje go (bez soli).
+def _seal_commitment(deps: AgentGraphDeps, record: dict[str, Any]) -> str | None:
+    """#16 — dokleja do rekordu SHA-256 commitment, sól i zahashowany plaintext.
 
     Commit-reveal: publikujemy sam HASH treści predykcji + losowej soli.
     Dopóki sól nie zostanie ujawniona (sweep po rozliczeniu), hash jest
@@ -1179,10 +1177,10 @@ def _attach_commitment(
     Klucze dokładane TYLKO gdy publisher istnieje — nowe kolumny przed migracjami
     024 i 043 dałyby PGRST204 i zabiły zapis całej predykcji (gate jak
     `receipts_enabled`; DI daje publisher dopiero, gdy kolumny istnieją).
-    Awaria publikacji nigdy nie wywala cyklu.
+    Zwraca hash do publikacji PO zapisie (WIA-01) albo None, gdy atestacja off.
     """
     if deps.attestation_publisher is None:
-        return
+        return None
     # WIA-02: schemat v2 — ceny w skali kolumny DECIMAL(14,4), te same co w rekordzie.
     payload = prediction_commitment_payload(
         symbol=record["symbol"],
@@ -1190,20 +1188,40 @@ def _attach_commitment(
         predicted_target_price=record.get("predicted_target_price"),
         price_at_prediction=record["price_at_prediction"],
     )
-    salt = new_salt()
     # WIA-70: hash liczony z tych samych bajtów, które zapisujemy i ujawnimy dosłownie.
     plaintext = canonicalize(payload, schema_version=ATTESTATION_SCHEMA_VERSION)
+    salt = _commitment_salt(deps, record["symbol"])
     commitment = commit_canonical(plaintext, salt)
     record["commitment_hash"] = commitment
     record["commitment_salt"] = salt
     record["commitment_payload"] = plaintext
+    return commitment
+
+
+def _commitment_salt(deps: AgentGraphDeps, symbol: str) -> str:
+    """WIA-01: sól wiersza z tej samej godziny albo świeża.
+
+    Upsert (symbol, timestamp_hour) nadpisuje wiersz przy retry LangGraph albo
+    re-runie GHA. Z nową solą opublikowany wcześniej hash tej samej predykcji
+    zostałby bez soli w bazie — nie do ujawnienia, czyli jak ukryte pudło.
+    Wartość spoza kontraktu portu (nie tekst, pusta) traktujemy jak brak."""
+    existing = deps.repository_port.get_current_hour_commitment_salt(symbol)
+    return existing if isinstance(existing, str) and existing else new_salt()
+
+
+def _publish_commitment(deps: AgentGraphDeps, symbol: str, commitment: str) -> None:
+    """#16 — publikuje sam hash (bez soli). WIA-01: wołane DOPIERO po udanym
+    `save_prediction` — hash bez zapisanej soli nigdy nie zostałby ujawniony.
+    Awaria publikacji nigdy nie wywala cyklu."""
+    if deps.attestation_publisher is None:
+        return
     try:
         # Publikujemy WYŁĄCZNIE hash — sól zostaje w bazie do czasu revealu.
         deps.attestation_publisher.publish_commitment(
-            {"symbol": record["symbol"], "commitment": commitment}
+            {"symbol": symbol, "commitment": commitment}
         )
     except Exception:
-        logger.exception("Attestation commitment publish failed for %s", record["symbol"])
+        logger.exception("Attestation commitment publish failed for %s", symbol)
 
 
 # Tolerancja porównań z zerem. Score i wkłady fuzji to wynik ważonej sumy —
@@ -1665,8 +1683,8 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     if deps.experiment_arms_enabled and arms:
         record["experiment_arms"] = dict(arms)
 
-    # #16: commit-reveal (migracja 024).
-    _attach_commitment(deps, record)
+    # #16: commit-reveal (migracje 024, 043); publikacja dopiero po zapisie.
+    commitment = _seal_commitment(deps, record)
 
     # Embedding podsumowania newsów → pgvector (reużyty z predict_node lub
     # policzony tu w fallbacku; graceful — przy braku zapisujemy bez wektora).
@@ -1675,6 +1693,9 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         record["embedding"] = vector
 
     prediction_id = repository_port.save_prediction(record)
+    # WIA-01: hash trafia do publicznego logu dopiero, gdy sól jest w bazie.
+    if commitment is not None:
+        _publish_commitment(deps, state["symbol"], commitment)
 
     # Strukturalny audit trail rady — JSONB blob w prediction_logs zostaje
     # (wstecz-kompat), ale głosy lecą też do osobnej tabeli, żeby dało się

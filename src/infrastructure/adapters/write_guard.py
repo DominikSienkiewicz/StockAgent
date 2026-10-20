@@ -102,6 +102,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_settled_moves",
         "get_unrevealed_commitments",
         "attestation_columns_available",
+        "get_current_hour_commitment_salt",
         "get_latest_snapshot_at",
         "get_last_scorecard_at",
         "probe_database",
@@ -217,6 +218,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def attestation_columns_available(self) -> bool:
         return self._delegate.attestation_columns_available()
+
+    def get_current_hour_commitment_salt(self, symbol: str) -> str | None:
+        return self._delegate.get_current_hour_commitment_salt(symbol)
 
     def get_latest_snapshot_at(self) -> datetime | None:
         return self._delegate.get_latest_snapshot_at()

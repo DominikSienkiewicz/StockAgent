@@ -2793,6 +2793,112 @@ class TestAttestationCommitment:
 
         assert "commitment_payload" not in repository_port.save_prediction.call_args.args[0]
 
+    def test_commitment_not_published_when_save_fails(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-01: hash bez zapisanej soli nigdy nie zostanie ujawniony — w ledgerze
+        # wyglądałby jak ukryte pudło.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        repository_port.save_prediction.side_effect = RuntimeError("supabase down")
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+
+        with pytest.raises(RuntimeError, match="supabase down"):
+            self._run(ports, publisher)
+
+        publisher.publish_commitment.assert_not_called()
+
+    def test_commitment_is_published_after_the_prediction_is_saved(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+        saved_before_publish: list[bool] = []
+        publisher.publish_commitment.side_effect = lambda _record: (
+            saved_before_publish.append(repository_port.save_prediction.called)
+            or "public/attestation/commitments.jsonl"
+        )
+
+        self._run(ports, publisher)
+
+        assert saved_before_publish == [True]
+        published = publisher.publish_commitment.call_args.args[0]
+        record = repository_port.save_prediction.call_args.args[0]
+        assert published == {"symbol": "AAPL", "commitment": record["commitment_hash"]}
+
+    def test_rerun_in_the_same_hour_reuses_the_stored_salt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-01: upsert (symbol, timestamp_hour) nadpisuje wiersz — z nową solą
+        # opublikowany wcześniej hash tej samej predykcji byłby nie do ujawnienia.
+        import hashlib
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        repository_port.get_current_hour_commitment_salt.return_value = "f" * 32
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._run(ports, self._publisher())
+
+        repository_port.get_current_hour_commitment_salt.assert_called_once_with("AAPL")
+        record = repository_port.save_prediction.call_args.args[0]
+        assert record["commitment_salt"] == "f" * 32
+        digest = hashlib.sha256((record["commitment_payload"] + "f" * 32).encode("utf-8"))
+        assert record["commitment_hash"] == digest.hexdigest()
+
+    def test_first_save_of_the_hour_draws_a_fresh_salt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        repository_port.get_current_hour_commitment_salt.return_value = None
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._run(ports, self._publisher())
+
+        salt = repository_port.save_prediction.call_args.args[0]["commitment_salt"]
+        assert len(salt) == 32 and salt != "f" * 32
+
+    def test_without_publisher_the_salt_is_not_looked_up(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Atestacja off → zero dodatkowych odczytów (kolumny 024 mogą nie istnieć).
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._run(ports, None)
+
+        repository_port.get_current_hour_commitment_salt.assert_not_called()
+
 
 class TestPaidCallMeter:
     """FinOps transparency — agent raportuje własny rachunek. Licznik zbiera

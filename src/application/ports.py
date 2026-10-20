@@ -380,6 +380,14 @@ class RepositoryPort(ABC):
         043); przed migracją klucza nie ma, a stare wiersze mają None."""
 
     @abstractmethod
+    def get_current_hour_commitment_salt(self, symbol: str) -> str | None:
+        """WIA-01 — sól commitmentu wiersza `symbol` z bieżącej godziny UTC (klucz
+        upsertu `save_prediction`). None = brak takiego wiersza albo błąd odczytu.
+
+        Ponowny zapis w tej godzinie (retry LangGraph, re-run GHA) nadpisuje wiersz:
+        z tą samą solą ten sam payload daje ten sam, już opublikowany hash."""
+
+    @abstractmethod
     def attestation_columns_available(self) -> bool:
         """WIA-70 — czy baza ma kolumny commitmentu (`commitment_hash`,
         `commitment_salt` z 024 i `commitment_payload` z 043). False → cykl bez

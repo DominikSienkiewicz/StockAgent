@@ -2949,3 +2949,44 @@ class TestCommitmentPayloadColumn:
         chain.execute.side_effect = self._missing_payload_column()
 
         assert repo.attestation_columns_available() is False
+
+
+class TestCurrentHourCommitmentSalt:
+    """WIA-01: sól wiersza (symbol, bieżąca godzina UTC) — klucza upsertu
+    `save_prediction`. Ponowny zapis w tej godzinie reużywa ją, więc ten sam
+    payload daje ten sam, już opublikowany hash."""
+
+    def test_reads_the_salt_of_this_hour_row(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [])
+        builder.limit.return_value = builder
+        builder.execute.return_value = MagicMock(data=[{"commitment_salt": "f" * 32}])
+        before = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+
+        assert repo.get_current_hour_commitment_salt("AAPL") == "f" * 32
+
+        after = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        filters = {call.args[0]: call.args[1] for call in builder.eq.call_args_list}
+        assert filters["symbol"] == "AAPL"
+        # Klucz upsertu: date_trunc('hour', timestamp, 'UTC') z migracji 013.
+        assert datetime.fromisoformat(filters["timestamp_hour"]) in {before, after}
+        builder.not_.is_.assert_called_with("commitment_salt", "null")
+
+    def test_no_row_this_hour_means_no_salt(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [])
+        builder.limit.return_value = builder
+        builder.execute.return_value = MagicMock(data=[])
+
+        assert repo.get_current_hour_commitment_salt("AAPL") is None
+
+    def test_read_failure_degrades_to_no_salt(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [])
+        builder.limit.return_value = builder
+        builder.execute.side_effect = Exception("column commitment_salt does not exist")
+
+        assert repo.get_current_hour_commitment_salt("AAPL") is None

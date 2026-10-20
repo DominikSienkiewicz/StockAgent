@@ -982,6 +982,27 @@ class SupabaseRepository(RepositoryPort):
         )
         return _paginate(query)
 
+    def get_current_hour_commitment_salt(self, symbol: str) -> str | None:
+        # Godzina jak w kolumnie generowanej z 013: date_trunc('hour', timestamp, 'UTC').
+        hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        try:
+            response = (
+                self._client.table(self._table)
+                .select("commitment_salt")
+                .eq("symbol", symbol)
+                .eq("timestamp_hour", hour.isoformat())
+                .not_.is_("commitment_salt", "null")
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "Commitment salt of %s unavailable — świeża sól", symbol, exc_info=True
+            )
+            return None
+        rows = _rows(response)
+        return str(rows[0]["commitment_salt"]) if rows else None
+
     def attestation_columns_available(self) -> bool:
         try:
             self._client.table(self._table).select(
