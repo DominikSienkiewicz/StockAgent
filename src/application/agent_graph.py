@@ -1282,7 +1282,7 @@ def _resolve_move_interval(
 
 def _interval_price(price: Decimal, move_return: float) -> Decimal:
     """Granica przedziału jako cena (skala `predicted_target_price`, 4 miejsca)."""
-    return (price * (Decimal(1) + Decimal(str(move_return)))).quantize(Decimal("0.0001"))
+    return Money(price * (Decimal(1) + Decimal(str(move_return)))).for_storage().amount
 
 
 def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:

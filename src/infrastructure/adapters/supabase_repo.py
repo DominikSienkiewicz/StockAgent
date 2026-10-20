@@ -203,8 +203,34 @@ def _serialize(value: Any) -> Any:
     return value
 
 
-def _serialize_record(record: dict[str, Any]) -> dict[str, Any]:
-    return {k: _serialize(v) for k, v in record.items()}
+# ARCH-38: kolumny cenowe `prediction_logs` w skali DECIMAL(14,4) (001, 032).
+_PREDICTION_PRICE_COLUMNS = frozenset({
+    "price_at_prediction",
+    "predicted_target_price",
+    "actual_price_after_12h",
+    "interval_low",
+    "interval_high",
+})
+
+
+def _storage_price(value: Decimal) -> Decimal:
+    """ARCH-38: cena w skali kolumny DECIMAL(14,4), połówki od zera jak w Postgresie.
+
+    Wartość, której kwantyzacja nie zmienia, zostaje z własnym literałem
+    („99.0”, nie „99.0000”) — baza i tak przechowa ją identycznie."""
+    stored = Money(value).for_storage().amount
+    return value if stored == value else stored
+
+
+def _serialize_record(
+    record: dict[str, Any], price_columns: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    return {
+        k: _serialize(
+            _storage_price(v) if k in price_columns and isinstance(v, Decimal) else v
+        )
+        for k, v in record.items()
+    }
 
 
 def _optional_text(value: Any) -> str | None:
@@ -673,7 +699,7 @@ class SupabaseRepository(RepositoryPort):
         # Upsert na (symbol, timestamp_hour) (#7) — re-run GHA / nakładający się
         # workflow_dispatch / retry LangGraph aktualizuje istniejący wiersz w tej
         # samej godzinie zamiast duplikować (duplikaty zaburzały trafność).
-        record = _serialize_record({"symbol": symbol, "price": price.amount})
+        record = _serialize_record({"symbol": symbol, "price": _storage_price(price.amount)})
         (
             self._client.table(self._snapshot_table)
             .upsert(record, on_conflict="symbol,timestamp_hour")
@@ -742,7 +768,7 @@ class SupabaseRepository(RepositoryPort):
         # Upsert na (symbol, timestamp_hour) (#7) — idempotentny zapis predykcji.
         # Domyślny merge upsertu zwraca wiersz, więc nadal mamy z czego odczytać
         # id (graf używa go jako prediction_id).
-        record = _serialize_record(prediction)
+        record = _serialize_record(prediction, _PREDICTION_PRICE_COLUMNS)
         response = (
             self._client.table(self._table)
             .upsert(record, on_conflict="symbol,timestamp_hour")
@@ -1334,7 +1360,8 @@ class SupabaseRepository(RepositoryPort):
                 "accuracy_score": accuracy_score,
                 "is_trend_correct": is_trend_correct,
                 "correction_insights": insight,
-            }
+            },
+            _PREDICTION_PRICE_COLUMNS,
         )
         # Idempotency guard: aktualizujemy tylko gdy actual_price_after_12h jest
         # NULL. Bez tego dwa równoczesne cykle (np. ręczny workflow_dispatch

@@ -121,6 +121,18 @@ class TestSavePriceSnapshot:
         upsert.assert_called_once()
         assert upsert.call_args.kwargs["on_conflict"] == "symbol,timestamp_hour"
 
+    def test_price_serialized_with_four_decimal_places(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ARCH-38: kolumna DECIMAL(14,4) — połówka idzie od zera (ROUND_HALF_UP)
+        # jak w Postgresie, a nie do parzystej, jak domyślnie w Pythonie.
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": "snap-1"}])
+
+        repo.save_price_snapshot("AAPL", Money(Decimal("90.11115")))
+
+        inserted = mock_client.table.return_value.upsert.call_args.args[0]
+        assert inserted["price"] == "90.1112"
+
 
 # ---------------------------------------------------------------------------
 # get_last_prediction_price — referencja dla cechy price_delta (P0: train/serve
@@ -255,6 +267,31 @@ class TestSavePrediction:
         # Decimal nie jest JSON-serializowalny natywnie — adapter musi zamieniać na str/float
         assert isinstance(inserted["price_at_prediction"], str | float | int)
         assert str(inserted["price_at_prediction"]) == "100.55"
+
+    def test_price_columns_are_quantized_to_decimal_14_4(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ARCH-38: tylko kolumny DECIMAL(14,4); inne Decimale (np. pole spoza
+        # tej skali) zachowują pełną precyzję.
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": "uuid-1"}])
+
+        repo.save_prediction(
+            {
+                "symbol": "AAPL",
+                "price_at_prediction": Decimal("90.11115"),
+                "predicted_target_price": Decimal("90.11111111101"),
+                "interval_low": Decimal("-0.00005"),
+                "interval_high": Decimal("91.00005"),
+                "gate_delta_raw": Decimal("0.123456789"),
+            }
+        )
+
+        inserted = mock_client.table.return_value.upsert.call_args.args[0]
+        assert inserted["price_at_prediction"] == "90.1112"
+        assert inserted["predicted_target_price"] == "90.1111"
+        assert inserted["interval_low"] == "-0.0001"
+        assert inserted["interval_high"] == "91.0001"
+        assert inserted["gate_delta_raw"] == "0.123456789"
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +608,25 @@ class TestUpdatePredictionAccuracy:
             mock_client.table.return_value.update.return_value.eq.return_value.is_
         )
         is_call.assert_called_with("actual_price_after_12h", "null")
+
+    def test_actual_price_is_quantized_to_the_column_scale(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ARCH-38: `actual_price_after_12h` to DECIMAL(14,4).
+        _set_chain_response(
+            mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}]
+        )
+
+        repo.update_prediction_accuracy(
+            prediction_id="uuid-1",
+            actual_price=Decimal("99.00005"),
+            accuracy_score=0.87,
+            is_trend_correct=True,
+            insight="x",
+        )
+
+        payload = mock_client.table.return_value.update.call_args.args[0]
+        assert payload["actual_price_after_12h"] == "99.0001"
 
 
 # ---------------------------------------------------------------------------

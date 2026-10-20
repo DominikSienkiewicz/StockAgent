@@ -6,6 +6,7 @@ import pytest
 
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
+    STORAGE_SCALE,
     AssetType,
     Fundamentals,
     Money,
@@ -47,6 +48,28 @@ class TestMoney:
         infinity = Decimal("Infinity")
         with pytest.raises(ValueError, match="Inf|finite"):
             Money(infinity)
+
+
+class TestMoneyScale:
+    """ARCH-38: `Money` w skali kolumn DECIMAL(14,4) — Python trzyma pełną
+    precyzję, baza cztery miejsca, więc hash i zapis muszą widzieć to samo."""
+
+    def test_storage_scale_mirrors_decimal_14_4(self) -> None:
+        assert Decimal("0.0001") == STORAGE_SCALE
+
+    def test_for_storage_matches_decimal_14_4(self) -> None:
+        # Połówki od zera jak NUMERIC w Postgresie (ROUND_HALF_UP), nie HALF_EVEN.
+        assert Money(Decimal("90.11115")).for_storage().amount == Decimal("90.1112")
+        assert Money(Decimal("-0.00005")).for_storage().amount == Decimal("-0.0001")
+
+    def test_for_storage_has_exactly_four_places(self) -> None:
+        # Tekst kolumny NUMERIC(14,4) ma zawsze cztery miejsca — kanoniczny literał.
+        assert str(Money(Decimal("298.87")).for_storage().amount) == "298.8700"
+        assert str(Money(Decimal("90.11111111101")).for_storage().amount) == "90.1111"
+
+    def test_for_storage_is_idempotent(self) -> None:
+        stored = Money(Decimal("90.11115")).for_storage()
+        assert stored.for_storage() == stored
 
 
 class TestThreshold:

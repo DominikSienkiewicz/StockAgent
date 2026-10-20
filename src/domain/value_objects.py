@@ -1,8 +1,13 @@
 import math
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
+
+# ARCH-38: lustro kolumn cenowych DECIMAL(14,4) (001_init.sql:24-34,
+# 002_price_snapshots.sql:15, 032_move_interval.sql). Python trzyma pełną
+# precyzję, baza cztery miejsca — hash commitmentu i zapis muszą widzieć to samo.
+STORAGE_SCALE = Decimal("0.0001")
 
 
 @dataclass(frozen=True)
@@ -18,6 +23,16 @@ class Money:
             raise ValueError(
                 f"Money amount must be a finite number (got {self.amount})"
             )
+
+    def for_storage(self) -> "Money":
+        """Kwota w skali kolumny DECIMAL(14,4), zawsze z czterema miejscami.
+
+        `ROUND_HALF_UP` w Pythonie zaokrągla połówki od zera, tak jak NUMERIC
+        w Postgresie; domyślne HALF_EVEN dałoby z 90.11125 wartość 90.1112, a baza
+        zapisze 90.1113. Tylko dla cen z kolumn DECIMAL(14,4) — nie dla
+        `PriceDelta` ani ułamków cech ML.
+        """
+        return Money(self.amount.quantize(STORAGE_SCALE, rounding=ROUND_HALF_UP))
 
 
 @dataclass(frozen=True)
