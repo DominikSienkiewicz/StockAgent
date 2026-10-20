@@ -1233,3 +1233,17 @@ class TestCostLedgerSettings:
             llm_pricing_as_of="2026-10-20",
         ).config_hash()
         assert priced == baseline
+
+
+class TestTwoPhaseCycleFlag:
+    """EXP-27: cykl dwufazowy to eksperyment za flagą, domyślnie wyłączony."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).two_phase_cycle_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        # Faza 2 to ten sam przepis płatnej analizy co cykl jednofazowy; flaga
+        # zmienia kolejność i to, kogo tnie sufit — jak `max_paid_llm_calls_per_cycle`.
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "two_phase_cycle_enabled" in NON_RECIPE_SETTINGS_FIELDS

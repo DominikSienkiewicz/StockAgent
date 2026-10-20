@@ -5321,3 +5321,215 @@ class TestSlowLoopCostLedger:
 
         records = persist.call_args.kwargs["ledger"].records()
         assert [(r.source, r.node, r.symbol) for r in records] == [("llm", "recap", None)]
+
+
+class TestTwoPhaseCycle:
+    """EXP-27 (decyzja 2026-10-20: za flagą, do porównania z FIN-04): faza 1 dla
+    wszystkich symboli to darmowa cena, reflect i bramka domenowa; faza 2 buduje
+    `AlphaVantageClient(symbols=przepuszczone)` i płaci tylko za nie, w kolejności
+    malejącego |Δ| — sufit FIN-12 odcina najmniejsze ruchy."""
+
+    _NOW = datetime(2026, 10, 20, 21, 30, tzinfo=UTC)
+
+    def _repository(self, *, unverified: bool = False) -> MagicMock:
+        from src.domain.prediction import Prediction, TrendDirection
+        from src.domain.value_objects import Money
+
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_last_price.return_value = Money(Decimal("100"))
+        repository.get_last_price_snapshot.return_value = (
+            Money(Decimal("100")),
+            self._NOW - timedelta(hours=24),
+        )
+        repository.get_last_prediction_price.return_value = None
+        repository.get_cached_fundamentals.return_value = None
+        repository.get_settled_moves.return_value = []
+        repository.find_similar_predictions.return_value = []
+        repository.get_council_votes_for_prediction.return_value = []
+        repository.save_prediction.side_effect = lambda record: f"id-{record['symbol']}"
+        repository.get_unverified_prediction.side_effect = (
+            (
+                lambda symbol, **_: Prediction(
+                    id=f"prev-{symbol}",
+                    symbol=symbol,
+                    predicted_trend=TrendDirection.SIDEWAYS,
+                    price_at_prediction=Decimal("100"),
+                    predicted_target_price=Decimal("100"),
+                )
+            )
+            if unverified
+            else (lambda symbol, **_: None)
+        )
+        return repository
+
+    def _wire(self, settings, mocker, prices: dict[str, str]) -> tuple[MagicMock, MagicMock]:
+        """Prawdziwy graf i prawdziwy klient AV; atrapy tylko na brzegach (ceny,
+        LLM, HTTP). Zwraca (klasę klienta AV pod podglądem, mock `Session.get`)."""
+        from src.application.ports import LLMPort, MarketDataPort
+        from src.domain.value_objects import Money
+        from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
+
+        market = MagicMock(spec=MarketDataPort)
+        market.get_current_price.side_effect = lambda symbol: Money(Decimal(prices[symbol]))
+        mocker.patch("main_agent.FinnhubAdapter", return_value=market)
+        llm = MagicMock(spec=LLMPort)
+        llm.analyze.return_value = {
+            "trend_direction": "BULLISH",
+            "confidence_score": 0.7,
+            "av_agreement": 0.6,
+            "target_price_12h": 106.0,
+            "reasoning": "r",
+        }
+        llm.analyze_mistake.return_value = "lekcja"
+        mocker.patch("main_agent.build_llm_adapter", return_value=llm)
+        mocker.patch("main_agent.build_council_adapter", return_value=None)
+        mocker.patch("main_agent.build_embedding_adapter", return_value=None)
+        client_cls = mocker.patch("main_agent.AlphaVantageClient", wraps=AlphaVantageClient)
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"feed": []}
+        session_get = mocker.patch("requests.Session.get", return_value=response)
+        settings.symbols = list(prices)
+        settings.two_phase_cycle_enabled = True
+        return client_cls, session_get
+
+    def _run(self, settings, repository):
+        use_case = main_agent.build_use_case(settings, repository=repository)
+        return main_agent._analyze_symbols(
+            list(settings.symbols),
+            use_case=use_case,
+            settings=settings,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=False,
+            alpha_use_case=MagicMock(),
+            cycle_at=self._NOW,
+            phase_two_feeds=main_agent.build_phase_two_feeds(settings, quota_monitor=None),
+        )
+
+    @staticmethod
+    def _news_requests(session_get: MagicMock) -> list[str]:
+        return [
+            call.kwargs["params"]["tickers"]
+            for call in session_get.call_args_list
+            if call.kwargs.get("params", {}).get("function") == "NEWS_SENTIMENT"
+        ]
+
+    @pytest.mark.parametrize("concurrency", [1, 4])
+    def test_av_client_built_only_for_symbols_past_gate(
+        self, settings, mock_external_clients, mocker, concurrency
+    ) -> None:
+        movers = {"S07": "105", "S21": "97", "S40": "104"}
+        prices = {f"S{i:02d}": movers.get(f"S{i:02d}", "100.5") for i in range(45)}
+        client_cls, session_get = self._wire(settings, mocker, prices)
+        settings.symbol_concurrency = concurrency
+        repository = self._repository()
+
+        results, failures, _, _ = self._run(settings, repository)
+
+        # Jeden klient AV na cykl, zbudowany po fazie 1 z samymi symbolami za bramką.
+        client_cls.assert_called_once()
+        assert sorted(client_cls.call_args.kwargs["symbols"]) == ["S07", "S21", "S40"]
+        assert sorted(self._news_requests(session_get)) == ["S07", "S21", "S40"]
+        assert failures == 0
+        statuses = {result.symbol: result.status for result in results}
+        assert [result.symbol for result in results] == list(prices)
+        assert {s for s, status in statuses.items() if status == "saved"} == set(movers)
+        assert sum(1 for status in statuses.values() if status == "ignored") == 42
+        # Pod progiem: snapshot jak dziś; za bramką: snapshot z zapisu fazy 2.
+        assert repository.save_price_snapshot.call_count == 45
+
+    def test_budget_cap_cuts_the_smallest_moves_first(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # Kolejność z config.toml (A, B, C) odcięłaby C; ranking |Δ| to B, C, A.
+        prices = {"A": "103", "B": "105", "C": "96", "D": "100.5"}
+        _, session_get = self._wire(settings, mocker, prices)
+        settings.max_paid_llm_calls_per_cycle = 2
+        repository = self._repository()
+
+        results, _, _, _ = self._run(settings, repository)
+
+        saved = [call.args[0]["symbol"] for call in repository.save_prediction.call_args_list]
+        assert saved == ["B", "C"]
+        cut = next(result for result in results if result.symbol == "A")
+        assert cut.status == "ignored"
+        assert cut.skip_reason is main_agent.SkipReason.BUDGET_EXHAUSTED
+        # Odcięty symbol zachowuje starą referencję ceny (wyjątek FIN-12)...
+        snapshotted = {call.args[0] for call in repository.save_price_snapshot.call_args_list}
+        assert snapshotted == {"B", "C", "D"}
+        # ...i nie kosztuje requestu Alpha Vantage.
+        assert sorted(self._news_requests(session_get)) == ["B", "C"]
+
+    def test_every_symbol_is_settled_before_the_first_paid_feed(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # Self-Reflection przed bramką (CLAUDE.md): faza 1 rozlicza wszystkich.
+        prices = {"A": "105", "B": "100.5", "C": "96"}
+        _, session_get = self._wire(settings, mocker, prices)
+        repository = self._repository(unverified=True)
+        events: list[str] = []
+        repository.update_prediction_accuracy.side_effect = (
+            lambda prediction_id, **_: events.append(f"settle:{prediction_id}")
+        )
+        response = session_get.return_value
+        session_get.side_effect = lambda *_a, **kw: (
+            events.append(f"av:{kw['params']['tickers']}") or response
+        )
+
+        self._run(settings, repository)
+
+        settled = [event for event in events if event.startswith("settle:")]
+        assert settled == ["settle:prev-A", "settle:prev-B", "settle:prev-C"]
+        first_feed = next(i for i, event in enumerate(events) if event.startswith("av:"))
+        assert first_feed == len(settled)
+
+    def test_build_use_case_defers_the_av_client_to_phase_two(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.infrastructure.adapters.alpha_vantage_adapters import PhaseTwoOnlyFeed
+
+        client_cls = mocker.patch("main_agent.AlphaVantageClient")
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.two_phase_cycle_enabled = True
+
+        main_agent.build_use_case(settings)
+
+        client_cls.assert_not_called()
+        deps = use_case_cls.call_args.args[0]
+        assert isinstance(deps.sentiment_port, PhaseTwoOnlyFeed)
+        assert isinstance(deps.news_port, PhaseTwoOnlyFeed)
+
+    def test_local_stub_run_binds_stub_feeds_without_an_av_client(self, settings, mocker) -> None:
+        from src.infrastructure.adapters.local_stubs import (
+            LocalStubNewsAdapter,
+            LocalStubSentimentAdapter,
+        )
+
+        client_cls = mocker.patch("main_agent.AlphaVantageClient")
+        settings.paid_calls_enabled = False
+
+        sentiment, news = main_agent.build_phase_two_feeds(settings, quota_monitor=None)(["A"])
+
+        client_cls.assert_not_called()
+        assert isinstance(sentiment, LocalStubSentimentAdapter)
+        assert isinstance(news, LocalStubNewsAdapter)
+
+    def test_main_runs_the_two_phase_cycle_only_behind_the_flag(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        fake_uc = MagicMock()
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        analyze = mocker.patch("main_agent._analyze_symbols", return_value=([], 0, {}, {}))
+        mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings)
+        settings.two_phase_cycle_enabled = True
+        main_agent.main(settings)
+
+        flag_off, flag_on = analyze.call_args_list
+        assert flag_off.kwargs.get("phase_two_feeds") is None
+        assert callable(flag_on.kwargs["phase_two_feeds"])

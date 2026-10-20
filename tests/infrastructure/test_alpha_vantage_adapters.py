@@ -68,3 +68,23 @@ class TestSentimentAdapter:
         result = adapter.get_social_score("AAPL")
 
         assert "degraded_reason" not in result
+
+
+class TestPhaseTwoOnlyFeed:
+    """EXP-27: w cyklu dwufazowym deps grafu dostają zaślepkę feedu — klient AV
+    powstaje dopiero w fazie 2. Wywołanie zaślepki to błąd orkiestracji, więc
+    rzuca zamiast udawać pusty feed (pusty feed wyglądałby jak spokojny dzień)."""
+
+    def test_is_both_feed_ports(self):
+        from src.infrastructure.adapters.alpha_vantage_adapters import PhaseTwoOnlyFeed
+
+        feed = PhaseTwoOnlyFeed()
+        assert isinstance(feed, SentimentPort)
+        assert isinstance(feed, NewsPort)
+
+    @pytest.mark.parametrize("method", ["get_social_score", "get_news_context"])
+    def test_refuses_to_serve_a_feed(self, method):
+        from src.infrastructure.adapters.alpha_vantage_adapters import PhaseTwoOnlyFeed
+
+        with pytest.raises(RuntimeError, match="EXP-27"):
+            getattr(PhaseTwoOnlyFeed(), method)("AAPL")

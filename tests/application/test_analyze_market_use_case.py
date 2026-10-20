@@ -610,3 +610,83 @@ class TestCycleTelemetry:
         assert use_case.telemetry is telemetry
         assert use_case.paid_calls is telemetry.paid_calls
         assert telemetry.snapshot().gated == 1
+
+
+class TestTwoPhaseCycle:
+    """EXP-27: use case wystawia fazę bramki (`run_gate`) i fazę płatną
+    (`paid_phase`) na porty feedu podane dopiero po fazie 1 — DI buduje je
+    z klientem AV tylko dla symboli za bramką."""
+
+    def _big_move(self, market_port, repository_port, llm_port, ml_port) -> None:
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_last_price_snapshot.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("95.0"))  # -5%
+        llm_port.analyze.return_value = {
+            "trend_direction": "BEARISH",
+            "confidence_score": 0.7,
+            "target_price_12h": 94.0,
+            "reasoning": "r",
+        }
+        ml_port.predict.return_value = Money(Decimal("94.5"))
+        repository_port.save_prediction.return_value = "uuid-2p"
+
+    def test_flat_symbol_ends_in_the_gate_phase(
+        self, use_case, market_port, repository_port, sentiment_port
+    ):
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_last_price_snapshot.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+
+        outcome = use_case.run_gate("AAPL")
+
+        assert outcome.passed is False
+        assert outcome.state["status"] == "ignored"
+        sentiment_port.get_social_score.assert_not_called()
+
+    def test_paid_phase_uses_the_feeds_bound_after_the_gate(
+        self, use_case, market_port, repository_port, sentiment_port, news_port,
+        llm_port, ml_port,
+    ):
+        self._big_move(market_port, repository_port, llm_port, ml_port)
+        phase_two_sentiment = Mock(spec=SentimentPort)
+        phase_two_sentiment.get_social_score.return_value = {"av_sentiment_score": 0.1}
+        phase_two_news = Mock(spec=NewsPort)
+        phase_two_news.get_news_context.return_value = [{"title": "Headline"}]
+
+        outcome = use_case.run_gate("AAPL")
+        paid = use_case.paid_phase(sentiment_port=phase_two_sentiment, news_port=phase_two_news)
+        result = paid.run(outcome.state, peer_context=(("MSFT", "BULLISH"),))
+
+        assert outcome.passed is True
+        assert result["status"] == "saved"
+        phase_two_sentiment.get_social_score.assert_called_once_with("AAPL")
+        phase_two_news.get_news_context.assert_called_once_with("AAPL")
+        sentiment_port.get_social_score.assert_not_called()
+        news_port.get_news_context.assert_not_called()
+        # Contagion fazy 2: peery z werdyktami z tego cyklu trafiają do stanu.
+        assert result["peer_context"] == (("MSFT", "BULLISH"),)
+        # Jedna telemetria cyklu dla obu faz.
+        assert use_case.telemetry.snapshot().passed == 1
+        assert use_case.paid_calls["llm"] == 1
+
+    def test_gate_phase_compiles_once_for_the_whole_cycle(
+        self, use_case, market_port, repository_port, monkeypatch
+    ):
+        from src.application.use_cases import analyze_market as module
+
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_last_price_snapshot.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("100.0"))
+        compiled = []
+        real_factory = module.create_gate_graph
+
+        def counting_factory(deps):
+            compiled.append(deps)
+            return real_factory(deps)
+
+        monkeypatch.setattr(module, "create_gate_graph", counting_factory)
+
+        for symbol in ("AAPL", "MSFT", "NVDA"):
+            use_case.run_gate(symbol)
+
+        assert len(compiled) == 1

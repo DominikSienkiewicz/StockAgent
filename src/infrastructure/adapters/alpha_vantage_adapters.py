@@ -47,3 +47,22 @@ class AlphaVantageSentimentAdapter(SentimentPort):
         if reason is not None:
             payload = {**payload, "degraded_reason": reason}
         return payload
+
+
+class PhaseTwoOnlyFeed(SentimentPort, NewsPort):
+    """EXP-27: zaślepka feedu AV w deps cyklu dwufazowego.
+
+    Klient Alpha Vantage powstaje dopiero w fazie 2, z symbolami, które przeszły
+    bramkę; faza 1 nie woła feedu. Wywołanie zaślepki oznacza błąd orkiestracji,
+    więc rzuca — pusty feed wyglądałby jak spokojny dzień i trafiłby do predykcji."""
+
+    _MESSAGE = (
+        "EXP-27: the Alpha Vantage feed is bound in the paid phase of the two-phase "
+        "cycle — phase one must not call it"
+    )
+
+    def get_social_score(self, symbol: str) -> dict[str, Any]:
+        raise RuntimeError(f"{self._MESSAGE} (symbol {symbol})")
+
+    def get_news_context(self, symbol: str) -> list[dict[str, Any]]:
+        raise RuntimeError(f"{self._MESSAGE} (symbol {symbol})")

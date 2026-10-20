@@ -188,6 +188,10 @@ slow_loop_max_paid_llm_calls_per_week = 15
 # analizuje akcji — ceny stoją, a przebieg, snapshoty i mail byłyby zbędne. Krypto idzie
 # normalnie; bez krypto przebieg kończy się od razu, bez maila.
 nyse_closure_skip_enabled = true
+# EXP-27: cykl dwufazowy — faza 1 (darmowa cena, reflect, bramka) dla wszystkich symboli,
+# faza 2 buduje klienta Alpha Vantage tylko dla symboli za bramką i płaci za nie malejąco
+# po |Δ| (sufit FIN-12 odcina najmniejsze ruchy). Eksperyment do porównania z FIN-04. Off.
+two_phase_cycle_enabled = false
 # FIN-13: ledger kosztów — jeden wiersz `llm_calls` na request LLM / embeddingów
 # (tokeny, koszt, przebieg, węzeł, symbol; bez treści promptu), zapis batchem po
 # przebiegu Fast i Slow Loopa. UWAGA: włącz DOPIERO po migracji 040 (inaczej błąd

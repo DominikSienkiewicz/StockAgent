@@ -148,6 +148,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "slow_loop_max_paid_llm_calls_per_week",
     # FIN-34: dzień zamknięcia NYSE decyduje, CZY akcje idą do grafu, nie jak.
     "nyse_closure_skip_enabled",
+    # EXP-27: cykl dwufazowy zmienia kolejność analizy (malejące |Δ|) i to, kogo
+    # tnie sufit FIN-12 — płatna analiza symbolu jest ta sama co w cyklu jednofazowym.
+    "two_phase_cycle_enabled",
     # FIN-13: cennik wycenia tokeny w mailu i ledgerze, a flaga włącza sam zapis
     # `llm_calls` — żadne z nich nie zmienia prognozy.
     "llm_pricing",
@@ -580,6 +583,10 @@ class Settings(BaseSettings):
     # FIN-13: zapis ledgera `llm_calls` (migracja 040) batchem po przebiegu Fast
     # i Slow Loopa. Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
     cost_ledger_enabled: bool = False
+    # EXP-27: cykl dwufazowy — faza 1 (cena, reflect, bramka) dla wszystkich symboli,
+    # faza 2 (klient AV tylko dla symboli za bramką, płatna analiza malejąco po |Δ|).
+    # Eksperyment do porównania z FIN-04; off w kodzie i w config.toml.
+    two_phase_cycle_enabled: bool = False
     # ----- Database -----
     supabase_url: str
     supabase_key: str

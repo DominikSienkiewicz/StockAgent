@@ -17,14 +17,14 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from src.application.agent_graph import AgentGraphDeps
+from src.application.agent_graph import AgentGraphDeps, AgentState
 from src.application.alpha_signals import AlphaSignals
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.metering import MeteredLLMPort
@@ -91,7 +91,7 @@ from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
 from src.application.tools import build_research_tools
 from src.application.usage_ledger import UsageLedger
-from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
+from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidPhase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
 from src.application.use_cases.monitor_macro_risk import (
     MacroRiskReport,
@@ -117,7 +117,7 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
-from src.domain.finops import CycleCost, estimate_cycle_cost
+from src.domain.finops import CycleCost, estimate_cycle_cost, rank_by_magnitude
 from src.domain.hedge import equity_hedge_symbols
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
@@ -137,6 +137,7 @@ from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
 from src.infrastructure.adapters.alpha_vantage_adapters import (
     AlphaVantageNewsAdapter,
     AlphaVantageSentimentAdapter,
+    PhaseTwoOnlyFeed,
 )
 from src.infrastructure.adapters.alpha_vantage_client import NEWS_WINDOW, AlphaVantageClient
 from src.infrastructure.adapters.cached_fundamentals import (
@@ -1071,17 +1072,19 @@ def _production_paid_ports(
 
     Jeden `AlphaVantageClient` dla akcji i krypto: adapter wewnętrznie prefiksuje
     BTC → CRYPTO:BTC w requestach NEWS_SENTIMENT. FIN-13: każdy adapter LLM
-    i embeddingów zgłasza tokeny do `usage_sink` (ledger przebiegu)."""
-    av_client = AlphaVantageClient(
-        api_keys=settings.alpha_vantage_api_keys,
-        symbols=[*settings.symbols, *settings.crypto_symbols],
-        crypto_symbols=settings.crypto_symbols,
-        quota_monitor=quota_monitor,
-        # `news_volume_24h` ma liczyć ostatnie 24 h, nie „50 najnowszych".
-        news_window=NEWS_WINDOW,
-        # FIN-04: request AV tylko dla symbolu za bramką (FEATURE_SET_VERSION 3).
-        lazy_per_symbol=True,
-    )
+    i embeddingów zgłasza tokeny do `usage_sink` (ledger przebiegu). EXP-27: w cyklu
+    dwufazowym klient AV powstaje dopiero w fazie 2 (`build_phase_two_feeds`),
+    a deps grafu dostają zaślepkę `PhaseTwoOnlyFeed`."""
+    sentiment: SentimentPort
+    news: NewsPort
+    if settings.two_phase_cycle_enabled:
+        sentiment = news = PhaseTwoOnlyFeed()
+    else:
+        av_client = _alpha_vantage_client(
+            settings, [*settings.symbols, *settings.crypto_symbols], quota_monitor
+        )
+        sentiment = AlphaVantageSentimentAdapter(av_client)
+        news = AlphaVantageNewsAdapter(av_client)
     llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor, usage_sink=usage_sink)
     # FIN-02: każdy request persony, chairmana i rewizji liczy się u źródła.
     # Osobny obiekt niż `llm_port`, więc główna analiza nie liczy się podwójnie.
@@ -1094,8 +1097,8 @@ def _production_paid_ports(
     )
     return _PaidPorts(
         llm=llm_port,
-        sentiment=AlphaVantageSentimentAdapter(av_client),
-        news=AlphaVantageNewsAdapter(av_client),
+        sentiment=sentiment,
+        news=news,
         embedding=build_embedding_adapter(
             settings, quota_monitor=quota_monitor, usage_sink=usage_sink
         ),
@@ -1104,6 +1107,43 @@ def _production_paid_ports(
             settings, quota_monitor=quota_monitor, usage_sink=usage_sink
         ),
     )
+
+
+def _alpha_vantage_client(
+    settings: Settings, symbols: Sequence[str], quota_monitor: QuotaMonitor | None
+) -> AlphaVantageClient:
+    return AlphaVantageClient(
+        api_keys=settings.alpha_vantage_api_keys,
+        symbols=list(symbols),
+        crypto_symbols=settings.crypto_symbols,
+        quota_monitor=quota_monitor,
+        # `news_volume_24h` ma liczyć ostatnie 24 h, nie „50 najnowszych".
+        news_window=NEWS_WINDOW,
+        # FIN-04: request AV tylko dla symbolu za bramką (FEATURE_SET_VERSION 3).
+        lazy_per_symbol=True,
+    )
+
+
+# EXP-27: porty feedu fazy 2 dla symboli za bramką (w kolejności fazy 2).
+PhaseTwoFeeds = Callable[[Sequence[str]], tuple[SentimentPort, NewsPort]]
+
+
+def build_phase_two_feeds(
+    settings: Settings, quota_monitor: QuotaMonitor | None
+) -> PhaseTwoFeeds:
+    """EXP-27: fabryka feedu fazy 2 — `AlphaVantageClient` z samymi symbolami za
+    bramką, w trybie leniwym FIN-04: request idzie tylko dla symbolu, który
+    faktycznie dostaje analizę (odcięty sufitem FIN-12 nie kosztuje AV), a cechy
+    newsów liczą własny feed symbolu jak w cyklu jednofazowym (FEATURE_SET_VERSION 3).
+    FIN-35: bez `paid_calls_enabled` atrapy, bez klienta AV."""
+
+    def feeds(passed: Sequence[str]) -> tuple[SentimentPort, NewsPort]:
+        if not settings.paid_calls_enabled:
+            return LocalStubSentimentAdapter(), LocalStubNewsAdapter()
+        client = _alpha_vantage_client(settings, passed, quota_monitor)
+        return AlphaVantageSentimentAdapter(client), AlphaVantageNewsAdapter(client)
+
+    return feeds
 
 
 def _local_stub_ports() -> _PaidPorts:
@@ -1513,81 +1553,125 @@ def _process_one_symbol(
     dobierającego wagi. Off → `alpha_fusion=None` → prompt i cechy jak przed #14.
     """
     try:
-        asset = Asset(
-            symbol=symbol,
-            asset_type=_classify_asset(symbol, crypto_set, etf_set),
+        inputs = _symbol_inputs(
+            symbol,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+            earnings_gate_enabled=earnings_gate_enabled,
+            alpha_fusion_enabled=alpha_fusion_enabled,
         )
-        # #6: bramka earnings. Event pobieramy PRZED grafem, bo mnożnik progu
-        # musi być znany zanim graf zdecyduje o odpaleniu płatnych portów.
-        # Gdy kalendarz earnings jest wyłączony, nie ruszamy portu w ogóle.
-        earnings_event: EarningsEvent | None = None
-        earnings_multiplier = 1.0
-        if earnings_gate_enabled:
-            earnings_event = alpha_use_case.fetch_earnings(symbol)
-            if earnings_event is not None:
-                earnings_multiplier = earnings_threshold_multiplier(
-                    earnings_event.proximity()
-                )
-        # #14: enrichment biegnie PRZED grafem. Dawniej działał po nim, więc
-        # LLM i cechy XGBoost nigdy nie widziały sygnałów alfa — 5 pobieranych
-        # źródeł było render-only. Liczba płatnych wywołań się NIE zmienia:
-        # `enrich` i tak leciał raz na symbol, tylko później.
-        alpha_signal: AlphaSignals | None = None
-        alpha_fusion: AlphaFusionScore | None = None
-        if collect_alpha:
-            # De-dup: gdy bramka earnings pobrała już event, wstrzykujemy go,
-            # zamiast płacić za drugie wywołanie Alpha Vantage na ten sam symbol.
-            # Z wyłączoną bramką wołamy `enrich(symbol)` dokładnie jak dawniej.
-            prefetch: dict[str, Any] = (
-                {"earnings": earnings_event, "earnings_prefetched": True}
-                if earnings_gate_enabled
-                else {}
-            )
-            alpha_signal = alpha_use_case.enrich(symbol, **prefetch)
-            if alpha_fusion_enabled and alpha_signal is not None:
-                alpha_fusion = fuse_alpha_signals(
-                    insider=alpha_signal.insider,
-                    options=alpha_signal.options,
-                    social=alpha_signal.social,
-                    analyst=alpha_signal.analyst,
-                    earnings=alpha_signal.earnings,
-                )
-
         raw = use_case.run(
             symbol,
-            asset=asset,
+            asset=inputs.asset,
             regime_context=regime_context,
             regime_multiplier=regime_multiplier,
-            earnings_multiplier=earnings_multiplier,
-            alpha_fusion=alpha_fusion,
+            earnings_multiplier=inputs.earnings_multiplier,
+            alpha_fusion=inputs.alpha_fusion,
             peer_context=peer_ctx,
             # FIN-14: wiek referencji ceny liczy się od startu cyklu.
             now=cycle_at,
         )
-        logger.info(
-            "%s: status=%s delta=%s prediction_id=%s",
-            symbol,
-            raw.get("status"),
-            raw.get("delta"),
-            raw.get("prediction_id"),
-        )
-        sr = to_symbol_result(symbol, raw, now=cycle_at)
-        alpha_price: Decimal | None = None
-        if collect_alpha and sr.current_price is not None:
-            alpha_price = sr.current_price
-        return _ProcessedSymbol(sr, False, alpha_signal, alpha_price)
+        return _finished_symbol(symbol, raw, inputs.alpha_signal, collect_alpha, cycle_at)
     except Exception as exc:
-        logger.exception("Failed to process symbol %s", symbol)
-        return _ProcessedSymbol(
-            # BEZ-07: komunikat idzie do maila — ani URL z kluczem, ani dosłowna
-            # wartość sekretu z Settings (`secret_values`) nie może w nim zostać.
-            to_symbol_result(
-                symbol, None, error=redact_secrets(str(exc), secret_values)
-            ),
-            True,
-            None,
-            None,
+        return _failed_symbol(symbol, exc, secret_values)
+
+
+class _SymbolInputs(NamedTuple):
+    """Wejścia grafu liczone PRZED nim: klasa aktywa, mnożnik earnings, alfa."""
+
+    asset: Asset
+    earnings_multiplier: float
+    alpha_signal: AlphaSignals | None
+    alpha_fusion: AlphaFusionScore | None
+
+
+def _symbol_inputs(
+    symbol: str,
+    *,
+    crypto_set: set[str],
+    etf_set: set[str],
+    collect_alpha: bool,
+    alpha_use_case: AlphaEnrichmentUseCase,
+    earnings_gate_enabled: bool,
+    alpha_fusion_enabled: bool,
+) -> _SymbolInputs:
+    asset = Asset(
+        symbol=symbol,
+        asset_type=_classify_asset(symbol, crypto_set, etf_set),
+    )
+    # #6: bramka earnings. Event pobieramy PRZED grafem, bo mnożnik progu
+    # musi być znany zanim graf zdecyduje o odpaleniu płatnych portów.
+    # Gdy kalendarz earnings jest wyłączony, nie ruszamy portu w ogóle.
+    earnings_event: EarningsEvent | None = None
+    earnings_multiplier = 1.0
+    if earnings_gate_enabled:
+        earnings_event = alpha_use_case.fetch_earnings(symbol)
+        if earnings_event is not None:
+            earnings_multiplier = earnings_threshold_multiplier(
+                earnings_event.proximity()
+            )
+    # #14: enrichment biegnie PRZED grafem. Dawniej działał po nim, więc
+    # LLM i cechy XGBoost nigdy nie widziały sygnałów alfa — 5 pobieranych
+    # źródeł było render-only. Liczba płatnych wywołań się NIE zmienia:
+    # `enrich` i tak leciał raz na symbol, tylko później.
+    alpha_signal: AlphaSignals | None = None
+    alpha_fusion: AlphaFusionScore | None = None
+    if collect_alpha:
+        # De-dup: gdy bramka earnings pobrała już event, wstrzykujemy go,
+        # zamiast płacić za drugie wywołanie Alpha Vantage na ten sam symbol.
+        # Z wyłączoną bramką wołamy `enrich(symbol)` dokładnie jak dawniej.
+        prefetch: dict[str, Any] = (
+            {"earnings": earnings_event, "earnings_prefetched": True}
+            if earnings_gate_enabled
+            else {}
         )
+        alpha_signal = alpha_use_case.enrich(symbol, **prefetch)
+        if alpha_fusion_enabled and alpha_signal is not None:
+            alpha_fusion = fuse_alpha_signals(
+                insider=alpha_signal.insider,
+                options=alpha_signal.options,
+                social=alpha_signal.social,
+                analyst=alpha_signal.analyst,
+                earnings=alpha_signal.earnings,
+            )
+    return _SymbolInputs(asset, earnings_multiplier, alpha_signal, alpha_fusion)
+
+
+def _finished_symbol(
+    symbol: str,
+    raw: dict[str, Any],
+    alpha_signal: AlphaSignals | None,
+    collect_alpha: bool,
+    cycle_at: datetime | None,
+) -> _ProcessedSymbol:
+    logger.info(
+        "%s: status=%s delta=%s prediction_id=%s",
+        symbol,
+        raw.get("status"),
+        raw.get("delta"),
+        raw.get("prediction_id"),
+    )
+    sr = to_symbol_result(symbol, raw, now=cycle_at)
+    alpha_price: Decimal | None = None
+    if collect_alpha and sr.current_price is not None:
+        alpha_price = sr.current_price
+    return _ProcessedSymbol(sr, False, alpha_signal, alpha_price)
+
+
+def _failed_symbol(
+    symbol: str, exc: Exception, secret_values: tuple[str, ...]
+) -> _ProcessedSymbol:
+    logger.exception("Failed to process symbol %s", symbol)
+    return _ProcessedSymbol(
+        # BEZ-07: komunikat idzie do maila — ani URL z kluczem, ani dosłowna
+        # wartość sekretu z Settings (`secret_values`) nie może w nim zostać.
+        to_symbol_result(symbol, None, error=redact_secrets(str(exc), secret_values)),
+        True,
+        None,
+        None,
+    )
 
 
 def _analyze_symbols_parallel(
@@ -1704,6 +1788,227 @@ def _analyze_symbols_sequential(
     return results, failures, alpha_signals, alpha_prices
 
 
+class _GatedSymbol(NamedTuple):
+    """EXP-27: symbol po fazie 1 — skończony (`done`) albo czekający na fazę 2."""
+
+    symbol: str
+    done: _ProcessedSymbol | None
+    state: AgentState | None
+    alpha_signal: AlphaSignals | None
+
+
+def _gate_one_symbol(
+    symbol: str,
+    *,
+    use_case: AnalyzeMarketUseCase,
+    crypto_set: set[str],
+    etf_set: set[str],
+    regime_context: str,
+    regime_multiplier: float,
+    collect_alpha: bool,
+    alpha_use_case: AlphaEnrichmentUseCase,
+    earnings_gate_enabled: bool,
+    alpha_fusion_enabled: bool,
+    cycle_at: datetime | None,
+    secret_values: tuple[str, ...],
+) -> _GatedSymbol:
+    """EXP-27 faza 1 jednego symbolu: te same wejścia co `_process_one_symbol`
+    (earnings, alfa) i graf bramki. NIGDY nie rzuca — błąd to wynik `is_failure`."""
+    try:
+        inputs = _symbol_inputs(
+            symbol,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+            earnings_gate_enabled=earnings_gate_enabled,
+            alpha_fusion_enabled=alpha_fusion_enabled,
+        )
+        outcome = use_case.run_gate(
+            symbol,
+            asset=inputs.asset,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            earnings_multiplier=inputs.earnings_multiplier,
+            alpha_fusion=inputs.alpha_fusion,
+            now=cycle_at,
+        )
+        if outcome.passed:
+            return _GatedSymbol(symbol, None, outcome.state, inputs.alpha_signal)
+        done = _finished_symbol(
+            symbol, dict(outcome.state), inputs.alpha_signal, collect_alpha, cycle_at
+        )
+        return _GatedSymbol(symbol, done, None, inputs.alpha_signal)
+    except Exception as exc:
+        return _GatedSymbol(symbol, _failed_symbol(symbol, exc, secret_values), None, None)
+
+
+def _analyze_gated_symbol(
+    gated: _GatedSymbol,
+    *,
+    paid_phase: PaidPhase,
+    peer_ctx: tuple[tuple[str, str], ...],
+    collect_alpha: bool,
+    cycle_at: datetime | None,
+    secret_values: tuple[str, ...],
+) -> _ProcessedSymbol:
+    """EXP-27 faza 2 jednego symbolu za bramką. NIGDY nie rzuca."""
+    assert gated.state is not None, "faza 2 dostaje tylko symbole za bramką"
+    try:
+        raw = paid_phase.run(gated.state, peer_context=peer_ctx)
+        return _finished_symbol(gated.symbol, raw, gated.alpha_signal, collect_alpha, cycle_at)
+    except Exception as exc:
+        return _failed_symbol(gated.symbol, exc, secret_values)
+
+
+def _parallel_paths(settings: Settings) -> bool:
+    """Równolegle tylko przy concurrency > 1 i bez contagion (#5 zależy od kolejności)."""
+    return settings.symbol_concurrency > 1 and not settings.contagion_enabled
+
+
+def _run_paid_phase(
+    order: list[str],
+    gated: Mapping[str, _GatedSymbol],
+    *,
+    paid_phase: PaidPhase,
+    settings: Settings,
+    collect_alpha: bool,
+    cycle_at: datetime | None,
+    secret_values: tuple[str, ...],
+) -> dict[str, _ProcessedSymbol]:
+    """EXP-27 faza 2 w kolejności `order` (malejące |Δ|). Równolegle jak cykl
+    jednofazowy (pula startuje symbole w tej kolejności); sekwencyjnie z contagion
+    liczonym z werdyktów wcześniejszych symboli fazy 2 i throttle między nimi."""
+    if _parallel_paths(settings):
+        with ThreadPoolExecutor(max_workers=settings.symbol_concurrency) as executor:
+            processed = list(
+                executor.map(
+                    lambda sym: _analyze_gated_symbol(
+                        gated[sym],
+                        paid_phase=paid_phase,
+                        peer_ctx=(),
+                        collect_alpha=collect_alpha,
+                        cycle_at=cycle_at,
+                        secret_values=secret_values,
+                    ),
+                    order,
+                )
+            )
+        return dict(zip(order, processed, strict=True))
+
+    results: dict[str, _ProcessedSymbol] = {}
+    processed_stances: dict[str, str] = {}
+    for index, symbol in enumerate(order):
+        peer_ctx = (
+            build_peer_context(symbol, settings.peer_groups, processed_stances)
+            if settings.contagion_enabled
+            else ()
+        )
+        proc = _analyze_gated_symbol(
+            gated[symbol],
+            paid_phase=paid_phase,
+            peer_ctx=peer_ctx,
+            collect_alpha=collect_alpha,
+            cycle_at=cycle_at,
+            secret_values=secret_values,
+        )
+        results[symbol] = proc
+        if not proc.is_failure and proc.result.trend:
+            processed_stances[symbol] = proc.result.trend
+        # Throttle MIĘDZY płatnymi symbolami — chroni OpenAI TPM.
+        if settings.symbol_throttle_seconds > 0 and index < len(order) - 1:
+            time.sleep(settings.symbol_throttle_seconds)
+    return results
+
+
+def _analyze_symbols_two_phase(
+    eligible: list[str],
+    *,
+    use_case: AnalyzeMarketUseCase,
+    settings: Settings,
+    crypto_set: set[str],
+    etf_set: set[str],
+    regime_context: str,
+    regime_multiplier: float,
+    collect_alpha: bool,
+    alpha_use_case: AlphaEnrichmentUseCase,
+    phase_two_feeds: PhaseTwoFeeds,
+    cycle_at: datetime | None,
+    secret_values: tuple[str, ...],
+) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
+    """EXP-27: cykl dwufazowy. Faza 1 (wszystkie symbole): cena, reflect, bramka
+    domenowa; symbol pod progiem kończy jak dziś. Faza 2: feed AV zbudowany dla
+    symboli za bramką i płatna analiza w kolejności `rank_by_magnitude`, więc
+    sufit FIN-12 odcina najmniejsze |Δ|. Wyniki w kolejności `eligible`."""
+
+    def gate(symbol: str) -> _GatedSymbol:
+        return _gate_one_symbol(
+            symbol,
+            use_case=use_case,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+            earnings_gate_enabled=settings.earnings_calendar_enabled,
+            alpha_fusion_enabled=settings.alpha_fusion_enabled,
+            cycle_at=cycle_at,
+            secret_values=secret_values,
+        )
+
+    # Faza 1 nie zależy od kolejności (contagion żyje w fazie 2), więc idzie
+    # równolegle przy każdym concurrency > 1.
+    if settings.symbol_concurrency > 1:
+        with ThreadPoolExecutor(max_workers=settings.symbol_concurrency) as executor:
+            gated_list = list(executor.map(gate, eligible))
+    else:
+        gated_list = [gate(symbol) for symbol in eligible]
+
+    processed = {g.symbol: g.done for g in gated_list if g.done is not None}
+    passed = {g.symbol: g for g in gated_list if g.state is not None}
+    order = rank_by_magnitude(
+        {symbol: g.state["delta"] for symbol, g in passed.items() if g.state is not None}
+    )
+    logger.info(
+        "EXP-27 two-phase cycle: %d/%d symbols past the gate, paid phase by |Δ|: %s",
+        len(order),
+        len(eligible),
+        order,
+    )
+    if order:
+        sentiment_port, news_port = phase_two_feeds(order)
+        processed.update(
+            _run_paid_phase(
+                order,
+                passed,
+                paid_phase=use_case.paid_phase(
+                    sentiment_port=sentiment_port, news_port=news_port
+                ),
+                settings=settings,
+                collect_alpha=collect_alpha,
+                cycle_at=cycle_at,
+                secret_values=secret_values,
+            )
+        )
+
+    ordered = [processed[symbol] for symbol in eligible]
+    return (
+        [p.result for p in ordered],
+        sum(1 for p in ordered if p.is_failure),
+        {
+            s: p.alpha_signal
+            for s, p in zip(eligible, ordered, strict=True)
+            if p.alpha_signal is not None
+        },
+        {
+            s: p.alpha_price
+            for s, p in zip(eligible, ordered, strict=True)
+            if p.alpha_price is not None
+        },
+    )
+
+
 def _analyze_symbols(
     eligible: list[str],
     *,
@@ -1716,10 +2021,27 @@ def _analyze_symbols(
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
     cycle_at: datetime | None = None,
+    phase_two_feeds: PhaseTwoFeeds | None = None,
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
-    """Dispatcher: wybiera ścieżkę równoległą lub sekwencyjną.
+    """Dispatcher: wybiera ścieżkę równoległą lub sekwencyjną; z `phase_two_feeds`
+    (EXP-27, `two_phase_cycle_enabled`) cykl dwufazowy.
     Zwraca (wyniki, liczba_błędów, alpha_signals, alpha_prices)."""
     secret_values = settings.secret_values()
+    if phase_two_feeds is not None:
+        return _analyze_symbols_two_phase(
+            eligible,
+            use_case=use_case,
+            settings=settings,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+            phase_two_feeds=phase_two_feeds,
+            cycle_at=cycle_at,
+            secret_values=secret_values,
+        )
     # Ścieżka równoległa: tylko gdy concurrency > 1 ORAZ contagion off (contagion
     # #5 zależy od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
     if settings.symbol_concurrency > 1 and not settings.contagion_enabled:
@@ -2656,6 +2978,12 @@ def main(
         # ARCH-26: odznaki proweniencji liczą wiek danych od startu cyklu —
         # tego samego zegara, który mail drukuje w nagłówku.
         cycle_at=started_at,
+        # EXP-27: cykl dwufazowy tylko za flagą; None = cykl jednofazowy jak dotąd.
+        phase_two_feeds=(
+            build_phase_two_feeds(settings, quota_monitor)
+            if settings.two_phase_cycle_enabled
+            else None
+        ),
     )
     results.extend(loop_results)
 

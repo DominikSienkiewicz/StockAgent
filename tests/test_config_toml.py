@@ -374,3 +374,9 @@ def test_settings_read_the_price_list_from_config_toml(monkeypatch: pytest.Monke
     assert table["claude-sonnet-4-6"].cache_write_usd_per_mtok == pytest.approx(3.75)
     assert table["gpt-5-mini"].cache_write_usd_per_mtok is None
     assert table["text-embedding-3-small"].output_usd_per_mtok is None
+
+
+def test_real_config_toml_ships_the_two_phase_cycle_off() -> None:
+    """EXP-27 (decyzja 2026-10-20): eksperyment za flagą, domyślnie wyłączony."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["two_phase_cycle_enabled"] is False

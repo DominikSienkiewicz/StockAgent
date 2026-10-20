@@ -788,21 +788,26 @@ def _budget_exhausted(deps: AgentGraphDeps, symbol: str) -> bool:
     return True
 
 
-def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
-    threshold = deps.threshold
-    crypto_threshold = deps.crypto_threshold
+@dataclasses.dataclass(frozen=True)
+class _GateVerdict:
+    """Werdykt domenowej bramki volatility dla symbolu (bez sufitu budżetu)."""
+
+    passes: bool
+    stale: bool
+    threshold: Threshold
+    asset: Asset
+
+
+def _volatility_verdict(deps: AgentGraphDeps, state: AgentState) -> _GateVerdict:
     asset = state.get("asset") or Asset(symbol=state["symbol"])
     delta = PriceDelta(state["delta"])
-    chosen = _pick_threshold(state, threshold, crypto_threshold)
+    chosen = _pick_threshold(state, deps.threshold, deps.crypto_threshold)
     stale = _reference_is_stale(state)
     passes = asset.evaluate_volatility(delta, chosen, reference_stale=stale)
-    over_budget = passes and _budget_exhausted(deps, state["symbol"])
-    if over_budget:
-        decision = "budget_exhausted"
-        deps.telemetry.record_gate(state["symbol"], False, "budget_exhausted")
-    else:
-        decision = "analyze" if passes else "ignore"
-        deps.telemetry.record_gate(state["symbol"], passes, _gate_reason(passes, stale))
+    return _GateVerdict(passes=passes, stale=stale, threshold=chosen, asset=asset)
+
+
+def _log_gate_decision(state: AgentState, verdict: _GateVerdict, decision: str) -> None:
     # #13: decyzja bramki volatility musi być widoczna w logach — bez tego
     # nie dało się odróżnić zamierzonego "ignore" (FinOps) od cichego buga.
     logger.info(
@@ -810,14 +815,59 @@ def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
         "stale_reference=%s → %s",
         state["symbol"],
         abs(float(state["delta"])),
-        float(chosen.value),
-        asset.asset_type.value,
-        stale,
+        float(verdict.threshold.value),
+        verdict.asset.asset_type.value,
+        verdict.stale,
         decision,
     )
+
+
+def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
+    verdict = _volatility_verdict(deps, state)
+    passes = verdict.passes
+    over_budget = passes and _budget_exhausted(deps, state["symbol"])
+    if over_budget:
+        decision = "budget_exhausted"
+        deps.telemetry.record_gate(state["symbol"], False, "budget_exhausted")
+    else:
+        decision = "analyze" if passes else "ignore"
+        deps.telemetry.record_gate(
+            state["symbol"], passes, _gate_reason(passes, verdict.stale)
+        )
+    _log_gate_decision(state, verdict, decision)
     if over_budget:
         return "budget_exhausted"
     return "analyze_sentiment" if passes else "ignore"
+
+
+# EXP-27: wynik bramki fazy 1 dla symbolu, który czeka na fazę płatną.
+GATE_PASSED = "paid_phase"
+
+
+def _gate_phase_route(deps: AgentGraphDeps, state: AgentState) -> str:
+    """EXP-27 faza 1: sama bramka domenowa, bez sufitu budżetu. Symbol pod progiem
+    kończy w `ignore` jak dziś; symbol za bramką kończy fazę 1 bez terminala
+    (bez snapshotu) — o analizie albo cięciu budżetem decyduje faza 2, więc
+    dopiero ona zapisuje decyzję w telemetrii (jedna decyzja na symbol)."""
+    verdict = _volatility_verdict(deps, state)
+    if not verdict.passes:
+        deps.telemetry.record_gate(state["symbol"], False, _gate_reason(False, verdict.stale))
+        _log_gate_decision(state, verdict, "ignore")
+        return "ignore"
+    _log_gate_decision(state, verdict, GATE_PASSED)
+    return GATE_PASSED
+
+
+def _paid_phase_route(deps: AgentGraphDeps, state: AgentState) -> str:
+    """EXP-27 faza 2: sufit płatnych wywołań LLM cyklu (FIN-12) sprawdzany przed
+    płatną częścią symbolu. DI podaje symbole malejąco po |Δ|, więc sufit odcina
+    najmniejsze ruchy, a nie ostatnie w kolejności z config.toml."""
+    symbol = state["symbol"]
+    if _budget_exhausted(deps, symbol):
+        deps.telemetry.record_gate(symbol, False, "budget_exhausted")
+        return "budget_exhausted"
+    deps.telemetry.record_gate(symbol, True, _gate_reason(True, stale=False))
+    return "analyze_sentiment"
 
 
 
@@ -1686,5 +1736,66 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     workflow.add_edge("ignore", END)
     workflow.add_edge("budget_exhausted", END)
 
+    return workflow
+
+
+def create_gate_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
+    """EXP-27 faza 1 cyklu dwufazowego — darmowa część grafu dla KAŻDEGO symbolu:
+
+        check_price → reflect → [fetch_fundamentals] → [delta ≥ threshold?]
+                                                          ├── nie → ignore → END
+                                                          └── tak → END (czeka na fazę 2)
+
+    `reflect` zostaje przed bramką (Self-Reflection), łącznie z płatną diagnozą
+    pomyłki pod tą samą bramką. Symbol za bramką kończy bez snapshotu ceny: zapisze
+    go terminal fazy 2 (`save`), a symbol odcięty sufitem zostaje bez snapshotu
+    jak w FIN-12. Stan końcowy jest wejściem `create_paid_graph`."""
+    workflow = StateGraph[AgentState](state_schema=AgentState)
+    workflow.add_node("check_price", lambda s: _check_price_node(deps, s))
+    workflow.add_node("reflect", lambda s: _reflect_node(deps, s))
+    workflow.add_node("ignore", lambda s: _ignore_node(deps, s))
+    workflow.set_entry_point("check_price")
+    workflow.add_edge("check_price", "reflect")
+    gate_source = "reflect"
+    if deps.fundamentals_port is not None:
+        fetch_fundamentals = _build_fetch_fundamentals_node(deps.fundamentals_port)
+        workflow.add_node("fetch_fundamentals", lambda s: fetch_fundamentals(s))
+        workflow.add_edge("reflect", "fetch_fundamentals")
+        gate_source = "fetch_fundamentals"
+    workflow.add_conditional_edges(
+        gate_source,
+        lambda s: _gate_phase_route(deps, s),
+        {"ignore": "ignore", GATE_PASSED: END},
+    )
+    workflow.add_edge("ignore", END)
+    return workflow
+
+
+def create_paid_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
+    """EXP-27 faza 2 — płatna część grafu dla symbolu za bramką, od stanu fazy 1:
+
+        [budżet cyklu?] ├── wyczerpany → budget_exhausted → END
+                        └── jest → analyze_sentiment → fetch_news → predict
+                                   → council → save → END
+
+    Te same węzły co w `create_agent_graph`; DI podaje tu porty feedu klienta AV
+    zbudowanego tylko dla symboli za bramką."""
+    workflow = StateGraph[AgentState](state_schema=AgentState)
+    workflow.add_node("analyze_sentiment", lambda s: _analyze_sentiment_node(deps, s))
+    workflow.add_node("fetch_news", lambda s: _fetch_news_node(deps, s))
+    workflow.add_node("predict", lambda s: _predict_node(deps, s))
+    workflow.add_node("council", lambda s: _council_node(deps, s))
+    workflow.add_node("save", lambda s: _save_node(deps, s))
+    workflow.add_node("budget_exhausted", lambda s: _budget_exhausted_node(deps, s))
+    workflow.set_conditional_entry_point(
+        lambda s: _paid_phase_route(deps, s),
+        {"analyze_sentiment": "analyze_sentiment", "budget_exhausted": "budget_exhausted"},
+    )
+    workflow.add_edge("analyze_sentiment", "fetch_news")
+    workflow.add_edge("fetch_news", "predict")
+    workflow.add_edge("predict", "council")
+    workflow.add_edge("council", "save")
+    workflow.add_edge("save", END)
+    workflow.add_edge("budget_exhausted", END)
     return workflow
 

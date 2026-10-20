@@ -4147,3 +4147,144 @@ class TestUsageAttribution:
             ("embedding", "predict"),
             ("embedding", "save"),
         ]
+
+
+class TestTwoPhaseGraphs:
+    """EXP-27: cykl dwufazowy dzieli graf na fazę bramki (cena, reflect, fundamenty
+    z cache, bramka domenowa) i fazę płatną (sentyment, newsy, predykcja, rada,
+    zapis). Graf jednofazowy `create_agent_graph` zostaje bez zmian."""
+
+    def _deps(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        **extra,
+    ) -> AgentGraphDeps:
+        return AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            **extra,
+        )
+
+    def test_symbol_below_the_gate_ends_in_phase_one_with_a_snapshot(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.agent_graph import create_gate_graph
+
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "ignored"
+        repository_port.save_price_snapshot.assert_called_once()
+        sentiment_port.get_social_score.assert_not_called()
+        news_port.get_news_context.assert_not_called()
+        metrics = deps.telemetry.snapshot()
+        assert (metrics.gated, metrics.passed) == (1, 0)
+        assert dict(metrics.gate_reasons) == {"below_threshold": 1}
+
+    def test_symbol_past_the_gate_stops_before_any_paid_feed(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.agent_graph import create_gate_graph
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert "status" not in final
+        assert final["delta"] == Decimal("-0.1")
+        # Self-Reflection przed bramką: rozliczenie i płatna diagnoza już w fazie 1.
+        repository_port.update_prediction_accuracy.assert_called_once()
+        llm_port.analyze_mistake.assert_called_once()
+        # Bez terminala fazy 1 nie ma snapshotu — zapisze go faza 2.
+        repository_port.save_price_snapshot.assert_not_called()
+        sentiment_port.get_social_score.assert_not_called()
+        llm_port.analyze.assert_not_called()
+        # Decyzję o płatnej analizie (albo cięciu budżetem) zapisze faza 2.
+        assert deps.telemetry.snapshot().passed == 0
+
+    def test_gate_phase_reads_cached_fundamentals_before_the_gate(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.agent_graph import create_gate_graph
+        from src.application.ports import FundamentalsPort
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        fundamentals_port = Mock(spec=FundamentalsPort)
+        fundamentals_port.get_fundamentals.return_value = None
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            fundamentals_port=fundamentals_port,
+        )
+
+        from src.domain.asset import Asset
+
+        # DI klasyfikuje aktywo przed grafem — węzeł fundamentów go wymaga.
+        state = {**_initial_state("100.0"), "asset": Asset(symbol="AAPL")}
+        final = create_gate_graph(deps).compile().invoke(state)
+
+        fundamentals_port.get_fundamentals.assert_called_once_with("AAPL")
+        assert "status" not in final
+        assert "valuation_verdict" in final
+
+    def test_paid_phase_finishes_the_symbol_from_the_gate_state(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.agent_graph import create_gate_graph, create_paid_graph
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        gate_state = create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        final = create_paid_graph(deps).compile().invoke(gate_state)
+
+        assert final["status"] == "saved"
+        sentiment_port.get_social_score.assert_called_once_with("AAPL")
+        news_port.get_news_context.assert_called_once_with("AAPL")
+        repository_port.save_price_snapshot.assert_called_once()
+        # Lekcja z reflect fazy 1 dociera do promptu predykcji fazy 2.
+        assert "Zignorowałem szerszy kontekst makro." in llm_port.analyze.call_args.args[0]
+        metrics = deps.telemetry.snapshot()
+        assert (metrics.gated, metrics.passed) == (0, 1)
+        assert dict(metrics.gate_reasons) == {"above_threshold": 1}
+
+    def test_paid_phase_over_budget_ends_without_a_snapshot(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.agent_graph import create_gate_graph, create_paid_graph
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=1,
+        )
+        deps.telemetry.record_paid_call("llm")
+        gate_state = create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        final = create_paid_graph(deps).compile().invoke(gate_state)
+
+        assert final["status"] == "ignored"
+        assert final["budget_exhausted"] is True
+        repository_port.save_price_snapshot.assert_not_called()
+        sentiment_port.get_social_score.assert_not_called()
+        assert dict(deps.telemetry.snapshot().gate_reasons) == {"budget_exhausted": 1}
