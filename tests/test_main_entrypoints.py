@@ -2136,6 +2136,20 @@ class TestAlphaVantageNewsWindowWiring:
 
         assert client_cls.call_args.kwargs["news_window"] == timedelta(hours=24)
 
+    def test_build_use_case_fetches_news_lazily_per_symbol(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # FIN-04: symbol pod bramką volatility nie pociąga requestu AV za innych.
+        from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
+
+        client_cls = mocker.patch(
+            "main_agent.AlphaVantageClient", wraps=AlphaVantageClient
+        )
+
+        main_agent.build_use_case(settings)
+
+        assert client_cls.call_args.kwargs["lazy_per_symbol"] is True
+
 
 class TestAlphaVantageBudgetBanner:
     """FIN-32: najgorszy przypadek doby AV ponad pojemność kluczy to WARNING w bannerze

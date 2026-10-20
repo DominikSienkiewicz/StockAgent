@@ -2967,8 +2967,8 @@ class TestFeatureSetVersionStamp:
 
         record = self._record(ports, repository_port, enabled=True)
 
-        # Okno newsów 24 h (3738ef2) zmieniło znaczenie `news_volume_24h` → wersja 2.
-        assert record["feature_set_version"] == FEATURE_SET_VERSION == 2
+        # Okno newsów 24 h (3738ef2) → wersja 2; feed leniwy per symbol (FIN-04) → 3.
+        assert record["feature_set_version"] == FEATURE_SET_VERSION == 3
 
 
 # ---------------------------------------------------------------------------

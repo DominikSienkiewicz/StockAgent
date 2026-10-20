@@ -1019,7 +1019,8 @@ def build_use_case(
 
     SYMBOLS przekazujemy do AlphaVantageClient jako sumę akcji + krypto,
     z osobną listą crypto_symbols → adapter wewnętrznie prefiksuje BTC →
-    CRYPTO:BTC w requestach NEWS_SENTIMENT.
+    CRYPTO:BTC w requestach NEWS_SENTIMENT. Klient działa leniwie per symbol
+    (FIN-04): symbol pod bramką volatility nie kosztuje żadnego requestu AV.
 
     `run_context` (MAIL-42) wchodzi do przepisu predykcji (WIA-20); brak = run
     lokalny.
@@ -1032,6 +1033,8 @@ def build_use_case(
         quota_monitor=quota_monitor,
         # `news_volume_24h` ma liczyć ostatnie 24 h, nie „50 najnowszych".
         news_window=NEWS_WINDOW,
+        # FIN-04: request AV tylko dla symbolu za bramką (FEATURE_SET_VERSION 3).
+        lazy_per_symbol=True,
     )
     llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor)
     # ARCH-11: jedna telemetria na cykl — dostają ją graf i licznik requestów rady.
