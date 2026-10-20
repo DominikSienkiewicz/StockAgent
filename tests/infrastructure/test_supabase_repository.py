@@ -2579,3 +2579,63 @@ class TestSaveLLMCalls:
         repo.save_llm_calls([])
 
         mock_client.table.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# NIEZ-29: save_cycle_run — historia przebiegów `cycle_runs` (migracja 041)
+# ---------------------------------------------------------------------------
+
+
+class TestSaveCycleRun:
+    @staticmethod
+    def _run(**overrides: Any) -> Any:
+        from src.application.ports import CycleRun
+
+        fields: dict[str, Any] = {
+            "loop": "fast",
+            "run_id": "18324",
+            "run_attempt": 2,
+            "started_at": datetime(2026, 10, 20, 5, 30, tzinfo=UTC),
+            "duration_s": 312.5,
+            "eligible": 40,
+            "saved": 6,
+            "failures": 1,
+            "paid_calls": {"llm": 7, "council_llm": 48},
+            "report_delivered": True,
+        }
+        fields.update(overrides)
+        return CycleRun(**fields)
+
+    def test_inserts_one_row_with_the_run_identity_and_counts(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_cycle_run(self._run())
+
+        mock_client.table.assert_called_once_with("cycle_runs")
+        insert = mock_client.table.return_value.insert
+        insert.assert_called_once()
+        assert insert.call_args.args[0] == {
+            "loop": "fast",
+            "run_id": "18324",
+            "run_attempt": 2,
+            "started_at": "2026-10-20T05:30:00+00:00",
+            "duration_s": 312.5,
+            "eligible": 40,
+            "saved": 6,
+            "failures": 1,
+            "paid_calls": {"llm": 7, "council_llm": 48},
+            "report_delivered": True,
+        }
+        insert.return_value.execute.assert_called_once()
+
+    def test_local_run_without_attempt_or_email_keeps_nulls(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_cycle_run(self._run(run_id="local", run_attempt=None, report_delivered=None))
+
+        row = mock_client.table.return_value.insert.call_args.args[0]
+        assert (row["run_id"], row["run_attempt"], row["report_delivered"]) == (
+            "local",
+            None,
+            None,
+        )

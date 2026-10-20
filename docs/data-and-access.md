@@ -33,6 +33,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `regime_history` | `033` | Model output: market regime per cycle | on, no policies | Fast Loop | Fast Loop (regime hysteresis) |
 | `fx_rates` | `036` | Market data: NBP exchange-rate cache | on, no policies | Fast Loop | Fast Loop |
 | `llm_calls` | `040` | Operational: one row per LLM or embedding request (tokens, cost, run, node, symbol), no prompt text | on, no policies | Fast Loop, Slow Loop (`cost_ledger_enabled`) | nobody in the app yet |
+| `cycle_runs` | `041` | Operational: one row per loop run (run id and attempt, start, duration, symbol counts, paid calls per source, email delivered), no symbols | on, no policies | Fast Loop (`cycle_runs_enabled`) | nobody in the app yet |
 
 The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges):
 

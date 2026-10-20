@@ -156,6 +156,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "llm_pricing",
     "llm_pricing_as_of",
     "cost_ledger_enabled",
+    # NIEZ-29: sam zapis historii przebiegów `cycle_runs` — prognoza ta sama.
+    "cycle_runs_enabled",
 })
 
 # WIA-20: pola przepisu — progi, modele, providerzy, symbole, źródła danych
@@ -583,6 +585,10 @@ class Settings(BaseSettings):
     # FIN-13: zapis ledgera `llm_calls` (migracja 040) batchem po przebiegu Fast
     # i Slow Loopa. Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
     cost_ledger_enabled: bool = False
+    # NIEZ-29: wiersz `cycle_runs` (migracja 041) na końcu cyklu Fast Loopa: run_id
+    # (ten sam co w `llm_calls`), próba runu, liczby cyklu, płatne wywołania i stan
+    # maila. Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
+    cycle_runs_enabled: bool = False
     # EXP-27: cykl dwufazowy — faza 1 (cena, reflect, bramka) dla wszystkich symboli,
     # faza 2 (klient AV tylko dla symboli za bramką, płatna analiza malejąco po |Δ|).
     # Eksperyment do porównania z FIN-04; off w kodzie i w config.toml.

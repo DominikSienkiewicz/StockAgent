@@ -65,6 +65,7 @@ MIGRATION_FILES = [
     "038_enable_rls.sql",
     "039_feature_store_av_degraded_rows.sql",
     "040_llm_calls.sql",
+    "041_cycle_runs.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1122,6 +1123,50 @@ class TestMigrations:
                 "output_tokens) VALUES ('LC_NEG', 'predict', 'anthropic', 'c', -1, 0)"
             )
 
+    # -- Migracja 041: historia przebiegów pętli (NIEZ-29) ---------------------
+
+    def test_cycle_runs_holds_the_run_identity_and_counts(self, pg_conn) -> None:
+        """Jeden wiersz na przebieg: tożsamość runu (łączy się z `llm_calls` po
+        `run_id`), liczby cyklu i stan maila — bez symboli i treści raportu."""
+        assert _columns(pg_conn, "cycle_runs") == {
+            "id",
+            "loop",
+            "run_id",
+            "run_attempt",
+            "started_at",
+            "duration_s",
+            "eligible",
+            "saved",
+            "failures",
+            "paid_calls",
+            "report_delivered",
+            "created_at",
+        }
+
+    def test_cycle_runs_is_indexed_by_started_at(self, pg_conn) -> None:
+        assert "idx_cycle_runs_started_at" in _indexes(pg_conn, "cycle_runs")
+
+    def test_cycle_runs_accepts_a_local_run_without_attempt_or_email(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO cycle_runs (loop, run_id, started_at, duration_s, eligible, "
+                "saved, failures) VALUES ('fast', 'local', NOW(), 12.5, 3, 1, 0) "
+                "RETURNING run_attempt, report_delivered, paid_calls, created_at IS NOT NULL"
+            )
+            assert cur.fetchone() == (None, None, {}, True)
+
+    def test_cycle_runs_rejects_an_unknown_loop_and_negative_counts(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO cycle_runs (loop, run_id, started_at, duration_s, eligible, "
+                "saved, failures) VALUES ('nightly', 'CR_BAD', NOW(), 1, 1, 0, 0)"
+            )
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO cycle_runs (loop, run_id, started_at, duration_s, eligible, "
+                "saved, failures) VALUES ('fast', 'CR_NEG', NOW(), 1, 1, -1, 0)"
+            )
+
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 
     def test_every_public_table_has_row_level_security(self, pg_conn) -> None:
@@ -1487,6 +1532,34 @@ class TestSupabaseRoleEmulation:
             _set_role(cur, "anon")
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 cur.execute("SELECT 1 FROM llm_calls LIMIT 1")
+
+    def test_cycle_runs_is_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        """NIEZ-29: nowa tabela po 038 — RLS włączony w 041, anon i authenticated bez
+        prawa, a service_role (Fast Loop) zapisuje przebieg i czyta historię."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'cycle_runs'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [_has_table_privilege(cur, role, "cycle_runs") for role in PUBLIC_API_ROLES]
+
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO cycle_runs (loop, run_id, run_attempt, started_at, duration_s, "
+                "eligible, saved, failures, paid_calls, report_delivered) VALUES "
+                "('fast', 'CR_SR', 1, NOW(), 312.5, 40, 6, 1, "
+                "'{\"llm\": 7, \"council_llm\": 48}', true)"
+            )
+            cur.execute("SELECT paid_calls ->> 'llm' FROM cycle_runs WHERE run_id = 'CR_SR'")
+            assert cur.fetchone() == ("7",)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM cycle_runs LIMIT 1")
 
     def test_service_role_executes_the_rpc_functions(self, supabase_like_conn) -> None:
         """RPC, które aplikacja woła przez PostgREST. `refresh_ml_feature_store`

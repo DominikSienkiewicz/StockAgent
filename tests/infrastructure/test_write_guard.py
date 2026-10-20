@@ -156,3 +156,18 @@ def test_llm_cost_ledger_write_is_skipped_with_a_warning(
     assert delegate.mock_calls == []
     assert "save_llm_calls" in caplog.text
     assert "save_llm_calls" in ReadOnlyRepository.WRITE_METHODS
+
+
+def test_cycle_run_write_is_skipped_with_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # NIEZ-29: wiersz `cycle_runs` to zapis — lokalny run go pomija jak ledger kosztów.
+    delegate = create_autospec(RepositoryPort, instance=True)
+    repository = ReadOnlyRepository(delegate)
+
+    with caplog.at_level(logging.WARNING, logger="src.infrastructure.adapters.write_guard"):
+        repository.save_cycle_run(MagicMock())
+
+    assert delegate.mock_calls == []
+    assert "save_cycle_run" in caplog.text
+    assert "save_cycle_run" in ReadOnlyRepository.WRITE_METHODS

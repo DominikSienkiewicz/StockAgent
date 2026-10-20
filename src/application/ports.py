@@ -56,6 +56,27 @@ class PreviousVerdict:
     timestamp: datetime
 
 
+@dataclass(frozen=True)
+class CycleRun:
+    """NIEZ-29 — jeden przebieg pętli (wiersz `cycle_runs`, migracja 041).
+
+    Same liczby przebiegu, bez symboli: `run_id` to `RunContext.run_id` (ten sam
+    co w `llm_calls`), `run_attempt` — `GITHUB_RUN_ATTEMPT` (None poza GitHub
+    Actions), `paid_calls` — płatne wywołania per klucz cennika,
+    `report_delivered` — czy mail wyszedł (None = przebieg bez kanału e-mail)."""
+
+    loop: str
+    run_id: str
+    run_attempt: int | None
+    started_at: datetime
+    duration_s: float
+    eligible: int
+    saved: int
+    failures: int
+    paid_calls: Mapping[str, int]
+    report_delivered: bool | None
+
+
 class RepositoryPort(ABC):
     """Persystencja: zapis predykcji, odczyt historii, dostęp do feature store."""
 
@@ -431,6 +452,12 @@ class RepositoryPort(ABC):
         Same tokeny, koszt i identyfikatory — bez treści promptu. Pusta lista =
         no-op. Wołający pilnuje flagi `cost_ledger_enabled` (bez migracji 040
         zapis kończyłby się błędem PostgREST)."""
+
+    @abstractmethod
+    def save_cycle_run(self, run: CycleRun) -> None:
+        """NIEZ-29 — jeden wiersz `cycle_runs` (migracja 041) na przebieg pętli,
+        jednym insertem na końcu przebiegu. Wołający pilnuje flagi
+        `cycle_runs_enabled` (bez migracji 041 zapis kończyłby się błędem PostgREST)."""
 
 
 class MLPredictionPort(ABC):

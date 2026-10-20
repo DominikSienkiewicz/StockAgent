@@ -1247,3 +1247,16 @@ class TestTwoPhaseCycleFlag:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "two_phase_cycle_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestCycleRunsFlag:
+    """NIEZ-29: zapis historii przebiegów (migracja 041) — flaga samego zapisu,
+    domyślnie off i poza przepisem (`config_hash` się nie rusza)."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).cycle_runs_enabled is False
+
+    def test_is_a_write_only_flag_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "cycle_runs_enabled" in NON_RECIPE_SETTINGS_FIELDS

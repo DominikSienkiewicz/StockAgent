@@ -5533,3 +5533,118 @@ class TestTwoPhaseCycle:
         flag_off, flag_on = analyze.call_args_list
         assert flag_off.kwargs.get("phase_two_feeds") is None
         assert callable(flag_on.kwargs["phase_two_feeds"])
+
+
+class TestCycleRunRecord:
+    """NIEZ-29: jeden wiersz `cycle_runs` (migracja 041) na końcu cyklu Fast Loopa —
+    czy cykl ruszył, ile symboli zapisał, ile padło, płatne wywołania i czy mail
+    wyszedł. Best-effort za flagą `cycle_runs_enabled`, przez strażnik BEZ-08."""
+
+    _STARTED_AT = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def _run_main(self, settings, mocker, *, delivered: bool = True) -> MagicMock:
+        repository = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_agent.build_repository", return_value=repository)
+        fake_uc = MagicMock()
+        fake_uc.run.side_effect = [
+            {"status": "saved", "delta": Decimal("0.05"), "prediction_id": "p1"},
+            RuntimeError("Finnhub 503"),
+        ]
+        fake_uc.telemetry.snapshot.return_value.paid_calls = {"llm": 1, "council_llm": 8}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch("main_agent.build_notifier", return_value=MagicMock())
+        mocker.patch("main_agent._dispatch_reports", return_value=delivered)
+        main_agent.main(settings, clock=lambda: self._STARTED_AT)
+        return repository
+
+    def test_main_persists_cycle_run_with_delivery_status(
+        self, settings, mock_external_clients, mocker, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("GITHUB_RUN_ID", "18324")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+        settings.cycle_runs_enabled = True
+
+        repository = self._run_main(settings, mocker)
+
+        repository.save_cycle_run.assert_called_once()
+        run = repository.save_cycle_run.call_args.args[0]
+        assert (run.loop, run.run_id, run.run_attempt) == ("fast", "18324", 2)
+        assert run.started_at == self._STARTED_AT
+        assert (run.eligible, run.saved, run.failures) == (2, 1, 1)
+        assert dict(run.paid_calls) == {"llm": 1, "council_llm": 8}
+        assert run.report_delivered is True
+        assert run.duration_s >= 0
+
+    def test_failed_email_is_recorded_as_not_delivered(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.cycle_runs_enabled = True
+
+        repository = self._run_main(settings, mocker, delivered=False)
+
+        assert repository.save_cycle_run.call_args.args[0].report_delivered is False
+
+    def test_flag_off_writes_no_cycle_run(self, settings, mock_external_clients, mocker) -> None:
+        settings.cycle_runs_enabled = False
+
+        repository = self._run_main(settings, mocker)
+
+        repository.save_cycle_run.assert_not_called()
+
+    def test_local_run_has_no_attempt(
+        self, settings, mock_external_clients, mocker, monkeypatch
+    ) -> None:
+        # Poza GHA `run_id` = "local" (RunContext), a ręcznie wyeksportowany
+        # GITHUB_RUN_ATTEMPT nie udaje ponowienia — tak jak GITHUB_RUN_ID.
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+        settings.cycle_runs_enabled = True
+
+        repository = self._run_main(settings, mocker)
+
+        run = repository.save_cycle_run.call_args.args[0]
+        assert (run.run_id, run.run_attempt) == ("local", None)
+
+    @pytest.mark.parametrize("attempt", ["", "abc", "0"])
+    def test_malformed_attempt_is_none(self, attempt: str) -> None:
+        environ = {"GITHUB_ACTIONS": "true", "GITHUB_RUN_ATTEMPT": attempt}
+
+        assert main_agent.run_attempt_from_environ(environ) is None
+
+    def test_failed_cycle_run_write_does_not_fail_the_cycle(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        settings.cycle_runs_enabled = True
+        repository = MagicMock(spec=RepositoryPort)
+        repository.save_cycle_run.side_effect = RuntimeError("PGRST205")
+        mocker.patch("main_agent.build_repository", return_value=repository)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch("main_agent._dispatch_reports", return_value=True)
+
+        assert main_agent.main(settings) == 0
+
+        assert "cycle_runs" in caplog.text
+
+    def test_read_only_run_skips_the_cycle_run_with_a_warning(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        # BEZ-08: bez `db_writes_enabled` zapis idzie przez ReadOnlyRepository.
+        import logging
+
+        from src.infrastructure.adapters.write_guard import ReadOnlyRepository
+
+        delegate = MagicMock(spec=RepositoryPort)
+        settings.cycle_runs_enabled = True
+
+        with caplog.at_level(logging.WARNING):
+            main_agent.persist_cycle_run(
+                settings=settings,
+                repository=ReadOnlyRepository(delegate),
+                run=MagicMock(run_id="local"),
+            )
+
+        delegate.save_cycle_run.assert_not_called()
+        assert "save_cycle_run" in caplog.text

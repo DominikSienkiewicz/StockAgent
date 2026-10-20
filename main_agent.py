@@ -38,6 +38,7 @@ from src.application.ports import (
     AdvisoryCouncilPort,
     AnalystConsensusPort,
     AttestationPublisherPort,
+    CycleRun,
     EarningsCalendarPort,
     EmbeddingPort,
     FxRatePort,
@@ -1370,6 +1371,32 @@ def persist_llm_calls(
             len(entries),
             run_context.run_id,
         )
+
+
+def run_attempt_from_environ(environ: Mapping[str, str]) -> int | None:
+    """NIEZ-29: numer próby runu (`GITHUB_RUN_ATTEMPT`) — ponowienie ma ten sam
+    `run_id`. Jak `RunContext`: poza GitHub Actions zawsze None, a wartość, która
+    nie jest liczbą ≥ 1, też None (kolumna ma CHECK >= 1)."""
+    if environ.get("GITHUB_ACTIONS") != "true":
+        return None
+    raw = environ.get("GITHUB_RUN_ATTEMPT", "")
+    if not raw.isdigit() or int(raw) < 1:
+        return None
+    return int(raw)
+
+
+def persist_cycle_run(*, settings: Settings, repository: RepositoryPort, run: CycleRun) -> None:
+    """NIEZ-29: wiersz `cycle_runs` (migracja 041) na końcu cyklu.
+
+    Tylko za `cycle_runs_enabled` — bez migracji tabela nie istnieje. Zapis idzie
+    przez repozytorium przebiegu, więc lokalnie pomija go strażnik BEZ-08. Błąd
+    zapisu nie wywraca przebiegu: historia to ślad cyklu, nie jego wynik."""
+    if not settings.cycle_runs_enabled:
+        return
+    try:
+        repository.save_cycle_run(run)
+    except Exception:
+        logger.exception("save_cycle_run failed — cycle_runs row of run %s not written", run.run_id)
 
 
 def _regime_tagging_enabled(settings: Settings) -> bool:
@@ -3114,14 +3141,33 @@ def main(
     report_delivery = _report_delivery(
         delivered, notifier=notifier, subscribers=subscribers, settings=settings
     )
+    run_duration = time.perf_counter() - started_perf
     _write_cycle_summary(
         results=results,
         telemetry=use_case.telemetry,
         cost=cost,
         failures=failures,
-        duration_s=time.perf_counter() - started_perf,
+        duration_s=run_duration,
         quota_alerts=quota_monitor.alerts,
         delivered=report_delivery,
+    )
+    persist_cycle_run(
+        settings=settings,
+        repository=repository,
+        run=CycleRun(
+            loop="fast",
+            run_id=run_context.run_id,
+            # Decyzja właściciela: numer próby czyta entry point, `RunContext`
+            # (i przepis predykcji WIA-20) zostaje bez zmian.
+            run_attempt=run_attempt_from_environ(os.environ),
+            started_at=started_at,
+            duration_s=run_duration,
+            eligible=len(eligible),
+            saved=sum(1 for result in results if result.status == "saved"),
+            failures=failures,
+            paid_calls=dict(use_case.telemetry.snapshot().paid_calls),
+            report_delivered=report_delivery,
+        ),
     )
 
     # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).

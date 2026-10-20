@@ -28,6 +28,7 @@ from typing import Any, ClassVar
 
 from src.application.ports import (
     AttestationPublisherPort,
+    CycleRun,
     PositionsImportPort,
     PreviousVerdict,
     RepositoryPort,
@@ -122,6 +123,7 @@ class ReadOnlyRepository(RepositoryPort):
         "save_model_scorecard",
         "save_council_votes",
         "save_llm_calls",
+        "save_cycle_run",
     })
 
     def __init__(self, delegate: RepositoryPort) -> None:
@@ -301,6 +303,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def save_llm_calls(self, calls: Sequence[LLMCallEntry]) -> None:
         self._skipped.skip("save_llm_calls")
+
+    def save_cycle_run(self, run: CycleRun) -> None:
+        self._skipped.skip("save_cycle_run")
 
 
 class ReadOnlyPositionsImport(PositionsImportPort):

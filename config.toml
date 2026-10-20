@@ -197,6 +197,10 @@ two_phase_cycle_enabled = false
 # przebiegu Fast i Slow Loopa. UWAGA: włącz DOPIERO po migracji 040 (inaczej błąd
 # zapisu w logu). Sekcja „Koszt cyklu” liczy koszt z tokenów i bez tej flagi.
 cost_ledger_enabled = false
+# NIEZ-29: historia przebiegów — jeden wiersz `cycle_runs` na koniec cyklu Fast Loopa
+# (run_id jak w `llm_calls` + numer próby runu, liczby cyklu, płatne wywołania per
+# źródło, czy mail wyszedł; bez symboli). UWAGA: włącz DOPIERO po migracji 041.
+cycle_runs_enabled = false
 # FIN-13: cennik LLM per model — standard tier, USD za 1M tokenów, stan na dzień
 # `llm_pricing_as_of`. Źródła:
 #   https://platform.claude.com/docs/en/about-claude/pricing

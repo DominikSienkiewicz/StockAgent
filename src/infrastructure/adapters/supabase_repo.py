@@ -10,7 +10,7 @@ from typing import Any, Literal, NamedTuple, cast
 from postgrest.exceptions import APIError
 from supabase import create_client
 
-from src.application.ports import PreviousVerdict, RepositoryPort
+from src.application.ports import CycleRun, PreviousVerdict, RepositoryPort
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.equity_curve import directional_hit_rate
@@ -39,6 +39,8 @@ DEFAULT_FEATURE_SNAPSHOT_TABLE = "feature_snapshots"
 DEFAULT_REGIME_HISTORY_TABLE = "regime_history"
 # FIN-13: ledger kosztów per request LLM / embeddingów (migracja 040).
 LLM_CALLS_TABLE = "llm_calls"
+# NIEZ-29: historia przebiegów pętli (migracja 041).
+CYCLE_RUNS_TABLE = "cycle_runs"
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -1189,6 +1191,22 @@ class SupabaseRepository(RepositoryPort):
             for call in calls
         ]
         self._client.table(LLM_CALLS_TABLE).insert(rows).execute()
+
+    def save_cycle_run(self, run: CycleRun) -> None:
+        # Jeden insert na przebieg; `paid_calls` idzie jako JSONB (dict, nie string).
+        row = {
+            "loop": run.loop,
+            "run_id": run.run_id,
+            "run_attempt": run.run_attempt,
+            "started_at": run.started_at.isoformat(),
+            "duration_s": run.duration_s,
+            "eligible": run.eligible,
+            "saved": run.saved,
+            "failures": run.failures,
+            "paid_calls": dict(run.paid_calls),
+            "report_delivered": run.report_delivered,
+        }
+        self._client.table(CYCLE_RUNS_TABLE).insert(row).execute()
 
     def update_prediction_accuracy(
         self,

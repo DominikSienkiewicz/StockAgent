@@ -380,3 +380,9 @@ def test_real_config_toml_ships_the_two_phase_cycle_off() -> None:
     """EXP-27 (decyzja 2026-10-20): eksperyment za flagą, domyślnie wyłączony."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["two_phase_cycle_enabled"] is False
+
+
+def test_real_config_toml_ships_the_cycle_runs_history_off_until_migration() -> None:
+    """NIEZ-29: zapis `cycle_runs` dopiero po migracji 041 (ręczny DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["cycle_runs_enabled"] is False
