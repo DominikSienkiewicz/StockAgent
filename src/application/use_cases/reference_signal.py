@@ -23,6 +23,7 @@ from src.domain.reference_signal import (
     BASELINE_MAX_AGE,
     ReferenceOutcome,
     ReferenceRead,
+    may_call,
     momentum_call,
     select_baseline,
     settle_call,
@@ -34,7 +35,9 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ReferenceSignalSummary:
     """Liczby przebiegu, bez symboli: zapisane odczyty, wywołania, abstynencje,
-    rozliczenia (trafienia, pudła, wygasłe) i symbole, które padły (spośród `total`)."""
+    rozliczenia (trafienia, pudła, wygasłe) i symbole, które padły (spośród `total`).
+
+    `held` — odczyty bez wywołania, bo symbol ma już wywołanie sprzed < 6 dni."""
 
     reads: int
     calls: int
@@ -44,6 +47,7 @@ class ReferenceSignalSummary:
     expired: int
     failures: int
     total: int
+    held: int = 0
 
 
 class RunReferenceSignalUseCase:
@@ -78,6 +82,7 @@ class RunReferenceSignalUseCase:
             expired=tally["expired"],
             failures=tally["failures"],
             total=len(symbols),
+            held=tally["held"],
         )
 
     def _run_symbol(
@@ -104,6 +109,14 @@ class RunReferenceSignalUseCase:
                 open_call.id, outcome, current.price if judged else None, moment
             )
             tally[_OUTCOME_KEYS[outcome]] += 1
+
+        # Wywołanie sprzed < 6 dni nie może być jeszcze rozliczone (rozliczenie zaczyna
+        # się od 6 dni), więc lista otwartych wywołań zawiera każde, które blokuje.
+        if not may_call((open_call.call for open_call in open_calls), current):
+            self._repository.save_reference_read(current, None)
+            tally["reads"] += 1
+            tally["held"] += 1
+            return
 
         call = momentum_call(select_baseline(reads, current), current)
         self._repository.save_reference_read(current, call)

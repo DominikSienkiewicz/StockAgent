@@ -30,7 +30,10 @@ paused. It is the zero-cost benchmark the paid LLM has to beat.
    read the rule abstains for that symbol in that run.
 5. **Call.** `BULLISH` when the current price is above the baseline price,
    `BEARISH` when it is below. An unchanged price, or a price that is not
-   positive, abstains. The rule never calls `SIDEWAYS`.
+   positive, abstains. The rule never calls `SIDEWAYS`. At most one call per
+   symbol in 6 days: when the symbol already has a call made less than 6 days
+   before the current read, the run makes no new call; it only settles the calls
+   that are due (rule 6) and stores the read.
 6. **Horizon.** Until the next run. A call is settled by the first later read of
    the same symbol taken at least 6 days and at most 8 days after the call. A
    read taken less than 6 days after the call leaves it open. A call with no

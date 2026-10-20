@@ -140,3 +140,37 @@ class TestSettleCall:
     def test_read_after_the_horizon_expires_the_call(self) -> None:
         outcome = settle_call(self._CALL, _read("104", SUNDAY + timedelta(days=14)))
         assert outcome is ReferenceOutcome.EXPIRED
+
+
+class TestOneCallPerSixDays:
+    """Poprawka v1 przed startem: najwyżej jedno wywołanie na symbol w ciągu 6 dni —
+    ponowny przebieg w tym oknie (np. re-run joba) nie dubluje skorelowanego wywołania."""
+
+    @staticmethod
+    def _call(days_ago: float, symbol: str = "AAPL") -> ReferenceCall:
+        return ReferenceCall(
+            symbol=symbol,
+            trend=TrendDirection.BULLISH,
+            price_at_call=Decimal("100"),
+            called_at=SUNDAY - timedelta(days=days_ago),
+        )
+
+    def test_call_from_a_day_ago_holds_the_next_call(self) -> None:
+        from src.domain.reference_signal import may_call
+
+        assert may_call([self._call(days_ago=1)], _read("105", SUNDAY)) is False
+
+    def test_call_returns_after_six_days(self) -> None:
+        from src.domain.reference_signal import may_call
+
+        assert may_call([self._call(days_ago=6)], _read("105", SUNDAY)) is True
+
+    def test_other_symbols_calls_do_not_hold(self) -> None:
+        from src.domain.reference_signal import may_call
+
+        assert may_call([self._call(days_ago=1, symbol="MSFT")], _read("105", SUNDAY)) is True
+
+    def test_protocol_states_the_one_call_window(self) -> None:
+        # Zawinięcie linii w Markdownie nie zmienia zdania — porównujemy po spacjach.
+        text = " ".join((ROOT / REFERENCE_PROTOCOL_PATH).read_text(encoding="utf-8").split())
+        assert f"At most one call per symbol in {BASELINE_MIN_AGE.days} days" in text

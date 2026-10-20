@@ -24,7 +24,7 @@ from src.domain.prediction import Prediction, TrendDirection
 # Etykieta `recipe_version` każdego wywołania — odróżnia je od predykcji LLM.
 REFERENCE_RECIPE_VERSION = "reference-v1"
 REFERENCE_PROTOCOL_PATH = "docs/reference-protocol-v1.md"
-REFERENCE_PROTOCOL_SHA256 = "aa0e816a47f574b0a9c17f15ea32f115bd4274707c215be6e3d28ad742b6ddb2"
+REFERENCE_PROTOCOL_SHA256 = "dab92dae5415d5aa2ab561c3a4aa934621812f5edc69db374d587d2f9eb24eea"
 
 # Okno „zeszły tydzień” dla odczytu bazowego i dla odczytu rozliczającego: tydzień
 # ± dzień zapasu na opóźnienie crona GitHuba (deadman Slow Loopa liczy 192 h).
@@ -84,6 +84,19 @@ def select_baseline(
         if read.symbol == current.symbol and _is_week_apart(read.read_at, current.read_at)
     ]
     return max(candidates, key=lambda read: read.read_at, default=None)
+
+
+def may_call(recent_calls: Iterable[ReferenceCall], current: ReferenceRead) -> bool:
+    """Najwyżej jedno wywołanie na symbol w ciągu 6 dni (poprawka v1 przed startem).
+
+    Ponowny przebieg w tym oknie (np. re-run joba) dałby drugie, prawie identyczne
+    wywołanie z tej samej bazy — skorelowany duplikat pompujący próbę. Taki przebieg
+    tylko rozlicza dojrzałe wywołania i zapisuje odczyt. Wywołanie sprzed dokładnie
+    6 dni już nie blokuje."""
+    return not any(
+        call.symbol == current.symbol and current.read_at - call.called_at < BASELINE_MIN_AGE
+        for call in recent_calls
+    )
 
 
 def momentum_call(

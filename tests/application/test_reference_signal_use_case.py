@@ -184,3 +184,37 @@ def test_never_writes_price_snapshots_or_llm_predictions() -> None:
     repository.save_price_snapshot.assert_not_called()
     repository.save_prediction.assert_not_called()
     repository.update_prediction_accuracy.assert_not_called()
+
+
+def test_rerun_a_day_later_stores_the_read_without_a_new_call() -> None:
+    # Poprawka v1: najwyżej jedno wywołanie na symbol w 6 dni; ponowny przebieg tylko
+    # rozlicza dojrzałe wywołania i zapisuje odczyt.
+    monday = SUNDAY + timedelta(days=1)
+    week_before = ReferenceRead(
+        symbol="AAPL", price=Decimal("100"), read_at=monday - timedelta(days=7)
+    )
+    repository = _repository(reads=[week_before], open_calls=[_open_call(days_ago=0)])
+    use_case = RunReferenceSignalUseCase(market=_market("105"), repository=repository)
+
+    summary = use_case.run(["AAPL"], now=monday)
+
+    read, call = repository.save_reference_read.call_args.args
+    assert read == ReferenceRead(symbol="AAPL", price=Decimal("105"), read_at=monday)
+    assert call is None
+    repository.settle_reference_call.assert_not_called()
+    assert summary.calls == 0 and summary.held == 1 and summary.reads == 1
+
+
+def test_call_returns_six_days_after_the_previous_one() -> None:
+    six_days_ago = SUNDAY - timedelta(days=6)
+    baseline = ReferenceRead(symbol="AAPL", price=Decimal("100"), read_at=six_days_ago)
+    repository = _repository(reads=[baseline], open_calls=[_open_call(days_ago=6)])
+
+    summary = _run(_market("104"), repository, ["AAPL"])
+
+    repository.settle_reference_call.assert_called_once_with(
+        "7", ReferenceOutcome.HIT, Decimal("104"), SUNDAY
+    )
+    _, call = repository.save_reference_read.call_args.args
+    assert call is not None and call.trend is TrendDirection.BULLISH
+    assert summary.calls == 1 and summary.held == 0
