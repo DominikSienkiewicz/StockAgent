@@ -4521,6 +4521,8 @@ class TestSlowLoopPaidBudget:
         settings.symbols = ["AAPL"]
         settings.weekly_recap_enabled = True
         settings.calibration_judge_enabled = True
+        # FIN-35: budżet dotyczy prawdziwego dostawcy — lokalna atrapa nie płaci.
+        settings.paid_calls_enabled = True
         return provider, recap_cls, judge_cls
 
     def test_job_past_the_weekly_cap_never_reaches_the_provider(
@@ -4660,3 +4662,66 @@ class TestNyseClosedDay:
         self._run(settings, mocker, caplog, self._TRADING_DAY)
 
         assert dispatch.call_args.kwargs["started_at"] == self._TRADING_DAY
+
+
+class TestLocalRunWithoutPaidCalls:
+    """FIN-35: przy `paid_calls_enabled=False` (domyślnie, lokalnie) DI podstawia
+    deterministyczne atrapy zamiast płatnych portów, a produkcyjne adaptery w ogóle
+    nie powstają. Jeden WARNING mówi o tym wprost."""
+
+    def test_earnings_calendar_stays_null_without_paid_calls(self, settings) -> None:
+        from src.infrastructure.adapters.alpha_vantage_earnings import (
+            NullEarningsCalendarAdapter,
+        )
+
+        settings.paid_calls_enabled = False
+        settings.earnings_calendar_enabled = True
+
+        enrichment = main_agent.build_alpha_enrichment(settings)
+
+        assert isinstance(enrichment._earnings, NullEarningsCalendarAdapter)
+
+    def _trainer(self, settings, mocker) -> tuple[MagicMock, MagicMock, MagicMock]:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        mocker.patch("main_trainer.build_notifier", return_value=MagicMock())
+        av_fundamentals = mocker.patch("main_trainer.AlphaVantageFundamentalsAdapter")
+        build_llm = mocker.patch("main_agent.build_llm_adapter")
+        recap_cls = mocker.patch("main_trainer.WeeklyRecapUseCase")
+        recap_cls.return_value.run.return_value = {"status": "skipped_below_threshold"}
+        settings.symbols = ["AAPL"]
+        settings.weekly_recap_enabled = True
+        return av_fundamentals, build_llm, recap_cls
+
+    def test_slow_loop_skips_av_fundamentals_and_uses_the_llm_stub(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        settings.paid_calls_enabled = False
+        av_fundamentals, build_llm, recap_cls = self._trainer(settings, mocker)
+
+        with caplog.at_level(logging.WARNING):
+            main_trainer.main(settings)
+
+        av_fundamentals.assert_not_called()
+        build_llm.assert_not_called()
+        recap_llm = recap_cls.call_args.kwargs["llm_port"]
+        assert "narrative" not in recap_llm.analyze("narracja")
+        warnings = [
+            r.message for r in caplog.records if "lokalnie bez płatnych wywołań" in r.message
+        ]
+        assert len(warnings) == 1
+
+    def test_paid_slow_loop_refreshes_fundamentals_from_av(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.paid_calls_enabled = True
+        av_fundamentals, build_llm, _ = self._trainer(settings, mocker)
+
+        main_trainer.main(settings)
+
+        av_fundamentals.assert_called_once()
+        build_llm.assert_called_once()

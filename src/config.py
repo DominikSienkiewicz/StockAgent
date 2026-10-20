@@ -106,6 +106,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # Flagi samego zapisu i publikacji.
     # BEZ-08: czy przebieg w ogóle zapisuje do bazy; prognoza cyklu ta sama.
     "db_writes_enabled",
+    # FIN-35: atrapy płatnych portów tylko lokalnie (produkcja zawsze true), a lokalny
+    # zapis do bazy i tak jest off (`db_writes_enabled`) — przepisów produkcji nie dzieli.
+    "paid_calls_enabled",
     "receipts_enabled",
     "feature_set_version_enabled",
     "recipe_version_enabled",
@@ -554,6 +557,11 @@ class Settings(BaseSettings):
     # które zapisują, ustawiają "true". Nie w `config.toml` (test strażnik): plik jest
     # wspólny dla lokalnego runu i produkcji, więc zapis włączony w nim byłby wszędzie.
     db_writes_enabled: bool = False
+    # FIN-35: lokalny run nie płaci — LLM, rada, Alpha Vantage (newsy, sentyment,
+    # fundamenty, kalendarz wyników) i embeddingi idą przez atrapy z jednym WARNING-iem.
+    # Jak `db_writes_enabled`: z env / `.env` (`PAID_CALLS_ENABLED`), nie w config.toml
+    # (test strażnik); workflowy, które płacą (Fast Loop, Slow Loop), ustawiają "true".
+    paid_calls_enabled: bool = False
 
     # ----- Agent config -----
     volatility_threshold: Decimal = Field(default=Decimal("0.02"))

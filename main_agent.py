@@ -900,9 +900,13 @@ def build_alpha_enrichment(settings: Settings) -> AlphaEnrichmentUseCase:
         if settings.insider_flow_enabled
         else NullInsiderFlowAdapter()
     )
+    # FIN-35: kalendarz wyników to płatne zapytanie AV — lokalnie bez płatnych
+    # wywołań zostaje Null-adapter.
     earnings: EarningsCalendarPort = (
         AlphaVantageEarningsAdapter(api_key=settings.alpha_vantage_api_keys[0])
-        if settings.earnings_calendar_enabled and settings.alpha_vantage_api_keys
+        if settings.earnings_calendar_enabled
+        and settings.alpha_vantage_api_keys
+        and settings.paid_calls_enabled
         else NullEarningsCalendarAdapter()
     )
     options: OptionsFlowPort = (
@@ -1007,6 +1011,16 @@ def build_move_calibration(
         return None
     return calibration_windows(
         rows, lambda symbol: _classify_asset(symbol, crypto_set, etf_set)
+    )
+
+
+def warn_if_paid_calls_disabled(settings: Settings) -> None:
+    """FIN-35: jeden jawny WARNING na przebieg, gdy płatne porty idą przez atrapy."""
+    if settings.paid_calls_enabled:
+        return
+    logger.warning(
+        "PAID_CALLS_ENABLED=false — lokalnie bez płatnych wywołań: LLM, rada, "
+        "Alpha Vantage i embeddingi zastąpione atrapami (prognozy neutralne)"
     )
 
 

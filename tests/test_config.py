@@ -1129,3 +1129,29 @@ class TestNyseClosureSkipFlag:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "nyse_closure_skip_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestPaidCallsFlag:
+    """FIN-35: płatne porty (LLM, rada, Alpha Vantage, embeddingi) tylko jawnie.
+    Jak `DB_WRITES_ENABLED`: przełącznik żyje w środowisku, domyślnie false,
+    workflowy, które płacą, ustawiają "true"."""
+
+    def test_defaults_off(self, env):
+        env.delenv("PAID_CALLS_ENABLED", raising=False)
+
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).paid_calls_enabled is False
+
+    def test_reads_the_environment_variable(self, env):
+        env.setenv("PAID_CALLS_ENABLED", "true")
+
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).paid_calls_enabled is True
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "paid_calls_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, paid_calls_enabled=True
+        ).config_hash()
+        assert flipped == baseline

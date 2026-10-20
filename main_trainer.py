@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from main_agent import build_notifier
+from main_agent import build_notifier, warn_if_paid_calls_disabled
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort
 from src.application.ml_features import FEATURE_SET_VERSION
@@ -44,6 +44,7 @@ from src.infrastructure.adapters.cached_fundamentals import CachedFundamentalsAd
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.write_guard import ReadOnlyRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
 from src.infrastructure.llm.unavailable import UnavailableLLMAdapter
 from src.infrastructure.logging_redaction import configure_logging
 
@@ -96,8 +97,11 @@ def _refresh_fundamentals_cache(
     Fast loop czyta wyłącznie z cache — nigdy nie woła AV bezpośrednio.
 
     Odświeżamy tylko spółki (STOCK) — ETF-y nie mają EPS/P/E. Pojedynczy błąd
-    nie wywala całego cyklu.
+    nie wywala całego cyklu. FIN-35: lokalnie bez płatnych wywołań nie pytamy AV.
     """
+    if not settings.paid_calls_enabled:
+        logger.info("Fundamentals refresh skipped — lokalnie bez płatnych wywołań")
+        return
     fundamentals_port = CachedFundamentalsAdapter(
         repo=repository,
         delegate=AlphaVantageFundamentalsAdapter(
@@ -219,14 +223,17 @@ class _SlowLoopPaidLLM:
         logger.info("Slow Loop LLM budget — allowed=%s cap=%s", self._allowed, self._cap)
 
     def port_for(self, job: str) -> LLMPort:
+        return BudgetedLLMPort(self._provider(), allowed=self._allowed.get(job, 0), job=job)
+
+    def _provider(self) -> LLMPort:
+        """Atrapa (FIN-35) i adapter zastępczy nie wysyłają requestu, więc nie
+        trafiają do licznika; prawdziwy adapter idzie przez `MeteredLLMPort`."""
+        if not self._settings.paid_calls_enabled:
+            return LocalStubLLMAdapter()
         provider = _build_llm_or_unavailable(self._settings, self._quota_monitor)
-        # Adapter zastępczy nie wysyła requestu, więc nie trafia do licznika.
-        metered = (
-            provider
-            if isinstance(provider, UnavailableLLMAdapter)
-            else MeteredLLMPort(provider, self.telemetry, "llm")
-        )
-        return BudgetedLLMPort(metered, allowed=self._allowed.get(job, 0), job=job)
+        if isinstance(provider, UnavailableLLMAdapter):
+            return provider
+        return MeteredLLMPort(provider, self.telemetry, "llm")
 
     def log_spend(self) -> None:
         spent = self.telemetry.snapshot().total_paid_calls
@@ -292,6 +299,7 @@ def _send_weekly_recap(
 def main(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
     configure_logging(settings.secret_values())
+    warn_if_paid_calls_disabled(settings)
     quota_monitor = QuotaMonitor()
     repository = build_repository(settings)
     use_case = build_use_case(settings)

@@ -137,7 +137,7 @@ Because a local run and production share one database, every local cycle used to
 - the `fx_rates` cache is read but not filled, and attestation commitments and reveals are not published (a commitment of a `dry-run-…` prediction would be a false public entry);
 - `main_tools.py import-positions --apply` prints the diff and then refuses with exit code 1 and "nic nie zapisano"; the dry run without `--apply` is unchanged.
 
-The wrappers live in [`src/infrastructure/adapters/write_guard.py`](../src/infrastructure/adapters/write_guard.py); every abstract method of a guarded port is classified there as a read or a write, and a test fails when a new port method is not. The paid calls are not affected: a read-only Fast Loop still calls the LLM, Alpha Vantage and the embeddings for every symbol past the volatility gate.
+The wrappers live in [`src/infrastructure/adapters/write_guard.py`](../src/infrastructure/adapters/write_guard.py); every abstract method of a guarded port is classified there as a read or a write, and a test fails when a new port method is not. The paid calls have their own switch, below.
 
 To write from a local run on purpose (for example a one-off positions import), set the variable for that one command:
 
@@ -146,6 +146,21 @@ DB_WRITES_ENABLED=true uv run python main_tools.py import-positions --csv positi
 ```
 
 The switch is read from the environment or `.env` only. It is deliberately not in `config.toml`: that file is shared by local runs and GitHub Actions, so turning writes on there would turn them on for every local run (a test keeps it out). The workflows that write — Fast Loop, Slow Loop and Shock Watch — set `DB_WRITES_ENABLED: "true"` in the step that runs the entry point; the read-only deadman does not. `tests/test_db_writes_wiring.py` checks both, and fails when a new `main_*.py` is not classified as writing or read-only.
+
+### Local runs make no paid calls by default
+
+A read-only local run still spent the shared Alpha Vantage quota (25 requests a day per key) and LLM credit without a trace in the database. `Settings.paid_calls_enabled` defaults to `false` (FIN-35), and with it off the entry points build deterministic stubs instead of the paid adapters, which are never constructed:
+
+- **Slow Loop** (`main_trainer.py`): the Alpha Vantage fundamentals refresh is skipped, and the weekly recap and the calibration judge get `LocalStubLLMAdapter` (a fixed neutral analysis without a narrative and a fixed note instead of an insight, both saying they are a stub): the recap goes out without a narrative, the judge stores its arithmetic with the stub's note. The run logs one `WARNING`: `PAID_CALLS_ENABLED=false — lokalnie bez płatnych wywołań: …`;
+- **Fast Loop** (`main_agent.py`): the earnings calendar stays the null adapter. The other paid ports of a local Fast Loop (the main LLM, the council, Alpha Vantage news and sentiment, the embeddings and tool use) are not stubbed yet and still fire for every symbol past the volatility gate; the stubs for Alpha Vantage news and sentiment (`LocalStubSentimentAdapter`, `LocalStubNewsAdapter`) are in [`src/infrastructure/adapters/local_stubs.py`](../src/infrastructure/adapters/local_stubs.py).
+
+Replaying recorded responses is out of scope; the stubs are fixed values. To make paid calls from a local run on purpose, set the variable for that one command:
+
+```bash
+PAID_CALLS_ENABLED=true uv run python main_trainer.py
+```
+
+Do not combine `PAID_CALLS_ENABLED=false` with `DB_WRITES_ENABLED=true`: the stubs' output would land in the production database. Like `DB_WRITES_ENABLED`, the switch is read from the environment or `.env` only and is kept out of `config.toml` by a test. The workflows that pay — Fast Loop and Slow Loop — set `PAID_CALLS_ENABLED: "true"` in the step that runs the entry point; Shock Watch and the deadman make no paid call and do not set it. `tests/test_paid_calls_wiring.py` checks both and fails when a new `main_*.py` is not classified as paying or free.
 
 ## Build commands
 

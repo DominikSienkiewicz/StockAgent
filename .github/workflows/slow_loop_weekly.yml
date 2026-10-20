@@ -53,6 +53,9 @@ jobs:
           # odczytu) — scorecardy, cache fundamentów, kalibracja i alerty kwot
           # wymagają jawnego włączenia. Pilnuje tego tests/test_db_writes_wiring.py.
           DB_WRITES_ENABLED: "true"
+          # FIN-35: bez tego fundamenty AV nie są odświeżane, a recap i sędzia
+          # kalibracji dostają atrapę LLM. Pilnuje tego tests/test_paid_calls_wiring.py.
+          PAID_CALLS_ENABLED: "true"
           # #17: niedzielna retrospektywa woła LLM (dokładnie RAZ) i wysyła mail,
           # więc przy `weekly_recap_enabled = true` te sekrety muszą być realne.
           # Z flagą off recap nie startuje i dummy w zupełności wystarczą.
