@@ -4394,8 +4394,8 @@ def test_fx_cache_writes_through_only_with_db_writes(settings, mocker, enabled: 
 
 class TestCouncilRequestMeteringWiring:
     """FIN-02: DI owija port LLM rady w `MeteredLLMPort` z TĄ SAMĄ telemetrią,
-    którą dostaje graf, i włącza `council_llm_metered` — każdy request persony
-    i chairmana trafia do kosztu cyklu, a węzeł rady nie dolicza drugi raz."""
+    którą dostaje graf — każdy request persony i chairmana trafia do kosztu
+    cyklu (węzeł rady tylko loguje)."""
 
     def test_council_llm_counts_into_the_graph_telemetry(
         self, settings, mock_external_clients, mocker
@@ -4416,7 +4416,6 @@ class TestCouncilRequestMeteringWiring:
         council_llm.analyze("chairman prompt")
 
         council_inner.analyze.assert_called_with("chairman prompt")
-        assert deps.council_llm_metered is True
         assert deps.telemetry.snapshot().paid_calls["council_llm"] == 2
         # Główny LLM nie jest owinięty — jego wywołania liczy `_log_paid_call`.
         assert deps.llm_port is not council_llm

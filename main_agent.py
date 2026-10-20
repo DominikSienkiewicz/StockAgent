@@ -1146,7 +1146,6 @@ def build_use_case(
             else None
         ),
         telemetry=telemetry,
-        council_llm_metered=True,
     ))
 
 
