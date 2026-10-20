@@ -213,4 +213,4 @@ def test_layer_globs_see_the_layers() -> None:
     # Strażnik pustego wyniku: zła ścieżka dałaby zero parametrów i zielony test.
     assert "asset.py" in _layer_modules(DOMAIN_DIR)
     assert "ports.py" in _layer_modules(APPLICATION_DIR)
-    assert DOMAIN_ANY_ALLOWED <= set(_layer_modules(DOMAIN_DIR))
+    assert set(_layer_modules(DOMAIN_DIR)) >= DOMAIN_ANY_ALLOWED
