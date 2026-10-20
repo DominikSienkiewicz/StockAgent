@@ -138,6 +138,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "max_paid_llm_calls_per_cycle",
     # FIN-30: tygodniowy sufit LLM Slow Loopa (recap, sędzia) — inny job, nie Fast Loop.
     "slow_loop_max_paid_llm_calls_per_week",
+    # FIN-34: dzień zamknięcia NYSE decyduje, CZY akcje idą do grafu, nie jak.
+    "nyse_closure_skip_enabled",
 })
 
 # WIA-20: pola przepisu — progi, modele, providerzy, symbole, źródła danych
@@ -539,6 +541,10 @@ class Settings(BaseSettings):
     # liczy domena (`slow_loop_paid_budget`), recap ma pierwszeństwo. None = bez
     # limitu, 0 = tydzień bez LLM (deterministyczne fallbacki). config.toml: 15.
     slow_loop_max_paid_llm_calls_per_week: int | None = None
+    # FIN-34: w dzień zamknięcia NYSE (święto, weekend; `market_calendar`) Fast Loop
+    # pomija akcje, krypto idzie normalnie; bez krypto przebieg kończy się bez maila.
+    # Off w kodzie, żeby testy entry pointów nie zależały od daty; config.toml: true.
+    nyse_closure_skip_enabled: bool = False
     # ----- Database -----
     supabase_url: str
     supabase_key: str

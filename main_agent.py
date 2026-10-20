@@ -17,7 +17,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -117,6 +117,7 @@ from src.domain.finops import estimate_cycle_cost
 from src.domain.hedge import equity_hedge_symbols
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
+from src.domain.market_calendar import closure_reason, to_nyse_time
 from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
 from src.domain.portfolio import PlnRates, Portfolio
@@ -2335,9 +2336,46 @@ def _record_av_budget_alert(settings: Settings, quota_monitor: QuotaMonitor) -> 
     )
 
 
-def main(settings: Settings | None = None) -> int:
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _nyse_closure(settings: Settings, now: datetime) -> str | None:
+    """FIN-34: powód zamknięcia NYSE w dniu cyklu (data ET) albo None, gdy NYSE
+    handluje albo pomijanie jest wyłączone (`nyse_closure_skip_enabled`)."""
+    if not settings.nyse_closure_skip_enabled:
+        return None
+    return closure_reason(to_nyse_time(now).date())
+
+
+def _closure_label(reason: str) -> str:
+    return "NYSE zamknięta (weekend)" if reason == "weekend" else f"święto NYSE ({reason})"
+
+
+def main(
+    settings: Settings | None = None, *, clock: Callable[[], datetime] = _utc_now
+) -> int:
+    """`clock` to zegar cyklu: dzień NYSE (FIN-34) i `started_at` raportu."""
     settings = settings or Settings.from_env()
     configure_logging(settings.secret_values())
+    # FIN-34: w dzień zamknięcia NYSE ceny akcji stoją — akcje nie idą do grafu.
+    # Krypto handluje w święta, więc idzie normalnie; bez krypto nie ma czego
+    # analizować, więc przebieg kończy się przed budową adapterów i bez maila.
+    closure = _nyse_closure(settings, clock())
+    if closure is not None and not settings.crypto_symbols:
+        logger.info(
+            "%s — akcje pominięte, brak krypto: przebieg kończy się bez analizy i bez maila",
+            _closure_label(closure),
+        )
+        return 0
+    if closure is not None:
+        logger.info(
+            "%s — akcje pominięte (%d), krypto idzie normalnie: %s",
+            _closure_label(closure),
+            len(settings.symbols),
+            settings.crypto_symbols,
+        )
+    stock_symbols = [] if closure is not None else list(settings.symbols)
     # MAIL-42: przebieg (run, commit, link do logów) — raz na cykl, z env GHA.
     run_context = RunContext.from_environ(os.environ)
     # Real-time alerty (U4): kanał alertów budujemy BEZ quota_monitora, żeby
@@ -2372,11 +2410,11 @@ def main(settings: Settings | None = None) -> int:
         except Exception:
             logger.exception("Failed to list subscribers — fallback do pojedynczej wysyłki")
 
-    started_at = datetime.now(UTC)
+    started_at = clock()
     started_perf = time.perf_counter()
     logger.info(
         "Fast Loop start — symbols=%s crypto=%s",
-        settings.symbols,
+        stock_symbols,
         settings.crypto_symbols,
     )
 
@@ -2392,10 +2430,13 @@ def main(settings: Settings | None = None) -> int:
     # Krypto dochodzi do puli iterowanych symboli — ma własny adapter ceny
     # (CoinGecko) i własny próg volatility (5%).
     all_symbols = list(settings.symbols) + list(settings.crypto_symbols)
+    # FIN-34: symbole TEGO cyklu — w dzień zamknięcia NYSE samo krypto. Watchlista
+    # (`all_symbols`) zostaje pełna dla kontekstu raportu (trafność, radar, portfel).
+    cycle_symbols = [*stock_symbols, *settings.crypto_symbols]
     # Eligible — symbole, dla których pójdzie pełna analiza. Unsupported tickery
     # są oznaczone "ignored" przed pętlą, więc throttle policzy je poprawnie.
-    eligible = [s for s in all_symbols if s not in unsupported]
-    for skipped in (s for s in all_symbols if s in unsupported):
+    eligible = [s for s in cycle_symbols if s not in unsupported]
+    for skipped in (s for s in cycle_symbols if s in unsupported):
         logger.info(
             "%s: skipped — in SYMBOLS_UNSUPPORTED_PRICE (Finnhub free / EU-listed)",
             skipped,

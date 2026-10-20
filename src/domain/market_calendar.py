@@ -110,6 +110,14 @@ def is_trading_day(day: date) -> bool:
     return day.weekday() < 5 and day not in NYSE_HOLIDAYS
 
 
+def closure_reason(day: date) -> str | None:
+    """FIN-34: dlaczego NYSE nie handluje w dniu `day` — nazwa święta albo
+    „weekend”; None w dzień handlowy (skrócona sesja też nim jest)."""
+    if is_trading_day(day):
+        return None
+    return holiday_name(day) or "weekend"
+
+
 def session_on(day: date) -> TradingSession | None:
     """Sesja dnia `day` z godzinami otwarcia i zamknięcia; None w dzień bez sesji."""
     if not is_trading_day(day):

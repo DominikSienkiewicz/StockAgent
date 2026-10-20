@@ -184,6 +184,10 @@ max_paid_llm_calls_per_cycle = 100
 # przyszłe joby diagnoz). Wywołanie ponad budżet jest odrzucane przed dostawcą i job
 # idzie deterministycznym fallbackiem; recap ma pierwszeństwo.
 slow_loop_max_paid_llm_calls_per_week = 15
+# FIN-34: w dzień zamknięcia NYSE (święto z `market_calendar`, weekend) Fast Loop nie
+# analizuje akcji — ceny stoją, a przebieg, snapshoty i mail byłyby zbędne. Krypto idzie
+# normalnie; bez krypto przebieg kończy się od razu, bez maila.
+nyse_closure_skip_enabled = true
 # options_flow: option-chain to endpoint PREMIUM Finnhuba — na free tier zwraca 403,
 # więc sygnał nie powstaje, a każdy cykl marnuje ~39 requestów. Off do czasu planu premium.
 # Odblokowuje #18 (edge vs implied move).

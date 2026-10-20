@@ -170,3 +170,14 @@ class TestNextOpen:
     def test_naive_datetime_is_read_as_utc(self) -> None:
         naive = datetime(2026, 10, 15, 10, 30)
         assert next_open(naive) == next_open(naive.replace(tzinfo=UTC))
+
+
+def test_closure_reason_names_the_holiday_the_weekend_or_nothing() -> None:
+    # FIN-34: Fast Loop pomija akcje w dzień zamknięcia NYSE i loguje powód.
+    from src.domain.market_calendar import closure_reason
+
+    assert closure_reason(date(2026, 12, 25)) == "Boże Narodzenie"
+    assert closure_reason(date(2026, 10, 24)) == "weekend"
+    assert closure_reason(date(2026, 12, 23)) is None
+    # Skrócona sesja to wciąż dzień handlowy.
+    assert closure_reason(date(2026, 11, 27)) is None

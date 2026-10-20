@@ -4572,3 +4572,91 @@ class TestSlowLoopPaidBudget:
         assert any(
             "Slow Loop paid LLM calls: 1/15" in rec.message for rec in caplog.records
         ), [rec.message for rec in caplog.records]
+
+
+class TestNyseClosedDay:
+    """FIN-34: w dzień zamknięcia NYSE (święto, weekend) Fast Loop pomija akcje
+    z jawnym logiem. Krypto handluje w święta, więc idzie normalnie; bez krypto
+    przebieg kończy się od razu — bez use case'u i bez maila."""
+
+    _CHRISTMAS = datetime(2026, 12, 25, 5, 30, tzinfo=UTC)
+    _TRADING_DAY = datetime(2026, 12, 23, 5, 30, tzinfo=UTC)
+
+    def _run(self, settings, mocker, caplog, now: datetime) -> tuple[MagicMock, MagicMock]:
+        import logging
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        build_use_case = mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        notifier = MagicMock()
+        mocker.patch("main_agent.build_notifier", return_value=notifier)
+        with caplog.at_level(logging.INFO, logger="main_agent"):
+            self.exit_code = main_agent.main(settings, clock=lambda: now)
+        return build_use_case, notifier
+
+    def test_holiday_without_crypto_ends_without_use_case_and_mail(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        settings.nyse_closure_skip_enabled = True
+
+        build_use_case, notifier = self._run(settings, mocker, caplog, self._CHRISTMAS)
+
+        assert self.exit_code == 0
+        build_use_case.assert_not_called()
+        notifier.send_report.assert_not_called()
+        assert any(
+            "święto NYSE" in rec.message and "Boże Narodzenie" in rec.message
+            for rec in caplog.records
+        ), [rec.message for rec in caplog.records]
+
+    def test_holiday_with_crypto_analyzes_only_crypto(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        settings.nyse_closure_skip_enabled = True
+        settings.crypto_symbols = ["BTC"]
+
+        build_use_case, _ = self._run(settings, mocker, caplog, self._CHRISTMAS)
+
+        fake_uc = build_use_case.return_value
+        assert [c.args[0] for c in fake_uc.run.call_args_list] == ["BTC"]
+        assert any(
+            "święto NYSE" in rec.message and "BTC" in rec.message for rec in caplog.records
+        )
+
+    def test_weekend_skips_stocks_too(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        settings.nyse_closure_skip_enabled = True
+        saturday = datetime(2026, 10, 24, 5, 30, tzinfo=UTC)
+
+        build_use_case, _ = self._run(settings, mocker, caplog, saturday)
+
+        build_use_case.assert_not_called()
+        assert any("NYSE zamknięta (weekend)" in rec.message for rec in caplog.records)
+
+    def test_trading_day_runs_every_symbol(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        settings.nyse_closure_skip_enabled = True
+        settings.crypto_symbols = ["BTC"]
+
+        build_use_case, _ = self._run(settings, mocker, caplog, self._TRADING_DAY)
+
+        fake_uc = build_use_case.return_value
+        assert [c.args[0] for c in fake_uc.run.call_args_list] == ["AAPL", "VOO", "BTC"]
+
+    def test_flag_off_runs_on_a_holiday_as_before(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        build_use_case, _ = self._run(settings, mocker, caplog, self._CHRISTMAS)
+
+        assert build_use_case.return_value.run.call_count == len(settings.symbols)
+
+    def test_cycle_start_comes_from_the_injected_clock(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        self._run(settings, mocker, caplog, self._TRADING_DAY)
+
+        assert dispatch.call_args.kwargs["started_at"] == self._TRADING_DAY

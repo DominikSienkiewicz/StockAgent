@@ -308,3 +308,9 @@ def test_real_config_toml_caps_the_slow_loop_llm_week() -> None:
     """FIN-30 (decyzja 2026-10-20): Slow Loop ma 15 płatnych wywołań LLM na tydzień."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["slow_loop_max_paid_llm_calls_per_week"] == 15
+
+
+def test_real_config_toml_skips_stocks_on_closed_nyse_days() -> None:
+    """FIN-34: produkcja nie analizuje akcji w święto NYSE (cron `1-5` bez zmian)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["nyse_closure_skip_enabled"] is True

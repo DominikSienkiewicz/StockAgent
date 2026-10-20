@@ -1116,3 +1116,16 @@ class TestSlowLoopWeeklyLlmBudget:
         assert "slow_loop_max_paid_llm_calls_per_week" in NON_RECIPE_SETTINGS_FIELDS
         baseline = self._settings().config_hash()
         assert self._settings(slow_loop_max_paid_llm_calls_per_week=3).config_hash() == baseline
+
+
+class TestNyseClosureSkipFlag:
+    """FIN-34: w dzień zamknięcia NYSE Fast Loop pomija akcje. Flaga w kodzie
+    domyślnie off (testy entry pointów nie zależą od daty), `config.toml` ją włącza."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).nyse_closure_skip_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "nyse_closure_skip_enabled" in NON_RECIPE_SETTINGS_FIELDS

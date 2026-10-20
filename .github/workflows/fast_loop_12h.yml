@@ -13,6 +13,8 @@ on:
   #   # Aby zachować 7:30 PL przez cały rok, zmień na '30 6' w CET.
   #   # GHA cron to best-effort — opóźnienia 5-60 min są normalne.
   #   # Tylko dni robocze (pon-pt) — w weekendy giełda jest zamknięta.
+  #   # Święta NYSE pomija sam agent (FIN-34, `nyse_closure_skip_enabled` w config.toml):
+  #   # w dzień zamknięcia akcje nie idą do grafu, krypto tak; cron zostaje `1-5`.
   #   - cron: '30 5 * * 1-5'
   workflow_dispatch:   # ręczne wymuszenie z panelu Actions
 
