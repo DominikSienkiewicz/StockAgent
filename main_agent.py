@@ -17,35 +17,45 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from src.application.agent_graph import AgentGraphDeps
+from src.application.agent_graph import AgentGraphDeps, AgentState
 from src.application.alpha_signals import AlphaSignals
+from src.application.cycle_telemetry import CycleTelemetry
+from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.move_interval import (
     CALIBRATION_LOOKBACK_DAYS,
     calibration_windows,
     interval_coverage,
 )
+from src.application.portfolio_fx import collect_pln_rates, effective_pln_rates, nbp_today
 from src.application.ports import (
     AdvisoryCouncilPort,
     AnalystConsensusPort,
     AttestationPublisherPort,
+    CycleRun,
     EarningsCalendarPort,
     EmbeddingPort,
+    FxRatePort,
+    HeartbeatPort,
     InsiderFlowPort,
     LLMPort,
     MacroRatesPort,
     MarketDataPort,
+    NewsPort,
     OptionsFlowPort,
     PortfolioPositionsPort,
     ReportNotifierPort,
     RepositoryPort,
+    SentimentPort,
     SocialVelocityPort,
     ToolUseLLMPort,
+    UsageSink,
     WebPublisherPort,
 )
 from src.application.quota_monitor import QuotaMonitor
@@ -58,10 +68,16 @@ from src.application.report_builder import (
     to_symbol_result,
 )
 from src.application.report_council_history import InvestorHistory
-from src.application.report_evidence import hit_rate_evidence, portfolio_curve
+from src.application.report_evidence import (
+    BENCHMARK_SYMBOL,
+    PaperCosts,
+    benchmark_comparison,
+    hit_rate_evidence,
+    portfolio_curve,
+)
 from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
-    SECTORS,
+    build_sector_map,
     format_local,
 )
 from src.application.report_lessons import LessonsReport, build_lessons
@@ -72,11 +88,13 @@ from src.application.report_model_scorecard import (
 )
 from src.application.report_models import ResolvedPrediction
 from src.application.report_onboarding import onboarding_subject
+from src.application.report_ops import render_cycle_summary_markdown
 from src.application.report_public_scorecard import render_public_scorecard_html
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
 from src.application.tools import build_research_tools
-from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
+from src.application.usage_ledger import UsageLedger
+from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidPhase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
 from src.application.use_cases.monitor_macro_risk import (
     MacroRiskReport,
@@ -85,10 +103,12 @@ from src.application.use_cases.monitor_macro_risk import (
 from src.application.use_cases.portfolio_risk import (
     PortfolioRiskReport,
     PortfolioRiskUseCase,
+    PositionRisk,
 )
 from src.config import Settings
 from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
+from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
     probability_scores,
@@ -100,23 +120,31 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
-from src.domain.finops import estimate_cycle_cost
+from src.domain.finops import CycleCost, estimate_cycle_cost, rank_by_magnitude
+from src.domain.hedge import equity_hedge_symbols
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
+from src.domain.market_calendar import closure_reason, to_nyse_time
+from src.domain.number_format import format_money_pl, format_number_pl
 from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
-from src.domain.portfolio import Portfolio
+from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
 from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
-from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
+from src.infrastructure.adapters._http import redact_secrets
+from src.infrastructure.adapters.advisory_council import (
+    COUNCIL_MAX_PERSONAS,
+    LLMAdvisoryCouncil,
+)
 from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
 from src.infrastructure.adapters.alpha_vantage_adapters import (
     AlphaVantageNewsAdapter,
     AlphaVantageSentimentAdapter,
+    PhaseTwoOnlyFeed,
 )
 from src.infrastructure.adapters.alpha_vantage_client import NEWS_WINDOW, AlphaVantageClient
 from src.infrastructure.adapters.cached_fundamentals import (
@@ -126,13 +154,24 @@ from src.infrastructure.adapters.cached_fundamentals import (
 from src.infrastructure.adapters.coingecko import CoinGeckoAdapter
 from src.infrastructure.adapters.composite_notifier import CompositeNotifier
 from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
-from src.infrastructure.adapters.nbp_client import NbpClient
+from src.infrastructure.adapters.http_heartbeat import HttpHeartbeat, NullHeartbeat
+from src.infrastructure.adapters.local_stubs import (
+    LocalStubNewsAdapter,
+    LocalStubSentimentAdapter,
+)
+from src.infrastructure.adapters.nbp_client import NbpClient, NbpFxRateClient
 from src.infrastructure.adapters.resend_notifier import NullNotifier, ResendNotifier
 from src.infrastructure.adapters.routing_market_data import RoutingMarketDataPort
 from src.infrastructure.adapters.subscriber_repo import SupabaseSubscriberRepository
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+from src.infrastructure.adapters.write_guard import (
+    ReadOnlyAttestationPublisher,
+    ReadOnlyRepository,
+)
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
-from src.infrastructure.persona_loader import personas_sha256
+from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
+from src.infrastructure.logging_redaction import configure_logging
+from src.infrastructure.persona_loader import load_council_personas, personas_sha256
 from src.infrastructure.recipe_fingerprints import ml_model_version, prompt_templates_sha256
 
 # R2: domyślne scenariusze stress-testu (szok rynku jako ułamek). Szok stosowany
@@ -176,6 +215,7 @@ def _build_single_llm(
     provider: str,
     model: str,
     quota_monitor: QuotaMonitor | None,
+    usage_sink: UsageSink | None = None,
 ) -> LLMPort:
     """Buduje pojedynczy adapter LLM dla danego providera/modelu."""
     if provider == "anthropic":
@@ -184,23 +224,102 @@ def _build_single_llm(
         from src.infrastructure.llm.anthropic_client import AnthropicAdapter
 
         return AnthropicAdapter(
-            api_key=settings.anthropic_api_key, model=model, quota_monitor=quota_monitor
+            api_key=settings.anthropic_api_key,
+            model=model,
+            quota_monitor=quota_monitor,
+            usage_sink=usage_sink,
         )
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
     return OpenAIAdapter(
-        api_key=settings.openai_api_key, model=model, quota_monitor=quota_monitor
+        api_key=settings.openai_api_key,
+        model=model,
+        quota_monitor=quota_monitor,
+        usage_sink=usage_sink,
     )
 
 
 def build_llm_adapter(
-    settings: Settings, quota_monitor: QuotaMonitor | None = None
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    usage_sink: UsageSink | None = None,
+    *,
+    telemetry: CycleTelemetry | None = None,
+    fallback_allowance: PaidCallAllowance | None = None,
 ) -> LLMPort:
     """Factory LLM — wybiera providera na podstawie konfiguracji.
 
     #2: gdy `model_routing_enabled`, zwraca `CascadingLLMAdapter` — tani model
     domyślnie, eskalacja do frontier tylko gdy `confidence < routing_floor`.
+    FIN-13: `usage_sink` dostaje tokeny każdego requestu (oba modele kaskady).
+    NIEZ-44: z `llm_fallback_provider` całość idzie za `FailoverLLMAdapter`
+    (`_with_llm_fallback`); request do zapasowego liczy `telemetry` pod `llm`,
+    a `fallback_allowance` (Slow Loop) odrzuca go ponad przydział joba.
     """
+    primary = _build_primary_llm(settings, quota_monitor, usage_sink)
+    return _with_llm_fallback(
+        settings, primary, quota_monitor, usage_sink, telemetry, fallback_allowance
+    )
+
+
+def _with_llm_fallback(
+    settings: Settings,
+    primary: LLMPort,
+    quota_monitor: QuotaMonitor | None,
+    usage_sink: UsageSink | None,
+    telemetry: CycleTelemetry | None,
+    allowance: PaidCallAllowance | None = None,
+) -> LLMPort:
+    """NIEZ-44: zapasowy dostawca za głównym — tylko gdy skonfigurowany i ma klucz.
+
+    Zapasowy dostaje ten sam monitor kwot i ten sam `usage_sink` (tokeny z jego
+    dostawcą i modelem), a `MeteredLLMPort` liczy jego request w telemetrii cyklu
+    pod `llm` — więc widzi go sufit FIN-12 i sekcja kosztu. Request do głównego
+    liczy jak dotąd graf (Fast Loop) albo meter joba (Slow Loop). `allowance`
+    (Slow Loop, FIN-30): request do zapasowego zużywa przydział joba, a ponad nim
+    `BudgetedLLMPort` odrzuca go przed dostawcą i failover nie startuje."""
+    provider = settings.llm_fallback_provider
+    if provider is None:
+        return primary
+    key_name, key = _fallback_api_key(settings)
+    if not key:
+        logger.warning(
+            "llm_fallback_provider=%s, ale %s nie jest ustawiony — LLM bez failovera",
+            provider,
+            key_name,
+        )
+        return primary
+    from src.infrastructure.llm.failover import FailoverLLMAdapter
+
+    model = settings.llm_fallback_model or _provider_default_model(provider)
+    secondary = _build_single_llm(settings, provider, model, quota_monitor, usage_sink)
+    if telemetry is not None:
+        secondary = MeteredLLMPort(secondary, telemetry, "llm")
+    if allowance is not None:
+        secondary = BudgetedLLMPort(secondary, allowance=allowance)
+    return FailoverLLMAdapter(primary, secondary, provider=provider, model=model)
+
+
+def _fallback_api_key(settings: Settings) -> tuple[str, str | None]:
+    """NIEZ-44: (nazwa zmiennej, wartość) klucza dostawcy zapasowego."""
+    if settings.llm_fallback_provider == "anthropic":
+        return "ANTHROPIC_API_KEY", settings.anthropic_api_key
+    return "OPENAI_API_KEY", settings.openai_api_key
+
+
+def llm_fallback_available(settings: Settings) -> bool:
+    """NIEZ-44: czy `build_llm_adapter` zbuduje zapasowego dostawcę — ustawiony
+    `llm_fallback_provider` i jego klucz. Slow Loop prosi wtedy budżet FIN-30
+    o +1 wywołanie na job."""
+    return settings.llm_fallback_provider is not None and bool(_fallback_api_key(settings)[1])
+
+
+def _build_primary_llm(
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None,
+    usage_sink: UsageSink | None,
+) -> LLMPort:
+    """Główny LLM analizy: kaskada modeli (#2) albo adapter `llm_provider`."""
     if settings.model_routing_enabled:
         from src.infrastructure.llm.cascading import CascadingLLMAdapter
         from src.infrastructure.llm.openai_client import OpenAIAdapter
@@ -209,12 +328,14 @@ def build_llm_adapter(
             api_key=settings.openai_api_key,
             model=settings.router_cheap_model,
             quota_monitor=quota_monitor,
+            usage_sink=usage_sink,
         )
         frontier = _build_single_llm(
             settings,
             settings.router_frontier_provider,
             settings.router_frontier_model,
             quota_monitor,
+            usage_sink,
         )
         return CascadingLLMAdapter(
             cheap=cheap, frontier=frontier, routing_floor=settings.routing_floor
@@ -229,18 +350,24 @@ def build_llm_adapter(
         from src.infrastructure.llm.anthropic_client import AnthropicAdapter
 
         return AnthropicAdapter(
-            api_key=settings.anthropic_api_key, quota_monitor=quota_monitor
+            api_key=settings.anthropic_api_key,
+            quota_monitor=quota_monitor,
+            usage_sink=usage_sink,
         )
 
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
     return OpenAIAdapter(
-        api_key=settings.openai_api_key, quota_monitor=quota_monitor
+        api_key=settings.openai_api_key,
+        quota_monitor=quota_monitor,
+        usage_sink=usage_sink,
     )
 
 
 def build_tool_use_adapter(
-    settings: Settings, quota_monitor: QuotaMonitor | None = None
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    usage_sink: UsageSink | None = None,
 ) -> ToolUseLLMPort | None:
     """#6: adapter LLM z pętlą tool-use. None gdy wyłączony (tool_use_enabled=false).
 
@@ -264,6 +391,8 @@ def build_tool_use_adapter(
             api_key=settings.anthropic_api_key,
             max_rounds=settings.tool_use_max_rounds,
             quota_monitor=quota_monitor,
+            secret_values=settings.secret_values(),
+            usage_sink=usage_sink,
         )
     from src.infrastructure.llm.tool_calling_openai import ToolCallingOpenAIAdapter
 
@@ -271,6 +400,8 @@ def build_tool_use_adapter(
         api_key=settings.openai_api_key,
         max_rounds=settings.tool_use_max_rounds,
         quota_monitor=quota_monitor,
+        secret_values=settings.secret_values(),
+        usage_sink=usage_sink,
     )
 
 
@@ -402,6 +533,7 @@ def _dispatch_push_digest(
     subject: str,
     email_delivered: bool = True,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
+    resolved_unavailable: bool = False,
 ) -> None:
     """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
 
@@ -417,6 +549,7 @@ def _dispatch_push_digest(
             resolved,
             email_delivered=email_delivered,
             display_timezone=display_timezone,
+            resolved_unavailable=resolved_unavailable,
         )
         push_notifier.send_report(
             subject=subject, html_body=digest, plain_text=digest
@@ -435,7 +568,12 @@ def build_positions_port(settings: Settings) -> PortfolioPositionsPort:
 
     if not settings.portfolio_positions_enabled:
         return NullPositionsAdapter()
-    return SupabasePositionsAdapter(url=settings.supabase_url, key=settings.supabase_key)
+    # PORT-18: waluta i prawdziwa data zakupu dopiero po migracji 035 (flaga).
+    return SupabasePositionsAdapter(
+        url=settings.supabase_url,
+        key=settings.supabase_key,
+        currency_columns=settings.positions_currency_enabled,
+    )
 
 
 def _build_user_portfolio(settings: Settings) -> Portfolio | None:
@@ -452,13 +590,54 @@ def _build_user_portfolio(settings: Settings) -> Portfolio | None:
         return None
     if not positions or as_of is None:
         return None
+    if not settings.positions_currency_enabled:
+        # PORT-11: bez migracji 035 adapter podaje `as_of` jako datę — to data
+        # aktualizacji tabeli, nie zakupu. Nie udajemy kursu z dnia zakupu.
+        positions = [dataclasses.replace(p, purchase_date=None) for p in positions]
     return Portfolio(positions=tuple(positions), as_of=as_of)
+
+
+def build_fx_port(settings: Settings) -> FxRatePort:
+    """PORT-11 — kurs NBP z dnia (darmowe). Cache `fx_rates` tylko za flagą
+    `fx_rates_cache_enabled` (migracja 036); bez niej żadnego zapytania do tabeli.
+    BEZ-08: bez `db_writes_enabled` cache jest tylko czytany — kurs z NBP nie
+    trafia do wspólnej tabeli."""
+    nbp = NbpFxRateClient()
+    if not settings.fx_rates_cache_enabled:
+        return nbp
+    from src.infrastructure.adapters.fx_rates_cache import SupabaseCachedFxRates
+
+    return SupabaseCachedFxRates(
+        url=settings.supabase_url,
+        key=settings.supabase_key,
+        delegate=nbp,
+        today=lambda: nbp_today(datetime.now(UTC)),
+        write_through=settings.db_writes_enabled,
+    )
+
+
+def _collect_portfolio_fx(
+    settings: Settings, portfolio: Portfolio | None, now: datetime
+) -> PlnRates | None:
+    """PORT-11 — kursy NBP do „P/L zł”: bieżące i z dni zakupu pozycji.
+
+    Darmowe, w fazie raportu (poza grafem i bramką volatility), za `nbp_enabled`.
+    Błąd → None: sekcja bierze wtedy same kursy bieżące z Risk Watch i mówi
+    wprost, że kursu z dnia zakupu nie ma."""
+    if portfolio is None or not settings.nbp_enabled:
+        return None
+    try:
+        return collect_pln_rates(portfolio, build_fx_port(settings), today=nbp_today(now))
+    except Exception:
+        logger.exception("Failed to collect NBP rates for the portfolio")
+        return None
 
 
 def _quote_held_positions(
     settings: Settings, portfolio: Portfolio | None, watchlist: list[str]
 ) -> dict[str, Decimal]:
-    """PORT-07 — darmowa cena pozycji spoza watchlisty: SAM `/quote` przez
+    """PORT-07 — darmowa cena pozycji spoza `watchlist` (symboli wycenionych
+    w cyklu; w dzień zamknięcia NYSE samo krypto, FIN-34): SAM `/quote` przez
     `build_market_port` (Finnhub / CoinGecko).
 
     Bez `save_price_snapshot` (należy wyłącznie do Fast Loopa i bramki), bez
@@ -485,8 +664,9 @@ def _quote_held_positions(
 
 
 def _portfolio_clusters(settings: Settings) -> dict[str, str]:
-    """#15 — mapa symbol → klaster korelacji z `peer_groups` (już w configu).
-    Klastrów nie liczymy tutaj; domena tylko sumuje ekspozycję."""
+    """#15 — mapa symbol → grupa z `peer_groups`, czyli sektor akcji z `sectors`
+    w config.toml (PORT-05) — sektor, nie policzony klaster korelacji. Grup nie
+    liczymy tutaj; domena tylko sumuje ekspozycję."""
     clusters: dict[str, str] = {}
     for cluster, symbols in settings.peer_groups.items():
         for symbol in symbols:
@@ -495,7 +675,8 @@ def _portfolio_clusters(settings: Settings) -> dict[str, str]:
 
 
 def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
-    """#16 — publisher commit-reveal. Null gdy `attestation_enabled=false`."""
+    """#16 — publisher commit-reveal. Null gdy `attestation_enabled=false`,
+    tylko do odczytu bez `db_writes_enabled` (BEZ-08)."""
     from src.infrastructure.adapters.attestation_publisher import (
         FileAttestationPublisher,
         NullAttestationPublisher,
@@ -503,10 +684,15 @@ def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
 
     if not settings.attestation_enabled:
         return NullAttestationPublisher()
-    return FileAttestationPublisher(
+    publisher = FileAttestationPublisher(
         commitment_path=settings.attestation_commitments_path,
         reveal_path=settings.attestation_reveals_path,
     )
+    if settings.db_writes_enabled:
+        return publisher
+    # BEZ-08: predykcja z runu tylko do odczytu ma id `dry-run-…` i nie istnieje
+    # w bazie — jej commitment byłby fałszywym wpisem w publicznym logu.
+    return ReadOnlyAttestationPublisher(publisher)
 
 
 def build_options_port(settings: Settings) -> OptionsFlowPort | None:
@@ -546,17 +732,64 @@ def build_public_scorecard_publisher(settings: Settings) -> WebPublisherPort:
     return FileWebPublisher(output_path=settings.public_scorecard_path)
 
 
+def _paper_costs(settings: Settings) -> PaperCosts:
+    """WIA-50: założenia kosztowe paper-PnL z config.toml (akcje/ETF i krypto)."""
+    return PaperCosts(
+        cost_bps=settings.paper_cost_bps,
+        crypto_cost_bps=settings.crypto_paper_cost_bps,
+        crypto_symbols=frozenset(settings.crypto_symbols),
+    )
+
+
+def _benchmark_comparison(
+    settings: Settings,
+    repository: RepositoryPort,
+    resolved: list[ResolvedPrediction],
+    costs: PaperCosts,
+) -> BenchmarkComparison | None:
+    """WIA-21: agent obok koszyka i IVV — te same okna, te same koszty.
+
+    IVV czytamy z darmowych `price_snapshots` (zero płatnych portów), o dzień
+    dłużej niż okno predykcji: snapshot startu najstarszego cyklu bywa zapisany
+    minuty przed predykcją, czyli tuż przed odcięciem okna. Błąd odczytu IVV
+    zostawia koszyk i jawny brak danych benchmarku.
+    """
+    try:
+        history = [
+            (stamp, float(price.amount))
+            for stamp, price in repository.get_price_history(
+                BENCHMARK_SYMBOL, settings.track_record_days + 1
+            )
+        ]
+    except Exception:
+        logger.exception("Failed to read %s snapshots for the benchmark", BENCHMARK_SYMBOL)
+        history = []
+    try:
+        return benchmark_comparison(
+            resolved,
+            costs,
+            history,
+            settle_after=timedelta(hours=settings.reflection_min_age_hours),
+        )
+    except Exception:
+        logger.exception("Failed to compare the equity curve with benchmarks")
+        return None
+
+
 def _publish_public_scorecard(
-    settings: Settings, repository: RepositoryPort, publisher: WebPublisherPort
+    settings: Settings,
+    repository: RepositoryPort,
+    publisher: WebPublisherPort,
+    costs: PaperCosts | None = None,
 ) -> None:
     """#10 — publikuje stronę z agregatami (N, hit-rate, Brier, ECE, krzywe).
 
     Metryki liczone z `resolved`/`cal_rows` NIEZALEŻNIE od flag
     `equity_curve_enabled` / `calibration_curve_enabled` — tamte sterują
     sekcjami prywatnego maila, nie publicznym dowodem. Krzywa kapitału to
-    portfel o równej wadze per cykl (WIA-17); strona ujawnia okno i datę
-    generacji (WIA-33). Best-effort: błąd odczytu ani `OSError` przy zapisie
-    nie wywalają cyklu.
+    portfel o równej wadze per cykl (WIA-17), po kosztach `costs` (WIA-50;
+    None = brutto); strona ujawnia okno i datę generacji (WIA-33).
+    Best-effort: błąd odczytu ani `OSError` przy zapisie nie wywalają cyklu.
     """
     if not settings.public_scorecard_enabled:
         return
@@ -567,12 +800,19 @@ def _publish_public_scorecard(
         samples = _calibration_samples(
             repository.get_resolved_for_calibration(settings.track_record_days)
         )
+        benchmark = (
+            None
+            if costs is None
+            else _benchmark_comparison(settings, repository, resolved, costs)
+        )
         page = render_public_scorecard_html(
             resolved,
-            portfolio_curve(resolved),
+            portfolio_curve(resolved, costs),
             samples,
             generated_on=datetime.now(UTC).date(),
             window_days=settings.track_record_days,
+            costs=costs,
+            benchmark=benchmark,
         )
         if page:
             publisher.publish(page)
@@ -581,7 +821,14 @@ def _publish_public_scorecard(
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
-    return SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    """Repozytorium Fast Loopa (także `main_watch` i `main_deadman`).
+
+    BEZ-08: bez `db_writes_enabled` owinięte w `ReadOnlyRepository` — lokalny run
+    czyta wspólną bazę, ale niczego do niej nie zapisuje."""
+    repository = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    if settings.db_writes_enabled:
+        return repository
+    return ReadOnlyRepository(repository)
 
 
 def build_web_publisher(settings: Settings) -> WebPublisherPort:
@@ -600,6 +847,7 @@ def build_council_llm_adapter(
     settings: Settings,
     main_llm: LLMPort,
     quota_monitor: QuotaMonitor | None = None,
+    usage_sink: UsageSink | None = None,
 ) -> LLMPort:
     """Wybiera LLM dla rady doradczej.
 
@@ -627,6 +875,7 @@ def build_council_llm_adapter(
             api_key=settings.anthropic_api_key,
             model=settings.council_llm_model or ANTHROPIC_DEFAULT,
             quota_monitor=quota_monitor,
+            usage_sink=usage_sink,
         )
 
     from src.infrastructure.llm.openai_client import DEFAULT_MODEL as OPENAI_DEFAULT
@@ -636,6 +885,7 @@ def build_council_llm_adapter(
         api_key=settings.openai_api_key,
         model=settings.council_llm_model or OPENAI_DEFAULT,
         quota_monitor=quota_monitor,
+        usage_sink=usage_sink,
     )
 
 
@@ -654,7 +904,6 @@ def build_council_adapter(
     wag person (cache per asset_type, jeden odczyt na klasę aktywa/cykl).
     #1: `debate_mode` z configu — jedna runda rewizji przy podzielonym round-1.
     """
-    from collections.abc import Mapping
     from pathlib import Path
 
     from src.infrastructure.persona_loader import load_council_personas
@@ -680,7 +929,9 @@ def build_council_adapter(
 
 
 def build_embedding_adapter(
-    settings: Settings, quota_monitor: QuotaMonitor | None = None
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    usage_sink: UsageSink | None = None,
 ) -> EmbeddingPort | None:
     """Embeddingi — OpenAI niezależnie od LLM_PROVIDER.
 
@@ -694,7 +945,7 @@ def build_embedding_adapter(
     from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
 
     return OpenAIEmbeddingAdapter(
-        api_key=settings.openai_api_key, quota_monitor=quota_monitor
+        api_key=settings.openai_api_key, quota_monitor=quota_monitor, usage_sink=usage_sink
     )
 
 
@@ -763,9 +1014,13 @@ def build_alpha_enrichment(settings: Settings) -> AlphaEnrichmentUseCase:
         if settings.insider_flow_enabled
         else NullInsiderFlowAdapter()
     )
+    # FIN-35: kalendarz wyników to płatne zapytanie AV — lokalnie bez płatnych
+    # wywołań zostaje Null-adapter.
     earnings: EarningsCalendarPort = (
         AlphaVantageEarningsAdapter(api_key=settings.alpha_vantage_api_keys[0])
-        if settings.earnings_calendar_enabled and settings.alpha_vantage_api_keys
+        if settings.earnings_calendar_enabled
+        and settings.alpha_vantage_api_keys
+        and settings.paid_calls_enabled
         else NullEarningsCalendarAdapter()
     )
     options: OptionsFlowPort = (
@@ -873,35 +1128,174 @@ def build_move_calibration(
     )
 
 
+class _PaidPorts(NamedTuple):
+    """FIN-35: porty Fast Loopa, które płacą za wywołanie — produkcyjne albo atrapy."""
+
+    llm: LLMPort
+    sentiment: SentimentPort
+    news: NewsPort
+    embedding: EmbeddingPort | None
+    council: AdvisoryCouncilPort | None
+    tool_use: ToolUseLLMPort | None
+
+
+def _production_paid_ports(
+    settings: Settings,
+    telemetry: CycleTelemetry,
+    repository: RepositoryPort,
+    quota_monitor: QuotaMonitor | None,
+    usage_sink: UsageSink | None = None,
+) -> _PaidPorts:
+    """Prawdziwe płatne adaptery (GHA: `PAID_CALLS_ENABLED=true`).
+
+    Jeden `AlphaVantageClient` dla akcji i krypto: adapter wewnętrznie prefiksuje
+    BTC → CRYPTO:BTC w requestach NEWS_SENTIMENT. FIN-13: każdy adapter LLM
+    i embeddingów zgłasza tokeny do `usage_sink` (ledger przebiegu). EXP-27: w cyklu
+    dwufazowym klient AV powstaje dopiero w fazie 2 (`build_phase_two_feeds`),
+    a deps grafu dostają zaślepkę `PhaseTwoOnlyFeed`."""
+    sentiment: SentimentPort
+    news: NewsPort
+    if settings.two_phase_cycle_enabled:
+        sentiment = news = PhaseTwoOnlyFeed()
+    else:
+        av_client = _alpha_vantage_client(
+            settings, [*settings.symbols, *settings.crypto_symbols], quota_monitor
+        )
+        sentiment = AlphaVantageSentimentAdapter(av_client)
+        news = AlphaVantageNewsAdapter(av_client)
+    llm_port = build_llm_adapter(
+        settings, quota_monitor=quota_monitor, usage_sink=usage_sink, telemetry=telemetry
+    )
+    # FIN-02: każdy request persony, chairmana i rewizji liczy się u źródła.
+    # Osobny obiekt niż `llm_port`, więc główna analiza nie liczy się podwójnie.
+    council_llm_port = MeteredLLMPort(
+        build_council_llm_adapter(
+            settings, llm_port, quota_monitor=quota_monitor, usage_sink=usage_sink
+        ),
+        telemetry,
+        "council_llm",
+    )
+    return _PaidPorts(
+        llm=llm_port,
+        sentiment=sentiment,
+        news=news,
+        embedding=build_embedding_adapter(
+            settings, quota_monitor=quota_monitor, usage_sink=usage_sink
+        ),
+        council=build_council_adapter(settings, council_llm_port, repository=repository),
+        tool_use=build_tool_use_adapter(
+            settings, quota_monitor=quota_monitor, usage_sink=usage_sink
+        ),
+    )
+
+
+def _alpha_vantage_client(
+    settings: Settings, symbols: Sequence[str], quota_monitor: QuotaMonitor | None
+) -> AlphaVantageClient:
+    return AlphaVantageClient(
+        api_keys=settings.alpha_vantage_api_keys,
+        symbols=list(symbols),
+        crypto_symbols=settings.crypto_symbols,
+        quota_monitor=quota_monitor,
+        # `news_volume_24h` ma liczyć ostatnie 24 h, nie „50 najnowszych".
+        news_window=NEWS_WINDOW,
+        # FIN-04: request AV tylko dla symbolu za bramką (FEATURE_SET_VERSION 3).
+        lazy_per_symbol=True,
+    )
+
+
+# EXP-27: porty feedu fazy 2 dla symboli za bramką (w kolejności fazy 2).
+PhaseTwoFeeds = Callable[[Sequence[str]], tuple[SentimentPort, NewsPort]]
+
+
+def build_phase_two_feeds(
+    settings: Settings, quota_monitor: QuotaMonitor | None
+) -> PhaseTwoFeeds:
+    """EXP-27: fabryka feedu fazy 2 — `AlphaVantageClient` z samymi symbolami za
+    bramką, w trybie leniwym FIN-04: request idzie tylko dla symbolu, który
+    faktycznie dostaje analizę (odcięty sufitem FIN-12 nie kosztuje AV), a cechy
+    newsów liczą własny feed symbolu jak w cyklu jednofazowym (FEATURE_SET_VERSION 3).
+    FIN-35: bez `paid_calls_enabled` atrapy, bez klienta AV."""
+
+    def feeds(passed: Sequence[str]) -> tuple[SentimentPort, NewsPort]:
+        if not settings.paid_calls_enabled:
+            return LocalStubSentimentAdapter(), LocalStubNewsAdapter()
+        client = _alpha_vantage_client(settings, passed, quota_monitor)
+        return AlphaVantageSentimentAdapter(client), AlphaVantageNewsAdapter(client)
+
+    return feeds
+
+
+def _local_stub_ports() -> _PaidPorts:
+    """FIN-35: lokalny run bez płatnych wywołań. Neutralny LLM i pusty feed AV
+    (z flagą `paid_calls_disabled`) przechodzą cały graf; rada, embeddingi
+    i tool-use są wyłączone (None), więc nie udają werdyktu ani analogów RAG."""
+    return _PaidPorts(
+        llm=LocalStubLLMAdapter(),
+        sentiment=LocalStubSentimentAdapter(),
+        news=LocalStubNewsAdapter(),
+        embedding=None,
+        council=None,
+        tool_use=None,
+    )
+
+
+# FIN-35: kod wyjścia odmowy startu — inny niż 1 („wszystkie symbole padły”).
+STUB_WRITES_REFUSED_EXIT_CODE = 2
+
+
+def refuses_stub_writes(settings: Settings) -> bool:
+    """FIN-35: atrapy płatnych portów + zapis do bazy = neutralne prognozy atrapy
+    w produkcyjnym track recordzie. True (z ERROR-em) = entry point nie startuje."""
+    if not settings.db_writes_enabled or settings.paid_calls_enabled:
+        return False
+    logger.error(
+        "DB_WRITES_ENABLED=true przy PAID_CALLS_ENABLED=false — odmowa startu: atrapy "
+        "płatnych portów zapisałyby neutralne prognozy do produkcyjnej bazy. Ustaw "
+        "PAID_CALLS_ENABLED=true (płatny przebieg) albo DB_WRITES_ENABLED=false "
+        "(lokalny przebieg tylko do odczytu)."
+    )
+    return True
+
+
+def warn_if_paid_calls_disabled(settings: Settings) -> None:
+    """FIN-35: jeden jawny WARNING na przebieg, gdy płatne porty idą przez atrapy."""
+    if settings.paid_calls_enabled:
+        return
+    logger.warning(
+        "PAID_CALLS_ENABLED=false — lokalnie bez płatnych wywołań: LLM, rada, "
+        "Alpha Vantage i embeddingi zastąpione atrapami (prognozy neutralne)"
+    )
+
+
 def build_use_case(
     settings: Settings,
     repository: RepositoryPort | None = None,
     quota_monitor: QuotaMonitor | None = None,
     run_context: RunContext | None = None,
+    usage_ledger: UsageLedger | None = None,
 ) -> AnalyzeMarketUseCase:
     """DI Container — buduje wszystkie adaptery i wstrzykuje do Use Case'a.
 
-    SYMBOLS przekazujemy do AlphaVantageClient jako sumę akcji + krypto,
-    z osobną listą crypto_symbols → adapter wewnętrznie prefiksuje BTC →
-    CRYPTO:BTC w requestach NEWS_SENTIMENT.
+    FIN-35: płatne porty (LLM, rada, Alpha Vantage, embeddingi, tool-use) są
+    produkcyjne tylko przy `paid_calls_enabled`; inaczej graf dostaje atrapy
+    (`_local_stub_ports`). Klient AV działa leniwie per symbol (FIN-04): symbol
+    pod bramką volatility nie kosztuje żadnego requestu AV.
 
     `run_context` (MAIL-42) wchodzi do przepisu predykcji (WIA-20); brak = run
-    lokalny.
+    lokalny. `usage_ledger` (FIN-13) dostaje tokeny płatnych adapterów; atrapy
+    FIN-35 nie wysyłają requestów, więc niczego do niego nie zgłaszają.
     """
-    all_av_symbols = list(settings.symbols) + list(settings.crypto_symbols)
-    av_client = AlphaVantageClient(
-        api_keys=settings.alpha_vantage_api_keys,
-        symbols=all_av_symbols,
-        crypto_symbols=settings.crypto_symbols,
-        quota_monitor=quota_monitor,
-        # `news_volume_24h` ma liczyć ostatnie 24 h, nie „50 najnowszych".
-        news_window=NEWS_WINDOW,
-    )
-    llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor)
-    council_llm_port = build_council_llm_adapter(
-        settings, llm_port, quota_monitor=quota_monitor
-    )
+    # ARCH-11: jedna telemetria na cykl — dostają ją graf i licznik requestów rady.
+    telemetry = CycleTelemetry()
     supabase_repo = repository or build_repository(settings)
+    paid = (
+        _production_paid_ports(
+            settings, telemetry, supabase_repo, quota_monitor, usage_sink=usage_ledger
+        )
+        if settings.paid_calls_enabled
+        else _local_stub_ports()
+    )
     # Fast loop: delegate = Null — nie woła płatnego AV, czyta tylko cache Supabase.
     fundamentals_port = CachedFundamentalsAdapter(
         repo=supabase_repo,
@@ -931,7 +1325,7 @@ def build_use_case(
     # #6: tool-use research agent — adapter + read-only toole (fundamenty z cache,
     # makro NBP). Budowane tylko gdy włączony. Toole NIE robią nowych płatnych
     # wywołań: fast loop czyta fundamenty z cache, a NBP jest darmowe i bezkluczowe.
-    tool_use_port = build_tool_use_adapter(settings, quota_monitor=quota_monitor)
+    tool_use_port = paid.tool_use
     research_tools = (
         build_research_tools(fundamentals_port, NbpClient())
         if tool_use_port is not None
@@ -944,16 +1338,14 @@ def build_use_case(
     )
     return AnalyzeMarketUseCase(AgentGraphDeps(
         market_port=market_port,
-        sentiment_port=AlphaVantageSentimentAdapter(av_client),
-        news_port=AlphaVantageNewsAdapter(av_client),
+        sentiment_port=paid.sentiment,
+        news_port=paid.news,
         repository_port=supabase_repo,
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
-        llm_port=llm_port,
+        llm_port=paid.llm,
         threshold=Threshold(settings.volatility_threshold),
-        embedding_port=build_embedding_adapter(settings, quota_monitor=quota_monitor),
-        council_port=build_council_adapter(
-            settings, council_llm_port, repository=supabase_repo
-        ),
+        embedding_port=paid.embedding,
+        council_port=paid.council,
         # 0.0 → wyłączony (rada zawsze leci gdy główna bramka przepuści).
         council_threshold=(
             Threshold(settings.council_volatility_threshold)
@@ -989,6 +1381,10 @@ def build_use_case(
         interval_columns_enabled=settings.interval_coverage_enabled,
         # EXP-01: kolumna `gate_delta` (migracja 034) za flagą.
         gate_delta_enabled=settings.gate_delta_enabled,
+        # EXP-05: eksperymenty (ramię per symbol-dzień liczy use case); kolumna
+        # `experiment_arms` (migracja 037) za flagą, kwit v2 za `receipts_enabled`.
+        experiments=settings.experiment_definitions(),
+        experiment_arms_enabled=settings.experiment_arms_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings),
@@ -999,7 +1395,86 @@ def build_use_case(
             if settings.attestation_enabled
             else None
         ),
+        telemetry=telemetry,
+        # FIN-12: sufit płatnych wywołań LLM cyklu; None = bez limitu.
+        paid_call_cap=settings.max_paid_llm_calls_per_cycle,
     ))
+
+
+def cycle_cost(
+    settings: Settings, telemetry: CycleTelemetry, ledger: UsageLedger
+) -> CycleCost | None:
+    """FinOps: koszt CAŁEGO cyklu z telemetrii grafu (ARCH-11).
+
+    FIN-13: źródło z wycenionymi tokenami w ledgerze dostaje koszt z tokenów,
+    reszta zostaje na `UNIT_COST_USD`. Cykl w całości odcięty bramką volatility
+    ma zerowy licznik → sekcja mówi "cykl darmowy". FIN-35: atrapy liczą się
+    w telemetrii jak prawdziwe wywołania, więc lokalnie sekcja kosztu by
+    kłamała — chowamy ją (None)."""
+    if not settings.paid_calls_enabled:
+        return None
+    return estimate_cycle_cost(
+        telemetry.snapshot().paid_calls,
+        token_costs=ledger.token_costs(settings.llm_price_table()),
+        priced_as_of=settings.llm_pricing_as_of,
+    )
+
+
+def persist_llm_calls(
+    *,
+    settings: Settings,
+    repository: RepositoryPort,
+    ledger: UsageLedger,
+    run_context: RunContext,
+) -> None:
+    """FIN-13: ledger `llm_calls` (migracja 040) jednym batchem po przebiegu.
+
+    Tylko za `cost_ledger_enabled` — bez migracji tabela nie istnieje. Zapis idzie
+    przez repozytorium przebiegu, więc lokalnie pomija go strażnik BEZ-08. Błąd
+    zapisu nie wywraca przebiegu: ledger to księgowość, nie wynik cyklu."""
+    if not settings.cost_ledger_enabled:
+        return
+    entries = ledger.entries(
+        run_id=run_context.run_id,
+        price_table=settings.llm_price_table(),
+        price_as_of=settings.llm_pricing_as_of,
+    )
+    if not entries:
+        return
+    try:
+        repository.save_llm_calls(entries)
+    except Exception:
+        logger.exception(
+            "save_llm_calls failed — %d llm_calls rows of run %s not written",
+            len(entries),
+            run_context.run_id,
+        )
+
+
+def run_attempt_from_environ(environ: Mapping[str, str]) -> int | None:
+    """NIEZ-29: numer próby runu (`GITHUB_RUN_ATTEMPT`) — ponowienie ma ten sam
+    `run_id`. Jak `RunContext`: poza GitHub Actions zawsze None, a wartość, która
+    nie jest liczbą ≥ 1, też None (kolumna ma CHECK >= 1)."""
+    if environ.get("GITHUB_ACTIONS") != "true":
+        return None
+    raw = environ.get("GITHUB_RUN_ATTEMPT", "")
+    if not raw.isdigit() or int(raw) < 1:
+        return None
+    return int(raw)
+
+
+def persist_cycle_run(*, settings: Settings, repository: RepositoryPort, run: CycleRun) -> None:
+    """NIEZ-29: wiersz `cycle_runs` (migracja 041) na końcu cyklu.
+
+    Tylko za `cycle_runs_enabled` — bez migracji tabela nie istnieje. Zapis idzie
+    przez repozytorium przebiegu, więc lokalnie pomija go strażnik BEZ-08. Błąd
+    zapisu nie wywraca przebiegu: historia to ślad cyklu, nie jego wynik."""
+    if not settings.cycle_runs_enabled:
+        return
+    try:
+        repository.save_cycle_run(run)
+    except Exception:
+        logger.exception("save_cycle_run failed — cycle_runs row of run %s not written", run.run_id)
 
 
 def _regime_tagging_enabled(settings: Settings) -> bool:
@@ -1166,6 +1641,8 @@ def _process_one_symbol(
     alpha_use_case: AlphaEnrichmentUseCase,
     earnings_gate_enabled: bool = False,
     alpha_fusion_enabled: bool = False,
+    cycle_at: datetime | None = None,
+    secret_values: tuple[str, ...] = (),
 ) -> _ProcessedSymbol:
     """Przetwarza jeden symbol. NIGDY nie rzuca — łapie wyjątek i zwraca wynik
     z `is_failure=True`. Dzięki temu pula wątków (ścieżka równoległa
@@ -1182,72 +1659,124 @@ def _process_one_symbol(
     dobierającego wagi. Off → `alpha_fusion=None` → prompt i cechy jak przed #14.
     """
     try:
-        asset = Asset(
-            symbol=symbol,
-            asset_type=_classify_asset(symbol, crypto_set, etf_set),
+        inputs = _symbol_inputs(
+            symbol,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+            earnings_gate_enabled=earnings_gate_enabled,
+            alpha_fusion_enabled=alpha_fusion_enabled,
         )
-        # #6: bramka earnings. Event pobieramy PRZED grafem, bo mnożnik progu
-        # musi być znany zanim graf zdecyduje o odpaleniu płatnych portów.
-        # Gdy kalendarz earnings jest wyłączony, nie ruszamy portu w ogóle.
-        earnings_event: EarningsEvent | None = None
-        earnings_multiplier = 1.0
-        if earnings_gate_enabled:
-            earnings_event = alpha_use_case.fetch_earnings(symbol)
-            if earnings_event is not None:
-                earnings_multiplier = earnings_threshold_multiplier(
-                    earnings_event.proximity()
-                )
-        # #14: enrichment biegnie PRZED grafem. Dawniej działał po nim, więc
-        # LLM i cechy XGBoost nigdy nie widziały sygnałów alfa — 5 pobieranych
-        # źródeł było render-only. Liczba płatnych wywołań się NIE zmienia:
-        # `enrich` i tak leciał raz na symbol, tylko później.
-        alpha_signal: AlphaSignals | None = None
-        alpha_fusion: AlphaFusionScore | None = None
-        if collect_alpha:
-            # De-dup: gdy bramka earnings pobrała już event, wstrzykujemy go,
-            # zamiast płacić za drugie wywołanie Alpha Vantage na ten sam symbol.
-            # Z wyłączoną bramką wołamy `enrich(symbol)` dokładnie jak dawniej.
-            prefetch: dict[str, Any] = (
-                {"earnings": earnings_event, "earnings_prefetched": True}
-                if earnings_gate_enabled
-                else {}
-            )
-            alpha_signal = alpha_use_case.enrich(symbol, **prefetch)
-            if alpha_fusion_enabled and alpha_signal is not None:
-                alpha_fusion = fuse_alpha_signals(
-                    insider=alpha_signal.insider,
-                    options=alpha_signal.options,
-                    social=alpha_signal.social,
-                    analyst=alpha_signal.analyst,
-                    earnings=alpha_signal.earnings,
-                )
-
         raw = use_case.run(
             symbol,
-            asset=asset,
+            asset=inputs.asset,
             regime_context=regime_context,
             regime_multiplier=regime_multiplier,
-            earnings_multiplier=earnings_multiplier,
-            alpha_fusion=alpha_fusion,
+            earnings_multiplier=inputs.earnings_multiplier,
+            alpha_fusion=inputs.alpha_fusion,
             peer_context=peer_ctx,
+            # FIN-14: wiek referencji ceny liczy się od startu cyklu.
+            now=cycle_at,
         )
-        logger.info(
-            "%s: status=%s delta=%s prediction_id=%s",
-            symbol,
-            raw.get("status"),
-            raw.get("delta"),
-            raw.get("prediction_id"),
-        )
-        sr = to_symbol_result(symbol, raw)
-        alpha_price: Decimal | None = None
-        if collect_alpha and sr.current_price is not None:
-            alpha_price = sr.current_price
-        return _ProcessedSymbol(sr, False, alpha_signal, alpha_price)
+        return _finished_symbol(symbol, raw, inputs.alpha_signal, collect_alpha, cycle_at)
     except Exception as exc:
-        logger.exception("Failed to process symbol %s", symbol)
-        return _ProcessedSymbol(
-            to_symbol_result(symbol, None, error=str(exc)), True, None, None
+        return _failed_symbol(symbol, exc, secret_values)
+
+
+class _SymbolInputs(NamedTuple):
+    """Wejścia grafu liczone PRZED nim: klasa aktywa, mnożnik earnings, alfa."""
+
+    asset: Asset
+    earnings_multiplier: float
+    alpha_signal: AlphaSignals | None
+    alpha_fusion: AlphaFusionScore | None
+
+
+def _symbol_inputs(
+    symbol: str,
+    *,
+    crypto_set: set[str],
+    etf_set: set[str],
+    collect_alpha: bool,
+    alpha_use_case: AlphaEnrichmentUseCase,
+    earnings_gate_enabled: bool,
+    alpha_fusion_enabled: bool,
+) -> _SymbolInputs:
+    asset = Asset(
+        symbol=symbol,
+        asset_type=_classify_asset(symbol, crypto_set, etf_set),
+    )
+    # #6: bramka earnings. Event pobieramy PRZED grafem, bo mnożnik progu
+    # musi być znany zanim graf zdecyduje o odpaleniu płatnych portów.
+    # Gdy kalendarz earnings jest wyłączony, nie ruszamy portu w ogóle.
+    earnings_event: EarningsEvent | None = None
+    earnings_multiplier = 1.0
+    if earnings_gate_enabled:
+        earnings_event = alpha_use_case.fetch_earnings(symbol)
+        if earnings_event is not None:
+            earnings_multiplier = earnings_threshold_multiplier(
+                earnings_event.proximity()
+            )
+    # #14: enrichment biegnie PRZED grafem. Dawniej działał po nim, więc
+    # LLM i cechy XGBoost nigdy nie widziały sygnałów alfa — 5 pobieranych
+    # źródeł było render-only. Liczba płatnych wywołań się NIE zmienia:
+    # `enrich` i tak leciał raz na symbol, tylko później.
+    alpha_signal: AlphaSignals | None = None
+    alpha_fusion: AlphaFusionScore | None = None
+    if collect_alpha:
+        # De-dup: gdy bramka earnings pobrała już event, wstrzykujemy go,
+        # zamiast płacić za drugie wywołanie Alpha Vantage na ten sam symbol.
+        # Z wyłączoną bramką wołamy `enrich(symbol)` dokładnie jak dawniej.
+        prefetch: dict[str, Any] = (
+            {"earnings": earnings_event, "earnings_prefetched": True}
+            if earnings_gate_enabled
+            else {}
         )
+        alpha_signal = alpha_use_case.enrich(symbol, **prefetch)
+        if alpha_fusion_enabled and alpha_signal is not None:
+            alpha_fusion = fuse_alpha_signals(
+                insider=alpha_signal.insider,
+                options=alpha_signal.options,
+                social=alpha_signal.social,
+                analyst=alpha_signal.analyst,
+                earnings=alpha_signal.earnings,
+            )
+    return _SymbolInputs(asset, earnings_multiplier, alpha_signal, alpha_fusion)
+
+
+def _finished_symbol(
+    symbol: str,
+    raw: dict[str, Any],
+    alpha_signal: AlphaSignals | None,
+    collect_alpha: bool,
+    cycle_at: datetime | None,
+) -> _ProcessedSymbol:
+    logger.info(
+        "%s: status=%s delta=%s prediction_id=%s",
+        symbol,
+        raw.get("status"),
+        raw.get("delta"),
+        raw.get("prediction_id"),
+    )
+    sr = to_symbol_result(symbol, raw, now=cycle_at)
+    alpha_price: Decimal | None = None
+    if collect_alpha and sr.current_price is not None:
+        alpha_price = sr.current_price
+    return _ProcessedSymbol(sr, False, alpha_signal, alpha_price)
+
+
+def _failed_symbol(
+    symbol: str, exc: Exception, secret_values: tuple[str, ...]
+) -> _ProcessedSymbol:
+    logger.exception("Failed to process symbol %s", symbol)
+    # BEZ-07: komunikat idzie do maila — ani URL z kluczem, ani dosłowna
+    # wartość sekretu z Settings (`secret_values`) nie może w nim zostać.
+    result = to_symbol_result(symbol, None, error=redact_secrets(str(exc), secret_values))
+    # NIEZ-22: typ wyjątku osobno — step summary liczy błędy per klasa, bez komunikatu.
+    return _ProcessedSymbol(
+        dataclasses.replace(result, error_type=type(exc).__name__), True, None, None
+    )
 
 
 def _analyze_symbols_parallel(
@@ -1263,6 +1792,8 @@ def _analyze_symbols_parallel(
     alpha_use_case: AlphaEnrichmentUseCase,
     earnings_gate_enabled: bool = False,
     alpha_fusion_enabled: bool = False,
+    cycle_at: datetime | None = None,
+    secret_values: tuple[str, ...] = (),
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy
     od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
@@ -1282,6 +1813,8 @@ def _analyze_symbols_parallel(
                     alpha_use_case=alpha_use_case,
                     earnings_gate_enabled=earnings_gate_enabled,
                     alpha_fusion_enabled=alpha_fusion_enabled,
+                    cycle_at=cycle_at,
+                    secret_values=secret_values,
                 ),
                 eligible,
             )
@@ -1313,6 +1846,8 @@ def _analyze_symbols_sequential(
     regime_multiplier: float,
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
+    cycle_at: datetime | None = None,
+    secret_values: tuple[str, ...] = (),
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
     """Ścieżka sekwencyjna: zachowuje kolejność, buduje peer_context dla contagion
     (#5) i throttluje między symbolami (ochrona OpenAI TPM)."""
@@ -1340,6 +1875,8 @@ def _analyze_symbols_sequential(
             alpha_use_case=alpha_use_case,
             earnings_gate_enabled=settings.earnings_calendar_enabled,
             alpha_fusion_enabled=settings.alpha_fusion_enabled,
+            cycle_at=cycle_at,
+            secret_values=secret_values,
         )
         results.append(proc.result)
         if proc.is_failure:
@@ -1356,6 +1893,227 @@ def _analyze_symbols_sequential(
     return results, failures, alpha_signals, alpha_prices
 
 
+class _GatedSymbol(NamedTuple):
+    """EXP-27: symbol po fazie 1 — skończony (`done`) albo czekający na fazę 2."""
+
+    symbol: str
+    done: _ProcessedSymbol | None
+    state: AgentState | None
+    alpha_signal: AlphaSignals | None
+
+
+def _gate_one_symbol(
+    symbol: str,
+    *,
+    use_case: AnalyzeMarketUseCase,
+    crypto_set: set[str],
+    etf_set: set[str],
+    regime_context: str,
+    regime_multiplier: float,
+    collect_alpha: bool,
+    alpha_use_case: AlphaEnrichmentUseCase,
+    earnings_gate_enabled: bool,
+    alpha_fusion_enabled: bool,
+    cycle_at: datetime | None,
+    secret_values: tuple[str, ...],
+) -> _GatedSymbol:
+    """EXP-27 faza 1 jednego symbolu: te same wejścia co `_process_one_symbol`
+    (earnings, alfa) i graf bramki. NIGDY nie rzuca — błąd to wynik `is_failure`."""
+    try:
+        inputs = _symbol_inputs(
+            symbol,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+            earnings_gate_enabled=earnings_gate_enabled,
+            alpha_fusion_enabled=alpha_fusion_enabled,
+        )
+        outcome = use_case.run_gate(
+            symbol,
+            asset=inputs.asset,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            earnings_multiplier=inputs.earnings_multiplier,
+            alpha_fusion=inputs.alpha_fusion,
+            now=cycle_at,
+        )
+        if outcome.passed:
+            return _GatedSymbol(symbol, None, outcome.state, inputs.alpha_signal)
+        done = _finished_symbol(
+            symbol, dict(outcome.state), inputs.alpha_signal, collect_alpha, cycle_at
+        )
+        return _GatedSymbol(symbol, done, None, inputs.alpha_signal)
+    except Exception as exc:
+        return _GatedSymbol(symbol, _failed_symbol(symbol, exc, secret_values), None, None)
+
+
+def _analyze_gated_symbol(
+    gated: _GatedSymbol,
+    *,
+    paid_phase: PaidPhase,
+    peer_ctx: tuple[tuple[str, str], ...],
+    collect_alpha: bool,
+    cycle_at: datetime | None,
+    secret_values: tuple[str, ...],
+) -> _ProcessedSymbol:
+    """EXP-27 faza 2 jednego symbolu za bramką. NIGDY nie rzuca."""
+    assert gated.state is not None, "faza 2 dostaje tylko symbole za bramką"
+    try:
+        raw = paid_phase.run(gated.state, peer_context=peer_ctx)
+        return _finished_symbol(gated.symbol, raw, gated.alpha_signal, collect_alpha, cycle_at)
+    except Exception as exc:
+        return _failed_symbol(gated.symbol, exc, secret_values)
+
+
+def _parallel_paths(settings: Settings) -> bool:
+    """Równolegle tylko przy concurrency > 1 i bez contagion (#5 zależy od kolejności)."""
+    return settings.symbol_concurrency > 1 and not settings.contagion_enabled
+
+
+def _run_paid_phase(
+    order: list[str],
+    gated: Mapping[str, _GatedSymbol],
+    *,
+    paid_phase: PaidPhase,
+    settings: Settings,
+    collect_alpha: bool,
+    cycle_at: datetime | None,
+    secret_values: tuple[str, ...],
+) -> dict[str, _ProcessedSymbol]:
+    """EXP-27 faza 2 w kolejności `order` (malejące |Δ|). Równolegle jak cykl
+    jednofazowy (pula startuje symbole w tej kolejności); sekwencyjnie z contagion
+    liczonym z werdyktów wcześniejszych symboli fazy 2 i throttle między nimi."""
+    if _parallel_paths(settings):
+        with ThreadPoolExecutor(max_workers=settings.symbol_concurrency) as executor:
+            processed = list(
+                executor.map(
+                    lambda sym: _analyze_gated_symbol(
+                        gated[sym],
+                        paid_phase=paid_phase,
+                        peer_ctx=(),
+                        collect_alpha=collect_alpha,
+                        cycle_at=cycle_at,
+                        secret_values=secret_values,
+                    ),
+                    order,
+                )
+            )
+        return dict(zip(order, processed, strict=True))
+
+    results: dict[str, _ProcessedSymbol] = {}
+    processed_stances: dict[str, str] = {}
+    for index, symbol in enumerate(order):
+        peer_ctx = (
+            build_peer_context(symbol, settings.peer_groups, processed_stances)
+            if settings.contagion_enabled
+            else ()
+        )
+        proc = _analyze_gated_symbol(
+            gated[symbol],
+            paid_phase=paid_phase,
+            peer_ctx=peer_ctx,
+            collect_alpha=collect_alpha,
+            cycle_at=cycle_at,
+            secret_values=secret_values,
+        )
+        results[symbol] = proc
+        if not proc.is_failure and proc.result.trend:
+            processed_stances[symbol] = proc.result.trend
+        # Throttle MIĘDZY płatnymi symbolami — chroni OpenAI TPM.
+        if settings.symbol_throttle_seconds > 0 and index < len(order) - 1:
+            time.sleep(settings.symbol_throttle_seconds)
+    return results
+
+
+def _analyze_symbols_two_phase(
+    eligible: list[str],
+    *,
+    use_case: AnalyzeMarketUseCase,
+    settings: Settings,
+    crypto_set: set[str],
+    etf_set: set[str],
+    regime_context: str,
+    regime_multiplier: float,
+    collect_alpha: bool,
+    alpha_use_case: AlphaEnrichmentUseCase,
+    phase_two_feeds: PhaseTwoFeeds,
+    cycle_at: datetime | None,
+    secret_values: tuple[str, ...],
+) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
+    """EXP-27: cykl dwufazowy. Faza 1 (wszystkie symbole): cena, reflect, bramka
+    domenowa; symbol pod progiem kończy jak dziś. Faza 2: feed AV zbudowany dla
+    symboli za bramką i płatna analiza w kolejności `rank_by_magnitude`, więc
+    sufit FIN-12 odcina najmniejsze |Δ|. Wyniki w kolejności `eligible`."""
+
+    def gate(symbol: str) -> _GatedSymbol:
+        return _gate_one_symbol(
+            symbol,
+            use_case=use_case,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+            earnings_gate_enabled=settings.earnings_calendar_enabled,
+            alpha_fusion_enabled=settings.alpha_fusion_enabled,
+            cycle_at=cycle_at,
+            secret_values=secret_values,
+        )
+
+    # Faza 1 nie zależy od kolejności (contagion żyje w fazie 2), więc idzie
+    # równolegle przy każdym concurrency > 1.
+    if settings.symbol_concurrency > 1:
+        with ThreadPoolExecutor(max_workers=settings.symbol_concurrency) as executor:
+            gated_list = list(executor.map(gate, eligible))
+    else:
+        gated_list = [gate(symbol) for symbol in eligible]
+
+    processed = {g.symbol: g.done for g in gated_list if g.done is not None}
+    passed = {g.symbol: g for g in gated_list if g.state is not None}
+    order = rank_by_magnitude(
+        {symbol: g.state["delta"] for symbol, g in passed.items() if g.state is not None}
+    )
+    logger.info(
+        "EXP-27 two-phase cycle: %d/%d symbols past the gate, paid phase by |Δ|: %s",
+        len(order),
+        len(eligible),
+        order,
+    )
+    if order:
+        sentiment_port, news_port = phase_two_feeds(order)
+        processed.update(
+            _run_paid_phase(
+                order,
+                passed,
+                paid_phase=use_case.paid_phase(
+                    sentiment_port=sentiment_port, news_port=news_port
+                ),
+                settings=settings,
+                collect_alpha=collect_alpha,
+                cycle_at=cycle_at,
+                secret_values=secret_values,
+            )
+        )
+
+    ordered = [processed[symbol] for symbol in eligible]
+    return (
+        [p.result for p in ordered],
+        sum(1 for p in ordered if p.is_failure),
+        {
+            s: p.alpha_signal
+            for s, p in zip(eligible, ordered, strict=True)
+            if p.alpha_signal is not None
+        },
+        {
+            s: p.alpha_price
+            for s, p in zip(eligible, ordered, strict=True)
+            if p.alpha_price is not None
+        },
+    )
+
+
 def _analyze_symbols(
     eligible: list[str],
     *,
@@ -1367,9 +2125,28 @@ def _analyze_symbols(
     regime_multiplier: float,
     collect_alpha: bool,
     alpha_use_case: AlphaEnrichmentUseCase,
+    cycle_at: datetime | None = None,
+    phase_two_feeds: PhaseTwoFeeds | None = None,
 ) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
-    """Dispatcher: wybiera ścieżkę równoległą lub sekwencyjną.
+    """Dispatcher: wybiera ścieżkę równoległą lub sekwencyjną; z `phase_two_feeds`
+    (EXP-27, `two_phase_cycle_enabled`) cykl dwufazowy.
     Zwraca (wyniki, liczba_błędów, alpha_signals, alpha_prices)."""
+    secret_values = settings.secret_values()
+    if phase_two_feeds is not None:
+        return _analyze_symbols_two_phase(
+            eligible,
+            use_case=use_case,
+            settings=settings,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+            phase_two_feeds=phase_two_feeds,
+            cycle_at=cycle_at,
+            secret_values=secret_values,
+        )
     # Ścieżka równoległa: tylko gdy concurrency > 1 ORAZ contagion off (contagion
     # #5 zależy od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
     if settings.symbol_concurrency > 1 and not settings.contagion_enabled:
@@ -1385,6 +2162,8 @@ def _analyze_symbols(
             alpha_use_case=alpha_use_case,
             earnings_gate_enabled=settings.earnings_calendar_enabled,
             alpha_fusion_enabled=settings.alpha_fusion_enabled,
+            cycle_at=cycle_at,
+            secret_values=secret_values,
         )
 
     if settings.symbol_concurrency > 1 and settings.contagion_enabled:
@@ -1404,6 +2183,8 @@ def _analyze_symbols(
         regime_multiplier=regime_multiplier,
         collect_alpha=collect_alpha,
         alpha_use_case=alpha_use_case,
+        cycle_at=cycle_at,
+        secret_values=secret_values,
     )
 
 
@@ -1434,15 +2215,55 @@ def _build_portfolio_radar(
         return None
 
 
-def _portfolio_sectors(results: list[SymbolResult]) -> dict[str, int]:
+def _build_position_risk(
+    settings: Settings,
+    repository: RepositoryPort,
+    portfolio: Portfolio | None,
+    rates: PlnRates | None = None,
+) -> PositionRisk | None:
+    """PORT-04 — VaR, obsunięcie i hedge REALNEGO portfela do sizingu.
+
+    Tylko za `portfolio_var_enabled` i tylko przy realnych pozycjach: bez nich
+    banda zostaje jak dotąd, a VaR radaru (równe wagi watchlisty) nigdy jej nie
+    zwęża. Hedge'em są wyłącznie trzymane instrumenty typu INVERSE_EQUITY
+    i VOLATILITY z `risk_symbol_types` (`EQUITY_HEDGE_TYPES`) — GLD czy EPOL to
+    inwestycja. Darmowa historia cen; błąd → None (banda bez zmian).
+
+    `rates` (kursy NBP) liczą wagi w złotych; pozycja bez kursu wypada."""
+    if not settings.portfolio_var_enabled or portfolio is None:
+        return None
+    try:
+        return PortfolioRiskUseCase(repository_port=repository).position_risk(
+            portfolio,
+            hedge_symbols=equity_hedge_symbols(settings.risk_symbol_types),
+            rates=rates,
+        )
+    except Exception:
+        logger.exception("Position risk failed — banda bez ryzyka portfela")
+        return None
+
+
+def _sector_map(settings: Settings) -> dict[str, str]:
+    """PORT-05 — symbol → etykieta sektora z jednego źródła: `sectors`,
+    `symbols_etf` i `crypto_symbols` z config.toml."""
+    return build_sector_map(
+        settings.sectors,
+        etf_symbols=settings.symbols_etf,
+        crypto_symbols=settings.crypto_symbols,
+    )
+
+
+def _portfolio_sectors(
+    results: list[SymbolResult], sector_map: Mapping[str, str]
+) -> dict[str, int]:
     """#4 — skład portfela wg sektorów (sektor → liczba instrumentów).
 
-    Reużywa istniejący słownik `SECTORS`; symbole spoza mapy trafiają do
+    Etykiety z mapy sektorów configu (PORT-05); symbole spoza mapy trafiają do
     "Inne", żeby licznik zawsze sumował się do liczby instrumentów.
     """
     counts: dict[str, int] = {}
     for r in results:
-        sector = SECTORS.get(r.symbol, "Inne")
+        sector = sector_map.get(r.symbol, "Inne")
         counts[sector] = counts.get(sector, 0) + 1
     return counts
 
@@ -1458,6 +2279,7 @@ def _classify_cycle_maturity(results: list[SymbolResult]) -> CycleMaturity:
     errors = sum(1 for r in results if r.status == "error")
     cold_start = sum(1 for r in results if r.skip_reason is SkipReason.COLD_START)
     below = sum(1 for r in results if r.skip_reason is SkipReason.BELOW_THRESHOLD)
+    stale = sum(1 for r in results if r.skip_reason is SkipReason.STALE_REFERENCE)
     # SkipReason.UNSUPPORTED_PRICE celowo nie ma tu swojej liczności — te symbole
     # wypadają z mianownika przez to, że nie trafiają do ŻADNEJ z powyższych sum.
     return classify_cycle(
@@ -1465,6 +2287,7 @@ def _classify_cycle_maturity(results: list[SymbolResult]) -> CycleMaturity:
         cold_start_count=cold_start,
         below_threshold_count=below,
         error_count=errors,
+        stale_reference_count=stale,
     )
 
 
@@ -1481,7 +2304,7 @@ def _build_subject(
 ) -> str:
     """#1 — temat maila jak nagłówek gazety, nie jak licznik.
 
-    Gdy cykl ma lead, jego pierwsza pozycja idzie do tematu ("NVDA -4.2%, rada
+    Gdy cykl ma lead, jego pierwsza pozycja idzie do tematu ("NVDA -4,2%, rada
     PODZIELONA"); bez leadu zostaje dotychczasowy temat licznikowy. `prefix`
     (np. "⚠️ [QUOTA] ") jest sygnałem operacyjnym i przetrwa w obu wariantach.
 
@@ -1646,12 +2469,13 @@ def _calibration_samples(rows: list[dict[str, Any]]) -> list[tuple[float, bool]]
 
 
 def _build_track_record(
-    settings: Settings, repository: RepositoryPort
+    settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
 ) -> tuple[EquityCurve | None, list[CalibrationBucket] | None, LessonsReport | None]:
     """T1/T2/T4 — krzywa kapitału, kalibracja, lessons (render-only, zero
     płatnych). Każda podsekcja flag-gated; wszystkie czytają zamknięte predykcje
     z okna track_record_days. Krzywa kapitału to portfel o równej wadze per
-    cykl (WIA-17), nie szeregowe składanie równoległych trade'ów."""
+    cykl (WIA-17), nie szeregowe składanie równoległych trade'ów, po kosztach
+    obrotu `costs` (WIA-50; None = brutto)."""
     equity_curve: EquityCurve | None = None
     calibration_buckets: list[CalibrationBucket] | None = None
     lessons: LessonsReport | None = None
@@ -1664,7 +2488,7 @@ def _build_track_record(
             logger.exception("Failed to fetch resolved predictions for track record")
             tr_resolved = []
         if settings.equity_curve_enabled:
-            equity_curve = portfolio_curve(tr_resolved)
+            equity_curve = portfolio_curve(tr_resolved, costs)
         if settings.lessons_enabled:
             lessons = build_lessons(tr_resolved)
     if settings.calibration_curve_enabled:
@@ -1679,7 +2503,7 @@ def _build_track_record(
 
 
 def _build_track_record_stats(
-    settings: Settings, repository: RepositoryPort
+    settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
 ) -> TrackRecordStats | None:
     """Dowód trafności (T1), Brier / BSS (T2) i pokrycie przedziałów 80% (ML-34)
     pod sekcją Track Record.
@@ -1688,18 +2512,24 @@ def _build_track_record_stats(
     `interval_coverage_enabled` (kolumny z migracji 032). Osobna funkcja,
     bo `_build_track_record` zwraca stały kontrakt trzech podsekcji. Każdy
     odczyt best-effort: błąd → brak danej statystyki, cykl leci dalej.
+    `costs` (WIA-50) to te same założenia, z którymi `_build_track_record`
+    liczy krzywą — jadą do etykiety „paper-PnL (koszt X bps)” i do porównania
+    z koszykiem i IVV (WIA-21), które bez kosztów nie powstaje.
     """
     evidence = None
     scores = None
+    benchmark = None
     if settings.equity_curve_enabled:
+        resolved: list[ResolvedPrediction] = []
         try:
-            evidence = hit_rate_evidence(
-                parse_resolved_predictions(
-                    repository.get_resolved_predictions(settings.track_record_days)
-                )
+            resolved = parse_resolved_predictions(
+                repository.get_resolved_predictions(settings.track_record_days)
             )
+            evidence = hit_rate_evidence(resolved)
         except Exception:
             logger.exception("Failed to compute hit-rate evidence for track record")
+        if resolved and costs is not None:
+            benchmark = _benchmark_comparison(settings, repository, resolved, costs)
     if settings.calibration_curve_enabled:
         try:
             scores = probability_scores(
@@ -1719,9 +2549,16 @@ def _build_track_record_stats(
             coverage = measured if measured.n else None
         except Exception:
             logger.exception("Failed to measure interval coverage for track record")
-    if evidence is None and scores is None and coverage is None:
+    paper_costs = costs if settings.equity_curve_enabled else None
+    if all(part is None for part in (evidence, scores, coverage, paper_costs, benchmark)):
         return None
-    return TrackRecordStats(hit_rate=evidence, scores=scores, coverage=coverage)
+    return TrackRecordStats(
+        hit_rate=evidence,
+        scores=scores,
+        coverage=coverage,
+        costs=paper_costs,
+        benchmark=benchmark,
+    )
 
 
 def _persist_quota_alerts(repository: RepositoryPort, alerts: list[QuotaAlert]) -> None:
@@ -1741,7 +2578,7 @@ def _fetch_report_context(
     resolved_since: datetime | None = None,
 ) -> tuple[
     dict[str, Any] | None,
-    list[ResolvedPrediction],
+    list[ResolvedPrediction] | None,
     list[QuotaAlert],
     list[InvestorHistory],
     list[PersonaTrackRecord],
@@ -1752,9 +2589,12 @@ def _fetch_report_context(
     Każdy odczyt osobno owinięty — błąd jednego nie blokuje pozostałych.
 
     `resolved_since` (WIA-19) — zamknięte predykcje to te ROZLICZONE od tej
-    chwili (start cyklu), a nie utworzone w ostatnich 24 h. None = okno 24 h."""
+    chwili (start cyklu), a nie utworzone w ostatnich 24 h. None = okno 24 h.
+
+    MAIL-25: nieudany odczyt zamkniętych predykcji zwraca None, nie pustą listę —
+    pusta lista znaczy w mailu „brak rozliczeń”, czego po awarii nie wiemy."""
     accuracy_stats: dict[str, Any] | None = None
-    resolved: list[ResolvedPrediction] = []
+    resolved: list[ResolvedPrediction] | None = None
     try:
         accuracy_stats = repository.get_accuracy_stats(ACCURACY_STATS_DAYS)
     except Exception:
@@ -1770,6 +2610,7 @@ def _fetch_report_context(
         resolved = parse_resolved_predictions(resolved_rows)
     except Exception:
         logger.exception("Failed to fetch resolved predictions")
+        resolved = None
 
     # Persystencja alertów z BIEŻĄCEGO cyklu (przed odczytem history, żeby też
     # tu trafiły) + odczyt z okna bannera.
@@ -1813,7 +2654,12 @@ def _without_owner_portfolio(context: ReportContext) -> ReportContext:
     bez pozycji, klastrów i cen pozycji spoza watchlisty. Bez portfela lead
     (a więc i preheader) nie dostaje tierów „Twojej pozycji”."""
     return dataclasses.replace(
-        context, user_portfolio=None, portfolio_clusters=None, held_prices=None
+        context,
+        user_portfolio=None,
+        portfolio_clusters=None,
+        held_prices=None,
+        position_risk=None,
+        portfolio_fx=None,
     )
 
 
@@ -1832,10 +2678,18 @@ def _dispatch_reports(
     all_symbols: list[str],
     context: ReportContext,
     legacy_push_notifier: ReportNotifierPort | None = None,
-) -> None:
+    cycle_symbols: list[str] | None = None,
+) -> bool:
     """Faza wysyłki: dociągnięcie danych raportu, zbudowanie raportu i rozesłanie
     — pojedynczo albo per subskrybent (raport tnięty do jego watchlisty). Cała
     faza jest best-effort: błąd wysyłki nie psuje exit-code cyklu.
+
+    Zwraca, czy mail wyszedł bez błędu (NIEZ-22/NIEZ-29: step summary i `cycle_runs`).
+    False także wtedy, gdy raport nie powstał, bo padło coś przed wysyłką.
+
+    `cycle_symbols` (FIN-34) to symbole, które TEN cykl wycenił w grafie; None =
+    cała watchlista. W dzień zamknięcia NYSE to samo krypto, więc trzymane akcje
+    z watchlisty dostają darmowy `/quote` jak pozycje spoza niej (PORT-07).
 
     `context` przynosi sekcje policzone JESZCZE PRZED wysyłką (ryzyko makro,
     radar portfela, alfa, koszt cyklu); resztę pól dokłada ta funkcja z odczytów
@@ -1845,6 +2699,8 @@ def _dispatch_reports(
     # powstaną później (np. Resend przy samej wysyłce), dopisuje `finally`.
     persisted_alerts = len(quota_monitor.alerts)
     email_delivered = True
+    # Wyjątek PRZED wysyłką = raportu nie ma; po wysyłce wynik maila już jest znany.
+    report_sent = False
     try:
         # WIA-19: za flagą sekcja zamkniętych predykcji = rozliczone w TYM cyklu
         # (`settled_at` ≥ start cyklu, migracja 029). Trigger stempluje zegarem
@@ -1863,21 +2719,39 @@ def _dispatch_reports(
 
         # T1/T2/T4: Track Record (render-only, zero płatnych). Każda podsekcja
         # flag-gated; wszystkie czytają zamknięte predykcje z okna track_record_days.
+        # WIA-50: krzywa, jej etykieta i scorecard z tymi samymi kosztami.
+        paper_costs = _paper_costs(settings)
         equity_curve, calibration_buckets, lessons = _build_track_record(
-            settings, repository
+            settings, repository, paper_costs
         )
-        track_record_stats = _build_track_record_stats(settings, repository)
+        track_record_stats = _build_track_record_stats(settings, repository, paper_costs)
         # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
         signal_calibration_buckets = _build_signal_calibration(settings, repository)
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
         maturity = _classify_cycle_maturity(results)
-        sectors = _portfolio_sectors(results)
+        sector_map = _sector_map(settings)
+        sectors = _portfolio_sectors(results, sector_map)
         # #12: karta kondycji modelu (flaga + migracja 019).
         model_scorecard = _build_model_scorecard(settings, repository)
         # #15: realny portfel użytkownika (flaga + migracja 023).
         user_portfolio = _build_user_portfolio(settings)
-        # PORT-07: pozycje spoza watchlisty dostają sam darmowy /quote.
-        held_prices = _quote_held_positions(settings, user_portfolio, all_symbols)
+        # PORT-07: pozycje spoza symboli cyklu dostają sam darmowy /quote.
+        held_prices = _quote_held_positions(
+            settings, user_portfolio, all_symbols if cycle_symbols is None else cycle_symbols
+        )
+        # PORT-11: kursy NBP do „P/L zł” (darmowe, poza bramką volatility).
+        portfolio_fx = _collect_portfolio_fx(settings, user_portfolio, started_at)
+        # PORT-04: ryzyko realnego portfela do sizingu (flaga + pozycje), wagi
+        # w złotych tymi samymi kursami co raport.
+        macro = context.macro_risk_report
+        position_risk = _build_position_risk(
+            settings,
+            repository,
+            user_portfolio,
+            rates=effective_pln_rates(
+                portfolio_fx, macro.polish_macro if macro is not None else None
+            ),
+        )
         # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
         consensus_shifts = (
             _build_consensus_shifts(repository, results, now=started_at)
@@ -1891,6 +2765,7 @@ def _dispatch_reports(
             accuracy_stats=accuracy_stats,
             resolved_predictions=resolved,
             resolved_this_cycle=resolved_since is not None,
+            resolved_unavailable=resolved is None,
             council_history=council_history,
             persona_track_record=persona_track_record,
             quota_alerts=recent_alerts,
@@ -1905,7 +2780,11 @@ def _dispatch_reports(
             consensus_shifts=consensus_shifts,
             user_portfolio=user_portfolio,
             held_prices=held_prices,
+            portfolio_fx=portfolio_fx,
             portfolio_clusters=_portfolio_clusters(settings),
+            position_risk=position_risk,
+            sector_map=sector_map,
+            sector_peers=settings.sector_peers,
             display_timezone=settings.display_timezone,
         )
 
@@ -2004,10 +2883,11 @@ def _dispatch_reports(
                 _send_legacy_push(
                     legacy_push_notifier, subject, _build(user_portfolio_in_text=False)
                 )
+        report_sent = True
 
         # #10: publiczny scorecard — osobny publisher, osobna ścieżka.
         _publish_public_scorecard(
-            settings, repository, build_public_scorecard_publisher(settings)
+            settings, repository, build_public_scorecard_publisher(settings), paper_costs
         )
 
         # #16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,
@@ -2022,15 +2902,17 @@ def _dispatch_reports(
                 push_notifier=build_push_notifier(settings, quota_monitor),
                 results=results,
                 started_at=started_at,
-                resolved=resolved,
+                resolved=resolved or [],
                 subject=subject,
                 email_delivered=email_delivered,
+                resolved_unavailable=resolved is None,
                 display_timezone=settings.display_timezone,
             )
     except Exception:
         logger.exception("Failed to send report")
     finally:
         _persist_quota_alerts(repository, quota_monitor.alerts[persisted_alerts:])
+    return report_sent and email_delivered
 
 
 def _send_legacy_push(
@@ -2045,12 +2927,233 @@ def _send_legacy_push(
         logger.exception("Failed to send the legacy push report")
 
 
-def main(settings: Settings | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+def _record_av_budget_alert(settings: Settings, quota_monitor: QuotaMonitor) -> None:
+    """FIN-32: najgorszy przypadek doby AV ponad pojemność kluczy → WARNING w bannerze
+    maila. Log z liczbami wystawia już walidator `Settings`; tu tylko treść maila
+    po polsku (MAIL-15), bo banner pokazuje wyłącznie Fast Loop."""
+    budget = settings.av_budget()
+    if budget.ok:
+        return
+    quota_monitor.record(
+        QuotaAlert(
+            source="Alpha Vantage",
+            severity=QuotaSeverity.WARNING,
+            message=(
+                f"Budżet Alpha Vantage nie domyka się: najgorszy przypadek doby to "
+                f"{budget.worst_case} zapytań (cała watchlista za bramką), a klucze "
+                f"dają {budget.capacity} (25 na klucz). Gdy za bramkę przejdzie "
+                "więcej symboli, część dostanie pusty feed newsów i sentymentu."
+            ),
+            action=(
+                "Dodaj klucz w ALPHA_VANTAGE_API_KEYS (darmowy na alphavantage.co) "
+                "albo zmniejsz watchlistę; av_budget_strict = true zatrzyma start."
+            ),
+            occurred_at=datetime.now(UTC),
+        )
     )
-    settings = settings or Settings.from_env()
+
+
+def _record_weekly_budget_alert(settings: Settings, quota_monitor: QuotaMonitor) -> None:
+    """WIA-11: najgorszy tydzień Fast Loopa ponad `fast_loop_weekly_budget_usd` →
+    WARNING w logu i w bannerze maila (wzorzec FIN-32). Fail-open: katalog person,
+    którego nie da się wczytać, pomija samą kontrolę — przebieg idzie dalej."""
+    budget_usd = settings.fast_loop_weekly_budget_usd
+    if budget_usd is None:
+        return
+    try:
+        personas = load_council_personas(Path(settings.council_personas_dir))
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "Fast Loop weekly budget not checked: council personas unreadable (%s)", exc
+        )
+        return
+    weekly = settings.fast_loop_weekly_budget(personas=min(len(personas), COUNCIL_MAX_PERSONAS))
+    if weekly.ok:
+        return
+    logger.warning(
+        "Fast Loop weekly budget exceeded: the worst case is %.2f USD a week (%d cycles × "
+        "%.4f USD, every eligible symbol past the volatility gate at the FIN-12 ceiling), "
+        "the budget fast_loop_weekly_budget_usd is %.2f USD. Raise the budget or lower "
+        "max_paid_llm_calls_per_cycle, the watchlist or the cron cadence.",
+        weekly.worst_case_usd,
+        weekly.cycles_per_week,
+        weekly.cycle_worst_usd,
+        budget_usd,
+    )
+    week_usd = format_money_pl(Decimal(str(weekly.worst_case_usd)), "USD")
+    cycle_usd = format_number_pl(Decimal(str(weekly.cycle_worst_usd)), signed=False, decimals=4)
+    budget = format_money_pl(Decimal(str(budget_usd)), "USD")
+    quota_monitor.record(
+        QuotaAlert(
+            source="FinOps",
+            severity=QuotaSeverity.WARNING,
+            message=(
+                f"Budżet tygodniowy Fast Loopa nie domyka się: najgorszy tydzień to "
+                f"{week_usd} ({weekly.cycles_per_week} cykli po ${cycle_usd}, cała "
+                f"watchlista za bramką przy suficie cyklu), a budżet to {budget}. "
+                "Szacunek, nie faktura."
+            ),
+            action=(
+                "Podnieś fast_loop_weekly_budget_usd w config.toml albo obniż "
+                "max_paid_llm_calls_per_cycle, watchlistę lub kadencję crona."
+            ),
+            occurred_at=datetime.now(UTC),
+        )
+    )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+# NIEZ-22: plik podsumowania kroku, który GitHub Actions pokazuje na stronie runu.
+STEP_SUMMARY_ENV = "GITHUB_STEP_SUMMARY"
+
+
+def append_step_summary(markdown: str, environ: Mapping[str, str] | None = None) -> None:
+    """NIEZ-22: dopisuje `markdown` do pliku z env `GITHUB_STEP_SUMMARY`.
+
+    Brak zmiennej (lokalny run) = nic. Błąd zapisu tylko loguje: summary to podgląd
+    przebiegu, nie jego wynik. Wspólne dla Fast Loopa, Slow Loopa i shock watcha."""
+    path = (os.environ if environ is None else environ).get(STEP_SUMMARY_ENV)
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as summary:
+            summary.write(markdown.rstrip("\n") + "\n\n")
+    except OSError:
+        logger.warning("Step summary not written to %s", STEP_SUMMARY_ENV, exc_info=True)
+
+
+def write_step_summary(render: Callable[[], str]) -> None:
+    """NIEZ-22: renderuje i dopisuje summary tylko w GitHub Actions (jest zmienna).
+
+    Wyjątek renderera też tylko loguje — podgląd nie może wywrócić przebiegu."""
+    if not os.environ.get(STEP_SUMMARY_ENV):
+        return
+    try:
+        markdown = render()
+    except Exception:
+        logger.warning("Step summary not rendered", exc_info=True)
+        return
+    append_step_summary(markdown)
+
+
+def _report_delivery(
+    delivered: bool,
+    *,
+    notifier: ReportNotifierPort,
+    subscribers: Sequence[Subscriber],
+    settings: Settings,
+) -> bool | None:
+    """NIEZ-22: czy mail cyklu wyszedł; None = przebieg bez kanału e-mail
+    (`NullNotifier` i brak fan-outu do subskrybentów) — nic nie miało wyjść."""
+    fan_out = bool(subscribers) and bool(settings.resend_api_key)
+    if not fan_out and isinstance(notifier, NullNotifier):
+        return None
+    return delivered
+
+
+def _write_cycle_summary(
+    *,
+    results: Sequence[SymbolResult],
+    telemetry: CycleTelemetry,
+    cost: CycleCost | None,
+    failures: int,
+    duration_s: float,
+    quota_alerts: Sequence[QuotaAlert],
+    delivered: bool | None,
+) -> None:
+    """NIEZ-22: agregaty cyklu na publicznej stronie runu — bez symboli i treści błędów."""
+    write_step_summary(
+        lambda: render_cycle_summary_markdown(
+            results,
+            paid_calls=telemetry.snapshot().paid_calls,
+            cycle_cost=cost,
+            failures=failures,
+            duration_s=duration_s,
+            quota_alerts=quota_alerts,
+            delivered=delivered,
+        )
+    )
+
+
+# FIN-34: wspólny log pominięcia akcji Fast Loopa i shock watcha (`main_watch`).
+STOCKS_SKIPPED_LOG = "%s — akcje pominięte (%d), krypto idzie normalnie: %s"
+
+
+def nyse_closure_label(settings: Settings, now: datetime) -> str | None:
+    """FIN-34: „święto NYSE (…)” albo „NYSE zamknięta (weekend)” w dniu `now`
+    (data ET); None, gdy NYSE handluje albo pomijanie jest wyłączone
+    (`nyse_closure_skip_enabled`). Ta sama reguła dla Fast Loopa i shock watcha."""
+    if not settings.nyse_closure_skip_enabled:
+        return None
+    reason = closure_reason(to_nyse_time(now).date())
+    if reason is None:
+        return None
+    return "NYSE zamknięta (weekend)" if reason == "weekend" else f"święto NYSE ({reason})"
+
+
+def build_heartbeat(settings: Settings) -> HeartbeatPort:
+    """NIEZ-13: ping zewnętrznego watchdoga; brak / pusty `HEARTBEAT_URL` = Null."""
+    url = (settings.heartbeat_url or "").strip()
+    if not url:
+        return NullHeartbeat()
+    return HttpHeartbeat(url)
+
+
+def ping_heartbeat(settings: Settings, *, ok: bool) -> None:
+    """NIEZ-13: jeden ping na koniec przebiegu. Błąd pingu tylko loguje (bez
+    tracebacku — komunikat adaptera i tak nie niesie URL-a): watchdog to sygnał
+    o przebiegu, nie jego wynik."""
+    try:
+        build_heartbeat(settings).ping(ok=ok)
+    except Exception as exc:
+        logger.warning("Heartbeat ping failed — run result unchanged: %s", exc)
+
+
+def run_with_heartbeat(settings: Settings, run: Callable[[], int]) -> int:
+    """NIEZ-13: przebieg entry pointa z pingiem heartbeatu na końcu (ok = exit 0).
+
+    Wyjątek przebiegu pinguje porażkę i leci dalej — job w Actions i tak pada,
+    a watchdog dowiaduje się od razu, nie po oknie checku. Wspólne dla Fast
+    Loopa, Slow Loopa i shock watcha."""
+    try:
+        exit_code = run()
+    except Exception:
+        ping_heartbeat(settings, ok=False)
+        raise
+    ping_heartbeat(settings, ok=exit_code == 0)
+    return exit_code
+
+
+def main(
+    settings: Settings | None = None, *, clock: Callable[[], datetime] = _utc_now
+) -> int:
+    """`clock` to zegar cyklu: dzień NYSE (FIN-34) i `started_at` raportu."""
+    resolved = settings or Settings.from_env()
+    configure_logging(resolved.secret_values())
+    return run_with_heartbeat(resolved, lambda: _run_fast_loop(resolved, clock))
+
+
+def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
+    """Jeden przebieg Fast Loopa; kod wyjścia jak `main()` (0 / 1 / 2)."""
+    if refuses_stub_writes(settings):
+        return STUB_WRITES_REFUSED_EXIT_CODE
+    # FIN-34: w dzień zamknięcia NYSE ceny akcji stoją — akcje nie idą do grafu.
+    # Krypto handluje w święta, więc idzie normalnie; bez krypto nie ma czego
+    # analizować, więc przebieg kończy się przed budową adapterów i bez maila.
+    closure = nyse_closure_label(settings, clock())
+    if closure is not None and not settings.crypto_symbols:
+        logger.info(
+            "%s — akcje pominięte, brak krypto: przebieg kończy się bez analizy i bez maila",
+            closure,
+        )
+        return 0
+    if closure is not None:
+        logger.info(STOCKS_SKIPPED_LOG, closure, len(settings.symbols), settings.crypto_symbols)
+    stock_symbols = [] if closure is not None else list(settings.symbols)
+    warn_if_paid_calls_disabled(settings)
     # MAIL-42: przebieg (run, commit, link do logów) — raz na cykl, z env GHA.
     run_context = RunContext.from_environ(os.environ)
     # Real-time alerty (U4): kanał alertów budujemy BEZ quota_monitora, żeby
@@ -2063,12 +3166,17 @@ def main(settings: Settings | None = None) -> int:
         else None
     )
     quota_monitor = QuotaMonitor(alert_notifier=alert_notifier)
+    _record_av_budget_alert(settings, quota_monitor)
+    _record_weekly_budget_alert(settings, quota_monitor)
     repository = build_repository(settings)
+    # FIN-13: jeden ledger tokenów na przebieg — adaptery zgłaszają, mail wycenia.
+    usage_ledger = UsageLedger()
     use_case = build_use_case(
         settings,
         repository=repository,
         quota_monitor=quota_monitor,
         run_context=run_context,
+        usage_ledger=usage_ledger,
     )
     # Mail i stary push osobno: tekst pushu nie niesie sekcji portfela.
     notifier = build_notifier(settings, quota_monitor=quota_monitor, include_push=False)
@@ -2084,11 +3192,11 @@ def main(settings: Settings | None = None) -> int:
         except Exception:
             logger.exception("Failed to list subscribers — fallback do pojedynczej wysyłki")
 
-    started_at = datetime.now(UTC)
+    started_at = clock()
     started_perf = time.perf_counter()
     logger.info(
         "Fast Loop start — symbols=%s crypto=%s",
-        settings.symbols,
+        stock_symbols,
         settings.crypto_symbols,
     )
 
@@ -2104,10 +3212,13 @@ def main(settings: Settings | None = None) -> int:
     # Krypto dochodzi do puli iterowanych symboli — ma własny adapter ceny
     # (CoinGecko) i własny próg volatility (5%).
     all_symbols = list(settings.symbols) + list(settings.crypto_symbols)
+    # FIN-34: symbole TEGO cyklu — w dzień zamknięcia NYSE samo krypto. Watchlista
+    # (`all_symbols`) zostaje pełna dla kontekstu raportu (trafność, radar, portfel).
+    cycle_symbols = [*stock_symbols, *settings.crypto_symbols]
     # Eligible — symbole, dla których pójdzie pełna analiza. Unsupported tickery
     # są oznaczone "ignored" przed pętlą, więc throttle policzy je poprawnie.
-    eligible = [s for s in all_symbols if s not in unsupported]
-    for skipped in (s for s in all_symbols if s in unsupported):
+    eligible = [s for s in cycle_symbols if s not in unsupported]
+    for skipped in (s for s in cycle_symbols if s in unsupported):
         logger.info(
             "%s: skipped — in SYMBOLS_UNSUPPORTED_PRICE (Finnhub free / EU-listed)",
             skipped,
@@ -2136,6 +3247,15 @@ def main(settings: Settings | None = None) -> int:
         regime_multiplier=regime_multiplier,
         collect_alpha=collect_alpha,
         alpha_use_case=alpha_use_case,
+        # ARCH-26: odznaki proweniencji liczą wiek danych od startu cyklu —
+        # tego samego zegara, który mail drukuje w nagłówku.
+        cycle_at=started_at,
+        # EXP-27: cykl dwufazowy tylko za flagą; None = cykl jednofazowy jak dotąd.
+        phase_two_feeds=(
+            build_phase_two_feeds(settings, quota_monitor)
+            if settings.two_phase_cycle_enabled
+            else None
+        ),
     )
     results.extend(loop_results)
 
@@ -2150,8 +3270,16 @@ def main(settings: Settings | None = None) -> int:
     # ---- Portfolio Radar (Q4 — korelacja/koncentracja watchlisty, darmowe) ----
     portfolio_risk_report = _build_portfolio_radar(settings, repository, all_symbols)
 
+    persist_llm_calls(
+        settings=settings,
+        repository=repository,
+        ledger=usage_ledger,
+        run_context=run_context,
+    )
+    cost = cycle_cost(settings, use_case.telemetry, usage_ledger)
+
     # ---- Wysyłka raportu ----
-    _dispatch_reports(
+    delivered = _dispatch_reports(
         results=results,
         started_at=started_at,
         duration=duration,
@@ -2163,6 +3291,7 @@ def main(settings: Settings | None = None) -> int:
         web_publisher=web_publisher,
         subscribers=subscribers,
         all_symbols=all_symbols,
+        cycle_symbols=cycle_symbols,
         legacy_push_notifier=legacy_push_notifier,
         context=ReportContext(
             macro_risk_report=macro_risk_report,
@@ -2170,11 +3299,40 @@ def main(settings: Settings | None = None) -> int:
             alpha_signals=alpha_signals,
             alpha_prices=alpha_prices,
             yield_curve=yield_curve,
-            # FinOps: koszt CAŁEGO cyklu z licznika grafu. Cykl w całości odcięty
-            # bramką volatility ma zerowy licznik → sekcja mówi "cykl darmowy".
-            cycle_cost=estimate_cycle_cost(dict(use_case.paid_calls)),
+            cycle_cost=cost,
             ml_model_loaded=use_case.ml_model_loaded,
             run_context=run_context,
+        ),
+    )
+    report_delivery = _report_delivery(
+        delivered, notifier=notifier, subscribers=subscribers, settings=settings
+    )
+    run_duration = time.perf_counter() - started_perf
+    _write_cycle_summary(
+        results=results,
+        telemetry=use_case.telemetry,
+        cost=cost,
+        failures=failures,
+        duration_s=run_duration,
+        quota_alerts=quota_monitor.alerts,
+        delivered=report_delivery,
+    )
+    persist_cycle_run(
+        settings=settings,
+        repository=repository,
+        run=CycleRun(
+            loop="fast",
+            run_id=run_context.run_id,
+            # Decyzja właściciela: numer próby czyta entry point, `RunContext`
+            # (i przepis predykcji WIA-20) zostaje bez zmian.
+            run_attempt=run_attempt_from_environ(os.environ),
+            started_at=started_at,
+            duration_s=run_duration,
+            eligible=len(eligible),
+            saved=sum(1 for result in results if result.status == "saved"),
+            failures=failures,
+            paid_calls=dict(use_case.telemetry.snapshot().paid_calls),
+            report_delivered=report_delivery,
         ),
     )
 

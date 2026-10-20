@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from openai import OpenAI
 
-from src.application.ports import Tool, ToolUseLLMPort
+from src.application.ports import Tool, ToolUseLLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
+from src.infrastructure.adapters._http import redact_secrets
+from src.infrastructure.llm._usage import openai_chat_usage, report_usage
 from src.infrastructure.llm.openai_client import (
     DEFAULT_TIMEOUT,
     validate_model_id,
@@ -41,6 +43,9 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
 
     `max_rounds` to twarda bramka FinOps — bez niej rozbiegany model pętliłby
     płatne wywołania bez końca.
+
+    FIN-13: każda runda to osobny płatny request — każda zgłasza swoje tokeny do
+    `usage_sink`, choć licznik cyklu liczy całą pętlę jako jedno wywołanie `llm`.
     """
 
     def __init__(
@@ -51,14 +56,20 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
         quota_monitor: QuotaMonitor | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        secret_values: Iterable[str] = (),
+        usage_sink: UsageSink | None = None,
     ) -> None:
+        """`secret_values` (z `Settings.secret_values()`, wstrzykiwane przez DI)
+        redagują błąd narzędzia, zanim wróci do modelu jako `{"error": ...}`."""
         # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
         validate_model_id(model)
+        self._usage_sink = usage_sink
         self._client = OpenAI(api_key=api_key, timeout=timeout)
         self._model = model
         self._max_rounds = max_rounds
         self._quota_monitor = quota_monitor
         self._max_tokens = max_tokens
+        self._secret_values = tuple(secret_values)
 
     @staticmethod
     def _map_tools(tools: Sequence[Tool]) -> list[dict[str, Any]]:
@@ -75,8 +86,7 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
             for tool in tools
         ]
 
-    @staticmethod
-    def _execute_tool(tool: Tool, raw_args: str) -> dict[str, Any]:
+    def _execute_tool(self, tool: Tool, raw_args: str) -> dict[str, Any]:
         """Wykonuje `tool.func` na rozparsowanych argumentach.
 
         Każdy błąd (złe JSON-argumenty, wyjątek funkcji) zamienia na
@@ -88,8 +98,10 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
         try:
             return tool.func(args)
         except Exception as exc:  # noqa: BLE001 — celowo łapiemy wszystko
-            logger.warning("Tool %s raised: %s", tool.name, exc)
-            return {"error": str(exc)}
+            # Treść wyjątku (URL z kluczem, echo klucza) idzie do płatnego modelu.
+            message = redact_secrets(str(exc), self._secret_values)
+            logger.warning("Tool %s raised: %s", tool.name, message)
+            return {"error": message}
 
     def analyze_with_tools(
         self, prompt: str, tools: Sequence[Tool]
@@ -112,6 +124,8 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
                 kwargs["tools"] = tool_schema
 
             response = self._client.chat.completions.create(**kwargs)
+            if self._usage_sink is not None:
+                report_usage(self._usage_sink, openai_chat_usage(response, self._model))
             message = response.choices[0].message
             tool_calls = getattr(message, "tool_calls", None)
 

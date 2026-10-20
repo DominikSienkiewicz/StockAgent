@@ -96,3 +96,80 @@ def test_deadman_builds_no_paid_adapter(settings, mocker) -> None:
 
     for builder in paid_builders:
         builder.assert_not_called()
+
+
+# NIEZ-11 (dni handlowe): po wznowieniu Fast Loopa (`liveness_fast_loop_max_gap_h` > 0)
+# jego oczekiwanie liczy się w dniach handlowych NYSE — weekend i święto nie alarmują.
+FRIDAY_CYCLE = datetime(2026, 10, 16, 5, 35, tzinfo=UTC)
+MONDAY_DEADMAN = datetime(2026, 10, 19, 9, 17, tzinfo=UTC)
+
+
+@pytest.fixture
+def resumed_settings(settings: Settings) -> Settings:
+    return settings.model_copy(update={"liveness_fast_loop_max_gap_h": 26})
+
+
+def _resumed_repo(fast_loop_last_seen: datetime, now: datetime) -> MagicMock:
+    repository = _repo(now - timedelta(days=1))
+    repository.get_latest_snapshot_at.return_value = fast_loop_last_seen
+    return repository
+
+
+def test_resumed_fast_loop_after_a_weekend_sends_nothing(resumed_settings, mocker) -> None:
+    notifier = _wire(mocker, _resumed_repo(FRIDAY_CYCLE, MONDAY_DEADMAN))
+
+    assert main_deadman.main(resumed_settings, now=MONDAY_DEADMAN) == 0
+
+    notifier.send_report.assert_not_called()
+
+
+def test_resumed_fast_loop_silent_for_two_trading_days_sends_one_mail(
+    resumed_settings, mocker
+) -> None:
+    tuesday_cycle = datetime(2026, 10, 13, 5, 35, tzinfo=UTC)
+    thursday_deadman = datetime(2026, 10, 15, 9, 17, tzinfo=UTC)
+    notifier = _wire(mocker, _resumed_repo(tuesday_cycle, thursday_deadman))
+
+    assert main_deadman.main(resumed_settings, now=thursday_deadman) == 0
+
+    notifier.send_report.assert_called_once()
+    assert "Fast Loop" in notifier.send_report.call_args.kwargs["subject"]
+
+
+# NIEZ-28: projekt Supabase jest na planie Free, który wstrzymuje projekt po 7 dniach
+# bez aktywności. Deadman raz dziennie czyta jeden wiersz (tylko odczyt) i mailuje,
+# gdy baza nie odpowiada — także wtedy, gdy wszystkie joby są wstrzymane.
+
+
+def test_unreachable_database_sends_the_database_alert(settings, mocker) -> None:
+    repository = _repo(datetime.now(UTC))
+    repository.probe_database.side_effect = RuntimeError("Supabase 540: project paused")
+    notifier = _wire(mocker, repository)
+
+    assert main_deadman.main(settings) == 0
+
+    notifier.send_report.assert_called_once()
+    kwargs = notifier.send_report.call_args.kwargs
+    assert "Supabase" in kwargs["subject"]
+    assert "7 dniach" in kwargs["plain_text"]
+    repository.get_last_scorecard_at.assert_not_called()
+
+
+def test_database_is_probed_even_when_every_job_is_paused(settings, mocker) -> None:
+    repository = _repo(None)
+    notifier = _wire(mocker, repository)
+    paused = settings.model_copy(update={"liveness_slow_loop_max_gap_h": 0})
+
+    assert main_deadman.main(paused) == 0
+
+    repository.probe_database.assert_called_once_with()
+    notifier.send_report.assert_not_called()
+
+
+def test_failed_database_alert_exits_1_so_the_workflow_alert_fires(settings, mocker) -> None:
+    repository = _repo(datetime.now(UTC))
+    repository.probe_database.side_effect = RuntimeError("timeout")
+    notifier = _wire(mocker, repository)
+    notifier.send_report.side_effect = RuntimeError("Resend 500")
+
+    assert main_deadman.main(settings) == 1

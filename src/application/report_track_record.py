@@ -1,7 +1,8 @@
 """Render sekcji 📈 Track Record w raporcie e-mail.
 
 Trzy podsekcje track-recordu agenta, render-only (zero płatnych wywołań):
-  - T1: krzywa kapitału (paper-PnL ze zrealizowanych predykcji) — podsumowanie
+  - T1: krzywa kapitału (paper-PnL ze zrealizowanych predykcji, po kosztach
+    obrotu — WIA-50) — podsumowanie, linia „na tle rynku” (koszyk i IVV, WIA-21)
     + zwięzła sparklinia tabelaryczna (email-safe, bez zewnętrznych obrazków),
   - T2: krzywa kalibracji (reliability diagram) — bucket pewności → realny
     hit-rate + ECE,
@@ -22,16 +23,24 @@ import html as _html
 from dataclasses import dataclass
 
 from src.application.report_evidence import (
-    PORTFOLIO_ASSUMPTIONS_PL,
+    BENCHMARK_METHOD_PL,
+    NO_BENCHMARK_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
+    PaperCosts,
     baselines_label,
+    benchmark_detail,
+    benchmark_line,
     hit_rate_detail,
     hit_rate_value,
     murphy_label,
+    paper_pnl_label,
+    portfolio_assumptions,
     probability_label,
     uncertainty_note,
 )
+from src.application.report_formatting import pct, pct_range
 from src.application.report_lessons import LessonsReport
+from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
     ProbabilityScores,
@@ -39,6 +48,7 @@ from src.domain.calibration_curve import (
 )
 from src.domain.conformal import IntervalCoverage
 from src.domain.equity_curve import EquityCurve
+from src.domain.number_format import DecimalMark
 from src.domain.track_record import HitRateEvidence
 
 # Maksymalna liczba słupków sparklini krzywej kapitału (ostatnie N transakcji) —
@@ -47,6 +57,17 @@ _SPARKLINE_BARS = 24
 _SPARKLINE_MAX_PX = 36
 
 _NOTE_STYLE = "font-size: 12px; color: #6b7280; margin: 0 0 10px 0;"
+# WIA-21: druga linia sparklini — koszyk buy&hold, neutralny szary.
+_BENCHMARK_BAR_COLOR = "#9ca3af"
+_SECTION_HEADER = (
+    "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
+    "📈 Track Record — skuteczność i kalibracja</h2>"
+)
+# Budżet MAIL-06: w duży dzień zostają same kluczowe liczby.
+_COMPACT_NOTE_PL = (
+    "Duży dzień — wersja zwarta: bez wykresów, kalibracji i lekcji; "
+    "pełny Track Record w zwykłym mailu."
+)
 
 
 @dataclass(frozen=True)
@@ -55,12 +76,18 @@ class TrackRecordStats:
 
     - `hit_rate` — dowód trafności kierunkowej z rozliczonych predykcji okna,
     - `scores` — Brier / log loss / BSS / Murphy z próbek kalibracji,
-    - `coverage` — pokrycie zrealizowane przedziałów 80% (ML-34, migracja 032).
+    - `coverage` — pokrycie zrealizowane przedziałów 80% (ML-34, migracja 032),
+    - `costs` — założenia kosztowe, z którymi policzono krzywą kapitału (WIA-50);
+      None = krzywa brutto i copy „bez kosztów transakcyjnych”,
+    - `benchmark` — krzywa agenta obok koszyka i IVV (WIA-21); None = linia
+      „Na tle rynku: brak danych benchmarku”.
     """
 
     hit_rate: HitRateEvidence | None = None
     scores: ProbabilityScores | None = None
     coverage: IntervalCoverage | None = None
+    costs: PaperCosts | None = None
+    benchmark: BenchmarkComparison | None = None
 
 
 def render_track_record_html(
@@ -68,13 +95,21 @@ def render_track_record_html(
     calibration_buckets: list[CalibrationBucket] | None,
     lessons: LessonsReport | None,
     stats: TrackRecordStats | None = None,
+    *,
+    compact: bool = False,
 ) -> str:
     """Fragment HTML sekcji Track Record. Pusty string, gdy wszystkie trzy
-    podsekcje są puste."""
+    podsekcje są puste.
+
+    `compact` (budżet MAIL-06, duży dzień) zostawia same kluczowe liczby:
+    paper-PnL z kosztem, linię agent · koszyk · IVV i trafność z przedziałem
+    i n — bez sparklinii, kalibracji, pokrycia i lekcji."""
     stats = stats or TrackRecordStats()
+    if compact:
+        return _render_compact_html(equity_curve, stats)
     subsections: list[str] = []
     if equity_curve is not None and equity_curve.n_trades > 0:
-        subsections.append(_render_equity_html(equity_curve, stats.hit_rate))
+        subsections.append(_render_equity_html(equity_curve, stats))
     if calibration_buckets:
         subsections.append(_render_calibration_html(calibration_buckets, stats.scores))
     if lessons is not None and lessons.items:
@@ -84,33 +119,88 @@ def render_track_record_html(
 
     if not subsections:
         return ""
+    return _SECTION_HEADER + "".join(subsections)
 
-    header = (
-        "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
-        "📈 Track Record — skuteczność i kalibracja</h2>"
+
+def _render_compact_html(equity_curve: EquityCurve | None, stats: TrackRecordStats) -> str:
+    """Duży dzień: nagłówek, podsumowanie krzywej, linia benchmarku i trafność."""
+    if equity_curve is None or equity_curve.n_trades == 0:
+        return ""
+    evidence = stats.hit_rate
+    hit_rate = ""
+    if evidence is not None and evidence.hit_rate.rate is not None:
+        line = f"Trafność kierunkowa: {hit_rate_value(evidence)} ({hit_rate_detail(evidence)})"
+        hit_rate = f"<p style='{_NOTE_STYLE}'>{_html.escape(line)}</p>"
+    return (
+        _SECTION_HEADER
+        + _render_equity_summary_html(equity_curve, stats.costs)
+        + _render_benchmark_line_html(stats.benchmark)
+        + hit_rate
+        + f"<p style='{_NOTE_STYLE}'>{_COMPACT_NOTE_PL}</p>"
     )
-    return header + "".join(subsections)
 
 
-def _render_equity_html(curve: EquityCurve, evidence: HitRateEvidence | None) -> str:
-    """T1 — podsumowanie krzywej kapitału, założenia, dowód trafności, sparklinia."""
+def _equity_title(costs: PaperCosts | None) -> str:
+    """„Krzywa kapitału (paper-PnL)” albo z kosztem: „… — paper-PnL (koszt 10 bps)”."""
+    if costs is None:
+        return "Krzywa kapitału (paper-PnL)"
+    return f"Krzywa kapitału — {paper_pnl_label(costs)}"
+
+
+def _render_equity_summary_html(curve: EquityCurve, costs: PaperCosts | None) -> str:
+    """Ramka z wynikiem łącznym, trafnością, obsunięciem i liczbą transakcji."""
     total_color = "#059669" if curve.total_return >= 0 else "#dc2626"
-    summary = (
+    return (
         "<div style='padding: 10px 14px; background: #eff6ff; "
         "border-left: 3px solid #2563eb; border-radius: 4px; "
         "margin-bottom: 10px; font-size: 13px;'>"
-        "<strong>Krzywa kapitału (paper-PnL):</strong> wynik łączny "
+        f"<strong>{_html.escape(_equity_title(costs))}:</strong> wynik łączny "
         f"<span style='color: {total_color}; font-weight: 600;'>"
-        f"{curve.total_return * 100:+.1f}%</span> · trafność "
-        f"{curve.win_rate * 100:.1f}% · max obsunięcie "
-        f"{curve.max_drawdown * 100:.1f}% · transakcji: {curve.n_trades}"
+        f"{pct(curve.total_return, signed=True, decimals=1)}</span> · trafność "
+        f"{pct(curve.win_rate, decimals=1)} · max obsunięcie "
+        f"{pct(curve.max_drawdown, decimals=1)} · transakcji: {curve.n_trades}"
         "</div>"
     )
+
+
+def _render_equity_html(curve: EquityCurve, stats: TrackRecordStats) -> str:
+    """T1 — podsumowanie krzywej kapitału, założenia, dowód trafności, sparklinia."""
+    summary = _render_equity_summary_html(curve, stats.costs)
     assumptions = (
-        f"<p style='{_NOTE_STYLE}'>{_html.escape(PORTFOLIO_ASSUMPTIONS_PL)} "
+        f"<p style='{_NOTE_STYLE}'>{_html.escape(portfolio_assumptions(stats.costs))} "
         f"{_html.escape(PORTFOLIO_METHOD_CHANGE_PL)}</p>"
     )
-    return summary + assumptions + _render_evidence_html(evidence) + _render_sparkline_html(curve)
+    basket = None if stats.benchmark is None else stats.benchmark.basket
+    return (
+        summary
+        + assumptions
+        + _render_benchmark_html(stats.benchmark)
+        + _render_evidence_html(stats.hit_rate)
+        + _render_sparkline_html(curve, basket)
+    )
+
+
+def _render_benchmark_line_html(benchmark: BenchmarkComparison | None) -> str:
+    """WIA-21 — „Na tle rynku: agent · koszyk · IVV” albo jawny brak danych."""
+    if benchmark is None:
+        return f"<p style='{_NOTE_STYLE}'>Na tle rynku: {NO_BENCHMARK_PL}</p>"
+    return (
+        "<p style='font-size: 13px; margin: 0 0 4px 0;'>Na tle rynku: "
+        f"<strong>{_html.escape(benchmark_line(benchmark))}</strong></p>"
+    )
+
+
+def _render_benchmark_html(benchmark: BenchmarkComparison | None) -> str:
+    """WIA-21 — linia benchmarku plus zwrot nadwyżkowy i hit-rate względem rynku."""
+    if benchmark is None:
+        return _render_benchmark_line_html(None)
+    note = (
+        f"{benchmark_detail(benchmark)}. {BENCHMARK_METHOD_PL} "
+        "Sparklinia: agent (kolor), koszyk (szary)."
+    )
+    return _render_benchmark_line_html(benchmark) + (
+        f"<p style='{_NOTE_STYLE}'>{_html.escape(note)}</p>"
+    )
 
 
 def _render_evidence_html(evidence: HitRateEvidence | None) -> str:
@@ -121,38 +211,63 @@ def _render_evidence_html(evidence: HitRateEvidence | None) -> str:
     baselines = baselines_label(evidence)
     if baselines:
         parts.append(f"naiwne strategie: {baselines}")
-    if evidence.verdict is not None:
-        parts.append(evidence.verdict)
+    verdict = evidence.verdict_in(DecimalMark.COMMA)
+    if verdict is not None:
+        parts.append(verdict)
     note = uncertainty_note(evidence)
     if note:
         parts.append(note)
     return f"<p style='{_NOTE_STYLE}'>{_html.escape(' · '.join(parts))}</p>"
 
 
-def _render_sparkline_html(curve: EquityCurve) -> str:
+def _render_sparkline_html(curve: EquityCurve, basket: EquityCurve | None = None) -> str:
     """Zwięzła sparklinia equity jako tabela słupków (email-safe, bez SVG/obrazków).
 
-    Słupki skalowane do zakresu [min, max] equity w oknie ostatnich N punktów."""
+    Słupki skalowane do zakresu [min, max] equity w oknie ostatnich N punktów.
+    Z koszykiem (WIA-21) drugi wiersz rysuje go szarymi słupkami we wspólnej
+    skali, więc wysokości obu wierszy da się porównać."""
     points = list(curve.points)[-_SPARKLINE_BARS:]
     if not points:
         return ""
-    equities = [p.equity for p in points]
+    bench = [] if basket is None else list(basket.points)[-_SPARKLINE_BARS:]
+    equities = [p.equity for p in points] + [p.equity for p in bench]
     lo, hi = min(equities), max(equities)
     span = (hi - lo) or 1.0
+
+    def height(equity: float) -> int:
+        # Wysokość ≥2px, by nawet płaski odcinek był widoczny.
+        return 2 + int((equity - lo) / span * (_SPARKLINE_MAX_PX - 2))
+
     cells: list[str] = []
     for p in points:
-        # Wysokość ≥2px, by nawet płaski odcinek był widoczny.
-        height = 2 + int((p.equity - lo) / span * (_SPARKLINE_MAX_PX - 2))
         color = "#0ea5e9" if p.period_return >= 0 else "#f97316"
         cells.append(
             "<td style='vertical-align: bottom; padding: 0 1px;'>"
-            f"<div style='width: 6px; height: {height}px; "
+            f"<div style='width: 6px; height: {height(p.equity)}px; "
             f"background: {color}; border-radius: 1px;'></div>"
             "</td>"
         )
+    if not bench:
+        return (
+            "<table role='presentation' style='border-collapse: collapse; "
+            f"height: {_SPARKLINE_MAX_PX}px; margin: 0 0 16px 0;'><tr>"
+            + "".join(cells)
+            + "</tr></table>"
+        )
+    # Zwięzły inline styl drugiego wiersza — każdy bajt maila idzie do budżetu MAIL-06.
+    bench_cells = "".join(
+        "<td style='vertical-align:bottom;padding:0 1px'>"
+        f"<div style='width:6px;height:{height(p.equity)}px;"
+        f"background:{_BENCHMARK_BAR_COLOR}'></div></td>"
+        for p in bench
+    )
     return (
-        f"<table style='border-collapse: collapse; height: {_SPARKLINE_MAX_PX}px; "
-        "margin: 0 0 16px 0;'><tr>" + "".join(cells) + "</tr></table>"
+        "<table role='presentation' style='border-collapse: collapse; "
+        f"height: {2 * _SPARKLINE_MAX_PX}px; margin: 0 0 16px 0;'><tr>"
+        + "".join(cells)
+        + "</tr><tr>"
+        + bench_cells
+        + "</tr></table>"
     )
 
 
@@ -177,12 +292,12 @@ def _render_calibration_html(
         color = _severity_color(gap)
         rows.append(
             "<tr>"
-            f"<td style='padding: 6px 8px;'>{b.lower * 100:.0f}–{b.upper * 100:.0f}%</td>"
+            f"<td style='padding: 6px 8px;'>{pct_range(b.lower, b.upper)}</td>"
             f"<td style='padding: 6px 8px; text-align: right;'>{b.count}</td>"
             f"<td style='padding: 6px 8px; text-align: right;'>"
-            f"{b.mean_confidence * 100:.0f}%</td>"
+            f"{pct(b.mean_confidence, decimals=0)}</td>"
             f"<td style='padding: 6px 8px; text-align: right; color: {color}; "
-            f"font-weight: 600;'>{b.hit_rate * 100:.0f}%</td>"
+            f"font-weight: 600;'>{pct(b.hit_rate, decimals=0)}</td>"
             "</tr>"
         )
     ece_color = _severity_color(ece)
@@ -203,14 +318,14 @@ def _render_calibration_html(
         "font-size: 13px; margin-bottom: 8px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Pewność</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>N</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Śr. pewność</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Hit-rate</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Pewność</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>N</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Śr. pewność</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Hit-rate</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         "<p style='font-size: 12px; color: #6b7280; margin: 0 0 16px 0;'>"
         f"Pomocniczo — błąd kalibracji (ECE): <strong style='color: {ece_color};'>"
-        f"{ece * 100:.1f}%</strong> — im niżej, tym lepiej pewność odpowiada "
+        f"{pct(ece, decimals=1)}</strong> — im niżej, tym lepiej pewność odpowiada "
         "realnej trafności.</p>"
     )
 
@@ -221,9 +336,9 @@ def _render_coverage_html(coverage: IntervalCoverage) -> str:
     gap = abs(rate - coverage.nominal)
     return (
         f"<p style='font-size: 13px; margin: 12px 0 4px 0; color: {_severity_color(gap)};'>"
-        f"<strong>Pokrycie przedziałów {coverage.nominal * 100:.0f}%: zrealizowane "
-        f"{rate * 100:.0f}% ({coverage.hits}/{coverage.n}) vs nominalne "
-        f"{coverage.nominal * 100:.0f}%</strong></p>"
+        f"<strong>Pokrycie przedziałów {pct(coverage.nominal, decimals=0)}: zrealizowane "
+        f"{pct(rate, decimals=0)} ({coverage.hits}/{coverage.n}) vs nominalne "
+        f"{pct(coverage.nominal, decimals=0)}</strong></p>"
         f"<p style='{_NOTE_STYLE}'>Gwarancja pokrycia zakłada wymienność obserwacji, "
         "której rynek nie spełnia (zmienność się grupuje, reżimy się zmieniają). "
         "ACI łagodzi zmianę rozkładu, ale niczego nie gwarantuje — dlatego "
@@ -248,7 +363,7 @@ def _render_lessons_html(lessons: LessonsReport) -> str:
     items: list[str] = []
     for item in lessons.items:
         change = (
-            f" ({item.actual_change_pct * 100:+.1f}%)"
+            f" ({pct(item.actual_change_pct, signed=True, decimals=1)})"
             if item.actual_change_pct is not None
             else ""
         )

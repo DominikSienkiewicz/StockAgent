@@ -8,15 +8,31 @@ from __future__ import annotations
 
 import tomllib
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 from src.application.report_formatting import (
     COMPANY_NAMES,
     DEFAULT_DISPLAY_TIMEZONE,
+    DOT_NUMBERS,
+    PALETTE,
+    POLISH_NUMBERS,
+    build_sector_map,
     company_label,
+    delta_color,
     format_local,
+    format_local_date,
+    money,
+    number,
+    number_exact,
+    pct,
+    pct_range,
+    plural_pl,
     provenance_badges_html,
     sector_label,
+    trend_color,
 )
 from src.domain.provenance import ProvenanceBadge, ProvenanceLevel
 
@@ -26,25 +42,38 @@ CONFIG_TOML = Path(__file__).resolve().parents[2] / "config.toml"
 # nowy symbol w configu bez nazwy wywala ten test.
 _CONFIGURED_SYMBOL_LISTS = ("symbols", "symbols_etf", "crypto_symbols", "risk_symbols")
 
+# PORT-05: mapa sektorów nie żyje już w kodzie — testy podają ją jawnie,
+# z tymi samymi etykietami, które dawała dawna mapa w `report_formatting`.
+_SECTOR_MAP = build_sector_map(
+    {
+        "Big Tech": ["AAPL"],
+        "Półprzewodniki/AI": ["NVDA"],
+        "Chmura/Software": ["MSFT"],
+        "Cyberbezpieczeństwo": ["CRWD", "PANW", "OKTA", "S", "SAIL"],
+    },
+    etf_symbols=("VT", "QUAL", "IHI", "VB", "EWY", "IVV", "XDWD.DE", "IUSN.DE"),
+    crypto_symbols=("BTC", "ETH"),
+)
+
 
 class TestSectorLabel:
     def test_stock_returns_polish_sector(self) -> None:
-        assert sector_label("AAPL") == "Big Tech"
-        assert sector_label("NVDA") == "Półprzewodniki/AI"
-        assert sector_label("MSFT") == "Chmura/Software"
+        assert sector_label("AAPL", _SECTOR_MAP) == "Big Tech"
+        assert sector_label("NVDA", _SECTOR_MAP) == "Półprzewodniki/AI"
+        assert sector_label("MSFT", _SECTOR_MAP) == "Chmura/Software"
 
     def test_cybersecurity_bucket(self) -> None:
         # Nowo dodane spółki cyber muszą mieć sektor.
         for sym in ("CRWD", "PANW", "OKTA", "S", "SAIL"):
-            assert sector_label(sym) == "Cyberbezpieczeństwo", sym
+            assert sector_label(sym, _SECTOR_MAP) == "Cyberbezpieczeństwo", sym
 
     def test_etf_maps_to_etf(self) -> None:
         for sym in ("VT", "QUAL", "IHI", "VB", "EWY", "IVV", "XDWD.DE", "IUSN.DE"):
-            assert sector_label(sym) == "ETF", sym
+            assert sector_label(sym, _SECTOR_MAP) == "ETF", sym
 
     def test_crypto_maps_to_krypto(self) -> None:
-        assert sector_label("BTC") == "Krypto"
-        assert sector_label("ETH") == "Krypto"
+        assert sector_label("BTC", _SECTOR_MAP) == "Krypto"
+        assert sector_label("ETH", _SECTOR_MAP) == "Krypto"
 
     def test_unknown_symbol_returns_none(self) -> None:
         assert sector_label("ZZZZ") is None
@@ -53,18 +82,59 @@ class TestSectorLabel:
         assert sector_label("") is None
 
     def test_every_configured_symbol_has_a_sector(self) -> None:
-        # Każdy ticker z domyślnego portfolio (43) + krypto MUSI mieć sektor —
+        # Każdy ticker z config.toml (akcje, ETF-y, krypto) MUSI mieć sektor —
         # inaczej w mailu pojawi się symbol bez etykiety mimo że jest w SYMBOLS.
-        portfolio = [
-            "AAPL", "AMZN", "GOOGL", "MSFT", "META", "NVDA", "TSLA", "AMD",
-            "NET", "PLTR", "ORCL", "UBER", "TSM", "ASML", "ASMIY", "SAP",
-            "SIEGY", "NVO", "DELL", "IBM", "MU", "QCOM", "CRWD", "INTC",
-            "SNDK", "BLK", "SSNLF", "TEAM", "FROG", "SNOW", "DDOG", "SAIL",
-            "OKTA", "S", "PANW", "VT", "QUAL", "IHI", "VB", "EWY", "IVV",
-            "XDWD.DE", "IUSN.DE", "BTC", "ETH",
+        # Niezmiennik na mapie z configu, nie zamrożona lista (TEST-21, G79).
+        config = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+        sector_map = build_sector_map(
+            config["sectors"],
+            etf_symbols=config["symbols_etf"],
+            crypto_symbols=config["crypto_symbols"],
+        )
+        configured = [
+            *config["symbols"], *config["symbols_etf"], *config["crypto_symbols"]
         ]
-        missing = [s for s in portfolio if sector_label(s) is None]
+        missing = [s for s in configured if sector_label(s, sector_map) is None]
         assert not missing, f"brak sektora dla: {missing}"
+
+
+class TestBuildSectorMap:
+    """PORT-05: jedno źródło etykiet — sektory akcji z configu, ETF-y i krypto
+    z list klas aktywów."""
+
+    def test_stock_symbols_get_their_config_sector(self) -> None:
+        sector_map = build_sector_map(
+            {"Big Tech": ["AAPL"], "Finanse": ["BLK"]}, etf_symbols=(), crypto_symbols=()
+        )
+
+        assert sector_map == {"AAPL": "Big Tech", "BLK": "Finanse"}
+
+    def test_etfs_and_crypto_get_their_asset_class(self) -> None:
+        sector_map = build_sector_map({}, etf_symbols=("VT",), crypto_symbols=("BTC",))
+
+        assert sector_map == {"VT": "ETF", "BTC": "Krypto"}
+
+    def test_asset_class_wins_over_a_stock_sector(self) -> None:
+        sector_map = build_sector_map(
+            {"Big Tech": ["AAPL", "VT"]}, etf_symbols=("VT",), crypto_symbols=()
+        )
+
+        assert sector_map["VT"] == "ETF"
+
+    def test_insertion_order_is_config_sectors_then_etf_then_crypto(self) -> None:
+        sector_map = build_sector_map(
+            {"Mobilność": ["TSLA"], "Big Tech": ["AAPL"]},
+            etf_symbols=("VT",),
+            crypto_symbols=("BTC",),
+        )
+
+        assert list(dict.fromkeys(sector_map.values())) == [
+            "Mobilność", "Big Tech", "ETF", "Krypto"
+        ]
+
+    def test_label_without_a_map_is_none(self) -> None:
+        # Bez mapy z configu nie ma żadnej zapasowej mapy w kodzie.
+        assert sector_label("AAPL") is None
 
 
 class TestProvenanceBadgesHtml:
@@ -166,3 +236,125 @@ class TestFormatLocal:
 
     def test_default_display_timezone_is_warsaw(self) -> None:
         assert DEFAULT_DISPLAY_TIMEZONE == "Europe/Warsaw"
+
+
+class TestFormatLocalDate:
+    """FIN-14: data referencji ceny w mailu — lokalna, z rokiem."""
+
+    def test_local_date_carries_the_year(self) -> None:
+        assert format_local_date(datetime(2026, 9, 19, 17, 30, tzinfo=UTC), "Europe/Warsaw") == (
+            "19.09.2026"
+        )
+
+    def test_local_date_can_be_the_next_day(self) -> None:
+        assert format_local_date(datetime(2026, 5, 14, 23, 30, tzinfo=UTC), "Europe/Warsaw") == (
+            "15.05.2026"
+        )
+
+    def test_naive_datetime_is_read_as_utc(self) -> None:
+        assert format_local_date(datetime(2026, 5, 14, 23, 30), "Europe/Warsaw") == "15.05.2026"
+
+
+class TestPluralPl:
+    """ARCH-28: jedna reguła polskiej odmiany przez liczebnik zamiast kopii per sekcja."""
+
+    @pytest.mark.parametrize(
+        ("count", "expected"),
+        [
+            (1, "predykcja"),
+            (2, "predykcje"),
+            (4, "predykcje"),
+            (22, "predykcje"),
+            (104, "predykcje"),
+            (0, "predykcji"),
+            (5, "predykcji"),
+            (11, "predykcji"),
+            (12, "predykcji"),
+            (14, "predykcji"),
+            (21, "predykcji"),
+            (112, "predykcji"),
+            (-3, "predykcje"),
+        ],
+    )
+    def test_plural_pl_matches_polish_rules(self, count: int, expected: str) -> None:
+        assert plural_pl(count, "predykcja", "predykcje", "predykcji") == expected
+
+
+class TestPalette:
+    """ARCH-28: kolory raportu w jednym miejscu; helpery kolorów biorą je stąd."""
+
+    def test_palette_keeps_the_report_colors(self) -> None:
+        assert PALETTE.positive == "#15803d"
+        assert PALETTE.negative == "#dc2626"
+        assert PALETTE.neutral == "#737373"
+        assert PALETTE.muted == "#6b7280"
+
+    def test_color_helpers_read_the_palette(self) -> None:
+        assert trend_color("BULLISH") == PALETTE.positive
+        assert trend_color("BEARISH") == PALETTE.negative
+        assert trend_color(None) == PALETTE.neutral
+        assert delta_color(Decimal("0.01")) == PALETTE.positive
+        assert delta_color(Decimal("-0.01")) == PALETTE.negative
+        assert delta_color(Decimal("0")) == PALETTE.neutral
+        assert delta_color(None) == PALETTE.neutral
+
+
+class TestPct:
+    """ARCH-28: `pct` to jeden formater procentów sekcji maila — po polsku, przez
+    domenowy `format_pct_pl` (MAIL-58 etap 2)."""
+
+    def test_pct_takes_the_number_of_decimals(self) -> None:
+        assert pct(Decimal("0.01234"), signed=True, decimals=1) == "+1,2%"
+        assert pct(Decimal("0.24"), decimals=0) == "24%"
+
+    def test_pct_defaults_write_two_decimals_the_polish_way(self) -> None:
+        assert pct(Decimal("0.01234")) == "1,23%"
+        assert pct(Decimal("-0.042"), signed=True) == "-4,20%"
+        assert pct(None) == "—"
+
+    def test_pct_rounds_a_float_tie_half_up(self) -> None:
+        # Binarnie 0.0125 * 100 to 1.25 „w dół od połowy” — format dałby „1.2%”.
+        assert pct(0.0125, decimals=1) == "1,3%"
+
+    def test_pct_drops_the_minus_from_a_value_rounded_to_zero(self) -> None:
+        assert pct(Decimal("-0.00001"), signed=True) == "+0,00%"
+
+
+class TestNumberAndMoney:
+    """MAIL-58 etap 2: liczby i kwoty sekcji maila po polsku."""
+
+    def test_number_uses_a_decimal_comma(self) -> None:
+        assert number(0.42, decimals=2, signed=True) == "+0,42"
+        assert number(Decimal("4.2710"), decimals=4) == "4,2710"
+        assert number(None, decimals=2) == "—"
+
+    def test_number_exact_keeps_the_precision_of_the_decimal(self) -> None:
+        assert number_exact(Decimal("4.2710")) == "4,2710"
+        assert number_exact(Decimal("186.00")) == "186,00"
+        assert number_exact(Decimal("65040")) == "65\u00a0040"
+
+    def test_money_writes_dollars_the_polish_way(self) -> None:
+        assert money(Decimal("3200")) == "$3\u00a0200,00"
+        assert money(Decimal("-200"), signed=True) == "-$200,00"
+        assert money(None) == "—"
+
+    def test_pct_range_puts_one_percent_sign_at_the_end(self) -> None:
+        assert pct_range(0.405, 0.63) == "41–63%"
+
+
+class TestNumberStyle:
+    """MAIL-58: etykiety współdzielone przez mail i publiczny scorecard — mail po
+    polsku, scorecard przy kropce i dotychczasowym zaokrąglaniu."""
+
+    def test_polish_style_matches_the_mail_helpers(self) -> None:
+        assert POLISH_NUMBERS.pct(0.52, decimals=1) == "52,0%"
+        assert POLISH_NUMBERS.pct_range(0.41, 0.63) == "41–63%"
+        assert POLISH_NUMBERS.number(0.231, decimals=3) == "0,231"
+        assert POLISH_NUMBERS.decimal_separator == ","
+
+    def test_dot_style_keeps_the_public_scorecard_format(self) -> None:
+        assert DOT_NUMBERS.pct(0.52, decimals=1) == "52.0%"
+        assert DOT_NUMBERS.pct(0.057, decimals=1, signed=True) == "+5.7%"
+        assert DOT_NUMBERS.pct(-0.0001, decimals=1, signed=True) == "+0.0%"
+        assert DOT_NUMBERS.number(0.231, decimals=3) == "0.231"
+        assert DOT_NUMBERS.decimal_separator == "."

@@ -10,6 +10,7 @@ import html as _html
 from decimal import Decimal
 
 from src.application.alpha_signals import AlphaSignals
+from src.application.report_formatting import number, pct
 from src.domain.analyst_consensus import AnalystRating
 from src.domain.earnings import EarningsProximity
 from src.domain.insider_flow import InsiderSignal
@@ -18,6 +19,8 @@ from src.domain.options_flow import OptionsSentiment
 from src.domain.social_velocity import SocialTrend
 
 _DASH = "—"
+# DAT-03: Form 4 widziane, ale żaden niesparsowany — to nie jest spokojne okno.
+_INSIDER_NO_EVIDENCE = "brak danych EDGAR"
 
 _INSIDER_LABEL = {
     InsiderSignal.NET_BUYING: "kupno insiderów",
@@ -90,10 +93,10 @@ def _render_yield_curve_html(curve: YieldCurveSnapshot) -> str:
     state = curve.state()
     color = _YIELD_STATE_COLOR[state]
     spread = curve.spread_10y_2y
-    spread_txt = f"{spread:+.2f} pp" if spread is not None else _DASH
+    spread_txt = f"{number(spread, decimals=2, signed=True)} pp" if spread is not None else _DASH
 
     def fmt(v: float | None) -> str:
-        return f"{v:.2f}%" if v is not None else _DASH
+        return f"{number(v, decimals=2)}%" if v is not None else _DASH
 
     return (
         "<div style='padding: 10px 14px; background: #f8fafc; "
@@ -125,26 +128,32 @@ def _render_signals_table_html(
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Symbol</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Insiderzy</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Analitycy</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Opcje</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Social</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Earnings</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Symbol</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Insiderzy</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Analitycy</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Opcje</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Social</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Earnings</th>"
         "</tr></thead><tbody>" + "".join(body) + "</tbody></table>"
     )
 
 
+def _insider_text(sig: AlphaSignals) -> str:
+    if sig.insider is None:
+        return _DASH
+    if not sig.insider.has_evidence():
+        return _INSIDER_NO_EVIDENCE
+    return _INSIDER_LABEL[sig.insider.evaluate_signal()]
+
+
 def _render_signal_row_html(sig: AlphaSignals, price: Decimal | None) -> str:
-    insider_txt = (
-        _INSIDER_LABEL[sig.insider.evaluate_signal()] if sig.insider else _DASH
-    )
+    insider_txt = _insider_text(sig)
     analyst_txt = _DASH
     if sig.analyst is not None:
         analyst_txt = _RATING_LABEL[sig.analyst.rating()]
         upside = sig.analyst.upside(price) if price is not None else None
         if upside is not None:
-            analyst_txt += f" ({upside * 100:+.0f}%)"
+            analyst_txt += f" ({pct(upside, signed=True, decimals=0)})"
     options_txt = (
         _OPTIONS_LABEL[sig.options.sentiment()] if sig.options else _DASH
     )
@@ -152,7 +161,7 @@ def _render_signal_row_html(sig: AlphaSignals, price: Decimal | None) -> str:
     if sig.social is not None:
         social_txt = (
             f"{_SOCIAL_LABEL[sig.social.trend()]} "
-            f"(×{sig.social.velocity_ratio():.1f})"
+            f"(×{number(sig.social.velocity_ratio(), decimals=1)})"
         )
     earnings_txt = _DASH
     if sig.earnings is not None:

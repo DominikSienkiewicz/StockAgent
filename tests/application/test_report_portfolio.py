@@ -88,8 +88,8 @@ class TestRenderVarAndStress:
         assert "<h2" in html
         assert "Value-at-Risk" in html
         # VaR/CVaR jako procenty + poziom ufności.
-        assert "8.0%" in html
-        assert "12.0%" in html
+        assert "8,0%" in html
+        assert "12,0%" in html
         assert "95%" in html
 
     def test_stress_table_rendered_when_present(self) -> None:
@@ -161,8 +161,8 @@ class TestInsufficientHistory:
 
         text = render_correlation_text(report)
 
-        assert "2.1%" in text
-        assert "3.4%" in text
+        assert "2,1%" in text
+        assert "3,4%" in text
 
     def test_text_is_empty_when_nothing_to_show(self) -> None:
         assert render_correlation_text(PortfolioRiskReport()) == ""

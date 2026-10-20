@@ -78,7 +78,7 @@ def test_html_shows_trailing_pe_value() -> None:
     )
     rep = _make_base_symbol_result(valuation=valuation)
     html, _ = build_html_report([rep], datetime(2026, 5, 17, tzinfo=UTC), 1.0)
-    assert "25.00" in html
+    assert "25,00" in html
     assert "UNDERVALUED" in html
 
 
@@ -93,7 +93,7 @@ def test_html_shows_eps_growth_as_percent() -> None:
     )
     rep = _make_base_symbol_result(valuation=valuation)
     html, _ = build_html_report([rep], datetime(2026, 5, 17, tzinfo=UTC), 1.0)
-    assert "15.0%" in html
+    assert "15,0%" in html
 
 
 def test_html_shows_dash_for_none_pe() -> None:

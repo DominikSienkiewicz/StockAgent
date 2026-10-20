@@ -10,16 +10,28 @@ Kluczem cyklu jest dzień UTC znacznika `prediction_logs.timestamp`: Fast Loop
 rusza najwyżej raz na dzień sesyjny, a predykcje jednego dnia są skorelowane.
 Predykcje bez znacznika czasu lądują w jednym wspólnym cyklu — to zaniża n_eff
 (ostrożnie), zamiast udawać, że są niezależne.
+
+WIA-50: krzywa portfela może być liczona po kosztach transakcyjnych
+(`PaperCosts`, koszt jednostronny od obrotu per symbol). Bez podanych kosztów
+krzywa jest brutto, a copy założeń mówi to wprost.
+
+WIA-21: `benchmark_comparison` stawia krzywą agenta obok koszyka (buy&hold tych
+samych symboli w tych samych oknach) i IVV (buy&hold w oknach predykcji, ze
+snapshotów `price_snapshots`), z tymi samymi kosztami. Brak danych IVV to jawne
+„brak danych benchmarku”, nie pusta liczba.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
+from src.application.report_formatting import POLISH_NUMBERS, NumberStyle
 from src.application.report_models import ResolvedPrediction
+from src.domain.benchmark import BenchmarkComparison, compare_with_benchmarks, window_change
 from src.domain.calibration_curve import ProbabilityScores
-from src.domain.equity_curve import EquityCurve, portfolio_equity_curve
+from src.domain.equity_curve import EquityCurve, PaperTrade, paper_portfolio_curve
 from src.domain.significance import MIN_BOOTSTRAP_CYCLES
 from src.domain.statistics import wilson_interval
 from src.domain.track_record import (
@@ -34,15 +46,54 @@ from src.domain.track_record import (
 SMALL_SAMPLE_N_EFF = 5
 
 PORTFOLIO_METHOD_SINCE = "2026-10-18"
-PORTFOLIO_ASSUMPTIONS_PL = (
+_PORTFOLIO_RULES_PL = (
     "Założenia: jeden punkt na cykl (dzień UTC predykcji), równa waga każdej "
-    "predykcji w cyklu, prognoza „bez ruchu” to gotówka; bez kosztów "
-    "transakcyjnych i poślizgu."
+    "predykcji w cyklu, prognoza „bez ruchu” to gotówka"
 )
+PORTFOLIO_ASSUMPTIONS_PL = f"{_PORTFOLIO_RULES_PL}; bez kosztów transakcyjnych i poślizgu."
 PORTFOLIO_METHOD_CHANGE_PL = (
     f"Metodologia zmieniona {PORTFOLIO_METHOD_SINCE}: wcześniej każdą transakcję "
     "składano szeregowo na 100% kapitału, więc starsze wyniki nie są porównywalne."
 )
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
+# WIA-21: benchmark rynku — ETF S&P 500 z watchlisty, więc ma snapshot w każdym
+# cyklu (`price_snapshots`, odczyt darmowy).
+BENCHMARK_SYMBOL = "IVV"
+# Strona publiczna nie podaje symboli watchlisty, także tickera benchmarku —
+# nazywa indeks, który IVV odwzorowuje (decyzja 2026-10-19).
+PUBLIC_BENCHMARK_LABEL = "S&P 500"
+NO_BENCHMARK_PL = "brak danych benchmarku"
+
+
+def benchmark_method(index_label: str = BENCHMARK_SYMBOL) -> str:
+    """Copy metody porównania z benchmarkami; `index_label` nazywa indeks."""
+    return (
+        "Koszyk = buy&hold tych samych symboli w tych samych oknach (long-only), "
+        f"{index_label} = buy&hold w oknach predykcji; agent i benchmarki płacą "
+        "ten sam koszt od obrotu. Okna z tych samych snapshotów cyklu co predykcje "
+        "(snapshot 05:30 UTC to zamknięcie poprzedniej sesji)."
+    )
+
+
+BENCHMARK_METHOD_PL = benchmark_method()
+
+
+@dataclass(frozen=True)
+class PaperCosts:
+    """WIA-50: założenia kosztowe paper-PnL — koszt jednostronny w bps od obrotu.
+
+    `crypto_cost_bps` dotyczy symboli z `crypto_symbols`, `cost_bps` — reszty
+    (akcje i ETF-y). Symbole służą tylko do doboru kosztu; nie trafiają do copy.
+    """
+
+    cost_bps: float = 0.0
+    crypto_cost_bps: float = 0.0
+    crypto_symbols: frozenset[str] = frozenset()
+
+    def for_symbol(self, symbol: str) -> float:
+        """Koszt jednostronny dla symbolu (krypto ma własny)."""
+        return self.crypto_cost_bps if symbol in self.crypto_symbols else self.cost_bps
 
 
 def cycle_key(prediction: ResolvedPrediction) -> str:
@@ -80,27 +131,172 @@ def hit_rate_evidence(resolved: Sequence[ResolvedPrediction]) -> HitRateEvidence
     return assess_directional_hit_rate(scored_calls(resolved))
 
 
-def portfolio_curve(resolved: Sequence[ResolvedPrediction]) -> EquityCurve | None:
-    """Krzywa portfela o równej wadze per cykl (WIA-17); None bez ruchów cen."""
+def _moment(prediction: ResolvedPrediction) -> datetime:
+    """Znacznik predykcji w UTC do sortowania; brak znacznika → najwcześniej."""
+    stamp = prediction.predicted_at
+    if stamp is None:
+        return _EPOCH
+    return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+
+
+def _benchmark_change(
+    prediction: ResolvedPrediction,
+    history: Sequence[tuple[datetime, float]],
+    settle_after: timedelta | None,
+) -> float | None:
+    """Zmiana benchmarku w oknie predykcji; None bez historii albo znacznika."""
+    if settle_after is None or not history or prediction.predicted_at is None:
+        return None
+    return window_change(history, prediction.predicted_at, settle_after)
+
+
+def paper_cycles(
+    resolved: Sequence[ResolvedPrediction],
+    costs: PaperCosts | None = None,
+    *,
+    benchmark_history: Sequence[tuple[datetime, float]] = (),
+    settle_after: timedelta | None = None,
+) -> list[list[PaperTrade]]:
+    """Predykcje z ruchem ceny jako cykle trade'ów, chronologicznie.
+
+    Repozytorium oddaje predykcje od najnowszej, a obrót per symbol (WIA-50)
+    wymaga kolejności czasu także wewnątrz cyklu. Bez `costs` koszt jest 0.
+    Z `benchmark_history` i `settle_after` (WIA-21) każdy trade niesie zmianę
+    benchmarku w swoim oknie.
+    """
+    costs = costs or PaperCosts()
     keyed = [
-        (cycle_key(p), (p.predicted_trend, change))
-        for p in resolved
+        (
+            cycle_key(p),
+            PaperTrade(
+                p.symbol,
+                p.predicted_trend,
+                change,
+                costs.for_symbol(p.symbol),
+                benchmark_change=_benchmark_change(p, benchmark_history, settle_after),
+            ),
+        )
+        for p in sorted(resolved, key=_moment)
         if (change := _realized_change(p)) is not None
     ]
-    if not keyed:
+    return group_by_cycle(keyed)
+
+
+def portfolio_curve(
+    resolved: Sequence[ResolvedPrediction], costs: PaperCosts | None = None
+) -> EquityCurve | None:
+    """Krzywa portfela o równej wadze per cykl (WIA-17), po kosztach z `costs`
+    (WIA-50, bez nich brutto); None bez ruchów cen."""
+    cycles = paper_cycles(resolved, costs)
+    if not cycles:
         return None
-    return portfolio_equity_curve(group_by_cycle(keyed))
+    return paper_portfolio_curve(cycles)
 
 
-def interval_label(low: float, high: float) -> str:
+def benchmark_comparison(
+    resolved: Sequence[ResolvedPrediction],
+    costs: PaperCosts,
+    benchmark_history: Sequence[tuple[datetime, float]],
+    *,
+    settle_after: timedelta,
+    index_symbol: str = BENCHMARK_SYMBOL,
+) -> BenchmarkComparison | None:
+    """WIA-21: agent, koszyk i indeks z tych samych okien i kosztów; None bez ruchów cen.
+
+    `benchmark_history` to chronologiczne `(znacznik, cena)` indeksu, a
+    `settle_after` — wiek, po którym `reflect_node` rozlicza predykcję. Indeks
+    płaci koszt akcji/ETF (`costs.for_symbol`).
+    """
+    cycles = paper_cycles(
+        resolved, costs, benchmark_history=benchmark_history, settle_after=settle_after
+    )
+    if not cycles:
+        return None
+    return compare_with_benchmarks(
+        cycles, index_symbol=index_symbol, index_cost_bps=costs.for_symbol(index_symbol)
+    )
+
+
+def benchmark_line(
+    comparison: BenchmarkComparison,
+    *,
+    numbers: NumberStyle = POLISH_NUMBERS,
+    index_label: str | None = None,
+) -> str:
+    """„agent +1,2% · koszyk +3,4% · IVV +2,1%”; bez danych IVV — jawny brak.
+
+    `index_label` zastępuje ticker indeksu (strona publiczna: „S&P 500”)."""
+    label = index_label or comparison.index_symbol
+    index = (
+        f"{label}: {NO_BENCHMARK_PL}"
+        if comparison.index is None
+        else f"{label} {numbers.pct(comparison.index.total_return, decimals=1, signed=True)}"
+    )
+    return (
+        f"agent {numbers.pct(comparison.agent.total_return, decimals=1, signed=True)} · "
+        f"koszyk {numbers.pct(comparison.basket.total_return, decimals=1, signed=True)} · "
+        f"{index}"
+    )
+
+
+def benchmark_detail(
+    comparison: BenchmarkComparison,
+    *,
+    numbers: NumberStyle = POLISH_NUMBERS,
+    index_label: str | None = None,
+) -> str:
+    """Zwrot nadwyżkowy vs koszyk (p.p.) i hit-rate względem rynku z liczbą zakładów."""
+    excess = numbers.pct(comparison.excess_vs_basket, decimals=1, signed=True)
+    hit_rate = comparison.market_hit_rate
+    market = (
+        NO_BENCHMARK_PL
+        if hit_rate.rate is None
+        else f"{numbers.pct(hit_rate.rate, decimals=1)} (n={hit_rate.directional})"
+    )
+    return (
+        f"Zwrot nadwyżkowy vs koszyk: {excess.removesuffix('%')} p.p. · "
+        f"hit-rate względem rynku ({index_label or comparison.index_symbol}): {market}"
+    )
+
+
+def bps_label(value: float, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
+    """Koszt w bps: „10”, a ułamkowy w zapisie stylu — „12,5” / „12.5”."""
+    if float(value).is_integer():
+        return str(int(value))
+    return numbers.number(value, decimals=1)
+
+
+def paper_pnl_label(costs: PaperCosts, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
+    """Etykieta krzywej: „paper-PnL (koszt 10 bps)”."""
+    return f"paper-PnL (koszt {bps_label(costs.cost_bps, numbers=numbers)} bps)"
+
+
+def portfolio_assumptions(
+    costs: PaperCosts | None, *, numbers: NumberStyle = POLISH_NUMBERS
+) -> str:
+    """Copy założeń krzywej portfela; bez `costs` — wariant brutto (bez kosztów)."""
+    if costs is None:
+        return PORTFOLIO_ASSUMPTIONS_PL
+    crypto = ""
+    if costs.crypto_symbols and costs.crypto_cost_bps != costs.cost_bps:
+        crypto = f" (krypto {bps_label(costs.crypto_cost_bps, numbers=numbers)} bps)"
+    return (
+        f"{_PORTFOLIO_RULES_PL}; koszt transakcyjny "
+        f"{bps_label(costs.cost_bps, numbers=numbers)} bps{crypto} od obrotu, "
+        "naliczany tylko przy zmianie pozycji symbolu: wejście i wyjście do gotówki "
+        "po 1×, odwrócenie 2×; bez poślizgu."
+    )
+
+
+def interval_label(low: float, high: float, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
     """„95% CI 41–63%” — przedział w pełnych procentach."""
-    return f"95% CI {low * 100:.0f}–{high * 100:.0f}%"
+    return f"95% CI {numbers.pct_range(low, high)}"
 
 
-def wilson_label(successes: float, n: int) -> str:
+def wilson_label(successes: float, n: int, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
     """Przedział Wilsona z liczbą prób, np. „95% CI 41–63%, n=80”."""
     low, high = wilson_interval(successes, n)
-    return f"{interval_label(low, high)}, n={n}"
+    return f"{interval_label(low, high, numbers=numbers)}, n={n}"
 
 
 def sample_label(n: int, n_eff: float) -> str:
@@ -110,39 +306,41 @@ def sample_label(n: int, n_eff: float) -> str:
     return f"n={n}, n_eff≈{n_eff:.0f}"
 
 
-def hit_rate_value(evidence: HitRateEvidence | None) -> str:
-    """Hit-rate kierunkowy jako „52.0%” albo „—”, gdy nie było zakładów."""
+def hit_rate_value(
+    evidence: HitRateEvidence | None, *, numbers: NumberStyle = POLISH_NUMBERS
+) -> str:
+    """Hit-rate kierunkowy jako „52,0%” albo „—”, gdy nie było zakładów."""
     rate = None if evidence is None else evidence.hit_rate.rate
-    return "—" if rate is None else f"{rate * 100:.1f}%"
+    return "—" if rate is None else numbers.pct(rate, decimals=1)
 
 
-def hit_rate_detail(evidence: HitRateEvidence) -> str:
+def hit_rate_detail(evidence: HitRateEvidence, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
     """„95% CI 41–63%, n=412, n_eff≈61” — przedział Wilsona liczony na n_eff."""
     if evidence.interval is None:
         return ""
     low, high = evidence.interval
     sample = sample_label(evidence.hit_rate.directional, evidence.n_eff)
-    return f"{interval_label(low, high)}, {sample}"
+    return f"{interval_label(low, high, numbers=numbers)}, {sample}"
 
 
-def baselines_label(evidence: HitRateEvidence) -> str:
+def baselines_label(evidence: HitRateEvidence, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
     """Naiwne baseline'y na tych samych predykcjach, np. „zawsze-BULLISH: 54% · …”."""
     b = evidence.baselines
     if b.always_bullish is None or b.always_bearish is None or b.always_sideways is None:
         return ""
     return (
-        f"zawsze-BULLISH: {b.always_bullish * 100:.0f}% · "
-        f"zawsze-BEARISH: {b.always_bearish * 100:.0f}% · "
-        f"zawsze-SIDEWAYS: {b.always_sideways * 100:.0f}%"
+        f"zawsze-BULLISH: {numbers.pct(b.always_bullish, decimals=0)} · "
+        f"zawsze-BEARISH: {numbers.pct(b.always_bearish, decimals=0)} · "
+        f"zawsze-SIDEWAYS: {numbers.pct(b.always_sideways, decimals=0)}"
     )
 
 
-def uncertainty_note(evidence: HitRateEvidence) -> str:
+def uncertainty_note(evidence: HitRateEvidence, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
     """Bootstrap po cyklach albo ostrzeżenie, że cykli jest za mało; plus mała próbka."""
     notes: list[str] = []
     if evidence.bootstrap is not None:
         low, high = evidence.bootstrap
-        notes.append(f"bootstrap po cyklach: {low * 100:.0f}–{high * 100:.0f}%")
+        notes.append(f"bootstrap po cyklach: {numbers.pct_range(low, high)}")
     elif evidence.hit_rate.directional:
         notes.append(
             f"za mało cykli ({evidence.cycles} < {MIN_BOOTSTRAP_CYCLES}) na bootstrap — "
@@ -155,32 +353,29 @@ def uncertainty_note(evidence: HitRateEvidence) -> str:
     return "; ".join(notes)
 
 
-def _signed_pct(value: float) -> str:
-    # `+ 0.0` zamienia ujemne zero z zaokrąglenia na dodatnie — „+0.0%”, nie „-0.0%”.
-    return f"{round(value * 100, 1) + 0.0:+.1f}%"
-
-
-def _score(value: float) -> str:
-    """Wynik do 3 miejsc bez zer końcowych: 0.231 → „0.231”, 0.250 → „0.25”.
+def _score(value: float, numbers: NumberStyle) -> str:
+    """Wynik do 3 miejsc bez zer końcowych: 0.231 → „0,231”, 0.250 → „0,25”.
 
     Krótszy zapis jest też bezpieczniejszy dla strony publicznej: test anty-PII
     szuka w niej fragmentów kwot (np. „250”), a „0.250” byłoby fałszywym trafem.
     """
-    return f"{value:.3f}".rstrip("0").rstrip(".")
+    text = numbers.number(value, decimals=3)
+    return text.rstrip("0").rstrip(numbers.decimal_separator)
 
 
-def probability_label(scores: ProbabilityScores) -> str:
-    """„Brier = 0.231 (klimatologia 0.245, BSS = +5.7%) · log loss = 0.66”."""
-    skill = "n/d" if scores.skill is None else _signed_pct(scores.skill)
+def probability_label(scores: ProbabilityScores, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
+    """„Brier = 0,231 (klimatologia 0,245, BSS = +5,7%) · log loss = 0,66”."""
+    skill = "n/d" if scores.skill is None else numbers.pct(scores.skill, decimals=1, signed=True)
     return (
-        f"Brier = {_score(scores.brier)} (klimatologia {_score(scores.climatology_brier)}, "
-        f"BSS = {skill}) · log loss = {_score(scores.log_loss)}"
+        f"Brier = {_score(scores.brier, numbers)} "
+        f"(klimatologia {_score(scores.climatology_brier, numbers)}, "
+        f"BSS = {skill}) · log loss = {_score(scores.log_loss, numbers)}"
     )
 
 
-def murphy_label(scores: ProbabilityScores) -> str:
-    """Rozkład Murphy'ego: „REL 0.01 · RES 0.004 · UNC 0.245”."""
+def murphy_label(scores: ProbabilityScores, *, numbers: NumberStyle = POLISH_NUMBERS) -> str:
+    """Rozkład Murphy'ego: „REL 0,01 · RES 0,004 · UNC 0,245”."""
     return (
-        f"REL {_score(scores.reliability)} · RES {_score(scores.resolution)} · "
-        f"UNC {_score(scores.uncertainty)}"
+        f"REL {_score(scores.reliability, numbers)} · RES {_score(scores.resolution, numbers)} · "
+        f"UNC {_score(scores.uncertainty, numbers)}"
     )

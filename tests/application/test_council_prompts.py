@@ -298,3 +298,42 @@ class TestChairmanPrompt:
         assert "final_recommendation" in prompt
         assert "consensus_strength" in prompt
         assert "dissenting_views" in prompt
+
+
+class TestBlindCouncil:
+    """EXP-02: ramię `blind` — persony nie widzą trendu ani pewności głównego
+    LLM, więc ich głosy nie mogą być echem werdyktu analityka. Reszta danych
+    (cena, zmiana, sentyment, cel ML, newsy) zostaje bez zmian."""
+
+    _LLM_LINE = "Trend wg głównego analityka agenta"
+
+    def test_blind_prompt_omits_main_llm_trend_and_confidence(self):
+        data = replace(_make_input(), blind=True)
+        peers = [_make_opinion("Cathie Wood", "SELL")]
+
+        for prompt in (
+            investor_prompt(_BUFFETT, data),
+            investor_revision_prompt(_BUFFETT, data, peers),
+        ):
+            assert self._LLM_LINE not in prompt
+            assert "BULLISH" not in prompt
+            assert "82%" not in prompt
+            assert "Cena aktualna: 180.00" in prompt
+            assert "Sentyment (Alpha Vantage, skala -1.0 do +1.0): 0.60" in prompt
+            assert "Cel cenowy ML (XGBoost): 185.00" in prompt
+
+    def test_sighted_prompt_still_shows_the_llm_verdict(self):
+        data = _make_input()
+
+        assert data.blind is False
+        for prompt in (
+            investor_prompt(_BUFFETT, data),
+            investor_revision_prompt(_BUFFETT, data, [_make_opinion("Cathie Wood")]),
+        ):
+            assert f"{self._LLM_LINE}: BULLISH (pewność: 82%)" in prompt
+
+    def test_blind_market_block_has_no_empty_line(self):
+        prompt = investor_prompt(_BUFFETT, replace(_make_input(), blind=True))
+
+        block = prompt.split("<dane_rynkowe>")[1].split("</dane_rynkowe>")[0]
+        assert "\n\n" not in block.strip("\n")

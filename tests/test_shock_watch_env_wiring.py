@@ -59,12 +59,56 @@ def _schedule(workflow: str) -> object:
     return triggers.get("schedule")
 
 
-def test_watch_cron_runs_only_alongside_the_fast_loop_cron() -> None:
-    # Watch nigdy nie zapisuje snapshotu ceny — referencje bierze wyłącznie
-    # z Fast Loopa, a referencja starsza niż 30 h tłumi każdy alert. Cron watcha
-    # bez crona Fast Loopa to co godzinę „0 alertów" bez żadnej szansy na alert.
-    if _schedule("shock_watch_hourly.yml"):
-        assert _schedule("fast_loop_12h.yml"), (
-            "shock_watch_hourly.yml ma aktywny cron, a fast_loop_12h.yml nie — "
-            "watch jest wtedy ślepy (brak świeżych snapshotów cen)."
+def _wired_daily_change_source(mocker) -> object:
+    """Źródło dziennej zmiany, które `main_watch.main()` składa z PRAWDZIWEJ fabryki
+    ceny (`main_agent.build_market_port`); baza, push i sam skan są atrapami."""
+    import main_watch
+    from src.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="sk-test",
+        finnhub_api_key="fh",
+        alpha_vantage_api_keys=["av1"],
+        supabase_url="https://test.supabase.co",
+        supabase_key="anon",
+        symbols=["AAPL"],
+        crypto_symbols=["BTC"],
+        shock_alerts_enabled=True,
+        telegram_bot_token="tg-token",
+        telegram_chat_id="42",
+    )
+    mocker.patch("main_agent.build_repository")
+    mocker.patch("main_agent.build_push_notifier")
+    scan_watch = mocker.patch(
+        "main_watch.scan_watch", return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1)
+    )
+
+    main_watch.main(settings)
+
+    return scan_watch.call_args.kwargs.get("daily_change")
+
+
+def test_watch_cron_without_the_fast_loop_cron_needs_its_daily_change_source(mocker) -> None:
+    # ALR-02: watch ma własne źródło ruchu — dzienną zmianę z darmowego /quote —
+    # więc cron watcha może chodzić bez Fast Loopa. Bez tego źródła jedynymi
+    # referencjami są snapshoty Fast Loopa i cron dawałby co godzinę „0 alertów".
+    from src.application.ports import DailyChangePort
+
+    if _schedule("shock_watch_hourly.yml") and not _schedule("fast_loop_12h.yml"):
+        assert isinstance(_wired_daily_change_source(mocker), DailyChangePort), (
+            "shock_watch_hourly.yml ma aktywny cron bez fast_loop_12h.yml, a main_watch "
+            "nie składa źródła dziennej zmiany — watch byłby ślepy."
         )
+
+
+def test_watch_wires_the_free_price_router_as_its_daily_change_source(mocker) -> None:
+    # Strażnik wyżej sprawdza okablowanie tylko przy aktywnym cronie — ten test pilnuje,
+    # że to okablowanie istnieje już teraz, zanim właściciel odkomentuje cron.
+    from src.application.ports import DailyChangePort
+    from src.infrastructure.adapters.routing_market_data import RoutingMarketDataPort
+
+    source = _wired_daily_change_source(mocker)
+
+    assert isinstance(source, DailyChangePort)
+    assert isinstance(source, RoutingMarketDataPort)

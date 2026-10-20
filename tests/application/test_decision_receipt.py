@@ -87,3 +87,22 @@ def test_unknown_or_missing_schema_version_is_not_guessed() -> None:
     assert read_decision_receipt({"effective_threshold": "0.02"}) is None
     assert read_decision_receipt(None) is None
     assert read_decision_receipt("not a receipt") is None
+
+
+def test_v2_reads_the_experiment_arms_and_tolerates_their_absence() -> None:
+    # EXP-05: opcjonalny klucz v2 — bez bumpu wersji, brak = brak eksperymentu.
+    with_arms = read_decision_receipt(
+        {"schema_version": 2, "experiment_arms": {"EXP-02": "blind", "bad": 3}}
+    )
+    without_arms = read_decision_receipt({"schema_version": 2})
+
+    assert with_arms is not None and without_arms is not None
+    assert with_arms.experiment_arms == {"EXP-02": "blind"}
+    assert without_arms.experiment_arms == {}
+
+
+def test_v1_receipt_has_no_experiment_arms() -> None:
+    receipt = read_decision_receipt({**_V1, "experiment_arms": {"EXP-02": "blind"}})
+
+    assert receipt is not None
+    assert receipt.experiment_arms == {}

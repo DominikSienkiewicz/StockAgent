@@ -14,7 +14,7 @@ import requests
 from src.application.ports import ReportNotifierPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import build_session, raise_for_status_redacted
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +72,16 @@ class ResendNotifier(ReportNotifierPort):
             self._emit_quota_alert(
                 severity=QuotaSeverity.CRITICAL,
                 message=(
+                    f"Resend nieosiągalny ({type(exc).__name__}) — mail nie został "
+                    "dostarczony."
+                ),
+                action=(
+                    "Sprawdź status Resend i sieć runnera; kolejny przebieg ponowi "
+                    "wysyłkę."
+                ),
+                log_message=(
                     f"Resend unreachable ({type(exc).__name__}) — email not delivered."
                 ),
-                action="Check Resend status and the runner's network; the next run retries.",
             )
             raise
         # Resend zwraca 429 gdy free tier (100 mails/dobę) wyczerpany.
@@ -82,44 +89,60 @@ class ResendNotifier(ReportNotifierPort):
             self._emit_quota_alert(
                 severity=QuotaSeverity.CRITICAL,
                 message=(
-                    "Resend returned 429 — free tier (100 mails/day) "
-                    "exhausted. This report did not get delivered."
+                    "Resend zwrócił 429 — wyczerpany darmowy limit (100 maili/dobę). "
+                    "Ten raport nie został dostarczony."
                 ),
                 action=(
-                    "Wait 24h for daily reset, upgrade Resend plan, or "
-                    "throttle agent runs (GHA cron less frequently)."
+                    "Poczekaj 24 h na dobowy reset, podnieś plan Resend albo "
+                    "rzadziej uruchamiaj agenta (cron GHA)."
+                ),
+                log_message=(
+                    "Resend returned 429 — free tier (100 mails/day) "
+                    "exhausted. This report did not get delivered."
                 ),
             )
         elif 400 <= response.status_code < 500:
             self._emit_quota_alert(
                 severity=QuotaSeverity.CRITICAL,
                 message=(
-                    f"Resend returned {response.status_code} — email not "
-                    "delivered (auth / domain / quota issue)."
+                    f"Resend zwrócił {response.status_code} — mail nie został "
+                    "dostarczony (klucz, domena albo limit)."
                 ),
                 action=(
-                    "Verify RESEND_API_KEY is valid and DIGEST_FROM_EMAIL "
-                    "is verified in your Resend domain settings."
+                    "Sprawdź, czy RESEND_API_KEY jest ważny, a DIGEST_FROM_EMAIL "
+                    "zweryfikowany w ustawieniach domeny w Resend."
+                ),
+                log_message=(
+                    f"Resend returned {response.status_code} — email not "
+                    "delivered (auth / domain / quota issue)."
                 ),
             )
         elif response.status_code >= 500:
             self._emit_quota_alert(
                 severity=QuotaSeverity.CRITICAL,
                 message=(
+                    f"Resend zwrócił {response.status_code} — mail nie został "
+                    "dostarczony (błąd dostawcy)."
+                ),
+                action="Sprawdź status.resend.com; kolejny przebieg ponowi wysyłkę.",
+                log_message=(
                     f"Resend returned {response.status_code} — email not delivered "
                     "(provider error)."
                 ),
-                action="Check status.resend.com; the next run retries.",
             )
-        response.raise_for_status()
+        raise_for_status_redacted(response)
         message_id = response.json().get("id", "<no-id>")
         logger.info(
             "Resend: sent report to %s (id=%s)", self._recipient, message_id
         )
 
     def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str
+        self, severity: QuotaSeverity, message: str, action: str, log_message: str
     ) -> None:
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
+        logger.log(level, "%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(

@@ -217,3 +217,24 @@ class TestNullAdapter:
 
     def test_null_implements_port(self) -> None:
         assert issubclass(NullAnalystConsensusAdapter, AnalystConsensusPort)
+
+
+def test_network_error_log_omits_token(mocker, caplog) -> None:
+    # BEZ-07: `logger.exception` drukuje komunikat i traceback błędu sieci, a ten
+    # niesie URL z `&token=` — logi GHA są publiczne.
+    import logging
+
+    adapter = FinnhubAnalystAdapter(api_key="analyst-secret-token")
+    mocker.patch(
+        "requests.Session.get",
+        side_effect=requests.ConnectionError(
+            "Max retries exceeded with url: "
+            "/api/v1/stock/recommendation?symbol=AAPL&token=analyst-secret-token"
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert adapter.get_consensus("AAPL") is None
+
+    assert "Finnhub analyst consensus failed for AAPL" in caplog.text
+    assert "analyst-secret-token" not in caplog.text

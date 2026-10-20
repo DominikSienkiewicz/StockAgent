@@ -133,7 +133,7 @@ class TestCandidateMetrics:
             folds=5,
         )
         # (0.02 - 0.01) / 0.02 * 100 = 50%
-        assert "50.0%" in out
+        assert "50,0%" in out
         assert "61%" in out
         assert "5" in out
 
@@ -148,7 +148,7 @@ class TestCandidateMetrics:
             directional_hit_rate=0.40,
             folds=5,
         )
-        assert "-50.0%" in out
+        assert "-50,0%" in out
 
     def test_metrics_optional_render_without_them(self) -> None:
         # Bez metryk kandydata sekcja i tak pokazuje przebieg treningu.
@@ -430,11 +430,11 @@ class TestThreeBaselines:
                 llm_baseline_rmse=0.0190,
             )
             assert "zwrot 0" in out
-            assert "0.0200" in out
+            assert "0,0200" in out
             assert "dryf średniej" in out
-            assert "0.0195" in out
+            assert "0,0195" in out
             assert "sam LLM" in out
-            assert "0.0190" in out
+            assert "0,0190" in out
 
     def test_rows_without_the_new_baselines_render_as_before(self) -> None:
         # Wiersze sprzed migracji 028 albo zapis bez flagi: brak linii baseline'ów.

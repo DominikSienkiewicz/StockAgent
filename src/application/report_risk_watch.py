@@ -12,7 +12,7 @@ from __future__ import annotations
 import html as _html
 from decimal import Decimal
 
-from src.application.report_formatting import company_label
+from src.application.report_formatting import company_label, number, number_exact, pct
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.drawdown import DrawdownSignal
 from src.domain.hedge import HedgeAssessment
@@ -65,9 +65,8 @@ _STRESS_LABEL = {
 
 
 def _format_pct(value: Decimal) -> str:
-    pct = (value * Decimal("100")).quantize(Decimal("0.01"))
-    sign = "+" if pct >= 0 else ""
-    return f"{sign}{pct}%"
+    """Ułamek jako procent ze znakiem, dwa miejsca po przecinku („+2,10%”, MAIL-58)."""
+    return pct(value, signed=True, decimals=2)
 
 
 def _drawdown_alert(dd: DrawdownSignal) -> MacroAlertLevel:
@@ -139,9 +138,9 @@ def _render_hedges_table_html(hedges: list[HedgeAssessment]) -> str:
             "<td style='padding: 6px 8px;'><strong>"
             f"{_html.escape(company_label(h.hedge_symbol))}</strong></td>"
             f"<td style='padding: 6px 8px; text-align: right;'>"
-            f"{h.correlation:+.2f}</td>"
+            f"{number(h.correlation, decimals=2, signed=True)}</td>"
             f"<td style='padding: 6px 8px; text-align: right;'>"
-            f"{h.effectiveness:+.2f}</td>"
+            f"{number(h.effectiveness, decimals=2, signed=True)}</td>"
             f"<td style='padding: 6px 8px; color: {color}; font-weight: 600;'>"
             f"{_html.escape(h.label)}</td>"
             "</tr>"
@@ -153,10 +152,10 @@ def _render_hedges_table_html(hedges: list[HedgeAssessment]) -> str:
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Hedge</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Korelacja</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Skuteczność</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Ocena</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Hedge</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Korelacja</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Skuteczność</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Ocena</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + _TABLE_CLOSE
@@ -185,10 +184,10 @@ def _render_signals_table_html(signals: list[MacroRiskSignal]) -> str:
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Ticker</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Typ</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Δ vs poprz.</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Alert</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Ticker</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Typ</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Δ vs poprz.</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Alert</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + _TABLE_CLOSE
@@ -211,7 +210,7 @@ def _render_drawdowns_table_html(drawdowns: list[DrawdownSignal]) -> str:
             f"color: {color}; font-weight: 600;'>"
             f"{_format_pct(dd.drawdown_fraction)}</td>"
             f"<td style='padding: 6px 8px; text-align: right; color: #6b7280;'>"
-            f"{dd.peak_price}</td>"
+            f"{number_exact(dd.peak_price)}</td>"
             f"<td style='padding: 6px 8px; color: {color}; font-weight: 600;'>"
             f"{_ALERT_LABEL[alert]}</td>"
             f"</tr>"
@@ -221,11 +220,11 @@ def _render_drawdowns_table_html(drawdowns: list[DrawdownSignal]) -> str:
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Ticker</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Ticker</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>"
         "Spadek od 30d szczytu</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Szczyt</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Alert</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Szczyt</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Alert</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + _TABLE_CLOSE
@@ -239,9 +238,9 @@ def _render_polish_macro_html(snap: PolishMacroSnapshot) -> str:
         "<div style='padding: 10px 14px; background: #f9fafb; "
         "border-radius: 4px; font-size: 13px; margin-bottom: 16px;'>"
         "<strong>Polska — kursy referencyjne (NBP, 30d):</strong><br>"
-        f"EUR/PLN: <strong>{snap.eur_pln}</strong> "
+        f"EUR/PLN: <strong>{number_exact(snap.eur_pln)}</strong> "
         f"({_format_pct(snap.eur_pln_30d_change_pct)}) · "
-        f"USD/PLN: <strong>{snap.usd_pln}</strong> "
+        f"USD/PLN: <strong>{number_exact(snap.usd_pln)}</strong> "
         f"({_format_pct(snap.usd_pln_30d_change_pct)})<br>"
         f"Poziom stresu fiskalnego: <strong>{label}</strong>"
         "</div>"
@@ -282,7 +281,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
             lines.append(
                 f"  {company_label(dd.symbol):40s} "
                 f"{_format_pct(dd.drawdown_fraction):>8s} od szczytu "
-                f"(szczyt {dd.peak_price}) "
+                f"(szczyt {number_exact(dd.peak_price)}) "
                 f"[{_ALERT_LABEL[alert]}]"
             )
         lines.append("")
@@ -292,8 +291,8 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         for h in report.hedges:
             lines.append(
                 f"  {company_label(h.hedge_symbol):40s} "
-                f"corr={h.correlation:+.2f} "
-                f"skuteczność={h.effectiveness:+.2f} "
+                f"corr={number(h.correlation, decimals=2, signed=True)} "
+                f"skuteczność={number(h.effectiveness, decimals=2, signed=True)} "
                 f"[{h.label}]"
             )
         lines.append("")
@@ -301,11 +300,11 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
     if report.polish_macro is not None:
         snap = report.polish_macro
         lines.append(
-            f"  EUR/PLN: {snap.eur_pln} "
+            f"  EUR/PLN: {number_exact(snap.eur_pln)} "
             f"({_format_pct(snap.eur_pln_30d_change_pct)} / 30d)"
         )
         lines.append(
-            f"  USD/PLN: {snap.usd_pln} "
+            f"  USD/PLN: {number_exact(snap.usd_pln)} "
             f"({_format_pct(snap.usd_pln_30d_change_pct)} / 30d)"
         )
         lines.append(

@@ -35,6 +35,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from src.domain.council import CouncilVerdict
+from src.domain.number_format import format_pct_pl
+from src.domain.polish_labels import council_recommendation_label
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
 # --- Bazy scoringu (ADDYTYWNE, nie multiplikatywne) -------------------------
@@ -67,11 +69,14 @@ class LeadItem:
 
     `icon` + `headline` to jednolinijkowy punch (headline nadaje się też na
     temat maila), `detail` to jedno zdanie kontekstu (może być puste).
+    `symbol` (MAIL-06) wskazuje ticker pozycji — raport daje mu pełny blok
+    uzasadnień; None = pozycja bez symbolu (alert limitu).
     """
 
     icon: str
     headline: str
     detail: str
+    symbol: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,7 +90,7 @@ class LeadSignal:
       wyżej przelicza ułamek z `PriceDelta` przez `.percent`.
     - `council_verdict` bywa None (cykl bez rady — np. odcięty bramką volatility).
     - `resolved_label` to gotowy, sformatowany tekst werdyktu zamkniętej predykcji
-      (np. „trafiona predykcja BUY") albo None, gdy nic się w tym cyklu nie zamknęło.
+      (np. „trafiona prognoza wzrostu") albo None, gdy nic się w tym cyklu nie zamknęło.
     - `position_weight` (PORT-10) to udział symbolu w realnym portfelu jako UŁAMEK
       (0.24 = 24%), None = symbol spoza portfela albo portfela brak.
     - `crossed_volatility_gate` — ruch przekroczył próg bramki volatility w tym
@@ -118,8 +123,8 @@ def _magnitude(delta_pct: Decimal) -> float:
 
 
 def _format_delta(delta_pct: Decimal) -> str:
-    """Delta jako podpisany procent z jednym miejscem po przecinku (np. „-4.2%")."""
-    return f"{delta_pct:+.1f}%"
+    """Delta jako podpisany procent z jednym miejscem po przecinku (np. „-4,2%”, MAIL-58)."""
+    return format_pct_pl(delta_pct, signed=True)
 
 
 def _quota_candidate(alert: QuotaAlert) -> _Candidate:
@@ -133,8 +138,8 @@ def _quota_candidate(alert: QuotaAlert) -> _Candidate:
 
 
 def _format_weight(weight: Decimal) -> str:
-    """Waga pozycji jako procent bez miejsc po przecinku (0.24 → „24%")."""
-    return f"{weight * 100:.0f}%"
+    """Waga pozycji jako procent bez miejsc po przecinku (0.24 → „24%”, MAIL-58)."""
+    return format_pct_pl(weight * 100, signed=False, decimals=0)
 
 
 def _position_candidate(signal: LeadSignal) -> _Candidate | None:
@@ -159,6 +164,7 @@ def _position_candidate(signal: LeadSignal) -> _Candidate | None:
                 f"({_format_weight(weight)} portfela) {delta_label}"
             ),
             detail=verdict.summary,
+            symbol=signal.symbol,
         )
         return _Candidate(score=_AGAINST_POSITION_SCORE + impact, item=item)
 
@@ -171,6 +177,7 @@ def _position_candidate(signal: LeadSignal) -> _Candidate | None:
                 if verdict is not None
                 else signal.resolved_label or "Twoja pozycja ruszyła się ponad próg bramki."
             ),
+            symbol=signal.symbol,
         )
         return _Candidate(score=_POSITION_MOVE_SCORE + impact, item=item)
     return None
@@ -199,6 +206,7 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
             icon="⚖️",
             headline=f"{signal.symbol} {delta_label}, rada PODZIELONA",
             detail=verdict.summary,
+            symbol=signal.symbol,
         )
         return _Candidate(score=_SPLIT_SCORE + magnitude, item=item)
 
@@ -208,9 +216,10 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
             icon="🔥",
             headline=(
                 f"{signal.symbol} {delta_label}, "
-                f"rada zgodna: {verdict.final_recommendation}"
+                f"rada zgodna: {council_recommendation_label(verdict.final_recommendation)}"
             ),
             detail=verdict.summary,
+            symbol=signal.symbol,
         )
         return _Candidate(score=_STRONG_CONSENSUS_SCORE + magnitude, item=item)
 
@@ -220,6 +229,7 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
             icon="📊",
             headline=f"{signal.symbol} {delta_label}: {signal.resolved_label}",
             detail=signal.resolved_label,
+            symbol=signal.symbol,
         )
         return _Candidate(score=_CLOSED_VERDICT_SCORE + magnitude, item=item)
 

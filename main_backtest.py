@@ -19,6 +19,7 @@ from src.application.use_cases.backtest import BacktestUseCase
 from src.config import Settings
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+from src.infrastructure.logging_redaction import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -35,21 +36,21 @@ def build_use_case(settings: Settings) -> BacktestUseCase:
         db_port=SupabaseRepository(
             url=settings.supabase_url, key=settings.supabase_key
         ),
+        cost_bps=settings.paper_cost_bps,
     )
 
 
 def main(settings: Settings | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-    )
     settings = settings or Settings.from_env()
+    configure_logging(settings.secret_values())
     repository = SupabaseRepository(
         url=settings.supabase_url, key=settings.supabase_key
     )
+    # WIA-50: backtest iteruje `symbols` (bez krypto), więc koszt akcji/ETF.
     use_case = BacktestUseCase(
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
         db_port=repository,
+        cost_bps=settings.paper_cost_bps,
     )
 
     logger.info("Backtest start — symbols=%s", settings.symbols)
@@ -65,10 +66,12 @@ def main(settings: Settings | None = None) -> int:
         try:
             summary = use_case.run(symbol, refresh_view=False)
             # ML-20: IC i jego t-stat obok RMSE — zawsze z liczbą foldów, bo przy
-            # 4 foldach t-stat mówi niewiele.
+            # 4 foldach t-stat mówi niewiele. WIA-50: zwrot netto strategii
+            # znakowej po koszcie obrotu i sam obrót.
             logger.info(
                 "%s: %s | folds=%d cand_rmse=%.5f base_rmse=%.5f "
-                "drift_rmse=%s llm_rmse=%s hit=%.1f%% impr=%.1f%% ic=%s sd=%s t=%s",
+                "drift_rmse=%s llm_rmse=%s hit=%.1f%% impr=%.1f%% ic=%s sd=%s t=%s "
+                "net=%s turnover=%s cost=%gbps",
                 symbol,
                 summary.verdict,
                 summary.n_folds,
@@ -81,6 +84,9 @@ def main(settings: Settings | None = None) -> int:
                 _fmt_optional(summary.mean_ic, "%.3f"),
                 _fmt_optional(summary.ic_std, "%.3f"),
                 _fmt_optional(summary.ic_t_stat, "%.2f"),
+                _fmt_optional(summary.mean_net_return, "%.5f"),
+                _fmt_optional(summary.turnover, "%.2f"),
+                settings.paper_cost_bps,
             )
         except Exception:
             logger.exception("Backtest failed for %s", symbol)

@@ -224,3 +224,128 @@ class TestKeyRotation:
 
         assert result is None
         assert mock_get.call_count == calls_after_first
+
+
+def test_daily_quota_alert_is_polish_and_logged_in_english(caplog) -> None:
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"], quota_monitor=monitor)
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = _mock_response(RATE_LIMITED_JSON)
+        adapter.get_fundamentals("AAPL")
+
+    alert = monitor.alerts[0]
+    assert "dzienny limit" in alert.message
+    assert "missing" not in alert.message
+    assert alert.action.startswith("Dodaj kolejny klucz")
+    assert "fundamentals daily quota exhausted" in caplog.text
+
+
+def test_http_error_warning_omits_apikey(caplog) -> None:
+    # BEZ-07: ostrzeżenie wkleja `str(exc)`, a HTTPError z requests niesie URL z kluczem.
+    import logging
+
+    import requests
+
+    response = requests.Response()
+    response.status_code = 401
+    response.reason = "Unauthorized"
+    response.url = "https://www.alphavantage.co/query?function=OVERVIEW&apikey=fund-secret-key"
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["fund-secret-key"])
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = response
+        assert adapter.get_fundamentals("AAPL") is None
+
+    assert "401 Client Error" in caplog.text
+    assert "fund-secret-key" not in caplog.text
+
+
+def test_network_error_warning_omits_apikey(caplog) -> None:
+    import logging
+
+    import requests
+
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["fund-secret-key"])
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = requests.ConnectionError(
+            "Max retries exceeded with url: /query?function=OVERVIEW&apikey=fund-secret-key"
+        )
+        assert adapter.get_fundamentals("AAPL") is None
+
+    assert "fundamentals fetch failed for AAPL" in caplog.text
+    assert "fund-secret-key" not in caplog.text
+
+
+# --- DAT-06: wspólny klasyfikator soft-limitu (Information | Note) ------------
+
+NOTE_JSON: dict[str, Any] = {
+    "Note": "Thank you for using Alpha Vantage! Our standard API call frequency "
+    "is 5 calls per minute."
+}
+
+
+def test_note_soft_limit_backs_off_and_retries_the_same_key() -> None:
+    # `Note` to limit częstotliwości: krótki backoff i ten sam klucz — rotacja od
+    # razu spaliłaby dzienny budżet rezerwowego klucza.
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"])
+    with patch.object(adapter._session, "get") as mock_get, patch("time.sleep") as sleep_mock:
+        mock_get.side_effect = [
+            _mock_response(NOTE_JSON),        # KEY1 / OVERVIEW — limit minutowy
+            _mock_response(OVERVIEW_JSON),    # KEY1 / OVERVIEW po backoffie — OK
+            _mock_response(EARNINGS_JSON),    # KEY1 / EARNINGS — OK
+        ]
+        result = adapter.get_fundamentals("AAPL")
+
+    assert result is not None
+    keys_used = [c.kwargs["params"]["apikey"] for c in mock_get.call_args_list]
+    assert keys_used == ["KEY1", "KEY1", "KEY1"]
+    assert sleep_mock.call_count == 1
+
+
+def test_information_soft_limit_rotates_without_backoff() -> None:
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"])
+    with patch.object(adapter._session, "get") as mock_get, patch("time.sleep") as sleep_mock:
+        mock_get.side_effect = [
+            _mock_response(RATE_LIMITED_JSON),
+            _mock_response(OVERVIEW_JSON),
+            _mock_response(EARNINGS_JSON),
+        ]
+        adapter.get_fundamentals("AAPL")
+
+    keys_used = [c.kwargs["params"]["apikey"] for c in mock_get.call_args_list]
+    assert keys_used == ["KEY1", "KEY2", "KEY2"]
+    assert sleep_mock.call_count == 0
+
+
+def test_note_on_every_key_alerts_about_the_frequency_limit() -> None:
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"], quota_monitor=monitor)
+    with patch.object(adapter._session, "get") as mock_get, patch("time.sleep"):
+        mock_get.return_value = _mock_response(NOTE_JSON)
+        assert adapter.get_fundamentals("AAPL") is None
+
+    message = monitor.alerts[0].message
+    assert "częstotliwości" in message
+    assert "dzienny limit" not in message
+
+
+def test_soft_limit_log_carries_the_marker_without_the_key(caplog) -> None:
+    import logging
+
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["fund-secret-key"])
+    leaky = {
+        "Information": "We have detected your API key as fund-secret-key and our "
+        "standard API rate limit is 25 requests per day."
+    }
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = _mock_response(leaky)
+        assert adapter.get_fundamentals("AAPL") is None
+
+    assert "standard API rate limit is 25 requests per day" in caplog.text
+    assert "fund-secret-key" not in caplog.text

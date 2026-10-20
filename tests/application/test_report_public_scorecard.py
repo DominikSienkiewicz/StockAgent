@@ -7,6 +7,7 @@ ujawnić. Publikujemy wyłącznie agregaty: N, hit-rate, ECE, krzywą kalibracji
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -255,6 +256,15 @@ class TestHonestHeadline:
 
         assert "nieodróżnialne od rzutu monetą" in html
 
+    def test_significance_verdict_keeps_the_decimal_point(self) -> None:
+        # MAIL-58: polski zapis dotyczy tylko maila — strona publiczna zostaje przy kropce.
+        resolved = [_dated("BULLISH", i % 2 == 0, 1 + i) for i in range(6)]
+
+        html = render_public_scorecard_html(resolved, None, None)
+
+        assert re.search(r"p=\d\.\d", html)
+        assert not re.search(r"p=\d,\d", html)
+
 
 class TestProbabilityScoresOnScorecard:
     """WIA-36: Brier i Brier Skill Score jako główne metryki pewności; ECE pomocniczo."""
@@ -322,4 +332,104 @@ def test_scorecard_states_universe_selection_caveat() -> None:
     assert "long-bias" in html
     assert "nie jest umiejętnością" in html
     # Zastrzeżenie nie może łamać inwariantu „zero symboli watchlisty”.
+    assert "NVDA" not in html
+
+
+class TestPaperCostDisclosure:
+    """WIA-50: strona publiczna podaje koszt paper-PnL z kropką dziesiętną."""
+
+    def test_equity_section_names_the_cost(self) -> None:
+        from src.application.report_evidence import PaperCosts
+
+        curve = equity_curve([("BULLISH", 0.03)], cost_bps=12.5)
+        costs = PaperCosts(
+            cost_bps=12.5, crypto_cost_bps=25, crypto_symbols=frozenset({"ZZCOIN"})
+        )
+
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], curve, None, costs=costs
+        )
+
+        assert "paper-PnL (koszt 12.5 bps)" in html
+        assert "krypto 25 bps" in html
+        assert "12,5" not in html
+        assert "bez kosztów transakcyjnych" not in html
+        # Symbole z założeń kosztowych nie trafiają na stronę.
+        assert "ZZCOIN" not in html
+
+    def test_without_costs_the_page_says_the_curve_is_gross(self) -> None:
+        curve = equity_curve([("BULLISH", 0.03)])
+
+        html = render_public_scorecard_html([_resolved("AAA", "BULLISH", True)], curve, None)
+
+        assert "bez kosztów transakcyjnych" in html
+
+
+class TestBenchmarkDisclosure:
+    """WIA-21: strona publiczna stawia krzywą agenta obok koszyka i indeksu —
+    z kropką dziesiętną i bez symboli watchlisty. Decyzja 2026-10-19: indeks
+    nazywa się „S&P 500”, nie tickerem IVV (który też jest w watchliście)."""
+
+    @staticmethod
+    def _comparison(*, with_index: bool = True):
+        from src.domain.benchmark import compare_with_benchmarks
+        from src.domain.equity_curve import PaperTrade
+
+        cycles = [
+            [PaperTrade("NVDA", "BEARISH", c, benchmark_change=0.008 if with_index else None)]
+            for c in (0.01, -0.005, 0.02)
+        ]
+        return compare_with_benchmarks(cycles, index_symbol="IVV", index_cost_bps=0)
+
+    def test_equity_section_compares_with_basket_and_ivv(self) -> None:
+        comparison = self._comparison()
+
+        html = render_public_scorecard_html(
+            [_resolved("NVDA", "BEARISH", False)], comparison.agent, None, benchmark=comparison
+        )
+
+        assert "agent -2.5% · koszyk +2.5% · S&amp;P 500 +2.4%" in html
+        assert "Zwrot nadwyżkowy vs koszyk: -5.0 p.p." in html
+        assert "hit-rate względem rynku (S&amp;P 500): 33.3% (n=3)" in html
+        assert "spark-bar bench" in html
+        assert ".spark-bar.bench{" in html
+        assert "NVDA" not in html
+
+    def test_missing_ivv_data_is_stated_explicitly(self) -> None:
+        comparison = self._comparison(with_index=False)
+
+        html = render_public_scorecard_html(
+            [_resolved("NVDA", "BEARISH", False)], comparison.agent, None, benchmark=comparison
+        )
+
+        assert "S&amp;P 500: brak danych benchmarku" in html
+
+    def test_without_a_comparison_the_page_says_there_is_no_benchmark(self) -> None:
+        curve = equity_curve([("BULLISH", 0.03)])
+
+        html = render_public_scorecard_html([_resolved("AAA", "BULLISH", True)], curve, None)
+
+        assert "Na tle rynku: brak danych benchmarku" in html
+        assert "spark-bar bench" not in html
+
+
+def test_benchmark_never_leaks_the_index_ticker_or_basket_symbols() -> None:
+    """Inwariant „zero symboli watchlisty” bez wyjątków — także z benchmarkiem:
+    ticker indeksu (IVV jest w watchliście) i symbole koszyka nie trafiają na stronę."""
+    from src.domain.benchmark import compare_with_benchmarks
+    from src.domain.equity_curve import PaperTrade
+
+    cycles = [
+        [
+            PaperTrade("NVDA", "BULLISH", 0.02, 10, benchmark_change=0.01),
+            PaperTrade("IVV", "BEARISH", 0.01, 10, benchmark_change=0.01),
+        ]
+    ]
+    comparison = compare_with_benchmarks(cycles, index_symbol="IVV", index_cost_bps=10)
+    resolved = [_resolved("NVDA", "BULLISH", True), _resolved("IVV", "BEARISH", False)]
+
+    html = render_public_scorecard_html(resolved, comparison.agent, None, benchmark=comparison)
+
+    assert "S&amp;P 500" in html
+    assert "IVV" not in html
     assert "NVDA" not in html

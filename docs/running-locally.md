@@ -10,7 +10,7 @@ Stack, prerequisites, local setup, and CI. Tunables live in [configuration.md](c
 - **OpenAI Python SDK** v2 — `gpt-5-mini` advisory council + `text-embedding-3-small` embeddings, JSON mode
 - **Anthropic Python SDK** (core dependency) — Claude Sonnet 4.6, **default model for the main analysis**
 - **XGBoost 3.2** + scikit-learn — sklearn-style API, native `.ubj` (UBJSON) format
-- **Supabase** (Postgres 16 + pgvector) — REST via `supabase-py`, service_role key
+- **Supabase** (Postgres 16 + pgvector) — REST via `supabase-py`, secret / service_role key
 - **Resend.com** — HTML email, sandbox sender without domain verification
 - **Pydantic Settings** v2 — typed env vars from `.env` with validators (CSV → list)
 - **requests** + `urllib3.Retry` — shared session with exponential backoff on 429 / 5xx
@@ -84,10 +84,18 @@ cp .env.example .env
 #    if present in your deployment) — the Fast Loop falls back to the cold-start
 #    "no change" baseline (= return 0) until the next Slow Loop retrains from scratch.
 
+# ⚠️ Migration 038 turns on Row Level Security (no policies) on every public table
+#    and revokes the anon / authenticated grants on tables, views, sequences and
+#    functions. Afterwards only the secret key (sb_secret_…) or the legacy
+#    service_role key can read or write. Put that key into GitHub Secrets and .env
+#    BEFORE you run the migration (rollout order: docs/data-and-access.md).
+
 # 4. Smoke test (expect 650+ tests passing + ~22 skipped live/Docker tests)
 uv run pytest
 
-# 5. Single Fast Loop run
+# 5. Single Fast Loop run — read-only against the shared database unless
+#    DB_WRITES_ENABLED=true, and without paid calls unless PAID_CALLS_ENABLED=true
+#    (see "Local runs are read-only by default" and "Local runs make no paid calls" below)
 uv run python main_agent.py
 ```
 
@@ -106,35 +114,80 @@ ALPHA_VANTAGE_API_KEYS=key1,key2,key3   # CSV — rotation on rate-limit
 
 # Database (Supabase)
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=eyJ...                     # service_role key
+SUPABASE_KEY=sb_secret_...              # secret key (or the legacy service_role JWT)
 
 # Email — recipient is a secret; sender + on/off toggle live in config.toml
 RESEND_API_KEY=re_...
 DIGEST_TO_EMAIL=you@example.com
 ```
 
+`SUPABASE_KEY` must be the project's secret key (`sb_secret_…`, Supabase dashboard → Project Settings → API Keys) or the legacy `service_role` JWT, because migration `038` turns on Row Level Security and the app relies on that key bypassing it. `Settings` refuses to start with a public key (BEZ-10): a publishable key (`sb_publishable_…`) or a JWT whose `role` claim is `anon` or `authenticated` stops every entry point with a validation error that names the fix and does not print the key. The check reads the `role` claim without verifying the signature and lets any other string through. [Data and access](data-and-access.md) gives the rollout order: key first, then the deploy, then migration `038`.
+
 Everything else — `symbols`, `symbols_etf`, `volatility_threshold`, `crypto_symbols`, `council_llm_provider/model`, `risk_symbols`, `nbp_enabled`, `symbol_throttle_seconds`, `notifications_enabled`, `digest_from_email`, … — is edited in [`config.toml`](../config.toml). Any value can still be overridden by an environment variable (precedence: **env → `.env` → `config.toml` → code defaults**), e.g. `SYMBOL_THROTTLE_SECONDS=0` for a quick local run.
 
 The secrets feed **GitHub Actions Secrets** — local and CI hit the **same Supabase database**, guaranteeing "works on my machine == works in prod" parity. `config.toml` is committed, so CI gets the same config without any repo variables.
+
+### Local runs are read-only by default
+
+Because a local run and production share one database, every local cycle used to write into the production track record: a price snapshot per symbol, a prediction that overwrote the one production saved in the same hour (the write is an upsert on `symbol, timestamp_hour`), settlements of production predictions, quota alerts and the regime history. `Settings.db_writes_enabled` now defaults to `false`, and with it off `main_agent.py`, `main_trainer.py`, `main_watch.py` and `main_tools.py` are dry runs against the shared database (BEZ-08; `main_deadman.py` only reads anyway, while `main_backtest.py` still refreshes `ml_feature_store` before its folds):
+
+- reads go to Supabase unchanged, so the email, the Track Record and the RAG analogues look like production;
+- every write method of the repository is skipped with one `WARNING` per method per run (`DB_WRITES_ENABLED=false — SupabaseRepository.save_price_snapshot pominięty …`), and the next calls of the same method log at `DEBUG` only;
+- a saved prediction gets the id `dry-run-<uuid>`, so the council votes and the commitment that depend on it cannot be mistaken for a database row;
+- `refresh_feature_store` counts as a write (it refreshes a view in the shared database), so a local `main_trainer.py` trains on the view as production last refreshed it;
+- the `fx_rates` cache is read but not filled, and attestation commitments and reveals are not published (a commitment of a `dry-run-…` prediction would be a false public entry);
+- `main_tools.py import-positions --apply` prints the diff and then refuses with exit code 1 and "nic nie zapisano"; the dry run without `--apply` is unchanged.
+
+The wrappers live in [`src/infrastructure/adapters/write_guard.py`](../src/infrastructure/adapters/write_guard.py); every abstract method of a guarded port is classified there as a read or a write, and a test fails when a new port method is not. The paid calls have their own switch, below.
+
+To write from a local run on purpose (for example a one-off positions import), set the variable for that one command:
+
+```bash
+DB_WRITES_ENABLED=true uv run python main_tools.py import-positions --csv positions.csv --apply
+```
+
+The switch is read from the environment or `.env` only. It is deliberately not in `config.toml`: that file is shared by local runs and GitHub Actions, so turning writes on there would turn them on for every local run (a test keeps it out). The workflows that write — Fast Loop, Slow Loop and Shock Watch — set `DB_WRITES_ENABLED: "true"` in the step that runs the entry point; the read-only deadman does not. `tests/test_db_writes_wiring.py` checks both, and fails when a new `main_*.py` is not classified as writing or read-only.
+
+### Local runs make no paid calls by default
+
+A read-only local run still spent the shared Alpha Vantage quota (25 requests a day per key) and LLM credit without a trace in the database. `Settings.paid_calls_enabled` defaults to `false` (FIN-35), and with it off the entry points build deterministic stubs instead of the paid adapters, which are never constructed:
+
+- **Fast Loop** (`main_agent.py`): the main LLM is `LocalStubLLMAdapter` (a neutral `SIDEWAYS`, confidence 50% analysis whose reasoning says it is a stub, and a fixed mistake diagnosis); Alpha Vantage sentiment and news are `LocalStubSentimentAdapter` (a neutral payload with `degraded_reason: paid_calls_disabled`, so the prediction carries that data-quality flag and the email a DEGRADED badge) and `LocalStubNewsAdapter` (no articles); the council, the embeddings and tool use are off, so there is no council verdict and no RAG analogue; the earnings calendar is the null adapter. The volatility gate, the ML model and the free sources (Finnhub, CoinGecko, NBP, FRED, EDGAR, Reddit) run as usual, and the email hides the cycle-cost section, because the stubbed calls are counted like real ones;
+- **Slow Loop** (`main_trainer.py`): the Alpha Vantage fundamentals refresh is skipped, and the weekly recap and the calibration judge get the LLM stub: the recap goes out without a narrative, the judge stores its arithmetic with the stub's note;
+- each run logs one `WARNING`: `PAID_CALLS_ENABLED=false — lokalnie bez płatnych wywołań: …`.
+
+Replaying recorded responses is out of scope; the stubs are fixed values. To make paid calls from a local run on purpose, set the variable for that one command:
+
+```bash
+PAID_CALLS_ENABLED=true uv run python main_agent.py
+```
+
+`PAID_CALLS_ENABLED=false` together with `DB_WRITES_ENABLED=true` is refused: `main_agent.py` and `main_trainer.py` log an `ERROR` naming both variables and exit with code 2 before they build any adapter, because the stubs' neutral predictions would land in the production track record (code 1 stays "every symbol failed"). The check lives in the entry points, not in `Settings`; Shock Watch and the deadman make no paid call and start as usual. Like `DB_WRITES_ENABLED`, the switch is read from the environment or `.env` only and is kept out of `config.toml` by a test. The workflows that pay — Fast Loop and Slow Loop — set `PAID_CALLS_ENABLED: "true"` in the step that runs the entry point; Shock Watch and the deadman make no paid call and do not set it. `tests/test_paid_calls_wiring.py` checks both and fails when a new `main_*.py` is not classified as paying or free.
 
 ## Build commands
 
 ```bash
 uv sync                            # install deps (Anthropic SDK included; `--extra anthropic` is a kept alias)
-uv run python main_agent.py        # one Fast Loop run (analysis + email)
-uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain)
-uv run python main_backtest.py     # offline walk-forward backtest (folds purge the 12h label horizon): per-symbol out-of-sample RMSE / hit-rate vs baseline, plus per-fold rank IC, sign-strategy return and turnover; logs mean IC, its sd and t-stat next to the fold count (read-only, no model write)
-uv run python -m src.tools.evaluate            # offline eval: hit-rate + RMSE vs baseline, directional n_eff, naive baselines and binomial-test verdict (read-only)
-uv run python -m src.tools.evaluate --days 60  # custom evaluation window
-uv run python -m src.tools.evaluate --by-recipe  # + directional hit rate per recipe version (needs migration 030)
-uv run python -m src.tools.evaluate --by-universe  # + directional hit rate per symbol-universe version (from the v2 receipt)
-uv run python -m src.tools.evaluate --by component  # + ablation: LLM trend vs council recommendation vs XGBoost direction on the same rows (see below)
-uv run python -m src.tools.evaluate --by regime --by asset_class  # + LLM hit rate per segment; repeatable, also confidence_bucket, alpha_fusion_sign, edge_label
-uv run python -m src.tools.evaluate --echo  # + momentum echo test: is the LLM trend just the sign of the move that opened the gate? (needs migration 034)
+uv run python main_agent.py        # one Fast Loop run (analysis + email); no database writes without DB_WRITES_ENABLED=true
+uv run python main_trainer.py      # one Slow Loop run (XGBoost retrain); no database writes without DB_WRITES_ENABLED=true
+uv run python main_tools.py --help # one-off tools: one subcommand per tool (see "One-off tools" below)
+uv run python main_tools.py import-positions --csv positions.csv          # dry-run: diff of the CSV against the positions table (writes nothing)
+DB_WRITES_ENABLED=true uv run python main_tools.py import-positions --csv positions.csv --apply  # replace the positions table with the CSV, as_of = now (refused without DB_WRITES_ENABLED=true)
+uv run python main_backtest.py     # offline walk-forward backtest (folds purge the 12h label horizon): per-symbol out-of-sample RMSE / hit-rate vs baseline, plus per-fold rank IC, sign-strategy return and turnover; logs mean IC, its sd and t-stat next to the fold count, and the sign strategy's mean return per row net of `paper_cost_bps` (`net=`) with the mean turnover (`turnover=`, a flip counts 1) (read-only, no model write)
+uv run python main_tools.py evaluate           # offline eval: hit-rate + RMSE vs baseline, directional n_eff, naive baselines and binomial-test verdict (read-only)
+uv run python main_tools.py evaluate --days 60 # custom evaluation window
+uv run python main_tools.py evaluate --by-recipe  # + directional hit rate per recipe version (needs migration 030)
+uv run python main_tools.py evaluate --by-universe  # + directional hit rate per symbol-universe version (from the v2 receipt)
+uv run python main_tools.py evaluate --by component  # + ablation: LLM trend vs council recommendation vs XGBoost direction on the same rows (see below)
+uv run python main_tools.py evaluate --by regime --by asset_class  # + LLM hit rate per segment; repeatable, also confidence_bucket, alpha_fusion_sign, edge_label
+uv run python main_tools.py evaluate --echo  # + momentum echo test: is the LLM trend just the sign of the move that opened the gate? (needs migration 034)
+uv run python main_tools.py evaluate --experiment EXP-02 --days 90  # + A/B arms of an in-loop experiment: treatment − control per metric with a block-bootstrap CI (arms from migration 037 or the v2 receipt)
+uv run python main_tools.py cost-envelope  # estimated min/max paid calls and USD of one Fast Loop cycle for config.toml, plus the worst week at the FIN-12 ceiling against fast_loop_weekly_budget_usd (offline, zero paid calls)
 uv run pytest                                   # full local suite
 uv run pytest -m "not integration and not containers" # unit only
 uv run pytest -m containers                    # Docker/Postgres schema tests
 uv run pytest -m integration                   # live API tests (requires real keys)
+uv run pytest tests/application/test_report_builder_snapshot.py --update-golden  # rewrite the email golden snapshots after an intended email change
 uv run ruff check .                # lint (same command as CI)
 uv run mypy                        # type check (strict) on [tool.mypy].files: src + every main_*.py
 ```
@@ -145,6 +198,22 @@ Every evaluation number (the headline, `--by` segments and `--echo`) skips the p
 
 `--echo` is the momentum echo test (EXP-01). The gate only lets through moves of at least the threshold, and the LLM sees that same move in its prompt, so a trend that mostly repeats (or reverses) its sign is a call a free rule makes at no cost. On the settled predictions with a `gate_delta` (migration `034`, history backfilled from `price_snapshots`; see `gate_delta_enabled` in [configuration](configuration.md)) it prints (a) the share of echo (`predicted_trend` = sign of the gate delta) and of reversal (= the opposite sign); (b) on the same rows (a directional LLM call, a non-zero delta, a known move), the hit rate of the LLM and of the free baselines "sign of the move" and "opposite sign", with `n` and `n_eff`; (c) the LLM hit rate only where it disagrees with momentum. The comparison is paired: where the LLM and a baseline make the same call they hit or miss together, so only the rows where they disagree decide. There one side's hit is the other's miss, so each comparison is a sign test of the LLM's wins against 0.5 on `n_eff` (one bet per correlated day; a zero move is a tie and drops out): LLM vs "sign of the move" on the reversals, LLM vs "opposite sign" on the echoes, both corrected with Benjamini-Hochberg FDR (q = 0.10). Fewer than 10 compared rows are flagged "za mało danych". Before the migration the run prints "kolumna gate_delta niedostępna — uruchom migrację 034" and the rest of the report instead of failing. The result lives only in `evaluate`, not in the weekly recap or the email (owner's decision).
 
+`--experiment <id>` compares the arms of an experiment defined in `config.toml` (EXP-05, see [Experiments](configuration.md#experiments)). Only the settled rows that carry an arm of that experiment count: from `prediction_logs.experiment_arms` (migration `037`) or, before the migration or with `experiment_arms_enabled` off, from the optional `experiment_arms` key of the v2 decision receipt; a row with both uses the column. For every metric of the experiment's prompt part it prints the treatment minus the control (percentage points for rates, raw difference for Brier scores, where lower is better), each arm's mean with `n` and `n_eff`, and a 95% interval from a block bootstrap that resamples whole UTC days, so both arms of one day move together and a market-wide day does not pass for a difference between arms. Fewer than 20 days give no interval ("za mało cykli"), and fewer than 10 rows in an arm are flagged "za mało danych". The primary metric is marked ★. An id missing from `config.toml` exits with code 1 before reading the database. Experiments run only while the Fast Loop runs, and the council fires only above `council_volatility_threshold`, so a council experiment needs weeks of cycles.
+
+**One-off tools (ARCH-39).** [`main_tools.py`](../main_tools.py) is the composition root of the one-off CLI tools: every tool is one argparse subcommand (`uv run python main_tools.py <command> --help`), only `main_tools.py` builds the `Settings` and the adapters a tool needs, and the tool's logic (parsing, validation, diffs, metrics, formatting) stays in pure functions under `src/tools/`. A separate `main_<x>.py` is reserved for entry points with their own workflow (Fast Loop, Slow Loop, shock watch, deadman, backtest). `[tool.mypy].files` lists every `main_*.py`, so the tools are type-checked like the other entry points, and `tests/test_architecture.py` fails when a module under `src/tools/` imports `src.config`, an adapter or an LLM client. The offline evaluation moved here without an alias: `python -m src.tools.evaluate` is now `python main_tools.py evaluate`, with the same options.
+
+**Importing positions (PORT-18).** `import-positions` replaces the hand-maintained `positions` table with a CSV file, so the STALE badge stops being the default state and positions get a real purchase date. The file is UTF-8, comma-separated, with a header row; one row is one lot, and several lots of one symbol (bought on different dates) are allowed:
+
+```csv
+symbol,quantity,avg_cost,currency,purchase_date
+NVDA,10,118.50,USD,2025-03-01
+SAP.DE,4,182.10,EUR,
+```
+
+`symbol` is the ticker as in `config.toml` (upper-cased), `quantity` and `avg_cost` are positive numbers with a dot as the decimal separator (`avg_cost` per unit, in `currency`), `currency` is a three-letter ISO 4217 code, and `purchase_date` is an optional column and value in ISO `YYYY-MM-DD`, not in the future; empty means unknown, and the report then says the purchase-date rate is unknown instead of guessing one. Every row is validated before the database is touched, and all errors are printed with their line numbers. A file without a single position is an error, not a request to empty the table. Without `--apply` the command prints the diff against the current table (`+` added, `-` removed, `=` unchanged lots) and writes nothing; reading the table is strict, so a database error stops it instead of showing everything as new. With `--apply` it inserts the file's lots with `as_of` = now and then deletes the rows that existed before, so a failed insert leaves the old portfolio in place. `--apply` needs `DB_WRITES_ENABLED=true` (see [Local runs are read-only by default](#local-runs-are-read-only-by-default)); without it the command prints the diff, says that nothing was written and exits with code 1. Writing `currency` and `purchase_date` needs migration `035` and `positions_currency_enabled = true` (see [configuration](configuration.md)); until then `--apply` refuses a file with a non-USD currency or a purchase date. The import makes no paid calls.
+
+**Email golden snapshot (TEST-02).** `tests/application/test_report_builder_snapshot.py` renders three synthetic cycles with a frozen clock and fixed data: a full cycle (saved stocks with council, news and provenance badges, crypto, skipped and unsupported tickers, a source error, plus Risk Watch, your portfolio, Track Record, the model scorecard, cycle cost and the run footer), a quiet day where the volatility gate skips everything, and the day-1 cold start. It compares the HTML and the plain-text email character for character with `tests/application/snapshots/<scenario>.html` and `.txt`, and on a difference prints a unified diff. The HTML is stored one tag per line so a change reads as an ordinary diff; that layout is reversible and the test checks it, so the comparison stays exact. Nothing in it depends on the machine's time zone, locale or hash seed. When the email changes on purpose, rewrite the snapshots with the `--update-golden` command above (the only thing that writes them), review `git diff tests/application/snapshots/` and commit them together with the change; never edit them by hand to turn the test green.
+
 ## GitHub Actions
 
 Five workflows in [`.github/workflows/`](../.github/workflows/):
@@ -152,15 +221,19 @@ Five workflows in [`.github/workflows/`](../.github/workflows/):
 | File | Cron (UTC) | Polish time (CEST / CET) | What it does |
 |---|---|---|---|
 | [`ci.yml`](../.github/workflows/ci.yml) | — (on push / PR) | — | ruff + mypy + pytest, plus a parallel **SonarCloud** scan job (`pytest --cov` → coverage upload) |
-| [`fast_loop_12h.yml`](../.github/workflows/fast_loop_12h.yml) | _disabled_ (manual only) | — | Analysis + email report. **Daily schedule is currently paused** — the cron is commented out, so it runs only via manual `workflow_dispatch`. Re-enable by uncommenting the `schedule` block. |
-| [`slow_loop_weekly.yml`](../.github/workflows/slow_loop_weekly.yml) | `0 3 * * 0` | Sunday 05:00 (summer) | XGBoost retraining; commits `data/models/price_predictor.ubj` only when a candidate beats the naive baseline |
-| [`shock_watch_hourly.yml`](../.github/workflows/shock_watch_hourly.yml) | _disabled_ (manual only) | — | Free shock alerts (`main_watch.py`) — no LLM, no paid API. Designed for an hourly 24/7 cron (`7 * * * *`, BTC/ETH trade around the clock), **paused together with the Fast Loop**: its only reference prices are Fast Loop snapshots, and a reference older than 30 h suppresses every alert. A run where every reference is stale logs a `Shock watch ślepy` WARNING, a run where every symbol fails (e.g. the database is down) exits 1, and without a push channel (`TELEGRAM_*` or `SLACK_WEBHOOK_URL`) it logs an error and neither sends nor records a shock, so the daily debounce stays free. Re-enable both crons together. |
-| [`deadman_daily.yml`](../.github/workflows/deadman_daily.yml) | `17 9 * * *` | 11:17 (summer) | Free liveness check (`main_deadman.py`) — reads the newest `price_snapshots` and `model_scorecards` rows and mails through Resend when a job has been silent longer than `liveness_*_max_gap_h` in `config.toml` (`0` = deliberately paused, e.g. the Fast Loop). One run a day means at most one alert a day; an unreadable database exits 1, which triggers the failure mail. |
+| [`fast_loop_12h.yml`](../.github/workflows/fast_loop_12h.yml) | _disabled_ (manual only) | — | Analysis + email report. **Daily schedule is currently paused** — the cron is commented out, so it runs only via manual `workflow_dispatch`. Re-enable it by following the [resume checklist](resume-checklist.md), whose last step uncomments the `schedule` block; once it is active, `tests/test_workflow_env_wiring.py::test_enabled_fast_loop_schedule_requires_deadman` checks the deadman cron, the cost ceiling, the weekly budget, the liveness gap and the write and paid-call switches. |
+| [`slow_loop_weekly.yml`](../.github/workflows/slow_loop_weekly.yml) | `0 3 * * 0` | Sunday 05:00 (summer) | XGBoost retraining; commits `data/models/price_predictor.ubj` only when a candidate beats the naive baseline. With `reference_signal_enabled` (migration `042`) it also runs the free weekly reference signal (WIA-24) |
+| [`shock_watch_hourly.yml`](../.github/workflows/shock_watch_hourly.yml) | _disabled_ (manual only) | — | Free shock alerts (`main_watch.py`) — no LLM, no paid API. Designed for an hourly 24/7 cron (`7 * * * *`, BTC/ETH trade around the clock), **paused**, and it can resume on its own without the Fast Loop: since ALR-02 it reads the day's change from the free quote first (Finnhub `dp`, CoinGecko 24 h change) and uses a Fast Loop snapshot only as a fallback, where a reference older than 30 h suppresses the alert. A run where no daily change was fresh and every snapshot is stale logs a `Shock watch ślepy` WARNING, a run where every symbol fails (e.g. the database is down) exits 1, and without a push channel (`TELEGRAM_*` or `SLACK_WEBHOOK_URL`) it logs an error and neither sends nor records a shock, so the daily debounce stays free. The owner uncomments its schedule; the Fast Loop cron can stay off. |
+| [`deadman_daily.yml`](../.github/workflows/deadman_daily.yml) | `17 9 * * *` | 11:17 (summer) | Free liveness check (`main_deadman.py`) — reads the newest `price_snapshots` and `model_scorecards` rows and mails through Resend when a job has been silent longer than `liveness_*_max_gap_h` in `config.toml` (`0` = deliberately paused, e.g. the Fast Loop; once resumed, the Fast Loop is counted in NYSE trading days, so weekends and holidays raise no alert). One run a day means at most one alert a day. Each run first reads one `price_snapshots` row (read-only, NIEZ-28): the Supabase project is on the Free plan, which pauses a project after 7 days without activity, so a database that does not answer gets its own mail (`baza Supabase nie odpowiada`); this monitors a pause, it does not prevent one. A database that answers the probe but fails a liveness read exits 1, which triggers the failure mail. |
 | [`db_migrate.yml`](../.github/workflows/db_migrate.yml) | — (`workflow_dispatch` only) | — | Applies `supabase/migrations/` via the Supabase CLI. Deliberately manual: a broken migration must never fire on a cron. |
 
 Fast Loop, Slow Loop, Shock Watch and DB Migrate each end with a step that runs only when the job failed or was cancelled (a timeout included) and mails the run link through Resend — [`scripts/notify-failure.sh`](../scripts/notify-failure.sh), plain bash with the same `RESEND_API_KEY` / `DIGEST_TO_EMAIL` secrets as the digest, so it still fires when dependency installation is what broke. GitHub's own failure mail reaches only whoever last edited the cron. The loop workflows expose `workflow_dispatch` for manual triggers from the GitHub UI. Their cron is fixed-UTC and **does not follow DST** — when winter time kicks in, the schedule shifts by one hour relative to Polish time. GitHub Actions cron is best-effort — 5-60 min delays are normal.
 
-**Repository secrets** (the only things CI needs beyond the committed `config.toml`): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`, `DIGEST_TO_EMAIL`, `FRED_API_KEY`. Database migrations need one more, used only by the manual DB Migrate workflow: `SUPABASE_DB_URL` — the **direct Postgres connection string** (`postgresql://postgres:...@db.<ref>.supabase.co:5432/postgres`), not the PostgREST `SUPABASE_URL`. The two are different things and only the former can run DDL. `ANTHROPIC_API_KEY` is required (main analysis runs on Claude); `DIGEST_TO_EMAIL` is a **secret** (was a variable — move it). `FRED_API_KEY` is **optional** — only needed when `yield_curve_enabled = true` (the FRED yield-curve alpha source). `SONAR_TOKEN` is **optional** — it enables the SonarCloud scan job; without it that job is skipped, so CI never breaks before Sonar is configured.
+**External heartbeat (NIEZ-13).** A watchdog on GitHub Actions dies with it, and GitHub disables the crons of a repository after 60 days without activity (the 08-18 → 10-15 gap lasted 58 days), so the liveness signal comes from outside. Fast Loop, Slow Loop and Shock Watch ping the URL in the `HEARTBEAT_URL` secret once, at the end of the run, through `HeartbeatPort` ([`src/infrastructure/adapters/http_heartbeat.py`](../src/infrastructure/adapters/http_heartbeat.py)): a run that exits 0 sends `GET <URL>`, any other exit code (1, or 2 for the FIN-35 refusal) and a crash send `GET <URL>/fail`, the healthchecks.io convention. A missed ping inside the check's period is the alarm, raised by the external service. The URL is a secret (the check's UUID sits in its path): it is a `SECRET_SETTINGS_FIELDS` member (outside `config_hash`, redacted in the logs), and the adapter's exception carries only the error type and the HTTP status. A failed ping is logged and never changes the exit code. An empty or missing secret builds `NullHeartbeat`, so no request is made. One URL serves all three jobs, so the check's period must cover the longest gap between runs — today the weekly Slow Loop (7 days plus a grace period) while the Fast Loop and Shock Watch crons are paused. To enable it, create a check, add its ping URL as the `HEARTBEAT_URL` repository secret and `scripts/gh-secrets-check.sh` stops reporting it missing.
+
+**Run summary (NIEZ-22).** Fast Loop, Slow Loop and Shock Watch append a short markdown summary to the run page in the Actions UI (the file named by `GITHUB_STEP_SUMMARY`), so the outcome is visible even when the email did not go out. The repository is public and so is the run page, which is why the summary carries **aggregates only** — the same invariant as the public scorecard: no watchlist symbol, email address, error text, reasoning, price, amount or position. The Fast Loop lists the duration, the number of symbols per status and per skip reason, the failures per exception class (the class name, never the message), the paid calls per source, the cycle cost (from tokens, an estimate, or both) or `n/a` on a stub run, the quota alerts per severity and whether the report email was delivered, not delivered or not configured. Shock Watch writes how many references it checked, how many were stale and how many alerts it sent; the Slow Loop writes the per-symbol evaluation statuses as counts, the pooled model's status and sample count, and whether the feature store refresh failed. The renderers are pure functions in [`src/application/report_ops.py`](../src/application/report_ops.py); only the entry points write the file, and only when the variable is set, so a local run writes nothing. A failed render or write is logged and never changes the exit code.
+
+**Repository secrets** (the only things CI needs beyond the committed `config.toml`): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEYS`, `SUPABASE_URL`, `SUPABASE_KEY`, `RESEND_API_KEY`, `DIGEST_TO_EMAIL`, `FRED_API_KEY`. Database migrations need one more, used only by the manual DB Migrate workflow: `SUPABASE_DB_URL` — the **direct Postgres connection string** (`postgresql://postgres:...@db.<ref>.supabase.co:5432/postgres`), not the PostgREST `SUPABASE_URL`. The two are different things and only the former can run DDL. `ANTHROPIC_API_KEY` is required (main analysis runs on Claude); `DIGEST_TO_EMAIL` is a **secret** (was a variable — move it). `FRED_API_KEY` is **optional** — only needed when `yield_curve_enabled = true` (the FRED yield-curve alpha source). `SONAR_TOKEN` is **optional** — it enables the SonarCloud scan job; without it that job is skipped, so CI never breaks before Sonar is configured. `HEARTBEAT_URL` is **optional** — the external heartbeat below; without it no ping is sent.
 
 **SonarCloud — one-time setup.** [`ci.yml`](../.github/workflows/ci.yml) carries a `sonarcloud` job that runs `pytest --cov` and uploads code + coverage to [SonarCloud](https://sonarcloud.io/project/overview?id=DominikSienkiewicz_StockAgent) (keys live in [`sonar-project.properties`](../sonar-project.properties)). To enable it: (1) create a **`SONAR_TOKEN`** repository secret (SonarCloud → *My Account → Security*); (2) in SonarCloud, **disable *Automatic Analysis*** (*Administration → Analysis Method*) — CI-based and automatic analysis cannot both run, and only the CI scan uploads the coverage report the "Sonar way" gate (≥ 80% on new code) needs.
 
@@ -192,3 +265,11 @@ scripts/prod-state-check.sh > docs/concepts/prod-state-$(date +%F).md
 ```
 
 It accepts `-R`, `-f`, `--skip-github` and `--skip-supabase`. It is read-only by construction: `gh` is only used to list and view, every Supabase request is `curl --get` with the key passed on stdin (never in argv or the output), and no database function is called; [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py) enforces this on the script text. The output names secrets and counts subscribers, so keep it in the git-ignored `docs/concepts/`. Postgres version and the project plan are not exposed over REST and still need the Supabase dashboard.
+
+### Secret redaction
+
+Finnhub, Alpha Vantage and FRED take their key as a query parameter, and `requests` copies the full URL into the text of `HTTPError` and of network errors. That text used to reach the email (a failed symbol's error line), the `quota_alerts` table and the public GitHub Actions log. Every adapter with a key in the URL now calls `safe_get` and `raise_for_status_redacted` from [`src/infrastructure/adapters/_http.py`](../src/infrastructure/adapters/_http.py): they raise the same `requests` exception type with a redacted message and `from None`, so a logged traceback does not chain the original. `redact_secrets` replaces with `***` the `apikey`, `token`, `api_key` and `key` query parameters, authorization headers (`Authorization`, `Bearer …`, `apikey`, `x-api-key`), the Telegram bot path (`/bot<token>/`) and the Slack webhook URL. A failed symbol's error in the email passes through the same function, together with the literal secret values from `Settings` (`main_agent._analyze_symbols` hands them to each symbol), so a key echoed in an unrecognised shape is removed too. Telegram and Slack network failures put only the exception type into the alert and the log. In the tool-use loop (`tool_calling_openai.py`, `tool_calling_anthropic.py`) a tool's exception goes back to the paid model as `{"error": ...}` only after `redact_secrets`, which also gets the literal secret values from `Settings` that `main_agent.build_tool_use_adapter` injects; the adapter does not read `Settings` itself.
+
+Logs get a second pass. Every entry point (`main_agent.py`, `main_trainer.py`, `main_watch.py`, `main_deadman.py`, `main_backtest.py`, `main_tools.py`) configures logging only through `configure_logging(settings.secret_values())` from [`src/infrastructure/logging_redaction.py`](../src/infrastructure/logging_redaction.py), and [`tests/test_entrypoint_logging.py`](../tests/test_entrypoint_logging.py) fails when a `main_*.py` skips it or calls `logging.basicConfig` directly. It works like `basicConfig` and then gives every root handler a `RedactingFormatter`. The formatter runs `redact_secrets` on the finished record, traceback included: a logging `Filter` runs before the traceback text exists, so it cannot see it. Besides the patterns above, it replaces the literal value of every field in `SECRET_SETTINGS_FIELDS` (`src/config.py`), each key of `ALPHA_VANTAGE_API_KEYS` separately. Values shorter than 8 characters are not replaced, so a short placeholder or chat id does not wipe ordinary log text.
+
+GitHub masks a secret in the job log only as the whole string, so one key out of the comma-separated `ALPHA_VANTAGE_API_KEYS` would still print in clear. Fast Loop, Slow Loop and Shock Watch therefore run [`scripts/mask-csv-secret.sh`](../scripts/mask-csv-secret.sh) right after checkout, before any Python step. It splits the secret on commas and trims each key the way `Settings` does, then registers `::add-mask::` for each one; the runner does not print that command, and the script echoes nothing else. Deadman injects only a placeholder for that secret and has no such step. [`tests/test_workflow_env_wiring.py`](../tests/test_workflow_env_wiring.py) fails when a workflow maps `secrets.ALPHA_VANTAGE_API_KEYS` without the masking step ahead of Python.

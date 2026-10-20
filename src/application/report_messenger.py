@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from src.application.report_formatting import DEFAULT_DISPLAY_TIMEZONE, format_local
+from src.application.report_formatting import (
+    DEFAULT_DISPLAY_TIMEZONE,
+    MESSENGER_DISCLAIMER,
+    format_local,
+)
 from src.application.report_models import ResolvedPrediction, SymbolResult
 
 # Twardy limit długości digestu. Ostrzejszy niż 4096 Telegrama — zostawiamy
@@ -37,6 +41,10 @@ _MAX_SYMBOL_LEN = 12
 
 # Znak wielokropka (jeden znak zamiast trzech kropek — oszczędza budżet).
 _ELLIPSIS = "…"
+
+# MAIL-08: ogon z zastrzeżeniem doklejany PO clampie, więc jego długość
+# schodzi z budżetu treści — clamp nie może go uciąć.
+_DISCLAIMER_TAIL = f"\n{MESSENGER_DISCLAIMER}"
 
 _TREND_ARROWS = {"BULLISH": "📈", "BEARISH": "📉"}
 _TREND_NEUTRAL = "➡️"
@@ -69,8 +77,11 @@ def _cycle_line(results: list[SymbolResult]) -> str:
     return f"Cykl: {saved} zapisane · {ignored} pominięte · {errors} błędów"
 
 
-def _scorecard_line(resolved: list[ResolvedPrediction]) -> str:
-    """Scorecard ✅/❌ zamkniętych predykcji."""
+def _scorecard_line(resolved: list[ResolvedPrediction], *, unavailable: bool) -> str:
+    """Scorecard ✅/❌ zamkniętych predykcji. MAIL-25: awaria odczytu nie udaje
+    „brak zamkniętych predykcji”."""
+    if unavailable and not resolved:
+        return "Scorecard: rozliczenia niedostępne (błąd odczytu)"
     if not resolved:
         return "Scorecard: brak zamkniętych predykcji"
     correct = sum(1 for p in resolved if p.is_correct)
@@ -99,11 +110,12 @@ def build_messenger_digest(
     *,
     email_delivered: bool = True,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
+    resolved_unavailable: bool = False,
 ) -> str:
     """Buduje zwięzły digest push (~5 linii) dla Telegrama/Slacka.
 
-    Zestaw sekcji jest stały (nagłówek, cykl, scorecard, sygnały) — to zamraża
-    kontrakt formatu przeciw dryfowi. Wynik jest ZAWSZE ≤ `MAX_DIGEST_CHARS`,
+    Zestaw sekcji jest stały (nagłówek, cykl, scorecard, sygnały, zastrzeżenie
+    MAIL-08) — to zamraża kontrakt formatu przeciw dryfowi. Wynik jest ZAWSZE ≤ `MAX_DIGEST_CHARS`,
     także przy patologicznym wejściu (60 symboli, bardzo długie nazwy): sekcje
     zmienne są ucinane, a na końcu działa twardy clamp jako siatka
     bezpieczeństwa. Pusty cykl zwraca krótki, ustrukturyzowany komunikat z
@@ -116,6 +128,8 @@ def build_messenger_digest(
         email_delivered: False, gdy wysyłka maila padła — push mówi o tym zaraz
             pod nagłówkiem, bo przy 401/403 kolejny mail też by nie doszedł.
         display_timezone: strefa (IANA) godziny w nagłówku; `started_at` jest w UTC.
+        resolved_unavailable: True, gdy odczyt zamkniętych predykcji padł
+            (MAIL-25) — scorecard mówi o awarii zamiast „brak”.
 
     Returns:
         Gotowy tekst push, ≤ `MAX_DIGEST_CHARS` znaków.
@@ -125,12 +139,14 @@ def build_messenger_digest(
         _header_line(started_at, display_timezone),
         *([] if email_delivered else [UNDELIVERED_EMAIL_LINE]),
         _cycle_line(results),
-        _scorecard_line(resolved),
+        _scorecard_line(resolved, unavailable=resolved_unavailable),
         _signals_line(results),
     ]
     digest = "\n".join(lines)
     # Twardy clamp — ostateczna gwarancja kontraktu długości niezależnie od
-    # danych. Sekcje wymagane są na górze, więc przetrwają ewentualne ucięcie.
-    if len(digest) > MAX_DIGEST_CHARS:
-        digest = digest[: MAX_DIGEST_CHARS - 1] + _ELLIPSIS
-    return digest
+    # danych. Sekcje wymagane są na górze, więc przetrwają ewentualne ucięcie;
+    # zastrzeżenie ma zarezerwowane miejsce w budżecie.
+    budget = MAX_DIGEST_CHARS - len(_DISCLAIMER_TAIL)
+    if len(digest) > budget:
+        digest = digest[: budget - 1] + _ELLIPSIS
+    return digest + _DISCLAIMER_TAIL

@@ -179,3 +179,39 @@ class TestLabelHorizonPurge:
         use_case.run("AAPL")
 
         assert ml_port.walk_forward_report.call_args.kwargs.get("timestamps") is None
+
+
+class TestTradingCosts:
+    """WIA-50: backtest raportuje zwrot strategii znakowej po kosztach obrotu."""
+
+    def test_cost_bps_reaches_the_summary(self, ml_port, repository_port) -> None:
+        repository_port.get_feature_store_data.return_value = _feature_store_rows(60)
+        ml_port.walk_forward_report.return_value = [
+            {
+                "candidate_rmse": 0.10,
+                "baseline_rmse": 0.20,
+                "hit_rate": 0.60,
+                "sign_strategy_return": 0.003,
+                "turnover": 0.5,
+            }
+        ]
+        use_case = BacktestUseCase(ml_port=ml_port, db_port=repository_port, cost_bps=10)
+
+        summary = use_case.run("AAPL")
+
+        assert summary.turnover == pytest.approx(0.5)
+        assert summary.mean_net_return == pytest.approx(0.002)
+
+    def test_default_cost_is_zero(self, use_case, ml_port, repository_port) -> None:
+        repository_port.get_feature_store_data.return_value = _feature_store_rows(60)
+        ml_port.walk_forward_report.return_value = [
+            {
+                "candidate_rmse": 0.10,
+                "baseline_rmse": 0.20,
+                "hit_rate": 0.60,
+                "sign_strategy_return": 0.003,
+                "turnover": 0.5,
+            }
+        ]
+
+        assert use_case.run("AAPL").mean_net_return == pytest.approx(0.003)

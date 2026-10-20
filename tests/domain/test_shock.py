@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from src.domain.asset import Asset, PriceDelta
@@ -134,3 +134,100 @@ class TestConstants:
     def test_crypto_threshold_is_higher_than_doubled_typical_equity_gate(self):
         # Krypto musi mieć wyższy próg niż podwojona typowa bramka equity (4%).
         assert Decimal("0.02") * SHOCK_THRESHOLD_MULTIPLIER < CRYPTO_SHOCK_THRESHOLD
+
+
+class TestClassifyShock:
+    """ALR-02: sama klasyfikacja ruchu, bez wieku referencji — dzienna zmiana
+    z /quote nie ma snapshotu, więc jej świeżość ocenia osobny predykat."""
+
+    def test_equity_move_above_double_gate_is_a_shock(self):
+        from src.domain.shock import classify_shock
+
+        delta = PriceDelta(Decimal("-0.09"))
+        alert = classify_shock(Asset("AAPL", AssetType.STOCK), delta, FAST_LOOP_THRESHOLD)
+        assert alert == ShockAlert(symbol="AAPL", delta=delta, direction=ShockDirection.DOWN)
+
+    def test_crypto_keeps_its_own_higher_threshold(self):
+        from src.domain.shock import classify_shock
+
+        delta = PriceDelta(Decimal("0.05"))
+        assert classify_shock(Asset("BTC", AssetType.CRYPTO), delta, FAST_LOOP_THRESHOLD) is None
+
+    def test_detect_shock_matches_classify_shock_on_a_fresh_reference(self):
+        from src.domain.shock import classify_shock
+
+        asset = Asset("NVDA", AssetType.STOCK)
+        for raw in ("-0.10", "-0.04", "0.03", "0.06"):
+            delta = PriceDelta(Decimal(raw))
+            assert detect_shock(
+                asset, delta, FAST_LOOP_THRESHOLD, FRESH_SNAPSHOT_HOURS
+            ) == classify_shock(asset, delta, FAST_LOOP_THRESHOLD)
+
+
+class TestDailyChangeFreshness:
+    """ALR-02: `dp` Finnhuba w sobotę to ruch z piątku. Odczyt spoza bieżącego
+    dnia UTC (dnia klucza debounce) nie może alarmować — inaczej piątkowy szok
+    wróciłby w sobotę jako drugi alert pod nowym kluczem `alert_date`."""
+
+    def test_reading_from_the_same_utc_day_is_fresh(self):
+        from datetime import UTC, datetime
+
+        from src.domain.shock import is_daily_change_fresh
+
+        now = datetime(2026, 10, 16, 19, 7, tzinfo=UTC)
+        assert is_daily_change_fresh(datetime(2026, 10, 16, 19, 0, tzinfo=UTC), now) is True
+
+    def test_saturday_with_friday_close_is_stale(self):
+        from datetime import UTC, datetime
+
+        from src.domain.shock import is_daily_change_fresh
+
+        friday_close = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
+        saturday = datetime(2026, 10, 17, 9, 7, tzinfo=UTC)
+        assert is_daily_change_fresh(friday_close, saturday) is False
+
+    def test_friday_evening_after_utc_midnight_is_stale(self):
+        # 20:07 ET w piątek to już sobota w UTC: debounce liczy nowy dzień, więc
+        # świeżość musi liczyć ten sam dzień — inaczej sesja dałaby dwa alerty.
+        from datetime import UTC, datetime
+
+        from src.domain.shock import is_daily_change_fresh
+
+        friday_close = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
+        after_midnight = datetime(2026, 10, 17, 0, 7, tzinfo=UTC)
+        assert is_daily_change_fresh(friday_close, after_midnight) is False
+
+    def test_naive_timestamps_are_read_as_utc(self):
+        from datetime import UTC, datetime
+
+        from src.domain.shock import is_daily_change_fresh
+
+        assert is_daily_change_fresh(
+            datetime(2026, 10, 16, 23, 0), datetime(2026, 10, 16, 23, 30, tzinfo=UTC)
+        ) is True
+
+
+class TestRollingWindowCooldown:
+    """ALR-02, decyzja 2: zmiana 24 h CoinGecko wciąż zawiera ruch, za który alert
+    wyszedł mniej niż 24 h temu — kolejny alert z niej byłby tym samym ruchem."""
+
+    _NOW = datetime(2026, 10, 17, 0, 7, tzinfo=UTC)
+
+    def test_alert_from_23_hours_ago_is_still_in_the_window(self):
+        from datetime import timedelta
+
+        from src.domain.shock import is_move_already_alerted
+
+        assert is_move_already_alerted(self._NOW - timedelta(hours=23), self._NOW) is True
+
+    def test_alert_from_25_hours_ago_left_the_window(self):
+        from datetime import timedelta
+
+        from src.domain.shock import is_move_already_alerted
+
+        assert is_move_already_alerted(self._NOW - timedelta(hours=25), self._NOW) is False
+
+    def test_no_previous_alert_never_blocks(self):
+        from src.domain.shock import is_move_already_alerted
+
+        assert is_move_already_alerted(None, self._NOW) is False

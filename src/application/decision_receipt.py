@@ -6,6 +6,8 @@ a JSONB nie ma migracji kolumn, więc wersję niesie pole `schema_version`:
 - v1 — analogi RAG, atrybucje cech, próg efektywny;
 - v2 — v1 plus płaskie pola przepisu (`PredictionRecipe`) i `recipe_version`.
   WIA-66 dołoży w v2 opcjonalny klucz `provenance` bez kolejnego bumpu.
+  EXP-05 dokłada opcjonalny klucz `experiment_arms` (`{id: ramię}`) — tylko gdy
+  w cyklu działał jakiś eksperyment.
 
 Każda wersja jest nadzbiorem poprzedniej, a czytnik toleruje brak każdego
 opcjonalnego klucza. Nieznanej wersji nie zgaduje — zwraca None.
@@ -34,6 +36,7 @@ class DecisionReceipt:
     precedents: tuple[Mapping[str, Any], ...] = ()
     feature_attribution: tuple[Mapping[str, Any], ...] = ()
     recipe: Mapping[str, str] = field(default_factory=dict)
+    experiment_arms: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def recipe_version(self) -> str | None:
@@ -55,6 +58,11 @@ def read_decision_receipt(payload: object) -> DecisionReceipt | None:
         precedents=_mappings(payload.get("precedents")),
         feature_attribution=_mappings(payload.get("feature_attribution")),
         recipe=_recipe_fields(payload) if schema_version >= RECEIPT_SCHEMA_V2 else {},
+        experiment_arms=(
+            _experiment_arms(payload.get("experiment_arms"))
+            if schema_version >= RECEIPT_SCHEMA_V2
+            else {}
+        ),
     )
 
 
@@ -67,3 +75,14 @@ def _mappings(value: object) -> tuple[Mapping[str, Any], ...]:
 def _recipe_fields(payload: Mapping[str, Any]) -> dict[str, str]:
     keys = (*RECIPE_FIELDS, "recipe_version")
     return {key: str(payload[key]) for key in keys if payload.get(key) is not None}
+
+
+def _experiment_arms(value: object) -> dict[str, str]:
+    """Ramiona `{id: ramię}`; wpis o nietekstowej wartości pomijamy."""
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(experiment_id): arm
+        for experiment_id, arm in value.items()
+        if isinstance(arm, str)
+    }

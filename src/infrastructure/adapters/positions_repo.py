@@ -9,7 +9,13 @@ dostarcza port `PortfolioPositionsPort` w dwóch wariantach:
         symbol    → symbol
         quantity  → quantity        (Decimal, przez str — bez błędu binarnego)
         avg_cost  → purchase_price   (nazwa kolumny ≠ nazwa pola — mapujemy tu)
-        as_of     → purchase_date    (data z timestampu; as_of napędza też badge STALE)
+        as_of     → purchase_date    (TYLKO bez `currency_columns`: data z timestampu;
+                                      as_of napędza też badge STALE)
+    PORT-18 (`currency_columns=True`, flaga `positions_currency_enabled`, migracja 035):
+        currency      → currency       (ISO 4217; brak kolumny → USD)
+        purchase_date → purchase_date  (prawdziwa data zakupu; NULL → None, nie as_of)
+    Ten sam adapter implementuje `PositionsImportPort` (import CSV): ścisły odczyt
+    i zamianę całej tabeli — INSERT nowych lotów, potem DELETE starych po `id`.
   - `NullPositionsAdapter` — no-op ([] / None), zero I/O; używany, gdy port jest
     wyłączony (fallback na dotychczasowe równe wagi).
 
@@ -23,14 +29,16 @@ wartości niefinitne/nieparsowalne) są pomijane PRZED konstrukcją `Position` �
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import re
+from collections.abc import Sequence
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
 from supabase import create_client
 
-from src.application.ports import PortfolioPositionsPort
-from src.domain.portfolio import Position
+from src.application.ports import PortfolioPositionsPort, PositionsImportPort
+from src.domain.portfolio import DEFAULT_POSITION_CURRENCY, Position, is_iso_currency
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +63,39 @@ def _parse_decimal(raw: Any) -> Decimal | None:
     return value
 
 
-def _parse_position(row: dict[str, Any]) -> Position | None:
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _parse_currency(raw: Any) -> str | None:
+    """Kolumna `currency` (035) → kod ISO 4217 albo None (wiersz pominięty).
+
+    Brak kolumny (flaga włączona przed migracją) to USD — domyślna waluta
+    kolumny. Wielkość liter i spacje normalizujemy; reszta formatu jest twarda."""
+    if raw is None:
+        return DEFAULT_POSITION_CURRENCY
+    code = str(raw).strip().upper()
+    return code if is_iso_currency(code) else None
+
+
+def _parse_purchase_date(raw: Any) -> date | None:
+    """Kolumna `purchase_date` (DATE, ISO) → data albo None = nieznana.
+
+    Nieparsowalna wartość też jest „nieznaną datą” — pozycja zostaje w portfelu,
+    a raport mówi wprost, że kursu z dnia zakupu nie zna."""
+    if not isinstance(raw, str) or not _ISO_DATE.match(raw.strip()):
+        return None
+    try:
+        return date.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+
+
+def _parse_position(row: dict[str, Any], *, currency_columns: bool = False) -> Position | None:
     """Mapuje wiersz tabeli `positions` na `Position` albo None (pominięcie).
 
-    Odrzuca wiersze bez symbolu, z quantity <= 0 oraz z niefinitnym/ujemnym
-    kosztem — wszystko PRZED konstrukcją `Position`, żeby nie wywołać wyjątku
-    z `__post_init__`.
+    Odrzuca wiersze bez symbolu, z quantity <= 0, z niefinitnym/ujemnym
+    kosztem oraz (z `currency_columns`) z walutą spoza formatu ISO — wszystko
+    PRZED konstrukcją `Position`, żeby nie wywołać wyjątku z `__post_init__`.
     """
     symbol = row.get("symbol")
     if not isinstance(symbol, str) or not symbol.strip():
@@ -78,11 +113,23 @@ def _parse_position(row: dict[str, Any]) -> Position | None:
     if as_of is None:
         return None
 
+    if not currency_columns:
+        return Position(
+            symbol=symbol.strip(),
+            quantity=quantity,
+            purchase_price=purchase_price,
+            purchase_date=as_of.date(),
+        )
+
+    currency = _parse_currency(row.get("currency"))
+    if currency is None:
+        return None
     return Position(
         symbol=symbol.strip(),
         quantity=quantity,
         purchase_price=purchase_price,
-        purchase_date=as_of.date(),
+        purchase_date=_parse_purchase_date(row.get("purchase_date")),
+        currency=currency,
     )
 
 
@@ -96,17 +143,43 @@ def _parse_as_of(raw: Any) -> datetime | None:
         return None
 
 
-class SupabasePositionsAdapter(PortfolioPositionsPort):
-    """Adapter odczytu tabeli `positions` (PostgreSQL via PostgREST)."""
+class SupabasePositionsAdapter(PortfolioPositionsPort, PositionsImportPort):
+    """Adapter tabeli `positions` (PostgreSQL via PostgREST).
+
+    `currency_columns` (flaga `positions_currency_enabled`) włącza odczyt i zapis
+    kolumn `currency`/`purchase_date` z migracji 035. Bez niej zapis nie zawiera
+    nowych kluczy (przed migracją → PGRST204), a odczyt zostaje przy USD.
+    """
 
     def __init__(
         self,
         url: str,
         key: str,
         table_name: str = DEFAULT_POSITIONS_TABLE,
+        *,
+        currency_columns: bool = False,
     ) -> None:
         self._client = create_client(url, key)
         self._table = table_name
+        self._currency_columns = currency_columns
+
+    def _query_rows(self) -> list[dict[str, Any]]:
+        """Wszystkie wiersze tabeli `positions` (najświeższe pierwsze); błąd → wyjątek."""
+        response = (
+            self._client.table(self._table)
+            .select("*")
+            .order("as_of", desc=True)
+            .execute()
+        )
+        return cast(list[dict[str, Any]], response.data or [])
+
+    def _parse_rows(self, rows: list[dict[str, Any]]) -> list[Position]:
+        return [
+            position
+            for row in rows
+            if (position := _parse_position(row, currency_columns=self._currency_columns))
+            is not None
+        ]
 
     def _fetch_rows(self) -> list[dict[str, Any]]:
         """Zwraca wszystkie wiersze tabeli `positions` (najświeższe pierwsze).
@@ -115,12 +188,7 @@ class SupabasePositionsAdapter(PortfolioPositionsPort):
         błąd sieci) → [] + WARNING z podpowiedzią o migracji.
         """
         try:
-            response = (
-                self._client.table(self._table)
-                .select("*")
-                .order("as_of", desc=True)
-                .execute()
-            )
+            return self._query_rows()
         except Exception:
             logger.warning(
                 "positions: query on table %r failed — falling back to no "
@@ -130,7 +198,6 @@ class SupabasePositionsAdapter(PortfolioPositionsPort):
                 exc_info=True,
             )
             return []
-        return cast(list[dict[str, Any]], response.data or [])
 
     def get_positions(self) -> list[Position]:
         """Zwraca realne pozycje z tabeli `positions`.
@@ -138,12 +205,48 @@ class SupabasePositionsAdapter(PortfolioPositionsPort):
         Wiersze uszkodzone (brak symbolu, quantity <= 0, wartości niefinitne)
         są pomijane. Graceful: błąd zapytania → [].
         """
-        out: list[Position] = []
-        for row in self._fetch_rows():
-            position = _parse_position(row)
-            if position is not None:
-                out.append(position)
-        return out
+        return self._parse_rows(self._fetch_rows())
+
+    def current_positions(self) -> list[Position]:
+        """PORT-18: te same loty co `get_positions`, ale błąd odczytu → wyjątek."""
+        return self._parse_rows(self._query_rows())
+
+    def replace_positions(self, positions: Sequence[Position], as_of: datetime) -> None:
+        """PORT-18: zastępuje całą tabelę lotami z importu, wszystkie z `as_of`.
+
+        Kolejność jest celowa: najpierw INSERT nowych lotów, potem DELETE wierszy,
+        które istniały przed importem (po `id`). Błąd zapisu zostawia stary
+        portfel; błąd kasowania zostawia duplikaty, które ponowny import usuwa.
+        Bez `currency_columns` lot, którego tabela nie przechowa (waluta inna niż
+        USD albo data zakupu), jest odrzucany — ciche zgubienie waluty jest
+        gorsze niż brak importu.
+        """
+        payload = [self._payload(position, as_of) for position in positions]
+        existing = self._client.table(self._table).select("id").execute()
+        old_ids = [row["id"] for row in cast(list[dict[str, Any]], existing.data or [])]
+        if payload:
+            self._client.table(self._table).insert(payload).execute()
+        if old_ids:
+            self._client.table(self._table).delete().in_("id", old_ids).execute()
+
+    def _payload(self, position: Position, as_of: datetime) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            "symbol": position.symbol,
+            "quantity": str(position.quantity),
+            "avg_cost": str(position.purchase_price),
+            "as_of": as_of.isoformat(),
+        }
+        if self._currency_columns:
+            record["currency"] = position.currency
+            record["purchase_date"] = (
+                None if position.purchase_date is None else position.purchase_date.isoformat()
+            )
+        elif position.currency != DEFAULT_POSITION_CURRENCY or position.purchase_date:
+            raise ValueError(
+                f"{position.symbol}: waluta/data zakupu wymagają migracji 035 "
+                "i positions_currency_enabled = true"
+            )
+        return record
 
     def get_as_of(self) -> datetime | None:
         """Najświeższy `as_of` w tabeli (napędza badge STALE).

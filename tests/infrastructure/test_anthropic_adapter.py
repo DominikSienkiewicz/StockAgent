@@ -460,3 +460,131 @@ class TestSingleRetryLayer:
         AnthropicAdapter(api_key="sk-ant-test").analyze("Predict.")
 
         assert sleep.call_args.args[0] <= 20
+
+
+def test_critical_alert_is_polish_and_logged_in_english(mock_anthropic_class, mocker, caplog):
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    from anthropic import APIStatusError
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
+    client = MagicMock()
+    mock_anthropic_class.return_value = client
+    client.messages.create.side_effect = _status_error(529)
+    monitor = QuotaMonitor()
+    adapter = AnthropicAdapter(
+        api_key="sk-ant-test", backoff_base=0.01, max_retries=2, quota_monitor=monitor
+    )
+
+    with caplog.at_level(logging.WARNING), pytest.raises(APIStatusError):
+        adapter.analyze("Predict.")
+
+    alert = monitor.alerts[0]
+    assert "wywołanie nie powiodło się" in alert.message
+    assert "call failed" not in alert.message
+    assert alert.action.startswith("Sprawdź")
+    assert "failed after 2 retries" in caplog.text
+
+
+class TestUsageReporting:
+    """FIN-13: tokeny z `response.usage` idą do portu `UsageSink` — adapter nie
+    zna Supabase ani cennika. Brak usage = brak rekordu, bez wyjątku."""
+
+    @staticmethod
+    def _response_with_usage(text: str, **usage: object) -> MagicMock:
+        response = _message_response(text)
+        response.usage = MagicMock(spec=list(usage))
+        for name, value in usage.items():
+            setattr(response.usage, name, value)
+        return response
+
+    @staticmethod
+    def _adapter(mock_anthropic_class: MagicMock) -> tuple[AnthropicAdapter, MagicMock, MagicMock]:
+        from src.application.ports import UsageSink
+
+        client = MagicMock()
+        mock_anthropic_class.return_value = client
+        sink = MagicMock(spec=UsageSink)
+        adapter = AnthropicAdapter(
+            api_key="sk-ant-test", model="claude-sonnet-4-6", usage_sink=sink
+        )
+        return adapter, client, sink
+
+    def test_usage_is_reported_to_sink(self, mock_anthropic_class):
+        from src.domain.finops import LLMUsage
+
+        adapter, client, sink = self._adapter(mock_anthropic_class)
+        client.messages.create.return_value = self._response_with_usage(
+            "{}",
+            input_tokens=1200,
+            output_tokens=300,
+            cache_read_input_tokens=4000,
+            cache_creation_input_tokens=1500,
+        )
+
+        adapter.analyze("Predict AAPL.")
+
+        sink.record.assert_called_once_with(
+            LLMUsage(
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+                input_tokens=1200,
+                output_tokens=300,
+                cache_read_tokens=4000,
+                cache_write_tokens=1500,
+            )
+        )
+
+    def test_usage_without_cache_fields_counts_zero_cache_tokens(self, mock_anthropic_class):
+        adapter, client, sink = self._adapter(mock_anthropic_class)
+        client.messages.create.return_value = self._response_with_usage(
+            "lekcja", input_tokens=50, output_tokens=7
+        )
+
+        adapter.analyze_mistake("Why?")
+
+        usage = sink.record.call_args.args[0]
+        assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (
+            50,
+            0,
+            0,
+        )
+
+    def test_missing_usage_records_nothing(self, mock_anthropic_class):
+        adapter, client, sink = self._adapter(mock_anthropic_class)
+        response = _message_response("{}")
+        response.usage = None
+        client.messages.create.return_value = response
+
+        assert adapter.analyze("Predict.") == {}
+        sink.record.assert_not_called()
+
+    def test_usage_of_a_billed_empty_answer_is_still_reported(self, mock_anthropic_class):
+        # Request poszedł i kosztował — pusta treść nie kasuje rachunku.
+        adapter, client, sink = self._adapter(mock_anthropic_class)
+        response = self._response_with_usage("", input_tokens=900, output_tokens=0)
+        response.content = []
+        client.messages.create.return_value = response
+
+        with pytest.raises(ValueError):
+            adapter.analyze("Predict.")
+
+        sink.record.assert_called_once()
+
+    def test_failing_sink_does_not_fail_the_paid_call(self, mock_anthropic_class):
+        adapter, client, sink = self._adapter(mock_anthropic_class)
+        sink.record.side_effect = RuntimeError("ledger down")
+        client.messages.create.return_value = self._response_with_usage(
+            '{"ok": true}', input_tokens=1, output_tokens=1
+        )
+
+        assert adapter.analyze("Predict.") == {"ok": True}
+
+    def test_without_a_sink_usage_is_not_read(self, adapter_with_client):
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _message_response("{}")
+
+        assert adapter.analyze("Predict.") == {}

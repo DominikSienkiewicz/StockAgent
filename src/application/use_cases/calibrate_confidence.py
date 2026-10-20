@@ -16,6 +16,10 @@ from src.domain.prediction import calibration_error, calibration_score
 
 logger = logging.getLogger(__name__)
 
+# FIN-30: płatne wywołania LLM jednego przebiegu (zbiorczy wniosek) — wkład
+# sędziego do tygodniowego budżetu Slow Loopa.
+PAID_LLM_CALLS_PER_RUN = 1
+
 
 def _judge_prompt(n: int, mean_conf: float, accuracy: float, gap: float) -> str:
     return f"""

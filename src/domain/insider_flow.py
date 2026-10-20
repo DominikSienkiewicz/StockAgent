@@ -24,13 +24,26 @@ class InsiderFlowSnapshot:
 
     `net_shares` > 0 oznacza netto kupno (insiderzy dokupują), < 0 netto
     sprzedaż. `buy_count`/`sell_count` to liczba transakcji każdego typu.
-    Adapter wypełnia te pola z Form 4 (transakcje insiderów)."""
+    Adapter wypełnia te pola z Form 4 (transakcje insiderów).
+
+    `filings_seen`/`filings_parsed` (DAT-03): ile Form 4 z okna adapter widział
+    i ile z nich sparsował. Bez nich niesparsowane filingi wyglądały jak okno bez
+    transakcji. Domyślne zera = snapshot bez tej wiedzy, traktowany jak dowód."""
 
     symbol: str
     net_shares: float
     buy_count: int
     sell_count: int
     window_days: int
+    filings_seen: int = 0
+    filings_parsed: int = 0
+
+    def has_evidence(self) -> bool:
+        """Czy snapshot mówi coś o insiderach. Okno bez Form 4 to dowód braku
+        transakcji; Form 4 widziane, a żaden niesparsowany, to brak danych EDGAR —
+        zerowe liczniki nie mogą wtedy udawać spokojnego okna. Częściowo sparsowane
+        okno zostaje dowodem (częściowa agregacja jak dotąd)."""
+        return self.filings_seen == 0 or self.filings_parsed > 0
 
     def evaluate_signal(self, min_net_shares: float = 0.0) -> InsiderSignal:
         """Klasyfikuje przepływ. Brak transakcji → NEUTRAL; netto powyżej progu

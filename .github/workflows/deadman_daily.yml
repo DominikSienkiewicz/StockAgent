@@ -4,6 +4,10 @@ on:
   # NIEZ-11: raz dziennie sprawdza ślady życia jobów w bazie i mailuje przez Resend,
   # gdy job, który powinien chodzić, zamilkł (oczekiwania: `liveness_*_max_gap_h`
   # w config.toml). Dzienny cron daje najwyżej jeden alert na dobę.
+  # NIEZ-28: każdy przebieg najpierw czyta jeden wiersz price_snapshots (PostgREST,
+  # tylko odczyt) — projekt Supabase Free jest wstrzymywany po 7 dniach bez
+  # aktywności, a brak odpowiedzi bazy daje osobny mail. To monitor, nie keepalive:
+  # nie gwarantuje, że Supabase projektu nie wstrzyma.
   schedule:
     - cron: '17 9 * * *'   # 09:17 UTC — po typowym starcie niedzielnego Slow Loopa
   workflow_dispatch:
@@ -37,9 +41,9 @@ jobs:
       - name: 📦 Sync dependencies
         run: uv sync --frozen --no-build --no-install-project
 
-      - name: 🫀 Check job liveness (free)
+      - name: 🫀 Check job liveness and database (free)
         env:
-          # Odczyt śladów życia (price_snapshots, model_scorecards).
+          # Odczyt bazy (monitor) i śladów życia (price_snapshots, model_scorecards).
           SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
           # Alert mailem — ten sam kanał co digest.

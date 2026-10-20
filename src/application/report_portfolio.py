@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import html as _html
 
+from src.application.report_formatting import pct
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.risk_sample import RiskStat
 
@@ -95,15 +96,15 @@ def render_correlation_text(report: PortfolioRiskReport) -> str:
     if report.var is not None:
         conf_pct = round(report.var_confidence * 100)
         lines.append(
-            f"  📉 Value-at-Risk ({conf_pct}%): {report.var * 100:.1f}% "
-            f"(CVaR {(report.cvar or 0.0) * 100:.1f}%)"
+            f"  📉 Value-at-Risk ({conf_pct}%): {pct(report.var, decimals=1)} "
+            f"(CVaR {pct(report.cvar or 0.0, decimals=1)})"
         )
     for impact in report.scenarios:
         worst = impact.worst_symbol if impact.worst_symbol is not None else "—"
         lines.append(
-            f"  🧪 {impact.scenario_name} ({impact.market_shock * 100:+.0f}%): "
-            f"portfel {impact.portfolio_pnl * 100:+.1f}%, najsłabszy {worst} "
-            f"({impact.worst_pnl * 100:+.1f}%)"
+            f"  🧪 {impact.scenario_name} ({pct(impact.market_shock, signed=True, decimals=0)}): "
+            f"portfel {pct(impact.portfolio_pnl, signed=True, decimals=1)}, najsłabszy {worst} "
+            f"({pct(impact.worst_pnl, signed=True, decimals=1)})"
         )
     lines.extend(f"  ⏳ {note}" for note in _insufficient_notes(report))
     if not lines:
@@ -140,8 +141,8 @@ def _render_var_html(report: PortfolioRiskReport) -> str:
         return ""
     conf_pct = round(report.var_confidence * 100)
     tail_pct = round((1.0 - report.var_confidence) * 100)
-    var_pct = f"{report.var * 100:.1f}%"
-    cvar_pct = f"{(report.cvar or 0.0) * 100:.1f}%"
+    var_pct = pct(report.var, decimals=1)
+    cvar_pct = pct(report.cvar or 0.0, decimals=1)
     return (
         "<div style='padding: 10px 14px; background: #fffbeb; "
         "border-left: 3px solid #f59e0b; border-radius: 4px; "
@@ -170,12 +171,12 @@ def _render_stress_html(report: PortfolioRiskReport) -> str:
             "<td style='padding: 6px 8px;'><strong>"
             f"{_html.escape(impact.scenario_name)}</strong></td>"
             f"<td style='padding: 6px 8px; text-align: right; color: #6b7280;'>"
-            f"{impact.market_shock * 100:+.0f}%</td>"
+            f"{pct(impact.market_shock, signed=True, decimals=0)}</td>"
             f"<td style='padding: 6px 8px; text-align: right; "
             f"color: {'#dc2626' if impact.portfolio_pnl < 0 else '#059669'};'>"
-            f"{impact.portfolio_pnl * 100:+.1f}%</td>"
+            f"{pct(impact.portfolio_pnl, signed=True, decimals=1)}</td>"
             f"<td style='padding: 6px 8px;'>{worst} "
-            f"({impact.worst_pnl * 100:+.1f}%)</td>"
+            f"({pct(impact.worst_pnl, signed=True, decimals=1)})</td>"
             "</tr>"
         )
     return (
@@ -185,10 +186,10 @@ def _render_stress_html(report: PortfolioRiskReport) -> str:
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
-        "<th style='padding: 6px 8px; text-align: left;'>Scenariusz</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Szok</th>"
-        "<th style='padding: 6px 8px; text-align: right;'>Portfel</th>"
-        "<th style='padding: 6px 8px; text-align: left;'>Najsłabszy</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Scenariusz</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Szok</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Portfel</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: left;'>Najsłabszy</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table>"

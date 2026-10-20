@@ -50,6 +50,24 @@ def _format_ml_target_line(data: CouncilInput) -> str:
     return f"Cel cenowy ML (XGBoost): {data.ml_price_target}"
 
 
+def _format_market_data(data: CouncilInput) -> str:
+    """Wnętrze <dane_rynkowe>, wspólne dla rundy 1 i rewizji. EXP-02: ślepa rada
+    (`data.blind`) nie dostaje linii z trendem i pewnością głównego LLM."""
+    lines = [
+        f"Symbol: {data.symbol}",
+        f"Cena aktualna: {data.current_price}",
+        f"Zmiana 12h: {data.price_delta_pct:+.2f}%",
+        f"Sentyment (Alpha Vantage, skala -1.0 do +1.0): {data.sentiment_score:.2f}",
+    ]
+    if not data.blind:
+        lines.append(
+            f"Trend wg głównego analityka agenta: {data.llm_trend} "
+            f"(pewność: {data.llm_confidence:.0%})"
+        )
+    lines.append(_format_ml_target_line(data))
+    return "\n".join(lines)
+
+
 def investor_prompt(persona: InvestorPersona, data: CouncilInput) -> str:
     """Prompt dla pojedynczego inwestora w radzie.
 
@@ -66,12 +84,7 @@ def investor_prompt(persona: InvestorPersona, data: CouncilInput) -> str:
     news_fenced = fence_untrusted("NEWS", data.news_articles)
     return f"""
 <dane_rynkowe>
-Symbol: {data.symbol}
-Cena aktualna: {data.current_price}
-Zmiana 12h: {data.price_delta_pct:+.2f}%
-Sentyment (Alpha Vantage, skala -1.0 do +1.0): {data.sentiment_score:.2f}
-Trend wg głównego analityka agenta: {data.llm_trend} (pewność: {data.llm_confidence:.0%})
-{_format_ml_target_line(data)}
+{_format_market_data(data)}
 </dane_rynkowe>
 
 <newsy>
@@ -121,12 +134,7 @@ def investor_revision_prompt(
     )
     return f"""
 <dane_rynkowe>
-Symbol: {data.symbol}
-Cena aktualna: {data.current_price}
-Zmiana 12h: {data.price_delta_pct:+.2f}%
-Sentyment (Alpha Vantage, skala -1.0 do +1.0): {data.sentiment_score:.2f}
-Trend wg głównego analityka agenta: {data.llm_trend} (pewność: {data.llm_confidence:.0%})
-{_format_ml_target_line(data)}
+{_format_market_data(data)}
 </dane_rynkowe>
 
 <newsy>

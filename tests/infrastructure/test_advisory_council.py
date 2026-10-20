@@ -617,3 +617,128 @@ class TestTotalTimeout:
 
         assert time.perf_counter() - start < 0.5
         assert slow not in {op.investor_name for op in result.investor_opinions}
+
+
+class TestBlindCouncilCallCount:
+    """EXP-02 (FinOps): ślepa rada to te same wywołania co rada widząca —
+    zmienia się wyłącznie treść promptu person."""
+
+    def test_blind_arm_makes_the_same_calls_without_the_llm_line(self, llm_port: Mock):
+        from dataclasses import replace
+
+        counts = []
+        for blind in (False, True):
+            llm_port.reset_mock()
+            llm_port.analyze.side_effect = None
+            llm_port.analyze.return_value = _opinion_json()
+            council = LLMAdvisoryCouncil(
+                llm_port=llm_port, personas=_TEST_PERSONAS[:3], max_personas=3
+            )
+            council.analyze("AAPL", replace(_make_input(), blind=blind))
+            counts.append(llm_port.analyze.call_count)
+            persona_prompts = [call.args[0] for call in llm_port.analyze.call_args_list[:3]]
+            sees_llm = ["Trend wg głównego analityka agenta" in p for p in persona_prompts]
+            assert sees_llm == [not blind] * 3
+
+        assert counts[0] == counts[1] == 4
+
+
+# --- FIN-02: rada liczona per realny request (MeteredLLMPort) ------------------
+
+_SEVEN_PERSONAS = _TEST_PERSONAS[:7]
+
+
+def _metered_council(llm_port: Mock, *, debate_mode: bool = False):
+    from src.application.cycle_telemetry import CycleTelemetry
+    from src.application.metering import MeteredLLMPort
+
+    telemetry = CycleTelemetry()
+    council = LLMAdvisoryCouncil(
+        llm_port=MeteredLLMPort(llm_port, telemetry, "council_llm"),
+        personas=_SEVEN_PERSONAS,
+        debate_mode=debate_mode,
+    )
+    return council, telemetry
+
+
+def test_analyze_records_one_paid_call_per_llm_request(llm_port: Mock) -> None:
+    llm_port.analyze.side_effect = _routed()
+    council, telemetry = _metered_council(llm_port)
+
+    council.analyze("AAPL", _make_input())
+
+    # 7 person + chairman = 8 requestów, nie „1 rada”.
+    assert telemetry.snapshot().paid_calls["council_llm"] == 8
+    assert llm_port.analyze.call_count == 8
+
+
+def test_debate_round_counts_every_revision_request(llm_port: Mock) -> None:
+    round1 = {"n": 0}
+
+    def split_then_converge(prompt: str) -> dict:
+        if "<opinie_peerow>" in prompt:
+            return _opinion_json("BUY")
+        if "final_recommendation" in prompt:
+            return _verdict_json()
+        idx = round1["n"]
+        round1["n"] += 1
+        return _opinion_json({0: "BUY", 1: "SELL"}.get(idx, "HOLD"))
+
+    llm_port.analyze.side_effect = split_then_converge
+    council, telemetry = _metered_council(llm_port, debate_mode=True)
+
+    council.analyze("AAPL", _make_input())
+
+    # 7 person + 7 rewizji + chairman.
+    assert telemetry.snapshot().paid_calls["council_llm"] == 15
+
+
+def test_timed_out_persona_request_is_still_counted(llm_port: Mock, mocker) -> None:
+    # Request spóźnionej persony poszedł do dostawcy — płacimy za niego, choć
+    # głos odpada po limicie czasu rady. Limit 0.3 s (persona śpi 1 s) daje
+    # wątkom czas na start także na obciążonej maszynie.
+    mocker.patch("src.infrastructure.adapters.advisory_council._COUNCIL_TOTAL_TIMEOUT_S", 0.3)
+    slow = _SEVEN_PERSONAS[0].name
+    llm_port.analyze.side_effect = _routed(slow={slow})
+    council, telemetry = _metered_council(llm_port)
+
+    result = council.analyze("AAPL", _make_input())
+
+    assert slow not in {op.investor_name for op in result.investor_opinions}
+    assert telemetry.snapshot().paid_calls["council_llm"] == 8
+
+
+def test_failed_persona_request_is_still_counted(llm_port: Mock) -> None:
+    failing = _SEVEN_PERSONAS[1].name
+    llm_port.analyze.side_effect = _routed(failing={failing})
+    council, telemetry = _metered_council(llm_port)
+
+    council.analyze("AAPL", _make_input())
+
+    assert telemetry.snapshot().paid_calls["council_llm"] == 8
+
+
+def test_persona_threads_inherit_the_usage_scope_of_the_caller() -> None:
+    """FIN-13: persony idą w wątkach puli, a kontekst (`contextvars`) nie przechodzi
+    do wątku sam — bez kopii kontekstu tokeny person trafiałyby do ledgera bez
+    węzła i symbolu."""
+    from src.application.usage_ledger import UsageLedger, usage_scope
+    from src.domain.finops import LLMUsage
+
+    ledger = UsageLedger()
+    usage = LLMUsage(provider="openai", model="gpt-5-mini", input_tokens=1, output_tokens=1)
+    port = Mock(spec=LLMPort)
+
+    def analyze(_prompt: str) -> dict:
+        ledger.record(usage)
+        return _opinion_json()
+
+    port.analyze.side_effect = analyze
+    council = LLMAdvisoryCouncil(llm_port=port, personas=_TEST_PERSONAS[:3])
+
+    with usage_scope(source="council_llm", node="council", symbol="AAPL"):
+        council.analyze("AAPL", _make_input())
+
+    attributions = {(r.source, r.node, r.symbol) for r in ledger.records()}
+    assert len(ledger.records()) == 4  # 3 persony + chairman
+    assert attributions == {("council_llm", "council", "AAPL")}

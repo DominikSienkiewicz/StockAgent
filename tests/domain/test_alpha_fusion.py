@@ -291,3 +291,47 @@ class TestResultInvariants:
         assert isinstance(result.score, float)
         # Kontrola, że nasz helper nie potrzebuje ceny (Decimal) do klasyfikacji.
         assert AnalystConsensus(symbol="AAPL", hold=5).upside(Decimal("100")) is None
+
+
+# ---------------------------------------------------------------------------
+# DAT-03: niesparsowane Form 4 to brak danych, nie brak transakcji insiderów.
+# ---------------------------------------------------------------------------
+class TestInsiderWithoutEvidence:
+    def test_unparsed_filings_leave_the_insider_out_of_the_fusion(self) -> None:
+        insider = InsiderFlowSnapshot(
+            "AAPL", 0.0, 0, 0, 90, filings_seen=3, filings_parsed=0
+        )
+
+        result = fuse_alpha_signals(insider=insider, options=_options(0.5))
+
+        assert "insider" not in result.available_sources
+        assert "insider" not in result.contributions
+        # Brak dowodu nie rozcieńcza pozostałych źródeł neutralnym zerem.
+        assert result.score == pytest.approx(fuse_alpha_signals(options=_options(0.5)).score)
+
+    def test_insider_without_evidence_alone_gives_no_sources(self) -> None:
+        insider = InsiderFlowSnapshot(
+            "AAPL", 0.0, 0, 0, 90, filings_seen=3, filings_parsed=0
+        )
+
+        result = fuse_alpha_signals(insider=insider)
+
+        assert result.available_sources == ()
+        assert result.score == pytest.approx(0.0)
+
+    def test_window_without_form4_is_evidence_of_no_trades(self) -> None:
+        insider = InsiderFlowSnapshot(
+            "AAPL", 0.0, 0, 0, 90, filings_seen=0, filings_parsed=0
+        )
+
+        assert fuse_alpha_signals(insider=insider).available_sources == ("insider",)
+
+    def test_partially_parsed_filings_still_vote(self) -> None:
+        insider = InsiderFlowSnapshot(
+            "AAPL", 500.0, 1, 0, 90, filings_seen=3, filings_parsed=1
+        )
+
+        result = fuse_alpha_signals(insider=insider)
+
+        assert result.available_sources == ("insider",)
+        assert result.score == pytest.approx(1.0)

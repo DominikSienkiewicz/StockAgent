@@ -133,3 +133,32 @@ def test_label_at_negative_threshold_boundary_is_inverted() -> None:
         "QQQ", book, hedge, expect_inverse=True, effective_threshold=threshold
     )
     assert assessment.label == "odwrócony"
+
+
+class TestEquityHedgeSymbols:
+    """PORT-04 (decyzja 2026-10-19): hedge'em portfela akcji w sizingu są tylko
+    instrumenty odwrotne do akcji i zmienności. Trzymane GLD czy EPOL to
+    inwestycja, nie zabezpieczenie."""
+
+    def test_only_inverse_equity_and_volatility_are_hedges(self) -> None:
+        from src.domain.hedge import EQUITY_HEDGE_TYPES
+        from src.domain.macro_risk import MacroRiskInstrumentType
+
+        assert frozenset({
+            MacroRiskInstrumentType.INVERSE_EQUITY,
+            MacroRiskInstrumentType.VOLATILITY,
+        }) == EQUITY_HEDGE_TYPES
+
+    def test_picks_hedge_symbols_by_instrument_type(self) -> None:
+        from src.domain.hedge import equity_hedge_symbols
+        from src.domain.macro_risk import MacroRiskInstrumentType as T
+
+        symbols = equity_hedge_symbols({
+            "SH": T.INVERSE_EQUITY,
+            "VIXY": T.VOLATILITY,
+            "TBT": T.INVERSE_TREASURY,
+            "GLD": T.SAFE_HAVEN,
+            "EPOL": T.SOVEREIGN_PROXY,
+        })
+
+        assert symbols == frozenset({"SH", "VIXY"})

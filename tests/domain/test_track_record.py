@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.domain.number_format import DecimalMark
 from src.domain.significance import MIN_BOOTSTRAP_CYCLES
 from src.domain.track_record import (
     NaiveBaselines,
@@ -117,6 +118,21 @@ class TestAssessDirectionalHitRate:
         assert evidence.p_value is not None
         assert evidence.verdict is not None
         assert "rzutu monetą" in evidence.verdict
+
+    def test_verdict_can_write_the_p_value_with_a_comma(self) -> None:
+        # MAIL-58: `verdict` zostaje z kropką (publiczny scorecard), mail bierze przecinek.
+        calls = [
+            _call("2026-10-01", "BULLISH", True, 0.01),
+            _call("2026-10-02", "BULLISH", False, -0.01),
+        ]
+
+        evidence = assess_directional_hit_rate(calls)
+        polish = evidence.verdict_in(DecimalMark.COMMA)
+
+        assert evidence.verdict is not None and polish is not None
+        assert "p=0." in evidence.verdict
+        assert "p=0," in polish
+        assert polish == evidence.verdict.replace("p=0.", "p=0,")
 
     def test_no_directional_calls_means_no_interval_and_no_verdict(self) -> None:
         evidence = assess_directional_hit_rate([_call("2026-10-01", "SIDEWAYS", True, 0.0)])

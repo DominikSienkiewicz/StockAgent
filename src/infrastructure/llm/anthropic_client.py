@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -10,9 +9,11 @@ from typing import Any, TypeVar
 
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 
-from src.application.ports import LLMPort
+from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.llm._json_text import strip_code_block
+from src.infrastructure.llm._usage import anthropic_usage, report_usage
 
 # Centralny model id (rodzina Claude 4.x). Świadomie BEZ daty w komentarzu —
 # data dryfuje (zostaje "maj 2026" długo po fakcie) i sugeruje fałszywą
@@ -43,11 +44,6 @@ MAX_RETRY_WAIT_S = 20.0
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-# Bez otaczających `\s*` — `\s*(.*?)\s*` na wejściu z dużą ilością białych
-# znaków bez domknięcia fence'a backtrackuje wielomianowo (ReDoS na output LLM).
-# Otaczające białe znaki obcinamy w `_strip_code_block` przez `.strip()`.
-_CODE_BLOCK_RE = re.compile(r"```(?:json)?(.*?)```", re.DOTALL)
 
 
 def validate_model_id(model: str) -> None:
@@ -91,6 +87,9 @@ class AnthropicAdapter(LLMPort):
     retry'owane z backoffem; inne błędy (np. 400) lecą natychmiast w górę.
     Sygnał kwot trafia do `QuotaMonitor` (WARNING po udanym retry, CRITICAL
     po wyczerpaniu) — tak samo jak w OpenAIAdapter.
+
+    FIN-13: tokeny udanego requestu (`response.usage`) idą do `usage_sink`, także
+    gdy treść odpowiedzi okaże się pusta albo niepoprawna — request był płatny.
     """
 
     def __init__(
@@ -103,6 +102,7 @@ class AnthropicAdapter(LLMPort):
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE,
         quota_monitor: QuotaMonitor | None = None,
+        usage_sink: UsageSink | None = None,
     ) -> None:
         # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
         validate_model_id(model)
@@ -114,6 +114,7 @@ class AnthropicAdapter(LLMPort):
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._quota_monitor = quota_monitor
+        self._usage_sink = usage_sink
 
     @staticmethod
     def _build_user_content(prompt: str) -> Any:
@@ -137,6 +138,8 @@ class AnthropicAdapter(LLMPort):
                 ],
             )
         )
+        if self._usage_sink is not None:
+            report_usage(self._usage_sink, anthropic_usage(response, self._model))
         return self._extract_text(response)
 
     def _call_with_retry(self, fn: Callable[[], T]) -> T:
@@ -154,13 +157,17 @@ class AnthropicAdapter(LLMPort):
                     self._emit_quota_alert(
                         severity=QuotaSeverity.WARNING,
                         message=(
-                            f"Anthropic {self._model} hit a transient error "
-                            f"{attempt}× during a single call (retry succeeded)."
+                            f"Anthropic {self._model}: przejściowy błąd {attempt}× "
+                            "w jednym wywołaniu (ponowienie się udało)."
                         ),
                         action=(
-                            "Transient 429/5xx — usually self-heals. If frequent, "
-                            "raise COUNCIL_VOLATILITY_THRESHOLD or check Anthropic "
-                            "status / your usage tier."
+                            "Przejściowe 429/5xx zwykle mija samo. Jeśli się "
+                            "powtarza, podnieś COUNCIL_VOLATILITY_THRESHOLD albo "
+                            "sprawdź status Anthropic / tier konta."
+                        ),
+                        log_message=(
+                            f"Anthropic {self._model} hit a transient error "
+                            f"{attempt}× during a single call (retry succeeded)."
                         ),
                     )
                 return result
@@ -171,13 +178,18 @@ class AnthropicAdapter(LLMPort):
                     self._emit_quota_alert(
                         severity=QuotaSeverity.CRITICAL,
                         message=(
+                            f"Anthropic {self._model} nie odpowiedział po "
+                            f"{self._max_retries} ponowieniach "
+                            f"({type(exc).__name__}) — wywołanie nie powiodło się."
+                        ),
+                        action=(
+                            "Sprawdź stronę statusu Anthropic / podnieś tier konta "
+                            "albo ustaw LLM_PROVIDER=openai dla tego przebiegu."
+                        ),
+                        log_message=(
                             f"Anthropic {self._model} failed after "
                             f"{self._max_retries} retries "
                             f"({type(exc).__name__}) — call failed."
-                        ),
-                        action=(
-                            "Check Anthropic status page / upgrade usage tier, or "
-                            "switch LLM_PROVIDER=openai for this run."
                         ),
                     )
                     raise
@@ -220,8 +232,12 @@ class AnthropicAdapter(LLMPort):
         return min(float(self._backoff_base * (2**attempt)), MAX_RETRY_WAIT_S)
 
     def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str
+        self, severity: QuotaSeverity, message: str, action: str, log_message: str
     ) -> None:
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
+        logger.log(level, "%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(
@@ -243,8 +259,7 @@ class AnthropicAdapter(LLMPort):
 
     @staticmethod
     def _strip_code_block(text: str) -> str:
-        match = _CODE_BLOCK_RE.search(text)
-        return match.group(1).strip() if match else text
+        return strip_code_block(text)
 
     @staticmethod
     def _next_string_state(ch: str, escaped: bool) -> tuple[bool, bool]:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import html as _html
 from decimal import Decimal
 
+from src.application.report_formatting import INVESTMENT_DISCLAIMER, number, pct
 from src.domain.council import InvestorOpinion
 from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
 
@@ -34,8 +35,8 @@ def _ece_delta_label(recap: WeeklyRecap) -> str:
     if recap.ece_delta == 0:
         direction = "bez zmian"
     return (
-        f"ECE {recap.current_ece:.3f} "
-        f"({direction} o {abs(recap.ece_delta):.3f} tydzień do tygodnia)"
+        f"ECE {number(recap.current_ece, decimals=3)} "
+        f"({direction} o {number(abs(recap.ece_delta), decimals=3)} tydzień do tygodnia)"
     )
 
 
@@ -58,7 +59,7 @@ def _dissenters_html(dissenters: tuple[InvestorOpinion, ...]) -> str:
 
 
 def hero_verdict(highlight: RecapHighlight) -> str:
-    """„✅ kierunek trafiony · błąd ceny docelowej 1.5%” (WIA-07).
+    """„✅ kierunek trafiony · błąd ceny docelowej 1,5%” (WIA-07).
 
     `accuracy` to bliskość ceny do celu, nie trafność — dlatego mail pokazuje
     błąd ceny docelowej (1 − accuracy, w % ceny wejścia), a trafność kierunku
@@ -68,7 +69,7 @@ def hero_verdict(highlight: RecapHighlight) -> str:
     error_label = (
         "błąd ceny docelowej ≥100%"
         if highlight.accuracy <= 0
-        else f"błąd ceny docelowej {error:.1%}"
+        else f"błąd ceny docelowej {pct(error, decimals=1)}"
     )
     if highlight.direction_correct is None:
         return error_label
@@ -146,6 +147,10 @@ def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> 
         + _dissenters_html(recap.best.vindicated_dissenters)
         + "<div style='font-size: 12px; color: #6b7280; margin-top: 8px;'>"
         f"📐 Kalibracja: {_html.escape(_ece_delta_label(recap))}</div>"
+        # MAIL-08: recap to osobny mail, więc zamyka go własne zastrzeżenie.
+        + "<div style='font-size: 11px; color: #6b7280; margin-top: 16px; "
+        "padding-top: 8px; border-top: 1px solid #e5e7eb;'>"
+        f"{_html.escape(INVESTMENT_DISCLAIMER)}</div>"
     )
 
 
@@ -175,4 +180,5 @@ def render_weekly_recap_text(recap: WeeklyRecap | None, narrative: str = "") -> 
     lines.extend(_hero_text(best_title(recap), recap.best))
     lines.extend(_hero_text(worst_title(recap), recap.worst))
     lines.append(f"  Kalibracja: {_ece_delta_label(recap)}")
+    lines.extend(["-" * 64, INVESTMENT_DISCLAIMER])
     return "\n".join(lines)

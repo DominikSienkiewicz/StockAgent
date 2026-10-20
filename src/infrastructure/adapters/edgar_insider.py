@@ -15,7 +15,9 @@ Adapter jest cienki i „graceful": każdy błąd na dowolnym kroku → None, ni
 nie podnosi wyjątku (to opcjonalne źródło alpha). Logika klasyfikacji sygnału
 żyje w domenie (`InsiderFlowSnapshot.evaluate_signal`). Częściowa agregacja jest
 ok — jeśli część Form-4 XML nie sparsuje się, pomijamy je; jeśli nie sparsuje
-się żaden, zwracamy snapshot z zerowymi licznikami (net_shares = 0.0).
+się żaden, zwracamy snapshot z zerowymi licznikami (net_shares = 0.0). Snapshot
+niesie liczbę widzianych i sparsowanych Form 4 (DAT-03), więc domena
+(`has_evidence`) odróżnia taką awarię od okna bez transakcji.
 """
 
 from __future__ import annotations
@@ -109,6 +111,7 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             net_shares = 0.0
             buy_count = 0
             sell_count = 0
+            filings_parsed = 0
             for accession, primary_doc in filings:
                 parsed = self._parse_form4(cik, accession, primary_doc)
                 if parsed is None:
@@ -118,6 +121,7 @@ class EdgarInsiderAdapter(InsiderFlowPort):
                 net_shares += delta_net
                 buy_count += buys
                 sell_count += sells
+                filings_parsed += 1
 
             return InsiderFlowSnapshot(
                 symbol=symbol,
@@ -125,6 +129,8 @@ class EdgarInsiderAdapter(InsiderFlowPort):
                 buy_count=buy_count,
                 sell_count=sell_count,
                 window_days=self._window_days,
+                filings_seen=len(filings),
+                filings_parsed=filings_parsed,
             )
         except Exception:
             # Opcjonalne źródło alpha — żaden błąd nie może wywalić cyklu.

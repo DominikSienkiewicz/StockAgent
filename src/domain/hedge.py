@@ -13,10 +13,29 @@ płatnych portów.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from src.domain.correlation import pearson
+from src.domain.macro_risk import MacroRiskInstrumentType
+
+# PORT-04 (decyzja 2026-10-19): w sizingu hedge'em portfela akcji są tylko
+# instrumenty odwrotne do akcji i długa zmienność. Złoto (SAFE_HAVEN), proxy
+# suwerenne (EPOL) czy odwrotne obligacje trzymane w portfelu to inwestycja,
+# nie zabezpieczenie akcji — nie mogą obniżać bandy jako „nieskuteczny hedge”.
+EQUITY_HEDGE_TYPES: frozenset[MacroRiskInstrumentType] = frozenset({
+    MacroRiskInstrumentType.INVERSE_EQUITY,
+    MacroRiskInstrumentType.VOLATILITY,
+})
+
+
+def equity_hedge_symbols(
+    symbol_types: Mapping[str, MacroRiskInstrumentType],
+) -> frozenset[str]:
+    """Symbole, które w sizingu liczą się jako hedge portfela akcji."""
+    return frozenset(
+        symbol for symbol, kind in symbol_types.items() if kind in EQUITY_HEDGE_TYPES
+    )
 
 
 def realized_correlation(

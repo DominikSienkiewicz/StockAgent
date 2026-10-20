@@ -105,3 +105,36 @@ def test_empty_cycle_is_steady_state() -> None:
 # po usunięciu martwego kwarga stały się dosłownymi duplikatami sąsiadów obok.
 # Filtrowanie robi orkiestrator, więc kontrakt weryfikuje `TestCycleMaturityWiring`
 # w tests/test_main_entrypoints.py — na realnych `SymbolResult`, nie na liczbach.
+
+
+def test_stale_reference_is_a_skip_reason() -> None:
+    # FIN-14: referencja sprzed pauzy — cykl buduje nowy punkt odniesienia.
+    assert SkipReason.STALE_REFERENCE.value == "STALE_REFERENCE"
+
+
+def test_stale_references_mean_history_exists() -> None:
+    # FIN-14: po pauzie stęchła referencja dowodzi, że historia już była. Nowe
+    # symbole (cold-start) dorzucone w tym samym cyklu nie robią z niego Dnia 1.
+    result = classify_cycle(
+        saved_count=0,
+        cold_start_count=3,
+        below_threshold_count=0,
+        error_count=0,
+        stale_reference_count=40,
+    )
+    assert result is CycleMaturity.STEADY_STATE
+
+
+def test_stale_reference_count_defaults_to_zero() -> None:
+    result = classify_cycle(
+        saved_count=0,
+        cold_start_count=3,
+        below_threshold_count=0,
+        error_count=0,
+    )
+    assert result is CycleMaturity.FIRST_RUN
+
+
+def test_budget_exhausted_is_its_own_skip_reason() -> None:
+    # FIN-12: symbol nad progiem odcięty budżetem cyklu nie jest „poniżej progu”.
+    assert SkipReason.BUDGET_EXHAUSTED.value == "BUDGET_EXHAUSTED"

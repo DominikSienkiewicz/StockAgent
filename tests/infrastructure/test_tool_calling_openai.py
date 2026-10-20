@@ -291,3 +291,66 @@ class TestConfiguration:
 
         with pytest.raises(ValueError, match="JSON"):
             adapter.analyze_with_tools("Predict.", [tool])
+
+
+def test_tool_error_returned_to_model_omits_secrets(mock_openai_class) -> None:
+    # Runda 2 BEZ-07: błąd narzędzia wraca do modelu jako `{"error": ...}`, więc
+    # URL z `?apikey=` i dosłowny klucz z Settings muszą z niego zniknąć wcześniej.
+    client = MagicMock()
+    mock_openai_class.return_value = client
+    adapter = ToolCallingOpenAIAdapter(
+        api_key="sk-test", model="gpt-4o", secret_values=("Lit3ral~odd#key",)
+    )
+
+    def leaky(_args: dict) -> dict:
+        raise RuntimeError(
+            "fetch failed for url https://www.alphavantage.co/query?apikey=SECRET-URL-1 "
+            "(provider echoed Lit3ral~odd#key)"
+        )
+
+    client.chat.completions.create.side_effect = [
+        _tool_request_message([_tool_call("call_s", "get_fundamentals", {"symbol": "AAPL"})]),
+        _final_message("{}"),
+    ]
+
+    adapter.analyze_with_tools("Predict.", [_make_tool(leaky)])
+
+    second_call = client.chat.completions.create.call_args_list[1]
+    tool_message = next(m for m in second_call.kwargs["messages"] if m.get("role") == "tool")
+    error = json.loads(tool_message["content"])["error"]
+    assert "fetch failed" in error
+    assert "SECRET-URL-1" not in error
+    assert "Lit3ral~odd#key" not in error
+
+
+class TestUsageReporting:
+    """FIN-13: każdy request pętli tool-use zgłasza swoje tokeny do `UsageSink`."""
+
+    @staticmethod
+    def _with_usage(response: MagicMock, prompt: int, completion: int) -> MagicMock:
+        response.usage = MagicMock(spec=["prompt_tokens", "completion_tokens"])
+        response.usage.prompt_tokens = prompt
+        response.usage.completion_tokens = completion
+        return response
+
+    def test_every_round_reports_its_usage(self, mock_openai_class):
+        from src.application.ports import UsageSink
+
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        sink = MagicMock(spec=UsageSink)
+        adapter = ToolCallingOpenAIAdapter(api_key="sk-test", model="gpt-4o", usage_sink=sink)
+        client.chat.completions.create.side_effect = [
+            self._with_usage(
+                _tool_request_message([_tool_call("c1", "get_fundamentals", {"symbol": "A"})]),
+                800,
+                25,
+            ),
+            self._with_usage(_final_message('{"trend_direction": "BEARISH"}'), 950, 90),
+        ]
+
+        adapter.analyze_with_tools("Predict.", [_make_tool(lambda args: {"pe": 20})])
+
+        recorded = [call.args[0] for call in sink.record.call_args_list]
+        assert [(u.input_tokens, u.output_tokens) for u in recorded] == [(800, 25), (950, 90)]
+        assert {(u.provider, u.model) for u in recorded} == {("openai", "gpt-4o")}

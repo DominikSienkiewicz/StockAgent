@@ -20,7 +20,7 @@ from typing import Any
 
 from src.application.ports import AnalystConsensusPort
 from src.domain.analyst_consensus import AnalystConsensus
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import build_session, safe_get
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10.0
@@ -65,7 +65,8 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
 
     def _latest_recommendation(self, symbol: str) -> dict[str, Any] | None:
         """Najświeższy snapshot rozkładu rekomendacji lub None."""
-        response = self._session.get(
+        response = safe_get(
+            self._session,
             f"{self._base_url}/stock/recommendation",
             params={"symbol": symbol, "token": self._api_key},
             timeout=self._timeout,
@@ -83,7 +84,8 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
 
     def _price_target(self, symbol: str) -> float | None:
         """Mediana (fallback: średnia) celu cenowego. Premium/403/pusto → None."""
-        response = self._session.get(
+        response = safe_get(
+            self._session,
             f"{self._base_url}/stock/price-target",
             params={"symbol": symbol, "token": self._api_key},
             timeout=self._timeout,

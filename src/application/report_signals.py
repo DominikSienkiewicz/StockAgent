@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
-from zoneinfo import ZoneInfo
 
-from src.application.report_formatting import pct, score_to_pl_label
+from src.application.report_formatting import format_local, number, pct, score_to_pl_label
 from src.application.report_models import (
     ResolvedPrediction,
     RiskSignal,
@@ -18,6 +17,14 @@ from src.domain.calibration_curve import (
     calibrated_confidence,
     find_bucket,
 )
+from src.domain.market_calendar import (
+    TradingSession,
+    holiday_name,
+    next_open,
+    session_on,
+    to_nyse_time,
+    upcoming_session,
+)
 from src.domain.sizing import SizeBand, suggest_band
 
 DIVERGENCE_PRICE_THRESHOLD = Decimal("0.02")
@@ -25,9 +32,8 @@ DIVERGENCE_SENTIMENT_THRESHOLD = 0.2
 AV_LLM_CONFLICT_THRESHOLD = 0.3
 LOW_SIGNAL_NEWS_THRESHOLD = 3
 
-NYSE_TZ = ZoneInfo("America/New_York")
-NYSE_OPEN = time(9, 30)
-NYSE_CLOSE = time(16, 0)
+# Strefa nazw dni i godzin sesji w mailu — ta sama, w której NYSE publikuje kalendarz.
+_NYSE_DISPLAY_TZ = "America/New_York"
 
 
 def build_trade_signals(
@@ -38,6 +44,9 @@ def build_trade_signals(
     portfolio_weights: Mapping[str, Decimal] | None = None,
     cluster_exposures: Mapping[str, Decimal] | None = None,
     hit_sample: float | None = None,
+    portfolio_var: float | None = None,
+    drawdown: float | None = None,
+    hedge_effective: bool | None = None,
 ) -> list[TradeSignal]:
     """Top sygnały transakcyjne — posortowane po sile sygnału.
 
@@ -48,6 +57,9 @@ def build_trade_signals(
     sizing konserwatywny. Brak werdyktu rady → `size_band` None.
     PORT-01: `hit_sample` (n_eff próby hit-rate) trafia do `suggest_band` —
     próba poniżej `MIN_HIT_SAMPLE` nie odblokuje pełnej bandy.
+    PORT-04: `portfolio_var`, `drawdown` i `hedge_effective` (ryzyko realnego
+    portfela, wspólne dla cyklu) idą wprost do `suggest_band` i mogą bandę
+    wyłącznie zwęzić. None → banda jak przed PORT-04.
 
     #9: gdy podano `calibration_buckets`, `strength` liczymy na pewności
     SKALIBROWANEJ historycznym hit-rate'em jej kubełka (shrinkage przy małej
@@ -83,7 +95,14 @@ def build_trade_signals(
             current_price=r.current_price,
             target_price=r.target_price,
             size_band=_size_band_for(
-                r, hit_rate, portfolio_weights, cluster_exposures, hit_sample
+                r,
+                hit_rate,
+                portfolio_weights,
+                cluster_exposures,
+                hit_sample,
+                portfolio_var=portfolio_var,
+                drawdown=drawdown,
+                hedge_effective=hedge_effective,
             ),
             calibrated_confidence=calibrated,
             ml_cold_start=r.ml_cold_start,
@@ -109,6 +128,10 @@ def _size_band_for(
     weights: Mapping[str, Decimal] | None = None,
     cluster_exposures: Mapping[str, Decimal] | None = None,
     hit_sample: float | None = None,
+    *,
+    portfolio_var: float | None = None,
+    drawdown: float | None = None,
+    hedge_effective: bool | None = None,
 ) -> SizeBand | None:
     """Wylicza bandę pozycji z werdyktu rady symbolu; None gdy brak werdyktu.
 
@@ -128,6 +151,9 @@ def _size_band_for(
         current_weight=float(weight) if weight is not None else None,
         cluster_exposure=float(cluster) if cluster is not None else None,
         hit_sample=hit_sample,
+        portfolio_var=portfolio_var,
+        drawdown=drawdown,
+        hedge_effective=hedge_effective,
     )
 
 
@@ -143,7 +169,7 @@ def _divergence_signal(r: SymbolResult) -> RiskSignal | None:
             symbol=r.symbol, type="DIVERGENCE", severity="high",
             description=(
                 f"cena rośnie {pct(r.delta)} ale sentyment "
-                f"{r.sentiment_score:+.2f} -> możliwa korekta lub pump"
+                f"{number(r.sentiment_score, decimals=2, signed=True)} -> możliwa korekta lub pump"
             ),
         )
     if (
@@ -154,7 +180,7 @@ def _divergence_signal(r: SymbolResult) -> RiskSignal | None:
             symbol=r.symbol, type="DIVERGENCE", severity="high",
             description=(
                 f"cena spada {pct(r.delta)} ale sentyment "
-                f"{r.sentiment_score:+.2f} -> okazja lub odbicie?"
+                f"{number(r.sentiment_score, decimals=2, signed=True)} -> okazja lub odbicie?"
             ),
         )
     return None
@@ -167,7 +193,7 @@ def _av_llm_conflict_signal(r: SymbolResult) -> RiskSignal | None:
     return RiskSignal(
         symbol=r.symbol, type="AV_LLM_CONFLICT", severity="high",
         description=(
-            f"LLM nie zgadza się z AV (zgoda={r.av_llm_agreement:.2f})"
+            f"LLM nie zgadza się z AV (zgoda={number(r.av_llm_agreement, decimals=2)})"
             " -> potencjalny fake news / manipulacja"
         ),
     )
@@ -278,33 +304,63 @@ def build_portfolio_mood(results: list[SymbolResult]) -> dict[str, Any]:
 
 
 def market_status(now_utc: datetime) -> dict[str, str]:
-    """Status sesji NYSE (uproszczony — bez świąt)."""
-    nyc = now_utc.astimezone(NYSE_TZ)
-    if nyc.weekday() >= 5:
-        next_monday = nyc + timedelta(days=(7 - nyc.weekday()))
+    """Status sesji NYSE z kalendarzem świąt i skróconych sesji (ALR-15).
+
+    Święto i skrócona sesja są nazwane wprost w etykiecie, a „najbliższe otwarcie”
+    pomija weekend i święta. Naiwny `datetime` = UTC."""
+    nyc = to_nyse_time(now_utc)
+    session = session_on(nyc.date())
+    if session is None:
+        holiday = holiday_name(nyc.date())
+        label = f"📅 Zamknięta (święto: {holiday})" if holiday else "🌙 Zamknięta (weekend)"
+        return {"label": label, "detail": f"Najbliższe otwarcie: {_format_et(next_open(nyc))}"}
+    early_close = _early_close_note(session)
+    if nyc < session.opens_at:
         return {
-            "label": "🌙 Zamknięta (weekend)",
-            "detail": f"Najbliższe otwarcie: {next_monday.strftime('%A %d.%m')} 09:30 ET",
+            "label": _with_note("🌅 Premarket", early_close),
+            "detail": f"Otwarcie za {_humanize_delta(session.opens_at - nyc)}",
         }
-    cur = nyc.time()
-    if NYSE_OPEN <= cur < NYSE_CLOSE:
-        close_today = nyc.replace(hour=NYSE_CLOSE.hour, minute=NYSE_CLOSE.minute, second=0)
-        delta = close_today - nyc
+    if nyc < session.closes_at:
         return {
-            "label": "🟢 Otwarta (regular hours)",
-            "detail": f"Zamknięcie za {_humanize_delta(delta)}",
+            "label": f"🟢 Otwarta ({early_close or 'regular hours'})",
+            "detail": f"Zamknięcie za {_humanize_delta(session.closes_at - nyc)}",
         }
-    if cur < NYSE_OPEN:
-        open_today = nyc.replace(hour=NYSE_OPEN.hour, minute=NYSE_OPEN.minute, second=0)
-        delta = open_today - nyc
-        return {
-            "label": "🌅 Premarket",
-            "detail": f"Otwarcie za {_humanize_delta(delta)}",
-        }
+    opening = next_open(nyc)
+    detail = (
+        "Otwarcie jutro 09:30 ET"
+        if opening.date() == nyc.date() + timedelta(days=1)
+        else f"Najbliższe otwarcie: {_format_et(opening)}"
+    )
     return {
-        "label": "🌆 After-hours",
-        "detail": "Otwarcie jutro 09:30 ET",
+        "label": _with_note("🌆 After-hours", early_close),
+        "detail": detail,
     }
+
+
+def forecast_horizon_label(now_utc: datetime) -> str:
+    """Najbliższe zamknięcie sesji NYSE po starcie cyklu (ALR-15), np.
+    „najbliższe zamknięcie NYSE: pt 27.11 13:00 ET (skrócona sesja)”.
+
+    Następny cykl rozlicza prognozę bieżącą ceną, więc przy dziennej kadencji przed
+    otwarciem prognoza obejmuje właśnie tę sesję; święta i weekendy są pominięte."""
+    session = upcoming_session(now_utc)
+    suffix = " (skrócona sesja)" if session.is_early_close else ""
+    return f"najbliższe zamknięcie NYSE: {_format_et(session.closes_at)}{suffix}"
+
+
+def _early_close_note(session: TradingSession) -> str | None:
+    if not session.is_early_close:
+        return None
+    return f"skrócona sesja do {session.closes_at:%H:%M} ET"
+
+
+def _with_note(label: str, note: str | None) -> str:
+    return f"{label} ({note})" if note else label
+
+
+def _format_et(moment: datetime) -> str:
+    """„pt 27.11 13:00 ET” — dzień tygodnia po polsku, niezależnie od locale."""
+    return f"{format_local(moment, _NYSE_DISPLAY_TZ)} ET"
 
 
 def _trend_to_direction(trend: str | None) -> str:

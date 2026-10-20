@@ -12,6 +12,7 @@ Defensywnie zwraca None przy:
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,33 +20,38 @@ from src.application.ports import FundamentalsPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Fundamentals
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._alpha_vantage_common import (
+    NOTE_BACKOFF_SECONDS,
+    is_frequency_limit,
+    is_soft_limit,
+    soft_limit_text,
+)
+from src.infrastructure.adapters._http import (
+    build_session,
+    raise_for_status_redacted,
+    safe_get,
+)
 
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://www.alphavantage.co/query"
 
 
+# Klucze, które niesie realna odpowiedź OVERVIEW/EARNINGS — ich obecność
+# odróżnia dane od soft-limitu (DAT-06, `is_soft_limit`).
+_FUNDAMENTALS_DATA_KEYS = ("Symbol", "PERatio", "quarterlyEarnings", "annualEarnings")
+
+
 class _AlphaVantageQuotaExhausted(Exception):
     """Wewnętrzny sygnał: AV zwróciło soft-limit 200 (pole `Information`/`Note`),
     a nie realne dane. Odróżnia wyczerpanie limitu od zwykłej pustej odpowiedzi,
-    żeby `get_fundamentals` nie potraktował go cicho jako brak fundamentów."""
+    żeby `get_fundamentals` nie potraktował go cicho jako brak fundamentów.
 
+    `frequency_limit` = ostatni klucz odbił limit minutowy (`Note`), nie dzienny."""
 
-def _is_rate_limited(payload: dict[str, Any]) -> bool:
-    """AV w free tier sygnalizuje wyczerpanie dziennego limitu (25/dobę)
-    odpowiedzią 200 z polem `Information` (czasem `Note`) i BEZ realnych
-    danych. Wykrywamy ten wzorzec, by nie zwracać cicho None."""
-    has_soft_limit_marker = "Information" in payload or "Note" in payload
-    if not has_soft_limit_marker:
-        return False
-    # Realna odpowiedź OVERVIEW/EARNINGS niesie te klucze; jeśli któryś
-    # jest obecny, to nie jest soft-limit (AV nie miesza danych z notką).
-    has_real_data = any(
-        key in payload
-        for key in ("Symbol", "PERatio", "quarterlyEarnings", "annualEarnings")
-    )
-    return not has_real_data
+    def __init__(self, message: str, *, frequency_limit: bool = False) -> None:
+        super().__init__(message)
+        self.frequency_limit = frequency_limit
 
 
 def _parse_float(value: Any) -> float | None:
@@ -101,31 +107,48 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
 
     def _get(self, function: str, symbol: str) -> dict[str, Any]:
         """Woła AV aktualnym kluczem; przy soft-limicie rotuje na kolejny
-        i ponawia. Gdy WSZYSTKIE klucze wyczerpane — `_AlphaVantageQuotaExhausted`."""
+        i ponawia. Gdy WSZYSTKIE klucze wyczerpane — `_AlphaVantageQuotaExhausted`.
+
+        `Note` (limit minutowy) dostaje jeden backoff i ponowienie tym samym
+        kluczem, `Information` (limit dzienny) od razu rotuje (DAT-06)."""
+        backed_off = False
         while self._key_index < len(self._api_keys):
             params = {
                 "function": function,
                 "symbol": symbol,
                 "apikey": self._current_key(),
             }
-            response = self._session.get(_BASE_URL, params=params, timeout=15)
-            response.raise_for_status()
+            response = safe_get(self._session, _BASE_URL, params=params, timeout=15)
+            raise_for_status_redacted(response)
             data = response.json()
             if not isinstance(data, dict):
                 return {}
             # Soft-limit (200 + `Information`/`Note`, brak danych) musi być
             # rozróżniony od zwykłej pustki — inaczej dane giną po cichu.
-            if _is_rate_limited(data):
-                note = data.get("Information") or data.get("Note") or ""
+            if not is_soft_limit(data, _FUNDAMENTALS_DATA_KEYS):
+                return data
+            marker = soft_limit_text(data, self._api_keys)
+            frequency_limit = is_frequency_limit(data)
+            if frequency_limit and not backed_off:
                 logger.warning(
-                    "Alpha Vantage fundamentals key #%d exhausted — rotating.",
+                    "Alpha Vantage fundamentals key #%d hit the frequency limit: %s — "
+                    "retrying the same key in %.1f s.",
                     self._key_index + 1,
+                    marker,
+                    NOTE_BACKOFF_SECONDS,
                 )
-                self._key_index += 1
-                if self._key_index >= len(self._api_keys):
-                    raise _AlphaVantageQuotaExhausted(str(note))
+                backed_off = True
+                time.sleep(NOTE_BACKOFF_SECONDS)
                 continue
-            return data
+            logger.warning(
+                "Alpha Vantage fundamentals key #%d exhausted: %s — rotating.",
+                self._key_index + 1,
+                marker,
+            )
+            self._key_index += 1
+            backed_off = False
+            if self._key_index >= len(self._api_keys):
+                raise _AlphaVantageQuotaExhausted(marker, frequency_limit=frequency_limit)
         # Klucze wyczerpane jeszcze przed tym wywołaniem (short-circuit) —
         # nie spalamy requestu na martwym kluczu.
         raise _AlphaVantageQuotaExhausted("all keys exhausted")
@@ -144,28 +167,47 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
             )
         )
 
+    def _report_quota_exhausted(self, symbol: str, *, frequency_limit: bool) -> None:
+        """Log po angielsku + CRITICAL alert po polsku (MAIL-15); limit minutowy
+        (`Note`) ma własny tekst — „dzienny limit 25 zapytań” by mylił (DAT-06)."""
+        if frequency_limit:
+            logger.exception(
+                "Alpha Vantage fundamentals frequency limit hit on every key for %s",
+                symbol,
+            )
+            self._emit_quota_alert(
+                message=(
+                    "Fundamenty Alpha Vantage odbiły limit częstotliwości zapytań "
+                    "(pole Note) mimo ponowienia; w tym cyklu brakuje P/E i wzrostu EPS."
+                ),
+                action=(
+                    "Rozłóż zapytania w czasie albo dodaj kolejny klucz "
+                    "w ALPHA_VANTAGE_API_KEYS (darmowy na alphavantage.co)."
+                ),
+            )
+            return
+        logger.exception("Alpha Vantage fundamentals daily quota exhausted for %s", symbol)
+        self._emit_quota_alert(
+            message=(
+                "Fundamenty Alpha Vantage wyczerpały dzienny limit 25 zapytań; "
+                "w tym cyklu brakuje P/E i wzrostu EPS."
+            ),
+            action=(
+                "Dodaj kolejny klucz w ALPHA_VANTAGE_API_KEYS (darmowy na "
+                "alphavantage.co), zmniejsz liczbę symboli z fundamentami "
+                "albo poczekaj na reset o północy UTC."
+            ),
+        )
+
     def get_fundamentals(self, symbol: str) -> Fundamentals | None:
         try:
             overview = self._get("OVERVIEW", symbol)
             earnings = self._get("EARNINGS", symbol)
-        except _AlphaVantageQuotaExhausted:
-            # Wyczerpany dzienny limit: NIE udajemy pustych fundamentów.
-            # Emitujemy alert i przerywamy — kolejne klucze i tak są wspólne
-            # z resztą integracji AV, więc dalsze próby tylko spalą budżet.
-            logger.exception(
-                "Alpha Vantage fundamentals daily quota exhausted for %s", symbol
-            )
-            self._emit_quota_alert(
-                message=(
-                    "Alpha Vantage fundamentals hit the daily 25 req/day limit; "
-                    "P/E and EPS-growth data is missing for this cycle."
-                ),
-                action=(
-                    "Add another key in ALPHA_VANTAGE_API_KEYS (free at "
-                    "alphavantage.co), reduce the number of fundamentals symbols, "
-                    "or wait for the UTC-midnight reset."
-                ),
-            )
+        except _AlphaVantageQuotaExhausted as exhausted:
+            # Wyczerpany limit: NIE udajemy pustych fundamentów. Emitujemy alert
+            # i przerywamy — kolejne klucze i tak są wspólne z resztą integracji
+            # AV, więc dalsze próby tylko spalą budżet.
+            self._report_quota_exhausted(symbol, frequency_limit=exhausted.frequency_limit)
             return None
         except Exception as exc:
             logger.warning(

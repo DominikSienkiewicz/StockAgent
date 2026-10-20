@@ -279,3 +279,48 @@ def test_folds_without_the_extra_baselines_keep_the_zero_return_gate():
     assert summary.mean_llm_baseline_rmse is None
     assert summary.beats_baseline is True
     assert summary.verdict == "model bije baseline o 50.0%"
+
+
+def _strategy_folds(*pairs: tuple[float, float]) -> list[dict[str, float]]:
+    """Foldy z `sign_strategy_return` i `turnover` (ML-20, odwrócenie = 1)."""
+    return [
+        {
+            "candidate_rmse": 0.01,
+            "baseline_rmse": 0.02,
+            "hit_rate": 0.5,
+            "sign_strategy_return": gross,
+            "turnover": turnover,
+        }
+        for gross, turnover in pairs
+    ]
+
+
+def test_summary_reports_mean_net_return_after_turnover_costs():
+    # WIA-50: turnover foldu liczy odwrócenie jako 1, czyli połowę obróconego
+    # kapitału (dwie nogi). Turnover 0.5 = jedna noga na wiersz → 10 bps.
+    summary = summarize_folds(_strategy_folds((0.002, 0.5), (0.004, 0.0)), cost_bps=10)
+
+    assert summary.turnover == pytest.approx(0.25)
+    assert summary.mean_net_return == pytest.approx(((0.002 - 0.001) + 0.004) / 2)
+
+
+def test_net_return_equals_the_gross_strategy_return_without_costs():
+    summary = summarize_folds(_strategy_folds((0.002, 1.0), (0.004, 0.5)))
+
+    assert summary.mean_net_return == pytest.approx(0.003)
+    assert summary.turnover == pytest.approx(0.75)
+
+
+def test_net_return_and_turnover_stay_empty_without_strategy_metrics():
+    summary = summarize_folds(
+        [{"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.6}], cost_bps=10
+    )
+
+    assert summary.mean_net_return is None
+    assert summary.turnover is None
+
+
+def test_costs_do_not_move_the_rmse_verdict():
+    folds = _strategy_folds((0.002, 1.0))
+
+    assert summarize_folds(folds, cost_bps=50).verdict == summarize_folds(folds).verdict

@@ -11,11 +11,14 @@ Uruchomienie:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg2
 import pytest
+from psycopg2 import sql
 from testcontainers.postgres import PostgresContainer
 
 # `supabase db push` czyta WYŁĄCZNIE `supabase/migrations/` — trzymamy je tam,
@@ -56,6 +59,14 @@ MIGRATION_FILES = [
     "032_move_interval.sql",
     "033_regime_history.sql",
     "034_gate_delta.sql",
+    "035_positions_currency.sql",
+    "036_fx_rates.sql",
+    "037_experiment_arms.sql",
+    "038_enable_rls.sql",
+    "039_feature_store_av_degraded_rows.sql",
+    "040_llm_calls.sql",
+    "041_cycle_runs.sql",
+    "042_reference_predictions.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -123,6 +134,20 @@ def _indexes(conn: psycopg2.extensions.connection, table: str) -> set[str]:
             (table,),
         )
         return {row[0] for row in cur.fetchall()}
+
+
+# Tabele `public` aplikacji (relkind r/p, bez obiektów rozszerzeń) z flagą RLS.
+_PUBLIC_TABLES_SQL = """
+    SELECT c.relname, c.relrowsecurity
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'
+      )
+"""
 
 
 @pytest.mark.containers
@@ -925,6 +950,753 @@ class TestMigrations:
             )
             assert cur.fetchone()[0] == pytest.approx(-0.0312345)
 
+    # -- Migracja 035: waluta i data zakupu pozycji (PORT-18) ------------------
+
+    def test_positions_have_an_iso_currency_and_an_optional_purchase_date(
+        self, pg_conn
+    ) -> None:
+        """Wiersz bez waluty to USD, bez daty zakupu — NULL; waluta spoza ISO odpada."""
+        assert {"currency", "purchase_date"} <= _columns(pg_conn, "positions")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO positions (symbol, quantity, avg_cost) "
+                "VALUES ('CUR_DEFAULT', 1, 10) RETURNING currency, purchase_date"
+            )
+            assert cur.fetchone() == ("USD", None)
+            cur.execute(
+                "INSERT INTO positions (symbol, quantity, avg_cost, currency, purchase_date) "
+                "VALUES ('CUR_SET', 1, 10, 'EUR', '2025-03-01') "
+                "RETURNING currency, purchase_date::TEXT"
+            )
+            assert cur.fetchone() == ("EUR", "2025-03-01")
+            with pytest.raises(psycopg2.errors.CheckViolation):
+                cur.execute(
+                    "INSERT INTO positions (symbol, quantity, avg_cost, currency) "
+                    "VALUES ('CUR_BAD', 1, 10, 'usd')"
+                )
+
+    # -- Migracja 036: cache kursów NBP z dnia (PORT-11) -----------------------
+
+    def test_fx_rates_cache_one_rate_per_currency_and_day(self, pg_conn) -> None:
+        """Klucz (currency, on_date); kurs dodatni, z tabeli nie późniejszej niż dzień."""
+        assert {"currency", "on_date", "effective_date", "rate", "source", "fetched_at"} <= (
+            _columns(pg_conn, "fx_rates")
+        )
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO fx_rates (currency, on_date, effective_date, rate) "
+                "VALUES ('USD', '2025-03-02', '2025-02-28', 3.9725) RETURNING source"
+            )
+            assert cur.fetchone() == ("NBP_A",)
+            with pytest.raises(psycopg2.errors.UniqueViolation):
+                cur.execute(
+                    "INSERT INTO fx_rates (currency, on_date, effective_date, rate) "
+                    "VALUES ('USD', '2025-03-02', '2025-02-28', 3.99)"
+                )
+            for values in (
+                "('usd', '2025-03-03', '2025-03-03', 3.9)",
+                "('EUR', '2025-03-03', '2025-03-03', 0)",
+                "('EUR', '2025-03-03', '2025-03-04', 4.1)",
+            ):
+                with pytest.raises(psycopg2.errors.CheckViolation):
+                    cur.execute(
+                        "INSERT INTO fx_rates (currency, on_date, effective_date, rate) "
+                        f"VALUES {values}"
+                    )
+
+    # -- Migracja 037: ramiona eksperymentów (EXP-05) --------------------------
+
+    def test_experiment_arms_column_is_a_nullable_json_object(self, pg_conn) -> None:
+        """Zapis bez flagi `experiment_arms_enabled` zostawia NULL; ramiona to obiekt JSON."""
+        assert "experiment_arms" in _columns(pg_conn, "prediction_logs")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('EA_NULL', '2026-11-02T21:30:00+00:00', 100.0) "
+                "RETURNING experiment_arms"
+            )
+            assert cur.fetchone() == (None,)
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, experiment_arms) "
+                "VALUES ('EA_SET', '2026-11-02T21:30:00+00:00', 100.0, "
+                "'{\"EXP-02\": \"blind\"}') "
+                "RETURNING experiment_arms ->> 'EXP-02'"
+            )
+            assert cur.fetchone() == ("blind",)
+
+    # -- Migracja 039: ml_feature_store bez niepełnego feedu AV (DAT-07, DAT-08) -
+
+    def test_feature_store_excludes_av_degraded_rows(self, pg_conn) -> None:
+        """Payload bez feedu i błąd sieci w środku fetchu dają zera „bez danych",
+        tak jak wyczerpane klucze — nie trenują modelu. Filtry 026 zostają."""
+        with pg_conn.cursor() as cur:
+            clean, unexpected, fetch_error, exhausted, no_prior = self._settled_rows(
+                cur,
+                "QF_AV039",
+                [
+                    "[]",
+                    '["av_unexpected_payload"]',
+                    '["news_volume_24h_missing", "av_fetch_error"]',
+                    '["av_keys_exhausted"]',
+                    '["price_delta_no_prior_prediction"]',
+                ],
+            )
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute("SELECT id FROM ml_feature_store WHERE symbol = 'QF_AV039'")
+            in_view = {row[0] for row in cur.fetchall()}
+
+        assert in_view == {clean, no_prior}
+        assert not in_view & {unexpected, fetch_error, exhausted}
+
+    def test_feature_store_lag_runs_over_av_degraded_rows(self, pg_conn) -> None:
+        """Filtr 039 też jest PO LAG: wiersz po `av_fetch_error` liczy
+        `price_prev_12h` od ceny tego wiersza, jak inference."""
+        with pg_conn.cursor() as cur:
+            _, _, after = self._settled_rows(
+                cur, "QF_AV039_LAG", ["[]", '["av_fetch_error"]', "[]"]
+            )
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute(
+                "SELECT price_prev_12h, price_prev_24h FROM ml_feature_store WHERE id = %s",
+                (after,),
+            )
+            row = cur.fetchone()
+
+        assert row is not None
+        assert float(row[0]) == pytest.approx(102.0)
+        assert float(row[1]) == pytest.approx(101.0)
+
+    def test_feature_store_after_039_keeps_the_feature_contract(self, pg_conn) -> None:
+        """039 odtwarza widok 1:1 z 027 — te same kolumny i oba indeksy."""
+        assert {
+            "price_delta",
+            "av_sentiment_score",
+            "news_volume_24h",
+            "alpha_fusion_score",
+            "feature_set_version",
+            "target_return",
+        } <= _columns(pg_conn, "ml_feature_store")
+        assert {
+            "idx_ml_feature_store_id",
+            "idx_ml_feature_store_symbol_timestamp",
+        } <= _indexes(pg_conn, "ml_feature_store")
+
+    # -- Migracja 040: ledger kosztów LLM per wywołanie (FIN-13) ---------------
+
+    def test_llm_calls_holds_tokens_and_cost_but_no_prompt(self, pg_conn) -> None:
+        """Wiersz to liczby i identyfikatory przebiegu; żadnej kolumny na treść
+        promptu ani odpowiedzi (kontekst portfela)."""
+        assert _columns(pg_conn, "llm_calls") == {
+            "id",
+            "run_id",
+            "symbol",
+            "node",
+            "provider",
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "cost_usd",
+            "price_as_of",
+            "created_at",
+        }
+
+    def test_llm_calls_is_indexed_by_created_at(self, pg_conn) -> None:
+        assert "idx_llm_calls_created_at" in _indexes(pg_conn, "llm_calls")
+
+    def test_llm_calls_accepts_a_call_without_symbol_cost_or_price(self, pg_conn) -> None:
+        """Slow Loop nie ma symbolu, a model spoza cennika nie ma kosztu."""
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, node, provider, model, input_tokens, "
+                "output_tokens) VALUES ('LC_RUN', 'weekly_recap', 'openai', 'gpt-9', 10, 5) "
+                "RETURNING symbol, cost_usd, price_as_of, cache_read_tokens, "
+                "cache_write_tokens, created_at IS NOT NULL"
+            )
+            assert cur.fetchone() == (None, None, None, 0, 0, True)
+
+    def test_llm_calls_rejects_negative_token_counts(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, node, provider, model, input_tokens, "
+                "output_tokens) VALUES ('LC_NEG', 'predict', 'anthropic', 'c', -1, 0)"
+            )
+
+    # -- Migracja 041: historia przebiegów pętli (NIEZ-29) ---------------------
+
+    def test_cycle_runs_holds_the_run_identity_and_counts(self, pg_conn) -> None:
+        """Jeden wiersz na przebieg: tożsamość runu (łączy się z `llm_calls` po
+        `run_id`), liczby cyklu i stan maila — bez symboli i treści raportu."""
+        assert _columns(pg_conn, "cycle_runs") == {
+            "id",
+            "loop",
+            "run_id",
+            "run_attempt",
+            "started_at",
+            "duration_s",
+            "eligible",
+            "saved",
+            "failures",
+            "paid_calls",
+            "report_delivered",
+            "created_at",
+        }
+
+    def test_cycle_runs_is_indexed_by_started_at(self, pg_conn) -> None:
+        assert "idx_cycle_runs_started_at" in _indexes(pg_conn, "cycle_runs")
+
+    def test_cycle_runs_accepts_a_local_run_without_attempt_or_email(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO cycle_runs (loop, run_id, started_at, duration_s, eligible, "
+                "saved, failures) VALUES ('fast', 'local', NOW(), 12.5, 3, 1, 0) "
+                "RETURNING run_attempt, report_delivered, paid_calls, created_at IS NOT NULL"
+            )
+            assert cur.fetchone() == (None, None, {}, True)
+
+    def test_cycle_runs_rejects_an_unknown_loop_and_negative_counts(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO cycle_runs (loop, run_id, started_at, duration_s, eligible, "
+                "saved, failures) VALUES ('nightly', 'CR_BAD', NOW(), 1, 1, 0, 0)"
+            )
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO cycle_runs (loop, run_id, started_at, duration_s, eligible, "
+                "saved, failures) VALUES ('fast', 'CR_NEG', NOW(), 1, 1, -1, 0)"
+            )
+
+    # -- Migracja 042: sygnał referencyjny WIA-24 ------------------------------
+
+    def test_reference_predictions_hold_read_call_and_settlement_in_one_row(
+        self, pg_conn
+    ) -> None:
+        """Osobna tabela, nie `prediction_logs`: żaden odczyt ścieżek LLM (reflect,
+        RAG, widok cech, track record) jej nie widzi."""
+        assert _columns(pg_conn, "reference_predictions") == {
+            "id",
+            "symbol",
+            "read_at",
+            "price",
+            "predicted_trend",
+            "recipe_version",
+            "outcome",
+            "settled_price",
+            "settled_at",
+            "created_at",
+        }
+
+    def test_reference_predictions_are_indexed_for_the_weekly_reads(self, pg_conn) -> None:
+        assert {
+            "idx_reference_predictions_read_at",
+            "idx_reference_predictions_open_calls",
+        } <= _indexes(pg_conn, "reference_predictions")
+
+    def test_reference_read_defaults_to_reference_v1_once_per_symbol_and_time(
+        self, pg_conn
+    ) -> None:
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price) "
+                "VALUES ('REF_A', '2026-10-25T03:00:00Z', 100.5) "
+                "RETURNING recipe_version, predicted_trend, outcome, created_at IS NOT NULL"
+            )
+            assert cur.fetchone() == ("reference-v1", None, None, True)
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.UniqueViolation):
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price) "
+                "VALUES ('REF_A', '2026-10-25T03:00:00Z', 101)"
+            )
+
+    def test_reference_settlement_round_trips(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend) "
+                "VALUES ('REF_B', '2026-10-18T03:00:00Z', 100, 'BULLISH') RETURNING id"
+            )
+            (row_id,) = cur.fetchone()
+            cur.execute(
+                "UPDATE reference_predictions SET outcome = 'HIT', settled_price = 104, "
+                "settled_at = '2026-10-25T03:00:00Z' WHERE id = %s RETURNING outcome",
+                (row_id,),
+            )
+            assert cur.fetchone() == ("HIT",)
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            "('REF_C1', NOW(), 0, NULL, NULL, NULL, NULL, 'reference-v1')",
+            "('REF_C2', NOW(), 100, 'SIDEWAYS', NULL, NULL, NULL, 'reference-v1')",
+            "('REF_C3', NOW(), 100, NULL, 'HIT', 104, NOW(), 'reference-v1')",
+            "('REF_C4', NOW(), 100, 'BULLISH', 'HIT', NULL, NOW(), 'reference-v1')",
+            "('REF_C5', NOW(), 100, 'BULLISH', 'EXPIRED', 104, NOW(), 'reference-v1')",
+            "('REF_C6', NOW(), 100, 'BULLISH', NULL, 104, NULL, 'reference-v1')",
+            "('REF_C7', NOW(), 100, 'BULLISH', 'HIT', 104, NULL, 'reference-v1')",
+            "('REF_C8', NOW(), 100, 'BULLISH', NULL, NULL, NULL, 'llm-abc')",
+        ],
+        ids=[
+            "price_not_positive",
+            "sideways_call",
+            "outcome_without_call",
+            "hit_without_price",
+            "expired_with_price",
+            "price_without_outcome",
+            "outcome_without_time",
+            "not_a_reference_label",
+        ],
+    )
+    def test_reference_predictions_reject_inconsistent_rows(self, pg_conn, values) -> None:
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend, "
+                f"outcome, settled_price, settled_at, recipe_version) VALUES {values}"
+            )
+
+    # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
+
+    def test_every_public_table_has_row_level_security(self, pg_conn) -> None:
+        """Przy domyślnych grantach Supabase tabela `public` bez RLS jest czytelna
+        i zapisywalna kluczem publicznym (anon). 038 włącza RLS na wszystkich, a
+        tabela dodana w kolejnej migracji musi włączyć je sama — inaczej ten test
+        padnie. Biegnie po `test_migrations_are_idempotent`, więc sprawdza też, że
+        ponowny przebieg 001/002 (jawne DISABLE) kończy się z RLS włączonym."""
+        with pg_conn.cursor() as cur:
+            cur.execute(_PUBLIC_TABLES_SQL)
+            row_security = dict(cur.fetchall())
+
+        # Strażnik pustego wyniku: bez migracji lista byłaby pusta i test zielony.
+        assert {"subscribers", "positions", "prediction_logs"} <= row_security.keys()
+        assert sorted(name for name, enabled in row_security.items() if not enabled) == []
+
+
+# -- TEST-15: emulacja ról Supabase dla testów uprawnień ----------------------
+
+# Role API jak w obrazie Supabase: klucz publiczny (anon / publishable) działa
+# jako `anon`, JWT zalogowanego użytkownika jako `authenticated`, klucz secret /
+# service_role jako `service_role`, który omija RLS (BYPASSRLS).
+SUPABASE_API_ROLES = {
+    "anon": "NOLOGIN NOINHERIT",
+    "authenticated": "NOLOGIN NOINHERIT",
+    "service_role": "NOLOGIN NOINHERIT BYPASSRLS",
+}
+PUBLIC_API_ROLES = ("anon", "authenticated")
+SUPABASE_LIKE_DB = "supabase_like"
+
+# Domyślne uprawnienia, które Supabase ustawia roli tworzącej obiekty w `public`
+# (tam `postgres`, tu superuser kontenera aplikujący migracje): każda nowa
+# tabela, widok, sekwencja i funkcja trafia do wszystkich trzech ról API.
+SUPABASE_DEFAULT_GRANTS = """
+    GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT ALL ON TABLES TO anon, authenticated, service_role;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role;
+"""
+
+# Pełna lista uprawnień tabeli w Postgres 16 (MAINTAIN dochodzi dopiero w 17).
+ANY_TABLE_PRIVILEGE = "SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER"
+ANY_SEQUENCE_PRIVILEGE = "USAGE, SELECT, UPDATE"
+
+# Obiekty `public` należące do rozszerzeń (pgvector, pgcrypto) pomijamy: ich
+# funkcje mają EXECUTE dla PUBLIC z definicji rozszerzenia i nie niosą danych.
+_NOT_EXTENSION_MEMBER = """
+    NOT EXISTS (
+        SELECT 1 FROM pg_depend d
+        WHERE d.classid = '{catalog}'::regclass AND d.objid = {oid} AND d.deptype = 'e'
+    )
+"""
+_APP_RELATIONS_SQL = f"""
+    SELECT c.relname, c.relkind
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+      AND {_NOT_EXTENSION_MEMBER.format(catalog="pg_class", oid="c.oid")}
+"""
+_APP_FUNCTIONS_SQL = f"""
+    SELECT p.oid::regprocedure::text
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.prokind = 'f'
+      AND {_NOT_EXTENSION_MEMBER.format(catalog="pg_proc", oid="p.oid")}
+"""
+
+
+@pytest.fixture(scope="module")
+def supabase_like_conn(pg_conn):
+    """Osobna baza w TYM SAMYM kontenerze co `pg_conn` (drugi kontener to kolejne
+    setki MB przy pełnym swapie): najpierw role i domyślne granty jak w Supabase,
+    potem komplet migracji — w tej samej kolejności co na produkcji.
+
+    Superuser kontenera gra rolę `postgres` (właściciel obiektów, omija RLS),
+    a testy przełączają się na role API przez `SET LOCAL ROLE`. Role są
+    obiektami klastra, więc widzi je też baza `pg_conn`; `TestMigrations` biegnie
+    wcześniej (kolejność w pliku), a guard pg_roles w 038 działa w obu stanach.
+    To emulacja, nie Supabase: brak PostgREST, JWT i Postgresa 17 (MAINTAIN)."""
+    with pg_conn.cursor() as cur:
+        for role, attributes in SUPABASE_API_ROLES.items():
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
+            if cur.fetchone() is None:
+                cur.execute(
+                    sql.SQL("CREATE ROLE {} {}").format(
+                        sql.Identifier(role), sql.SQL(attributes)
+                    )
+                )
+        cur.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(SUPABASE_LIKE_DB))
+        )
+        cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(SUPABASE_LIKE_DB)))
+
+    info = pg_conn.info
+    conn = psycopg2.connect(
+        host=info.host,
+        port=info.port,
+        dbname=SUPABASE_LIKE_DB,
+        user=info.user,
+        password=info.password,
+    )
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute(SUPABASE_DEFAULT_GRANTS)
+    _apply_migrations(conn)
+    yield conn
+    conn.close()
+
+
+@contextmanager
+def _rolled_back(
+    conn: psycopg2.extensions.connection,
+) -> Iterator[psycopg2.extensions.cursor]:
+    """Transakcja zawsze wycofywana: dane testu, granty i `SET LOCAL ROLE` znikają
+    razem z nią, więc kolejny test zaczyna jako superuser na czystej bazie."""
+    with conn.cursor() as cur:
+        cur.execute("BEGIN")
+        try:
+            yield cur
+        finally:
+            cur.execute("ROLLBACK")
+
+
+def _set_role(cur: psycopg2.extensions.cursor, role: str) -> None:
+    cur.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(role)))
+
+
+def _has_table_privilege(cur: psycopg2.extensions.cursor, role: str, relation: str) -> bool:
+    cur.execute(
+        "SELECT has_table_privilege(%s::name, %s::regclass, %s)",
+        (role, relation, ANY_TABLE_PRIVILEGE),
+    )
+    return bool(cur.fetchone()[0])
+
+
+@pytest.mark.containers
+class TestSupabaseRoleEmulation:
+    """Test migracji jako superuser nie widzi regresji uprawnień: superuser omija
+    i RLS, i granty. Tu sprawdzamy bazę oczami ról, którymi łączy się PostgREST —
+    po 038 klucz publiczny (anon) nic nie widzi, a klucz secret (service_role)
+    dalej czyta, pisze i woła RPC aplikacji."""
+
+    def test_anon_cannot_read_subscribers(self, supabase_like_conn) -> None:
+        """Bez 038 domyślne granty Supabase i wyłączony RLS oddają anon e-mail."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("INSERT INTO subscribers (email) VALUES ('reader@example.com')")
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT email FROM subscribers")
+
+    def test_anon_cannot_read_positions(self, supabase_like_conn) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "INSERT INTO positions (symbol, quantity, avg_cost) VALUES ('NVDA', 10, 120.5)"
+            )
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT symbol, quantity, avg_cost FROM positions")
+
+    def test_anon_select_is_denied_on_every_relation(self, supabase_like_conn) -> None:
+        """Każda tabela, widok i `ml_feature_store` — prawdziwy SELECT, nie katalog."""
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(_APP_RELATIONS_SQL)
+            relations = [name for name, kind in cur.fetchall() if kind != "S"]
+        assert {"subscribers", "positions", "ml_feature_store"} <= set(relations)
+
+        readable = []
+        for relation in relations:
+            with _rolled_back(supabase_like_conn) as cur:
+                _set_role(cur, "anon")
+                try:
+                    cur.execute(
+                        sql.SQL("SELECT 1 FROM {} LIMIT 1").format(sql.Identifier(relation))
+                    )
+                except psycopg2.errors.InsufficientPrivilege:
+                    continue
+                readable.append(relation)
+        assert readable == []
+
+    @pytest.mark.parametrize("role", PUBLIC_API_ROLES)
+    def test_public_roles_hold_no_privilege_on_any_relation(
+        self, supabase_like_conn, role: str
+    ) -> None:
+        """Tabele, widoki, widok zmaterializowany i sekwencje — także INSERT,
+        UPDATE, DELETE i TRUNCATE, nie tylko odczyt."""
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(_APP_RELATIONS_SQL)
+            relations = cur.fetchall()
+            granted = []
+            for name, kind in relations:
+                if kind == "S":
+                    cur.execute(
+                        "SELECT has_sequence_privilege(%s::name, %s::regclass, %s)",
+                        (role, name, ANY_SEQUENCE_PRIVILEGE),
+                    )
+                    held = bool(cur.fetchone()[0])
+                else:
+                    held = _has_table_privilege(cur, role, name)
+                if held:
+                    granted.append(name)
+
+        assert "council_votes_id_seq" in {name for name, _ in relations}
+        assert granted == []
+
+    @pytest.mark.parametrize("role", PUBLIC_API_ROLES)
+    def test_public_roles_cannot_execute_app_functions(
+        self, supabase_like_conn, role: str
+    ) -> None:
+        """EXECUTE z domyślnego grantu roli PUBLIC też się liczy — `anon` jest jej
+        członkiem. Nowa funkcja w kolejnej migracji musi odebrać go sama."""
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(_APP_FUNCTIONS_SQL)
+            functions = [row[0] for row in cur.fetchall()]
+            executable = []
+            for function in functions:
+                cur.execute(
+                    "SELECT has_function_privilege(%s::name, %s::regprocedure, 'EXECUTE')",
+                    (role, function),
+                )
+                if cur.fetchone()[0]:
+                    executable.append(function)
+
+        assert any(name.startswith("match_news_embeddings(") for name in functions)
+        assert executable == []
+
+    def test_rls_hides_every_row_even_if_a_grant_comes_back(self, supabase_like_conn) -> None:
+        """Druga warstwa: gdy grant wróci (przyszła migracja, ręczny GRANT w
+        dashboardzie), RLS bez polityk dalej zwraca anon zero wierszy."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("INSERT INTO subscribers (email) VALUES ('leak@example.com')")
+            cur.execute("GRANT SELECT ON subscribers TO anon")
+            _set_role(cur, "anon")
+            cur.execute("SELECT count(*) FROM subscribers")
+            assert cur.fetchone() == (0,)
+
+    def test_objects_created_after_the_migration_are_not_granted_to_public_roles(
+        self, supabase_like_conn
+    ) -> None:
+        """ALTER DEFAULT PRIVILEGES z 038: nowa tabela albo DROP + CREATE widoku
+        (wzorzec 026/027) nie przywracają grantów anon / authenticated, a
+        service_role dalej je dostaje."""
+        probes = ("probe_table", "probe_view", "probe_matview")
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("CREATE TABLE probe_table (id BIGSERIAL PRIMARY KEY)")
+            cur.execute("CREATE VIEW probe_view AS SELECT 1 AS one")
+            cur.execute("CREATE MATERIALIZED VIEW probe_matview AS SELECT 1 AS one")
+
+            granted = [
+                (role, probe)
+                for role in PUBLIC_API_ROLES
+                for probe in probes
+                if _has_table_privilege(cur, role, probe)
+            ]
+            cur.execute(
+                "SELECT has_sequence_privilege(%s::name, 'probe_table_id_seq'::regclass, %s)",
+                ("anon", ANY_SEQUENCE_PRIVILEGE),
+            )
+            anon_sequence = bool(cur.fetchone()[0])
+            service_role = [_has_table_privilege(cur, "service_role", probe) for probe in probes]
+
+        assert granted == []
+        assert anon_sequence is False
+        assert service_role == [True, True, True]
+
+    def test_service_role_reads_and_writes_through_rls(self, supabase_like_conn) -> None:
+        """Klucz secret / service_role po 038: PII i portfel, predykcja z
+        rozliczeniem (trigger 029), głos rady (BIGSERIAL → USAGE sekwencji),
+        upsert snapshotu ceny i odczyt `ml_feature_store`."""
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "service_role")
+
+            cur.execute("INSERT INTO subscribers (email) VALUES ('owner@example.com')")
+            cur.execute("SELECT email FROM subscribers")
+            assert ("owner@example.com",) in cur.fetchall()
+
+            cur.execute(
+                "INSERT INTO positions (symbol, quantity, avg_cost) VALUES ('NVDA', 10, 120.5)"
+            )
+            cur.execute("SELECT symbol, currency FROM positions")
+            assert ("NVDA", "USD") in cur.fetchall()
+
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction) "
+                "VALUES ('SR_NVDA', 100.0) RETURNING id"
+            )
+            prediction_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE prediction_logs SET actual_price_after_12h = 105.0 WHERE id = %s "
+                "RETURNING settled_at IS NOT NULL",
+                (prediction_id,),
+            )
+            assert cur.fetchone() == (True,)
+
+            cur.execute(
+                "INSERT INTO council_votes "
+                "(prediction_id, symbol, investor_name, recommendation, confidence) "
+                "VALUES (%s, 'SR_NVDA', 'Buffett', 'BUY', 0.8) RETURNING id",
+                (prediction_id,),
+            )
+            assert cur.fetchone() is not None
+
+            for price in (100.0, 101.0):
+                cur.execute(
+                    "INSERT INTO price_snapshots (symbol, price, timestamp) "
+                    "VALUES ('SR_NVDA', %s, '2026-10-20T10:15:00+00:00') "
+                    "ON CONFLICT (symbol, timestamp_hour) DO UPDATE SET price = EXCLUDED.price",
+                    (price,),
+                )
+            cur.execute("SELECT price FROM price_snapshots WHERE symbol = 'SR_NVDA'")
+            assert [float(price) for (price,) in cur.fetchall()] == [101.0]
+
+            # Widok sprzed REFRESH: pusty, ale odczyt jest dozwolony.
+            cur.execute("SELECT count(*) FROM ml_feature_store")
+            assert cur.fetchone() == (0,)
+
+    def test_feature_store_rebuilt_by_039_stays_closed_to_public_roles(
+        self, supabase_like_conn
+    ) -> None:
+        """039 robi DROP + CREATE widoku PO 038: anon / authenticated bez żadnego
+        prawa, service_role dalej czyta (Slow Loop trenuje z tego widoku)."""
+        with _rolled_back(supabase_like_conn) as cur:
+            public = [
+                _has_table_privilege(cur, role, "ml_feature_store") for role in PUBLIC_API_ROLES
+            ]
+            cur.execute(
+                "SELECT has_table_privilege('service_role', 'ml_feature_store', 'SELECT')"
+            )
+            service_role = cur.fetchone()[0]
+
+        assert public == [False, False]
+        assert service_role is True
+
+    def test_llm_calls_is_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        """FIN-13: nowa tabela po 038 — RLS włączony w 040, anon i authenticated bez
+        prawa, a service_role (Fast i Slow Loop) zapisuje batch i czyta."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'llm_calls'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [_has_table_privilege(cur, role, "llm_calls") for role in PUBLIC_API_ROLES]
+
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, symbol, node, provider, model, input_tokens, "
+                "output_tokens, cost_usd, price_as_of) VALUES "
+                "('LC_SR', 'NVDA', 'predict', 'anthropic', 'claude-sonnet-4-6', 1000, 200, "
+                "0.006, '2026-10-20'), "
+                "('LC_SR', NULL, 'weekly_recap', 'openai', 'gpt-5-mini', 10, 5, NULL, NULL)"
+            )
+            cur.execute("SELECT count(*) FROM llm_calls WHERE run_id = 'LC_SR'")
+            assert cur.fetchone() == (2,)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM llm_calls LIMIT 1")
+
+    def test_cycle_runs_is_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        """NIEZ-29: nowa tabela po 038 — RLS włączony w 041, anon i authenticated bez
+        prawa, a service_role (Fast Loop) zapisuje przebieg i czyta historię."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'cycle_runs'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [_has_table_privilege(cur, role, "cycle_runs") for role in PUBLIC_API_ROLES]
+
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO cycle_runs (loop, run_id, run_attempt, started_at, duration_s, "
+                "eligible, saved, failures, paid_calls, report_delivered) VALUES "
+                "('fast', 'CR_SR', 1, NOW(), 312.5, 40, 6, 1, "
+                "'{\"llm\": 7, \"council_llm\": 48}', true)"
+            )
+            cur.execute("SELECT paid_calls ->> 'llm' FROM cycle_runs WHERE run_id = 'CR_SR'")
+            assert cur.fetchone() == ("7",)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM cycle_runs LIMIT 1")
+
+    def test_reference_predictions_are_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        """WIA-24: nowa tabela po 038 — RLS włączony w 042, anon i authenticated bez
+        prawa, a service_role (Slow Loop) zapisuje odczyt i rozlicza wywołanie."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class "
+                "WHERE oid = 'reference_predictions'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [
+                _has_table_privilege(cur, role, "reference_predictions")
+                for role in PUBLIC_API_ROLES
+            ]
+
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend) "
+                "VALUES ('REF_SR', '2026-10-18T03:00:00Z', 100, 'BEARISH')"
+            )
+            cur.execute(
+                "UPDATE reference_predictions SET outcome = 'MISS', settled_price = 101, "
+                "settled_at = '2026-10-25T03:00:00Z' WHERE symbol = 'REF_SR'"
+            )
+            cur.execute("SELECT outcome FROM reference_predictions WHERE symbol = 'REF_SR'")
+            assert cur.fetchone() == ("MISS",)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM reference_predictions LIMIT 1")
+
+    def test_service_role_executes_the_rpc_functions(self, supabase_like_conn) -> None:
+        """RPC, które aplikacja woła przez PostgREST. `refresh_ml_feature_store`
+        poza zakresem: REFRESH wymaga właściciela widoku, a prawo MAINTAIN dla
+        grantu ALL przynosi dopiero Postgres 17."""
+        vector = "[" + ",".join(["0.1"] * 1536) + "]"
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "service_role")
+            # Baza emulacji nie ma zatwierdzonych wierszy — liczy się brak 42501.
+            cur.execute("SELECT count(*) FROM match_news_embeddings(%s::vector, 3)", (vector,))
+            assert cur.fetchone() == (0,)
+            cur.execute("SELECT count(*) FROM persona_accuracy_weights(90)")
+            assert cur.fetchone() == (0,)
+            cur.execute("SELECT count(*) FROM persona_accuracy_stats(90)")
+            assert cur.fetchone() == (0,)
+
 
 @pytest.fixture
 def fresh_pg():
@@ -1167,6 +1939,101 @@ class TestMigration034BackfillsGateDelta:
             cur.execute(migration)
             assert self._gate_deltas(cur)["GB_PREV"] == pytest.approx(0.5)
 
+
+@pytest.mark.containers
+class TestMigration035BackfillsPositionCurrency:
+    """PORT-18: waluta istniejących pozycji z sufiksu tickera — .DE/.AS/.PA/.MI/.MC
+    → EUR, .L → GBP (bez przeliczania GBX), reszta → USD. Data zakupu zostaje NULL,
+    bo `as_of` to data aktualizacji tabeli, nie zakupu."""
+
+    def _apply_up_to_034(self, conn: psycopg2.extensions.connection) -> None:
+        idx = MIGRATION_FILES.index("035_positions_currency.sql")
+        with conn.cursor() as cur:
+            for filename in MIGRATION_FILES[:idx]:
+                cur.execute((MIGRATIONS_DIR / filename).read_text())
+
+    def _currencies(self, cur: psycopg2.extensions.cursor) -> dict[str, str]:
+        cur.execute("SELECT symbol, currency FROM positions")
+        return dict(cur.fetchall())
+
+    def test_035_derives_the_currency_from_the_ticker_suffix(self, fresh_pg) -> None:
+        conn = fresh_pg
+        self._apply_up_to_034(conn)
+        migration = (MIGRATIONS_DIR / "035_positions_currency.sql").read_text()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO positions (symbol, quantity, avg_cost) VALUES "
+                "('SAP.DE', 1, 1), ('ASML.AS', 1, 1), ('AIR.PA', 1, 1), "
+                "('ENI.MI', 1, 1), ('ITX.MC', 1, 1), ('VUSA.L', 1, 1), "
+                "('xdwd.de', 1, 1), ('AAPL', 1, 1), ('BRK.B', 1, 1)"
+            )
+
+            cur.execute(migration)
+
+            assert self._currencies(cur) == {
+                "SAP.DE": "EUR",
+                "ASML.AS": "EUR",
+                "AIR.PA": "EUR",
+                "ENI.MI": "EUR",
+                "ITX.MC": "EUR",
+                "VUSA.L": "GBP",
+                "xdwd.de": "EUR",
+                "AAPL": "USD",
+                "BRK.B": "USD",
+            }
+            cur.execute("SELECT count(*) FROM positions WHERE purchase_date IS NOT NULL")
+            assert cur.fetchone() == (0,)
+
+            # Idempotencja: ponowny przebieg nie nadpisuje waluty ustawionej importem.
+            cur.execute("UPDATE positions SET currency = 'USD' WHERE symbol = 'VUSA.L'")
+            cur.execute(migration)
+            assert self._currencies(cur)["VUSA.L"] == "USD"
+
+
+@pytest.mark.containers
+class TestMigration037BackfillsExperimentArms:
+    """EXP-05: ramiona sprzed migracji żyją tylko w kwicie v2
+    (`decision_receipts->'experiment_arms'`); bez kwitu zostaje NULL."""
+
+    def _apply_up_to_036(self, conn: psycopg2.extensions.connection) -> None:
+        idx = MIGRATION_FILES.index("037_experiment_arms.sql")
+        with conn.cursor() as cur:
+            for filename in MIGRATION_FILES[:idx]:
+                cur.execute((MIGRATIONS_DIR / filename).read_text())
+
+    def test_037_copies_the_arms_from_the_v2_receipt(self, fresh_pg) -> None:
+        conn = fresh_pg
+        self._apply_up_to_036(conn)
+        migration = (MIGRATIONS_DIR / "037_experiment_arms.sql").read_text()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, decision_receipts) VALUES "
+                "('EB_ARMS', '2026-11-02T21:30:00+00:00', 100.0, "
+                "'{\"schema_version\": 2, \"experiment_arms\": {\"EXP-03\": \"no_memory\"}}'), "
+                "('EB_NONE', '2026-11-02T21:30:00+00:00', 100.0, '{\"schema_version\": 2}'), "
+                "('EB_BARE', '2026-11-02T21:30:00+00:00', 100.0, NULL)"
+            )
+
+            cur.execute(migration)
+            cur.execute(
+                "SELECT symbol, experiment_arms FROM prediction_logs WHERE symbol LIKE 'EB_%'"
+            )
+            arms = dict(cur.fetchall())
+
+            assert arms == {
+                "EB_ARMS": {"EXP-03": "no_memory"},
+                "EB_NONE": None,
+                "EB_BARE": None,
+            }
+            # Idempotencja: ponowny przebieg nie nadpisuje ramion zapisanych przez Fast Loop.
+            cur.execute(
+                "UPDATE prediction_logs SET experiment_arms = '{\"EXP-03\": \"memory\"}' "
+                "WHERE symbol = 'EB_ARMS'"
+            )
+            cur.execute(migration)
+            cur.execute("SELECT experiment_arms FROM prediction_logs WHERE symbol = 'EB_ARMS'")
+            assert cur.fetchone() == ({"EXP-03": "memory"},)
 
 def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:
     """`supabase db push` czyta wyłącznie `supabase/migrations/`.

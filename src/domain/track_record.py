@@ -22,6 +22,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from src.domain.equity_curve import DirectionalHitRate, directional_hit_rate, signal_of
+from src.domain.number_format import DecimalMark
 from src.domain.prediction import SIDEWAYS_TOLERANCE
 from src.domain.significance import (
     binomial_test_greater,
@@ -133,10 +134,14 @@ class HitRateEvidence:
 
     @property
     def verdict(self) -> str | None:
-        """Polski werdykt istotności (z n i n_eff) albo None bez p-wartości."""
+        """Polski werdykt istotności (z n i n_eff) z kropką albo None bez p-wartości."""
+        return self.verdict_in(DecimalMark.POINT)
+
+    def verdict_in(self, mark: DecimalMark) -> str | None:
+        """Werdykt z p-wartością zapisaną znakiem `mark` (mail: przecinek, MAIL-58)."""
         if self.p_value is None:
             return None
-        return verdict_pl(self.p_value, self.hit_rate.directional, self.n_eff)
+        return verdict_pl(self.p_value, self.hit_rate.directional, self.n_eff, mark=mark)
 
 
 def assess_directional_hit_rate(

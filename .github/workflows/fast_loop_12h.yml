@@ -13,6 +13,8 @@ on:
   #   # Aby zachować 7:30 PL przez cały rok, zmień na '30 6' w CET.
   #   # GHA cron to best-effort — opóźnienia 5-60 min są normalne.
   #   # Tylko dni robocze (pon-pt) — w weekendy giełda jest zamknięta.
+  #   # Święta NYSE pomija sam agent (FIN-34, `nyse_closure_skip_enabled` w config.toml):
+  #   # w dzień zamknięcia akcje nie idą do grafu, krypto tak; cron zostaje `1-5`.
   #   - cron: '30 5 * * 1-5'
   workflow_dispatch:   # ręczne wymuszenie z panelu Actions
 
@@ -38,6 +40,13 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
+      - name: 🙈 Mask each Alpha Vantage key
+        # BEZ-03: GitHub maskuje sekret CSV tylko w całości — pojedynczy klucz z listy
+        # wyszedłby w logu jawnie. Maskujemy każdy osobno, zanim ruszy Python.
+        env:
+          ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
+        run: scripts/mask-csv-secret.sh ALPHA_VANTAGE_API_KEYS
+
       - name: 🐍 Set up Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -54,14 +63,24 @@ jobs:
         run: uv sync --frozen --extra anthropic --no-build --no-install-project
 
       - name: 🧠 Run Agent (LangGraph + XGBoost + LLM)
-        # Tu wstrzykujemy WYŁĄCZNIE sekrety. Cały config niewrażliwy (symbole,
-        # progi, modele, providerzy, throttle, risk watch…) jest w commitowanym
-        # `config.toml` i czytany wprost przez Settings — bez mapowania vars.*,
-        # więc nie ma już driftu .env ↔ workflow ani repo variables do pilnowania.
+        # Tu wstrzykujemy WYŁĄCZNIE sekrety (plus przełączniki DB_WRITES_ENABLED
+        # i PAID_CALLS_ENABLED niżej).
+        # Cały config niewrażliwy (symbole, progi, modele, providerzy, throttle, risk
+        # watch…) jest w commitowanym `config.toml` i czytany wprost przez Settings —
+        # bez mapowania vars.*, więc nie ma już driftu .env ↔ workflow ani repo
+        # variables do pilnowania.
         env:
           # Database
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:           ${{ secrets.SUPABASE_KEY }}
+          # BEZ-08: jedyny niesekret w env — Settings domyślnie NIE zapisuje do bazy
+          # (lokalny run tylko do odczytu), więc job produkcyjny włącza zapis jawnie.
+          # Pilnuje tego tests/test_db_writes_wiring.py.
+          DB_WRITES_ENABLED:      "true"
+          # FIN-35: Settings domyślnie podstawia atrapy płatnych portów (lokalny run
+          # bez płatnych wywołań), więc job produkcyjny włącza je jawnie.
+          # Pilnuje tego tests/test_paid_calls_wiring.py.
+          PAID_CALLS_ENABLED:     "true"
           # LLM — analiza główna na Anthropic, embeddingi + rada na OpenAI
           OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
@@ -79,6 +98,9 @@ jobs:
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
           SLACK_WEBHOOK_URL:      ${{ secrets.SLACK_WEBHOOK_URL }}
+          # NIEZ-13: zewnętrzny heartbeat (np. healthchecks.io) — ping na koniec przebiegu,
+          # porażka → <URL>/fail. Brak sekretu = pusty string = NullHeartbeat (zero requestów).
+          HEARTBEAT_URL:          ${{ secrets.HEARTBEAT_URL }}
         run: uv run --frozen --no-build --no-sync python main_agent.py
 
       - name: 📮 Mail o porażce jobu

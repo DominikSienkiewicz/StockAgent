@@ -141,3 +141,39 @@ def test_today_defaults_without_injection() -> None:
 def test_null_adapter_returns_none() -> None:
     adapter = NullEarningsCalendarAdapter()
     assert adapter.get_next_earnings("AAPL") is None
+
+
+def test_network_error_log_omits_apikey(caplog) -> None:
+    # BEZ-07: `logger.exception` drukuje traceback z URL-em zawierającym `&apikey=`.
+    import logging
+
+    import requests
+
+    adapter = AlphaVantageEarningsAdapter(api_key="earnings-secret-key")
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = requests.ConnectionError(
+            "Max retries exceeded with url: "
+            "/query?function=EARNINGS_CALENDAR&symbol=AAPL&apikey=earnings-secret-key"
+        )
+        assert adapter.get_next_earnings("AAPL") is None
+
+    assert "AlphaVantage earnings fetch failed for AAPL" in caplog.text
+    assert "earnings-secret-key" not in caplog.text
+
+
+def test_http_error_log_omits_apikey(caplog) -> None:
+    import logging
+
+    import requests
+
+    response = requests.Response()
+    response.status_code = 401
+    response.reason = "Unauthorized"
+    response.url = "https://www.alphavantage.co/query?symbol=AAPL&apikey=earnings-secret-key"
+    adapter = AlphaVantageEarningsAdapter(api_key="earnings-secret-key")
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = response
+        assert adapter.get_next_earnings("AAPL") is None
+
+    assert "401 Client Error" in caplog.text
+    assert "earnings-secret-key" not in caplog.text

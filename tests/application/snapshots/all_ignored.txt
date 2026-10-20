@@ -1,0 +1,38 @@
+================================================================
+STOCKAGENT — RAPORT CYKLU
+================================================================
+Czas rozpoczęcia:  czw 15.10 12:30
+Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
+
+Sygnały ponad próg: 0
+Rozliczone: brak (ostatnie 24h)
+Wiarygodność modelu: trafność kierunkowa 57,5% (n=40, ostatnie 30 dni) — szczegóły w Zapleczu
+
+KRYPTO
+----------------------------------------------------------------
+  ETH (Ethereum)                              $3 164,80  Δ   -1,10%  poniżej progu
+
+================================================================
+ZAPLECZE
+Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, pominięte symbole i błędy.
+================================================================
+
+HISTORIA TRAFNOŚCI (ostatnie 30 dni)
+----------------------------------------------------------------
+  Trafność kierunkowa (bez prognoz „bez ruchu”): 57,5% (95% CI 42–71%, n=40)
+  Trafność łączna (z prognozami „bez ruchu”): 62,0% (95% CI 48–74%, n=50)  ·  Predykcji ocenionych: 50  ·  Poprawnych: 31
+
+NASTROJE PORTFELA
+----------------------------------------------------------------
+  Średni sentyment: +0,00 (Neutralny)
+  Wysoka pewność (≥70%): 0 / 0  ·  Newsów: 0
+
+POMINIĘTE (poniżej progu zmienności)
+----------------------------------------------------------------
+  NVDA(0,40%), AMD(-0,70%), VOO(0,20%), ETH(-1,10%)
+
+----------------------------------------------------------------
+Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.
+Symboli: 4 · predykcji: 0 · pominiętych: 4 · błędów: 0 · czas trwania: 74,2s
+----------------------------------------------------------------
+przebieg #18234567890 · commit 6eff942 · logi: https://github.com/example/StockAgent/actions/runs/18234567890

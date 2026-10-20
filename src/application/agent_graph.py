@@ -7,11 +7,13 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from src.application.cycle_telemetry import CycleTelemetry
 from src.application.decision_receipt import RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2
 from src.application.ml_features import (
     FEATURE_SET_VERSION,
@@ -20,6 +22,8 @@ from src.application.ml_features import (
     ML_FEATURE_COLUMNS,
 )
 from src.application.ports import (
+    LLM_FAILOVER_MODEL_KEY,
+    LLM_FAILOVER_PROVIDER_KEY,
     AdvisoryCouncilPort,
     AttestationPublisherPort,
     EmbeddingPort,
@@ -34,15 +38,27 @@ from src.application.ports import (
     Tool,
     ToolUseLLMPort,
 )
-from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction_prompt
+from src.application.prompts import (
+    format_analog_line,
+    get_mistake_diagnosis_prompt,
+    get_prediction_prompt,
+)
 from src.application.rag_rerank import rerank_analogs
+from src.application.usage_ledger import usage_scope
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, PriceDelta
 from src.domain.attestation import commit as attestation_commit
 from src.domain.attestation import new_salt
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
+from src.domain.experiment import (
+    ARM_BLIND_COUNCIL,
+    ARM_NO_MEMORY,
+    Experiment,
+    has_treatment,
+)
 from src.domain.feature_attribution import FeatureContribution, top_contributions
+from src.domain.finops import PAID_LLM_SOURCES, paid_budget_allows
 from src.domain.implied_edge import (
     ImpliedEdge,
     evaluate_edge,
@@ -71,48 +87,63 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def _timed_node(node_name: str, symbol: str) -> Iterator[None]:
+def _timed_node(node_name: str, symbol: str, telemetry: CycleTelemetry) -> Iterator[None]:
     """#14: lekka instrumentacja czasu wykonania płatnego węzła.
 
     Mierzy elapsed_ms i loguje go na INFO (z nazwą węzła i symbolem). Czas
     jest raportowany ZAWSZE, nawet gdy węzeł rzuci wyjątek (FinOps: chcemy
-    wiedzieć, jak długo trwało wywołanie, które padło). Trzyma się warstwy
-    application — żadnego nowego portu, czysty stdlib.
+    wiedzieć, jak długo trwało wywołanie, które padło). ARCH-11: ten sam czas
+    trafia do telemetrii cyklu, a wyjątek liczy się tam jako awaria węzła.
     """
     start = time.perf_counter()
+    failed = True
     try:
         yield
+        failed = False
     finally:
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         logger.info(
             "node=%s symbol=%s elapsed_ms=%.1f", node_name, symbol, elapsed_ms
         )
+        telemetry.record_node_timing(node_name, symbol, elapsed_ms, failed=failed)
+
+
+def _log_paid_call_line(node_name: str, symbol: str, detail: str) -> None:
+    """Jawna linia w logu, gdy odpala się PŁATNE wywołanie zewnętrzne
+    (LLM / sentyment / news / rada). Pozwala audytować FinOps — ile płatnych
+    wywołań poszło w danym cyklu i z którego węzła."""
+    logger.info(
+        "paid call: node=%s symbol=%s %s", node_name, symbol, detail
+    )
 
 
 def _log_paid_call(
     deps: AgentGraphDeps, node_name: str, symbol: str, source: str, detail: str
 ) -> None:
-    """Jawna linia w logu, gdy odpala się PŁATNE wywołanie zewnętrzne
-    (LLM / sentyment / news). Pozwala audytować FinOps — ile płatnych wywołań
-    poszło w danym cyklu i z którego węzła.
+    """Linia w logu + inkrement licznika płatnych wywołań cyklu.
 
-    `source` to klucz cennika z `src/domain/finops.py` (`llm`, `council_llm`,
-    `sentiment`, `news`). Inkrementujemy licznik tutaj — jedno miejsce prawdy
-    o tym, co jest płatne. Licznik jest współdzielony przez wszystkie symbole
-    cyklu, bo raportujemy KOSZT CYKLU, nie symbolu.
+    `source` to klucz cennika z `src/domain/finops.py` (`llm`, `sentiment`,
+    `news`, `embedding`). Licznik (ARCH-11: `deps.telemetry`) jest współdzielony
+    przez wszystkie symbole cyklu, bo raportujemy KOSZT CYKLU, nie symbolu.
+    Rady tu nie liczymy: jej requesty liczy u źródła `MeteredLLMPort` (FIN-02).
     """
-    logger.info(
-        "paid call: node=%s symbol=%s %s", node_name, symbol, detail
-    )
-    deps.paid_call_meter[source] += 1
+    _log_paid_call_line(node_name, symbol, detail)
+    deps.telemetry.record_paid_call(source)
 
 
 class AgentState(TypedDict, total=False):
     symbol: str
     previous_price: Decimal
+    # FIN-14: moment zapisu referencji ceny i werdykt domeny o jej stęchłości
+    # (`is_reference_stale`). Stęchła referencja zamyka bramkę volatility.
+    reference_at: datetime | None
+    stale_reference: bool
     current_price: Decimal
     delta: Decimal
     status: str
+    # FIN-12: ruch przeszedł bramkę volatility, ale cykl wyczerpał sufit płatnych
+    # wywołań LLM — symbol kończy jako 'ignored' bez analizy i bez snapshotu ceny.
+    budget_exhausted: bool
 
     # Opcjonalny obiekt Asset (przekazywany z zewnątrz, gdy dostępny asset_type)
     asset: Asset
@@ -130,6 +161,9 @@ class AgentState(TypedDict, total=False):
 
     # Predykcja
     llm_analysis: dict[str, Any]
+    # NIEZ-44: (dostawca, model) zapasowego LLM, gdy analizę zrobił on, a nie główny.
+    # Brak klucza = główny LLM. Zmienia przepis zapisany przy predykcji.
+    llm_failover: tuple[str, str]
     ml_target_price: Decimal
     # ML-14: wektor cech dokładnie w postaci podanej modelowi (`ML_FEATURE_COLUMNS`)
     # — trafia do `feature_snapshots`, żeby trening nie odtwarzał go widokiem SQL.
@@ -170,6 +204,10 @@ class AgentState(TypedDict, total=False):
     # #6 bramka earnings — mnożnik progu (≥1.0) zależny od bliskości raportu
     # kwartalnego. Mnoży się z regime_multiplier w `_pick_threshold`.
     earnings_multiplier: float
+
+    # EXP-05: ramiona AKTYWNYCH eksperymentów tego symbolu-dnia `{id: ramię}`,
+    # przydzielone przez use case. Brak klucza = cykl jak bez eksperymentów.
+    experiment_arms: dict[str, str]
 
     # Persystencja
     prediction_id: str | None
@@ -220,18 +258,18 @@ def _format_analog(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         return None
     trend = item.get("predicted_trend") or "?"
     correct = item.get("is_trend_correct")
-    if correct:
-        outcome = "prognoza trafiła"
-    elif correct is False:
-        outcome = "prognoza chybiła"
-    else:
-        outcome = "wynik nieznany"
     insight = str(item.get("correction_insights") or "").strip()
-    line = f"  - [{trend}, {outcome}] {summary}"
+    # Treść linii składa `format_analog_line` w prompts.py — tylko moduły
+    # promptów wchodzą do `prompt_sha256`, więc tu zostają wyłącznie dane.
     # WIA-10: placeholder reflect_node (np. historyczne „diagnoza odłożona”)
     # nie jest wnioskiem — analog zostaje, ale bez fałszywej lekcji.
-    if is_substantive_insight(insight):
-        line += f" → wniosek: {insight}"
+    line = format_analog_line(
+        source=str(item.get("symbol") or "").strip(),
+        trend=str(trend),
+        is_trend_correct=correct,
+        lesson=insight if is_substantive_insight(insight) else "",
+        headlines=summary,
+    )
     # #13: RPC zwraca `id` i `similarity`, a kod je gubił. Bez nich kwit
     # decyzyjny nie pozwala zaudytować, KTÓRY analog stał za predykcją.
     precedent = {
@@ -255,7 +293,8 @@ def _build_similar_context(
     rerankowane rekordy do reużycia jako precedent receipts (Q5).
 
     Zwraca `(similar_context, precedents)`:
-      - `similar_context` — tekstowy blok wstrzykiwany do promptu (jak dotąd),
+      - `similar_context` — jedna linia na analog; prompt ogradza je fence'em
+        ANALOGS (BEZ-06),
       - `precedents` — zwięzła lista top-N analogów `{summary, predicted_trend,
         is_trend_correct}` dla raportu ("dlaczego ta decyzja").
 
@@ -352,6 +391,43 @@ _LLM_UNIT_FIELDS: tuple[tuple[str, str], ...] = (
     ("confidence_score", "confidence_score"),
     ("av_agreement", "av_llm_agreement"),
 )
+
+
+# NIEZ-44: flaga jakości predykcji od zapasowego dostawcy LLM (track record ją odsiewa).
+LLM_FAILOVER_FLAG = "llm_failover"
+# Znacznik failovera bez modelu — przepis i tak nie może udawać głównego modelu.
+_UNKNOWN_FAILOVER_MODEL = "unknown"
+
+
+def _split_failover_marker(
+    raw: dict[str, Any],
+) -> tuple[tuple[str, str] | None, dict[str, Any]]:
+    """NIEZ-44: zdejmuje znacznik adaptera failover z wyniku LLM, zanim ktokolwiek
+    go przeczyta. Zwraca `(dostawca, model)` zapasowego (None = odpowiedział główny)
+    i analizę bez kluczy znacznika."""
+    analysis = {
+        key: value
+        for key, value in raw.items()
+        if key not in (LLM_FAILOVER_PROVIDER_KEY, LLM_FAILOVER_MODEL_KEY)
+    }
+    provider = raw.get(LLM_FAILOVER_PROVIDER_KEY)
+    if not provider:
+        return None, analysis
+    model = raw.get(LLM_FAILOVER_MODEL_KEY)
+    return (str(provider), str(model) if model else _UNKNOWN_FAILOVER_MODEL), analysis
+
+
+def _effective_recipe(deps: AgentGraphDeps, state: AgentState) -> PredictionRecipe | None:
+    """WIA-20 + NIEZ-44: przepis, z którego FAKTYCZNIE powstała predykcja.
+
+    Po failoverze główny LLM w przepisie podmienia dostawca i model zapasowego,
+    więc kwit i `recipe_version` niosą prawdziwy model, a wersja przepisu wydziela
+    takie predykcje w osobny segment track recordu."""
+    failover = state.get("llm_failover")
+    if deps.recipe is None or failover is None:
+        return deps.recipe
+    provider, model = failover
+    return dataclasses.replace(deps.recipe, llm_provider=provider, llm_model=model)
 
 
 def _normalize_llm_analysis(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -516,13 +592,31 @@ class AgentGraphDeps:
     # EXP-01: delta, która otworzyła bramkę, w `gate_delta` (migracja 034). Off =
     # klucza nie ma w rekordzie — przed migracją dałby PGRST204.
     gate_delta_enabled: bool = False
+    # EXP-05: definicje eksperymentów; use case liczy z nich ramiona per
+    # symbol-dzień i podaje je w stanie (`experiment_arms`).
+    experiments: tuple[Experiment, ...] = ()
+    # EXP-05: kolumna `experiment_arms` (migracja 037). Off = klucza nie ma
+    # w rekordzie — przed migracją dałby PGRST204.
+    experiment_arms_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
-    # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). Pole jest
-    # NIE-opcjonalne z własnym licznikiem per egzemplarz deps: wołający, który go
-    # nie poda, i tak dostaje działający licznik pod `use_case.paid_calls`, więc
-    # nikt nie musi doszywać go przez `dataclasses.replace` po fakcie.
-    paid_call_meter: Counter[str] = dataclasses.field(default_factory=Counter)
+    # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
+    # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
+    # nie poda go z DI — `use_case.paid_calls` działa i wtedy.
+    telemetry: CycleTelemetry = dataclasses.field(default_factory=CycleTelemetry)
+    # Zgodność wstecz: dawny goły licznik płatnych wywołań. To NIE drugi licznik —
+    # po `__post_init__` jest magazynem `telemetry.paid_calls` (podany Counter
+    # zostaje przejęty przez telemetrię, brak = Counter telemetrii).
+    paid_call_meter: Counter[str] | None = None
+    # FIN-12: sufit płatnych wywołań LLM cyklu (`PAID_LLM_SOURCES`). None = bez
+    # limitu. Decyzję podejmuje domena (`paid_budget_allows`) po bramce volatility.
+    paid_call_cap: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.paid_call_meter is None:
+            object.__setattr__(self, "paid_call_meter", self.telemetry.paid_calls)
+        else:
+            self.telemetry.bind_paid_calls(self.paid_call_meter)
 
 
 def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
@@ -663,9 +757,14 @@ def _build_decision_receipts(deps: AgentGraphDeps, state: AgentState) -> dict[st
             for c in attribution
         ],
     }
-    if deps.recipe is not None:
+    recipe = _effective_recipe(deps, state)
+    if recipe is not None:
         receipt["schema_version"] = RECEIPT_SCHEMA_V2
-        receipt.update(deps.recipe.receipt_fields())
+        receipt.update(recipe.receipt_fields())
+        # EXP-05: opcjonalny klucz v2 — tylko gdy jakiś eksperyment jest aktywny.
+        arms = state.get("experiment_arms")
+        if arms:
+            receipt["experiment_arms"] = dict(arms)
     return receipt
 
 
@@ -701,25 +800,117 @@ def _pick_threshold(
 
 
 
-def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
-    threshold = deps.threshold
-    crypto_threshold = deps.crypto_threshold
+def _reference_is_stale(state: AgentState) -> bool:
+    """FIN-14: werdykt domeny policzony przez use case przy odczycie referencji.
+    Brak klucza (graf wołany bez use case'u) = referencja świeża, jak przed FIN-14."""
+    return bool(state.get("stale_reference", False))
+
+
+def _gate_reason(passes: bool, stale: bool) -> str:
+    """ARCH-11: powód decyzji bramki do telemetrii cyklu. Stęchła referencja
+    zamyka bramkę niezależnie od ruchu (FIN-14), więc ma własny powód."""
+    if passes:
+        return "above_threshold"
+    return "stale_reference" if stale else "below_threshold"
+
+
+def _budget_exhausted(deps: AgentGraphDeps, symbol: str) -> bool:
+    """FIN-12: czy cykl wyczerpał sufit płatnych wywołań LLM. Licznik jest wspólny
+    dla wszystkich symboli cyklu (także równoległych), więc czytamy go pod lockiem
+    telemetrii; reguła miękkiego sufitu żyje w domenie."""
+    spent = deps.telemetry.paid_calls_of(PAID_LLM_SOURCES)
+    if paid_budget_allows(spent, deps.paid_call_cap):
+        return False
+    logger.warning(
+        "paid LLM budget exhausted before %s: %d/%d calls spent this cycle — "
+        "symbol skipped without analysis, price reference kept for the next cycle",
+        symbol,
+        spent,
+        deps.paid_call_cap,
+    )
+    return True
+
+
+@dataclasses.dataclass(frozen=True)
+class _GateVerdict:
+    """Werdykt domenowej bramki volatility dla symbolu (bez sufitu budżetu)."""
+
+    passes: bool
+    stale: bool
+    threshold: Threshold
+    asset: Asset
+
+
+def _volatility_verdict(deps: AgentGraphDeps, state: AgentState) -> _GateVerdict:
     asset = state.get("asset") or Asset(symbol=state["symbol"])
     delta = PriceDelta(state["delta"])
-    chosen = _pick_threshold(state, threshold, crypto_threshold)
-    passes = asset.evaluate_volatility(delta, chosen)
-    decision = "analyze" if passes else "ignore"
+    chosen = _pick_threshold(state, deps.threshold, deps.crypto_threshold)
+    stale = _reference_is_stale(state)
+    passes = asset.evaluate_volatility(delta, chosen, reference_stale=stale)
+    return _GateVerdict(passes=passes, stale=stale, threshold=chosen, asset=asset)
+
+
+def _log_gate_decision(state: AgentState, verdict: _GateVerdict, decision: str) -> None:
     # #13: decyzja bramki volatility musi być widoczna w logach — bez tego
     # nie dało się odróżnić zamierzonego "ignore" (FinOps) od cichego buga.
     logger.info(
-        "volatility gate for %s: |Δ|=%.4f threshold=%.4f asset_type=%s → %s",
+        "volatility gate for %s: |Δ|=%.4f threshold=%.4f asset_type=%s "
+        "stale_reference=%s → %s",
         state["symbol"],
         abs(float(state["delta"])),
-        float(chosen.value),
-        asset.asset_type.value,
+        float(verdict.threshold.value),
+        verdict.asset.asset_type.value,
+        verdict.stale,
         decision,
     )
+
+
+def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
+    verdict = _volatility_verdict(deps, state)
+    passes = verdict.passes
+    over_budget = passes and _budget_exhausted(deps, state["symbol"])
+    if over_budget:
+        decision = "budget_exhausted"
+        deps.telemetry.record_gate(state["symbol"], False, "budget_exhausted")
+    else:
+        decision = "analyze" if passes else "ignore"
+        deps.telemetry.record_gate(
+            state["symbol"], passes, _gate_reason(passes, verdict.stale)
+        )
+    _log_gate_decision(state, verdict, decision)
+    if over_budget:
+        return "budget_exhausted"
     return "analyze_sentiment" if passes else "ignore"
+
+
+# EXP-27: wynik bramki fazy 1 dla symbolu, który czeka na fazę płatną.
+GATE_PASSED = "paid_phase"
+
+
+def _gate_phase_route(deps: AgentGraphDeps, state: AgentState) -> str:
+    """EXP-27 faza 1: sama bramka domenowa, bez sufitu budżetu. Symbol pod progiem
+    kończy w `ignore` jak dziś; symbol za bramką kończy fazę 1 bez terminala
+    (bez snapshotu) — o analizie albo cięciu budżetem decyduje faza 2, więc
+    dopiero ona zapisuje decyzję w telemetrii (jedna decyzja na symbol)."""
+    verdict = _volatility_verdict(deps, state)
+    if not verdict.passes:
+        deps.telemetry.record_gate(state["symbol"], False, _gate_reason(False, verdict.stale))
+        _log_gate_decision(state, verdict, "ignore")
+        return "ignore"
+    _log_gate_decision(state, verdict, GATE_PASSED)
+    return GATE_PASSED
+
+
+def _paid_phase_route(deps: AgentGraphDeps, state: AgentState) -> str:
+    """EXP-27 faza 2: sufit płatnych wywołań LLM cyklu (FIN-12) sprawdzany przed
+    płatną częścią symbolu. DI podaje symbole malejąco po |Δ|, więc sufit odcina
+    najmniejsze ruchy, a nie ostatnie w kolejności z config.toml."""
+    symbol = state["symbol"]
+    if _budget_exhausted(deps, symbol):
+        deps.telemetry.record_gate(symbol, False, "budget_exhausted")
+        return "budget_exhausted"
+    deps.telemetry.record_gate(symbol, True, _gate_reason(True, stale=False))
+    return "analyze_sentiment"
 
 
 
@@ -787,7 +978,10 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     gate_asset = state.get("asset") or Asset(symbol=symbol)
     gate_delta = PriceDelta(state["delta"])
     gate_threshold = _pick_threshold(state, threshold, crypto_threshold)
-    diagnose_paid = gate_asset.evaluate_volatility(gate_delta, gate_threshold)
+    # FIN-14: ta sama bramka — ruch od stęchłej referencji nie płaci za diagnozę.
+    diagnose_paid = gate_asset.evaluate_volatility(
+        gate_delta, gate_threshold, reference_stale=_reference_is_stale(state)
+    )
 
     if diagnose_paid:
         # Counterfactual dissent-replay (#8): który dysydent rady trafił ruch,
@@ -809,7 +1003,10 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         )
         # #14: płatne wywołanie LLM diagnozy — log jawny + timing.
         _log_paid_call(deps, "reflect", symbol, "llm", "llm_port.analyze_mistake")
-        with _timed_node("reflect_analyze_mistake", symbol):
+        with (
+            _timed_node("reflect_analyze_mistake", symbol, deps.telemetry),
+            usage_scope(source="llm", node="reflect", symbol=symbol),
+        ):
             insight = llm_port.analyze_mistake(prompt)
     else:
         # Niska zmienność — nie palimy budżetu LLM na diagnozę. Predykcja
@@ -836,7 +1033,7 @@ def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> dict[str
     _log_paid_call(
         deps, "analyze_sentiment", symbol, "sentiment", "sentiment_port.get_social_score"
     )
-    with _timed_node("analyze_sentiment", symbol):
+    with _timed_node("analyze_sentiment", symbol, deps.telemetry):
         return {"sentiment": sentiment_port.get_social_score(symbol)}
 
 
@@ -846,7 +1043,7 @@ def _fetch_news_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     symbol = state["symbol"]
     # #14: węzeł płatny (Alpha Vantage NEWS feed) — instrumentacja jak wyżej.
     _log_paid_call(deps, "fetch_news", symbol, "news", "news_port.get_news_context")
-    with _timed_node("fetch_news", symbol):
+    with _timed_node("fetch_news", symbol, deps.telemetry):
         return {"news": news_port.get_news_context(symbol)}
 
 
@@ -864,8 +1061,13 @@ def _compute_rag_context(
     # reużyte jako audytowalny blok "Na podstawie analogów" w raporcie.
     similar_precedents: list[dict[str, Any]] = []
     if deps.embedding_port is not None and news_summary:
+        # FIN-01: embedding to płatny request (OpenAI) — liczony w koszcie cyklu.
+        _log_paid_call(
+            deps, "predict", state["symbol"], "embedding", "embedding_port.embed"
+        )
         try:
-            news_embedding = deps.embedding_port.embed(news_summary)
+            with usage_scope(source="embedding", node="predict", symbol=state["symbol"]):
+                news_embedding = deps.embedding_port.embed(news_summary)
         except Exception:
             logger.exception(
                 "Embedding failed for %s — predicting without RAG", state["symbol"]
@@ -894,23 +1096,8 @@ def _run_llm_analysis(
     ``llm_port.analyze``. #12-guard: błąd parsowania/API degradujemy do
     neutralnego fallbacku. Zwraca ``(llm_analysis, llm_failed)``."""
     try:
-        if (
-            deps.tool_use_port is not None
-            and deps.research_tools
-            and deps.tool_use_threshold is not None
-            and (state.get("asset") or Asset(symbol=symbol)).evaluate_volatility(
-                PriceDelta(state["delta"]), deps.tool_use_threshold
-            )
-        ):
-            _log_paid_call(
-                deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools"
-            )
-            with _timed_node("predict_tool_use", symbol):
-                return deps.tool_use_port.analyze_with_tools(
-                    prompt, deps.research_tools
-                ), False
-        _log_paid_call(deps, "predict", symbol, "llm", "llm_port.analyze")
-        return deps.llm_port.analyze(prompt), False
+        with usage_scope(source="llm", node="predict", symbol=symbol):
+            return _call_prediction_llm(deps, state, prompt, symbol), False
     except Exception:
         logger.exception(
             "llm_port.analyze failed for %s — degraduję do neutralnej analizy",
@@ -922,6 +1109,27 @@ def _run_llm_analysis(
             "av_agreement": 0.5,
             "reasoning": "Analiza LLM niedostępna — neutralny fallback.",
         }, True
+
+
+def _call_prediction_llm(
+    deps: AgentGraphDeps, state: AgentState, prompt: str, symbol: str
+) -> dict[str, Any]:
+    """Jedno płatne wywołanie predykcji: pętla tool-use albo `llm_port.analyze`."""
+    if (
+        deps.tool_use_port is not None
+        and deps.research_tools
+        and deps.tool_use_threshold is not None
+        and (state.get("asset") or Asset(symbol=symbol)).evaluate_volatility(
+            PriceDelta(state["delta"]), deps.tool_use_threshold
+        )
+    ):
+        _log_paid_call(
+            deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools"
+        )
+        with _timed_node("predict_tool_use", symbol, deps.telemetry):
+            return deps.tool_use_port.analyze_with_tools(prompt, deps.research_tools)
+    _log_paid_call(deps, "predict", symbol, "llm", "llm_port.analyze")
+    return deps.llm_port.analyze(prompt)
 
 
 def _run_ml_prediction(
@@ -1087,10 +1295,17 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     sentiment = state.get("sentiment") or {}
     news = state.get("news", [])
     news_summary = _summarize_news(news)
+    # EXP-03: ramię `no_memory` — bez lekcji z reflect i bez zapytania RAG. Embedding
+    # newsów powstaje wtedy w save_node (fallback), więc koszt jak w status quo.
+    memory = _uses_memory(state)
 
-    news_embedding, similar_context, similar_precedents = _compute_rag_context(
-        deps, state, news_summary
-    )
+    news_embedding: list[float] | None = None
+    similar_context = ""
+    similar_precedents: list[dict[str, Any]] = []
+    if memory:
+        news_embedding, similar_context, similar_precedents = _compute_rag_context(
+            deps, state, news_summary
+        )
 
     # 1. LLM — analiza jakościowa z cross-validation pre-computed AV sentymentu
     prompt = get_prediction_prompt(
@@ -1105,7 +1320,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
             "news_summary": news_summary,
             "news_titles": _news_titles(news, _NEWS_TITLES_LIMIT),
         },
-        reflection_context=state.get("reflection_context", ""),
+        reflection_context=state.get("reflection_context", "") if memory else "",
         similar_context=similar_context,
         # #7 reżim + #5 contagion (oba z bieżącego cyklu, przekazane w state).
         regime_context=state.get("regime_context", ""),
@@ -1114,8 +1329,10 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         ),
         # #14: pusty string przy braku fuzji → blok nie wchodzi do promptu.
         alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
+        include_memory=memory,
     )
     raw_analysis, llm_failed = _run_llm_analysis(deps, state, prompt, symbol)
+    failover, raw_analysis = _split_failover_marker(raw_analysis)
     # ML-07: kanonizacja PRZED pierwszym odczytem — rada, zapis i raport
     # czytają już ten sam znormalizowany dict, nie surowy tekst modelu.
     llm_analysis, analysis_flags = _normalize_llm_analysis(raw_analysis)
@@ -1132,6 +1349,8 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     flags: list[str] = []
     if llm_failed:
         flags.append("llm_analysis_failed")
+    if failover is not None:
+        flags.append(LLM_FAILOVER_FLAG)
     flags.extend(analysis_flags)
     # Adapter sentymentu (AV) może oznaczyć cały feed jako zdegradowany
     # (np. wszystkie klucze wyczerpane). Wtedy 0.0 we wszystkich polach
@@ -1194,6 +1413,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # #14: pojedyncze wyjście węzła — logujemy całkowity czas predict.
     elapsed_ms = (time.perf_counter() - predict_start) * 1000.0
     logger.info("node=predict symbol=%s elapsed_ms=%.1f", symbol, elapsed_ms)
+    deps.telemetry.record_node_timing("predict", symbol, elapsed_ms)
 
     implied_edge = _resolve_implied_edge(
         deps, symbol, current_price, ml_target, ml_cold_start=ml_cold_start
@@ -1202,7 +1422,9 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         deps, state, current_price, ml_target, ml_cold_start=ml_cold_start
     )
 
+    failover_state: dict[str, Any] = {} if failover is None else {"llm_failover": failover}
     return {
+        **failover_state,
         "llm_analysis": llm_analysis,
         "ml_target_price": ml_target,
         "ml_features": features,
@@ -1267,14 +1489,19 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         valuation_verdict=state.get("valuation_verdict", ValuationVerdict.UNKNOWN),
         # #3: typ aktywa napędza dobór wag person (per klasa aktywa).
         asset_type=(state.get("asset") or Asset(symbol=state["symbol"])).asset_type,
+        # EXP-02: ramię `blind` — te same wywołania rady, prompt bez werdyktu LLM.
+        blind=has_treatment(state.get("experiment_arms") or {}, ARM_BLIND_COUNCIL),
     )
     # #14: rada to N równoległych wywołań LLM — najdroższy płatny węzeł.
     # Jawny log płatnego wywołania + timing (mierzony też przy błędzie).
-    _log_paid_call(
-        deps, "council", state["symbol"], "council_llm", "council_port.analyze"
-    )
+    # FIN-02: węzeł tylko loguje — każdy request person, chairmana i rewizji
+    # liczy `MeteredLLMPort`, którym DI owija port LLM rady.
+    _log_paid_call_line("council", state["symbol"], "council_port.analyze")
     try:
-        with _timed_node("council", state["symbol"]):
+        with (
+            _timed_node("council", state["symbol"], deps.telemetry),
+            usage_scope(source="council_llm", node="council", symbol=state["symbol"]),
+        ):
             verdict = council_port.analyze(state["symbol"], data)
     except Exception:
         logger.exception(
@@ -1286,19 +1513,30 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
+def _uses_memory(state: AgentState) -> bool:
+    """EXP-03: czy prompt predykcji dostaje pamięć (lekcje z reflect i analogi
+    RAG). Fałsz tylko w ramieniu `no_memory` aktywnego eksperymentu."""
+    return not has_treatment(state.get("experiment_arms") or {}, ARM_NO_MEMORY)
+
+
 def _resolve_news_vector(
     deps: AgentGraphDeps, state: AgentState, news_summary: str
 ) -> list[float] | None:
     """Wektor newsów do zapisu w pgvector. predict_node zwykle już go policzył
     (RAG) — reużywamy; fallback: embedujemy tu, jeśli predict go nie dostarczył.
-    Graceful: brak portu / pusty tekst / błąd API → None (zapis bez wektora)."""
+    Graceful: brak portu / pusty tekst / błąd API → None (zapis bez wektora).
+    EXP-03: ramię `no_memory` nie robi zapytania RAG, więc wektor powstaje tutaj —
+    predykcja trafia do korpusu analogów jak w status quo, bez dziury po eksperymencie."""
     if deps.embedding_port is None or not news_summary:
         return None
     vector = state.get("news_embedding")
     if vector:
         return vector
+    # FIN-01: liczymy tylko realny request — wektor reużyty z predict nie kosztuje.
+    _log_paid_call(deps, "save", state["symbol"], "embedding", "embedding_port.embed")
     try:
-        return deps.embedding_port.embed(news_summary)
+        with usage_scope(source="embedding", node="save", symbol=state["symbol"]):
+            return deps.embedding_port.embed(news_summary)
     except Exception:
         logger.exception(
             "Embedding failed for %s — saving without vector", state["symbol"]
@@ -1375,9 +1613,11 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     if deps.feature_set_version_enabled:
         record["feature_set_version"] = FEATURE_SET_VERSION
 
-    # WIA-20: wersja przepisu — track record segmentuje się po niej.
-    if deps.recipe_version_enabled and deps.recipe is not None:
-        record["recipe_version"] = deps.recipe.version
+    # WIA-20: wersja przepisu — track record segmentuje się po niej. NIEZ-44: po
+    # failoverze to przepis z modelem zapasowego (osobny segment).
+    recipe = _effective_recipe(deps, state)
+    if deps.recipe_version_enabled and recipe is not None:
+        record["recipe_version"] = recipe.version
 
     # #18: `edge_sigma` (migracja 025) tylko gdy sygnał realnie powstał —
     # bez portu opcji klucz nie istnieje, więc stary schemat zapisuje się jak dotąd.
@@ -1401,6 +1641,12 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # previous_price 0) to brak punktu odniesienia, nie ruch — klucza nie ma.
     if deps.gate_delta_enabled and state["previous_price"] != 0:
         record["gate_delta"] = float(state["delta"])
+
+    # EXP-05: ramiona aktywnych eksperymentów (migracja 037). Bez aktywnego
+    # eksperymentu klucza nie ma — kolumna zostaje NULL.
+    arms = state.get("experiment_arms")
+    if deps.experiment_arms_enabled and arms:
+        record["experiment_arms"] = dict(arms)
 
     # #16: commit-reveal (migracja 024).
     _attach_commitment(deps, record)
@@ -1443,8 +1689,21 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # #6: węzeł terminalny — zapisujemy snapshot ceny dla następnego cyklu.
     _persist_price_snapshot(deps, state)
-    _persist_feature_snapshot(deps, state, gated=False)
+    # FIN-14 (decyzja 2026-10-19): cykl re-baseline nie jest obserwacją cyklu —
+    # `snapshot_delta` od stęchłej referencji to ruch z wielu dni, więc wektor
+    # ML-14 nie powstaje. Zapisujemy tylko nowy punkt odniesienia.
+    if not _reference_is_stale(state):
+        _persist_feature_snapshot(deps, state, gated=False)
     return {"status": "ignored"}
+
+
+def _budget_exhausted_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+    """FIN-12: węzeł terminalny symbolu odciętego budżetem cyklu — jedyny wyjątek
+    od zapisu snapshotu w każdym cyklu. Snapshot z bieżącą ceną zjadłby ruch ponad
+    progiem: następny cykl liczyłby Δ od nowej ceny i ruch zniknąłby bez analizy.
+    Wektor ML-14 też nie powstaje — ten sam ruch wróci jako obserwacja następnego
+    cyklu, więc zapis tutaj zdublowałby go w treningu."""
+    return {"status": "ignored", "budget_exhausted": True}
 
 
 
@@ -1454,6 +1713,7 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     Topologia bez fundamentals_port:
         check_price → reflect → [delta ≥ threshold?]
                                   ├── nie → ignore → END
+                                  ├── tak, budżet LLM cyklu wyczerpany → budget_exhausted → END
                                   └── tak → analyze_sentiment → fetch_news
                                                               → predict → save → END
 
@@ -1477,6 +1737,7 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     workflow.add_node("council", lambda s: _council_node(deps, s))
     workflow.add_node("save", lambda s: _save_node(deps, s))
     workflow.add_node("ignore", lambda s: _ignore_node(deps, s))
+    workflow.add_node("budget_exhausted", lambda s: _budget_exhausted_node(deps, s))
 
     workflow.set_entry_point("check_price")
     # check_price → reflect: bezwarunkowo. Ocena przeszłej predykcji odbywa się
@@ -1502,6 +1763,7 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
             {
                 "analyze_sentiment": "analyze_sentiment",
                 "ignore": "ignore",
+                "budget_exhausted": "budget_exhausted",
             },
         )
     else:
@@ -1512,6 +1774,7 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
             {
                 "analyze_sentiment": "analyze_sentiment",
                 "ignore": "ignore",
+                "budget_exhausted": "budget_exhausted",
             },
         )
 
@@ -1521,6 +1784,68 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     workflow.add_edge("council", "save")
     workflow.add_edge("save", END)
     workflow.add_edge("ignore", END)
+    workflow.add_edge("budget_exhausted", END)
 
+    return workflow
+
+
+def create_gate_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
+    """EXP-27 faza 1 cyklu dwufazowego — darmowa część grafu dla KAŻDEGO symbolu:
+
+        check_price → reflect → [fetch_fundamentals] → [delta ≥ threshold?]
+                                                          ├── nie → ignore → END
+                                                          └── tak → END (czeka na fazę 2)
+
+    `reflect` zostaje przed bramką (Self-Reflection), łącznie z płatną diagnozą
+    pomyłki pod tą samą bramką. Symbol za bramką kończy bez snapshotu ceny: zapisze
+    go terminal fazy 2 (`save`), a symbol odcięty sufitem zostaje bez snapshotu
+    jak w FIN-12. Stan końcowy jest wejściem `create_paid_graph`."""
+    workflow = StateGraph[AgentState](state_schema=AgentState)
+    workflow.add_node("check_price", lambda s: _check_price_node(deps, s))
+    workflow.add_node("reflect", lambda s: _reflect_node(deps, s))
+    workflow.add_node("ignore", lambda s: _ignore_node(deps, s))
+    workflow.set_entry_point("check_price")
+    workflow.add_edge("check_price", "reflect")
+    gate_source = "reflect"
+    if deps.fundamentals_port is not None:
+        fetch_fundamentals = _build_fetch_fundamentals_node(deps.fundamentals_port)
+        workflow.add_node("fetch_fundamentals", lambda s: fetch_fundamentals(s))
+        workflow.add_edge("reflect", "fetch_fundamentals")
+        gate_source = "fetch_fundamentals"
+    workflow.add_conditional_edges(
+        gate_source,
+        lambda s: _gate_phase_route(deps, s),
+        {"ignore": "ignore", GATE_PASSED: END},
+    )
+    workflow.add_edge("ignore", END)
+    return workflow
+
+
+def create_paid_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
+    """EXP-27 faza 2 — płatna część grafu dla symbolu za bramką, od stanu fazy 1:
+
+        [budżet cyklu?] ├── wyczerpany → budget_exhausted → END
+                        └── jest → analyze_sentiment → fetch_news → predict
+                                   → council → save → END
+
+    Te same węzły co w `create_agent_graph`; DI podaje tu porty feedu klienta AV
+    zbudowanego tylko dla symboli za bramką."""
+    workflow = StateGraph[AgentState](state_schema=AgentState)
+    workflow.add_node("analyze_sentiment", lambda s: _analyze_sentiment_node(deps, s))
+    workflow.add_node("fetch_news", lambda s: _fetch_news_node(deps, s))
+    workflow.add_node("predict", lambda s: _predict_node(deps, s))
+    workflow.add_node("council", lambda s: _council_node(deps, s))
+    workflow.add_node("save", lambda s: _save_node(deps, s))
+    workflow.add_node("budget_exhausted", lambda s: _budget_exhausted_node(deps, s))
+    workflow.set_conditional_entry_point(
+        lambda s: _paid_phase_route(deps, s),
+        {"analyze_sentiment": "analyze_sentiment", "budget_exhausted": "budget_exhausted"},
+    )
+    workflow.add_edge("analyze_sentiment", "fetch_news")
+    workflow.add_edge("fetch_news", "predict")
+    workflow.add_edge("predict", "council")
+    workflow.add_edge("council", "save")
+    workflow.add_edge("save", END)
+    workflow.add_edge("budget_exhausted", END)
     return workflow
 

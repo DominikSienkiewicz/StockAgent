@@ -166,7 +166,8 @@ def fuse_alpha_signals(
 
     Wszystkie kierunkowe źródła None → `score` 0.0, `contributions` puste."""
     raw_signals: dict[str, float] = {}
-    if insider is not None:
+    if insider is not None and insider.has_evidence():
+        # DAT-03: niesparsowane Form 4 to brak danych, nie neutralny głos insiderów.
         raw_signals["insider"] = _INSIDER_SIGNAL[insider.evaluate_signal()]
     if options is not None:
         raw_signals["options"] = _OPTIONS_SIGNAL[options.sentiment()]

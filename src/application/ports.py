@@ -11,6 +11,8 @@ from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.earnings import EarningsEvent
+from src.domain.finops import LLMCallEntry, LLMUsage
+from src.domain.fx import FxRate
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.options_flow import OptionsFlowSnapshot
@@ -18,7 +20,9 @@ from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.quota import QuotaAlert
+from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
+from src.domain.shock import DailyChange
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
 from src.domain.value_objects import AssetType, Fundamentals, Money
@@ -29,6 +33,17 @@ class MarketDataPort(ABC):
 
     @abstractmethod
     def get_current_price(self, symbol: str) -> Money: ...
+
+
+class DailyChangePort(ABC):
+    """Dzienna zmiana ceny z darmowego notowania (ALR-02, Finnhub /quote, CoinGecko).
+
+    Watch szoku liczy z niej alert bez snapshotów Fast Loopa. Brak danych w odpowiedzi
+    → `ValueError`, jak w `MarketDataPort`.
+    """
+
+    @abstractmethod
+    def get_daily_change(self, symbol: str) -> DailyChange: ...
 
 
 class SentimentPort(ABC):
@@ -52,6 +67,36 @@ class PreviousVerdict:
     verdict: CouncilVerdict
     sentiment_score: float
     timestamp: datetime
+
+
+@dataclass(frozen=True)
+class CycleRun:
+    """NIEZ-29 — jeden przebieg pętli (wiersz `cycle_runs`, migracja 041).
+
+    Same liczby przebiegu, bez symboli: `run_id` to `RunContext.run_id` (ten sam
+    co w `llm_calls`), `run_attempt` — `GITHUB_RUN_ATTEMPT` (None poza GitHub
+    Actions), `paid_calls` — płatne wywołania per klucz cennika,
+    `report_delivered` — czy mail wyszedł (None = przebieg bez kanału e-mail)."""
+
+    loop: str
+    run_id: str
+    run_attempt: int | None
+    started_at: datetime
+    duration_s: float
+    eligible: int
+    saved: int
+    failures: int
+    paid_calls: Mapping[str, int]
+    report_delivered: bool | None
+
+
+@dataclass(frozen=True)
+class OpenReferenceCall:
+    """WIA-24 — nierozliczone wywołanie sygnału referencyjnego z id wiersza
+    `reference_predictions` (migracja 042), którym rozlicza je kolejny przebieg."""
+
+    id: str
+    call: ReferenceCall
 
 
 class RepositoryPort(ABC):
@@ -347,6 +392,12 @@ class RepositoryPort(ABC):
         Slow Loopa (zapisuje wiersz per symbol także przy pominięciu). None = brak."""
 
     @abstractmethod
+    def probe_database(self) -> None:
+        """NIEZ-28 — odczyt jednego wiersza (tylko do odczytu): dowód, że baza
+        odpowiada. Projekt Supabase na planie Free jest wstrzymywany po 7 dniach bez
+        aktywności, a wtedy każdy job pada na połączeniu. Wyjątek = baza nie odpowiada."""
+
+    @abstractmethod
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         """#11 — najnowszy snapshot ceny WRAZ ze znacznikiem czasu.
 
@@ -366,6 +417,13 @@ class RepositoryPort(ABC):
         """#11 — pary (symbol, dzień) już zaalarmowane od `since`.
         Pusty zbiór = brak danych / brak migracji 021 → debounce w domenie
         polega wtedy wyłącznie na pamięci bieżącego przebiegu."""
+
+    @abstractmethod
+    def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
+        """ALR-02 — chwila NAJNOWSZEGO alertu szoku per symbol od `since`
+        (`shock_alerts.created_at`, migracja 021). Watch tłumi nią alert krypto
+        ze zmiany 24 h, póki okno zawiera ruch już zaalarmowany. Pusty słownik =
+        brak alertów / brak migracji 021."""
 
     @abstractmethod
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
@@ -415,6 +473,46 @@ class RepositoryPort(ABC):
         bez parsowania JSONB blob `prediction_logs.council_verdict`. Pusta lista
         głosów to no-op (rada padła całkowicie / została pominięta progiem).
         """
+
+    @abstractmethod
+    def save_llm_calls(self, calls: Sequence[LLMCallEntry]) -> None:
+        """FIN-13 — ledger kosztów: jeden wiersz `llm_calls` (migracja 040) na
+        request do dostawcy LLM / embeddingów, zapisany JEDNYM batchem po cyklu.
+        Same tokeny, koszt i identyfikatory — bez treści promptu. Pusta lista =
+        no-op. Wołający pilnuje flagi `cost_ledger_enabled` (bez migracji 040
+        zapis kończyłby się błędem PostgREST)."""
+
+    @abstractmethod
+    def save_cycle_run(self, run: CycleRun) -> None:
+        """NIEZ-29 — jeden wiersz `cycle_runs` (migracja 041) na przebieg pętli,
+        jednym insertem na końcu przebiegu. Wołający pilnuje flagi
+        `cycle_runs_enabled` (bez migracji 041 zapis kończyłby się błędem PostgREST)."""
+
+    # WIA-24 — sygnał referencyjny w osobnej tabeli `reference_predictions` (migracja
+    # 042), nigdy w `prediction_logs`. Wołający pilnuje flagi `reference_signal_enabled`.
+
+    @abstractmethod
+    def get_reference_reads(self, since: datetime) -> list[ReferenceRead]:
+        """Odczyty sygnału referencyjnego wszystkich symboli od `since`, rosnąco po czasie."""
+
+    @abstractmethod
+    def get_open_reference_calls(self) -> list[OpenReferenceCall]:
+        """Wywołania (BULLISH / BEARISH) jeszcze bez rozliczenia, bez limitu wieku —
+        stare wygasają w kolejnym przebiegu."""
+
+    @abstractmethod
+    def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
+        """Jeden wiersz: odczyt przebiegu i wywołanie z niego (None = abstynencja)."""
+
+    @abstractmethod
+    def settle_reference_call(
+        self,
+        record_id: str,
+        outcome: ReferenceOutcome,
+        settled_price: Decimal | None,
+        settled_at: datetime,
+    ) -> None:
+        """Rozliczenie wywołania: HIT / MISS z ceną odczytu albo EXPIRED bez ceny."""
 
 
 class MLPredictionPort(ABC):
@@ -476,16 +574,37 @@ class MLPredictionPort(ABC):
         Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
 
 
+# NIEZ-44: klucze, którymi adapter failover znakuje wynik `LLMPort.analyze` od
+# dostawcy ZAPASOWEGO (dostawca i model, który faktycznie odpowiedział). Graf zdejmuje
+# je przed normalizacją analizy i dopisuje flagę jakości `llm_failover`.
+LLM_FAILOVER_PROVIDER_KEY = "_llm_provider"
+LLM_FAILOVER_MODEL_KEY = "_llm_model"
+
+
 class LLMPort(ABC):
     """Model językowy do rozumowania i samokorekty (np. OpenAI, Anthropic)."""
 
     @abstractmethod
     def analyze(self, prompt: str) -> dict[str, Any]:
-        """Główna analiza — zwraca ustrukturyzowany JSON wg output_schema z promptu."""
+        """Główna analiza — zwraca ustrukturyzowany JSON wg output_schema z promptu.
+
+        Wynik od dostawcy zapasowego (NIEZ-44) niesie dodatkowo
+        `LLM_FAILOVER_PROVIDER_KEY` i `LLM_FAILOVER_MODEL_KEY`."""
 
     @abstractmethod
     def analyze_mistake(self, prompt: str) -> str:
         """Diagnoza błędnej predykcji — zwraca tekstowy correction_insight."""
+
+
+class UsageSink(ABC):
+    """FIN-13: odbiorca zużycia tokenów zgłaszanego przez adaptery LLM i embeddingów.
+
+    Adapter oddaje samo `LLMUsage` z odpowiedzi dostawcy — nie zna Supabase,
+    cennika ani grafu. Źródło cennika, węzeł i symbol dopisuje implementacja
+    w application (`UsageLedger`) z zakresu wołającego."""
+
+    @abstractmethod
+    def record(self, usage: LLMUsage) -> None: ...
 
 
 class EmbeddingPort(ABC):
@@ -503,6 +622,18 @@ class ReportNotifierPort(ABC):
 
     @abstractmethod
     def send_report(self, subject: str, html_body: str, plain_text: str) -> None: ...
+
+
+class HeartbeatPort(ABC):
+    """NIEZ-13: zewnętrzny watchdog żywotności cronów (np. healthchecks.io).
+
+    Watchdog na tym samym GitHub Actions umiera razem z nim, a GitHub wyłącza
+    crony po 60 dniach bez aktywności repo — o ciszy musi powiedzieć ktoś z
+    zewnątrz. Entry point pinguje RAZ, na końcu przebiegu: `ok=True` = przebieg
+    zakończony kodem 0, `ok=False` = porażka. Brak pingu w oknie checku to alarm."""
+
+    @abstractmethod
+    def ping(self, ok: bool) -> None: ...
 
 
 class AlertNotifierPort(ABC):
@@ -546,6 +677,18 @@ class MacroIndicatorsPort(ABC):
     def fetch_polish_macro(self) -> PolishMacroSnapshot | None: ...
 
 
+class FxRatePort(ABC):
+    """PORT-11 — kurs średni waluty do PLN z danego dnia (NBP, tabela A).
+
+    Dzień bez tabeli (weekend, święto, przed publikacją) → kurs z poprzedniego
+    dnia roboczego (`FxRate.effective_date`). None = źródło niedostępne albo
+    waluta spoza tabeli; wołający pokazuje wtedy brak kursu, nigdy kurs innej
+    waluty. Darmowe (NBP bez klucza), poza bramką volatility."""
+
+    @abstractmethod
+    def get_rate(self, currency: str, on_date: date) -> FxRate | None: ...
+
+
 class SubscriberRepositoryPort(ABC):
     """Źródło listy subskrybentów raportu (U2 — personalizowany fan-out).
 
@@ -570,6 +713,20 @@ class PortfolioPositionsPort(ABC):
         """Znacznik czasu najświeższej pozycji. None = brak danych.
         Napędza badge STALE — stęchły portfel daje FAŁSZYWY P/L, gorszy niż
         brak sekcji, więc świeżość jest wymaganiem, nie ozdobnikiem."""
+
+
+class PositionsImportPort(ABC):
+    """PORT-18 — zapis tabeli `positions` z importu CSV (`main_tools.py
+    import-positions`). W przeciwieństwie do odczytu dla raportu jest ŚCISŁY:
+    błąd to wyjątek, bo dry-run na pustej liście pokazałby „wszystko nowe”."""
+
+    @abstractmethod
+    def current_positions(self) -> list[Position]:
+        """Bieżące loty z tabeli (te same, które czyta raport)."""
+
+    @abstractmethod
+    def replace_positions(self, positions: Sequence[Position], as_of: datetime) -> None:
+        """Zastępuje całą zawartość tabeli podanymi lotami z jednym `as_of`."""
 
 
 class AttestationPublisherPort(ABC):

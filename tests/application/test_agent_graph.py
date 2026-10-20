@@ -1857,6 +1857,31 @@ class TestProvenanceSignals:
         # odznakę DEGRADED. (Provenance buduje się w report z raw outputu.)
         assert "av_keys_exhausted" in final["data_quality_flags"]
 
+    @pytest.mark.parametrize("reason", ["av_unexpected_payload", "av_fetch_error"])
+    def test_av_degradation_reaches_the_saved_quality_flags(
+        self, reason, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Migracja 039 wycina te wiersze z ml_feature_store po fladze w zapisie
+        # predykcji (DAT-07, DAT-08) — flaga musi dojść do rekordu, nie tylko do stanu.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        sentiment_port.get_social_score.return_value = {
+            "av_sentiment_score": 0.0,
+            "av_relevance_avg": 0.0,
+            "news_volume_24h": 0,
+            "high_relevance_count": 0,
+            "av_sentiment_label": "Neutral",
+            "degraded_reason": reason,
+        }
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        saved = repository_port.save_prediction.call_args.args[0]
+        assert reason in saved["data_quality_flags"]
+
     def test_clean_cycle_has_no_quality_flags(
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,
@@ -2756,6 +2781,101 @@ class TestPaidCallMeter:
 
         assert final["status"] == "saved"
 
+    def _embedding_cycle(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        embedding_port, state=None,
+    ):
+        from collections import Counter
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        repository_port.find_similar_predictions.return_value = []
+        meter: Counter[str] = Counter()
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        create_agent_graph(AgentGraphDeps(
+            **ports, threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port, paid_call_meter=meter,
+        )).compile().invoke(state or _initial_state("100.0"))
+        return meter
+
+    def test_embedding_call_is_metered(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # FIN-01: embedding newsów w predict (RAG) jest płatny i ląduje w koszcie
+        # cyklu; save_node reużywa wektora, więc nie liczy się drugi raz.
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+
+        meter = self._embedding_cycle(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            embedding_port,
+        )
+
+        embedding_port.embed.assert_called_once()
+        assert meter["embedding"] == 1
+
+    def test_save_retry_after_failed_rag_embedding_counts_both_requests(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.side_effect = [RuntimeError("503"), [0.1] * 8]
+
+        meter = self._embedding_cycle(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            embedding_port,
+        )
+
+        assert embedding_port.embed.call_count == 2
+        assert meter["embedding"] == 2
+
+    def test_save_fallback_embedding_is_metered_in_the_no_memory_arm(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+
+        meter = self._embedding_cycle(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            embedding_port,
+            state={**_initial_state("100.0"), "experiment_arms": {"EXP-03": "no_memory"}},
+        )
+
+        embedding_port.embed.assert_called_once()
+        assert meter["embedding"] == 1
+
+    def test_no_news_means_no_embedding_call(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        news_port.get_news_context.return_value = []
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        news_port.get_news_context.return_value = []
+        from collections import Counter
+
+        meter: Counter[str] = Counter()
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        create_agent_graph(AgentGraphDeps(
+            **ports, threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port, paid_call_meter=meter,
+        )).compile().invoke(_initial_state("100.0"))
+
+        embedding_port.embed.assert_not_called()
+        assert "embedding" not in meter
+
 
 # ---------------------------------------------------------------------------
 # ML-09 — wszystkie 5 nagłówków w prompcie predykcji
@@ -2872,8 +2992,8 @@ class TestFeatureSetVersionStamp:
 
         record = self._record(ports, repository_port, enabled=True)
 
-        # Okno newsów 24 h (3738ef2) zmieniło znaczenie `news_volume_24h` → wersja 2.
-        assert record["feature_set_version"] == FEATURE_SET_VERSION == 2
+        # Okno newsów 24 h (3738ef2) → wersja 2; feed leniwy per symbol (FIN-04) → 3.
+        assert record["feature_set_version"] == FEATURE_SET_VERSION == 3
 
 
 # ---------------------------------------------------------------------------
@@ -2951,6 +3071,42 @@ class TestFeatureSnapshots:
         embedding_port.embed.assert_not_called()
         ml_port.predict.assert_not_called()
         assert sum(deps.paid_call_meter.values()) == 0
+
+    def test_rebaseline_cycle_writes_the_price_but_no_feature_vector(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # FIN-14 + decyzja 2026-10-19: po pauzie `snapshot_delta` to ruch z wielu
+        # dni, nie obserwacja cyklu — wektor ML-14 nie powstaje, cena tak.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        state = {**_initial_state("100.0"), "stale_reference": True}
+
+        final = create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )).compile().invoke(state)
+
+        assert final["status"] == "ignored"
+        repository_port.save_price_snapshot.assert_called_once_with(
+            "AAPL", Money(Decimal("90.0"))
+        )
+        repository_port.save_feature_snapshot.assert_not_called()
+
+    def test_ignored_cycle_with_a_fresh_reference_still_writes_the_vector(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))  # -0,5%
+        state = {**_initial_state("100.0"), "stale_reference": False}
+
+        final = create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )).compile().invoke(state)
+
+        assert final["status"] == "ignored"
+        repository_port.save_price_snapshot.assert_called_once()
+        repository_port.save_feature_snapshot.assert_called_once()
 
     def test_ignored_snapshot_is_written_next_to_the_price_snapshot(
         self, market_port, sentiment_port, news_port,
@@ -3363,3 +3519,772 @@ class TestGateDeltaColumn:
         )
 
         assert "gate_delta" not in record
+
+
+class TestExperimentArmsRecord:
+    """EXP-05: ramiona aktywnych eksperymentów (stan grafu) trafiają do kwitu v2
+    jako opcjonalny klucz i — za flagą `experiment_arms_enabled` — do kolumny
+    `experiment_arms` (migracja 037). Bez flagi klucza kolumny nie ma wcale:
+    przed migracją to PGRST204 i śmierć zapisu całej predykcji."""
+
+    _ARMS = {"EXP-02": "sighted"}
+
+    def _record(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, arms: dict[str, str] | None, column: bool, receipts: bool = True,
+    ) -> dict:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        state = _initial_state("100.0")
+        if arms is not None:
+            state["experiment_arms"] = arms
+        create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            receipts_enabled=receipts,
+            recipe=_recipe(),
+            experiment_arms_enabled=column,
+        )).compile().invoke(state)
+        return repository_port.save_prediction.call_args.args[0]
+
+    def test_receipt_v2_carries_the_arms(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=self._ARMS, column=False,
+        )
+
+        receipt = record["decision_receipts"]
+        assert receipt["schema_version"] == 2
+        assert receipt["experiment_arms"] == self._ARMS
+
+    def test_without_an_active_experiment_the_receipt_has_no_arms_key(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=None, column=True,
+        )
+
+        assert "experiment_arms" not in record["decision_receipts"]
+        assert "experiment_arms" not in record
+
+    def test_flag_off_omits_the_column_even_with_arms(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=self._ARMS, column=False,
+        )
+
+        assert "experiment_arms" not in record
+
+    def test_flag_on_writes_the_arms_column(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        record = self._record(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=self._ARMS, column=True, receipts=False,
+        )
+
+        assert record["experiment_arms"] == self._ARMS
+        assert "decision_receipts" not in record
+
+
+class TestBlindCouncilArm:
+    """EXP-02: ramię `blind` przełącza `CouncilInput.blind` — rada leci tymi
+    samymi wywołaniami, a licznik płatnych wywołań jest identyczny w obu ramionach."""
+
+    def _run(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, arms: dict[str, str] | None,
+    ) -> tuple[Mock, AgentGraphDeps]:
+        from src.application.ports import AdvisoryCouncilPort
+
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            council_port=council_port,
+        )
+        state = _initial_state("100.0")
+        if arms is not None:
+            state["experiment_arms"] = arms
+        create_agent_graph(deps).compile().invoke(state)
+        return council_port, deps
+
+    def test_blind_arm_hides_the_llm_verdict_from_the_council(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        council_port, _ = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms={"EXP-02": "blind"},
+        )
+
+        council_port.analyze.assert_called_once()
+        assert council_port.analyze.call_args.args[1].blind is True
+
+    @pytest.mark.parametrize("arms", [None, {"EXP-02": "sighted"}])
+    def test_control_arm_and_no_experiment_keep_the_sighted_council(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port, arms,
+    ):
+        council_port, _ = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=arms,
+        )
+
+        assert council_port.analyze.call_args.args[1].blind is False
+
+    def test_blind_arm_adds_no_paid_calls(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        meters = []
+        for arms in ({"EXP-02": "sighted"}, {"EXP-02": "blind"}):
+            for port in (market_port, sentiment_port, news_port, repository_port, llm_port):
+                port.reset_mock()
+            _, deps = self._run(
+                market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+                arms=arms,
+            )
+            meters.append(dict(deps.paid_call_meter))
+
+        assert meters[0] == meters[1]
+        assert "council_llm" not in meters[0]
+
+
+class TestNoMemoryArm:
+    """EXP-03: ramię `no_memory` — prompt predykcji bez `reflection_context`
+    i `similar_context`. Ramię nie robi zapytania RAG, ale embeduje newsy przy
+    zapisie jak status quo (decyzja 2026-10-20), więc predykcja trafia do
+    korpusu analogów; rozliczenie poprzedniej predykcji w reflect bez zmian."""
+
+    def _run(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, arms: dict[str, str] | None,
+    ) -> tuple[Mock, AgentGraphDeps]:
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+        repository_port.find_similar_predictions.return_value = [
+            {
+                "news_summary": "Fed hawkish surprise spooks tech",
+                "predicted_trend": "BEARISH",
+                "is_trend_correct": True,
+                "correction_insights": "reaguj na jastrzębi Fed",
+            }
+        ]
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        deps = AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        )
+        state = _initial_state("100.0")
+        if arms is not None:
+            state["experiment_arms"] = arms
+        create_agent_graph(deps).compile().invoke(state)
+        return embedding_port, deps
+
+    def test_no_memory_arm_prompt_has_no_reflection_or_analogs(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms={"EXP-03": "no_memory"},
+        )
+
+        prompt = llm_port.analyze.call_args_list[0].args[0]
+        assert "reflection_context" not in prompt
+        assert "Zignorowałem szerszy kontekst makro." not in prompt
+        assert "similar_past_situations" not in prompt
+        assert "Fed hawkish surprise spooks tech" not in prompt
+        # Rozliczenie poprzedniej predykcji nie zależy od ramienia.
+        repository_port.update_prediction_accuracy.assert_called_once()
+
+    def test_no_memory_arm_skips_rag_but_embeds_at_save(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        embedding_port, _ = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms={"EXP-03": "no_memory"},
+        )
+
+        repository_port.find_similar_predictions.assert_not_called()
+        embedding_port.embed.assert_called_once()
+        assert repository_port.save_prediction.call_args.args[0]["embedding"] == [0.1] * 8
+
+    @pytest.mark.parametrize("arms", [None, {"EXP-03": "memory"}])
+    def test_memory_arm_and_no_experiment_keep_lessons_and_analogs(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port, arms,
+    ):
+        embedding_port, _ = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            arms=arms,
+        )
+
+        prompt = llm_port.analyze.call_args_list[0].args[0]
+        assert "Zignorowałem szerszy kontekst makro." in prompt
+        assert "Fed hawkish surprise spooks tech" in prompt
+        embedding_port.embed.assert_called_once()
+
+    def test_no_memory_arm_adds_no_paid_calls(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        meters = []
+        embeds = []
+        for arms in ({"EXP-03": "memory"}, {"EXP-03": "no_memory"}):
+            for port in (market_port, sentiment_port, news_port, repository_port, llm_port):
+                port.reset_mock()
+            embedding_port, deps = self._run(
+                market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+                arms=arms,
+            )
+            meters.append(dict(deps.paid_call_meter))
+            embeds.append(embedding_port.embed.call_count)
+
+        assert meters[0] == meters[1]
+        # Jeden embedding na cykl w obu ramionach: RAG-zapytanie albo zapis.
+        assert embeds == [1, 1]
+
+
+class TestCycleTelemetryWiring:
+    """ARCH-11: graf zasila jeden `CycleTelemetry` na cykl — płatne wywołania
+    (`_log_paid_call`), czasy węzłów (`_timed_node`) i decyzje bramki."""
+
+    def _deps(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        **extra,
+    ) -> AgentGraphDeps:
+        return AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            **extra,
+        )
+
+    def test_gated_cycle_records_the_gate_and_no_paid_call(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        metrics = deps.telemetry.snapshot()
+        assert (metrics.gated, metrics.passed) == (1, 0)
+        assert dict(metrics.gate_reasons) == {"below_threshold": 1}
+        assert metrics.total_paid_calls == 0
+        assert dict(metrics.node_max_ms) == {}
+
+    def test_stale_reference_is_its_own_gate_reason(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        create_agent_graph(deps).compile().invoke(
+            {**_initial_state("100.0"), "stale_reference": True}
+        )
+
+        assert dict(deps.telemetry.snapshot().gate_reasons) == {"stale_reference": 1}
+
+    def test_paid_cycle_records_pass_paid_calls_and_node_timings(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.cycle_telemetry import CycleTelemetry
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        telemetry = CycleTelemetry()
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            telemetry=telemetry,
+        )
+
+        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        metrics = telemetry.snapshot()
+        assert (metrics.gated, metrics.passed) == (0, 1)
+        assert dict(metrics.gate_reasons) == {"above_threshold": 1}
+        assert metrics.paid_calls["llm"] == 1
+        assert metrics.paid_calls["sentiment"] == 1
+        assert metrics.paid_calls["news"] == 1
+        assert {"analyze_sentiment", "fetch_news", "predict"} <= set(metrics.node_max_ms)
+        # Ten sam magazyn pod dawnym polem — jedno źródło prawdy, nie dwa liczniki.
+        assert deps.paid_call_meter is telemetry.paid_calls
+
+    def test_caller_meter_and_telemetry_share_one_store(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from collections import Counter
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        meter: Counter[str] = Counter()
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_meter=meter,
+        )
+
+        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert deps.telemetry.paid_calls is meter
+        assert dict(deps.telemetry.snapshot().paid_calls) == dict(meter)
+
+    def test_failing_council_counts_as_node_failure(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.ports import AdvisoryCouncilPort
+
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.side_effect = RuntimeError("council down")
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            council_port=council_port,
+        )
+
+        final = create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        metrics = deps.telemetry.snapshot()
+        assert dict(metrics.node_failures) == {"council": 1}
+        assert "council" in metrics.node_max_ms
+
+
+class TestCouncilRequestMetering:
+    """FIN-02: węzeł rady tylko loguje — requesty rady liczy wyłącznie
+    `MeteredLLMPort`, którym DI owija port LLM rady. Graf bez tego dekoratora
+    nie dolicza rady ani jednym wywołaniem."""
+
+    def test_council_without_metered_port_adds_no_council_call(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        caplog,
+    ):
+        from src.application.ports import AdvisoryCouncilPort
+
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            council_port=council_port,
+        )
+        with caplog.at_level(logging.INFO, logger="src.application.agent_graph"):
+            create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        council_port.analyze.assert_called_once()
+        assert "council_llm" not in deps.telemetry.snapshot().paid_calls
+        assert any(
+            "paid call: node=council" in rec.message for rec in caplog.records
+        )
+
+
+class TestPaidCallBudget:
+    """FIN-12: twardy sufit płatnych wywołań LLM na cykl. Domena decyduje
+    (`paid_budget_allows`, miękki sufit), graf po pozytywnej bramce volatility
+    kieruje symbol ponad budżetem do 'ignore' z flagą `budget_exhausted`."""
+
+    _COUNCIL_REQUESTS = 8
+
+    def _deps(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        **extra,
+    ) -> AgentGraphDeps:
+        from src.application.cycle_telemetry import CycleTelemetry
+        from src.application.ports import AdvisoryCouncilPort
+
+        telemetry = CycleTelemetry()
+        council_port = Mock(spec=AdvisoryCouncilPort)
+
+        def council_requests(symbol, data):
+            # Jak `MeteredLLMPort`: każda persona i chairman to osobny request.
+            for _ in range(self._COUNCIL_REQUESTS):
+                telemetry.record_paid_call("council_llm")
+            return None
+
+        council_port.analyze.side_effect = council_requests
+        return AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            council_port=council_port,
+            telemetry=telemetry,
+            **extra,
+        )
+
+    def _run_cycle(self, deps: AgentGraphDeps, symbols: list[str]) -> list[dict]:
+        app = create_agent_graph(deps).compile()
+        return [
+            app.invoke({"symbol": symbol, "previous_price": Decimal("100.0")})
+            for symbol in symbols
+        ]
+
+    def test_third_symbol_routed_to_ignore_with_budget_exhausted_flag(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=10,
+        )
+
+        # Każdy symbol: 1 predykcja + 8 requestów rady = 9 wywołań LLM.
+        first, second, third = self._run_cycle(deps, ["AAPL", "MSFT", "NVDA"])
+
+        assert [first["status"], second["status"]] == ["saved", "saved"]
+        assert third["status"] == "ignored"
+        assert third["budget_exhausted"] is True
+        assert "budget_exhausted" not in first
+        assert llm_port.analyze.call_count == 2
+
+    def test_cut_symbol_keeps_its_old_price_reference(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        # Snapshot z nową ceną zjadłby ruch: następny cykl liczyłby Δ od 90, nie od 100.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=10, feature_snapshots_enabled=True,
+        )
+
+        self._run_cycle(deps, ["AAPL", "MSFT", "NVDA"])
+
+        snapshot_symbols = [
+            c.args[0] for c in repository_port.save_price_snapshot.call_args_list
+        ]
+        assert snapshot_symbols == ["AAPL", "MSFT"]
+        feature_symbols = [
+            c.args[0] for c in repository_port.save_feature_snapshot.call_args_list
+        ]
+        assert "NVDA" not in feature_symbols
+
+    def test_cut_symbol_pays_for_nothing_past_the_gate(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=9,
+        )
+
+        self._run_cycle(deps, ["AAPL", "MSFT"])
+
+        assert sentiment_port.get_social_score.call_count == 1
+        assert news_port.get_news_context.call_count == 1
+        metrics = deps.telemetry.snapshot()
+        assert metrics.paid_calls["llm"] == 1
+        assert dict(metrics.gate_reasons) == {"above_threshold": 1, "budget_exhausted": 1}
+
+    def test_cutoff_is_logged_as_a_warning(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        caplog,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=9,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="src.application.agent_graph"):
+            self._run_cycle(deps, ["AAPL", "MSFT"])
+
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("MSFT" in m and "budget" in m and "9/9" in m for m in warnings), warnings
+
+    def test_no_cap_analyzes_every_symbol_past_the_gate(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        finals = self._run_cycle(deps, ["AAPL", "MSFT", "NVDA"])
+
+        assert [f["status"] for f in finals] == ["saved", "saved", "saved"]
+        assert llm_port.analyze.call_count == 3
+
+    def test_symbol_below_the_gate_is_never_marked_budget_exhausted(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=0,
+        )
+
+        (final,) = self._run_cycle(deps, ["AAPL"])
+
+        assert final["status"] == "ignored"
+        assert "budget_exhausted" not in final
+        repository_port.save_price_snapshot.assert_called_once()
+
+
+class TestUsageAttribution:
+    """FIN-13: graf otacza każde płatne wywołanie zakresem `usage_scope`, więc
+    tokeny zgłoszone przez adapter trafiają do ledgera ze źródłem cennika,
+    węzłem i symbolem — adapter nie zna grafu."""
+
+    def test_every_paid_call_reports_its_source_node_and_symbol(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.ports import AdvisoryCouncilPort
+        from src.application.usage_ledger import UsageLedger
+        from src.domain.finops import LLMUsage
+
+        ledger = UsageLedger()
+        usage = LLMUsage(provider="anthropic", model="m", input_tokens=1, output_tokens=1)
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        analysis = llm_port.analyze.return_value
+        llm_port.analyze.side_effect = lambda _prompt: ledger.record(usage) or analysis
+        llm_port.analyze_mistake.side_effect = lambda _prompt: ledger.record(usage) or "lekcja"
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.side_effect = lambda _text: ledger.record(usage) or [0.1] * 4
+        repository_port.find_similar_predictions.return_value = []
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.side_effect = lambda _symbol, _data: ledger.record(usage)
+        deps = AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+            council_port=council_port,
+        )
+
+        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert [(r.source, r.node, r.symbol) for r in ledger.records()] == [
+            ("llm", "reflect", "AAPL"),
+            ("embedding", "predict", "AAPL"),
+            ("llm", "predict", "AAPL"),
+            ("council_llm", "council", "AAPL"),
+        ]
+
+    def test_save_time_embedding_retry_is_attributed_to_save(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.usage_ledger import UsageLedger
+        from src.domain.finops import LLMUsage
+
+        ledger = UsageLedger()
+        usage = LLMUsage(provider="openai", model="e", input_tokens=1, output_tokens=0)
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        embedding_port = Mock(spec=EmbeddingPort)
+        # RAG nie dał wektora (pusty) → zapis embeduje jeszcze raz.
+        vectors = iter([[], [0.2] * 4])
+        embedding_port.embed.side_effect = lambda _text: ledger.record(usage) or next(vectors)
+        deps = AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        )
+
+        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert [(r.source, r.node) for r in ledger.records()] == [
+            ("embedding", "predict"),
+            ("embedding", "save"),
+        ]
+
+
+class TestTwoPhaseGraphs:
+    """EXP-27: cykl dwufazowy dzieli graf na fazę bramki (cena, reflect, fundamenty
+    z cache, bramka domenowa) i fazę płatną (sentyment, newsy, predykcja, rada,
+    zapis). Graf jednofazowy `create_agent_graph` zostaje bez zmian."""
+
+    def _deps(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        **extra,
+    ) -> AgentGraphDeps:
+        return AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            **extra,
+        )
+
+    def test_symbol_below_the_gate_ends_in_phase_one_with_a_snapshot(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.agent_graph import create_gate_graph
+
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "ignored"
+        repository_port.save_price_snapshot.assert_called_once()
+        sentiment_port.get_social_score.assert_not_called()
+        news_port.get_news_context.assert_not_called()
+        metrics = deps.telemetry.snapshot()
+        assert (metrics.gated, metrics.passed) == (1, 0)
+        assert dict(metrics.gate_reasons) == {"below_threshold": 1}
+
+    def test_symbol_past_the_gate_stops_before_any_paid_feed(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.agent_graph import create_gate_graph
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert "status" not in final
+        assert final["delta"] == Decimal("-0.1")
+        # Self-Reflection przed bramką: rozliczenie i płatna diagnoza już w fazie 1.
+        repository_port.update_prediction_accuracy.assert_called_once()
+        llm_port.analyze_mistake.assert_called_once()
+        # Bez terminala fazy 1 nie ma snapshotu — zapisze go faza 2.
+        repository_port.save_price_snapshot.assert_not_called()
+        sentiment_port.get_social_score.assert_not_called()
+        llm_port.analyze.assert_not_called()
+        # Decyzję o płatnej analizie (albo cięciu budżetem) zapisze faza 2.
+        assert deps.telemetry.snapshot().passed == 0
+
+    def test_gate_phase_reads_cached_fundamentals_before_the_gate(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.agent_graph import create_gate_graph
+        from src.application.ports import FundamentalsPort
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        fundamentals_port = Mock(spec=FundamentalsPort)
+        fundamentals_port.get_fundamentals.return_value = None
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            fundamentals_port=fundamentals_port,
+        )
+
+        from src.domain.asset import Asset
+
+        # DI klasyfikuje aktywo przed grafem — węzeł fundamentów go wymaga.
+        state = {**_initial_state("100.0"), "asset": Asset(symbol="AAPL")}
+        final = create_gate_graph(deps).compile().invoke(state)
+
+        fundamentals_port.get_fundamentals.assert_called_once_with("AAPL")
+        assert "status" not in final
+        assert "valuation_verdict" in final
+
+    def test_paid_phase_finishes_the_symbol_from_the_gate_state(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.agent_graph import create_gate_graph, create_paid_graph
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        gate_state = create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        final = create_paid_graph(deps).compile().invoke(gate_state)
+
+        assert final["status"] == "saved"
+        sentiment_port.get_social_score.assert_called_once_with("AAPL")
+        news_port.get_news_context.assert_called_once_with("AAPL")
+        repository_port.save_price_snapshot.assert_called_once()
+        # Lekcja z reflect fazy 1 dociera do promptu predykcji fazy 2.
+        assert "Zignorowałem szerszy kontekst makro." in llm_port.analyze.call_args.args[0]
+        metrics = deps.telemetry.snapshot()
+        assert (metrics.gated, metrics.passed) == (0, 1)
+        assert dict(metrics.gate_reasons) == {"above_threshold": 1}
+
+    def test_paid_phase_over_budget_ends_without_a_snapshot(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.agent_graph import create_gate_graph, create_paid_graph
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_cap=1,
+        )
+        deps.telemetry.record_paid_call("llm")
+        gate_state = create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        final = create_paid_graph(deps).compile().invoke(gate_state)
+
+        assert final["status"] == "ignored"
+        assert final["budget_exhausted"] is True
+        repository_port.save_price_snapshot.assert_not_called()
+        sentiment_port.get_social_score.assert_not_called()
+        assert dict(deps.telemetry.snapshot().gate_reasons) == {"budget_exhausted": 1}

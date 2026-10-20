@@ -156,7 +156,7 @@ class TestHtmlRendering:
         html = render_risk_watch_html(report)
         assert "EUR/PLN" in html
         assert "USD/PLN" in html
-        assert "4.45" in html
+        assert "4,45" in html
 
     def test_skips_polish_macro_block_when_none(self) -> None:
         report = MacroRiskReport(
@@ -193,7 +193,7 @@ class TestPlainTextRendering:
         report = MacroRiskReport(polish_macro=snap, overall_alert=MacroAlertLevel.ELEVATED)
         text = render_risk_watch_text(report)
         assert "EUR/PLN" in text
-        assert "4.45" in text
+        assert "4,45" in text
 
 
 class TestDrawdownRendering:
@@ -209,6 +209,16 @@ class TestDrawdownRendering:
         assert "-25" in html  # -25% od szczytu
         # Czerwony kolor wiersza CRITICAL.
         assert "#dc2626" in html
+
+    def test_peak_price_is_written_with_a_decimal_comma(self) -> None:
+        # MAIL-58: szczyt to liczba dla czytelnika — „186,00”, nie „186.00”.
+        report = MacroRiskReport(
+            drawdowns=[_drawdown("AMD", peak="186.00", current="160.00")],
+            overall_alert=MacroAlertLevel.ELEVATED,
+        )
+
+        assert "186,00" in render_risk_watch_html(report)
+        assert "(szczyt 186,00)" in render_risk_watch_text(report)
 
     def test_html_drawdown_present_even_without_signals(self) -> None:
         report = MacroRiskReport(

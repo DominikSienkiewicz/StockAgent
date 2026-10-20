@@ -464,6 +464,68 @@ class TestGetInsiderFlow:
         assert isinstance(adapter, InsiderFlowPort)
 
 
+class TestFilingEvidence:
+    """DAT-03: adapter liczy Form 4 widziane w oknie i sparsowane, żeby domena
+    odróżniła awarię parsowania od braku transakcji."""
+
+    @staticmethod
+    def _patch(mocker, form4_body: dict[str, str]) -> None:
+        def get(url: str, **_: object) -> Mock:
+            if "company_tickers.json" in url:
+                return _ok_json(_company_tickers())
+            if "submissions" in url:
+                return _ok_json(_two_form4_submissions())
+            for doc, body in form4_body.items():
+                if doc in url:
+                    return _ok_text(body)
+            return _error_response(404)
+
+        mocker.patch("requests.Session.get", side_effect=get)
+
+    def test_counts_seen_and_parsed_filings(self, adapter: EdgarInsiderAdapter, mocker) -> None:
+        self._patch(
+            mocker,
+            {
+                "form4_buy.xml": _form4_xml(code="P", shares=1000.0),
+                "form4_sell.xml": _form4_xml(code="S", shares=400.0),
+            },
+        )
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        assert snap is not None
+        assert (snap.filings_seen, snap.filings_parsed) == (2, 2)
+        assert snap.has_evidence()
+
+    def test_all_failing_filings_are_seen_but_not_parsed(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        self._patch(mocker, {})
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        assert snap is not None
+        assert (snap.filings_seen, snap.filings_parsed) == (2, 0)
+        assert not snap.has_evidence()
+
+    def test_partial_parse_counts_only_the_parsed_filing(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        self._patch(
+            mocker,
+            {
+                "form4_buy.xml": "<<<not xml at all>>>",
+                "form4_sell.xml": _form4_xml(code="S", shares=500.0),
+            },
+        )
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        assert snap is not None
+        assert (snap.filings_seen, snap.filings_parsed) == (2, 1)
+        assert snap.has_evidence()
+
+
 class TestNullInsiderFlowAdapter:
     def test_returns_none_without_io(self, mocker) -> None:
         mock_get = mocker.patch("requests.Session.get")

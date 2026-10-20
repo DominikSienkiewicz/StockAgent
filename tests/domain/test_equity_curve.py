@@ -16,15 +16,22 @@ Reguły metryk:
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from src.domain.benchmark import index_curve, window_change
 from src.domain.equity_curve import (
     DirectionalHitRate,
     EquityCurve,
     EquityPoint,
+    PaperTrade,
+    buy_and_hold_curve,
     directional_hit_rate,
     equity_curve,
+    excess_return,
+    market_relative_hit_rate,
+    paper_portfolio_curve,
     portfolio_equity_curve,
     signal_of,
 )
@@ -264,3 +271,170 @@ class TestPortfolioEquityCurve:
     def test_empty_cycles_are_skipped_and_empty_input_is_all_zeros(self) -> None:
         assert portfolio_equity_curve([]) == equity_curve([])
         assert portfolio_equity_curve([[], [("BULLISH", 0.1)]]).points[0].index == 0
+
+
+def test_round_trip_cost_is_charged_on_directional_entry() -> None:
+    """WIA-50: wejście z gotówki płaci nogę wejścia round tripu (10 bps → -0.001);
+    noga wyjścia przychodzi dopiero przy zmianie pozycji."""
+    curve = equity_curve([("BULLISH", 0.0)], cost_bps=10)
+
+    assert curve.points[0].period_return == pytest.approx(-0.001)
+    assert curve.total_return == pytest.approx(-0.001)
+
+
+class TestSerialCurveCosts:
+    """WIA-50: w szeregowej krzywej poprzedni trade to poprzednia pozycja."""
+
+    def test_holding_the_same_direction_pays_only_once(self) -> None:
+        curve = equity_curve([("BULLISH", 0.01), ("BULLISH", 0.01)], cost_bps=10)
+
+        assert curve.points[0].period_return == pytest.approx(0.009)
+        assert curve.points[1].period_return == pytest.approx(0.01)
+
+    def test_sideways_exit_and_flip_are_charged(self) -> None:
+        curve = equity_curve(
+            [("BULLISH", 0.0), ("SIDEWAYS", 0.05), ("BEARISH", 0.0), ("BULLISH", 0.0)],
+            cost_bps=10,
+        )
+
+        returns = [p.period_return for p in curve.points]
+        assert returns == [
+            pytest.approx(-0.001),  # wejście
+            pytest.approx(-0.001),  # wyjście do gotówki
+            pytest.approx(-0.001),  # wejście w short
+            pytest.approx(-0.002),  # odwrócenie short → long
+        ]
+
+    def test_default_cost_is_zero(self) -> None:
+        trades = [("BULLISH", 0.02), ("BEARISH", 0.01)]
+
+        assert equity_curve(trades) == equity_curve(trades, cost_bps=0)
+
+    def test_win_rate_stays_directional_and_gross(self) -> None:
+        # Koszt zmienia PnL, nie trafność: +0.05% brutto to nadal trafiony long.
+        curve = equity_curve([("BULLISH", 0.0005)], cost_bps=10)
+
+        assert curve.win_rate == pytest.approx(1.0)
+        assert curve.total_return < 0
+
+
+class TestPaperPortfolioCurve:
+    """WIA-50: portfel o równej wadze per cykl z kosztem od obrotu per symbol."""
+
+    def test_entry_cost_is_weighted_by_the_trade_share(self) -> None:
+        cycles = [
+            [
+                PaperTrade("AAA", "BULLISH", 0.0, cost_bps=10),
+                PaperTrade("BBB", "SIDEWAYS", 0.0, cost_bps=10),
+            ]
+        ]
+
+        curve = paper_portfolio_curve(cycles)
+
+        # AAA wchodzi (−0.001) na połowie kapitału, BBB zostaje w gotówce.
+        assert curve.total_return == pytest.approx(-0.0005)
+
+    def test_turnover_is_tracked_per_symbol_across_cycles(self) -> None:
+        cycles = [
+            [PaperTrade("AAA", "BULLISH", 0.01, 10), PaperTrade("BBB", "BEARISH", 0.0, 10)],
+            [PaperTrade("AAA", "BULLISH", 0.01, 10), PaperTrade("BBB", "BULLISH", 0.0, 10)],
+        ]
+
+        curve = paper_portfolio_curve(cycles)
+
+        # Cykl 1: AAA i BBB wchodzą (po −0.001). Cykl 2: AAA trzyma (0), BBB
+        # odwraca short → long (−0.002).
+        assert curve.points[0].period_return == pytest.approx((0.009 - 0.001) / 2)
+        assert curve.points[1].period_return == pytest.approx((0.01 - 0.002) / 2)
+
+    def test_sideways_exit_is_charged_to_the_symbol(self) -> None:
+        cycles = [
+            [PaperTrade("AAA", "BULLISH", 0.0, 10)],
+            [PaperTrade("AAA", "SIDEWAYS", 0.03, 10)],
+        ]
+
+        curve = paper_portfolio_curve(cycles)
+
+        assert curve.points[1].period_return == pytest.approx(-0.001)
+
+    def test_each_trade_carries_its_own_cost(self) -> None:
+        # Krypto ma wyższy koszt niż akcje — koszt jedzie z trade'em.
+        cycles = [
+            [
+                PaperTrade("AAA", "BULLISH", 0.0, cost_bps=10),
+                PaperTrade("BTC", "BULLISH", 0.0, cost_bps=25),
+            ]
+        ]
+
+        curve = paper_portfolio_curve(cycles)
+
+        assert curve.total_return == pytest.approx(-(0.001 + 0.0025) / 2)
+
+    def test_zero_cost_matches_the_cost_free_portfolio_curve(self) -> None:
+        cycles = [
+            [("BULLISH", 0.10), ("BEARISH", 0.02)],
+            [("BEARISH", -0.04), ("SIDEWAYS", 0.3)],
+        ]
+        paper = [
+            [PaperTrade(f"S{i}", trend, change) for i, (trend, change) in enumerate(cycle)]
+            for cycle in cycles
+        ]
+
+        assert paper_portfolio_curve(paper) == portfolio_equity_curve(cycles)
+
+
+def test_benchmark_curve_compounds_long_only_changes() -> None:
+    """WIA-21: koszyk to buy&hold tych samych symboli w tych samych oknach —
+    long niezależnie od prognozy agenta."""
+    cycles = [
+        [PaperTrade("AAA", "BEARISH", 0.02)],
+        [PaperTrade("AAA", "SIDEWAYS", -0.01)],
+    ]
+
+    basket = buy_and_hold_curve(cycles)
+
+    assert [p.period_return for p in basket.points] == [
+        pytest.approx(0.02),
+        pytest.approx(-0.01),
+    ]
+    assert basket.total_return == pytest.approx(1.02 * 0.99 - 1)
+    # Agent na tych samych oknach: short traci 2%, gotówka stoi.
+    assert paper_portfolio_curve(cycles).total_return == pytest.approx(-0.02)
+
+
+def test_bullish_counts_as_market_relative_hit_when_stock_falls_less_than_benchmark() -> None:
+    """WIA-21: akcja −1% przy IVV −3% to zwrot nadwyżkowy +2% — BULLISH trafił
+    względem rynku, choć kierunkowo chybił."""
+    result = market_relative_hit_rate([("BULLISH", -0.01, -0.03)])
+
+    assert result == DirectionalHitRate(hits=1, directional=1, sideways=0)
+    assert excess_return(-0.01, -0.03) == pytest.approx(0.02)
+
+
+def test_benchmark_curve_aligned_to_same_days() -> None:
+    """WIA-21: okno benchmarku zaczyna się snapshotem z TEGO SAMEGO cyklu co
+    predykcja i kończy w cyklu rozliczenia (≥ 6 h później) — nie od wczorajszego
+    snapshotu, nawet gdy benchmark zapisano kilka minut po predykcji."""
+    history = [
+        (datetime(2026, 10, 1, 5, 31, tzinfo=UTC), 100.0),
+        (datetime(2026, 10, 2, 5, 40, tzinfo=UTC), 102.0),  # po predykcji z 05:35
+        (datetime(2026, 10, 3, 5, 31, tzinfo=UTC), 101.0),
+        (datetime(2026, 10, 4, 5, 31, tzinfo=UTC), 104.0),
+    ]
+    stamps = [datetime(2026, 10, day, 5, 35, tzinfo=UTC) for day in (1, 2, 3)]
+
+    changes = [window_change(history, stamp, timedelta(hours=6)) for stamp in stamps]
+    curve = index_curve(
+        [[PaperTrade("AAA", "BULLISH", 0.0, benchmark_change=change)] for change in changes],
+        symbol="IVV",
+        cost_bps=0,
+    )
+
+    assert changes == [
+        pytest.approx(0.02),
+        pytest.approx(101 / 102 - 1),
+        pytest.approx(104 / 101 - 1),
+    ]
+    assert curve is not None
+    assert [p.index for p in curve.points] == [0, 1, 2]
+    assert curve.total_return == pytest.approx(0.04)

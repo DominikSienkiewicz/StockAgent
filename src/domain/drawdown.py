@@ -26,6 +26,21 @@ def peak_from_history(prices: Sequence[Decimal]) -> Decimal:
     return max(prices)
 
 
+def drawdown_from_returns(returns: Sequence[float]) -> float:
+    """PORT-04: bieżące obsunięcie od szczytu krzywej kapitału ze zwrotów.
+
+    Krzywa startuje od 1.0 (start to pierwszy szczyt) i rośnie o kolejne
+    zwroty. Wynik to DODATNIA głębokość ostatniego punktu pod szczytem
+    (0.2 = 20% niżej), 0.0 na nowym szczycie albo bez zwrotów.
+    """
+    equity = 1.0
+    peak = 1.0
+    for value in returns:
+        equity *= 1.0 + value
+        peak = max(peak, equity)
+    return 1.0 - equity / peak
+
+
 @dataclass(frozen=True)
 class DrawdownSignal:
     symbol: str

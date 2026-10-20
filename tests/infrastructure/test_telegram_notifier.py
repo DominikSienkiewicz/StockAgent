@@ -121,3 +121,47 @@ def test_session_does_not_retry_post_on_5xx(notifier: TelegramNotifier) -> None:
     # MAIL-03: Telegram nie ma klucza idempotencji — powtórzony POST to dwa pushe.
     retry = notifier._session.get_adapter("https://api.telegram.org").max_retries
     assert "POST" not in retry.allowed_methods
+
+
+def test_alert_text_is_polish_and_english_stays_in_logs(mocker, caplog) -> None:
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    monitor = QuotaMonitor()
+    notifier = TelegramNotifier(bot_token="123:ABC", chat_id="42", quota_monitor=monitor)
+    mocker.patch("requests.Session.post", return_value=_resp(403))
+
+    with caplog.at_level(logging.WARNING):
+        notifier.send_report("S", "<p>H</p>", "T")
+
+    alert = monitor.alerts[0]
+    assert "push nie został dostarczony" in alert.message
+    assert "not delivered" not in alert.message
+    assert alert.action.startswith("Sprawdź")
+    assert "Telegram returned 403" in caplog.text
+
+
+def test_network_alert_omits_bot_token(mocker, caplog) -> None:
+    # BEZ-07: treść błędu sieci niesie URL `/bot<token>/sendMessage`; alert idzie do
+    # maila i `quota_alerts`, log do publicznego GHA — żadne z nich nie może mieć tokenu.
+    import logging
+
+    monitor = QuotaMonitor()
+    notifier = TelegramNotifier(
+        bot_token="987654:SECRET-bot-token", chat_id="42", quota_monitor=monitor
+    )
+    mocker.patch(
+        "requests.Session.post",
+        side_effect=requests.ConnectionError(
+            "HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded "
+            "with url: /bot987654:SECRET-bot-token/sendMessage"
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        notifier.send_report("S", "<p>H</p>", "T")
+
+    alert = monitor.alerts[0]
+    assert "ConnectionError" in alert.message
+    for text in (alert.message, alert.action, caplog.text):
+        assert "SECRET-bot-token" not in text

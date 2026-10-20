@@ -9,9 +9,11 @@ from typing import Any, TypeVar
 
 from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
 
-from src.application.ports import LLMPort
+from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.llm._json_text import strip_code_block
+from src.infrastructure.llm._usage import openai_chat_usage, report_usage
 
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_TEMPERATURE = 0.2  # niska temperatura — chcemy deterministycznego Quanta
@@ -91,6 +93,9 @@ class OpenAIAdapter(LLMPort):
 
     Retry: 429 (TPM exceeded) jest retry'owany z backoffem; wszelkie inne
     błędy lecą natychmiast w górę (niech caller decyduje).
+
+    FIN-13: tokeny udanego requestu (`response.usage`) idą do `usage_sink`, także
+    przy pustej treści (np. `finish_reason="length"`) — request był płatny.
     """
 
     def __init__(
@@ -103,6 +108,7 @@ class OpenAIAdapter(LLMPort):
         backoff_base: float = DEFAULT_BACKOFF_BASE,
         quota_monitor: QuotaMonitor | None = None,
         max_tokens: int | None = None,
+        usage_sink: UsageSink | None = None,
     ) -> None:
         # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
         validate_model_id(model)
@@ -113,6 +119,7 @@ class OpenAIAdapter(LLMPort):
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._quota_monitor = quota_monitor
+        self._usage_sink = usage_sink
         # None → domyślny cap zależny od rodziny modelu (reasoning vs nie);
         # jawna wartość → twardy override (per-rodzinny default pomijany).
         self._max_tokens = max_tokens
@@ -174,6 +181,7 @@ class OpenAIAdapter(LLMPort):
                 **self._create_kwargs(prompt, json_mode=True)
             )
         )
+        self._report_usage(response)
         choice = response.choices[0]
         content = choice.message.content
         if not content:
@@ -197,6 +205,13 @@ class OpenAIAdapter(LLMPort):
 
         try:
             return json.loads(content)  # type: ignore[no-any-return]
+        except json.JSONDecodeError:
+            pass
+        # NIEZ-44: JSON w bloku ```json``` parsujemy jak AnthropicAdapter — failover
+        # przełącza dostawców, więc ta sama odpowiedź ma dać ten sam dict.
+        fenced = strip_code_block(content)
+        try:
+            return json.loads(fenced)  # type: ignore[no-any-return]
         except json.JSONDecodeError as exc:
             raise ValueError(
                 f"OpenAI returned invalid JSON: {content[:200]!r}"
@@ -208,10 +223,15 @@ class OpenAIAdapter(LLMPort):
                 **self._create_kwargs(prompt, json_mode=False)
             )
         )
+        self._report_usage(response)
         content: str | None = response.choices[0].message.content
         if content is None:
             return ""
         return content.strip()
+
+    def _report_usage(self, response: Any) -> None:
+        if self._usage_sink is not None:
+            report_usage(self._usage_sink, openai_chat_usage(response, self._model))
 
     def _call_with_retry(self, fn: Callable[[], T]) -> T:
         """Retry'uje wyłącznie RateLimitError (429). Honoruje retry-after.
@@ -229,13 +249,17 @@ class OpenAIAdapter(LLMPort):
                     self._emit_quota_alert(
                         severity=QuotaSeverity.WARNING,
                         message=(
-                            f"OpenAI {self._model} hit TPM limit "
-                            f"{attempt}× during a single call (retry succeeded)."
+                            f"OpenAI {self._model}: limit TPM trafiony {attempt}× "
+                            "w jednym wywołaniu (ponowienie się udało)."
                         ),
                         action=(
-                            "Council already on a mini model — raise "
-                            "COUNCIL_VOLATILITY_THRESHOLD, drop to gpt-5-nano, "
-                            "or upgrade your OpenAI usage tier."
+                            "Rada działa już na modelu mini — podnieś "
+                            "COUNCIL_VOLATILITY_THRESHOLD, przejdź na gpt-5-nano "
+                            "albo podnieś tier konta OpenAI."
+                        ),
+                        log_message=(
+                            f"OpenAI {self._model} hit TPM limit "
+                            f"{attempt}× during a single call (retry succeeded)."
                         ),
                     )
                 return result
@@ -245,13 +269,17 @@ class OpenAIAdapter(LLMPort):
                     self._emit_quota_alert(
                         severity=QuotaSeverity.CRITICAL,
                         message=(
-                            f"OpenAI {self._model} returned {reason} after "
-                            f"{self._max_retries} retries — call failed."
+                            f"OpenAI {self._model} zwrócił {reason} po "
+                            f"{self._max_retries} ponowieniach — wywołanie nie "
+                            "powiodło się."
                         ),
                         action=(
-                            "Upgrade OpenAI tier or route the advisory "
-                            "council to a higher-TPM model via "
-                            "COUNCIL_LLM_MODEL."
+                            "Podnieś tier konta OpenAI albo skieruj radę doradczą "
+                            "na model z wyższym limitem TPM przez COUNCIL_LLM_MODEL."
+                        ),
+                        log_message=(
+                            f"OpenAI {self._model} returned {reason} after "
+                            f"{self._max_retries} retries — call failed."
                         ),
                     )
                     raise
@@ -282,8 +310,12 @@ class OpenAIAdapter(LLMPort):
         return min(float(self._backoff_base * (2**attempt)), MAX_RETRY_WAIT_S)
 
     def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str
+        self, severity: QuotaSeverity, message: str, action: str, log_message: str
     ) -> None:
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
+        logger.log(level, "%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(

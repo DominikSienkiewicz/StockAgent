@@ -245,3 +245,48 @@ class TestQuotaAlertEmit:
         notifier.send_report("subj", "<html>", "text")
 
         assert monitor.alerts == []
+
+
+class TestPolishAlertText:
+    """MAIL-15: treść alertu trafia do bannera, leadu i tematu maila — po
+    polsku. Angielska diagnoza zostaje w logach."""
+
+    @staticmethod
+    def _failing(status_code: int) -> Mock:
+        response = Mock(spec=requests.Response)
+        response.status_code = status_code
+        response.raise_for_status.side_effect = requests.HTTPError(str(status_code))
+        return response
+
+    def test_rate_limit_alert_is_polish_and_logged_in_english(self, mocker, caplog):
+        from src.application.quota_monitor import QuotaMonitor
+
+        monitor = QuotaMonitor()
+        notifier = ResendNotifier(
+            api_key="re_x", sender="a@x", recipient="b@x", quota_monitor=monitor
+        )
+        mocker.patch("requests.Session.post", return_value=self._failing(429))
+
+        with caplog.at_level(logging.WARNING), pytest.raises(requests.HTTPError):
+            notifier.send_report("subj", "<html>", "text")
+
+        alert = monitor.alerts[0]
+        assert "nie został dostarczony" in alert.message
+        assert "exhausted" not in alert.message
+        assert alert.action.startswith("Poczekaj")
+        assert "Resend returned 429" in caplog.text
+
+    def test_network_alert_is_polish_and_logged_in_english(self, mocker, caplog):
+        from src.application.quota_monitor import QuotaMonitor
+
+        monitor = QuotaMonitor()
+        notifier = ResendNotifier(
+            api_key="re_x", sender="a@x", recipient="b@x", quota_monitor=monitor
+        )
+        mocker.patch("requests.Session.post", side_effect=requests.ConnectionError("x"))
+
+        with caplog.at_level(logging.WARNING), pytest.raises(requests.ConnectionError):
+            notifier.send_report("subj", "<html>", "text")
+
+        assert "nieosiągalny" in monitor.alerts[0].message
+        assert "Resend unreachable (ConnectionError)" in caplog.text

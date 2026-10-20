@@ -1,4 +1,5 @@
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -6,6 +7,7 @@ import pytest
 
 from src.application.agent_graph import AgentGraphDeps
 from src.application.ports import (
+    EmbeddingPort,
     LLMPort,
     MarketDataPort,
     MLPredictionPort,
@@ -14,6 +16,7 @@ from src.application.ports import (
     SentimentPort,
 )
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
+from src.domain.prediction import Prediction, TrendDirection
 from src.domain.value_objects import Money, Threshold
 
 
@@ -369,3 +372,321 @@ class TestThresholdInjection:
 
         assert result["status"] == "ignored"
         sentiment_port.get_social_score.assert_not_called()
+
+
+class TestStaleReferenceRebaseline:
+    """FIN-14 (decyzja 2026-10-19: re-baseline): referencja ceny starsza niż
+    `REFERENCE_MAX_AGE_HOURS` to nie poprzedni cykl, tylko stan sprzed pauzy.
+    Ruch od niej otworzyłby bramkę wszystkim symbolom naraz — cykl zapisuje
+    więc nowy snapshot BEZ analizy: zero LLM, Alpha Vantage i embeddingów."""
+
+    _NOW = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def _use_case(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        embedding_port,
+    ) -> AnalyzeMarketUseCase:
+        return AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        ))
+
+    def _arrange_big_move(self, market_port, repository_port, *, reference_age: timedelta) -> None:
+        reference = Money(Decimal("100.0"))
+        repository_port.get_last_price.return_value = reference
+        repository_port.get_last_price_snapshot.return_value = (
+            reference, self._NOW - reference_age,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10% ≥ próg
+
+    def test_month_old_reference_saves_snapshot_without_paid_calls(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            embedding_port,
+        )
+        self._arrange_big_move(market_port, repository_port, reference_age=timedelta(days=30))
+
+        result = use_case.run("AAPL", now=self._NOW)
+
+        assert result["status"] == "ignored"
+        assert result["stale_reference"] is True
+        assert result["reference_at"] == self._NOW - timedelta(days=30)
+        sentiment_port.get_social_score.assert_not_called()
+        news_port.get_news_context.assert_not_called()
+        llm_port.analyze.assert_not_called()
+        llm_port.analyze_mistake.assert_not_called()
+        embedding_port.embed.assert_not_called()
+        ml_port.predict.assert_not_called()
+        repository_port.save_prediction.assert_not_called()
+        assert sum(use_case.paid_calls.values()) == 0
+        # Nowy punkt odniesienia: następny cykl porówna się do dzisiejszej ceny.
+        repository_port.save_price_snapshot.assert_called_once_with(
+            "AAPL", Money(Decimal("90.0"))
+        )
+
+    def test_month_old_reference_skips_paid_diagnosis_but_still_scores_prior(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        # Błędna wcześniejsza predykcja + ruch ≥ progu od stęchłej referencji:
+        # tania ocena leci, płatna diagnoza LLM — nie (ta sama bramka).
+        repository_port.get_unverified_prediction.return_value = Prediction(
+            id="prior-uuid",
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100.0"),
+            predicted_target_price=Decimal("105.0"),
+        )
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            None,
+        )
+        self._arrange_big_move(market_port, repository_port, reference_age=timedelta(days=30))
+
+        use_case.run("AAPL", now=self._NOW)
+
+        llm_port.analyze_mistake.assert_not_called()
+        repository_port.update_prediction_accuracy.assert_called_once()
+
+    def test_reference_from_previous_cycle_still_opens_the_gate(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        sentiment_port.get_social_score.return_value = {"galaxy_score": 85}
+        news_port.get_news_context.return_value = [{"title": "Reuters story"}]
+        llm_port.analyze.return_value = {
+            "trend_direction": "BEARISH",
+            "confidence_score": 0.8,
+            "target_price_12h": 88.0,
+            "reasoning": "macro headwinds",
+        }
+        ml_port.predict.return_value = Money(Decimal("89.0"))
+        repository_port.save_prediction.return_value = "new-uuid"
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            None,
+        )
+        self._arrange_big_move(market_port, repository_port, reference_age=timedelta(hours=24))
+
+        result = use_case.run("AAPL", now=self._NOW)
+
+        assert result["status"] == "saved"
+        assert result["stale_reference"] is False
+        sentiment_port.get_social_score.assert_called_once_with("AAPL")
+
+    def test_cold_start_reads_no_reference_age(
+        self, use_case, market_port, repository_port
+    ):
+        # Cold-start bez zmian: brak ceny → brak referencji → brak odczytu wieku.
+        repository_port.get_last_price.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("100.0"))
+
+        result = use_case.run("AAPL", now=self._NOW)
+
+        assert result["status"] == "ignored"
+        assert result["stale_reference"] is False
+        assert result["reference_at"] is None
+        repository_port.get_last_price_snapshot.assert_not_called()
+
+    def test_unreadable_reference_age_keeps_the_gate_as_before(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        # Odczyt wieku jest best-effort: błąd Supabase nie wywala symbolu,
+        # a bramka działa jak przed FIN-14 (sam próg volatility).
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_last_price_snapshot.side_effect = RuntimeError("Supabase 503")
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))  # +0.5%
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            None,
+        )
+
+        result = use_case.run("AAPL", now=self._NOW)
+
+        assert result["status"] == "ignored"
+        assert result["stale_reference"] is False
+        assert result["reference_at"] is None
+
+
+class TestExperimentArms:
+    """EXP-05: use case przydziela ramiona AKTYWNYCH eksperymentów per
+    symbol-dzień UTC cyklu i podaje je grafowi w stanie. Bez aktywnego
+    eksperymentu stan jest taki jak przed EXP-05."""
+
+    _NOW = datetime(2026, 11, 2, 21, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _experiment(*, enabled: bool):
+        from datetime import date
+
+        from src.domain.experiment import ARM_NO_MEMORY, Experiment, ExperimentMetric
+
+        return Experiment(
+            id="EXP-03",
+            hypothesis="Lekcje i analogi poprawiają trafność.",
+            arms=("memory", ARM_NO_MEMORY),
+            start=date(2026, 11, 1),
+            end=date(2026, 12, 31),
+            primary_metric=ExperimentMetric.HIT_RATE,
+            enabled=enabled,
+        )
+
+    def _result(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, enabled: bool,
+    ) -> dict:
+        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            experiments=(self._experiment(enabled=enabled),),
+        ))
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))  # +0.5%
+        return use_case.run("AAPL", now=self._NOW)
+
+    def test_active_experiment_puts_the_assigned_arm_into_the_state(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from datetime import date
+
+        from src.domain.experiment import assign_arm
+
+        result = self._result(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )
+
+        expected = assign_arm("EXP-03", "AAPL", date(2026, 11, 2), ("memory", "no_memory"))
+        assert result["experiment_arms"] == {"EXP-03": expected}
+
+    def test_inactive_experiment_leaves_the_state_untouched(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        result = self._result(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=False,
+        )
+
+        assert "experiment_arms" not in result
+
+
+class TestCycleTelemetry:
+    """ARCH-11: use case wystawia TEN SAM `CycleTelemetry`, który dostają węzły,
+    a `paid_calls` zostaje żywym Counterem z tego obiektu."""
+
+    def test_exposes_the_graph_telemetry_and_its_live_counter(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.cycle_telemetry import CycleTelemetry
+
+        telemetry = CycleTelemetry()
+        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            telemetry=telemetry,
+        ))
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))  # -0.5%
+
+        use_case.run("AAPL")
+
+        assert use_case.telemetry is telemetry
+        assert use_case.paid_calls is telemetry.paid_calls
+        assert telemetry.snapshot().gated == 1
+
+
+class TestTwoPhaseCycle:
+    """EXP-27: use case wystawia fazę bramki (`run_gate`) i fazę płatną
+    (`paid_phase`) na porty feedu podane dopiero po fazie 1 — DI buduje je
+    z klientem AV tylko dla symboli za bramką."""
+
+    def _big_move(self, market_port, repository_port, llm_port, ml_port) -> None:
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_last_price_snapshot.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("95.0"))  # -5%
+        llm_port.analyze.return_value = {
+            "trend_direction": "BEARISH",
+            "confidence_score": 0.7,
+            "target_price_12h": 94.0,
+            "reasoning": "r",
+        }
+        ml_port.predict.return_value = Money(Decimal("94.5"))
+        repository_port.save_prediction.return_value = "uuid-2p"
+
+    def test_flat_symbol_ends_in_the_gate_phase(
+        self, use_case, market_port, repository_port, sentiment_port
+    ):
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_last_price_snapshot.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+
+        outcome = use_case.run_gate("AAPL")
+
+        assert outcome.passed is False
+        assert outcome.state["status"] == "ignored"
+        sentiment_port.get_social_score.assert_not_called()
+
+    def test_paid_phase_uses_the_feeds_bound_after_the_gate(
+        self, use_case, market_port, repository_port, sentiment_port, news_port,
+        llm_port, ml_port,
+    ):
+        self._big_move(market_port, repository_port, llm_port, ml_port)
+        phase_two_sentiment = Mock(spec=SentimentPort)
+        phase_two_sentiment.get_social_score.return_value = {"av_sentiment_score": 0.1}
+        phase_two_news = Mock(spec=NewsPort)
+        phase_two_news.get_news_context.return_value = [{"title": "Headline"}]
+
+        outcome = use_case.run_gate("AAPL")
+        paid = use_case.paid_phase(sentiment_port=phase_two_sentiment, news_port=phase_two_news)
+        result = paid.run(outcome.state, peer_context=(("MSFT", "BULLISH"),))
+
+        assert outcome.passed is True
+        assert result["status"] == "saved"
+        phase_two_sentiment.get_social_score.assert_called_once_with("AAPL")
+        phase_two_news.get_news_context.assert_called_once_with("AAPL")
+        sentiment_port.get_social_score.assert_not_called()
+        news_port.get_news_context.assert_not_called()
+        # Contagion fazy 2: peery z werdyktami z tego cyklu trafiają do stanu.
+        assert result["peer_context"] == (("MSFT", "BULLISH"),)
+        # Jedna telemetria cyklu dla obu faz.
+        assert use_case.telemetry.snapshot().passed == 1
+        assert use_case.paid_calls["llm"] == 1
+
+    def test_gate_phase_compiles_once_for_the_whole_cycle(
+        self, use_case, market_port, repository_port, monkeypatch
+    ):
+        from src.application.use_cases import analyze_market as module
+
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_last_price_snapshot.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("100.0"))
+        compiled = []
+        real_factory = module.create_gate_graph
+
+        def counting_factory(deps):
+            compiled.append(deps)
+            return real_factory(deps)
+
+        monkeypatch.setattr(module, "create_gate_graph", counting_factory)
+
+        for symbol in ("AAPL", "MSFT", "NVDA"):
+            use_case.run_gate(symbol)
+
+        assert len(compiled) == 1

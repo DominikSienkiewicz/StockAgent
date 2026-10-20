@@ -23,6 +23,13 @@ jobs:
           # przy ustawionym permissions.contents=write powyżej)
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 🙈 Mask each Alpha Vantage key
+        # BEZ-03: GitHub maskuje sekret CSV tylko w całości — pojedynczy klucz z listy
+        # wyszedłby w logu jawnie. Maskujemy każdy osobno, zanim ruszy Python.
+        env:
+          ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
+        run: scripts/mask-csv-secret.sh ALPHA_VANTAGE_API_KEYS
+
       - name: 🐍 Set up Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -42,6 +49,13 @@ jobs:
           # Symbole i ml_model_path czyta z config.toml (commitowany).
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # BEZ-08: Settings domyślnie NIE zapisuje do bazy (lokalny run tylko do
+          # odczytu) — scorecardy, cache fundamentów, kalibracja i alerty kwot
+          # wymagają jawnego włączenia. Pilnuje tego tests/test_db_writes_wiring.py.
+          DB_WRITES_ENABLED: "true"
+          # FIN-35: bez tego fundamenty AV nie są odświeżane, a recap i sędzia
+          # kalibracji dostają atrapę LLM. Pilnuje tego tests/test_paid_calls_wiring.py.
+          PAID_CALLS_ENABLED: "true"
           # #17: niedzielna retrospektywa woła LLM (dokładnie RAZ) i wysyła mail,
           # więc przy `weekly_recap_enabled = true` te sekrety muszą być realne.
           # Z flagą off recap nie startuje i dummy w zupełności wystarczą.
@@ -53,6 +67,9 @@ jobs:
           ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
           # Dummy — trener nie pyta Finnhuba, ale Settings wymaga pola.
           FINNHUB_API_KEY: unused-in-slow-loop
+          # NIEZ-13: zewnętrzny heartbeat (np. healthchecks.io) — ping na koniec przebiegu,
+          # porażka → <URL>/fail. Brak sekretu = pusty string = NullHeartbeat (zero requestów).
+          HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
         run: uv run --frozen --no-build --no-sync python main_trainer.py
 
       - name: 💾 Commit and push updated model

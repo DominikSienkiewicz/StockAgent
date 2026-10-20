@@ -134,3 +134,29 @@ class TestEvaluateDrawdown:
         critical_pct = Decimal("0.1")
         with pytest.raises(ValueError):
             sig.evaluate_drawdown(elevated_pct=elevated_pct, critical_pct=critical_pct)
+
+
+class TestDrawdownFromReturns:
+    """PORT-04: bieżące obsunięcie portfela od szczytu krzywej kapitału
+    zbudowanej ze zwrotów (dodatnia głębokość, 0.2 = 20% pod szczytem)."""
+
+    def test_depth_below_the_running_peak(self) -> None:
+        from src.domain.drawdown import drawdown_from_returns
+
+        # 1.0 → 1.2 → 1.1 → 0.96: szczyt 1.2, teraz 20% niżej.
+        assert drawdown_from_returns([0.2, -1 / 12, -0.14 / 1.1]) == pytest.approx(0.2)
+
+    def test_start_counts_as_the_first_peak(self) -> None:
+        from src.domain.drawdown import drawdown_from_returns
+
+        assert drawdown_from_returns([-0.1, -0.1]) == pytest.approx(0.19)
+
+    def test_new_high_has_no_drawdown(self) -> None:
+        from src.domain.drawdown import drawdown_from_returns
+
+        assert drawdown_from_returns([-0.1, 0.5]) == pytest.approx(0.0)
+
+    def test_empty_returns_have_no_drawdown(self) -> None:
+        from src.domain.drawdown import drawdown_from_returns
+
+        assert drawdown_from_returns([]) == 0.0

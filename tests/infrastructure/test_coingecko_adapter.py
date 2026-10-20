@@ -239,3 +239,93 @@ class TestQuotaAlertEmit:
 
         with pytest.raises(requests.HTTPError):
             adapter.get_current_price("BTC")
+
+
+def test_rate_limit_alert_is_polish_and_logged_in_english(mocker, caplog) -> None:
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = CoinGeckoAdapter(quota_monitor=monitor)
+    mocker.patch(
+        "requests.Session.get", return_value=_rate_limited_response(retry_after="42")
+    )
+
+    with caplog.at_level(logging.WARNING), pytest.raises(requests.HTTPError):
+        adapter.get_current_price("BTC")
+
+    alert = monitor.alerts[0]
+    assert "wyczerpany darmowy limit" in alert.message
+    assert "exhausted" not in alert.message
+    assert alert.action.startswith("Spowolnij")
+    assert "CoinGecko returned 429 for 'BTC'" in caplog.text
+
+
+class TestGetDailyChange:
+    """ALR-02: zmiana 24 h i chwila aktualizacji z tego samego /simple/price."""
+
+    def test_asks_for_24h_change_and_update_time(self, adapter: CoinGeckoAdapter, mocker) -> None:
+        mock_get = mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response(
+                {"bitcoin": {"usd": 61000, "usd_24h_change": -8.0, "last_updated_at": 1760630400}}
+            ),
+        )
+
+        adapter.get_daily_change("BTC")
+
+        params = mock_get.call_args.kwargs["params"]
+        assert params["ids"] == "bitcoin"
+        assert params["include_24hr_change"] == "true"
+        assert params["include_last_updated_at"] == "true"
+
+    def test_returns_fraction_and_update_time(self, adapter: CoinGeckoAdapter, mocker) -> None:
+        from datetime import UTC, datetime
+
+        from src.domain.shock import DailyChange
+
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response(
+                {"bitcoin": {"usd": 61000, "usd_24h_change": -8.0, "last_updated_at": 1760630400}}
+            ),
+        )
+
+        assert adapter.get_daily_change("BTC") == DailyChange(
+            fraction=Decimal("-0.08"),
+            as_of=datetime.fromtimestamp(1760630400, tz=UTC),
+        )
+
+    def test_raises_value_error_without_change_field(
+        self, adapter: CoinGeckoAdapter, mocker
+    ) -> None:
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response({"bitcoin": {"usd": 61000, "last_updated_at": 1760630400}}),
+        )
+
+        with pytest.raises(ValueError, match="24h"):
+            adapter.get_daily_change("BTC")
+
+    def test_raises_value_error_for_unmapped_ticker(self, adapter: CoinGeckoAdapter) -> None:
+        with pytest.raises(ValueError, match="not mapped"):
+            adapter.get_daily_change("DOGE")
+
+    def test_rate_limit_emits_a_quota_alert(self, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        monitor = QuotaMonitor()
+        adapter = CoinGeckoAdapter(quota_monitor=monitor)
+        mocker.patch("requests.Session.get", return_value=_rate_limited_response())
+
+        with pytest.raises(requests.HTTPError):
+            adapter.get_daily_change("BTC")
+
+        assert len(monitor.alerts) == 1
+
+    def test_is_daily_change_port(self) -> None:
+        from src.application.ports import DailyChangePort
+
+        assert issubclass(CoinGeckoAdapter, DailyChangePort)

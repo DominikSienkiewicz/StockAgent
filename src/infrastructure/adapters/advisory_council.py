@@ -1,6 +1,7 @@
 # src/infrastructure/adapters/advisory_council.py
 from __future__ import annotations
 
+import contextvars
 import logging
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError, as_completed
@@ -168,12 +169,14 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         Executor zamykamy bez czekania (NIEZ-08): `with` blokowałby w `__exit__` na
         wiszących wywołaniach, więc limit czasu byłby tylko filtrem wyników. Spóźnione
         wywołania kończą się w tle i jedynie logują — nie piszą do `opinions`.
+        Każda persona dostaje kopię kontekstu wołającego (`contextvars`): wątek puli
+        sam go nie dziedziczy, a niesie on np. atrybucję tokenów (FIN-13).
         """
         opinions: list[InvestorOpinion | None] = [None] * len(personas)
         executor = ThreadPoolExecutor(max_workers=max(1, len(personas)))
         try:
             future_to_idx = {
-                executor.submit(call, persona): i
+                executor.submit(contextvars.copy_context().run, call, persona): i
                 for i, persona in enumerate(personas)
             }
             try:

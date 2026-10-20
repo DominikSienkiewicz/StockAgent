@@ -10,12 +10,24 @@ from typing import Any, Literal, NamedTuple, cast
 from postgrest.exceptions import APIError
 from supabase import create_client
 
-from src.application.ports import PreviousVerdict, RepositoryPort
+from src.application.ports import (
+    CycleRun,
+    OpenReferenceCall,
+    PreviousVerdict,
+    RepositoryPort,
+)
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.equity_curve import directional_hit_rate
-from src.domain.prediction import Prediction, normalize_trend
+from src.domain.finops import LLMCallEntry
+from src.domain.prediction import Prediction, TrendDirection, normalize_trend
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.reference_signal import (
+    REFERENCE_RECIPE_VERSION,
+    ReferenceCall,
+    ReferenceOutcome,
+    ReferenceRead,
+)
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.regime_key import canonical_regime_key
 from src.domain.significance import effective_n
@@ -36,6 +48,12 @@ DEFAULT_COUNCIL_VOTES_TABLE = "council_votes"
 DEFAULT_QUOTA_ALERTS_TABLE = "quota_alerts"
 DEFAULT_FEATURE_SNAPSHOT_TABLE = "feature_snapshots"
 DEFAULT_REGIME_HISTORY_TABLE = "regime_history"
+# WIA-24 (migracja 042): sygnał referencyjny poza `prediction_logs`.
+REFERENCE_PREDICTIONS_TABLE = "reference_predictions"
+# FIN-13: ledger kosztów per request LLM / embeddingów (migracja 040).
+LLM_CALLS_TABLE = "llm_calls"
+# NIEZ-29: historia przebiegów pętli (migracja 041).
+CYCLE_RUNS_TABLE = "cycle_runs"
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -80,7 +98,7 @@ class _EvalField(NamedTuple):
     select: str  # wyrażenie selecta PostgREST
 
 
-# WIA-55 / EXP-01: pola opcjonalne ewaluacji (`src.tools.evaluate --by/--echo`).
+# WIA-55 / EXP-01: pola opcjonalne ewaluacji (`main_tools.py evaluate --by/--echo`).
 # Czytane tylko na żądanie: każda kolumna istnieje dopiero po swojej migracji
 # (w komentarzu), a domyślny przebieg ma działać na każdej bazie.
 _EVAL_EXTRA_FIELDS: dict[str, _EvalField] = {
@@ -94,6 +112,15 @@ _EVAL_EXTRA_FIELDS: dict[str, _EvalField] = {
     "alpha_fusion_score": _EvalField("alpha_fusion_score", "alpha_fusion_score"),  # 022
     "edge_sigma": _EvalField("edge_sigma", "edge_sigma"),  # 025
     "gate_delta": _EvalField("gate_delta", "gate_delta"),  # 034
+    # EXP-05 — konsensus rady (005) i ramiona eksperymentów: kolumna (037)
+    # oraz opcjonalny klucz kwitu v2 (020), z którego CLI czyta przed migracją.
+    "council_consensus": _EvalField(
+        "council_verdict", "council_consensus:council_verdict->>consensus_strength"
+    ),
+    "experiment_arms": _EvalField("experiment_arms", "experiment_arms"),  # 037
+    "receipt_experiment_arms": _EvalField(
+        "decision_receipts", "receipt_experiment_arms:decision_receipts->experiment_arms"
+    ),
 }
 
 # Kody PostgREST/Postgres dla kolumny, której nie ma w bazie (select → 42703).
@@ -216,7 +243,7 @@ class SupabaseRepository(RepositoryPort):
     """Adapter dla Supabase (PostgreSQL via PostgREST).
 
     Tabela `prediction_logs` + zmaterializowany widok `ml_feature_store`
-    — schema patrz docs/08-database-schema.md.
+    — relacje, klasy danych, wymagany klucz i RLS opisuje docs/data-and-access.md.
     """
 
     def __init__(
@@ -464,7 +491,7 @@ class SupabaseRepository(RepositoryPort):
         extra_fields: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
         """Zamknięte predykcje z ostatnich `days` dni z polami do ewaluacji
-        (ceny + kierunek). Read-only; używane przez `src.tools.evaluate`.
+        (ceny + kierunek). Read-only; używane przez `main_tools.py evaluate`.
 
         `with_recipe` (WIA-20) dokłada kolumnę `recipe_version` do segmentacji
         po przepisie — WYMAGA migracji 030 (inaczej PostgREST zwraca 400).
@@ -934,6 +961,13 @@ class SupabaseRepository(RepositoryPort):
     def get_last_scorecard_at(self) -> datetime | None:
         return self._latest_timestamp("model_scorecards")
 
+    def probe_database(self) -> None:
+        # Bez łagodzenia błędów: wyjątek to dla deadmana „baza nie odpowiada”.
+        # Wstrzymany projekt potrafi odpowiedzieć stroną HTML zamiast listy wierszy.
+        response = self._client.table("price_snapshots").select("timestamp").limit(1).execute()
+        if not isinstance(response.data, list):
+            raise RuntimeError("Supabase: odpowiedź bez listy wierszy price_snapshots")
+
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         response = (
             self._client.table("price_snapshots")
@@ -990,6 +1024,34 @@ class SupabaseRepository(RepositoryPort):
                 continue
             sent.add((str(symbol), date.fromisoformat(raw_date)))
         return sent
+
+    def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
+        # Graceful jak `get_sent_shock_alerts`: brak migracji 021 → {} (watch nie
+        # tłumi wtedy krypto oknem 24 h; debounce dnia działa dalej).
+        try:
+            response = (
+                self._client.table("shock_alerts")
+                .select("symbol, created_at")
+                .gte("created_at", since.isoformat())
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "shock_alerts niedostępne — bez okna 24 h dla krypto "
+                "(zaaplikuj migrację 021).",
+                exc_info=True,
+            )
+            return {}
+        latest: dict[str, datetime] = {}
+        for row in _rows(response):
+            symbol, raw_stamp = row.get("symbol"), row.get("created_at")
+            if symbol is None or not isinstance(raw_stamp, str):
+                continue
+            stamp = datetime.fromisoformat(raw_stamp)
+            key = str(symbol)
+            if key not in latest or stamp > latest[key]:
+                latest[key] = stamp
+        return latest
 
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
         # SUROWO, bez try/except — graceful degradation robi caller
@@ -1146,6 +1208,117 @@ class SupabaseRepository(RepositoryPort):
             for vote in votes
         ]
         self._client.table(self._council_votes_table).insert(rows).execute()
+
+    def save_llm_calls(self, calls: Sequence[LLMCallEntry]) -> None:
+        # Jeden insert na przebieg (batch po cyklu), nie request na wywołanie LLM.
+        if not calls:
+            return
+        rows = [
+            {
+                "run_id": call.run_id,
+                "symbol": call.symbol,
+                "node": call.node,
+                "provider": call.usage.provider,
+                "model": call.usage.model,
+                "input_tokens": call.usage.input_tokens,
+                "output_tokens": call.usage.output_tokens,
+                "cache_read_tokens": call.usage.cache_read_tokens,
+                "cache_write_tokens": call.usage.cache_write_tokens,
+                "cost_usd": call.cost_usd,
+                "price_as_of": (
+                    call.price_as_of.isoformat() if call.price_as_of is not None else None
+                ),
+            }
+            for call in calls
+        ]
+        self._client.table(LLM_CALLS_TABLE).insert(rows).execute()
+
+    def save_cycle_run(self, run: CycleRun) -> None:
+        # Jeden insert na przebieg; `paid_calls` idzie jako JSONB (dict, nie string).
+        row = {
+            "loop": run.loop,
+            "run_id": run.run_id,
+            "run_attempt": run.run_attempt,
+            "started_at": run.started_at.isoformat(),
+            "duration_s": run.duration_s,
+            "eligible": run.eligible,
+            "saved": run.saved,
+            "failures": run.failures,
+            "paid_calls": dict(run.paid_calls),
+            "report_delivered": run.report_delivered,
+        }
+        self._client.table(CYCLE_RUNS_TABLE).insert(row).execute()
+
+    def get_reference_reads(self, since: datetime) -> list[ReferenceRead]:
+        # Paginacja (#8) i `id` jako drugi klucz, jak w pozostałych odczytach historii.
+        query = (
+            self._client.table(REFERENCE_PREDICTIONS_TABLE)
+            .select("symbol, price, read_at")
+            .gte("read_at", since.isoformat())
+            .order("read_at", desc=False)
+            .order("id", desc=False)
+        )
+        return [
+            ReferenceRead(
+                symbol=str(row["symbol"]),
+                price=Decimal(str(row["price"])),
+                read_at=datetime.fromisoformat(str(row["read_at"])),
+            )
+            for row in _paginate(query)
+        ]
+
+    def get_open_reference_calls(self) -> list[OpenReferenceCall]:
+        query = (
+            self._client.table(REFERENCE_PREDICTIONS_TABLE)
+            .select("id, symbol, predicted_trend, price, read_at")
+            .not_.is_("predicted_trend", "null")
+            .is_("outcome", "null")
+            .order("read_at", desc=False)
+            .order("id", desc=False)
+        )
+        return [
+            OpenReferenceCall(
+                id=str(row["id"]),
+                call=ReferenceCall(
+                    symbol=str(row["symbol"]),
+                    trend=TrendDirection(str(row["predicted_trend"])),
+                    price_at_call=Decimal(str(row["price"])),
+                    called_at=datetime.fromisoformat(str(row["read_at"])),
+                ),
+            )
+            for row in _paginate(query)
+        ]
+
+    def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
+        # Etykietę stawia jawnie kod (stała domeny), nie tylko DEFAULT kolumny.
+        record = _serialize_record(
+            {
+                "symbol": read.symbol,
+                "read_at": read.read_at.isoformat(),
+                "price": read.price,
+                "predicted_trend": None if call is None else call.trend.value,
+                "recipe_version": REFERENCE_RECIPE_VERSION,
+            }
+        )
+        self._client.table(REFERENCE_PREDICTIONS_TABLE).insert(record).execute()
+
+    def settle_reference_call(
+        self,
+        record_id: str,
+        outcome: ReferenceOutcome,
+        settled_price: Decimal | None,
+        settled_at: datetime,
+    ) -> None:
+        record = _serialize_record(
+            {
+                "outcome": outcome.value,
+                "settled_price": settled_price,
+                "settled_at": settled_at.isoformat(),
+            }
+        )
+        self._client.table(REFERENCE_PREDICTIONS_TABLE).update(record).eq(
+            "id", record_id
+        ).execute()
 
     def update_prediction_accuracy(
         self,

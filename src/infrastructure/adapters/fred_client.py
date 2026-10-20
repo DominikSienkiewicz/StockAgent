@@ -24,7 +24,11 @@ import requests
 
 from src.application.ports import MacroRatesPort
 from src.domain.macro_rates import YieldCurveSnapshot
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import (
+    build_session,
+    raise_for_status_redacted,
+    safe_get,
+)
 
 DEFAULT_BASE_URL = "https://api.stlouisfed.org/fred"
 DEFAULT_TIMEOUT = 10.0
@@ -77,12 +81,13 @@ class FredClient(MacroRatesPort):
             "limit": 1,
         }
         try:
-            response = self._session.get(
+            response = safe_get(
+                self._session,
                 f"{self._base_url}/series/observations",
                 params=params,
                 timeout=self._timeout,
             )
-            response.raise_for_status()
+            raise_for_status_redacted(response)
             payload = response.json()
             # Body może być nie-dictem (lista/null z proxy/CDN) — twardo strażujemy
             # kształt przed .get(), inaczej AttributeError wyciekłby z except.

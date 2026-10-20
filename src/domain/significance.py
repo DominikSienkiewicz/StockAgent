@@ -18,6 +18,9 @@ from __future__ import annotations
 import math
 import random
 from collections.abc import Sequence
+from decimal import Decimal
+
+from src.domain.number_format import DecimalMark, format_number_pl
 
 # Powyżej tej liczności dokładny ogon przez `math.comb` traci sens numeryczny
 # (iloczyny rzędu 1e±300) — przechodzimy na przybliżenie normalne.
@@ -79,25 +82,38 @@ def benjamini_hochberg(pvalues: Sequence[float], q: float = DEFAULT_FDR_Q) -> li
     return rejected
 
 
-def _format_p(p: float) -> str:
+def _format_decimal(value: float, decimals: int, mark: DecimalMark) -> str:
+    if mark is DecimalMark.COMMA:
+        return format_number_pl(Decimal(str(value)), False, decimals)
+    return f"{value:.{decimals}f}"
+
+
+def _format_p(p: float, mark: DecimalMark) -> str:
     """p-wartość do copy: dwa miejsca, a bardzo małe jako „p<0.001”."""
     if p < 0.001:
-        return "p<0.001"
+        return f"p<{_format_decimal(0.001, 3, mark)}"
     if p < 0.01:
-        return f"p={p:.3f}"
-    return f"p={p:.2f}"
+        return f"p={_format_decimal(p, 3, mark)}"
+    return f"p={_format_decimal(p, 2, mark)}"
 
 
 def verdict_pl(
-    p: float, n: int, n_eff: float | None = None, alpha: float = DEFAULT_ALPHA
+    p: float,
+    n: int,
+    n_eff: float | None = None,
+    alpha: float = DEFAULT_ALPHA,
+    *,
+    mark: DecimalMark = DecimalMark.POINT,
 ) -> str:
     """Polski werdykt istotności, np. „nieodróżnialne od rzutu monetą (p=0.41, n=37)”.
 
     `p` to p-wartość względem najlepszego naiwnego baseline'u. Bez `n_eff`
     werdykt dopisuje, że zakłada niezależne próby (p-wartość jest wtedy zbyt
-    optymistyczna przy skorelowanych predykcjach jednego cyklu).
+    optymistyczna przy skorelowanych predykcjach jednego cyklu). `mark` to znak
+    dziesiętny p-wartości: kropka dla strony publicznej, przecinek dla maila
+    (MAIL-58, zaokrąglenie ROUND_HALF_UP).
     """
-    details = f"{_format_p(p)}, n={n}"
+    details = f"{_format_p(p, mark)}, n={n}"
     if n_eff is not None:
         details += f", n_eff≈{n_eff:.0f}"
     else:
@@ -138,19 +154,48 @@ def _intraclass_correlation(cycles: Sequence[Sequence[bool]], n: int) -> float:
 
     Zerowa wariancja całkowita → 1.0 (najgorszy przypadek, patrz `effective_n`).
     """
-    k = len(cycles)
     rates = [sum(cycle) / len(cycle) for cycle in cycles]
     pooled = sum(sum(cycle) for cycle in cycles) / n
     between = sum(len(c) * (r - pooled) ** 2 for c, r in zip(cycles, rates, strict=True))
     within = sum(len(c) * r * (1.0 - r) for c, r in zip(cycles, rates, strict=True))
+    return _icc_from_sums([len(c) for c in cycles], between, within, n)
+
+
+def _icc_from_sums(sizes: Sequence[int], between: float, within: float, n: int) -> float:
+    """ICC(1) z sum kwadratów między cyklami i w cyklach, przycięte do [0, 1]."""
+    k = len(sizes)
     ms_between = between / (k - 1)
     ms_within = within / (n - k)
     # m0 — skorygowana średnia liczność dla nierównych cykli.
-    m0 = (n - sum(len(c) ** 2 for c in cycles) / n) / (k - 1)
+    m0 = (n - sum(size**2 for size in sizes) / n) / (k - 1)
     denominator = ms_between + (m0 - 1.0) * ms_within
     if denominator <= 0.0:
         return 1.0
     return min(1.0, max(0.0, (ms_between - ms_within) / denominator))
+
+
+def effective_n_values(values_by_cycle: Sequence[Sequence[float]]) -> float:
+    """EXP-05: `effective_n` dla wartości ciągłych (np. kwadratów błędu Briera).
+
+    Ta sama reguła n / (1 + (m̄ − 1)·ICC) i te same brzegi rozstrzygane na
+    niekorzyść dowodu; ICC z jednoczynnikowej ANOVA na surowych wartościach.
+    Dla wyników 0/1 daje to samo co `effective_n`.
+    """
+    cycles = [cycle for cycle in values_by_cycle if cycle]
+    k = len(cycles)
+    n = sum(len(cycle) for cycle in cycles)
+    if n == 0:
+        return 0.0
+    if n == k:
+        return float(n)
+    if k < 2:
+        return float(k)
+    means = [sum(cycle) / len(cycle) for cycle in cycles]
+    pooled = sum(sum(cycle) for cycle in cycles) / n
+    between = sum(len(c) * (m - pooled) ** 2 for c, m in zip(cycles, means, strict=True))
+    within = sum((x - m) ** 2 for c, m in zip(cycles, means, strict=True) for x in c)
+    icc = _icc_from_sums([len(c) for c in cycles], between, within, n)
+    return n / (1.0 + (n / k - 1.0) * icc)
 
 
 def cluster_bootstrap_ci(
@@ -176,8 +221,51 @@ def cluster_bootstrap_ci(
         hits = sum(h for h, _ in sample)
         total = sum(t for _, t in sample)
         estimates.append(hits / total)
+    return _percentile_interval(estimates, level)
+
+
+def cluster_bootstrap_difference_ci(
+    arms_by_cycle: Sequence[tuple[Sequence[float], Sequence[float]]],
+    n_boot: int = 2000,
+    seed: int = 0,
+    level: float = 0.95,
+) -> tuple[float, float] | None:
+    """EXP-05: percentylowy przedział różnicy średnich (drugie ramię − pierwsze)
+    z bootstrapu losującego CAŁE cykle.
+
+    `arms_by_cycle` to pary `(wartości ramienia A, wartości ramienia B)` jednego
+    cyklu. Oba ramiona dnia losują się razem, więc wspólny ruch rynku tego dnia
+    nie udaje różnicy między ramionami. Próba bez obserwacji któregoś ramienia
+    odpada. Deterministyczny dla `seed`; przy < `MIN_BOOTSTRAP_CYCLES`
+    niepustych cyklach albo pustym ramieniu zwraca None.
+    """
+    cycles = [
+        (sum(first), len(first), sum(second), len(second))
+        for first, second in arms_by_cycle
+        if first or second
+    ]
+    if len(cycles) < MIN_BOOTSTRAP_CYCLES or n_boot <= 0:
+        return None
+    rng = random.Random(seed)
+    estimates: list[float] = []
+    for _ in range(n_boot):
+        sample = rng.choices(cycles, k=len(cycles))
+        first_n = sum(c[1] for c in sample)
+        second_n = sum(c[3] for c in sample)
+        if first_n == 0 or second_n == 0:
+            continue
+        first_mean = sum(c[0] for c in sample) / first_n
+        estimates.append(sum(c[2] for c in sample) / second_n - first_mean)
+    if not estimates:
+        return None
+    return _percentile_interval(estimates, level)
+
+
+def _percentile_interval(estimates: list[float], level: float) -> tuple[float, float]:
+    """Percentylowy przedział `level` z niepustej listy estymat bootstrapu."""
     estimates.sort()
+    last = len(estimates) - 1
     tail = (1.0 - level) / 2.0
-    low_index = int(math.floor(tail * (n_boot - 1)))
-    high_index = int(math.ceil((1.0 - tail) * (n_boot - 1)))
+    low_index = int(math.floor(tail * last))
+    high_index = int(math.ceil((1.0 - tail) * last))
     return estimates[low_index], estimates[high_index]

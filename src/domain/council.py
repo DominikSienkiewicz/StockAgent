@@ -28,6 +28,9 @@ class CouncilInput:
     # G03: False = model ML nie ma wag (cold-start) i `ml_price_target` jest tylko
     # baseline'em "cena bez zmian" — prompt nie może podać go jako celu modelu.
     ml_model_active: bool = field(default=True)
+    # EXP-02: ramię `blind` eksperymentu — prompty person bez trendu i pewności
+    # głównego LLM (kotwiczenie: siedem „niezależnych” głosów jako echo jednego).
+    blind: bool = field(default=False)
 
     def __post_init__(self) -> None:
         # Kolekcja jako tuple — frozen=True blokuje tylko rebinding atrybutu, NIE

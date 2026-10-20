@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import html
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from src.domain import polish_labels
+from src.domain.number_format import format_money_pl, format_number_pl, format_pct_pl
 from src.domain.provenance import ProvenanceBadge, ProvenanceLevel
 
 COMPANY_NAMES: dict[str, str] = {
@@ -159,78 +162,48 @@ def company_label(symbol: str) -> str:
     return symbol
 
 
-# Mapowanie symbol → sektor (PL), używane w sekcji PREDYKCJE maila. Membership
-# w słowniku pełni też rolę klasyfikacji klasy aktywa: ETF-y → "ETF",
-# krypto → "Krypto", akcje → konkretny sektor. Symbol spoza słownika nie
-# dostaje etykiety (po cichu, tak jak company_label pomija nieznaną nazwę).
-# Pokrywa domyślne portfolio (43) + krypto; rozszerzaj wraz z SYMBOLS.
-# Klasyfikacja zgrupowana per sektor — każda nazwa sektora pada raz (łatwiej
-# rozszerzać niż płaską mapę symbol→sektor z powtarzaną etykietą). `SECTORS`
-# spłaszczamy do symbol→sektor dla szybkiego lookupu.
-_SECTOR_SYMBOLS: dict[str, list[str]] = {
-    "Big Tech": ["AAPL", "AMZN", "GOOGL", "GOOG", "META"],
-    "Półprzewodniki/AI": [
-        "NVDA", "AMD", "TSM", "ASML", "ASMIY", "MU", "QCOM", "INTC", "SNDK",
-    ],
-    "Chmura/Software": [
-        "MSFT", "ORCL", "NET", "SAP", "PLTR", "IBM", "TEAM", "FROG", "SNOW", "DDOG",
-    ],
-    "Cyberbezpieczeństwo": ["CRWD", "PANW", "OKTA", "S", "SAIL"],
-    "Hardware": ["DELL", "SSNLF"],
-    "Mobilność": ["TSLA", "UBER"],
-    "Przemysł/Pharma": ["SIEGY", "NVO"],
-    "Finanse": ["BLK"],
-    "ETF": ["VT", "QUAL", "IHI", "VB", "EWY", "IVV", "XDWD.DE", "IUSN.DE"],
-    "Krypto": ["BTC", "ETH"],
-}
-SECTORS: dict[str, str] = {
-    symbol: sector
-    for sector, symbols in _SECTOR_SYMBOLS.items()
-    for symbol in symbols
-}
+# PORT-05: etykiety klas aktywów bez sektora akcji. Sektory akcji idą z
+# `sectors` w config.toml — w kodzie nie ma już żadnej kopii tej mapy.
+ETF_SECTOR = "ETF"
+CRYPTO_SECTOR = "Krypto"
 
 
-# Kuratorowana pula peerów per sektor akcji — nadzbiór monitorowanych. Służy
-# sekcji 💡 WARTE UWAGI: gdy sektor jest "gorący" w bieżącym cyklu, sugerujemy
-# stąd tickery, których jeszcze nie monitorujemy. Tylko sektory akcji
-# (ETF/Krypto mają inną dynamikę i nie są tu uwzględniane).
-PEERS: dict[str, list[str]] = {
-    "Big Tech": ["NFLX", "DIS"],
-    "Półprzewodniki/AI": ["AVGO", "TXN", "AMAT", "KLAC", "LRCX", "ARM", "MRVL"],
-    "Chmura/Software": ["CRM", "ADBE", "NOW", "MDB", "WDAY", "HUBS"],
-    "Cyberbezpieczeństwo": ["ZS", "FTNT", "CYBR", "TENB", "QLYS"],
-    "Hardware": ["HPQ", "HPE", "WDC", "STX", "SMCI", "LOGI"],
-    "Mobilność": ["LYFT", "RIVN", "LCID", "GM", "F"],
-    "Przemysł/Pharma": ["LLY", "MRK", "PFE", "ABBV", "NVS"],
-    "Finanse": ["JPM", "GS", "MS", "V", "MA"],
-}
+def build_sector_map(
+    sectors: Mapping[str, Sequence[str]],
+    *,
+    etf_symbols: Iterable[str],
+    crypto_symbols: Iterable[str],
+) -> dict[str, str]:
+    """symbol → etykieta sektora (PL) z jednego źródła konfiguracji.
+
+    Akcje dostają sektor z `sectors`, ETF-y „ETF”, krypto „Krypto” (klasa
+    aktywa wygrywa z sektorem). Kolejność wstawienia — sektory w kolejności
+    configu, potem ETF i Krypto — wyznacza kanoniczną kolejność sektorów."""
+    mapping = {symbol: sector for sector, symbols in sectors.items() for symbol in symbols}
+    mapping.update(dict.fromkeys(etf_symbols, ETF_SECTOR))
+    mapping.update(dict.fromkeys(crypto_symbols, CRYPTO_SECTOR))
+    return mapping
 
 
-def sector_label(symbol: str) -> str | None:
-    """Zwraca sektor (PL) dla symbolu lub None, gdy nieznany.
+def sector_label(symbol: str, sector_map: Mapping[str, str] | None = None) -> str | None:
+    """Zwraca sektor (PL) dla symbolu z `sector_map` lub None, gdy nieznany.
 
     None → renderer pomija etykietę (brak '—'), analogicznie do company_label.
     """
-    if not symbol:
+    if not symbol or sector_map is None:
         return None
-    return SECTORS.get(symbol)
+    return sector_map.get(symbol)
 
 
-def company_label_with_sector(symbol: str) -> str:
+def company_label_with_sector(symbol: str, sector_map: Mapping[str, str]) -> str:
     """'SYMBOL (Nazwa) · Sektor' lub 'SYMBOL (Nazwa)' gdy sektor nieznany.
 
     Używane w sekcji PREDYKCJE — sektor doklejony przy nazwie spółki.
     """
     label = company_label(symbol)
-    sector = sector_label(symbol)
+    sector = sector_label(symbol, sector_map)
     return f"{label} · {sector}" if sector else label
 
-
-_TREND_PL = {
-    "BULLISH": "Wzrostowy",
-    "BEARISH": "Spadkowy",
-    "SIDEWAYS": "Boczny",
-}
 
 _SENTIMENT_PL = {
     "Bullish": "Pozytywny",
@@ -242,11 +215,27 @@ _SENTIMENT_PL = {
 
 
 def trend_label(trend: str | None) -> str:
-    return _TREND_PL.get(trend or "", trend or "—")
+    """Nazwa trendu ze wspólnego słownika domeny (MAIL-15)."""
+    return polish_labels.trend_label(trend)
 
 
 def sentiment_label(label: str | None) -> str:
     return _SENTIMENT_PL.get(label or "", label or "—")
+
+
+# MAIL-08 (G21): zastrzeżenie inwestycyjne. Raport podaje sygnały modelu i bandy
+# wielkości pozycji, więc każdy kanał, który je pokazuje, niesie też to zdanie —
+# bezwarunkowo, poza sekcjami, które same się chowają.
+INVESTMENT_DISCLAIMER = (
+    "Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany "
+    "przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie "
+    "stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub "
+    "prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. "
+    "Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie "
+    "gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko."
+)
+# Wariant pushu: ma się zmieścić w budżecie digestu (MAX_DIGEST_CHARS).
+MESSENGER_DISCLAIMER = "ℹ️ Sygnały modelu nie stanowią rekomendacji inwestycyjnej."
 
 
 # MAIL-14: strefa czasu w temacie, nagłówku maila i pushu. Logi zostają w UTC.
@@ -266,36 +255,174 @@ def format_local(moment: datetime, tz: str) -> str:
     return f"{_WEEKDAYS_PL[local.weekday()]} {local:%d.%m %H:%M}"
 
 
-def pct(value: Decimal | None, signed: bool = False) -> str:
-    if value is None:
-        return "—"
-    if signed:
-        return f"{value * 100:+.2f}%"
-    return f"{value * 100:.2f}%"
+def format_local_date(moment: datetime, tz: str) -> str:
+    """Dzień chwili w strefie `tz` jako „19.09.2026” (naiwny `datetime` = UTC,
+    jak w `format_local`). Rok jest jawny: daty sprzed pauzy bywają odległe."""
+    aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    return f"{aware.astimezone(ZoneInfo(tz)):%d.%m.%Y}"
 
 
-def money(value: Decimal | None) -> str:
+def _decimal(value: Decimal | float) -> Decimal:
+    """Float ze statystyk → Decimal przez najkrótszy zapis (0.0125 → „0.0125”), żeby
+    remis zaokrąglał się jak w zapisie dziesiętnym, a nie jak w binarnym."""
+    return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def pct(value: Decimal | float | None, signed: bool = False, decimals: int = 2) -> str:
+    """Ułamek jako procent po polsku (0.0123 → „1,23%”), przez `format_pct_pl`.
+
+    ARCH-28: jeden formater procentów sekcji maila — przecinek, ROUND_HALF_UP,
+    minus ASCII, zero bez minusa. None → „—”.
+    """
     if value is None:
         return "—"
-    return f"${value:.2f}"
+    return format_pct_pl(_decimal(value) * 100, signed, decimals)
+
+
+def direction_pct(value: Decimal | float | None, decimals: int = 2) -> str:
+    """MAIL-57: zmiana ze strzałką i znakiem („▲ +0,42%”, „▼ -0,42%”) — kierunek
+    czytelny bez koloru. Ruch zaokrąglony do zera nie dostaje strzałki. None → „—”."""
+    if value is None:
+        return "—"
+    text = pct(value, signed=True, decimals=decimals)
+    if text == pct(0, signed=True, decimals=decimals):
+        return text
+    return f"{'▲' if value > 0 else '▼'} {text}"
+
+
+def pct_range(low: Decimal | float, high: Decimal | float, decimals: int = 0) -> str:
+    """Przedział ułamków jako procenty z jednym „%” na końcu: „41–63%”."""
+    return f"{pct(low, decimals=decimals).removesuffix('%')}–{pct(high, decimals=decimals)}"
+
+
+def number(value: Decimal | float | None, decimals: int, signed: bool = False) -> str:
+    """Liczba po polsku (sentyment „+0,42”, kurs „4,27”), przez `format_number_pl`."""
+    if value is None:
+        return "—"
+    return format_number_pl(_decimal(value), signed, decimals)
+
+
+@dataclass(frozen=True, slots=True)
+class NumberStyle:
+    """Zapis liczb w etykietach współdzielonych przez mail i publiczny scorecard.
+
+    MAIL-58: mail pisze po polsku (`POLISH_NUMBERS`), a publiczny scorecard
+    zostaje przy kropce i dotychczasowym zaokrąglaniu (`DOT_NUMBERS`).
+    """
+
+    polish: bool
+
+    @property
+    def decimal_separator(self) -> str:
+        return "," if self.polish else "."
+
+    def pct(self, fraction: float, *, decimals: int, signed: bool = False) -> str:
+        """Ułamek jako procent: „52,0%” (polski) albo „52.0%” (kropka)."""
+        if self.polish:
+            return pct(fraction, signed=signed, decimals=decimals)
+        # `+ 0.0` zamienia ujemne zero z zaokrąglenia na dodatnie — „+0.0%”.
+        rounded = round(fraction * 100, decimals) + 0.0
+        sign = "+" if signed else ""
+        return f"{rounded:{sign}.{decimals}f}%"
+
+    def pct_range(self, low: float, high: float, *, decimals: int = 0) -> str:
+        """Przedział procentów z jednym „%” na końcu: „41–63%”."""
+        low_pct = self.pct(low, decimals=decimals).removesuffix("%")
+        return f"{low_pct}–{self.pct(high, decimals=decimals)}"
+
+    def number(self, value: float, *, decimals: int) -> str:
+        """Liczba: „0,231” (polski) albo „0.231” (kropka)."""
+        if self.polish:
+            return number(value, decimals=decimals)
+        return f"{value:.{decimals}f}"
+
+
+POLISH_NUMBERS = NumberStyle(polish=True)
+DOT_NUMBERS = NumberStyle(polish=False)
+
+
+def plural_pl(n: int, one: str, few: str, many: str) -> str:
+    """Polska forma rzeczownika po liczebniku `n` (ARCH-28).
+
+    1 → `one`; końcówka 2–4 poza nastkami 12–14 (2, 22, 104) → `few`; reszta
+    (0, 5–21, 25, 112) → `many`. Liczy się wartość bezwzględna.
+    """
+    count = abs(n)
+    if count == 1:
+        return one
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many
+
+
+@dataclass(frozen=True, slots=True)
+class ReportPalette:
+    """Kolory raportu w jednym miejscu (ARCH-28); sekcje przechodzą na nie stopniowo.
+
+    MAIL-57: kolory tekstu mają mieć ≥ 4.5:1 na białym i na `surface` (WCAG AA dla
+    tekstu 11–13 px, `contrast_ratio`). `positive`, `caution` i `subtle` ściemnione
+    z #16a34a (3.3:1), #ca8a04 (2.9:1) i #9ca3af (2.5:1) — jaśniejszy szary tekst
+    niż `muted` nie przechodzi AA, więc `subtle` mu równy."""
+
+    positive: str = "#15803d"
+    negative: str = "#dc2626"
+    neutral: str = "#737373"
+    caution: str = "#a16207"
+    text: str = "#111827"
+    text_secondary: str = "#374151"
+    muted: str = "#6b7280"
+    subtle: str = "#6b7280"
+    border: str = "#e5e7eb"
+    surface: str = "#f9fafb"
+
+
+PALETTE = ReportPalette()
+
+
+def _relative_luminance(color: str) -> float:
+    """Luminancja względna sRGB koloru `#rrggbb` albo `#rgb` (WCAG 2.x)."""
+    hex_digits = color.removeprefix("#")
+    if len(hex_digits) == 3:
+        hex_digits = "".join(digit * 2 for digit in hex_digits)
+    channels = [int(hex_digits[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+    linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    """MAIL-57: kontrast dwóch kolorów wg WCAG 2.x — od 1 (ten sam kolor) do 21
+    (czarny na białym). Kolejność argumentów nie ma znaczenia."""
+    lighter, darker = sorted(
+        (_relative_luminance(foreground), _relative_luminance(background)), reverse=True
+    )
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def number_exact(value: Decimal) -> str:
+    """Decimal po polsku z jego własną precyzją: kurs NBP „4,2710”, cena „186,00”."""
+    exponent = value.as_tuple().exponent
+    decimals = -exponent if isinstance(exponent, int) and exponent < 0 else 0
+    return format_number_pl(value, False, decimals)
+
+
+def money(value: Decimal | None, signed: bool = False) -> str:
+    """Kwota w USD po polsku („$1 234,50”), przez `format_money_pl`. None → „—”."""
+    if value is None:
+        return "—"
+    return format_money_pl(value, "USD", signed=signed)
 
 
 def trend_color(trend: str | None) -> str:
     return {
-        "BULLISH": "#16a34a",
-        "BEARISH": "#dc2626",
-        "SIDEWAYS": "#737373",
-    }.get(trend or "", "#737373")
+        "BULLISH": PALETTE.positive,
+        "BEARISH": PALETTE.negative,
+    }.get(trend or "", PALETTE.neutral)
 
 
 def delta_color(delta: Decimal | None) -> str:
-    if delta is None:
-        return "#737373"
-    if delta > 0:
-        return "#16a34a"
-    if delta < 0:
-        return "#dc2626"
-    return "#737373"
+    if delta is None or delta == 0:
+        return PALETTE.neutral
+    return PALETTE.positive if delta > 0 else PALETTE.negative
 
 
 def score_to_pl_label(score: float) -> str:

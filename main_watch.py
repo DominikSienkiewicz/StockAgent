@@ -2,9 +2,14 @@
 
 Czwarty entry point obok `main_agent` (Fast Loop), `main_trainer` (Slow Loop)
 i `main_backtest`. Zaprojektowany pod cron CO GODZINĘ, 24/7 — nie tylko w sesji
-NYSE, bo BTC/ETH handlują całą dobę. Cron jest wstrzymany razem z Fast Loopem:
-jedynymi referencjami cen są jego snapshoty, więc bez niego watch jest ślepy
-(i mówi to WARNING-iem zamiast udawać zdrowe „0 alertów").
+NYSE, bo BTC/ETH handlują całą dobę.
+
+Dwa źródła ruchu (ALR-02). Pierwszeństwo ma dzienna zmiana z darmowego notowania
+(`DailyChangePort`: Finnhub `dp` od poprzedniego zamknięcia, CoinGecko zmiana 24 h)
+— niezależna od Fast Loopa. Snapshot Fast Loopa jest fallbackiem, gdy odczytu nie ma,
+padł albo pochodzi z innego dnia UTC (sobota z piątkowym `dp`). Gdy oba źródła są
+niedostępne albo stęchłe, watch jest ślepy i mówi to WARNING-iem zamiast udawać
+zdrowe „0 alertów".
 
 FinOps: **zero płatnych wywołań**. Watch dotyka wyłącznie darmowych źródeł ceny
 (Finnhub / CoinGecko), odczytu Supabase i darmowych kanałów push. Żadnego LLM,
@@ -31,33 +36,53 @@ import logging
 import sys
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from functools import partial
 
-from src.application.ports import MarketDataPort, ReportNotifierPort, RepositoryPort
+from src.application.ports import (
+    DailyChangePort,
+    MarketDataPort,
+    ReportNotifierPort,
+    RepositoryPort,
+)
 from src.application.report_formatting import format_local
+from src.application.report_ops import render_watch_summary_markdown
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
+from src.domain.number_format import format_pct_pl
 from src.domain.shock import (
+    ROLLING_CHANGE_WINDOW,
     SNAPSHOT_MAX_AGE_HOURS,
+    DailyChange,
     ShockAlert,
+    classify_shock,
     detect_shock,
+    is_daily_change_fresh,
+    is_move_already_alerted,
     is_reference_stale,
     should_emit,
 )
-from src.domain.value_objects import Money, Threshold
+from src.domain.value_objects import AssetType, Money, Threshold
+from src.infrastructure.logging_redaction import configure_logging
 
 logger = logging.getLogger(__name__)
 
+# Punkt odniesienia ruchu w treści pusha — zależy od źródła (ALR-02).
+SNAPSHOT_BASIS = "od ostatniego snapshotu ceny"
+PREVIOUS_CLOSE_BASIS = "od poprzedniego zamknięcia"
+ROLLING_24H_BASIS = "w ciągu ostatnich 24 h"
+
 
 def _render_alert(
-    alert: ShockAlert, *, detected_at: datetime, display_timezone: str
+    alert: ShockAlert, *, basis: str, detected_at: datetime, display_timezone: str
 ) -> tuple[str, str]:
-    """Treść pusha — krótka i jednoznaczna (temat, ciało). Po polsku. Chwila
-    wykrycia w strefie odbiorcy (MAIL-14) — logi watcha zostają w UTC."""
+    """Treść pusha — krótka i jednoznaczna (temat, ciało). Po polsku, także liczby
+    („-5,2%”, MAIL-58). Chwila wykrycia w strefie odbiorcy (MAIL-14) — logi watcha
+    zostają w UTC. `basis` mówi, wobec czego liczony jest ruch."""
     arrow = "📉" if alert.direction.name == "DOWN" else "📈"
-    pct = alert.delta.fraction * 100
-    subject = f"{arrow} Szok rynkowy: {alert.symbol} {pct:+.1f}%"
+    move = format_pct_pl(alert.delta.percent, signed=True)
+    subject = f"{arrow} Szok rynkowy: {alert.symbol} {move}"
     body = (
-        f"{arrow} {alert.symbol} {pct:+.1f}% od ostatniego snapshotu ceny "
+        f"{arrow} {alert.symbol} {move} {basis} "
         f"(stan na {format_local(detected_at, display_timezone)}).\n"
         "Alert poza cyklem — pełna analiza w najbliższym dziennym digeście."
     )
@@ -96,6 +121,59 @@ def _detect_symbol_shock(
     )
 
 
+def _fresh_daily_change(
+    daily_change: DailyChangePort | None, symbol: str, moment: datetime
+) -> DailyChange | None:
+    """Świeży odczyt dziennej zmiany albo None — wtedy watch wraca do snapshotu.
+
+    Błąd źródła nie przerywa symbolu: snapshot Fast Loopa jest fallbackiem, więc
+    padnięty /quote kosztuje tylko WARNING."""
+    if daily_change is None:
+        return None
+    try:
+        reading = daily_change.get_daily_change(symbol)
+    except Exception:
+        logger.warning(
+            "Daily change unavailable for %s — falling back to the price snapshot",
+            symbol,
+            exc_info=True,
+        )
+        return None
+    if not is_daily_change_fresh(reading.as_of, moment):
+        logger.info(
+            "Daily change for %s is from %s, not today (UTC) — falling back to the snapshot",
+            symbol,
+            reading.as_of.isoformat(),
+        )
+        return None
+    return reading
+
+
+def _crypto_alert_times(
+    repository: RepositoryPort,
+    daily_change: DailyChangePort | None,
+    symbols: list[str],
+    crypto: set[str],
+    moment: datetime,
+) -> dict[str, datetime]:
+    """Chwile ostatnich alertów z okna 24 h — tylko gdy krypto idzie dzienną zmianą.
+
+    Bez portu dziennej zmiany albo bez krypto na liście nie ma czego tłumić, więc
+    nie ma też odczytu. Błąd odczytu → {} z logiem: lepiej ryzykować powtórzony
+    alert niż zgubić nowy."""
+    if daily_change is None or not crypto.intersection(symbols):
+        return {}
+    try:
+        return repository.get_shock_alert_times(moment - ROLLING_CHANGE_WINDOW)
+    except Exception:
+        logger.exception("Failed to read shock alert times — crypto 24 h window not applied")
+        return {}
+
+
+def _daily_change_basis(asset: Asset) -> str:
+    return ROLLING_24H_BASIS if asset.asset_type is AssetType.CRYPTO else PREVIOUS_CLOSE_BASIS
+
+
 def _persist_shock_alert(
     repository: RepositoryPort, symbol: str, today: date, alert: ShockAlert
 ) -> None:
@@ -111,15 +189,33 @@ def _persist_shock_alert(
 
 @dataclass(frozen=True)
 class WatchOutcome:
-    """Wynik przebiegu: wysłane alerty i symbole, które padły (spośród `total`)."""
+    """Wynik przebiegu: wysłane alerty i symbole, które padły (spośród `total`).
+
+    `checked` — symbole z referencją ceny, `stale` — z referencją zbyt starą na
+    alert (NIEZ-22: step summary pokazuje ślepotę watcha liczbami)."""
 
     sent: int
     failures: int
     total: int
+    checked: int = 0
+    stale: int = 0
 
     @property
     def all_failed(self) -> bool:
         return self.total > 0 and self.failures == self.total
+
+
+def _watched_stocks(settings: Settings, moment: datetime) -> list[str]:
+    """FIN-34: w dzień zamknięcia NYSE ceny akcji stoją — ta sama reguła i ten sam
+    log co w Fast Loopie; krypto handluje w święta, więc zostaje."""
+    # Import lokalny jak w `main()` — reguła żyje w DI Containerze Fast Loopa.
+    from main_agent import STOCKS_SKIPPED_LOG, nyse_closure_label
+
+    closure = nyse_closure_label(settings, moment)
+    if closure is None:
+        return list(settings.symbols)
+    logger.info(STOCKS_SKIPPED_LOG, closure, len(settings.symbols), settings.crypto_symbols)
+    return []
 
 
 def scan_watch(
@@ -129,6 +225,7 @@ def scan_watch(
     market: MarketDataPort,
     push_notifier: ReportNotifierPort | None,
     now: datetime | None = None,
+    daily_change: DailyChangePort | None = None,
 ) -> WatchOutcome:
     """Jeden przebieg watcha.
 
@@ -137,6 +234,9 @@ def scan_watch(
     `push_notifier=None` (brak kanału push): skan biegnie dalej, żeby sygnał
     ślepoty nie zniknął, ale wykryty szok nie jest ani wysyłany, ani zapisywany —
     zapis zablokowałby debounce na dobę dla alertu, którego nikt nie dostał (ALR-01).
+    `daily_change` (ALR-02): świeży odczyt rozstrzyga o symbolu sam, bez snapshotu
+    i bez ceny bieżącej — jedno źródło, najwyżej jeden alert. None → wyłącznie
+    snapshoty, jak przed ALR-02.
     """
     if not settings.shock_alerts_enabled:
         logger.info("Shock watch wyłączony (shock_alerts_enabled=false).")
@@ -147,7 +247,8 @@ def scan_watch(
     crypto = set(settings.crypto_symbols)
     unsupported = set(settings.symbols_unsupported_price)
     symbols = [
-        s for s in (*settings.symbols, *settings.crypto_symbols) if s not in unsupported
+        s for s in (*_watched_stocks(settings, moment), *settings.crypto_symbols)
+        if s not in unsupported
     ]
 
     try:
@@ -155,6 +256,7 @@ def scan_watch(
     except Exception:
         logger.exception("Failed to read shock alert history — debounce in-memory only")
         already_sent = set()
+    crypto_alert_times = _crypto_alert_times(repository, daily_change, symbols, crypto, moment)
 
     sent = 0
     failures = 0
@@ -164,24 +266,41 @@ def scan_watch(
         try:
             if not should_emit(symbol, today, already_sent):
                 continue
-            snapshot = repository.get_last_price_snapshot(symbol)
-            if snapshot is None:
-                continue
-            previous, taken_at = snapshot
-            age_hours = (moment - taken_at).total_seconds() / 3600.0
-            checked += 1
-            # Wiek PRZED pobraniem ceny: stęchła referencja i tak tłumi alert.
-            if is_reference_stale(age_hours):
-                stale += 1
-                continue
-            alert = _detect_symbol_shock(
-                symbol,
-                settings=settings,
-                market=market,
-                crypto=crypto,
-                previous=previous,
-                age_hours=age_hours,
-            )
+            reading = _fresh_daily_change(daily_change, symbol, moment)
+            if reading is not None:
+                checked += 1
+                asset = _classify(symbol, crypto)
+                # Decyzja 2: zmiana 24 h krypto wciąż zawiera ruch zaalarmowany < 24 h
+                # temu — po północy UTC byłby to drugi alert za ten sam ruch.
+                if asset.asset_type is AssetType.CRYPTO and is_move_already_alerted(
+                    crypto_alert_times.get(symbol), moment
+                ):
+                    logger.info("Shock watch: %s zaalarmowany < 24 h temu — pomijam", symbol)
+                    continue
+                alert = classify_shock(
+                    asset, PriceDelta(reading.fraction), Threshold(settings.volatility_threshold)
+                )
+                basis = _daily_change_basis(asset)
+            else:
+                snapshot = repository.get_last_price_snapshot(symbol)
+                if snapshot is None:
+                    continue
+                previous, taken_at = snapshot
+                age_hours = (moment - taken_at).total_seconds() / 3600.0
+                checked += 1
+                # Wiek PRZED pobraniem ceny: stęchła referencja i tak tłumi alert.
+                if is_reference_stale(age_hours):
+                    stale += 1
+                    continue
+                alert = _detect_symbol_shock(
+                    symbol,
+                    settings=settings,
+                    market=market,
+                    crypto=crypto,
+                    previous=previous,
+                    age_hours=age_hours,
+                )
+                basis = SNAPSHOT_BASIS
             if alert is None:
                 continue
             if push_notifier is None:
@@ -189,7 +308,10 @@ def scan_watch(
                 continue
 
             subject, body = _render_alert(
-                alert, detected_at=moment, display_timezone=settings.display_timezone
+                alert,
+                basis=basis,
+                detected_at=moment,
+                display_timezone=settings.display_timezone,
             )
             push_notifier.send_report(
                 subject=subject, html_body=body, plain_text=body
@@ -202,16 +324,20 @@ def scan_watch(
             failures += 1
 
     if checked and stale == checked:
-        # Jedyne referencje to snapshoty Fast Loopa — gdy on stoi, watch nie
-        # widzi niczego, a samo „0 alertów" wyglądałoby jak zdrowy przebieg.
+        # Bez świeżej dziennej zmiany jedyne referencje to snapshoty Fast Loopa —
+        # gdy on stoi, watch nie widzi niczego, a samo „0 alertów" wyglądałoby jak
+        # zdrowy przebieg.
         logger.warning(
             "Shock watch ślepy: wszystkie %d referencje cen są starsze niż %.0f h "
-            "(snapshoty zapisuje wyłącznie Fast Loop) — żaden alert nie jest możliwy.",
+            "(snapshoty zapisuje wyłącznie Fast Loop, dziennej zmiany brak) — "
+            "żaden alert nie jest możliwy.",
             checked,
             SNAPSHOT_MAX_AGE_HOURS,
         )
     logger.info("Shock watch done — %d alert(ów) wysłanych", sent)
-    return WatchOutcome(sent=sent, failures=failures, total=len(symbols))
+    return WatchOutcome(
+        sent=sent, failures=failures, total=len(symbols), checked=checked, stale=stale
+    )
 
 
 def run_watch(
@@ -221,20 +347,34 @@ def run_watch(
     market: MarketDataPort,
     push_notifier: ReportNotifierPort,
     now: datetime | None = None,
+    daily_change: DailyChangePort | None = None,
 ) -> int:
-    """Jeden przebieg watcha. Zwraca liczbę WYSŁANYCH alertów."""
+    """Jeden przebieg watcha. Zwraca liczbę WYSŁANYCH alertów.
+
+    `daily_change=None` → wyłącznie snapshoty Fast Loopa (zachowanie sprzed ALR-02)."""
     return scan_watch(
-        settings, repository=repository, market=market, push_notifier=push_notifier, now=now
+        settings,
+        repository=repository,
+        market=market,
+        push_notifier=push_notifier,
+        now=now,
+        daily_change=daily_change,
     ).sent
 
 
 def main(settings: Settings | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    resolved = settings or Settings()  # type: ignore[call-arg]
+    configure_logging(
+        resolved.secret_values(), fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
-    settings = settings or Settings()  # type: ignore[call-arg]
+    # Import lokalny — reguła pingu żyje w DI Containerze Fast Loopa.
+    from main_agent import run_with_heartbeat
 
+    # NIEZ-13: ping zewnętrznego heartbeatu na koniec (ok = exit 0).
+    return run_with_heartbeat(resolved, lambda: _run_watch(resolved))
+
+
+def _run_watch(settings: Settings) -> int:
     # Import lokalny — DI Container Fast Loopa buduje darmowe adaptery ceny
     # i kanały push; watch tylko je składa. Zero płatnych portów.
     from main_agent import (
@@ -242,6 +382,7 @@ def main(settings: Settings | None = None) -> int:
         build_push_channels,
         build_push_notifier,
         build_repository,
+        write_step_summary,
     )
 
     push_notifier = build_push_notifier(settings) if build_push_channels(settings) else None
@@ -250,11 +391,25 @@ def main(settings: Settings | None = None) -> int:
             "Shock watch bez kanału push (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID albo "
             "SLACK_WEBHOOK_URL) — wykryte szoki nie zostaną wysłane ani zapisane."
         )
-    outcome = scan_watch(
+    market = build_market_port(settings)
+    scan = partial(
+        scan_watch,
         settings,
         repository=build_repository(settings),
-        market=build_market_port(settings),
+        market=market,
         push_notifier=push_notifier,
+    )
+    # ALR-02: router darmowych cen (Finnhub /quote, CoinGecko) jest też źródłem dziennej
+    # zmiany. Port ceny bez tej zdolności → przebieg wyłącznie na snapshotach.
+    outcome = scan(daily_change=market) if isinstance(market, DailyChangePort) else scan()
+    write_step_summary(
+        lambda: render_watch_summary_markdown(
+            checked=outcome.checked,
+            stale=outcome.stale,
+            sent=outcome.sent,
+            failures=outcome.failures,
+            total=outcome.total,
+        )
     )
     # Brak alertów to normalny, zdrowy przebieg; padnięte WSZYSTKIE symbole (np. baza
     # nie odpowiada) już nie — jak w Fast Loopie, exit 1 (NIEZ-05).

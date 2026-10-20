@@ -7,14 +7,20 @@ liczy się tylko poprawność parsowania JSONa i mapowanie na domenę.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from unittest.mock import Mock
 
 import pytest
 import requests
 
+from src.domain.fx import FxRate
 from src.domain.polish_macro import PolishMacroSnapshot
-from src.infrastructure.adapters.nbp_client import NbpClient
+from src.infrastructure.adapters.nbp_client import (
+    MAX_LOOKBACK_DAYS,
+    NbpClient,
+    NbpFxRateClient,
+)
 
 
 def _ok_response(payload: dict) -> Mock:
@@ -153,3 +159,119 @@ class TestFetchPolishMacro:
             url = call.args[0] if call.args else call.kwargs.get("url", "")
             assert "/exchangerates/rates/A/" in url
             assert "last/30" in url
+
+
+# --- PORT-11: kurs z dnia (FxRatePort) ----------------------------------------
+
+
+def _day_payload(code: str, effective: str, mid: float) -> dict:
+    """Format api.nbp.pl/api/exchangerates/rates/a/{code}/{date}/."""
+    return {
+        "table": "A",
+        "currency": "dolar amerykański",
+        "code": code,
+        "rates": [{"no": "043/A/NBP/2025", "effectiveDate": effective, "mid": mid}],
+    }
+
+
+def _not_found() -> Mock:
+    return _error_response(404)
+
+
+def _urls(mock_get: Mock) -> list[str]:
+    return [call.args[0] for call in mock_get.call_args_list]
+
+
+class TestFxRateForDay:
+    def test_returns_the_mid_rate_of_the_requested_day(self, mocker) -> None:
+        mock_get = mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response(_day_payload("USD", "2025-03-03", 3.9725)),
+        )
+
+        rate = NbpFxRateClient().get_rate("USD", date(2025, 3, 3))
+
+        assert rate == FxRate(
+            currency="USD",
+            on_date=date(2025, 3, 3),
+            effective_date=date(2025, 3, 3),
+            rate=Decimal("3.9725"),
+        )
+        assert _urls(mock_get) == [
+            "https://api.nbp.pl/api/exchangerates/rates/a/usd/2025-03-03/?format=json"
+        ]
+        assert mock_get.call_args.kwargs["timeout"] > 0
+
+    def test_steps_back_to_the_previous_business_day(self, mocker) -> None:
+        # Niedziela 2025-03-02 i sobota 03-01 bez tabeli → kurs z piątku 02-28.
+        mock_get = mocker.patch(
+            "requests.Session.get",
+            side_effect=[
+                _not_found(),
+                _not_found(),
+                _ok_response(_day_payload("EUR", "2025-02-28", 4.1512)),
+            ],
+        )
+
+        rate = NbpFxRateClient().get_rate("eur", date(2025, 3, 2))
+
+        assert rate is not None
+        assert (rate.currency, rate.on_date, rate.effective_date, rate.rate) == (
+            "EUR", date(2025, 3, 2), date(2025, 2, 28), Decimal("4.1512"),
+        )
+        assert [url.split("/")[-2] for url in _urls(mock_get)] == [
+            "2025-03-02", "2025-03-01", "2025-02-28",
+        ]
+
+    def test_gives_up_after_the_lookback_window(self, mocker) -> None:
+        mock_get = mocker.patch("requests.Session.get", return_value=_not_found())
+
+        assert NbpFxRateClient().get_rate("XYZ", date(2025, 3, 3)) is None
+        assert mock_get.call_count == MAX_LOOKBACK_DAYS + 1
+
+    def test_network_error_is_none_and_stops_stepping_back(self, mocker) -> None:
+        mock_get = mocker.patch(
+            "requests.Session.get", side_effect=requests.ConnectionError("down")
+        )
+
+        assert NbpFxRateClient().get_rate("USD", date(2025, 3, 3)) is None
+        assert mock_get.call_count == 1
+
+    def test_server_error_is_none(self, mocker) -> None:
+        mocker.patch("requests.Session.get", return_value=_error_response(503))
+
+        assert NbpFxRateClient().get_rate("USD", date(2025, 3, 3)) is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"rates": []},
+            {"rates": [{"effectiveDate": "2025-03-03"}]},
+            {"rates": [{"effectiveDate": "zły", "mid": 3.9}]},
+            {"rates": [{"effectiveDate": "2025-03-03", "mid": 0}]},
+        ],
+    )
+    def test_malformed_payload_is_none(self, mocker, payload: dict) -> None:
+        mocker.patch("requests.Session.get", return_value=_ok_response(payload))
+
+        assert NbpFxRateClient().get_rate("USD", date(2025, 3, 3)) is None
+
+    def test_pln_needs_no_request(self, mocker) -> None:
+        mock_get = mocker.patch("requests.Session.get")
+
+        rate = NbpFxRateClient().get_rate("PLN", date(2025, 3, 3))
+
+        assert rate is not None and rate.rate == Decimal("1")
+        mock_get.assert_not_called()
+
+    def test_after_a_network_error_the_cycle_stops_asking_nbp(self, mocker) -> None:
+        # Jeden klient na cykl: przy leżącym NBP każde zapytanie to timeout z retry,
+        # a dziesiątki dat zakupu wysadziłyby limit czasu joba.
+        mock_get = mocker.patch(
+            "requests.Session.get", side_effect=requests.ConnectTimeout("timeout")
+        )
+        client = NbpFxRateClient()
+
+        assert client.get_rate("USD", date(2025, 3, 3)) is None
+        assert client.get_rate("EUR", date(2024, 6, 3)) is None
+        assert mock_get.call_count == 1

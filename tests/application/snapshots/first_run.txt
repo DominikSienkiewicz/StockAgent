@@ -1,0 +1,37 @@
+👋 Dzień 1 — buduję punkt odniesienia
+Startuję dla 3 instrumenty. Ten cykl zapisuje pierwsze ceny jako punkt odniesienia — pierwsze predykcje pojawią się jutro. Pominięcia poniżej to nie awaria, tylko brak historii.
+  • Krypto — 1
+  • Półprzewodniki — 2
+
+================================================================
+STOCKAGENT — RAPORT CYKLU
+================================================================
+Czas rozpoczęcia:  czw 15.10 12:30
+Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
+
+Sygnały ponad próg: 0
+Rozliczone: brak (ostatnie 24h)
+
+KRYPTO
+----------------------------------------------------------------
+  BTC (Bitcoin)                              $65 040,00  Δ   +0,00%  poniżej progu
+
+================================================================
+ZAPLECZE
+Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, pominięte symbole i błędy.
+================================================================
+
+NASTROJE PORTFELA
+----------------------------------------------------------------
+  Średni sentyment: +0,00 (Neutralny)
+  Wysoka pewność (≥70%): 0 / 0  ·  Newsów: 0
+
+POMINIĘTE (poniżej progu zmienności)
+----------------------------------------------------------------
+  NVDA(0,00%), AMD(0,00%), BTC(0,00%)
+
+----------------------------------------------------------------
+Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.
+Symboli: 3 · predykcji: 0 · pominiętych: 3 · błędów: 0 · czas trwania: 74,2s
+----------------------------------------------------------------
+przebieg #local · commit local

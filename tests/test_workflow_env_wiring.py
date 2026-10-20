@@ -14,8 +14,15 @@ Ten test pilnuje obu stron:
 
 from __future__ import annotations
 
+import os
+import posixpath
+import re
+import shlex
+import subprocess
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -141,6 +148,207 @@ def test_enabled_public_artifacts_have_a_durable_publish_step() -> None:
     )
 
 
+# BEZ-09: `web_digest_enabled` zapisuje PEŁNY prywatny digest (watchlista, a przy
+# `portfolio_positions_enabled` sekcja „💼 Twój portfel” z kwotami w zł) do
+# `web_digest_path` pod `public/`. Deploy Pages albo commit `public/` przez git
+# wypchnąłby go publicznie jedną flagą, więc flaga jest zakazana obok każdego
+# takiego kroku, a artefakt Pages to wyłącznie katalog publicznego scorecardu.
+PRIVATE_ARTIFACT_FLAGS = ("web_digest_enabled",)
+PUBLIC_ROOT = "public"
+# Domyślny `path` akcji `actions/upload-pages-artifact`, gdy krok go nie podaje.
+PAGES_ARTIFACT_DEFAULT_PATH = "_site/"
+# `git add` bez listy ścieżek, który zgarnia całe drzewo — `public/` nie jest
+# w `.gitignore`, więc razem z nim leci digest.
+GIT_ADD_SWEEP_FLAGS = ("-A", "--all")
+
+
+def _all_workflow_specs() -> dict[str, dict[str, Any]]:
+    """Każdy plik workflow, nie tylko joby z `main_agent.py` — deploy Pages
+    może siedzieć w osobnym jobie albo pliku."""
+    workflows_dir = ROOT / ".github" / "workflows"
+    paths = sorted([*workflows_dir.glob("*.yml"), *workflows_dir.glob("*.yaml")])
+    return {path.name: yaml.safe_load(path.read_text(encoding="utf-8")) for path in paths}
+
+
+def _workflow_steps(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [step for job in (spec.get("jobs") or {}).values() for step in job.get("steps", [])]
+
+
+def _normalized(path: str) -> str:
+    return posixpath.normpath(path.strip().strip("'\""))
+
+
+def _contains(parent: str, path: str) -> bool:
+    """Czy publikacja `parent` zabiera `path` (ten sam katalog albo jego wnętrze)."""
+    return parent in (".", path) or path.startswith(parent + "/")
+
+
+def _overlaps(first: str, second: str) -> bool:
+    return _contains(first, second) or _contains(second, first)
+
+
+def _git_added_paths(script: str) -> list[str]:
+    """Ścieżki każdego `git add` w skrypcie kroku; zgarnięcie całego drzewa jako "."."""
+    added: list[str] = []
+    for command in re.split(r"&&|\|\||[;\n]", script):
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = command.split()
+        starts = [i for i in range(len(tokens) - 1) if tokens[i : i + 2] == ["git", "add"]]
+        for start in starts:
+            for arg in tokens[start + 2 :]:
+                if arg in GIT_ADD_SWEEP_FLAGS:
+                    added.append(".")
+                elif not arg.startswith("-"):
+                    added.append(_normalized(arg))
+    return added
+
+
+def _is_pages_deploy(step: Mapping[str, Any]) -> bool:
+    return str(step.get("uses", "")).startswith("actions/deploy-pages")
+
+
+def _pages_upload_path(step: Mapping[str, Any]) -> str | None:
+    if not str(step.get("uses", "")).startswith("actions/upload-pages-artifact"):
+        return None
+    inputs = step.get("with") or {}
+    return _normalized(str(inputs.get("path", PAGES_ARTIFACT_DEFAULT_PATH)))
+
+
+def _private_digest_publication_violations(
+    config: Mapping[str, Any], workflows: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
+    """Kroki, które opublikowałyby prywatny digest: deploy Pages albo `git add`
+    katalogu `public/` przy włączonym `web_digest_enabled`, oraz artefakt Pages
+    inny niż katalog publicznego scorecardu (nigdy `public/` ani katalog digestu)."""
+    scorecard_dir = posixpath.dirname(_normalized(str(config["public_scorecard_path"])))
+    digest_dir = posixpath.dirname(_normalized(str(config["web_digest_path"])))
+    private_enabled = [flag for flag in PRIVATE_ARTIFACT_FLAGS if config.get(flag) is True]
+    violations: list[str] = []
+    for name, spec in workflows.items():
+        for step in _workflow_steps(spec):
+            label = f"{name}: {step.get('name') or step.get('uses') or step.get('run')}"
+            git_public = any(
+                _overlaps(path, PUBLIC_ROOT) for path in _git_added_paths(str(step.get("run", "")))
+            )
+            if private_enabled and (_is_pages_deploy(step) or git_public):
+                violations.append(
+                    f"{label} publikuje Pages albo `{PUBLIC_ROOT}/`, a config.toml włącza "
+                    f"{private_enabled} — prywatny digest (watchlista, kwoty portfela) "
+                    f"z `{digest_dir}/` trafiłby publicznie."
+                )
+            upload = _pages_upload_path(step)
+            if upload is None:
+                continue
+            if upload != scorecard_dir:
+                violations.append(
+                    f"{label} wysyła na Pages `{upload}` zamiast `{scorecard_dir}` "
+                    f"(dirname `public_scorecard_path`)."
+                )
+            if _contains(upload, PUBLIC_ROOT) or _overlaps(upload, digest_dir):
+                violations.append(
+                    f"{label} wysyła na Pages `{upload}`, czyli całe `{PUBLIC_ROOT}/` albo "
+                    f"prywatny digest z `{digest_dir}/`."
+                )
+    return violations
+
+
+def _repo_config(**overrides: Any) -> dict[str, Any]:
+    config = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
+    return {**config, **overrides}
+
+
+def _synthetic_workflow(*steps: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Syntetyczny workflow z jednym jobem — Pages dziś nie istnieje (WIA-16)."""
+    job = {"runs-on": "ubuntu-latest", "steps": list(steps)}
+    return {"pages.yml": {"jobs": {"deploy": job}}}
+
+
+def _pages_steps(path: str | None = "public/scorecard") -> tuple[dict[str, Any], ...]:
+    upload: dict[str, Any] = {"uses": "actions/upload-pages-artifact@v3"}
+    if path is not None:
+        upload["with"] = {"path": path}
+    return upload, {"uses": "actions/deploy-pages@v4"}
+
+
+def test_pages_upload_never_includes_private_digest() -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=True), _synthetic_workflow(*_pages_steps())
+    )
+
+    assert any("prywatny digest" in violation for violation in violations), violations
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "git add public/scorecard public/attestation && git commit -m pages && git push",
+        "git add -A\ngit commit -m pages\ngit push",
+        "git add .; git push",
+        'git add -f "public/digest/index.html"',
+    ],
+)
+def test_git_publication_of_public_dir_forbids_private_digest(script: str) -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
+    )
+
+    assert any("prywatny digest" in violation for violation in violations), violations
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'MODEL_PATH="data/models/price_predictor.ubj"\ngit add "$MODEL_PATH"\ngit push',
+        "git add data/models/price_predictor.ubj && git commit -m weights && git push",
+    ],
+)
+def test_git_commit_outside_public_dir_allows_private_digest(script: str) -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
+    )
+
+    assert violations == []
+
+
+@pytest.mark.parametrize("path", ["public/scorecard", "./public/scorecard/"])
+def test_pages_upload_of_the_scorecard_dir_alone_is_allowed(path: str) -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=False), _synthetic_workflow(*_pages_steps(path))
+    )
+
+    assert violations == []
+
+
+@pytest.mark.parametrize("path", ["public", "./public/", "public/digest", ".", None])
+def test_pages_upload_path_must_be_the_scorecard_dir(path: str | None) -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=False), _synthetic_workflow(*_pages_steps(path))
+    )
+
+    assert violations, f"artefakt Pages `{path}` przeszedł strażnika"
+
+
+def test_pages_upload_never_publishes_public_root_even_for_a_scorecard_there() -> None:
+    config = _repo_config(web_digest_enabled=False, public_scorecard_path="public/index.html")
+
+    violations = _private_digest_publication_violations(
+        config, _synthetic_workflow(*_pages_steps("public"))
+    )
+
+    assert violations, "artefakt Pages `public` zabrałby `public/digest/`"
+
+
+def test_real_workflows_never_publish_private_digest() -> None:
+    workflows = _all_workflow_specs()
+    assert {"fast_loop_12h.yml", "slow_loop_weekly.yml"} <= set(workflows)
+
+    violations = _private_digest_publication_violations(_repo_config(), workflows)
+
+    assert not violations, violations
+
+
 def _slow_loop_trainer_env() -> dict[str, object]:
     workflow = ROOT / ".github" / "workflows" / "slow_loop_weekly.yml"
     spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
@@ -183,3 +391,266 @@ def test_slow_loop_commits_weights_even_when_training_step_failed() -> None:
     steps = [s for job in spec["jobs"].values() for s in job.get("steps", [])]
     commit_step = next(s for s in steps if "git push" in str(s.get("run", "")))
     assert str(commit_step.get("if", "")).replace(" ", "") == "${{!cancelled()}}"
+
+
+# BEZ-03: GitHub maskuje sekret tylko w całości. Element sekretu CSV (jeden klucz
+# z `ALPHA_VANTAGE_API_KEYS=k1,k2`) wyszedłby w logu jawnie, więc każdy job, który
+# wstrzykuje ten sekret, rejestruje `::add-mask::` per klucz, zanim ruszy Python.
+CSV_SECRET = "ALPHA_VANTAGE_API_KEYS"
+CSV_SECRET_REF = f"${{{{ secrets.{CSV_SECRET} }}}}"
+MASK_SCRIPT = ROOT / "scripts" / "mask-csv-secret.sh"
+
+
+def _jobs_injecting_csv_secret() -> list[tuple[str, list[dict[str, object]]]]:
+    """(workflow/job, kroki) dla każdego jobu, który mapuje prawdziwy sekret CSV."""
+    found: list[tuple[str, list[dict[str, object]]]] = []
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in spec.get("jobs", {}).items():
+            steps = job.get("steps", [])
+            if any(dict(s.get("env") or {}).get(CSV_SECRET) == CSV_SECRET_REF for s in steps):
+                found.append((f"{path.name}/{job_name}", steps))
+    return found
+
+
+def _is_mask_step(step: dict[str, object]) -> bool:
+    env = dict(step.get("env") or {})
+    run = str(step.get("run", ""))
+    return env.get(CSV_SECRET) == CSV_SECRET_REF and (
+        f"scripts/mask-csv-secret.sh {CSV_SECRET}" in run
+    )
+
+
+def test_guard_sees_every_workflow_injecting_the_alpha_vantage_secret() -> None:
+    workflows = {name.split("/")[0] for name, _ in _jobs_injecting_csv_secret()}
+
+    assert {"fast_loop_12h.yml", "slow_loop_weekly.yml", "shock_watch_hourly.yml"} <= workflows
+
+
+def test_every_alpha_vantage_key_is_masked_before_python_runs() -> None:
+    unmasked: list[str] = []
+    for name, steps in _jobs_injecting_csv_secret():
+        mask = next((i for i, s in enumerate(steps) if _is_mask_step(s)), None)
+        python = [i for i, s in enumerate(steps) if "python" in str(s.get("run", ""))]
+        if mask is None or (python and mask > min(python)):
+            unmasked.append(name)
+
+    assert not unmasked, (
+        f"{unmasked} wstrzykują {CSV_SECRET} bez kroku `scripts/mask-csv-secret.sh "
+        f"{CSV_SECRET}` przed Pythonem — pojedynczy klucz z listy wyjdzie w logu jawnie."
+    )
+
+
+def _run_mask_script(value: str | None) -> subprocess.CompletedProcess[str]:
+    env = {"PATH": os.environ["PATH"]}
+    if value is not None:
+        env[CSV_SECRET] = value
+    return subprocess.run(
+        [str(MASK_SCRIPT), CSV_SECRET], env=env, capture_output=True, text=True, check=False
+    )
+
+
+def test_mask_script_is_executable() -> None:
+    assert MASK_SCRIPT.is_file()
+    assert os.access(MASK_SCRIPT, os.X_OK)
+
+
+def test_mask_script_masks_each_trimmed_key_and_prints_nothing_else() -> None:
+    # Split i trim jak `Settings._parse_av_keys`: przecinek, spacje, puste elementy, CR.
+    result = _run_mask_script(" av-key-one , av-key-two,,\tav-key-three\r")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "::add-mask::av-key-one",
+        "::add-mask::av-key-two",
+        "::add-mask::av-key-three",
+    ]
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize("value", [None, "", " , "])
+def test_mask_script_without_keys_is_a_quiet_no_op(value: str | None) -> None:
+    # Fork / brak sekretu: krok nie może wywalić jobu ani niczego wypisać.
+    result = _run_mask_script(value)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+# NIEZ-13: zewnętrzny heartbeat — każdy cron pętli pinguje go na koniec przebiegu.
+# Brak sekretu w repo daje pusty string, a pusty `HEARTBEAT_URL` = NullHeartbeat.
+HEARTBEAT_ENTRYPOINTS = {
+    "fast_loop_12h.yml": "main_agent.py",
+    "slow_loop_weekly.yml": "main_trainer.py",
+    "shock_watch_hourly.yml": "main_watch.py",
+}
+
+
+@pytest.mark.parametrize(("workflow", "entrypoint"), sorted(HEARTBEAT_ENTRYPOINTS.items()))
+def test_loop_workflows_map_the_heartbeat_secret(workflow: str, entrypoint: str) -> None:
+    spec = yaml.safe_load((ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8"))
+    steps = [step for job in spec["jobs"].values() for step in job.get("steps", [])]
+    run_step = next(s for s in steps if str(s.get("run", "")).endswith(entrypoint))
+
+    assert run_step.get("env", {}).get("HEARTBEAT_URL") == "${{ secrets.HEARTBEAT_URL }}"
+
+
+def test_env_example_ships_a_heartbeat_placeholder() -> None:
+    lines = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    values = [line.split("=", 1)[1] for line in lines if line.startswith("HEARTBEAT_URL=")]
+
+    assert values == ["https://hc-ping.com/your-check-uuid"]
+
+
+# WIA-11: warunki wznowienia crona Fast Loopa sprawdzalne z repo. Cron zakomentowano
+# w 02fc397 (decyzja 2), a cisza 08-17…10-15 przeszła bez alarmu — włączony
+# `schedule` wymaga deadmana z aktywnym cronem, sufitu kosztu cyklu, budżetu
+# tygodniowego, progu liveness Fast Loopa oraz jawnego zapisu i płatnych wywołań
+# w kroku agenta. Zgodność `fast_loop_cycles_per_day` z cronem pilnuje FIN-32
+# (tests/test_config_toml.py). Reszta checklisty: docs/resume-checklist.md.
+FAST_LOOP_WORKFLOW = "fast_loop_12h.yml"
+
+
+def _active_schedule(spec: Mapping[str, Any]) -> list[Any]:
+    """Wpisy `schedule` workflow; zakomentowany blok = pusta lista."""
+    # PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True.
+    triggers = spec.get("on", spec.get(True)) or {}
+    schedule = triggers.get("schedule") if isinstance(triggers, Mapping) else None
+    return list(schedule or [])
+
+
+def _entrypoint_env(spec: Mapping[str, Any], entrypoint: str) -> dict[str, Any]:
+    step = next(
+        (s for s in _workflow_steps(spec) if str(s.get("run", "")).endswith(entrypoint)), {}
+    )
+    return dict(step.get("env") or {})
+
+
+def _scheduled_deadmen(workflows: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """Workflowy, które uruchamiają `main_deadman.py` z aktywnego crona."""
+    return [
+        name
+        for name, spec in workflows.items()
+        if _active_schedule(spec)
+        and any("main_deadman.py" in str(s.get("run", "")) for s in _workflow_steps(spec))
+    ]
+
+
+def _assert_fast_loop_resume_conditions(
+    config: Mapping[str, Any], workflows: Mapping[str, Mapping[str, Any]]
+) -> None:
+    assert _scheduled_deadmen(workflows), (
+        f"{FAST_LOOP_WORKFLOW} ma aktywny cron, ale żaden workflow nie uruchamia "
+        "main_deadman.py z crona — deadman nie zauważy, że Fast Loop zamilkł "
+        "(cisza 08-17…10-15 przeszła bez alarmu)."
+    )
+    assert config.get("max_paid_llm_calls_per_cycle") is not None, (
+        "aktywny cron Fast Loopa bez `max_paid_llm_calls_per_cycle` w config.toml — "
+        "cykl nie ma sufitu płatnych wywołań LLM (FIN-12)."
+    )
+    assert config.get("fast_loop_weekly_budget_usd") is not None, (
+        "aktywny cron Fast Loopa bez `fast_loop_weekly_budget_usd` w config.toml — "
+        "start nie porówna tygodniowego najgorszego przypadku z budżetem."
+    )
+    assert float(config.get("liveness_fast_loop_max_gap_h", 0)) > 0, (
+        "aktywny cron Fast Loopa przy `liveness_fast_loop_max_gap_h = 0` w config.toml — "
+        "deadman traktuje Fast Loop jako świadomie wstrzymany i go nie sprawdza."
+    )
+    env = _entrypoint_env(workflows[FAST_LOOP_WORKFLOW], "main_agent.py")
+    assert env.get("PAID_CALLS_ENABLED") == "true", (
+        f"{FAST_LOOP_WORKFLOW} z aktywnym cronem musi ustawiać PAID_CALLS_ENABLED: "
+        '"true" — inaczej cykl idzie na atrapach (FIN-35).'
+    )
+    assert env.get("DB_WRITES_ENABLED") == "true", (
+        f"{FAST_LOOP_WORKFLOW} z aktywnym cronem musi ustawiać DB_WRITES_ENABLED: "
+        '"true" — inaczej cykl nie zapisuje snapshotów ani predykcji (BEZ-08).'
+    )
+
+
+def test_enabled_fast_loop_schedule_requires_deadman() -> None:
+    workflows = _all_workflow_specs()
+    if not _active_schedule(workflows[FAST_LOOP_WORKFLOW]):
+        pytest.skip("cron Fast Loopa zakomentowany — warunki wznowienia: docs/resume-checklist.md")
+
+    _assert_fast_loop_resume_conditions(_repo_config(), workflows)
+
+
+def _resume_ready_config(**overrides: Any) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "max_paid_llm_calls_per_cycle": 100,
+        "fast_loop_weekly_budget_usd": 7.0,
+        "liveness_fast_loop_max_gap_h": 26,
+    }
+    return {**config, **overrides}
+
+
+def _scheduled_workflow(entrypoint: str, env: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    step: dict[str, Any] = {"run": f"uv run python {entrypoint}"}
+    if env is not None:
+        step["env"] = dict(env)
+    job = {"runs-on": "ubuntu-latest", "steps": [step]}
+    triggers = {"schedule": [{"cron": "30 5 * * 1-5"}], "workflow_dispatch": None}
+    return {True: triggers, "jobs": {"run": job}}
+
+
+_AGENT_ENV = {"PAID_CALLS_ENABLED": "true", "DB_WRITES_ENABLED": "true"}
+
+
+def _resume_ready_workflows() -> dict[str, dict[str, Any]]:
+    return {
+        FAST_LOOP_WORKFLOW: _scheduled_workflow("main_agent.py", _AGENT_ENV),
+        "deadman_daily.yml": _scheduled_workflow("main_deadman.py"),
+    }
+
+
+def test_resume_guard_accepts_a_fully_prepared_resume() -> None:
+    _assert_fast_loop_resume_conditions(_resume_ready_config(), _resume_ready_workflows())
+
+
+def test_resume_guard_catches_a_missing_deadman() -> None:
+    workflows = _resume_ready_workflows()
+    del workflows["deadman_daily.yml"]
+
+    with pytest.raises(AssertionError, match="main_deadman.py"):
+        _assert_fast_loop_resume_conditions(_resume_ready_config(), workflows)
+
+
+def test_resume_guard_catches_a_deadman_without_its_cron() -> None:
+    workflows = _resume_ready_workflows()
+    workflows["deadman_daily.yml"][True] = {"workflow_dispatch": None}
+
+    with pytest.raises(AssertionError, match="main_deadman.py"):
+        _assert_fast_loop_resume_conditions(_resume_ready_config(), workflows)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"max_paid_llm_calls_per_cycle": None}, "max_paid_llm_calls_per_cycle"),
+        ({"fast_loop_weekly_budget_usd": None}, "fast_loop_weekly_budget_usd"),
+        ({"liveness_fast_loop_max_gap_h": 0}, "liveness_fast_loop_max_gap_h"),
+    ],
+)
+def test_resume_guard_catches_each_missing_config_condition(
+    overrides: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(AssertionError, match=message):
+        _assert_fast_loop_resume_conditions(
+            _resume_ready_config(**overrides), _resume_ready_workflows()
+        )
+
+
+@pytest.mark.parametrize("switch", ["PAID_CALLS_ENABLED", "DB_WRITES_ENABLED"])
+def test_resume_guard_catches_each_missing_workflow_switch(switch: str) -> None:
+    workflows = _resume_ready_workflows()
+    env = {key: value for key, value in _AGENT_ENV.items() if key != switch}
+    workflows[FAST_LOOP_WORKFLOW] = _scheduled_workflow("main_agent.py", env)
+
+    with pytest.raises(AssertionError, match=switch):
+        _assert_fast_loop_resume_conditions(_resume_ready_config(), workflows)
+
+
+def test_resume_guard_reads_the_real_deadman_schedule() -> None:
+    # Parser crona musi widzieć prawdziwy `on: schedule` (klucz True w PyYAML) —
+    # inaczej warunkowy test wyżej byłby pomijany także przy odkomentowanym cronie.
+    assert _scheduled_deadmen(_all_workflow_specs()) == ["deadman_daily.yml"]

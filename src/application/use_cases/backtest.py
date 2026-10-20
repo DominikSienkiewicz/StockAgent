@@ -26,9 +26,13 @@ class BacktestUseCase:
     pustego `BacktestSummary`.
     """
 
-    def __init__(self, ml_port: MLPredictionPort, db_port: RepositoryPort) -> None:
+    def __init__(
+        self, ml_port: MLPredictionPort, db_port: RepositoryPort, *, cost_bps: float = 0.0
+    ) -> None:
         self._ml_port = ml_port
         self._db_port = db_port
+        # WIA-50: jednostronny koszt obrotu do zwrotu netto strategii znakowej.
+        self._cost_bps = cost_bps
 
     def run(self, symbol: str, *, refresh_view: bool = False) -> BacktestSummary:
         if refresh_view:
@@ -56,7 +60,7 @@ class BacktestUseCase:
         folds = self._ml_port.walk_forward_report(
             df[list(ML_FEATURE_COLUMNS)], df[TARGET_COLUMN], timestamps=stamps
         )
-        return summarize_folds(folds)
+        return summarize_folds(folds, cost_bps=self._cost_bps)
 
 
 def _too_few_samples_summary(n_valid: int) -> BacktestSummary:

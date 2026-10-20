@@ -22,7 +22,11 @@ import requests
 
 from src.application.ports import EarningsCalendarPort
 from src.domain.earnings import EarningsEvent
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import (
+    build_session,
+    raise_for_status_redacted,
+    safe_get,
+)
 
 DEFAULT_BASE_URL = "https://www.alphavantage.co"
 DEFAULT_TIMEOUT = 10.0
@@ -61,7 +65,8 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
             return None
 
     def _fetch_csv(self, symbol: str) -> str | None:
-        response = self._session.get(
+        response = safe_get(
+            self._session,
             f"{self._base_url}/query",
             params={
                 "function": "EARNINGS_CALENDAR",
@@ -71,7 +76,7 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
             },
             timeout=self._timeout,
         )
-        response.raise_for_status()
+        raise_for_status_redacted(response)
         text = response.text
         # AV przy rate-limit / błędzie zwraca JSON note zamiast CSV — wykrywamy
         # to po wiodącym `{` i odmawiamy parsowania jako CSV.

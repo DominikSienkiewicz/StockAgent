@@ -1,23 +1,33 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
-from src.application.ports import MarketDataPort
+from src.application.ports import DailyChangePort, MarketDataPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.shock import DailyChange
 from src.domain.value_objects import Money
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import (
+    build_session,
+    raise_for_status_redacted,
+    safe_get,
+)
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10  # sekundy
 
 
-class FinnhubAdapter(MarketDataPort):
+class FinnhubAdapter(MarketDataPort, DailyChangePort):
     """Adapter dla Finnhub Quote API.
 
     Endpoint: GET /quote?symbol={symbol}&token={api_key}
-    Response: {"c": current_price, "d": change, "dp": percent_change, ...}
+    Response: {"c": current_price, "d": change, "dp": percent_change,
+    "pc": previous_close, "t": quote_unix_time, ...}
     """
 
     def __init__(
@@ -34,7 +44,38 @@ class FinnhubAdapter(MarketDataPort):
         self._quota_monitor = quota_monitor
 
     def get_current_price(self, symbol: str) -> Money:
-        response = self._session.get(
+        payload = self._fetch_quote(symbol)
+        price = payload.get("c")
+        if not price:
+            # Nie logujemy całego payloadu — Finnhub error responses bywają
+            # niedeterministyczne i mogą zawierać dane diagnostyczne kontekstu
+            # konta. Wystarczy boolowski status pól, których brakuje.
+            has_change = "d" in payload
+            raise ValueError(
+                f"Finnhub returned no price for symbol '{symbol}' "
+                f"(has_change_field={has_change}). Ticker may be invalid or delisted."
+            )
+
+        return Money(Decimal(str(price)))
+
+    def get_daily_change(self, symbol: str) -> DailyChange:
+        """ALR-02: `dp` (procent od poprzedniego zamknięcia) jako ułamek i `t`
+        jako chwila notowania — to samo darmowe /quote co cena."""
+        payload = self._fetch_quote(symbol)
+        percent, stamp = payload.get("dp"), payload.get("t")
+        if not payload.get("c") or percent is None or not stamp:
+            raise ValueError(
+                f"Finnhub returned no daily change for symbol '{symbol}' "
+                f"(has_dp={percent is not None}, has_t={bool(stamp)})."
+            )
+        return DailyChange(
+            fraction=Decimal(str(percent)) / 100,
+            as_of=datetime.fromtimestamp(int(stamp), tz=UTC),
+        )
+
+    def _fetch_quote(self, symbol: str) -> dict[str, Any]:
+        response = safe_get(
+            self._session,
             f"{self._base_url}/quote",
             params={"symbol": symbol, "token": self._api_key},
             timeout=self._timeout,
@@ -49,33 +90,29 @@ class FinnhubAdapter(MarketDataPort):
             self._emit_quota_alert(
                 severity=QuotaSeverity.CRITICAL,
                 message=(
+                    f"Finnhub zwrócił 429 dla '{symbol}' — wyczerpany darmowy "
+                    "limit (60 zapytań/min)."
+                ),
+                action=(
+                    "Zmniejsz liczbę SYMBOLS albo podnieś SYMBOL_THROTTLE_SECONDS, "
+                    "żeby spowolnić pętlę, albo podnieś plan Finnhub."
+                ),
+                log_message=(
                     f"Finnhub returned 429 for '{symbol}' — free tier "
                     "limit (60 req/min) exhausted."
                 ),
-                action=(
-                    "Reduce SYMBOLS count or raise SYMBOL_THROTTLE_SECONDS "
-                    "to slow the loop, or upgrade Finnhub plan."
-                ),
             )
-        response.raise_for_status()
-
-        payload = response.json()
-        price = payload.get("c")
-        if not price:
-            # Nie logujemy całego payloadu — Finnhub error responses bywają
-            # niedeterministyczne i mogą zawierać dane diagnostyczne kontekstu
-            # konta. Wystarczy boolowski status pól, których brakuje.
-            has_change = "d" in payload
-            raise ValueError(
-                f"Finnhub returned no price for symbol '{symbol}' "
-                f"(has_change_field={has_change}). Ticker may be invalid or delisted."
-            )
-
-        return Money(Decimal(str(price)))
+        raise_for_status_redacted(response)
+        payload: dict[str, Any] = response.json()
+        return payload
 
     def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str
+        self, severity: QuotaSeverity, message: str, action: str, log_message: str
     ) -> None:
+        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
+        # zostaje angielską diagnozą w logach.
+        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
+        logger.log(level, "%s", log_message)
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(

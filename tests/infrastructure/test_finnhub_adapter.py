@@ -106,6 +106,39 @@ class TestGetCurrentPrice:
         with pytest.raises(ValueError, match="price"):
             adapter.get_current_price("DELISTED")
 
+    def test_http_error_message_omits_token(self, adapter, mocker):
+        # BEZ-07: prawdziwy Response — `requests` wkleja URL z `&token=` do komunikatu,
+        # który trafia do maila (błąd symbolu) i publicznych logów GHA.
+        import traceback
+
+        response = requests.Response()
+        response.status_code = 401
+        response.reason = "Unauthorized"
+        response.url = "https://finnhub.io/api/v1/quote?symbol=AAPL&token=test-token-123"
+        mocker.patch("requests.Session.get", return_value=response)
+
+        with pytest.raises(requests.HTTPError) as excinfo:
+            adapter.get_current_price("AAPL")
+
+        assert "401 Client Error" in str(excinfo.value)
+        assert "test-token-123" not in str(excinfo.value)
+        assert "test-token-123" not in "".join(traceback.format_exception(excinfo.value))
+
+    def test_network_error_message_omits_token(self, adapter, mocker):
+        # BEZ-07: ConnectionError po wyczerpaniu retry też niesie URL z kluczem.
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=requests.ConnectionError(
+                "Max retries exceeded with url: /api/v1/quote?symbol=AAPL&token=test-token-123"
+            ),
+        )
+
+        with pytest.raises(requests.ConnectionError) as excinfo:
+            adapter.get_current_price("AAPL")
+
+        assert "test-token-123" not in str(excinfo.value)
+        assert excinfo.value.__cause__ is None
+
 
 class TestAdapterImplementsPort:
     def test_is_market_data_port(self):
@@ -169,3 +202,86 @@ class TestQuotaAlertEmit:
         adapter.get_current_price("AAPL")
 
         assert monitor.alerts == []
+
+
+def test_rate_limit_alert_is_polish_and_logged_in_english(mocker, caplog) -> None:
+    # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
+    import logging
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = FinnhubAdapter(api_key="x", quota_monitor=monitor)
+    response = Mock(spec=requests.Response)
+    response.status_code = 429
+    response.raise_for_status.side_effect = requests.HTTPError("429")
+    mocker.patch("requests.Session.get", return_value=response)
+
+    with caplog.at_level(logging.WARNING), pytest.raises(requests.HTTPError):
+        adapter.get_current_price("AAPL")
+
+    alert = monitor.alerts[0]
+    assert "wyczerpany darmowy limit" in alert.message
+    assert "exhausted" not in alert.message
+    assert "SYMBOL_THROTTLE_SECONDS" in alert.action
+    assert "Finnhub returned 429 for 'AAPL'" in caplog.text
+
+
+class TestGetDailyChange:
+    """ALR-02: `dp` (procent od poprzedniego zamknięcia) i `t` (chwila notowania)
+    z tego samego darmowego /quote — watch nie potrzebuje snapshotu Fast Loopa."""
+
+    def test_returns_fraction_and_quote_time(self, adapter, mocker):
+        from datetime import UTC, datetime
+
+        from src.domain.shock import DailyChange
+
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response(
+                {"c": 182.0, "d": -18.0, "dp": -9.0, "pc": 200.0, "t": 1760630400}
+            ),
+        )
+
+        reading = adapter.get_daily_change("AAPL")
+
+        assert reading == DailyChange(
+            fraction=Decimal("-0.09"),
+            as_of=datetime.fromtimestamp(1760630400, tz=UTC),
+        )
+
+    def test_raises_value_error_without_quote_time(self, adapter, mocker):
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response({"c": 182.0, "dp": -9.0, "t": 0}),
+        )
+
+        with pytest.raises(ValueError, match="daily change"):
+            adapter.get_daily_change("AAPL")
+
+    def test_raises_value_error_for_unknown_ticker(self, adapter, mocker):
+        # Finnhub: nieznany ticker to same zera i `dp: null`.
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response({"c": 0, "d": None, "dp": None, "t": 0}),
+        )
+
+        with pytest.raises(ValueError):
+            adapter.get_daily_change("NOPE")
+
+    def test_http_error_message_omits_token(self, adapter, mocker):
+        response = requests.Response()
+        response.status_code = 401
+        response.reason = "Unauthorized"
+        response.url = "https://finnhub.io/api/v1/quote?symbol=AAPL&token=test-token-123"
+        mocker.patch("requests.Session.get", return_value=response)
+
+        with pytest.raises(requests.HTTPError) as excinfo:
+            adapter.get_daily_change("AAPL")
+
+        assert "test-token-123" not in str(excinfo.value)
+
+    def test_is_daily_change_port(self):
+        from src.application.ports import DailyChangePort
+
+        assert issubclass(FinnhubAdapter, DailyChangePort)

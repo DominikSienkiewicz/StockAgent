@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -20,6 +21,7 @@ from src.application.report_builder import (
     detect_risk_signals,
     market_status,
     parse_resolved_predictions,
+    to_lead_signals,
     to_symbol_result,
 )
 from src.application.report_formatting import company_label
@@ -28,9 +30,10 @@ from src.application.run_context import RunContext
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.cycle_maturity import SkipReason
+from src.domain.equity_curve import EquityCurve, EquityPoint
 from src.domain.model_scorecard import summarize_evaluations, summarize_run
 from src.domain.persona_track_record import PersonaTrackRecord
-from src.domain.portfolio import Portfolio, Position
+from src.domain.portfolio import PlnRates, Portfolio, Position
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
 
@@ -112,7 +115,7 @@ class TestCryptoSection:
             datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0,
         )
         assert "🪙" in html
-        assert "$3200.00" in html
+        assert "$3\u00a0200,00" in html
 
     def test_crypto_section_in_plain_text(self):
         _, text = build_html_report(
@@ -175,13 +178,15 @@ class TestBuildHtmlReport:
     def test_html_shows_sector_in_predictions(self):
         # AAPL → Big Tech, doklejony przy nazwie spółki w sekcji PREDYKCJE.
         html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(sector_map={"AAPL": "Big Tech"}),
         )
         assert "Big Tech" in html
 
     def test_plain_text_shows_sector_in_predictions(self):
         _, text = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(sector_map={"AAPL": "Big Tech"}),
         )
         assert "Big Tech" in text
 
@@ -194,7 +199,11 @@ class TestBuildHtmlReport:
             sentiment_score=0.3, sentiment_label="Bullish",
         )
         html, text = build_html_report(
-            [hot], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+            [hot], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(
+                sector_map={"CRWD": "Cyberbezpieczeństwo"},
+                sector_peers={"Cyberbezpieczeństwo": ["ZS", "FTNT", "CYBR", "TENB", "QLYS"]},
+            ),
         )
         assert "Warte uwagi" in html
         assert "WARTE UWAGI" in text
@@ -211,7 +220,11 @@ class TestBuildHtmlReport:
             sentiment_score=0.05, sentiment_label="Neutral",
         )
         html, text = build_html_report(
-            [cold], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+            [cold], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            ReportContext(
+                sector_map={"AAPL": "Big Tech"},
+                sector_peers={"Big Tech": ["NFLX", "DIS"]},
+            ),
         )
         assert "Warte uwagi" not in html
         assert "WARTE UWAGI" not in text
@@ -241,8 +254,8 @@ class TestBuildHtmlReport:
         _, text = build_html_report(
             [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
         )
-        assert "$298.87" in text
-        assert "2.50%" in text
+        assert "$298,87" in text
+        assert "2,50%" in text
 
     def test_handles_empty_results(self):
         html, text = build_html_report(
@@ -348,8 +361,8 @@ class TestForecastDetails:
             [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
         )
         # Prognoza pokazana jako "$305.00 (+2.05%)"
-        assert "$305.00" in html
-        assert "+2.05%" in html or "+2.04%" in html
+        assert "$305,00" in html
+        assert "+2,05%" in html or "+2,04%" in html
 
     def test_html_shows_confidence_percent(self):
         html, _ = build_html_report(
@@ -370,7 +383,7 @@ class TestForecastDetails:
             [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
         )
         assert "Oczekiwany ruch" in html
-        assert "$298.87 → $305.00" in html
+        assert "$298,87 → $305,00" in html
 
 
 class TestForecastChart:
@@ -511,7 +524,7 @@ class TestAccuracyStats:
                     "days_window": 30,
                 },
                      ))
-        assert "72.0%" in html or "72%" in html
+        assert "72,0%" in html or "72%" in html
         assert "50" in html
         assert "30 dni" in html
 
@@ -710,10 +723,10 @@ class TestDayOverDay:
         assert "Trafiona" in text
         assert "Błędna" in text
 
-    def test_no_section_when_no_resolved(self):
+    def test_empty_settlements_say_so(self):
         html, _ = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(resolved_predictions=[]))
-        assert "Zamknięte predykcje" not in html
+        assert "Brak rozliczeń predykcji z ostatnich 24h." in html
 
 
 class TestResolvedPostMortem:
@@ -757,7 +770,7 @@ class TestResolvedPostMortem:
         # (1) dlaczego prognoza mówiła spadek
         assert "Słabe wyniki kwartalne" in html
         # (2) co się faktycznie stało — ruch ceny
-        assert "+4.00%" in html
+        assert "+4,00%" in html
         # (3) dlaczego się NIE potwierdziła — diagnoza
         assert "Zignorowałem odbicie całego sektora chmury" in html
         # plain text też niesie pełen post-mortem
@@ -817,7 +830,7 @@ class TestResolvedPostMortem:
             ReportContext(resolved_predictions=resolved),
         )
         assert "Popyt na GPU do AI rośnie" in html
-        assert "+6.00%" in html
+        assert "+6,00%" in html
         assert "Trafiona" in html
 
     def test_crypto_closed_prediction_is_covered_and_tagged(self):
@@ -832,7 +845,7 @@ class TestResolvedPostMortem:
         ]
         html, _ = build_html_report(
             [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-            ReportContext(resolved_predictions=resolved),
+            ReportContext(resolved_predictions=resolved, sector_map={"BTC": "Krypto"}),
         )
         assert "BTC" in html
         assert "Krypto" in html  # tag klasy aktywa (company_label_with_sector)
@@ -1328,6 +1341,72 @@ class TestProvenanceBadgesInReport:
         assert "Dane zdegradowane" in text
 
 
+def _wall_clock_at(moment: datetime) -> type[datetime]:
+    """Podmiana `datetime` w module raportu: `now()` zwraca `moment`."""
+
+    class _WallClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment
+
+    return _WallClock
+
+
+class TestInjectedClock:
+    """ARCH-26 — wiek fundamentów w odznakach liczy się od zegara cyklu
+    (`now`), nie od chwili, w której mapper akurat się wykonał."""
+
+    _NOW = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+
+    def _raw(self, fundamentals_age: timedelta) -> dict:
+        from src.domain.value_objects import Fundamentals
+
+        return {
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("103"),
+            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
+                             "reasoning": "r"},
+            "sentiment": {"av_sentiment_score": 0.2},
+            "data_quality_flags": [],
+            "fundamentals": Fundamentals(
+                trailing_pe=None, forward_pe=None, peg_ratio=None, eps_growth_yoy=None,
+                fetched_at=self._NOW - fundamentals_age,
+            ),
+        }
+
+    def test_to_symbol_result_uses_injected_now(self):
+        # 24 h względem wstrzykniętego zegara = świeże; wobec zegara rzeczywistego
+        # (dowolna data po 2026-01-16) te same fundamenty przekraczają TTL 144 h.
+        raw = self._raw(timedelta(hours=24))
+        first = to_symbol_result("AAPL", raw, now=self._NOW)
+        second = to_symbol_result("AAPL", raw, now=self._NOW)
+        assert first.provenance_badges == second.provenance_badges
+        assert [b.level.value for b in first.provenance_badges] == ["FRESH"]
+
+    def test_stale_age_is_measured_from_injected_now(self):
+        result = to_symbol_result("AAPL", self._raw(timedelta(hours=200)), now=self._NOW)
+        details = [b.detail for b in result.provenance_badges if b.level.value == "STALE"]
+        assert details == ["fundamenty: 200h (TTL 144h)"]
+
+    def test_same_now_gives_identical_report_whatever_the_wall_clock(self, monkeypatch):
+        raw = self._raw(timedelta(hours=100))
+        reports = []
+        for wall_clock in (self._NOW, self._NOW + timedelta(days=30)):
+            monkeypatch.setattr(report_builder, "datetime", _wall_clock_at(wall_clock))
+            result = to_symbol_result("AAPL", raw, now=self._NOW)
+            reports.append(build_html_report([result], self._NOW, 1.0))
+        assert reports[0] == reports[1]
+
+    def test_without_now_the_mapper_falls_back_to_the_wall_clock(self, monkeypatch):
+        monkeypatch.setattr(
+            report_builder, "datetime", _wall_clock_at(self._NOW + timedelta(days=30))
+        )
+        result = to_symbol_result("AAPL", self._raw(timedelta(hours=100)))
+        assert "STALE" in [b.level.value for b in result.provenance_badges]
+
+
 class TestCompanyLabel:
     def test_known_symbol_returns_name(self):
         assert company_label("AAPL") == "AAPL (Apple Inc.)"
@@ -1443,7 +1522,7 @@ class TestRecommendationInReport:
         )
         assert "SPRZEDAJ" in after_header
 
-    def test_html_shows_wstrzymaj_for_sideways(self):
+    def test_html_shows_trzymaj_for_sideways(self):
         r = SymbolResult(
             symbol="IBM", status="saved", trend="SIDEWAYS",
             confidence_score=0.6, current_price=Decimal("150"),
@@ -1456,7 +1535,22 @@ class TestRecommendationInReport:
             if "Wygenerowane predykcje" in html
             else html
         )
-        assert "WSTRZYMAJ" in after_header
+        assert "TRZYMAJ" in after_header
+
+    def test_sideways_signal_uses_the_council_hold_label(self):
+        # Decyzja 2026-10-19: ruch boczny i HOLD rady to jedna etykieta — TRZYMAJ.
+        r = SymbolResult(
+            symbol="IBM", status="saved", trend="SIDEWAYS",
+            confidence_score=0.6, current_price=Decimal("150"),
+            target_price=Decimal("151"), reasoning="mixed signals",
+            sentiment_score=0.0,
+        )
+        html, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+        assert "Sygnał modelu: TRZYMAJ" in html
+        assert "Sygnał modelu: TRZYMAJ" in text
+        assert "WSTRZYMAJ" not in html
+        assert "WSTRZYMAJ" not in text
 
     def test_html_recommendation_includes_why_reason(self):
         r = SymbolResult(
@@ -1468,7 +1562,7 @@ class TestRecommendationInReport:
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         # Powinien być powód (pewność / prognoza zmiana)
         assert "80%" in html  # pewność
-        assert "+6.00%" in html  # prognozowana zmiana
+        assert "+6,00%" in html  # prognozowana zmiana
 
     def test_plain_text_includes_recommendation(self):
         r = SymbolResult(
@@ -1654,8 +1748,8 @@ class TestLeadSection:
 
         html, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
 
-        assert "NVDA -4.2%, rada PODZIELONA" in html
-        assert "NVDA -4.2%, rada PODZIELONA" in text
+        assert "NVDA -4,2%, rada PODZIELONA" in html
+        assert "NVDA -4,2%, rada PODZIELONA" in text
 
 
 class TestSkipReasonMapping:
@@ -1781,9 +1875,9 @@ class TestColdStartForecast:
         assert "Oczekiwany ruch: — (ML: cold-start)" in html
         assert "Prognozowana zmiana" not in html
         # "(+0.00%)" to dotychczasowy format kolumny prognozy i linii ruchu.
-        assert "(+0.00%)" not in html
+        assert "(+0,00%)" not in html
         assert "prognoza — (ML: cold-start)" in text
-        assert "(+0.00%)" not in text
+        assert "(+0,00%)" not in text
 
     def test_trained_forecast_has_no_cold_start_label(self):
         html, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1850,9 +1944,9 @@ class TestColdStartSignalsAndChart:
         )
         assert "Najsilniejsze sygnały" in html
         assert "ranking wg pewności" in html
-        assert "+0.00%" not in html
+        assert "+0,00%" not in html
         assert "ranking wg pewności" in text
-        assert "+0.00%" not in text
+        assert "+0,00%" not in text
 
     def test_forecast_chart_skips_cold_start_results(self):
         assert build_forecast_chart_html([_cold_start_result()]) == ""
@@ -1968,8 +2062,8 @@ class TestTradeSignalCalibrationAndStrength:
         assert "siła sygnału" not in html
         assert "#1" in html
         assert "#2" in html
-        assert "ruch 3.1% × pewność skalibrowana 58%" in html
-        assert "ruch 3.1% × pewność 85%" in html
+        assert "ruch 3,1% × pewność skalibrowana 58%" in html
+        assert "ruch 3,1% × pewność 85%" in html
 
     def test_html_uncalibrated_signal_shows_raw_confidence_only(self):
         html = report_builder._render_trade_signals_html(
@@ -1990,7 +2084,7 @@ class TestTradeSignalCalibrationAndStrength:
         ])
 
         assert "wg pewności skalibrowanej 58%" in html
-        assert "ruch 0.0%" not in html
+        assert "ruch 0,0%" not in html
 
     def test_text_shows_calibration_and_rank_components(self):
         lines = report_builder._render_trade_signals_text(
@@ -1999,7 +2093,7 @@ class TestTradeSignalCalibrationAndStrength:
         text = "\n".join(lines)
 
         assert "pewność 85% → 58% po kalibracji (n kubełka: 12)" in text
-        assert "#1 · ruch 3.1% × pewność skalibrowana 58%" in text
+        assert "#1 · ruch 3,1% × pewność skalibrowana 58%" in text
         assert "siła " not in text
 
 
@@ -2033,18 +2127,18 @@ class TestAccuracyHistoryBothDefinitions:
         html = self._html(self._STATS)
 
         assert "Trafność kierunkowa (bez prognoz „bez ruchu”)" in html
-        assert "65.0%" in html
+        assert "65,0%" in html
         assert "n=40" in html
         assert "Trafność łączna (z prognozami „bez ruchu”)" in html
-        assert "72.0%" in html
+        assert "72,0%" in html
         assert "95% CI 58–83%, n=50" in html
         assert "Średnia trafność" not in html
 
     def test_text_shows_directional_next_to_total(self):
         text = self._text(self._STATS)
 
-        assert "Trafność kierunkowa (bez prognoz „bez ruchu”): 65.0%" in text
-        assert "Trafność łączna (z prognozami „bez ruchu”): 72.0%" in text
+        assert "Trafność kierunkowa (bez prognoz „bez ruchu”): 65,0%" in text
+        assert "Trafność łączna (z prognozami „bez ruchu”): 72,0%" in text
         assert "Średnia trafność" not in text
 
     def test_no_directional_calls_is_said_plainly(self):
@@ -2203,7 +2297,7 @@ def test_user_portfolio_lists_a_position_the_cycle_could_not_price():
         ReportContext(user_portfolio=portfolio),
     )
 
-    assert "Bez wyceny w tym cyklu: XDWD.DE (≈ 44.4% kosztu)" in html
+    assert "Bez wyceny w tym cyklu: XDWD.DE (≈ 44,4% kosztu)" in html
 
 
 def test_held_price_outside_the_watchlist_prices_the_position():
@@ -2226,7 +2320,7 @@ def test_held_price_outside_the_watchlist_prices_the_position():
     )
 
     assert "Bez wyceny" not in html
-    assert "$820.00" in html
+    assert "$820,00" in html
 
 
 def test_lead_warns_about_a_council_signal_against_a_large_position():
@@ -2265,9 +2359,9 @@ def test_lead_warns_about_a_council_signal_against_a_large_position():
         ReportContext(user_portfolio=portfolio, held_prices={"AAPL": Decimal("3000")}),
     )
 
-    headline = "Sygnał przeciw Twojej pozycji: rada SPRZEDAJ na NVDA (25% portfela) -4.2%"
+    headline = "Sygnał przeciw Twojej pozycji: rada SPRZEDAJ na NVDA (25% portfela) -4,2%"
     assert headline in html
-    assert html.index(headline) < html.index("AMD +8.0%, rada zgodna")
+    assert html.index(headline) < html.index("AMD +8,0%, rada zgodna")
     assert headline in text
 
 
@@ -2290,7 +2384,7 @@ def test_plain_text_email_carries_the_user_portfolio_section():
     )
 
     assert "=== 💼 Twój portfel ===" in text
-    assert "$2,988.70" in text
+    assert "$2\u00a0988,70" in text
     assert "USER_PORTFOLIO_SLOT" not in text
 
 
@@ -2302,7 +2396,7 @@ def test_plain_text_without_user_portfolio_keeps_the_html_section():
     )
 
     assert "Twój portfel" not in text
-    assert "$2,988.70" not in text
+    assert "$2\u00a0988,70" not in text
     assert "USER_PORTFOLIO_SLOT" not in text
     assert "Twój portfel" in html
 
@@ -2374,7 +2468,9 @@ def _consensus(summary: str) -> CouncilVerdict:
 
 
 def _first_element(html: str) -> str:
-    return html[: html.index("</div>") + len("</div>")]
+    # MAIL-57: mail jest kompletnym dokumentem — preheader to pierwszy element <body>.
+    body = html[html.index("<body>") + len("<body>"):]
+    return body[: body.index("</div>") + len("</div>")]
 
 
 def test_html_starts_with_hidden_preheader_from_lead():
@@ -2549,8 +2645,8 @@ class TestMoveIntervalInReport:
 
         html, text = build_html_report([result], self._STARTED, 1.0)
 
-        assert "80% przedział: −2.1% … +2.4% (n=57)" in html
-        assert "80% przedział: −2.1% … +2.4% (n=57)" in text
+        assert "80% przedział: -2,1% … +2,4% (n=57)" in html
+        assert "80% przedział: -2,1% … +2,4% (n=57)" in text
 
     def test_short_window_says_so_instead_of_a_number(self):
         result = self._with_interval(low=None, high=None, calibration_size=12)
@@ -2575,7 +2671,7 @@ class TestMoveIntervalInReport:
 
         html, _ = build_html_report([result], self._STARTED, 1.0)
 
-        assert "80% przedział: −1.0% … +1.2% (n=30)" in html
+        assert "80% przedział: -1,0% … +1,2% (n=30)" in html
 
     def test_to_symbol_result_carries_the_interval_from_the_graph(self):
         from src.domain.conformal import MoveInterval
@@ -2590,3 +2686,793 @@ class TestMoveIntervalInReport:
         result = to_symbol_result("AAPL", {"status": "saved", "move_interval": "x"})
 
         assert result.move_interval is None
+
+
+class TestInvestmentDisclaimer:
+    """MAIL-08 (G21): „Sygnał modelu: KUP” i bandy % portfela nie mogą iść bez
+    zastrzeżenia. Stopka HTML i koniec tekstu niosą je ZAWSZE — także w raporcie
+    bez predykcji, w raporcie subskrybenta (fan-out) i w HTML-u web digestu."""
+
+    _DISCLAIMER = "nie stanowi rekomendacji inwestycyjnej"
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    _RUN = RunContext(run_id="77", git_sha="abc1234def")
+
+    @pytest.mark.parametrize(
+        ("results", "context"),
+        [
+            ([], ReportContext()),
+            ([_saved_result(), _ignored_result(), _error_result()], ReportContext()),
+            ([_saved_result()], ReportContext(symbols_filter=frozenset({"MSFT"}))),
+            ([_saved_result()], ReportContext(run_context=_RUN)),
+        ],
+        ids=["empty-cycle", "full-cycle", "subscriber-fan-out", "with-run-footer"],
+    )
+    def test_html_and_plain_always_carry_disclaimer(self, results, context):
+        html, text = build_html_report(results, self._STARTED, 1.0, context)
+
+        assert self._DISCLAIMER in html
+        assert self._DISCLAIMER in text
+
+    def test_html_disclaimer_sits_in_the_footer_after_the_predictions(self):
+        html, _ = build_html_report([_saved_result()], self._STARTED, 1.0)
+
+        assert html.index("Wygenerowane predykcje") < html.index(self._DISCLAIMER)
+        assert html.index(self._DISCLAIMER) < html.index("raport automatyczny")
+
+    def test_plain_disclaimer_closes_the_body_before_the_run_footer(self):
+        _, text = build_html_report(
+            [_saved_result()], self._STARTED, 1.0, ReportContext(run_context=self._RUN)
+        )
+
+        assert text.index("Strong macro tailwinds") < text.index(self._DISCLAIMER)
+        assert text.index(self._DISCLAIMER) < text.index("przebieg #77")
+
+
+def test_predictions_table_says_model_signal_not_recommendation():
+    # MAIL-27: zastrzeżenie „nie stanowi rekomendacji” obok nagłówka
+    # „Rekomendacja” było sprzeczne — tabela i blok uzasadnień mówią o sygnale.
+    html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+    predictions = html.split("Wygenerowane predykcje")[1]
+    assert ">Sygnał modelu<" in predictions
+    assert "Sygnał modelu: KUP" in predictions
+    assert ">Rekomendacja<" not in html
+    assert "Rekomendacja: KUP" not in html
+
+
+def test_plain_text_says_model_signal_not_recommendation():
+    _, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+    assert "Sygnał modelu: KUP (pewność 85%" in text
+    assert "Rekomendacja" not in text
+
+
+
+class TestLeadInPolish:
+    """MAIL-15: lead i temat maila mówią po polsku — angielskie BULLISH/BUY
+    zostają w logach i w bazie, nie w treści."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def test_resolved_label_names_the_forecast_in_polish(self):
+        results = [
+            SymbolResult(symbol="NVDA", status="saved", delta=Decimal("0.03")),
+            SymbolResult(symbol="AMD", status="saved", delta=Decimal("-0.02")),
+            SymbolResult(symbol="IBM", status="saved", delta=Decimal("0.001")),
+        ]
+        resolved = [
+            ResolvedPrediction(symbol="NVDA", predicted_trend="BULLISH", is_correct=True),
+            ResolvedPrediction(symbol="AMD", predicted_trend="BEARISH", is_correct=False),
+            ResolvedPrediction(symbol="IBM", predicted_trend="SIDEWAYS", is_correct=True),
+        ]
+
+        labels = {s.symbol: s.resolved_label for s in to_lead_signals(results, resolved)}
+
+        assert labels == {
+            "NVDA": "trafiona prognoza wzrostu",
+            "AMD": "chybiona prognoza spadku",
+            "IBM": "trafiona prognoza ruchu bocznego",
+        }
+
+    def test_closed_prediction_lead_has_no_english_trend(self):
+        results = [SymbolResult(symbol="NVDA", status="saved", delta=Decimal("0.03"))]
+        resolved = [
+            ResolvedPrediction(symbol="NVDA", predicted_trend="BULLISH", is_correct=True)
+        ]
+
+        html, text = build_html_report(
+            results, self._STARTED, 1.0, ReportContext(resolved_predictions=resolved)
+        )
+
+        assert "NVDA +3,0%: trafiona prognoza wzrostu" in html
+        assert "NVDA +3,0%: trafiona prognoza wzrostu" in text
+        assert "BULLISH" not in html
+        assert "BULLISH" not in text
+
+    def test_quota_banner_severity_is_polish(self):
+        alert = QuotaAlert(
+            source="Resend", severity=QuotaSeverity.CRITICAL,
+            message="Resend zwrócił 429.", action="Poczekaj na reset.",
+            occurred_at=self._STARTED,
+        )
+
+        html, text = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(quota_alerts=[alert])
+        )
+
+        assert "KRYTYCZNY" in html
+        assert "KRYTYCZNY" in text
+        assert "CRITICAL" not in html
+        assert "CRITICAL" not in text
+
+
+
+class TestResolvedSectionWhenNothingSettled:
+    """MAIL-25: pusta sekcja nie odróżniała „nic się nie zamknęło” od awarii
+    odczytu. Pusta lista rozliczeń → jawna linia zgodna z oknem nagłówka
+    (WIA-19); awaria odczytu → ostrzeżenie, nigdy „brak rozliczeń”."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def test_cycle_window_says_nothing_settled_in_this_cycle(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0,
+            ReportContext(resolved_predictions=[], resolved_this_cycle=True),
+        )
+
+        assert "Zamknięte predykcje (rozliczone w tym cyklu)" in html
+        assert "Brak rozliczeń w tym cyklu." in html
+        assert "ZAMKNIĘTE PREDYKCJE (rozliczone w tym cyklu)" in text
+        assert "Brak rozliczeń w tym cyklu." in text
+        assert "ostatnich 24h" not in html
+
+    def test_24h_window_keeps_its_own_wording(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(resolved_predictions=[])
+        )
+
+        assert "Zamknięte predykcje (ostatnie 24h)" in html
+        assert "ZAMKNIĘTE PREDYKCJE (ostatnie 24h)" in text
+        assert "Brak rozliczeń predykcji z ostatnich 24h." in text
+        assert "w tym cyklu" not in text
+
+    def test_read_failure_is_not_dressed_up_as_no_settlements(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0,
+            ReportContext(resolved_predictions=[], resolved_unavailable=True),
+        )
+
+        assert "Nie udało się odczytać rozliczeń" in html
+        assert "Nie udało się odczytać rozliczeń" in text
+        assert "Brak rozliczeń" not in html
+        assert "Brak rozliczeń" not in text
+
+    def test_preheader_does_not_count_zero_settlements_on_read_failure(self):
+        html, _ = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(resolved_unavailable=True)
+        )
+
+        first = _first_element(html)
+        assert "Brak sygnałów ponad próg · rozliczenia niedostępne" in first
+        assert "0 zamkniętych predykcji" not in first
+
+    def test_report_without_settlement_data_keeps_no_section(self):
+        # Wołający, który nie dociąga rozliczeń (None), nie dostaje fałszywego
+        # „brak rozliczeń” — tylko pusta lista z udanego odczytu jest informacją.
+        html, text = build_html_report([], self._STARTED, 1.0, ReportContext())
+
+        assert "Zamknięte predykcje" not in html
+        assert "ZAMKNIĘTE PREDYKCJE" not in text
+
+
+class TestStaleReferenceReport:
+    """FIN-14 — symbol z referencją sprzed pauzy nie jest „poniżej progu”: cykl
+    zapisał nowy punkt odniesienia bez analizy, a raport mówi to wprost."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    _REFERENCE_AT = datetime(2026, 9, 19, 17, 30, tzinfo=UTC)
+
+    def _raw(self, *, stale: bool) -> dict[str, object]:
+        return {
+            "status": "ignored",
+            "delta": Decimal("-0.10"),
+            "previous_price": Decimal("100"),
+            "current_price": Decimal("90"),
+            "reference_at": self._REFERENCE_AT,
+            "stale_reference": stale,
+        }
+
+    def test_mapper_marks_stale_reference_and_keeps_its_date(self):
+        result = to_symbol_result("AAPL", self._raw(stale=True), now=self._STARTED)
+
+        assert result.skip_reason is SkipReason.STALE_REFERENCE
+        assert result.reference_at == self._REFERENCE_AT
+
+    def test_mapper_keeps_below_threshold_for_a_fresh_reference(self):
+        result = to_symbol_result("AAPL", self._raw(stale=False), now=self._STARTED)
+
+        assert result.skip_reason is SkipReason.BELOW_THRESHOLD
+        assert result.reference_at == self._REFERENCE_AT
+
+    def test_report_says_new_reference_point_with_the_reference_date(self):
+        result = to_symbol_result("AAPL", self._raw(stale=True), now=self._STARTED)
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        expected = "referencja sprzed 19.09.2026 — nowy punkt odniesienia"
+        assert expected in html
+        assert expected in text
+
+    def test_stale_symbol_is_not_listed_below_the_volatility_threshold(self):
+        result = to_symbol_result("AAPL", self._raw(stale=True), now=self._STARTED)
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "poniżej progu zmienności" not in html
+        assert "poniżej progu zmienności" not in text
+
+    def test_crypto_section_calls_a_stale_symbol_a_new_reference_point(self):
+        result = SymbolResult(
+            symbol="BTC", status="ignored", delta=Decimal("0.12"),
+            current_price=Decimal("65000"), asset_class="CRYPTO",
+            skip_reason=SkipReason.STALE_REFERENCE, reference_at=self._REFERENCE_AT,
+        )
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "poniżej progu" not in html
+        assert "poniżej progu" not in text
+        assert "nowy punkt odniesienia" in html.split("🪙 Krypto")[1]
+        assert "nowy punkt odniesienia" in text.split("KRYPTO")[1]
+
+
+class TestPortfolioChangeInReport:
+    """PORT-06: zmiana portfela od ostatniego maila w sekcji 💼 i na pierwszym
+    ekranie. Cena poprzednia odtwarzana z delty cyklu (prev = current / (1 + Δ)),
+    także dla symboli pominiętych bramką; cold-start nie ma punktu odniesienia."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _portfolio(*positions: tuple[str, str]) -> Portfolio:
+        return Portfolio(
+            positions=tuple(
+                Position(symbol=symbol, quantity=Decimal(qty), purchase_price=Decimal("5"),
+                         purchase_date=datetime(2026, 3, 2).date())
+                for symbol, qty in positions
+            ),
+            as_of=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+
+    def _results(self, **overrides: object) -> list[SymbolResult]:
+        nvda = SymbolResult(
+            symbol="NVDA", status="saved", delta=Decimal("0.10"),
+            current_price=Decimal("11"), trend="BULLISH", confidence_score=0.7,
+            target_price=Decimal("12"),
+        )
+        aapl = SymbolResult(
+            symbol="AAPL", status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD,
+            delta=Decimal("-0.02"), current_price=Decimal("9.80"),
+        )
+        return [dataclasses.replace(nvda, **overrides), aapl]
+
+    def test_first_screen_box_and_section_show_the_change(self):
+        context = ReportContext(user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25")))
+
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        assert "Twój portfel od ostatniego maila" in html
+        assert "+7,0%" in html
+        assert "Zmiana od ostatniego maila: <strong" in html
+        assert "NVDA +$75,00, AAPL -$5,00" in html
+        assert "Twój portfel od ostatniego maila: +7,0% (+$70,00)" in text
+        assert "Zmiana od ostatniego maila: +$70,00 (+7,0%)" in text
+
+    def test_first_screen_box_comes_before_the_portfolio_section(self):
+        context = ReportContext(user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25")))
+
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        assert html.index("Twój portfel od ostatniego maila") < html.index("💼 Twój portfel")
+        assert text.index("Twój portfel od ostatniego maila") < text.index("=== 💼 Twój portfel")
+
+    def test_cold_start_position_is_left_out_of_the_change(self):
+        context = ReportContext(
+            user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25"), ("NEW", "1"))
+        )
+        new = SymbolResult(
+            symbol="NEW", status="ignored", skip_reason=SkipReason.COLD_START,
+            delta=Decimal("0"), current_price=Decimal("50"),
+        )
+
+        html, _ = build_html_report([*self._results(), new], self._STARTED, 1.0, context)
+
+        assert "+7,0%" in html
+        assert "bez punktu odniesienia: NEW" in html
+
+    def test_after_a_pause_the_change_is_dated(self):
+        reference_at = datetime(2026, 9, 19, 17, 30, tzinfo=UTC)
+        context = ReportContext(user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25")))
+        results = [
+            dataclasses.replace(
+                r, status="ignored", skip_reason=SkipReason.STALE_REFERENCE,
+                reference_at=reference_at,
+            )
+            for r in self._results()
+        ]
+
+        html, text = build_html_report(results, self._STARTED, 1.0, context)
+
+        assert "Twój portfel od 19.09.2026" in html
+        assert "Zmiana od 19.09.2026" in html
+        assert "Twój portfel od 19.09.2026: +7,0%" in text
+        assert "od ostatniego maila" not in html
+
+    def test_no_portfolio_no_change(self):
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, ReportContext())
+
+        assert "od ostatniego maila" not in html
+        assert "od ostatniego maila" not in text
+
+    def test_legacy_push_text_has_no_change_line(self):
+        context = ReportContext(
+            user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25")),
+            user_portfolio_in_text=False,
+        )
+
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        assert "Twój portfel od ostatniego maila" in html
+        assert "od ostatniego maila" not in text
+        assert "$70,00" not in text
+
+
+class TestFirstScreenReaderNumbers:
+    """MAIL-16: pierwszy ekran odpowiada na pytania czytelnika — co z moim
+    portfelem, ile sygnałów ponad próg, czy model ostatnio trafiał. Liczniki
+    pracy pipeline'u (pominięte, błędy, czas trwania, liczba symboli) są
+    w stopce technicznej, w HTML i w tekście."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    _DISCLAIMER = "nie stanowi rekomendacji inwestycyjnej"
+
+    @staticmethod
+    def _resolved(correct: int, wrong: int) -> list[ResolvedPrediction]:
+        return [
+            ResolvedPrediction(symbol=f"C{i}", predicted_trend="BULLISH", is_correct=True)
+            for i in range(correct)
+        ] + [
+            ResolvedPrediction(symbol=f"W{i}", predicted_trend="BEARISH", is_correct=False)
+            for i in range(wrong)
+        ]
+
+    @staticmethod
+    def _saved(symbol: str, trend: str) -> SymbolResult:
+        return SymbolResult(
+            symbol=symbol, status="saved", delta=Decimal("0.03"),
+            current_price=Decimal("100"), trend=trend, target_price=Decimal("102"),
+            confidence_score=0.7,
+        )
+
+    def test_first_screen_shows_resolved_hit_count_before_counters(self):
+        results = [_saved_result(), _ignored_result(), _error_result()]
+        context = ReportContext(resolved_predictions=self._resolved(3, 2))
+
+        html, text = build_html_report(results, self._STARTED, 1.0, context)
+
+        assert "3/5" in html
+        assert html.index("3/5") < html.index("Pominięte")
+        assert text.index("Rozliczone: 3/5 trafionych") < text.index("pominiętych")
+
+    def test_signals_box_counts_saved_predictions_with_a_direction(self):
+        results = [
+            self._saved("AAPL", "BULLISH"),
+            self._saved("MSFT", "BEARISH"),
+            self._saved("GOOGL", "SIDEWAYS"),
+            _ignored_result("NVDA"),
+        ]
+
+        html, text = build_html_report(results, self._STARTED, 1.0)
+
+        signals_box = html.split("Sygnały ponad próg")[1][:200]
+        assert ">2</div>" in signals_box
+        assert "Sygnały ponad próg: 2" in text
+
+    def test_reader_boxes_come_in_order_portfolio_signals_settlements(self):
+        portfolio = Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("2"), purchase_price=Decimal("90"),
+                         purchase_date=datetime(2026, 3, 2).date()),
+            ),
+            as_of=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+        context = ReportContext(
+            user_portfolio=portfolio, resolved_predictions=self._resolved(1, 1)
+        )
+
+        html, text = build_html_report(
+            [self._saved("AAPL", "BULLISH")], self._STARTED, 1.0, context
+        )
+
+        assert (
+            html.index("Twój portfel od ostatniego maila")
+            < html.index("Sygnały ponad próg")
+            < html.index("Rozliczone")
+        )
+        assert (
+            text.index("Twój portfel od ostatniego maila")
+            < text.index("Sygnały ponad próg")
+            < text.index("Rozliczone: 1/2 trafionych")
+        )
+
+    def test_without_a_portfolio_the_portfolio_box_is_hidden(self):
+        html, text = build_html_report(
+            [self._saved("AAPL", "BULLISH")], self._STARTED, 1.0,
+            ReportContext(resolved_predictions=self._resolved(1, 0)),
+        )
+
+        assert "Twój portfel" not in html
+        assert "Twój portfel" not in text
+        assert "Sygnały ponad próg" in html
+        assert "1/1" in html
+
+    def test_operational_counters_move_to_the_technical_footer(self):
+        results = [_saved_result(), _ignored_result(), _ignored_result("GOOGL"), _error_result()]
+
+        html, text = build_html_report(results, self._STARTED, 12.5)
+
+        header = html[: html.index("Sygnały ponad próg")]
+        assert "Czas trwania" not in header
+        assert "Liczba symboli" not in header
+        footer = html[html.index(self._DISCLAIMER):]
+        assert "Symboli: <strong>4</strong>" in footer
+        assert "Predykcje: <strong>1</strong>" in footer
+        assert "Pominięte: <strong>2</strong>" in footer
+        assert "Błędy: <strong>1</strong>" in footer
+        assert "Czas trwania: 12,5s" in footer
+        text_footer = text[text.index(self._DISCLAIMER):]
+        assert (
+            "Symboli: 4 · predykcji: 1 · pominiętych: 2 · błędów: 1 · czas trwania: 12,5s"
+            in text_footer
+        )
+        assert "Czas trwania" not in text[: text.index(self._DISCLAIMER)]
+
+    def test_no_settlements_box_says_none_instead_of_zero_of_zero(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0, ReportContext(resolved_predictions=[])
+        )
+
+        assert "0/0" not in html
+        assert "Rozliczone: brak" in text
+
+    def test_unreadable_settlements_box_says_unavailable(self):
+        html, text = build_html_report(
+            [], self._STARTED, 1.0,
+            ReportContext(resolved_predictions=None, resolved_unavailable=True),
+        )
+
+        settlements_box = html.split("Rozliczone")[1][:300]
+        assert "niedostępne" in settlements_box
+        assert "Rozliczone: niedostępne" in text
+
+
+def test_trade_signals_precede_track_record():
+    # MAIL-17: Track Record stoi w „Zapleczu” — przy przycięciu przez Gmaila
+    # dolna część maila znika pierwsza, więc akcyjne sygnały muszą być wyżej.
+    curve = EquityCurve(
+        points=(EquityPoint(index=0, period_return=0.01, equity=1.01),),
+        total_return=0.01, win_rate=1.0, max_drawdown=0.0, n_trades=1,
+    )
+
+    html, _ = build_html_report(
+        [_saved_result()], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(equity_curve=curve),
+    )
+
+    assert html.index("Najsilniejsze sygnały") < html.index("Track Record")
+
+
+# PORT-04: VaR / obsunięcie / hedge zwężają bandę WYŁĄCZNIE przy realnych
+# pozycjach. Orkiestrator podaje `position_risk` tylko za `portfolio_var_enabled`.
+
+_SUFFICIENT_ACCURACY = {
+    "mean_accuracy": 0.7, "sample_count": 200, "correct_count": 140,
+    "days_window": 30, "n_eff": 25.0,
+}
+
+
+def _owner_portfolio() -> Portfolio:
+    # Pozycja w innym symbolu niż sygnał — ekspozycja NVDA nie zwęża bandy.
+    return Portfolio(
+        positions=(Position("AAPL", Decimal("1"), Decimal("100"), datetime(2026, 1, 2).date()),),
+        as_of=datetime(2026, 5, 14, tzinfo=UTC),
+    )
+
+
+def _risk_sizing_report(**context: object) -> str:
+    html, _ = build_html_report(
+        [_strong_buy_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(accuracy_stats=_SUFFICIENT_ACCURACY, **context),  # type: ignore[arg-type]
+    )
+    return html
+
+
+def test_portfolio_var_of_real_positions_narrows_the_band():
+    from src.application.use_cases.portfolio_risk import PositionRisk
+
+    html = _risk_sizing_report(
+        user_portfolio=_owner_portfolio(), position_risk=PositionRisk(var=0.05)
+    )
+
+    assert "Pozycja pełna" not in html
+    assert "Pozycja standardowa 2-3% portfela" in html
+
+
+def test_deep_portfolio_drawdown_forces_the_starter_band():
+    from src.application.use_cases.portfolio_risk import PositionRisk
+
+    html = _risk_sizing_report(
+        user_portfolio=_owner_portfolio(), position_risk=PositionRisk(drawdown=0.2)
+    )
+
+    assert "Pozycja startowa 1-2% portfela" in html
+
+
+def test_position_risk_without_real_positions_leaves_the_band():
+    from src.application.use_cases.portfolio_risk import PositionRisk
+
+    html = _risk_sizing_report(position_risk=PositionRisk(var=0.05, drawdown=0.2))
+
+    assert "Pozycja pełna 4-5% portfela" in html
+
+
+def test_equal_weight_radar_var_never_narrows_the_band():
+    from src.application.use_cases.portfolio_risk import PortfolioRiskReport
+
+    html = _risk_sizing_report(
+        user_portfolio=_owner_portfolio(),
+        portfolio_risk_report=PortfolioRiskReport(watchlist_size=3, var=0.2),
+    )
+
+    assert "Pozycja pełna 4-5% portfela" in html
+
+
+
+# PORT-05: etykiety sektorów i peerzy Warte uwagi idą wyłącznie z mapy configu
+# w `ReportContext` — w kodzie nie ma zapasowej kopii.
+
+
+def test_sector_label_comes_only_from_the_context_map():
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+    )
+
+    assert "Big Tech" not in html
+    assert "Big Tech" not in text
+
+
+def test_renamed_sector_keeps_its_suggestions():
+    hot = SymbolResult(
+        symbol="CRWD", status="saved", delta=Decimal("0.06"),
+        current_price=Decimal("769"), trend="BULLISH",
+        target_price=Decimal("780"), confidence_score=0.75,
+    )
+
+    html, _ = build_html_report(
+        [hot], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(sector_map={"CRWD": "Cyber"}, sector_peers={"Cyber": ["ZS"]}),
+    )
+
+    assert "Warte uwagi" in html
+    assert "Cyber" in html
+    assert "ZS" in html
+
+
+class TestPortfolioInOneCurrency:
+    """Wagi portfela (lead, sizing, sekcja 💼) i zmiana od ostatniego maila liczone
+    w złotych kursami NBP — nie suma dolarów z euro. Pozycja bez kursu wypada
+    z wag i sum z jawną notą, nigdy nie jest liczona jak USD."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    _RATES = PlnRates(current={"USD": Decimal("4.00"), "EUR": Decimal("4.30")})
+
+    @staticmethod
+    def _portfolio() -> Portfolio:
+        # AAPL 43 × 100 USD × 4,00 = 17 200 zł = SAP.DE 40 × 100 EUR × 4,30.
+        # Natywnie 4300 „+” 4000 dawało AAPL 52% portfela.
+        return Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("43"), purchase_price=Decimal("90")),
+                Position(
+                    symbol="SAP.DE",
+                    quantity=Decimal("40"),
+                    purchase_price=Decimal("90"),
+                    currency="EUR",
+                ),
+            ),
+            as_of=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+
+    @staticmethod
+    def _results(aapl_delta: str = "0.05") -> list[SymbolResult]:
+        return [
+            SymbolResult(symbol="AAPL", status="saved", delta=Decimal(aapl_delta),
+                         current_price=Decimal("100")),
+            SymbolResult(symbol="SAP.DE", status="ignored",
+                         skip_reason=SkipReason.BELOW_THRESHOLD, delta=Decimal("0"),
+                         current_price=Decimal("100")),
+        ]
+
+    def _context(self, rates: PlnRates | None = None) -> ReportContext:
+        return ReportContext(user_portfolio=self._portfolio(), portfolio_fx=rates or self._RATES)
+
+    def test_lead_weight_of_a_position_is_its_share_in_pln(self) -> None:
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, self._context())
+
+        assert "AAPL (50% portfela)" in html
+        assert "AAPL (50% portfela)" in text
+
+    def test_sizing_sees_weights_and_sector_exposure_in_pln(self, mocker) -> None:
+        signals = mocker.patch(
+            "src.application.report_builder.build_trade_signals", return_value=[]
+        )
+        context = dataclasses.replace(
+            self._context(), portfolio_clusters={"AAPL": "Mix", "SAP.DE": "Mix"}
+        )
+
+        build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        kwargs = signals.call_args.kwargs
+        assert kwargs["portfolio_weights"] == {"AAPL": Decimal("0.5"), "SAP.DE": Decimal("0.5")}
+        assert kwargs["cluster_exposures"] == {"AAPL": Decimal("1"), "SAP.DE": Decimal("1")}
+
+    def test_section_weights_are_shares_in_pln(self) -> None:
+        _, text = build_html_report(self._results(), self._STARTED, 1.0, self._context())
+
+        rows = [line for line in text.splitlines() if " waga " in line]
+        assert len(rows) == 2
+        assert all("waga  50,0%" in row for row in rows), rows
+
+    def test_position_without_its_rate_is_out_of_the_weights_with_a_note(self) -> None:
+        context = self._context(PlnRates(current={"USD": Decimal("4.00")}))
+
+        html, text = build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        assert "AAPL (100% portfela)" in html
+        assert "Bez kursu NBP: SAP.DE — poza wagami i sumami w zł" in html
+        assert "Bez kursu NBP: SAP.DE — poza wagami i sumami w zł" in text
+        sap_row = next(line for line in text.splitlines() if line.startswith("  SAP.DE   waga"))
+        assert "waga      —" in sap_row
+
+    def test_change_since_the_last_email_is_measured_in_pln(self) -> None:
+        # AAPL 95 → 100 USD (Δ 5,26%) po 4,00, SAP.DE bez zmian po 4,30:
+        # 43 × 5 × 4,00 = +860 zł na 16 340 + 17 200 zł → +2,6% (natywnie +2,7%).
+        results = self._results(aapl_delta=str(Decimal("100") / Decimal("95") - 1))
+
+        html, text = build_html_report(results, self._STARTED, 1.0, self._context())
+
+        assert "Zmiana od ostatniego maila: +860,00 zł (+2,6%)" in text
+        assert "najwięcej: AAPL +860,00 zł" in text
+        assert "Twój portfel od ostatniego maila: +2,6% (+860,00 zł)" in text
+        assert "+860,00 zł" in html
+        assert "$215" not in text
+
+    def test_change_leaves_out_a_position_without_its_rate(self) -> None:
+        results = self._results(aapl_delta=str(Decimal("100") / Decimal("95") - 1))
+        context = self._context(PlnRates(current={"USD": Decimal("4.00")}))
+
+        _, text = build_html_report(results, self._STARTED, 1.0, context)
+
+        # Samo AAPL: +860 zł na 16 340 zł → +5,3%; SAP.DE nie udaje „bez zmian”.
+        assert "Zmiana od ostatniego maila: +860,00 zł (+5,3%)" in text
+        assert "bez punktu odniesienia: SAP.DE" not in text
+
+    def test_without_any_rate_the_report_keeps_native_amounts(self) -> None:
+        context = ReportContext(user_portfolio=self._portfolio())
+
+        _, text = build_html_report(self._results(), self._STARTED, 1.0, context)
+
+        # Bez kursów zostaje stara ścieżka: kwoty w walucie notowania.
+        assert "Twój portfel od ostatniego maila: +2,5% (+$204,76)" in text
+
+
+class TestForecastHorizonInPredictions:
+    """ALR-15: sekcja predykcji mówi, po zamknięciu której sesji NYSE następny cykl
+    rozliczy prognozę — kalendarz zna święta i skrócone sesje."""
+
+    # Thanksgiving (czw 26.11.2026), 05:30 ET — najbliższa sesja to skrócony piątek.
+    _STARTED = datetime(2026, 11, 26, 10, 30, tzinfo=UTC)
+    _HORIZON = (
+        "Horyzont prognozy: następny cykl · najbliższe zamknięcie NYSE: "
+        "pt 27.11 13:00 ET (skrócona sesja)"
+    )
+
+    def test_html_names_the_next_session_close(self):
+        html, _ = build_html_report([_saved_result()], self._STARTED, 1.0)
+
+        assert self._HORIZON in html
+
+    def test_plain_text_names_the_next_session_close(self):
+        _, text = build_html_report([_saved_result()], self._STARTED, 1.0)
+
+        assert self._HORIZON in text
+
+    def test_cycle_without_predictions_has_no_horizon_line(self):
+        html, text = build_html_report([_ignored_result()], self._STARTED, 1.0)
+
+        assert "Horyzont prognozy" not in html
+        assert "Horyzont prognozy" not in text
+
+
+class TestBudgetExhaustedReport:
+    """FIN-12 — symbol nad progiem, którego cykl nie przeanalizował, bo skończył
+    się budżet płatnych wywołań LLM. To nie „poniżej progu”: ruch był, analizy nie."""
+
+    _STARTED = datetime(2026, 10, 20, 5, 30, tzinfo=UTC)
+
+    def _raw(self, **overrides: object) -> dict[str, object]:
+        return {
+            "status": "ignored",
+            "delta": Decimal("-0.10"),
+            "previous_price": Decimal("100"),
+            "current_price": Decimal("90"),
+            "budget_exhausted": True,
+            **overrides,
+        }
+
+    def test_mapper_marks_the_budget_cutoff(self):
+        result = to_symbol_result("NVDA", self._raw(), now=self._STARTED)
+
+        assert result.status == "ignored"
+        assert result.skip_reason is SkipReason.BUDGET_EXHAUSTED
+
+    def test_report_names_the_cut_symbols_with_their_move(self):
+        result = to_symbol_result("NVDA", self._raw(), now=self._STARTED)
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "Pominięte — wyczerpany budżet cyklu" in html
+        assert "NVDA" in html.split("Pominięte — wyczerpany budżet cyklu")[1]
+        assert "POMINIĘTE — WYCZERPANY BUDŻET CYKLU" in text
+        assert "NVDA(-10,00%)" in text.split("POMINIĘTE — WYCZERPANY BUDŻET CYKLU")[1]
+
+    def test_cut_symbol_is_not_listed_below_the_volatility_threshold(self):
+        result = to_symbol_result("NVDA", self._raw(), now=self._STARTED)
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "poniżej progu zmienności" not in html
+        assert "poniżej progu zmienności" not in text
+
+    def test_below_threshold_symbols_stay_in_their_own_section(self):
+        cut = to_symbol_result("NVDA", self._raw(), now=self._STARTED)
+        flat = to_symbol_result(
+            "MSFT",
+            self._raw(delta=Decimal("0.005"), budget_exhausted=False),
+            now=self._STARTED,
+        )
+
+        html, text = build_html_report([cut, flat], self._STARTED, 1.0)
+
+        below = html.split("poniżej progu zmienności")[1]
+        assert "MSFT" in below
+        assert "NVDA" not in below
+
+    def test_no_cutoff_no_section(self):
+        html, text = build_html_report([_ignored_result()], self._STARTED, 1.0)
+
+        assert "wyczerpany budżet cyklu" not in html
+        assert "WYCZERPANY BUDŻET CYKLU" not in text
+
+    def test_crypto_section_names_the_budget_cutoff(self):
+        result = SymbolResult(
+            symbol="BTC", status="ignored", delta=Decimal("0.12"),
+            current_price=Decimal("65000"), asset_class="CRYPTO",
+            skip_reason=SkipReason.BUDGET_EXHAUSTED,
+        )
+
+        html, text = build_html_report([result], self._STARTED, 1.0)
+
+        assert "poniżej progu" not in html.split("🪙 Krypto")[1]
+        assert "budżet cyklu" in html.split("🪙 Krypto")[1]
+        assert "budżet cyklu" in text.split("KRYPTO")[1]

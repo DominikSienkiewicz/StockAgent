@@ -25,10 +25,13 @@ ML_FEATURE_COLUMNS = (
 # znaczenie (nowa kolumna to osobna zmiana kontraktu). Historia:
 #   1 — `news_volume_24h` liczyło trafne artykuły wśród 50 najnowszych w dowolnym
 #       wieku (feed Alpha Vantage bez `time_from`, przed commitem 3738ef2);
-#   2 — feed ograniczony do ostatnich 24 h (`time_from` = now − 24 h).
+#   2 — feed ograniczony do ostatnich 24 h (`time_from` = now − 24 h);
+#   3 — feed leniwy per symbol (FIN-04): `news_volume_24h` liczy tylko artykuły
+#       z requestu tego symbolu (limit 50 na symbol), a nie trafne artykuły
+#       z feedu całej watchlisty scalonego w jednym wsadzie.
 # Fast Loop stempluje nią `prediction_logs.feature_set_version` (migracja 027),
 # a Slow Loop może trenować wyłącznie na wierszach bieżącej wersji.
-FEATURE_SET_VERSION = 2
+FEATURE_SET_VERSION = 3
 
 # ML-14: klucze cech DARMOWYCH w `feature_snapshots.features` (migracja 031).
 # Fast Loop zapisuje je w KAŻDYM ukończonym cyklu, także ignored, wyłącznie z

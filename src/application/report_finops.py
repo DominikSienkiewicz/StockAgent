@@ -15,13 +15,19 @@ Dwie świadome decyzje o samosupresji, celowo RÓŻNE od reszty raportu:
 Uczciwość jest wymogiem, nie ozdobą: kwoty to SZACUNEK rzędu wielkości (patrz
 `UNIT_COST_USD` w domenie), nie faktura — więc przy każdej kwocie stoi słowo
 "szacunkowy", a na końcu sekcji jawne zastrzeżenie.
+
+FIN-13: źródło z wycenionymi tokenami ma kwotę „z tokenów” (bez tyldy), a obok
+niego źródła na stałej są oznaczone „(szacunek)”; nagłówek mówi, co jest czym,
+i podaje datę cennika. Cykl bez danych o tokenach renderuje się jak przed FIN-13.
 """
 
 from __future__ import annotations
 
 import html as _html
+from datetime import date
 
-from src.domain.finops import CycleCost
+from src.application.report_formatting import number, plural_pl
+from src.domain.finops import CycleCost, SourceCost
 
 _HEADING = "💸 Koszt cyklu"
 
@@ -31,6 +37,17 @@ _DISCLAIMER = (
     "Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, "
     "nie faktura od dostawcy."
 )
+
+# FIN-13: zastrzeżenie sekcji z kwotami z tokenów — to ceny katalogowe, nie faktura.
+_TOKEN_DISCLAIMER = (
+    "Kwoty „z tokenów” to tokeny zwrócone przez dostawcę wycenione cennikiem "
+    "katalogowym z config.toml (standard tier) — to wciąż nie faktura od dostawcy."
+)
+_MIXED_DISCLAIMER_SUFFIX = (
+    " Pozycje oznaczone „(szacunek)” liczy cennik jednostkowy na wywołanie."
+)
+_ESTIMATE_MARKER = "(szacunek)"
+_MIXED_NOTE = "część z tokenów, reszta szacunkiem"
 
 # Komunikat cyklu darmowego — sedno FinOps repo, renderowany jawnie.
 _FREE_CYCLE = (
@@ -59,8 +76,73 @@ def _source_label(source: str) -> str:
 
 
 def _fmt_usd(amount: float) -> str:
-    """Formatuje kwotę USD z 4 miejscami — kwoty są rzędu centów lub mniej."""
-    return f"${amount:.4f}"
+    """Kwota USD z 4 miejscami po przecinku („$0,0123”) — koszty są rzędu centów."""
+    return f"${number(amount, decimals=4)}"
+
+
+def _calls_label(calls: int) -> str:
+    return f"{calls} {plural_pl(calls, 'wywołanie', 'wywołania', 'wywołań')}"
+
+
+def _fmt_date(day: date) -> str:
+    return day.strftime("%d.%m.%Y")
+
+
+def _is_mixed(cost: CycleCost) -> bool:
+    """Część kwoty z tokenów, część ze stałej (albo źródła spoza cennika)."""
+    return bool(cost.unknown_sources) or not all(line.from_tokens for line in cost.lines)
+
+
+def _token_header_details(cost: CycleCost) -> str:
+    """Nawias nagłówka sekcji z tokenami: liczba wywołań, mieszanka, data cennika."""
+    parts = [f"{cost.total_calls} płatnych wywołań"]
+    if _is_mixed(cost):
+        parts.append(_MIXED_NOTE)
+    if cost.priced_as_of is not None:
+        parts.append(f"cennik z {_fmt_date(cost.priced_as_of)}")
+    return "; ".join(parts)
+
+
+def _token_total(cost: CycleCost) -> tuple[str, str]:
+    """(prefiks nagłówka, kwota) — tylda tylko, gdy w sumie jest szacunek."""
+    if _is_mixed(cost):
+        return "Koszt cyklu:", f"~{_fmt_usd(cost.total_usd)}"
+    return "Koszt cyklu z tokenów:", _fmt_usd(cost.total_usd)
+
+
+def _token_disclaimer(cost: CycleCost) -> str:
+    return _TOKEN_DISCLAIMER + (_MIXED_DISCLAIMER_SUFFIX if _is_mixed(cost) else "")
+
+
+def _line_parts(line: SourceCost) -> tuple[str, str, str]:
+    """(opis wywołań, kwota, dopisek) linii rozbicia w sekcji z tokenami — wspólne
+    dla HTML i tekstu. Obok kwot z tokenów szacunek ze stałej jest oznaczony."""
+    if line.from_tokens:
+        return f"{_calls_label(line.calls)} z tokenów =", _fmt_usd(line.subtotal_usd), ""
+    return (
+        f"{line.calls} × ~{_fmt_usd(line.unit_cost_usd)} =",
+        f"~{_fmt_usd(line.subtotal_usd)}",
+        f" {_ESTIMATE_MARKER}",
+    )
+
+
+def _token_rows_html(cost: CycleCost) -> list[str]:
+    prefix, total = _token_total(cost)
+    rows = [
+        f"<div style='font-size: 13px; color: {_COLOR_TEXT}; "
+        f"margin-bottom: 6px;'>{_html.escape(prefix)} "
+        f"<strong>{_html.escape(total)}</strong> "
+        f"({_html.escape(_token_header_details(cost))})</div>"
+    ]
+    for line in cost.lines:
+        calls, amount, marker = _line_parts(line)
+        rows.append(
+            f"<div style='font-size: 12px; color: {_COLOR_TEXT}; "
+            f"margin-bottom: 2px;'>{_html.escape(_source_label(line.source))}: "
+            f"{_html.escape(calls)} <strong>{_html.escape(amount)}</strong>"
+            f"{_html.escape(marker)}</div>"
+        )
+    return rows
 
 
 def render_finops_html(cost: CycleCost | None) -> str:
@@ -73,7 +155,9 @@ def render_finops_html(cost: CycleCost | None) -> str:
 
     rows: list[str] = []
 
-    if cost.total_calls == 0:
+    if cost.total_calls > 0 and cost.from_tokens:
+        rows.extend(_token_rows_html(cost))
+    elif cost.total_calls == 0:
         rows.append(
             f"<div style='font-size: 13px; color: {_COLOR_FREE}; "
             f"font-weight: 600;'>✅ {_html.escape(_FREE_CYCLE)}</div>"
@@ -103,9 +187,10 @@ def render_finops_html(cost: CycleCost | None) -> str:
             f"{joined}</div>"
         )
 
+    disclaimer = _token_disclaimer(cost) if cost.from_tokens else _DISCLAIMER
     rows.append(
         f"<div style='font-size: 11px; color: {_COLOR_MUTED}; "
-        f"margin-top: 6px; font-style: italic;'>{_html.escape(_DISCLAIMER)}</div>"
+        f"margin-top: 6px; font-style: italic;'>{_html.escape(disclaimer)}</div>"
     )
 
     return (
@@ -124,7 +209,13 @@ def render_finops_text(cost: CycleCost | None) -> str:
 
     lines: list[str] = ["KOSZT CYKLU", "-" * 64]
 
-    if cost.total_calls == 0:
+    if cost.total_calls > 0 and cost.from_tokens:
+        prefix, total = _token_total(cost)
+        lines.append(f"  {prefix} {total} ({_token_header_details(cost)})")
+        for line in cost.lines:
+            calls, amount, marker = _line_parts(line)
+            lines.append(f"    {_source_label(line.source)}: {calls} {amount}{marker}")
+    elif cost.total_calls == 0:
         lines.append(f"  {_FREE_CYCLE}")
     else:
         lines.append(
@@ -141,6 +232,6 @@ def render_finops_text(cost: CycleCost | None) -> str:
         joined = ", ".join(cost.unknown_sources)
         lines.append(f"  Źródła spoza cennika (koszt nieoszacowany): {joined}")
 
-    lines.append(f"  Uwaga: {_DISCLAIMER}")
+    lines.append(f"  Uwaga: {_token_disclaimer(cost) if cost.from_tokens else _DISCLAIMER}")
     lines.append("")
     return "\n".join(lines)

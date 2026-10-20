@@ -39,27 +39,41 @@ samych wierszach i hit-rate LLM tam, gdzie nie zgadza się z momentum — z n,
 n_eff i BH-FDR. Bez migracji drukuje komunikat zamiast wyjątku. Wynik żyje
 WYŁĄCZNIE tu (decyzja właściciela) — nie w recapie ani w mailu.
 
-Uruchom:
-    uv run python -m src.tools.evaluate
-    uv run python -m src.tools.evaluate --days 60
-    uv run python -m src.tools.evaluate --by-recipe
-    uv run python -m src.tools.evaluate --by-universe
-    uv run python -m src.tools.evaluate --by component --by regime
-    uv run python -m src.tools.evaluate --echo
+Eksperymenty (EXP-05): `--experiment <id>` porównuje ramiona eksperymentu
+z `config.toml` na wierszach z zapisanym ramieniem (kolumna `experiment_arms`
+z migracji 037, a bez niej opcjonalny klucz kwitu v2). Dla każdej metryki części
+promptu: średnia per ramię z n i n_eff, różnica zabieg − kontrola i 95% CI
+z bootstrapu blokowego po dniach UTC; metryka główna oznaczona ★.
+
+Uruchom (ARCH-39: składanie `Settings` i repozytorium żyje w `main_tools.py`,
+tu zostają czyste funkcje):
+    uv run python main_tools.py evaluate
+    uv run python main_tools.py evaluate --days 60
+    uv run python main_tools.py evaluate --by-recipe
+    uv run python main_tools.py evaluate --by-universe
+    uv run python main_tools.py evaluate --by component --by regime
+    uv run python main_tools.py evaluate --echo
+    uv run python main_tools.py evaluate --experiment EXP-02 --days 90
 
 Exit code: 0 zawsze (narzędzie raportujące, nie bramka CI).
 """
 from __future__ import annotations
 
-import argparse
+import json
 import math
-import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from src.domain.equity_curve import DirectionalHitRate, directional_hit_rate
+from src.domain.experiment import (
+    ArmComparison,
+    Experiment,
+    ExperimentCall,
+    ExperimentMetric,
+    compare_experiment,
+)
 from src.domain.implied_edge import edge_label_for_sigma
 from src.domain.momentum_echo import EchoCall, EchoReport, HeadToHead, assess_momentum_echo
 from src.domain.recipe import hit_rate_by_version
@@ -80,12 +94,9 @@ from src.domain.segment_evidence import (
     sign_segment,
     trend_hit,
 )
-from src.domain.significance import DEFAULT_FDR_Q
+from src.domain.significance import DEFAULT_FDR_Q, MIN_BOOTSTRAP_CYCLES
 from src.domain.track_record import HitRateEvidence, ScoredCall, assess_directional_hit_rate
 from src.domain.value_objects import AssetType
-
-if TYPE_CHECKING:
-    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
 # Prefiks wersji w raporcie CLI — pełny sha256 nic nie mówi człowiekowi.
 _VERSION_PREFIX = 12
@@ -115,6 +126,34 @@ _SEGMENT_KEY_WIDTH = 16
 # EXP-01: pole delty bramki i komunikat, gdy migracja 034 jeszcze nie poszła.
 GATE_DELTA_FIELD = "gate_delta"
 GATE_DELTA_UNAVAILABLE = "kolumna gate_delta niedostępna — uruchom migrację 034"
+
+# EXP-05: ramiona z kolumny (037) albo z kwitu v2 (020), pewność LLM (016)
+# i werdykt rady (005) — pola czytane na żądanie `--experiment`.
+EXPERIMENT_ARMS_FIELD = "experiment_arms"
+RECEIPT_ARMS_FIELD = "receipt_experiment_arms"
+EXPERIMENT_FIELDS: tuple[str, ...] = (
+    EXPERIMENT_ARMS_FIELD,
+    RECEIPT_ARMS_FIELD,
+    "confidence_score",
+    "council_recommendation",
+    "council_consensus",
+)
+EXPERIMENT_ARMS_UNAVAILABLE = (
+    "kolumna experiment_arms niedostępna — uruchom migrację 037; ramiona z kwitu decyzyjnego"
+)
+# Kolumny, bez których raport idzie dalej: komunikat i ponowny odczyt bez nich.
+OPTIONAL_COLUMNS: Mapping[str, str] = {
+    GATE_DELTA_FIELD: GATE_DELTA_UNAVAILABLE,
+    EXPERIMENT_ARMS_FIELD: EXPERIMENT_ARMS_UNAVAILABLE,
+}
+
+_METRIC_LABELS: Mapping[ExperimentMetric, str] = {
+    ExperimentMetric.HIT_RATE: "trafność LLM (kierunkowa)",
+    ExperimentMetric.BRIER: "Brier pewności LLM",
+    ExperimentMetric.COUNCIL_LLM_AGREEMENT: "zgodność rady z LLM",
+    ExperimentMetric.COUNCIL_HIT_RATE: "trafność rady (BUY/SELL)",
+    ExperimentMetric.COUNCIL_BRIER: "Brier konsensusu rady",
+}
 
 
 @dataclass(frozen=True)
@@ -157,17 +196,21 @@ def _cycle_key(value: Any) -> str:
     return stamp.date().isoformat()
 
 
-def _scored_call(row: dict[str, Any]) -> ScoredCall:
+def _realized_change(row: Mapping[str, Any]) -> float | None:
+    """Zrealizowany ruch ceny (ułamek) albo None bez kompletu cen."""
     price_at = _to_float(row.get("price_at_prediction"))
     actual = _to_float(row.get("actual_price_after_12h"))
-    change = None
-    if price_at and actual is not None:
-        change = (actual - price_at) / price_at
+    if not price_at or actual is None:
+        return None
+    return (actual - price_at) / price_at
+
+
+def _scored_call(row: dict[str, Any]) -> ScoredCall:
     return ScoredCall(
         cycle=_cycle_key(row.get("timestamp")),
         predicted_trend=str(row.get("predicted_trend")),
         is_correct=bool(row["is_trend_correct"]),
-        realized_change=change,
+        realized_change=_realized_change(row),
     )
 
 
@@ -508,104 +551,190 @@ def _evidence_lines(evidence: HitRateEvidence | None) -> list[str]:
     return lines
 
 
-def _read_rows(
-    repo: SupabaseRepository, days: int, reads: dict[str, Any], fields: set[str]
-) -> tuple[list[dict[str, Any]], bool]:
-    """Odczyt wierszy ewaluacji i to, czy niosą `gate_delta`.
+def evaluation_reads(
+    *,
+    by_recipe: bool,
+    by_universe: bool,
+    segmentations: Sequence[str],
+    echo: bool,
+    experiment: bool = False,
+) -> tuple[dict[str, Any], set[str]]:
+    """Co odczytać z repozytorium: flagi segmentów wersji i dodatkowe kolumny.
 
-    Bez migracji 034 reszta raportu ma zostać: komunikat zamiast wyjątku
-    i ponowny odczyt bez delty bramki (test echa wtedy pomijamy jawnie)."""
-    from src.infrastructure.adapters.supabase_repo import MissingColumnError
+    Kolumny segmentów tylko na żądanie: `recipe_version` istnieje dopiero po
+    migracji 030, `gate_delta` po 034, `experiment_arms` po 037, a domyślny
+    przebieg ma działać na każdej bazie. Zwraca (kwargs
+    `with_recipe`/`with_universe`, pola `extra_fields`)."""
+    reads: dict[str, Any] = {
+        name: True
+        for name, wanted in (("with_recipe", by_recipe), ("with_universe", by_universe))
+        if wanted
+    }
+    fields = {name for s in segmentations for name in SEGMENT_FIELDS[s]}
+    if echo:
+        fields.add(GATE_DELTA_FIELD)
+    if experiment:
+        fields.update(EXPERIMENT_FIELDS)
+    return reads, fields
 
-    try:
-        rows = repo.get_resolved_predictions_for_eval(days=days, **reads, **_fields_kwarg(fields))
-    except MissingColumnError as exc:
-        if exc.column != GATE_DELTA_FIELD:
-            raise
-        print(GATE_DELTA_UNAVAILABLE)
-        remaining = fields - {GATE_DELTA_FIELD}
-        return (
-            repo.get_resolved_predictions_for_eval(days=days, **reads, **_fields_kwarg(remaining)),
-            False,
-        )
-    return rows, GATE_DELTA_FIELD in fields
 
-
-def _fields_kwarg(fields: set[str]) -> dict[str, Any]:
+def fields_kwarg(fields: set[str]) -> dict[str, Any]:
     """Kwarg `extra_fields` tylko, gdy coś zamówiono — domyślny odczyt bez zmian."""
     return {"extra_fields": tuple(sorted(fields))} if fields else {}
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Evaluate StockAgent prediction quality vs a naive baseline.",
-    )
-    parser.add_argument(
-        "--days",
-        type=int,
-        default=30,
-        help="Okno (dni) zamkniętych predykcji do ewaluacji (default: 30).",
-    )
-    parser.add_argument(
-        "--by-recipe",
-        action="store_true",
-        help="Trafność per wersja przepisu (recipe_version) — wymaga migracji 030.",
-    )
-    parser.add_argument(
-        "--by-universe",
-        action="store_true",
-        help="Trafność per wersja uniwersum symboli (z kwitu decyzyjnego v2).",
-    )
-    parser.add_argument(
-        "--by",
-        action="append",
-        choices=SEGMENTATIONS,
-        default=[],
-        help=(
-            "Ablacja komponentów albo segment kontekstu (WIA-55); można powtórzyć. "
-            "Każda kolumna segmentu wymaga swojej migracji."
-        ),
-    )
-    parser.add_argument(
-        "--echo",
-        action="store_true",
-        help="Test echa momentum (EXP-01): trend LLM vs znak delty bramki — wymaga migracji 034.",
-    )
-    args = parser.parse_args(argv)
-    segmentations = tuple(dict.fromkeys(args.by))
-
-    # Import lokalnie — narzędzie nie powinno wymagać konfiguracji do testów
-    # czystej funkcji `summarize_evaluation`.
-    from src.config import Settings
-    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
-
-    settings = Settings.from_env()
-    repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
-    # Kolumny segmentów tylko na żądanie: `recipe_version` istnieje dopiero po
-    # migracji 030, a domyślny przebieg ma działać na każdej bazie.
-    segment_reads: dict[str, Any] = {
-        name: True
-        for name, wanted in (("with_recipe", args.by_recipe), ("with_universe", args.by_universe))
-        if wanted
-    }
-    extra_fields = {name for s in segmentations for name in SEGMENT_FIELDS[s]}
-    if args.echo:
-        extra_fields.add(GATE_DELTA_FIELD)
-    rows, echo = _read_rows(repo, args.days, segment_reads, extra_fields)
-    if "asset_class" in segmentations:
-        rows = with_asset_class(rows, settings.crypto_symbols, settings.symbols_etf)
+def render_evaluation(
+    rows: list[dict[str, Any]],
+    *,
+    days: int,
+    segmentations: Sequence[str],
+    by_recipe: bool,
+    by_universe: bool,
+    echo: bool,
+    experiment: Experiment | None = None,
+) -> str:
+    """Pełny tekst raportu CLI: nagłówek, segmenty wersji, `--by`, test echa
+    i porównanie ramion eksperymentu."""
     report = summarize_evaluation(rows, segment_by=segmentations)
-    print(format_report(report, args.days))
-    if args.by_recipe:
-        print(format_segments(summarize_by_version(rows, "recipe_version"), "przepis"))
-    if args.by_universe:
-        print(format_segments(summarize_by_version(rows, "universe_version"), "uniwersum"))
-    for name in segmentations:
-        print(format_segment_evidence(name, report.segments[name]))
+    sections = [format_report(report, days)]
+    if by_recipe:
+        sections.append(format_segments(summarize_by_version(rows, "recipe_version"), "przepis"))
+    if by_universe:
+        sections.append(
+            format_segments(summarize_by_version(rows, "universe_version"), "uniwersum")
+        )
+    sections.extend(format_segment_evidence(name, report.segments[name]) for name in segmentations)
     if echo:
-        print(format_echo(summarize_echo(rows)))
-    return 0
+        sections.append(format_echo(summarize_echo(rows)))
+    if experiment is not None:
+        sections.append(format_experiment(summarize_experiment(rows, experiment)))
+    return "\n".join(sections)
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+@dataclass(frozen=True)
+class ExperimentReport:
+    """Porównanie ramion jednego eksperymentu (EXP-05) na rozliczonych predykcjach.
+
+    `arm_counts` — wiersze z ramieniem tego eksperymentu per ramię definicji
+    (z oceną kierunku lub bez); `comparisons` — zabieg vs kontrola per metryka."""
+
+    experiment: Experiment
+    arm_counts: Mapping[str, int]
+    comparisons: tuple[ArmComparison, ...]
+
+
+def _arms_value(value: Any) -> Mapping[str, Any]:
+    """JSONB z PostgREST: zwykle dict, czasem tekst JSON; reszta → brak ramion."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}
+    return value if isinstance(value, Mapping) else {}
+
+
+def experiment_arm(row: Mapping[str, Any], experiment_id: str) -> str | None:
+    """Ramię wiersza: kolumna `experiment_arms` (037) ma pierwszeństwo przed kwitem v2."""
+    for field_name in (EXPERIMENT_ARMS_FIELD, RECEIPT_ARMS_FIELD):
+        arm = _arms_value(row.get(field_name)).get(experiment_id)
+        if isinstance(arm, str):
+            return arm
+    return None
+
+
+def _experiment_call(row: dict[str, Any], arm: str) -> ExperimentCall:
+    correct = row.get("is_trend_correct")
+    return ExperimentCall(
+        cycle=_cycle_key(row.get("timestamp")),
+        arm=arm,
+        predicted_trend=str(row.get("predicted_trend")),
+        is_correct=None if correct is None else bool(correct),
+        confidence=_to_float(row.get("confidence_score")),
+        realized_change=_realized_change(row),
+        council_recommendation=_text(row.get("council_recommendation")),
+        consensus_strength=_to_float(row.get("council_consensus")),
+    )
+
+
+def summarize_experiment(
+    rows: list[dict[str, Any]], experiment: Experiment
+) -> ExperimentReport:
+    """Ramiona eksperymentu na tych samych rozliczonych predykcjach (czysta funkcja).
+
+    Wiersz bez ramienia tego eksperymentu (cykl bez aktywnego eksperymentu)
+    nie wchodzi; ramię spoza definicji jest liczone, ale nie porównywane."""
+    calls = [
+        _experiment_call(row, arm)
+        for row in rows
+        if (arm := experiment_arm(row, experiment.id)) is not None
+    ]
+    counts = {arm: 0 for arm in experiment.arms}
+    for call in calls:
+        if call.arm in counts:
+            counts[call.arm] += 1
+    return ExperimentReport(
+        experiment=experiment,
+        arm_counts=counts,
+        comparisons=compare_experiment(experiment, calls),
+    )
+
+
+def format_experiment(report: ExperimentReport) -> str:
+    """Sekcja CLI eksperymentu: definicja, liczności ramion i różnica per metryka."""
+    experiment = report.experiment
+    counts = ", ".join(f"{arm} {count}" for arm, count in report.arm_counts.items())
+    lines = [
+        f"  Eksperyment {experiment.id} ({experiment.part.value}): {experiment.hypothesis}",
+        f"    Okno: {experiment.start.isoformat()} – {experiment.end.isoformat()} · "
+        f"włączony: {'tak' if experiment.enabled else 'nie'} · "
+        f"metryka główna: {experiment.primary_metric.value}",
+        f"    Wiersze z ramieniem: {counts} (CI blokowe 95% po dniach UTC, "
+        f"k < {MIN_BOOTSTRAP_CYCLES} cykli → bez CI)",
+    ]
+    for comparison in report.comparisons:
+        primary = "★" if comparison.metric is experiment.primary_metric else " "
+        lines.append(f"    {primary} {_comparison_line(comparison)}")
+    return "\n".join(lines)
+
+
+def _comparison_line(comparison: ArmComparison) -> str:
+    metric = comparison.metric
+    control, treatment = comparison.control, comparison.treatment
+    parts = [
+        f"{_METRIC_LABELS[metric]}: {treatment.arm} − {control.arm} "
+        f"{_metric_delta(metric, comparison.difference)}",
+    ]
+    if comparison.interval is not None:
+        low, high = comparison.interval
+        parts.append(
+            f"95% CI blokowe {_metric_delta(metric, low)} … {_metric_delta(metric, high)}"
+        )
+    else:
+        parts.append(f"CI: za mało cykli (k={comparison.cycles})")
+    parts.append(
+        f"[{_arm_text(metric, control.arm, control.mean, control.n, control.n_eff)} · "
+        f"{_arm_text(metric, treatment.arm, treatment.mean, treatment.n, treatment.n_eff)}]"
+    )
+    if metric.lower_is_better:
+        parts.append("niżej = lepiej")
+    if min(control.n, treatment.n) < MIN_SEGMENT_N:
+        parts.append(f"⚠️ {INSUFFICIENT_DATA_PL}")
+    return "  ".join(parts)
+
+
+def _metric_delta(metric: ExperimentMetric, value: float | None) -> str:
+    if value is None:
+        return "—"
+    if metric.lower_is_better:
+        return f"{value:+.3f}"
+    return f"{value * 100:+.1f} pp"
+
+
+def _arm_text(metric: ExperimentMetric, arm: str, mean: float | None, n: int, n_eff: float) -> str:
+    if mean is None:
+        value = "—"
+    elif metric.lower_is_better:
+        value = f"{mean:.3f}"
+    else:
+        value = f"{mean * 100:.1f}%"
+    return f"{arm} {value} n={n} n_eff≈{n_eff:.1f}"

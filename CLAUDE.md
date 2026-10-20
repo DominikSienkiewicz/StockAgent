@@ -31,10 +31,13 @@ domain  ←  application  ←  infrastructure
 - **`src/application/`** — porty (interfejsy ABC w `ports.py`), use cases, graf
   LangGraph, prompty, report builder. Zna `domain`, **nie zna** konkretnych adapterów.
 - **`src/infrastructure/`** — adaptery implementujące porty. Jedyne miejsce z I/O.
-- **`main_agent.py` / `main_trainer.py` / `main_watch.py` / `main_deadman.py`** — DI Container.
+- **`main_agent.py` / `main_trainer.py` / `main_watch.py` / `main_deadman.py` / `main_tools.py`** — DI Container.
   Jedyne miejsce, gdzie konkretne adaptery są łączone z use case'ami. `main_watch.py` (#11)
   i `main_deadman.py` (NIEZ-11) reużywają fabryk z `main_agent` i NIE WOŁAJĄ żadnego
   płatnego portu ani `save_price_snapshot`.
+  Każde narzędzie jednorazowe to podkomenda `main_tools.py`, które jako jedyne składa dla niego
+  `Settings` i adaptery, a `src/tools/` trzyma wyłącznie czyste funkcje — osobny `main_<x>.py`
+  dostaje tylko entry-point z własnym workflow (ARCH-39, bez wyjątków).
 
 Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
 `infrastructure/`. Nigdy nie wstrzykuj konkretnej klasy infrastruktury do `application`.
@@ -56,6 +59,8 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 
 - Adaptery HTTP: testy mockują **`requests.Session.get` / `requests.Session.post`**
   (adaptery wołają przez `self._session` z `_http.build_session()`, nie przez gołe `requests`).
+- Adapter z sekretem w URL-u albo nagłówku woła `safe_get` / `raise_for_status_redacted`
+  z `_http.py`, a jego test sprawdza, że komunikat wyjątku nie zawiera sekretu.
 - Testy integracyjne (prawdziwe API): oznaczone `@pytest.mark.integration`,
   pomijane bez kluczy w env. CI uruchamia `pytest -m "not integration and not containers"`,
   a testy kontenerowe osobnym krokiem `pytest -m containers`.
@@ -66,8 +71,18 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - **Bramka volatility**: płatne porty (LLM, Alpha Vantage, embeddingi) **nie mogą**
   być wołane, gdy zmiana ceny < `volatility_threshold`. Logika progu żyje w domenie
   (`Asset.evaluate_volatility`) — graf jest tylko wykonawcą.
+  Wyjątek (FIN-30): Slow Loop (recap tygodniowy, sędzia kalibracji, przyszłe joby
+  diagnoz) woła LLM poza bramką, ale tylko w tygodniowym budżecie
+  `slow_loop_max_paid_llm_calls_per_week` (config.toml: 15). Przydział liczy domena
+  (`slow_loop_paid_budget`), wywołanie ponad przydział odrzuca `BudgetedLLMPort`
+  przed dostawcą, a licznikiem jest ten sam `MeteredLLMPort` + `CycleTelemetry`
+  co w Fast Loopie.
 - **Cold-start**: `check_price_node` zapisuje snapshot ceny w KAŻDYM cyklu
   (`price_snapshots`), żeby następny cykl miał punkt odniesienia.
+  Jedyny wyjątek (FIN-12): symbol odcięty sufitem płatnych wywołań cyklu
+  (`max_paid_llm_calls_per_cycle`, węzeł `budget_exhausted`) kończy jako 'ignored'
+  BEZ snapshotu ceny — inaczej następny cykl liczyłby Δ od nowej ceny i ruch ponad
+  progiem zniknąłby bez analizy.
 - **Self-Reflection**: `reflect_node` działa PRZED bramką volatility — ocena
   przeszłej predykcji jest niezależna od tego, czy bieżący cykl robi nową prognozę.
 - **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. `main_agent.main()`
@@ -87,6 +102,10 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   `tests/infrastructure/test_migrations.py` (testy aplikują komplet na prawdziwym
   kontenerze pgvector; osobny test pilnuje, żeby lista nie rozjechała się z katalogiem).
 - Aplikacja: ręczny workflow „🗄️ DB Migrate", nigdy z crona Fast Loopa.
+- Uprawnienia (od 038): nowa tabela = `ENABLE ROW LEVEL SECURITY` (bez polityk);
+  nowa funkcja = `REVOKE EXECUTE ... FROM PUBLIC` i `GRANT EXECUTE ... TO service_role`
+  w bloku `DO` z guardem `pg_roles`. Test emulacji ról w `test_migrations.py` pada,
+  gdy któregoś brakuje; szczegóły w `docs/data-and-access.md`.
 
 ## Sekrety
 

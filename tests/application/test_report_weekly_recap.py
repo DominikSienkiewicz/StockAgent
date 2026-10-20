@@ -133,7 +133,7 @@ class TestHeroDirectionVerdict:
         assert "Strzał tygodnia" in html
         assert "✅ kierunek trafiony" in html
         assert "❌ kierunek chybiony" in html
-        assert "błąd ceny docelowej 5.0%" in html
+        assert "błąd ceny docelowej 5,0%" in html
         assert "trafność 95%" not in html
 
     def test_html_week_without_direction_hits_has_no_best_shot(self) -> None:
@@ -147,7 +147,7 @@ class TestHeroDirectionVerdict:
 
         assert "Strzał tygodnia: NVDA" in text
         assert "✅ kierunek trafiony" in text
-        assert "błąd ceny docelowej 5.0%" in text
+        assert "błąd ceny docelowej 5,0%" in text
         assert "trafność 95%" not in text
 
     def test_text_week_without_direction_hits_has_no_best_shot(self) -> None:
@@ -177,3 +177,30 @@ class TestWorstHeroMirrorTitle:
         text = render_weekly_recap_text(_hero_recap(best_correct=True))
 
         assert "Wtopa tygodnia: TSLA" in text
+
+
+class TestWeeklyRecapDisclaimer:
+    """MAIL-08: recap wychodzi jako osobny mail, więc niesie własne zastrzeżenie
+    na końcu — HTML i tekst. Recap None nadal jest pusty (samosupresja)."""
+
+    _DISCLAIMER = "nie stanowi rekomendacji inwestycyjnej"
+
+    def test_html_recap_ends_with_disclaimer(self) -> None:
+        html = render_weekly_recap_html(_recap(), narrative="Tydzień pełen zwrotów.")
+
+        assert self._DISCLAIMER in html
+        assert html.index("Kalibracja") < html.index(self._DISCLAIMER)
+
+    def test_text_recap_ends_with_disclaimer(self) -> None:
+        text = render_weekly_recap_text(_recap())
+
+        assert self._DISCLAIMER in text.splitlines()[-1]
+
+
+def test_ece_line_uses_a_decimal_comma() -> None:
+    # MAIL-58: mail niedzielny pisze liczby po polsku — „ECE 0,150”, nie „ECE 0.150”.
+    html = render_weekly_recap_html(_recap())
+    text = render_weekly_recap_text(_recap())
+
+    assert "ECE 0,150 (poprawa o 0,050 tydzień do tygodnia)" in html
+    assert "ECE 0,150 (poprawa o 0,050 tydzień do tygodnia)" in text

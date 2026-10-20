@@ -29,6 +29,12 @@ routing_floor = 0.6
 router_cheap_model = "gpt-5-mini"
 router_frontier_provider = "anthropic"
 router_frontier_model = "claude-sonnet-4-6"
+# NIEZ-44: zapasowy dostawca analizy głównej — request idzie do niego tylko, gdy główny
+# padnie po swoich retry (błąd 4xx inny niż 429 nie przełącza). Predykcja od zapasowego
+# dostaje flagę jakości `llm_failover` i faktyczny model w kwicie (osobna wersja
+# przepisu). Wymaga klucza drugiego dostawcy w sekretach. Wyłączony — odkomentuj:
+# llm_fallback_provider = "openai"
+# llm_fallback_model = "gpt-4o"
 # Reżim rynku (#7): RISK-OFF zacieśnia próg volatility (mnożnik ≤ max). Włączone.
 regime_aware_enabled = true
 regime_threshold_max_multiplier = 2.0
@@ -40,9 +46,9 @@ regime_threshold_max_multiplier = 2.0
 # Stan w tabeli `regime_history`. UWAGA: włącz DOPIERO po migracji 033.
 regime_hysteresis_enabled = false
 regime_exit_confirmations = 2
-# Contagion (#5): werdykty skorelowanych spółek z tego cyklu do promptu. Off.
+# Contagion (#5): werdykty spółek z tego samego sektora z tego cyklu do promptu.
+# Grupy (`peer_groups`) idą z `sectors` niżej. Off.
 contagion_enabled = false
-peer_groups = {}
 # Kalibracja pewności sędzią-LLM (#4, Slow Loop, migracja 016). Off.
 calibration_judge_enabled = false
 # Tool-use research agent (#6): na największych ruchach model dociąga read-only
@@ -99,9 +105,14 @@ feature_snapshots_enabled = false
 # migracji 032 (inaczej PGRST204 i przepadły zapis predykcji).
 interval_coverage_enabled = false
 # EXP-01: delta ceny, która otworzyła bramkę volatility, w `prediction_logs.gate_delta`
-# — test echa momentum w `uv run python -m src.tools.evaluate --echo` (offline, nie
+# — test echa momentum w `uv run python main_tools.py evaluate --echo` (offline, nie
 # w mailu). Historia z backfillu migracji. UWAGA: włącz DOPIERO po migracji 034 (PGRST204).
 gate_delta_enabled = false
+# EXP-05: eksperymenty w pętli (definicje `experiments.<id>.*` na końcu pliku) —
+# ramię per symbol-dzień UTC = sha256(id|symbol|dzień) mod liczba ramion. Ramię
+# idzie do kwitu v2 (za receipts_enabled, bez migracji); ta flaga dokłada kolumnę
+# `prediction_logs.experiment_arms`. UWAGA: włącz DOPIERO po migracji 037 (PGRST204).
+experiment_arms_enabled = false
 # WIA-19: okna „zamknięte predykcje” po chwili rozliczenia (`settled_at`, migracja
 # 029): sekcja maila = rozliczone w tym cyklu, recap = rozliczone w ostatnich 7 dniach.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 029 (inaczej 400 i sekcja znika).
@@ -114,7 +125,9 @@ shock_alerts_enabled = true
 # NIEZ-11: deadman (main_deadman.py, cron raz dziennie, zero płatnych API) mailuje
 # przez Resend, gdy job zamilkł dłużej niż przerwa w godzinach. 0 = job świadomie
 # wstrzymany: Fast Loop stoi (decyzja 2). Slow Loop chodzi co niedzielę — 192 h to
-# tydzień plus dzień zapasu na opóźnienia crona GitHuba.
+# tydzień plus dzień zapasu na opóźnienia crona GitHuba. Fast Loop liczy się w dniach
+# handlowych NYSE: przerwa to zapas od północy ET każdego dnia handlowego (weekend
+# i święto nie alarmują) — przy wznowieniu np. 26 (alarm po dwóch dniach bez cyklu).
 liveness_fast_loop_max_gap_h = 0
 liveness_slow_loop_max_gap_h = 192
 # #14: Alpha Fusion Score (migracja 022) — ważona fuzja insider/opcje/analitycy/
@@ -129,6 +142,15 @@ attestation_enabled = false
 # #15: realny portfel użytkownika (tabela `positions`, migracja 023) — wagi,
 # P/L i VaR w PLN zamiast fikcji równych wag. Flaga off → Null adapter. Włączone.
 portfolio_positions_enabled = true
+# PORT-18: waluta i prawdziwa data zakupu pozycji (`positions.currency`,
+# `purchase_date`, migracja 035) — odczyt w raporcie i zapis importu CSV
+# (`main_tools.py import-positions`). UWAGA: włącz DOPIERO po migracji 035
+# (inaczej PGRST204 przy imporcie).
+positions_currency_enabled = false
+# PORT-11: P/L w zł po kursie NBP z dnia zakupu — kursy z NBP (darmowe) idą za
+# `nbp_enabled`; ta flaga dokłada tylko cache kursów z minionych dni w tabeli
+# `fx_rates`. UWAGA: włącz DOPIERO po migracji 036 (inaczej błędy w logu).
+fx_rates_cache_enabled = false
 # #17: niedzielna retrospektywa („Tydzień StockAgenta"). Koszt: 1 wywołanie LLM
 # TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Włączone.
 weekly_recap_enabled = true
@@ -141,6 +163,10 @@ public_scorecard_path = "public/scorecard/index.html"
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"
 track_record_days = 30
+# WIA-50: jednostronny koszt transakcyjny paper-PnL i backtestu (bps od obrotu),
+# naliczany tylko przy zmianie pozycji symbolu (wejście/wyjście 1×, odwrócenie 2×).
+paper_cost_bps = 10
+crypto_paper_cost_bps = 25
 # Dane — nowe źródła alpha. Default off → Null adapter (zero płatnych). Realny
 # adapter włącza flaga (+ ewentualny klucz: FRED_API_KEY dla yield_curve).
 insider_flow_enabled = true
@@ -148,6 +174,66 @@ insider_flow_enabled = true
 # sentymentu (~39/dzień). Darmowy AV = 25 req/dzień/klucz, więc wymaga >= 4 kluczy.
 # Włącz dopiero, gdy masz tyle w ALPHA_VANTAGE_API_KEYS. Odblokowuje bramkę earnings (#6).
 earnings_calendar_enabled = false
+# FIN-32: najgorszy przypadek doby AV (cała watchlista za bramką, +1 na symbol przy
+# kalendarzu wyników) ponad 25 × liczba kluczy → WARNING w logu i w bannerze maila.
+# true = błąd startu zamiast ostrzeżenia. Off, bo liczba kluczy żyje w sekretach.
+av_budget_strict = false
+# FIN-32: cykle Fast Loopa na dobę w tym budżecie = uruchomienia na dobę z harmonogramu
+# `.github/workflows/fast_loop_12h.yml` (cron zakomentowany → 1). Test strażnik pilnuje
+# zgodności — zmieniasz cron, zmień i to.
+fast_loop_cycles_per_day = 1
+# FIN-12: sufit płatnych wywołań LLM jednego cyklu Fast Loopa (predykcja, diagnoza
+# pomyłki, każdy request rady). Miękki: symbol za bramką wchodzi, dopóki wydane < sufit;
+# kolejne idą do „Pominięte — wyczerpany budżet cyklu” bez snapshotu ceny.
+max_paid_llm_calls_per_cycle = 100
+# WIA-11: jawny budżet tygodniowy Fast Loopa (USD, szacunek UNIT_COST_USD). Najgorszy
+# tydzień = cała watchlista za bramką przy suficie wyżej (rada ≤ 99 + 4 symbole w locie
+# × 8 requestów) × fast_loop_cycles_per_day × 5 dni handlowych; ponad budżet → WARNING
+# i alert w bannerze maila przy starcie. Dla tego pliku (2026-10-20): 1,2112 USD na cykl,
+# 6,06 USD na tydzień, zaokrąglone w górę do pełnego dolara. Zmieniasz watchlistę, sufit,
+# radę albo cron — przelicz (`main_tools.py cost-envelope`, wiersz tygodniowy); start
+# Fast Loopa ostrzeże, gdy budżet przestanie wystarczać.
+fast_loop_weekly_budget_usd = 7.0
+# FIN-30: sufit płatnych wywołań LLM Slow Loopa na tydzień (recap, sędzia kalibracji,
+# przyszłe joby diagnoz). Wywołanie ponad budżet jest odrzucane przed dostawcą i job
+# idzie deterministycznym fallbackiem; recap ma pierwszeństwo.
+slow_loop_max_paid_llm_calls_per_week = 15
+# FIN-34: w dzień zamknięcia NYSE (święto z `market_calendar`, weekend) Fast Loop nie
+# analizuje akcji — ceny stoją, a przebieg, snapshoty i mail byłyby zbędne. Krypto idzie
+# normalnie; bez krypto przebieg kończy się od razu, bez maila.
+nyse_closure_skip_enabled = true
+# EXP-27: cykl dwufazowy — faza 1 (darmowa cena, reflect, bramka) dla wszystkich symboli,
+# faza 2 buduje klienta Alpha Vantage tylko dla symboli za bramką i płaci za nie malejąco
+# po |Δ| (sufit FIN-12 odcina najmniejsze ruchy). Eksperyment do porównania z FIN-04. Off.
+two_phase_cycle_enabled = false
+# FIN-13: ledger kosztów — jeden wiersz `llm_calls` na request LLM / embeddingów
+# (tokeny, koszt, przebieg, węzeł, symbol; bez treści promptu), zapis batchem po
+# przebiegu Fast i Slow Loopa. UWAGA: włącz DOPIERO po migracji 040 (inaczej błąd
+# zapisu w logu). Sekcja „Koszt cyklu” liczy koszt z tokenów i bez tej flagi.
+cost_ledger_enabled = false
+# NIEZ-29: historia przebiegów — jeden wiersz `cycle_runs` na koniec cyklu Fast Loopa
+# (run_id jak w `llm_calls` + numer próby runu, liczby cyklu, płatne wywołania per
+# źródło, czy mail wyszedł; bez symboli). UWAGA: włącz DOPIERO po migracji 041.
+cycle_runs_enabled = false
+# WIA-24: darmowy sygnał referencyjny `reference-v1` (docs/reference-protocol-v1.md) —
+# raz na przebieg Slow Loopa własny odczyt /quote (Finnhub, CoinGecko), rozliczenie
+# zeszłotygodniowego wywołania i nowe wywołanie ze znaku zmiany tygodniowej. Zapis do
+# osobnej tabeli `reference_predictions`, nigdy do `prediction_logs` ani
+# `price_snapshots`; zero płatnych wywołań. UWAGA: włącz DOPIERO po migracji 042.
+reference_signal_enabled = false
+# FIN-13: cennik LLM per model — standard tier, USD za 1M tokenów, stan na dzień
+# `llm_pricing_as_of`. Źródła:
+#   https://platform.claude.com/docs/en/about-claude/pricing
+#   https://developers.openai.com/api/docs/pricing
+# Anthropic `cache_write` = zapis cache 5 min (adapter używa cache ephemeral). OpenAI
+# nie nalicza zapisu cache, embedding ma tylko wejście. Tylko modele, które repo
+# konfiguruje; model bez wpisu zostaje na szacunku UNIT_COST_USD (src/domain/finops.py).
+# Cennik dryfuje — przy zmianie stawek albo modelu zaktualizuj też datę.
+llm_pricing_as_of = "2026-10-20"
+llm_pricing."claude-sonnet-4-6" = { input = 3.00, cache_read = 0.30, cache_write = 3.75, output = 15.00 }
+llm_pricing."gpt-5-mini" = { input = 0.25, cache_read = 0.025, output = 2.00 }
+llm_pricing."gpt-4o" = { input = 2.50, cache_read = 1.25, output = 10.00 }
+llm_pricing."text-embedding-3-small" = { input = 0.02 }
 # options_flow: option-chain to endpoint PREMIUM Finnhuba — na free tier zwraca 403,
 # więc sygnał nie powstaje, a każdy cykl marnuje ~39 requestów. Off do czasu planu premium.
 # Odblokowuje #18 (edge vs implied move).
@@ -212,7 +298,7 @@ web_digest_path = "public/digest/index.html"
 # --- NBP (kursy do raportu) ---
 nbp_enabled = true
 
-# --- Portfolio (43) ---
+# --- Portfolio ---
 symbols = [
   "AAPL", "AMZN", "GOOGL", "MSFT", "META", "NVDA", "TSLA", "AMD", "NET",
   "PLTR", "ORCL", "UBER", "TSM", "ASML", "ASMIY", "SAP", "SIEGY", "NVO",
@@ -228,6 +314,71 @@ symbols_unsupported_price = ["CSPX.L", "XDWD.DE", "IUSN.DE", "SSNLF"]
 # --- Krypto (CoinGecko zamiast Finnhub) ---
 crypto_symbols = ["BTC", "ETH"]
 
+# --- Sektory akcji (PORT-05: jedno źródło grup) ---
+# Sektor → akcje z `symbols` (bez ETF-ów i krypto — test spójności). Z tej mapy
+# powstaje `peer_groups`: ekspozycja sektora w sizingu, ostrzeżenie o koncentracji
+# w sekcji portfela i (gdy contagion włączony) peery w prompcie. To sektor, NIE
+# klaster policzonej korelacji. Ta sama mapa daje etykiety sektorów w mailu
+# (ETF-y z `symbols_etf` → „ETF”, `crypto_symbols` → „Krypto”).
+sectors."Big Tech" = ["AAPL", "AMZN", "GOOGL", "META"]
+sectors."Półprzewodniki/AI" = [
+  "NVDA", "AMD", "TSM", "ASML", "ASMIY", "MU", "QCOM", "INTC", "SNDK",
+]
+sectors."Chmura/Software" = [
+  "MSFT", "ORCL", "NET", "SAP", "PLTR", "IBM", "TEAM", "FROG", "SNOW", "DDOG",
+]
+sectors."Cyberbezpieczeństwo" = ["CRWD", "PANW", "OKTA", "S", "SAIL"]
+sectors."Hardware" = ["DELL", "SSNLF"]
+sectors."Mobilność" = ["TSLA", "UBER"]
+sectors."Przemysł/Pharma" = ["SIEGY", "NVO"]
+sectors."Finanse" = ["BLK"]
+
+# Kuratorowani peerzy spoza watchlisty per sektor akcji — sekcja 💡 Warte uwagi
+# podsuwa ich, gdy sektor jest „gorący” w cyklu. Klucze to nazwy z `sectors`
+# (nieznana nazwa zatrzymuje start). Render-only, zero płatnych wywołań.
+sector_peers."Big Tech" = ["NFLX", "DIS"]
+sector_peers."Półprzewodniki/AI" = ["AVGO", "TXN", "AMAT", "KLAC", "LRCX", "ARM", "MRVL"]
+sector_peers."Chmura/Software" = ["CRM", "ADBE", "NOW", "MDB", "WDAY", "HUBS"]
+sector_peers."Cyberbezpieczeństwo" = ["ZS", "FTNT", "CYBR", "TENB", "QLYS"]
+sector_peers."Hardware" = ["HPQ", "HPE", "WDC", "STX", "SMCI", "LOGI"]
+sector_peers."Mobilność" = ["LYFT", "RIVN", "LCID", "GM", "F"]
+sector_peers."Przemysł/Pharma" = ["LLY", "MRK", "PFE", "ABBV", "NVS"]
+sector_peers."Finanse" = ["JPM", "GS", "MS", "V", "MA"]
+
 # --- Risk Watch (osobny use case) ---
 risk_symbols = ["EPOL", "SH", "PSQ", "RWM", "EUM", "SQQQ", "TBT", "GLD", "VIXY", "UVXY"]
 risk_symbol_types = { EPOL = "SOVEREIGN_PROXY", SH = "INVERSE_EQUITY", PSQ = "INVERSE_EQUITY", RWM = "INVERSE_EQUITY", EUM = "INVERSE_EQUITY", SQQQ = "INVERSE_EQUITY", TBT = "INVERSE_TREASURY", GLD = "SAFE_HAVEN", VIXY = "VOLATILITY", UVXY = "VOLATILITY" }
+
+# --- Eksperymenty w pętli (EXP-05) ---
+# Klucz = id eksperymentu. Pola: hypothesis, arms (pierwsze = kontrolne, czyli
+# status quo; reszta to zabiegi znane kodowi: `blind` — prompt rady, `no_memory`
+# — prompt predykcji), start i end (dzień UTC cyklu, oba włącznie),
+# primary_metric (z metryk części promptu) i enabled. Aktywny = enabled i dzień
+# cyklu w oknie. Na jedną część promptu działa naraz co najwyżej jeden włączony
+# eksperyment (start pada przy nakładających się oknach). Zero nowych płatnych
+# wywołań. Ocena: `uv run python main_tools.py evaluate --experiment <id>`.
+
+# EXP-02: ślepa rada — ramię `blind` bez linii „Trend wg głównego analityka agenta
+# … (pewność …)” w promptach person (runda 1 i rewizja). Te same wywołania rady
+# w obu ramionach. Rada odpala tylko przy |Δ| ≥ council_volatility_threshold, więc
+# potrwa tygodnie. NIEAKTYWNY do wznowienia Fast Loopa — okno ustaw przy wznowieniu.
+experiments.EXP-02.hypothesis = "Persony bez trendu i pewności głównego LLM głosują niezależnie, więc rada jest trafniejsza i rzadziej powtarza werdykt LLM."
+experiments.EXP-02.arms = ["sighted", "blind"]
+experiments.EXP-02.start = 2026-11-02
+experiments.EXP-02.end = 2027-01-29
+experiments.EXP-02.primary_metric = "council_hit_rate"
+experiments.EXP-02.enabled = false
+
+# EXP-03: A/B pamięci — ramię `no_memory` bez lekcji z reflect (`reflection_context`)
+# i bez analogów RAG (`similar_context`) w prompcie predykcji; bez zapytania RAG,
+# ale embeduje newsy przy zapisie jak status quo, więc jego predykcje trafiają do
+# korpusu analogów (koszt bez zmian, brak dziury po eksperymencie). Rozliczenie
+# poprzedniej predykcji (reflect) bez zmian. RAG biegnie zawsze, gdy jest adapter
+# embeddingów (vector_memory_enabled dokłada tylko filtr reżimu); dzień bez analogu
+# mierzy same lekcje. NIEAKTYWNY do wznowienia Fast Loopa — okno ustaw przy wznowieniu.
+experiments.EXP-03.hypothesis = "Lekcje z rozliczonych pomyłek i analogi RAG w prompcie poprawiają trafność i kalibrację predykcji."
+experiments.EXP-03.arms = ["memory", "no_memory"]
+experiments.EXP-03.start = 2026-11-02
+experiments.EXP-03.end = 2027-01-29
+experiments.EXP-03.primary_metric = "hit_rate"
+experiments.EXP-03.enabled = false

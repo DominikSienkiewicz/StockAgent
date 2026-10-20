@@ -1,15 +1,17 @@
 name: 🚨 Shock Watch (hourly, free)
 
 on:
-  # ⏸️ Harmonogram WSTRZYMANY razem z Fast Loopem (fast_loop_12h.yml).
-  # Watch nigdy nie zapisuje snapshotu ceny — jedyne referencje to snapshoty
-  # Fast Loopa, a referencja starsza niż 30 h tłumi każdy alert. Bez Fast Loopa
-  # cron co godzinę pobierałby ceny tylko po to, żeby zgłosić „0 alertów".
-  # Przywróć cron RAZEM z cronem Fast Loopa (albo po uniezależnieniu watcha
-  # od jego snapshotów). Ręczne wymuszenie z panelu Actions zostaje.
+  # ⏸️ Harmonogram WSTRZYMANY — odkomentowuje go właściciel. Od ALR-02 watch może
+  # wrócić SAM, bez Fast Loopa (fast_loop_12h.yml): ruch liczy z dziennej zmiany
+  # darmowego /quote (Finnhub `dp`, CoinGecko zmiana 24 h), a snapshot Fast Loopa
+  # jest tylko fallbackiem. Watch nigdy nie zapisuje snapshotu ceny. Strażnik
+  # `tests/test_shock_watch_env_wiring.py` pilnuje, że cron bez Fast Loopa ma
+  # okablowane źródło dziennej zmiany. Ręczne wymuszenie z panelu Actions zostaje.
   #
   # Watch jest zaprojektowany pod 24/7, NIE tylko sesję NYSE — BTC/ETH handlują
   # całą dobę. Wymaga migracji 021 i `shock_alerts_enabled = true`.
+  # W dzień zamknięcia NYSE (święto, weekend) watch sam pomija akcje i sprawdza samo
+  # krypto (FIN-34, `nyse_closure_skip_enabled` w config.toml) — cron zostaje 24/7.
   # schedule:
   #   - cron: '7 * * * *'   # co godzinę, o :07 (rozsmarowanie obciążenia GHA)
   workflow_dispatch:
@@ -32,6 +34,13 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
+      - name: 🙈 Mask each Alpha Vantage key
+        # BEZ-03: GitHub maskuje sekret CSV tylko w całości — pojedynczy klucz z listy
+        # wyszedłby w logu jawnie. Maskujemy każdy osobno, zanim ruszy Python.
+        env:
+          ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
+        run: scripts/mask-csv-secret.sh ALPHA_VANTAGE_API_KEYS
+
       - name: 🐍 Set up Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -52,6 +61,9 @@ jobs:
           # Database — odczyt snapshotów + dedup alertów (migracja 021).
           SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
+          # BEZ-08: zapis `shock_alerts` (debounce między przebiegami) wymaga jawnego
+          # włączenia — Settings domyślnie nie zapisuje do bazy (lokalny run).
+          DB_WRITES_ENABLED: "true"
           # Darmowe źródło ceny dla akcji (krypto idzie po CoinGecko, bez klucza).
           FINNHUB_API_KEY:   ${{ secrets.FINNHUB_API_KEY }}
           # Settings wymaga OPENAI_API_KEY jako pola obowiązkowego, choć watch
@@ -64,6 +76,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SLACK_WEBHOOK_URL:  ${{ secrets.SLACK_WEBHOOK_URL }}
+          # NIEZ-13: zewnętrzny heartbeat (np. healthchecks.io) — ping na koniec przebiegu,
+          # porażka → <URL>/fail. Brak sekretu = pusty string = NullHeartbeat (zero requestów).
+          HEARTBEAT_URL:      ${{ secrets.HEARTBEAT_URL }}
         run: uv run --frozen --no-build --no-sync python main_watch.py
 
       - name: 📮 Mail o porażce jobu

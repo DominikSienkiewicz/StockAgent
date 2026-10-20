@@ -3,17 +3,19 @@
 Czysta logika prezentacji, BEZ I/O i bez dodatkowych calli. 'Gorący sektor'
 wyznaczamy wyłącznie z danych BIEŻĄCEGO cyklu (Δ12h + sentyment już
 policzone dla monitorowanych spółek), a peerów bierzemy z kuratorowanej mapy
-`PEERS`. Sekcja pomijana w całości, gdy nie ma gorących sektorów z wolnymi
-kandydatami (`render_*` → "").
+`sector_peers` z config.toml (PORT-05: klucze to te same sektory co `sectors`,
+pilnuje tego walidator `Settings`). Sekcja pomijana w całości, gdy nie ma
+gorących sektorów z wolnymi kandydatami (`render_*` → "").
 """
 
 from __future__ import annotations
 
 import html as _html_mod
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
-from src.application.report_formatting import PEERS, sector_label
+from src.application.report_formatting import pct, sector_label
 from src.application.report_models import SymbolResult
 
 # Progi 'gorącości' — wyższe niż główna bramka volatility (0.02), by sugestie
@@ -36,23 +38,27 @@ class SectorSuggestion:
 
 def build_sector_suggestions(
     results: list[SymbolResult],
+    sector_map: Mapping[str, str],
+    sector_peers: Mapping[str, Sequence[str]],
 ) -> list[SectorSuggestion]:
     """Z wyników cyklu buduje listę sugestii dla gorących sektorów akcji.
 
     Sektor kwalifikuje się, gdy jego najsilniejszy monitorowany ruch
     |Δ12h| ≥ MOVE_THRESHOLD LUB średni |sentyment| ≥ SENTIMENT_THRESHOLD,
-    i ma wolnych peerów (spoza symboli z bieżącego cyklu).
+    i ma wolnych peerów (spoza symboli z bieżącego cyklu). `sector_map`
+    (symbol → sektor) i `sector_peers` (sektor → peerzy) idą z tego samego
+    configu, więc nazwy sektorów się zgadzają.
     """
     monitored = {r.symbol for r in results}
 
-    # Grupujemy monitorowane saved-wyniki po sektorze (tylko sektory z PEERS,
+    # Grupujemy monitorowane saved-wyniki po sektorze (tylko sektory z peerami,
     # co automatycznie wyklucza ETF/Krypto i symbole nieznane).
     by_sector: dict[str, list[SymbolResult]] = {}
     for r in results:
         if r.status != "saved":
             continue
-        sector = sector_label(r.symbol)
-        if sector is None or sector not in PEERS:
+        sector = sector_label(r.symbol, sector_map)
+        if sector is None or sector not in sector_peers:
             continue
         by_sector.setdefault(sector, []).append(r)
 
@@ -67,7 +73,7 @@ def build_sector_suggestions(
         if not is_hot:
             continue
 
-        candidates = [p for p in PEERS[sector] if p not in monitored][:MAX_CANDIDATES]
+        candidates = [p for p in sector_peers[sector] if p not in monitored][:MAX_CANDIDATES]
         if not candidates:
             continue
 
@@ -89,7 +95,7 @@ def build_sector_suggestions(
 
 
 def _fmt_drivers(drivers: list[tuple[str, Decimal]]) -> str:
-    return ", ".join(f"{sym} {delta * 100:+.1f}%" for sym, delta in drivers)
+    return ", ".join(f"{sym} {pct(delta, signed=True, decimals=1)}" for sym, delta in drivers)
 
 
 def render_suggestions_html(suggestions: list[SectorSuggestion]) -> str:

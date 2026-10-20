@@ -278,3 +278,43 @@ class TestNullMacroRatesAdapter:
 
         assert adapter.fetch_yield_curve() is None
         mock_get.assert_not_called()
+
+
+def test_http_error_log_omits_api_key(mocker, caplog) -> None:
+    # BEZ-07: `exc_info=True` drukuje traceback z URL-em zawierającym `&api_key=`.
+    import logging
+
+    response = requests.Response()
+    response.status_code = 400
+    response.reason = "Bad Request"
+    response.url = (
+        "https://api.stlouisfed.org/fred/series/observations?series_id=DGS10"
+        "&api_key=fred-secret-key&file_type=json"
+    )
+    mocker.patch("requests.Session.get", return_value=response)
+    client = FredClient(api_key="fred-secret-key")
+
+    with caplog.at_level(logging.WARNING):
+        assert client.fetch_yield_curve() is None
+
+    assert "400 Client Error" in caplog.text
+    assert "fred-secret-key" not in caplog.text
+
+
+def test_network_error_log_omits_api_key(mocker, caplog) -> None:
+    import logging
+
+    mocker.patch(
+        "requests.Session.get",
+        side_effect=requests.ConnectionError(
+            "Max retries exceeded with url: "
+            "/fred/series/observations?series_id=DGS10&api_key=fred-secret-key"
+        ),
+    )
+    client = FredClient(api_key="fred-secret-key")
+
+    with caplog.at_level(logging.WARNING):
+        assert client.fetch_yield_curve() is None
+
+    assert "FRED fetch failed" in caplog.text
+    assert "fred-secret-key" not in caplog.text

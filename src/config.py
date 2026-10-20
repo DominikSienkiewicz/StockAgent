@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import logging
 import os
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     NoDecode,
@@ -17,12 +27,24 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from src.domain.experiment import Experiment, ExperimentMetric, validate_experiments
+from src.domain.finops import (
+    AV_DAILY_REQUESTS_PER_KEY,
+    AvBudget,
+    ModelPrice,
+    WeeklyCostBudget,
+    av_daily_budget,
+    capped_cycle_call_upper_bound,
+    weekly_cost_budget,
+)
 from src.domain.macro_risk import MacroRiskInstrumentType
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
 
 # Ścieżka do config.toml zakotwiczona w ROOCIE repo (src/config.py → ../config.toml),
 # NIE względem CWD. Inaczej agent odpalony spoza roota nie znajduje pliku i cały
 # config niewrażliwy po cichu spada do defaultów (np. notifications_enabled=False).
+logger = logging.getLogger(__name__)
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_TOML_FILE = str(_REPO_ROOT / "config.toml")
 
@@ -46,6 +68,8 @@ SECRET_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "slack_webhook_url",
     # Nagłówek SEC niesie adres kontaktowy.
     "edgar_user_agent",
+    # NIEZ-13: URL pingu heartbeatu niesie UUID checku — kto go zna, ten pinguje.
+    "heartbeat_url",
 })
 
 # WIA-20: pola niesekretne, które NIE zmieniają prognozy, więc nie wchodzą do
@@ -75,12 +99,26 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "calibration_curve_enabled",
     "lessons_enabled",
     "calibrated_confidence_enabled",
+    # PORT-05: peerzy sekcji 💡 Warte uwagi — sugestie liczone po predykcji.
+    "sector_peers",
     "model_scorecard_enabled",
     "cycle_diff_enabled",
     "settled_at_windows_enabled",
     "track_record_days",
+    # WIA-50: koszt paper-PnL / backtestu — parametr oceny, nie prognozy.
+    "paper_cost_bps",
+    "crypto_paper_cost_bps",
     "portfolio_positions_enabled",
+    # PORT-18: waluta i data zakupu pozycji (odczyt + zapis importu) — tylko raport.
+    "positions_currency_enabled",
+    # PORT-11: cache kursów NBP z dnia (P/L w zł) — tylko raport.
+    "fx_rates_cache_enabled",
     # Flagi samego zapisu i publikacji.
+    # BEZ-08: czy przebieg w ogóle zapisuje do bazy; prognoza cyklu ta sama.
+    "db_writes_enabled",
+    # FIN-35: atrapy płatnych portów tylko lokalnie (produkcja zawsze true), a lokalny
+    # zapis do bazy i tak jest off (`db_writes_enabled`) — przepisów produkcji nie dzieli.
+    "paid_calls_enabled",
     "receipts_enabled",
     "feature_set_version_enabled",
     "recipe_version_enabled",
@@ -93,6 +131,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "interval_coverage_enabled",
     # EXP-01: sam zapis delty bramki; test echa liczy ją offline w `evaluate`.
     "gate_delta_enabled",
+    # EXP-05: sam zapis ramion w kolumnie; definicje eksperymentów są w przepisie.
+    "experiment_arms_enabled",
     "model_scorecard_baselines_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
@@ -103,6 +143,35 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "liveness_slow_loop_max_gap_h",
     "calibration_judge_enabled",
     "feature_set_filter_enabled",
+    # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
+    "av_budget_strict",
+    "fast_loop_cycles_per_day",
+    # FIN-12: sufit kosztu cyklu decyduje, KTÓRE symbole dostają analizę, nie jaką —
+    # prognoza przeanalizowanego symbolu jest identyczna z sufitem i bez.
+    "max_paid_llm_calls_per_cycle",
+    # WIA-11: budżet tygodniowy to sama kontrola startu (WARNING i banner); prognoza ta sama.
+    "fast_loop_weekly_budget_usd",
+    # FIN-30: tygodniowy sufit LLM Slow Loopa (recap, sędzia) — inny job, nie Fast Loop.
+    "slow_loop_max_paid_llm_calls_per_week",
+    # FIN-34: dzień zamknięcia NYSE decyduje, CZY akcje idą do grafu, nie jak.
+    "nyse_closure_skip_enabled",
+    # EXP-27: cykl dwufazowy zmienia kolejność analizy (malejące |Δ|) i to, kogo
+    # tnie sufit FIN-12 — płatna analiza symbolu jest ta sama co w cyklu jednofazowym.
+    "two_phase_cycle_enabled",
+    # FIN-13: cennik wycenia tokeny w mailu i ledgerze, a flaga włącza sam zapis
+    # `llm_calls` — żadne z nich nie zmienia prognozy.
+    "llm_pricing",
+    "llm_pricing_as_of",
+    "cost_ledger_enabled",
+    # NIEZ-29: sam zapis historii przebiegów `cycle_runs` — prognoza ta sama.
+    "cycle_runs_enabled",
+    # WIA-24: sygnał referencyjny w Slow Loopie, osobna tabela — predykcja LLM ta sama.
+    "reference_signal_enabled",
+    # NIEZ-44 (decyzja 2026-10-20): zapasowy LLM działa tylko po awarii głównego,
+    # a predykcja od niego niesie własny przepis — flagę `llm_failover` i faktyczny
+    # dostawcę/model w kwicie i `recipe_version` — więc track record ją odsieje.
+    "llm_fallback_provider",
+    "llm_fallback_model",
 })
 
 # WIA-20: pola przepisu — progi, modele, providerzy, symbole, źródła danych
@@ -125,6 +194,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "regime_hysteresis_enabled",
     "regime_exit_confirmations",
     "contagion_enabled",
+    # PORT-05: sektory → `peer_groups` (contagion w prompcie, ekspozycja w sizingu).
+    "sectors",
     "peer_groups",
     "alpha_fusion_enabled",
     "insider_flow_enabled",
@@ -158,7 +229,65 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "reflection_max_age_hours",
     "rag_outcome_weight",
     "ml_model_path",
+    # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
+    "experiments",
 })
+
+
+# FIN-07: jedyny próg volatility, dla którego 0 ma znaczenie ("rada zawsze leci,
+# gdy główna bramka przepuści"); pozostałe progi bramek muszą być > 0.
+_ALWAYS_RUN_THRESHOLD_FIELD = "council_volatility_threshold"
+
+
+# BEZ-10: klucze Supabase działające jako role API, które po migracji 038 (RLS bez
+# polityk i REVOKE) nie widzą żadnego wiersza: publishable (nowy format) oraz
+# legacy JWT z rolą anon / authenticated. Aplikacja potrzebuje klucza secret
+# (`sb_secret_…`) albo legacy JWT service_role, które omijają RLS.
+_PUBLIC_SUPABASE_KEY_PREFIX = "sb_publishable_"
+_PUBLIC_SUPABASE_JWT_ROLES = frozenset({"anon", "authenticated"})
+
+
+def _supabase_jwt_role(key: str) -> str | None:
+    """Claim `role` z payloadu JWT, bez weryfikacji podpisu (to nie uwierzytelnienie,
+    tylko rozpoznanie rodzaju klucza). None, gdy klucz nie jest JWT albo nie ma roli."""
+    parts = key.split(".")
+    if len(parts) != 3:
+        return None
+    payload = parts[1]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except ValueError:
+        # binascii.Error, UnicodeDecodeError i JSONDecodeError dziedziczą po ValueError.
+        return None
+    role = claims.get("role") if isinstance(claims, dict) else None
+    return role if isinstance(role, str) else None
+
+
+class ExperimentSettings(BaseModel):
+    """EXP-05: jeden wpis `[experiments.<id>]` z `config.toml`. Domenową
+    walidację (ramiona, metryka, okno) robi `Experiment` przy starcie."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    hypothesis: str
+    arms: list[str]
+    start: date
+    end: date
+    primary_metric: ExperimentMetric
+    enabled: bool = False
+
+
+class ModelPriceSettings(BaseModel):
+    """FIN-13: stawki jednego modelu z `config.toml`, USD za 1M tokenów (standard
+    tier). Brak stawki = dostawca jej nie nalicza; request z takimi tokenami nie
+    jest wyceniany (fallback na `UNIT_COST_USD`), więc literówka w kluczu to błąd."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    input: float = Field(ge=0)
+    output: float | None = Field(default=None, ge=0)
+    cache_read: float | None = Field(default=None, ge=0)
+    cache_write: float | None = Field(default=None, ge=0)
 
 
 class Settings(BaseSettings):
@@ -180,6 +309,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        # BEZ-10: błąd walidacji nie wypisuje wejścia — traceback startu nie może
+        # nieść wartości sekretu (klucza Supabase, tokenu), nawet gdy pole ma zły typ.
+        hide_input_in_errors=True,
     )
 
     @classmethod
@@ -217,6 +349,12 @@ class Settings(BaseSettings):
     llm_provider: Literal["openai", "anthropic"] = "openai"
     openai_api_key: str
     anthropic_api_key: str | None = None
+    # NIEZ-44: zapasowy dostawca głównej analizy — dostaje request tylko, gdy główny
+    # rzuci po swoich retry (4xx poza 429 nie przełącza). Wymaga klucza drugiego
+    # dostawcy; bez niego WARNING i sam główny. None = bez failovera (domyślnie;
+    # config.toml ma tylko zakomentowany przykład). Model None = default providera.
+    llm_fallback_provider: Literal["openai", "anthropic"] | None = None
+    llm_fallback_model: str | None = None
 
     # Heterogeniczna strategia: rada doradcza (N person + chairman × M symboli) może
     # działać na tańszym modelu niż główna analiza, bo persona-acting + JSON
@@ -249,9 +387,16 @@ class Settings(BaseSettings):
     # więc odczyt i zapis by padały (cykl i tak bierze wtedy surowy reżim).
     regime_hysteresis_enabled: bool = False
     regime_exit_confirmations: int = DEFAULT_EXIT_CONFIRMATIONS
-    # Contagion: werdykty skorelowanych spółek z tego cyklu do promptu.
+    # Contagion: werdykty spółek z tej samej grupy z tego cyklu do promptu.
     contagion_enabled: bool = False
+    # PORT-05: sektor → akcje (jedno źródło grup). Puste `peer_groups` wyprowadzamy
+    # z sektorów bez ETF-ów i krypto; jawnie podane `peer_groups` wygrywają.
+    sectors: dict[str, list[str]] = Field(default_factory=dict)
     peer_groups: dict[str, list[str]] = Field(default_factory=dict)
+    # PORT-05: sektor → kuratorowani peerzy spoza watchlisty (sekcja 💡 Warte
+    # uwagi). Klucze MUSZĄ być sektorami z `sectors` — inaczej start pada, żeby
+    # zmiana nazwy sektora nie wyłączyła sugestii po cichu.
+    sector_peers: dict[str, list[str]] = Field(default_factory=dict)
     # LLM-as-Judge kalibracji pewności (Slow Loop, migracja 016).
     calibration_judge_enabled: bool = False
 
@@ -318,6 +463,16 @@ class Settings(BaseSettings):
     # wywołań, prognoza bez zmian. Off: nowy klucz przed migracją → PGRST204
     # i śmierć zapisu całej predykcji.
     gate_delta_enabled: bool = False
+    # EXP-05: eksperymenty w pętli — id → definicja (hipoteza, ramiona, okno,
+    # metryka główna, `enabled`). Ramię przydziela sha256(id|symbol|dzień UTC)
+    # mod liczba ramion; pierwsze ramię to status quo. Walidacja przy starcie:
+    # nieznany zabieg, metryka spoza części promptu albo dwa włączone eksperymenty
+    # na tej samej części w nakładających się oknach zatrzymują start.
+    experiments: dict[str, ExperimentSettings] = Field(default_factory=dict)
+    # EXP-05: kolumna `prediction_logs.experiment_arms` (migracja 037). Ramię
+    # trafia też do kwitu v2 (za `receipts_enabled`, bez migracji). Off: nowy
+    # klucz przed migracją → PGRST204 i śmierć zapisu całej predykcji.
+    experiment_arms_enabled: bool = False
     # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
     # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr
@@ -328,6 +483,8 @@ class Settings(BaseSettings):
     shock_alerts_enabled: bool = False
     # NIEZ-11: deadman (main_deadman.py, cron raz dziennie) — maksymalna przerwa
     # między śladami życia jobu w godzinach; 0 = job świadomie wstrzymany. Off.
+    # Fast Loop: zapas od północy ET każdego dnia handlowego NYSE (weekend i święto
+    # nie alarmują).
     liveness_fast_loop_max_gap_h: float = 0.0
     liveness_slow_loop_max_gap_h: float = 0.0
     # #14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
@@ -343,6 +500,17 @@ class Settings(BaseSettings):
     # Nazwa CELOWO nie `portfolio_enabled` — kolidowałaby z `portfolio_var_enabled`
     # i z sekcją watchlisty. Off → Null adapter → dotychczasowe równe wagi.
     portfolio_positions_enabled: bool = False
+    # PORT-18: kolumny `positions.currency` i `purchase_date` (migracja 035) —
+    # adapter czyta z nich walutę i PRAWDZIWĄ datę zakupu (zamiast `as_of`),
+    # a import CSV (`main_tools.py import-positions --apply`) je zapisuje. Off:
+    # nowy klucz w zapisie przed migracją → PGRST204; odczyt zostaje przy USD
+    # i dotychczasowym mapowaniu.
+    positions_currency_enabled: bool = False
+    # PORT-11: cache kursów NBP z minionych dni w tabeli `fx_rates` (migracja 036)
+    # pod P/L w zł po kursie z dnia zakupu. Same kursy idą z NBP za `nbp_enabled`
+    # (darmowe) także bez cache'u. Off: przed migracją tabeli nie ma, więc każdy
+    # odczyt i zapis kończyłby się błędem w logu.
+    fx_rates_cache_enabled: bool = False
     # #17: niedzielna retrospektywa narracyjna (Slow Loop). JEDYNA pozycja
     # z niezerowym kosztem FinOps: DOKŁADNIE 1 wywołanie LLM tygodniowo
     # (nie per symbol, nie per cykl). Poniżej 5 zamkniętych predykcji mail
@@ -357,6 +525,11 @@ class Settings(BaseSettings):
     attestation_reveals_path: str = "public/attestation/reveals.jsonl"
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
+    # WIA-50: jednostronny koszt transakcyjny (bps od obrotu) w paper-PnL,
+    # benchmarkach i backteście. Naliczany tylko przy zmianie pozycji symbolu:
+    # wejście i wyjście do gotówki 1×, odwrócenie 2×. Krypto ma własny koszt.
+    paper_cost_bps: float = 10.0
+    crypto_paper_cost_bps: float = 25.0
 
     # ----- Dane: nowe źródła alpha (default off → Null adapter, zero płatnych) -----
     # Każde źródło ma adapter (wolne/istniejące API) i Null-fallback. W Fast Loop
@@ -402,9 +575,67 @@ class Settings(BaseSettings):
     # Alpha Vantage akceptuje CSV — wiele kluczy rotujemy, gdy jeden wyczerpie
     # dzienny limit (25 req/dobę free). Wpisz w .env: ALPHA_VANTAGE_API_KEYS=k1,k2,k3
     alpha_vantage_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # FIN-32: najgorszy przypadek doby AV ponad 25 × klucze → WARNING w logu
+    # i w bannerze maila (fail-open). True = błąd startu zamiast ostrzeżenia.
+    av_budget_strict: bool = False
+    # FIN-32: cykle Fast Loopa na dobę w budżecie AV — tyle, ile uruchomień na dobę
+    # daje harmonogram `.github/workflows/fast_loop_12h.yml` (zakomentowany = 1,
+    # start ręczny; test strażnik pilnuje zgodności). Ręczny dispatch tego samego
+    # dnia to kolejny cykl ponad ten rachunek.
+    fast_loop_cycles_per_day: int = 1
+    # FIN-12: sufit płatnych wywołań LLM jednego cyklu Fast Loopa (predykcja +
+    # diagnoza pomyłki + każdy request rady). Miękki: symbol za bramką wchodzi,
+    # dopóki wydane < sufit. None = bez limitu (config.toml: 100).
+    max_paid_llm_calls_per_cycle: int | None = None
+    # WIA-11: jawny budżet tygodniowy Fast Loopa w USD. Najgorszy tydzień (cała
+    # watchlista za bramką przy suficie FIN-12 × cykle na dobę × 5 dni handlowych)
+    # ponad budżet → WARNING i alert w bannerze maila przy starcie (fail-open).
+    # None = bez kontroli.
+    fast_loop_weekly_budget_usd: float | None = None
+    # FIN-30: sufit płatnych wywołań LLM Slow Loopa na tydzień (= przebieg cronu
+    # niedzielnego): recap, sędzia kalibracji i przyszłe joby diagnoz. Przydział
+    # liczy domena (`slow_loop_paid_budget`), recap ma pierwszeństwo. None = bez
+    # limitu, 0 = tydzień bez LLM (deterministyczne fallbacki). config.toml: 15.
+    slow_loop_max_paid_llm_calls_per_week: int | None = None
+    # FIN-34: w dzień zamknięcia NYSE (święto, weekend; `market_calendar`) Fast Loop
+    # pomija akcje, krypto idzie normalnie; bez krypto przebieg kończy się bez maila.
+    # Off w kodzie, żeby testy entry pointów nie zależały od daty; config.toml: true.
+    nyse_closure_skip_enabled: bool = False
+    # FIN-13: cennik per model (id modelu → stawki USD za 1M tokenów) i jego data.
+    # Wycenia tokeny zgłoszone przez adaptery w sekcji „Koszt cyklu” i w ledgerze;
+    # model bez wpisu zostaje na szacunku `UNIT_COST_USD`. Pusty w kodzie — stawki
+    # z oficjalnych cenników żyją w config.toml razem z `llm_pricing_as_of`.
+    llm_pricing: dict[str, ModelPriceSettings] = Field(default_factory=dict)
+    llm_pricing_as_of: date | None = None
+    # FIN-13: zapis ledgera `llm_calls` (migracja 040) batchem po przebiegu Fast
+    # i Slow Loopa. Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
+    cost_ledger_enabled: bool = False
+    # NIEZ-29: wiersz `cycle_runs` (migracja 041) na końcu cyklu Fast Loopa: run_id
+    # (ten sam co w `llm_calls`), próba runu, liczby cyklu, płatne wywołania i stan
+    # maila. Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
+    cycle_runs_enabled: bool = False
+    # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
+    # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
+    # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
+    reference_signal_enabled: bool = False
+    # EXP-27: cykl dwufazowy — faza 1 (cena, reflect, bramka) dla wszystkich symboli,
+    # faza 2 (klient AV tylko dla symboli za bramką, płatna analiza malejąco po |Δ|).
+    # Eksperyment do porównania z FIN-04; off w kodzie i w config.toml.
+    two_phase_cycle_enabled: bool = False
     # ----- Database -----
     supabase_url: str
     supabase_key: str
+    # BEZ-08: lokalny run i GHA piszą do TEJ SAMEJ bazy. Off = run tylko do odczytu
+    # (`write_guard`): odczyty idą do bazy, zapisy są pomijane, predykcja dostaje
+    # id `dry-run-<uuid>`. Ustawiane z env / `.env` (`DB_WRITES_ENABLED`) — workflowy,
+    # które zapisują, ustawiają "true". Nie w `config.toml` (test strażnik): plik jest
+    # wspólny dla lokalnego runu i produkcji, więc zapis włączony w nim byłby wszędzie.
+    db_writes_enabled: bool = False
+    # FIN-35: lokalny run nie płaci — LLM, rada, Alpha Vantage (newsy, sentyment,
+    # fundamenty, kalendarz wyników) i embeddingi idą przez atrapy z jednym WARNING-iem.
+    # Jak `db_writes_enabled`: z env / `.env` (`PAID_CALLS_ENABLED`), nie w config.toml
+    # (test strażnik); workflowy, które płacą (Fast Loop, Slow Loop), ustawiają "true".
+    paid_calls_enabled: bool = False
 
     # ----- Agent config -----
     volatility_threshold: Decimal = Field(default=Decimal("0.02"))
@@ -510,6 +741,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     slack_webhook_url: str | None = None
+    # NIEZ-13: SEKRET — URL pingu zewnętrznego heartbeatu (np. healthchecks.io).
+    # Fast Loop, Slow Loop i shock watch pingują go na koniec przebiegu (porażka →
+    # `<URL>/fail`). Brak / pusty = NullHeartbeat, zero requestów.
+    heartbeat_url: str | None = None
     # Real-time alerty CRITICAL (U4): pushuj alert kwoty w chwili zdarzenia,
     # out-of-band od dziennego maila. NIEWRAŻLIWY flag → config.toml.
     realtime_alerts_enabled: bool = False
@@ -537,6 +772,27 @@ class Settings(BaseSettings):
         gotową listę przepuszczamy bez zmian."""
         if isinstance(value, str):
             return [s.strip() for s in value.split(",") if s.strip()]
+        return value
+
+    @field_validator("supabase_key")
+    @classmethod
+    def _reject_public_supabase_key(cls, value: str) -> str:
+        """BEZ-10: klucz publiczny zatrzymuje start (fail-fast). Po migracji 038 każdy
+        odczyt nim zwraca pusto albo 401, a zapis pada — cykl wyglądałby na zdrowy,
+        ale pracowałby na pustej bazie. Nieprzezroczyste stringi (fikstury testów)
+        przechodzą: odrzucamy tylko to, co da się rozpoznać jako klucz publiczny."""
+        is_public = (
+            value.startswith(_PUBLIC_SUPABASE_KEY_PREFIX)
+            or _supabase_jwt_role(value) in _PUBLIC_SUPABASE_JWT_ROLES
+        )
+        if is_public:
+            raise ValueError(
+                "SUPABASE_KEY is a public Supabase key (publishable or anon / authenticated "
+                "JWT). With Row Level Security on (migration 038) it can read and write "
+                "nothing. Set the secret key (sb_secret_...) or the legacy service_role key "
+                "in .env and in the GitHub SUPABASE_KEY secret "
+                "(Supabase dashboard -> Project Settings -> API Keys)."
+            )
         return value
 
     @field_validator("display_timezone")
@@ -587,6 +843,68 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
+    def _validate_sector_peers(self) -> Settings:
+        """PORT-05: peerzy są kluczowani nazwą sektora z `sectors`. Nieznana
+        nazwa (np. po zmianie nazwy sektora) zatrzymuje start zamiast po cichu
+        wyłączyć sugestie tego sektora."""
+        unknown = sorted(set(self.sector_peers) - set(self.sectors))
+        if unknown:
+            raise ValueError(
+                f"sector_peers has sectors missing from sectors: {unknown}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _derive_peer_groups_from_sectors(self) -> Settings:
+        """PORT-05: grupy sizingu i contagion to sektory akcji. ETF i krypto nie
+        mają sektora, więc wypadają; sektor bez akcji znika."""
+        if self.peer_groups:
+            return self
+        non_stock = set(self.symbols_etf) | set(self.crypto_symbols)
+        derived = {
+            sector: [symbol for symbol in symbols if symbol not in non_stock]
+            for sector, symbols in self.sectors.items()
+        }
+        object.__setattr__(
+            self, "peer_groups", {sector: symbols for sector, symbols in derived.items() if symbols}
+        )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_experiments(self) -> Settings:
+        """EXP-05: definicja, która nie zadziała zgodnie z zamiarem, zatrzymuje
+        start, zamiast po cichu zbierać dane z testu A/A."""
+        validate_experiments(self.experiment_definitions())
+        return self
+
+    def llm_price_table(self) -> dict[str, ModelPrice]:
+        """FIN-13: domenowy cennik per model z `llm_pricing`."""
+        return {
+            model: ModelPrice(
+                input_usd_per_mtok=price.input,
+                output_usd_per_mtok=price.output,
+                cache_read_usd_per_mtok=price.cache_read,
+                cache_write_usd_per_mtok=price.cache_write,
+            )
+            for model, price in self.llm_pricing.items()
+        }
+
+    def experiment_definitions(self) -> tuple[Experiment, ...]:
+        """EXP-05: domenowe definicje eksperymentów, posortowane po id."""
+        return tuple(
+            Experiment(
+                id=experiment_id,
+                hypothesis=definition.hypothesis,
+                arms=tuple(definition.arms),
+                start=definition.start,
+                end=definition.end,
+                primary_metric=definition.primary_metric,
+                enabled=definition.enabled,
+            )
+            for experiment_id, definition in sorted(self.experiments.items())
+        )
+
+    @model_validator(mode="after")
     def _validate_reflection_age_window(self) -> Settings:
         """Okno (min, max] puste → reflect nigdy niczego by nie rozliczył."""
         max_age = self.reflection_max_age_hours
@@ -596,6 +914,14 @@ class Settings(BaseSettings):
                 f"({max_age} <= {self.reflection_min_age_hours}); 0 disables the bound"
             )
         return self
+
+    @field_validator("paper_cost_bps", "crypto_paper_cost_bps")
+    @classmethod
+    def _validate_paper_cost_bps(cls, value: float, info: ValidationInfo) -> float:
+        """Ujemny koszt byłby rabatem za obrót — paper-PnL rósłby od samego handlu."""
+        if value < 0:
+            raise ValueError(f"{info.field_name} must be >= 0 (got {value})")
+        return value
 
     @field_validator("track_record_days")
     @classmethod
@@ -610,6 +936,42 @@ class Settings(BaseSettings):
         """1 = wyjście z RISK_OFF od razu (jak bez histerezy); mniej nie ma sensu."""
         if value < 1:
             raise ValueError(f"regime_exit_confirmations must be >= 1 (got {value})")
+        return value
+
+    @field_validator("fast_loop_cycles_per_day")
+    @classmethod
+    def _validate_fast_loop_cycles_per_day(cls, value: int) -> int:
+        """Zero cykli wyzerowałoby worst case i wyłączyło kontrolę budżetu AV."""
+        if value < 1:
+            raise ValueError(f"fast_loop_cycles_per_day must be >= 1 (got {value})")
+        return value
+
+    @field_validator("max_paid_llm_calls_per_cycle")
+    @classmethod
+    def _validate_max_paid_llm_calls_per_cycle(cls, value: int | None) -> int | None:
+        """Zero zamknęłoby po cichu każdą analizę; brak limitu to None."""
+        if value is not None and value < 1:
+            raise ValueError(
+                f"max_paid_llm_calls_per_cycle must be >= 1 or unset (got {value})"
+            )
+        return value
+
+    @field_validator("fast_loop_weekly_budget_usd")
+    @classmethod
+    def _validate_fast_loop_weekly_budget_usd(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError(
+                f"fast_loop_weekly_budget_usd must be >= 0 or unset (got {value})"
+            )
+        return value
+
+    @field_validator("slow_loop_max_paid_llm_calls_per_week")
+    @classmethod
+    def _validate_slow_loop_weekly_llm_cap(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError(
+                f"slow_loop_max_paid_llm_calls_per_week must be >= 0 or unset (got {value})"
+            )
         return value
 
     @field_validator("tool_use_max_rounds")
@@ -631,17 +993,22 @@ class Settings(BaseSettings):
     def _validate_volatility_threshold(
         cls, value: Decimal, info: ValidationInfo
     ) -> Decimal:
-        """Odrzuca ujemne progi volatility.
+        """Odrzuca progi volatility, które wyłączają bramkę FinOps.
 
         Ujemny próg sprawia, że `abs(delta) >= threshold` jest ZAWSZE
         prawdziwe → bramka FinOps cicho znika i każdy płatny port (LLM,
-        Alpha Vantage, embeddingi) odpala co cykl, bez błędu startu.
-        `0` jest dozwolone — `council_volatility_threshold = 0.0` to
-        udokumentowany "always run" disable switch.
+        Alpha Vantage, embeddingi) odpala co cykl, bez błędu startu. Próg 0
+        robi to samo (FIN-07), więc progi bramek płatnych portów muszą być > 0.
+        Wyjątek: `council_volatility_threshold = 0.0` to udokumentowany
+        "always run" disable switch drugiego sita rady — ten próg zostaje ≥ 0.
         """
-        if value < 0:
+        if info.field_name == _ALWAYS_RUN_THRESHOLD_FIELD:
+            if value < 0:
+                raise ValueError(f"{info.field_name} must be non-negative (got {value})")
+        elif value <= 0:
             raise ValueError(
-                f"{info.field_name} must be non-negative (got {value})"
+                f"{info.field_name} must be positive (got {value}) — "
+                "a threshold of 0 or less lets every move through the volatility gate"
             )
         return value
 
@@ -710,6 +1077,74 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _check_alpha_vantage_budget(self) -> Settings:
+        """FIN-32: budżet sprawdzony przy starcie, a nie dopiero jako
+        `av_keys_exhausted` w środku cyklu. Domyślnie WARNING i start dalej —
+        liczba kluczy w sekretach produkcji nie jest znana z repo, więc błąd
+        mógłby zablokować start już dziś; `av_budget_strict` daje twardy błąd.
+        Walidator działa w każdym entry poincie; banner maila dokłada Fast Loop."""
+        budget = self.av_budget()
+        if budget.ok:
+            return self
+        message = self._av_budget_message(budget)
+        if self.av_budget_strict:
+            raise ValueError(message)
+        logger.warning(message)
+        return self
+
+    def av_budget(self) -> AvBudget:
+        """FIN-32: worst case doby AV dla pełnej watchlisty Fast Loopa (WIA-11:
+        `symbols` + `crypto_symbols` − `symbols_unsupported_price`). Na symbol:
+        jedno NEWS_SENTIMENT i jedno EARNINGS_CALENDAR przy włączonym kalendarzu."""
+        return av_daily_budget(
+            n_av_symbols=self._eligible_symbol_count(),
+            requests_per_symbol=2 if self.earnings_calendar_enabled else 1,
+            cycles_per_day=self.fast_loop_cycles_per_day,
+            n_keys=len(self.alpha_vantage_api_keys),
+        )
+
+    def _eligible_symbol_count(self) -> int:
+        """Symbole, które Fast Loop wpuszcza do grafu: `symbols` + `crypto_symbols`
+        − `symbols_unsupported_price` (bez ceny symbol kończy jako ignored)."""
+        unsupported = set(self.symbols_unsupported_price)
+        watchlist = [*self.symbols, *self.crypto_symbols]
+        return sum(1 for symbol in watchlist if symbol not in unsupported)
+
+    def fast_loop_weekly_budget(self, personas: int) -> WeeklyCostBudget:
+        """WIA-11: najgorszy tydzień Fast Loopa vs `fast_loop_weekly_budget_usd`.
+
+        Cała watchlista za bramką przy suficie FIN-12; równolegle idzie
+        `symbol_concurrency` symboli, contagion wymusza jeden. `personas` to skład
+        rady z plików person — czyta je entry point, nie konfiguracja. Requesty AV
+        nie mają ceny, więc liczba tickerów AV nie zmienia kosztu."""
+        n_gated = self._eligible_symbol_count()
+        bound = capped_cycle_call_upper_bound(
+            n_gated=n_gated,
+            n_av_symbols=n_gated,
+            personas=personas,
+            debate=self.debate_mode_enabled,
+            tool_rounds=self.tool_use_max_rounds if self.tool_use_enabled else 0,
+            cap=self.max_paid_llm_calls_per_cycle,
+            concurrency=1 if self.contagion_enabled else self.symbol_concurrency,
+        )
+        return weekly_cost_budget(
+            bound,
+            cycles_per_day=self.fast_loop_cycles_per_day,
+            budget_usd=self.fast_loop_weekly_budget_usd,
+        )
+
+    def _av_budget_message(self, budget: AvBudget) -> str:
+        """Diagnoza przekroczenia po angielsku (log, błąd startu)."""
+        return (
+            f"Alpha Vantage daily budget exceeded: the worst case is {budget.worst_case} "
+            f"requests per day (every eligible symbol past the volatility gate in "
+            f"{self.fast_loop_cycles_per_day} cycle(s)), the capacity is {budget.capacity} "
+            f"({len(self.alpha_vantage_api_keys)} key(s) × {AV_DAILY_REQUESTS_PER_KEY}). "
+            "Add keys to ALPHA_VANTAGE_API_KEYS or shrink the watchlist; "
+            "av_budget_strict = true turns this warning into a startup error."
+        )
+
     def config_hash(self) -> str:
         """WIA-20: sha256 posortowanych pól przepisu (progi, modele, providerzy,
         symbole, flagi ścieżki predykcji) — składnik wersji przepisu predykcji.
@@ -722,6 +1157,16 @@ class Settings(BaseSettings):
         payload = self.model_dump(mode="json", exclude=set(excluded))
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def secret_values(self) -> tuple[str, ...]:
+        """BEZ-02: wartości pól `SECRET_SETTINGS_FIELDS` dla formattera logów —
+        każdy klucz z `alpha_vantage_api_keys` osobno, nieustawione pominięte."""
+        values: list[str] = []
+        for name in sorted(SECRET_SETTINGS_FIELDS):
+            value = getattr(self, name)
+            items = value if isinstance(value, list) else [value]
+            values.extend(str(item) for item in items if item)
+        return tuple(values)
 
     @classmethod
     def from_env(cls) -> Settings:

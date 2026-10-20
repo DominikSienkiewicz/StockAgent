@@ -134,3 +134,16 @@ class TestInstrumentPluralization:
         assert "13 instrumentów" in onboarding_subject(
             CycleMaturity.FIRST_RUN, instrument_count=13
         )
+
+
+def test_sectors_follow_the_config_order() -> None:
+    """PORT-05: kanoniczna kolejność sektorów idzie z mapy configu; sektor
+    spoza niej (np. „Inne”) ląduje na końcu."""
+    text = render_onboarding_text(
+        CycleMaturity.FIRST_RUN,
+        instrument_count=4,
+        sectors={"Inne": 1, "Krypto": 1, "Big Tech": 2},
+        sector_order=("Big Tech", "ETF", "Krypto"),
+    )
+
+    assert text.index("Big Tech") < text.index("Krypto") < text.index("Inne")

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.domain.number_format import DecimalMark
 from src.domain.significance import (
     benjamini_hochberg,
     binomial_test_greater,
@@ -82,6 +83,22 @@ class TestVerdictPl:
         assert "p<0.001" in verdict_pl(1e-9, 500, 120.0)
 
 
+class TestVerdictPlDecimalMark:
+    """MAIL-58: mail pisze p-wartość po polsku, publiczny scorecard zostaje przy kropce."""
+
+    def test_default_keeps_the_decimal_point(self) -> None:
+        assert "p=0.41" in verdict_pl(0.41, 37)
+        assert "p=0.003" in verdict_pl(0.003, 412, 61.4)
+
+    def test_comma_mark_writes_the_p_value_the_polish_way(self) -> None:
+        assert "p=0,41" in verdict_pl(0.41, 37, mark=DecimalMark.COMMA)
+        assert "p=0,003" in verdict_pl(0.003, 412, 61.4, mark=DecimalMark.COMMA)
+        assert "p<0,001" in verdict_pl(1e-9, 500, 120.0, mark=DecimalMark.COMMA)
+
+    def test_comma_mark_rounds_half_up(self) -> None:
+        assert "p=0,13" in verdict_pl(0.125, 37, mark=DecimalMark.COMMA)
+
+
 class TestEffectiveN:
     def test_effective_n_equals_n_when_outcomes_independent_across_cycles(self) -> None:
         # Każdy cykl ma ten sam odsetek trafień — zero korelacji wewnątrz cyklu.
@@ -136,3 +153,73 @@ class TestClusterBootstrap:
     def test_too_few_cycles_give_no_interval(self) -> None:
         # < 20 cykli: bootstrap niestabilny — zamiast przedziału zostaje n_eff.
         assert cluster_bootstrap_ci(self._cycles(19), n_boot=100, seed=0) is None
+
+
+class TestEffectiveNValues:
+    """EXP-05: n_eff dla wartości ciągłych (kwadraty błędu Briera) — ta sama
+    reguła co `effective_n`, a dla wyników 0/1 ten sam wynik."""
+
+    @pytest.mark.parametrize(
+        "cycles",
+        [
+            [[True, False, True, False] for _ in range(10)],
+            [[day % 2 == 0] * 40 for day in range(10)],
+            [[True], [False], [True]],
+            [[True] * 5, [True] * 5],
+            [[True, True, False], [False, False], [True, False, True, True]],
+            [],
+        ],
+    )
+    def test_matches_effective_n_on_binary_outcomes(self, cycles: list[list[bool]]) -> None:
+        from src.domain.significance import effective_n_values
+
+        values = [[1.0 if hit else 0.0 for hit in cycle] for cycle in cycles]
+
+        assert effective_n_values(values) == pytest.approx(effective_n(cycles))
+
+    def test_identical_values_within_cycles_collapse_to_cycle_count(self) -> None:
+        from src.domain.significance import effective_n_values
+
+        cycles = [[0.04 * (day % 3)] * 6 for day in range(8)]
+
+        assert effective_n_values(cycles) == pytest.approx(8.0)
+
+
+class TestClusterBootstrapDifference:
+    """EXP-05: przedział różnicy średnich dwóch ramion z bootstrapu po CAŁYCH
+    cyklach — ramiona jednego dnia losują się razem."""
+
+    @staticmethod
+    def _cycles(count: int) -> list[tuple[list[float], list[float]]]:
+        return [
+            ([1.0 if (day + i) % 4 else 0.0 for i in range(3)],
+             [1.0 if (day + i) % 2 else 0.0 for i in range(3)])
+            for day in range(count)
+        ]
+
+    def test_is_deterministic_for_seed_and_brackets_the_difference(self) -> None:
+        from src.domain.significance import cluster_bootstrap_difference_ci
+
+        cycles = self._cycles(30)
+        control = [v for a, _ in cycles for v in a]
+        treatment = [v for _, b in cycles for v in b]
+        difference = sum(treatment) / len(treatment) - sum(control) / len(control)
+
+        first = cluster_bootstrap_difference_ci(cycles, n_boot=400, seed=5)
+        second = cluster_bootstrap_difference_ci(cycles, n_boot=400, seed=5)
+
+        assert first is not None
+        assert first == second
+        assert first[0] <= difference <= first[1]
+
+    def test_too_few_cycles_give_no_interval(self) -> None:
+        from src.domain.significance import cluster_bootstrap_difference_ci
+
+        assert cluster_bootstrap_difference_ci(self._cycles(19), n_boot=100) is None
+
+    def test_an_arm_without_observations_gives_no_interval(self) -> None:
+        from src.domain.significance import cluster_bootstrap_difference_ci
+
+        cycles = [([1.0, 0.0], []) for _ in range(25)]
+
+        assert cluster_bootstrap_difference_ci(cycles, n_boot=100) is None
