@@ -17,7 +17,12 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from main_agent import build_notifier, warn_if_paid_calls_disabled
+from main_agent import (
+    STUB_WRITES_REFUSED_EXIT_CODE,
+    build_notifier,
+    refuses_stub_writes,
+    warn_if_paid_calls_disabled,
+)
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort
 from src.application.ml_features import FEATURE_SET_VERSION
@@ -299,6 +304,8 @@ def _send_weekly_recap(
 def main(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
     configure_logging(settings.secret_values())
+    if refuses_stub_writes(settings):
+        return STUB_WRITES_REFUSED_EXIT_CODE
     warn_if_paid_calls_disabled(settings)
     quota_monitor = QuotaMonitor()
     repository = build_repository(settings)

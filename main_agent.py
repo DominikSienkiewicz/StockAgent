@@ -1084,6 +1084,24 @@ def _local_stub_ports() -> _PaidPorts:
     )
 
 
+# FIN-35: kod wyjścia odmowy startu — inny niż 1 („wszystkie symbole padły”).
+STUB_WRITES_REFUSED_EXIT_CODE = 2
+
+
+def refuses_stub_writes(settings: Settings) -> bool:
+    """FIN-35: atrapy płatnych portów + zapis do bazy = neutralne prognozy atrapy
+    w produkcyjnym track recordzie. True (z ERROR-em) = entry point nie startuje."""
+    if not settings.db_writes_enabled or settings.paid_calls_enabled:
+        return False
+    logger.error(
+        "DB_WRITES_ENABLED=true przy PAID_CALLS_ENABLED=false — odmowa startu: atrapy "
+        "płatnych portów zapisałyby neutralne prognozy do produkcyjnej bazy. Ustaw "
+        "PAID_CALLS_ENABLED=true (płatny przebieg) albo DB_WRITES_ENABLED=false "
+        "(lokalny przebieg tylko do odczytu)."
+    )
+    return True
+
+
 def warn_if_paid_calls_disabled(settings: Settings) -> None:
     """FIN-35: jeden jawny WARNING na przebieg, gdy płatne porty idą przez atrapy."""
     if settings.paid_calls_enabled:
@@ -2426,6 +2444,8 @@ def main(
     """`clock` to zegar cyklu: dzień NYSE (FIN-34) i `started_at` raportu."""
     settings = settings or Settings.from_env()
     configure_logging(settings.secret_values())
+    if refuses_stub_writes(settings):
+        return STUB_WRITES_REFUSED_EXIT_CODE
     # FIN-34: w dzień zamknięcia NYSE ceny akcji stoją — akcje nie idą do grafu.
     # Krypto handluje w święta, więc idzie normalnie; bez krypto nie ma czego
     # analizować, więc przebieg kończy się przed budową adapterów i bez maila.

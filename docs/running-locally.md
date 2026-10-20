@@ -162,7 +162,7 @@ Replaying recorded responses is out of scope; the stubs are fixed values. To mak
 PAID_CALLS_ENABLED=true uv run python main_agent.py
 ```
 
-Do not combine `PAID_CALLS_ENABLED=false` with `DB_WRITES_ENABLED=true`: the stubs' neutral predictions would land in the production track record. Like `DB_WRITES_ENABLED`, the switch is read from the environment or `.env` only and is kept out of `config.toml` by a test. The workflows that pay — Fast Loop and Slow Loop — set `PAID_CALLS_ENABLED: "true"` in the step that runs the entry point; Shock Watch and the deadman make no paid call and do not set it. `tests/test_paid_calls_wiring.py` checks both and fails when a new `main_*.py` is not classified as paying or free.
+`PAID_CALLS_ENABLED=false` together with `DB_WRITES_ENABLED=true` is refused: `main_agent.py` and `main_trainer.py` log an `ERROR` naming both variables and exit with code 2 before they build any adapter, because the stubs' neutral predictions would land in the production track record (code 1 stays "every symbol failed"). The check lives in the entry points, not in `Settings`; Shock Watch and the deadman make no paid call and start as usual. Like `DB_WRITES_ENABLED`, the switch is read from the environment or `.env` only and is kept out of `config.toml` by a test. The workflows that pay — Fast Loop and Slow Loop — set `PAID_CALLS_ENABLED: "true"` in the step that runs the entry point; Shock Watch and the deadman make no paid call and do not set it. `tests/test_paid_calls_wiring.py` checks both and fails when a new `main_*.py` is not classified as paying or free.
 
 ## Build commands
 

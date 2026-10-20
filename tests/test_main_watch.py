@@ -286,3 +286,19 @@ def test_alert_writes_the_move_with_a_polish_decimal_comma(settings) -> None:
     sent = push.send_report.call_args.kwargs
     assert sent["subject"] == "📉 Szok rynkowy: AAPL -5,2%"
     assert sent["plain_text"].startswith("📉 AAPL -5,2% od ostatniego snapshotu ceny")
+
+
+def test_watch_starts_with_stubbed_paid_ports_and_database_writes(settings, mocker) -> None:
+    # FIN-35: odmowa startu dotyczy tylko jobów z płatnymi portami — watch żadnego
+    # nie woła, więc kombinacja zapis + atrapy go nie zatrzymuje.
+    settings.db_writes_enabled = True
+    settings.paid_calls_enabled = False
+    mocker.patch("main_agent.build_repository")
+    mocker.patch("main_agent.build_market_port")
+    mocker.patch("main_agent.build_push_notifier")
+    scan_watch = mocker.patch(
+        "main_watch.scan_watch", return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1)
+    )
+
+    assert main_watch.main(settings) == 0
+    scan_watch.assert_called_once()

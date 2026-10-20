@@ -4745,6 +4745,7 @@ class TestLocalRunWithoutPaidCalls:
         import logging
 
         settings.paid_calls_enabled = False
+        settings.db_writes_enabled = False
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
         mocker.patch("main_agent.build_use_case", return_value=fake_uc)
@@ -4798,6 +4799,7 @@ class TestLocalRunWithoutPaidCalls:
         import logging
 
         settings.paid_calls_enabled = False
+        settings.db_writes_enabled = False
         av_fundamentals, build_llm, recap_cls = self._trainer(settings, mocker)
 
         with caplog.at_level(logging.WARNING):
@@ -4822,3 +4824,59 @@ class TestLocalRunWithoutPaidCalls:
 
         av_fundamentals.assert_called_once()
         build_llm.assert_called_once()
+
+
+class TestStubbedPaidPortsRefuseDatabaseWrites:
+    """FIN-35 (decyzja 2026-10-20): atrapy płatnych portów razem z zapisem do bazy
+    wpisałyby neutralne prognozy atrapy do produkcyjnego track recordu. Fast Loop
+    i Slow Loop odmawiają startu, zanim zbudują jakikolwiek adapter."""
+
+    def test_fast_loop_refuses_to_start(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        settings.paid_calls_enabled = False
+        build_use_case = mocker.patch("main_agent.build_use_case")
+        build_repository = mocker.patch("main_agent.build_repository")
+
+        with caplog.at_level(logging.ERROR, logger="main_agent"):
+            exit_code = main_agent.main(settings)
+
+        assert exit_code == main_agent.STUB_WRITES_REFUSED_EXIT_CODE
+        assert exit_code not in (0, 1)
+        build_use_case.assert_not_called()
+        build_repository.assert_not_called()
+        errors = [r.message for r in caplog.records if r.levelno == logging.ERROR]
+        assert any(
+            "DB_WRITES_ENABLED=true" in m and "PAID_CALLS_ENABLED=false" in m for m in errors
+        ), errors
+
+    def test_slow_loop_refuses_to_start(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        settings.paid_calls_enabled = False
+        build_use_case = mocker.patch("main_trainer.build_use_case")
+        repository_cls = mocker.patch("main_trainer.SupabaseRepository")
+
+        with caplog.at_level(logging.ERROR):
+            exit_code = main_trainer.main(settings)
+
+        assert exit_code == main_agent.STUB_WRITES_REFUSED_EXIT_CODE
+        build_use_case.assert_not_called()
+        repository_cls.assert_not_called()
+        assert any("PAID_CALLS_ENABLED=false" in r.message for r in caplog.records)
+
+    def test_read_only_local_run_still_starts(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.paid_calls_enabled = False
+        settings.db_writes_enabled = False
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        build_use_case = mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+
+        assert main_agent.main(settings) == 0
+        build_use_case.assert_called_once()
