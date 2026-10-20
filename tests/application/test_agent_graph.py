@@ -3759,3 +3759,58 @@ class TestCycleTelemetryWiring:
         metrics = deps.telemetry.snapshot()
         assert dict(metrics.node_failures) == {"council": 1}
         assert "council" in metrics.node_max_ms
+
+
+class TestCouncilRequestMetering:
+    """FIN-02: gdy DI owija port LLM rady w `MeteredLLMPort`
+    (`council_llm_metered=True`), każdy realny request rady liczy dekorator,
+    a węzeł rady tylko loguje — bez drugiego inkrementu."""
+
+    def _run(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        caplog, *, metered: bool,
+    ) -> AgentGraphDeps:
+        from src.application.ports import AdvisoryCouncilPort
+
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            council_port=council_port,
+            council_llm_metered=metered,
+        )
+        with caplog.at_level(logging.INFO, logger="src.application.agent_graph"):
+            create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+        return deps
+
+    def test_metered_council_node_logs_without_incrementing(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        caplog,
+    ):
+        deps = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            caplog, metered=True,
+        )
+
+        assert "council_llm" not in deps.telemetry.snapshot().paid_calls
+        assert any(
+            "paid call: node=council" in rec.message for rec in caplog.records
+        )
+
+    def test_unmetered_council_port_keeps_one_call_per_run(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        caplog,
+    ):
+        deps = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            caplog, metered=False,
+        )
+
+        assert deps.telemetry.snapshot().paid_calls["council_llm"] == 1

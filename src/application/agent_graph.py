@@ -105,7 +105,13 @@ def _timed_node(node_name: str, symbol: str, telemetry: CycleTelemetry) -> Itera
 
 
 def _log_paid_call(
-    deps: AgentGraphDeps, node_name: str, symbol: str, source: str, detail: str
+    deps: AgentGraphDeps,
+    node_name: str,
+    symbol: str,
+    source: str,
+    detail: str,
+    *,
+    count: bool = True,
 ) -> None:
     """Jawna linia w logu, gdy odpala się PŁATNE wywołanie zewnętrzne
     (LLM / sentyment / news). Pozwala audytować FinOps — ile płatnych wywołań
@@ -115,11 +121,14 @@ def _log_paid_call(
     `sentiment`, `news`). Inkrementujemy licznik tutaj — jedno miejsce prawdy
     o tym, co jest płatne. Licznik (ARCH-11: `deps.telemetry`) jest współdzielony
     przez wszystkie symbole cyklu, bo raportujemy KOSZT CYKLU, nie symbolu.
+    `count=False` — wywołania liczy już port u źródła (FIN-02: `MeteredLLMPort`
+    rady), więc tu zostaje sam log.
     """
     logger.info(
         "paid call: node=%s symbol=%s %s", node_name, symbol, detail
     )
-    deps.telemetry.record_paid_call(source)
+    if count:
+        deps.telemetry.record_paid_call(source)
 
 
 class AgentState(TypedDict, total=False):
@@ -548,6 +557,11 @@ class AgentGraphDeps:
     experiment_arms_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
+    # FIN-02: True = DI owinął port LLM rady w `MeteredLLMPort` z tą samą
+    # telemetrią, więc każdy request person, chairmana i rewizji jest już
+    # policzony, a węzeł rady tylko loguje. False (graf bez DI) = węzeł dolicza
+    # jedno `council_llm` na przebieg rady, jak przed FIN-02.
+    council_llm_metered: bool = False
     # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
     # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
     # nie poda go z DI — `use_case.paid_calls` działa i wtedy.
@@ -1345,8 +1359,10 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     )
     # #14: rada to N równoległych wywołań LLM — najdroższy płatny węzeł.
     # Jawny log płatnego wywołania + timing (mierzony też przy błędzie).
+    # FIN-02: przy porcie z licznikiem requestów węzeł nie dolicza drugi raz.
     _log_paid_call(
-        deps, "council", state["symbol"], "council_llm", "council_port.analyze"
+        deps, "council", state["symbol"], "council_llm", "council_port.analyze",
+        count=not deps.council_llm_metered,
     )
     try:
         with _timed_node("council", state["symbol"], deps.telemetry):

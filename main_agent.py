@@ -26,6 +26,8 @@ from typing import Any, NamedTuple
 
 from src.application.agent_graph import AgentGraphDeps
 from src.application.alpha_signals import AlphaSignals
+from src.application.cycle_telemetry import CycleTelemetry
+from src.application.metering import MeteredLLMPort
 from src.application.move_interval import (
     CALIBRATION_LOOKBACK_DAYS,
     calibration_windows,
@@ -1032,8 +1034,14 @@ def build_use_case(
         news_window=NEWS_WINDOW,
     )
     llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor)
-    council_llm_port = build_council_llm_adapter(
-        settings, llm_port, quota_monitor=quota_monitor
+    # ARCH-11: jedna telemetria na cykl — dostają ją graf i licznik requestów rady.
+    telemetry = CycleTelemetry()
+    # FIN-02: każdy request persony, chairmana i rewizji liczy się u źródła.
+    # Osobny obiekt niż `llm_port`, więc główna analiza nie liczy się podwójnie.
+    council_llm_port = MeteredLLMPort(
+        build_council_llm_adapter(settings, llm_port, quota_monitor=quota_monitor),
+        telemetry,
+        "council_llm",
     )
     supabase_repo = repository or build_repository(settings)
     # Fast loop: delegate = Null — nie woła płatnego AV, czyta tylko cache Supabase.
@@ -1137,6 +1145,8 @@ def build_use_case(
             if settings.attestation_enabled
             else None
         ),
+        telemetry=telemetry,
+        council_llm_metered=True,
     ))
 
 

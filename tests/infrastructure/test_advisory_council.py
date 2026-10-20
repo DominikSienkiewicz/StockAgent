@@ -641,3 +641,77 @@ class TestBlindCouncilCallCount:
             assert sees_llm == [not blind] * 3
 
         assert counts[0] == counts[1] == 4
+
+
+# --- FIN-02: rada liczona per realny request (MeteredLLMPort) ------------------
+
+_SEVEN_PERSONAS = _TEST_PERSONAS[:7]
+
+
+def _metered_council(llm_port: Mock, *, debate_mode: bool = False):
+    from src.application.cycle_telemetry import CycleTelemetry
+    from src.application.metering import MeteredLLMPort
+
+    telemetry = CycleTelemetry()
+    council = LLMAdvisoryCouncil(
+        llm_port=MeteredLLMPort(llm_port, telemetry, "council_llm"),
+        personas=_SEVEN_PERSONAS,
+        debate_mode=debate_mode,
+    )
+    return council, telemetry
+
+
+def test_analyze_records_one_paid_call_per_llm_request(llm_port: Mock) -> None:
+    llm_port.analyze.side_effect = _routed()
+    council, telemetry = _metered_council(llm_port)
+
+    council.analyze("AAPL", _make_input())
+
+    # 7 person + chairman = 8 requestów, nie „1 rada”.
+    assert telemetry.snapshot().paid_calls["council_llm"] == 8
+    assert llm_port.analyze.call_count == 8
+
+
+def test_debate_round_counts_every_revision_request(llm_port: Mock) -> None:
+    round1 = {"n": 0}
+
+    def split_then_converge(prompt: str) -> dict:
+        if "<opinie_peerow>" in prompt:
+            return _opinion_json("BUY")
+        if "final_recommendation" in prompt:
+            return _verdict_json()
+        idx = round1["n"]
+        round1["n"] += 1
+        return _opinion_json({0: "BUY", 1: "SELL"}.get(idx, "HOLD"))
+
+    llm_port.analyze.side_effect = split_then_converge
+    council, telemetry = _metered_council(llm_port, debate_mode=True)
+
+    council.analyze("AAPL", _make_input())
+
+    # 7 person + 7 rewizji + chairman.
+    assert telemetry.snapshot().paid_calls["council_llm"] == 15
+
+
+def test_timed_out_persona_request_is_still_counted(llm_port: Mock, mocker) -> None:
+    # Request spóźnionej persony poszedł do dostawcy — płacimy za niego, choć
+    # głos odpada po limicie czasu rady.
+    mocker.patch("src.infrastructure.adapters.advisory_council._COUNCIL_TOTAL_TIMEOUT_S", 0.1)
+    slow = _SEVEN_PERSONAS[0].name
+    llm_port.analyze.side_effect = _routed(slow={slow})
+    council, telemetry = _metered_council(llm_port)
+
+    result = council.analyze("AAPL", _make_input())
+
+    assert slow not in {op.investor_name for op in result.investor_opinions}
+    assert telemetry.snapshot().paid_calls["council_llm"] == 8
+
+
+def test_failed_persona_request_is_still_counted(llm_port: Mock) -> None:
+    failing = _SEVEN_PERSONAS[1].name
+    llm_port.analyze.side_effect = _routed(failing={failing})
+    council, telemetry = _metered_council(llm_port)
+
+    council.analyze("AAPL", _make_input())
+
+    assert telemetry.snapshot().paid_calls["council_llm"] == 8
