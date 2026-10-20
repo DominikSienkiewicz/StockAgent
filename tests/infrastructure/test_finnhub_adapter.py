@@ -225,3 +225,63 @@ def test_rate_limit_alert_is_polish_and_logged_in_english(mocker, caplog) -> Non
     assert "exhausted" not in alert.message
     assert "SYMBOL_THROTTLE_SECONDS" in alert.action
     assert "Finnhub returned 429 for 'AAPL'" in caplog.text
+
+
+class TestGetDailyChange:
+    """ALR-02: `dp` (procent od poprzedniego zamknięcia) i `t` (chwila notowania)
+    z tego samego darmowego /quote — watch nie potrzebuje snapshotu Fast Loopa."""
+
+    def test_returns_fraction_and_quote_time(self, adapter, mocker):
+        from datetime import UTC, datetime
+
+        from src.domain.shock import DailyChange
+
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response(
+                {"c": 182.0, "d": -18.0, "dp": -9.0, "pc": 200.0, "t": 1760630400}
+            ),
+        )
+
+        reading = adapter.get_daily_change("AAPL")
+
+        assert reading == DailyChange(
+            fraction=Decimal("-0.09"),
+            as_of=datetime.fromtimestamp(1760630400, tz=UTC),
+        )
+
+    def test_raises_value_error_without_quote_time(self, adapter, mocker):
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response({"c": 182.0, "dp": -9.0, "t": 0}),
+        )
+
+        with pytest.raises(ValueError, match="daily change"):
+            adapter.get_daily_change("AAPL")
+
+    def test_raises_value_error_for_unknown_ticker(self, adapter, mocker):
+        # Finnhub: nieznany ticker to same zera i `dp: null`.
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response({"c": 0, "d": None, "dp": None, "t": 0}),
+        )
+
+        with pytest.raises(ValueError):
+            adapter.get_daily_change("NOPE")
+
+    def test_http_error_message_omits_token(self, adapter, mocker):
+        response = requests.Response()
+        response.status_code = 401
+        response.reason = "Unauthorized"
+        response.url = "https://finnhub.io/api/v1/quote?symbol=AAPL&token=test-token-123"
+        mocker.patch("requests.Session.get", return_value=response)
+
+        with pytest.raises(requests.HTTPError) as excinfo:
+            adapter.get_daily_change("AAPL")
+
+        assert "test-token-123" not in str(excinfo.value)
+
+    def test_is_daily_change_port(self):
+        from src.application.ports import DailyChangePort
+
+        assert issubclass(FinnhubAdapter, DailyChangePort)

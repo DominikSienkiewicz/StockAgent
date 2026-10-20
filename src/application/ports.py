@@ -21,6 +21,7 @@ from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.quota import QuotaAlert
 from src.domain.regime import MarketRegime, RegimeState
+from src.domain.shock import DailyChange
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
 from src.domain.value_objects import AssetType, Fundamentals, Money
@@ -31,6 +32,17 @@ class MarketDataPort(ABC):
 
     @abstractmethod
     def get_current_price(self, symbol: str) -> Money: ...
+
+
+class DailyChangePort(ABC):
+    """Dzienna zmiana ceny z darmowego notowania (ALR-02, Finnhub /quote, CoinGecko).
+
+    Watch szoku liczy z niej alert bez snapshotów Fast Loopa. Brak danych w odpowiedzi
+    → `ValueError`, jak w `MarketDataPort`.
+    """
+
+    @abstractmethod
+    def get_daily_change(self, symbol: str) -> DailyChange: ...
 
 
 class SentimentPort(ABC):

@@ -7,11 +7,15 @@ się natywnie 3–5% dziennie, więc dostaje osobny, wyższy próg.
 
 Persystencja (tabela `shock_alerts`, `UNIQUE(symbol, alert_date)`) NIE należy do
 tej warstwy — domena dostarcza jedynie czysty predykat debounce `should_emit`.
+
+Dwa źródła ruchu (ALR-02): delta wobec snapshotu Fast Loopa (`detect_shock`, z guardem
+wieku) albo dzienna zmiana z darmowego /quote (`DailyChange`, z guardem dnia
+`is_daily_change_fresh`). Oba kończą w tej samej klasyfikacji `classify_shock`.
 """
 
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import Enum
 
@@ -49,6 +53,19 @@ class ShockAlert:
     direction: ShockDirection
 
 
+@dataclass(frozen=True)
+class DailyChange:
+    """Dzienna zmiana ceny z darmowego notowania (ALR-02).
+
+    `fraction` to ułamek (-0.09 = -9%): dla akcji wobec poprzedniego zamknięcia
+    (Finnhub `dp`), dla krypto w oknie 24 h (CoinGecko). `as_of` to chwila
+    notowania — w sobotę Finnhub oddaje piątkowe `dp` z piątkowym `t`.
+    """
+
+    fraction: Decimal
+    as_of: datetime
+
+
 def _shock_threshold(asset: Asset, volatility_threshold: Threshold) -> Decimal:
     """Zwraca próg szoku (ułamek) właściwy dla danego typu aktywa."""
     if asset.asset_type is AssetType.CRYPTO:
@@ -64,6 +81,39 @@ def is_reference_stale(snapshot_age_hours: float) -> bool:
     stęchłe są wszystkie, nie może zgłosić żadnego alertu.
     """
     return snapshot_age_hours > SNAPSHOT_MAX_AGE_HOURS
+
+
+def _as_utc(moment: datetime) -> datetime:
+    # Naiwny datetime traktujemy jako UTC, jak całe repo.
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
+
+
+def is_daily_change_fresh(as_of: datetime, now: datetime) -> bool:
+    """Czy dzienna zmiana należy do bieżącego dnia UTC — dnia klucza debounce.
+
+    Odczyt z innego dnia UTC (sobota z piątkowym `dp`, piątkowy wieczór ET po
+    północy UTC) opisuje sesję, za którą alert mógł już wyjść pod poprzednim
+    `alert_date`. Ten sam dzień co klucz `UNIQUE(symbol, alert_date)` gwarantuje,
+    że jedna sesja daje najwyżej jeden alert.
+    """
+    return _as_utc(as_of).date() == _as_utc(now).date()
+
+
+def classify_shock(
+    asset: Asset, delta: PriceDelta, volatility_threshold: Threshold
+) -> ShockAlert | None:
+    """Klasyfikuje ruch jako szok albo zwraca None — bez oceny świeżości źródła.
+
+    Świeżość ocenia wołający: `detect_shock` dla snapshotu, `is_daily_change_fresh`
+    dla dziennej zmiany z notowania.
+    """
+    if abs(delta.fraction) < _shock_threshold(asset, volatility_threshold):
+        return None
+
+    direction = ShockDirection.DOWN if delta.fraction < 0 else ShockDirection.UP
+    return ShockAlert(symbol=asset.symbol, delta=delta, direction=direction)
 
 
 def detect_shock(
@@ -82,12 +132,7 @@ def detect_shock(
     """
     if is_reference_stale(snapshot_age_hours):
         return None
-
-    if abs(delta.fraction) < _shock_threshold(asset, volatility_threshold):
-        return None
-
-    direction = ShockDirection.DOWN if delta.fraction < 0 else ShockDirection.UP
-    return ShockAlert(symbol=asset.symbol, delta=delta, direction=direction)
+    return classify_shock(asset, delta, volatility_threshold)
 
 
 def should_emit(

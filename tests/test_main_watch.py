@@ -401,3 +401,241 @@ class TestWatchHeartbeat:
             assert main_watch.main(settings) == 0
 
         assert "heartbeat" in caplog.text.lower()
+
+
+def _daily(fraction: str, as_of: datetime) -> MagicMock:
+    """Port dziennej zmiany (ALR-02) z jednym odczytem dla każdego symbolu."""
+    from src.application.ports import DailyChangePort
+    from src.domain.shock import DailyChange
+
+    port = MagicMock(spec=DailyChangePort)
+    port.get_daily_change.return_value = DailyChange(fraction=Decimal(fraction), as_of=as_of)
+    return port
+
+
+def _no_snapshot_repo() -> MagicMock:
+    repo = MagicMock(spec=RepositoryPort)
+    repo.get_last_price_snapshot.return_value = None
+    repo.get_sent_shock_alerts.return_value = set()
+    return repo
+
+
+class TestDailyChangeWatch:
+    """ALR-02: dzienna zmiana z darmowego /quote zamiast snapshotów Fast Loopa —
+    watch alarmuje 24/7 bez wznawiania płatnej pętli."""
+
+    _FRIDAY_SESSION = datetime(2026, 10, 16, 15, 7, tzinfo=UTC)
+
+    def test_daily_change_drives_alert_without_snapshot(self, settings) -> None:
+        repo = _no_snapshot_repo()
+        push = MagicMock()
+
+        sent = main_watch.run_watch(
+            settings,
+            repository=repo,
+            market=_market("90"),
+            push_notifier=push,
+            now=self._FRIDAY_SESSION,
+            daily_change=_daily("-0.09", self._FRIDAY_SESSION - timedelta(minutes=5)),
+        )
+
+        assert sent == 1
+        push.send_report.assert_called_once()
+        repo.save_shock_alert.assert_called_once()
+        repo.save_price_snapshot.assert_not_called()
+
+    def test_saturday_reading_of_friday_move_does_not_alert(self, settings) -> None:
+        # `dp` w sobotę to piątkowy ruch — bez guardu na `t` dublowałby piątkowy alert.
+        saturday = datetime(2026, 10, 17, 9, 7, tzinfo=UTC)
+        friday_close = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
+        push = MagicMock()
+
+        sent = main_watch.run_watch(
+            settings,
+            repository=_no_snapshot_repo(),
+            market=_market("90"),
+            push_notifier=push,
+            now=saturday,
+            daily_change=_daily("-0.09", friday_close),
+        )
+
+        assert sent == 0
+        push.send_report.assert_not_called()
+
+    def test_fresh_reading_wins_over_snapshot_with_a_single_alert(self, settings) -> None:
+        # Oba źródła widzą szok: jeden alert, a snapshot i cena bieżąca nie są czytane.
+        now = self._FRIDAY_SESSION
+        repo = _repo("100", age_hours=1.0, now=now)
+        market = _market("90")
+        push = MagicMock()
+
+        sent = main_watch.run_watch(
+            settings,
+            repository=repo,
+            market=market,
+            push_notifier=push,
+            now=now,
+            daily_change=_daily("-0.09", now),
+        )
+
+        assert sent == 1
+        push.send_report.assert_called_once()
+        repo.get_last_price_snapshot.assert_not_called()
+        market.get_current_price.assert_not_called()
+
+    def test_fresh_calm_reading_is_final(self, settings) -> None:
+        # Świeży odczyt rozstrzyga — snapshot nie dokłada drugiej opinii o tym samym symbolu.
+        now = self._FRIDAY_SESSION
+        repo = _repo("100", age_hours=1.0, now=now)
+
+        sent = main_watch.run_watch(
+            settings,
+            repository=repo,
+            market=_market("90"),
+            push_notifier=MagicMock(),
+            now=now,
+            daily_change=_daily("-0.01", now),
+        )
+
+        assert sent == 0
+        repo.get_last_price_snapshot.assert_not_called()
+
+    def test_stale_reading_falls_back_to_the_snapshot(self, settings) -> None:
+        saturday = datetime(2026, 10, 17, 9, 7, tzinfo=UTC)
+        repo = _repo("100", age_hours=1.0, now=saturday)
+        push = MagicMock()
+
+        sent = main_watch.run_watch(
+            settings,
+            repository=repo,
+            market=_market("90"),
+            push_notifier=push,
+            now=saturday,
+            daily_change=_daily("-0.09", datetime(2026, 10, 16, 20, 0, tzinfo=UTC)),
+        )
+
+        assert sent == 1
+        assert push.send_report.call_args.kwargs["plain_text"].startswith(
+            "📉 AAPL -10,0% od ostatniego snapshotu ceny"
+        )
+
+    def test_failing_reading_falls_back_to_the_snapshot(self, settings, caplog) -> None:
+        now = self._FRIDAY_SESSION
+        repo = _repo("100", age_hours=1.0, now=now)
+        daily = _daily("-0.09", now)
+        daily.get_daily_change.side_effect = RuntimeError("429")
+
+        with caplog.at_level(logging.WARNING, logger="main_watch"):
+            outcome = main_watch.scan_watch(
+                settings,
+                repository=repo,
+                market=_market("90"),
+                push_notifier=MagicMock(),
+                now=now,
+                daily_change=daily,
+            )
+
+        assert outcome.sent == 1 and outcome.failures == 0
+        assert any("AAPL" in r.getMessage() for r in caplog.records)
+
+    def test_stock_alert_names_the_previous_close(self, settings) -> None:
+        now = self._FRIDAY_SESSION
+        push = MagicMock()
+
+        main_watch.run_watch(
+            settings,
+            repository=_no_snapshot_repo(),
+            market=_market("90"),
+            push_notifier=push,
+            now=now,
+            daily_change=_daily("-0.09", now),
+        )
+
+        assert push.send_report.call_args.kwargs["plain_text"].startswith(
+            "📉 AAPL -9,0% od poprzedniego zamknięcia"
+        )
+
+    def test_crypto_alert_names_the_24h_window(self, settings) -> None:
+        settings.symbols = []
+        settings.crypto_symbols = ["BTC"]
+        now = self._FRIDAY_SESSION
+        push = MagicMock()
+
+        main_watch.run_watch(
+            settings,
+            repository=_no_snapshot_repo(),
+            market=_market("90"),
+            push_notifier=push,
+            now=now,
+            daily_change=_daily("-0.08", now),
+        )
+
+        assert push.send_report.call_args.kwargs["plain_text"].startswith(
+            "📉 BTC -8,0% w ciągu ostatnich 24 h"
+        )
+
+    def test_fresh_readings_keep_the_watch_from_being_blind(self, settings, caplog) -> None:
+        # Fast Loop stoi (wszystkie snapshoty stęchłe), ale dzienna zmiana jest świeża.
+        now = self._FRIDAY_SESSION
+        repo = _repo("100", age_hours=48.0, now=now)
+
+        with caplog.at_level(logging.WARNING, logger="main_watch"):
+            outcome = main_watch.scan_watch(
+                settings,
+                repository=repo,
+                market=_market("90"),
+                push_notifier=MagicMock(),
+                now=now,
+                daily_change=_daily("-0.01", now),
+            )
+
+        assert outcome.checked == 1 and outcome.stale == 0
+        assert not any("ślepy" in r.getMessage() for r in caplog.records)
+
+    def test_debounce_also_covers_the_daily_change(self, settings) -> None:
+        now = self._FRIDAY_SESSION
+        repo = _no_snapshot_repo()
+        repo.get_sent_shock_alerts.return_value = {("AAPL", now.date())}
+        daily = _daily("-0.09", now)
+
+        assert main_watch.run_watch(
+            settings,
+            repository=repo,
+            market=_market("90"),
+            push_notifier=MagicMock(),
+            now=now,
+            daily_change=daily,
+        ) == 0
+        daily.get_daily_change.assert_not_called()
+
+
+def test_main_feeds_the_free_router_as_the_daily_change_source(settings, mocker) -> None:
+    # ALR-02: router darmowych cen (Finnhub /quote, CoinGecko) jest też źródłem
+    # dziennej zmiany; płatne fabryki dalej nietknięte.
+    from src.infrastructure.adapters.routing_market_data import RoutingMarketDataPort
+
+    router = MagicMock(spec=RoutingMarketDataPort)
+    repository = mocker.patch("main_agent.build_repository")
+    mocker.patch("main_agent.build_market_port", return_value=router)
+    push = mocker.patch("main_agent.build_push_notifier")
+    paid_builders = [
+        mocker.patch(f"main_agent.{name}")
+        for name in ("build_llm_adapter", "build_council_adapter", "build_embedding_adapter")
+    ]
+    settings.telegram_bot_token = "tg-token"
+    settings.telegram_chat_id = "42"
+    scan_watch = mocker.patch(
+        "main_watch.scan_watch", return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1)
+    )
+
+    assert main_watch.main(settings) == 0
+
+    scan_watch.assert_called_once_with(
+        settings,
+        repository=repository.return_value,
+        market=router,
+        push_notifier=push.return_value,
+        daily_change=router,
+    )
+    for builder in paid_builders:
+        builder.assert_not_called()

@@ -1,4 +1,4 @@
-"""Adapter CoinGecko — implementacja MarketDataPort dla krypto.
+"""Adapter CoinGecko — implementacja MarketDataPort i DailyChangePort (ALR-02) dla krypto.
 
 CoinGecko free tier:
 - bez klucza API
@@ -16,10 +16,12 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
-from src.application.ports import MarketDataPort
+from src.application.ports import DailyChangePort, MarketDataPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.shock import DailyChange
 from src.domain.value_objects import Money
 from src.infrastructure.adapters._http import build_session
 
@@ -37,7 +39,7 @@ DEFAULT_TICKER_TO_ID: dict[str, str] = {
 }
 
 
-class CoinGeckoAdapter(MarketDataPort):
+class CoinGeckoAdapter(MarketDataPort, DailyChangePort):
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
@@ -54,6 +56,34 @@ class CoinGeckoAdapter(MarketDataPort):
         self._session = build_session()
 
     def get_current_price(self, symbol: str) -> Money:
+        coin_block = self._fetch_coin_block(symbol, {})
+        price = coin_block.get(self._vs_currency)
+        if price is None:
+            raise ValueError(
+                f"CoinGecko response for '{symbol}' missing "
+                f"'{self._vs_currency}' field."
+            )
+        return Money(Decimal(str(price)))
+
+    def get_daily_change(self, symbol: str) -> DailyChange:
+        """ALR-02: zmiana w oknie 24 h (procent → ułamek) i chwila ostatniej
+        aktualizacji kursu — to samo darmowe /simple/price co cena."""
+        coin_block = self._fetch_coin_block(
+            symbol, {"include_24hr_change": "true", "include_last_updated_at": "true"}
+        )
+        percent = coin_block.get(f"{self._vs_currency}_24h_change")
+        stamp = coin_block.get("last_updated_at")
+        if percent is None or not stamp:
+            raise ValueError(
+                f"CoinGecko response for '{symbol}' missing the 24h change "
+                f"(has_change={percent is not None}, has_updated_at={bool(stamp)})."
+            )
+        return DailyChange(
+            fraction=Decimal(str(percent)) / 100,
+            as_of=datetime.fromtimestamp(int(stamp), tz=UTC),
+        )
+
+    def _fetch_coin_block(self, symbol: str, extra_params: dict[str, str]) -> dict[str, Any]:
         coin_id = self._ticker_to_id.get(symbol)
         if coin_id is None:
             raise ValueError(
@@ -63,7 +93,7 @@ class CoinGeckoAdapter(MarketDataPort):
             )
         response = self._session.get(
             f"{self._base_url}/simple/price",
-            params={"ids": coin_id, "vs_currencies": self._vs_currency},
+            params={"ids": coin_id, "vs_currencies": self._vs_currency, **extra_params},
             timeout=self._timeout,
         )
         if response.status_code == 429:
@@ -96,13 +126,7 @@ class CoinGeckoAdapter(MarketDataPort):
                 f"CoinGecko returned no data for '{symbol}' "
                 f"(coin_id={coin_id})."
             )
-        price = coin_block.get(self._vs_currency)
-        if price is None:
-            raise ValueError(
-                f"CoinGecko response for '{symbol}' missing "
-                f"'{self._vs_currency}' field."
-            )
-        return Money(Decimal(str(price)))
+        return coin_block
 
     @staticmethod
     def _retry_after_hint(response: object) -> str:
