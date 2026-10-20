@@ -51,6 +51,9 @@ regime_exit_confirmations = 2
 contagion_enabled = false
 # Kalibracja pewności sędzią-LLM (#4, Slow Loop, migracja 016). Off.
 calibration_judge_enabled = false
+# Sędzia zapisuje regułę Briera 1 − (c − o)² z wersją v2 (WIA-37). Włącz DOPIERO
+# po migracji 044 (PGRST204). Off: reguła liniowa v1, bez kolumny wersji.
+calibration_score_version_enabled = false
 # Tool-use research agent (#6): na największych ruchach model dociąga read-only
 # toole (fundamenty/makro) przed werdyktem. Płatna, wielorundowa ścieżka — off.
 tool_use_enabled = false

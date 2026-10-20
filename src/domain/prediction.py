@@ -18,11 +18,32 @@ def calibration_error(samples: Sequence[tuple[float, bool]]) -> float:
     return abs(mean_conf - accuracy)
 
 
+# WIA-37: wersja semantyki kolumny `prediction_logs.confidence_calibration`
+# (`calibration_score_version`, migracja 044). NULL w bazie = v1.
+LINEAR_CALIBRATION_SCORE_VERSION = 1
+BRIER_CALIBRATION_SCORE_VERSION = 2
+
+
 def calibration_score(confidence: float, correct: bool) -> float:
     """#4 — kalibracja pojedynczej predykcji: `1 − |confidence − wynik(0/1)|`
-    ∈ [0,1]. 1 = pewność idealnie dopasowana do wyniku."""
+    ∈ [0,1]. 1 = pewność idealnie dopasowana do wyniku.
+
+    Wycofywana (v1, WIA-37): reguła niewłaściwa — przy prawdziwej trafności 0.6
+    zgłoszenie 1.0 daje oczekiwane 0.6, a uczciwe 0.6 tylko 0.52, więc nagradza
+    przepewność. Zostaje dla wierszy v1; nowe wyniki liczy
+    `brier_calibration_score`."""
     outcome = 1.0 if correct else 0.0
     return 1.0 - abs(confidence - outcome)
+
+
+def brier_calibration_score(confidence: float, correct: bool) -> float:
+    """WIA-37 — kalibracja pojedynczej predykcji jako `1 − (confidence − wynik)²`
+    ∈ [0,1] (v2, `BRIER_CALIBRATION_SCORE_VERSION`).
+
+    Reguła właściwa: oczekiwany wynik jest największy, gdy pewność równa się
+    prawdziwej trafności, więc przepewność się nie opłaca."""
+    outcome = 1.0 if correct else 0.0
+    return 1.0 - (confidence - outcome) ** 2
 
 
 # Placeholdery, które reflect_node zapisuje w `correction_insights`, gdy nie ma

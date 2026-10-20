@@ -371,9 +371,12 @@ def _run_reference_signal(
     logger.info("Reference signal — %s", summary)
 
 
-def _run_calibration_judge(repository: RepositoryPort, llm_port: LLMPort) -> None:
+def _run_calibration_judge(
+    repository: RepositoryPort, llm_port: LLMPort, *, brier_score_enabled: bool = False
+) -> None:
     """#4: LLM-as-Judge kalibracji pewności (Slow Loop). FIN-30: jego wywołanie
-    LLM liczy się do tygodniowego budżetu Slow Loopa, nie do budżetu Fast Loopa."""
+    LLM liczy się do tygodniowego budżetu Slow Loopa, nie do budżetu Fast Loopa.
+    WIA-37: `brier_score_enabled` = reguła Briera v2 z kolumną wersji (migracja 044)."""
     try:
         from src.application.use_cases.calibrate_confidence import (
             CalibrateConfidenceUseCase,
@@ -382,6 +385,7 @@ def _run_calibration_judge(repository: RepositoryPort, llm_port: LLMPort) -> Non
         cal_result = CalibrateConfidenceUseCase(
             repository_port=repository,
             llm_port=llm_port,
+            brier_score_enabled=brier_score_enabled,
         ).run(days=30)
         logger.info("Calibration judge — %s", cal_result.get("status"))
     except Exception:
@@ -474,7 +478,11 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     usage_ledger = UsageLedger()
     paid_llm = _SlowLoopPaidLLM(settings, quota_monitor, usage_ledger)
     if settings.calibration_judge_enabled:
-        _run_calibration_judge(repository, paid_llm.port_for(JUDGE_JOB))
+        _run_calibration_judge(
+            repository,
+            paid_llm.port_for(JUDGE_JOB),
+            brier_score_enabled=settings.calibration_score_version_enabled,
+        )
 
     if settings.weekly_recap_enabled:
         _send_weekly_recap(settings, repository, quota_monitor, paid_llm.port_for(RECAP_JOB))

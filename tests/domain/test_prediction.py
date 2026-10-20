@@ -3,10 +3,13 @@ from decimal import Decimal
 import pytest
 
 from src.domain.prediction import (
+    BRIER_CALIBRATION_SCORE_VERSION,
     CRYPTO_SIDEWAYS_TOLERANCE,
+    LINEAR_CALIBRATION_SCORE_VERSION,
     SIDEWAYS_TOLERANCE,
     Prediction,
     TrendDirection,
+    brier_calibration_score,
     calibration_error,
     calibration_score,
     normalize_trend,
@@ -278,3 +281,40 @@ class TestPredictionDiagnosisInputs:
 
         assert pred.news_summary == "Fed holds | Chips rally"
         assert pred.reasoning == "Popyt na GPU rośnie."
+
+
+class TestBrierCalibrationScore:
+    """WIA-37: `1 − |c − o|` jest regułą niewłaściwą — przy prawdziwej trafności
+    0.6 zgłoszenie c = 1.0 daje więcej niż uczciwe c = 0.6. `1 − (c − o)²` jest
+    właściwa: oczekiwany wynik jest największy przy c równym trafności."""
+
+    @staticmethod
+    def _expected(score: object, confidence: float, true_rate: float) -> float:
+        assert callable(score)
+        return true_rate * score(confidence, True) + (1 - true_rate) * score(confidence, False)
+
+    def test_brier_calibration_score_is_proper(self) -> None:
+        honest = self._expected(brier_calibration_score, 0.6, 0.6)
+        overconfident = self._expected(brier_calibration_score, 1.0, 0.6)
+
+        assert honest > overconfident
+
+    def test_linear_score_rewards_overconfidence(self) -> None:
+        # Dlatego v1 zostaje tylko do odczytu starych wierszy.
+        honest = self._expected(calibration_score, 0.6, 0.6)
+        overconfident = self._expected(calibration_score, 1.0, 0.6)
+
+        assert overconfident > honest
+
+    @pytest.mark.parametrize(
+        ("confidence", "correct", "expected"),
+        [(0.9, False, 0.19), (0.8, True, 0.96), (1.0, True, 1.0), (0.0, True, 0.0)],
+    )
+    def test_brier_calibration_score_values(
+        self, confidence: float, correct: bool, expected: float
+    ) -> None:
+        assert brier_calibration_score(confidence, correct) == pytest.approx(expected)
+
+    def test_score_versions_are_distinct(self) -> None:
+        assert LINEAR_CALIBRATION_SCORE_VERSION == 1
+        assert BRIER_CALIBRATION_SCORE_VERSION == 2

@@ -68,6 +68,7 @@ MIGRATION_FILES = [
     "041_cycle_runs.sql",
     "042_reference_predictions.sql",
     "043_attestation_payload.sql",
+    "044_calibration_score_version.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1280,6 +1281,43 @@ class TestMigrations:
                 ("TEST_ATTEST_PAYLOAD", plaintext),
             )
             assert cur.fetchone() == (plaintext,)
+
+    # -- Migracja 044: wersja reguły confidence_calibration (WIA-37) -----------
+
+    def test_calibration_score_version_backfills_scored_rows_as_linear(
+        self, pg_conn
+    ) -> None:
+        """Ocena bez wersji to reguła liniowa (v1); wiersz bez oceny zostaje NULL,
+        a wiersz z v2 nie wraca do v1 przy ponownym przebiegu migracji."""
+        assert "calibration_score_version" in _columns(pg_conn, "prediction_logs")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, confidence_calibration) VALUES "
+                "('CSV_V1', '2026-11-03T21:30:00+00:00', 100.0, 0.4), "
+                "('CSV_NONE', '2026-11-03T21:30:00+00:00', 100.0, NULL)"
+            )
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction, "
+                "confidence_calibration, calibration_score_version) "
+                "VALUES ('CSV_V2', '2026-11-03T21:30:00+00:00', 100.0, 0.19, 2)"
+            )
+            cur.execute(
+                (MIGRATIONS_DIR / "044_calibration_score_version.sql").read_text()
+            )
+            cur.execute(
+                "SELECT symbol, calibration_score_version FROM prediction_logs "
+                "WHERE symbol LIKE 'CSV_%' ORDER BY symbol"
+            )
+            assert cur.fetchall() == [("CSV_NONE", None), ("CSV_V1", 1), ("CSV_V2", 2)]
+
+    def test_calibration_score_version_rejects_an_unknown_rule(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, calibration_score_version) "
+                "VALUES ('CSV_BAD', '2026-11-03T21:30:00+00:00', 100.0, 3)"
+            )
 
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 

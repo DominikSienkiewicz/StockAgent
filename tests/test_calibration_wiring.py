@@ -1,0 +1,69 @@
+"""Wiring statystyki i kalibracji track recordu (W2-1) w entry pointach.
+
+Osobny plik zamiast dopisywania do `test_main_entrypoints.py`: te same
+mocki I/O, ale bez dotykania wspólnego, długiego modułu testów.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from unittest.mock import MagicMock
+
+import pytest
+
+import main_trainer
+from src.application.ports import LLMPort, RepositoryPort
+from src.config import Settings
+
+
+@pytest.fixture
+def settings() -> Settings:
+    return Settings(
+        _env_file=None,
+        openai_api_key="sk-test",
+        finnhub_api_key="fh",
+        alpha_vantage_api_keys=["av1", "av2"],
+        supabase_url="https://test.supabase.co",
+        supabase_key="anon",
+        symbols=["AAPL"],
+        volatility_threshold=Decimal("0.02"),
+        ml_model_path="data/models/missing.ubj",
+        db_writes_enabled=True,
+        paid_calls_enabled=True,
+    )
+
+
+class TestCalibrationJudgeScoreVersion:
+    """WIA-37: flaga `calibration_score_version_enabled` dociera do sędziego."""
+
+    @staticmethod
+    def _trainer(mocker: MagicMock) -> MagicMock:
+        mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        mocker.patch("main_trainer.build_notifier", return_value=MagicMock())
+        mocker.patch("main_agent.build_llm_adapter", return_value=MagicMock(spec=LLMPort))
+        judge_cls = mocker.patch(
+            "src.application.use_cases.calibrate_confidence.CalibrateConfidenceUseCase"
+        )
+        judge_cls.return_value.run.return_value = {"status": "calibrated"}
+        return judge_cls
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_flag_reaches_the_judge(
+        self, settings: Settings, mocker: MagicMock, enabled: bool
+    ) -> None:
+        judge_cls = self._trainer(mocker)
+        settings.calibration_judge_enabled = True
+        settings.weekly_recap_enabled = False
+        settings.calibration_score_version_enabled = enabled
+
+        main_trainer.main(settings)
+
+        assert judge_cls.call_args.kwargs["brier_score_enabled"] is enabled
+
+    def test_flag_ships_off(self) -> None:
+        assert Settings.model_fields["calibration_score_version_enabled"].default is False

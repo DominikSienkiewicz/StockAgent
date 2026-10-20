@@ -874,16 +874,21 @@ class SupabaseRepository(RepositoryPort):
         return _without_llm_fallback(_paginate(query))
 
     def save_calibration(
-        self, prediction_id: str, score: float, insight: str
+        self,
+        prediction_id: str,
+        score: float,
+        insight: str,
+        *,
+        score_version: int | None = None,
     ) -> None:
-        (
-            self._client.table(self._table)
-            .update(
-                {"confidence_calibration": score, "calibration_insight": insight}
-            )
-            .eq("id", prediction_id)
-            .execute()
-        )
+        payload: dict[str, Any] = {
+            "confidence_calibration": score,
+            "calibration_insight": insight,
+        }
+        # WIA-37: kolumna z migracji 044 — klucz tylko z wersją (flaga), inaczej PGRST204.
+        if score_version is not None:
+            payload["calibration_score_version"] = score_version
+        self._client.table(self._table).update(payload).eq("id", prediction_id).execute()
 
     def get_persona_accuracy(
         self, asset_type: AssetType, window_days: int = 90

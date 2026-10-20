@@ -315,11 +315,19 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def save_calibration(
-        self, prediction_id: str, score: float, insight: str
+        self,
+        prediction_id: str,
+        score: float,
+        insight: str,
+        *,
+        score_version: int | None = None,
     ) -> None:
         """#4 — zapisuje ocenę kalibracji pewności (sędzia-LLM, Slow Loop):
         `confidence_calibration` (0-1, czy deklarowana pewność była uzasadniona)
-        + `calibration_insight` na `prediction_logs` (migracja 016)."""
+        + `calibration_insight` na `prediction_logs` (migracja 016).
+
+        `score_version` (WIA-37) trafia do `calibration_score_version`
+        (migracja 044); None = bez tego klucza w zapisie (wiersz v1)."""
 
     @abstractmethod
     def get_persona_accuracy(
