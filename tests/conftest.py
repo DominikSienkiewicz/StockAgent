@@ -15,6 +15,9 @@ import os
 import pytest
 
 os.environ["STOCKAGENT_DISABLE_TOML"] = "1"
+# NIEZ-22: w CI (GitHub Actions) zmienna wskazuje summary jobu testów — testy
+# entry pointów dopisywałyby do niej podsumowania cykli zbudowanych z mocków.
+os.environ.pop("GITHUB_STEP_SUMMARY", None)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
