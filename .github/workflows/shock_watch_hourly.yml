@@ -1,12 +1,12 @@
 name: 🚨 Shock Watch (hourly, free)
 
 on:
-  # ⏸️ Harmonogram WSTRZYMANY razem z Fast Loopem (fast_loop_12h.yml).
-  # Watch nigdy nie zapisuje snapshotu ceny — jedyne referencje to snapshoty
-  # Fast Loopa, a referencja starsza niż 30 h tłumi każdy alert. Bez Fast Loopa
-  # cron co godzinę pobierałby ceny tylko po to, żeby zgłosić „0 alertów".
-  # Przywróć cron RAZEM z cronem Fast Loopa (albo po uniezależnieniu watcha
-  # od jego snapshotów). Ręczne wymuszenie z panelu Actions zostaje.
+  # ⏸️ Harmonogram WSTRZYMANY — odkomentowuje go właściciel. Od ALR-02 watch może
+  # wrócić SAM, bez Fast Loopa (fast_loop_12h.yml): ruch liczy z dziennej zmiany
+  # darmowego /quote (Finnhub `dp`, CoinGecko zmiana 24 h), a snapshot Fast Loopa
+  # jest tylko fallbackiem. Watch nigdy nie zapisuje snapshotu ceny. Strażnik
+  # `tests/test_shock_watch_env_wiring.py` pilnuje, że cron bez Fast Loopa ma
+  # okablowane źródło dziennej zmiany. Ręczne wymuszenie z panelu Actions zostaje.
   #
   # Watch jest zaprojektowany pod 24/7, NIE tylko sesję NYSE — BTC/ETH handlują
   # całą dobę. Wymaga migracji 021 i `shock_alerts_enabled = true`.
