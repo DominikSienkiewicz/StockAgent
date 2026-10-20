@@ -388,3 +388,26 @@ class TestCompactTrackRecord:
 
         assert "Na tle rynku: brak danych benchmarku" in html
         assert "Krzywa kapitału (paper-PnL)" in html
+
+
+class TestSidewaysCalibration:
+    """WIA-39: SIDEWAYS liczone osobno od krzywej kierunkowej — n i Brier."""
+
+    _BUCKETS = [
+        CalibrationBucket(lower=0.6, upper=0.7, count=10, mean_confidence=0.65, hit_rate=0.6)
+    ]
+
+    def test_sideways_line_shows_n_and_brier(self) -> None:
+        sideways = probability_scores([(0.8, True), (0.8, False)])
+        stats = TrackRecordStats(sideways_scores=sideways)
+
+        html = render_track_record_html(None, self._BUCKETS, None, stats)
+
+        # Brier = (0.2² + 0.8²) / 2 = 0.34.
+        assert "SIDEWAYS" in html
+        assert "n=2, Brier 0,340" in html
+
+    def test_no_sideways_scores_no_sideways_line(self) -> None:
+        html = render_track_record_html(None, self._BUCKETS, None, TrackRecordStats())
+
+        assert "SIDEWAYS" not in html

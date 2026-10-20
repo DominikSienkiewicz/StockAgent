@@ -92,6 +92,10 @@ from src.application.report_ops import render_cycle_summary_markdown
 from src.application.report_public_scorecard import render_public_scorecard_html
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
+from src.application.signal_calibration import (
+    directional_calibration_curve,
+    split_calibration_samples,
+)
 from src.application.tools import build_research_tools
 from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidPhase
@@ -2480,23 +2484,14 @@ def _build_signal_calibration(
     except Exception:
         logger.exception("Failed to fetch calibration samples for signal ranking")
         return None
-    samples = [
-        (float(row["confidence_score"]), bool(row["is_trend_correct"]))
-        for row in rows
-        if row.get("confidence_score") is not None
-        and row.get("is_trend_correct") is not None
-    ]
-    return reliability_curve(samples) if samples else None
+    # WIA-39: ranking kalibrujemy krzywą kierunkową — SIDEWAYS trafia za darmo.
+    return directional_calibration_curve(rows)
 
 
 def _calibration_samples(rows: list[dict[str, Any]]) -> list[tuple[float, bool]]:
-    """Wiersze kalibracji → próbki `(confidence, was_correct)`; niepełne pomijamy."""
-    return [
-        (float(row["confidence_score"]), bool(row["is_trend_correct"]))
-        for row in rows
-        if row.get("confidence_score") is not None
-        and row.get("is_trend_correct") is not None
-    ]
+    """Wiersze kalibracji → kierunkowe próbki `(confidence, was_correct)` (WIA-39:
+    SIDEWAYS mają osobną kalibrację); niepełne pomijamy."""
+    return split_calibration_samples(rows).directional
 
 
 def _build_track_record(
@@ -2561,13 +2556,15 @@ def _build_track_record_stats(
             logger.exception("Failed to compute hit-rate evidence for track record")
         if resolved and costs is not None:
             benchmark = _benchmark_comparison(settings, repository, resolved, costs)
+    sideways_scores = None
     if settings.calibration_curve_enabled:
         try:
-            scores = probability_scores(
-                _calibration_samples(
-                    repository.get_resolved_for_calibration(settings.track_record_days)
-                )
+            split = split_calibration_samples(
+                repository.get_resolved_for_calibration(settings.track_record_days)
             )
+            scores = probability_scores(split.directional)
+            # WIA-39: SIDEWAYS osobno — przy małym n wystarczą n i Brier.
+            sideways_scores = probability_scores(split.sideways)
         except Exception:
             logger.exception("Failed to compute probability scores for track record")
     coverage = None
@@ -2589,6 +2586,7 @@ def _build_track_record_stats(
         coverage=coverage,
         costs=paper_costs,
         benchmark=benchmark,
+        sideways_scores=sideways_scores,
     )
 
 

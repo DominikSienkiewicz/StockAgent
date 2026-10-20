@@ -490,3 +490,13 @@ class TestEvaluationProtocolSection:
         leaked = {s for s in watchlist if re.search(rf"\b{re.escape(s)}\b", section)}
         assert leaked == set()
         assert "@" not in section
+
+class TestDirectionalCalibrationDisclosure:
+    """WIA-39: krzywa kalibracji strony jest kierunkowa — strona mówi to wprost."""
+
+    def test_calibration_section_says_sideways_are_excluded(self) -> None:
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, [(0.6, True), (0.7, False)]
+        )
+
+        assert "bez prognoz „bez ruchu”" in html

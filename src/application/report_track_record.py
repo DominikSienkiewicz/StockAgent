@@ -38,7 +38,7 @@ from src.application.report_evidence import (
     probability_label,
     uncertainty_note,
 )
-from src.application.report_formatting import pct, pct_range
+from src.application.report_formatting import number, pct, pct_range
 from src.application.report_lessons import LessonsReport
 from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
@@ -80,7 +80,9 @@ class TrackRecordStats:
     - `costs` — założenia kosztowe, z którymi policzono krzywą kapitału (WIA-50);
       None = krzywa brutto i copy „bez kosztów transakcyjnych”,
     - `benchmark` — krzywa agenta obok koszyka i IVV (WIA-21); None = linia
-      „Na tle rynku: brak danych benchmarku”.
+      „Na tle rynku: brak danych benchmarku”,
+    - `sideways_scores` — Brier prognoz „bez ruchu” liczony osobno (WIA-39);
+      `scores` i krzywa kalibracji są wtedy wyłącznie kierunkowe.
     """
 
     hit_rate: HitRateEvidence | None = None
@@ -88,6 +90,7 @@ class TrackRecordStats:
     coverage: IntervalCoverage | None = None
     costs: PaperCosts | None = None
     benchmark: BenchmarkComparison | None = None
+    sideways_scores: ProbabilityScores | None = None
 
 
 def render_track_record_html(
@@ -111,7 +114,9 @@ def render_track_record_html(
     if equity_curve is not None and equity_curve.n_trades > 0:
         subsections.append(_render_equity_html(equity_curve, stats))
     if calibration_buckets:
-        subsections.append(_render_calibration_html(calibration_buckets, stats.scores))
+        subsections.append(
+            _render_calibration_html(calibration_buckets, stats.scores, stats.sideways_scores)
+        )
     if lessons is not None and lessons.items:
         subsections.append(_render_lessons_html(lessons))
     if stats.coverage is not None and stats.coverage.rate is not None:
@@ -280,8 +285,22 @@ def _severity_color(value: float) -> str:
     return "#16a34a"
 
 
+def _sideways_html(scores: ProbabilityScores | None) -> str:
+    """WIA-39 — SIDEWAYS poza krzywą kierunkową: przy małym n same n i Brier."""
+    if scores is None:
+        return ""
+    brier = number(scores.brier, decimals=3)
+    return (
+        f"<p style='{_NOTE_STYLE}'>Prognozy „bez ruchu” (SIDEWAYS) liczone osobno, "
+        f"poza krzywą: n={scores.n}, Brier {brier} — trafiają za darmo w spokojne "
+        "dni, więc nie mieszamy ich z zakładami na kierunek.</p>"
+    )
+
+
 def _render_calibration_html(
-    buckets: list[CalibrationBucket], scores: ProbabilityScores | None
+    buckets: list[CalibrationBucket],
+    scores: ProbabilityScores | None,
+    sideways: ProbabilityScores | None = None,
 ) -> str:
     """T2 — Brier / BSS (gdy są próbki) + reliability diagram: pewność → hit-rate."""
     ece = expected_calibration_error(buckets)
@@ -327,6 +346,7 @@ def _render_calibration_html(
         f"Pomocniczo — błąd kalibracji (ECE): <strong style='color: {ece_color};'>"
         f"{pct(ece, decimals=1)}</strong> — im niżej, tym lepiej pewność odpowiada "
         "realnej trafności.</p>"
+        f"{_sideways_html(sideways)}"
     )
 
 

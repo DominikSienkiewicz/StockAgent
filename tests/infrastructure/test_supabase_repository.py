@@ -3040,3 +3040,20 @@ class TestSaveCalibrationScoreVersion:
 
         payload = mock_client.table.return_value.update.call_args.args[0]
         assert "calibration_score_version" not in payload
+
+
+class TestResolvedForCalibrationTrendAndCycle:
+    """WIA-39 / WIA-38: kalibracja kierunkowa potrzebuje `predicted_trend`, a n_eff
+    i bootstrap po cyklach — `timestamp`. Obie kolumny istnieją od 001."""
+
+    def test_select_carries_trend_and_timestamp(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [[]])
+
+        repo.get_resolved_for_calibration(30)
+
+        selected = builder.select.call_args.args[0]
+        assert "predicted_trend" in selected
+        assert "timestamp" in selected
+

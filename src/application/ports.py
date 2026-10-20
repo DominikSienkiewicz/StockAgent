@@ -310,7 +310,8 @@ class RepositoryPort(ABC):
     @abstractmethod
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
         """#4 — rozliczone predykcje z `id`, `confidence_score`,
-        `is_trend_correct`, `reasoning_text` do oceny kalibracji (Slow Loop).
+        `is_trend_correct`, `predicted_trend`, `timestamp`, `reasoning_text` do
+        oceny kalibracji (Slow Loop) i krzywych kalibracji (WIA-39).
         Pomija wiersze bez `confidence_score`/`is_trend_correct`."""
 
     @abstractmethod

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import main_agent
 import main_trainer
 from src.application.ports import LLMPort, RepositoryPort
 from src.config import Settings
@@ -67,3 +68,59 @@ class TestCalibrationJudgeScoreVersion:
 
     def test_flag_ships_off(self) -> None:
         assert Settings.model_fields["calibration_score_version_enabled"].default is False
+
+
+_MIXED_CALIBRATION_ROWS = [
+    {"confidence_score": 0.9, "is_trend_correct": True, "predicted_trend": "SIDEWAYS"},
+    {"confidence_score": 0.9, "is_trend_correct": False, "predicted_trend": "BULLISH"},
+    {"confidence_score": 0.6, "is_trend_correct": True, "predicted_trend": "BEARISH"},
+]
+
+
+class TestDirectionalCalibrationWiring:
+    """WIA-39: ranking sygnałów i Track Record kalibrują krzywą kierunkową,
+    a SIDEWAYS dostaje własne n i Brier."""
+
+    @staticmethod
+    def _repo() -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_predictions.return_value = []
+        repo.get_resolved_for_calibration.return_value = _MIXED_CALIBRATION_ROWS
+        return repo
+
+    def test_signal_ranking_bucket_ignores_sideways(self) -> None:
+        settings = MagicMock()
+        settings.calibrated_confidence_enabled = True
+        settings.track_record_days = 30
+
+        buckets = main_agent._build_signal_calibration(settings, self._repo())
+
+        assert buckets is not None
+        top = next(b for b in buckets if b.lower <= 0.9 < b.upper)
+        assert top.count == 1
+        assert top.hit_rate == 0.0
+
+    def test_track_record_scores_split_directional_and_sideways(self) -> None:
+        settings = MagicMock()
+        settings.equity_curve_enabled = False
+        settings.calibration_curve_enabled = True
+        settings.interval_coverage_enabled = False
+        settings.track_record_days = 30
+
+        stats = main_agent._build_track_record_stats(settings, self._repo())
+
+        assert stats is not None
+        assert stats.scores is not None and stats.scores.n == 2
+        assert stats.sideways_scores is not None and stats.sideways_scores.n == 1
+
+    def test_track_record_curve_is_directional(self) -> None:
+        settings = MagicMock()
+        settings.equity_curve_enabled = False
+        settings.lessons_enabled = False
+        settings.calibration_curve_enabled = True
+        settings.track_record_days = 30
+
+        _, buckets, _ = main_agent._build_track_record(settings, self._repo())
+
+        assert buckets is not None
+        assert sum(b.count for b in buckets) == 2

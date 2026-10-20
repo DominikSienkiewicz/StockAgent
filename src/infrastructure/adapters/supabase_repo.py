@@ -861,10 +861,15 @@ class SupabaseRepository(RepositoryPort):
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
         # NIEZ-15: paginacja + `id` jako drugi klucz — przy równych timestampach
         # granica strony musi być deterministyczna (bez gubienia/dublowania wierszy).
+        # WIA-39/WIA-38: trend oddziela SIDEWAYS od kalibracji kierunkowej, a
+        # `timestamp` daje cykle pod n_eff i bootstrap (obie kolumny od 001).
         cutoff = datetime.now(UTC) - timedelta(days=days)
         query = (
             self._client.table(self._table)
-            .select("id, confidence_score, is_trend_correct, reasoning_text, data_quality_flags")
+            .select(
+                "id, confidence_score, is_trend_correct, predicted_trend, timestamp, "
+                "reasoning_text, data_quality_flags"
+            )
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .not_.is_("confidence_score", "null")
