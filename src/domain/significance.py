@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 
 from src.domain.number_format import DecimalMark, format_number_pl
@@ -221,6 +221,36 @@ def cluster_bootstrap_ci(
         hits = sum(h for h, _ in sample)
         total = sum(t for _, t in sample)
         estimates.append(hits / total)
+    return _percentile_interval(estimates, level)
+
+
+def cluster_bootstrap_statistic_ci[T](
+    samples_by_cycle: Sequence[Sequence[T]],
+    statistic: Callable[[list[T]], float | None],
+    n_boot: int = 2000,
+    seed: int = 0,
+    level: float = 0.95,
+) -> tuple[float, float] | None:
+    """WIA-58 / WIA-38: percentylowy przedział dowolnej statystyki próbki
+    (ECE, AUC) z bootstrapu losującego CAŁE cykle.
+
+    Ten sam schemat losowania co `cluster_bootstrap_ci`: cykle ze zwracaniem,
+    statystyka liczona na spłaszczonej próbie. Losowanie, dla którego statystyka
+    jest nieokreślona (None, np. AUC bez pudeł), odpada. Przy <
+    `MIN_BOOTSTRAP_CYCLES` niepustych cyklach albo bez żadnej estymaty → None.
+    """
+    cycles = [list(cycle) for cycle in samples_by_cycle if cycle]
+    if len(cycles) < MIN_BOOTSTRAP_CYCLES or n_boot <= 0:
+        return None
+    rng = random.Random(seed)
+    estimates: list[float] = []
+    for _ in range(n_boot):
+        sample = rng.choices(cycles, k=len(cycles))
+        value = statistic([item for cycle in sample for item in cycle])
+        if value is not None:
+            estimates.append(value)
+    if not estimates:
+        return None
     return _percentile_interval(estimates, level)
 
 

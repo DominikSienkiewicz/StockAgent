@@ -796,7 +796,8 @@ def render_public_scorecard_page(
     resolved = parse_resolved_predictions(
         repository.get_resolved_predictions(settings.track_record_days)
     )
-    samples = _calibration_samples(
+    # WIA-39/WIA-58: kierunkowe próbki; cykle dają n_eff i bootstrap ECE.
+    calibration = split_calibration_samples(
         repository.get_resolved_for_calibration(settings.track_record_days)
     )
     benchmark = (
@@ -807,12 +808,13 @@ def render_public_scorecard_page(
     return render_public_scorecard_html(
         resolved,
         portfolio_curve(resolved, costs),
-        samples,
+        calibration.directional,
         generated_on=datetime.now(UTC).date(),
         window_days=settings.track_record_days,
         costs=costs,
         benchmark=benchmark,
         protocol=load_evaluation_protocol(),
+        calibration_by_cycle=calibration.directional_by_cycle,
     )
 
 

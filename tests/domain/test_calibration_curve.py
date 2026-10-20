@@ -11,6 +11,8 @@ diagram niezawodności predykcji.
 from __future__ import annotations
 
 import math
+import random
+import statistics
 
 import pytest
 
@@ -18,6 +20,8 @@ from src.domain.calibration_curve import (
     CalibrationBucket,
     brier_score,
     calibrated_confidence,
+    calibration_error_evidence,
+    debiased_ece,
     expected_calibration_error,
     log_loss,
     murphy_decomposition,
@@ -260,3 +264,115 @@ class TestProbabilityScores:
         assert probability_scores([]) is None
         assert brier_score([]) == pytest.approx(0.0)
         assert murphy_decomposition([]) == (0.0, 0.0, 0.0)
+
+
+class TestEqualMassBuckets:
+    """WIA-58: pewności LLM skupiają się w 0.6–0.85, więc 10 kubełków równej
+    szerokości daje 2–3 niepuste. Kubełki równoliczne mają granice kwantylowe."""
+
+    def test_equal_mass_buckets_have_counts_within_one(self) -> None:
+        samples = [(0.6 + 0.01 * (i % 25), i % 3 == 0) for i in range(53)]
+
+        buckets = reliability_curve(samples, n_buckets=10, strategy="equal_mass")
+
+        counts = [b.count for b in buckets]
+        assert len(counts) == 10
+        assert sum(counts) == 53
+        assert max(counts) - min(counts) <= 1
+
+    def test_equal_width_stays_the_default(self) -> None:
+        samples = [(0.65, True), (0.66, False), (0.95, True)]
+
+        assert reliability_curve(samples) == reliability_curve(samples, strategy="equal_width")
+
+    def test_equal_mass_bounds_are_quantiles_covering_the_unit_interval(self) -> None:
+        samples = [(0.2, True), (0.4, False), (0.6, True), (0.8, True)]
+
+        buckets = reliability_curve(samples, n_buckets=2, strategy="equal_mass")
+
+        assert [(b.lower, b.upper) for b in buckets] == [(0.0, 0.6), (0.6, 1.0)]
+        assert [b.count for b in buckets] == [2, 2]
+        assert [b.hit_rate for b in buckets] == [0.5, 1.0]
+
+    def test_clustered_confidences_fill_every_equal_mass_bucket(self) -> None:
+        samples = [(0.61 + 0.23 * i / 99, i % 2 == 0) for i in range(100)]
+
+        assert len(reliability_curve(samples)) <= 3
+        assert len(reliability_curve(samples, strategy="equal_mass")) == 10
+
+    def test_fewer_samples_than_buckets_give_one_sample_per_bucket(self) -> None:
+        buckets = reliability_curve([(0.7, True), (0.8, False)], strategy="equal_mass")
+
+        assert [b.count for b in buckets] == [1, 1]
+
+    def test_unknown_strategy_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="strategy"):
+            reliability_curve([(0.7, True)], strategy="quantile")  # type: ignore[arg-type]
+
+
+def _perfectly_calibrated(rng: random.Random, n: int) -> list[tuple[float, bool]]:
+    confidences = [rng.uniform(0.55, 0.85) for _ in range(n)]
+    return [(c, rng.random() < c) for c in confidences]
+
+
+class TestDebiasedEce:
+    """WIA-58: przy małym n ECE jest obciążone w górę — nawet idealna kalibracja
+    daje kilka punktów procentowych. Korekta odejmuje ECE oczekiwane przy idealnej
+    kalibracji (symulacja Bernoulliego tych samych pewności)."""
+
+    def test_debiased_ece_near_zero_for_simulated_perfect_calibration(self) -> None:
+        rng = random.Random(7)
+        raw: list[float] = []
+        debiased: list[float] = []
+        for _ in range(20):
+            samples = _perfectly_calibrated(rng, 200)
+            buckets = reliability_curve(samples, strategy="equal_mass")
+            raw.append(expected_calibration_error(buckets))
+            debiased.append(debiased_ece(samples, n_sim=100, seed=11))
+
+        assert statistics.fmean(raw) > 0.04
+        assert abs(statistics.fmean(debiased)) < 0.02
+
+    def test_debiased_ece_is_deterministic_for_seed(self) -> None:
+        samples = _perfectly_calibrated(random.Random(3), 120)
+
+        assert debiased_ece(samples, n_sim=50, seed=5) == debiased_ece(samples, n_sim=50, seed=5)
+
+    def test_overconfident_forecast_keeps_a_large_debiased_ece(self) -> None:
+        samples = [(0.9, i % 2 == 0) for i in range(200)]
+
+        assert debiased_ece(samples, n_sim=50) > 0.3
+
+    def test_no_samples_no_error(self) -> None:
+        assert debiased_ece([]) == 0.0
+
+
+class TestCalibrationErrorEvidence:
+    """WIA-58: scorecard pisze „ECE 0.07 [0.03; 0.12], n_eff=…” — przedział
+    z bootstrapu losującego całe cykle, bo predykcje jednego dnia są skorelowane."""
+
+    @staticmethod
+    def _cycles(n_cycles: int) -> list[list[tuple[float, bool]]]:
+        rng = random.Random(1)
+        return [_perfectly_calibrated(rng, 8) for _ in range(n_cycles)]
+
+    def test_interval_brackets_the_ece_and_reports_n_eff(self) -> None:
+        evidence = calibration_error_evidence(self._cycles(25), n_sim=50, n_boot=300, seed=2)
+
+        assert evidence is not None
+        assert evidence.n == 200
+        assert 0 < evidence.n_eff <= 200
+        assert evidence.interval is not None
+        low, high = evidence.interval
+        assert low <= evidence.ece <= high
+        assert evidence.debiased < evidence.ece
+
+    def test_too_few_cycles_give_no_interval(self) -> None:
+        evidence = calibration_error_evidence(self._cycles(5), n_sim=20, n_boot=100)
+
+        assert evidence is not None
+        assert evidence.interval is None
+
+    def test_no_samples_no_evidence(self) -> None:
+        assert calibration_error_evidence([]) is None
+

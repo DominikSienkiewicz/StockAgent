@@ -500,3 +500,45 @@ class TestDirectionalCalibrationDisclosure:
         )
 
         assert "bez prognoz „bez ruchu”" in html
+
+
+class TestCalibrationErrorInterval:
+    """WIA-58: „ECE 7.0% [3.0%; 12.0%], n_eff≈…” — kubełki równoliczne, korekta
+    obciążenia i przedział z bootstrapu po cyklach, gdy znamy cykle próbek."""
+
+    @staticmethod
+    def _cycles(n_cycles: int) -> list[list[tuple[float, bool]]]:
+        return [
+            [(0.6 + 0.02 * (i % 10), (day + i) % 3 != 0) for i in range(8)]
+            for day in range(n_cycles)
+        ]
+
+    def test_ece_line_carries_the_interval_n_eff_and_debiased_value(self) -> None:
+        cycles = self._cycles(25)
+        samples = [sample for cycle in cycles for sample in cycle]
+
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, samples, calibration_by_cycle=cycles
+        )
+
+        assert re.search(r"ECE = \d+\.\d% \[\d+\.\d%; \d+\.\d%\], n=200, n_eff≈\d+", html)
+        assert "kubełki równoliczne" in html
+        assert "po korekcie obciążenia" in html
+
+    def test_too_few_cycles_say_so_instead_of_an_interval(self) -> None:
+        cycles = self._cycles(3)
+        samples = [sample for cycle in cycles for sample in cycle]
+
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, samples, calibration_by_cycle=cycles
+        )
+
+        assert "za mało cykli na bootstrap" in html
+        assert not re.search(r"ECE = \d+\.\d% \[", html)
+
+    def test_methodology_describes_the_equal_mass_buckets(self) -> None:
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, [(0.6, True)]
+        )
+
+        assert "równoliczn" in html

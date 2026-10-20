@@ -223,3 +223,44 @@ class TestClusterBootstrapDifference:
         cycles: list[tuple[list[float], list[float]]] = [([1.0, 0.0], []) for _ in range(25)]
 
         assert cluster_bootstrap_difference_ci(cycles, n_boot=100) is None
+
+
+class TestClusterBootstrapStatistic:
+    """WIA-58 / WIA-38: ten sam bootstrap po cyklach dla dowolnej statystyki
+    próbki (ECE, AUC), nie tylko dla hit-rate."""
+
+    @staticmethod
+    def _mean(values: list[float]) -> float | None:
+        return sum(values) / len(values) if values else None
+
+    def test_matches_the_hit_rate_bootstrap_for_the_mean(self) -> None:
+        from src.domain.significance import cluster_bootstrap_statistic_ci
+
+        cycles = [[True, False, True], [False], [True, True]] * 8
+
+        generic = cluster_bootstrap_statistic_ci(
+            cycles, lambda xs: self._mean([1.0 if x else 0.0 for x in xs]), n_boot=200, seed=4
+        )
+
+        assert generic == cluster_bootstrap_ci(cycles, n_boot=200, seed=4)
+
+    def test_too_few_cycles_give_no_interval(self) -> None:
+        from src.domain.significance import (
+            MIN_BOOTSTRAP_CYCLES,
+            cluster_bootstrap_statistic_ci,
+        )
+
+        cycles = [[1.0, 2.0]] * (MIN_BOOTSTRAP_CYCLES - 1)
+
+        assert cluster_bootstrap_statistic_ci(cycles, self._mean, n_boot=50) is None
+
+    def test_undefined_statistic_on_every_resample_gives_no_interval(self) -> None:
+        from src.domain.significance import (
+            MIN_BOOTSTRAP_CYCLES,
+            cluster_bootstrap_statistic_ci,
+        )
+
+        cycles = [[1.0]] * MIN_BOOTSTRAP_CYCLES
+
+        assert cluster_bootstrap_statistic_ci(cycles, lambda _: None, n_boot=50) is None
+

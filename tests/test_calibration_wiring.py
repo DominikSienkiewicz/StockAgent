@@ -124,3 +124,35 @@ class TestDirectionalCalibrationWiring:
 
         assert buckets is not None
         assert sum(b.count for b in buckets) == 2
+
+
+class TestScorecardCalibrationCycles:
+    """WIA-58: scorecard dostaje próbki kierunkowe pogrupowane po dniu UTC."""
+
+    def test_scorecard_receives_directional_samples_by_cycle(self, mocker: MagicMock) -> None:
+        settings = MagicMock()
+        settings.public_scorecard_enabled = True
+        settings.track_record_days = 30
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_predictions.return_value = []
+        repo.get_resolved_for_calibration.return_value = [
+            {**row, "timestamp": stamp}
+            for row, stamp in zip(
+                _MIXED_CALIBRATION_ROWS,
+                [
+                    "2026-10-19T05:30:00+00:00",
+                    "2026-10-19T05:31:00+00:00",
+                    "2026-10-20T05:30:00+00:00",
+                ],
+                strict=True,
+            )
+        ]
+        render = mocker.patch("main_agent.render_public_scorecard_html", return_value="")
+
+        main_agent._publish_public_scorecard(settings, repo, MagicMock())
+
+        assert render.call_args.args[2] == [(0.9, False), (0.6, True)]
+        assert render.call_args.kwargs["calibration_by_cycle"] == (
+            ((0.9, False),),
+            ((0.6, True),),
+        )

@@ -52,6 +52,7 @@ from src.application.report_models import ResolvedPrediction
 from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
+    calibration_error_evidence,
     expected_calibration_error,
     probability_scores,
     reliability_curve,
@@ -93,6 +94,8 @@ def render_public_scorecard_html(
     costs: PaperCosts | None = None,
     benchmark: BenchmarkComparison | None = None,
     protocol: EvaluationProtocol | None = None,
+
+    calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]] | None = None,
 ) -> str:
     """Renderuje publiczny scorecard kalibracji jako samodzielną stronę HTML.
 
@@ -118,6 +121,10 @@ def render_public_scorecard_html(
         metodologii; ten sam sha256 niesie każdy commitment v2. None = sekcja
         bez protokołu, jak przed WIA-42.
 
+      - `calibration_by_cycle` — te same próbki pogrupowane po cyklu (dniu UTC,
+        WIA-58); z nimi ECE dostaje kubełki równoliczne, korektę obciążenia,
+        n_eff i przedział z bootstrapu po cyklach. None = sama liczba ECE.
+
     Samosupresja: brak jakichkolwiek danych → `""` (nie publikujemy pustej
     strony). Wszystko, co idzie do outputu, jest escapowane.
     """
@@ -133,7 +140,7 @@ def render_public_scorecard_html(
 
     sections: list[str] = [
         _render_headline(predictions, generated_on, window_days),
-        _render_calibration_section(buckets, samples),
+        _render_calibration_section(buckets, samples, calibration_by_cycle),
         _render_equity_section(equity, costs, benchmark),
         _render_methodology_section(protocol),
     ]
@@ -217,8 +224,32 @@ def _stat_card(label: str, value: str, note: str = "") -> str:
     )
 
 
+def _ece_line(
+    ece: float, calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]] | None
+) -> str:
+    """„ECE = 7.0%” albo z cyklami (WIA-58): przedział, n, n_eff i ECE po korekcie."""
+    evidence = (
+        calibration_error_evidence(calibration_by_cycle) if calibration_by_cycle else None
+    )
+    if evidence is None:
+        return f"<strong>ECE = {ece * 100:.1f}%</strong>"
+    if evidence.interval is None:
+        spread = " (za mało cykli na bootstrap)"
+    else:
+        low, high = evidence.interval
+        spread = f" [{low * 100:.1f}%; {high * 100:.1f}%]"
+    sample = f"n={evidence.n}, n_eff≈{evidence.n_eff:.0f}"
+    debiased = max(0.0, evidence.debiased) * 100
+    return (
+        f"<strong>ECE = {evidence.ece * 100:.1f}%{spread}, {sample}</strong> "
+        f"(kubełki równoliczne; po korekcie obciążenia {debiased:.1f}%)"
+    )
+
+
 def _render_calibration_section(
-    buckets: Sequence[CalibrationBucket], samples: Sequence[tuple[float, bool]]
+    buckets: Sequence[CalibrationBucket],
+    samples: Sequence[tuple[float, bool]],
+    calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]] | None = None,
 ) -> str:
     """Sekcja pewności: Brier / BSS / log loss, rozkład Murphy'ego, sparkline + ECE.
 
@@ -253,7 +284,7 @@ def _render_calibration_section(
         "dni.</p>"
         f"{sparkline}"
         "<p class='ece'>Pomocniczo: błąd kalibracji "
-        f"<strong>ECE = {ece * 100:.1f}%</strong> — im niżej, tym wierniej "
+        f"{_ece_line(ece, calibration_by_cycle)} — im niżej, tym wierniej "
         "deklarowana pewność odpowiada realnej trafności.</p>"
         "</section>"
     )
@@ -396,7 +427,12 @@ def _render_methodology_section(protocol: EvaluationProtocol | None = None) -> s
         "<p>Pewność oceniamy Brier score i Brier Skill Score względem prognozy "
         "klimatologicznej (stała stopa bazowa). ECE publikujemy pomocniczo: "
         "przepewny model jest gorszy niż niepewny, ale ECE bywa zerowe także "
-        "przy zerowej umiejętności.</p>"
+        "przy zerowej umiejętności. Liczymy je na 10 kubełkach równolicznych "
+        "(granice kwantylowe, bo pewności skupiają się w wąskim paśmie), więc "
+        "różnią się one od kubełków równej szerokości na wykresie; przy małej "
+        "próbie ECE jest zawyżone, dlatego obok podajemy wartość po odjęciu "
+        "ECE oczekiwanego przy idealnej kalibracji i przedział z bootstrapu "
+        "losującego całe dni.</p>"
         "<p><strong>Okresy słabości są tu celowo widoczne.</strong> Zmiana "
         "reżimu rynku albo pechowa seria potrafią zjechać hit-rate poniżej "
         "rzutu monetą; taki wynik zostaje na stronie. Uczciwie pokazana "

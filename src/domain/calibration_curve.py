@@ -13,13 +13,28 @@ ECE jest tylko metryką POMOCNICZĄ (WIA-36): prognoza „zawsze 55%” przy 55%
 trafień ma ECE = 0, a zerową umiejętność. Główne metryki pewności to Brier
 score, log loss i Brier Skill Score względem prognozy klimatologicznej
 (stała stopa bazowa), plus rozkład Murphy'ego BS = REL − RES + UNC.
+
+WIA-58: pewności LLM skupiają się w 0.6–0.85, więc kubełki równej szerokości
+dają 2–3 niepuste. `strategy="equal_mass"` dzieli próbki po randze na kubełki
+równoliczne (granice kwantylowe). ECE przy małym n jest obciążone w górę —
+`debiased_ece` odejmuje ECE oczekiwane przy idealnej kalibracji, a
+`calibration_error_evidence` dokłada n_eff i przedział z bootstrapu po cyklach.
 """
 
 from __future__ import annotations
 
 import math
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
+
+from src.domain.significance import cluster_bootstrap_statistic_ci, effective_n
+
+BucketStrategy = Literal["equal_width", "equal_mass"]
+
+# WIA-58: liczba symulacji Bernoulliego w korekcie obciążenia ECE.
+DEFAULT_ECE_SIMULATIONS = 200
 
 
 @dataclass(frozen=True)
@@ -41,20 +56,29 @@ class CalibrationBucket:
 
 
 def reliability_curve(
-    samples: Sequence[tuple[float, bool]], n_buckets: int = 10
+    samples: Sequence[tuple[float, bool]],
+    n_buckets: int = 10,
+    strategy: BucketStrategy = "equal_width",
 ) -> list[CalibrationBucket]:
     """Buduje krzywą kalibracji z próbek `(confidence, was_correct)`.
 
-    Przedział `[0, 1]` dzielony jest na `n_buckets` kubełków o równej
-    szerokości. Każda próbka trafia do kubełka wg swojej pewności; wartość
-    dokładnie `1.0` ląduje w OSTATNIM kubełku (a nie poza zakresem). Dla
-    każdego NIEPUSTEGO kubełka liczymy `count`, `mean_confidence` (średnia
-    pewności w kubełku) i `hit_rate` (odsetek trafień). Puste kubełki są
-    pomijane. Wynik posortowany rosnąco po dolnej krawędzi. Puste wejście
-    daje `[]`.
+    `equal_width` (domyślnie): przedział `[0, 1]` dzielony jest na `n_buckets`
+    kubełków o równej szerokości. Każda próbka trafia do kubełka wg swojej
+    pewności; wartość dokładnie `1.0` ląduje w OSTATNIM kubełku (a nie poza
+    zakresem). Dla każdego NIEPUSTEGO kubełka liczymy `count`,
+    `mean_confidence` (średnia pewności w kubełku) i `hit_rate` (odsetek
+    trafień). Puste kubełki są pomijane. Wynik posortowany rosnąco po dolnej
+    krawędzi. Puste wejście daje `[]`.
+
+    `equal_mass` (WIA-58): patrz `_equal_mass_curve`. Nieznana strategia →
+    `ValueError`.
     """
+    if strategy not in ("equal_width", "equal_mass"):
+        raise ValueError(f"Unknown bucket strategy: {strategy!r}")
     if not samples or n_buckets <= 0:
         return []
+    if strategy == "equal_mass":
+        return _equal_mass_curve(samples, n_buckets)
 
     width = 1.0 / n_buckets
     # Akumulatory per indeks kubełka: suma pewności i liczba trafień.
@@ -83,6 +107,41 @@ def reliability_curve(
             )
         )
     return buckets
+
+
+def _equal_mass_curve(
+    samples: Sequence[tuple[float, bool]], n_buckets: int
+) -> list[CalibrationBucket]:
+    """Kubełki równoliczne: próbki posortowane po pewności dzielone po randze.
+
+    Liczności różnią się najwyżej o 1 (pierwsze `n mod k` kubełków ma o jedną
+    próbkę więcej); przy mniejszej liczbie próbek niż kubełków każdy kubełek ma
+    jedną. Granice są kwantylowe: dolna krawędź to pierwsza pewność kubełka
+    (0.0 dla pierwszego), górna — dolna krawędź następnego (1.0 dla
+    ostatniego). Remisy pewności mogą trafić do dwóch sąsiednich kubełków —
+    podział idzie po randze, więc `find_bucket` służy kubełkom równej szerokości.
+    """
+    ordered = sorted(samples, key=lambda sample: sample[0])
+    k = min(n_buckets, len(ordered))
+    base, extra = divmod(len(ordered), k)
+    groups: list[list[tuple[float, bool]]] = []
+    start = 0
+    for index in range(k):
+        size = base + (1 if index < extra else 0)
+        groups.append(ordered[start : start + size])
+        start += size
+    lowers = [0.0] + [group[0][0] for group in groups[1:]]
+    uppers = lowers[1:] + [1.0]
+    return [
+        CalibrationBucket(
+            lower=lower,
+            upper=upper,
+            count=len(group),
+            mean_confidence=sum(c for c, _ in group) / len(group),
+            hit_rate=sum(1 for _, hit in group if hit) / len(group),
+        )
+        for group, lower, upper in zip(groups, lowers, uppers, strict=True)
+    ]
 
 
 def expected_calibration_error(buckets: Sequence[CalibrationBucket]) -> float:
@@ -257,3 +316,88 @@ def probability_scores(
         resolution=resolution,
         uncertainty=uncertainty,
     )
+
+
+def _ece(
+    samples: Sequence[tuple[float, bool]], n_buckets: int, strategy: BucketStrategy
+) -> float:
+    return expected_calibration_error(reliability_curve(samples, n_buckets, strategy))
+
+
+def debiased_ece(
+    samples: Sequence[tuple[float, bool]],
+    n_buckets: int = 10,
+    strategy: BucketStrategy = "equal_mass",
+    n_sim: int = DEFAULT_ECE_SIMULATIONS,
+    seed: int = 0,
+) -> float:
+    """WIA-58 — ECE minus ECE oczekiwane przy IDEALNEJ kalibracji tych pewności.
+
+    Nawet idealnie skalibrowana prognoza ma przy małym n dodatnie ECE (szum
+    trafień w kubełku). Oczekiwanie szacujemy symulacją: dla tych samych
+    pewności losujemy wyniki Bernoulli(confidence) `n_sim` razy (deterministycznie
+    dla `seed`) i bierzemy średnie ECE. Wynik może być ujemny — to estymator
+    nieobciążony, nie odległość. Brak próbek albo `n_sim <= 0` → surowe ECE.
+    """
+    observed = _ece(samples, n_buckets, strategy)
+    if not samples or n_sim <= 0:
+        return observed
+    rng = random.Random(seed)
+    confidences = [confidence for confidence, _ in samples]
+    simulated = [
+        _ece([(c, rng.random() < c) for c in confidences], n_buckets, strategy)
+        for _ in range(n_sim)
+    ]
+    return observed - sum(simulated) / len(simulated)
+
+
+@dataclass(frozen=True)
+class CalibrationErrorEvidence:
+    """ECE z tym, co pozwala je ocenić (WIA-58).
+
+    - `ece` — ECE na kubełkach `strategy` (domyślnie równolicznych),
+    - `debiased` — ECE po korekcie obciążenia (`debiased_ece`),
+    - `interval` — percentylowy przedział `ece` z bootstrapu po cyklach;
+      None przy < `significance.MIN_BOOTSTRAP_CYCLES` cyklach,
+    - `n` / `n_eff` — liczba próbek i efektywna liczność trafień po cyklach.
+    """
+
+    n: int
+    n_eff: float
+    ece: float
+    debiased: float
+    interval: tuple[float, float] | None
+
+
+def calibration_error_evidence(
+    samples_by_cycle: Sequence[Sequence[tuple[float, bool]]],
+    n_buckets: int = 10,
+    strategy: BucketStrategy = "equal_mass",
+    *,
+    n_sim: int = DEFAULT_ECE_SIMULATIONS,
+    n_boot: int = 2000,
+    seed: int = 0,
+) -> CalibrationErrorEvidence | None:
+    """ECE, ECE po korekcie, przedział z bootstrapu blokowego i n_eff.
+
+    `samples_by_cycle` to próbki `(confidence, was_correct)` pogrupowane po
+    cyklu (dniu UTC): predykcje jednego dnia są skorelowane, więc bootstrap
+    losuje całe cykle, a n_eff liczy `effective_n` na trafieniach. Brak próbek
+    → None.
+    """
+    samples = [sample for cycle in samples_by_cycle for sample in cycle]
+    if not samples:
+        return None
+    return CalibrationErrorEvidence(
+        n=len(samples),
+        n_eff=effective_n([[hit for _, hit in cycle] for cycle in samples_by_cycle]),
+        ece=_ece(samples, n_buckets, strategy),
+        debiased=debiased_ece(samples, n_buckets, strategy, n_sim=n_sim, seed=seed),
+        interval=cluster_bootstrap_statistic_ci(
+            samples_by_cycle,
+            lambda resample: _ece(resample, n_buckets, strategy),
+            n_boot=n_boot,
+            seed=seed,
+        ),
+    )
+

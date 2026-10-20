@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from decimal import Decimal
 
 import pytest
@@ -289,8 +290,9 @@ class TestBrierCalibrationScore:
     właściwa: oczekiwany wynik jest największy przy c równym trafności."""
 
     @staticmethod
-    def _expected(score: object, confidence: float, true_rate: float) -> float:
-        assert callable(score)
+    def _expected(
+        score: Callable[[float, bool], float], confidence: float, true_rate: float
+    ) -> float:
         return true_rate * score(confidence, True) + (1 - true_rate) * score(confidence, False)
 
     def test_brier_calibration_score_is_proper(self) -> None:
