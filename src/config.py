@@ -130,8 +130,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "liveness_slow_loop_max_gap_h",
     "calibration_judge_enabled",
     "feature_set_filter_enabled",
-    # FIN-32: sama kontrola startu (WARNING vs błąd); prognoza ta sama.
+    # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
+    "fast_loop_cycles_per_day",
 })
 
 # WIA-20: pola przepisu — progi, modele, providerzy, symbole, źródła danych
@@ -192,13 +193,6 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
     "experiments",
 })
-
-
-# FIN-32: cykle Fast Loopa na dobę w budżecie Alpha Vantage — cron
-# `30 5 * * 1-5` w `.github/workflows/fast_loop_12h.yml` (dziś zakomentowany,
-# start ręczny). Każdy ręczny dispatch tego samego dnia to kolejny cykl ponad
-# ten rachunek.
-FAST_LOOP_CYCLES_PER_DAY = 1
 
 
 # FIN-07: jedyny próg volatility, dla którego 0 ma znaczenie ("rada zawsze leci,
@@ -526,6 +520,11 @@ class Settings(BaseSettings):
     # FIN-32: najgorszy przypadek doby AV ponad 25 × klucze → WARNING w logu
     # i w bannerze maila (fail-open). True = błąd startu zamiast ostrzeżenia.
     av_budget_strict: bool = False
+    # FIN-32: cykle Fast Loopa na dobę w budżecie AV — tyle, ile uruchomień na dobę
+    # daje harmonogram `.github/workflows/fast_loop_12h.yml` (zakomentowany = 1,
+    # start ręczny; test strażnik pilnuje zgodności). Ręczny dispatch tego samego
+    # dnia to kolejny cykl ponad ten rachunek.
+    fast_loop_cycles_per_day: int = 1
     # ----- Database -----
     supabase_url: str
     supabase_key: str
@@ -821,6 +820,14 @@ class Settings(BaseSettings):
             raise ValueError(f"regime_exit_confirmations must be >= 1 (got {value})")
         return value
 
+    @field_validator("fast_loop_cycles_per_day")
+    @classmethod
+    def _validate_fast_loop_cycles_per_day(cls, value: int) -> int:
+        """Zero cykli wyzerowałoby worst case i wyłączyło kontrolę budżetu AV."""
+        if value < 1:
+            raise ValueError(f"fast_loop_cycles_per_day must be >= 1 (got {value})")
+        return value
+
     @field_validator("tool_use_max_rounds")
     @classmethod
     def _validate_tool_use_max_rounds(cls, value: int) -> int:
@@ -949,7 +956,7 @@ class Settings(BaseSettings):
         return av_daily_budget(
             n_av_symbols=sum(1 for symbol in watchlist if symbol not in unsupported),
             requests_per_symbol=2 if self.earnings_calendar_enabled else 1,
-            cycles_per_day=FAST_LOOP_CYCLES_PER_DAY,
+            cycles_per_day=self.fast_loop_cycles_per_day,
             n_keys=len(self.alpha_vantage_api_keys),
         )
 
@@ -958,7 +965,7 @@ class Settings(BaseSettings):
         return (
             f"Alpha Vantage daily budget exceeded: the worst case is {budget.worst_case} "
             f"requests per day (every eligible symbol past the volatility gate in "
-            f"{FAST_LOOP_CYCLES_PER_DAY} cycle(s)), the capacity is {budget.capacity} "
+            f"{self.fast_loop_cycles_per_day} cycle(s)), the capacity is {budget.capacity} "
             f"({len(self.alpha_vantage_api_keys)} key(s) × {AV_DAILY_REQUESTS_PER_KEY}). "
             "Add keys to ALPHA_VANTAGE_API_KEYS or shrink the watchlist; "
             "av_budget_strict = true turns this warning into a startup error."

@@ -1031,3 +1031,34 @@ class TestAlphaVantageBudget:
 
         assert self._settings().av_budget_strict is False
         assert "av_budget_strict" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestFastLoopCyclesPerDay:
+    """FIN-32: kadencja Fast Loopa w budżecie AV to pole konfiguracji (config.toml),
+    a nie stała w kodzie — zgodność z cronem pilnuje test w test_config_toml.py."""
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_defaults_to_one_cycle_a_day(self, env):
+        assert self._settings().fast_loop_cycles_per_day == 1
+
+    def test_budget_multiplies_by_the_cycles_per_day(self, env):
+        symbols = [f"S{i:02d}" for i in range(13)]
+
+        assert self._settings(symbols=symbols).av_budget().ok is True
+        twice = self._settings(symbols=symbols, fast_loop_cycles_per_day=2).av_budget()
+        assert twice.worst_case == 26
+        assert twice.ok is False
+
+    def test_zero_cycles_are_rejected(self, env):
+        # Zero wyzerowałoby worst case i po cichu wyłączyło kontrolę budżetu.
+        with pytest.raises(ValueError, match="fast_loop_cycles_per_day"):
+            self._settings(fast_loop_cycles_per_day=0)
+
+    def test_stays_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "fast_loop_cycles_per_day" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = self._settings().config_hash()
+        assert self._settings(fast_loop_cycles_per_day=2).config_hash() == baseline

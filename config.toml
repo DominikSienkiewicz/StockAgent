@@ -172,6 +172,10 @@ earnings_calendar_enabled = false
 # kalendarzu wyników) ponad 25 × liczba kluczy → WARNING w logu i w bannerze maila.
 # true = błąd startu zamiast ostrzeżenia. Off, bo liczba kluczy żyje w sekretach.
 av_budget_strict = false
+# FIN-32: cykle Fast Loopa na dobę w tym budżecie = uruchomienia na dobę z harmonogramu
+# `.github/workflows/fast_loop_12h.yml` (cron zakomentowany → 1). Test strażnik pilnuje
+# zgodności — zmieniasz cron, zmień i to.
+fast_loop_cycles_per_day = 1
 # options_flow: option-chain to endpoint PREMIUM Finnhuba — na free tier zwraca 403,
 # więc sygnał nie powstaje, a każdy cykl marnuje ~39 requestów. Off do czasu planu premium.
 # Odblokowuje #18 (edge vs implied move).

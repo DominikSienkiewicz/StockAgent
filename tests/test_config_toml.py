@@ -241,3 +241,58 @@ def test_real_config_toml_defines_the_memory_experiment_inactive() -> None:
     assert experiment["arms"] == ["memory", "no_memory"]
     assert experiment["primary_metric"] == "hit_rate"
     assert experiment["enabled"] is False
+
+
+# --- FIN-32: kadencja Fast Loopa w budżecie AV = harmonogram workflow ----------
+
+FAST_LOOP_WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "fast_loop_12h.yml"
+
+
+def _cron_field_values(field: str, lowest: int, highest: int) -> set[int]:
+    """Wartości jednego pola crona (`*`, listy, zakresy, kroki) w [lowest, highest]."""
+    values: set[int] = set()
+    for part in field.split(","):
+        base, _, step = part.partition("/")
+        if base == "*":
+            start, end = lowest, highest
+        elif "-" in base:
+            start, end = (int(bound) for bound in base.split("-"))
+        else:
+            start = int(base)
+            end = highest if step else start
+        values.update(range(start, end + 1, int(step) if step else 1))
+    return values
+
+
+def _cron_runs_per_day(cron: str) -> int:
+    """Uruchomienia w dniu, w którym cron w ogóle startuje (dzień tygodnia nie
+    zmienia kadencji doby, tylko to, które doby są aktywne)."""
+    minute, hour, *_ = cron.split()
+    return len(_cron_field_values(minute, 0, 59)) * len(_cron_field_values(hour, 0, 23))
+
+
+def _scheduled_fast_loop_runs_per_day() -> int:
+    import yaml
+
+    spec = yaml.safe_load(FAST_LOOP_WORKFLOW.read_text(encoding="utf-8"))
+    # YAML 1.1: klucz `on` parsuje się jako True.
+    triggers = spec.get("on", spec.get(True)) or {}
+    schedule = triggers.get("schedule") if isinstance(triggers, dict) else None
+    if not schedule:
+        # Cron zakomentowany, start tylko ręczny: budżet liczy jeden cykl na dobę.
+        return 1
+    return sum(_cron_runs_per_day(entry["cron"]) for entry in schedule)
+
+
+@pytest.mark.parametrize(
+    ("cron", "runs"),
+    [("30 5 * * 1-5", 1), ("30 5,17 * * 1-5", 2), ("0 */6 * * *", 4), ("*/30 9-10 * * *", 4)],
+)
+def test_cron_runs_per_day_counts_minutes_times_hours(cron: str, runs: int) -> None:
+    assert _cron_runs_per_day(cron) == runs
+
+
+def test_fast_loop_cycles_per_day_matches_the_workflow_schedule() -> None:
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+
+    assert data["fast_loop_cycles_per_day"] == _scheduled_fast_loop_runs_per_day()
