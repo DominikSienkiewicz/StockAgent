@@ -66,6 +66,7 @@ every symbol was filtered reports **zero paid calls**, and the report prints tha
 | [The report email](docs/report-email.md) | Section-by-section anatomy of what lands in the inbox |
 | [Running it](docs/running-locally.md) | Stack, prerequisites, local setup, database migrations, build commands, GitHub Actions, secret management |
 | [Configuration](docs/configuration.md) | Every `Settings` field with its default, plus the feature flags and what each one costs |
+| [Data and access](docs/data-and-access.md) | Every table and view with its data class and who reads and writes it, the Supabase keys, retention, and the Row Level Security rollout |
 
 Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero deps) →
 Application (ports + use cases + LangGraph) → Infrastructure (adapters for API / DB / LLM /

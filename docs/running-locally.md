@@ -88,7 +88,7 @@ cp .env.example .env
 #    and revokes the anon / authenticated grants on tables, views, sequences and
 #    functions. Afterwards only the secret key (sb_secret_…) or the legacy
 #    service_role key can read or write. Put that key into GitHub Secrets and .env
-#    BEFORE you run the migration.
+#    BEFORE you run the migration (rollout order: docs/data-and-access.md).
 
 # 4. Smoke test (expect 650+ tests passing + ~22 skipped live/Docker tests)
 uv run pytest
@@ -120,7 +120,7 @@ RESEND_API_KEY=re_...
 DIGEST_TO_EMAIL=you@example.com
 ```
 
-`SUPABASE_KEY` must be the project's secret key (`sb_secret_…`, Supabase dashboard → Project Settings → API Keys) or the legacy `service_role` JWT, because migration `038` turns on Row Level Security and the app relies on that key bypassing it. `Settings` refuses to start with a public key (BEZ-10): a publishable key (`sb_publishable_…`) or a JWT whose `role` claim is `anon` or `authenticated` stops every entry point with a validation error that names the fix and does not print the key. The check reads the `role` claim without verifying the signature and lets any other string through.
+`SUPABASE_KEY` must be the project's secret key (`sb_secret_…`, Supabase dashboard → Project Settings → API Keys) or the legacy `service_role` JWT, because migration `038` turns on Row Level Security and the app relies on that key bypassing it. `Settings` refuses to start with a public key (BEZ-10): a publishable key (`sb_publishable_…`) or a JWT whose `role` claim is `anon` or `authenticated` stops every entry point with a validation error that names the fix and does not print the key. The check reads the `role` claim without verifying the signature and lets any other string through. [Data and access](data-and-access.md) gives the rollout order: key first, then the deploy, then migration `038`.
 
 Everything else — `symbols`, `symbols_etf`, `volatility_threshold`, `crypto_symbols`, `council_llm_provider/model`, `risk_symbols`, `nbp_enabled`, `symbol_throttle_seconds`, `notifications_enabled`, `digest_from_email`, … — is edited in [`config.toml`](../config.toml). Any value can still be overridden by an environment variable (precedence: **env → `.env` → `config.toml` → code defaults**), e.g. `SYMBOL_THROTTLE_SECONDS=0` for a quick local run.
 

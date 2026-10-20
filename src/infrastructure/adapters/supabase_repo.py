@@ -225,7 +225,7 @@ class SupabaseRepository(RepositoryPort):
     """Adapter dla Supabase (PostgreSQL via PostgREST).
 
     Tabela `prediction_logs` + zmaterializowany widok `ml_feature_store`
-    — schema patrz docs/08-database-schema.md.
+    — relacje, klasy danych, wymagany klucz i RLS opisuje docs/data-and-access.md.
     """
 
     def __init__(
