@@ -6,7 +6,8 @@ analyses a fixed watchlist of US stocks, ETFs and crypto. It combines price acti
 curated financial news sentiment, cross-checks the LLM's reading against Alpha Vantage data,
 scores every past prediction against the realised price, and writes a Polish-language report
 email with charts and its own running hit-rate. The daily report run is **paused** and starts
-only on manual `workflow_dispatch`. The hourly price-shock check is paused too, but it can
+only on manual `workflow_dispatch`; the steps to resume it are in the
+[resume checklist](docs/resume-checklist.md). The hourly price-shock check is paused too, but it can
 resume on its own: it reads each symbol's change for the day from the same free quote and
 uses the daily run's snapshots only as a fallback. Two jobs still run on schedule: the
 weekly model retraining, and a free daily deadman that mails when a job that should run has

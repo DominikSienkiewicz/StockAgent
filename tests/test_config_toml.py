@@ -403,3 +403,24 @@ def test_real_config_toml_ships_the_reference_signal_off_until_migration() -> No
     """WIA-24: tabela `reference_predictions` dopiero po migracji 042 (ręczny DB Migrate)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["reference_signal_enabled"] is False
+
+
+def test_real_config_toml_weekly_budget_covers_its_worst_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WIA-11: produkcyjny budżet tygodniowy pokrywa najgorszy przypadek tej samej
+    konfiguracji — inaczej każdy start Fast Loopa dawałby ostrzeżenie w bannerze."""
+    from src.infrastructure.persona_loader import load_council_personas
+
+    monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
+    monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
+    settings = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    personas = load_council_personas(CONFIG_TOML.parent / settings.council_personas_dir)
+
+    weekly = settings.fast_loop_weekly_budget(personas=len(personas))
+
+    assert settings.fast_loop_weekly_budget_usd is not None
+    assert weekly.ok, (
+        f"tygodniowy worst case {weekly.worst_case_usd:.2f} USD > budżet "
+        f"{settings.fast_loop_weekly_budget_usd:.2f} USD w config.toml"
+    )

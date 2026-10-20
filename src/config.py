@@ -32,7 +32,10 @@ from src.domain.finops import (
     AV_DAILY_REQUESTS_PER_KEY,
     AvBudget,
     ModelPrice,
+    WeeklyCostBudget,
     av_daily_budget,
+    capped_cycle_call_upper_bound,
+    weekly_cost_budget,
 )
 from src.domain.macro_risk import MacroRiskInstrumentType
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
@@ -146,6 +149,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # FIN-12: sufit kosztu cyklu decyduje, KTÓRE symbole dostają analizę, nie jaką —
     # prognoza przeanalizowanego symbolu jest identyczna z sufitem i bez.
     "max_paid_llm_calls_per_cycle",
+    # WIA-11: budżet tygodniowy to sama kontrola startu (WARNING i banner); prognoza ta sama.
+    "fast_loop_weekly_budget_usd",
     # FIN-30: tygodniowy sufit LLM Slow Loopa (recap, sędzia) — inny job, nie Fast Loop.
     "slow_loop_max_paid_llm_calls_per_week",
     # FIN-34: dzień zamknięcia NYSE decyduje, CZY akcje idą do grafu, nie jak.
@@ -582,6 +587,11 @@ class Settings(BaseSettings):
     # diagnoza pomyłki + każdy request rady). Miękki: symbol za bramką wchodzi,
     # dopóki wydane < sufit. None = bez limitu (config.toml: 100).
     max_paid_llm_calls_per_cycle: int | None = None
+    # WIA-11: jawny budżet tygodniowy Fast Loopa w USD. Najgorszy tydzień (cała
+    # watchlista za bramką przy suficie FIN-12 × cykle na dobę × 5 dni handlowych)
+    # ponad budżet → WARNING i alert w bannerze maila przy starcie (fail-open).
+    # None = bez kontroli.
+    fast_loop_weekly_budget_usd: float | None = None
     # FIN-30: sufit płatnych wywołań LLM Slow Loopa na tydzień (= przebieg cronu
     # niedzielnego): recap, sędzia kalibracji i przyszłe joby diagnoz. Przydział
     # liczy domena (`slow_loop_paid_budget`), recap ma pierwszeństwo. None = bez
@@ -946,6 +956,15 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("fast_loop_weekly_budget_usd")
+    @classmethod
+    def _validate_fast_loop_weekly_budget_usd(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError(
+                f"fast_loop_weekly_budget_usd must be >= 0 or unset (got {value})"
+            )
+        return value
+
     @field_validator("slow_loop_max_paid_llm_calls_per_week")
     @classmethod
     def _validate_slow_loop_weekly_llm_cap(cls, value: int | None) -> int | None:
@@ -1078,13 +1097,41 @@ class Settings(BaseSettings):
         """FIN-32: worst case doby AV dla pełnej watchlisty Fast Loopa (WIA-11:
         `symbols` + `crypto_symbols` − `symbols_unsupported_price`). Na symbol:
         jedno NEWS_SENTIMENT i jedno EARNINGS_CALENDAR przy włączonym kalendarzu."""
-        unsupported = set(self.symbols_unsupported_price)
-        watchlist = [*self.symbols, *self.crypto_symbols]
         return av_daily_budget(
-            n_av_symbols=sum(1 for symbol in watchlist if symbol not in unsupported),
+            n_av_symbols=self._eligible_symbol_count(),
             requests_per_symbol=2 if self.earnings_calendar_enabled else 1,
             cycles_per_day=self.fast_loop_cycles_per_day,
             n_keys=len(self.alpha_vantage_api_keys),
+        )
+
+    def _eligible_symbol_count(self) -> int:
+        """Symbole, które Fast Loop wpuszcza do grafu: `symbols` + `crypto_symbols`
+        − `symbols_unsupported_price` (bez ceny symbol kończy jako ignored)."""
+        unsupported = set(self.symbols_unsupported_price)
+        watchlist = [*self.symbols, *self.crypto_symbols]
+        return sum(1 for symbol in watchlist if symbol not in unsupported)
+
+    def fast_loop_weekly_budget(self, personas: int) -> WeeklyCostBudget:
+        """WIA-11: najgorszy tydzień Fast Loopa vs `fast_loop_weekly_budget_usd`.
+
+        Cała watchlista za bramką przy suficie FIN-12; równolegle idzie
+        `symbol_concurrency` symboli, contagion wymusza jeden. `personas` to skład
+        rady z plików person — czyta je entry point, nie konfiguracja. Requesty AV
+        nie mają ceny, więc liczba tickerów AV nie zmienia kosztu."""
+        n_gated = self._eligible_symbol_count()
+        bound = capped_cycle_call_upper_bound(
+            n_gated=n_gated,
+            n_av_symbols=n_gated,
+            personas=personas,
+            debate=self.debate_mode_enabled,
+            tool_rounds=self.tool_use_max_rounds if self.tool_use_enabled else 0,
+            cap=self.max_paid_llm_calls_per_cycle,
+            concurrency=1 if self.contagion_enabled else self.symbol_concurrency,
+        )
+        return weekly_cost_budget(
+            bound,
+            cycles_per_day=self.fast_loop_cycles_per_day,
+            budget_usd=self.fast_loop_weekly_budget_usd,
         )
 
     def _av_budget_message(self, budget: AvBudget) -> str:

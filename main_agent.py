@@ -125,6 +125,7 @@ from src.domain.hedge import equity_hedge_symbols
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.market_calendar import closure_reason, to_nyse_time
+from src.domain.number_format import format_money_pl, format_number_pl
 from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
 from src.domain.portfolio import PlnRates, Portfolio
@@ -135,7 +136,10 @@ from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
 from src.infrastructure.adapters._http import redact_secrets
-from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
+from src.infrastructure.adapters.advisory_council import (
+    COUNCIL_MAX_PERSONAS,
+    LLMAdvisoryCouncil,
+)
 from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
 from src.infrastructure.adapters.alpha_vantage_adapters import (
     AlphaVantageNewsAdapter,
@@ -167,7 +171,7 @@ from src.infrastructure.adapters.write_guard import (
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
 from src.infrastructure.logging_redaction import configure_logging
-from src.infrastructure.persona_loader import personas_sha256
+from src.infrastructure.persona_loader import load_council_personas, personas_sha256
 from src.infrastructure.recipe_fingerprints import ml_model_version, prompt_templates_sha256
 
 # R2: domyślne scenariusze stress-testu (szok rynku jako ułamek). Szok stosowany
@@ -2949,6 +2953,55 @@ def _record_av_budget_alert(settings: Settings, quota_monitor: QuotaMonitor) -> 
     )
 
 
+def _record_weekly_budget_alert(settings: Settings, quota_monitor: QuotaMonitor) -> None:
+    """WIA-11: najgorszy tydzień Fast Loopa ponad `fast_loop_weekly_budget_usd` →
+    WARNING w logu i w bannerze maila (wzorzec FIN-32). Fail-open: katalog person,
+    którego nie da się wczytać, pomija samą kontrolę — przebieg idzie dalej."""
+    budget_usd = settings.fast_loop_weekly_budget_usd
+    if budget_usd is None:
+        return
+    try:
+        personas = load_council_personas(Path(settings.council_personas_dir))
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "Fast Loop weekly budget not checked: council personas unreadable (%s)", exc
+        )
+        return
+    weekly = settings.fast_loop_weekly_budget(personas=min(len(personas), COUNCIL_MAX_PERSONAS))
+    if weekly.ok:
+        return
+    logger.warning(
+        "Fast Loop weekly budget exceeded: the worst case is %.2f USD a week (%d cycles × "
+        "%.4f USD, every eligible symbol past the volatility gate at the FIN-12 ceiling), "
+        "the budget fast_loop_weekly_budget_usd is %.2f USD. Raise the budget or lower "
+        "max_paid_llm_calls_per_cycle, the watchlist or the cron cadence.",
+        weekly.worst_case_usd,
+        weekly.cycles_per_week,
+        weekly.cycle_worst_usd,
+        budget_usd,
+    )
+    week_usd = format_money_pl(Decimal(str(weekly.worst_case_usd)), "USD")
+    cycle_usd = format_number_pl(Decimal(str(weekly.cycle_worst_usd)), signed=False, decimals=4)
+    budget = format_money_pl(Decimal(str(budget_usd)), "USD")
+    quota_monitor.record(
+        QuotaAlert(
+            source="FinOps",
+            severity=QuotaSeverity.WARNING,
+            message=(
+                f"Budżet tygodniowy Fast Loopa nie domyka się: najgorszy tydzień to "
+                f"{week_usd} ({weekly.cycles_per_week} cykli po ${cycle_usd}, cała "
+                f"watchlista za bramką przy suficie cyklu), a budżet to {budget}. "
+                "Szacunek, nie faktura."
+            ),
+            action=(
+                "Podnieś fast_loop_weekly_budget_usd w config.toml albo obniż "
+                "max_paid_llm_calls_per_cycle, watchlistę lub kadencję crona."
+            ),
+            occurred_at=datetime.now(UTC),
+        )
+    )
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -3114,6 +3167,7 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
     )
     quota_monitor = QuotaMonitor(alert_notifier=alert_notifier)
     _record_av_budget_alert(settings, quota_monitor)
+    _record_weekly_budget_alert(settings, quota_monitor)
     repository = build_repository(settings)
     # FIN-13: jeden ledger tokenów na przebieg — adaptery zgłaszają, mail wycenia.
     usage_ledger = UsageLedger()

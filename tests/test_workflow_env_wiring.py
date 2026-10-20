@@ -500,3 +500,157 @@ def test_env_example_ships_a_heartbeat_placeholder() -> None:
     values = [line.split("=", 1)[1] for line in lines if line.startswith("HEARTBEAT_URL=")]
 
     assert values == ["https://hc-ping.com/your-check-uuid"]
+
+
+# WIA-11: warunki wznowienia crona Fast Loopa sprawdzalne z repo. Cron zakomentowano
+# w 02fc397 (decyzja 2), a cisza 08-17…10-15 przeszła bez alarmu — włączony
+# `schedule` wymaga deadmana z aktywnym cronem, sufitu kosztu cyklu, budżetu
+# tygodniowego, progu liveness Fast Loopa oraz jawnego zapisu i płatnych wywołań
+# w kroku agenta. Zgodność `fast_loop_cycles_per_day` z cronem pilnuje FIN-32
+# (tests/test_config_toml.py). Reszta checklisty: docs/resume-checklist.md.
+FAST_LOOP_WORKFLOW = "fast_loop_12h.yml"
+
+
+def _active_schedule(spec: Mapping[str, Any]) -> list[Any]:
+    """Wpisy `schedule` workflow; zakomentowany blok = pusta lista."""
+    # PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True.
+    triggers = spec.get("on", spec.get(True)) or {}
+    schedule = triggers.get("schedule") if isinstance(triggers, Mapping) else None
+    return list(schedule or [])
+
+
+def _entrypoint_env(spec: Mapping[str, Any], entrypoint: str) -> dict[str, Any]:
+    step = next(
+        (s for s in _workflow_steps(spec) if str(s.get("run", "")).endswith(entrypoint)), {}
+    )
+    return dict(step.get("env") or {})
+
+
+def _scheduled_deadmen(workflows: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """Workflowy, które uruchamiają `main_deadman.py` z aktywnego crona."""
+    return [
+        name
+        for name, spec in workflows.items()
+        if _active_schedule(spec)
+        and any("main_deadman.py" in str(s.get("run", "")) for s in _workflow_steps(spec))
+    ]
+
+
+def _assert_fast_loop_resume_conditions(
+    config: Mapping[str, Any], workflows: Mapping[str, Mapping[str, Any]]
+) -> None:
+    assert _scheduled_deadmen(workflows), (
+        f"{FAST_LOOP_WORKFLOW} ma aktywny cron, ale żaden workflow nie uruchamia "
+        "main_deadman.py z crona — deadman nie zauważy, że Fast Loop zamilkł "
+        "(cisza 08-17…10-15 przeszła bez alarmu)."
+    )
+    assert config.get("max_paid_llm_calls_per_cycle") is not None, (
+        "aktywny cron Fast Loopa bez `max_paid_llm_calls_per_cycle` w config.toml — "
+        "cykl nie ma sufitu płatnych wywołań LLM (FIN-12)."
+    )
+    assert config.get("fast_loop_weekly_budget_usd") is not None, (
+        "aktywny cron Fast Loopa bez `fast_loop_weekly_budget_usd` w config.toml — "
+        "start nie porówna tygodniowego najgorszego przypadku z budżetem."
+    )
+    assert float(config.get("liveness_fast_loop_max_gap_h", 0)) > 0, (
+        "aktywny cron Fast Loopa przy `liveness_fast_loop_max_gap_h = 0` w config.toml — "
+        "deadman traktuje Fast Loop jako świadomie wstrzymany i go nie sprawdza."
+    )
+    env = _entrypoint_env(workflows[FAST_LOOP_WORKFLOW], "main_agent.py")
+    assert env.get("PAID_CALLS_ENABLED") == "true", (
+        f"{FAST_LOOP_WORKFLOW} z aktywnym cronem musi ustawiać PAID_CALLS_ENABLED: "
+        '"true" — inaczej cykl idzie na atrapach (FIN-35).'
+    )
+    assert env.get("DB_WRITES_ENABLED") == "true", (
+        f"{FAST_LOOP_WORKFLOW} z aktywnym cronem musi ustawiać DB_WRITES_ENABLED: "
+        '"true" — inaczej cykl nie zapisuje snapshotów ani predykcji (BEZ-08).'
+    )
+
+
+def test_enabled_fast_loop_schedule_requires_deadman() -> None:
+    workflows = _all_workflow_specs()
+    if not _active_schedule(workflows[FAST_LOOP_WORKFLOW]):
+        pytest.skip("cron Fast Loopa zakomentowany — warunki wznowienia: docs/resume-checklist.md")
+
+    _assert_fast_loop_resume_conditions(_repo_config(), workflows)
+
+
+def _resume_ready_config(**overrides: Any) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "max_paid_llm_calls_per_cycle": 100,
+        "fast_loop_weekly_budget_usd": 7.0,
+        "liveness_fast_loop_max_gap_h": 26,
+    }
+    return {**config, **overrides}
+
+
+def _scheduled_workflow(entrypoint: str, env: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    step: dict[str, Any] = {"run": f"uv run python {entrypoint}"}
+    if env is not None:
+        step["env"] = dict(env)
+    job = {"runs-on": "ubuntu-latest", "steps": [step]}
+    triggers = {"schedule": [{"cron": "30 5 * * 1-5"}], "workflow_dispatch": None}
+    return {True: triggers, "jobs": {"run": job}}
+
+
+_AGENT_ENV = {"PAID_CALLS_ENABLED": "true", "DB_WRITES_ENABLED": "true"}
+
+
+def _resume_ready_workflows() -> dict[str, dict[str, Any]]:
+    return {
+        FAST_LOOP_WORKFLOW: _scheduled_workflow("main_agent.py", _AGENT_ENV),
+        "deadman_daily.yml": _scheduled_workflow("main_deadman.py"),
+    }
+
+
+def test_resume_guard_accepts_a_fully_prepared_resume() -> None:
+    _assert_fast_loop_resume_conditions(_resume_ready_config(), _resume_ready_workflows())
+
+
+def test_resume_guard_catches_a_missing_deadman() -> None:
+    workflows = _resume_ready_workflows()
+    del workflows["deadman_daily.yml"]
+
+    with pytest.raises(AssertionError, match="main_deadman.py"):
+        _assert_fast_loop_resume_conditions(_resume_ready_config(), workflows)
+
+
+def test_resume_guard_catches_a_deadman_without_its_cron() -> None:
+    workflows = _resume_ready_workflows()
+    workflows["deadman_daily.yml"][True] = {"workflow_dispatch": None}
+
+    with pytest.raises(AssertionError, match="main_deadman.py"):
+        _assert_fast_loop_resume_conditions(_resume_ready_config(), workflows)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"max_paid_llm_calls_per_cycle": None}, "max_paid_llm_calls_per_cycle"),
+        ({"fast_loop_weekly_budget_usd": None}, "fast_loop_weekly_budget_usd"),
+        ({"liveness_fast_loop_max_gap_h": 0}, "liveness_fast_loop_max_gap_h"),
+    ],
+)
+def test_resume_guard_catches_each_missing_config_condition(
+    overrides: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(AssertionError, match=message):
+        _assert_fast_loop_resume_conditions(
+            _resume_ready_config(**overrides), _resume_ready_workflows()
+        )
+
+
+@pytest.mark.parametrize("switch", ["PAID_CALLS_ENABLED", "DB_WRITES_ENABLED"])
+def test_resume_guard_catches_each_missing_workflow_switch(switch: str) -> None:
+    workflows = _resume_ready_workflows()
+    env = {key: value for key, value in _AGENT_ENV.items() if key != switch}
+    workflows[FAST_LOOP_WORKFLOW] = _scheduled_workflow("main_agent.py", env)
+
+    with pytest.raises(AssertionError, match=switch):
+        _assert_fast_loop_resume_conditions(_resume_ready_config(), workflows)
+
+
+def test_resume_guard_reads_the_real_deadman_schedule() -> None:
+    # Parser crona musi widzieć prawdziwy `on: schedule` (klucz True w PyYAML) —
+    # inaczej warunkowy test wyżej byłby pomijany także przy odkomentowanym cronie.
+    assert _scheduled_deadmen(_all_workflow_specs()) == ["deadman_daily.yml"]

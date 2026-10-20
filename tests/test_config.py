@@ -1303,3 +1303,74 @@ class TestReferenceSignalFlag:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "reference_signal_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestFastLoopWeeklyBudget:
+    """WIA-11: jawny budżet tygodniowy Fast Loopa (`fast_loop_weekly_budget_usd`).
+    Najgorszy przypadek tygodnia = koszt cyklu przy suficie FIN-12 (cała watchlista
+    za bramką) × cykle na dobę × 5 dni handlowych. None = brak kontroli."""
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_defaults_to_no_budget(self, env):
+        assert self._settings().fast_loop_weekly_budget_usd is None
+
+    def test_negative_budget_is_rejected(self, env):
+        with pytest.raises(ValueError, match="fast_loop_weekly_budget_usd"):
+            self._settings(fast_loop_weekly_budget_usd=-1.0)
+
+    def test_stays_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "fast_loop_weekly_budget_usd" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = self._settings().config_hash()
+        assert self._settings(fast_loop_weekly_budget_usd=7.0).config_hash() == baseline
+
+    def test_worst_case_uses_the_eligible_watchlist_and_the_ceiling(self, env):
+        from src.domain.finops import capped_cycle_call_upper_bound, estimate_cycle_cost
+
+        settings = self._settings(
+            symbols=["AAPL", "MSFT", "CSPX.L"],
+            crypto_symbols=["BTC"],
+            symbols_unsupported_price=["CSPX.L"],
+            max_paid_llm_calls_per_cycle=5,
+            symbol_concurrency=2,
+            fast_loop_cycles_per_day=2,
+            fast_loop_weekly_budget_usd=1.0,
+        )
+
+        weekly = settings.fast_loop_weekly_budget(personas=7)
+
+        # 3 symbole za bramką (CSPX.L bez ceny), sufit 5 i dwa symbole naraz.
+        bound = capped_cycle_call_upper_bound(
+            n_gated=3, n_av_symbols=3, personas=7, debate=False, tool_rounds=0,
+            cap=5, concurrency=2,
+        )
+        assert bound.calls["council_llm"] == 4 + 2 * 8
+        assert weekly.cycles_per_week == 10
+        assert weekly.cycle_worst_usd == pytest.approx(estimate_cycle_cost(bound.calls).total_usd)
+        assert weekly.budget_usd == 1.0
+
+    def test_contagion_runs_symbols_one_at_a_time(self, env):
+        # Contagion wymusza przetwarzanie sekwencyjne, więc w locie jest jeden symbol.
+        parallel = self._settings(
+            symbols=[f"S{i:02d}" for i in range(20)],
+            max_paid_llm_calls_per_cycle=20,
+            symbol_concurrency=4,
+        )
+        sequential = parallel.model_copy(update={"contagion_enabled": True})
+
+        assert (
+            sequential.fast_loop_weekly_budget(personas=7).cycle_worst_usd
+            < parallel.fast_loop_weekly_budget(personas=7).cycle_worst_usd
+        )
+
+    def test_tool_use_rounds_raise_the_worst_case(self, env):
+        base = self._settings(symbols=["AAPL"])
+        tool_use = base.model_copy(update={"tool_use_enabled": True, "tool_use_max_rounds": 3})
+
+        assert (
+            tool_use.fast_loop_weekly_budget(personas=7).cycle_worst_usd
+            > base.fast_loop_weekly_budget(personas=7).cycle_worst_usd
+        )

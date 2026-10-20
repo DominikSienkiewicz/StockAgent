@@ -485,3 +485,135 @@ def test_llm_call_entry_carries_no_prompt_or_answer() -> None:
         "cache_read_tokens",
         "cache_write_tokens",
     }
+
+
+# --- WIA-11: tygodniowy najgorszy przypadek Fast Loopa przy suficie FIN-12 ------
+
+
+def test_capped_bound_without_a_ceiling_is_the_plain_bound() -> None:
+    from src.domain.finops import capped_cycle_call_upper_bound
+
+    capped = capped_cycle_call_upper_bound(
+        n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0,
+        cap=None, concurrency=4,
+    )
+    plain = cycle_call_upper_bound(
+        n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0
+    )
+
+    assert dict(capped.calls) == dict(plain.calls)
+    assert capped.av_requests == plain.av_requests
+
+
+def test_ceiling_bounds_council_requests_by_cap_and_concurrency() -> None:
+    # Licznik sufitu przed ostatnim wpuszczonym symbolem ≤ 99, a po nim radę kończą
+    # najwyżej 4 symbole w locie po 8 requestów (7 person + chairman): 99 + 32.
+    from src.domain.finops import capped_cycle_call_upper_bound
+
+    bound = capped_cycle_call_upper_bound(
+        n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0,
+        cap=100, concurrency=4,
+    )
+
+    assert bound.calls["council_llm"] == 131
+    # Symbol z ruchem poniżej progu rady wydaje tylko predykcję, więc sufit 100 nie
+    # tnie 42 symboli: predykcja, sentyment, newsy i embeddingi zostają pełne.
+    assert bound.calls["llm"] == 84
+    assert bound.calls["sentiment"] == 42
+    assert bound.calls["news"] == 42
+    assert bound.calls["embedding"] == 84
+    assert bound.av_requests == 42
+
+
+def test_ceiling_cuts_analysed_symbols_but_not_their_diagnoses() -> None:
+    # Bez rady każdy wpuszczony symbol dokłada do licznika co najmniej predykcję:
+    # wpuszczonych ≤ (3 − 1) + 1 = 3. Diagnoza pomyłki w reflect idzie przed sufitem,
+    # więc pozostałe 7 symboli za bramką płaci po jednej.
+    from src.domain.finops import capped_cycle_call_upper_bound
+
+    bound = capped_cycle_call_upper_bound(
+        n_gated=10, n_av_symbols=10, personas=0, debate=False, tool_rounds=0,
+        cap=3, concurrency=1,
+    )
+
+    assert bound.calls["llm"] == 3 * 2 + 7
+    assert bound.calls["council_llm"] == 0
+    assert bound.calls["sentiment"] == 3
+    assert bound.calls["news"] == 3
+    assert bound.calls["embedding"] == 6
+    assert bound.av_requests == 3
+
+
+def test_ceiling_never_raises_the_plain_bound() -> None:
+    from src.domain.finops import capped_cycle_call_upper_bound
+
+    bound = capped_cycle_call_upper_bound(
+        n_gated=2, n_av_symbols=1, personas=7, debate=True, tool_rounds=3,
+        cap=1000, concurrency=4,
+    )
+    plain = cycle_call_upper_bound(
+        n_gated=2, n_av_symbols=1, personas=7, debate=True, tool_rounds=3
+    )
+
+    assert dict(bound.calls) == dict(plain.calls)
+    assert bound.av_requests == 1
+
+
+@pytest.mark.parametrize(("cap", "concurrency"), [(0, 1), (100, 0)])
+def test_capped_bound_rejects_an_empty_ceiling_or_pool(cap: int, concurrency: int) -> None:
+    from src.domain.finops import capped_cycle_call_upper_bound
+
+    with pytest.raises(ValueError, match="must be >= 1"):
+        capped_cycle_call_upper_bound(
+            n_gated=1, n_av_symbols=1, personas=7, debate=False, tool_rounds=0,
+            cap=cap, concurrency=concurrency,
+        )
+
+
+def test_weekly_worst_case_is_the_cycle_bound_times_five_trading_days() -> None:
+    from src.domain.finops import TRADING_DAYS_PER_WEEK, weekly_cost_budget
+
+    bound = cycle_call_upper_bound(
+        n_gated=2, n_av_symbols=2, personas=7, debate=False, tool_rounds=0
+    )
+    cycle_usd = estimate_cycle_cost(bound.calls).total_usd
+
+    weekly = weekly_cost_budget(bound, cycles_per_day=2, budget_usd=None)
+
+    assert TRADING_DAYS_PER_WEEK == 5
+    assert weekly.cycles_per_week == 10
+    assert weekly.cycle_worst_usd == pytest.approx(cycle_usd)
+    assert weekly.worst_case_usd == pytest.approx(cycle_usd * 10)
+
+
+def test_weekly_budget_passes_only_when_it_covers_the_worst_case() -> None:
+    from src.domain.finops import weekly_cost_budget
+
+    bound = cycle_call_upper_bound(
+        n_gated=10, n_av_symbols=10, personas=7, debate=False, tool_rounds=0
+    )
+    # 10 × (2 × 0.01 + 8 × 0.0025 + 0.0005 + 0.0005 + 2 × 0.00002) = 0.4104 na cykl.
+    worst = weekly_cost_budget(bound, cycles_per_day=1, budget_usd=None).worst_case_usd
+
+    assert worst == pytest.approx(2.052)
+    assert weekly_cost_budget(bound, cycles_per_day=1, budget_usd=3.0).ok is True
+    assert weekly_cost_budget(bound, cycles_per_day=1, budget_usd=2.0).ok is False
+    # Bez budżetu nie ma z czym porównać — kontrola milczy.
+    assert weekly_cost_budget(bound, cycles_per_day=1, budget_usd=None).ok is True
+
+
+@pytest.mark.parametrize(
+    ("cycles_per_day", "budget_usd", "field"),
+    [(0, None, "cycles_per_day"), (1, -1.0, "budget_usd")],
+)
+def test_weekly_budget_rejects_invalid_inputs(
+    cycles_per_day: int, budget_usd: float | None, field: str
+) -> None:
+    from src.domain.finops import weekly_cost_budget
+
+    bound = cycle_call_upper_bound(
+        n_gated=1, n_av_symbols=1, personas=7, debate=False, tool_rounds=0
+    )
+
+    with pytest.raises(ValueError, match=field):
+        weekly_cost_budget(bound, cycles_per_day=cycles_per_day, budget_usd=budget_usd)

@@ -186,6 +186,13 @@ fast_loop_cycles_per_day = 1
 # pomyłki, każdy request rady). Miękki: symbol za bramką wchodzi, dopóki wydane < sufit;
 # kolejne idą do „Pominięte — wyczerpany budżet cyklu” bez snapshotu ceny.
 max_paid_llm_calls_per_cycle = 100
+# WIA-11: jawny budżet tygodniowy Fast Loopa (USD, szacunek UNIT_COST_USD). Najgorszy
+# tydzień = cała watchlista za bramką przy suficie wyżej (rada ≤ 99 + 4 symbole w locie
+# × 8 requestów) × fast_loop_cycles_per_day × 5 dni handlowych; ponad budżet → WARNING
+# i alert w bannerze maila przy starcie. Dla tego pliku (2026-10-20): 1,2112 USD na cykl,
+# 6,06 USD na tydzień, zaokrąglone w górę do pełnego dolara. Zmieniasz watchlistę, sufit,
+# radę albo cron — przelicz; start Fast Loopa ostrzeże, gdy budżet przestanie wystarczać.
+fast_loop_weekly_budget_usd = 7.0
 # FIN-30: sufit płatnych wywołań LLM Slow Loopa na tydzień (recap, sędzia kalibracji,
 # przyszłe joby diagnoz). Wywołanie ponad budżet jest odrzucane przed dostawcą i job
 # idzie deterministycznym fallbackiem; recap ma pierwszeństwo.

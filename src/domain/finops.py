@@ -290,6 +290,10 @@ class CycleCallBound:
     av_requests: int
 
 
+# Diagnoza pomyłki w reflect: jeden request `llm` na symbol za bramką, przed sufitem FIN-12.
+_DIAGNOSIS_REQUESTS = 1
+
+
 def cycle_call_upper_bound(
     n_gated: int,
     n_av_symbols: int,
@@ -331,7 +335,7 @@ def cycle_call_upper_bound(
     prediction_requests = tool_rounds + 1 if tool_rounds > 0 else 1
     council_requests = personas * (2 if debate else 1) + 1 if personas > 0 else 0
     per_symbol = {
-        "llm": 1 + prediction_requests,
+        "llm": _DIAGNOSIS_REQUESTS + prediction_requests,
         "council_llm": council_requests,
         "sentiment": 1,
         "news": 1,
@@ -342,6 +346,96 @@ def cycle_call_upper_bound(
             {source: n_gated * requests for source, requests in per_symbol.items()}
         ),
         av_requests=min(n_gated, n_av_symbols),
+    )
+
+
+def capped_cycle_call_upper_bound(
+    n_gated: int,
+    n_av_symbols: int,
+    personas: int,
+    debate: bool,
+    tool_rounds: int,
+    cap: int | None,
+    concurrency: int,
+) -> CycleCallBound:
+    """WIA-11: `cycle_call_upper_bound` przy miękkim suficie FIN-12 (`cap`).
+
+    Symbol wchodzi do analizy, dopóki licznik `llm` + `council_llm` < `cap`, a po
+    ostatnim wpuszczonym kończy analizę najwyżej `concurrency` symboli w locie.
+    Stąd dwie granice:
+      - analizowanych symboli ≤ (`cap` − 1) + `concurrency` — każdy dokłada do
+        licznika co najmniej swoją predykcję (rada odpada poniżej
+        `council_volatility_threshold`), więc przy krótkiej watchliście sufit nie
+        tnie predykcji, sentymentu, newsów ani embeddingów;
+      - requestów rady ≤ (`cap` − 1) + `concurrency` × requesty rady na symbol.
+    Diagnoza pomyłki w reflect idzie przed sufitem, więc płaci ją także symbol
+    odcięty budżetem. `cap` None = granica bez sufitu. Każde źródło dostaje
+    osobno swoje maksimum, więc suma to górna granica, nie scenariusz.
+    """
+    bound = cycle_call_upper_bound(n_gated, n_av_symbols, personas, debate, tool_rounds)
+    if cap is None:
+        return bound
+    for name, value in (("cap", cap), ("concurrency", concurrency)):
+        if value < 1:
+            raise ValueError(f"{name} must be >= 1 (got {value})")
+
+    analysed = min(n_gated, cap - 1 + concurrency)
+    council_per_symbol = cycle_call_upper_bound(
+        1, 1, personas, debate, tool_rounds
+    ).calls["council_llm"]
+    analysed_bound = cycle_call_upper_bound(analysed, n_av_symbols, personas, debate, tool_rounds)
+    calls = dict(analysed_bound.calls)
+    calls["llm"] += (n_gated - analysed) * _DIAGNOSIS_REQUESTS
+    calls["council_llm"] = min(
+        calls["council_llm"], cap - 1 + concurrency * council_per_symbol
+    )
+    return CycleCallBound(
+        calls=MappingProxyType(calls), av_requests=analysed_bound.av_requests
+    )
+
+
+# WIA-11: cron Fast Loopa chodzi w dni robocze (`1-5`), więc tydzień ma 5 dni cykli.
+TRADING_DAYS_PER_WEEK = 5
+
+
+@dataclass(frozen=True)
+class WeeklyCostBudget:
+    """Tygodniowy najgorszy przypadek Fast Loopa vs jawny budżet z config.toml.
+
+    - `cycle_worst_usd` — szacunek najdroższego cyklu (`estimate_cycle_cost`
+                          granicy przy suficie FIN-12);
+    - `cycles_per_week` — cykle na dobę × `TRADING_DAYS_PER_WEEK`;
+    - `budget_usd`      — `fast_loop_weekly_budget_usd`; None = bez kontroli.
+    """
+
+    cycle_worst_usd: float
+    cycles_per_week: int
+    budget_usd: float | None
+
+    @property
+    def worst_case_usd(self) -> float:
+        return self.cycle_worst_usd * self.cycles_per_week
+
+    @property
+    def ok(self) -> bool:
+        return self.budget_usd is None or self.worst_case_usd <= self.budget_usd
+
+
+def weekly_cost_budget(
+    bound: CycleCallBound, cycles_per_day: int, budget_usd: float | None
+) -> WeeklyCostBudget:
+    """Najgorszy tydzień = koszt cyklu z `bound` × cykle na dobę × 5 dni handlowych.
+
+    Szacunek jak cennik `UNIT_COST_USD`. Ręczny dispatch ponad harmonogram to cykl
+    spoza tego rachunku, jak w budżecie AV."""
+    if cycles_per_day < 1:
+        raise ValueError(f"cycles_per_day must be >= 1 (got {cycles_per_day})")
+    if budget_usd is not None and budget_usd < 0:
+        raise ValueError(f"budget_usd must be non-negative or unset (got {budget_usd})")
+    return WeeklyCostBudget(
+        cycle_worst_usd=estimate_cycle_cost(bound.calls).total_usd,
+        cycles_per_week=cycles_per_day * TRADING_DAYS_PER_WEEK,
+        budget_usd=budget_usd,
     )
 
 

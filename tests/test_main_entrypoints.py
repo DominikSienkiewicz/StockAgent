@@ -5648,3 +5648,76 @@ class TestCycleRunRecord:
 
         delegate.save_cycle_run.assert_not_called()
         assert "save_cycle_run" in caplog.text
+
+
+class TestFastLoopWeeklyBudgetBanner:
+    """WIA-11: tygodniowy najgorszy przypadek Fast Loopa (sufit FIN-12 × 5 dni
+    handlowych) ponad `fast_loop_weekly_budget_usd` to WARNING w logu i w bannerze
+    maila przy starcie — wzorzec FIN-32, fail-open."""
+
+    _WATCHLIST = [f"S{i:02d}" for i in range(42)]
+
+    def _alerts(self, settings, mocker) -> list[QuotaAlert]:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings)
+
+        return [
+            alert
+            for alert in dispatch.call_args.kwargs["quota_monitor"].alerts
+            if alert.source == "FinOps"
+        ]
+
+    def _production_like(self, settings, budget: float | None) -> Settings:
+        # 42 symbole za bramką, sufit 100, cztery symbole naraz, 7 person rady.
+        return settings.model_copy(update={
+            "symbols": self._WATCHLIST,
+            "alpha_vantage_api_keys": ["av1", "av2"],
+            "max_paid_llm_calls_per_cycle": 100,
+            "symbol_concurrency": 4,
+            "fast_loop_weekly_budget_usd": budget,
+        })
+
+    def test_worst_case_above_the_budget_lands_in_the_banner_and_the_log(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="main_agent"):
+            alerts = self._alerts(self._production_like(settings, budget=5.0), mocker)
+
+        assert [alert.severity for alert in alerts] == [QuotaSeverity.WARNING]
+        # 42 × (2 × 0,01 + 0,001 + 2 × 0,00002) + 131 × 0,0025 = 1,2112 USD na cykl.
+        assert "6,06" in alerts[0].message
+        assert "5,00" in alerts[0].message
+        assert "fast_loop_weekly_budget_usd" in alerts[0].action
+        assert "6.06" in caplog.text
+        assert "5.00" in caplog.text
+
+    def test_budget_covering_the_worst_case_adds_no_alert(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        assert self._alerts(self._production_like(settings, budget=7.0), mocker) == []
+
+    def test_without_a_budget_there_is_no_check(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        assert self._alerts(self._production_like(settings, budget=None), mocker) == []
+
+    def test_unreadable_personas_skip_the_check_without_stopping_the_run(
+        self, settings, mock_external_clients, mocker, caplog, tmp_path
+    ) -> None:
+        import logging
+
+        broken = self._production_like(settings, budget=5.0).model_copy(
+            update={"council_personas_dir": str(tmp_path / "missing")}
+        )
+
+        with caplog.at_level(logging.WARNING, logger="main_agent"):
+            alerts = self._alerts(broken, mocker)
+
+        assert alerts == []
+        assert "weekly budget not checked" in caplog.text
