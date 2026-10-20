@@ -30,9 +30,10 @@ ENV_KEY = "PAID_CALLS_ENABLED"
 # Wołają płatne porty: Fast Loop (LLM, rada, AV, embeddingi) i Slow Loop
 # (fundamenty AV, recap, sędzia kalibracji).
 PAYING_ENTRYPOINTS = frozenset({"main_agent.py", "main_trainer.py"})
-# Nie wołają żadnego płatnego portu (watch i deadman z założenia, CLAUDE.md).
+# Nie wołają żadnego płatnego portu (watch i deadman z założenia, CLAUDE.md;
+# publiczny scorecard WIA-52: repozytorium i zapis pliku).
 FREE_ENTRYPOINTS = frozenset(
-    {"main_watch.py", "main_deadman.py", "main_backtest.py", "main_tools.py"}
+    {"main_watch.py", "main_deadman.py", "main_backtest.py", "main_tools.py", "main_scorecard.py"}
 )
 
 _ENTRYPOINT_RUN = re.compile(r"python\s+(main_\w+\.py)")

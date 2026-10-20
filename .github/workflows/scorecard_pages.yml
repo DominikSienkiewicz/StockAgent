@@ -1,0 +1,119 @@
+name: 🏅 Public Scorecard (GitHub Pages, free)
+
+on:
+  # WIA-52: publiczny scorecard z danych, które już są w bazie — niezależnie od
+  # pauzy Fast Loopa (decyzja 1). Zero płatnych wywołań: odczyt Supabase, zapis
+  # jednego pliku i deploy Pages.
+  # ⏸️ Tygodniowy cron zakomentowany na czas pauzy, jak pozostałe crony. Kolejność
+  # wznowienia: docs/resume-checklist.md (Pages, flaga `public_scorecard_enabled`).
+  # schedule:
+  #   - cron: '0 6 * * 1'   # poniedziałek 06:00 UTC — po niedzielnym Slow Loopie
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Okno scorecardu w dniach (puste = track_record_days z config.toml)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read       # job budujący tylko czyta kod; uprawnienia Pages ma wyłącznie deploy
+
+concurrency:
+  group: scorecard-pages
+  cancel-in-progress: true
+
+jobs:
+  build-scorecard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # FinOps: twardy limit minut GHA
+    outputs:
+      # `success` tylko wtedy, gdy powstał artefakt Pages; flaga off albo puste okno = `skipped`.
+      scorecard: ${{ steps.scorecard-artifact.outcome }}
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          enable-cache: true
+
+      - name: 📦 Sync dependencies
+        # Bez extra: scorecard nie buduje żadnego adaptera LLM.
+        run: uv sync --frozen --no-build --no-install-project
+
+      - name: 🏅 Render public scorecard (free, read-only)
+        env:
+          # Odczyt zamkniętych predykcji i snapshotów IVV. Bez DB_WRITES_ENABLED:
+          # repozytorium zostaje tylko do odczytu.
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:           ${{ secrets.SUPABASE_KEY }}
+          # Settings wymaga tych pól, choć scorecard nie woła ani LLM, ani rynku.
+          OPENAI_API_KEY:         unused-in-scorecard
+          FINNHUB_API_KEY:        unused-in-scorecard
+          ALPHA_VANTAGE_API_KEYS: unused-in-scorecard
+          # Wejście dispatcha idzie przez env, nigdy wklejone w skrypt.
+          SCORECARD_DAYS:         ${{ inputs.days }}
+        run: uv run --frozen --no-build --no-sync python main_scorecard.py ${SCORECARD_DAYS:+--days "$SCORECARD_DAYS"}
+
+      - name: 📤 Upload public scorecard (Pages artifact)
+        id: scorecard-artifact
+        # WIA-16: wyłącznie katalog scorecardu (dirname `public_scorecard_path`), nigdy
+        # `public/` — tam leży prywatny web digest. Brak pliku = brak artefaktu i deployu.
+        if: hashFiles('public/scorecard/index.html') != ''
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public/scorecard
+
+      - name: 📮 Mail o porażce jobu
+        # NIEZ-23: timeout i anulowanie są ciche. Bez Pythona — działa też, gdy padło `uv sync`.
+        if: failure() || cancelled()
+        env:
+          RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO_EMAIL: ${{ secrets.DIGEST_TO_EMAIL }}
+          RUN_URL:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS:      ${{ job.status }}
+          WORKFLOW_NAME:   ${{ github.workflow }}
+        run: scripts/notify-failure.sh "$WORKFLOW_NAME"
+
+  deploy-scorecard:
+    # Osobny job: tylko on dostaje uprawnienia Pages. Deploy podmienia całą witrynę.
+    needs: build-scorecard
+    if: needs.build-scorecard.outputs.scorecard == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read     # checkout skryptu alertu
+      pages: write       # deploy artefaktu Pages
+      id-token: write    # OIDC, którego wymaga actions/deploy-pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Jedna kolejka `pages` dla każdego deployu Pages w repo — dwa naraz się wykluczają.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🌐 Deploy public scorecard to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: 📮 Mail o porażce jobu
+        if: failure() || cancelled()
+        env:
+          RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO_EMAIL: ${{ secrets.DIGEST_TO_EMAIL }}
+          RUN_URL:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS:      ${{ job.status }}
+          WORKFLOW_NAME:   ${{ github.workflow }}
+        run: scripts/notify-failure.sh "$WORKFLOW_NAME"

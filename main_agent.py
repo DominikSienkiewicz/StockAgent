@@ -776,45 +776,56 @@ def _benchmark_comparison(
         return None
 
 
-def _publish_public_scorecard(
-    settings: Settings,
-    repository: RepositoryPort,
-    publisher: WebPublisherPort,
-    costs: PaperCosts | None = None,
-) -> None:
-    """#10 — publikuje stronę z agregatami (N, hit-rate, Brier, ECE, krzywe).
+def render_public_scorecard_page(
+    settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
+) -> str:
+    """#10 — strona z agregatami (N, hit-rate, Brier, ECE, krzywe) z okna
+    `track_record_days`; "" gdy okno nie ma danych.
 
     Metryki liczone z `resolved`/`cal_rows` NIEZALEŻNIE od flag
     `equity_curve_enabled` / `calibration_curve_enabled` — tamte sterują
     sekcjami prywatnego maila, nie publicznym dowodem. Krzywa kapitału to
     portfel o równej wadze per cykl (WIA-17), po kosztach `costs` (WIA-50;
     None = brutto); strona ujawnia okno i datę generacji (WIA-33).
+    Błąd odczytu leci wyżej: Fast Loop go połyka, `main_scorecard` kończy exit 1.
+    """
+    resolved = parse_resolved_predictions(
+        repository.get_resolved_predictions(settings.track_record_days)
+    )
+    samples = _calibration_samples(
+        repository.get_resolved_for_calibration(settings.track_record_days)
+    )
+    benchmark = (
+        None
+        if costs is None
+        else _benchmark_comparison(settings, repository, resolved, costs)
+    )
+    return render_public_scorecard_html(
+        resolved,
+        portfolio_curve(resolved, costs),
+        samples,
+        generated_on=datetime.now(UTC).date(),
+        window_days=settings.track_record_days,
+        costs=costs,
+        benchmark=benchmark,
+        protocol=load_evaluation_protocol(),
+    )
+
+
+def _publish_public_scorecard(
+    settings: Settings,
+    repository: RepositoryPort,
+    publisher: WebPublisherPort,
+    costs: PaperCosts | None = None,
+) -> None:
+    """#10 — publikuje `render_public_scorecard_page` w cyklu Fast Loopa.
+
     Best-effort: błąd odczytu ani `OSError` przy zapisie nie wywalają cyklu.
     """
     if not settings.public_scorecard_enabled:
         return
     try:
-        resolved = parse_resolved_predictions(
-            repository.get_resolved_predictions(settings.track_record_days)
-        )
-        samples = _calibration_samples(
-            repository.get_resolved_for_calibration(settings.track_record_days)
-        )
-        benchmark = (
-            None
-            if costs is None
-            else _benchmark_comparison(settings, repository, resolved, costs)
-        )
-        page = render_public_scorecard_html(
-            resolved,
-            portfolio_curve(resolved, costs),
-            samples,
-            generated_on=datetime.now(UTC).date(),
-            window_days=settings.track_record_days,
-            costs=costs,
-            benchmark=benchmark,
-            protocol=load_evaluation_protocol(),
-        )
+        page = render_public_scorecard_page(settings, repository, costs)
         if page:
             publisher.publish(page)
     except Exception:

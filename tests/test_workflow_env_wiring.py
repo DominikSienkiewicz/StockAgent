@@ -349,6 +349,133 @@ def test_real_workflows_never_publish_private_digest() -> None:
     assert not violations, violations
 
 
+# WIA-16/WIA-52: deploy publicznego scorecardu na Pages. Artefakt to sam katalog
+# scorecardu, wysyłany tylko gdy plik powstał (`hashFiles`), a deploy idzie
+# w osobnym jobie z environment `github-pages` — wyłącznie ten job dostaje
+# `pages: write` i `id-token: write`.
+PAGES_WORKFLOWS = ("scorecard_pages.yml",)
+PAGES_PERMISSIONS = ("pages", "id-token")
+PAGES_ENVIRONMENT = "github-pages"
+
+
+def _job_steps_using(jobs: Mapping[str, Any], action: str) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (name, step)
+        for name, job in jobs.items()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith(action)
+    ]
+
+
+def _pages_permission_holders(permissions: Any) -> list[str]:
+    granted = permissions if isinstance(permissions, Mapping) else {}
+    return [permission for permission in PAGES_PERMISSIONS if permission in granted]
+
+
+def _pages_artifact_violations(upload: Mapping[str, Any], scorecard_file: str) -> list[str]:
+    violations: list[str] = []
+    path = _pages_upload_path(upload)
+    if path != posixpath.dirname(scorecard_file):
+        violations.append(f"artefakt Pages `{path}` zamiast katalogu scorecardu")
+    if f"hashFiles('{scorecard_file}')" not in str(upload.get("if", "")):
+        violations.append(f"upload bez `if: hashFiles('{scorecard_file}')` (flaga off)")
+    return violations
+
+
+def _pages_deploy_job_violations(name: str, job: Mapping[str, Any], build_job: str) -> list[str]:
+    violations: list[str] = []
+    needs = job.get("needs") or []
+    if build_job not in ([needs] if isinstance(needs, str) else needs):
+        violations.append(f"job `{name}` nie czeka na `{build_job}` (`needs`)")
+    if f"needs.{build_job}.outputs." not in str(job.get("if", "")):
+        violations.append(f"job `{name}` rusza także bez artefaktu (`if` bez outputs)")
+    environment = job.get("environment")
+    environment_name = environment.get("name") if isinstance(environment, Mapping) else environment
+    if environment_name != PAGES_ENVIRONMENT:
+        violations.append(f"job `{name}` bez environment `{PAGES_ENVIRONMENT}`")
+    permissions = job.get("permissions") or {}
+    if any(permissions.get(permission) != "write" for permission in PAGES_PERMISSIONS):
+        violations.append(f"job `{name}` bez `pages: write` i `id-token: write`")
+    return violations
+
+
+def _pages_deploy_violations(spec: Mapping[str, Any], scorecard_path: str) -> list[str]:
+    """Odstępstwa workflowu od kontraktu deployu scorecardu na Pages."""
+    jobs: Mapping[str, Any] = spec.get("jobs") or {}
+    uploads = _job_steps_using(jobs, "actions/upload-pages-artifact")
+    deploys = _job_steps_using(jobs, "actions/deploy-pages")
+    if len(uploads) != 1 or len(deploys) != 1:
+        return [f"oczekiwany jeden upload i jeden deploy Pages, są {len(uploads)} i {len(deploys)}"]
+    (build_job, upload), (deploy_job, _) = uploads[0], deploys[0]
+    violations = _pages_artifact_violations(upload, _normalized(scorecard_path))
+    if build_job == deploy_job:
+        return [*violations, f"deploy Pages w jobie budującym `{build_job}` zamiast osobnego"]
+    violations += _pages_deploy_job_violations(deploy_job, jobs[deploy_job], build_job)
+    elsewhere = [
+        f"{name}: {held}"
+        for name, permissions in [
+            ("workflow", spec.get("permissions")),
+            *((job_name, job.get("permissions")) for job_name, job in jobs.items()),
+        ]
+        if name != deploy_job
+        for held in _pages_permission_holders(permissions)
+    ]
+    if elsewhere:
+        violations.append(f"uprawnienia Pages poza jobem deploy: {elsewhere}")
+    return violations
+
+
+@pytest.mark.parametrize("workflow", PAGES_WORKFLOWS)
+def test_pages_workflows_deploy_only_the_scorecard_dir_from_a_separate_job(workflow: str) -> None:
+    spec = _all_workflow_specs()[workflow]
+
+    violations = _pages_deploy_violations(spec, str(_repo_config()["public_scorecard_path"]))
+
+    assert violations == []
+
+
+def _pages_workflow() -> dict[str, Any]:
+    """Syntetyczny workflow zgodny z kontraktem deployu Pages."""
+    upload = {
+        "id": "artifact",
+        "if": "hashFiles('public/scorecard/index.html') != ''",
+        "uses": "actions/upload-pages-artifact@v3",
+        "with": {"path": "public/scorecard"},
+    }
+    build = {"outputs": {"page": "${{ steps.artifact.outcome }}"}, "steps": [upload]}
+    deploy = {
+        "needs": "build",
+        "if": "needs.build.outputs.page == 'success'",
+        "environment": {"name": "github-pages"},
+        "permissions": {"contents": "read", "pages": "write", "id-token": "write"},
+        "steps": [{"uses": "actions/deploy-pages@v4"}],
+    }
+    return {"permissions": {"contents": "read"}, "jobs": {"build": build, "deploy": deploy}}
+
+
+def test_pages_deploy_guard_accepts_the_contract() -> None:
+    assert _pages_deploy_violations(_pages_workflow(), "public/scorecard/index.html") == []
+
+
+def test_pages_deploy_guard_catches_a_deploy_in_the_build_job() -> None:
+    spec = _pages_workflow()
+    spec["jobs"]["build"]["steps"].append({"uses": "actions/deploy-pages@v4"})
+    del spec["jobs"]["deploy"]
+
+    violations = _pages_deploy_violations(spec, "public/scorecard/index.html")
+
+    assert any("osobnego" in violation for violation in violations), violations
+
+
+def test_pages_deploy_guard_catches_pages_permissions_outside_the_deploy_job() -> None:
+    spec = _pages_workflow()
+    spec["permissions"]["pages"] = "write"
+
+    violations = _pages_deploy_violations(spec, "public/scorecard/index.html")
+
+    assert any("poza jobem deploy" in violation for violation in violations), violations
+
+
 def _slow_loop_trainer_env() -> dict[str, object]:
     workflow = ROOT / ".github" / "workflows" / "slow_loop_weekly.yml"
     spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
