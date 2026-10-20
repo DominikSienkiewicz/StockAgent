@@ -194,3 +194,50 @@ def cycle_call_upper_bound(
         ),
         av_requests=n_av_symbols if n_gated > 0 else 0,
     )
+
+
+# FIN-32: darmowy klucz Alpha Vantage daje 25 zapytań na dobę (reset o północy UTC).
+AV_DAILY_REQUESTS_PER_KEY = 25
+
+
+@dataclass(frozen=True)
+class AvBudget:
+    """Dobowy budżet Alpha Vantage: najgorszy przypadek vs pojemność kluczy.
+
+    - `worst_case` — zapytania doby, gdy każdy symbol AV przechodzi bramkę
+                     w każdym cyklu;
+    - `capacity`   — `AV_DAILY_REQUESTS_PER_KEY` × liczba kluczy.
+    """
+
+    worst_case: int
+    capacity: int
+
+    @property
+    def ok(self) -> bool:
+        return self.worst_case <= self.capacity
+
+
+def av_daily_budget(
+    n_av_symbols: int,
+    requests_per_symbol: int,
+    cycles_per_day: int,
+    n_keys: int,
+) -> AvBudget:
+    """Niezmiennik: symbole × zapytania na symbol × cykle doby ≤ 25 × klucze.
+
+    Bez niego przekroczenie wychodzi dopiero jako `av_keys_exhausted` w środku
+    cyklu, gdy część symboli dostała już pusty feed — a za bramką i tak płaci
+    za LLM. Rotacja kluczy po odpowiedzi rate-limit dokłada requesty spoza
+    tego rachunku (jak w `cycle_call_upper_bound`)."""
+    for name, value in (
+        ("n_av_symbols", n_av_symbols),
+        ("requests_per_symbol", requests_per_symbol),
+        ("cycles_per_day", cycles_per_day),
+        ("n_keys", n_keys),
+    ):
+        if value < 0:
+            raise ValueError(f"{name} must be non-negative (got {value})")
+    return AvBudget(
+        worst_case=n_av_symbols * requests_per_symbol * cycles_per_day,
+        capacity=AV_DAILY_REQUESTS_PER_KEY * n_keys,
+    )

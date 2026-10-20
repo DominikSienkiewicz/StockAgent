@@ -971,3 +971,63 @@ def test_zero_council_volatility_threshold_stays_the_always_run_switch(env) -> N
     settings = Settings(_env_file=None, council_volatility_threshold=Decimal("0"))
 
     assert settings.council_volatility_threshold == Decimal("0")
+
+
+class TestAlphaVantageBudget:
+    """FIN-32: najgorszy przypadek doby (cała watchlista za bramką) ≤ 25 × klucze.
+
+    Przekroczenie wychodziło dopiero jako `av_keys_exhausted` w środku cyklu.
+    Domyślnie WARNING i fail-open (liczba kluczy w sekretach jest nieznana),
+    twardy błąd startu tylko przy `av_budget_strict = true`."""
+
+    _WATCHLIST = [f"S{i:02d}" for i in range(43)]
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_settings_warns_when_av_worst_case_exceeds_capacity(self, env, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="src.config"):
+            settings = self._settings(symbols=self._WATCHLIST)  # jeden klucz
+
+        assert settings.av_budget().ok is False
+        assert "43" in caplog.text
+        assert "25" in caplog.text
+        assert "ALPHA_VANTAGE_API_KEYS" in caplog.text
+
+    def test_enough_keys_keep_the_log_quiet(self, env, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="src.config"):
+            settings = self._settings(
+                symbols=self._WATCHLIST, alpha_vantage_api_keys=["av-1", "av-2"]
+            )
+
+        assert settings.av_budget().ok is True
+        assert "Alpha Vantage" not in caplog.text
+
+    def test_worst_case_counts_the_watchlist_without_unpriced_symbols(self, env):
+        # WIA-11: symbole + krypto − symbols_unsupported_price (te nie wchodzą do grafu).
+        settings = self._settings(
+            symbols=["AAPL", "MSFT", "CSPX.L"],
+            crypto_symbols=["BTC"],
+            symbols_unsupported_price=["CSPX.L"],
+        )
+
+        assert settings.av_budget().worst_case == 3
+
+    def test_earnings_calendar_adds_a_request_per_symbol(self, env):
+        settings = self._settings(symbols=["AAPL", "MSFT"], earnings_calendar_enabled=True)
+
+        assert settings.av_budget().worst_case == 4
+
+    def test_strict_flag_stops_startup(self, env):
+        with pytest.raises(ValueError, match="Alpha Vantage"):
+            self._settings(symbols=self._WATCHLIST, av_budget_strict=True)
+
+    def test_strict_flag_defaults_off_and_stays_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert self._settings().av_budget_strict is False
+        assert "av_budget_strict" in NON_RECIPE_SETTINGS_FIELDS

@@ -168,6 +168,10 @@ insider_flow_enabled = true
 # sentymentu (~39/dzień). Darmowy AV = 25 req/dzień/klucz, więc wymaga >= 4 kluczy.
 # Włącz dopiero, gdy masz tyle w ALPHA_VANTAGE_API_KEYS. Odblokowuje bramkę earnings (#6).
 earnings_calendar_enabled = false
+# FIN-32: najgorszy przypadek doby AV (cała watchlista za bramką, +1 na symbol przy
+# kalendarzu wyników) ponad 25 × liczba kluczy → WARNING w logu i w bannerze maila.
+# true = błąd startu zamiast ostrzeżenia. Off, bo liczba kluczy żyje w sekretach.
+av_budget_strict = false
 # options_flow: option-chain to endpoint PREMIUM Finnhuba — na free tier zwraca 403,
 # więc sygnał nie powstaje, a każdy cykl marnuje ~39 requestów. Off do czasu planu premium.
 # Odblokowuje #18 (edge vs implied move).

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 from datetime import date
 from decimal import Decimal
@@ -27,12 +28,15 @@ from pydantic_settings import (
 )
 
 from src.domain.experiment import Experiment, ExperimentMetric, validate_experiments
+from src.domain.finops import AV_DAILY_REQUESTS_PER_KEY, AvBudget, av_daily_budget
 from src.domain.macro_risk import MacroRiskInstrumentType
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
 
 # Ścieżka do config.toml zakotwiczona w ROOCIE repo (src/config.py → ../config.toml),
 # NIE względem CWD. Inaczej agent odpalony spoza roota nie znajduje pliku i cały
 # config niewrażliwy po cichu spada do defaultów (np. notifications_enabled=False).
+logger = logging.getLogger(__name__)
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_TOML_FILE = str(_REPO_ROOT / "config.toml")
 
@@ -126,6 +130,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "liveness_slow_loop_max_gap_h",
     "calibration_judge_enabled",
     "feature_set_filter_enabled",
+    # FIN-32: sama kontrola startu (WARNING vs błąd); prognoza ta sama.
+    "av_budget_strict",
 })
 
 # WIA-20: pola przepisu — progi, modele, providerzy, symbole, źródła danych
@@ -186,6 +192,13 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
     "experiments",
 })
+
+
+# FIN-32: cykle Fast Loopa na dobę w budżecie Alpha Vantage — cron
+# `30 5 * * 1-5` w `.github/workflows/fast_loop_12h.yml` (dziś zakomentowany,
+# start ręczny). Każdy ręczny dispatch tego samego dnia to kolejny cykl ponad
+# ten rachunek.
+FAST_LOOP_CYCLES_PER_DAY = 1
 
 
 # FIN-07: jedyny próg volatility, dla którego 0 ma znaczenie ("rada zawsze leci,
@@ -510,6 +523,9 @@ class Settings(BaseSettings):
     # Alpha Vantage akceptuje CSV — wiele kluczy rotujemy, gdy jeden wyczerpie
     # dzienny limit (25 req/dobę free). Wpisz w .env: ALPHA_VANTAGE_API_KEYS=k1,k2,k3
     alpha_vantage_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # FIN-32: najgorszy przypadek doby AV ponad 25 × klucze → WARNING w logu
+    # i w bannerze maila (fail-open). True = błąd startu zamiast ostrzeżenia.
+    av_budget_strict: bool = False
     # ----- Database -----
     supabase_url: str
     supabase_key: str
@@ -907,6 +923,46 @@ class Settings(BaseSettings):
                 "(comma-separated) or legacy ALPHA_VANTAGE_API_KEY in env."
             )
         return self
+
+    @model_validator(mode="after")
+    def _check_alpha_vantage_budget(self) -> Settings:
+        """FIN-32: budżet sprawdzony przy starcie, a nie dopiero jako
+        `av_keys_exhausted` w środku cyklu. Domyślnie WARNING i start dalej —
+        liczba kluczy w sekretach produkcji nie jest znana z repo, więc błąd
+        mógłby zablokować start już dziś; `av_budget_strict` daje twardy błąd.
+        Walidator działa w każdym entry poincie; banner maila dokłada Fast Loop."""
+        budget = self.av_budget()
+        if budget.ok:
+            return self
+        message = self._av_budget_message(budget)
+        if self.av_budget_strict:
+            raise ValueError(message)
+        logger.warning(message)
+        return self
+
+    def av_budget(self) -> AvBudget:
+        """FIN-32: worst case doby AV dla pełnej watchlisty Fast Loopa (WIA-11:
+        `symbols` + `crypto_symbols` − `symbols_unsupported_price`). Na symbol:
+        jedno NEWS_SENTIMENT i jedno EARNINGS_CALENDAR przy włączonym kalendarzu."""
+        unsupported = set(self.symbols_unsupported_price)
+        watchlist = [*self.symbols, *self.crypto_symbols]
+        return av_daily_budget(
+            n_av_symbols=sum(1 for symbol in watchlist if symbol not in unsupported),
+            requests_per_symbol=2 if self.earnings_calendar_enabled else 1,
+            cycles_per_day=FAST_LOOP_CYCLES_PER_DAY,
+            n_keys=len(self.alpha_vantage_api_keys),
+        )
+
+    def _av_budget_message(self, budget: AvBudget) -> str:
+        """Diagnoza przekroczenia po angielsku (log, błąd startu)."""
+        return (
+            f"Alpha Vantage daily budget exceeded: the worst case is {budget.worst_case} "
+            f"requests per day (every eligible symbol past the volatility gate in "
+            f"{FAST_LOOP_CYCLES_PER_DAY} cycle(s)), the capacity is {budget.capacity} "
+            f"({len(self.alpha_vantage_api_keys)} key(s) × {AV_DAILY_REQUESTS_PER_KEY}). "
+            "Add keys to ALPHA_VANTAGE_API_KEYS or shrink the watchlist; "
+            "av_budget_strict = true turns this warning into a startup error."
+        )
 
     def config_hash(self) -> str:
         """WIA-20: sha256 posortowanych pól przepisu (progi, modele, providerzy,

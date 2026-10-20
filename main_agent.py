@@ -2304,6 +2304,32 @@ def _send_legacy_push(
         logger.exception("Failed to send the legacy push report")
 
 
+def _record_av_budget_alert(settings: Settings, quota_monitor: QuotaMonitor) -> None:
+    """FIN-32: najgorszy przypadek doby AV ponad pojemność kluczy → WARNING w bannerze
+    maila. Log z liczbami wystawia już walidator `Settings`; tu tylko treść maila
+    po polsku (MAIL-15), bo banner pokazuje wyłącznie Fast Loop."""
+    budget = settings.av_budget()
+    if budget.ok:
+        return
+    quota_monitor.record(
+        QuotaAlert(
+            source="Alpha Vantage",
+            severity=QuotaSeverity.WARNING,
+            message=(
+                f"Budżet Alpha Vantage nie domyka się: najgorszy przypadek doby to "
+                f"{budget.worst_case} zapytań (cała watchlista za bramką), a klucze "
+                f"dają {budget.capacity} (25 na klucz). Gdy za bramkę przejdzie "
+                "więcej symboli, część dostanie pusty feed newsów i sentymentu."
+            ),
+            action=(
+                "Dodaj klucz w ALPHA_VANTAGE_API_KEYS (darmowy na alphavantage.co) "
+                "albo zmniejsz watchlistę; av_budget_strict = true zatrzyma start."
+            ),
+            occurred_at=datetime.now(UTC),
+        )
+    )
+
+
 def main(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
     configure_logging(settings.secret_values())
@@ -2319,6 +2345,7 @@ def main(settings: Settings | None = None) -> int:
         else None
     )
     quota_monitor = QuotaMonitor(alert_notifier=alert_notifier)
+    _record_av_budget_alert(settings, quota_monitor)
     repository = build_repository(settings)
     use_case = build_use_case(
         settings,

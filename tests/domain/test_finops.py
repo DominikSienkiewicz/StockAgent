@@ -178,3 +178,44 @@ def test_fully_gated_cycle_has_a_zero_bound() -> None:
 def test_upper_bound_rejects_negative_inputs(field: str) -> None:
     with pytest.raises(ValueError, match=field):
         _bound(**{field: -1})
+
+
+# --- FIN-32: niezmiennik dobowego budżetu Alpha Vantage -------------------------
+
+
+def test_av_budget_flags_worst_case_above_capacity() -> None:
+    from src.domain.finops import AV_DAILY_REQUESTS_PER_KEY, av_daily_budget
+
+    over = av_daily_budget(
+        n_av_symbols=43, requests_per_symbol=1, cycles_per_day=1, n_keys=1
+    )
+
+    assert AV_DAILY_REQUESTS_PER_KEY == 25
+    assert over.ok is False
+    assert over.capacity == 25
+    assert over.worst_case == 43
+    assert av_daily_budget(43, 1, 1, 2).ok is True
+
+
+def test_av_budget_multiplies_symbols_requests_and_cycles() -> None:
+    from src.domain.finops import av_daily_budget
+
+    # Kalendarz wyników = drugi request per symbol; dwa cykle na dobę.
+    assert av_daily_budget(10, 2, 2, 1).worst_case == 40
+
+
+def test_av_budget_at_capacity_is_ok() -> None:
+    from src.domain.finops import av_daily_budget
+
+    assert av_daily_budget(25, 1, 1, 1).ok is True
+
+
+@pytest.mark.parametrize(
+    "field", ["n_av_symbols", "requests_per_symbol", "cycles_per_day", "n_keys"]
+)
+def test_av_budget_rejects_negative_inputs(field: str) -> None:
+    from src.domain.finops import av_daily_budget
+
+    arguments = {"n_av_symbols": 1, "requests_per_symbol": 1, "cycles_per_day": 1, "n_keys": 1}
+    with pytest.raises(ValueError, match=field):
+        av_daily_budget(**{**arguments, field: -1})

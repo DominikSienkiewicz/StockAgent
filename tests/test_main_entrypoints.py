@@ -2137,6 +2137,42 @@ class TestAlphaVantageNewsWindowWiring:
         assert client_cls.call_args.kwargs["news_window"] == timedelta(hours=24)
 
 
+class TestAlphaVantageBudgetBanner:
+    """FIN-32: najgorszy przypadek doby AV ponad pojemność kluczy to WARNING w bannerze
+    maila Fast Loopa — zanim `av_keys_exhausted` wyjdzie w środku cyklu."""
+
+    def _alerts(self, settings, mocker) -> list[QuotaAlert]:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings)
+
+        return list(dispatch.call_args.kwargs["quota_monitor"].alerts)
+
+    def test_worst_case_above_capacity_lands_in_the_banner(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        over = settings.model_copy(update={
+            "symbols": [f"S{i:02d}" for i in range(30)],
+            "alpha_vantage_api_keys": ["av1"],
+        })
+
+        alerts = self._alerts(over, mocker)
+
+        budget = [a for a in alerts if a.source == "Alpha Vantage"]
+        assert [a.severity for a in budget] == [QuotaSeverity.WARNING]
+        assert "30" in budget[0].message
+        assert "25" in budget[0].message
+        assert "ALPHA_VANTAGE_API_KEYS" in budget[0].action
+
+    def test_budget_within_capacity_adds_no_alert(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        assert self._alerts(settings, mocker) == []
+
+
 class TestPortfolioRadarMinimumSamples:
     """PORT-22: produkcyjny radar egzekwuje minimalne próby — VaR z dziewięciu
     zwrotów nie trafia do maila jako „VaR 95%”."""
