@@ -185,6 +185,7 @@ uv run python main_tools.py evaluate --echo  # + momentum echo test: is the LLM 
 uv run python main_tools.py evaluate --experiment EXP-02 --days 90  # + A/B arms of an in-loop experiment: treatment − control per metric with a block-bootstrap CI (arms from migration 037 or the v2 receipt)
 uv run python main_scorecard.py --days 120  # public scorecard page from the database (read-only, zero paid calls); writes public_scorecard_path only with public_scorecard_enabled, an empty window writes nothing
 uv run python main_tools.py cost-envelope  # estimated min/max paid calls and USD of one Fast Loop cycle for config.toml, plus the worst week at the FIN-12 ceiling against fast_loop_weekly_budget_usd (offline, zero paid calls)
+uv run python main_tools.py render-sample-report  # the report email of a fixed, fictional cycle into build/sample-report/ (HTML + plain text); no keys, no database, no network, zero paid calls (`--out-dir` to change the directory)
 uv run pytest -m "not integration and not containers" # the quality gate, as in CI
 uv run pytest                                   # everything, including live-API tests (real keys, paid calls, a real email)
 uv run pytest -m containers                    # Docker/Postgres schema tests

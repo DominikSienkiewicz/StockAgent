@@ -14,6 +14,7 @@ Użycie:
     uv run python main_tools.py evaluate [--days N] [--by-recipe] [--by X] [--echo]
         [--experiment ID]
     uv run python main_tools.py cost-envelope
+    uv run python main_tools.py render-sample-report [--out-dir build/sample-report]
 """
 
 from __future__ import annotations
@@ -46,6 +47,11 @@ from src.tools.import_positions import (
     format_plan,
     parse_positions_csv,
     plan_import,
+)
+from src.tools.render_sample_report import (
+    SAMPLE_HTML_NAME,
+    SAMPLE_TEXT_NAME,
+    render_sample_report,
 )
 
 if TYPE_CHECKING:
@@ -83,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_evaluate(subcommands)
     _add_import_positions(subcommands)
     _add_cost_envelope(subcommands)
+    _add_render_sample_report(subcommands)
     return parser
 
 
@@ -327,6 +334,39 @@ def _run_cost_envelope(args: argparse.Namespace) -> int:
     # WIA-11: tydzień przy suficie FIN-12 — ta sama reguła co kontrola startu Fast Loopa.
     print()
     print(render_weekly_budget(settings.fast_loop_weekly_budget(personas=inputs.personas)))
+    return 0
+
+
+def _add_render_sample_report(
+    subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subcommands.add_parser(
+        "render-sample-report",
+        help="Render the report email of a fictional cycle (no keys, no database, no network).",
+        description=(
+            "DX-01: the HTML and plain-text email of a fixed, fictional Fast Loop cycle, "
+            "built by the same build_html_report as the real run. Zero paid calls."
+        ),
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("build/sample-report"),
+        help="Directory for report-email.html and report-email.txt (default: build/sample-report).",
+    )
+    parser.set_defaults(handler=_run_render_sample_report)
+
+
+def _run_render_sample_report(args: argparse.Namespace) -> int:
+    """DX-01: zapis przykładowego maila — bez `Settings`, kluczy i sieci; exit 0."""
+    out_dir: Path = args.out_dir
+    report = render_sample_report()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / SAMPLE_HTML_NAME
+    text_path = out_dir / SAMPLE_TEXT_NAME
+    html_path.write_text(report.html, encoding="utf-8")
+    text_path.write_text(report.text, encoding="utf-8")
+    print(f"✅ przykładowy raport: {html_path} i {text_path}")
     return 0
 
 

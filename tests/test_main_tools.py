@@ -258,3 +258,22 @@ def test_cost_envelope_prints_the_weekly_worst_case_against_the_budget(
     assert "Weekly worst case at the FIN-12 ceiling: 5 cycles" in out
     assert "1.2112 USD = 6.0559 USD" in out
     assert "`fast_loop_weekly_budget_usd` = 7.00 USD, within the budget." in out
+
+
+# --- DX-01: render-sample-report ----------------------------------------------
+
+
+def test_render_sample_report_writes_both_bodies_without_settings(
+    mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from_env = mocker.patch("src.config.Settings.from_env", side_effect=AssertionError)
+
+    code = main_tools.main(["render-sample-report", "--out-dir", str(tmp_path / "out")])
+
+    assert code == 0
+    from_env.assert_not_called()
+    html = (tmp_path / "out" / "report-email.html").read_text(encoding="utf-8")
+    text = (tmp_path / "out" / "report-email.txt").read_text(encoding="utf-8")
+    assert html.startswith("<") and "Krypto" in html
+    assert "przebieg #sample" in text
+    assert "report-email.html" in capsys.readouterr().out
