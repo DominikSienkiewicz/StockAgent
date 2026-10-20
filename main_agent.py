@@ -45,10 +45,12 @@ from src.application.ports import (
     LLMPort,
     MacroRatesPort,
     MarketDataPort,
+    NewsPort,
     OptionsFlowPort,
     PortfolioPositionsPort,
     ReportNotifierPort,
     RepositoryPort,
+    SentimentPort,
     SocialVelocityPort,
     ToolUseLLMPort,
     WebPublisherPort,
@@ -142,6 +144,10 @@ from src.infrastructure.adapters.cached_fundamentals import (
 from src.infrastructure.adapters.coingecko import CoinGeckoAdapter
 from src.infrastructure.adapters.composite_notifier import CompositeNotifier
 from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
+from src.infrastructure.adapters.local_stubs import (
+    LocalStubNewsAdapter,
+    LocalStubSentimentAdapter,
+)
 from src.infrastructure.adapters.nbp_client import NbpClient, NbpFxRateClient
 from src.infrastructure.adapters.resend_notifier import NullNotifier, ResendNotifier
 from src.infrastructure.adapters.routing_market_data import RoutingMarketDataPort
@@ -152,6 +158,7 @@ from src.infrastructure.adapters.write_guard import (
     ReadOnlyRepository,
 )
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
 from src.infrastructure.logging_redaction import configure_logging
 from src.infrastructure.persona_loader import personas_sha256
 from src.infrastructure.recipe_fingerprints import ml_model_version, prompt_templates_sha256
@@ -1014,6 +1021,69 @@ def build_move_calibration(
     )
 
 
+class _PaidPorts(NamedTuple):
+    """FIN-35: porty Fast Loopa, które płacą za wywołanie — produkcyjne albo atrapy."""
+
+    llm: LLMPort
+    sentiment: SentimentPort
+    news: NewsPort
+    embedding: EmbeddingPort | None
+    council: AdvisoryCouncilPort | None
+    tool_use: ToolUseLLMPort | None
+
+
+def _production_paid_ports(
+    settings: Settings,
+    telemetry: CycleTelemetry,
+    repository: RepositoryPort,
+    quota_monitor: QuotaMonitor | None,
+) -> _PaidPorts:
+    """Prawdziwe płatne adaptery (GHA: `PAID_CALLS_ENABLED=true`).
+
+    Jeden `AlphaVantageClient` dla akcji i krypto: adapter wewnętrznie prefiksuje
+    BTC → CRYPTO:BTC w requestach NEWS_SENTIMENT."""
+    av_client = AlphaVantageClient(
+        api_keys=settings.alpha_vantage_api_keys,
+        symbols=[*settings.symbols, *settings.crypto_symbols],
+        crypto_symbols=settings.crypto_symbols,
+        quota_monitor=quota_monitor,
+        # `news_volume_24h` ma liczyć ostatnie 24 h, nie „50 najnowszych".
+        news_window=NEWS_WINDOW,
+        # FIN-04: request AV tylko dla symbolu za bramką (FEATURE_SET_VERSION 3).
+        lazy_per_symbol=True,
+    )
+    llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor)
+    # FIN-02: każdy request persony, chairmana i rewizji liczy się u źródła.
+    # Osobny obiekt niż `llm_port`, więc główna analiza nie liczy się podwójnie.
+    council_llm_port = MeteredLLMPort(
+        build_council_llm_adapter(settings, llm_port, quota_monitor=quota_monitor),
+        telemetry,
+        "council_llm",
+    )
+    return _PaidPorts(
+        llm=llm_port,
+        sentiment=AlphaVantageSentimentAdapter(av_client),
+        news=AlphaVantageNewsAdapter(av_client),
+        embedding=build_embedding_adapter(settings, quota_monitor=quota_monitor),
+        council=build_council_adapter(settings, council_llm_port, repository=repository),
+        tool_use=build_tool_use_adapter(settings, quota_monitor=quota_monitor),
+    )
+
+
+def _local_stub_ports() -> _PaidPorts:
+    """FIN-35: lokalny run bez płatnych wywołań. Neutralny LLM i pusty feed AV
+    (z flagą `paid_calls_disabled`) przechodzą cały graf; rada, embeddingi
+    i tool-use są wyłączone (None), więc nie udają werdyktu ani analogów RAG."""
+    return _PaidPorts(
+        llm=LocalStubLLMAdapter(),
+        sentiment=LocalStubSentimentAdapter(),
+        news=LocalStubNewsAdapter(),
+        embedding=None,
+        council=None,
+        tool_use=None,
+    )
+
+
 def warn_if_paid_calls_disabled(settings: Settings) -> None:
     """FIN-35: jeden jawny WARNING na przebieg, gdy płatne porty idą przez atrapy."""
     if settings.paid_calls_enabled:
@@ -1032,36 +1102,22 @@ def build_use_case(
 ) -> AnalyzeMarketUseCase:
     """DI Container — buduje wszystkie adaptery i wstrzykuje do Use Case'a.
 
-    SYMBOLS przekazujemy do AlphaVantageClient jako sumę akcji + krypto,
-    z osobną listą crypto_symbols → adapter wewnętrznie prefiksuje BTC →
-    CRYPTO:BTC w requestach NEWS_SENTIMENT. Klient działa leniwie per symbol
-    (FIN-04): symbol pod bramką volatility nie kosztuje żadnego requestu AV.
+    FIN-35: płatne porty (LLM, rada, Alpha Vantage, embeddingi, tool-use) są
+    produkcyjne tylko przy `paid_calls_enabled`; inaczej graf dostaje atrapy
+    (`_local_stub_ports`). Klient AV działa leniwie per symbol (FIN-04): symbol
+    pod bramką volatility nie kosztuje żadnego requestu AV.
 
     `run_context` (MAIL-42) wchodzi do przepisu predykcji (WIA-20); brak = run
     lokalny.
     """
-    all_av_symbols = list(settings.symbols) + list(settings.crypto_symbols)
-    av_client = AlphaVantageClient(
-        api_keys=settings.alpha_vantage_api_keys,
-        symbols=all_av_symbols,
-        crypto_symbols=settings.crypto_symbols,
-        quota_monitor=quota_monitor,
-        # `news_volume_24h` ma liczyć ostatnie 24 h, nie „50 najnowszych".
-        news_window=NEWS_WINDOW,
-        # FIN-04: request AV tylko dla symbolu za bramką (FEATURE_SET_VERSION 3).
-        lazy_per_symbol=True,
-    )
-    llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor)
     # ARCH-11: jedna telemetria na cykl — dostają ją graf i licznik requestów rady.
     telemetry = CycleTelemetry()
-    # FIN-02: każdy request persony, chairmana i rewizji liczy się u źródła.
-    # Osobny obiekt niż `llm_port`, więc główna analiza nie liczy się podwójnie.
-    council_llm_port = MeteredLLMPort(
-        build_council_llm_adapter(settings, llm_port, quota_monitor=quota_monitor),
-        telemetry,
-        "council_llm",
-    )
     supabase_repo = repository or build_repository(settings)
+    paid = (
+        _production_paid_ports(settings, telemetry, supabase_repo, quota_monitor)
+        if settings.paid_calls_enabled
+        else _local_stub_ports()
+    )
     # Fast loop: delegate = Null — nie woła płatnego AV, czyta tylko cache Supabase.
     fundamentals_port = CachedFundamentalsAdapter(
         repo=supabase_repo,
@@ -1091,7 +1147,7 @@ def build_use_case(
     # #6: tool-use research agent — adapter + read-only toole (fundamenty z cache,
     # makro NBP). Budowane tylko gdy włączony. Toole NIE robią nowych płatnych
     # wywołań: fast loop czyta fundamenty z cache, a NBP jest darmowe i bezkluczowe.
-    tool_use_port = build_tool_use_adapter(settings, quota_monitor=quota_monitor)
+    tool_use_port = paid.tool_use
     research_tools = (
         build_research_tools(fundamentals_port, NbpClient())
         if tool_use_port is not None
@@ -1104,16 +1160,14 @@ def build_use_case(
     )
     return AnalyzeMarketUseCase(AgentGraphDeps(
         market_port=market_port,
-        sentiment_port=AlphaVantageSentimentAdapter(av_client),
-        news_port=AlphaVantageNewsAdapter(av_client),
+        sentiment_port=paid.sentiment,
+        news_port=paid.news,
         repository_port=supabase_repo,
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
-        llm_port=llm_port,
+        llm_port=paid.llm,
         threshold=Threshold(settings.volatility_threshold),
-        embedding_port=build_embedding_adapter(settings, quota_monitor=quota_monitor),
-        council_port=build_council_adapter(
-            settings, council_llm_port, repository=supabase_repo
-        ),
+        embedding_port=paid.embedding,
+        council_port=paid.council,
         # 0.0 → wyłączony (rada zawsze leci gdy główna bramka przepuści).
         council_threshold=(
             Threshold(settings.council_volatility_threshold)
@@ -2390,6 +2444,7 @@ def main(
             settings.crypto_symbols,
         )
     stock_symbols = [] if closure is not None else list(settings.symbols)
+    warn_if_paid_calls_disabled(settings)
     # MAIL-42: przebieg (run, commit, link do logów) — raz na cykl, z env GHA.
     run_context = RunContext.from_environ(os.environ)
     # Real-time alerty (U4): kanał alertów budujemy BEZ quota_monitora, żeby
@@ -2518,7 +2573,13 @@ def main(
             yield_curve=yield_curve,
             # FinOps: koszt CAŁEGO cyklu z telemetrii grafu (ARCH-11). Cykl w całości
             # odcięty bramką volatility ma zerowy licznik → sekcja mówi "cykl darmowy".
-            cycle_cost=estimate_cycle_cost(use_case.telemetry.snapshot().paid_calls),
+            # FIN-35: atrapy liczą się w telemetrii jak prawdziwe wywołania, więc
+            # lokalnie sekcja kosztu by kłamała — chowamy ją.
+            cycle_cost=(
+                estimate_cycle_cost(use_case.telemetry.snapshot().paid_calls)
+                if settings.paid_calls_enabled
+                else None
+            ),
             ml_model_loaded=use_case.ml_model_loaded,
             run_context=run_context,
         ),

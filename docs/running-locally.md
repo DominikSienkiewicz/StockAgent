@@ -94,7 +94,8 @@ cp .env.example .env
 uv run pytest
 
 # 5. Single Fast Loop run — read-only against the shared database unless
-#    DB_WRITES_ENABLED=true (see "Local runs are read-only by default" below)
+#    DB_WRITES_ENABLED=true, and without paid calls unless PAID_CALLS_ENABLED=true
+#    (see "Local runs are read-only by default" and "Local runs make no paid calls" below)
 uv run python main_agent.py
 ```
 
@@ -151,16 +152,17 @@ The switch is read from the environment or `.env` only. It is deliberately not i
 
 A read-only local run still spent the shared Alpha Vantage quota (25 requests a day per key) and LLM credit without a trace in the database. `Settings.paid_calls_enabled` defaults to `false` (FIN-35), and with it off the entry points build deterministic stubs instead of the paid adapters, which are never constructed:
 
-- **Slow Loop** (`main_trainer.py`): the Alpha Vantage fundamentals refresh is skipped, and the weekly recap and the calibration judge get `LocalStubLLMAdapter` (a fixed neutral analysis without a narrative and a fixed note instead of an insight, both saying they are a stub): the recap goes out without a narrative, the judge stores its arithmetic with the stub's note. The run logs one `WARNING`: `PAID_CALLS_ENABLED=false — lokalnie bez płatnych wywołań: …`;
-- **Fast Loop** (`main_agent.py`): the earnings calendar stays the null adapter. The other paid ports of a local Fast Loop (the main LLM, the council, Alpha Vantage news and sentiment, the embeddings and tool use) are not stubbed yet and still fire for every symbol past the volatility gate; the stubs for Alpha Vantage news and sentiment (`LocalStubSentimentAdapter`, `LocalStubNewsAdapter`) are in [`src/infrastructure/adapters/local_stubs.py`](../src/infrastructure/adapters/local_stubs.py).
+- **Fast Loop** (`main_agent.py`): the main LLM is `LocalStubLLMAdapter` (a neutral `SIDEWAYS`, confidence 50% analysis whose reasoning says it is a stub, and a fixed mistake diagnosis); Alpha Vantage sentiment and news are `LocalStubSentimentAdapter` (a neutral payload with `degraded_reason: paid_calls_disabled`, so the prediction carries that data-quality flag and the email a DEGRADED badge) and `LocalStubNewsAdapter` (no articles); the council, the embeddings and tool use are off, so there is no council verdict and no RAG analogue; the earnings calendar is the null adapter. The volatility gate, the ML model and the free sources (Finnhub, CoinGecko, NBP, FRED, EDGAR, Reddit) run as usual, and the email hides the cycle-cost section, because the stubbed calls are counted like real ones;
+- **Slow Loop** (`main_trainer.py`): the Alpha Vantage fundamentals refresh is skipped, and the weekly recap and the calibration judge get the LLM stub: the recap goes out without a narrative, the judge stores its arithmetic with the stub's note;
+- each run logs one `WARNING`: `PAID_CALLS_ENABLED=false — lokalnie bez płatnych wywołań: …`.
 
 Replaying recorded responses is out of scope; the stubs are fixed values. To make paid calls from a local run on purpose, set the variable for that one command:
 
 ```bash
-PAID_CALLS_ENABLED=true uv run python main_trainer.py
+PAID_CALLS_ENABLED=true uv run python main_agent.py
 ```
 
-Do not combine `PAID_CALLS_ENABLED=false` with `DB_WRITES_ENABLED=true`: the stubs' output would land in the production database. Like `DB_WRITES_ENABLED`, the switch is read from the environment or `.env` only and is kept out of `config.toml` by a test. The workflows that pay — Fast Loop and Slow Loop — set `PAID_CALLS_ENABLED: "true"` in the step that runs the entry point; Shock Watch and the deadman make no paid call and do not set it. `tests/test_paid_calls_wiring.py` checks both and fails when a new `main_*.py` is not classified as paying or free.
+Do not combine `PAID_CALLS_ENABLED=false` with `DB_WRITES_ENABLED=true`: the stubs' neutral predictions would land in the production track record. Like `DB_WRITES_ENABLED`, the switch is read from the environment or `.env` only and is kept out of `config.toml` by a test. The workflows that pay — Fast Loop and Slow Loop — set `PAID_CALLS_ENABLED: "true"` in the step that runs the entry point; Shock Watch and the deadman make no paid call and do not set it. `tests/test_paid_calls_wiring.py` checks both and fails when a new `main_*.py` is not classified as paying or free.
 
 ## Build commands
 

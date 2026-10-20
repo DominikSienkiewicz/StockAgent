@@ -38,6 +38,7 @@ def settings() -> Settings:
         volatility_threshold=Decimal("0.02"),
         ml_model_path="data/models/missing.ubj",
         db_writes_enabled=True,  # BEZ-08: smoke testy odwzorowują workflowy GHA
+        paid_calls_enabled=True,  # FIN-35: jak wyżej — workflowy GHA płacą jawnie
     )
 
 
@@ -4666,8 +4667,65 @@ class TestNyseClosedDay:
 
 class TestLocalRunWithoutPaidCalls:
     """FIN-35: przy `paid_calls_enabled=False` (domyślnie, lokalnie) DI podstawia
-    deterministyczne atrapy zamiast płatnych portów, a produkcyjne adaptery w ogóle
-    nie powstają. Jeden WARNING mówi o tym wprost."""
+    deterministyczne atrapy zamiast LLM, rady, Alpha Vantage i embeddingów, a
+    produkcyjne adaptery w ogóle nie powstają. Jeden WARNING mówi o tym wprost."""
+
+    _PAID_FACTORIES = (
+        "build_llm_adapter",
+        "build_council_llm_adapter",
+        "build_council_adapter",
+        "build_embedding_adapter",
+        "build_tool_use_adapter",
+    )
+
+    def _deps(self, settings, mocker) -> tuple[object, dict[str, MagicMock]]:
+        factories = {name: mocker.patch(f"main_agent.{name}") for name in self._PAID_FACTORIES}
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        main_agent.build_use_case(settings)
+        return use_case_cls.call_args.args[0], factories
+
+    def test_fast_loop_gets_stubs_and_never_builds_a_paid_adapter(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.infrastructure.adapters.local_stubs import (
+            LocalStubNewsAdapter,
+            LocalStubSentimentAdapter,
+        )
+        from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
+
+        settings.paid_calls_enabled = False
+        settings.tool_use_enabled = True
+
+        deps, factories = self._deps(settings, mocker)
+
+        for name, factory in factories.items():
+            assert not factory.called, name
+        assert isinstance(deps.llm_port, LocalStubLLMAdapter)
+        assert isinstance(deps.sentiment_port, LocalStubSentimentAdapter)
+        assert isinstance(deps.news_port, LocalStubNewsAdapter)
+        assert deps.council_port is None
+        assert deps.embedding_port is None
+        assert deps.tool_use_port is None
+
+    def test_paid_run_wires_the_production_llm(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.application.ports import LLMPort
+        from src.infrastructure.adapters.alpha_vantage_adapters import (
+            AlphaVantageSentimentAdapter,
+        )
+
+        settings.paid_calls_enabled = True
+        production = MagicMock(spec=LLMPort)
+        mocker.patch("main_agent.build_llm_adapter", return_value=production)
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings)
+
+        deps = use_case_cls.call_args.args[0]
+        assert deps.llm_port is production
+        assert isinstance(deps.sentiment_port, AlphaVantageSentimentAdapter)
+        assert deps.council_port is not None
 
     def test_earnings_calendar_stays_null_without_paid_calls(self, settings) -> None:
         from src.infrastructure.adapters.alpha_vantage_earnings import (
@@ -4680,6 +4738,45 @@ class TestLocalRunWithoutPaidCalls:
         enrichment = main_agent.build_alpha_enrichment(settings)
 
         assert isinstance(enrichment._earnings, NullEarningsCalendarAdapter)
+
+    def test_fast_loop_warns_once_and_hides_the_cycle_cost(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        settings.paid_calls_enabled = False
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        with caplog.at_level(logging.WARNING):
+            main_agent.main(settings)
+
+        warnings = [
+            r.message for r in caplog.records if "lokalnie bez płatnych wywołań" in r.message
+        ]
+        assert len(warnings) == 1
+        # Atrapy liczą się w telemetrii jak prawdziwe wywołania — sekcja kosztu by kłamała.
+        assert dispatch.call_args.kwargs["context"].cycle_cost is None
+
+    def test_paid_fast_loop_keeps_quiet_and_reports_the_cost(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        settings.paid_calls_enabled = True
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        fake_uc.telemetry.snapshot.return_value.paid_calls = {}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        with caplog.at_level(logging.WARNING):
+            main_agent.main(settings)
+
+        assert not any("lokalnie bez płatnych wywołań" in r.message for r in caplog.records)
+        assert dispatch.call_args.kwargs["context"].cycle_cost is not None
 
     def _trainer(self, settings, mocker) -> tuple[MagicMock, MagicMock, MagicMock]:
         fake_uc = MagicMock()
