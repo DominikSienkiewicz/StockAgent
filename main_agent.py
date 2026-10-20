@@ -1389,10 +1389,11 @@ def build_use_case(
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings),
         # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
-        # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji.
+        # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji. WIA-70:
+        # flaga on bez kolumn 024/043 → cykl bez atestacji, predykcje zapisane.
         attestation_publisher=(
             build_attestation_publisher(settings)
-            if settings.attestation_enabled
+            if settings.attestation_enabled and supabase_repo.attestation_columns_available()
             else None
         ),
         telemetry=telemetry,
@@ -2324,6 +2325,30 @@ def _build_subject(
     return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
 
 
+def _reveal_record(row: Mapping[str, Any]) -> dict[str, Any]:
+    """#16 — rekord revealu: sól, hash i plaintext predykcji z wynikiem.
+
+    WIA-70: wiersz z `commitment_payload` (043) ujawnia zapisany plaintext
+    dosłownie (`payload`) — sceptyk liczy SHA-256(payload + sól) bez rekonstrukcji.
+    Wiersz bez niego (sprzed 043) ujawnia kolumny, z których odtwarza się payload v1.
+    """
+    record: dict[str, Any] = {
+        "symbol": row.get("symbol"),
+        "commitment": row.get("commitment_hash"),
+        # Sól wychodzi na jaw dopiero TERAZ — to jest sens revealu.
+        "salt": row.get("commitment_salt"),
+        "predicted_trend": row.get("predicted_trend"),
+        "predicted_target_price": row.get("predicted_target_price"),
+        "price_at_prediction": row.get("price_at_prediction"),
+        "actual_price_after_12h": row.get("actual_price_after_12h"),
+        "is_trend_correct": row.get("is_trend_correct"),
+    }
+    payload = row.get("commitment_payload")
+    if payload is not None:
+        record["payload"] = payload
+    return record
+
+
 def _sweep_reveals(
     repository: RepositoryPort, publisher: AttestationPublisherPort
 ) -> int:
@@ -2348,19 +2373,7 @@ def _sweep_reveals(
     revealed = 0
     for row in rows:
         try:
-            location = publisher.publish_reveal(
-                {
-                    "symbol": row.get("symbol"),
-                    "commitment": row.get("commitment_hash"),
-                    # Sól wychodzi na jaw dopiero TERAZ — to jest sens revealu.
-                    "salt": row.get("commitment_salt"),
-                    "predicted_trend": row.get("predicted_trend"),
-                    "predicted_target_price": row.get("predicted_target_price"),
-                    "price_at_prediction": row.get("price_at_prediction"),
-                    "actual_price_after_12h": row.get("actual_price_after_12h"),
-                    "is_trend_correct": row.get("is_trend_correct"),
-                }
-            )
+            location = publisher.publish_reveal(_reveal_record(row))
         except Exception:
             logger.exception("Failed to publish reveal for %s", row.get("id"))
             continue

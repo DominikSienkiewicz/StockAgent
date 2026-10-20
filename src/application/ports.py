@@ -375,7 +375,16 @@ class RepositoryPort(ABC):
 
         Napędza sweep: bez niego predykcje symboli usuniętych z `config.toml`
         nigdy nie zostałyby ujawnione, a dla sceptyka wygląda to jak ukrywanie
-        nietrafień. Pusta lista = nic do ujawnienia / brak migracji 024."""
+        nietrafień. Pusta lista = nic do ujawnienia / brak migracji 024.
+        WIA-70: wiersz niesie `commitment_payload` (dosłowny plaintext, migracja
+        043); przed migracją klucza nie ma, a stare wiersze mają None."""
+
+    @abstractmethod
+    def attestation_columns_available(self) -> bool:
+        """WIA-70 — czy baza ma kolumny commitmentu (`commitment_hash`,
+        `commitment_salt` z 024 i `commitment_payload` z 043). False → cykl bez
+        atestacji: zapis tych kluczy przed migracją dałby PGRST204 i zabił zapis
+        całej predykcji."""
 
     @abstractmethod
     def mark_commitment_revealed(self, prediction_id: str) -> None:

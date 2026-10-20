@@ -27,9 +27,9 @@ Put the project's secret key (`sb_secret_…`, Supabase dashboard → Project Se
 
 Merge the pending branches into `main` and push. The workflows run the code of the branch they start on, so the crons only pick up waves A to R once they are on `main`.
 
-### 3. Run DB Migrate for `026`–`042`
+### 3. Run DB Migrate for `026`–`043`
 
-Run **🗄️ DB Migrate (manual)** from the Actions tab with `dry_run` on, check that the log lists `026_feature_store_clean_rows.sql` to `042_reference_predictions.sql`, then run it again with `dry_run` off. `026` and `039` rebuild the `ml_feature_store` view and `038` enables RLS; none of the three has a flag.
+Run **🗄️ DB Migrate (manual)** from the Actions tab with `dry_run` on, check that the log lists `026_feature_store_clean_rows.sql` to `043_attestation_payload.sql`, then run it again with `dry_run` off. `026` and `039` rebuild the `ml_feature_store` view and `038` enables RLS; none of the three has a flag.
 
 ### 4. Turn on the flags the migrations unlock
 
@@ -72,7 +72,7 @@ Both experiments are defined in `config.toml` and inactive until the Fast Loop r
 
 ### 9. Pages and the `attestation-log` branch before the attestation flags
 
-`attestation_enabled` and `public_scorecard_enabled` stay off until their artefacts have a durable home: deploy GitHub Pages (Settings → Pages → Source: GitHub Actions) and protect the `attestation-log` branch, then turn both flags on (WIA-62). The workflows have no publish step yet, and `tests/test_workflow_env_wiring.py` fails either flag while no workflow that runs `main_agent.py` has an `actions/deploy-pages` or `git push` step, so the publish step lands first.
+`attestation_enabled` and `public_scorecard_enabled` stay off until their artefacts have a durable home (attestation also needs migration `043` from step 3, or each cycle runs without it): deploy GitHub Pages (Settings → Pages → Source: GitHub Actions) and protect the `attestation-log` branch, then turn both flags on (WIA-62). The workflows have no publish step yet, and `tests/test_workflow_env_wiring.py` fails either flag while no workflow that runs `main_agent.py` has an `actions/deploy-pages` or `git push` step, so the publish step lands first.
 
 ### 10. Uncomment the crons
 

@@ -48,8 +48,12 @@ from src.application.usage_ledger import usage_scope
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, PriceDelta
 from src.domain.attestation import SCHEMA_VERSION as ATTESTATION_SCHEMA_VERSION
-from src.domain.attestation import commit as attestation_commit
-from src.domain.attestation import new_salt, prediction_commitment_payload
+from src.domain.attestation import (
+    canonicalize,
+    commit_canonical,
+    new_salt,
+    prediction_commitment_payload,
+)
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
 from src.domain.experiment import (
@@ -1172,8 +1176,9 @@ def _attach_commitment(
     UCZCIWOŚĆ: daty commitów Gita są fałszowalne. Claim to „tamper-evidence
     przy branch protection", NIE „niepodrabialny timestamp".
 
-    Klucze dokładane TYLKO gdy publisher istnieje — nowe kolumny przed migracją
-    024 dałyby PGRST204 i zabiły zapis całej predykcji (gate jak `receipts_enabled`).
+    Klucze dokładane TYLKO gdy publisher istnieje — nowe kolumny przed migracjami
+    024 i 043 dałyby PGRST204 i zabiły zapis całej predykcji (gate jak
+    `receipts_enabled`; DI daje publisher dopiero, gdy kolumny istnieją).
     Awaria publikacji nigdy nie wywala cyklu.
     """
     if deps.attestation_publisher is None:
@@ -1186,9 +1191,12 @@ def _attach_commitment(
         price_at_prediction=record["price_at_prediction"],
     )
     salt = new_salt()
-    commitment = attestation_commit(payload, salt, schema_version=ATTESTATION_SCHEMA_VERSION)
+    # WIA-70: hash liczony z tych samych bajtów, które zapisujemy i ujawnimy dosłownie.
+    plaintext = canonicalize(payload, schema_version=ATTESTATION_SCHEMA_VERSION)
+    commitment = commit_canonical(plaintext, salt)
     record["commitment_hash"] = commitment
     record["commitment_salt"] = salt
+    record["commitment_payload"] = plaintext
     try:
         # Publikujemy WYŁĄCZNIE hash — sól zostaje w bazie do czasu revealu.
         deps.attestation_publisher.publish_commitment(

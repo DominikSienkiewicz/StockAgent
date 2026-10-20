@@ -67,6 +67,7 @@ MIGRATION_FILES = [
     "040_llm_calls.sql",
     "041_cycle_runs.sql",
     "042_reference_predictions.sql",
+    "043_attestation_payload.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1253,6 +1254,32 @@ class TestMigrations:
                 "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend, "
                 f"outcome, settled_price, settled_at, recipe_version) VALUES {values}"
             )
+
+    # -- Migracja 043: dosłowny plaintext commitmentu (WIA-70) ------------------
+
+    def test_commitment_payload_column_is_nullable_text(self, pg_conn) -> None:
+        """Reveal publikuje zapisany plaintext bajt w bajt: TEXT, nie JSONB (JSONB
+        przestawia klucze i białe znaki). NULL dla wierszy sprzed 043 i predykcji
+        bez atestacji — tych sweep ujawnia z kolumn, jak dotąd."""
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT data_type, is_nullable FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'prediction_logs'
+                  AND column_name = 'commitment_payload'
+                """
+            )
+            assert cur.fetchone() == ("text", "YES")
+
+    def test_commitment_payload_keeps_the_plaintext_byte_for_byte(self, pg_conn) -> None:
+        plaintext = '{"price_at_prediction":"90.1112","schema_version":2,"symbol":"Zażółć"}'
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, commitment_payload) VALUES (%s, %s) "
+                "RETURNING commitment_payload",
+                ("TEST_ATTEST_PAYLOAD", plaintext),
+            )
+            assert cur.fetchone() == (plaintext,)
 
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 

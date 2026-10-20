@@ -101,6 +101,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_resolved_predictions_detailed",
         "get_settled_moves",
         "get_unrevealed_commitments",
+        "attestation_columns_available",
         "get_latest_snapshot_at",
         "get_last_scorecard_at",
         "probe_database",
@@ -213,6 +214,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
         return self._delegate.get_unrevealed_commitments(days=days)
+
+    def attestation_columns_available(self) -> bool:
+        return self._delegate.attestation_columns_available()
 
     def get_latest_snapshot_at(self) -> datetime | None:
         return self._delegate.get_latest_snapshot_at()

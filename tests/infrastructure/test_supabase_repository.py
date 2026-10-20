@@ -2887,3 +2887,65 @@ class TestReferencePredictions:
 
         payload = mock_client.table.return_value.update.call_args.args[0]
         assert payload["outcome"] == "EXPIRED" and payload["settled_price"] is None
+
+
+# ---------------------------------------------------------------------------
+# WIA-70: dosłowny plaintext commitmentu (migracja 043)
+# ---------------------------------------------------------------------------
+
+
+class TestCommitmentPayloadColumn:
+    """Reveal publikuje zapisany plaintext, a baza bez migracji 043 nie może
+    zatrzymać ani sweepu starych wierszy, ani zapisu predykcji."""
+
+    @staticmethod
+    def _missing_payload_column() -> Exception:
+        from postgrest.exceptions import APIError
+
+        return APIError(
+            {"code": "42703", "message": "column prediction_logs.commitment_payload does not exist"}
+        )
+
+    def test_unrevealed_commitments_read_the_stored_payload(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [[{"id": "p-1", "commitment_payload": "{}"}]])
+
+        rows = repo.get_unrevealed_commitments()
+
+        assert "commitment_payload" in builder.select.call_args.args[0]
+        assert rows[0]["commitment_payload"] == "{}"
+
+    def test_unrevealed_commitments_fall_back_without_the_payload_column(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Przed 043 stare wiersze ujawniamy z kolumn, jak przed WIA-70.
+        builder = _fluent_query(mock_client, [])
+        failing, legacy = MagicMock(), MagicMock()
+        failing.execute.side_effect = self._missing_payload_column()
+        legacy.execute.return_value = MagicMock(data=[{"id": "p-1"}])
+        builder.range.side_effect = [failing, legacy]
+
+        rows = repo.get_unrevealed_commitments()
+
+        assert rows == [{"id": "p-1"}]
+        assert "commitment_payload" not in builder.select.call_args.args[0]
+
+    def test_attestation_columns_available_when_the_select_succeeds(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "select", "limit"], [])
+
+        assert repo.attestation_columns_available() is True
+        selected = mock_client.table.return_value.select.call_args.args[0]
+        assert {"commitment_hash", "commitment_salt", "commitment_payload"} <= {
+            column.strip() for column in selected.split(",")
+        }
+
+    def test_attestation_columns_unavailable_without_the_migration(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        chain = mock_client.table.return_value.select.return_value.limit.return_value
+        chain.execute.side_effect = self._missing_payload_column()
+
+        assert repo.attestation_columns_available() is False

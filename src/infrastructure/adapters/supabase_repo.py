@@ -126,6 +126,14 @@ _EVAL_EXTRA_FIELDS: dict[str, _EvalField] = {
 # Kody PostgREST/Postgres dla kolumny, której nie ma w bazie (select → 42703).
 _MISSING_COLUMN_CODES = frozenset({"42703", "PGRST204"})
 
+# WIA-70 (migracja 043): dosłowny plaintext commitmentu.
+_COMMITMENT_PAYLOAD_COLUMN = "commitment_payload"
+
+
+def _is_missing_column(exc: APIError, column: str) -> bool:
+    """Czy błąd PostgREST zgłasza brak właśnie tej kolumny (migracja nie zaaplikowana)."""
+    return exc.code in _MISSING_COLUMN_CODES and column in (exc.message or "")
+
 
 class MissingColumnError(RuntimeError):
     """Odczyt prosił o kolumnę, której baza jeszcze nie ma — migracja nie
@@ -935,25 +943,15 @@ class SupabaseRepository(RepositoryPort):
         return out
 
     def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
-        # Graceful: brak migracji 024 → [] (sweep nie ma czego ujawnić).
-        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        # Graceful: brak migracji 024 → [] (sweep nie ma czego ujawnić). WIA-70:
+        # brak samej kolumny z 043 → stare wiersze ujawniamy z kolumn, jak dotąd.
         try:
-            # NIEZ-15: bez paginacji sweep widział max ~1000 commitmentów.
-            query = (
-                self._client.table(self._table)
-                .select(
-                    "id, symbol, predicted_trend, predicted_target_price, "
-                    "price_at_prediction, actual_price_after_12h, "
-                    "is_trend_correct, commitment_hash, commitment_salt"
-                )
-                .gte("timestamp", cutoff)
-                .not_.is_("commitment_hash", "null")
-                .not_.is_("actual_price_after_12h", "null")
-                .is_("revealed_at", "null")
-                .order("timestamp", desc=False)
-                .order("id", desc=False)
-            )
-            return _paginate(query)
+            try:
+                return self._unrevealed_commitments(days, with_payload=True)
+            except APIError as exc:
+                if not _is_missing_column(exc, _COMMITMENT_PAYLOAD_COLUMN):
+                    raise
+            return self._unrevealed_commitments(days, with_payload=False)
         except Exception:
             logger.warning(
                 "Attestation columns unavailable — reveal sweep pominięty "
@@ -961,6 +959,42 @@ class SupabaseRepository(RepositoryPort):
                 exc_info=True,
             )
             return []
+
+    def _unrevealed_commitments(self, days: int, *, with_payload: bool) -> list[dict[str, Any]]:
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        columns = (
+            "id, symbol, predicted_trend, predicted_target_price, "
+            "price_at_prediction, actual_price_after_12h, "
+            "is_trend_correct, commitment_hash, commitment_salt"
+        )
+        if with_payload:
+            columns += f", {_COMMITMENT_PAYLOAD_COLUMN}"
+        # NIEZ-15: bez paginacji sweep widział max ~1000 commitmentów.
+        query = (
+            self._client.table(self._table)
+            .select(columns)
+            .gte("timestamp", cutoff)
+            .not_.is_("commitment_hash", "null")
+            .not_.is_("actual_price_after_12h", "null")
+            .is_("revealed_at", "null")
+            .order("timestamp", desc=False)
+            .order("id", desc=False)
+        )
+        return _paginate(query)
+
+    def attestation_columns_available(self) -> bool:
+        try:
+            self._client.table(self._table).select(
+                f"commitment_hash, commitment_salt, {_COMMITMENT_PAYLOAD_COLUMN}"
+            ).limit(1).execute()
+        except Exception:
+            logger.warning(
+                "Kolumny atestacji niedostępne — cykl bez atestacji "
+                "(zaaplikuj migracje 024 i 043).",
+                exc_info=True,
+            )
+            return False
+        return True
 
     def mark_commitment_revealed(self, prediction_id: str) -> None:
         self._client.table(self._table).update(

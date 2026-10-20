@@ -1520,6 +1520,50 @@ class TestAttestationRevealSweep:
 
         assert main_agent._sweep_reveals(repo, MagicMock()) == 0
 
+    @staticmethod
+    def _sweep_one(row: dict) -> dict:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [row]
+        pub = MagicMock(spec=AttestationPublisherPort)
+        pub.publish_reveal.return_value = "public/attestation/reveals.jsonl"
+
+        main_agent._sweep_reveals(repo, pub)
+
+        return dict(pub.publish_reveal.call_args.args[0])
+
+    def test_reveal_publishes_stored_payload_verbatim(self) -> None:
+        # WIA-70: weryfikacja bajt w bajt — niezależna od typów kolumn i od floatów,
+        # w których PostgREST oddaje NUMERIC (100.0 zamiast "100.0000").
+        import hashlib
+
+        canonical = (
+            '{"predicted_target_price":"110.0000","predicted_trend":"BULLISH",'
+            '"price_at_prediction":"100.0000","schema_version":2,"symbol":"GONE"}'
+        )
+        salt = "s" * 32
+        commitment = hashlib.sha256((canonical + salt).encode("utf-8")).hexdigest()
+        row = {
+            **self._row("p-1", salt),
+            "commitment_hash": commitment,
+            "commitment_payload": canonical,
+            "predicted_target_price": 110.0,
+            "price_at_prediction": 100.0,
+        }
+
+        published = self._sweep_one(row)
+
+        assert published["payload"] == canonical
+        recomputed = hashlib.sha256((published["payload"] + published["salt"]).encode("utf-8"))
+        assert recomputed.hexdigest() == published["commitment"]
+
+    def test_legacy_row_without_payload_is_revealed_from_columns(self) -> None:
+        # Wiersze sprzed 043 (albo bez kolumny) ujawniamy z kolumn, jak dotąd.
+        published = self._sweep_one({**self._row("p-1"), "commitment_payload": None})
+
+        assert "payload" not in published
+        assert published["predicted_target_price"] == "110.0"
+        assert published["price_at_prediction"] == "100.0"
+
 
 class TestWeeklyRecapWiring:
     """#17 — niedzielny recap. Slow Loop chodzi co tydzień i dotąd nie wysyłał
@@ -4429,6 +4473,24 @@ def test_attestation_publisher_follows_db_writes_flag(settings, enabled: bool) -
 
     expected = FileAttestationPublisher if enabled else ReadOnlyAttestationPublisher
     assert type(publisher) is expected
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_attestation_needs_the_commitment_columns(
+    settings, mock_external_clients, mocker, available: bool
+) -> None:
+    # WIA-70: flaga on przed migracjami 024/043 → cykl bez atestacji, ale z zapisem
+    # predykcji (nowe klucze dałyby PGRST204 i zabiły zapis całego wiersza).
+    use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+    settings.attestation_enabled = True
+    repo = MagicMock(spec=RepositoryPort)
+    repo.get_settled_moves.return_value = []
+    repo.attestation_columns_available.return_value = available
+
+    main_agent.build_use_case(settings, repository=repo)
+
+    publisher = use_case_cls.call_args.args[0].attestation_publisher
+    assert (publisher is not None) is available
 
 
 @pytest.mark.parametrize("enabled", [False, True])

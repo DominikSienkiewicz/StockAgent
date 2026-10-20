@@ -2732,7 +2732,7 @@ class TestAttestationCommitment:
         ports = self._ports(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
         )
-        commit_spy = mocker.spy(agent_graph_module, "attestation_commit")
+        payload_spy = mocker.spy(agent_graph_module, "prediction_commitment_payload")
 
         self._run(ports, self._publisher())
 
@@ -2744,13 +2744,54 @@ class TestAttestationCommitment:
         # Rekord niesie już te same skwantowane ceny, które zapisze kolumna.
         assert Decimal(row["predicted_target_price"]) == record["predicted_target_price"]
         assert Decimal(row["price_at_prediction"]) == record["price_at_prediction"]
-        payload_from_row = {**commit_spy.call_args.args[0], **row}
+        payload_from_row = {**payload_spy.spy_return, **row}
         assert attestation.verify(
             payload_from_row,
             record["commitment_salt"],
             record["commitment_hash"],
             schema_version=attestation.SCHEMA_VERSION,
         ) is True
+
+    def test_record_stores_the_hashed_plaintext(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-70: `commitment_payload` to dokładnie te bajty, z których powstał hash.
+        import hashlib
+        import json
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._run(ports, self._publisher())
+
+        record = repository_port.save_prediction.call_args.args[0]
+        plaintext = record["commitment_payload"]
+        digest = hashlib.sha256((plaintext + record["commitment_salt"]).encode("utf-8"))
+        assert digest.hexdigest() == record["commitment_hash"]
+        assert json.loads(plaintext)["schema_version"] == 2
+
+    def test_without_publisher_no_commitment_payload_is_written(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Flaga off → klucza nie ma (przed migracją 043 PGRST204 zabiłby zapis).
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._run(ports, None)
+
+        assert "commitment_payload" not in repository_port.save_prediction.call_args.args[0]
 
 
 class TestPaidCallMeter:
