@@ -695,8 +695,9 @@ def test_debate_round_counts_every_revision_request(llm_port: Mock) -> None:
 
 def test_timed_out_persona_request_is_still_counted(llm_port: Mock, mocker) -> None:
     # Request spóźnionej persony poszedł do dostawcy — płacimy za niego, choć
-    # głos odpada po limicie czasu rady.
-    mocker.patch("src.infrastructure.adapters.advisory_council._COUNCIL_TOTAL_TIMEOUT_S", 0.1)
+    # głos odpada po limicie czasu rady. Limit 0.3 s (persona śpi 1 s) daje
+    # wątkom czas na start także na obciążonej maszynie.
+    mocker.patch("src.infrastructure.adapters.advisory_council._COUNCIL_TOTAL_TIMEOUT_S", 0.3)
     slow = _SEVEN_PERSONAS[0].name
     llm_port.analyze.side_effect = _routed(slow={slow})
     council, telemetry = _metered_council(llm_port)
