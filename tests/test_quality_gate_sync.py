@@ -9,10 +9,13 @@ Kontrakt:
 1. CI lintuje i typuje KAŻDY `main_*.py` (jawnie albo przez `.` / gołe `mypy`
    z `[tool.mypy].files`).
 2. Dokumenty dla agentów i ludzi cytują dokładnie te same komendy co CI.
+3. Bramka pytest w plikach agentowych pomija testy `integration` (TEST-07): gołe
+   `uv run pytest` przy wyeksportowanych kluczach woła płatne API i wysyła mail.
 """
 
 from __future__ import annotations
 
+import shlex
 import tomllib
 from pathlib import Path
 
@@ -23,6 +26,7 @@ ROOT = Path(__file__).parent.parent
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 GATE_DOCS = ("CLAUDE.md", "AGENTS.md", "docs/running-locally.md")
 GATE_TOOLS = ("ruff", "mypy")
+AGENT_DOCS = ("CLAUDE.md", "AGENTS.md")
 
 
 def _entrypoints() -> list[str]:
@@ -96,3 +100,47 @@ def test_agent_docs_quote_the_ci_gate(doc: str, tool: str) -> None:
     assert all(tokens == ci_command for tokens in quoted), (
         f"{doc} cytuje {[' '.join(t) for t in quoted]}, a CI uruchamia `{' '.join(ci_command)}`."
     )
+
+
+def _pytest_marker(command: str) -> str | None:
+    """Wyrażenie `-m` komendy pytest ('' bez `-m`), None gdy to nie pytest."""
+    if "pytest" not in command:
+        return None
+    tokens = shlex.split(command.split("#", 1)[0])
+    if "pytest" not in tokens:
+        return None
+    args = tokens[tokens.index("pytest") + 1 :]
+    return args[args.index("-m") + 1] if "-m" in args[:-1] else ""
+
+
+def _ci_pytest_marker() -> str | None:
+    steps = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["quality"]["steps"]
+    markers = (_pytest_marker(str(step.get("run", ""))) for step in steps)
+    return next((marker for marker in markers if marker is not None), None)
+
+
+def test_pytest_marker_reads_the_selection_without_the_comment() -> None:
+    assert _pytest_marker('uv run pytest -m "not integration"  # -m containers') == (
+        "not integration"
+    )
+    assert _pytest_marker("uv run pytest") == ""
+    assert _pytest_marker("uv run mypy") is None
+
+
+@pytest.mark.parametrize("doc", AGENT_DOCS)
+def test_agent_docs_pytest_gate_skips_live_api_tests(doc: str) -> None:
+    ci_marker = _ci_pytest_marker()
+    assert ci_marker is not None and "not integration" in ci_marker, (
+        f"pierwszy krok pytest w ci.yml nie pomija testów integration: -m {ci_marker!r}"
+    )
+    quoted = [
+        _pytest_marker(line)
+        for line in (ROOT / doc).read_text(encoding="utf-8").splitlines()
+        if line.lstrip().startswith("uv run pytest")
+    ]
+
+    assert quoted, f"{doc} nie cytuje komendy pytest z bramki"
+    assert all(marker is not None and "not integration" in marker for marker in quoted), (
+        f"{doc}: bramka pytest bez 'not integration' ({quoted}) uruchomi testy na żywym API"
+    )
+    assert quoted[0] == ci_marker, f"{doc} cytuje -m {quoted[0]!r}, a CI -m {ci_marker!r}"
