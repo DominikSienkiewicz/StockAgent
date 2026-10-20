@@ -11,11 +11,14 @@ Uruchomienie:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg2
 import pytest
+from psycopg2 import sql
 from testcontainers.postgres import PostgresContainer
 
 # `supabase db push` czyta WYŁĄCZNIE `supabase/migrations/` — trzymamy je tam,
@@ -1033,6 +1036,325 @@ class TestMigrations:
         # Strażnik pustego wyniku: bez migracji lista byłaby pusta i test zielony.
         assert {"subscribers", "positions", "prediction_logs"} <= row_security.keys()
         assert sorted(name for name, enabled in row_security.items() if not enabled) == []
+
+
+# -- TEST-15: emulacja ról Supabase dla testów uprawnień ----------------------
+
+# Role API jak w obrazie Supabase: klucz publiczny (anon / publishable) działa
+# jako `anon`, JWT zalogowanego użytkownika jako `authenticated`, klucz secret /
+# service_role jako `service_role`, który omija RLS (BYPASSRLS).
+SUPABASE_API_ROLES = {
+    "anon": "NOLOGIN NOINHERIT",
+    "authenticated": "NOLOGIN NOINHERIT",
+    "service_role": "NOLOGIN NOINHERIT BYPASSRLS",
+}
+PUBLIC_API_ROLES = ("anon", "authenticated")
+SUPABASE_LIKE_DB = "supabase_like"
+
+# Domyślne uprawnienia, które Supabase ustawia roli tworzącej obiekty w `public`
+# (tam `postgres`, tu superuser kontenera aplikujący migracje): każda nowa
+# tabela, widok, sekwencja i funkcja trafia do wszystkich trzech ról API.
+SUPABASE_DEFAULT_GRANTS = """
+    GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT ALL ON TABLES TO anon, authenticated, service_role;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role;
+"""
+
+# Pełna lista uprawnień tabeli w Postgres 16 (MAINTAIN dochodzi dopiero w 17).
+ANY_TABLE_PRIVILEGE = "SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER"
+ANY_SEQUENCE_PRIVILEGE = "USAGE, SELECT, UPDATE"
+
+# Obiekty `public` należące do rozszerzeń (pgvector, pgcrypto) pomijamy: ich
+# funkcje mają EXECUTE dla PUBLIC z definicji rozszerzenia i nie niosą danych.
+_NOT_EXTENSION_MEMBER = """
+    NOT EXISTS (
+        SELECT 1 FROM pg_depend d
+        WHERE d.classid = '{catalog}'::regclass AND d.objid = {oid} AND d.deptype = 'e'
+    )
+"""
+_APP_RELATIONS_SQL = f"""
+    SELECT c.relname, c.relkind
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+      AND {_NOT_EXTENSION_MEMBER.format(catalog="pg_class", oid="c.oid")}
+"""
+_APP_FUNCTIONS_SQL = f"""
+    SELECT p.oid::regprocedure::text
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.prokind = 'f'
+      AND {_NOT_EXTENSION_MEMBER.format(catalog="pg_proc", oid="p.oid")}
+"""
+
+
+@pytest.fixture(scope="module")
+def supabase_like_conn(pg_conn):
+    """Osobna baza w TYM SAMYM kontenerze co `pg_conn` (drugi kontener to kolejne
+    setki MB przy pełnym swapie): najpierw role i domyślne granty jak w Supabase,
+    potem komplet migracji — w tej samej kolejności co na produkcji.
+
+    Superuser kontenera gra rolę `postgres` (właściciel obiektów, omija RLS),
+    a testy przełączają się na role API przez `SET LOCAL ROLE`. Role są
+    obiektami klastra, więc widzi je też baza `pg_conn`; `TestMigrations` biegnie
+    wcześniej (kolejność w pliku), a guard pg_roles w 038 działa w obu stanach.
+    To emulacja, nie Supabase: brak PostgREST, JWT i Postgresa 17 (MAINTAIN)."""
+    with pg_conn.cursor() as cur:
+        for role, attributes in SUPABASE_API_ROLES.items():
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
+            if cur.fetchone() is None:
+                cur.execute(
+                    sql.SQL("CREATE ROLE {} {}").format(
+                        sql.Identifier(role), sql.SQL(attributes)
+                    )
+                )
+        cur.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(SUPABASE_LIKE_DB))
+        )
+        cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(SUPABASE_LIKE_DB)))
+
+    info = pg_conn.info
+    conn = psycopg2.connect(
+        host=info.host,
+        port=info.port,
+        dbname=SUPABASE_LIKE_DB,
+        user=info.user,
+        password=info.password,
+    )
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute(SUPABASE_DEFAULT_GRANTS)
+    _apply_migrations(conn)
+    yield conn
+    conn.close()
+
+
+@contextmanager
+def _rolled_back(
+    conn: psycopg2.extensions.connection,
+) -> Iterator[psycopg2.extensions.cursor]:
+    """Transakcja zawsze wycofywana: dane testu, granty i `SET LOCAL ROLE` znikają
+    razem z nią, więc kolejny test zaczyna jako superuser na czystej bazie."""
+    with conn.cursor() as cur:
+        cur.execute("BEGIN")
+        try:
+            yield cur
+        finally:
+            cur.execute("ROLLBACK")
+
+
+def _set_role(cur: psycopg2.extensions.cursor, role: str) -> None:
+    cur.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(role)))
+
+
+def _has_table_privilege(cur: psycopg2.extensions.cursor, role: str, relation: str) -> bool:
+    cur.execute(
+        "SELECT has_table_privilege(%s::name, %s::regclass, %s)",
+        (role, relation, ANY_TABLE_PRIVILEGE),
+    )
+    return bool(cur.fetchone()[0])
+
+
+@pytest.mark.containers
+class TestSupabaseRoleEmulation:
+    """Test migracji jako superuser nie widzi regresji uprawnień: superuser omija
+    i RLS, i granty. Tu sprawdzamy bazę oczami ról, którymi łączy się PostgREST —
+    po 038 klucz publiczny (anon) nic nie widzi, a klucz secret (service_role)
+    dalej czyta, pisze i woła RPC aplikacji."""
+
+    def test_anon_cannot_read_subscribers(self, supabase_like_conn) -> None:
+        """Bez 038 domyślne granty Supabase i wyłączony RLS oddają anon e-mail."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("INSERT INTO subscribers (email) VALUES ('reader@example.com')")
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT email FROM subscribers")
+
+    def test_anon_cannot_read_positions(self, supabase_like_conn) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "INSERT INTO positions (symbol, quantity, avg_cost) VALUES ('NVDA', 10, 120.5)"
+            )
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT symbol, quantity, avg_cost FROM positions")
+
+    def test_anon_select_is_denied_on_every_relation(self, supabase_like_conn) -> None:
+        """Każda tabela, widok i `ml_feature_store` — prawdziwy SELECT, nie katalog."""
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(_APP_RELATIONS_SQL)
+            relations = [name for name, kind in cur.fetchall() if kind != "S"]
+        assert {"subscribers", "positions", "ml_feature_store"} <= set(relations)
+
+        readable = []
+        for relation in relations:
+            with _rolled_back(supabase_like_conn) as cur:
+                _set_role(cur, "anon")
+                try:
+                    cur.execute(
+                        sql.SQL("SELECT 1 FROM {} LIMIT 1").format(sql.Identifier(relation))
+                    )
+                except psycopg2.errors.InsufficientPrivilege:
+                    continue
+                readable.append(relation)
+        assert readable == []
+
+    @pytest.mark.parametrize("role", PUBLIC_API_ROLES)
+    def test_public_roles_hold_no_privilege_on_any_relation(
+        self, supabase_like_conn, role: str
+    ) -> None:
+        """Tabele, widoki, widok zmaterializowany i sekwencje — także INSERT,
+        UPDATE, DELETE i TRUNCATE, nie tylko odczyt."""
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(_APP_RELATIONS_SQL)
+            relations = cur.fetchall()
+            granted = []
+            for name, kind in relations:
+                if kind == "S":
+                    cur.execute(
+                        "SELECT has_sequence_privilege(%s::name, %s::regclass, %s)",
+                        (role, name, ANY_SEQUENCE_PRIVILEGE),
+                    )
+                    held = bool(cur.fetchone()[0])
+                else:
+                    held = _has_table_privilege(cur, role, name)
+                if held:
+                    granted.append(name)
+
+        assert "council_votes_id_seq" in {name for name, _ in relations}
+        assert granted == []
+
+    @pytest.mark.parametrize("role", PUBLIC_API_ROLES)
+    def test_public_roles_cannot_execute_app_functions(
+        self, supabase_like_conn, role: str
+    ) -> None:
+        """EXECUTE z domyślnego grantu roli PUBLIC też się liczy — `anon` jest jej
+        członkiem. Nowa funkcja w kolejnej migracji musi odebrać go sama."""
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(_APP_FUNCTIONS_SQL)
+            functions = [row[0] for row in cur.fetchall()]
+            executable = []
+            for function in functions:
+                cur.execute(
+                    "SELECT has_function_privilege(%s::name, %s::regprocedure, 'EXECUTE')",
+                    (role, function),
+                )
+                if cur.fetchone()[0]:
+                    executable.append(function)
+
+        assert any(name.startswith("match_news_embeddings(") for name in functions)
+        assert executable == []
+
+    def test_rls_hides_every_row_even_if_a_grant_comes_back(self, supabase_like_conn) -> None:
+        """Druga warstwa: gdy grant wróci (przyszła migracja, ręczny GRANT w
+        dashboardzie), RLS bez polityk dalej zwraca anon zero wierszy."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("INSERT INTO subscribers (email) VALUES ('leak@example.com')")
+            cur.execute("GRANT SELECT ON subscribers TO anon")
+            _set_role(cur, "anon")
+            cur.execute("SELECT count(*) FROM subscribers")
+            assert cur.fetchone() == (0,)
+
+    def test_objects_created_after_the_migration_are_not_granted_to_public_roles(
+        self, supabase_like_conn
+    ) -> None:
+        """ALTER DEFAULT PRIVILEGES z 038: nowa tabela albo DROP + CREATE widoku
+        (wzorzec 026/027) nie przywracają grantów anon / authenticated, a
+        service_role dalej je dostaje."""
+        probes = ("probe_table", "probe_view", "probe_matview")
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("CREATE TABLE probe_table (id BIGSERIAL PRIMARY KEY)")
+            cur.execute("CREATE VIEW probe_view AS SELECT 1 AS one")
+            cur.execute("CREATE MATERIALIZED VIEW probe_matview AS SELECT 1 AS one")
+
+            granted = [
+                (role, probe)
+                for role in PUBLIC_API_ROLES
+                for probe in probes
+                if _has_table_privilege(cur, role, probe)
+            ]
+            cur.execute(
+                "SELECT has_sequence_privilege(%s::name, 'probe_table_id_seq'::regclass, %s)",
+                ("anon", ANY_SEQUENCE_PRIVILEGE),
+            )
+            anon_sequence = bool(cur.fetchone()[0])
+            service_role = [_has_table_privilege(cur, "service_role", probe) for probe in probes]
+
+        assert granted == []
+        assert anon_sequence is False
+        assert service_role == [True, True, True]
+
+    def test_service_role_reads_and_writes_through_rls(self, supabase_like_conn) -> None:
+        """Klucz secret / service_role po 038: PII i portfel, predykcja z
+        rozliczeniem (trigger 029), głos rady (BIGSERIAL → USAGE sekwencji),
+        upsert snapshotu ceny i odczyt `ml_feature_store`."""
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "service_role")
+
+            cur.execute("INSERT INTO subscribers (email) VALUES ('owner@example.com')")
+            cur.execute("SELECT email FROM subscribers")
+            assert ("owner@example.com",) in cur.fetchall()
+
+            cur.execute(
+                "INSERT INTO positions (symbol, quantity, avg_cost) VALUES ('NVDA', 10, 120.5)"
+            )
+            cur.execute("SELECT symbol, currency FROM positions")
+            assert ("NVDA", "USD") in cur.fetchall()
+
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction) "
+                "VALUES ('SR_NVDA', 100.0) RETURNING id"
+            )
+            prediction_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE prediction_logs SET actual_price_after_12h = 105.0 WHERE id = %s "
+                "RETURNING settled_at IS NOT NULL",
+                (prediction_id,),
+            )
+            assert cur.fetchone() == (True,)
+
+            cur.execute(
+                "INSERT INTO council_votes "
+                "(prediction_id, symbol, investor_name, recommendation, confidence) "
+                "VALUES (%s, 'SR_NVDA', 'Buffett', 'BUY', 0.8) RETURNING id",
+                (prediction_id,),
+            )
+            assert cur.fetchone() is not None
+
+            for price in (100.0, 101.0):
+                cur.execute(
+                    "INSERT INTO price_snapshots (symbol, price, timestamp) "
+                    "VALUES ('SR_NVDA', %s, '2026-10-20T10:15:00+00:00') "
+                    "ON CONFLICT (symbol, timestamp_hour) DO UPDATE SET price = EXCLUDED.price",
+                    (price,),
+                )
+            cur.execute("SELECT price FROM price_snapshots WHERE symbol = 'SR_NVDA'")
+            assert [float(price) for (price,) in cur.fetchall()] == [101.0]
+
+            # Widok sprzed REFRESH: pusty, ale odczyt jest dozwolony.
+            cur.execute("SELECT count(*) FROM ml_feature_store")
+            assert cur.fetchone() == (0,)
+
+    def test_service_role_executes_the_rpc_functions(self, supabase_like_conn) -> None:
+        """RPC, które aplikacja woła przez PostgREST. `refresh_ml_feature_store`
+        poza zakresem: REFRESH wymaga właściciela widoku, a prawo MAINTAIN dla
+        grantu ALL przynosi dopiero Postgres 17."""
+        vector = "[" + ",".join(["0.1"] * 1536) + "]"
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "service_role")
+            # Baza emulacji nie ma zatwierdzonych wierszy — liczy się brak 42501.
+            cur.execute("SELECT count(*) FROM match_news_embeddings(%s::vector, 3)", (vector,))
+            assert cur.fetchone() == (0,)
+            cur.execute("SELECT count(*) FROM persona_accuracy_weights(90)")
+            assert cur.fetchone() == (0,)
+            cur.execute("SELECT count(*) FROM persona_accuracy_stats(90)")
+            assert cur.fetchone() == (0,)
 
 
 @pytest.fixture
