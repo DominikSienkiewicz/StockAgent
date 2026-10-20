@@ -2708,6 +2708,50 @@ class TestAttestationCommitment:
 
         assert final["status"] == "saved"
 
+    @staticmethod
+    def _as_decimal_14_4(value: object) -> str:
+        """Tekst, który Postgres zwróci z kolumny DECIMAL(14,4) (połówki od zera)."""
+        from decimal import ROUND_HALF_UP
+
+        return str(Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
+
+    def test_committed_prices_survive_db_scale_round_trip(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, mocker,
+    ):
+        # WIA-02 (G08): baza obetnie 90.11111111101 do 90.1111, więc hash liczony
+        # z pełnej precyzji nie zweryfikowałby się z payloadem odczytanym z wiersza.
+        import src.application.agent_graph as agent_graph_module
+        from src.domain import attestation
+
+        market_port.get_current_price.return_value = Money(Decimal("90.11115"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ml_port.predict.return_value = Money(Decimal("90.11111111101"))
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        commit_spy = mocker.spy(agent_graph_module, "attestation_commit")
+
+        self._run(ports, self._publisher())
+
+        record = repository_port.save_prediction.call_args.args[0]
+        row = {
+            column: self._as_decimal_14_4(record[column])
+            for column in ("price_at_prediction", "predicted_target_price")
+        }
+        # Rekord niesie już te same skwantowane ceny, które zapisze kolumna.
+        assert Decimal(row["predicted_target_price"]) == record["predicted_target_price"]
+        assert Decimal(row["price_at_prediction"]) == record["price_at_prediction"]
+        payload_from_row = {**commit_spy.call_args.args[0], **row}
+        assert attestation.verify(
+            payload_from_row,
+            record["commitment_salt"],
+            record["commitment_hash"],
+            schema_version=attestation.SCHEMA_VERSION,
+        ) is True
+
 
 class TestPaidCallMeter:
     """FinOps transparency — agent raportuje własny rachunek. Licznik zbiera

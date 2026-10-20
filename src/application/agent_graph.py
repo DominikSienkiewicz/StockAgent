@@ -47,8 +47,9 @@ from src.application.rag_rerank import rerank_analogs
 from src.application.usage_ledger import usage_scope
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, PriceDelta
+from src.domain.attestation import SCHEMA_VERSION as ATTESTATION_SCHEMA_VERSION
 from src.domain.attestation import commit as attestation_commit
-from src.domain.attestation import new_salt
+from src.domain.attestation import new_salt, prediction_commitment_payload
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
 from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
 from src.domain.experiment import (
@@ -1177,14 +1178,15 @@ def _attach_commitment(
     """
     if deps.attestation_publisher is None:
         return
-    payload = {
-        "symbol": record["symbol"],
-        "predicted_trend": record.get("predicted_trend"),
-        "predicted_target_price": str(record.get("predicted_target_price")),
-        "price_at_prediction": str(record.get("price_at_prediction")),
-    }
+    # WIA-02: schemat v2 — ceny w skali kolumny DECIMAL(14,4), te same co w rekordzie.
+    payload = prediction_commitment_payload(
+        symbol=record["symbol"],
+        predicted_trend=record.get("predicted_trend"),
+        predicted_target_price=record.get("predicted_target_price"),
+        price_at_prediction=record["price_at_prediction"],
+    )
     salt = new_salt()
-    commitment = attestation_commit(payload, salt)
+    commitment = attestation_commit(payload, salt, schema_version=ATTESTATION_SCHEMA_VERSION)
     record["commitment_hash"] = commitment
     record["commitment_salt"] = salt
     try:
@@ -1278,6 +1280,11 @@ def _resolve_move_interval(
     window = deps.move_calibration.get(asset.asset_type, ())
     predicted = 0.0 if ml_cold_start else float((ml_target - current_price) / current_price)
     return move_interval(window, predicted_return=predicted, cold_start=ml_cold_start)
+
+
+def _storage_price(price: Decimal | None) -> Decimal | None:
+    """Cena w skali kolumny DECIMAL(14,4) (ARCH-38); brak ceny zostaje brakiem."""
+    return None if price is None else Money(price).for_storage().amount
 
 
 def _interval_price(price: Decimal, move_return: float) -> Decimal:
@@ -1569,7 +1576,9 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
     record: dict[str, Any] = {
         "symbol": state["symbol"],
-        "price_at_prediction": state["current_price"],
+        # WIA-02: ceny w skali kolumn DECIMAL(14,4) — commitment liczony jest z tych
+        # samych wartości, które baza przechowa.
+        "price_at_prediction": _storage_price(state["current_price"]),
         # Zapisujemy nowy główny sygnał sentymentu (AV) jako sentiment_score.
         # Schema bazy nie wymaga zmian — pole jest generyczne.
         "sentiment_score": sentiment.get("av_sentiment_score"),
@@ -1581,7 +1590,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         ),
         "news_summary": news_summary,
         "predicted_trend": llm_analysis.get("trend_direction"),
-        "predicted_target_price": state.get("ml_target_price"),
+        "predicted_target_price": _storage_price(state.get("ml_target_price")),
         # #4: persystujemy deklarowaną pewność — bez niej Slow-Loopowy sędzia
         # nie oceni kalibracji (migracja 016).
         "confidence_score": _float_or_default(
