@@ -13,6 +13,7 @@ from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from src.application.cycle_telemetry import CycleTelemetry
 from src.application.decision_receipt import RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2
 from src.application.ml_features import (
     FEATURE_SET_VERSION,
@@ -82,22 +83,25 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def _timed_node(node_name: str, symbol: str) -> Iterator[None]:
+def _timed_node(node_name: str, symbol: str, telemetry: CycleTelemetry) -> Iterator[None]:
     """#14: lekka instrumentacja czasu wykonania płatnego węzła.
 
     Mierzy elapsed_ms i loguje go na INFO (z nazwą węzła i symbolem). Czas
     jest raportowany ZAWSZE, nawet gdy węzeł rzuci wyjątek (FinOps: chcemy
-    wiedzieć, jak długo trwało wywołanie, które padło). Trzyma się warstwy
-    application — żadnego nowego portu, czysty stdlib.
+    wiedzieć, jak długo trwało wywołanie, które padło). ARCH-11: ten sam czas
+    trafia do telemetrii cyklu, a wyjątek liczy się tam jako awaria węzła.
     """
     start = time.perf_counter()
+    failed = True
     try:
         yield
+        failed = False
     finally:
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         logger.info(
             "node=%s symbol=%s elapsed_ms=%.1f", node_name, symbol, elapsed_ms
         )
+        telemetry.record_node_timing(node_name, symbol, elapsed_ms, failed=failed)
 
 
 def _log_paid_call(
@@ -109,13 +113,13 @@ def _log_paid_call(
 
     `source` to klucz cennika z `src/domain/finops.py` (`llm`, `council_llm`,
     `sentiment`, `news`). Inkrementujemy licznik tutaj — jedno miejsce prawdy
-    o tym, co jest płatne. Licznik jest współdzielony przez wszystkie symbole
-    cyklu, bo raportujemy KOSZT CYKLU, nie symbolu.
+    o tym, co jest płatne. Licznik (ARCH-11: `deps.telemetry`) jest współdzielony
+    przez wszystkie symbole cyklu, bo raportujemy KOSZT CYKLU, nie symbolu.
     """
     logger.info(
         "paid call: node=%s symbol=%s %s", node_name, symbol, detail
     )
-    deps.paid_call_meter[source] += 1
+    deps.telemetry.record_paid_call(source)
 
 
 class AgentState(TypedDict, total=False):
@@ -544,11 +548,20 @@ class AgentGraphDeps:
     experiment_arms_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
-    # Licznik płatnych wywołań CYKLU (współdzielony między symbolami). Pole jest
-    # NIE-opcjonalne z własnym licznikiem per egzemplarz deps: wołający, który go
-    # nie poda, i tak dostaje działający licznik pod `use_case.paid_calls`, więc
-    # nikt nie musi doszywać go przez `dataclasses.replace` po fakcie.
-    paid_call_meter: Counter[str] = dataclasses.field(default_factory=Counter)
+    # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
+    # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
+    # nie poda go z DI — `use_case.paid_calls` działa i wtedy.
+    telemetry: CycleTelemetry = dataclasses.field(default_factory=CycleTelemetry)
+    # Zgodność wstecz: dawny goły licznik płatnych wywołań. To NIE drugi licznik —
+    # po `__post_init__` jest magazynem `telemetry.paid_calls` (podany Counter
+    # zostaje przejęty przez telemetrię, brak = Counter telemetrii).
+    paid_call_meter: Counter[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.paid_call_meter is None:
+            object.__setattr__(self, "paid_call_meter", self.telemetry.paid_calls)
+        else:
+            self.telemetry.bind_paid_calls(self.paid_call_meter)
 
 
 def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
@@ -737,6 +750,14 @@ def _reference_is_stale(state: AgentState) -> bool:
     return bool(state.get("stale_reference", False))
 
 
+def _gate_reason(passes: bool, stale: bool) -> str:
+    """ARCH-11: powód decyzji bramki do telemetrii cyklu. Stęchła referencja
+    zamyka bramkę niezależnie od ruchu (FIN-14), więc ma własny powód."""
+    if passes:
+        return "above_threshold"
+    return "stale_reference" if stale else "below_threshold"
+
+
 def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
     threshold = deps.threshold
     crypto_threshold = deps.crypto_threshold
@@ -746,6 +767,7 @@ def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
     stale = _reference_is_stale(state)
     passes = asset.evaluate_volatility(delta, chosen, reference_stale=stale)
     decision = "analyze" if passes else "ignore"
+    deps.telemetry.record_gate(state["symbol"], passes, _gate_reason(passes, stale))
     # #13: decyzja bramki volatility musi być widoczna w logach — bez tego
     # nie dało się odróżnić zamierzonego "ignore" (FinOps) od cichego buga.
     logger.info(
@@ -851,7 +873,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         )
         # #14: płatne wywołanie LLM diagnozy — log jawny + timing.
         _log_paid_call(deps, "reflect", symbol, "llm", "llm_port.analyze_mistake")
-        with _timed_node("reflect_analyze_mistake", symbol):
+        with _timed_node("reflect_analyze_mistake", symbol, deps.telemetry):
             insight = llm_port.analyze_mistake(prompt)
     else:
         # Niska zmienność — nie palimy budżetu LLM na diagnozę. Predykcja
@@ -878,7 +900,7 @@ def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> dict[str
     _log_paid_call(
         deps, "analyze_sentiment", symbol, "sentiment", "sentiment_port.get_social_score"
     )
-    with _timed_node("analyze_sentiment", symbol):
+    with _timed_node("analyze_sentiment", symbol, deps.telemetry):
         return {"sentiment": sentiment_port.get_social_score(symbol)}
 
 
@@ -888,7 +910,7 @@ def _fetch_news_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     symbol = state["symbol"]
     # #14: węzeł płatny (Alpha Vantage NEWS feed) — instrumentacja jak wyżej.
     _log_paid_call(deps, "fetch_news", symbol, "news", "news_port.get_news_context")
-    with _timed_node("fetch_news", symbol):
+    with _timed_node("fetch_news", symbol, deps.telemetry):
         return {"news": news_port.get_news_context(symbol)}
 
 
@@ -947,7 +969,7 @@ def _run_llm_analysis(
             _log_paid_call(
                 deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools"
             )
-            with _timed_node("predict_tool_use", symbol):
+            with _timed_node("predict_tool_use", symbol, deps.telemetry):
                 return deps.tool_use_port.analyze_with_tools(
                     prompt, deps.research_tools
                 ), False
@@ -1244,6 +1266,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # #14: pojedyncze wyjście węzła — logujemy całkowity czas predict.
     elapsed_ms = (time.perf_counter() - predict_start) * 1000.0
     logger.info("node=predict symbol=%s elapsed_ms=%.1f", symbol, elapsed_ms)
+    deps.telemetry.record_node_timing("predict", symbol, elapsed_ms)
 
     implied_edge = _resolve_implied_edge(
         deps, symbol, current_price, ml_target, ml_cold_start=ml_cold_start
@@ -1326,7 +1349,7 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         deps, "council", state["symbol"], "council_llm", "council_port.analyze"
     )
     try:
-        with _timed_node("council", state["symbol"]):
+        with _timed_node("council", state["symbol"], deps.telemetry):
             verdict = council_port.analyze(state["symbol"], data)
     except Exception:
         logger.exception(

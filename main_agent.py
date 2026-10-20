@@ -2420,9 +2420,9 @@ def main(settings: Settings | None = None) -> int:
             alpha_signals=alpha_signals,
             alpha_prices=alpha_prices,
             yield_curve=yield_curve,
-            # FinOps: koszt CAŁEGO cyklu z licznika grafu. Cykl w całości odcięty
-            # bramką volatility ma zerowy licznik → sekcja mówi "cykl darmowy".
-            cycle_cost=estimate_cycle_cost(dict(use_case.paid_calls)),
+            # FinOps: koszt CAŁEGO cyklu z telemetrii grafu (ARCH-11). Cykl w całości
+            # odcięty bramką volatility ma zerowy licznik → sekcja mówi "cykl darmowy".
+            cycle_cost=estimate_cycle_cost(use_case.telemetry.snapshot().paid_calls),
             ml_model_loaded=use_case.ml_model_loaded,
             run_context=run_context,
         ),

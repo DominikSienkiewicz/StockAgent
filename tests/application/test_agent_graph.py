@@ -3642,3 +3642,120 @@ class TestNoMemoryArm:
         assert meters[0] == meters[1]
         # Jeden embedding na cykl w obu ramionach: RAG-zapytanie albo zapis.
         assert embeds == [1, 1]
+
+
+class TestCycleTelemetryWiring:
+    """ARCH-11: graf zasila jeden `CycleTelemetry` na cykl — płatne wywołania
+    (`_log_paid_call`), czasy węzłów (`_timed_node`) i decyzje bramki."""
+
+    def _deps(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        **extra,
+    ) -> AgentGraphDeps:
+        return AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            **extra,
+        )
+
+    def test_gated_cycle_records_the_gate_and_no_paid_call(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        metrics = deps.telemetry.snapshot()
+        assert (metrics.gated, metrics.passed) == (1, 0)
+        assert dict(metrics.gate_reasons) == {"below_threshold": 1}
+        assert metrics.total_paid_calls == 0
+        assert dict(metrics.node_max_ms) == {}
+
+    def test_stale_reference_is_its_own_gate_reason(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        create_agent_graph(deps).compile().invoke(
+            {**_initial_state("100.0"), "stale_reference": True}
+        )
+
+        assert dict(deps.telemetry.snapshot().gate_reasons) == {"stale_reference": 1}
+
+    def test_paid_cycle_records_pass_paid_calls_and_node_timings(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.cycle_telemetry import CycleTelemetry
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        telemetry = CycleTelemetry()
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            telemetry=telemetry,
+        )
+
+        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        metrics = telemetry.snapshot()
+        assert (metrics.gated, metrics.passed) == (0, 1)
+        assert dict(metrics.gate_reasons) == {"above_threshold": 1}
+        assert metrics.paid_calls["llm"] == 1
+        assert metrics.paid_calls["sentiment"] == 1
+        assert metrics.paid_calls["news"] == 1
+        assert {"analyze_sentiment", "fetch_news", "predict"} <= set(metrics.node_max_ms)
+        # Ten sam magazyn pod dawnym polem — jedno źródło prawdy, nie dwa liczniki.
+        assert deps.paid_call_meter is telemetry.paid_calls
+
+    def test_caller_meter_and_telemetry_share_one_store(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from collections import Counter
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        meter: Counter[str] = Counter()
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            paid_call_meter=meter,
+        )
+
+        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert deps.telemetry.paid_calls is meter
+        assert dict(deps.telemetry.snapshot().paid_calls) == dict(meter)
+
+    def test_failing_council_counts_as_node_failure(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.ports import AdvisoryCouncilPort
+
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.side_effect = RuntimeError("council down")
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            council_port=council_port,
+        )
+
+        final = create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        metrics = deps.telemetry.snapshot()
+        assert dict(metrics.node_failures) == {"council": 1}
+        assert "council" in metrics.node_max_ms

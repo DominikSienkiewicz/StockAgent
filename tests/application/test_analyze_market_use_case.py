@@ -580,3 +580,33 @@ class TestExperimentArms:
         )
 
         assert "experiment_arms" not in result
+
+
+class TestCycleTelemetry:
+    """ARCH-11: use case wystawia TEN SAM `CycleTelemetry`, który dostają węzły,
+    a `paid_calls` zostaje żywym Counterem z tego obiektu."""
+
+    def test_exposes_the_graph_telemetry_and_its_live_counter(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.cycle_telemetry import CycleTelemetry
+
+        telemetry = CycleTelemetry()
+        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            telemetry=telemetry,
+        ))
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))  # -0.5%
+
+        use_case.run("AAPL")
+
+        assert use_case.telemetry is telemetry
+        assert use_case.paid_calls is telemetry.paid_calls
+        assert telemetry.snapshot().gated == 1

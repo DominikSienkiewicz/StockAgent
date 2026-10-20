@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from src.application.agent_graph import AgentGraphDeps, AgentState, create_agent_graph
+from src.application.cycle_telemetry import CycleTelemetry
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, is_reference_stale
 from src.domain.experiment import active_arms
@@ -24,11 +25,11 @@ class AnalyzeMarketUseCase:
 
     def __init__(self, deps: AgentGraphDeps) -> None:
         self._repository = deps.repository_port
-        # Licznik płatnych wywołań CAŁEGO cyklu — jeden na use case, nie na symbol.
+        # Telemetria CAŁEGO cyklu (ARCH-11) — jedna na use case, nie na symbol.
         # Wystawiamy TEN SAM egzemplarz, który dostaną węzły grafu (`deps` idzie
-        # do fabryki nietknięty), inaczej `paid_calls` zostałoby puste mimo
-        # płatnych wywołań i raport FinOps pokazałby zerowy koszt cyklu.
-        self.paid_calls: Counter[str] = deps.paid_call_meter
+        # do fabryki nietknięty), inaczej licznik płatnych wywołań zostałby pusty
+        # i raport FinOps pokazałby zerowy koszt cyklu.
+        self.telemetry: CycleTelemetry = deps.telemetry
         self._ml_port = deps.ml_port
         self._experiments = deps.experiments
         workflow = create_agent_graph(deps)
@@ -36,6 +37,12 @@ class AnalyzeMarketUseCase:
         # więc kompilujemy RAZ tutaj i reużywamy aplikację w każdym run().
         # Inaczej przy 43 symbolach na cykl rekompilowalibyśmy graf 43×.
         self._app = workflow.compile()
+
+    @property
+    def paid_calls(self) -> Counter[str]:
+        """Żywy licznik płatnych wywołań cyklu (`telemetry.paid_calls`); spójny
+        odczyt wszystkich metryk daje `telemetry.snapshot()`."""
+        return self.telemetry.paid_calls
 
     @property
     def ml_model_loaded(self) -> bool:
