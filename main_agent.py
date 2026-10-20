@@ -535,7 +535,8 @@ def _collect_portfolio_fx(
 def _quote_held_positions(
     settings: Settings, portfolio: Portfolio | None, watchlist: list[str]
 ) -> dict[str, Decimal]:
-    """PORT-07 — darmowa cena pozycji spoza watchlisty: SAM `/quote` przez
+    """PORT-07 — darmowa cena pozycji spoza `watchlist` (symboli wycenionych
+    w cyklu; w dzień zamknięcia NYSE samo krypto, FIN-34): SAM `/quote` przez
     `build_market_port` (Finnhub / CoinGecko).
 
     Bez `save_price_snapshot` (należy wyłącznie do Fast Loopa i bramki), bez
@@ -2161,10 +2162,15 @@ def _dispatch_reports(
     all_symbols: list[str],
     context: ReportContext,
     legacy_push_notifier: ReportNotifierPort | None = None,
+    cycle_symbols: list[str] | None = None,
 ) -> None:
     """Faza wysyłki: dociągnięcie danych raportu, zbudowanie raportu i rozesłanie
     — pojedynczo albo per subskrybent (raport tnięty do jego watchlisty). Cała
     faza jest best-effort: błąd wysyłki nie psuje exit-code cyklu.
+
+    `cycle_symbols` (FIN-34) to symbole, które TEN cykl wycenił w grafie; None =
+    cała watchlista. W dzień zamknięcia NYSE to samo krypto, więc trzymane akcje
+    z watchlisty dostają darmowy `/quote` jak pozycje spoza niej (PORT-07).
 
     `context` przynosi sekcje policzone JESZCZE PRZED wysyłką (ryzyko makro,
     radar portfela, alfa, koszt cyklu); resztę pól dokłada ta funkcja z odczytów
@@ -2208,8 +2214,10 @@ def _dispatch_reports(
         model_scorecard = _build_model_scorecard(settings, repository)
         # #15: realny portfel użytkownika (flaga + migracja 023).
         user_portfolio = _build_user_portfolio(settings)
-        # PORT-07: pozycje spoza watchlisty dostają sam darmowy /quote.
-        held_prices = _quote_held_positions(settings, user_portfolio, all_symbols)
+        # PORT-07: pozycje spoza symboli cyklu dostają sam darmowy /quote.
+        held_prices = _quote_held_positions(
+            settings, user_portfolio, all_symbols if cycle_symbols is None else cycle_symbols
+        )
         # PORT-11: kursy NBP do „P/L zł” (darmowe, poza bramką volatility).
         portfolio_fx = _collect_portfolio_fx(settings, user_portfolio, started_at)
         # PORT-04: ryzyko realnego portfela do sizingu (flaga + pozycje), wagi
@@ -2584,6 +2592,7 @@ def main(
         web_publisher=web_publisher,
         subscribers=subscribers,
         all_symbols=all_symbols,
+        cycle_symbols=cycle_symbols,
         legacy_push_notifier=legacy_push_notifier,
         context=ReportContext(
             macro_risk_report=macro_risk_report,

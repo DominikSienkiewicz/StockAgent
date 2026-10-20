@@ -4880,3 +4880,121 @@ class TestStubbedPaidPortsRefuseDatabaseWrites:
 
         assert main_agent.main(settings) == 0
         build_use_case.assert_called_once()
+
+
+class TestClosedDayHeldStockQuotes:
+    """FIN-34 (decyzja 2026-10-20): w dzień zamknięcia NYSE akcje nie idą do grafu,
+    więc trzymana akcja z watchlisty nie ma ceny z wyników cyklu. Dostaje sam
+    darmowy `/quote` (ścieżka PORT-07) — sekcja 💼 jest wyceniona, zero płatnych."""
+
+    _CHRISTMAS = datetime(2026, 12, 25, 5, 30, tzinfo=UTC)
+    _PAID_FACTORIES = (
+        "build_use_case",
+        "build_llm_adapter",
+        "build_council_adapter",
+        "build_council_llm_adapter",
+        "build_embedding_adapter",
+        "build_alpha_enrichment",
+        "build_tool_use_adapter",
+    )
+
+    @staticmethod
+    def _portfolio(*symbols: str) -> "main_agent.Portfolio":
+        from datetime import date
+
+        from src.domain.portfolio import Position
+
+        return main_agent.Portfolio(
+            positions=tuple(
+                Position(
+                    symbol=symbol,
+                    quantity=Decimal("2"),
+                    purchase_price=Decimal("100"),
+                    purchase_date=date(2026, 10, 1),
+                )
+                for symbol in symbols
+            ),
+            as_of=datetime(2026, 12, 24, 5, 0, tzinfo=UTC),
+        )
+
+    def test_held_watchlist_stock_gets_a_free_quote_when_only_crypto_ran(
+        self, settings, mocker
+    ) -> None:
+        from src.application.ports import MarketDataPort
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.value_objects import Money
+
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(
+            "main_agent._build_user_portfolio", return_value=self._portfolio("AAPL", "BTC")
+        )
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        report = mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+        market = MagicMock(spec=MarketDataPort)
+        market.get_current_price.return_value = Money(Decimal("229.10"))
+        mocker.patch("main_agent.build_market_port", return_value=market)
+        paid = {name: mocker.patch(f"main_agent.{name}") for name in self._PAID_FACTORIES}
+        repository = MagicMock(spec=RepositoryPort)
+
+        main_agent._dispatch_reports(
+            results=[
+                main_agent.SymbolResult(
+                    symbol="BTC", status="ignored", current_price=Decimal("65000")
+                )
+            ],
+            started_at=self._CHRISTMAS,
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=repository,
+            quota_monitor=QuotaMonitor(),
+            notifier=MagicMock(),
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL", "VOO", "BTC"],
+            cycle_symbols=["BTC"],
+            context=main_agent.ReportContext(),
+        )
+
+        market.get_current_price.assert_called_once_with("AAPL")
+        repository.save_price_snapshot.assert_not_called()
+        for name, factory in paid.items():
+            assert not factory.called, name
+        assert report.call_args_list[0].args[3].held_prices == {"AAPL": Decimal("229.10")}
+
+    def test_closed_day_passes_only_the_cycle_symbols_to_the_report(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.nyse_closure_skip_enabled = True
+        settings.crypto_symbols = ["BTC"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings, clock=lambda: self._CHRISTMAS)
+
+        kwargs = dispatch.call_args.kwargs
+        assert kwargs["cycle_symbols"] == ["BTC"]
+        assert kwargs["all_symbols"] == ["AAPL", "VOO", "BTC"]
+
+    def test_trading_day_cycle_covers_the_whole_watchlist(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.nyse_closure_skip_enabled = True
+        settings.crypto_symbols = ["BTC"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings, clock=lambda: datetime(2026, 12, 23, 5, 30, tzinfo=UTC))
+
+        assert dispatch.call_args.kwargs["cycle_symbols"] == ["AAPL", "VOO", "BTC"]
