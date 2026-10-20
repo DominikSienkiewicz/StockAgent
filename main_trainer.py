@@ -23,6 +23,7 @@ from typing import Any
 from main_agent import (
     STUB_WRITES_REFUSED_EXIT_CODE,
     build_notifier,
+    llm_fallback_available,
     persist_llm_calls,
     refuses_stub_writes,
     run_with_heartbeat,
@@ -70,6 +71,8 @@ WEEKLY_RECAP_DAYS = 7
 # pierwszeństwo przy przycinaniu budżetem tygodniowym.
 RECAP_JOB = "recap"
 JUDGE_JOB = "judge"
+# NIEZ-44: rezerwa przydziału joba na request do zapasowego dostawcy LLM.
+FALLBACK_LLM_CALLS_PER_JOB = 1
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
@@ -265,15 +268,25 @@ def _build_llm_or_unavailable(
         return UnavailableLLMAdapter(type(exc).__name__)
 
 
-def _requested_llm_calls(settings: Settings) -> dict[str, int]:
+def _requested_llm_calls(settings: Settings, extra_per_job: int = 0) -> dict[str, int]:
     """FIN-30: płatne wywołania LLM włączonych jobów przebiegu. Recap idzie przed
-    sędzią kalibracji: to on trafia do użytkownika, więc przycięcie bierze sędziego."""
+    sędzią kalibracji: to on trafia do użytkownika, więc przycięcie bierze sędziego.
+    `extra_per_job` (NIEZ-44) — rezerwa na request do zapasowego dostawcy LLM."""
     requested: dict[str, int] = {}
     if settings.weekly_recap_enabled:
-        requested[RECAP_JOB] = RECAP_LLM_CALLS
+        requested[RECAP_JOB] = RECAP_LLM_CALLS + extra_per_job
     if settings.calibration_judge_enabled:
-        requested[JUDGE_JOB] = JUDGE_LLM_CALLS
+        requested[JUDGE_JOB] = JUDGE_LLM_CALLS + extra_per_job
     return requested
+
+
+def _fallback_llm_calls(settings: Settings) -> int:
+    """NIEZ-44 (decyzja 2026-10-20): z działającym zapasowym dostawcą każdy job prosi
+    o +1 wywołanie — zużywa je wyłącznie request do zapasowego po awarii głównego.
+    Atrapy FIN-35 nie mają failovera. Sufit tygodniowy przycina jak dotąd."""
+    if settings.paid_calls_enabled and llm_fallback_available(settings):
+        return FALLBACK_LLM_CALLS_PER_JOB
+    return 0
 
 
 class _SlowLoopPaidLLM:
@@ -292,7 +305,9 @@ class _SlowLoopPaidLLM:
         self._quota_monitor = quota_monitor
         self._ledger = ledger
         self._cap = settings.slow_loop_max_paid_llm_calls_per_week
-        self._allowed = slow_loop_paid_budget(_requested_llm_calls(settings), self._cap)
+        self._allowed = slow_loop_paid_budget(
+            _requested_llm_calls(settings, _fallback_llm_calls(settings)), self._cap
+        )
         self.telemetry = CycleTelemetry()
         logger.info("Slow Loop LLM budget — allowed=%s cap=%s", self._allowed, self._cap)
 

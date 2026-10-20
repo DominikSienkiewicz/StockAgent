@@ -277,11 +277,7 @@ def _with_llm_fallback(
     provider = settings.llm_fallback_provider
     if provider is None:
         return primary
-    key_name, key = (
-        ("ANTHROPIC_API_KEY", settings.anthropic_api_key)
-        if provider == "anthropic"
-        else ("OPENAI_API_KEY", settings.openai_api_key)
-    )
+    key_name, key = _fallback_api_key(settings)
     if not key:
         logger.warning(
             "llm_fallback_provider=%s, ale %s nie jest ustawiony — LLM bez failovera",
@@ -298,6 +294,20 @@ def _with_llm_fallback(
     if allowance is not None:
         secondary = BudgetedLLMPort(secondary, allowance=allowance)
     return FailoverLLMAdapter(primary, secondary, provider=provider, model=model)
+
+
+def _fallback_api_key(settings: Settings) -> tuple[str, str | None]:
+    """NIEZ-44: (nazwa zmiennej, wartość) klucza dostawcy zapasowego."""
+    if settings.llm_fallback_provider == "anthropic":
+        return "ANTHROPIC_API_KEY", settings.anthropic_api_key
+    return "OPENAI_API_KEY", settings.openai_api_key
+
+
+def llm_fallback_available(settings: Settings) -> bool:
+    """NIEZ-44: czy `build_llm_adapter` zbuduje zapasowego dostawcę — ustawiony
+    `llm_fallback_provider` i jego klucz. Slow Loop prosi wtedy budżet FIN-30
+    o +1 wywołanie na job."""
+    return settings.llm_fallback_provider is not None and bool(_fallback_api_key(settings)[1])
 
 
 def _build_primary_llm(

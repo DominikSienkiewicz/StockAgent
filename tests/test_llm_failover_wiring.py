@@ -194,22 +194,30 @@ class TestFastLoopWiring:
 
 
 class TestSlowLoopWiring:
-    """Decyzja 2026-10-20: request do zapasowego przechodzi przez tygodniowy
+    """Decyzje 2026-10-20: request do zapasowego przechodzi przez tygodniowy
     przydział joba (FIN-30) i zużywa go; przy wyczerpanym przydziale failover nie
-    startuje, a błąd głównego idzie dalej jak dotąd."""
+    startuje, a błąd głównego idzie dalej jak dotąd. Z działającym fallbackiem każdy
+    job prosi `slow_loop_paid_budget` o +1 wywołanie (recap 2, sędzia 2) — tylko na
+    request do zapasowego; sufit tygodniowy zostaje twardy."""
 
-    def test_fallback_call_spends_the_job_allowance(
-        self, settings, mocker, failing_primary, secondary
+    @staticmethod
+    def _paid(settings, caplog) -> main_trainer._SlowLoopPaidLLM:
+        with caplog.at_level(logging.INFO, logger="main_trainer"):
+            return main_trainer._SlowLoopPaidLLM(settings, QuotaMonitor(), UsageLedger())
+
+    def test_with_a_fallback_recap_gets_two_calls_and_fails_over(
+        self, settings, mocker, failing_primary, secondary, caplog
     ) -> None:
         from src.application.metering import PaidBudgetExhausted
 
         settings.llm_fallback_provider = "openai"
         settings.weekly_recap_enabled = True
-        mocker.patch("main_trainer.RECAP_LLM_CALLS", 2)
+        settings.calibration_judge_enabled = True
         mocker.patch("main_agent._build_single_llm", return_value=secondary)
-        paid = main_trainer._SlowLoopPaidLLM(settings, QuotaMonitor(), UsageLedger())
+        paid = self._paid(settings, caplog)
         port = paid.port_for(main_trainer.RECAP_JOB)
 
+        assert "allowed={'recap': 2, 'judge': 2}" in caplog.text
         assert port.analyze("prompt")["trend_direction"] == "BULLISH"
         # Jeden request do głównego (meter joba) + jeden do zapasowego = cały przydział.
         assert dict(paid.telemetry.snapshot().paid_calls) == {"llm": 2}
@@ -218,36 +226,77 @@ class TestSlowLoopWiring:
         assert failing_primary.analyze.call_count == 1
         assert secondary.analyze.call_count == 1
 
-    def test_spent_allowance_skips_the_failover(
-        self, settings, mocker, failing_primary, secondary
-    ) -> None:
-        # Recap ma dziś przydział 1 — zużywa go request do głównego.
+    def test_without_a_fallback_each_job_keeps_one_call(self, settings, mocker, caplog) -> None:
+        from src.application.metering import PaidBudgetExhausted
+
+        primary = Mock(spec=LLMPort)
+        primary.analyze.return_value = {"trend_direction": "SIDEWAYS"}
+        mocker.patch(
+            "src.infrastructure.llm.anthropic_client.AnthropicAdapter", return_value=primary
+        )
+        settings.weekly_recap_enabled = True
+        settings.calibration_judge_enabled = True
+        paid = self._paid(settings, caplog)
+        port = paid.port_for(main_trainer.RECAP_JOB)
+
+        assert "allowed={'recap': 1, 'judge': 1}" in caplog.text
+        port.analyze("prompt")
+        with pytest.raises(PaidBudgetExhausted):
+            port.analyze("prompt")
+        assert primary.analyze.call_count == 1
+
+    def test_fallback_without_its_key_adds_no_call(self, settings, caplog) -> None:
+        # Adapter zapasowy nie powstanie (brak klucza), więc nie ma czego budżetować.
+        settings.llm_provider = "openai"
+        settings.llm_fallback_provider = "anthropic"
+        settings.anthropic_api_key = None
+        settings.weekly_recap_enabled = True
+
+        self._paid(settings, caplog)
+
+        assert "allowed={'recap': 1}" in caplog.text
+
+    def test_local_stub_run_adds_no_call(self, settings, caplog) -> None:
+        settings.paid_calls_enabled = False
         settings.llm_fallback_provider = "openai"
         settings.weekly_recap_enabled = True
+
+        self._paid(settings, caplog)
+
+        assert "allowed={'recap': 1}" in caplog.text
+
+    def test_weekly_ceiling_stays_hard(
+        self, settings, mocker, failing_primary, secondary, caplog
+    ) -> None:
+        # Sufit 3: recap ma pierwszeństwo (2), sędzia dostaje resztę (1) — jego jedyne
+        # wywołanie zużywa request do głównego, więc failover sędziego nie startuje.
+        settings.llm_fallback_provider = "openai"
+        settings.weekly_recap_enabled = True
+        settings.calibration_judge_enabled = True
+        settings.slow_loop_max_paid_llm_calls_per_week = 3
         mocker.patch("main_agent._build_single_llm", return_value=secondary)
-        paid = main_trainer._SlowLoopPaidLLM(settings, QuotaMonitor(), UsageLedger())
+        paid = self._paid(settings, caplog)
 
+        assert "allowed={'recap': 2, 'judge': 1}" in caplog.text
         with pytest.raises(TimeoutError):
-            paid.port_for(main_trainer.RECAP_JOB).analyze("prompt")
-
+            paid.port_for(main_trainer.JUDGE_JOB).analyze("prompt")
         secondary.analyze.assert_not_called()
         assert dict(paid.telemetry.snapshot().paid_calls) == {"llm": 1}
 
     def test_jobs_keep_separate_allowances(
-        self, settings, mocker, failing_primary, secondary
+        self, settings, mocker, failing_primary, secondary, caplog
     ) -> None:
         settings.llm_fallback_provider = "openai"
         settings.weekly_recap_enabled = True
         settings.calibration_judge_enabled = True
-        mocker.patch("main_trainer.RECAP_LLM_CALLS", 2)
         mocker.patch("main_agent._build_single_llm", return_value=secondary)
-        paid = main_trainer._SlowLoopPaidLLM(settings, QuotaMonitor(), UsageLedger())
+        paid = self._paid(settings, caplog)
 
         paid.port_for(main_trainer.RECAP_JOB).analyze("prompt")
-        with pytest.raises(TimeoutError):
-            paid.port_for(main_trainer.JUDGE_JOB).analyze("prompt")
+        paid.port_for(main_trainer.JUDGE_JOB).analyze("prompt")
 
-        assert secondary.analyze.call_count == 1
+        # Failover recapu nie zjada przydziału sędziego.
+        assert secondary.analyze.call_count == 2
 
     def test_local_stub_run_has_no_failover(self, settings, mocker) -> None:
         settings.paid_calls_enabled = False
