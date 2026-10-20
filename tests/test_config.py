@@ -1,6 +1,9 @@
+import base64
+import json
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from src.config import Settings
 
@@ -889,3 +892,65 @@ class TestDbWritesFlag:
             _env_file=None, **REQUIRED_ENV_KWARGS, db_writes_enabled=True
         ).config_hash()
         assert flipped == baseline
+
+
+def _unsigned_jwt(claims: dict[str, object]) -> str:
+    """JWT w formacie kluczy legacy Supabase; podpis jest atrapą, bo walidator go
+    nie sprawdza (rolę czyta z payloadu)."""
+
+    def segment(data: dict[str, object]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
+
+    return f"{segment({'alg': 'HS256', 'typ': 'JWT'})}.{segment(claims)}.signature"
+
+
+class TestSupabaseKeyRole:
+    """BEZ-10: po migracji 038 (RLS) klucz publiczny Supabase nie odczyta ani nie
+    zapisze niczego, więc start z nim ma się zatrzymać z jasnym komunikatem, a nie
+    produkować cykl pustych odczytów. Klucz nie może wyciec do komunikatu błędu."""
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "sb_publishable_0123456789abcdef",
+            _unsigned_jwt({"iss": "supabase", "ref": "project", "role": "anon"}),
+            _unsigned_jwt({"iss": "supabase", "ref": "project", "role": "authenticated"}),
+        ],
+        ids=["publishable", "legacy-anon-jwt", "authenticated-jwt"],
+    )
+    def test_rejects_public_supabase_key(self, env, key):
+        env.setenv("SUPABASE_KEY", key)
+
+        with pytest.raises(ValidationError, match="sb_secret_") as raised:
+            Settings(_env_file=None)
+
+        assert "service_role" in str(raised.value)
+        assert key not in str(raised.value)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "sb_secret_0123456789abcdef",
+            _unsigned_jwt({"iss": "supabase", "ref": "project", "role": "service_role"}),
+            # Fikstury testów i nieprzezroczyste stringi: bez prefiksu i bez JWT.
+            "supa-key",
+            "anon",
+            "not.a-jwt.payload",
+            _unsigned_jwt({"iss": "supabase"}),
+        ],
+        ids=[
+            "secret", "service-role-jwt", "fixture", "bare-anon-word", "dotted", "jwt-without-role",
+        ],
+    )
+    def test_accepts_secret_and_opaque_keys(self, env, key):
+        env.setenv("SUPABASE_KEY", key)
+
+        assert Settings(_env_file=None).supabase_key == key
+
+    def test_other_validation_errors_do_not_echo_the_key(self, env):
+        """`hide_input_in_errors`: błąd innego pola nie wypisuje wejścia, więc
+        traceback startu nie niesie wartości sekretów."""
+        with pytest.raises(ValidationError) as raised:
+            Settings(_env_file=None, supabase_key=["sb_secret_list-instead-of-str"])
+
+        assert "sb_secret_list-instead-of-str" not in str(raised.value)

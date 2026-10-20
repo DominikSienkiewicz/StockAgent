@@ -10,7 +10,7 @@ Stack, prerequisites, local setup, and CI. Tunables live in [configuration.md](c
 - **OpenAI Python SDK** v2 — `gpt-5-mini` advisory council + `text-embedding-3-small` embeddings, JSON mode
 - **Anthropic Python SDK** (core dependency) — Claude Sonnet 4.6, **default model for the main analysis**
 - **XGBoost 3.2** + scikit-learn — sklearn-style API, native `.ubj` (UBJSON) format
-- **Supabase** (Postgres 16 + pgvector) — REST via `supabase-py`, service_role key
+- **Supabase** (Postgres 16 + pgvector) — REST via `supabase-py`, secret / service_role key
 - **Resend.com** — HTML email, sandbox sender without domain verification
 - **Pydantic Settings** v2 — typed env vars from `.env` with validators (CSV → list)
 - **requests** + `urllib3.Retry` — shared session with exponential backoff on 429 / 5xx
@@ -113,12 +113,14 @@ ALPHA_VANTAGE_API_KEYS=key1,key2,key3   # CSV — rotation on rate-limit
 
 # Database (Supabase)
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=eyJ...                     # service_role key
+SUPABASE_KEY=sb_secret_...              # secret key (or the legacy service_role JWT)
 
 # Email — recipient is a secret; sender + on/off toggle live in config.toml
 RESEND_API_KEY=re_...
 DIGEST_TO_EMAIL=you@example.com
 ```
+
+`SUPABASE_KEY` must be the project's secret key (`sb_secret_…`, Supabase dashboard → Project Settings → API Keys) or the legacy `service_role` JWT, because migration `038` turns on Row Level Security and the app relies on that key bypassing it. `Settings` refuses to start with a public key (BEZ-10): a publishable key (`sb_publishable_…`) or a JWT whose `role` claim is `anon` or `authenticated` stops every entry point with a validation error that names the fix and does not print the key. The check reads the `role` claim without verifying the signature and lets any other string through.
 
 Everything else — `symbols`, `symbols_etf`, `volatility_threshold`, `crypto_symbols`, `council_llm_provider/model`, `risk_symbols`, `nbp_enabled`, `symbol_throttle_seconds`, `notifications_enabled`, `digest_from_email`, … — is edited in [`config.toml`](../config.toml). Any value can still be overridden by an environment variable (precedence: **env → `.env` → `config.toml` → code defaults**), e.g. `SYMBOL_THROTTLE_SECONDS=0` for a quick local run.
 

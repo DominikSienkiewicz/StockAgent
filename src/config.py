@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -187,6 +188,30 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
 })
 
 
+# BEZ-10: klucze Supabase działające jako role API, które po migracji 038 (RLS bez
+# polityk i REVOKE) nie widzą żadnego wiersza: publishable (nowy format) oraz
+# legacy JWT z rolą anon / authenticated. Aplikacja potrzebuje klucza secret
+# (`sb_secret_…`) albo legacy JWT service_role, które omijają RLS.
+_PUBLIC_SUPABASE_KEY_PREFIX = "sb_publishable_"
+_PUBLIC_SUPABASE_JWT_ROLES = frozenset({"anon", "authenticated"})
+
+
+def _supabase_jwt_role(key: str) -> str | None:
+    """Claim `role` z payloadu JWT, bez weryfikacji podpisu (to nie uwierzytelnienie,
+    tylko rozpoznanie rodzaju klucza). None, gdy klucz nie jest JWT albo nie ma roli."""
+    parts = key.split(".")
+    if len(parts) != 3:
+        return None
+    payload = parts[1]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except ValueError:
+        # binascii.Error, UnicodeDecodeError i JSONDecodeError dziedziczą po ValueError.
+        return None
+    role = claims.get("role") if isinstance(claims, dict) else None
+    return role if isinstance(role, str) else None
+
+
 class ExperimentSettings(BaseModel):
     """EXP-05: jeden wpis `[experiments.<id>]` z `config.toml`. Domenową
     walidację (ramiona, metryka, okno) robi `Experiment` przy starcie."""
@@ -220,6 +245,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        # BEZ-10: błąd walidacji nie wypisuje wejścia — traceback startu nie może
+        # nieść wartości sekretu (klucza Supabase, tokenu), nawet gdy pole ma zły typ.
+        hide_input_in_errors=True,
     )
 
     @classmethod
@@ -618,6 +646,27 @@ class Settings(BaseSettings):
         gotową listę przepuszczamy bez zmian."""
         if isinstance(value, str):
             return [s.strip() for s in value.split(",") if s.strip()]
+        return value
+
+    @field_validator("supabase_key")
+    @classmethod
+    def _reject_public_supabase_key(cls, value: str) -> str:
+        """BEZ-10: klucz publiczny zatrzymuje start (fail-fast). Po migracji 038 każdy
+        odczyt nim zwraca pusto albo 401, a zapis pada — cykl wyglądałby na zdrowy,
+        ale pracowałby na pustej bazie. Nieprzezroczyste stringi (fikstury testów)
+        przechodzą: odrzucamy tylko to, co da się rozpoznać jako klucz publiczny."""
+        is_public = (
+            value.startswith(_PUBLIC_SUPABASE_KEY_PREFIX)
+            or _supabase_jwt_role(value) in _PUBLIC_SUPABASE_JWT_ROLES
+        )
+        if is_public:
+            raise ValueError(
+                "SUPABASE_KEY is a public Supabase key (publishable or anon / authenticated "
+                "JWT). With Row Level Security on (migration 038) it can read and write "
+                "nothing. Set the secret key (sb_secret_...) or the legacy service_role key "
+                "in .env and in the GitHub SUPABASE_KEY secret "
+                "(Supabase dashboard -> Project Settings -> API Keys)."
+            )
         return value
 
     @field_validator("display_timezone")
