@@ -1531,6 +1531,20 @@ class TestAttestationRevealSweep:
 
         return dict(pub.publish_reveal.call_args.args[0])
 
+    def test_reveals_symbol_removed_from_config(self, settings) -> None:
+        # WIA-03: sweep nie zna watchlisty ani okna track recordu — commitment
+        # symbolu wyrzuconego z config.toml też musi zostać ujawniony.
+        settings.symbols = ["AAPL"]
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [{**self._row("p-1"), "symbol": "VOO"}]
+        pub = MagicMock(spec=AttestationPublisherPort)
+        pub.publish_reveal.return_value = "public/attestation/reveals.jsonl"
+
+        assert main_agent._sweep_reveals(repo, pub) == 1
+
+        repo.get_unrevealed_commitments.assert_called_once_with()
+        assert pub.publish_reveal.call_args.args[0]["symbol"] == "VOO"
+
     def test_reveal_publishes_stored_payload_verbatim(self) -> None:
         # WIA-70: weryfikacja bajt w bajt — niezależna od typów kolumn i od floatów,
         # w których PostgREST oddaje NUMERIC (100.0 zamiast "100.0000").

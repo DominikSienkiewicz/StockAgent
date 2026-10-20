@@ -942,7 +942,7 @@ class SupabaseRepository(RepositoryPort):
             out[str(name)] = (float(hit_rate), int(votes))
         return out
 
-    def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
+    def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:
         # Graceful: brak migracji 024 → [] (sweep nie ma czego ujawnić). WIA-70:
         # brak samej kolumny z 043 → stare wiersze ujawniamy z kolumn, jak dotąd.
         try:
@@ -960,8 +960,9 @@ class SupabaseRepository(RepositoryPort):
             )
             return []
 
-    def _unrevealed_commitments(self, days: int, *, with_payload: bool) -> list[dict[str, Any]]:
-        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    def _unrevealed_commitments(
+        self, days: int | None, *, with_payload: bool
+    ) -> list[dict[str, Any]]:
         columns = (
             "id, symbol, predicted_trend, predicted_target_price, "
             "price_at_prediction, actual_price_after_12h, "
@@ -969,12 +970,14 @@ class SupabaseRepository(RepositoryPort):
         )
         if with_payload:
             columns += f", {_COMMITMENT_PAYLOAD_COLUMN}"
+        query = self._client.table(self._table).select(columns)
+        # WIA-03: sweep nie podaje okna — commitment starszy niż okno track recordu
+        # też musi zostać ujawniony, inaczej wygląda jak ukryte pudło.
+        if days is not None:
+            query = query.gte("timestamp", (datetime.now(UTC) - timedelta(days=days)).isoformat())
         # NIEZ-15: bez paginacji sweep widział max ~1000 commitmentów.
         query = (
-            self._client.table(self._table)
-            .select(columns)
-            .gte("timestamp", cutoff)
-            .not_.is_("commitment_hash", "null")
+            query.not_.is_("commitment_hash", "null")
             .not_.is_("actual_price_after_12h", "null")
             .is_("revealed_at", "null")
             .order("timestamp", desc=False)

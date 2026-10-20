@@ -213,7 +213,7 @@ class ReadOnlyRepository(RepositoryPort):
     ) -> list[dict[str, Any]]:
         return self._delegate.get_settled_moves(days, with_intervals=with_intervals)
 
-    def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
+    def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:
         return self._delegate.get_unrevealed_commitments(days=days)
 
     def attestation_columns_available(self) -> bool:

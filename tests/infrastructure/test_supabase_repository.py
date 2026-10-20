@@ -2931,6 +2931,28 @@ class TestCommitmentPayloadColumn:
         assert rows == [{"id": "p-1"}]
         assert "commitment_payload" not in builder.select.call_args.args[0]
 
+    def test_unrevealed_commitments_have_no_time_window_by_default(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # WIA-03: nieujawniony commitment starszy niż okno track recordu wygląda
+        # jak ukryte pudło — sweep czyta wszystkie, bez okna i bez filtra watchlisty.
+        builder = _fluent_query(mock_client, [[]])
+
+        repo.get_unrevealed_commitments()
+
+        builder.gte.assert_not_called()
+        builder.in_.assert_not_called()
+        assert "symbol" not in [c.args[0] for c in builder.eq.call_args_list]
+
+    def test_unrevealed_commitments_honour_an_explicit_window(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [[]])
+
+        repo.get_unrevealed_commitments(30)
+
+        assert builder.gte.call_args.args[0] == "timestamp"
+
     def test_attestation_columns_available_when_the_select_succeeds(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:

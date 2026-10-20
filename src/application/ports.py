@@ -370,12 +370,14 @@ class RepositoryPort(ABC):
         pokrycia — WYMAGA migracji 032 (inaczej PostgREST zwraca 400)."""
 
     @abstractmethod
-    def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
+    def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:
         """#16 — ROZLICZONE predykcje z commitmentem, jeszcze nieujawnione.
 
         Napędza sweep: bez niego predykcje symboli usuniętych z `config.toml`
         nigdy nie zostałyby ujawnione, a dla sceptyka wygląda to jak ukrywanie
         nietrafień. Pusta lista = nic do ujawnienia / brak migracji 024.
+        WIA-03: domyślnie bez okna czasowego i bez filtra symboli; `days`
+        zawęża do ostatnich dni (sweep go nie podaje).
         WIA-70: wiersz niesie `commitment_payload` (dosłowny plaintext, migracja
         043); przed migracją klucza nie ma, a stare wiersze mają None."""
 

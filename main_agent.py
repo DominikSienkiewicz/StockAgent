@@ -2357,7 +2357,8 @@ def _sweep_reveals(
     Sweep, nie „reveal przy rozliczeniu": predykcje symboli usuniętych z
     `config.toml` nigdy nie przeszłyby przez reflect, więc ich commitmenty
     zostałyby na zawsze nieujawnione. Dla sceptyka wygląda to jak ukrywanie
-    nietrafień — a to niszczy cały sens weryfikowalnego track recordu.
+    nietrafień — a to niszczy cały sens weryfikowalnego track recordu. WIA-03:
+    dlatego odczyt nie ma ani filtra watchlisty, ani okna `track_record_days`.
 
     `revealed_at` stemplujemy DOPIERO po udanej publikacji. Odwrotna kolejność
     zgubiłaby nietrafienie na zawsze: oznaczone jako ujawnione, nigdy ujawnione.
