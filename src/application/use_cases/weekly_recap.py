@@ -185,6 +185,11 @@ def _extract_narrative(result: Any) -> str:
     return str(result) if result else ""
 
 
+# FIN-30: płatne wywołania LLM jednego przebiegu (narracja) — wkład recapu
+# do tygodniowego budżetu Slow Loopa.
+PAID_LLM_CALLS_PER_RUN = 1
+
+
 class WeeklyRecapUseCase:
     """Slow-Loopowa niedzielna retrospektywa z jedną narracją LLM."""
 

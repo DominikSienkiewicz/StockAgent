@@ -18,6 +18,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from main_agent import build_notifier
+from src.application.cycle_telemetry import CycleTelemetry
+from src.application.metering import BudgetedLLMPort, MeteredLLMPort
 from src.application.ml_features import FEATURE_SET_VERSION
 from src.application.ports import LLMPort, RepositoryPort
 from src.application.quota_monitor import QuotaMonitor
@@ -25,9 +27,16 @@ from src.application.report_weekly_recap import (
     render_weekly_recap_html,
     render_weekly_recap_text,
 )
+from src.application.use_cases.calibrate_confidence import (
+    PAID_LLM_CALLS_PER_RUN as JUDGE_LLM_CALLS,
+)
 from src.application.use_cases.train_model import POOLED_MODEL_SYMBOL, TrainModelUseCase
+from src.application.use_cases.weekly_recap import (
+    PAID_LLM_CALLS_PER_RUN as RECAP_LLM_CALLS,
+)
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
 from src.config import Settings
+from src.domain.finops import slow_loop_paid_budget
 from src.infrastructure.adapters.alpha_vantage_fundamentals import (
     AlphaVantageFundamentalsAdapter,
 )
@@ -41,6 +50,11 @@ from src.infrastructure.logging_redaction import configure_logging
 logger = logging.getLogger(__name__)
 
 WEEKLY_RECAP_DAYS = 7
+
+# FIN-30: joby Slow Loopa z płatnym LLM. Kolejność w `_requested_llm_calls` to
+# pierwszeństwo przy przycinaniu budżetem tygodniowym.
+RECAP_JOB = "recap"
+JUDGE_JOB = "judge"
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
@@ -178,10 +192,51 @@ def _build_llm_or_unavailable(settings: Settings, quota_monitor: QuotaMonitor) -
         return UnavailableLLMAdapter(type(exc).__name__)
 
 
-def _run_calibration_judge(
-    settings: Settings, repository: RepositoryPort, quota_monitor: QuotaMonitor
-) -> None:
-    """#4: LLM-as-Judge kalibracji pewności (Slow Loop, poza budżetem Fast Loopa)."""
+def _requested_llm_calls(settings: Settings) -> dict[str, int]:
+    """FIN-30: płatne wywołania LLM włączonych jobów przebiegu. Recap idzie przed
+    sędzią kalibracji: to on trafia do użytkownika, więc przycięcie bierze sędziego."""
+    requested: dict[str, int] = {}
+    if settings.weekly_recap_enabled:
+        requested[RECAP_JOB] = RECAP_LLM_CALLS
+    if settings.calibration_judge_enabled:
+        requested[JUDGE_JOB] = JUDGE_LLM_CALLS
+    return requested
+
+
+class _SlowLoopPaidLLM:
+    """FIN-30: jeden meter i jeden przydział tygodniowego budżetu LLM na przebieg.
+
+    Ten sam mechanizm co Fast Loop: `MeteredLLMPort` liczy każdy request w
+    `CycleTelemetry` pod kluczem cennika `llm`, a `BudgetedLLMPort` odrzuca
+    wywołanie ponad przydział domeny (`slow_loop_paid_budget`) przed dostawcą."""
+
+    def __init__(self, settings: Settings, quota_monitor: QuotaMonitor) -> None:
+        self._settings = settings
+        self._quota_monitor = quota_monitor
+        self._cap = settings.slow_loop_max_paid_llm_calls_per_week
+        self._allowed = slow_loop_paid_budget(_requested_llm_calls(settings), self._cap)
+        self.telemetry = CycleTelemetry()
+        logger.info("Slow Loop LLM budget — allowed=%s cap=%s", self._allowed, self._cap)
+
+    def port_for(self, job: str) -> LLMPort:
+        provider = _build_llm_or_unavailable(self._settings, self._quota_monitor)
+        # Adapter zastępczy nie wysyła requestu, więc nie trafia do licznika.
+        metered = (
+            provider
+            if isinstance(provider, UnavailableLLMAdapter)
+            else MeteredLLMPort(provider, self.telemetry, "llm")
+        )
+        return BudgetedLLMPort(metered, allowed=self._allowed.get(job, 0), job=job)
+
+    def log_spend(self) -> None:
+        spent = self.telemetry.snapshot().total_paid_calls
+        ceiling = "no weekly cap" if self._cap is None else str(self._cap)
+        logger.info("Slow Loop paid LLM calls: %d/%s", spent, ceiling)
+
+
+def _run_calibration_judge(repository: RepositoryPort, llm_port: LLMPort) -> None:
+    """#4: LLM-as-Judge kalibracji pewności (Slow Loop). FIN-30: jego wywołanie
+    LLM liczy się do tygodniowego budżetu Slow Loopa, nie do budżetu Fast Loopa."""
     try:
         from src.application.use_cases.calibrate_confidence import (
             CalibrateConfidenceUseCase,
@@ -189,7 +244,7 @@ def _run_calibration_judge(
 
         cal_result = CalibrateConfidenceUseCase(
             repository_port=repository,
-            llm_port=_build_llm_or_unavailable(settings, quota_monitor),
+            llm_port=llm_port,
         ).run(days=30)
         logger.info("Calibration judge — %s", cal_result.get("status"))
     except Exception:
@@ -197,10 +252,14 @@ def _run_calibration_judge(
 
 
 def _send_weekly_recap(
-    settings: Settings, repository: RepositoryPort, quota_monitor: QuotaMonitor
+    settings: Settings,
+    repository: RepositoryPort,
+    quota_monitor: QuotaMonitor,
+    llm_port: LLMPort,
 ) -> None:
     """#17: niedzielna retrospektywa. Slow Loop chodzi co tydzień i dotąd NIE
-    WYSYŁAŁ użytkownikowi nic. Koszt: dokładnie jedno wywołanie LLM tygodniowo.
+    WYSYŁAŁ użytkownikowi nic. Koszt: dokładnie jedno wywołanie LLM tygodniowo
+    (FIN-30: w tygodniowym budżecie Slow Loopa).
     Poniżej progu 5 zamkniętych predykcji use case zwraca `skipped_*` i mail
     NIE wychodzi — przy chudym tygodniu recap robiłby dramat z szumu.
     """
@@ -214,7 +273,7 @@ def _send_weekly_recap(
     try:
         recap_result = WeeklyRecapUseCase(
             repository_port=repository,
-            llm_port=_build_llm_or_unavailable(settings, quota_monitor),
+            llm_port=llm_port,
             crypto_symbols=settings.crypto_symbols,
         ).run(days=WEEKLY_RECAP_DAYS, since=since)
         if recap_result["status"] == "recap_ready":
@@ -254,11 +313,13 @@ def main(settings: Settings | None = None) -> int:
     failures = _train_symbols(settings, repository, use_case, trainable)
     failures += _train_pooled_model(settings, use_case, trainable)
 
+    paid_llm = _SlowLoopPaidLLM(settings, quota_monitor)
     if settings.calibration_judge_enabled:
-        _run_calibration_judge(settings, repository, quota_monitor)
+        _run_calibration_judge(repository, paid_llm.port_for(JUDGE_JOB))
 
     if settings.weekly_recap_enabled:
-        _send_weekly_recap(settings, repository, quota_monitor)
+        _send_weekly_recap(settings, repository, quota_monitor, paid_llm.port_for(RECAP_JOB))
+    paid_llm.log_spend()
 
     # NIEZ-03: alerty z sędziego i recapu (LLM, Resend) powstają po pierwszym zapisie.
     _persist_quota_alerts(repository, quota_monitor, start=persisted_alerts)

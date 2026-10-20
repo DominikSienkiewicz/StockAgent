@@ -4493,3 +4493,82 @@ class TestPaidCallCapWiring:
         main_agent.build_use_case(settings)
 
         assert use_case_cls.call_args.args[0].paid_call_cap is None
+
+
+class TestSlowLoopPaidBudget:
+    """FIN-30: płatne wywołania LLM Slow Loopa (recap, sędzia kalibracji) liczy ten
+    sam meter co Fast Loop, a tygodniowy budżet z domeny przycina je PRZED
+    wywołaniem dostawcy. Recap ma pierwszeństwo — to on trafia do użytkownika."""
+
+    def _trainer(self, settings, mocker) -> tuple[MagicMock, MagicMock, MagicMock]:
+        from src.application.ports import LLMPort
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        mocker.patch("main_trainer.build_notifier", return_value=MagicMock())
+        provider = MagicMock(spec=LLMPort)
+        provider.analyze.return_value = {"narrative": "opowieść"}
+        provider.analyze_mistake.return_value = "przepewny"
+        mocker.patch("main_agent.build_llm_adapter", return_value=provider)
+        recap_cls = mocker.patch("main_trainer.WeeklyRecapUseCase")
+        recap_cls.return_value.run.return_value = {"status": "skipped_below_threshold"}
+        judge_cls = mocker.patch(
+            "src.application.use_cases.calibrate_confidence.CalibrateConfidenceUseCase"
+        )
+        judge_cls.return_value.run.return_value = {"status": "calibrated"}
+        settings.symbols = ["AAPL"]
+        settings.weekly_recap_enabled = True
+        settings.calibration_judge_enabled = True
+        return provider, recap_cls, judge_cls
+
+    def test_job_past_the_weekly_cap_never_reaches_the_provider(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.application.metering import PaidBudgetExhausted
+
+        provider, recap_cls, judge_cls = self._trainer(settings, mocker)
+        settings.slow_loop_max_paid_llm_calls_per_week = 1
+
+        main_trainer.main(settings)
+
+        recap_llm = recap_cls.call_args.kwargs["llm_port"]
+        judge_llm = judge_cls.call_args.kwargs["llm_port"]
+        assert recap_llm.analyze("narracja") == {"narrative": "opowieść"}
+        with pytest.raises(PaidBudgetExhausted):
+            judge_llm.analyze_mistake("wniosek")
+        provider.analyze_mistake.assert_not_called()
+        judge_cls.return_value.run.assert_called_once()
+
+    def test_without_a_cap_both_jobs_reach_the_provider(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        provider, recap_cls, judge_cls = self._trainer(settings, mocker)
+
+        main_trainer.main(settings)
+
+        recap_cls.call_args.kwargs["llm_port"].analyze("narracja")
+        judge_cls.call_args.kwargs["llm_port"].analyze_mistake("wniosek")
+        provider.analyze.assert_called_once_with("narracja")
+        provider.analyze_mistake.assert_called_once_with("wniosek")
+
+    def test_paid_calls_of_the_run_are_metered_and_logged(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        _, recap_cls, judge_cls = self._trainer(settings, mocker)
+        settings.slow_loop_max_paid_llm_calls_per_week = 15
+
+        def recap_run(*_args, **_kwargs):
+            recap_cls.call_args.kwargs["llm_port"].analyze("narracja")
+            return {"status": "skipped_below_threshold"}
+
+        recap_cls.return_value.run.side_effect = recap_run
+        with caplog.at_level(logging.INFO, logger="main_trainer"):
+            main_trainer.main(settings)
+
+        assert any(
+            "Slow Loop paid LLM calls: 1/15" in rec.message for rec in caplog.records
+        ), [rec.message for rec in caplog.records]

@@ -271,3 +271,36 @@ def test_rank_by_magnitude_breaks_ties_alphabetically() -> None:
     # Malejąco po |Δ|; remis po |Δ| rozstrzyga alfabet, nie kolejność z config.toml.
     assert rank_by_magnitude(deltas) == ["AAPL", "NVDA", "AMD", "MSFT", "BTC"]
     assert rank_by_magnitude({}) == []
+
+
+# --- FIN-30: tygodniowy budżet płatnych wywołań LLM Slow Loopa -------------------
+
+
+def test_slow_loop_budget_trims_jobs_over_weekly_cap() -> None:
+    from src.domain.finops import slow_loop_paid_budget
+
+    requested = {"recap": 1, "judge": 1, "backfill": 5}
+
+    # Kolejność jobów to pierwszeństwo: ostatni dostaje resztę budżetu.
+    assert slow_loop_paid_budget(requested, 6) == {"recap": 1, "judge": 1, "backfill": 4}
+    assert slow_loop_paid_budget(requested, None) == requested
+
+
+def test_slow_loop_budget_gives_nothing_past_an_exhausted_cap() -> None:
+    from src.domain.finops import slow_loop_paid_budget
+
+    assert slow_loop_paid_budget({"recap": 1, "judge": 1}, 1) == {"recap": 1, "judge": 0}
+    assert slow_loop_paid_budget({"recap": 1, "judge": 1}, 0) == {"recap": 0, "judge": 0}
+
+
+@pytest.mark.parametrize(
+    ("requested", "cap", "field"),
+    [({"recap": -1}, 6, "recap"), ({"recap": 1}, -1, "cap")],
+)
+def test_slow_loop_budget_rejects_negative_inputs(
+    requested: dict[str, int], cap: int, field: str
+) -> None:
+    from src.domain.finops import slow_loop_paid_budget
+
+    with pytest.raises(ValueError, match=field):
+        slow_loop_paid_budget(requested, cap)

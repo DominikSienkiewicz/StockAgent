@@ -9,10 +9,14 @@ albo nie zdąży przed limitem czasu rady, też jest policzony (poszedł i koszt
 
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Any
 
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.ports import LLMPort
+
+logger = logging.getLogger(__name__)
 
 
 class MeteredLLMPort(LLMPort):
@@ -31,3 +35,40 @@ class MeteredLLMPort(LLMPort):
     def analyze_mistake(self, prompt: str) -> str:
         self._telemetry.record_paid_call(self._source)
         return self._inner.analyze_mistake(prompt)
+
+
+class PaidBudgetExhausted(RuntimeError):
+    """FIN-30: wywołanie LLM ponad przydział budżetu — odrzucone przed dostawcą."""
+
+
+class BudgetedLLMPort(LLMPort):
+    """Port LLM z twardym przydziałem `allowed` wywołań dla jednego joba.
+
+    Wywołanie ponad przydział rzuca `PaidBudgetExhausted` ZANIM dotrze do `inner`
+    (i do licznika `MeteredLLMPort` pod spodem), więc use case z deterministycznym
+    fallbackiem idzie swoją ścieżką awaryjną bez płatnego requestu."""
+
+    def __init__(self, inner: LLMPort, allowed: int, job: str) -> None:
+        self._inner = inner
+        self._remaining = allowed
+        self._job = job
+        self._lock = threading.Lock()
+
+    def analyze(self, prompt: str) -> dict[str, Any]:
+        self._spend()
+        return self._inner.analyze(prompt)
+
+    def analyze_mistake(self, prompt: str) -> str:
+        self._spend()
+        return self._inner.analyze_mistake(prompt)
+
+    def _spend(self) -> None:
+        with self._lock:
+            if self._remaining <= 0:
+                logger.warning(
+                    "paid LLM budget exhausted for job %s — call refused before "
+                    "the provider, the job falls back without LLM",
+                    self._job,
+                )
+                raise PaidBudgetExhausted(f"paid LLM budget exhausted for job {self._job}")
+            self._remaining -= 1

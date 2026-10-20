@@ -302,3 +302,9 @@ def test_real_config_toml_caps_paid_llm_calls_per_cycle() -> None:
     """FIN-12 (decyzja 2026-10-20): sufit 100 płatnych wywołań LLM na cykl."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["max_paid_llm_calls_per_cycle"] == 100
+
+
+def test_real_config_toml_caps_the_slow_loop_llm_week() -> None:
+    """FIN-30 (decyzja 2026-10-20): Slow Loop ma 15 płatnych wywołań LLM na tydzień."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["slow_loop_max_paid_llm_calls_per_week"] == 15

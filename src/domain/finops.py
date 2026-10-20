@@ -275,3 +275,27 @@ def rank_by_magnitude(deltas: Mapping[str, Decimal]) -> list[str]:
     Kolejność alfabetyczna (albo z config.toml) systematycznie odcinałaby budżetem
     te same symbole — największe ruchy mają pierwszeństwo do płatnej analizy."""
     return sorted(deltas, key=lambda symbol: (-abs(deltas[symbol]), symbol))
+
+
+def slow_loop_paid_budget(
+    calls_by_job: Mapping[str, int], cap: int | None
+) -> dict[str, int]:
+    """FIN-30: przydział tygodniowego budżetu płatnych wywołań LLM Slow Loopa.
+
+    Slow Loop chodzi poza bramką volatility (recap, sędzia kalibracji, przyszłe
+    joby diagnoz), więc jego koszt ogranicza ten sufit, a nie ruch ceny. Kolejność
+    `calls_by_job` to pierwszeństwo: każdy job dostaje min(żądane, reszta budżetu),
+    więc ostatni jest przycinany pierwszy. `cap` None = każdy job dostaje wszystko."""
+    if cap is not None and cap < 0:
+        raise ValueError(f"cap must be non-negative (got {cap})")
+    for job, requested in calls_by_job.items():
+        if requested < 0:
+            raise ValueError(f"{job} must request a non-negative number of calls (got {requested})")
+    if cap is None:
+        return dict(calls_by_job)
+    remaining = cap
+    allowed: dict[str, int] = {}
+    for job, requested in calls_by_job.items():
+        allowed[job] = min(requested, remaining)
+        remaining -= allowed[job]
+    return allowed

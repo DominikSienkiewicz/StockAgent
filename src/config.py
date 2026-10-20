@@ -136,6 +136,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # FIN-12: sufit kosztu cyklu decyduje, KTÓRE symbole dostają analizę, nie jaką —
     # prognoza przeanalizowanego symbolu jest identyczna z sufitem i bez.
     "max_paid_llm_calls_per_cycle",
+    # FIN-30: tygodniowy sufit LLM Slow Loopa (recap, sędzia) — inny job, nie Fast Loop.
+    "slow_loop_max_paid_llm_calls_per_week",
 })
 
 # WIA-20: pola przepisu — progi, modele, providerzy, symbole, źródła danych
@@ -532,6 +534,11 @@ class Settings(BaseSettings):
     # diagnoza pomyłki + każdy request rady). Miękki: symbol za bramką wchodzi,
     # dopóki wydane < sufit. None = bez limitu (config.toml: 100).
     max_paid_llm_calls_per_cycle: int | None = None
+    # FIN-30: sufit płatnych wywołań LLM Slow Loopa na tydzień (= przebieg cronu
+    # niedzielnego): recap, sędzia kalibracji i przyszłe joby diagnoz. Przydział
+    # liczy domena (`slow_loop_paid_budget`), recap ma pierwszeństwo. None = bez
+    # limitu, 0 = tydzień bez LLM (deterministyczne fallbacki). config.toml: 15.
+    slow_loop_max_paid_llm_calls_per_week: int | None = None
     # ----- Database -----
     supabase_url: str
     supabase_key: str
@@ -842,6 +849,15 @@ class Settings(BaseSettings):
         if value is not None and value < 1:
             raise ValueError(
                 f"max_paid_llm_calls_per_cycle must be >= 1 or unset (got {value})"
+            )
+        return value
+
+    @field_validator("slow_loop_max_paid_llm_calls_per_week")
+    @classmethod
+    def _validate_slow_loop_weekly_llm_cap(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError(
+                f"slow_loop_max_paid_llm_calls_per_week must be >= 0 or unset (got {value})"
             )
         return value
 

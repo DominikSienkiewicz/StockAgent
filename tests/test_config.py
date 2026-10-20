@@ -1088,3 +1088,31 @@ class TestMaxPaidLlmCallsPerCycle:
         assert "max_paid_llm_calls_per_cycle" in NON_RECIPE_SETTINGS_FIELDS
         baseline = self._settings().config_hash()
         assert self._settings(max_paid_llm_calls_per_cycle=50).config_hash() == baseline
+
+
+class TestSlowLoopWeeklyLlmBudget:
+    """FIN-30: tygodniowy sufit płatnych wywołań LLM Slow Loopa (recap, sędzia
+    kalibracji i przyszłe joby). None = bez limitu; `config.toml` ustawia 15."""
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_defaults_to_no_cap(self, env):
+        assert self._settings().slow_loop_max_paid_llm_calls_per_week is None
+
+    def test_zero_is_a_valid_llm_free_week(self, env):
+        # Zero = recap bez narracji i kalibracja bez wniosku (deterministyczne fallbacki).
+        assert self._settings(
+            slow_loop_max_paid_llm_calls_per_week=0
+        ).slow_loop_max_paid_llm_calls_per_week == 0
+
+    def test_negative_cap_is_rejected(self, env):
+        with pytest.raises(ValueError, match="slow_loop_max_paid_llm_calls_per_week"):
+            self._settings(slow_loop_max_paid_llm_calls_per_week=-1)
+
+    def test_stays_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "slow_loop_max_paid_llm_calls_per_week" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = self._settings().config_hash()
+        assert self._settings(slow_loop_max_paid_llm_calls_per_week=3).config_hash() == baseline
