@@ -92,6 +92,10 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   `tests/infrastructure/test_migrations.py` (testy aplikują komplet na prawdziwym
   kontenerze pgvector; osobny test pilnuje, żeby lista nie rozjechała się z katalogiem).
 - Aplikacja: ręczny workflow „🗄️ DB Migrate", nigdy z crona Fast Loopa.
+- Uprawnienia (od 038): nowa tabela = `ENABLE ROW LEVEL SECURITY` (bez polityk);
+  nowa funkcja = `REVOKE EXECUTE ... FROM PUBLIC` i `GRANT EXECUTE ... TO service_role`
+  w bloku `DO` z guardem `pg_roles`. Test emulacji ról w `test_migrations.py` pada,
+  gdy któregoś brakuje; szczegóły w `docs/data-and-access.md`.
 
 ## Sekrety
 
