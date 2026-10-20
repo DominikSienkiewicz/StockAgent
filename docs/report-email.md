@@ -43,7 +43,7 @@ The email is a **17 kB+ structured digest in Polish** (HTML + plain-text fallbac
 - 🧠 **Self-Reflection** — lessons learned per symbol (purple box)
 - 💡 **Worth a look (sectors in motion)** — peer suggestions computed **from the current cycle only, zero extra API calls**: when a stock sector runs hot (its strongest monitored move `|Δ| ≥ 3%` or mean `|sentiment| ≥ 0.3`), the report suggests notable peers in that sector you don't yet monitor (curated `sector_peers` in `config.toml`, keyed by the `sectors` names), e.g. *Cyberbezpieczeństwo gorące (CRWD +6,0%, PANW +4,2%) — rozważ: ZS, FTNT, CYBR*. Top 3 sectors, 3 peers each; section hidden when nothing is hot.
 - 📈 **Sentiment vs price correlation** (scatter plot)
-- 💸 **Cycle cost** — paid calls of the cycle; a free cycle says so (HTML only)
+- 💸 **Cycle cost** — paid calls of the cycle; a free cycle says so (HTML only). A source whose requests reported priced tokens shows the cost from tokens, the others the unit estimate marked "(szacunek)", with the price date (FIN-13, [configuration](configuration.md))
 - 💸 **Skipped — cycle budget exhausted** (`Pominięte — wyczerpany budżet cyklu`, FIN-12) — symbols whose move passed the volatility gate after the cycle had spent `max_paid_llm_calls_per_cycle`, as chips with their move and a note that the price reference stays unchanged. They are not listed under "Ignored", and the crypto section calls such a ticker `budżet cyklu wyczerpany` instead of "poniżej progu".
 - ⏸ **Ignored** (chip list) + ⚠️ **Errors**
 

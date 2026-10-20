@@ -12,6 +12,7 @@ Użycie:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -20,18 +21,21 @@ from typing import Any
 from main_agent import (
     STUB_WRITES_REFUSED_EXIT_CODE,
     build_notifier,
+    persist_llm_calls,
     refuses_stub_writes,
     warn_if_paid_calls_disabled,
 )
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort
 from src.application.ml_features import FEATURE_SET_VERSION
-from src.application.ports import LLMPort, RepositoryPort
+from src.application.ports import LLMPort, RepositoryPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_weekly_recap import (
     render_weekly_recap_html,
     render_weekly_recap_text,
 )
+from src.application.run_context import RunContext
+from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.calibrate_confidence import (
     PAID_LLM_CALLS_PER_RUN as JUDGE_LLM_CALLS,
 )
@@ -188,14 +192,16 @@ def _train_pooled_model(
     return 0
 
 
-def _build_llm_or_unavailable(settings: Settings, quota_monitor: QuotaMonitor) -> LLMPort:
+def _build_llm_or_unavailable(
+    settings: Settings, quota_monitor: QuotaMonitor, usage_sink: UsageSink | None = None
+) -> LLMPort:
     """Adapter LLM dla kroków Slow Loopa z deterministycznym fallbackiem. Błąd BUDOWY
     (brak SDK albo klucza) nie może wywrócić całego kroku — use case dostaje adapter,
     który rzuca przy wywołaniu, i idzie ścieżką bez LLM."""
     from main_agent import build_llm_adapter
 
     try:
-        return build_llm_adapter(settings, quota_monitor=quota_monitor)
+        return build_llm_adapter(settings, quota_monitor=quota_monitor, usage_sink=usage_sink)
     except Exception as exc:
         logger.exception("LLM adapter build failed — krok idzie bez LLM")
         return UnavailableLLMAdapter(type(exc).__name__)
@@ -217,28 +223,35 @@ class _SlowLoopPaidLLM:
 
     Ten sam mechanizm co Fast Loop: `MeteredLLMPort` liczy każdy request w
     `CycleTelemetry` pod kluczem cennika `llm`, a `BudgetedLLMPort` odrzuca
-    wywołanie ponad przydział domeny (`slow_loop_paid_budget`) przed dostawcą."""
+    wywołanie ponad przydział domeny (`slow_loop_paid_budget`) przed dostawcą.
+    FIN-13: tokeny prawdziwego dostawcy trafiają do `ledger` przebiegu, z jobem
+    jako węzłem."""
 
-    def __init__(self, settings: Settings, quota_monitor: QuotaMonitor) -> None:
+    def __init__(
+        self, settings: Settings, quota_monitor: QuotaMonitor, ledger: UsageLedger
+    ) -> None:
         self._settings = settings
         self._quota_monitor = quota_monitor
+        self._ledger = ledger
         self._cap = settings.slow_loop_max_paid_llm_calls_per_week
         self._allowed = slow_loop_paid_budget(_requested_llm_calls(settings), self._cap)
         self.telemetry = CycleTelemetry()
         logger.info("Slow Loop LLM budget — allowed=%s cap=%s", self._allowed, self._cap)
 
     def port_for(self, job: str) -> LLMPort:
-        return BudgetedLLMPort(self._provider(), allowed=self._allowed.get(job, 0), job=job)
+        return BudgetedLLMPort(self._provider(job), allowed=self._allowed.get(job, 0), job=job)
 
-    def _provider(self) -> LLMPort:
+    def _provider(self, job: str) -> LLMPort:
         """Atrapa (FIN-35) i adapter zastępczy nie wysyłają requestu, więc nie
         trafiają do licznika; prawdziwy adapter idzie przez `MeteredLLMPort`."""
         if not self._settings.paid_calls_enabled:
             return LocalStubLLMAdapter()
-        provider = _build_llm_or_unavailable(self._settings, self._quota_monitor)
+        provider = _build_llm_or_unavailable(
+            self._settings, self._quota_monitor, usage_sink=self._ledger
+        )
         if isinstance(provider, UnavailableLLMAdapter):
             return provider
-        return MeteredLLMPort(provider, self.telemetry, "llm")
+        return MeteredLLMPort(provider, self.telemetry, "llm", node=job)
 
     def log_spend(self) -> None:
         spent = self.telemetry.snapshot().total_paid_calls
@@ -328,13 +341,20 @@ def main(settings: Settings | None = None) -> int:
     failures = _train_symbols(settings, repository, use_case, trainable)
     failures += _train_pooled_model(settings, use_case, trainable)
 
-    paid_llm = _SlowLoopPaidLLM(settings, quota_monitor)
+    usage_ledger = UsageLedger()
+    paid_llm = _SlowLoopPaidLLM(settings, quota_monitor, usage_ledger)
     if settings.calibration_judge_enabled:
         _run_calibration_judge(repository, paid_llm.port_for(JUDGE_JOB))
 
     if settings.weekly_recap_enabled:
         _send_weekly_recap(settings, repository, quota_monitor, paid_llm.port_for(RECAP_JOB))
     paid_llm.log_spend()
+    persist_llm_calls(
+        settings=settings,
+        repository=repository,
+        ledger=usage_ledger,
+        run_context=RunContext.from_environ(os.environ),
+    )
 
     # NIEZ-03: alerty z sędziego i recapu (LLM, Resend) powstają po pierwszym zapisie.
     _persist_quota_alerts(repository, quota_monitor, start=persisted_alerts)

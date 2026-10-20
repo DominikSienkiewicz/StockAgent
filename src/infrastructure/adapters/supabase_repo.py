@@ -14,6 +14,7 @@ from src.application.ports import PreviousVerdict, RepositoryPort
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.equity_curve import directional_hit_rate
+from src.domain.finops import LLMCallEntry
 from src.domain.prediction import Prediction, normalize_trend
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.regime import MarketRegime, RegimeState
@@ -36,6 +37,8 @@ DEFAULT_COUNCIL_VOTES_TABLE = "council_votes"
 DEFAULT_QUOTA_ALERTS_TABLE = "quota_alerts"
 DEFAULT_FEATURE_SNAPSHOT_TABLE = "feature_snapshots"
 DEFAULT_REGIME_HISTORY_TABLE = "regime_history"
+# FIN-13: ledger kosztów per request LLM / embeddingów (migracja 040).
+LLM_CALLS_TABLE = "llm_calls"
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -1162,6 +1165,30 @@ class SupabaseRepository(RepositoryPort):
             for vote in votes
         ]
         self._client.table(self._council_votes_table).insert(rows).execute()
+
+    def save_llm_calls(self, calls: Sequence[LLMCallEntry]) -> None:
+        # Jeden insert na przebieg (batch po cyklu), nie request na wywołanie LLM.
+        if not calls:
+            return
+        rows = [
+            {
+                "run_id": call.run_id,
+                "symbol": call.symbol,
+                "node": call.node,
+                "provider": call.usage.provider,
+                "model": call.usage.model,
+                "input_tokens": call.usage.input_tokens,
+                "output_tokens": call.usage.output_tokens,
+                "cache_read_tokens": call.usage.cache_read_tokens,
+                "cache_write_tokens": call.usage.cache_write_tokens,
+                "cost_usd": call.cost_usd,
+                "price_as_of": (
+                    call.price_as_of.isoformat() if call.price_as_of is not None else None
+                ),
+            }
+            for call in calls
+        ]
+        self._client.table(LLM_CALLS_TABLE).insert(rows).execute()
 
     def update_prediction_accuracy(
         self,

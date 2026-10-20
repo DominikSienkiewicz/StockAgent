@@ -304,3 +304,184 @@ def test_slow_loop_budget_rejects_negative_inputs(
 
     with pytest.raises(ValueError, match=field):
         slow_loop_paid_budget(requested, cap)
+
+
+# --- FIN-13: koszt z prawdziwych tokenów (cennik per model) ----------------------
+
+
+def _sonnet_rates() -> dict[str, object]:
+    from src.domain.finops import ModelPrice
+
+    return {
+        "claude-sonnet-4-6": ModelPrice(
+            input_usd_per_mtok=3.0,
+            output_usd_per_mtok=15.0,
+            cache_read_usd_per_mtok=0.30,
+            cache_write_usd_per_mtok=3.75,
+        ),
+        "text-embedding-3-small": ModelPrice(input_usd_per_mtok=0.02),
+    }
+
+
+def test_price_usage_uses_per_model_rates() -> None:
+    from src.domain.finops import LLMUsage, price_usage
+
+    usage = LLMUsage(
+        provider="anthropic", model="claude-sonnet-4-6", input_tokens=1000, output_tokens=200
+    )
+
+    # 1000 × $3/1M + 200 × $15/1M = 0.003 + 0.003.
+    assert price_usage(usage, _sonnet_rates()) == pytest.approx(0.006)
+
+
+def test_price_usage_prices_cache_reads_and_writes() -> None:
+    from src.domain.finops import LLMUsage, price_usage
+
+    usage = LLMUsage(
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_tokens=1_000_000,
+        cache_write_tokens=1_000_000,
+    )
+
+    assert price_usage(usage, _sonnet_rates()) == pytest.approx(0.30 + 3.75)
+
+
+def test_price_usage_of_an_unknown_model_is_none() -> None:
+    from src.domain.finops import LLMUsage, price_usage
+
+    usage = LLMUsage(provider="openai", model="gpt-9-ultra", input_tokens=10, output_tokens=10)
+
+    # Nie zgadujemy stawki: brak modelu w cenniku = brak wyceny (fallback na stałą).
+    assert price_usage(usage, _sonnet_rates()) is None
+
+
+def test_price_usage_refuses_tokens_of_an_unpriced_category() -> None:
+    from src.domain.finops import LLMUsage, price_usage
+
+    # Cennik embeddingu ma tylko input — output bez stawki to brak wyceny, nie 0.
+    usage = LLMUsage(
+        provider="openai", model="text-embedding-3-small", input_tokens=500, output_tokens=3
+    )
+
+    assert price_usage(usage, _sonnet_rates()) is None
+
+
+def test_price_usage_of_input_only_usage_needs_only_the_input_rate() -> None:
+    from src.domain.finops import LLMUsage, price_usage
+
+    usage = LLMUsage(
+        provider="openai", model="text-embedding-3-small", input_tokens=500, output_tokens=0
+    )
+
+    assert price_usage(usage, _sonnet_rates()) == pytest.approx(500 * 0.02 / 1_000_000)
+
+
+def test_llm_usage_rejects_negative_token_counts() -> None:
+    from src.domain.finops import LLMUsage
+
+    with pytest.raises(ValueError, match="cache_read_tokens"):
+        LLMUsage(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            input_tokens=1,
+            output_tokens=1,
+            cache_read_tokens=-1,
+        )
+
+
+def test_token_cost_by_source_sums_each_source() -> None:
+    from src.domain.finops import LLMUsage, token_cost_by_source
+
+    sonnet = LLMUsage(
+        provider="anthropic", model="claude-sonnet-4-6", input_tokens=1000, output_tokens=200
+    )
+    embedding = LLMUsage(
+        provider="openai", model="text-embedding-3-small", input_tokens=1000, output_tokens=0
+    )
+
+    costs = token_cost_by_source(
+        [("llm", sonnet), ("llm", sonnet), ("embedding", embedding)], _sonnet_rates()
+    )
+
+    assert costs == {
+        "llm": pytest.approx(0.012),
+        "embedding": pytest.approx(1000 * 0.02 / 1_000_000),
+    }
+
+
+def test_token_cost_by_source_drops_a_source_with_an_unpriced_call() -> None:
+    from src.domain.finops import LLMUsage, token_cost_by_source
+
+    priced = LLMUsage(
+        provider="anthropic", model="claude-sonnet-4-6", input_tokens=10, output_tokens=10
+    )
+    unpriced = LLMUsage(provider="openai", model="gpt-9-ultra", input_tokens=10, output_tokens=10)
+
+    # Częściowa wycena zaniżałaby źródło — całe źródło wraca do szacunku ze stałej.
+    costs = token_cost_by_source(
+        [("council_llm", priced), ("council_llm", unpriced), ("llm", priced)], _sonnet_rates()
+    )
+
+    assert set(costs) == {"llm"}
+
+
+def test_cycle_cost_takes_token_costs_and_falls_back_per_source() -> None:
+    from datetime import date
+
+    calls = {"llm": 2, "sentiment": 2, "council_llm": 8}
+
+    cost = estimate_cycle_cost(
+        calls, token_costs={"llm": 0.012}, priced_as_of=date(2026, 10, 20)
+    )
+
+    lines = {line.source: line for line in cost.lines}
+    assert lines["llm"].from_tokens is True
+    assert lines["llm"].subtotal_usd == pytest.approx(0.012)
+    assert lines["llm"].unit_cost_usd == pytest.approx(0.006)
+    assert lines["council_llm"].from_tokens is False
+    assert lines["council_llm"].subtotal_usd == pytest.approx(8 * UNIT_COST_USD["council_llm"])
+    assert lines["sentiment"].from_tokens is False
+    assert cost.total_usd == pytest.approx(sum(line.subtotal_usd for line in cost.lines))
+    assert cost.total_calls == 12
+    assert cost.priced_as_of == date(2026, 10, 20)
+    assert cost.from_tokens is True
+
+
+def test_cycle_cost_without_token_costs_is_the_unit_estimate() -> None:
+    cost = estimate_cycle_cost({"llm": 2})
+
+    assert cost.lines[0].from_tokens is False
+    assert cost.from_tokens is False
+    assert cost.priced_as_of is None
+
+
+def test_token_cost_of_a_source_without_counted_calls_is_ignored() -> None:
+    # Licznik cyklu decyduje, które źródła są w rozbiciu; sam rekord tokenów bez
+    # policzonego wywołania nie dopisuje linii.
+    cost = estimate_cycle_cost({"llm": 1}, token_costs={"embedding": 0.5})
+
+    assert [line.source for line in cost.lines] == ["llm"]
+    assert cost.total_usd == pytest.approx(UNIT_COST_USD["llm"])
+
+
+def test_llm_call_entry_carries_no_prompt_or_answer() -> None:
+    import dataclasses
+
+    from src.domain.finops import LLMCallEntry, LLMUsage
+
+    fields = {field.name for field in dataclasses.fields(LLMCallEntry)}
+    usage_fields = {field.name for field in dataclasses.fields(LLMUsage)}
+
+    # Kontekst portfela: ledger zapisuje liczby, nigdy treść promptu ani odpowiedzi.
+    assert fields == {"run_id", "node", "symbol", "usage", "cost_usd", "price_as_of"}
+    assert usage_fields == {
+        "provider",
+        "model",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+    }

@@ -34,6 +34,7 @@ from src.application.ports import (
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import InvestorOpinion
+from src.domain.finops import LLMCallEntry
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.quota import QuotaAlert
@@ -120,6 +121,7 @@ class ReadOnlyRepository(RepositoryPort):
         "save_shock_alert",
         "save_model_scorecard",
         "save_council_votes",
+        "save_llm_calls",
     })
 
     def __init__(self, delegate: RepositoryPort) -> None:
@@ -296,6 +298,9 @@ class ReadOnlyRepository(RepositoryPort):
         self, prediction_id: str, symbol: str, votes: list[InvestorOpinion]
     ) -> None:
         self._skipped.skip("save_council_votes")
+
+    def save_llm_calls(self, calls: Sequence[LLMCallEntry]) -> None:
+        self._skipped.skip("save_llm_calls")
 
 
 class ReadOnlyPositionsImport(PositionsImportPort):

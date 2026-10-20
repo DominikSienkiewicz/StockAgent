@@ -314,3 +314,63 @@ def test_real_config_toml_skips_stocks_on_closed_nyse_days() -> None:
     """FIN-34: produkcja nie analizuje akcji w święto NYSE (cron `1-5` bez zmian)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["nyse_closure_skip_enabled"] is True
+
+
+def test_real_config_toml_ships_the_cost_ledger_off_until_migration() -> None:
+    """FIN-13: zapis `llm_calls` dopiero po migracji 040 (ręczny DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["cost_ledger_enabled"] is False
+
+
+def test_real_config_toml_prices_only_configured_models() -> None:
+    """FIN-13 (decyzja 2026-10-20): cennik standard tier z oficjalnych stron
+    Anthropic i OpenAI, USD za 1M tokenów, z datą `llm_pricing_as_of`. Wpisane są
+    tylko modele, które repo faktycznie konfiguruje (config.toml + domyślne
+    adapterów); model bez stawki zostaje na stałej `UNIT_COST_USD`, bez zgadywania."""
+    from src.infrastructure.llm.anthropic_client import DEFAULT_MODEL as ANTHROPIC_DEFAULT
+    from src.infrastructure.llm.openai_client import DEFAULT_MODEL as OPENAI_DEFAULT
+    from src.infrastructure.llm.openai_embeddings import DEFAULT_MODEL as EMBEDDING_DEFAULT
+    from src.infrastructure.llm.tool_calling_anthropic import (
+        DEFAULT_MODEL as TOOL_USE_ANTHROPIC_DEFAULT,
+    )
+    from src.infrastructure.llm.tool_calling_openai import (
+        DEFAULT_MODEL as TOOL_USE_OPENAI_DEFAULT,
+    )
+
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    configured = {
+        data["council_llm_model"],
+        data["router_cheap_model"],
+        data["router_frontier_model"],
+        ANTHROPIC_DEFAULT,
+        OPENAI_DEFAULT,
+        EMBEDDING_DEFAULT,
+        TOOL_USE_ANTHROPIC_DEFAULT,
+        TOOL_USE_OPENAI_DEFAULT,
+    }
+
+    assert data["llm_pricing_as_of"] == "2026-10-20"
+    assert set(data["llm_pricing"]) <= configured
+    assert data["llm_pricing"] == {
+        "claude-sonnet-4-6": {
+            "input": 3.00,
+            "cache_read": 0.30,
+            "cache_write": 3.75,
+            "output": 15.00,
+        },
+        "gpt-5-mini": {"input": 0.25, "cache_read": 0.025, "output": 2.00},
+        "gpt-4o": {"input": 2.50, "cache_read": 1.25, "output": 10.00},
+        "text-embedding-3-small": {"input": 0.02},
+    }
+
+
+def test_settings_read_the_price_list_from_config_toml(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
+    monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
+
+    settings = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+
+    table = settings.llm_price_table()
+    assert table["claude-sonnet-4-6"].cache_write_usd_per_mtok == pytest.approx(3.75)
+    assert table["gpt-5-mini"].cache_write_usd_per_mtok is None
+    assert table["text-embedding-3-small"].output_usd_per_mtok is None

@@ -599,3 +599,84 @@ def test_critical_alert_is_polish_and_logged_in_english(mock_openai_class, mocke
     assert "call failed" not in alert.message
     assert alert.action.startswith("Podnieś")
     assert "OpenAI gpt-4o returned 429 after" in caplog.text
+
+
+class TestUsageReporting:
+    """FIN-13: `prompt_tokens` OpenAI zawiera już tokeny z cache, więc adapter
+    zgłasza `input_tokens` = prompt − cached i `cache_read_tokens` = cached."""
+
+    @staticmethod
+    def _adapter(mock_openai_class: MagicMock, model: str = "gpt-5-mini"):
+        from src.application.ports import UsageSink
+
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        sink = MagicMock(spec=UsageSink)
+        return OpenAIAdapter(api_key="sk-test", model=model, usage_sink=sink), client, sink
+
+    @staticmethod
+    def _with_usage(response: MagicMock, prompt: int, completion: int, cached: object) -> MagicMock:
+        response.usage = MagicMock(
+            spec=["prompt_tokens", "completion_tokens", "prompt_tokens_details"]
+        )
+        response.usage.prompt_tokens = prompt
+        response.usage.completion_tokens = completion
+        if cached is None:
+            response.usage.prompt_tokens_details = None
+        else:
+            response.usage.prompt_tokens_details = MagicMock(spec=["cached_tokens"])
+            response.usage.prompt_tokens_details.cached_tokens = cached
+        return response
+
+    def test_usage_is_reported_to_sink(self, mock_openai_class):
+        from src.domain.finops import LLMUsage
+
+        adapter, client, sink = self._adapter(mock_openai_class)
+        client.chat.completions.create.return_value = self._with_usage(
+            _completion("{}"), prompt=2000, completion=450, cached=1536
+        )
+
+        adapter.analyze("Persona prompt")
+
+        sink.record.assert_called_once_with(
+            LLMUsage(
+                provider="openai",
+                model="gpt-5-mini",
+                input_tokens=464,
+                output_tokens=450,
+                cache_read_tokens=1536,
+                cache_write_tokens=0,
+            )
+        )
+
+    def test_usage_without_prompt_details_has_no_cached_tokens(self, mock_openai_class):
+        adapter, client, sink = self._adapter(mock_openai_class, model="gpt-4o")
+        client.chat.completions.create.return_value = self._with_usage(
+            _completion("lekcja"), prompt=120, completion=30, cached=None
+        )
+
+        adapter.analyze_mistake("Why?")
+
+        usage = sink.record.call_args.args[0]
+        assert (usage.model, usage.input_tokens, usage.cache_read_tokens) == ("gpt-4o", 120, 0)
+
+    def test_missing_usage_records_nothing(self, mock_openai_class):
+        adapter, client, sink = self._adapter(mock_openai_class)
+        response = _completion("{}")
+        response.usage = None
+        client.chat.completions.create.return_value = response
+
+        assert adapter.analyze("prompt") == {}
+        sink.record.assert_not_called()
+
+    def test_usage_of_a_truncated_answer_is_still_reported(self, mock_openai_class):
+        # finish_reason="length": rozumowanie zjadło budżet, ale tokeny są na rachunku.
+        adapter, client, sink = self._adapter(mock_openai_class)
+        client.chat.completions.create.return_value = self._with_usage(
+            _completion("", finish_reason="length"), prompt=900, completion=4096, cached=0
+        )
+
+        with pytest.raises(ValueError):
+            adapter.analyze("prompt")
+
+        assert sink.record.call_args.args[0].output_tokens == 4096

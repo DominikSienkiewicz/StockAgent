@@ -1155,3 +1155,81 @@ class TestPaidCallsFlag:
             _env_file=None, **REQUIRED_ENV_KWARGS, paid_calls_enabled=True
         ).config_hash()
         assert flipped == baseline
+
+
+class TestCostLedgerSettings:
+    """FIN-13: cennik LLM per model (USD za 1M tokenów, z datą) i zapis ledgera
+    `llm_calls` za flagą — produkcja nie ma migracji 040, więc w kodzie off."""
+
+    def test_ledger_write_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).cost_ledger_enabled is False
+
+    def test_no_price_list_in_code(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.llm_pricing == {}
+        assert settings.llm_pricing_as_of is None
+        assert settings.llm_price_table() == {}
+
+    def test_price_list_becomes_the_domain_price_table(self, env):
+        from datetime import date
+
+        from src.domain.finops import ModelPrice
+
+        settings = Settings(
+            _env_file=None,
+            **REQUIRED_ENV_KWARGS,
+            llm_pricing_as_of="2026-10-20",
+            llm_pricing={
+                "claude-sonnet-4-6": {
+                    "input": 3.0,
+                    "output": 15.0,
+                    "cache_read": 0.3,
+                    "cache_write": 3.75,
+                },
+                "text-embedding-3-small": {"input": 0.02},
+            },
+        )
+
+        assert settings.llm_pricing_as_of == date(2026, 10, 20)
+        assert settings.llm_price_table() == {
+            "claude-sonnet-4-6": ModelPrice(
+                input_usd_per_mtok=3.0,
+                output_usd_per_mtok=15.0,
+                cache_read_usd_per_mtok=0.3,
+                cache_write_usd_per_mtok=3.75,
+            ),
+            "text-embedding-3-small": ModelPrice(input_usd_per_mtok=0.02),
+        }
+
+    def test_negative_rate_is_rejected(self, env):
+        with pytest.raises(ValidationError, match="input"):
+            Settings(
+                _env_file=None,
+                **REQUIRED_ENV_KWARGS,
+                llm_pricing={"gpt-5-mini": {"input": -0.25, "output": 2.0}},
+            )
+
+    def test_unknown_rate_key_is_rejected(self, env):
+        # Literówka („ouput”) nie może po cichu zostawić modelu bez stawki wyjścia.
+        with pytest.raises(ValidationError, match="ouput"):
+            Settings(
+                _env_file=None,
+                **REQUIRED_ENV_KWARGS,
+                llm_pricing={"gpt-5-mini": {"input": 0.25, "ouput": 2.0}},
+            )
+
+    def test_pricing_and_ledger_stay_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert {"cost_ledger_enabled", "llm_pricing", "llm_pricing_as_of"} <= (
+            NON_RECIPE_SETTINGS_FIELDS
+        )
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        priced = Settings(
+            _env_file=None,
+            **REQUIRED_ENV_KWARGS,
+            llm_pricing={"gpt-5-mini": {"input": 0.25, "output": 2.0}},
+            llm_pricing_as_of="2026-10-20",
+        ).config_hash()
+        assert priced == baseline

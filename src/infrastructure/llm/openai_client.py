@@ -9,9 +9,10 @@ from typing import Any, TypeVar
 
 from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
 
-from src.application.ports import LLMPort
+from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.llm._usage import openai_chat_usage, report_usage
 
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_TEMPERATURE = 0.2  # niska temperatura — chcemy deterministycznego Quanta
@@ -91,6 +92,9 @@ class OpenAIAdapter(LLMPort):
 
     Retry: 429 (TPM exceeded) jest retry'owany z backoffem; wszelkie inne
     błędy lecą natychmiast w górę (niech caller decyduje).
+
+    FIN-13: tokeny udanego requestu (`response.usage`) idą do `usage_sink`, także
+    przy pustej treści (np. `finish_reason="length"`) — request był płatny.
     """
 
     def __init__(
@@ -103,6 +107,7 @@ class OpenAIAdapter(LLMPort):
         backoff_base: float = DEFAULT_BACKOFF_BASE,
         quota_monitor: QuotaMonitor | None = None,
         max_tokens: int | None = None,
+        usage_sink: UsageSink | None = None,
     ) -> None:
         # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
         validate_model_id(model)
@@ -113,6 +118,7 @@ class OpenAIAdapter(LLMPort):
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._quota_monitor = quota_monitor
+        self._usage_sink = usage_sink
         # None → domyślny cap zależny od rodziny modelu (reasoning vs nie);
         # jawna wartość → twardy override (per-rodzinny default pomijany).
         self._max_tokens = max_tokens
@@ -174,6 +180,7 @@ class OpenAIAdapter(LLMPort):
                 **self._create_kwargs(prompt, json_mode=True)
             )
         )
+        self._report_usage(response)
         choice = response.choices[0]
         content = choice.message.content
         if not content:
@@ -208,10 +215,15 @@ class OpenAIAdapter(LLMPort):
                 **self._create_kwargs(prompt, json_mode=False)
             )
         )
+        self._report_usage(response)
         content: str | None = response.choices[0].message.content
         if content is None:
             return ""
         return content.strip()
+
+    def _report_usage(self, response: Any) -> None:
+        if self._usage_sink is not None:
+            report_usage(self._usage_sink, openai_chat_usage(response, self._model))
 
     def _call_with_retry(self, fn: Callable[[], T]) -> T:
         """Retry'uje wyłącznie RateLimitError (429). Honoruje retry-after.

@@ -1,8 +1,9 @@
 # src/domain/finops.py
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from types import MappingProxyType
 
@@ -55,12 +56,17 @@ UNIT_COST_USD: dict[str, float] = {
 
 @dataclass(frozen=True)
 class SourceCost:
-    """Jedna pozycja rozbicia: ile kosztowało dane (znane) źródło w tym cyklu."""
+    """Jedna pozycja rozbicia: ile kosztowało dane (znane) źródło w tym cyklu.
+
+    `from_tokens` (FIN-13): subtotal policzony z tokenów zwróconych przez dostawcę
+    i cennika per model; `unit_cost_usd` to wtedy średnia na wywołanie. False =
+    szacunek `UNIT_COST_USD` × liczba wywołań."""
 
     source: str
     calls: int
     unit_cost_usd: float
     subtotal_usd: float
+    from_tokens: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,24 +81,42 @@ class CycleCost:
     - `unknown_sources` — źródła spoza cennika (wkład 0, ale jawnie zasygnalizowane).
 
     Cykl darmowy = `total_calls == 0` (bramka volatility odcięła wszystkie symbole).
+    `priced_as_of` (FIN-13) — data cennika per model, z którego policzono linie
+    `from_tokens`; None, gdy żadna linia nie jest z tokenów.
     """
 
     lines: tuple[SourceCost, ...]
     total_usd: float
     total_calls: int
     unknown_sources: tuple[str, ...]
+    priced_as_of: date | None = None
+
+    @property
+    def from_tokens(self) -> bool:
+        """Czy choć jedna linia rozbicia jest policzona z tokenów (FIN-13)."""
+        return any(line.from_tokens for line in self.lines)
 
 
-def estimate_cycle_cost(calls: Mapping[str, int]) -> CycleCost:
+def estimate_cycle_cost(
+    calls: Mapping[str, int],
+    token_costs: Mapping[str, float] | None = None,
+    priced_as_of: date | None = None,
+) -> CycleCost:
     """Szacuje koszt cyklu z liczników płatnych wywołań per źródło.
 
-    WYNIK JEST SZACUNKIEM (patrz `UNIT_COST_USD`), nie rachunkiem. Reguły:
+    Bez `token_costs` WYNIK JEST SZACUNKIEM (patrz `UNIT_COST_USD`), nie rachunkiem.
+    Reguły:
       - licznik <= 0 jest pomijany (nie zaniża sumy, nie tworzy pustej linii);
       - źródło spoza cennika NIE rzuca KeyError — wchodzi na listę
         `unknown_sources` z wkładem 0, ale jego wywołania liczą się do
         `total_calls` (naprawdę poszły);
       - zero wywołań → koszt 0.0 (cykl odcięty bramką volatility jest darmowy).
+
+    FIN-13: `token_costs` (z `token_cost_by_source`) podmienia szacunek źródła na
+    koszt z tokenów; źródło bez wpisu zostaje na `UNIT_COST_USD` (fallback per
+    źródło). O tym, które źródła są w rozbiciu, decyduje wyłącznie licznik `calls`.
     """
+    tokens = token_costs or {}
     lines: list[SourceCost] = []
     unknown: list[str] = []
     total_calls = 0
@@ -101,6 +125,18 @@ def estimate_cycle_cost(calls: Mapping[str, int]) -> CycleCost:
         if count <= 0:
             continue
         total_calls += count
+        token_cost = tokens.get(source)
+        if token_cost is not None:
+            lines.append(
+                SourceCost(
+                    source=source,
+                    calls=count,
+                    unit_cost_usd=token_cost / count,
+                    subtotal_usd=token_cost,
+                    from_tokens=True,
+                )
+            )
+            continue
         unit_cost = UNIT_COST_USD.get(source)
         if unit_cost is None:
             unknown.append(source)
@@ -126,7 +162,116 @@ def estimate_cycle_cost(calls: Mapping[str, int]) -> CycleCost:
         total_usd=sum((line.subtotal_usd for line in lines), 0.0),
         total_calls=total_calls,
         unknown_sources=tuple(unknown),
+        priced_as_of=priced_as_of if any(line.from_tokens for line in lines) else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# FIN-13: koszt z prawdziwych tokenów.
+#
+# Adapter LLM / embeddingów zgłasza tokeny z odpowiedzi dostawcy (`LLMUsage`),
+# a domena wycenia je cennikiem per model (`ModelPrice`, USD za 1M tokenów,
+# standard tier) z `config.toml`. Model spoza cennika → None: nie zgadujemy
+# stawki, źródło wraca do szacunku `UNIT_COST_USD`.
+
+_TOKENS_PER_PRICE_UNIT = 1_000_000
+
+
+@dataclass(frozen=True)
+class LLMUsage:
+    """Tokeny JEDNEGO requestu do dostawcy — bez treści promptu i odpowiedzi.
+
+    Kategorie są rozłączne i każda ma własną stawkę:
+      - `input_tokens`       — wejście po pełnej stawce (bez odczytu i zapisu cache);
+      - `output_tokens`      — wyjście (u modeli reasoning z tokenami rozumowania);
+      - `cache_read_tokens`  — wejście odczytane z cache promptu;
+      - `cache_write_tokens` — wejście zapisane do cache (Anthropic, zapis 5 min).
+    `model` to id modelu, o który prosił adapter (klucz cennika), nie snapshot
+    zwrócony przez API."""
+
+    provider: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+    def __post_init__(self) -> None:
+        for name in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+            value = getattr(self, name)
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative (got {value})")
+
+
+@dataclass(frozen=True)
+class ModelPrice:
+    """Cennik jednego modelu: USD za 1M tokenów danej kategorii.
+
+    None = cennik nie podaje stawki tej kategorii (OpenAI nie nalicza zapisu cache,
+    embedding nie ma wyjścia). Request z tokenami takiej kategorii nie ma wyceny."""
+
+    input_usd_per_mtok: float
+    output_usd_per_mtok: float | None = None
+    cache_read_usd_per_mtok: float | None = None
+    cache_write_usd_per_mtok: float | None = None
+
+
+def price_usage(usage: LLMUsage, price_table: Mapping[str, ModelPrice]) -> float | None:
+    """Koszt requestu w USD z tokenów i cennika per model.
+
+    None, gdy modelu nie ma w cenniku albo request ma tokeny kategorii bez stawki —
+    wtedy koszt jest nieznany, a nie zerowy."""
+    price = price_table.get(usage.model)
+    if price is None:
+        return None
+    total = 0.0
+    for tokens, rate in (
+        (usage.input_tokens, price.input_usd_per_mtok),
+        (usage.output_tokens, price.output_usd_per_mtok),
+        (usage.cache_read_tokens, price.cache_read_usd_per_mtok),
+        (usage.cache_write_tokens, price.cache_write_usd_per_mtok),
+    ):
+        if tokens == 0:
+            continue
+        if rate is None:
+            return None
+        total += tokens * rate / _TOKENS_PER_PRICE_UNIT
+    return total
+
+
+def token_cost_by_source(
+    records: Iterable[tuple[str, LLMUsage]], price_table: Mapping[str, ModelPrice]
+) -> dict[str, float]:
+    """Koszt z tokenów per klucz cennika cyklu (`llm`, `council_llm`, `embedding`).
+
+    Źródło, w którym choć jeden request nie ma wyceny, wypada z wyniku w całości:
+    częściowa suma zaniżałaby je pod etykietą „z tokenów”, więc sekcja kosztu
+    wraca dla niego do szacunku `UNIT_COST_USD`."""
+    costs: dict[str, float] = {}
+    unpriced: set[str] = set()
+    for source, usage in records:
+        cost = price_usage(usage, price_table)
+        if cost is None:
+            unpriced.add(source)
+            continue
+        costs[source] = costs.get(source, 0.0) + cost
+    return {source: cost for source, cost in costs.items() if source not in unpriced}
+
+
+@dataclass(frozen=True)
+class LLMCallEntry:
+    """Wiersz ledgera `llm_calls` (migracja 040): jeden request do dostawcy.
+
+    Same liczby i identyfikatory przebiegu — nigdy treść promptu ani odpowiedzi
+    (prompt niesie kontekst portfela). `cost_usd` None = model spoza cennika;
+    `price_as_of` = data cennika, którym policzono `cost_usd`."""
+
+    run_id: str
+    node: str
+    symbol: str | None
+    usage: LLMUsage
+    cost_usd: float | None
+    price_as_of: date | None
 
 
 @dataclass(frozen=True)

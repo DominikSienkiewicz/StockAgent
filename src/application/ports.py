@@ -11,6 +11,7 @@ from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.earnings import EarningsEvent
+from src.domain.finops import LLMCallEntry, LLMUsage
 from src.domain.fx import FxRate
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
@@ -423,6 +424,14 @@ class RepositoryPort(ABC):
         głosów to no-op (rada padła całkowicie / została pominięta progiem).
         """
 
+    @abstractmethod
+    def save_llm_calls(self, calls: Sequence[LLMCallEntry]) -> None:
+        """FIN-13 — ledger kosztów: jeden wiersz `llm_calls` (migracja 040) na
+        request do dostawcy LLM / embeddingów, zapisany JEDNYM batchem po cyklu.
+        Same tokeny, koszt i identyfikatory — bez treści promptu. Pusta lista =
+        no-op. Wołający pilnuje flagi `cost_ledger_enabled` (bez migracji 040
+        zapis kończyłby się błędem PostgREST)."""
+
 
 class MLPredictionPort(ABC):
     """Lokalny model predykcyjny (np. XGBoost)."""
@@ -493,6 +502,17 @@ class LLMPort(ABC):
     @abstractmethod
     def analyze_mistake(self, prompt: str) -> str:
         """Diagnoza błędnej predykcji — zwraca tekstowy correction_insight."""
+
+
+class UsageSink(ABC):
+    """FIN-13: odbiorca zużycia tokenów zgłaszanego przez adaptery LLM i embeddingów.
+
+    Adapter oddaje samo `LLMUsage` z odpowiedzi dostawcy — nie zna Supabase,
+    cennika ani grafu. Źródło cennika, węzeł i symbol dopisuje implementacja
+    w application (`UsageLedger`) z zakresu wołającego."""
+
+    @abstractmethod
+    def record(self, usage: LLMUsage) -> None: ...
 
 
 class EmbeddingPort(ABC):

@@ -104,3 +104,30 @@ class TestBudgetedLLMPort:
             port.analyze("drugie")
 
         assert telemetry.snapshot().paid_calls["llm"] == 1
+
+
+class TestUsageAttribution:
+    """FIN-13: dekorator zna klucz cennika, więc zgłoszenie tokenów z adaptera
+    pod nim trafia do ledgera z tym źródłem (rada w wątkach person, Slow Loop
+    bez grafu), z węzłem i symbolem z zakresu wołającego."""
+
+    def test_usage_recorded_inside_the_call_carries_the_source(self) -> None:
+        from src.application.usage_ledger import UsageLedger, usage_scope
+        from src.domain.finops import LLMUsage
+
+        ledger = UsageLedger()
+        usage = LLMUsage(provider="openai", model="gpt-5-mini", input_tokens=5, output_tokens=5)
+        inner = Mock(spec=LLMPort)
+        inner.analyze.side_effect = lambda _prompt: ledger.record(usage) or {}
+        inner.analyze_mistake.side_effect = lambda _prompt: ledger.record(usage) or ""
+        port = MeteredLLMPort(inner, CycleTelemetry(), "council_llm")
+
+        with usage_scope(node="council", symbol="NVDA"):
+            port.analyze("persona")
+        port.analyze_mistake("diagnoza")
+
+        sources = [(r.source, r.node, r.symbol) for r in ledger.records()]
+        assert sources == [
+            ("council_llm", "council", "NVDA"),
+            ("council_llm", "unattributed", None),
+        ]

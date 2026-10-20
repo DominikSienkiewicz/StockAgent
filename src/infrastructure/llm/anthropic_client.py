@@ -10,9 +10,10 @@ from typing import Any, TypeVar
 
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 
-from src.application.ports import LLMPort
+from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.llm._usage import anthropic_usage, report_usage
 
 # Centralny model id (rodzina Claude 4.x). Świadomie BEZ daty w komentarzu —
 # data dryfuje (zostaje "maj 2026" długo po fakcie) i sugeruje fałszywą
@@ -91,6 +92,9 @@ class AnthropicAdapter(LLMPort):
     retry'owane z backoffem; inne błędy (np. 400) lecą natychmiast w górę.
     Sygnał kwot trafia do `QuotaMonitor` (WARNING po udanym retry, CRITICAL
     po wyczerpaniu) — tak samo jak w OpenAIAdapter.
+
+    FIN-13: tokeny udanego requestu (`response.usage`) idą do `usage_sink`, także
+    gdy treść odpowiedzi okaże się pusta albo niepoprawna — request był płatny.
     """
 
     def __init__(
@@ -103,6 +107,7 @@ class AnthropicAdapter(LLMPort):
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE,
         quota_monitor: QuotaMonitor | None = None,
+        usage_sink: UsageSink | None = None,
     ) -> None:
         # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
         validate_model_id(model)
@@ -114,6 +119,7 @@ class AnthropicAdapter(LLMPort):
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._quota_monitor = quota_monitor
+        self._usage_sink = usage_sink
 
     @staticmethod
     def _build_user_content(prompt: str) -> Any:
@@ -137,6 +143,8 @@ class AnthropicAdapter(LLMPort):
                 ],
             )
         )
+        if self._usage_sink is not None:
+            report_usage(self._usage_sink, anthropic_usage(response, self._model))
         return self._extract_text(response)
 
     def _call_with_retry(self, fn: Callable[[], T]) -> T:

@@ -53,6 +53,7 @@ from src.application.ports import (
     SentimentPort,
     SocialVelocityPort,
     ToolUseLLMPort,
+    UsageSink,
     WebPublisherPort,
 )
 from src.application.quota_monitor import QuotaMonitor
@@ -89,6 +90,7 @@ from src.application.report_public_scorecard import render_public_scorecard_html
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
 from src.application.tools import build_research_tools
+from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
 from src.application.use_cases.monitor_macro_risk import (
@@ -115,7 +117,7 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
-from src.domain.finops import estimate_cycle_cost
+from src.domain.finops import CycleCost, estimate_cycle_cost
 from src.domain.hedge import equity_hedge_symbols
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
@@ -204,6 +206,7 @@ def _build_single_llm(
     provider: str,
     model: str,
     quota_monitor: QuotaMonitor | None,
+    usage_sink: UsageSink | None = None,
 ) -> LLMPort:
     """Buduje pojedynczy adapter LLM dla danego providera/modelu."""
     if provider == "anthropic":
@@ -212,22 +215,31 @@ def _build_single_llm(
         from src.infrastructure.llm.anthropic_client import AnthropicAdapter
 
         return AnthropicAdapter(
-            api_key=settings.anthropic_api_key, model=model, quota_monitor=quota_monitor
+            api_key=settings.anthropic_api_key,
+            model=model,
+            quota_monitor=quota_monitor,
+            usage_sink=usage_sink,
         )
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
     return OpenAIAdapter(
-        api_key=settings.openai_api_key, model=model, quota_monitor=quota_monitor
+        api_key=settings.openai_api_key,
+        model=model,
+        quota_monitor=quota_monitor,
+        usage_sink=usage_sink,
     )
 
 
 def build_llm_adapter(
-    settings: Settings, quota_monitor: QuotaMonitor | None = None
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    usage_sink: UsageSink | None = None,
 ) -> LLMPort:
     """Factory LLM — wybiera providera na podstawie konfiguracji.
 
     #2: gdy `model_routing_enabled`, zwraca `CascadingLLMAdapter` — tani model
     domyślnie, eskalacja do frontier tylko gdy `confidence < routing_floor`.
+    FIN-13: `usage_sink` dostaje tokeny każdego requestu (oba modele kaskady).
     """
     if settings.model_routing_enabled:
         from src.infrastructure.llm.cascading import CascadingLLMAdapter
@@ -237,12 +249,14 @@ def build_llm_adapter(
             api_key=settings.openai_api_key,
             model=settings.router_cheap_model,
             quota_monitor=quota_monitor,
+            usage_sink=usage_sink,
         )
         frontier = _build_single_llm(
             settings,
             settings.router_frontier_provider,
             settings.router_frontier_model,
             quota_monitor,
+            usage_sink,
         )
         return CascadingLLMAdapter(
             cheap=cheap, frontier=frontier, routing_floor=settings.routing_floor
@@ -257,18 +271,24 @@ def build_llm_adapter(
         from src.infrastructure.llm.anthropic_client import AnthropicAdapter
 
         return AnthropicAdapter(
-            api_key=settings.anthropic_api_key, quota_monitor=quota_monitor
+            api_key=settings.anthropic_api_key,
+            quota_monitor=quota_monitor,
+            usage_sink=usage_sink,
         )
 
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
     return OpenAIAdapter(
-        api_key=settings.openai_api_key, quota_monitor=quota_monitor
+        api_key=settings.openai_api_key,
+        quota_monitor=quota_monitor,
+        usage_sink=usage_sink,
     )
 
 
 def build_tool_use_adapter(
-    settings: Settings, quota_monitor: QuotaMonitor | None = None
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    usage_sink: UsageSink | None = None,
 ) -> ToolUseLLMPort | None:
     """#6: adapter LLM z pętlą tool-use. None gdy wyłączony (tool_use_enabled=false).
 
@@ -293,6 +313,7 @@ def build_tool_use_adapter(
             max_rounds=settings.tool_use_max_rounds,
             quota_monitor=quota_monitor,
             secret_values=settings.secret_values(),
+            usage_sink=usage_sink,
         )
     from src.infrastructure.llm.tool_calling_openai import ToolCallingOpenAIAdapter
 
@@ -301,6 +322,7 @@ def build_tool_use_adapter(
         max_rounds=settings.tool_use_max_rounds,
         quota_monitor=quota_monitor,
         secret_values=settings.secret_values(),
+        usage_sink=usage_sink,
     )
 
 
@@ -746,6 +768,7 @@ def build_council_llm_adapter(
     settings: Settings,
     main_llm: LLMPort,
     quota_monitor: QuotaMonitor | None = None,
+    usage_sink: UsageSink | None = None,
 ) -> LLMPort:
     """Wybiera LLM dla rady doradczej.
 
@@ -773,6 +796,7 @@ def build_council_llm_adapter(
             api_key=settings.anthropic_api_key,
             model=settings.council_llm_model or ANTHROPIC_DEFAULT,
             quota_monitor=quota_monitor,
+            usage_sink=usage_sink,
         )
 
     from src.infrastructure.llm.openai_client import DEFAULT_MODEL as OPENAI_DEFAULT
@@ -782,6 +806,7 @@ def build_council_llm_adapter(
         api_key=settings.openai_api_key,
         model=settings.council_llm_model or OPENAI_DEFAULT,
         quota_monitor=quota_monitor,
+        usage_sink=usage_sink,
     )
 
 
@@ -825,7 +850,9 @@ def build_council_adapter(
 
 
 def build_embedding_adapter(
-    settings: Settings, quota_monitor: QuotaMonitor | None = None
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    usage_sink: UsageSink | None = None,
 ) -> EmbeddingPort | None:
     """Embeddingi — OpenAI niezależnie od LLM_PROVIDER.
 
@@ -839,7 +866,7 @@ def build_embedding_adapter(
     from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
 
     return OpenAIEmbeddingAdapter(
-        api_key=settings.openai_api_key, quota_monitor=quota_monitor
+        api_key=settings.openai_api_key, quota_monitor=quota_monitor, usage_sink=usage_sink
     )
 
 
@@ -1038,11 +1065,13 @@ def _production_paid_ports(
     telemetry: CycleTelemetry,
     repository: RepositoryPort,
     quota_monitor: QuotaMonitor | None,
+    usage_sink: UsageSink | None = None,
 ) -> _PaidPorts:
     """Prawdziwe płatne adaptery (GHA: `PAID_CALLS_ENABLED=true`).
 
     Jeden `AlphaVantageClient` dla akcji i krypto: adapter wewnętrznie prefiksuje
-    BTC → CRYPTO:BTC w requestach NEWS_SENTIMENT."""
+    BTC → CRYPTO:BTC w requestach NEWS_SENTIMENT. FIN-13: każdy adapter LLM
+    i embeddingów zgłasza tokeny do `usage_sink` (ledger przebiegu)."""
     av_client = AlphaVantageClient(
         api_keys=settings.alpha_vantage_api_keys,
         symbols=[*settings.symbols, *settings.crypto_symbols],
@@ -1053,11 +1082,13 @@ def _production_paid_ports(
         # FIN-04: request AV tylko dla symbolu za bramką (FEATURE_SET_VERSION 3).
         lazy_per_symbol=True,
     )
-    llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor)
+    llm_port = build_llm_adapter(settings, quota_monitor=quota_monitor, usage_sink=usage_sink)
     # FIN-02: każdy request persony, chairmana i rewizji liczy się u źródła.
     # Osobny obiekt niż `llm_port`, więc główna analiza nie liczy się podwójnie.
     council_llm_port = MeteredLLMPort(
-        build_council_llm_adapter(settings, llm_port, quota_monitor=quota_monitor),
+        build_council_llm_adapter(
+            settings, llm_port, quota_monitor=quota_monitor, usage_sink=usage_sink
+        ),
         telemetry,
         "council_llm",
     )
@@ -1065,9 +1096,13 @@ def _production_paid_ports(
         llm=llm_port,
         sentiment=AlphaVantageSentimentAdapter(av_client),
         news=AlphaVantageNewsAdapter(av_client),
-        embedding=build_embedding_adapter(settings, quota_monitor=quota_monitor),
+        embedding=build_embedding_adapter(
+            settings, quota_monitor=quota_monitor, usage_sink=usage_sink
+        ),
         council=build_council_adapter(settings, council_llm_port, repository=repository),
-        tool_use=build_tool_use_adapter(settings, quota_monitor=quota_monitor),
+        tool_use=build_tool_use_adapter(
+            settings, quota_monitor=quota_monitor, usage_sink=usage_sink
+        ),
     )
 
 
@@ -1118,6 +1153,7 @@ def build_use_case(
     repository: RepositoryPort | None = None,
     quota_monitor: QuotaMonitor | None = None,
     run_context: RunContext | None = None,
+    usage_ledger: UsageLedger | None = None,
 ) -> AnalyzeMarketUseCase:
     """DI Container — buduje wszystkie adaptery i wstrzykuje do Use Case'a.
 
@@ -1127,13 +1163,16 @@ def build_use_case(
     pod bramką volatility nie kosztuje żadnego requestu AV.
 
     `run_context` (MAIL-42) wchodzi do przepisu predykcji (WIA-20); brak = run
-    lokalny.
+    lokalny. `usage_ledger` (FIN-13) dostaje tokeny płatnych adapterów; atrapy
+    FIN-35 nie wysyłają requestów, więc niczego do niego nie zgłaszają.
     """
     # ARCH-11: jedna telemetria na cykl — dostają ją graf i licznik requestów rady.
     telemetry = CycleTelemetry()
     supabase_repo = repository or build_repository(settings)
     paid = (
-        _production_paid_ports(settings, telemetry, supabase_repo, quota_monitor)
+        _production_paid_ports(
+            settings, telemetry, supabase_repo, quota_monitor, usage_sink=usage_ledger
+        )
         if settings.paid_calls_enabled
         else _local_stub_ports()
     )
@@ -1240,6 +1279,56 @@ def build_use_case(
         # FIN-12: sufit płatnych wywołań LLM cyklu; None = bez limitu.
         paid_call_cap=settings.max_paid_llm_calls_per_cycle,
     ))
+
+
+def cycle_cost(
+    settings: Settings, telemetry: CycleTelemetry, ledger: UsageLedger
+) -> CycleCost | None:
+    """FinOps: koszt CAŁEGO cyklu z telemetrii grafu (ARCH-11).
+
+    FIN-13: źródło z wycenionymi tokenami w ledgerze dostaje koszt z tokenów,
+    reszta zostaje na `UNIT_COST_USD`. Cykl w całości odcięty bramką volatility
+    ma zerowy licznik → sekcja mówi "cykl darmowy". FIN-35: atrapy liczą się
+    w telemetrii jak prawdziwe wywołania, więc lokalnie sekcja kosztu by
+    kłamała — chowamy ją (None)."""
+    if not settings.paid_calls_enabled:
+        return None
+    return estimate_cycle_cost(
+        telemetry.snapshot().paid_calls,
+        token_costs=ledger.token_costs(settings.llm_price_table()),
+        priced_as_of=settings.llm_pricing_as_of,
+    )
+
+
+def persist_llm_calls(
+    *,
+    settings: Settings,
+    repository: RepositoryPort,
+    ledger: UsageLedger,
+    run_context: RunContext,
+) -> None:
+    """FIN-13: ledger `llm_calls` (migracja 040) jednym batchem po przebiegu.
+
+    Tylko za `cost_ledger_enabled` — bez migracji tabela nie istnieje. Zapis idzie
+    przez repozytorium przebiegu, więc lokalnie pomija go strażnik BEZ-08. Błąd
+    zapisu nie wywraca przebiegu: ledger to księgowość, nie wynik cyklu."""
+    if not settings.cost_ledger_enabled:
+        return
+    entries = ledger.entries(
+        run_id=run_context.run_id,
+        price_table=settings.llm_price_table(),
+        price_as_of=settings.llm_pricing_as_of,
+    )
+    if not entries:
+        return
+    try:
+        repository.save_llm_calls(entries)
+    except Exception:
+        logger.exception(
+            "save_llm_calls failed — %d llm_calls rows of run %s not written",
+            len(entries),
+            run_context.run_id,
+        )
 
 
 def _regime_tagging_enabled(settings: Settings) -> bool:
@@ -2486,11 +2575,14 @@ def main(
     quota_monitor = QuotaMonitor(alert_notifier=alert_notifier)
     _record_av_budget_alert(settings, quota_monitor)
     repository = build_repository(settings)
+    # FIN-13: jeden ledger tokenów na przebieg — adaptery zgłaszają, mail wycenia.
+    usage_ledger = UsageLedger()
     use_case = build_use_case(
         settings,
         repository=repository,
         quota_monitor=quota_monitor,
         run_context=run_context,
+        usage_ledger=usage_ledger,
     )
     # Mail i stary push osobno: tekst pushu nie niesie sekcji portfela.
     notifier = build_notifier(settings, quota_monitor=quota_monitor, include_push=False)
@@ -2578,6 +2670,13 @@ def main(
     # ---- Portfolio Radar (Q4 — korelacja/koncentracja watchlisty, darmowe) ----
     portfolio_risk_report = _build_portfolio_radar(settings, repository, all_symbols)
 
+    persist_llm_calls(
+        settings=settings,
+        repository=repository,
+        ledger=usage_ledger,
+        run_context=run_context,
+    )
+
     # ---- Wysyłka raportu ----
     _dispatch_reports(
         results=results,
@@ -2599,15 +2698,7 @@ def main(
             alpha_signals=alpha_signals,
             alpha_prices=alpha_prices,
             yield_curve=yield_curve,
-            # FinOps: koszt CAŁEGO cyklu z telemetrii grafu (ARCH-11). Cykl w całości
-            # odcięty bramką volatility ma zerowy licznik → sekcja mówi "cykl darmowy".
-            # FIN-35: atrapy liczą się w telemetrii jak prawdziwe wywołania, więc
-            # lokalnie sekcja kosztu by kłamała — chowamy ją.
-            cycle_cost=(
-                estimate_cycle_cost(use_case.telemetry.snapshot().paid_calls)
-                if settings.paid_calls_enabled
-                else None
-            ),
+            cycle_cost=cycle_cost(settings, use_case.telemetry, usage_ledger),
             ml_model_loaded=use_case.ml_model_loaded,
             run_context=run_context,
         ),

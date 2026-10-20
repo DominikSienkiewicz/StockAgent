@@ -2495,3 +2495,87 @@ class TestResolvedForEvalSkipsLlmFallback:
         out = repo.get_resolved_predictions_for_eval(30)
 
         assert out == [real, unflagged]
+
+
+# ---------------------------------------------------------------------------
+# FIN-13: save_llm_calls — ledger kosztów `llm_calls` (migracja 040)
+# ---------------------------------------------------------------------------
+
+
+class TestSaveLLMCalls:
+    @staticmethod
+    def _entries() -> list[Any]:
+        from src.domain.finops import LLMCallEntry, LLMUsage
+
+        return [
+            LLMCallEntry(
+                run_id="18324",
+                node="predict",
+                symbol="NVDA",
+                usage=LLMUsage(
+                    provider="anthropic",
+                    model="claude-sonnet-4-6",
+                    input_tokens=1200,
+                    output_tokens=300,
+                    cache_read_tokens=4000,
+                    cache_write_tokens=0,
+                ),
+                cost_usd=0.0093,
+                price_as_of=date(2026, 10, 20),
+            ),
+            LLMCallEntry(
+                run_id="18324",
+                node="weekly_recap",
+                symbol=None,
+                usage=LLMUsage(
+                    provider="openai", model="gpt-9-ultra", input_tokens=10, output_tokens=5
+                ),
+                cost_usd=None,
+                price_as_of=None,
+            ),
+        ]
+
+    def test_inserts_one_row_per_call_in_a_single_batch(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_llm_calls(self._entries())
+
+        mock_client.table.assert_called_once_with("llm_calls")
+        insert = mock_client.table.return_value.insert
+        insert.assert_called_once()
+        rows = insert.call_args.args[0]
+        assert rows == [
+            {
+                "run_id": "18324",
+                "symbol": "NVDA",
+                "node": "predict",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "input_tokens": 1200,
+                "output_tokens": 300,
+                "cache_read_tokens": 4000,
+                "cache_write_tokens": 0,
+                "cost_usd": 0.0093,
+                "price_as_of": "2026-10-20",
+            },
+            {
+                "run_id": "18324",
+                "symbol": None,
+                "node": "weekly_recap",
+                "provider": "openai",
+                "model": "gpt-9-ultra",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "cost_usd": None,
+                "price_as_of": None,
+            },
+        ]
+
+    def test_no_calls_means_no_insert(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_llm_calls([])
+
+        mock_client.table.assert_not_called()

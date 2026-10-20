@@ -141,3 +141,18 @@ def test_attestation_writes_report_not_published() -> None:
 
     assert publisher.publish_commitment({"symbol": "AAPL"}) == ""
     assert publisher.publish_reveal({"symbol": "AAPL"}) == ""
+
+
+def test_llm_cost_ledger_write_is_skipped_with_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # FIN-13: ledger kosztów `llm_calls` to zapis jak każdy inny — lokalny run go pomija.
+    delegate = create_autospec(RepositoryPort, instance=True)
+    repository = ReadOnlyRepository(delegate)
+
+    with caplog.at_level(logging.WARNING, logger="src.infrastructure.adapters.write_guard"):
+        repository.save_llm_calls([MagicMock()])
+
+    assert delegate.mock_calls == []
+    assert "save_llm_calls" in caplog.text
+    assert "save_llm_calls" in ReadOnlyRepository.WRITE_METHODS

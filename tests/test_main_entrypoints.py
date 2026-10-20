@@ -4998,3 +4998,326 @@ class TestClosedDayHeldStockQuotes:
         main_agent.main(settings, clock=lambda: datetime(2026, 12, 23, 5, 30, tzinfo=UTC))
 
         assert dispatch.call_args.kwargs["cycle_symbols"] == ["AAPL", "VOO", "BTC"]
+
+
+def _usage(model: str = "claude-sonnet-4-6") -> "object":
+    from src.domain.finops import LLMUsage
+
+    return LLMUsage(provider="anthropic", model=model, input_tokens=1000, output_tokens=200)
+
+
+def _sonnet_price() -> "object":
+    from src.config import ModelPriceSettings
+
+    return ModelPriceSettings(input=3.0, output=15.0)
+
+
+class TestCostLedgerWiring:
+    """FIN-13: jeden `UsageLedger` na przebieg — adaptery LLM i embeddingów
+    zgłaszają do niego tokeny (port `UsageSink`), mail liczy z nich koszt cyklu,
+    a zapis `llm_calls` idzie batchem po cyklu tylko za `cost_ledger_enabled`."""
+
+    _PAID_FACTORIES = (
+        "build_llm_adapter",
+        "build_council_llm_adapter",
+        "build_embedding_adapter",
+        "build_tool_use_adapter",
+    )
+
+    def test_every_paid_adapter_gets_the_ledger_as_its_usage_sink(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.application.usage_ledger import UsageLedger
+
+        factories = {name: mocker.patch(f"main_agent.{name}") for name in self._PAID_FACTORIES}
+        mocker.patch("main_agent.AnalyzeMarketUseCase")
+        ledger = UsageLedger()
+
+        main_agent.build_use_case(settings, usage_ledger=ledger)
+
+        for name, factory in factories.items():
+            assert factory.call_args.kwargs["usage_sink"] is ledger, name
+
+    def test_local_stub_run_reports_no_usage(self, settings, mock_external_clients, mocker) -> None:
+        # FIN-35: atrapy nie wysyłają requestu, więc nie mają czego zgłosić.
+        from src.application.usage_ledger import UsageLedger
+
+        settings.paid_calls_enabled = False
+        factories = {name: mocker.patch(f"main_agent.{name}") for name in self._PAID_FACTORIES}
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        ledger = UsageLedger()
+
+        main_agent.build_use_case(settings, usage_ledger=ledger)
+        deps = use_case_cls.call_args.args[0]
+        deps.llm_port.analyze("prompt")
+        deps.llm_port.analyze_mistake("prompt")
+
+        assert not any(factory.called for factory in factories.values())
+        assert ledger.records() == ()
+
+    def test_main_hands_one_ledger_to_the_graph_and_the_ledger_write(
+        self, settings, mock_external_clients, mocker, monkeypatch
+    ) -> None:
+        # Identyfikator przebiegu ledgera to `GITHUB_RUN_ID` z RunContext (MAIL-42).
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("GITHUB_RUN_ID", "18324")
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        build = mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        persist = mocker.patch("main_agent.persist_llm_calls")
+        mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings)
+
+        ledger = build.call_args.kwargs["usage_ledger"]
+        assert persist.call_args.kwargs["ledger"] is ledger
+        assert persist.call_args.kwargs["run_context"].run_id == "18324"
+
+    def test_ledger_flag_off_writes_nothing(self, settings) -> None:
+        from src.application.usage_ledger import UsageLedger, usage_scope
+
+        ledger = UsageLedger()
+        with usage_scope(source="llm", node="predict", symbol="NVDA"):
+            ledger.record(_usage())
+        repository = MagicMock(spec=RepositoryPort)
+        settings.cost_ledger_enabled = False
+
+        main_agent.persist_llm_calls(
+            settings=settings,
+            repository=repository,
+            ledger=ledger,
+            run_context=main_agent.RunContext(),
+        )
+
+        repository.save_llm_calls.assert_not_called()
+
+    def test_ledger_flag_on_writes_one_priced_batch(self, settings) -> None:
+        from datetime import date
+
+        from src.application.usage_ledger import UsageLedger, usage_scope
+
+        ledger = UsageLedger()
+        with usage_scope(source="llm", node="predict", symbol="NVDA"):
+            ledger.record(_usage())
+            ledger.record(_usage(model="claude-unpriced"))
+        repository = MagicMock(spec=RepositoryPort)
+        settings.cost_ledger_enabled = True
+        settings.llm_pricing_as_of = date(2026, 10, 20)
+        settings.llm_pricing = {
+            "claude-sonnet-4-6": _sonnet_price()
+        }
+
+        main_agent.persist_llm_calls(
+            settings=settings,
+            repository=repository,
+            ledger=ledger,
+            run_context=main_agent.RunContext(run_id="18324"),
+        )
+
+        repository.save_llm_calls.assert_called_once()
+        entries = repository.save_llm_calls.call_args.args[0]
+        assert [(e.run_id, e.node, e.symbol) for e in entries] == [
+            ("18324", "predict", "NVDA"),
+            ("18324", "predict", "NVDA"),
+        ]
+        assert entries[0].cost_usd == pytest.approx(0.006)
+        assert entries[0].price_as_of == date(2026, 10, 20)
+        assert entries[1].cost_usd is None
+
+    def test_empty_ledger_writes_nothing(self, settings) -> None:
+        from src.application.usage_ledger import UsageLedger
+
+        repository = MagicMock(spec=RepositoryPort)
+        settings.cost_ledger_enabled = True
+
+        main_agent.persist_llm_calls(
+            settings=settings,
+            repository=repository,
+            ledger=UsageLedger(),
+            run_context=main_agent.RunContext(),
+        )
+
+        repository.save_llm_calls.assert_not_called()
+
+    def test_failed_ledger_write_does_not_fail_the_cycle(self, settings, caplog) -> None:
+        from src.application.usage_ledger import UsageLedger, usage_scope
+
+        ledger = UsageLedger()
+        with usage_scope(source="llm", node="predict", symbol="NVDA"):
+            ledger.record(_usage())
+        repository = MagicMock(spec=RepositoryPort)
+        repository.save_llm_calls.side_effect = RuntimeError("PGRST205")
+        settings.cost_ledger_enabled = True
+
+        main_agent.persist_llm_calls(
+            settings=settings,
+            repository=repository,
+            ledger=ledger,
+            run_context=main_agent.RunContext(),
+        )
+
+        assert "llm_calls" in caplog.text
+
+    def test_read_only_run_skips_the_ledger_write_with_a_warning(self, settings, caplog) -> None:
+        # BEZ-08: bez `db_writes_enabled` zapis ledgera pomija strażnik zapisu.
+        import logging
+
+        from src.application.usage_ledger import UsageLedger, usage_scope
+        from src.infrastructure.adapters.write_guard import ReadOnlyRepository
+
+        ledger = UsageLedger()
+        with usage_scope(source="llm", node="predict", symbol="NVDA"):
+            ledger.record(_usage())
+        delegate = MagicMock(spec=RepositoryPort)
+        settings.cost_ledger_enabled = True
+
+        with caplog.at_level(logging.WARNING):
+            main_agent.persist_llm_calls(
+                settings=settings,
+                repository=ReadOnlyRepository(delegate),
+                ledger=ledger,
+                run_context=main_agent.RunContext(),
+            )
+
+        delegate.save_llm_calls.assert_not_called()
+        assert "save_llm_calls" in caplog.text
+
+
+class TestCycleCostFromTokens:
+    """FIN-13: sekcja „Koszt cyklu” liczy źródło z tokenów, gdy ledger ma jego
+    rekordy z wycenionym modelem; reszta źródeł zostaje na `UNIT_COST_USD`.
+    Działa bez flagi ledgera — to tylko pamięć przebiegu."""
+
+    def _ledger(self) -> "object":
+        from src.application.usage_ledger import UsageLedger, usage_scope
+
+        ledger = UsageLedger()
+        with usage_scope(source="llm", node="predict", symbol="NVDA"):
+            ledger.record(_usage())
+        return ledger
+
+    def test_llm_line_is_priced_from_tokens_and_the_rest_from_the_unit_cost(
+        self, settings
+    ) -> None:
+        from datetime import date
+
+        from src.application.cycle_telemetry import CycleTelemetry
+        from src.domain.finops import UNIT_COST_USD
+
+        telemetry = CycleTelemetry()
+        telemetry.record_paid_call("llm")
+        telemetry.record_paid_call("sentiment")
+        settings.cost_ledger_enabled = False
+        settings.llm_pricing_as_of = date(2026, 10, 20)
+        settings.llm_pricing = {
+            "claude-sonnet-4-6": _sonnet_price()
+        }
+
+        cost = main_agent.cycle_cost(settings, telemetry, self._ledger())
+
+        lines = {line.source: line for line in cost.lines}
+        assert lines["llm"].from_tokens is True
+        assert lines["llm"].subtotal_usd == pytest.approx(0.006)
+        assert lines["sentiment"].subtotal_usd == pytest.approx(UNIT_COST_USD["sentiment"])
+        assert cost.priced_as_of == date(2026, 10, 20)
+
+    def test_without_a_price_list_the_cost_stays_an_estimate(self, settings) -> None:
+        from src.application.cycle_telemetry import CycleTelemetry
+
+        telemetry = CycleTelemetry()
+        telemetry.record_paid_call("llm")
+
+        cost = main_agent.cycle_cost(settings, telemetry, self._ledger())
+
+        assert cost.from_tokens is False
+        assert cost.priced_as_of is None
+
+    def test_local_stub_run_hides_the_section(self, settings) -> None:
+        from src.application.cycle_telemetry import CycleTelemetry
+
+        settings.paid_calls_enabled = False
+
+        assert main_agent.cycle_cost(settings, CycleTelemetry(), self._ledger()) is None
+
+    def test_main_puts_the_token_cost_into_the_mail(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from datetime import date
+
+        from src.application.cycle_telemetry import CycleTelemetry
+
+        telemetry = CycleTelemetry()
+        telemetry.record_paid_call("llm")
+        fake_uc = MagicMock()
+        fake_uc.telemetry = telemetry
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch("main_agent.UsageLedger", return_value=self._ledger())
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+        settings.llm_pricing_as_of = date(2026, 10, 20)
+        settings.llm_pricing = {
+            "claude-sonnet-4-6": _sonnet_price()
+        }
+
+        main_agent.main(settings)
+
+        cost = dispatch.call_args.kwargs["context"].cycle_cost
+        assert cost.lines[0].from_tokens is True
+        assert cost.total_usd == pytest.approx(0.006)
+
+
+class TestSlowLoopCostLedger:
+    """FIN-13: recap i sędzia kalibracji zgłaszają tokeny do ledgera przebiegu
+    Slow Loopa; zapis `llm_calls` za tą samą flagą co w Fast Loopie."""
+
+    def _trainer(self, settings, mocker) -> tuple[MagicMock, MagicMock]:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        mocker.patch("main_trainer.build_notifier", return_value=MagicMock())
+        build_llm = mocker.patch("main_agent.build_llm_adapter")
+        recap_cls = mocker.patch("main_trainer.WeeklyRecapUseCase")
+        recap_cls.return_value.run.return_value = {"status": "skipped_below_threshold"}
+        persist = mocker.patch("main_trainer.persist_llm_calls")
+        settings.symbols = ["AAPL"]
+        settings.weekly_recap_enabled = True
+        settings.paid_calls_enabled = True
+        return build_llm, persist
+
+    def test_recap_llm_reports_to_the_run_ledger_that_gets_persisted(
+        self, settings, mock_external_clients, mocker, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("GITHUB_RUN_ID", "18400")
+        build_llm, persist = self._trainer(settings, mocker)
+
+        main_trainer.main(settings)
+
+        ledger = persist.call_args.kwargs["ledger"]
+        assert build_llm.call_args.kwargs["usage_sink"] is ledger
+        assert persist.call_args.kwargs["run_context"].run_id == "18400"
+
+    def test_recap_usage_is_attributed_to_its_job(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.application.ports import LLMPort
+
+        build_llm, persist = self._trainer(settings, mocker)
+
+        def provider(_settings, quota_monitor=None, usage_sink=None):
+            port = MagicMock(spec=LLMPort)
+            port.analyze.side_effect = lambda _prompt: usage_sink.record(_usage()) or {}
+            return port
+
+        build_llm.side_effect = provider
+        recap_cls = main_trainer.WeeklyRecapUseCase
+        recap_cls.return_value.run.side_effect = lambda **_: (
+            recap_cls.call_args.kwargs["llm_port"].analyze("recap prompt")
+            or {"status": "skipped_below_threshold"}
+        )
+
+        main_trainer.main(settings)
+
+        records = persist.call_args.kwargs["ledger"].records()
+        assert [(r.source, r.node, r.symbol) for r in records] == [("llm", "recap", None)]

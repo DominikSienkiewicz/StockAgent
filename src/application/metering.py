@@ -15,26 +15,41 @@ from typing import Any
 
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.ports import LLMPort
+from src.application.usage_ledger import usage_scope
 
 logger = logging.getLogger(__name__)
 
 
 class MeteredLLMPort(LLMPort):
     """Port LLM, który rejestruje każde wywołanie w telemetrii cyklu pod
-    kluczem cennika `source` (np. `council_llm`) i deleguje do `inner`."""
+    kluczem cennika `source` (np. `council_llm`) i deleguje do `inner`.
 
-    def __init__(self, inner: LLMPort, telemetry: CycleTelemetry, source: str) -> None:
+    FIN-13: wywołanie `inner` idzie w zakresie `usage_scope(source=...)`, więc
+    tokeny zgłoszone przez adapter trafiają do ledgera pod tym samym kluczem
+    cennika co licznik. `node` (opcjonalny) nadaje węzeł wywołaniom spoza grafu
+    (joby Slow Loopa); bez niego węzeł i symbol dziedziczą z zakresu wołającego."""
+
+    def __init__(
+        self,
+        inner: LLMPort,
+        telemetry: CycleTelemetry,
+        source: str,
+        node: str | None = None,
+    ) -> None:
         self._inner = inner
         self._telemetry = telemetry
         self._source = source
+        self._node = node
 
     def analyze(self, prompt: str) -> dict[str, Any]:
         self._telemetry.record_paid_call(self._source)
-        return self._inner.analyze(prompt)
+        with usage_scope(source=self._source, node=self._node):
+            return self._inner.analyze(prompt)
 
     def analyze_mistake(self, prompt: str) -> str:
         self._telemetry.record_paid_call(self._source)
-        return self._inner.analyze_mistake(prompt)
+        with usage_scope(source=self._source, node=self._node):
+            return self._inner.analyze_mistake(prompt)
 
 
 class PaidBudgetExhausted(RuntimeError):

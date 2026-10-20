@@ -28,7 +28,12 @@ from pydantic_settings import (
 )
 
 from src.domain.experiment import Experiment, ExperimentMetric, validate_experiments
-from src.domain.finops import AV_DAILY_REQUESTS_PER_KEY, AvBudget, av_daily_budget
+from src.domain.finops import (
+    AV_DAILY_REQUESTS_PER_KEY,
+    AvBudget,
+    ModelPrice,
+    av_daily_budget,
+)
 from src.domain.macro_risk import MacroRiskInstrumentType
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
 
@@ -143,6 +148,11 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "slow_loop_max_paid_llm_calls_per_week",
     # FIN-34: dzień zamknięcia NYSE decyduje, CZY akcje idą do grafu, nie jak.
     "nyse_closure_skip_enabled",
+    # FIN-13: cennik wycenia tokeny w mailu i ledgerze, a flaga włącza sam zapis
+    # `llm_calls` — żadne z nich nie zmienia prognozy.
+    "llm_pricing",
+    "llm_pricing_as_of",
+    "cost_ledger_enabled",
 })
 
 # WIA-20: pola przepisu — progi, modele, providerzy, symbole, źródła danych
@@ -246,6 +256,19 @@ class ExperimentSettings(BaseModel):
     end: date
     primary_metric: ExperimentMetric
     enabled: bool = False
+
+
+class ModelPriceSettings(BaseModel):
+    """FIN-13: stawki jednego modelu z `config.toml`, USD za 1M tokenów (standard
+    tier). Brak stawki = dostawca jej nie nalicza; request z takimi tokenami nie
+    jest wyceniany (fallback na `UNIT_COST_USD`), więc literówka w kluczu to błąd."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    input: float = Field(ge=0)
+    output: float | None = Field(default=None, ge=0)
+    cache_read: float | None = Field(default=None, ge=0)
+    cache_write: float | None = Field(default=None, ge=0)
 
 
 class Settings(BaseSettings):
@@ -548,6 +571,15 @@ class Settings(BaseSettings):
     # pomija akcje, krypto idzie normalnie; bez krypto przebieg kończy się bez maila.
     # Off w kodzie, żeby testy entry pointów nie zależały od daty; config.toml: true.
     nyse_closure_skip_enabled: bool = False
+    # FIN-13: cennik per model (id modelu → stawki USD za 1M tokenów) i jego data.
+    # Wycenia tokeny zgłoszone przez adaptery w sekcji „Koszt cyklu” i w ledgerze;
+    # model bez wpisu zostaje na szacunku `UNIT_COST_USD`. Pusty w kodzie — stawki
+    # z oficjalnych cenników żyją w config.toml razem z `llm_pricing_as_of`.
+    llm_pricing: dict[str, ModelPriceSettings] = Field(default_factory=dict)
+    llm_pricing_as_of: date | None = None
+    # FIN-13: zapis ledgera `llm_calls` (migracja 040) batchem po przebiegu Fast
+    # i Slow Loopa. Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
+    cost_ledger_enabled: bool = False
     # ----- Database -----
     supabase_url: str
     supabase_key: str
@@ -798,6 +830,18 @@ class Settings(BaseSettings):
         start, zamiast po cichu zbierać dane z testu A/A."""
         validate_experiments(self.experiment_definitions())
         return self
+
+    def llm_price_table(self) -> dict[str, ModelPrice]:
+        """FIN-13: domenowy cennik per model z `llm_pricing`."""
+        return {
+            model: ModelPrice(
+                input_usd_per_mtok=price.input,
+                output_usd_per_mtok=price.output,
+                cache_read_usd_per_mtok=price.cache_read,
+                cache_write_usd_per_mtok=price.cache_write,
+            )
+            for model, price in self.llm_pricing.items()
+        }
 
     def experiment_definitions(self) -> tuple[Experiment, ...]:
         """EXP-05: domenowe definicje eksperymentów, posortowane po id."""

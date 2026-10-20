@@ -79,3 +79,74 @@ def test_unknown_source_html_is_escaped() -> None:
     html = render_finops_html(cost)
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
+
+
+# --- FIN-13: koszt z tokenów obok szacunku ze stałej ----------------------------
+
+
+def _mixed_cost():
+    from datetime import date
+
+    return estimate_cycle_cost(
+        {"llm": 2, "council_llm": 8, "sentiment": 2},
+        token_costs={"llm": 0.0123, "council_llm": 0.00456},
+        priced_as_of=date(2026, 10, 20),
+    )
+
+
+def test_token_lines_are_marked_as_computed_from_tokens_html() -> None:
+    html = render_finops_html(_mixed_cost())
+
+    assert "Model predykcyjny (LLM): 2 wywołania z tokenów = <strong>$0,0123</strong>" in html
+    assert "Rada doradcza (LLM): 8 wywołań z tokenów = <strong>$0,0046</strong>" in html
+    # Źródło bez danych o tokenach zostaje szacunkiem ze stałej, jawnie oznaczonym.
+    assert "Sentyment (Alpha Vantage): 2 × ~$0,0005 = <strong>~$0,0010</strong> (szacunek)" in html
+
+
+def test_token_lines_are_marked_as_computed_from_tokens_text() -> None:
+    text = render_finops_text(_mixed_cost())
+
+    assert "Model predykcyjny (LLM): 2 wywołania z tokenów = $0,0123" in text
+    assert "Sentyment (Alpha Vantage): 2 × ~$0,0005 = ~$0,0010 (szacunek)" in text
+
+
+def test_mixed_cycle_header_says_what_is_from_tokens() -> None:
+    cost = _mixed_cost()
+    html = render_finops_html(cost)
+    text = render_finops_text(cost)
+    total = f"{cost.total_usd:.4f}".replace(".", ",")
+
+    for rendered in (html, text):
+        assert f"~${total}" in rendered
+        assert "część z tokenów, reszta szacunkiem" in rendered
+        # Cennik dryfuje — data cennika stoi przy kwocie z tokenów.
+        assert "cennik z 20.10.2026" in rendered
+
+
+def test_fully_token_priced_cycle_has_no_estimate_marker() -> None:
+    from datetime import date
+
+    cost = estimate_cycle_cost(
+        {"llm": 1}, token_costs={"llm": 0.0061}, priced_as_of=date(2026, 10, 20)
+    )
+    html = render_finops_html(cost)
+    text = render_finops_text(cost)
+
+    for rendered in (html, text):
+        assert "Koszt cyklu z tokenów:" in rendered
+        assert "$0,0061" in rendered
+        assert "~$0,0061" not in rendered
+        assert "(szacunek)" not in rendered
+        assert "nie faktura" in rendered
+
+
+def test_unit_only_cycle_renders_as_before() -> None:
+    # Bez danych o tokenach (np. tokeny nieznane albo cennik pusty) sekcja jest
+    # dokładnie taka jak przed FIN-13 — golden snapshot maila bez zmian.
+    from src.domain.finops import estimate_cycle_cost as estimate
+
+    calls = {"llm": 2, "council_llm": 1}
+    assert render_finops_html(estimate(calls, token_costs={})) == render_finops_html(
+        estimate(calls)
+    )
+    assert "(szacunek)" not in render_finops_text(estimate(calls))

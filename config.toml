@@ -188,6 +188,24 @@ slow_loop_max_paid_llm_calls_per_week = 15
 # analizuje akcji — ceny stoją, a przebieg, snapshoty i mail byłyby zbędne. Krypto idzie
 # normalnie; bez krypto przebieg kończy się od razu, bez maila.
 nyse_closure_skip_enabled = true
+# FIN-13: ledger kosztów — jeden wiersz `llm_calls` na request LLM / embeddingów
+# (tokeny, koszt, przebieg, węzeł, symbol; bez treści promptu), zapis batchem po
+# przebiegu Fast i Slow Loopa. UWAGA: włącz DOPIERO po migracji 040 (inaczej błąd
+# zapisu w logu). Sekcja „Koszt cyklu” liczy koszt z tokenów i bez tej flagi.
+cost_ledger_enabled = false
+# FIN-13: cennik LLM per model — standard tier, USD za 1M tokenów, stan na dzień
+# `llm_pricing_as_of`. Źródła:
+#   https://platform.claude.com/docs/en/about-claude/pricing
+#   https://developers.openai.com/api/docs/pricing
+# Anthropic `cache_write` = zapis cache 5 min (adapter używa cache ephemeral). OpenAI
+# nie nalicza zapisu cache, embedding ma tylko wejście. Tylko modele, które repo
+# konfiguruje; model bez wpisu zostaje na szacunku UNIT_COST_USD (src/domain/finops.py).
+# Cennik dryfuje — przy zmianie stawek albo modelu zaktualizuj też datę.
+llm_pricing_as_of = "2026-10-20"
+llm_pricing."claude-sonnet-4-6" = { input = 3.00, cache_read = 0.30, cache_write = 3.75, output = 15.00 }
+llm_pricing."gpt-5-mini" = { input = 0.25, cache_read = 0.025, output = 2.00 }
+llm_pricing."gpt-4o" = { input = 2.50, cache_read = 1.25, output = 10.00 }
+llm_pricing."text-embedding-3-small" = { input = 0.02 }
 # options_flow: option-chain to endpoint PREMIUM Finnhuba — na free tier zwraca 403,
 # więc sygnał nie powstaje, a każdy cykl marnuje ~39 requestów. Off do czasu planu premium.
 # Odblokowuje #18 (edge vs implied move).

@@ -64,6 +64,7 @@ MIGRATION_FILES = [
     "037_experiment_arms.sql",
     "038_enable_rls.sql",
     "039_feature_store_av_degraded_rows.sql",
+    "040_llm_calls.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1079,6 +1080,48 @@ class TestMigrations:
             "idx_ml_feature_store_symbol_timestamp",
         } <= _indexes(pg_conn, "ml_feature_store")
 
+    # -- Migracja 040: ledger kosztów LLM per wywołanie (FIN-13) ---------------
+
+    def test_llm_calls_holds_tokens_and_cost_but_no_prompt(self, pg_conn) -> None:
+        """Wiersz to liczby i identyfikatory przebiegu; żadnej kolumny na treść
+        promptu ani odpowiedzi (kontekst portfela)."""
+        assert _columns(pg_conn, "llm_calls") == {
+            "id",
+            "run_id",
+            "symbol",
+            "node",
+            "provider",
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "cost_usd",
+            "price_as_of",
+            "created_at",
+        }
+
+    def test_llm_calls_is_indexed_by_created_at(self, pg_conn) -> None:
+        assert "idx_llm_calls_created_at" in _indexes(pg_conn, "llm_calls")
+
+    def test_llm_calls_accepts_a_call_without_symbol_cost_or_price(self, pg_conn) -> None:
+        """Slow Loop nie ma symbolu, a model spoza cennika nie ma kosztu."""
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, node, provider, model, input_tokens, "
+                "output_tokens) VALUES ('LC_RUN', 'weekly_recap', 'openai', 'gpt-9', 10, 5) "
+                "RETURNING symbol, cost_usd, price_as_of, cache_read_tokens, "
+                "cache_write_tokens, created_at IS NOT NULL"
+            )
+            assert cur.fetchone() == (None, None, None, 0, 0, True)
+
+    def test_llm_calls_rejects_negative_token_counts(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, node, provider, model, input_tokens, "
+                "output_tokens) VALUES ('LC_NEG', 'predict', 'anthropic', 'c', -1, 0)"
+            )
+
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 
     def test_every_public_table_has_row_level_security(self, pg_conn) -> None:
@@ -1415,6 +1458,35 @@ class TestSupabaseRoleEmulation:
 
         assert public == [False, False]
         assert service_role is True
+
+    def test_llm_calls_is_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        """FIN-13: nowa tabela po 038 — RLS włączony w 040, anon i authenticated bez
+        prawa, a service_role (Fast i Slow Loop) zapisuje batch i czyta."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'llm_calls'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [_has_table_privilege(cur, role, "llm_calls") for role in PUBLIC_API_ROLES]
+
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, symbol, node, provider, model, input_tokens, "
+                "output_tokens, cost_usd, price_as_of) VALUES "
+                "('LC_SR', 'NVDA', 'predict', 'anthropic', 'claude-sonnet-4-6', 1000, 200, "
+                "0.006, '2026-10-20'), "
+                "('LC_SR', NULL, 'weekly_recap', 'openai', 'gpt-5-mini', 10, 5, NULL, NULL)"
+            )
+            cur.execute("SELECT count(*) FROM llm_calls WHERE run_id = 'LC_SR'")
+            assert cur.fetchone() == (2,)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM llm_calls LIMIT 1")
 
     def test_service_role_executes_the_rpc_functions(self, supabase_like_conn) -> None:
         """RPC, które aplikacja woła przez PostgREST. `refresh_ml_feature_store`

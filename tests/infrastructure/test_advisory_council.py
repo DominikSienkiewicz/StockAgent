@@ -716,3 +716,29 @@ def test_failed_persona_request_is_still_counted(llm_port: Mock) -> None:
     council.analyze("AAPL", _make_input())
 
     assert telemetry.snapshot().paid_calls["council_llm"] == 8
+
+
+def test_persona_threads_inherit_the_usage_scope_of_the_caller() -> None:
+    """FIN-13: persony idą w wątkach puli, a kontekst (`contextvars`) nie przechodzi
+    do wątku sam — bez kopii kontekstu tokeny person trafiałyby do ledgera bez
+    węzła i symbolu."""
+    from src.application.usage_ledger import UsageLedger, usage_scope
+    from src.domain.finops import LLMUsage
+
+    ledger = UsageLedger()
+    usage = LLMUsage(provider="openai", model="gpt-5-mini", input_tokens=1, output_tokens=1)
+    port = Mock(spec=LLMPort)
+
+    def analyze(_prompt: str) -> dict:
+        ledger.record(usage)
+        return _opinion_json()
+
+    port.analyze.side_effect = analyze
+    council = LLMAdvisoryCouncil(llm_port=port, personas=_TEST_PERSONAS[:3])
+
+    with usage_scope(source="council_llm", node="council", symbol="AAPL"):
+        council.analyze("AAPL", _make_input())
+
+    attributions = {(r.source, r.node, r.symbol) for r in ledger.records()}
+    assert len(ledger.records()) == 4  # 3 persony + chairman
+    assert attributions == {("council_llm", "council", "AAPL")}

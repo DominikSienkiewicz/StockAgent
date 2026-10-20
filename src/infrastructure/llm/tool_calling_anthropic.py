@@ -7,9 +7,10 @@ from typing import Any
 
 from anthropic import Anthropic
 
-from src.application.ports import Tool, ToolUseLLMPort
+from src.application.ports import Tool, ToolUseLLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.infrastructure.adapters._http import redact_secrets
+from src.infrastructure.llm._usage import anthropic_usage, report_usage
 from src.infrastructure.llm.anthropic_client import (
     DEFAULT_TIMEOUT,
     AnthropicAdapter,
@@ -46,6 +47,9 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
     Parsowanie finalnego tekstu reużywa robustnej logiki `AnthropicAdapter`
     (rozpakowanie ```json``` + wyłuskanie pierwszego zbalansowanego {...}),
     bo Claude nie ma natywnego JSON Mode. `max_rounds` to twarda bramka FinOps.
+
+    FIN-13: każda runda to osobny płatny request — każda zgłasza swoje tokeny do
+    `usage_sink`, choć licznik cyklu liczy całą pętlę jako jedno wywołanie `llm`.
     """
 
     def __init__(
@@ -57,11 +61,13 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
         timeout: float = DEFAULT_TIMEOUT,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         secret_values: Iterable[str] = (),
+        usage_sink: UsageSink | None = None,
     ) -> None:
         """`secret_values` (z `Settings.secret_values()`, wstrzykiwane przez DI)
         redagują błąd narzędzia, zanim wróci do modelu jako `{"error": ...}`."""
         # Fail-fast na oczywiście-złym id modelu (pusty / zły provider prefix).
         validate_model_id(model)
+        self._usage_sink = usage_sink
         self._client = Anthropic(api_key=api_key, timeout=timeout)
         self._model = model
         self._max_rounds = max_rounds
@@ -116,6 +122,8 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
                 kwargs["tools"] = tool_schema
 
             response = self._client.messages.create(**kwargs)
+            if self._usage_sink is not None:
+                report_usage(self._usage_sink, anthropic_usage(response, self._model))
 
             if not offer_tools or response.stop_reason != "tool_use":
                 # Finalna odpowiedź (albo wymuszona po capie) — parsuj JSON.

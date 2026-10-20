@@ -4070,3 +4070,80 @@ class TestPaidCallBudget:
         assert final["status"] == "ignored"
         assert "budget_exhausted" not in final
         repository_port.save_price_snapshot.assert_called_once()
+
+
+class TestUsageAttribution:
+    """FIN-13: graf otacza każde płatne wywołanie zakresem `usage_scope`, więc
+    tokeny zgłoszone przez adapter trafiają do ledgera ze źródłem cennika,
+    węzłem i symbolem — adapter nie zna grafu."""
+
+    def test_every_paid_call_reports_its_source_node_and_symbol(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.ports import AdvisoryCouncilPort
+        from src.application.usage_ledger import UsageLedger
+        from src.domain.finops import LLMUsage
+
+        ledger = UsageLedger()
+        usage = LLMUsage(provider="anthropic", model="m", input_tokens=1, output_tokens=1)
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        analysis = llm_port.analyze.return_value
+        llm_port.analyze.side_effect = lambda _prompt: ledger.record(usage) or analysis
+        llm_port.analyze_mistake.side_effect = lambda _prompt: ledger.record(usage) or "lekcja"
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.side_effect = lambda _text: ledger.record(usage) or [0.1] * 4
+        repository_port.find_similar_predictions.return_value = []
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.side_effect = lambda _symbol, _data: ledger.record(usage)
+        deps = AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+            council_port=council_port,
+        )
+
+        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert [(r.source, r.node, r.symbol) for r in ledger.records()] == [
+            ("llm", "reflect", "AAPL"),
+            ("embedding", "predict", "AAPL"),
+            ("llm", "predict", "AAPL"),
+            ("council_llm", "council", "AAPL"),
+        ]
+
+    def test_save_time_embedding_retry_is_attributed_to_save(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.usage_ledger import UsageLedger
+        from src.domain.finops import LLMUsage
+
+        ledger = UsageLedger()
+        usage = LLMUsage(provider="openai", model="e", input_tokens=1, output_tokens=0)
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        embedding_port = Mock(spec=EmbeddingPort)
+        # RAG nie dał wektora (pusty) → zapis embeduje jeszcze raz.
+        vectors = iter([[], [0.2] * 4])
+        embedding_port.embed.side_effect = lambda _text: ledger.record(usage) or next(vectors)
+        deps = AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port,
+        )
+
+        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert [(r.source, r.node) for r in ledger.records()] == [
+            ("embedding", "predict"),
+            ("embedding", "save"),
+        ]

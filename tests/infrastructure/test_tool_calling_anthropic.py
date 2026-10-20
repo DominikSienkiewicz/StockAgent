@@ -377,3 +377,39 @@ def test_tool_error_returned_to_model_omits_secrets(mock_anthropic_class) -> Non
     assert "fetch failed" in error
     assert "SECRET-URL-1" not in error
     assert "Lit3ral~odd#key" not in error
+
+
+class TestUsageReporting:
+    """FIN-13: pętla tool-use to kilka płatnych requestów pod jednym licznikiem
+    `llm` — każdy z nich zgłasza swoje tokeny do `UsageSink`."""
+
+    @staticmethod
+    def _with_usage(response: MagicMock, input_tokens: int, output_tokens: int) -> MagicMock:
+        response.usage = MagicMock(spec=["input_tokens", "output_tokens"])
+        response.usage.input_tokens = input_tokens
+        response.usage.output_tokens = output_tokens
+        return response
+
+    def test_every_round_reports_its_usage(self, mock_anthropic_class):
+        from src.application.ports import UsageSink
+
+        client = MagicMock()
+        mock_anthropic_class.return_value = client
+        sink = MagicMock(spec=UsageSink)
+        adapter = ToolCallingAnthropicAdapter(
+            api_key="sk-ant-test", model="claude-sonnet-4-6", usage_sink=sink
+        )
+        client.messages.create.side_effect = [
+            self._with_usage(
+                _tool_use_response([_tool_use_block("t1", "get_fundamentals", {"symbol": "A"})]),
+                1000,
+                40,
+            ),
+            self._with_usage(_final_response('{"trend_direction": "BULLISH"}'), 1300, 120),
+        ]
+
+        adapter.analyze_with_tools("Predict.", [_make_tool(lambda args: {"pe": 20})])
+
+        recorded = [call.args[0] for call in sink.record.call_args_list]
+        assert [(u.input_tokens, u.output_tokens) for u in recorded] == [(1000, 40), (1300, 120)]
+        assert {(u.provider, u.model) for u in recorded} == {("anthropic", "claude-sonnet-4-6")}

@@ -322,3 +322,58 @@ def test_warning_alert_is_polish_and_logged_in_english(mock_openai_class, mocker
     assert "retry succeeded" not in alert.message
     assert alert.action.startswith("Podnieś")
     assert "hit TPM limit 1× during a single call" in caplog.text
+
+
+class TestUsageReporting:
+    """FIN-13: embedding raportuje `usage.prompt_tokens`; trafienie w cache LRU
+    nie jest requestem, więc nie ma rekordu."""
+
+    @staticmethod
+    def _adapter(mock_openai_class: MagicMock):
+        from src.application.ports import UsageSink
+
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        sink = MagicMock(spec=UsageSink)
+        return OpenAIEmbeddingAdapter(api_key="sk-test", usage_sink=sink), client, sink
+
+    @staticmethod
+    def _with_usage(prompt_tokens: object) -> MagicMock:
+        response = _embedding_response([0.1, 0.2])
+        response.usage = MagicMock(spec=["prompt_tokens", "total_tokens"])
+        response.usage.prompt_tokens = prompt_tokens
+        response.usage.total_tokens = prompt_tokens
+        return response
+
+    def test_usage_is_reported_to_sink(self, mock_openai_class):
+        from src.domain.finops import LLMUsage
+
+        adapter, client, sink = self._adapter(mock_openai_class)
+        client.embeddings.create.return_value = self._with_usage(321)
+
+        adapter.embed("Apple beats estimates")
+
+        sink.record.assert_called_once_with(
+            LLMUsage(
+                provider="openai",
+                model="text-embedding-3-small",
+                input_tokens=321,
+                output_tokens=0,
+            )
+        )
+
+    def test_cache_hit_records_nothing(self, mock_openai_class):
+        adapter, client, sink = self._adapter(mock_openai_class)
+        client.embeddings.create.return_value = self._with_usage(321)
+
+        adapter.embed("Apple beats estimates")
+        adapter.embed("Apple beats estimates")
+
+        assert sink.record.call_count == 1
+
+    def test_non_integer_usage_records_nothing(self, mock_openai_class):
+        adapter, client, sink = self._adapter(mock_openai_class)
+        client.embeddings.create.return_value = self._with_usage("321")
+
+        assert adapter.embed("text") == [0.1, 0.2]
+        sink.record.assert_not_called()

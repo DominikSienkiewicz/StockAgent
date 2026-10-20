@@ -42,6 +42,7 @@ from src.application.prompts import (
     get_prediction_prompt,
 )
 from src.application.rag_rerank import rerank_analogs
+from src.application.usage_ledger import usage_scope
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, PriceDelta
 from src.domain.attestation import commit as attestation_commit
@@ -909,7 +910,10 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         )
         # #14: płatne wywołanie LLM diagnozy — log jawny + timing.
         _log_paid_call(deps, "reflect", symbol, "llm", "llm_port.analyze_mistake")
-        with _timed_node("reflect_analyze_mistake", symbol, deps.telemetry):
+        with (
+            _timed_node("reflect_analyze_mistake", symbol, deps.telemetry),
+            usage_scope(source="llm", node="reflect", symbol=symbol),
+        ):
             insight = llm_port.analyze_mistake(prompt)
     else:
         # Niska zmienność — nie palimy budżetu LLM na diagnozę. Predykcja
@@ -969,7 +973,8 @@ def _compute_rag_context(
             deps, "predict", state["symbol"], "embedding", "embedding_port.embed"
         )
         try:
-            news_embedding = deps.embedding_port.embed(news_summary)
+            with usage_scope(source="embedding", node="predict", symbol=state["symbol"]):
+                news_embedding = deps.embedding_port.embed(news_summary)
         except Exception:
             logger.exception(
                 "Embedding failed for %s — predicting without RAG", state["symbol"]
@@ -998,23 +1003,8 @@ def _run_llm_analysis(
     ``llm_port.analyze``. #12-guard: błąd parsowania/API degradujemy do
     neutralnego fallbacku. Zwraca ``(llm_analysis, llm_failed)``."""
     try:
-        if (
-            deps.tool_use_port is not None
-            and deps.research_tools
-            and deps.tool_use_threshold is not None
-            and (state.get("asset") or Asset(symbol=symbol)).evaluate_volatility(
-                PriceDelta(state["delta"]), deps.tool_use_threshold
-            )
-        ):
-            _log_paid_call(
-                deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools"
-            )
-            with _timed_node("predict_tool_use", symbol, deps.telemetry):
-                return deps.tool_use_port.analyze_with_tools(
-                    prompt, deps.research_tools
-                ), False
-        _log_paid_call(deps, "predict", symbol, "llm", "llm_port.analyze")
-        return deps.llm_port.analyze(prompt), False
+        with usage_scope(source="llm", node="predict", symbol=symbol):
+            return _call_prediction_llm(deps, state, prompt, symbol), False
     except Exception:
         logger.exception(
             "llm_port.analyze failed for %s — degraduję do neutralnej analizy",
@@ -1026,6 +1016,27 @@ def _run_llm_analysis(
             "av_agreement": 0.5,
             "reasoning": "Analiza LLM niedostępna — neutralny fallback.",
         }, True
+
+
+def _call_prediction_llm(
+    deps: AgentGraphDeps, state: AgentState, prompt: str, symbol: str
+) -> dict[str, Any]:
+    """Jedno płatne wywołanie predykcji: pętla tool-use albo `llm_port.analyze`."""
+    if (
+        deps.tool_use_port is not None
+        and deps.research_tools
+        and deps.tool_use_threshold is not None
+        and (state.get("asset") or Asset(symbol=symbol)).evaluate_volatility(
+            PriceDelta(state["delta"]), deps.tool_use_threshold
+        )
+    ):
+        _log_paid_call(
+            deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools"
+        )
+        with _timed_node("predict_tool_use", symbol, deps.telemetry):
+            return deps.tool_use_port.analyze_with_tools(prompt, deps.research_tools)
+    _log_paid_call(deps, "predict", symbol, "llm", "llm_port.analyze")
+    return deps.llm_port.analyze(prompt)
 
 
 def _run_ml_prediction(
@@ -1389,7 +1400,10 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # liczy `MeteredLLMPort`, którym DI owija port LLM rady.
     _log_paid_call_line("council", state["symbol"], "council_port.analyze")
     try:
-        with _timed_node("council", state["symbol"], deps.telemetry):
+        with (
+            _timed_node("council", state["symbol"], deps.telemetry),
+            usage_scope(source="council_llm", node="council", symbol=state["symbol"]),
+        ):
             verdict = council_port.analyze(state["symbol"], data)
     except Exception:
         logger.exception(
@@ -1423,7 +1437,8 @@ def _resolve_news_vector(
     # FIN-01: liczymy tylko realny request — wektor reużyty z predict nie kosztuje.
     _log_paid_call(deps, "save", state["symbol"], "embedding", "embedding_port.embed")
     try:
-        return deps.embedding_port.embed(news_summary)
+        with usage_scope(source="embedding", node="save", symbol=state["symbol"]):
+            return deps.embedding_port.embed(news_summary)
     except Exception:
         logger.exception(
             "Embedding failed for %s — saving without vector", state["symbol"]
