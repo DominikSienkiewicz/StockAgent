@@ -2434,15 +2434,19 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _nyse_closure(settings: Settings, now: datetime) -> str | None:
-    """FIN-34: powód zamknięcia NYSE w dniu cyklu (data ET) albo None, gdy NYSE
-    handluje albo pomijanie jest wyłączone (`nyse_closure_skip_enabled`)."""
+# FIN-34: wspólny log pominięcia akcji Fast Loopa i shock watcha (`main_watch`).
+STOCKS_SKIPPED_LOG = "%s — akcje pominięte (%d), krypto idzie normalnie: %s"
+
+
+def nyse_closure_label(settings: Settings, now: datetime) -> str | None:
+    """FIN-34: „święto NYSE (…)” albo „NYSE zamknięta (weekend)” w dniu `now`
+    (data ET); None, gdy NYSE handluje albo pomijanie jest wyłączone
+    (`nyse_closure_skip_enabled`). Ta sama reguła dla Fast Loopa i shock watcha."""
     if not settings.nyse_closure_skip_enabled:
         return None
-    return closure_reason(to_nyse_time(now).date())
-
-
-def _closure_label(reason: str) -> str:
+    reason = closure_reason(to_nyse_time(now).date())
+    if reason is None:
+        return None
     return "NYSE zamknięta (weekend)" if reason == "weekend" else f"święto NYSE ({reason})"
 
 
@@ -2457,20 +2461,15 @@ def main(
     # FIN-34: w dzień zamknięcia NYSE ceny akcji stoją — akcje nie idą do grafu.
     # Krypto handluje w święta, więc idzie normalnie; bez krypto nie ma czego
     # analizować, więc przebieg kończy się przed budową adapterów i bez maila.
-    closure = _nyse_closure(settings, clock())
+    closure = nyse_closure_label(settings, clock())
     if closure is not None and not settings.crypto_symbols:
         logger.info(
             "%s — akcje pominięte, brak krypto: przebieg kończy się bez analizy i bez maila",
-            _closure_label(closure),
+            closure,
         )
         return 0
     if closure is not None:
-        logger.info(
-            "%s — akcje pominięte (%d), krypto idzie normalnie: %s",
-            _closure_label(closure),
-            len(settings.symbols),
-            settings.crypto_symbols,
-        )
+        logger.info(STOCKS_SKIPPED_LOG, closure, len(settings.symbols), settings.crypto_symbols)
     stock_symbols = [] if closure is not None else list(settings.symbols)
     warn_if_paid_calls_disabled(settings)
     # MAIL-42: przebieg (run, commit, link do logów) — raz na cykl, z env GHA.

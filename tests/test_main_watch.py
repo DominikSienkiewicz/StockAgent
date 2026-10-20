@@ -302,3 +302,48 @@ def test_watch_starts_with_stubbed_paid_ports_and_database_writes(settings, mock
 
     assert main_watch.main(settings) == 0
     scan_watch.assert_called_once()
+
+
+class TestNyseClosedDayWatch:
+    """FIN-34: w dzień zamknięcia NYSE ceny akcji stoją, więc watch (za tą samą
+    flagą co Fast Loop) pomija akcje z tym samym logiem; krypto sprawdza dalej."""
+
+    _CHRISTMAS = datetime(2026, 12, 25, 5, 30, tzinfo=UTC)
+
+    def _scan(self, settings, now: datetime, caplog) -> tuple[MagicMock, object]:
+        settings.symbols = ["AAPL"]
+        settings.crypto_symbols = ["BTC"]
+        repo = _repo("100", age_hours=1.0, now=now)
+        with caplog.at_level(logging.INFO, logger="main_watch"):
+            outcome = main_watch.scan_watch(
+                settings, repository=repo, market=_market("100"), push_notifier=MagicMock(),
+                now=now,
+            )
+        return repo, outcome
+
+    def test_holiday_checks_only_crypto(self, settings, caplog) -> None:
+        settings.nyse_closure_skip_enabled = True
+
+        repo, outcome = self._scan(settings, self._CHRISTMAS, caplog)
+
+        checked = [c.args[0] for c in repo.get_last_price_snapshot.call_args_list]
+        assert checked == ["BTC"]
+        assert outcome.total == 1
+        assert any(
+            "święto NYSE (Boże Narodzenie)" in rec.message and "BTC" in rec.message
+            for rec in caplog.records
+        ), [rec.message for rec in caplog.records]
+
+    def test_trading_day_checks_stocks_too(self, settings, caplog) -> None:
+        settings.nyse_closure_skip_enabled = True
+
+        repo, _ = self._scan(settings, datetime(2026, 12, 23, 5, 30, tzinfo=UTC), caplog)
+
+        checked = [c.args[0] for c in repo.get_last_price_snapshot.call_args_list]
+        assert checked == ["AAPL", "BTC"]
+
+    def test_flag_off_checks_stocks_on_a_holiday(self, settings, caplog) -> None:
+        repo, _ = self._scan(settings, self._CHRISTMAS, caplog)
+
+        checked = [c.args[0] for c in repo.get_last_price_snapshot.call_args_list]
+        assert checked == ["AAPL", "BTC"]

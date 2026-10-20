@@ -10,6 +10,8 @@ on:
   #
   # Watch jest zaprojektowany pod 24/7, NIE tylko sesję NYSE — BTC/ETH handlują
   # całą dobę. Wymaga migracji 021 i `shock_alerts_enabled = true`.
+  # W dzień zamknięcia NYSE (święto, weekend) watch sam pomija akcje i sprawdza samo
+  # krypto (FIN-34, `nyse_closure_skip_enabled` w config.toml) — cron zostaje 24/7.
   # schedule:
   #   - cron: '7 * * * *'   # co godzinę, o :07 (rozsmarowanie obciążenia GHA)
   workflow_dispatch:

@@ -125,6 +125,19 @@ class WatchOutcome:
         return self.total > 0 and self.failures == self.total
 
 
+def _watched_stocks(settings: Settings, moment: datetime) -> list[str]:
+    """FIN-34: w dzień zamknięcia NYSE ceny akcji stoją — ta sama reguła i ten sam
+    log co w Fast Loopie; krypto handluje w święta, więc zostaje."""
+    # Import lokalny jak w `main()` — reguła żyje w DI Containerze Fast Loopa.
+    from main_agent import STOCKS_SKIPPED_LOG, nyse_closure_label
+
+    closure = nyse_closure_label(settings, moment)
+    if closure is None:
+        return list(settings.symbols)
+    logger.info(STOCKS_SKIPPED_LOG, closure, len(settings.symbols), settings.crypto_symbols)
+    return []
+
+
 def scan_watch(
     settings: Settings,
     *,
@@ -150,7 +163,8 @@ def scan_watch(
     crypto = set(settings.crypto_symbols)
     unsupported = set(settings.symbols_unsupported_price)
     symbols = [
-        s for s in (*settings.symbols, *settings.crypto_symbols) if s not in unsupported
+        s for s in (*_watched_stocks(settings, moment), *settings.crypto_symbols)
+        if s not in unsupported
     ]
 
     try:
