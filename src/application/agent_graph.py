@@ -942,6 +942,10 @@ def _compute_rag_context(
     # reużyte jako audytowalny blok "Na podstawie analogów" w raporcie.
     similar_precedents: list[dict[str, Any]] = []
     if deps.embedding_port is not None and news_summary:
+        # FIN-01: embedding to płatny request (OpenAI) — liczony w koszcie cyklu.
+        _log_paid_call(
+            deps, "predict", state["symbol"], "embedding", "embedding_port.embed"
+        )
         try:
             news_embedding = deps.embedding_port.embed(news_summary)
         except Exception:
@@ -1396,6 +1400,8 @@ def _resolve_news_vector(
     vector = state.get("news_embedding")
     if vector:
         return vector
+    # FIN-01: liczymy tylko realny request — wektor reużyty z predict nie kosztuje.
+    _log_paid_call(deps, "save", state["symbol"], "embedding", "embedding_port.embed")
     try:
         return deps.embedding_port.embed(news_summary)
     except Exception:

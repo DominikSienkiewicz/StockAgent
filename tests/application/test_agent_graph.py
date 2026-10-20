@@ -2756,6 +2756,101 @@ class TestPaidCallMeter:
 
         assert final["status"] == "saved"
 
+    def _embedding_cycle(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        embedding_port, state=None,
+    ):
+        from collections import Counter
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        repository_port.find_similar_predictions.return_value = []
+        meter: Counter[str] = Counter()
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        create_agent_graph(AgentGraphDeps(
+            **ports, threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port, paid_call_meter=meter,
+        )).compile().invoke(state or _initial_state("100.0"))
+        return meter
+
+    def test_embedding_call_is_metered(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # FIN-01: embedding newsów w predict (RAG) jest płatny i ląduje w koszcie
+        # cyklu; save_node reużywa wektora, więc nie liczy się drugi raz.
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+
+        meter = self._embedding_cycle(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            embedding_port,
+        )
+
+        embedding_port.embed.assert_called_once()
+        assert meter["embedding"] == 1
+
+    def test_save_retry_after_failed_rag_embedding_counts_both_requests(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.side_effect = [RuntimeError("503"), [0.1] * 8]
+
+        meter = self._embedding_cycle(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            embedding_port,
+        )
+
+        assert embedding_port.embed.call_count == 2
+        assert meter["embedding"] == 2
+
+    def test_save_fallback_embedding_is_metered_in_the_no_memory_arm(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        embedding_port.embed.return_value = [0.1] * 8
+
+        meter = self._embedding_cycle(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            embedding_port,
+            state={**_initial_state("100.0"), "experiment_arms": {"EXP-03": "no_memory"}},
+        )
+
+        embedding_port.embed.assert_called_once()
+        assert meter["embedding"] == 1
+
+    def test_no_news_means_no_embedding_call(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        embedding_port = Mock(spec=EmbeddingPort)
+        news_port.get_news_context.return_value = []
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        news_port.get_news_context.return_value = []
+        from collections import Counter
+
+        meter: Counter[str] = Counter()
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        create_agent_graph(AgentGraphDeps(
+            **ports, threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding_port, paid_call_meter=meter,
+        )).compile().invoke(_initial_state("100.0"))
+
+        embedding_port.embed.assert_not_called()
+        assert "embedding" not in meter
+
 
 # ---------------------------------------------------------------------------
 # ML-09 — wszystkie 5 nagłówków w prompcie predykcji
