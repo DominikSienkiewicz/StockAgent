@@ -27,7 +27,7 @@ from typing import Any, NamedTuple
 from src.application.agent_graph import AgentGraphDeps, AgentState
 from src.application.alpha_signals import AlphaSignals
 from src.application.cycle_telemetry import CycleTelemetry
-from src.application.metering import MeteredLLMPort
+from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.move_interval import (
     CALIBRATION_LOOKBACK_DAYS,
     calibration_windows,
@@ -241,6 +241,7 @@ def build_llm_adapter(
     usage_sink: UsageSink | None = None,
     *,
     telemetry: CycleTelemetry | None = None,
+    fallback_allowance: PaidCallAllowance | None = None,
 ) -> LLMPort:
     """Factory LLM — wybiera providera na podstawie konfiguracji.
 
@@ -248,10 +249,13 @@ def build_llm_adapter(
     domyślnie, eskalacja do frontier tylko gdy `confidence < routing_floor`.
     FIN-13: `usage_sink` dostaje tokeny każdego requestu (oba modele kaskady).
     NIEZ-44: z `llm_fallback_provider` całość idzie za `FailoverLLMAdapter`
-    (`_with_llm_fallback`); request do zapasowego liczy `telemetry` pod `llm`.
+    (`_with_llm_fallback`); request do zapasowego liczy `telemetry` pod `llm`,
+    a `fallback_allowance` (Slow Loop) odrzuca go ponad przydział joba.
     """
     primary = _build_primary_llm(settings, quota_monitor, usage_sink)
-    return _with_llm_fallback(settings, primary, quota_monitor, usage_sink, telemetry)
+    return _with_llm_fallback(
+        settings, primary, quota_monitor, usage_sink, telemetry, fallback_allowance
+    )
 
 
 def _with_llm_fallback(
@@ -260,13 +264,16 @@ def _with_llm_fallback(
     quota_monitor: QuotaMonitor | None,
     usage_sink: UsageSink | None,
     telemetry: CycleTelemetry | None,
+    allowance: PaidCallAllowance | None = None,
 ) -> LLMPort:
     """NIEZ-44: zapasowy dostawca za głównym — tylko gdy skonfigurowany i ma klucz.
 
     Zapasowy dostaje ten sam monitor kwot i ten sam `usage_sink` (tokeny z jego
     dostawcą i modelem), a `MeteredLLMPort` liczy jego request w telemetrii cyklu
     pod `llm` — więc widzi go sufit FIN-12 i sekcja kosztu. Request do głównego
-    liczy jak dotąd graf (Fast Loop) albo meter joba (Slow Loop)."""
+    liczy jak dotąd graf (Fast Loop) albo meter joba (Slow Loop). `allowance`
+    (Slow Loop, FIN-30): request do zapasowego zużywa przydział joba, a ponad nim
+    `BudgetedLLMPort` odrzuca go przed dostawcą i failover nie startuje."""
     provider = settings.llm_fallback_provider
     if provider is None:
         return primary
@@ -288,6 +295,8 @@ def _with_llm_fallback(
     secondary = _build_single_llm(settings, provider, model, quota_monitor, usage_sink)
     if telemetry is not None:
         secondary = MeteredLLMPort(secondary, telemetry, "llm")
+    if allowance is not None:
+        secondary = BudgetedLLMPort(secondary, allowance=allowance)
     return FailoverLLMAdapter(primary, secondary, provider=provider, model=model)
 
 

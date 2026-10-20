@@ -126,6 +126,24 @@ class TestBuildLLMAdapter:
         # Request do głównego liczy graf (`_log_paid_call`); tu tylko zapasowy.
         assert dict(telemetry.snapshot().paid_calls) == {"llm": 2}
 
+    def test_fallback_allowance_refuses_the_secondary_before_the_provider(
+        self, settings, mocker, failing_primary, secondary
+    ) -> None:
+        from src.application.metering import PaidCallAllowance
+
+        settings.llm_fallback_provider = "openai"
+        mocker.patch("main_agent._build_single_llm", return_value=secondary)
+        telemetry = CycleTelemetry()
+
+        adapter = main_agent.build_llm_adapter(
+            settings, telemetry=telemetry, fallback_allowance=PaidCallAllowance(0, "recap")
+        )
+        with pytest.raises(TimeoutError):
+            adapter.analyze("prompt")
+
+        secondary.analyze.assert_not_called()
+        assert dict(telemetry.snapshot().paid_calls) == {}
+
     def test_primary_success_meters_nothing_extra(self, settings, mocker, secondary) -> None:
         primary = Mock(spec=LLMPort)
         primary.analyze.return_value = {"trend_direction": "SIDEWAYS"}
@@ -176,20 +194,60 @@ class TestFastLoopWiring:
 
 
 class TestSlowLoopWiring:
-    def test_fallback_call_counts_in_the_weekly_meter(
+    """Decyzja 2026-10-20: request do zapasowego przechodzi przez tygodniowy
+    przydział joba (FIN-30) i zużywa go; przy wyczerpanym przydziale failover nie
+    startuje, a błąd głównego idzie dalej jak dotąd."""
+
+    def test_fallback_call_spends_the_job_allowance(
         self, settings, mocker, failing_primary, secondary
     ) -> None:
+        from src.application.metering import PaidBudgetExhausted
+
+        settings.llm_fallback_provider = "openai"
+        settings.weekly_recap_enabled = True
+        mocker.patch("main_trainer.RECAP_LLM_CALLS", 2)
+        mocker.patch("main_agent._build_single_llm", return_value=secondary)
+        paid = main_trainer._SlowLoopPaidLLM(settings, QuotaMonitor(), UsageLedger())
+        port = paid.port_for(main_trainer.RECAP_JOB)
+
+        assert port.analyze("prompt")["trend_direction"] == "BULLISH"
+        # Jeden request do głównego (meter joba) + jeden do zapasowego = cały przydział.
+        assert dict(paid.telemetry.snapshot().paid_calls) == {"llm": 2}
+        with pytest.raises(PaidBudgetExhausted):
+            port.analyze("prompt")
+        assert failing_primary.analyze.call_count == 1
+        assert secondary.analyze.call_count == 1
+
+    def test_spent_allowance_skips_the_failover(
+        self, settings, mocker, failing_primary, secondary
+    ) -> None:
+        # Recap ma dziś przydział 1 — zużywa go request do głównego.
         settings.llm_fallback_provider = "openai"
         settings.weekly_recap_enabled = True
         mocker.patch("main_agent._build_single_llm", return_value=secondary)
         paid = main_trainer._SlowLoopPaidLLM(settings, QuotaMonitor(), UsageLedger())
 
-        assert paid.port_for(main_trainer.RECAP_JOB).analyze("prompt")["trend_direction"] == (
-            "BULLISH"
-        )
+        with pytest.raises(TimeoutError):
+            paid.port_for(main_trainer.RECAP_JOB).analyze("prompt")
 
-        # Jeden request do głównego (meter joba) + jeden do zapasowego.
-        assert dict(paid.telemetry.snapshot().paid_calls) == {"llm": 2}
+        secondary.analyze.assert_not_called()
+        assert dict(paid.telemetry.snapshot().paid_calls) == {"llm": 1}
+
+    def test_jobs_keep_separate_allowances(
+        self, settings, mocker, failing_primary, secondary
+    ) -> None:
+        settings.llm_fallback_provider = "openai"
+        settings.weekly_recap_enabled = True
+        settings.calibration_judge_enabled = True
+        mocker.patch("main_trainer.RECAP_LLM_CALLS", 2)
+        mocker.patch("main_agent._build_single_llm", return_value=secondary)
+        paid = main_trainer._SlowLoopPaidLLM(settings, QuotaMonitor(), UsageLedger())
+
+        paid.port_for(main_trainer.RECAP_JOB).analyze("prompt")
+        with pytest.raises(TimeoutError):
+            paid.port_for(main_trainer.JUDGE_JOB).analyze("prompt")
+
+        assert secondary.analyze.call_count == 1
 
     def test_local_stub_run_has_no_failover(self, settings, mocker) -> None:
         settings.paid_calls_enabled = False

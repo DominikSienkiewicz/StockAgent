@@ -246,3 +246,27 @@ def test_failover_is_logged_with_the_error_type_only(
     assert "TimeoutError" in caplog.text
     assert "openai" in caplog.text and "gpt-4o" in caplog.text
     assert "key=x" not in caplog.text
+
+
+@pytest.mark.parametrize("method", ["analyze", "analyze_mistake"])
+def test_fallback_refused_by_the_budget_reraises_the_primary_error(
+    adapter: FailoverLLMAdapter,
+    primary: Mock,
+    secondary: Mock,
+    method: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Slow Loop (decyzja 2026-10-20): zapasowy idzie przez przydział joba FIN-30.
+    # Wyczerpany przydział = failover nie startuje, a błąd głównego leci jak dotąd.
+    from src.application.metering import PaidBudgetExhausted
+
+    getattr(primary, method).side_effect = _StatusError(503)
+    getattr(secondary, method).side_effect = PaidBudgetExhausted("paid LLM budget exhausted")
+
+    with (
+        caplog.at_level(logging.WARNING, logger="src.infrastructure.llm.failover"),
+        pytest.raises(_StatusError),
+    ):
+        getattr(adapter, method)("prompt")
+
+    assert "budget" in caplog.text

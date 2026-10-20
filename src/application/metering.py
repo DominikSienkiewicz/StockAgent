@@ -56,28 +56,25 @@ class PaidBudgetExhausted(RuntimeError):
     """FIN-30: wywołanie LLM ponad przydział budżetu — odrzucone przed dostawcą."""
 
 
-class BudgetedLLMPort(LLMPort):
-    """Port LLM z twardym przydziałem `allowed` wywołań dla jednego joba.
+class PaidCallAllowance:
+    """FIN-30: przydział płatnych wywołań LLM jednego joba w przebiegu.
 
-    Wywołanie ponad przydział rzuca `PaidBudgetExhausted` ZANIM dotrze do `inner`
-    (i do licznika `MeteredLLMPort` pod spodem), więc use case z deterministycznym
-    fallbackiem idzie swoją ścieżką awaryjną bez płatnego requestu."""
+    NIEZ-44: jeden obiekt dzielą porty joba — główny dostawca i zapasowy za
+    `FailoverLLMAdapter` — więc request do zapasowego zużywa ten sam przydział,
+    a przy wyczerpanym failover nie startuje."""
 
-    def __init__(self, inner: LLMPort, allowed: int, job: str) -> None:
-        self._inner = inner
+    def __init__(self, allowed: int, job: str) -> None:
         self._remaining = allowed
         self._job = job
         self._lock = threading.Lock()
 
-    def analyze(self, prompt: str) -> dict[str, Any]:
-        self._spend()
-        return self._inner.analyze(prompt)
+    @property
+    def remaining(self) -> int:
+        with self._lock:
+            return self._remaining
 
-    def analyze_mistake(self, prompt: str) -> str:
-        self._spend()
-        return self._inner.analyze_mistake(prompt)
-
-    def _spend(self) -> None:
+    def spend(self) -> None:
+        """Zużywa jedno wywołanie albo rzuca `PaidBudgetExhausted` (przed dostawcą)."""
         with self._lock:
             if self._remaining <= 0:
                 logger.warning(
@@ -87,3 +84,31 @@ class BudgetedLLMPort(LLMPort):
                 )
                 raise PaidBudgetExhausted(f"paid LLM budget exhausted for job {self._job}")
             self._remaining -= 1
+
+
+class BudgetedLLMPort(LLMPort):
+    """Port LLM z twardym przydziałem `allowed` wywołań dla jednego joba.
+
+    Wywołanie ponad przydział rzuca `PaidBudgetExhausted` ZANIM dotrze do `inner`
+    (i do licznika `MeteredLLMPort` pod spodem), więc use case z deterministycznym
+    fallbackiem idzie swoją ścieżką awaryjną bez płatnego requestu. `allowance`
+    (NIEZ-44) zamiast `allowed`/`job` = przydział dzielony z innym portem joba."""
+
+    def __init__(
+        self,
+        inner: LLMPort,
+        allowed: int = 0,
+        job: str = "",
+        *,
+        allowance: PaidCallAllowance | None = None,
+    ) -> None:
+        self._inner = inner
+        self._allowance = allowance if allowance is not None else PaidCallAllowance(allowed, job)
+
+    def analyze(self, prompt: str) -> dict[str, Any]:
+        self._allowance.spend()
+        return self._inner.analyze(prompt)
+
+    def analyze_mistake(self, prompt: str) -> str:
+        self._allowance.spend()
+        return self._inner.analyze_mistake(prompt)

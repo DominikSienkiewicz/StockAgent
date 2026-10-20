@@ -30,7 +30,7 @@ from main_agent import (
     write_step_summary,
 )
 from src.application.cycle_telemetry import CycleTelemetry
-from src.application.metering import BudgetedLLMPort, MeteredLLMPort
+from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.ml_features import FEATURE_SET_VERSION
 from src.application.ports import LLMPort, RepositoryPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
@@ -240,20 +240,25 @@ def _build_llm_or_unavailable(
     quota_monitor: QuotaMonitor,
     usage_sink: UsageSink | None = None,
     telemetry: CycleTelemetry | None = None,
+    allowance: PaidCallAllowance | None = None,
 ) -> LLMPort:
     """Adapter LLM dla kroków Slow Loopa z deterministycznym fallbackiem. Błąd BUDOWY
     (brak SDK albo klucza) nie może wywrócić całego kroku — use case dostaje adapter,
     który rzuca przy wywołaniu, i idzie ścieżką bez LLM. NIEZ-44: request do
-    zapasowego dostawcy liczy `telemetry` przebiegu."""
+    zapasowego dostawcy liczy `telemetry` przebiegu i zużywa `allowance` joba."""
     from main_agent import build_llm_adapter
 
     try:
         if settings.llm_fallback_provider is None:
             return build_llm_adapter(settings, quota_monitor=quota_monitor, usage_sink=usage_sink)
-        # Telemetria liczy wyłącznie request do zapasowego — bez failovera wywołanie
-        # fabryki zostaje takie jak dotąd.
+        # Telemetria i przydział dotyczą wyłącznie requestu do zapasowego — bez
+        # failovera wywołanie fabryki zostaje takie jak dotąd.
         return build_llm_adapter(
-            settings, quota_monitor=quota_monitor, usage_sink=usage_sink, telemetry=telemetry
+            settings,
+            quota_monitor=quota_monitor,
+            usage_sink=usage_sink,
+            telemetry=telemetry,
+            fallback_allowance=allowance,
         )
     except Exception as exc:
         logger.exception("LLM adapter build failed — krok idzie bez LLM")
@@ -292,15 +297,21 @@ class _SlowLoopPaidLLM:
         logger.info("Slow Loop LLM budget — allowed=%s cap=%s", self._allowed, self._cap)
 
     def port_for(self, job: str) -> LLMPort:
-        return BudgetedLLMPort(self._provider(job), allowed=self._allowed.get(job, 0), job=job)
+        # NIEZ-44: jeden przydział na job — dzieli go request do zapasowego dostawcy.
+        allowance = PaidCallAllowance(self._allowed.get(job, 0), job)
+        return BudgetedLLMPort(self._provider(job, allowance), allowance=allowance)
 
-    def _provider(self, job: str) -> LLMPort:
+    def _provider(self, job: str, allowance: PaidCallAllowance) -> LLMPort:
         """Atrapa (FIN-35) i adapter zastępczy nie wysyłają requestu, więc nie
         trafiają do licznika; prawdziwy adapter idzie przez `MeteredLLMPort`."""
         if not self._settings.paid_calls_enabled:
             return LocalStubLLMAdapter()
         provider = _build_llm_or_unavailable(
-            self._settings, self._quota_monitor, usage_sink=self._ledger, telemetry=self.telemetry
+            self._settings,
+            self._quota_monitor,
+            usage_sink=self._ledger,
+            telemetry=self.telemetry,
+            allowance=allowance,
         )
         if isinstance(provider, UnavailableLLMAdapter):
             return provider

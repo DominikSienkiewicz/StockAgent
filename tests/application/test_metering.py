@@ -131,3 +131,43 @@ class TestUsageAttribution:
             ("council_llm", "council", "NVDA"),
             ("council_llm", "unattributed", None),
         ]
+
+
+class TestSharedAllowance:
+    """NIEZ-44: porty jednego joba Slow Loopa (główny i zapasowy dostawca) dzielą
+    jeden przydział FIN-30 — każdy request zużywa ten sam budżet, a nadmiar
+    odrzuca `BudgetedLLMPort` przed dostawcą."""
+
+    def test_ports_sharing_an_allowance_spend_one_budget(self, inner: Mock) -> None:
+        from src.application.metering import (
+            BudgetedLLMPort,
+            PaidBudgetExhausted,
+            PaidCallAllowance,
+        )
+
+        other = Mock(spec=LLMPort)
+        other.analyze.return_value = {"recommendation": "SELL"}
+        allowance = PaidCallAllowance(2, "recap")
+        main = BudgetedLLMPort(inner, allowance=allowance)
+        fallback = BudgetedLLMPort(other, allowance=allowance)
+
+        assert main.analyze("a") == {"recommendation": "BUY"}
+        assert fallback.analyze("b") == {"recommendation": "SELL"}
+        with pytest.raises(PaidBudgetExhausted, match="recap"):
+            fallback.analyze("c")
+        with pytest.raises(PaidBudgetExhausted):
+            main.analyze_mistake("d")
+
+        assert inner.analyze.call_count == 1
+        assert other.analyze.call_count == 1
+        inner.analyze_mistake.assert_not_called()
+
+    def test_allowance_reports_the_remaining_calls(self) -> None:
+        from src.application.metering import PaidBudgetExhausted, PaidCallAllowance
+
+        allowance = PaidCallAllowance(1, "judge")
+        allowance.spend()
+
+        assert allowance.remaining == 0
+        with pytest.raises(PaidBudgetExhausted, match="judge"):
+            allowance.spend()

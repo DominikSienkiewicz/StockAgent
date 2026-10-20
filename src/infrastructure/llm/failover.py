@@ -9,11 +9,13 @@ tylko po awarii dostawcy głównego — retry i alerty kwot robi już adapter g�
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import anthropic
 import openai
 
+from src.application.metering import PaidBudgetExhausted
 from src.application.ports import LLM_FAILOVER_MODEL_KEY, LLM_FAILOVER_PROVIDER_KEY, LLMPort
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,8 @@ class FailoverLLMAdapter(LLMPort):
     `provider` / `model` to tożsamość zapasowego — `analyze` dopisuje ją do wyniku
     (`LLM_FAILOVER_*_KEY`), żeby predykcja niosła flagę jakości i faktyczny przepis.
     `analyze_mistake` zwraca sam tekst, więc diagnoza od zapasowego nie ma znacznika
-    (to nie predykcja; jej request liczy meter wokół `secondary`)."""
+    (to nie predykcja; jej request liczy meter wokół `secondary`). Gdy `secondary`
+    odmówi z braku przydziału (`PaidBudgetExhausted`), leci błąd głównego."""
 
     def __init__(self, primary: LLMPort, secondary: LLMPort, *, provider: str, model: str) -> None:
         self._primary = primary
@@ -67,8 +70,8 @@ class FailoverLLMAdapter(LLMPort):
         except Exception as exc:
             if not fails_over(exc):
                 raise
-            self._log_failover("analyze", exc)
-        result = self._secondary.analyze(prompt)
+            primary_error = exc
+        result = self._fail_over("analyze", primary_error, lambda: self._secondary.analyze(prompt))
         return {
             **result,
             LLM_FAILOVER_PROVIDER_KEY: self._provider,
@@ -81,15 +84,27 @@ class FailoverLLMAdapter(LLMPort):
         except Exception as exc:
             if not fails_over(exc):
                 raise
-            self._log_failover("analyze_mistake", exc)
-        return self._secondary.analyze_mistake(prompt)
+            primary_error = exc
+        return self._fail_over(
+            "analyze_mistake", primary_error, lambda: self._secondary.analyze_mistake(prompt)
+        )
 
-    def _log_failover(self, method: str, exc: Exception) -> None:
+    def _fail_over[T](self, method: str, primary_error: Exception, call: Callable[[], T]) -> T:
+        """Request do zapasowego. Odmowa przydziału joba (FIN-30, Slow Loop) zanim
+        request wyjdzie = failover nie startuje i leci błąd głównego, jak bez failovera."""
         # Sam typ błędu: komunikat SDK potrafi nieść URL albo fragment odpowiedzi.
         logger.warning(
             "LLM failover: primary %s failed (%s) — retrying on %s/%s",
             method,
-            type(exc).__name__,
+            type(primary_error).__name__,
             self._provider,
             self._model,
         )
+        try:
+            return call()
+        except PaidBudgetExhausted:
+            logger.warning(
+                "LLM failover skipped: the job's paid budget is spent — primary %s error stands",
+                method,
+            )
+            raise primary_error from None
