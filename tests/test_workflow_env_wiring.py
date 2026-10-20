@@ -160,6 +160,13 @@ PAGES_ARTIFACT_DEFAULT_PATH = "_site/"
 # `git add` bez listy ścieżek, który zgarnia całe drzewo — `public/` nie jest
 # w `.gitignore`, więc razem z nim leci digest.
 GIT_ADD_SWEEP_FLAGS = ("-A", "--all")
+# WIA-16: akcje gh-pages firm trzecich → (wejście z publikowanym katalogiem, jego
+# domyślna wartość). `publish_dir` ma domyślnie `./public`; `folder` jest wymagany,
+# więc brak wejścia liczymy jak całe drzewo.
+THIRD_PARTY_PAGES_ACTIONS = {
+    "peaceiris/actions-gh-pages": ("publish_dir", "public"),
+    "jamesives/github-pages-deploy-action": ("folder", "."),
+}
 
 
 def _all_workflow_specs() -> dict[str, dict[str, Any]]:
@@ -187,32 +194,62 @@ def _overlaps(first: str, second: str) -> bool:
     return _contains(first, second) or _contains(second, first)
 
 
+def _in_workdir(workdir: str, path: str) -> str:
+    return posixpath.normpath(posixpath.join(workdir, path))
+
+
+def _git_subcommand(tokens: list[str], index: int) -> tuple[int, str]:
+    """Indeks podkomendy gita za opcjami `-C <dir>` i katalog, w którym działa (WIA-16)."""
+    workdir = "."
+    while tokens[index : index + 1] == ["-C"] and index + 1 < len(tokens):
+        workdir = _in_workdir(workdir, _normalized(tokens[index + 1]))
+        index += 2
+    return index, workdir
+
+
 def _git_added_paths(script: str) -> list[str]:
-    """Ścieżki każdego `git add` w skrypcie kroku; zgarnięcie całego drzewa jako "."."""
+    """Ścieżki każdego `git add` w skrypcie kroku, względem katalogu repo (także
+    `git -C <dir> add`); zgarnięcie całego drzewa jako katalog roboczy."""
     added: list[str] = []
     for command in re.split(r"&&|\|\||[;\n]", script):
         try:
             tokens = shlex.split(command)
         except ValueError:
             tokens = command.split()
-        starts = [i for i in range(len(tokens) - 1) if tokens[i : i + 2] == ["git", "add"]]
-        for start in starts:
-            for arg in tokens[start + 2 :]:
+        for start in (i for i, token in enumerate(tokens) if token == "git"):
+            subcommand, workdir = _git_subcommand(tokens, start + 1)
+            if tokens[subcommand : subcommand + 1] != ["add"]:
+                continue
+            for arg in tokens[subcommand + 1 :]:
                 if arg in GIT_ADD_SWEEP_FLAGS:
-                    added.append(".")
+                    added.append(workdir)
                 elif not arg.startswith("-"):
-                    added.append(_normalized(arg))
+                    added.append(_in_workdir(workdir, _normalized(arg)))
     return added
 
 
+def _third_party_pages_action(step: Mapping[str, Any]) -> tuple[str, str] | None:
+    action = str(step.get("uses", "")).split("@", 1)[0].lower()
+    return THIRD_PARTY_PAGES_ACTIONS.get(action)
+
+
 def _is_pages_deploy(step: Mapping[str, Any]) -> bool:
-    return str(step.get("uses", "")).startswith("actions/deploy-pages")
+    return (
+        str(step.get("uses", "")).startswith("actions/deploy-pages")
+        or _third_party_pages_action(step) is not None
+    )
 
 
 def _pages_upload_path(step: Mapping[str, Any]) -> str | None:
+    """Katalog, który krok wysyła na Pages: artefakt `actions/upload-pages-artifact`
+    albo katalog akcji gh-pages firmy trzeciej (WIA-16)."""
+    inputs = step.get("with") or {}
+    third_party = _third_party_pages_action(step)
+    if third_party is not None:
+        key, default = third_party
+        return _normalized(str(inputs.get(key, default)))
     if not str(step.get("uses", "")).startswith("actions/upload-pages-artifact"):
         return None
-    inputs = step.get("with") or {}
     return _normalized(str(inputs.get("path", PAGES_ARTIFACT_DEFAULT_PATH)))
 
 
@@ -340,6 +377,86 @@ def test_pages_upload_never_publishes_public_root_even_for_a_scorecard_there() -
     assert violations, "artefakt Pages `public` zabrałby `public/digest/`"
 
 
+# WIA-16: akcje gh-pages firm trzecich i `git -C <dir> add` publikują tak samo jak
+# deploy Pages albo `git add` — strażnik nie może przepuścić ich bokiem.
+THIRD_PARTY_PAGES_STEPS = (
+    ("peaceiris/actions-gh-pages@v4", "publish_dir"),
+    ("JamesIves/github-pages-deploy-action@v4", "folder"),
+)
+
+
+def _third_party_pages_step(uses: str, key: str, path: str | None) -> dict[str, Any]:
+    step: dict[str, Any] = {"uses": uses}
+    if path is not None:
+        step["with"] = {key: path}
+    return step
+
+
+@pytest.mark.parametrize(("uses", "key"), THIRD_PARTY_PAGES_STEPS)
+def test_third_party_pages_action_forbids_private_digest(uses: str, key: str) -> None:
+    step = _third_party_pages_step(uses, key, "./public/scorecard")
+
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=True), _synthetic_workflow(step)
+    )
+
+    assert any("prywatny digest" in violation for violation in violations), violations
+
+
+@pytest.mark.parametrize(("uses", "key"), THIRD_PARTY_PAGES_STEPS)
+@pytest.mark.parametrize("path", ["public", "./public/", "public/digest", ".", None])
+def test_third_party_pages_action_must_publish_the_scorecard_dir(
+    uses: str, key: str, path: str | None
+) -> None:
+    step = _third_party_pages_step(uses, key, path)
+
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=False), _synthetic_workflow(step)
+    )
+
+    assert violations, f"{uses} z `{key}: {path}` przeszedł strażnika"
+
+
+@pytest.mark.parametrize(("uses", "key"), THIRD_PARTY_PAGES_STEPS)
+def test_third_party_pages_action_of_the_scorecard_dir_alone_is_allowed(
+    uses: str, key: str
+) -> None:
+    step = _third_party_pages_step(uses, key, "public/scorecard")
+
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=False), _synthetic_workflow(step)
+    )
+
+    assert violations == []
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "git -C public add . && git -C public commit -m pages && git -C public push",
+        "git -C public add -A",
+        "git -C public/scorecard add index.html && git push",
+        'git -C "./public" add "digest/index.html"',
+    ],
+)
+def test_git_dash_c_add_of_public_dir_forbids_private_digest(script: str) -> None:
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
+    )
+
+    assert any("prywatny digest" in violation for violation in violations), violations
+
+
+def test_git_dash_c_add_outside_public_dir_allows_private_digest() -> None:
+    script = "git -C data/models add price_predictor.ubj && git -C data/models push"
+
+    violations = _private_digest_publication_violations(
+        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
+    )
+
+    assert violations == []
+
+
 def test_real_workflows_never_publish_private_digest() -> None:
     workflows = _all_workflow_specs()
     assert {"fast_loop_12h.yml", "slow_loop_weekly.yml"} <= set(workflows)
@@ -353,7 +470,7 @@ def test_real_workflows_never_publish_private_digest() -> None:
 # scorecardu, wysyłany tylko gdy plik powstał (`hashFiles`), a deploy idzie
 # w osobnym jobie z environment `github-pages` — wyłącznie ten job dostaje
 # `pages: write` i `id-token: write`.
-PAGES_WORKFLOWS = ("scorecard_pages.yml",)
+PAGES_WORKFLOWS = ("fast_loop_12h.yml", "scorecard_pages.yml")
 PAGES_PERMISSIONS = ("pages", "id-token")
 PAGES_ENVIRONMENT = "github-pages"
 

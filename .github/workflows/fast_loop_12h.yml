@@ -20,8 +20,7 @@ on:
 
 permissions:
   contents: read       # tylko czytamy kod; Fast Loop nie pisze do repo
-  # `pages: write` / `id-token: write` wrócą razem z krokiem deploy-pages
-  # (publiczny scorecard, atestacja) — bez niego leżałyby nieużywane.
+  # WIA-16: `pages: write` / `id-token: write` ma wyłącznie job `deploy-scorecard`.
 
 # Zapobiega overlapowi: jeśli opóźniony pierwszy run trwa nadal gdy ruszy
 # drugi (GHA cron bywa best-effort, opóźnienia 5-60 min są normalne), nowy
@@ -35,6 +34,9 @@ jobs:
   run-market-agent:
     runs-on: ubuntu-latest
     timeout-minutes: 15   # FinOps: twardy limit, by zawieszony job nie zjadał minut
+    outputs:
+      # WIA-16: `success` tylko wtedy, gdy powstał artefakt Pages publicznego scorecardu.
+      scorecard: ${{ steps.scorecard-artifact.outcome }}
 
     steps:
       - name: 📥 Checkout repository
@@ -103,9 +105,56 @@ jobs:
           HEARTBEAT_URL:          ${{ secrets.HEARTBEAT_URL }}
         run: uv run --frozen --no-build --no-sync python main_agent.py
 
+      - name: 📤 Upload public scorecard (Pages artifact)
+        id: scorecard-artifact
+        # WIA-16: wyłącznie katalog scorecardu (dirname `public_scorecard_path`), nigdy
+        # `public/` — tam leży prywatny web digest. Flaga off albo puste okno = brak
+        # pliku, więc brak artefaktu i deployu.
+        if: hashFiles('public/scorecard/index.html') != ''
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public/scorecard
+
       - name: 📮 Mail o porażce jobu
         # NIEZ-23: GitHub mailuje o porażce crona tylko autora ostatniej zmiany crona,
         # a timeout i anulowanie są ciche. Bez Pythona — działa też, gdy padło `uv sync`.
+        if: failure() || cancelled()
+        env:
+          RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO_EMAIL: ${{ secrets.DIGEST_TO_EMAIL }}
+          RUN_URL:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS:      ${{ job.status }}
+          WORKFLOW_NAME:   ${{ github.workflow }}
+        run: scripts/notify-failure.sh "$WORKFLOW_NAME"
+
+  deploy-scorecard:
+    # WIA-16: osobny job — tylko on dostaje uprawnienia Pages. Deploy podmienia całą
+    # witrynę, więc idzie tędy wyłącznie strona scorecardu, nigdy JSONL atestacji.
+    needs: run-market-agent
+    if: needs.run-market-agent.outputs.scorecard == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read     # checkout skryptu alertu
+      pages: write       # deploy artefaktu Pages
+      id-token: write    # OIDC, którego wymaga actions/deploy-pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Jedna kolejka `pages` dla każdego deployu Pages w repo — dwa naraz się wykluczają.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🌐 Deploy public scorecard to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: 📮 Mail o porażce jobu
         if: failure() || cancelled()
         env:
           RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}

@@ -156,8 +156,8 @@ fx_rates_cache_enabled = false
 weekly_recap_enabled = true
 # #10: publiczny scorecard kalibracji — wyłącznie agregaty (N, hit-rate, ECE),
 # zero PII i zero symboli. Osobna ścieżka niż prywatny web_digest. Wyłączone do
-# ustawienia Pages (Source: GitHub Actions); deploy: scorecard_pages.yml (WIA-52),
-# kolejność: docs/resume-checklist.md.
+# ustawienia Pages (Source: GitHub Actions); deploy: scorecard_pages.yml (WIA-52)
+# i job deploy-scorecard Fast Loopa (WIA-16), kolejność: docs/resume-checklist.md.
 public_scorecard_enabled = false
 public_scorecard_path = "public/scorecard/index.html"
 attestation_commitments_path = "public/attestation/commitments.jsonl"
