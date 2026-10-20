@@ -71,8 +71,18 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - **Bramka volatility**: płatne porty (LLM, Alpha Vantage, embeddingi) **nie mogą**
   być wołane, gdy zmiana ceny < `volatility_threshold`. Logika progu żyje w domenie
   (`Asset.evaluate_volatility`) — graf jest tylko wykonawcą.
+  Wyjątek (FIN-30): Slow Loop (recap tygodniowy, sędzia kalibracji, przyszłe joby
+  diagnoz) woła LLM poza bramką, ale tylko w tygodniowym budżecie
+  `slow_loop_max_paid_llm_calls_per_week` (config.toml: 15). Przydział liczy domena
+  (`slow_loop_paid_budget`), wywołanie ponad przydział odrzuca `BudgetedLLMPort`
+  przed dostawcą, a licznikiem jest ten sam `MeteredLLMPort` + `CycleTelemetry`
+  co w Fast Loopie.
 - **Cold-start**: `check_price_node` zapisuje snapshot ceny w KAŻDYM cyklu
   (`price_snapshots`), żeby następny cykl miał punkt odniesienia.
+  Jedyny wyjątek (FIN-12): symbol odcięty sufitem płatnych wywołań cyklu
+  (`max_paid_llm_calls_per_cycle`, węzeł `budget_exhausted`) kończy jako 'ignored'
+  BEZ snapshotu ceny — inaczej następny cykl liczyłby Δ od nowej ceny i ruch ponad
+  progiem zniknąłby bez analizy.
 - **Self-Reflection**: `reflect_node` działa PRZED bramką volatility — ocena
   przeszłej predykcji jest niezależna od tego, czy bieżący cykl robi nową prognozę.
 - **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. `main_agent.main()`
