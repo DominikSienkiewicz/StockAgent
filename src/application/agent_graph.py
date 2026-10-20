@@ -35,7 +35,11 @@ from src.application.ports import (
     Tool,
     ToolUseLLMPort,
 )
-from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction_prompt
+from src.application.prompts import (
+    format_analog_line,
+    get_mistake_diagnosis_prompt,
+    get_prediction_prompt,
+)
 from src.application.rag_rerank import rerank_analogs
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, PriceDelta
@@ -235,27 +239,18 @@ def _format_analog(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         return None
     trend = item.get("predicted_trend") or "?"
     correct = item.get("is_trend_correct")
-    if correct:
-        outcome = "prognoza trafiła"
-    elif correct is False:
-        outcome = "prognoza chybiła"
-    else:
-        outcome = "wynik nieznany"
     insight = str(item.get("correction_insights") or "").strip()
-    # BEZ-06: prompt przycina analog od końca (fence ANALOGS, 900 znaków), więc
-    # symbol źródłowy, wynik i wniosek idą PRZED nagłówkami — limit utnie
-    # najwyżej ostatni nagłówek, nigdy lekcję.
-    source = str(item.get("symbol") or "").strip()
-    tag = ", ".join(part for part in (source, str(trend), outcome) if part)
-    parts = [f"[{tag}]"]
+    # Treść linii składa `format_analog_line` w prompts.py — tylko moduły
+    # promptów wchodzą do `prompt_sha256`, więc tu zostają wyłącznie dane.
     # WIA-10: placeholder reflect_node (np. historyczne „diagnoza odłożona”)
     # nie jest wnioskiem — analog zostaje, ale bez fałszywej lekcji.
-    if is_substantive_insight(insight):
-        parts.append(f"wniosek: {insight} —")
-    parts.append(f"nagłówki: {summary}")
-    # Jeden analog = jedna linia `similar_context` = jeden punkt fence'a, więc
-    # nowe linie z bazy (wieloliniowa diagnoza LLM-a) zwijamy do spacji.
-    line = " ".join(" ".join(parts).split())
+    line = format_analog_line(
+        source=str(item.get("symbol") or "").strip(),
+        trend=str(trend),
+        is_trend_correct=correct,
+        lesson=insight if is_substantive_insight(insight) else "",
+        headlines=summary,
+    )
     # #13: RPC zwraca `id` i `similarity`, a kod je gubił. Bez nich kwit
     # decyzyjny nie pozwala zaudytować, KTÓRY analog stał za predykcją.
     precedent = {

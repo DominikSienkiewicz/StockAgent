@@ -19,6 +19,31 @@ def _fence_analogs(similar_context: str) -> str:
     return fence_untrusted("ANALOGS", analogs, max_len=_ANALOG_MAX_LEN)
 
 
+def format_analog_line(
+    *, source: str, trend: str, is_trend_correct: bool | None, lesson: str, headlines: str
+) -> str:
+    """Jedna linia analogu RAG w `similar_context` — szablon żyje tu, bo tylko
+    moduły promptów wchodzą do `prompt_sha256` przepisu.
+
+    BEZ-06: fence ANALOGS przycina analog od końca (900 znaków), więc symbol
+    źródłowy, wynik i wniosek idą PRZED nagłówkami — limit utnie najwyżej
+    ostatni nagłówek, nigdy lekcję. Pusty `lesson` = analog bez wniosku."""
+    if is_trend_correct:
+        outcome = "prognoza trafiła"
+    elif is_trend_correct is False:
+        outcome = "prognoza chybiła"
+    else:
+        outcome = "wynik nieznany"
+    tag = ", ".join(part for part in (source, trend, outcome) if part)
+    parts = [f"[{tag}]"]
+    if lesson:
+        parts.append(f"wniosek: {lesson} —")
+    parts.append(f"nagłówki: {headlines}")
+    # Jeden analog = jedna linia = jeden punkt fence'a, więc nowe linie z bazy
+    # (wieloliniowa diagnoza LLM-a) zwijamy do spacji.
+    return " ".join(" ".join(parts).split())
+
+
 def get_prediction_prompt(
     symbol: str,
     current_data: dict[str, Any],
