@@ -21,7 +21,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 |---|---|---|---|---|---|
 | `prediction_logs` | `001`, columns added up to `037` | Model output: predictions, council verdicts, receipts, settlements, embeddings | on, no policies | Fast Loop (prediction, settlement, calibration, attestation reveal) | Fast Loop (reflection, RAG, report, track record), tools (`evaluate`) |
 | `price_snapshots` | `002`, `013` | Market data: one price per symbol and hour | on, no policies | Fast Loop (every cycle) | Fast Loop, Shock Watch (reference price), Deadman (database probe) |
-| `ml_feature_store` | materialized view, `001` rebuilt in `004`, `012`, `022`, `026`, `027` | Derived training features from `prediction_logs` | not applicable (a materialized view has no RLS; grants only) | Slow Loop and backtest refresh it (`refresh_ml_feature_store`) | Slow Loop, backtest |
+| `ml_feature_store` | materialized view, `001` rebuilt in `004`, `012`, `022`, `026`, `027`, `039` | Derived training features from `prediction_logs` | not applicable (a materialized view has no RLS; grants only) | Slow Loop and backtest refresh it (`refresh_ml_feature_store`) | Slow Loop, backtest |
 | `fundamentals_cache` | `006` | Market data: Alpha Vantage fundamentals cache | on, no policies | Fast Loop | Fast Loop |
 | `council_votes` | `007` | Model output: one vote per persona and prediction | on, no policies | Fast Loop | Fast Loop (persona weights and track record) |
 | `quota_alerts` | `010` | Operational: API quota exhaustion events | on, no policies | Fast Loop, Slow Loop | Fast Loop (report banner) |

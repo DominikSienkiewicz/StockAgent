@@ -63,6 +63,7 @@ MIGRATION_FILES = [
     "036_fx_rates.sql",
     "037_experiment_arms.sql",
     "038_enable_rls.sql",
+    "039_feature_store_av_degraded_rows.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1021,6 +1022,63 @@ class TestMigrations:
             )
             assert cur.fetchone() == ("blind",)
 
+    # -- Migracja 039: ml_feature_store bez niepełnego feedu AV (DAT-07, DAT-08) -
+
+    def test_feature_store_excludes_av_degraded_rows(self, pg_conn) -> None:
+        """Payload bez feedu i błąd sieci w środku fetchu dają zera „bez danych",
+        tak jak wyczerpane klucze — nie trenują modelu. Filtry 026 zostają."""
+        with pg_conn.cursor() as cur:
+            clean, unexpected, fetch_error, exhausted, no_prior = self._settled_rows(
+                cur,
+                "QF_AV039",
+                [
+                    "[]",
+                    '["av_unexpected_payload"]',
+                    '["news_volume_24h_missing", "av_fetch_error"]',
+                    '["av_keys_exhausted"]',
+                    '["price_delta_no_prior_prediction"]',
+                ],
+            )
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute("SELECT id FROM ml_feature_store WHERE symbol = 'QF_AV039'")
+            in_view = {row[0] for row in cur.fetchall()}
+
+        assert in_view == {clean, no_prior}
+        assert not in_view & {unexpected, fetch_error, exhausted}
+
+    def test_feature_store_lag_runs_over_av_degraded_rows(self, pg_conn) -> None:
+        """Filtr 039 też jest PO LAG: wiersz po `av_fetch_error` liczy
+        `price_prev_12h` od ceny tego wiersza, jak inference."""
+        with pg_conn.cursor() as cur:
+            _, _, after = self._settled_rows(
+                cur, "QF_AV039_LAG", ["[]", '["av_fetch_error"]', "[]"]
+            )
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute(
+                "SELECT price_prev_12h, price_prev_24h FROM ml_feature_store WHERE id = %s",
+                (after,),
+            )
+            row = cur.fetchone()
+
+        assert row is not None
+        assert float(row[0]) == pytest.approx(102.0)
+        assert float(row[1]) == pytest.approx(101.0)
+
+    def test_feature_store_after_039_keeps_the_feature_contract(self, pg_conn) -> None:
+        """039 odtwarza widok 1:1 z 027 — te same kolumny i oba indeksy."""
+        assert {
+            "price_delta",
+            "av_sentiment_score",
+            "news_volume_24h",
+            "alpha_fusion_score",
+            "feature_set_version",
+            "target_return",
+        } <= _columns(pg_conn, "ml_feature_store")
+        assert {
+            "idx_ml_feature_store_id",
+            "idx_ml_feature_store_symbol_timestamp",
+        } <= _indexes(pg_conn, "ml_feature_store")
+
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 
     def test_every_public_table_has_row_level_security(self, pg_conn) -> None:
@@ -1340,6 +1398,23 @@ class TestSupabaseRoleEmulation:
             # Widok sprzed REFRESH: pusty, ale odczyt jest dozwolony.
             cur.execute("SELECT count(*) FROM ml_feature_store")
             assert cur.fetchone() == (0,)
+
+    def test_feature_store_rebuilt_by_039_stays_closed_to_public_roles(
+        self, supabase_like_conn
+    ) -> None:
+        """039 robi DROP + CREATE widoku PO 038: anon / authenticated bez żadnego
+        prawa, service_role dalej czyta (Slow Loop trenuje z tego widoku)."""
+        with _rolled_back(supabase_like_conn) as cur:
+            public = [
+                _has_table_privilege(cur, role, "ml_feature_store") for role in PUBLIC_API_ROLES
+            ]
+            cur.execute(
+                "SELECT has_table_privilege('service_role', 'ml_feature_store', 'SELECT')"
+            )
+            service_role = cur.fetchone()[0]
+
+        assert public == [False, False]
+        assert service_role is True
 
     def test_service_role_executes_the_rpc_functions(self, supabase_like_conn) -> None:
         """RPC, które aplikacja woła przez PostgREST. `refresh_ml_feature_store`

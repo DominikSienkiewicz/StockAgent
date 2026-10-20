@@ -1857,6 +1857,31 @@ class TestProvenanceSignals:
         # odznakę DEGRADED. (Provenance buduje się w report z raw outputu.)
         assert "av_keys_exhausted" in final["data_quality_flags"]
 
+    @pytest.mark.parametrize("reason", ["av_unexpected_payload", "av_fetch_error"])
+    def test_av_degradation_reaches_the_saved_quality_flags(
+        self, reason, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Migracja 039 wycina te wiersze z ml_feature_store po fladze w zapisie
+        # predykcji (DAT-07, DAT-08) — flaga musi dojść do rekordu, nie tylko do stanu.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        sentiment_port.get_social_score.return_value = {
+            "av_sentiment_score": 0.0,
+            "av_relevance_avg": 0.0,
+            "news_volume_24h": 0,
+            "high_relevance_count": 0,
+            "av_sentiment_label": "Neutral",
+            "degraded_reason": reason,
+        }
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        saved = repository_port.save_prediction.call_args.args[0]
+        assert reason in saved["data_quality_flags"]
+
     def test_clean_cycle_has_no_quality_flags(
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,
