@@ -26,8 +26,11 @@ from dataclasses import dataclass
 # Podstawa oszacowań (stan wiedzy ~2026, publiczne cenniki):
 #   - llm          — jedno zapytanie predykcyjne (model klasy gpt-5-mini /
 #                    claude-sonnet), kilka tys. tokenów in+out ≈ $0.01.
-#   - council_llm  — rada 7 person w JEDNYM wywołaniu (gpt-5-mini), dłuższy
-#                    prompt i dłuższa odpowiedź ≈ $0.02.
+#   - council_llm  — jedno wywołanie persony lub chairmana rady (gpt-5-mini);
+#                    licznik liczy KAŻDY request rady (FIN-02), więc przebieg
+#                    7 person + chairman to 8 wywołań, z debatą 15 ≈ $0.0025
+#                    za wywołanie. Raporty sprzed FIN-02 liczyły przebieg rady
+#                    jako 1 wywołanie po $0.02, czyli zaniżały radę.
 #   - sentiment    — Alpha Vantage (NEWS_SENTIMENT); rozliczenie subskrypcyjne,
 #                    więc koszt zamortyzowany na wywołanie jest groszowy ≈ $0.0005.
 #   - news         — news API; również subskrypcja, koszt zamortyzowany ≈ $0.0005.
@@ -35,7 +38,7 @@ from dataclasses import dataclass
 #                    rzędu kilkuset tokenów ≈ $0.00002.
 UNIT_COST_USD: dict[str, float] = {
     "llm": 0.010,
-    "council_llm": 0.020,
+    "council_llm": 0.0025,
     "sentiment": 0.0005,
     "news": 0.0005,
     "embedding": 0.00002,
@@ -90,7 +93,6 @@ def estimate_cycle_cost(calls: Mapping[str, int]) -> CycleCost:
     """
     lines: list[SourceCost] = []
     unknown: list[str] = []
-    total_usd = 0.0
     total_calls = 0
 
     for source, count in calls.items():
@@ -102,7 +104,6 @@ def estimate_cycle_cost(calls: Mapping[str, int]) -> CycleCost:
             unknown.append(source)
             continue
         subtotal = unit_cost * count
-        total_usd += subtotal
         lines.append(
             SourceCost(
                 source=source,
@@ -118,7 +119,9 @@ def estimate_cycle_cost(calls: Mapping[str, int]) -> CycleCost:
 
     return CycleCost(
         lines=tuple(lines),
-        total_usd=total_usd,
+        # Suma w kolejności rozbicia: dodawanie floatów nie jest łączne, więc suma
+        # liczona w innej kolejności mogłaby różnić się od sumy linii o ułamek centa.
+        total_usd=sum((line.subtotal_usd for line in lines), 0.0),
         total_calls=total_calls,
         unknown_sources=tuple(unknown),
     )

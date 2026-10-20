@@ -86,3 +86,14 @@ def test_mixed_known_and_unknown() -> None:
     assert cost.unknown_sources == ("mystery",)
     assert [line.source for line in cost.lines] == ["llm"]
     assert cost.total_calls == 3
+
+
+def test_council_is_priced_per_persona_or_chairman_call() -> None:
+    """FIN-03: `council_llm` liczy się per request (FIN-02), więc stawka jest per
+    wywołanie persony lub chairmana — rada 7 person + chairman = 8 × 0.0025."""
+    assert UNIT_COST_USD["council_llm"] == 0.0025
+
+    cost = estimate_cycle_cost({"council_llm": 8})
+
+    assert abs(cost.total_usd - 0.02) < 1e-12
+    assert cost.lines[0].calls == 8
