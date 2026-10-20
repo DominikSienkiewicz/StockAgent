@@ -10,13 +10,24 @@ from typing import Any, Literal, NamedTuple, cast
 from postgrest.exceptions import APIError
 from supabase import create_client
 
-from src.application.ports import CycleRun, PreviousVerdict, RepositoryPort
+from src.application.ports import (
+    CycleRun,
+    OpenReferenceCall,
+    PreviousVerdict,
+    RepositoryPort,
+)
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
-from src.domain.prediction import Prediction, normalize_trend
+from src.domain.prediction import Prediction, TrendDirection, normalize_trend
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.reference_signal import (
+    REFERENCE_RECIPE_VERSION,
+    ReferenceCall,
+    ReferenceOutcome,
+    ReferenceRead,
+)
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.regime_key import canonical_regime_key
 from src.domain.significance import effective_n
@@ -37,6 +48,8 @@ DEFAULT_COUNCIL_VOTES_TABLE = "council_votes"
 DEFAULT_QUOTA_ALERTS_TABLE = "quota_alerts"
 DEFAULT_FEATURE_SNAPSHOT_TABLE = "feature_snapshots"
 DEFAULT_REGIME_HISTORY_TABLE = "regime_history"
+# WIA-24 (migracja 042): sygnał referencyjny poza `prediction_logs`.
+REFERENCE_PREDICTIONS_TABLE = "reference_predictions"
 # FIN-13: ledger kosztów per request LLM / embeddingów (migracja 040).
 LLM_CALLS_TABLE = "llm_calls"
 # NIEZ-29: historia przebiegów pętli (migracja 041).
@@ -1235,6 +1248,77 @@ class SupabaseRepository(RepositoryPort):
             "report_delivered": run.report_delivered,
         }
         self._client.table(CYCLE_RUNS_TABLE).insert(row).execute()
+
+    def get_reference_reads(self, since: datetime) -> list[ReferenceRead]:
+        # Paginacja (#8) i `id` jako drugi klucz, jak w pozostałych odczytach historii.
+        query = (
+            self._client.table(REFERENCE_PREDICTIONS_TABLE)
+            .select("symbol, price, read_at")
+            .gte("read_at", since.isoformat())
+            .order("read_at", desc=False)
+            .order("id", desc=False)
+        )
+        return [
+            ReferenceRead(
+                symbol=str(row["symbol"]),
+                price=Decimal(str(row["price"])),
+                read_at=datetime.fromisoformat(str(row["read_at"])),
+            )
+            for row in _paginate(query)
+        ]
+
+    def get_open_reference_calls(self) -> list[OpenReferenceCall]:
+        query = (
+            self._client.table(REFERENCE_PREDICTIONS_TABLE)
+            .select("id, symbol, predicted_trend, price, read_at")
+            .not_.is_("predicted_trend", "null")
+            .is_("outcome", "null")
+            .order("read_at", desc=False)
+            .order("id", desc=False)
+        )
+        return [
+            OpenReferenceCall(
+                id=str(row["id"]),
+                call=ReferenceCall(
+                    symbol=str(row["symbol"]),
+                    trend=TrendDirection(str(row["predicted_trend"])),
+                    price_at_call=Decimal(str(row["price"])),
+                    called_at=datetime.fromisoformat(str(row["read_at"])),
+                ),
+            )
+            for row in _paginate(query)
+        ]
+
+    def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
+        # Etykietę stawia jawnie kod (stała domeny), nie tylko DEFAULT kolumny.
+        record = _serialize_record(
+            {
+                "symbol": read.symbol,
+                "read_at": read.read_at.isoformat(),
+                "price": read.price,
+                "predicted_trend": None if call is None else call.trend.value,
+                "recipe_version": REFERENCE_RECIPE_VERSION,
+            }
+        )
+        self._client.table(REFERENCE_PREDICTIONS_TABLE).insert(record).execute()
+
+    def settle_reference_call(
+        self,
+        record_id: str,
+        outcome: ReferenceOutcome,
+        settled_price: Decimal | None,
+        settled_at: datetime,
+    ) -> None:
+        record = _serialize_record(
+            {
+                "outcome": outcome.value,
+                "settled_price": settled_price,
+                "settled_at": settled_at.isoformat(),
+            }
+        )
+        self._client.table(REFERENCE_PREDICTIONS_TABLE).update(record).eq(
+            "id", record_id
+        ).execute()
 
     def update_prediction_accuracy(
         self,

@@ -66,6 +66,7 @@ MIGRATION_FILES = [
     "039_feature_store_av_degraded_rows.sql",
     "040_llm_calls.sql",
     "041_cycle_runs.sql",
+    "042_reference_predictions.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1167,6 +1168,92 @@ class TestMigrations:
                 "saved, failures) VALUES ('fast', 'CR_NEG', NOW(), 1, 1, -1, 0)"
             )
 
+    # -- Migracja 042: sygnał referencyjny WIA-24 ------------------------------
+
+    def test_reference_predictions_hold_read_call_and_settlement_in_one_row(
+        self, pg_conn
+    ) -> None:
+        """Osobna tabela, nie `prediction_logs`: żaden odczyt ścieżek LLM (reflect,
+        RAG, widok cech, track record) jej nie widzi."""
+        assert _columns(pg_conn, "reference_predictions") == {
+            "id",
+            "symbol",
+            "read_at",
+            "price",
+            "predicted_trend",
+            "recipe_version",
+            "outcome",
+            "settled_price",
+            "settled_at",
+            "created_at",
+        }
+
+    def test_reference_predictions_are_indexed_for_the_weekly_reads(self, pg_conn) -> None:
+        assert {
+            "idx_reference_predictions_read_at",
+            "idx_reference_predictions_open_calls",
+        } <= _indexes(pg_conn, "reference_predictions")
+
+    def test_reference_read_defaults_to_reference_v1_once_per_symbol_and_time(
+        self, pg_conn
+    ) -> None:
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price) "
+                "VALUES ('REF_A', '2026-10-25T03:00:00Z', 100.5) "
+                "RETURNING recipe_version, predicted_trend, outcome, created_at IS NOT NULL"
+            )
+            assert cur.fetchone() == ("reference-v1", None, None, True)
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.UniqueViolation):
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price) "
+                "VALUES ('REF_A', '2026-10-25T03:00:00Z', 101)"
+            )
+
+    def test_reference_settlement_round_trips(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend) "
+                "VALUES ('REF_B', '2026-10-18T03:00:00Z', 100, 'BULLISH') RETURNING id"
+            )
+            (row_id,) = cur.fetchone()
+            cur.execute(
+                "UPDATE reference_predictions SET outcome = 'HIT', settled_price = 104, "
+                "settled_at = '2026-10-25T03:00:00Z' WHERE id = %s RETURNING outcome",
+                (row_id,),
+            )
+            assert cur.fetchone() == ("HIT",)
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            "('REF_C1', NOW(), 0, NULL, NULL, NULL, NULL, 'reference-v1')",
+            "('REF_C2', NOW(), 100, 'SIDEWAYS', NULL, NULL, NULL, 'reference-v1')",
+            "('REF_C3', NOW(), 100, NULL, 'HIT', 104, NOW(), 'reference-v1')",
+            "('REF_C4', NOW(), 100, 'BULLISH', 'HIT', NULL, NOW(), 'reference-v1')",
+            "('REF_C5', NOW(), 100, 'BULLISH', 'EXPIRED', 104, NOW(), 'reference-v1')",
+            "('REF_C6', NOW(), 100, 'BULLISH', NULL, 104, NULL, 'reference-v1')",
+            "('REF_C7', NOW(), 100, 'BULLISH', 'HIT', 104, NULL, 'reference-v1')",
+            "('REF_C8', NOW(), 100, 'BULLISH', NULL, NULL, NULL, 'llm-abc')",
+        ],
+        ids=[
+            "price_not_positive",
+            "sideways_call",
+            "outcome_without_call",
+            "hit_without_price",
+            "expired_with_price",
+            "price_without_outcome",
+            "outcome_without_time",
+            "not_a_reference_label",
+        ],
+    )
+    def test_reference_predictions_reject_inconsistent_rows(self, pg_conn, values) -> None:
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend, "
+                f"outcome, settled_price, settled_at, recipe_version) VALUES {values}"
+            )
+
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 
     def test_every_public_table_has_row_level_security(self, pg_conn) -> None:
@@ -1560,6 +1647,40 @@ class TestSupabaseRoleEmulation:
             _set_role(cur, "anon")
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 cur.execute("SELECT 1 FROM cycle_runs LIMIT 1")
+
+    def test_reference_predictions_are_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        """WIA-24: nowa tabela po 038 — RLS włączony w 042, anon i authenticated bez
+        prawa, a service_role (Slow Loop) zapisuje odczyt i rozlicza wywołanie."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class "
+                "WHERE oid = 'reference_predictions'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [
+                _has_table_privilege(cur, role, "reference_predictions")
+                for role in PUBLIC_API_ROLES
+            ]
+
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend) "
+                "VALUES ('REF_SR', '2026-10-18T03:00:00Z', 100, 'BEARISH')"
+            )
+            cur.execute(
+                "UPDATE reference_predictions SET outcome = 'MISS', settled_price = 101, "
+                "settled_at = '2026-10-25T03:00:00Z' WHERE symbol = 'REF_SR'"
+            )
+            cur.execute("SELECT outcome FROM reference_predictions WHERE symbol = 'REF_SR'")
+            assert cur.fetchone() == ("MISS",)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM reference_predictions LIMIT 1")
 
     def test_service_role_executes_the_rpc_functions(self, supabase_like_conn) -> None:
         """RPC, które aplikacja woła przez PostgREST. `refresh_ml_feature_store`

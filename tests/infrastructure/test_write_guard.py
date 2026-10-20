@@ -181,3 +181,26 @@ def test_shock_alert_times_are_a_read() -> None:
 
     delegate.get_shock_alert_times.assert_called_once_with(sentinel.since)
     assert "get_shock_alert_times" in ReadOnlyRepository.READ_METHODS
+
+
+def test_reference_signal_writes_are_skipped_and_reads_pass(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # WIA-24: lokalny Slow Loop liczy sygnał referencyjny, ale nie zapisuje go do bazy.
+    delegate = create_autospec(RepositoryPort, instance=True)
+    repository = ReadOnlyRepository(delegate)
+
+    with caplog.at_level(logging.WARNING, logger="src.infrastructure.adapters.write_guard"):
+        repository.save_reference_read(sentinel.read, sentinel.call)
+        repository.settle_reference_call(
+            sentinel.record_id, sentinel.outcome, sentinel.price, sentinel.at
+        )
+    repository.get_reference_reads(sentinel.since)
+    repository.get_open_reference_calls()
+
+    assert {"save_reference_read", "settle_reference_call"} <= ReadOnlyRepository.WRITE_METHODS
+    assert "save_reference_read" in caplog.text and "settle_reference_call" in caplog.text
+    delegate.save_reference_read.assert_not_called()
+    delegate.settle_reference_call.assert_not_called()
+    delegate.get_reference_reads.assert_called_once_with(sentinel.since)
+    delegate.get_open_reference_calls.assert_called_once_with()

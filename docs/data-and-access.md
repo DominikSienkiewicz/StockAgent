@@ -34,6 +34,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `fx_rates` | `036` | Market data: NBP exchange-rate cache | on, no policies | Fast Loop | Fast Loop |
 | `llm_calls` | `040` | Operational: one row per LLM or embedding request (tokens, cost, run, node, symbol), no prompt text | on, no policies | Fast Loop, Slow Loop (`cost_ledger_enabled`) | nobody in the app yet |
 | `cycle_runs` | `041` | Operational: one row per loop run (run id and attempt, start, duration, symbol counts, paid calls per source, email delivered), no symbols | on, no policies | Fast Loop (`cycle_runs_enabled`) | nobody in the app yet |
+| `reference_predictions` | `042` | Model output: the free reference signal (WIA-24) — one row per weekly read with its call and settlement, `recipe_version = 'reference-v1'`, kept out of `prediction_logs` | on, no policies | Slow Loop (`reference_signal_enabled`) | Slow Loop (baseline read and open calls) |
 
 The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges):
 
@@ -75,8 +76,9 @@ used only by the DB Migrate workflow. The app never reads it.
 Nothing is deleted automatically: there is no retention job and no TTL in the database.
 
 - `prediction_logs`, `price_snapshots`, `council_votes`, `quota_alerts`, `shock_alerts`,
-  `model_scorecards`, `feature_snapshots`, `regime_history`, `fx_rates` and `llm_calls` grow by
-  append or upsert and keep every row. Deleting a prediction also deletes its `council_votes`
+  `model_scorecards`, `feature_snapshots`, `regime_history`, `fx_rates`, `llm_calls` and
+  `reference_predictions` grow by append or upsert and keep every row (a reference row is
+  updated once, when its call is settled). Deleting a prediction also deletes its `council_votes`
   (`ON DELETE CASCADE`).
 - `fundamentals_cache` holds one row per symbol, overwritten on refresh. The 144-hour TTL is
   applied when the row is read, not by deleting it.

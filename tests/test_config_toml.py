@@ -397,3 +397,9 @@ def test_real_config_toml_ships_the_llm_failover_off() -> None:
     assert "llm_fallback_provider" not in data
     assert "llm_fallback_model" not in data
     assert "# llm_fallback_provider = " in text
+
+
+def test_real_config_toml_ships_the_reference_signal_off_until_migration() -> None:
+    """WIA-24: tabela `reference_predictions` dopiero po migracji 042 (ręczny DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["reference_signal_enabled"] is False

@@ -45,6 +45,7 @@ from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.calibrate_confidence import (
     PAID_LLM_CALLS_PER_RUN as JUDGE_LLM_CALLS,
 )
+from src.application.use_cases.reference_signal import RunReferenceSignalUseCase
 from src.application.use_cases.train_model import POOLED_MODEL_SYMBOL, TrainModelUseCase
 from src.application.use_cases.weekly_recap import (
     PAID_LLM_CALLS_PER_RUN as RECAP_LLM_CALLS,
@@ -338,6 +339,38 @@ class _SlowLoopPaidLLM:
         logger.info("Slow Loop paid LLM calls: %d/%s", spent, ceiling)
 
 
+def _reference_universe(settings: Settings) -> list[str]:
+    """Protokół v1: symbole treningu (`symbols` + `crypto_symbols`) bez tych, dla
+    których darmowe źródło nie podaje ceny."""
+    unsupported = set(settings.symbols_unsupported_price)
+    trained = dict.fromkeys([*settings.symbols, *settings.crypto_symbols])
+    return [symbol for symbol in trained if symbol not in unsupported]
+
+
+def _run_reference_signal(
+    settings: Settings, repository: RepositoryPort, now: datetime | None = None
+) -> None:
+    """WIA-24: darmowy sygnał referencyjny raz na przebieg (za flagą, migracja 042).
+
+    Cena z routera darmowych źródeł Fast Loopa (Finnhub /quote, CoinGecko) — zero
+    płatnych portów. Zapis przez repozytorium Slow Loopa, więc lokalnie (BEZ-08)
+    `ReadOnlyRepository` go pomija. Best-effort: błąd kroku nie zmienia exit code'u
+    treningu."""
+    if not settings.reference_signal_enabled:
+        return
+    # Import lokalny — fabryka darmowych cen żyje w DI Containerze Fast Loopa.
+    from main_agent import build_market_port
+
+    try:
+        summary = RunReferenceSignalUseCase(
+            market=build_market_port(settings), repository=repository
+        ).run(_reference_universe(settings), now=now)
+    except Exception:
+        logger.exception("Reference signal failed — pomijam")
+        return
+    logger.info("Reference signal — %s", summary)
+
+
 def _run_calibration_judge(repository: RepositoryPort, llm_port: LLMPort) -> None:
     """#4: LLM-as-Judge kalibracji pewności (Slow Loop). FIN-30: jego wywołanie
     LLM liczy się do tygodniowego budżetu Slow Loopa, nie do budżetu Fast Loopa."""
@@ -436,6 +469,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     failures = _train_symbols(settings, repository, use_case, trainable, tally)
     failures += _train_pooled_model(settings, use_case, trainable, tally)
     tally.failures, tally.total = failures, len(trainable) + 1
+    _run_reference_signal(settings, repository)
 
     usage_ledger = UsageLedger()
     paid_llm = _SlowLoopPaidLLM(settings, quota_monitor, usage_ledger)

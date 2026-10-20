@@ -20,6 +20,7 @@ from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.quota import QuotaAlert
+from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.shock import DailyChange
 from src.domain.social_velocity import SocialVelocitySnapshot
@@ -87,6 +88,15 @@ class CycleRun:
     failures: int
     paid_calls: Mapping[str, int]
     report_delivered: bool | None
+
+
+@dataclass(frozen=True)
+class OpenReferenceCall:
+    """WIA-24 — nierozliczone wywołanie sygnału referencyjnego z id wiersza
+    `reference_predictions` (migracja 042), którym rozlicza je kolejny przebieg."""
+
+    id: str
+    call: ReferenceCall
 
 
 class RepositoryPort(ABC):
@@ -477,6 +487,32 @@ class RepositoryPort(ABC):
         """NIEZ-29 — jeden wiersz `cycle_runs` (migracja 041) na przebieg pętli,
         jednym insertem na końcu przebiegu. Wołający pilnuje flagi
         `cycle_runs_enabled` (bez migracji 041 zapis kończyłby się błędem PostgREST)."""
+
+    # WIA-24 — sygnał referencyjny w osobnej tabeli `reference_predictions` (migracja
+    # 042), nigdy w `prediction_logs`. Wołający pilnuje flagi `reference_signal_enabled`.
+
+    @abstractmethod
+    def get_reference_reads(self, since: datetime) -> list[ReferenceRead]:
+        """Odczyty sygnału referencyjnego wszystkich symboli od `since`, rosnąco po czasie."""
+
+    @abstractmethod
+    def get_open_reference_calls(self) -> list[OpenReferenceCall]:
+        """Wywołania (BULLISH / BEARISH) jeszcze bez rozliczenia, bez limitu wieku —
+        stare wygasają w kolejnym przebiegu."""
+
+    @abstractmethod
+    def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
+        """Jeden wiersz: odczyt przebiegu i wywołanie z niego (None = abstynencja)."""
+
+    @abstractmethod
+    def settle_reference_call(
+        self,
+        record_id: str,
+        outcome: ReferenceOutcome,
+        settled_price: Decimal | None,
+        settled_at: datetime,
+    ) -> None:
+        """Rozliczenie wywołania: HIT / MISS z ceną odczytu albo EXPIRED bez ceny."""
 
 
 class MLPredictionPort(ABC):

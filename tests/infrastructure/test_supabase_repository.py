@@ -2682,3 +2682,152 @@ class TestShockAlertTimes:
         mock_client.table.side_effect = Exception("no table")
 
         assert repo.get_shock_alert_times(datetime(2026, 10, 16, tzinfo=UTC)) == {}
+
+
+class TestReferencePredictions:
+    """WIA-24 (migracja 042): odczyt, wywołanie i rozliczenie sygnału referencyjnego
+    w jednym wierszu `reference_predictions` — nigdy w `prediction_logs`."""
+
+    def test_save_writes_the_read_and_call_with_the_reference_label(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.prediction import TrendDirection
+        from src.domain.reference_signal import ReferenceCall, ReferenceRead
+
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}])
+        at = datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
+
+        repo.save_reference_read(
+            ReferenceRead(symbol="AAPL", price=Decimal("103.25"), read_at=at),
+            ReferenceCall(
+                symbol="AAPL",
+                trend=TrendDirection.BULLISH,
+                price_at_call=Decimal("103.25"),
+                called_at=at,
+            ),
+        )
+
+        mock_client.table.assert_called_with("reference_predictions")
+        assert mock_client.table.return_value.insert.call_args.args[0] == {
+            "symbol": "AAPL",
+            "read_at": "2026-10-25T03:00:00+00:00",
+            "price": "103.25",
+            "predicted_trend": "BULLISH",
+            "recipe_version": "reference-v1",
+        }
+
+    def test_save_of_an_abstention_has_no_trend(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.reference_signal import ReferenceRead
+
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}])
+
+        repo.save_reference_read(
+            ReferenceRead(
+                symbol="BTC", price=Decimal("61000"), read_at=datetime(2026, 10, 25, tzinfo=UTC)
+            ),
+            None,
+        )
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload["predicted_trend"] is None
+
+    def test_reads_since_parse_into_domain_reads(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.reference_signal import ReferenceRead
+
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "gte", "order", "order", "range"],
+            [{"symbol": "AAPL", "price": "100.5", "read_at": "2026-10-18T03:00:00+00:00"}],
+        )
+
+        reads = repo.get_reference_reads(datetime(2026, 10, 17, 3, 0, tzinfo=UTC))
+
+        assert reads == [
+            ReferenceRead(
+                symbol="AAPL",
+                price=Decimal("100.5"),
+                read_at=datetime(2026, 10, 18, 3, 0, tzinfo=UTC),
+            )
+        ]
+        mock_client.table.assert_called_with("reference_predictions")
+        mock_client.table.return_value.select.return_value.gte.assert_called_once_with(
+            "read_at", "2026-10-17T03:00:00+00:00"
+        )
+
+    def test_open_calls_are_unsettled_rows_with_a_trend(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.application.ports import OpenReferenceCall
+        from src.domain.prediction import TrendDirection
+        from src.domain.reference_signal import ReferenceCall
+
+        select = mock_client.table.return_value.select.return_value
+        unsettled = select.not_.is_.return_value.is_.return_value
+        _set_paginated_response(
+            unsettled.order.return_value.order.return_value,
+            [
+                [
+                    {
+                        "id": 7,
+                        "symbol": "AAPL",
+                        "predicted_trend": "BEARISH",
+                        "price": "100",
+                        "read_at": "2026-10-18T03:00:00+00:00",
+                    }
+                ]
+            ],
+        )
+
+        calls = repo.get_open_reference_calls()
+
+        assert calls == [
+            OpenReferenceCall(
+                id="7",
+                call=ReferenceCall(
+                    symbol="AAPL",
+                    trend=TrendDirection.BEARISH,
+                    price_at_call=Decimal("100"),
+                    called_at=datetime(2026, 10, 18, 3, 0, tzinfo=UTC),
+                ),
+            )
+        ]
+        select.not_.is_.assert_called_once_with("predicted_trend", "null")
+        select.not_.is_.return_value.is_.assert_called_once_with("outcome", "null")
+
+    def test_settle_writes_outcome_price_and_time(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.reference_signal import ReferenceOutcome
+
+        _set_chain_response(mock_client, ["table", "update", "eq"], [{"id": 7}])
+
+        repo.settle_reference_call(
+            "7", ReferenceOutcome.HIT, Decimal("104"), datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
+        )
+
+        mock_client.table.assert_called_with("reference_predictions")
+        update = mock_client.table.return_value.update
+        assert update.call_args.args[0] == {
+            "outcome": "HIT",
+            "settled_price": "104",
+            "settled_at": "2026-10-25T03:00:00+00:00",
+        }
+        update.return_value.eq.assert_called_once_with("id", "7")
+
+    def test_expiry_settles_without_a_price(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.reference_signal import ReferenceOutcome
+
+        _set_chain_response(mock_client, ["table", "update", "eq"], [{"id": 7}])
+
+        repo.settle_reference_call(
+            "7", ReferenceOutcome.EXPIRED, None, datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
+        )
+
+        payload = mock_client.table.return_value.update.call_args.args[0]
+        assert payload["outcome"] == "EXPIRED" and payload["settled_price"] is None

@@ -207,6 +207,12 @@ cost_ledger_enabled = false
 # (run_id jak w `llm_calls` + numer próby runu, liczby cyklu, płatne wywołania per
 # źródło, czy mail wyszedł; bez symboli). UWAGA: włącz DOPIERO po migracji 041.
 cycle_runs_enabled = false
+# WIA-24: darmowy sygnał referencyjny `reference-v1` (docs/reference-protocol-v1.md) —
+# raz na przebieg Slow Loopa własny odczyt /quote (Finnhub, CoinGecko), rozliczenie
+# zeszłotygodniowego wywołania i nowe wywołanie ze znaku zmiany tygodniowej. Zapis do
+# osobnej tabeli `reference_predictions`, nigdy do `prediction_logs` ani
+# `price_snapshots`; zero płatnych wywołań. UWAGA: włącz DOPIERO po migracji 042.
+reference_signal_enabled = false
 # FIN-13: cennik LLM per model — standard tier, USD za 1M tokenów, stan na dzień
 # `llm_pricing_as_of`. Źródła:
 #   https://platform.claude.com/docs/en/about-claude/pricing

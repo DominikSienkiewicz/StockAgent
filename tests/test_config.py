@@ -1290,3 +1290,16 @@ class TestHeartbeatUrl:
             Settings(_env_file=None, **REQUIRED_ENV_KWARGS).heartbeat_url
             == "https://hc-ping.com/abc-from-env"
         )
+
+
+class TestReferenceSignalFlag:
+    """WIA-24: sygnał referencyjny w Slow Loopie (migracja 042) — flaga osobnej tabeli,
+    domyślnie off i poza przepisem (`config_hash` się nie rusza)."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).reference_signal_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "reference_signal_enabled" in NON_RECIPE_SETTINGS_FIELDS

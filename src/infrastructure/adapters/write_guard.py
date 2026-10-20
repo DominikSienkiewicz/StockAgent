@@ -29,6 +29,7 @@ from typing import Any, ClassVar
 from src.application.ports import (
     AttestationPublisherPort,
     CycleRun,
+    OpenReferenceCall,
     PositionsImportPort,
     PreviousVerdict,
     RepositoryPort,
@@ -39,6 +40,7 @@ from src.domain.finops import LLMCallEntry
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.quota import QuotaAlert
+from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.value_objects import AssetType, Fundamentals, Money
 
@@ -108,6 +110,8 @@ class ReadOnlyRepository(RepositoryPort):
         "get_previous_verdict",
         "get_recent_model_scorecards",
         "get_council_vote_history",
+        "get_reference_reads",
+        "get_open_reference_calls",
     })
     WRITE_METHODS: ClassVar[frozenset[str]] = frozenset({
         "save_price_snapshot",
@@ -125,6 +129,8 @@ class ReadOnlyRepository(RepositoryPort):
         "save_council_votes",
         "save_llm_calls",
         "save_cycle_run",
+        "save_reference_read",
+        "settle_reference_call",
     })
 
     def __init__(self, delegate: RepositoryPort) -> None:
@@ -243,6 +249,12 @@ class ReadOnlyRepository(RepositoryPort):
             symbols, window_days=window_days, investors=investors
         )
 
+    def get_reference_reads(self, since: datetime) -> list[ReferenceRead]:
+        return self._delegate.get_reference_reads(since)
+
+    def get_open_reference_calls(self) -> list[OpenReferenceCall]:
+        return self._delegate.get_open_reference_calls()
+
     # ----- zapisy (pomijane) -----
 
     def save_price_snapshot(self, symbol: str, price: Money) -> None:
@@ -310,6 +322,18 @@ class ReadOnlyRepository(RepositoryPort):
 
     def save_cycle_run(self, run: CycleRun) -> None:
         self._skipped.skip("save_cycle_run")
+
+    def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
+        self._skipped.skip("save_reference_read")
+
+    def settle_reference_call(
+        self,
+        record_id: str,
+        outcome: ReferenceOutcome,
+        settled_price: Decimal | None,
+        settled_at: datetime,
+    ) -> None:
+        self._skipped.skip("settle_reference_call")
 
 
 class ReadOnlyPositionsImport(PositionsImportPort):

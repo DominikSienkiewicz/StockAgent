@@ -160,6 +160,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "cost_ledger_enabled",
     # NIEZ-29: sam zapis historii przebiegów `cycle_runs` — prognoza ta sama.
     "cycle_runs_enabled",
+    # WIA-24: sygnał referencyjny w Slow Loopie, osobna tabela — predykcja LLM ta sama.
+    "reference_signal_enabled",
     # NIEZ-44 (decyzja 2026-10-20): zapasowy LLM działa tylko po awarii głównego,
     # a predykcja od niego niesie własny przepis — flagę `llm_failover` i faktyczny
     # dostawcę/model w kwicie i `recipe_version` — więc track record ją odsieje.
@@ -602,6 +604,10 @@ class Settings(BaseSettings):
     # (ten sam co w `llm_calls`), próba runu, liczby cyklu, płatne wywołania i stan
     # maila. Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
     cycle_runs_enabled: bool = False
+    # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
+    # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
+    # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
+    reference_signal_enabled: bool = False
     # EXP-27: cykl dwufazowy — faza 1 (cena, reflect, bramka) dla wszystkich symboli,
     # faza 2 (klient AV tylko dla symboli za bramką, płatna analiza malejąco po |Δ|).
     # Eksperyment do porównania z FIN-04; off w kodzie i w config.toml.
