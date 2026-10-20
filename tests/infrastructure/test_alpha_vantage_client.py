@@ -338,6 +338,74 @@ class TestApiKeyRotation:
         assert client._cached_feed is not None
         assert len(client._cached_feed) > 0
 
+    @staticmethod
+    def _note_response():
+        # Historyczny kształt limitu częstotliwości AV: pole `Note` zamiast `Information`.
+        return _ok_response({
+            "Note": "Thank you for using Alpha Vantage! Our standard API call "
+            "frequency is 5 calls per minute."
+        })
+
+    def test_rotates_when_soft_limit_uses_note_field(self, mocker):
+        # DAT-06: `Note` to też soft-limit. Bez wspólnego klasyfikatora klient brał
+        # go za pusty feed — bez rotacji i bez `degraded_reason`.
+        sleep_mock = mocker.patch(
+            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
+        )
+        mock_get = mocker.patch("requests.Session.get")
+        mock_get.side_effect = [
+            self._note_response(),             # key1 — limit minutowy
+            self._note_response(),             # key1 po backoffie — nadal limit
+            _ok_response(_SAMPLE_PAYLOAD),     # key2 — OK
+        ]
+
+        client = AlphaVantageClient(api_keys=["key1", "key2"], symbols=["AAPL"])
+        articles = client.articles_for("AAPL")
+
+        keys_used = [call.kwargs["params"]["apikey"] for call in mock_get.call_args_list]
+        # Krótki backoff i ponowienie TYM SAMYM kluczem, dopiero potem rotacja.
+        assert keys_used == ["key1", "key1", "key2"]
+        assert sleep_mock.call_count == 1
+        assert sleep_mock.call_args.args[0] > 0
+        assert len(articles) == 1
+        assert client.degraded_reason is None
+
+    def test_note_cleared_by_backoff_keeps_the_same_key(self, mocker):
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch("requests.Session.get")
+        mock_get.side_effect = [self._note_response(), _ok_response(_SAMPLE_PAYLOAD)]
+
+        client = AlphaVantageClient(api_keys=["key1", "key2"], symbols=["AAPL"])
+        articles = client.articles_for("AAPL")
+
+        keys_used = [call.kwargs["params"]["apikey"] for call in mock_get.call_args_list]
+        assert keys_used == ["key1", "key1"]
+        assert client._active_key_idx == 0
+        assert len(articles) == 1
+
+    def test_note_on_every_key_alerts_about_the_frequency_limit(self, mocker):
+        # Alert „dzienny limit 25 zapytań” myliłby, gdy klucze odbił limit minutowy.
+        from src.application.quota_monitor import QuotaMonitor
+
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch(
+            "requests.Session.get", return_value=self._note_response()
+        )
+        monitor = QuotaMonitor()
+        client = AlphaVantageClient(
+            api_keys=["key1", "key2"], symbols=["AAPL"], quota_monitor=monitor
+        )
+
+        client.articles_for("AAPL")
+
+        # Dwa klucze × (próba + ponowienie po backoffie).
+        assert mock_get.call_count == 4
+        assert client.degraded_reason == "av_keys_exhausted"
+        alert = monitor.alerts[0]
+        assert "częstotliwości" in alert.message
+        assert "dzienny limit" not in alert.message
+        assert "ALPHA_VANTAGE_API_KEYS" in alert.action
+
 
 class TestArticlesFor:
     def test_filters_by_symbol_via_ticker_sentiment(self, client, mocker):
@@ -791,6 +859,26 @@ def test_exhausted_keys_alert_is_polish_and_logged_in_english(mocker, caplog):
     assert "incomplete" not in alert.message
     assert alert.action.startswith("Dodaj kolejny klucz")
     assert "Alpha Vantage API keys exhausted" in caplog.text
+
+
+def test_soft_limit_log_carries_the_marker_without_the_key(mocker, caplog) -> None:
+    # DAT-06: diagnoza wymaga treści markera, a AV potrafi wkleić do niej klucz.
+    import logging
+
+    mocker.patch(
+        "requests.Session.get",
+        return_value=_ok_response({
+            "Information": "We have detected your API key as news-secret-key and our "
+            "standard API rate limit is 25 requests per day."
+        }),
+    )
+    client = AlphaVantageClient(api_keys=["news-secret-key"], symbols=["AAPL"])
+
+    with caplog.at_level(logging.WARNING):
+        client.articles_for("AAPL")
+
+    assert "standard API rate limit is 25 requests per day" in caplog.text
+    assert "news-secret-key" not in caplog.text
 
 
 def test_http_error_message_omits_apikey(mocker) -> None:

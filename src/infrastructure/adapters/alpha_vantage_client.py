@@ -17,6 +17,12 @@ from typing import Any
 
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.adapters._alpha_vantage_common import (
+    NOTE_BACKOFF_SECONDS,
+    is_frequency_limit,
+    is_soft_limit,
+    soft_limit_text,
+)
 from src.infrastructure.adapters._http import (
     build_session,
     raise_for_status_redacted,
@@ -39,6 +45,9 @@ DEFAULT_BATCH_SIZE = 1
 INTER_REQUEST_DELAY_SECONDS = 1.1
 
 HIGH_RELEVANCE_BAR = 0.8
+
+# Klucz danych NEWS_SENTIMENT — jego obecność odróżnia feed od soft-limitu (DAT-06).
+_NEWS_DATA_KEYS = ("feed",)
 
 # Okno, które obiecuje nazwa cechy `news_volume_24h`. Bez `time_from` AV zwraca
 # `limit` najnowszych artykułów z dowolnego okresu — dla NVDA to kilka godzin,
@@ -117,6 +126,9 @@ class AlphaVantageClient:
         # zwróciły rate-limit, feed jest (potencjalnie) niekompletny. Bez
         # tego sygnału pusty feed wygląda identycznie jak "spokojny dzień".
         self._degraded_reason: str | None = None
+        # DAT-06: ostatni soft-limit przed wyczerpaniem był minutowy (`Note`) —
+        # wtedy alert nie może mówić o dziennym limicie 25 zapytań.
+        self._exhausted_by_frequency_limit = False
         self._session = build_session()
         # Serializuje leniwy fetch feedu — bez tego współbieżni callerzy (równoległe
         # symbole) startują N duplikatów cold-startu, zjadając dzienny limit AV.
@@ -229,19 +241,30 @@ class AlphaVantageClient:
             len(self._api_keys),
         )
         self._degraded_reason = "av_keys_exhausted"
-        self._emit_quota_alert(
-            severity=QuotaSeverity.CRITICAL,
-            # MAIL-15: treść alertu idzie do maila po polsku; angielska
-            # diagnoza jest w logger.error powyżej.
-            message=(
+        # MAIL-15: treść alertu idzie do maila po polsku; angielska
+        # diagnoza jest w logger.error powyżej.
+        if self._exhausted_by_frequency_limit:
+            message = (
+                f"Wszystkie klucze Alpha Vantage ({len(self._api_keys)}) odbiły limit "
+                "częstotliwości zapytań (pole Note) mimo ponowienia. Feed newsów "
+                "i sentymentu jest w tym cyklu niepełny."
+            )
+            action = (
+                "Rozłóż zapytania w czasie albo dodaj kolejny klucz "
+                "w ALPHA_VANTAGE_API_KEYS (darmowy na alphavantage.co)."
+            )
+        else:
+            message = (
                 f"Wszystkie klucze Alpha Vantage ({len(self._api_keys)}) wyczerpały "
                 "dzienny limit 25 zapytań. Feed newsów i sentymentu jest w tym "
                 "cyklu niepełny."
-            ),
-            action=(
+            )
+            action = (
                 "Dodaj kolejny klucz w ALPHA_VANTAGE_API_KEYS (darmowy na "
                 "alphavantage.co) albo poczekaj na reset o północy UTC."
-            ),
+            )
+        self._emit_quota_alert(
+            severity=QuotaSeverity.CRITICAL, message=message, action=action
         )
 
     def _fetch_batch_with_rotation(
@@ -250,27 +273,44 @@ class AlphaVantageClient:
         """Próbuje wszystkich kluczy od `_active_key_idx` w górę.
 
         Zwraca payload przy sukcesie (i aktualizuje `_active_key_idx`),
-        albo `None` gdy wszystkie klucze wyczerpane.
+        albo `None` gdy wszystkie klucze wyczerpane. `Note` (limit minutowy)
+        dostaje jeden backoff i ponowienie tym samym kluczem, `Information`
+        (limit dzienny) od razu rotuje (DAT-06).
         """
+        backed_off = False
         while self._active_key_idx < len(self._api_keys):
             key = self._api_keys[self._active_key_idx]
             payload = self._fetch_batch(tickers, key)
 
-            if _is_rate_limited(payload):
+            if not is_soft_limit(payload, _NEWS_DATA_KEYS):
+                return payload
+
+            marker = soft_limit_text(payload, self._api_keys)
+            if is_frequency_limit(payload) and not backed_off:
                 logger.warning(
-                    "Alpha Vantage key #%d rate-limited: %s — rotating to next.",
+                    "Alpha Vantage key #%d hit the frequency limit: %s — retrying "
+                    "the same key in %.1f s.",
                     self._active_key_idx + 1,
-                    str(payload.get("Information", ""))[:160],
+                    marker,
+                    NOTE_BACKOFF_SECONDS,
                 )
-                self._active_key_idx += 1
-                # Bez sleepa: do martwego klucza nie poszedł realny request,
-                # więc pacing 1 req/sec go nie dotyczy. Re-chodzenie po
-                # wyczerpanych kluczach z 1.1s przerwą marnowałoby wall-clock
-                # na quota-wyczerpany dzień. Pacing pilnuje tylko realnych
-                # requestów (w `_fetch`, między batchami).
+                backed_off = True
+                time.sleep(NOTE_BACKOFF_SECONDS)
                 continue
 
-            return payload
+            logger.warning(
+                "Alpha Vantage key #%d rate-limited: %s — rotating to next.",
+                self._active_key_idx + 1,
+                marker,
+            )
+            self._exhausted_by_frequency_limit = is_frequency_limit(payload)
+            self._active_key_idx += 1
+            backed_off = False
+            # Bez sleepa: do martwego klucza nie poszedł realny request,
+            # więc pacing 1 req/sec go nie dotyczy. Re-chodzenie po
+            # wyczerpanych kluczach z 1.1s przerwą marnowałoby wall-clock
+            # na quota-wyczerpany dzień. Pacing pilnuje tylko realnych
+            # requestów (w `_fetch`, między batchami).
 
         return None
 
@@ -429,12 +469,6 @@ def _parse_time_published(raw: object) -> datetime | None:
         return datetime.strptime(str(raw), _TIME_PUBLISHED_FORMAT).replace(tzinfo=UTC)
     except ValueError:
         return None
-
-
-def _is_rate_limited(payload: dict[str, Any]) -> bool:
-    """AV w free tier sygnalizuje rate-limit polem `Information` w 200 OK,
-    bez wypełnionego `feed`. Wykrywamy ten wzorzec, by rotować klucz."""
-    return "Information" in payload and "feed" not in payload
 
 
 def _score_to_label(score: float) -> str:
