@@ -53,6 +53,12 @@ _TIME_PUBLISHED_FORMAT = "%Y%m%dT%H%M%S"
 _VALID_TICKER_RE = re.compile(r"^[A-Za-z0-9:_-]+$")
 
 
+def supported_tickers(symbols: Iterable[str]) -> list[str]:
+    """Tickery, które AV przyjmuje w `tickers` (bez kropki, np. CSPX.L odpada).
+    Z tej listy klient pobiera feed; FIN-06 liczy z niej requesty cyklu."""
+    return [sym for sym in symbols if _VALID_TICKER_RE.match(sym)]
+
+
 class AlphaVantageClient:
     """Lazy single-batch fetcher z in-memory cache na cały lifecycle instancji.
 
@@ -134,13 +140,8 @@ class AlphaVantageClient:
         Filtrujemy tickery zawierające kropkę (np. CSPX.L) — i tak Finnhub
         free tier ich nie obsługuje, więc to spójne ograniczenie.
         """
-        valid: list[str] = []
-        skipped: list[str] = []
-        for sym in symbols:
-            if _VALID_TICKER_RE.match(sym):
-                valid.append(sym)
-            else:
-                skipped.append(sym)
+        valid = supported_tickers(symbols)
+        skipped = [sym for sym in symbols if sym not in valid]
         if skipped:
             logger.warning(
                 "Alpha Vantage doesn't support tickers with non-alphanumeric chars "

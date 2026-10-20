@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 # FinOps — czysty model kosztu jednego cyklu agenta. "Agent, który raportuje
 # własny rachunek": bierze liczniki płatnych wywołań zewnętrznych (LLM, sentyment,
@@ -124,4 +125,72 @@ def estimate_cycle_cost(calls: Mapping[str, int]) -> CycleCost:
         total_usd=sum((line.subtotal_usd for line in lines), 0.0),
         total_calls=total_calls,
         unknown_sources=tuple(unknown),
+    )
+
+
+@dataclass(frozen=True)
+class CycleCallBound:
+    """Górna granica płatnych wywołań JEDNEGO cyklu (najgorszy przypadek).
+
+    - `calls`       — per klucz `UNIT_COST_USD`, w jednostkach licznika cyklu,
+                      więc `estimate_cycle_cost(calls)` to najwyższy szacunek,
+                      jaki może pokazać sekcja „Koszt cyklu”.
+    - `av_requests` — requesty HTTP do Alpha Vantage NEWS_SENTIMENT: limit
+                      kluczy, nie pozycja cennika.
+    """
+
+    calls: Mapping[str, int]
+    av_requests: int
+
+
+def cycle_call_upper_bound(
+    n_gated: int,
+    n_av_symbols: int,
+    personas: int,
+    debate: bool,
+    tool_rounds: int,
+) -> CycleCallBound:
+    """Najgorszy przypadek cyklu, w którym `n_gated` symboli przechodzi bramkę.
+
+    Per symbol za bramką:
+      - `llm`         — diagnoza pomyłki w reflect (ta sama bramka) + predykcja:
+                        jedno `analyze` albo pętla tool-use, czyli `tool_rounds`
+                        rund z toolami i jedna wymuszona bez nich (`tool_rounds`
+                        = 0 → tool-use wyłączony);
+      - `council_llm` — `personas` wywołań, drugie tyle przy debacie (runda
+                        rewizji po podzielonym głosowaniu), plus chairman;
+      - `sentiment`, `news` — po jednym wywołaniu węzła;
+      - `embedding`   — embedding RAG w predict i ponowna próba przy zapisie,
+                        gdy RAG nie dał wektora.
+    Feed Alpha Vantage pobiera pierwszy symbol za bramką dla wszystkich
+    `n_av_symbols` tickerów, więc `av_requests` nie zależy od liczby symboli
+    za bramką. Cykl, w którym bramka odcina wszystko, ma granicę zero.
+
+    Wynik to szacunek tak jak cennik: model routing może dołożyć eskalację do
+    modelu frontier w `analyze`, a rotacja kluczy AV ponawia request po
+    odpowiedzi rate-limit — ani jedno, ani drugie nie jest tu liczone.
+    """
+    for name, value in (
+        ("n_gated", n_gated),
+        ("n_av_symbols", n_av_symbols),
+        ("personas", personas),
+        ("tool_rounds", tool_rounds),
+    ):
+        if value < 0:
+            raise ValueError(f"{name} must be non-negative (got {value})")
+
+    prediction_requests = tool_rounds + 1 if tool_rounds > 0 else 1
+    council_requests = personas * (2 if debate else 1) + 1 if personas > 0 else 0
+    per_symbol = {
+        "llm": 1 + prediction_requests,
+        "council_llm": council_requests,
+        "sentiment": 1,
+        "news": 1,
+        "embedding": 2,
+    }
+    return CycleCallBound(
+        calls=MappingProxyType(
+            {source: n_gated * requests for source, requests in per_symbol.items()}
+        ),
+        av_requests=n_av_symbols if n_gated > 0 else 0,
     )

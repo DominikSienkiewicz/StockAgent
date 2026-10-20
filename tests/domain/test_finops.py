@@ -7,9 +7,13 @@ rozbicia. Cennik to stała modułu — jedno źródło prawdy.
 
 from __future__ import annotations
 
+import pytest
+
 from src.domain.finops import (
     UNIT_COST_USD,
+    CycleCallBound,
     CycleCost,
+    cycle_call_upper_bound,
     estimate_cycle_cost,
 )
 
@@ -97,3 +101,80 @@ def test_council_is_priced_per_persona_or_chairman_call() -> None:
 
     assert abs(cost.total_usd - 0.02) < 1e-12
     assert cost.lines[0].calls == 8
+
+
+# --- FIN-06: górna granica płatnych wywołań cyklu ------------------------------
+
+
+def _bound(
+    *,
+    n_gated: int = 1,
+    n_av_symbols: int = 1,
+    personas: int = 7,
+    debate: bool = False,
+    tool_rounds: int = 0,
+) -> CycleCallBound:
+    return cycle_call_upper_bound(
+        n_gated=n_gated,
+        n_av_symbols=n_av_symbols,
+        personas=personas,
+        debate=debate,
+        tool_rounds=tool_rounds,
+    )
+
+
+def test_upper_bound_counts_council_as_personas_plus_chairman() -> None:
+    assert _bound().calls["council_llm"] == 8
+    assert _bound(n_gated=3).calls["council_llm"] == 24
+
+
+def test_upper_bound_counts_the_debate_revision_round() -> None:
+    assert _bound(debate=True).calls["council_llm"] == 15
+
+
+def test_upper_bound_without_personas_has_no_council_calls() -> None:
+    assert _bound(personas=0).calls["council_llm"] == 0
+
+
+def test_upper_bound_llm_is_diagnosis_plus_prediction_per_symbol() -> None:
+    # Diagnoza pomyłki w reflect (ta sama bramka) + jedno `analyze`.
+    assert _bound(n_gated=4).calls["llm"] == 8
+
+
+def test_upper_bound_llm_counts_every_tool_use_request() -> None:
+    # Pętla tool-use: `tool_rounds` rund z toolami + jedna wymuszona bez nich.
+    assert _bound(tool_rounds=3).calls["llm"] == 1 + 4
+
+
+def test_upper_bound_meters_sentiment_news_and_embeddings_per_symbol() -> None:
+    calls = _bound(n_gated=5).calls
+
+    assert calls["sentiment"] == 5
+    assert calls["news"] == 5
+    # Embedding RAG w predict + ponowna próba w save po nieudanym RAG.
+    assert calls["embedding"] == 10
+
+
+def test_upper_bound_prices_every_source_of_the_price_list() -> None:
+    assert set(_bound().calls) == set(UNIT_COST_USD)
+
+
+def test_upper_bound_av_requests_follow_the_feed_not_the_gate() -> None:
+    # Pierwszy symbol za bramką pobiera feed AV dla wszystkich tickerów.
+    assert _bound(n_gated=1, n_av_symbols=42).av_requests == 42
+
+
+def test_fully_gated_cycle_has_a_zero_bound() -> None:
+    bound = _bound(n_gated=0, n_av_symbols=42, debate=True, tool_rounds=3)
+
+    assert sum(bound.calls.values()) == 0
+    assert bound.av_requests == 0
+    assert estimate_cycle_cost(bound.calls).total_usd == 0.0
+
+
+@pytest.mark.parametrize(
+    "field", ["n_gated", "n_av_symbols", "personas", "tool_rounds"]
+)
+def test_upper_bound_rejects_negative_inputs(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        _bound(**{field: -1})

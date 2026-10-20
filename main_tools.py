@@ -13,6 +13,7 @@ Użycie:
     uv run python main_tools.py import-positions --csv pozycje.csv [--apply]
     uv run python main_tools.py evaluate [--days N] [--by-recipe] [--by X] [--echo]
         [--experiment ID]
+    uv run python main_tools.py cost-envelope
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from src.tools.cost_envelope import EnvelopeInputs, cost_envelope, render_cost_envelope
 from src.tools.evaluate import (
     GATE_DELTA_FIELD,
     OPTIONAL_COLUMNS,
@@ -75,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", required=True, metavar="<command>")
     _add_evaluate(subcommands)
     _add_import_positions(subcommands)
+    _add_cost_envelope(subcommands)
     return parser
 
 
@@ -279,6 +282,43 @@ def _positions_import_port(settings: Settings) -> PositionsImportPort:
     if settings.db_writes_enabled:
         return adapter
     return ReadOnlyPositionsImport(adapter)
+
+
+def _add_cost_envelope(
+    subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subcommands.add_parser(
+        "cost-envelope",
+        help="Print the estimated min/max paid calls and cost of one Fast Loop cycle.",
+        description=(
+            "FIN-06: worst case = every eligible symbol of config.toml past the volatility "
+            "gate; minimum = every symbol below it. Offline, zero paid calls."
+        ),
+    )
+    parser.set_defaults(handler=_run_cost_envelope)
+
+
+def _run_cost_envelope(args: argparse.Namespace) -> int:
+    """FIN-06: koperta kosztu cyklu dla bieżącej konfiguracji (offline); exit 0."""
+    from src.infrastructure.adapters.advisory_council import COUNCIL_MAX_PERSONAS
+    from src.infrastructure.adapters.alpha_vantage_client import supported_tickers
+    from src.infrastructure.persona_loader import load_council_personas
+
+    settings = _load_settings()
+    watchlist = [*settings.symbols, *settings.crypto_symbols]
+    # Jak `main_agent.main`: bez ceny symbol nie wchodzi do grafu, a feed AV
+    # (`build_use_case`) bierze całą watchlistę, którą AV przyjmuje.
+    unsupported = set(settings.symbols_unsupported_price)
+    personas = load_council_personas(Path(settings.council_personas_dir))
+    inputs = EnvelopeInputs(
+        n_gated=sum(1 for symbol in watchlist if symbol not in unsupported),
+        n_av_symbols=len(supported_tickers(watchlist)),
+        personas=min(len(personas), COUNCIL_MAX_PERSONAS),
+        debate=settings.debate_mode_enabled,
+        tool_rounds=settings.tool_use_max_rounds if settings.tool_use_enabled else 0,
+    )
+    print(render_cost_envelope(cost_envelope(inputs)))
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

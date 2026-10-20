@@ -165,6 +165,7 @@ uv run python main_tools.py evaluate --by component  # + ablation: LLM trend vs 
 uv run python main_tools.py evaluate --by regime --by asset_class  # + LLM hit rate per segment; repeatable, also confidence_bucket, alpha_fusion_sign, edge_label
 uv run python main_tools.py evaluate --echo  # + momentum echo test: is the LLM trend just the sign of the move that opened the gate? (needs migration 034)
 uv run python main_tools.py evaluate --experiment EXP-02 --days 90  # + A/B arms of an in-loop experiment: treatment − control per metric with a block-bootstrap CI (arms from migration 037 or the v2 receipt)
+uv run python main_tools.py cost-envelope  # estimated min/max paid calls and USD of one Fast Loop cycle for config.toml (offline, zero paid calls)
 uv run pytest                                   # full local suite
 uv run pytest -m "not integration and not containers" # unit only
 uv run pytest -m containers                    # Docker/Postgres schema tests

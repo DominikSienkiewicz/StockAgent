@@ -825,3 +825,10 @@ def test_network_error_message_omits_apikey(mocker) -> None:
 
     assert "news-secret-key" not in str(excinfo.value)
     assert excinfo.value.__cause__ is None
+
+
+def test_supported_tickers_drops_symbols_alpha_vantage_rejects() -> None:
+    # FIN-06: ta sama lista, z której klient pobiera feed, liczy requesty cyklu.
+    from src.infrastructure.adapters.alpha_vantage_client import supported_tickers
+
+    assert supported_tickers(["AAPL", "CSPX.L", "BTC", "XDWD.DE"]) == ["AAPL", "BTC"]

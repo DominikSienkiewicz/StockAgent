@@ -196,3 +196,30 @@ def test_src_tools_evaluate_has_no_entry_point_of_its_own() -> None:
     from src.tools import evaluate
 
     assert not hasattr(evaluate, "main")
+
+
+# --- FIN-06: cost-envelope ----------------------------------------------------
+
+
+def test_cost_envelope_prints_the_bound_for_the_configured_watchlist(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = mocker.patch("src.config.Settings.from_env").return_value
+    settings.symbols = ["AAPL", "MSFT", "CSPX.L"]
+    settings.crypto_symbols = ["BTC"]
+    settings.symbols_unsupported_price = ["CSPX.L"]
+    settings.council_personas_dir = "data/council_personas"
+    settings.debate_mode_enabled = False
+    settings.tool_use_enabled = True
+    settings.tool_use_max_rounds = 3
+
+    code = main_tools.main(["cost-envelope"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    # 3 symbole za bramką (CSPX.L bez ceny), rada z 7 plików person + chairman.
+    assert "| `council_llm` | 0 | 24 |" in out
+    # Diagnoza + pętla tool-use (3 rundy + 1) na symbol.
+    assert "| `llm` | 0 | 15 |" in out
+    # Feed AV: AAPL, MSFT, BTC — CSPX.L odpada na filtrze tickerów AV.
+    assert "0–3" in out
