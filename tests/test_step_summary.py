@@ -92,7 +92,9 @@ class TestFastLoopSummary:
 
         main_agent.main(settings)
 
-        assert summary_file.read_text(encoding="utf-8").startswith("previous step\n")
+        markdown = summary_file.read_text(encoding="utf-8")
+        assert markdown.startswith("previous step\n")
+        assert "## Fast Loop" in markdown
 
     def test_without_the_variable_nothing_is_written(
         self, settings, mock_external_clients, mocker, monkeypatch, tmp_path
