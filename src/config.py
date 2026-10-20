@@ -65,6 +65,8 @@ SECRET_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "slack_webhook_url",
     # Nagłówek SEC niesie adres kontaktowy.
     "edgar_user_agent",
+    # NIEZ-13: URL pingu heartbeatu niesie UUID checku — kto go zna, ten pinguje.
+    "heartbeat_url",
 })
 
 # WIA-20: pola niesekretne, które NIE zmieniają prognozy, więc nie wchodzą do
@@ -712,6 +714,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     slack_webhook_url: str | None = None
+    # NIEZ-13: SEKRET — URL pingu zewnętrznego heartbeatu (np. healthchecks.io).
+    # Fast Loop, Slow Loop i shock watch pingują go na koniec przebiegu (porażka →
+    # `<URL>/fail`). Brak / pusty = NullHeartbeat, zero requestów.
+    heartbeat_url: str | None = None
     # Real-time alerty CRITICAL (U4): pushuj alert kwoty w chwili zdarzenia,
     # out-of-band od dziennego maila. NIEWRAŻLIWY flag → config.toml.
     realtime_alerts_enabled: bool = False

@@ -559,6 +559,18 @@ class ReportNotifierPort(ABC):
     def send_report(self, subject: str, html_body: str, plain_text: str) -> None: ...
 
 
+class HeartbeatPort(ABC):
+    """NIEZ-13: zewnętrzny watchdog żywotności cronów (np. healthchecks.io).
+
+    Watchdog na tym samym GitHub Actions umiera razem z nim, a GitHub wyłącza
+    crony po 60 dniach bez aktywności repo — o ciszy musi powiedzieć ktoś z
+    zewnątrz. Entry point pinguje RAZ, na końcu przebiegu: `ok=True` = przebieg
+    zakończony kodem 0, `ok=False` = porażka. Brak pingu w oknie checku to alarm."""
+
+    @abstractmethod
+    def ping(self, ok: bool) -> None: ...
+
+
 class AlertNotifierPort(ABC):
     """Real-time push pojedynczych alertów CRITICAL — odsprzężony od dziennego maila.
 

@@ -254,11 +254,18 @@ def run_watch(
 
 
 def main(settings: Settings | None = None) -> int:
-    settings = settings or Settings()  # type: ignore[call-arg]
+    resolved = settings or Settings()  # type: ignore[call-arg]
     configure_logging(
-        settings.secret_values(), fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+        resolved.secret_values(), fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
+    # Import lokalny — reguła pingu żyje w DI Containerze Fast Loopa.
+    from main_agent import run_with_heartbeat
 
+    # NIEZ-13: ping zewnętrznego heartbeatu na koniec (ok = exit 0).
+    return run_with_heartbeat(resolved, lambda: _run_watch(resolved))
+
+
+def _run_watch(settings: Settings) -> int:
     # Import lokalny — DI Container Fast Loopa buduje darmowe adaptery ceny
     # i kanały push; watch tylko je składa. Zero płatnych portów.
     from main_agent import (

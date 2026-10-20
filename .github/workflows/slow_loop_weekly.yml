@@ -67,6 +67,9 @@ jobs:
           ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
           # Dummy — trener nie pyta Finnhuba, ale Settings wymaga pola.
           FINNHUB_API_KEY: unused-in-slow-loop
+          # NIEZ-13: zewnętrzny heartbeat (np. healthchecks.io) — ping na koniec przebiegu,
+          # porażka → <URL>/fail. Brak sekretu = pusty string = NullHeartbeat (zero requestów).
+          HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
         run: uv run --frozen --no-build --no-sync python main_trainer.py
 
       - name: 💾 Commit and push updated model

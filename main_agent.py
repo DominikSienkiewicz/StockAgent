@@ -42,6 +42,7 @@ from src.application.ports import (
     EarningsCalendarPort,
     EmbeddingPort,
     FxRatePort,
+    HeartbeatPort,
     InsiderFlowPort,
     LLMPort,
     MacroRatesPort,
@@ -149,6 +150,7 @@ from src.infrastructure.adapters.cached_fundamentals import (
 from src.infrastructure.adapters.coingecko import CoinGeckoAdapter
 from src.infrastructure.adapters.composite_notifier import CompositeNotifier
 from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
+from src.infrastructure.adapters.http_heartbeat import HttpHeartbeat, NullHeartbeat
 from src.infrastructure.adapters.local_stubs import (
     LocalStubNewsAdapter,
     LocalStubSentimentAdapter,
@@ -2967,12 +2969,50 @@ def nyse_closure_label(settings: Settings, now: datetime) -> str | None:
     return "NYSE zamknięta (weekend)" if reason == "weekend" else f"święto NYSE ({reason})"
 
 
+def build_heartbeat(settings: Settings) -> HeartbeatPort:
+    """NIEZ-13: ping zewnętrznego watchdoga; brak / pusty `HEARTBEAT_URL` = Null."""
+    url = (settings.heartbeat_url or "").strip()
+    if not url:
+        return NullHeartbeat()
+    return HttpHeartbeat(url)
+
+
+def ping_heartbeat(settings: Settings, *, ok: bool) -> None:
+    """NIEZ-13: jeden ping na koniec przebiegu. Błąd pingu tylko loguje (bez
+    tracebacku — komunikat adaptera i tak nie niesie URL-a): watchdog to sygnał
+    o przebiegu, nie jego wynik."""
+    try:
+        build_heartbeat(settings).ping(ok=ok)
+    except Exception as exc:
+        logger.warning("Heartbeat ping failed — run result unchanged: %s", exc)
+
+
+def run_with_heartbeat(settings: Settings, run: Callable[[], int]) -> int:
+    """NIEZ-13: przebieg entry pointa z pingiem heartbeatu na końcu (ok = exit 0).
+
+    Wyjątek przebiegu pinguje porażkę i leci dalej — job w Actions i tak pada,
+    a watchdog dowiaduje się od razu, nie po oknie checku. Wspólne dla Fast
+    Loopa, Slow Loopa i shock watcha."""
+    try:
+        exit_code = run()
+    except Exception:
+        ping_heartbeat(settings, ok=False)
+        raise
+    ping_heartbeat(settings, ok=exit_code == 0)
+    return exit_code
+
+
 def main(
     settings: Settings | None = None, *, clock: Callable[[], datetime] = _utc_now
 ) -> int:
     """`clock` to zegar cyklu: dzień NYSE (FIN-34) i `started_at` raportu."""
-    settings = settings or Settings.from_env()
-    configure_logging(settings.secret_values())
+    resolved = settings or Settings.from_env()
+    configure_logging(resolved.secret_values())
+    return run_with_heartbeat(resolved, lambda: _run_fast_loop(resolved, clock))
+
+
+def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
+    """Jeden przebieg Fast Loopa; kod wyjścia jak `main()` (0 / 1 / 2)."""
     if refuses_stub_writes(settings):
         return STUB_WRITES_REFUSED_EXIT_CODE
     # FIN-34: w dzień zamknięcia NYSE ceny akcji stoją — akcje nie idą do grafu.

@@ -1260,3 +1260,32 @@ class TestCycleRunsFlag:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "cycle_runs_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestHeartbeatUrl:
+    """NIEZ-13: `HEARTBEAT_URL` to sekret (UUID checku w ścieżce) — poza hashem
+    przepisu i redagowany w logach jak każdy klucz."""
+
+    def test_defaults_to_none(self, env):
+        env.delenv("HEARTBEAT_URL", raising=False)
+
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).heartbeat_url is None
+
+    def test_is_a_secret_outside_the_hash_and_redacted(self, env):
+        from src.config import SECRET_SETTINGS_FIELDS
+
+        url = "https://hc-ping.com/5f3c0b9e-7a1d-4c2e-9b8f-0d6a2e4c1b7f"
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        with_url = Settings(_env_file=None, **REQUIRED_ENV_KWARGS, heartbeat_url=url)
+
+        assert "heartbeat_url" in SECRET_SETTINGS_FIELDS
+        assert with_url.config_hash() == baseline.config_hash()
+        assert url in with_url.secret_values()
+
+    def test_is_read_from_the_environment(self, env, monkeypatch):
+        monkeypatch.setenv("HEARTBEAT_URL", "https://hc-ping.com/abc-from-env")
+
+        assert (
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).heartbeat_url
+            == "https://hc-ping.com/abc-from-env"
+        )

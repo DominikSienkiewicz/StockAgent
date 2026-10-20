@@ -76,6 +76,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SLACK_WEBHOOK_URL:  ${{ secrets.SLACK_WEBHOOK_URL }}
+          # NIEZ-13: zewnętrzny heartbeat (np. healthchecks.io) — ping na koniec przebiegu,
+          # porażka → <URL>/fail. Brak sekretu = pusty string = NullHeartbeat (zero requestów).
+          HEARTBEAT_URL:      ${{ secrets.HEARTBEAT_URL }}
         run: uv run --frozen --no-build --no-sync python main_watch.py
 
       - name: 📮 Mail o porażce jobu

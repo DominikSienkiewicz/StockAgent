@@ -25,6 +25,7 @@ from main_agent import (
     build_notifier,
     persist_llm_calls,
     refuses_stub_writes,
+    run_with_heartbeat,
     warn_if_paid_calls_disabled,
     write_step_summary,
 )
@@ -357,8 +358,13 @@ def _send_weekly_recap(
 
 
 def main(settings: Settings | None = None) -> int:
-    settings = settings or Settings.from_env()
-    configure_logging(settings.secret_values())
+    resolved = settings or Settings.from_env()
+    configure_logging(resolved.secret_values())
+    # NIEZ-13: ping zewnętrznego heartbeatu na koniec (ok = exit 0).
+    return run_with_heartbeat(resolved, lambda: _run_with_summary(resolved))
+
+
+def _run_with_summary(settings: Settings) -> int:
     if refuses_stub_writes(settings):
         return STUB_WRITES_REFUSED_EXIT_CODE
     tally = _TrainingTally()

@@ -347,3 +347,57 @@ class TestNyseClosedDayWatch:
 
         checked = [c.args[0] for c in repo.get_last_price_snapshot.call_args_list]
         assert checked == ["AAPL", "BTC"]
+
+
+class TestWatchHeartbeat:
+    """NIEZ-13: zewnętrzny watchdog dostaje ping na końcu przebiegu watcha."""
+
+    def test_main_pings_heartbeat_with_ok_flag(self, settings, mocker) -> None:
+        from src.application.ports import HeartbeatPort
+
+        heartbeat = MagicMock(spec=HeartbeatPort)
+        mocker.patch("main_agent.build_heartbeat", return_value=heartbeat)
+        mocker.patch("main_agent.build_repository")
+        mocker.patch("main_agent.build_market_port")
+        mocker.patch(
+            "main_watch.scan_watch",
+            return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1),
+        )
+
+        assert main_watch.main(settings) == 0
+
+        heartbeat.ping.assert_called_once_with(ok=True)
+
+    def test_run_where_every_symbol_failed_pings_a_failure(self, settings, mocker) -> None:
+        from src.application.ports import HeartbeatPort
+
+        heartbeat = MagicMock(spec=HeartbeatPort)
+        mocker.patch("main_agent.build_heartbeat", return_value=heartbeat)
+        mocker.patch("main_agent.build_repository")
+        mocker.patch("main_agent.build_market_port")
+        mocker.patch(
+            "main_watch.scan_watch",
+            return_value=main_watch.WatchOutcome(sent=0, failures=2, total=2),
+        )
+
+        assert main_watch.main(settings) == 1
+
+        heartbeat.ping.assert_called_once_with(ok=False)
+
+    def test_failed_ping_does_not_change_the_exit_code(self, settings, mocker, caplog) -> None:
+        from src.application.ports import HeartbeatPort
+
+        heartbeat = MagicMock(spec=HeartbeatPort)
+        heartbeat.ping.side_effect = RuntimeError("heartbeat ping failed (ConnectTimeout)")
+        mocker.patch("main_agent.build_heartbeat", return_value=heartbeat)
+        mocker.patch("main_agent.build_repository")
+        mocker.patch("main_agent.build_market_port")
+        mocker.patch(
+            "main_watch.scan_watch",
+            return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert main_watch.main(settings) == 0
+
+        assert "heartbeat" in caplog.text.lower()

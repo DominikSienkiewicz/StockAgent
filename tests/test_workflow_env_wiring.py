@@ -475,3 +475,28 @@ def test_mask_script_without_keys_is_a_quiet_no_op(value: str | None) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
+
+
+# NIEZ-13: zewnętrzny heartbeat — każdy cron pętli pinguje go na koniec przebiegu.
+# Brak sekretu w repo daje pusty string, a pusty `HEARTBEAT_URL` = NullHeartbeat.
+HEARTBEAT_ENTRYPOINTS = {
+    "fast_loop_12h.yml": "main_agent.py",
+    "slow_loop_weekly.yml": "main_trainer.py",
+    "shock_watch_hourly.yml": "main_watch.py",
+}
+
+
+@pytest.mark.parametrize(("workflow", "entrypoint"), sorted(HEARTBEAT_ENTRYPOINTS.items()))
+def test_loop_workflows_map_the_heartbeat_secret(workflow: str, entrypoint: str) -> None:
+    spec = yaml.safe_load((ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8"))
+    steps = [step for job in spec["jobs"].values() for step in job.get("steps", [])]
+    run_step = next(s for s in steps if str(s.get("run", "")).endswith(entrypoint))
+
+    assert run_step.get("env", {}).get("HEARTBEAT_URL") == "${{ secrets.HEARTBEAT_URL }}"
+
+
+def test_env_example_ships_a_heartbeat_placeholder() -> None:
+    lines = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    values = [line.split("=", 1)[1] for line in lines if line.startswith("HEARTBEAT_URL=")]
+
+    assert values == ["https://hc-ping.com/your-check-uuid"]
