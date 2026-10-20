@@ -401,6 +401,30 @@ class TestMainBacktest:
         # Pojedynczy błąd per-symbol nie wywala harnessa.
         assert main_backtest.main(settings) == 0
 
+    def test_backtest_builds_no_paid_adapter(
+        self, settings, mock_external_clients, mocker
+    ):
+        # DOC-21: „no retroactive LLM replays” — backtest odtwarza zebrane cechy
+        # XGBoostem i nigdy nie pyta LLM o historię, której model mógł się nauczyć.
+        import anthropic
+        import openai
+
+        from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
+
+        paid_clients = [
+            mocker.patch.object(client, "__init__", side_effect=AssertionError(client.__name__))
+            for client in (openai.OpenAI, anthropic.Anthropic, AlphaVantageClient)
+        ]
+        fake_uc = MagicMock()
+        fake_uc.run.side_effect = RuntimeError("bez danych")
+
+        main_backtest.build_use_case(settings)
+        mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
+        assert main_backtest.main(settings) == 0
+
+        for client in paid_clients:
+            client.assert_not_called()
+
 
 class TestBuildMacroRiskUseCase:
     """Factory MonitorMacroRisk — DI Risk Watch w main_agent.py."""

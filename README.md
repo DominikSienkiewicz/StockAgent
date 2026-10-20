@@ -92,6 +92,32 @@ Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero 
 Application (ports + use cases + LangGraph) → Infrastructure (adapters for API / DB / LLM /
 ML / email). The dependency arrow flows one way.
 
+## Pre-registered parameters
+
+The values that decide when the agent predicts and how a prediction is scored were fixed in
+the repository before the track record that judges them. Each row names the commit that set
+the value. The `config.toml` values are part of `config_hash`, so changing one starts a new
+`recipe_version` segment instead of passing for a change in accuracy; the domain constants
+change only through a commit to the file named.
+
+| Parameter | Value | Where | Commit | Date |
+|---|---|---|---|---|
+| Volatility gate, stocks and ETFs (`volatility_threshold`) | `0.02` | `config.toml` | `3e4a37f` | 2026-05-13 |
+| Council gate (`council_volatility_threshold`) | `0.03` | `config.toml` | `4014008` | 2026-05-19 |
+| Volatility gate, crypto (`crypto_volatility_threshold`) | `0.05` | `config.toml` | `c51954a` | 2026-06-01 |
+| Minimum age before a prediction is scored (`reflection_min_age_hours`) | 6 h | `config.toml` | `48378c4` | 2026-06-05 |
+| Hit rate that counts as good in position sizing (`GOOD_HIT_RATE_THRESHOLD`) | `0.55` | `src/domain/sizing.py` | `3e6a493` | 2026-06-21 |
+| SIDEWAYS band, stocks and ETFs (`SIDEWAYS_TOLERANCE`) | ±0.5% | `src/domain/prediction.py` | `3e4a37f` | 2026-05-13 |
+| SIDEWAYS band, crypto (`CRYPTO_SIDEWAYS_TOLERANCE`) | ±2.5% | `src/domain/prediction.py` | `4785eab` | 2026-07-10 |
+
+**No retroactive LLM replays.** The LLM is never backtested on history: it has read the news
+and prices of the days it would be "predicting", so a replay measures memory, not forecasting,
+and every replayed day costs paid calls. `main_backtest.py` replays only the stored feature
+rows through XGBoost walk-forward folds, and
+`tests/test_main_entrypoints.py::TestMainBacktest::test_backtest_builds_no_paid_adapter` fails
+if it ever builds an OpenAI, Anthropic or Alpha Vantage client. The LLM's record is the live
+one: predictions written before the outcome and scored once it is known.
+
 ## Disclaimer
 
 Educational / proof-of-concept project demonstrating expertise in Agentic AI, Hexagonal
