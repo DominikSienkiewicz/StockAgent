@@ -110,6 +110,15 @@ change only through a commit to the file named.
 | SIDEWAYS band, stocks and ETFs (`SIDEWAYS_TOLERANCE`) | ±0.5% | `src/domain/prediction.py` | `3e4a37f` | 2026-05-13 |
 | SIDEWAYS band, crypto (`CRYPTO_SIDEWAYS_TOLERANCE`) | ±2.5% | `src/domain/prediction.py` | `4785eab` | 2026-07-10 |
 
+The scoring rules themselves are machine-readable in
+[`evaluation_protocol.toml`](evaluation_protocol.toml): the horizon, the hit rule with its
+SIDEWAYS bands and directional dead zone, the baselines, the primary metrics, α, the window,
+the adoption date and how the universe was selected. Its sha256 is part of every prediction's
+recipe and of every attestation commitment, and the public scorecard prints it, so a metric
+cannot be chosen after the results are in; a test fails when the file and the domain constants
+disagree. A new protocol is a new version with its own hash, and results scored under the old
+one stay in their own segment.
+
 **No retroactive LLM replays.** The LLM is never backtested on history: it has read the news
 and prices of the days it would be "predicting", so a replay measures memory, not forecasting,
 and every replayed day costs paid calls. `main_backtest.py` replays only the stored feature

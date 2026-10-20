@@ -105,7 +105,7 @@ from src.application.use_cases.portfolio_risk import (
     PortfolioRiskUseCase,
     PositionRisk,
 )
-from src.config import Settings
+from src.config import Settings, load_evaluation_protocol
 from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
 from src.domain.benchmark import BenchmarkComparison
@@ -813,6 +813,7 @@ def _publish_public_scorecard(
             window_days=settings.track_record_days,
             costs=costs,
             benchmark=benchmark,
+            protocol=load_evaluation_protocol(),
         )
         if page:
             publisher.publish(page)
@@ -1107,6 +1108,7 @@ def build_prediction_recipe(settings: Settings, run_context: RunContext) -> Pred
         universe_version=universe_version(settings.symbols, settings.crypto_symbols),
         git_sha=run_context.git_sha,
         run_id=run_context.run_id,
+        protocol_sha256=load_evaluation_protocol().sha256,
     )
 
 
@@ -1366,11 +1368,13 @@ def build_use_case(
         regime_tagging_enabled=_regime_tagging_enabled(settings),
         receipts_enabled=settings.receipts_enabled,
         feature_set_version_enabled=settings.feature_set_version_enabled,
-        # WIA-20: przepis liczymy tylko, gdy ktoś go zapisze (kwit v2 albo
-        # kolumna `recipe_version`); obie flagi off → zero nowych odczytów plików.
+        # WIA-20: przepis liczymy tylko, gdy ktoś go zapisze (kwit v2, kolumna
+        # `recipe_version` albo commitment v2 — WIA-41); flagi off → zero odczytów plików.
         recipe=(
             build_prediction_recipe(settings, run_context or RunContext())
-            if settings.receipts_enabled or settings.recipe_version_enabled
+            if settings.receipts_enabled
+            or settings.recipe_version_enabled
+            or settings.attestation_enabled
             else None
         ),
         recipe_version_enabled=settings.recipe_version_enabled,

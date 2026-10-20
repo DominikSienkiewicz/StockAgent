@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import tomllib
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -27,6 +28,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from src.domain.evaluation_protocol import EvaluationProtocol, parse_evaluation_protocol
 from src.domain.experiment import Experiment, ExperimentMetric, validate_experiments
 from src.domain.finops import (
     AV_DAILY_REQUESTS_PER_KEY,
@@ -1176,3 +1178,17 @@ class Settings(BaseSettings):
         bo mypy nie zna mechanizmu source loading w BaseSettings.
         """
         return cls()  # type: ignore[call-arg]
+
+
+# WIA-42: protokół ewaluacji w roocie repo. Hash liczony z BAJTÓW pliku (razem
+# z komentarzami) — każda zmiana pliku to nowy protokół, bez dyskusji o tym,
+# czy zmiana „była merytoryczna”.
+EVALUATION_PROTOCOL_PATH = _REPO_ROOT / "evaluation_protocol.toml"
+
+
+def load_evaluation_protocol(path: Path = EVALUATION_PROTOCOL_PATH) -> EvaluationProtocol:
+    """Protokół ewaluacji z pliku razem z sha256 jego bajtów (przepis, commitment v2)."""
+    raw = path.read_bytes()
+    return parse_evaluation_protocol(
+        tomllib.loads(raw.decode("utf-8")), hashlib.sha256(raw).hexdigest()
+    )

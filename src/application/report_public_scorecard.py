@@ -27,6 +27,7 @@ from __future__ import annotations
 import html as _html
 from collections.abc import Sequence
 from datetime import date, timedelta
+from decimal import Decimal
 
 from src.application.report_evidence import (
     NO_BENCHMARK_PL,
@@ -56,12 +57,30 @@ from src.domain.calibration_curve import (
     reliability_curve,
 )
 from src.domain.equity_curve import EquityCurve
+from src.domain.evaluation_protocol import EvaluationProtocol
 from src.domain.track_record import HitRateEvidence
 
 # Parametry div-sparkline (technika z report_track_record._render_sparkline_html):
 # słupki jako <div> o wysokości w px, skalowane do zakresu serii.
 _SPARKLINE_MAX_PX = 40
 _EQUITY_BARS = 40
+
+# WIA-42: etykiety identyfikatorów z `evaluation_protocol.toml` na stronie
+# publicznej. Indeks nazywa się „S&P 500”, nie tickerem — żaden symbol
+# watchlisty nie trafia na stronę.
+PROTOCOL_LABELS: dict[str, str] = {
+    "always_bullish": "zawsze wzrost",
+    "always_bearish": "zawsze spadek",
+    "always_sideways": "zawsze bez ruchu",
+    "basket_buy_and_hold": "koszyk kup-i-trzymaj",
+    "sp500_buy_and_hold": f"{PUBLIC_BENCHMARK_LABEL} kup-i-trzymaj",
+    "directional_hit_rate": "hit-rate kierunkowy",
+    "brier_score": "Brier score",
+    "brier_skill_score": "Brier Skill Score",
+    "expected_calibration_error": "ECE",
+    "market_relative_hit_rate": "hit-rate względem rynku",
+    "paper_pnl_net": "paper-PnL po kosztach",
+}
 
 
 def render_public_scorecard_html(
@@ -73,6 +92,7 @@ def render_public_scorecard_html(
     window_days: int | None = None,
     costs: PaperCosts | None = None,
     benchmark: BenchmarkComparison | None = None,
+    protocol: EvaluationProtocol | None = None,
 ) -> str:
     """Renderuje publiczny scorecard kalibracji jako samodzielną stronę HTML.
 
@@ -94,6 +114,9 @@ def render_public_scorecard_html(
         drugą linię (koszyk). Koszyk to agregat, a indeks nazywa się „S&P 500”
         zamiast tickera — żaden symbol nie trafia na stronę. None = „Na tle
         rynku: brak danych benchmarku”.
+      - `protocol` — protokół ewaluacji z hashem (WIA-42), renderowany w sekcji
+        metodologii; ten sam sha256 niesie każdy commitment v2. None = sekcja
+        bez protokołu, jak przed WIA-42.
 
     Samosupresja: brak jakichkolwiek danych → `""` (nie publikujemy pustej
     strony). Wszystko, co idzie do outputu, jest escapowane.
@@ -112,7 +135,7 @@ def render_public_scorecard_html(
         _render_headline(predictions, generated_on, window_days),
         _render_calibration_section(buckets, samples),
         _render_equity_section(equity, costs, benchmark),
-        _render_methodology_section(),
+        _render_methodology_section(protocol),
     ]
     body = "".join(section for section in sections if section)
     return _wrap_page(body, str(generated_on))
@@ -345,13 +368,15 @@ def _render_equity_sparkline(
     return f"<table class='sparkline'>{rows}</table>"
 
 
-def _render_methodology_section() -> str:
+def _render_methodology_section(protocol: EvaluationProtocol | None = None) -> str:
     """Sekcja „Metodologia" — uczciwe, polskie copy o okresach słabości.
 
     Publicznie żenujący hit-rate w słabym okresie to FEATURE, nie bug:
     weryfikowalna pokora buduje zaufanie mocniej niż obietnice. Copy mówi
-    wprost, że pokazujemy też własne pomyłki.
+    wprost, że pokazujemy też własne pomyłki. WIA-42: z protokołem sekcja
+    kończy się jego regułami i hashem.
     """
+    protocol_block = "" if protocol is None else _render_protocol(protocol)
     return (
         "<section class='block methodology'>"
         "<h2>Metodologia</h2>"
@@ -383,9 +408,56 @@ def _render_methodology_section() -> str:
         "(long-bias) na takim uniwersum nie jest umiejętnością: dlatego obok "
         "trafności stoi naiwna strategia „zawsze wzrost” policzona na tych "
         "samych predykcjach.</p>"
+        f"{protocol_block}"
         "<p class='fineprint'>Wynik paper-PnL jest symulacją bez realnych "
         "transakcji i nie stanowi rekomendacji inwestycyjnej.</p>"
         "</section>"
+    )
+
+
+def _render_protocol(protocol: EvaluationProtocol) -> str:
+    """WIA-42: reguły protokołu ewaluacji i sha256 pliku, z którego pochodzą."""
+
+    def labels(names: Sequence[str]) -> str:
+        return ", ".join(PROTOCOL_LABELS.get(name, name) for name in names)
+
+    def band(fraction: Decimal) -> str:
+        return DOT_NUMBERS.pct(float(fraction), decimals=1)
+
+    sideways = (
+        "wchodzą do mianownika hit-rate"
+        if protocol.sideways_in_hit_rate
+        else "nie wchodzą do mianownika hit-rate"
+    )
+    selection = (
+        "ręcznie" if protocol.universe_selection == "manual" else protocol.universe_selection
+    )
+    items = [
+        f"Horyzont: {protocol.horizon_hours} h.",
+        "Trafność: wzrost, gdy cena po horyzoncie jest wyższa niż przy prognozie, "
+        "spadek, gdy niższa (martwa strefa "
+        f"{band(protocol.directional_dead_zone)}); bez ruchu, gdy zmiana mieści się "
+        f"w ±{band(protocol.sideways_band)} (krypto ±{band(protocol.crypto_sideways_band)}). "
+        f"Prognozy „bez ruchu” {sideways}.",
+        f"Naiwne strategie: {labels(protocol.naive_baselines)}; "
+        f"benchmarki: {labels(protocol.benchmarks)}.",
+        f"Metryki główne: {labels(protocol.primary_metrics)}; "
+        f"pomocnicze: {labels(protocol.secondary_metrics)}.",
+        f"Istotność: α = {DOT_NUMBERS.number(protocol.alpha, decimals=2)}, "
+        f"FDR q = {DOT_NUMBERS.number(protocol.fdr_q, decimals=2)}.",
+        f"Okno: {protocol.window_days} dni.",
+        f"Uniwersum: wybrane {selection} ({protocol.universe_selected}); "
+        "wersja listy jest w przepisie każdej predykcji.",
+    ]
+    rows = "".join(f"<li>{_html.escape(item)}</li>" for item in items)
+    return (
+        "<h3>Protokół ewaluacji</h3>"
+        f"<p>Wersja {protocol.version}, przyjęta "
+        f"{_html.escape(protocol.adopted_on.isoformat())}. Reguły zamrożono przed "
+        "wynikami, które oceniają; hash pliku protokołu niesie każdy commitment "
+        "predykcji, więc metryk nie da się dobrać po fakcie.</p>"
+        f"<ul>{rows}</ul>"
+        f"<p class='fineprint'>sha256 protokołu: <code>{_html.escape(protocol.sha256)}</code></p>"
     )
 
 

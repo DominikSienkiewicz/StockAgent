@@ -433,3 +433,60 @@ def test_benchmark_never_leaks_the_index_ticker_or_basket_symbols() -> None:
     assert "S&amp;P 500" in html
     assert "IVV" not in html
     assert "NVDA" not in html
+
+
+class TestEvaluationProtocolSection:
+    """WIA-42: sekcja metodologii pokazuje protokół ewaluacji z jego hashem —
+    ten sam sha256, który niesie każdy commitment v2."""
+
+    @staticmethod
+    def _protocol() -> object:
+        from src.config import load_evaluation_protocol
+
+        return load_evaluation_protocol()
+
+    def test_methodology_renders_the_protocol_and_its_hash(self) -> None:
+        protocol = self._protocol()
+
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, [(0.8, True)], protocol=protocol
+        )
+
+        assert "Protokół ewaluacji" in html
+        assert protocol.sha256 in html
+        assert "12 h" in html
+        # Strona publiczna pisze liczby z kropką (DOT_NUMBERS, MAIL-58).
+        assert "±0.5%" in html and "±2.5%" in html
+        assert "α = 0.05" in html
+
+    def test_without_a_protocol_the_methodology_is_unchanged(self) -> None:
+        resolved = [_resolved("AAA", "BULLISH", True)]
+
+        html = render_public_scorecard_html(resolved, None, [(0.8, True)])
+
+        assert "Protokół ewaluacji" not in html
+
+    def test_protocol_section_names_no_watchlist_symbol(self) -> None:
+        import tomllib
+        from pathlib import Path
+
+        config = tomllib.loads(
+            (Path(__file__).parents[2] / "config.toml").read_text(encoding="utf-8")
+        )
+        protocol = self._protocol()
+
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, [(0.8, True)], protocol=protocol
+        )
+        section = html[html.index("Protokół ewaluacji"):]
+
+        # Jednoliterowy ticker („S”) koliduje z nazwą indeksu „S&P 500”, którą strona
+        # podaje celowo zamiast tickera IVV.
+        watchlist = {
+            symbol
+            for symbol in (*config["symbols"], *config["crypto_symbols"], *config["symbols_etf"])
+            if len(symbol) > 1
+        }
+        leaked = {s for s in watchlist if re.search(rf"\b{re.escape(s)}\b", section)}
+        assert leaked == set()
+        assert "@" not in section

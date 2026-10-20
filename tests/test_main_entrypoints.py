@@ -3240,6 +3240,23 @@ class TestPredictionRecipeWiring:
         assert deps.recipe.git_sha == "abc"
         assert deps.recipe_version_enabled is False
 
+    def test_attestation_on_builds_the_recipe_for_the_commitment(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # WIA-41/42: commitment v2 wiąże `recipe_version` i hash protokołu, więc
+        # przepis powstaje także wtedy, gdy kwit i kolumna przepisu są wyłączone.
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.attestation_enabled = True
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_settled_moves.return_value = []
+        repo.attestation_columns_available.return_value = True
+
+        main_agent.build_use_case(settings, repository=repo)
+
+        deps = use_case_cls.call_args.args[0]
+        assert deps.recipe is not None
+        assert len(deps.recipe.protocol_sha256) == 64
+
     def test_column_flag_reaches_graph_deps_with_a_recipe(
         self, settings, mock_external_clients, mocker
     ) -> None:

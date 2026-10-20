@@ -1201,6 +1201,8 @@ def _seal_commitment(
         council_recommendation=None if council is None else council.final_recommendation,
         council_consensus_strength=None if council is None else council.consensus_strength,
         recipe_version=None if recipe is None else recipe.version,
+        # WIA-42: hash protokołu ewaluacji, którym ta predykcja zostanie oceniona.
+        protocol_sha256=None if recipe is None else recipe.protocol_sha256 or None,
     )
     # WIA-70: hash liczony z tych samych bajtów, które zapisujemy i ujawnimy dosłownie.
     plaintext = canonicalize(payload, schema_version=ATTESTATION_SCHEMA_VERSION)

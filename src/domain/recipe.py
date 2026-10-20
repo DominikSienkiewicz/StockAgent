@@ -43,6 +43,9 @@ class PredictionRecipe:
         model_version: "cold_start" albo sha256 pliku wag XGBoost.
         universe_version: wersja uniwersum symboli (`universe_version`, WIA-48).
         git_sha, run_id: commit i przebieg (audyt, poza `version`).
+        protocol_sha256: sha256 pliku `evaluation_protocol.toml` (WIA-42) —
+            zmiana protokołu to nowa wersja przepisu. Pusty = przepis sprzed
+            WIA-42 (pole z domyślną wartością, żeby stare konstrukcje działały).
     """
 
     llm_provider: str
@@ -56,6 +59,7 @@ class PredictionRecipe:
     universe_version: str
     git_sha: str
     run_id: str
+    protocol_sha256: str = ""
 
     @cached_property
     def version(self) -> str:

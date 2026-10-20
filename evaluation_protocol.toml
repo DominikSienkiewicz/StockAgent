@@ -1,0 +1,53 @@
+# Protokół ewaluacji StockAgent (WIA-42) — reguły, którymi liczymy track record.
+#
+# Zamrożony PRZED wynikami, które ocenia. sha256 tego pliku (bajt w bajt, razem
+# z komentarzami) wchodzi do przepisu predykcji (`protocol_sha256`, więc też do
+# `recipe_version`) i do każdego commitmentu v2 — dowód, że metryki nie wybrano
+# po zobaczeniu wyników (HARKing). Zmiana czegokolwiek = nowa `version` i nowa
+# `adopted_on`; predykcje sprzed zmiany liczymy protokołem, którego hash niosą.
+# Zgodność ze stałymi domeny pilnuje tests/test_evaluation_protocol.py.
+
+version = 1
+# Data przyjęcia tej wersji protokołu (data odcięcia: od niej commitmenty niosą jej hash).
+adopted_on = 2026-10-20
+
+[horizon]
+# Cel ceny na 12 h (`target_price_12h`, `actual_price_after_12h`, etykieta modelu ML).
+hours = 12
+
+[hit_rule]
+# BULLISH trafiona, gdy cena po horyzoncie > cena przy predykcji; BEARISH, gdy <.
+# Martwa strefa kierunku = 0: zmiana dokładnie 0 to pudło BULLISH i BEARISH.
+directional_dead_zone = "0"
+# SIDEWAYS trafiona, gdy |zmiana| / cena przy predykcji <= pasmo.
+sideways_band = "0.005"
+crypto_sideways_band = "0.025"
+# SIDEWAYS nie stawia zakładu na kierunek — poza mianownikiem hit-rate kierunkowego.
+sideways_in_hit_rate = false
+
+[baselines]
+# Naiwne strategie liczone na tych samych predykcjach.
+naive = ["always_bullish", "always_bearish", "always_sideways"]
+# Benchmarki krzywej paper-PnL z tym samym kosztem obrotu.
+benchmarks = ["basket_buy_and_hold", "sp500_buy_and_hold"]
+
+[metrics]
+primary = ["directional_hit_rate", "brier_score", "brier_skill_score"]
+secondary = ["expected_calibration_error", "market_relative_hit_rate", "paper_pnl_net"]
+
+[significance]
+# Test dwumianowy hit-rate kierunkowego względem lepszej z naiwnych strategii
+# kierunkowych, na efektywnej liczności n_eff; FDR dla segmentów.
+alpha = 0.05
+fdr_q = 0.10
+
+[window]
+# Okno track recordu w dniach (`track_record_days` w config.toml).
+track_record_days = 30
+
+[universe]
+# Lista symboli żyje w config.toml; każda predykcja niesie jej hash
+# (`universe_version` w przepisie), więc zmiana listy to nowy segment.
+source = "config.toml: symbols + crypto_symbols"
+selection = "manual"
+selected = "2026-06"
