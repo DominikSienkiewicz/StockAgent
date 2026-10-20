@@ -3,7 +3,7 @@
 Bez failovera awaria dostawcy po retry kończy się neutralnym fallbackiem grafu
 (SIDEWAYS / 0.5) dla każdego symbolu za bramką: cykl płaci za newsy i embeddingi,
 a predykcji nie ma. Kompozyt (wzorem `CascadingLLMAdapter`) przełącza na zapasowego
-tylko po wyjątku głównego — retry i alerty kwot robi już adapter głównego.
+tylko po awarii dostawcy głównego — retry i alerty kwot robi już adapter głównego.
 """
 
 from __future__ import annotations
@@ -11,29 +11,44 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import anthropic
+import openai
+
 from src.application.ports import LLM_FAILOVER_MODEL_KEY, LLM_FAILOVER_PROVIDER_KEY, LLMPort
 
 logger = logging.getLogger(__name__)
 
 _RATE_LIMITED = 429
+_SERVER_ERROR = 500
+# Timeout i błąd połączenia obu SDK (`APITimeoutError` dziedziczy po
+# `APIConnectionError`) oraz wbudowane — tak kończy się request, który nie dostał
+# odpowiedzi dostawcy.
+_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+    anthropic.APIConnectionError,
+    openai.APIConnectionError,
+    TimeoutError,
+    ConnectionError,
+)
 
 
 def fails_over(exc: Exception) -> bool:
-    """Czy błąd głównego uzasadnia request u zapasowego.
+    """Czy błąd głównego to awaria dostawcy, która uzasadnia request u zapasowego.
 
-    Błąd klienta 4xx poza 429 (zły prompt, zły klucz, brak modelu) nie przełącza:
-    drugi dostawca dostałby ten sam wadliwy request albo maskowałby błąd konfiguracji.
-    Reszta — 429 i 5xx po retry, timeout, błąd sieci, pusta albo niepoprawna
-    odpowiedź — przełącza. `status_code` mają błędy HTTP obu SDK."""
+    Decyzja właściciela (2026-10-20): przełączają wyłącznie 429, 5xx, timeout i błąd
+    sieci/połączenia — każdy po retry adaptera głównego. Pusta albo zła odpowiedź
+    JSON (`ValueError`) nie przełącza: dostawca odpowiedział, a graf kończy ją
+    neutralnym fallbackiem. Błąd klienta 4xx poza 429 (zły prompt, zły klucz, brak
+    modelu) też nie — drugi dostawca dostałby ten sam wadliwy request albo maskowałby
+    błąd konfiguracji. `status_code` mają błędy HTTP obu SDK."""
     status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and 400 <= status < 500:
-        return status == _RATE_LIMITED
-    return True
+    if isinstance(status, int):
+        return status == _RATE_LIMITED or status >= _SERVER_ERROR
+    return isinstance(exc, _TRANSPORT_ERRORS)
 
 
 class FailoverLLMAdapter(LLMPort):
     """`LLMPort` z zapasowym dostawcą: `secondary` dostaje request wyłącznie po
-    wyjątku `primary`, który `fails_over`.
+    awarii `primary`, którą rozpoznaje `fails_over`.
 
     `provider` / `model` to tożsamość zapasowego — `analyze` dopisuje ją do wyniku
     (`LLM_FAILOVER_*_KEY`), żeby predykcja niosła flagę jakości i faktyczny przepis.

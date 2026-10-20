@@ -1,10 +1,12 @@
 """NIEZ-44: FailoverLLMAdapter — drugi dostawca LLM po wyczerpaniu retry głównego.
 
 Kompozyt dwóch `LLMPort` (wzorem `CascadingLLMAdapter`). Zapasowy jest wołany
-WYŁĄCZNIE, gdy główny rzucił — po swoich własnych retry. Błąd klienta 4xx inny
-niż 429 (zły prompt, zły klucz) nie przełącza: drugi dostawca dostałby ten sam
-zły request. Wynik od zapasowego niesie jego dostawcę i model (klucze
-`LLM_FAILOVER_PROVIDER_KEY` / `LLM_FAILOVER_MODEL_KEY`), żeby graf dopisał flagę
+WYŁĄCZNIE przy awarii dostawcy głównego — 429, 5xx, timeout, błąd sieci albo
+połączenia — po jego własnych retry (decyzja właściciela 2026-10-20). Pusta albo
+zła odpowiedź JSON głównego nie przełącza: kończy się neutralnym fallbackiem grafu
+jak dotąd. Błąd klienta 4xx inny niż 429 (zły prompt, zły klucz) też nie
+przełącza. Wynik od zapasowego niesie jego dostawcę i model
+(`LLM_FAILOVER_PROVIDER_KEY` / `LLM_FAILOVER_MODEL_KEY`), żeby graf dopisał flagę
 jakości `llm_failover` i faktyczny przepis predykcji.
 """
 
@@ -13,6 +15,9 @@ from __future__ import annotations
 import logging
 from unittest.mock import Mock
 
+import anthropic
+import httpx
+import openai
 import pytest
 
 from src.application.ports import (
@@ -22,6 +27,8 @@ from src.application.ports import (
 )
 from src.infrastructure.llm.failover import FailoverLLMAdapter
 
+_REQUEST = httpx.Request("POST", "https://api.example.test/v1/messages")
+
 
 class _StatusError(Exception):
     """Kształt błędu HTTP obu SDK (`APIStatusError.status_code`)."""
@@ -29,6 +36,12 @@ class _StatusError(Exception):
     def __init__(self, status_code: int) -> None:
         super().__init__(f"HTTP {status_code}")
         self.status_code = status_code
+
+
+def _sdk_status_error(sdk, status: int) -> Exception:
+    return sdk.InternalServerError(
+        f"HTTP {status}", response=httpx.Response(status, request=_REQUEST), body=None
+    )
 
 
 @pytest.fixture
@@ -56,7 +69,8 @@ def test_is_an_llm_port(adapter: FailoverLLMAdapter) -> None:
 def test_secondary_used_only_after_primary_raises(
     adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock
 ) -> None:
-    primary.analyze.side_effect = RuntimeError("overloaded")
+    # 529 Overloaded — Anthropic po wyczerpaniu własnych retry.
+    primary.analyze.side_effect = _StatusError(529)
 
     result = adapter.analyze("prompt")
 
@@ -77,11 +91,60 @@ def test_primary_success_never_touches_the_secondary(
     assert result == {"trend_direction": "BEARISH"}
 
 
-@pytest.mark.parametrize("status", [429, 500, 529])
+@pytest.mark.parametrize("status", [429, 500, 503, 529])
 def test_rate_limit_and_server_errors_fail_over(
     adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock, status: int
 ) -> None:
     primary.analyze.side_effect = _StatusError(status)
+
+    adapter.analyze("prompt")
+
+    secondary.analyze.assert_called_once()
+
+
+@pytest.mark.parametrize("sdk", [anthropic, openai], ids=["anthropic", "openai"])
+def test_sdk_503_fails_over(
+    adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock, sdk
+) -> None:
+    primary.analyze.side_effect = _sdk_status_error(sdk, 503)
+
+    adapter.analyze("prompt")
+
+    secondary.analyze.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        anthropic.APITimeoutError(request=_REQUEST),
+        openai.APITimeoutError(request=_REQUEST),
+        TimeoutError("read timed out"),
+    ],
+    ids=["anthropic", "openai", "builtin"],
+)
+def test_timeouts_fail_over(
+    adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock, error: Exception
+) -> None:
+    primary.analyze.side_effect = error
+
+    adapter.analyze("prompt")
+
+    secondary.analyze.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        anthropic.APIConnectionError(request=_REQUEST),
+        openai.APIConnectionError(request=_REQUEST),
+        ConnectionResetError("connection reset by peer"),
+    ],
+    ids=["anthropic", "openai", "builtin"],
+)
+def test_connection_errors_fail_over(
+    adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock, error: Exception
+) -> None:
+    primary.analyze.side_effect = error
 
     adapter.analyze("prompt")
 
@@ -100,11 +163,43 @@ def test_client_errors_other_than_429_do_not_fail_over(
     secondary.analyze.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError("Anthropic returned invalid JSON: 'I cannot answer that.'"),
+        ValueError("OpenAI returned empty content for analyze() (finish_reason='stop')."),
+    ],
+    ids=["invalid_json", "empty_content"],
+)
+def test_bad_answer_does_not_fail_over(
+    adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock, error: Exception
+) -> None:
+    # Decyzja właściciela: dostawca odpowiedział — zła treść kończy się neutralnym
+    # fallbackiem grafu, a nie drugim płatnym requestem.
+    primary.analyze.side_effect = error
+
+    with pytest.raises(ValueError):
+        adapter.analyze("prompt")
+
+    secondary.analyze.assert_not_called()
+
+
+def test_unclassified_error_does_not_fail_over(
+    adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock
+) -> None:
+    primary.analyze.side_effect = RuntimeError("unexpected")
+
+    with pytest.raises(RuntimeError):
+        adapter.analyze("prompt")
+
+    secondary.analyze.assert_not_called()
+
+
 def test_secondary_failure_propagates(
     adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock
 ) -> None:
     # Graf degraduje wtedy do neutralnego fallbacku z flagą `llm_analysis_failed`.
-    primary.analyze.side_effect = RuntimeError("overloaded")
+    primary.analyze.side_effect = _StatusError(503)
     secondary.analyze.side_effect = TimeoutError("fallback timed out")
 
     with pytest.raises(TimeoutError):
@@ -114,10 +209,21 @@ def test_secondary_failure_propagates(
 def test_mistake_diagnosis_fails_over_too(
     adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock
 ) -> None:
-    primary.analyze_mistake.side_effect = RuntimeError("overloaded")
+    primary.analyze_mistake.side_effect = _StatusError(503)
 
     assert adapter.analyze_mistake("prompt") == "insight from the fallback"
     secondary.analyze_mistake.assert_called_once_with("prompt")
+
+
+def test_mistake_diagnosis_with_a_bad_answer_stays_on_the_primary(
+    adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock
+) -> None:
+    primary.analyze_mistake.side_effect = ValueError("empty content")
+
+    with pytest.raises(ValueError):
+        adapter.analyze_mistake("prompt")
+
+    secondary.analyze_mistake.assert_not_called()
 
 
 def test_mistake_diagnosis_success_stays_on_the_primary(
@@ -132,11 +238,11 @@ def test_mistake_diagnosis_success_stays_on_the_primary(
 def test_failover_is_logged_with_the_error_type_only(
     adapter: FailoverLLMAdapter, primary: Mock, caplog: pytest.LogCaptureFixture
 ) -> None:
-    primary.analyze.side_effect = RuntimeError("overloaded at https://api.example.test?key=x")
+    primary.analyze.side_effect = TimeoutError("timed out at https://api.example.test?key=x")
 
     with caplog.at_level(logging.WARNING, logger="src.infrastructure.llm.failover"):
         adapter.analyze("prompt")
 
-    assert "RuntimeError" in caplog.text
+    assert "TimeoutError" in caplog.text
     assert "openai" in caplog.text and "gpt-4o" in caplog.text
     assert "key=x" not in caplog.text

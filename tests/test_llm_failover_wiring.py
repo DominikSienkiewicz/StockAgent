@@ -48,9 +48,10 @@ def settings() -> Settings:
 
 @pytest.fixture
 def failing_primary(mocker) -> Mock:
+    # Awaria dostawcy po retry (decyzja: failover tylko przy 429/5xx/timeout/sieci).
     primary = Mock(spec=LLMPort)
-    primary.analyze.side_effect = RuntimeError("overloaded")
-    primary.analyze_mistake.side_effect = RuntimeError("overloaded")
+    primary.analyze.side_effect = TimeoutError("read timed out")
+    primary.analyze_mistake.side_effect = TimeoutError("read timed out")
     mocker.patch("src.infrastructure.llm.anthropic_client.AnthropicAdapter", return_value=primary)
     return primary
 
