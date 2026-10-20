@@ -529,6 +529,42 @@ class TestErrorHandling:
         with pytest.raises(requests.HTTPError):
             client.articles_for("AAPL")
 
+    def test_mid_fetch_failure_caches_partial_feed_and_is_not_refetched(
+        self, mocker, caplog
+    ):
+        # DAT-08: jeden padnięty batch nie może wymuszać pełnego ponownego
+        # pobrania przy każdym kolejnym symbolu — częściowy feed zostaje w cache.
+        import logging
+
+        mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch(
+            "requests.Session.get",
+            side_effect=[
+                _ok_response(_SAMPLE_PAYLOAD),                       # AAPL — OK
+                requests.ConnectionError(
+                    "Max retries exceeded with url: /query?apikey=av-secret-key"
+                ),                                                   # AMD — sieć padła
+            ],
+        )
+        client = AlphaVantageClient(
+            api_keys=["av-secret-key"], symbols=["AAPL", "AMD", "NVDA"]
+        )
+
+        # Wariant zgodny wstecz: pierwszy caller nadal dostaje wyjątek.
+        with caplog.at_level(logging.WARNING), pytest.raises(requests.ConnectionError):
+            client.articles_for("AAPL")
+        aapl = client.articles_for("AAPL")
+        nvda = client.sentiment_for("NVDA")
+
+        assert mock_get.call_count == 2
+        assert [a["title"] for a in aapl] == ["Apple Q2 beats expectations"]
+        assert nvda["news_volume_24h"] == 0
+        assert client.degraded_reason == "av_fetch_error"
+        # Log niesie tylko typ wyjątku — treść błędu sieci bywa z URL-em i kluczem.
+        assert "ConnectionError" in caplog.text
+        assert "Max retries" not in caplog.text
+        assert "av-secret-key" not in caplog.text
+
 
 class TestCryptoPrefix:
     """AV NEWS_SENTIMENT przyjmuje krypto tickery z prefiksem CRYPTO:

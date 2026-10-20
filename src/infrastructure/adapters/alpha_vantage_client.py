@@ -15,6 +15,8 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import requests
+
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.infrastructure.adapters._alpha_vantage_common import (
@@ -133,6 +135,7 @@ class AlphaVantageClient:
         # DAT-06: ostatni soft-limit przed wyczerpaniem był minutowy (`Note`) —
         # wtedy alert nie może mówić o dziennym limicie 25 zapytań.
         self._exhausted_by_frequency_limit = False
+        self._keys_exhausted_reported = False
         self._session = build_session()
         # Serializuje leniwy fetch feedu — bez tego współbieżni callerzy (równoległe
         # symbole) startują N duplikatów cold-startu, zjadając dzienny limit AV.
@@ -143,7 +146,8 @@ class AlphaVantageClient:
         """Niesie informację o degradacji feedu w bieżącym cyklu.
 
         Wartości: `"av_keys_exhausted"` gdy rotacja wyczerpała wszystkie klucze
-        i co najmniej jeden batch nie został pobrany. `None` gdy wszystko OK.
+        i co najmniej jeden batch nie został pobrany, `"av_fetch_error"` gdy błąd
+        sieci/HTTP przerwał fetch (feed częściowy, DAT-08). `None` gdy wszystko OK.
         Konsumowane przez `AlphaVantageSentimentAdapter` → graph
         → `prediction_logs.data_quality_flags`.
         """
@@ -204,7 +208,11 @@ class AlphaVantageClient:
             if idx > 0:
                 time.sleep(INTER_REQUEST_DELAY_SECONDS)
 
-            payload = self._fetch_batch_with_rotation(batch)
+            try:
+                payload = self._fetch_batch_with_rotation(batch)
+            except requests.RequestException as exc:
+                self._cache_partial_feed_after_error(batch, exc, combined)
+                raise
             if payload is None:
                 # Wszystkie klucze wyczerpane — graceful degradation:
                 # zostawiamy częściowy feed z poprzednich batchów.
@@ -233,6 +241,28 @@ class AlphaVantageClient:
                 seen_urls.add(url)
             combined.append(article)
 
+    def _cache_partial_feed_after_error(
+        self,
+        tickers: list[str],
+        exc: requests.RequestException,
+        combined: list[dict[str, Any]],
+    ) -> None:
+        """DAT-08: błąd sieci/HTTP w środku fetchu zostawia w cache to, co już
+        przyszło. Bez tego `_cached_feed` zostaje None i KAŻDY kolejny symbol
+        startuje pełny fetch od nowa, paląc dzienny limit kluczy. Wołający
+        rzuca wyjątek dalej (kontrakt bez zmian); log niesie tylko typ wyjątku,
+        bo jego treść bywa z URL-em zapytania."""
+        logger.error(
+            "Alpha Vantage NEWS_SENTIMENT request failed for %s (%s) — caching the "
+            "partial feed of %d articles; the rest of the cycle reads it without refetching.",
+            ",".join(tickers),
+            type(exc).__name__,
+            len(combined),
+        )
+        self._cached_feed = combined
+        if self._degraded_reason is None:
+            self._degraded_reason = "av_fetch_error"
+
     def _mark_unexpected_payload(
         self, tickers: list[str], payload: dict[str, Any]
     ) -> None:
@@ -253,10 +283,12 @@ class AlphaVantageClient:
 
         Wołane zarówno gdy batch zwrócił None (rotacja wyczerpała klucze
         w trakcie), jak i przy short-circuit kolejnych batchów po wcześniejszym
-        wyczerpaniu. Guard na `_degraded_reason` zapobiega podwójnemu alertowi.
+        wyczerpaniu. Własny guard zapobiega podwójnemu alertowi — guard na
+        `_degraded_reason` wyciszałby CRITICAL po wcześniejszym `av_fetch_error`.
         """
-        if self._degraded_reason is not None:
+        if self._keys_exhausted_reported:
             return
+        self._keys_exhausted_reported = True
         logger.error(
             "All %d Alpha Vantage API keys exhausted — returning partial feed.",
             len(self._api_keys),
