@@ -871,7 +871,11 @@ def build_repository(settings: Settings) -> RepositoryPort:
 
     BEZ-08: bez `db_writes_enabled` owinięte w `ReadOnlyRepository` — lokalny run
     czyta wspólną bazę, ale niczego do niej nie zapisuje."""
-    repository = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    repository = SupabaseRepository(
+        url=settings.supabase_url,
+        key=settings.supabase_key,
+        council_votes_upsert_enabled=settings.council_votes_upsert_enabled,
+    )
     if settings.db_writes_enabled:
         return repository
     return ReadOnlyRepository(repository)

@@ -436,3 +436,9 @@ def test_real_config_toml_ships_the_earnings_cache_off_until_migration() -> None
     """FIN-11: `earnings_cache` powstaje dopiero w migracji 053 (ręczny DB Migrate)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["earnings_cache_enabled"] is False
+
+
+def test_real_config_toml_ships_the_council_votes_upsert_off_until_migration() -> None:
+    """NIEZ-14: upsert głosów wymaga indeksu UNIQUE z migracji 054 (ręczny DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["council_votes_upsert_enabled"] is False

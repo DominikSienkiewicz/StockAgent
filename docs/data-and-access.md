@@ -23,7 +23,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `price_snapshots` | `002`, `013` | Market data: one price per symbol and hour | on, no policies | Fast Loop (every cycle) | Fast Loop, Shock Watch (fallback reference price when the free quote has no fresh daily change, ALR-02), Deadman (database probe), Scorecard (IVV benchmark) |
 | `ml_feature_store` | materialized view, `001` rebuilt in `004`, `012`, `022`, `026`, `027`, `039`, `047`, `050` | Derived training features from `prediction_logs` | not applicable (a materialized view has no RLS; grants only) | Slow Loop and backtest refresh it (`refresh_ml_feature_store`) | Slow Loop, backtest |
 | `fundamentals_cache` | `006` | Market data: Alpha Vantage fundamentals cache | on, no policies | Fast Loop | Fast Loop |
-| `council_votes` | `007` | Model output: one vote per persona and prediction | on, no policies | Fast Loop | Fast Loop (persona weights and track record) |
+| `council_votes` | `007`, `054` (unique vote per persona and prediction) | Model output: one vote per persona and prediction | on, no policies | Fast Loop | Fast Loop (persona weights and track record) |
 | `quota_alerts` | `010` | Operational: API quota exhaustion events | on, no policies | Fast Loop, Slow Loop | Fast Loop (report banner) |
 | `subscribers` | `014` | **Personal data**: recipient email addresses and watchlists | on, no policies | nobody in the app (edited by hand in Supabase) | Fast Loop (`subscriptions_enabled`) |
 | `model_scorecards` | `019`, `028`, `049` | Model output: walk-forward evaluation of each training run | on, no policies | Slow Loop | Fast Loop (report), Deadman (last training run) |

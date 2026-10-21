@@ -1146,6 +1146,34 @@ class TestSaveCouncilVotes:
             assert row["recommendation"] in {"BUY", "SELL", "HOLD"}
             assert 0.0 <= row["confidence"] <= 1.0
 
+    def test_upserts_on_prediction_and_investor_key(self, mock_client: MagicMock) -> None:
+        # NIEZ-14 (migracja 054): re-run w tej samej godzinie trafia w ten sam wiersz
+        # predykcji, więc głosy nadpisują się zamiast dublować wagę w rankingu person.
+        from src.domain.council import InvestorOpinion
+
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", council_votes_upsert_enabled=True
+        )
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": 1}])
+        vote = InvestorOpinion(
+            investor_name="Warren Buffett",
+            recommendation="BUY",
+            confidence=0.9,
+            reasoning="Silna fosa.",
+            key_factors=["moat"],
+        )
+
+        repo.save_council_votes(prediction_id="uuid-pred-1", symbol="AAPL", votes=[vote])
+
+        mock_client.table.assert_any_call("council_votes")
+        upsert = mock_client.table.return_value.upsert
+        rows = upsert.call_args.args[0]
+        assert [(row["prediction_id"], row["investor_name"]) for row in rows] == [
+            ("uuid-pred-1", "Warren Buffett")
+        ]
+        assert upsert.call_args.kwargs == {"on_conflict": "prediction_id,investor_name"}
+        mock_client.table.return_value.insert.assert_not_called()
+
     def test_noop_for_empty_votes(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:

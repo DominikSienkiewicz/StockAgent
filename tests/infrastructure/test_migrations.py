@@ -74,6 +74,7 @@ MIGRATION_FILES = [
     "049_model_scorecards_run_id.sql",
     "050_feature_store_label_horizon.sql",
     "053_earnings_cache.sql",
+    "054_council_votes_unique.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -2359,6 +2360,77 @@ class TestMigration053EarningsCache:
             _set_role(cur, "anon")
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 cur.execute("SELECT 1 FROM earnings_cache LIMIT 1")
+
+
+@pytest.mark.containers
+class TestMigration054CouncilVotesUnique:
+    """NIEZ-14: re-run Fast Loopa w tej samej godzinie dublował głosy rady (goły
+    insert), a każdy duplikat ważył w rankingu person. 054 najpierw usuwa duplikaty
+    (zostaje najwyższe `id`, czyli najnowszy głos), potem zakłada UNIQUE."""
+
+    @staticmethod
+    def _prediction(cur: psycopg2.extensions.cursor, symbol: str) -> str:
+        cur.execute(
+            "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+            "VALUES (%s, '2026-10-20T21:30:00+00:00', 100.0) RETURNING id",
+            (symbol,),
+        )
+        return str(cur.fetchone()[0])
+
+    @staticmethod
+    def _vote(cur: psycopg2.extensions.cursor, prediction_id: str, name: str, rec: str) -> None:
+        cur.execute(
+            "INSERT INTO council_votes "
+            "(prediction_id, symbol, investor_name, recommendation, confidence) "
+            "VALUES (%s, 'CV', %s, %s, 0.7)",
+            (prediction_id, name, rec),
+        )
+
+    def test_council_votes_rejects_duplicate_vote(self, pg_conn) -> None:
+        _apply_migrations(pg_conn)
+
+        with pg_conn.cursor() as cur:
+            prediction_id = self._prediction(cur, "CV_UNIQ")
+            self._vote(cur, prediction_id, "Warren Buffett", "BUY")
+            with pytest.raises(psycopg2.errors.UniqueViolation):
+                self._vote(cur, prediction_id, "Warren Buffett", "SELL")
+            cur.execute(
+                "INSERT INTO council_votes "
+                "(prediction_id, symbol, investor_name, recommendation, confidence) "
+                "VALUES (%s, 'CV', 'Warren Buffett', 'HOLD', 0.5) "
+                "ON CONFLICT (prediction_id, investor_name) DO UPDATE "
+                "SET recommendation = EXCLUDED.recommendation",
+                (prediction_id,),
+            )
+            cur.execute(
+                "SELECT count(*), max(recommendation) FROM council_votes "
+                "WHERE prediction_id = %s",
+                (prediction_id,),
+            )
+            assert cur.fetchone() == (1, "HOLD")
+
+    def test_054_dedupes_then_builds_the_unique_index(self, fresh_pg) -> None:
+        conn = fresh_pg
+        idx = MIGRATION_FILES.index("054_council_votes_unique.sql")
+        with conn.cursor() as cur:
+            for filename in MIGRATION_FILES[:idx]:
+                cur.execute((MIGRATIONS_DIR / filename).read_text())
+            prediction_id = self._prediction(cur, "CV_DUP")
+            self._vote(cur, prediction_id, "Warren Buffett", "BUY")
+            self._vote(cur, prediction_id, "Warren Buffett", "SELL")
+            self._vote(cur, prediction_id, "Michael Burry", "SELL")
+
+            migration = (MIGRATIONS_DIR / "054_council_votes_unique.sql").read_text()
+            cur.execute(migration)
+            cur.execute(migration)
+
+            cur.execute(
+                "SELECT investor_name, recommendation FROM council_votes "
+                "WHERE prediction_id = %s ORDER BY investor_name",
+                (prediction_id,),
+            )
+            assert cur.fetchall() == [("Michael Burry", "SELL"), ("Warren Buffett", "SELL")]
+        assert "idx_council_votes_prediction_investor_uniq" in _indexes(conn, "council_votes")
 
 
 def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:

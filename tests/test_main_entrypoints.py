@@ -4668,6 +4668,19 @@ def test_build_repository_blocks_writes_when_db_writes_disabled(settings, mocker
     assert prediction_id.startswith("dry-run-")
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_build_repository_passes_the_council_votes_upsert_flag(
+    settings, mocker, enabled: bool
+) -> None:
+    # NIEZ-14: upsert głosów rady potrzebuje UNIQUE z migracji 054 — za flagą.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.council_votes_upsert_enabled = enabled
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["council_votes_upsert_enabled"] is enabled
+
+
 def test_build_repository_writes_when_db_writes_enabled(settings, mocker) -> None:
     from src.domain.value_objects import Money
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository

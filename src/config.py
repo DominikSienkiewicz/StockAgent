@@ -138,6 +138,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "model_scorecard_baselines_enabled",
     # ML-24: sam identyfikator przebiegu treningu w karcie; prognoza ta sama.
     "model_scorecard_run_id_enabled",
+
+    # NIEZ-14: upsert zamiast insertu głosów rady — te same głosy, bez duplikatów.
+    "council_votes_upsert_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -638,6 +641,10 @@ class Settings(BaseSettings):
     # (ten sam co w `llm_calls`), próba runu, liczby cyklu, płatne wywołania i stan
     # maila. Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
     cycle_runs_enabled: bool = False
+    # NIEZ-14: głosy rady upsertem po (prediction_id, investor_name) — re-run w tej
+    # samej godzinie nie dubluje ich wagi. Wymaga UNIQUE z migracji 054; do tego
+    # czasu goły insert (upsert bez indeksu PostgREST odrzuca).
+    council_votes_upsert_enabled: bool = False
     # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
     # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
     # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
