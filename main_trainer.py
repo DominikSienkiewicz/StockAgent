@@ -19,6 +19,7 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from main_agent import (
@@ -47,6 +48,7 @@ from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.calibrate_confidence import (
     PAID_LLM_CALLS_PER_RUN as JUDGE_LLM_CALLS,
 )
+from src.application.use_cases.export_evidence import ExportEvidenceUseCase
 from src.application.use_cases.monitor_output_drift import (
     MonitorOutputDriftUseCase,
     RowsReader,
@@ -63,6 +65,7 @@ from src.config import Settings
 from src.domain.finops import slow_loop_paid_budget
 from src.domain.fundamentals_refresh import refresh_budget, select_refresh_batch
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.adapters.age_archive import AgeEncryptedArchive, is_age_recipient
 from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
 from src.infrastructure.adapters.alpha_vantage_earnings import AlphaVantageEarningsAdapter
 from src.infrastructure.adapters.alpha_vantage_fundamentals import (
@@ -96,6 +99,8 @@ RECAP_JOB = "recap"
 JUDGE_JOB = "judge"
 # NIEZ-44: rezerwa przydziału joba na request do zapasowego dostawcy LLM.
 FALLBACK_LLM_CALLS_PER_JOB = 1
+# NIEZ-32: katalog zaszyfrowanej kopii; workflow uploaduje z niego wyłącznie *.age.
+EVIDENCE_BACKUP_DIR = Path("data/backup")
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
@@ -597,6 +602,35 @@ def _run_model_probe(
     _push_critical_alerts(settings, alerts)
 
 
+def _run_evidence_export(
+    settings: Settings, now: datetime | None = None, out_dir: Path = EVIDENCE_BACKUP_DIR
+) -> None:
+    """NIEZ-32: tygodniowa kopia tabel dowodowych, szyfrowana `age` przed zapisem.
+    Bez poprawnego `BACKUP_AGE_RECIPIENT` krok jest pomijany z WARNING-iem —
+    nieszyfrowana kopia nie powstaje nigdy. sha256 artefaktu idzie do logu.
+    Sam odczyt bazy (bez zapisu), więc działa też bez `db_writes_enabled`."""
+    recipient = (settings.backup_age_recipient or "").strip()
+    if not recipient:
+        logger.warning("Evidence export skipped — BACKUP_AGE_RECIPIENT nie ustawiony")
+        return
+    if not is_age_recipient(recipient):
+        logger.warning("Evidence export skipped — BACKUP_AGE_RECIPIENT to nie klucz publiczny age")
+        return
+    try:
+        receipt = ExportEvidenceUseCase(
+            _supabase_repository(settings), AgeEncryptedArchive(recipient, out_dir)
+        ).run(now=now or datetime.now(UTC))
+    except Exception:
+        logger.exception("Evidence export failed — pomijam")
+        return
+    logger.info(
+        "Evidence export — %s sha256=%s (%d B)",
+        receipt.path,
+        receipt.sha256,
+        receipt.size_bytes,
+    )
+
+
 def _run_calibration_judge(
     repository: RepositoryPort, llm_port: LLMPort, *, brier_score_enabled: bool = False
 ) -> None:
@@ -705,6 +739,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     _run_reference_signal(settings, repository)
     _run_output_drift(settings, quota_monitor)
     _run_model_probe(settings, quota_monitor)
+    _run_evidence_export(settings)
 
     usage_ledger = UsageLedger()
     paid_llm = _SlowLoopPaidLLM(settings, quota_monitor, usage_ledger)

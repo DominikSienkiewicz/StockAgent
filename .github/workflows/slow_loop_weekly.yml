@@ -43,6 +43,20 @@ jobs:
       - name: 📦 Sync dependencies
         run: uv sync --frozen --no-build --no-install-project
 
+      - name: 🔐 Install age (evidence backup)
+        # NIEZ-32: kopia tabel dowodowych jest szyfrowana `age` kluczem odbiorcy przed
+        # zapisem. Bez sekretu krok nic nie instaluje, a trener pomija kopię z WARNING-iem.
+        # Awaria apt nie może zablokować treningu — kopia wtedy po prostu nie powstaje.
+        continue-on-error: true
+        env:
+          BACKUP_AGE_RECIPIENT: ${{ secrets.BACKUP_AGE_RECIPIENT }}
+        run: |
+          if [ -n "$BACKUP_AGE_RECIPIENT" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq age
+          else
+            echo "BACKUP_AGE_RECIPIENT not set — evidence backup skipped"
+          fi
+
       - name: 📈 Train XGBoost on prediction_logs
         env:
           # Slow Loop: baza, Alpha Vantage (fundamenty), LLM i Resend (recap).
@@ -74,7 +88,20 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SLACK_WEBHOOK_URL:  ${{ secrets.SLACK_WEBHOOK_URL }}
+          # NIEZ-32: klucz publiczny age odbiorcy kopii; brak = kopia pominięta.
+          BACKUP_AGE_RECIPIENT: ${{ secrets.BACKUP_AGE_RECIPIENT }}
         run: uv run --frozen --no-build --no-sync python main_trainer.py
+
+      - name: 📦 Upload encrypted evidence backup
+        # NIEZ-32: wyłącznie szyfrogram *.age — artefakt publicznego repo pobierze każdy
+        # zalogowany. Bez pliku (brak sekretu, błąd kopii) krok nic nie wysyła.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-backup-${{ github.run_id }}
+          path: data/backup/*.age
+          retention-days: 90
+          if-no-files-found: ignore
 
       - name: 💾 Commit and push updated model
         # ML-04: trener kończy się exit 1, gdy padł choć jeden symbol — wagi wspólnego

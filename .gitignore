@@ -222,6 +222,9 @@ __marimo__/
 # ignorowany katalog docelowy = router z 404. Backlog produktowy zostaje lokalny.
 /docs/product-backlog.md
 
+# NIEZ-32: zaszyfrowana kopia tabel dowodowych — artefakt Slow Loopa, nie kod.
+/data/backup/
+
 # Supabase CLI — artefakty lokalne (link, gałęzie preview). Migracje ZOSTAJĄ w repo.
 supabase/.temp/
 supabase/.branches/

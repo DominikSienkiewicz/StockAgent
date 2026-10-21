@@ -163,6 +163,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "calibration_score_version_enabled",
     # NIEZ-25: sonda Models API w Slow Loopie — sam odczyt katalogu dostawcy.
     "model_probe_enabled",
+    # NIEZ-32: klucz PUBLICZNY odbiorcy kopii (z sekretu repo, ale nic nie odszyfruje).
+    "backup_age_recipient",
     "feature_set_filter_enabled",
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
@@ -847,6 +849,10 @@ class Settings(BaseSettings):
     # Fast Loop, Slow Loop i shock watch pingują go na koniec przebiegu (porażka →
     # `<URL>/fail`). Brak / pusty = NullHeartbeat, zero requestów.
     heartbeat_url: str | None = None
+    # NIEZ-32: klucz publiczny age odbiorcy tygodniowej kopii tabel dowodowych (Slow
+    # Loop), z sekretu repo / `.env`. Brak / pusty = kopia pominięta z WARNING-iem,
+    # nigdy bez szyfrowania.
+    backup_age_recipient: str | None = None
     # Real-time alerty CRITICAL (U4): pushuj alert kwoty w chwili zdarzenia,
     # out-of-band od dziennego maila. NIEWRAŻLIWY flag → config.toml.
     realtime_alerts_enabled: bool = False

@@ -993,3 +993,29 @@ class ModelCatalogPort(ABC):
     def is_available(self, model_id: str) -> bool:
         """True = dostawca zna model, False = nie zna (404). Błąd sieci albo
         uprawnień klucza to wyjątek, nie False — to nie jest brak modelu."""
+
+
+class EvidenceSourcePort(ABC):
+    """NIEZ-32: odczyt tabel dowodowych (track record) do kopii zapasowej."""
+
+    @abstractmethod
+    def read_rows(self, table: str, columns: Sequence[str]) -> list[dict[str, Any]]:
+        """Wszystkie wiersze `table` (paginacja), wyłącznie kolumny `columns`.
+        Kolumny, której baza jeszcze nie ma (brak migracji), w wierszach nie ma."""
+
+
+@dataclass(frozen=True)
+class ArchiveReceipt:
+    """NIEZ-32: zapisany (zaszyfrowany) artefakt kopii: ścieżka, sha256, rozmiar."""
+
+    path: str
+    sha256: str
+    size_bytes: int
+
+
+class EvidenceArchivePort(ABC):
+    """NIEZ-32: magazyn kopii — szyfruje PRZED zapisem; jawny tekst nie trafia na dysk."""
+
+    @abstractmethod
+    def store(self, name: str, files: Mapping[str, bytes]) -> ArchiveReceipt:
+        """Pakuje `files` (nazwa pliku → treść) w jeden zaszyfrowany artefakt `name`."""

@@ -13,6 +13,7 @@ from supabase import create_client
 
 from src.application.ports import (
     CycleRun,
+    EvidenceSourcePort,
     LatestPrediction,
     OpenReferenceCall,
     PreviousVerdict,
@@ -198,6 +199,18 @@ def _missing_eval_column(exc: APIError, fields: Sequence[str]) -> str | None:
     return None
 
 
+def _missing_column(exc: APIError, columns: Sequence[str]) -> str | None:
+    """NIEZ-32: kolumna z `columns`, której brak zgłasza PostgREST (42703); None
+    przy innym błędzie. Najdłuższe nazwy najpierw — `confidence` vs `confidence_score`."""
+    if exc.code not in _MISSING_COLUMN_CODES:
+        return None
+    message = exc.message or ""
+    for column in sorted(columns, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(column)}\b", message):
+            return column
+    return None
+
+
 # Flaga, którą predict_node zostawia przy neutralnej atrapie po awarii głównego
 # LLM („SIDEWAYS 50%”). Taki wiersz nie jest predykcją i nie może zasilać
 # hit-rate ani kalibracji (WIA-09).
@@ -360,7 +373,7 @@ def _deserialize_verdict(raw: dict[str, Any]) -> CouncilVerdict:
     )
 
 
-class SupabaseRepository(RepositoryPort):
+class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
     """Adapter dla Supabase (PostgreSQL via PostgREST).
 
     Tabela `prediction_logs` + zmaterializowany widok `ml_feature_store`
@@ -1248,6 +1261,27 @@ class SupabaseRepository(RepositoryPort):
                 continue
             break
         return frozenset(missing)
+
+    def read_rows(self, table: str, columns: Sequence[str]) -> list[dict[str, Any]]:
+        """NIEZ-32 (`EvidenceSourcePort`): wszystkie wiersze `table`, tylko `columns`,
+        stronami po `id` (paginacja #8). Kolumna bez swojej migracji (42703) wypada
+        z selecta z WARNING-iem — kopia reszty kolumn i tak powstaje."""
+        remaining = list(columns)
+        while remaining:
+            query = self._client.table(table).select(", ".join(remaining)).order("id")
+            try:
+                return _paginate(query)
+            except APIError as exc:
+                missing = _missing_column(exc, remaining)
+                if missing is None:
+                    raise
+                logger.warning(
+                    "Evidence export: %s.%s missing (migration not applied) — skipped",
+                    table,
+                    missing,
+                )
+                remaining.remove(missing)
+        return []
 
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         response = (
