@@ -5,6 +5,8 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 
+from src.domain.market_calendar import TradingSession, last_started_session, to_nyse_time
+
 # ARCH-38: lustro kolumn cenowych DECIMAL(14,4) (001_init.sql:24-34,
 # 002_price_snapshots.sql:15, 032_move_interval.sql). Python trzyma pełną
 # precyzję, baza cztery miejsca — hash commitmentu i zapis muszą widzieć to samo.
@@ -96,6 +98,35 @@ class ValuationVerdict(Enum):
     FAIR = "FAIR"
     OVERVALUED = "OVERVALUED"
     UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class Quote:
+    """DAT-14: notowanie z chwilą, z której pochodzi (`t` w Finnhub /quote).
+
+    Sama cena nie mówi, czy jest bieżąca: w święto NYSE /quote oddaje zamknięcie
+    poprzedniej sesji. `prev_close` i `open_price` są opcjonalne — źródło nie
+    zawsze je podaje."""
+
+    price: Money
+    quoted_at: datetime
+    prev_close: Money | None = None
+    open_price: Money | None = None
+
+
+def is_stale(
+    quoted_at: datetime, now: datetime, last_session: TradingSession | None = None
+) -> bool:
+    """Czy notowanie pochodzi sprzed otwarcia `last_session` (DAT-14).
+
+    Domyślnie `last_session` to ostatnia sesja NYSE rozpoczęta do `now`
+    (`last_started_session`): piątek w trakcie sesji z czwartkowym zamknięciem
+    → stęchłe; piątek przed otwarciem albo weekend z ostatnim zamknięciem → świeże.
+    Wołający podaje własną sesję, gdy cena musi odzwierciedlać konkretną sesję —
+    np. rozliczenie predykcji wymaga sesji PO niej, a w święto najświeższe
+    zamknięcie jest sprzed predykcji. Naiwny `datetime` to UTC."""
+    session = last_session if last_session is not None else last_started_session(now)
+    return to_nyse_time(quoted_at) < session.opens_at
 
 
 # TTL danych fundamentalnych w cache. Slow Loop odświeża je raz w tygodniu, więc

@@ -296,3 +296,52 @@ def test_quote_request_takes_a_token_from_the_shared_limiter(mocker) -> None:
     adapter.get_current_price("AAPL")
 
     limiter.acquire.assert_called_once()
+
+
+class TestGetQuote:
+    """DAT-14: /quote niesie chwilę notowania (`t`) — `get_current_price` czyta
+    tylko `c`, więc w święto NYSE wczorajsze zamknięcie udawało bieżącą cenę."""
+
+    def test_quote_carries_timestamp_from_t_field(self, adapter, mocker):
+        from datetime import UTC, datetime
+
+        from src.domain.value_objects import Quote
+
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response(
+                {"c": 182.5, "pc": 180.0, "o": 181.0, "dp": 1.39, "t": 1760630400}
+            ),
+        )
+
+        quote = adapter.get_quote("AAPL")
+
+        assert quote == Quote(
+            price=Money(Decimal("182.5")),
+            quoted_at=datetime.fromtimestamp(1760630400, tz=UTC),
+            prev_close=Money(Decimal("180.0")),
+            open_price=Money(Decimal("181.0")),
+        )
+
+    def test_missing_previous_close_and_open_are_none(self, adapter, mocker):
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_ok_response({"c": 182.5, "pc": 0, "t": 1760630400}),
+        )
+
+        quote = adapter.get_quote("AAPL")
+
+        assert quote.prev_close is None
+        assert quote.open_price is None
+
+    @pytest.mark.parametrize("payload", [{"c": 182.5, "t": 0}, {"c": 0, "t": 1760630400}])
+    def test_raises_value_error_without_price_or_time(self, adapter, mocker, payload):
+        mocker.patch("requests.Session.get", return_value=_ok_response(payload))
+
+        with pytest.raises(ValueError, match="quote"):
+            adapter.get_quote("AAPL")
+
+    def test_is_quote_port(self):
+        from src.application.ports import QuotePort
+
+        assert issubclass(FinnhubAdapter, QuotePort)

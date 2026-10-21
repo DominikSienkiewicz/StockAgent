@@ -180,3 +180,79 @@ class TestClampUnit:
 
         with pytest.raises(ValueError):
             clamp_unit(float("nan"))
+
+
+# --- DAT-14: notowanie z chwilą i jego świeżość -------------------------------
+
+# 2026-10-15 (czw.) i 2026-10-16 (pt.) to zwykłe sesje NYSE (9:30–16:00 ET = 13:30–20:00 UTC).
+_THU_CLOSE = datetime(2026, 10, 15, 20, 0, tzinfo=UTC)
+_FRI_MIDDAY = datetime(2026, 10, 16, 17, 0, tzinfo=UTC)
+
+
+def _quote(quoted_at: datetime):
+    from src.domain.value_objects import Quote
+
+    return Quote(price=Money(Decimal("182.5")), quoted_at=quoted_at)
+
+
+def test_quote_older_than_last_session_is_stale() -> None:
+    # Piątek w trakcie sesji, a /quote oddaje czwartkowe zamknięcie — dane stoją.
+    from src.domain.value_objects import is_stale
+
+    quote = _quote(_THU_CLOSE)
+
+    assert is_stale(quote.quoted_at, _FRI_MIDDAY)
+
+
+class TestQuoteFreshness:
+    def test_quote_from_the_running_session_is_fresh(self) -> None:
+        from src.domain.value_objects import is_stale
+
+        assert not is_stale(datetime(2026, 10, 16, 16, 55, tzinfo=UTC), _FRI_MIDDAY)
+
+    def test_previous_close_before_the_next_open_is_fresh(self) -> None:
+        # Piątek 8:00 ET: ostatnia rozpoczęta sesja to czwartek — jego zamknięcie
+        # jest najświeższym możliwym notowaniem.
+        from src.domain.value_objects import is_stale
+
+        assert not is_stale(_THU_CLOSE, datetime(2026, 10, 16, 12, 0, tzinfo=UTC))
+
+    def test_weekend_quote_from_friday_close_is_fresh(self) -> None:
+        from src.domain.value_objects import is_stale
+
+        friday_close = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
+
+        assert not is_stale(friday_close, datetime(2026, 10, 17, 15, 0, tzinfo=UTC))
+
+    def test_holiday_quote_is_stale_against_the_session_the_caller_requires(self) -> None:
+        # Święto Dziękczynienia (czw. 2026-11-26): środowe zamknięcie jest najświeższe
+        # na dziś, ale rozliczenie predykcji ze środy wymaga sesji PO niej (piątek).
+        from src.domain.market_calendar import session_on
+        from src.domain.value_objects import is_stale
+
+        wednesday_close = datetime(2026, 11, 25, 21, 0, tzinfo=UTC)
+        holiday_noon = datetime(2026, 11, 26, 17, 0, tzinfo=UTC)
+        friday = session_on(datetime(2026, 11, 27).date())
+        assert friday is not None
+
+        assert not is_stale(wednesday_close, holiday_noon)
+        assert is_stale(wednesday_close, holiday_noon, friday)
+
+    def test_naive_quote_time_is_utc(self) -> None:
+        from src.domain.value_objects import is_stale
+
+        assert is_stale(_THU_CLOSE.replace(tzinfo=None), _FRI_MIDDAY)
+
+    def test_quote_is_immutable_and_keeps_optional_prices(self) -> None:
+        from src.domain.value_objects import Quote
+
+        quote = Quote(
+            price=Money(Decimal("182.5")),
+            quoted_at=_THU_CLOSE,
+            prev_close=Money(Decimal("180")),
+            open_price=Money(Decimal("181")),
+        )
+
+        assert quote.prev_close == Money(Decimal("180"))
+        with pytest.raises(FrozenInstanceError):
+            quote.price = Money(Decimal("1"))  # type: ignore[misc]

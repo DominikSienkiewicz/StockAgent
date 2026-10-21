@@ -25,7 +25,7 @@ from src.domain.regime import MarketRegime, RegimeState
 from src.domain.shock import DailyChange
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
-from src.domain.value_objects import AssetType, Fundamentals, Money
+from src.domain.value_objects import AssetType, Fundamentals, Money, Quote
 
 
 class MarketDataPort(ABC):
@@ -33,6 +33,17 @@ class MarketDataPort(ABC):
 
     @abstractmethod
     def get_current_price(self, symbol: str) -> Money: ...
+
+
+class QuotePort(ABC):
+    """DAT-14: notowanie z chwilą, z której pochodzi (Finnhub /quote).
+
+    Obok `MarketDataPort`, nie w nim: `get_current_price` ma wielu konsumentów
+    i źródła bez czasu notowania, więc migracja na `Quote` idzie stopniowo.
+    Brak ceny albo czasu w odpowiedzi → `ValueError`."""
+
+    @abstractmethod
+    def get_quote(self, symbol: str) -> Quote: ...
 
 
 class DailyChangePort(ABC):

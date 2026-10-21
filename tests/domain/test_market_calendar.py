@@ -181,3 +181,28 @@ def test_closure_reason_names_the_holiday_the_weekend_or_nothing() -> None:
     assert closure_reason(date(2026, 12, 23)) is None
     # Skrócona sesja to wciąż dzień handlowy.
     assert closure_reason(date(2026, 11, 27)) is None
+
+
+class TestLastStartedSession:
+    """DAT-14: sesja, którą świeże notowanie musi już odzwierciedlać."""
+
+    def test_during_a_session_it_is_today(self) -> None:
+        from src.domain.market_calendar import last_started_session
+
+        session = last_started_session(datetime(2026, 10, 16, 17, 0, tzinfo=UTC))
+
+        assert session.day == date(2026, 10, 16)
+
+    def test_before_the_open_it_is_the_previous_trading_day(self) -> None:
+        from src.domain.market_calendar import last_started_session
+
+        session = last_started_session(datetime(2026, 10, 19, 12, 0, tzinfo=UTC))
+
+        assert session.day == date(2026, 10, 16)
+
+    def test_on_a_holiday_it_is_the_day_before(self) -> None:
+        from src.domain.market_calendar import last_started_session
+
+        session = last_started_session(datetime(2026, 11, 26, 17, 0, tzinfo=UTC))
+
+        assert session.day == date(2026, 11, 25)

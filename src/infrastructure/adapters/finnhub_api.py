@@ -5,11 +5,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from src.application.ports import DailyChangePort, MarketDataPort
+from src.application.ports import DailyChangePort, MarketDataPort, QuotePort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.shock import DailyChange
-from src.domain.value_objects import Money
+from src.domain.value_objects import Money, Quote
 from src.infrastructure.adapters._http import (
     RateLimiter,
     build_session,
@@ -23,7 +23,7 @@ DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10  # sekundy
 
 
-class FinnhubAdapter(MarketDataPort, DailyChangePort):
+class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
     """Adapter dla Finnhub Quote API.
 
     Endpoint: GET /quote?symbol={symbol}&token={api_key}
@@ -75,6 +75,23 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort):
         return DailyChange(
             fraction=Decimal(str(percent)) / 100,
             as_of=datetime.fromtimestamp(int(stamp), tz=UTC),
+        )
+
+    def get_quote(self, symbol: str) -> Quote:
+        """DAT-14: cena `c` z chwilą notowania `t` (plus `pc` i `o`, gdy są) —
+        `get_current_price` zostaje bez zmian dla obecnych konsumentów."""
+        payload = self._fetch_quote(symbol)
+        price, stamp = payload.get("c"), payload.get("t")
+        if not price or not stamp:
+            raise ValueError(
+                f"Finnhub returned no quote for symbol '{symbol}' "
+                f"(has_price={bool(price)}, has_t={bool(stamp)})."
+            )
+        return Quote(
+            price=Money(Decimal(str(price))),
+            quoted_at=datetime.fromtimestamp(int(stamp), tz=UTC),
+            prev_close=_optional_money(payload.get("pc")),
+            open_price=_optional_money(payload.get("o")),
         )
 
     def _fetch_quote(self, symbol: str) -> dict[str, Any]:
@@ -130,3 +147,10 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort):
                 occurred_at=datetime.now(UTC),
             )
         )
+
+
+def _optional_money(value: Any) -> Money | None:
+    """Pole ceny z /quote; brak albo 0 (Finnhub tak oznacza brak danych) → None."""
+    if not value:
+        return None
+    return Money(Decimal(str(value)))
