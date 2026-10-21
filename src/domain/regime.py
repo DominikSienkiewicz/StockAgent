@@ -108,6 +108,26 @@ class RegimeDetector:
             return ceiling
         return 1.0
 
+    def reason(
+        self,
+        macro_alert: _AlertLevel | None,
+        risk_signals: Sequence[_AlertLevel] | None,
+    ) -> str:
+        """ALR-05: powód klasyfikacji dla czytelnika maila — te same reguły co
+        `classify`: brak makro, alert CRITICAL albo liczba głosów ELEVATED."""
+        if macro_alert is None:
+            return "brak danych makro"
+        severities = [
+            self._severity(macro_alert),
+            *(self._severity(signal) for signal in risk_signals or ()),
+        ]
+        if max(severities) >= _SEVERITY["CRITICAL"]:
+            return "alert CRITICAL"
+        elevated = severities.count(_SEVERITY["ELEVATED"])
+        if elevated:
+            return f"{elevated} {_votes_word(elevated)} ELEVATED"
+        return "wszystkie sygnały NORMAL"
+
     def label(self, regime: MarketRegime) -> str:
         """Krótka polska etykieta reżimu do bannera w raporcie."""
         return {
@@ -120,6 +140,15 @@ class RegimeDetector:
     def _severity(level: _AlertLevel) -> int:
         """Ranga severity z nazwy członka enuma (nieznana → 0)."""
         return _SEVERITY.get(level.name, 0)
+
+
+def _votes_word(count: int) -> str:
+    """Polska odmiana „głos” po liczebniku: 1 głos, 2–4 głosy, 5+ (i 12–14) głosów."""
+    if count == 1:
+        return "głos"
+    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return "głosy"
+    return "głosów"
 
 
 @dataclass(frozen=True)

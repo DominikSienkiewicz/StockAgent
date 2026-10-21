@@ -3888,6 +3888,108 @@ class TestResolveRegimeHysteresis:
         assert kwargs["cycle_at"].tzinfo is not None
 
 
+class TestRegimeBannerWiring:
+    """ALR-05 — `_resolve_regime` oddaje reżim cyklu do nagłówka maila (sink
+    `on_banner`), bez zmiany zwracanej pary (kontekst promptu, mnożnik)."""
+
+    _CYCLE_AT = datetime(2026, 10, 19, 13, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.regime_aware_enabled = True
+        settings.yield_curve_enabled = False
+        settings.regime_threshold_max_multiplier = 1.5
+        settings.regime_hysteresis_enabled = False
+        settings.volatility_threshold = Decimal("0.02")
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    @staticmethod
+    def _macro(level: MacroAlertLevel) -> MagicMock:
+        report = MagicMock()
+        report.overall_alert = level
+        return report
+
+    def test_risk_off_banner_carries_multiplier_threshold_and_reason(self) -> None:
+        from src.domain.regime import MarketRegime
+
+        banners: list[object] = []
+
+        result = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.CRITICAL), None,
+            on_banner=banners.append,
+        )
+
+        assert result == (main_agent.RegimeDetector().label(MarketRegime.RISK_OFF), 1.5)
+        [banner] = banners
+        assert banner == main_agent.RegimeBanner(
+            regime=MarketRegime.RISK_OFF,
+            multiplier=1.5,
+            base_threshold=Decimal("0.02"),
+            reason="alert CRITICAL",
+        )
+
+    def test_hysteresis_hold_is_the_reason(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_latest_regime_state.return_value = RegimeState(regime=MarketRegime.RISK_OFF)
+        banners: list[object] = []
+
+        main_agent._resolve_regime(
+            self._settings(regime_hysteresis_enabled=True, regime_exit_confirmations=2),
+            self._macro(MacroAlertLevel.NORMAL),
+            None,
+            repository=repo,
+            cycle_at=self._CYCLE_AT,
+            on_banner=banners.append,
+        )
+
+        [banner] = banners
+        assert banner.regime is MarketRegime.RISK_OFF
+        assert banner.reason == "histereza: trzymam RISK_OFF (surowy odczyt RISK_ON)"
+
+    def test_regime_off_sends_no_banner(self) -> None:
+        banners: list[object] = []
+
+        main_agent._resolve_regime(
+            self._settings(regime_aware_enabled=False),
+            self._macro(MacroAlertLevel.CRITICAL),
+            None,
+            on_banner=banners.append,
+        )
+
+        assert banners == []
+
+    def test_main_puts_the_banner_into_the_report_context(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.domain.regime import MarketRegime
+
+        banner = main_agent.RegimeBanner(
+            regime=MarketRegime.RISK_OFF,
+            multiplier=2.0,
+            base_threshold=Decimal("0.02"),
+            reason="alert CRITICAL",
+        )
+
+        def resolve(*_args: object, on_banner=None, **_kwargs: object) -> tuple[str, float]:
+            on_banner(banner)
+            return "Ucieczka od ryzyka", 2.0
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch("main_agent._resolve_regime", side_effect=resolve)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings)
+
+        assert dispatch.call_args.kwargs["context"].regime == banner
+
+
 class TestGateDeltaWiring:
     """EXP-01 — flaga z Settings trafia do `AgentGraphDeps`; off (domyślnie) =
     rekord predykcji nie niesie `gate_delta`, którego przed migracją 034 nie ma."""

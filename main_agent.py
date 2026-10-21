@@ -91,6 +91,7 @@ from src.application.report_models import ResolvedPrediction
 from src.application.report_onboarding import onboarding_subject
 from src.application.report_ops import render_cycle_summary_markdown
 from src.application.report_public_scorecard import render_public_scorecard_html
+from src.application.report_regime import RegimeBanner
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
@@ -1605,9 +1606,13 @@ def _resolve_regime(
     *,
     repository: RepositoryPort | None = None,
     cycle_at: datetime | None = None,
+    on_banner: Callable[[RegimeBanner], None] | None = None,
 ) -> tuple[str, float]:
     """#7: reżim rynku z overall_alert (zacieśnia próg + label do promptu).
     Zwraca (regime_context, regime_multiplier). Off / brak raportu → ("", 1.0).
+
+    ALR-05: `on_banner` dostaje reżim cyklu dla nagłówka maila (reżim, mnożnik,
+    próg akcji, powód); off / brak raportu → nie jest wołany.
 
     ALR-03: z `repository` i flagą `regime_hysteresis_enabled` surowy reżim
     przechodzi przez histerezę (stan z `regime_history`), patrz
@@ -1648,6 +1653,21 @@ def _resolve_regime(
         raw_regime.value,
         regime_multiplier,
     )
+    if on_banner is not None:
+        # Reżim efektywny różny od surowego = histereza trzyma RISK_OFF (ALR-03).
+        reason = (
+            detector.reason(macro_risk_report.overall_alert, risk_signals)
+            if regime is raw_regime
+            else f"histereza: trzymam {regime.value} (surowy odczyt {raw_regime.value})"
+        )
+        on_banner(
+            RegimeBanner(
+                regime=regime,
+                multiplier=regime_multiplier,
+                base_threshold=settings.volatility_threshold,
+                reason=reason,
+            )
+        )
     return regime_context, regime_multiplier
 
 
@@ -3443,12 +3463,15 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
     macro_risk_report = _run_risk_watch(settings, repository)
 
     # #7: reżim rynku z overall_alert (zacieśnia próg + label do promptu). Off → neutral.
+    # ALR-05: ten sam reżim trafia do nagłówka maila.
+    regime_banners: list[RegimeBanner] = []
     regime_context, regime_multiplier = _resolve_regime(
         settings,
         macro_risk_report,
         yield_curve,
         repository=repository,
         cycle_at=started_at,
+        on_banner=regime_banners.append,
     )
 
     loop_results, failures, alpha_signals, alpha_prices = _analyze_symbols(
@@ -3519,6 +3542,7 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
             ml_model_loaded=use_case.ml_model_loaded,
             run_context=run_context,
             expired_unverified=expired_unverified,
+            regime=regime_banners[-1] if regime_banners else None,
         ),
     )
     report_delivery = _report_delivery(

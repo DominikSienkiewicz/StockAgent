@@ -2455,6 +2455,79 @@ def test_header_shows_the_cycle_start_in_the_display_timezone():
     assert "05:30" not in text
 
 
+def test_header_shows_regime_and_multiplier():
+    # ALR-05: reżim zacieśnia bramkę każdego cyklu — czytelnik widzi mniej predykcji,
+    # więc nagłówek mówi, jaki reżim, jaki mnożnik progu i dlaczego. Liczby po
+    # polsku (MAIL-58), stąd „×1,5”, a nie „×1.5” z opisu wpisu.
+    from src.application.report_regime import RegimeBanner
+    from src.domain.regime import MarketRegime
+
+    banner = RegimeBanner(
+        regime=MarketRegime.RISK_OFF,
+        multiplier=1.5,
+        base_threshold=Decimal("0.02"),
+        reason="2 głosy ELEVATED",
+    )
+
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(regime=banner),
+    )
+
+    expected = "Reżim: RISK_OFF · próg ×1,5 (2,0% → 3,0%) · powód: 2 głosy ELEVATED"
+    assert expected in html
+    assert expected in text
+    assert text.index(expected) < text.index("Sygnały ponad próg")
+
+
+def test_header_without_multiplier_shows_one_threshold():
+    from src.application.report_regime import RegimeBanner
+    from src.domain.regime import MarketRegime
+
+    banner = RegimeBanner(
+        regime=MarketRegime.RISK_ON,
+        multiplier=1.0,
+        base_threshold=Decimal("0.02"),
+        reason="wszystkie sygnały NORMAL",
+    )
+
+    _, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(regime=banner),
+    )
+
+    assert "Reżim: RISK_ON · próg ×1,0 (2,0%) · powód: wszystkie sygnały NORMAL" in text
+
+
+def test_header_without_regime_has_no_regime_line():
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0, ReportContext()
+    )
+
+    assert "Reżim:" not in html
+    assert "Reżim:" not in text
+
+
+def test_regime_reason_is_escaped_in_html():
+    from src.application.report_regime import RegimeBanner
+    from src.domain.regime import MarketRegime
+
+    banner = RegimeBanner(
+        regime=MarketRegime.NEUTRAL,
+        multiplier=1.0,
+        base_threshold=Decimal("0.02"),
+        reason="<b>x</b>",
+    )
+
+    html, _ = build_html_report(
+        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(regime=banner),
+    )
+
+    assert "<b>x</b>" not in html
+    assert "&lt;b&gt;x&lt;/b&gt;" in html
+
+
 def _consensus(summary: str) -> CouncilVerdict:
     return CouncilVerdict(
         final_recommendation="BUY", consensus_strength=0.9, summary=summary,

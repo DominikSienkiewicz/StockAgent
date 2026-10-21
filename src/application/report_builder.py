@@ -104,6 +104,11 @@ from src.application.report_quota_banner import (
     render_quota_banner_html,
     render_quota_banner_text,
 )
+from src.application.report_regime import (
+    RegimeBanner,
+    render_regime_html,
+    render_regime_text,
+)
 from src.application.report_risk_watch import (
     render_risk_watch_html,
     render_risk_watch_text,
@@ -1299,6 +1304,9 @@ class ReportContext:
     # MAIL-42: przebieg, który wygenerował mail — stopka z numerem, krótkim SHA
     # i (tylko w GHA) linkiem do logów. None = stopka jak przed MAIL-42.
     run_context: RunContext | None = None
+    # ALR-05: reżim rynku i mnożnik progu bramki w nagłówku. None = reżim off
+    # albo brak raportu Risk Watch — nagłówek jak przed ALR-05.
+    regime: RegimeBanner | None = None
 
 
 def _resolved_note(context: ReportContext, window: str) -> str | None:
@@ -1546,6 +1554,7 @@ def build_html_report(
         sector_map=sector_map,
         forecast_horizon=forecast_horizon,
         symbol_chips=symbol_chips,
+        regime_html=render_regime_html(context.regime),
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1578,6 +1587,7 @@ def build_html_report(
         sector_map=sector_map,
         forecast_horizon=forecast_horizon,
         symbol_chips=symbol_chips,
+        regime_text=render_regime_text(context.regime),
     )
     text = _fill_text_slots(
         text,
@@ -2453,6 +2463,7 @@ def _render_html(
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
     symbol_chips: Mapping[str, str] | None = None,
+    regime_html: str = "",
 ) -> str:
     sections = []
 
@@ -2461,7 +2472,7 @@ def _render_html(
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 720px; margin: 0 auto; color: #1f2937;">
       <h1 style="font-size: 22px; margin: 0 0 4px 0;">📊 StockAgent — raport cyklu</h1>
       <div style="font-size: 13px; color: #6b7280; margin-bottom: 24px;">
-        Czas rozpoczęcia: {started_local}
+        Czas rozpoczęcia: {started_local}{regime_html}
       </div>
     """)
 
@@ -2872,6 +2883,7 @@ def _render_plain(
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
     symbol_chips: Mapping[str, str] | None = None,
+    regime_text: str = "",
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
@@ -2882,6 +2894,8 @@ def _render_plain(
     lines.append("=" * 64)
     lines.append(f"Czas rozpoczęcia:  {started_local}")
     lines.append(f"Sesja NYSE:        {session['label']} — {session['detail']}")
+    if regime_text:
+        lines.append(regime_text)
     lines.append("")
     # MAIL-16: trzy liczby dla czytelnika (portfel tylko u właściciela, PORT-06);
     # liczniki operacyjne są w stopce technicznej.
