@@ -152,12 +152,16 @@ class TestBestAnyBaseline:
     def test_best_any_includes_the_sideways_strategy(self) -> None:
         best = naive_baselines([0.001, -0.002, -0.003, 0.02]).best_any
 
-        assert best == ("SIDEWAYS", pytest.approx(0.75))
+        assert best is not None
+        assert best[0] == "SIDEWAYS"
+        assert best[1] == cast(float, pytest.approx(0.75))
 
     def test_best_any_falls_back_to_the_stronger_direction(self) -> None:
         best = naive_baselines([0.02, -0.01, 0.03]).best_any
 
-        assert best == ("BULLISH", pytest.approx(2 / 3))
+        assert best is not None
+        assert best[0] == "BULLISH"
+        assert best[1] == cast(float, pytest.approx(2 / 3))
 
     def test_empty_changes_have_no_best_any(self) -> None:
         assert naive_baselines([]).best_any is None
