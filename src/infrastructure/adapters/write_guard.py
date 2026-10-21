@@ -342,6 +342,8 @@ class ReadOnlyRepository(RepositoryPort):
         is_trend_correct: bool,
         insight: str,
         correction_category: MistakeCategory | None = None,
+        *,
+        stale_quote: bool | None = None,
     ) -> None:
         self._skipped.skip("update_prediction_accuracy")
 

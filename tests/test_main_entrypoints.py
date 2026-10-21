@@ -7021,3 +7021,28 @@ class TestSlowLoopEarningsCache:
         main_trainer.main(settings)
 
         refresh.assert_called_once()
+
+
+class TestStaleQuoteWiring:
+    """DAT-14: akcje i ETF biorą cenę z /quote razem z jego czasem — port notowań
+    to ten sam adapter Finnhub co gałąź equity routera; kolumna `stale_quote`
+    (migracja 055) za flagą, w grafie i w repozytorium."""
+
+    def test_quote_port_is_the_finnhub_equity_feed(self, settings, mock_external_clients):
+        from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert isinstance(deps.quote_port, FinnhubAdapter)
+        assert deps.stale_quote_enabled is settings.stale_quote_enabled
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_build_repository_passes_the_stale_quote_flag(
+        self, settings, mocker, enabled: bool
+    ) -> None:
+        repo_cls = mocker.patch("main_agent.SupabaseRepository")
+        settings.stale_quote_enabled = enabled
+
+        main_agent.build_repository(settings)
+
+        assert repo_cls.call_args.kwargs["stale_quote_enabled"] is enabled

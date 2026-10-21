@@ -320,3 +320,10 @@ class TestBrierCalibrationScore:
     def test_score_versions_are_distinct(self) -> None:
         assert LINEAR_CALIBRATION_SCORE_VERSION == 1
         assert BRIER_CALIBRATION_SCORE_VERSION == 2
+
+
+def test_stale_quote_note_is_a_placeholder_not_a_lesson() -> None:
+    # DAT-14: rozliczenie na nieaktualnym notowaniu nie ma diagnozy — to nie lekcja.
+    from src.domain.prediction import STALE_QUOTE_INSIGHT, is_substantive_insight
+
+    assert not is_substantive_insight(STALE_QUOTE_INSIGHT)

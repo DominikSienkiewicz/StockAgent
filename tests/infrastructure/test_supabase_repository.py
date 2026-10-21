@@ -4067,3 +4067,129 @@ def test_recently_resolved_rows_carry_the_receipt_for_the_post_mortem(
     repo.get_recently_resolved_predictions(24)
 
     assert "decision_receipts" in chain.select.call_args.args[0]
+
+
+# ---------------------------------------------------------------------------
+# DAT-14: `stale_quote` (migracja 055) — rozliczenie i odczyty trafności
+# ---------------------------------------------------------------------------
+
+
+class TestStaleQuote:
+    """Rozliczenie z nieaktualnego notowania niesie `stale_quote` tylko, gdy graf
+    je poda (flaga), a odczyty trafności wybierają kolumnę i odsiewają takie
+    wiersze wyłącznie za flagą repozytorium — przed migracją SELECT dałby 400."""
+
+    @staticmethod
+    def _repo(mock_client: MagicMock) -> SupabaseRepository:
+        return SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", stale_quote_enabled=True
+        )
+
+    @staticmethod
+    def _settle(repo: SupabaseRepository, **kwargs: Any) -> None:
+        repo.update_prediction_accuracy(
+            prediction_id="uuid-1",
+            actual_price=Decimal("100.0"),
+            accuracy_score=0.96,
+            is_trend_correct=False,
+            insight="x",
+            **kwargs,
+        )
+
+    def test_settlement_carries_the_flag_only_when_given(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}])
+
+        self._settle(repo)
+        plain = mock_client.table.return_value.update.call_args.args[0]
+        self._settle(repo, stale_quote=True)
+        stale = mock_client.table.return_value.update.call_args.args[0]
+
+        assert "stale_quote" not in plain
+        assert stale["stale_quote"] is True
+
+    def test_unverified_prediction_carries_its_creation_time(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "is_", "order", "limit"],
+            [
+                {
+                    "id": "uuid-1",
+                    "symbol": "AAPL",
+                    "predicted_trend": "BULLISH",
+                    "price_at_prediction": 100.0,
+                    "predicted_target_price": 104.0,
+                    "timestamp": "2026-10-19T05:30:00+00:00",
+                }
+            ],
+        )
+
+        prediction = repo.get_unverified_prediction("AAPL")
+
+        assert prediction is not None
+        assert prediction.created_at == datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def test_accuracy_stats_drop_stale_settlements_with_the_flag(
+        self, mock_client: MagicMock
+    ) -> None:
+        repo = self._repo(mock_client)
+        chain = mock_client.table.return_value
+        rows = [
+            {"is_trend_correct": True, "stale_quote": None},
+            {"is_trend_correct": False, "stale_quote": True},
+            {"is_trend_correct": False, "stale_quote": False},
+        ]
+        _set_paginated_response(
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value,
+            [rows],
+        )
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert stats["sample_count"] == 2
+        assert stats["correct_count"] == 1
+        assert "stale_quote" in chain.select.call_args.args[0]
+
+    def test_without_the_flag_readers_do_not_select_the_column(
+        self, repo: SupabaseRepository, mock_client: MagicMock, mocker: Any
+    ) -> None:
+        mocker.patch("src.infrastructure.adapters.supabase_repo._paginate", return_value=[])
+
+        repo.get_accuracy_stats(days=30)
+        repo.get_resolved_predictions(days=30)
+        repo.get_resolved_for_calibration(days=30)
+
+        selects = mock_client.table.return_value.select.call_args_list
+        assert len(selects) == 3
+        assert all("stale_quote" not in c.args[0] for c in selects)
+
+    def test_every_accuracy_reader_drops_stale_settlements(
+        self, mock_client: MagicMock, mocker: Any
+    ) -> None:
+        repo = self._repo(mock_client)
+        rows = [
+            {"symbol": "AAPL", "is_trend_correct": True, "stale_quote": True},
+            {"symbol": "NVDA", "is_trend_correct": True},
+        ]
+        mocker.patch(
+            "src.infrastructure.adapters.supabase_repo._paginate",
+            side_effect=lambda _query: [dict(row) for row in rows],
+        )
+
+        readers = {
+            "recent": repo.get_recently_resolved_predictions(24),
+            "track_record": repo.get_resolved_predictions(days=30),
+            "detailed": repo.get_resolved_predictions_detailed(days=7),
+            "calibration": repo.get_resolved_for_calibration(days=30),
+            "eval": repo.get_resolved_predictions_for_eval(days=30),
+        }
+
+        assert {name: [r["symbol"] for r in out] for name, out in readers.items()} == {
+            name: ["NVDA"] for name in readers
+        }
+        selects = mock_client.table.return_value.select.call_args_list
+        assert len(selects) == len(readers)
+        assert all("stale_quote" in c.args[0] for c in selects)

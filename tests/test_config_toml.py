@@ -516,3 +516,8 @@ def test_real_config_toml_ships_the_diagnosis_backfill_off_with_its_cap() -> Non
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["diagnosis_backfill_enabled"] is False
     assert data["diagnosis_backfill_max_calls"] == 5
+
+def test_real_config_toml_ships_the_stale_quote_flag_off_until_migration() -> None:
+    """DAT-14: kolumna `prediction_logs.stale_quote` powstaje w migracji 055."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["stale_quote_enabled"] is False

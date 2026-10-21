@@ -281,13 +281,18 @@ class RepositoryPort(ABC):
         is_trend_correct: bool,
         insight: str,
         correction_category: MistakeCategory | None = None,
+        *,
+        stale_quote: bool | None = None,
     ) -> None:
         """Zamyka predykcję feedbackiem. `accuracy_score` (bliskość ceny do
         celu) napędza trening; `is_trend_correct` (zgodność kierunku) napędza
         trafność raportu — to dwie różne miary, nie wolno ich mylić.
 
         `correction_category` (WIA-57) — kategoria przyczyny błędu z diagnozy;
-        kolumnę z migracji 046 zapisuje adapter tylko za swoją flagą."""
+        kolumnę z migracji 046 zapisuje adapter tylko za swoją flagą.
+        `stale_quote` (DAT-14, migracja 055): True = rozliczenie z notowania sprzed
+        sesji po predykcji, wiersz wypada z trafności. None = kolumny nie dotykamy
+        (graf podaje ją wyłącznie za `stale_quote_enabled`)."""
 
     @abstractmethod
     def get_feature_store_data(

@@ -255,3 +255,44 @@ class TestQuoteFreshness:
         assert quote.prev_close == Money(Decimal("180"))
         with pytest.raises(FrozenInstanceError):
             quote.price = Money(Decimal("1"))  # type: ignore[misc]
+
+
+class TestSettlementQuote:
+    """DAT-14: rozliczenie wymaga notowania z sesji otwartej PO predykcji — inaczej
+    cena rozliczenia równa się cenie wejścia (weekend, święto, drugi przebieg przed
+    otwarciem), a BULLISH i BEARISH wychodzą jako pudło bez ruchu rynku."""
+
+    # Pon. 2026-10-19 05:30 UTC = 01:30 ET, przed otwarciem (13:30 UTC).
+    _MONDAY_PRE_OPEN = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def test_friday_close_cannot_settle_a_monday_pre_open_prediction(self) -> None:
+        from src.domain.value_objects import settles_on_stale_quote
+
+        friday_close = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
+
+        assert settles_on_stale_quote(friday_close, self._MONDAY_PRE_OPEN)
+
+    def test_close_of_the_session_after_the_prediction_settles_it(self) -> None:
+        from src.domain.value_objects import settles_on_stale_quote
+
+        monday_close = datetime(2026, 10, 19, 20, 0, tzinfo=UTC)
+
+        assert not settles_on_stale_quote(monday_close, self._MONDAY_PRE_OPEN)
+
+    def test_a_holiday_keeps_the_quote_stale_until_the_next_session(self) -> None:
+        # Święto Dziękczynienia (czw. 2026-11-26); piątek to skrócona sesja 9:30–13:00 ET.
+        from src.domain.value_objects import settles_on_stale_quote
+
+        predicted = datetime(2026, 11, 26, 5, 30, tzinfo=UTC)
+        wednesday_close = datetime(2026, 11, 25, 21, 0, tzinfo=UTC)
+        friday_early_close = datetime(2026, 11, 27, 18, 0, tzinfo=UTC)
+
+        assert settles_on_stale_quote(wednesday_close, predicted)
+        assert not settles_on_stale_quote(friday_early_close, predicted)
+
+    def test_naive_times_are_utc(self) -> None:
+        from src.domain.value_objects import settles_on_stale_quote
+
+        friday_close = datetime(2026, 10, 16, 20, 0)
+
+        assert settles_on_stale_quote(friday_close, self._MONDAY_PRE_OPEN.replace(tzinfo=None))

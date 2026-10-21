@@ -34,6 +34,7 @@ from src.application.ports import (
     MLPredictionPort,
     NewsPort,
     OptionsFlowPort,
+    QuotePort,
     RepositoryPort,
     SentimentPort,
     Tool,
@@ -80,6 +81,7 @@ from src.domain.mistake_taxonomy import parse_mistake_diagnosis
 from src.domain.prediction import (
     CORRECT_PREDICTION_INSIGHT,
     DIAGNOSIS_SKIPPED_INSIGHT,
+    STALE_QUOTE_INSIGHT,
     Prediction,
     TrendDirection,
     is_substantive_insight,
@@ -95,6 +97,8 @@ from src.domain.value_objects import (
     Threshold,
     ValuationVerdict,
     clamp_unit,
+    is_stale,
+    settles_on_stale_quote,
 )
 
 logger = logging.getLogger(__name__)
@@ -153,6 +157,11 @@ class AgentState(TypedDict, total=False):
     reference_at: datetime | None
     stale_reference: bool
     current_price: Decimal
+    # DAT-14: chwila notowania ceny bieżącej (Finnhub `t`) i werdykt domeny, czy jest
+    # sprzed ostatniej rozpoczętej sesji. Brak kluczy = cena bez czasu (krypto, graf
+    # bez `quote_port`) — stęchłości nie oceniamy, jak przed DAT-14.
+    quoted_at: datetime
+    stale_quote: bool
     delta: Decimal
     # ALR-10: cena odniesienia dryfu (ostatnia predykcja z okna albo początek okna,
     # podaje use case za `drift_gate_enabled`) i dryf od niej (ułamek, z check_price).
@@ -677,6 +686,12 @@ class AgentGraphDeps:
     # analiza i rekord jak przed ML-29 — przed migracją klucz dałby PGRST204.
     trend_probabilities_enabled: bool = False
     options_port: OptionsFlowPort | None = None
+    # DAT-14: notowanie z czasem (Finnhub /quote) dla akcji i ETF zamiast gołej ceny
+    # z `market_port` — ten sam jeden request. None = cena bez czasu, jak przed DAT-14.
+    quote_port: QuotePort | None = None
+    # DAT-14: kolumna `stale_quote` (migracja 055) w predykcji i rozliczeniu. Off =
+    # klucza nie ma w rekordzie — przed migracją dałby PGRST204.
+    stale_quote_enabled: bool = False
     attestation_publisher: AttestationPublisherPort | None = None
     # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
     # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
@@ -700,9 +715,24 @@ class AgentGraphDeps:
             self.telemetry.bind_paid_calls(self.paid_call_meter)
 
 
+# DAT-14: klasy aktywów notowane w sesjach NYSE — krypto handluje 24/7 (CoinGecko).
+_SESSION_QUOTED_ASSETS = frozenset({AssetType.STOCK, AssetType.ETF})
+
+
+def _session_quote_port(deps: AgentGraphDeps, state: AgentState) -> QuotePort | None:
+    """DAT-14: port notowania z czasem, gdy symbol jest akcją albo ETF-em.
+    Symbol bez klasy aktywa (graf bez use case'u) zostaje przy `market_port`."""
+    asset = state.get("asset")
+    if deps.quote_port is None or asset is None:
+        return None
+    return deps.quote_port if asset.asset_type in _SESSION_QUOTED_ASSETS else None
+
+
 def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
-    market_port = deps.market_port
-    current = market_port.get_current_price(state["symbol"])
+    symbol = state["symbol"]
+    quote_port = _session_quote_port(deps, state)
+    quote = quote_port.get_quote(symbol) if quote_port is not None else None
+    current = quote.price if quote is not None else deps.market_port.get_current_price(symbol)
     previous = Money(state["previous_price"])
     delta = PriceDelta.calculate(previous, current)
     # #6: snapshot ceny NIE jest już zapisywany tutaj. Zapis przeniesiony do
@@ -714,6 +744,16 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]
         "current_price": current.amount,
         "delta": delta.percentage,
     }
+    if quote is not None:
+        stale = is_stale(quote.quoted_at, deps.clock())
+        if stale:
+            logger.warning(
+                "Quote for %s is from %s, before the last started NYSE session",
+                symbol,
+                quote.quoted_at.isoformat(),
+            )
+        update["quoted_at"] = quote.quoted_at
+        update["stale_quote"] = stale
     reference = state.get("drift_reference")
     if reference is not None and reference > 0:
         update["drift"] = PriceDelta.calculate(Money(reference), current).fraction
@@ -1033,6 +1073,46 @@ def _paid_phase_route(deps: AgentGraphDeps, state: AgentState) -> str:
 
 
 
+def _settles_on_stale_quote(state: AgentState, last: Prediction) -> bool:
+    """DAT-14: notowanie cyklu nie pochodzi z sesji po predykcji (weekend, święto,
+    drugi przebieg przed otwarciem). Bez czasu notowania albo predykcji — False."""
+    quoted_at = state.get("quoted_at")
+    if quoted_at is None or last.created_at is None:
+        return False
+    return settles_on_stale_quote(quoted_at, last.created_at)
+
+
+def _settle_on_stale_quote(
+    deps: AgentGraphDeps,
+    last: Prediction,
+    current_price: Decimal,
+    accuracy: float,
+    trend_correct: bool,
+) -> dict[str, Any]:
+    """DAT-14: rozliczenie ceną równą cenie wejścia nie mówi nic o trafności —
+    za flagą wiersz dostaje `stale_quote` i wypada z trafności, a płatna diagnoza
+    LLM nie leci (nie ma prawdziwego błędu do wyjaśnienia)."""
+    assert last.id is not None, "Prediction from repository must have id"
+    logger.warning(
+        "Settling %s prediction %s on a quote from before the next session — "
+        "excluded from accuracy%s",
+        last.symbol,
+        last.id,
+        "" if deps.stale_quote_enabled else " once stale_quote_enabled is on",
+    )
+    deps.repository_port.update_prediction_accuracy(
+        prediction_id=last.id,
+        actual_price=current_price,
+        accuracy_score=accuracy,
+        is_trend_correct=trend_correct,
+        insight=STALE_QUOTE_INSIGHT,
+        stale_quote=True if deps.stale_quote_enabled else None,
+    )
+    return {
+        "reflection_context": "Ostatnie rozliczenie na nieaktualnym notowaniu — bez oceny."
+    }
+
+
 def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     repository_port = deps.repository_port
     reflection_min_age_hours = deps.reflection_min_age_hours
@@ -1071,6 +1151,9 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     asset = state.get("asset")
     tolerance = sideways_tolerance_for(asset.asset_type if asset is not None else None)
     trend_correct = last.is_trend_correct(current_price, tolerance=tolerance)
+
+    if _settles_on_stale_quote(state, last):
+        return _settle_on_stale_quote(deps, last, current_price, accuracy, trend_correct)
 
     if trend_correct:
         repository_port.update_prediction_accuracy(
@@ -1765,6 +1848,8 @@ def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
         "interval_high": deps.interval_columns_enabled,
         "gate_delta": deps.gate_delta_enabled,
         "experiment_arms": deps.experiment_arms_enabled,
+        # DAT-14 (migracja 055): werdykt notowania z `quote_port`, za flagą.
+        "stale_quote": deps.stale_quote_enabled and deps.quote_port is not None,
         "commitment_hash": deps.attestation_publisher is not None,
         "commitment_salt": deps.attestation_publisher is not None,
         # WIA-70 (migracja 043): dosłowny plaintext commitmentu, ta sama zasada.
@@ -1891,6 +1976,12 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     trend_probabilities = state.get("trend_probabilities")
     if deps.trend_probabilities_enabled and trend_probabilities is not None:
         record["trend_probabilities"] = dict(trend_probabilities)
+
+    # DAT-14: predykcja na notowaniu sprzed ostatniej sesji wypada z trafności po
+    # rozliczeniu. Bez notowania z czasem (krypto) kolumna zostaje NULL.
+    stale_quote = state.get("stale_quote")
+    if deps.stale_quote_enabled and stale_quote is not None:
+        record["stale_quote"] = stale_quote
 
     # #16: commit-reveal (migracje 024, 043); publikacja dopiero po zapisie.
     commitment = _seal_commitment(deps, record, council=council_verdict, recipe=recipe)

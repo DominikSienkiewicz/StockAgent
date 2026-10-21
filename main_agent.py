@@ -54,6 +54,7 @@ from src.application.ports import (
     NewsPort,
     OptionsFlowPort,
     PortfolioPositionsPort,
+    QuotePort,
     ReportNotifierPort,
     RepositoryPort,
     SentimentPort,
@@ -894,6 +895,7 @@ def build_repository(settings: Settings) -> RepositoryPort:
         persona_vote_outcomes_enabled=settings.persona_vote_outcomes_enabled,
         crypto_symbols=settings.crypto_symbols,
         correction_category_enabled=settings.correction_category_enabled,
+        stale_quote_enabled=settings.stale_quote_enabled,
     )
     if settings.db_writes_enabled:
         return repository
@@ -1431,12 +1433,13 @@ def build_agent_graph_deps(
     )
     fundamentals_port = build_fast_loop_fundamentals_port(supabase_repo)
     # Routing: krypto → CoinGecko, reszta → Finnhub. Use case widzi jeden port.
+    equity_quotes = FinnhubAdapter(
+        api_key=settings.require_finnhub_api_key(),
+        quota_monitor=quota_monitor,
+        rate_limiter=FINNHUB_RATE_LIMITER,
+    )
     market_port = RoutingMarketDataPort(
-        equity=FinnhubAdapter(
-            api_key=settings.require_finnhub_api_key(),
-            quota_monitor=quota_monitor,
-            rate_limiter=FINNHUB_RATE_LIMITER,
-        ),
+        equity=equity_quotes,
         crypto=CoinGeckoAdapter(quota_monitor=quota_monitor),
         crypto_symbols=settings.crypto_symbols,
     )
@@ -1527,6 +1530,11 @@ def build_agent_graph_deps(
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings, quota_monitor),
+        # DAT-14: akcje i ETF biorą cenę z /quote razem z czasem notowania (ten sam
+        # request); kolumna `stale_quote` (migracja 055) za flagą. Źródło ceny bez
+        # czasu notowania → cena jak przed DAT-14 (wzorzec `DailyChangePort` watcha).
+        quote_port=equity_quotes if isinstance(equity_quotes, QuotePort) else None,
+        stale_quote_enabled=settings.stale_quote_enabled,
         # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
         # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji. WIA-70:
         # flaga on bez kolumn 024/043 → cykl bez atestacji, predykcje zapisane.

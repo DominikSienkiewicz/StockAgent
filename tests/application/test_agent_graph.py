@@ -4994,6 +4994,31 @@ class TestRequiredPredictionColumns:
         assert set(repo.save_prediction.call_args.args[0]) <= required
         assert not required & self._OPTIONAL
 
+    def test_stale_quote_column_is_required_when_its_flag_writes_it(self) -> None:
+        """DAT-14 (migracja 055): `stale_quote` w rekordzie tylko za flagą i z portem
+        notowań — i wtedy też na liście kolumn sprawdzanej przed płatnymi węzłami."""
+        import dataclasses
+
+        from src.application.agent_graph import _save_node, required_prediction_columns
+        from src.application.ports import QuotePort
+
+        deps, repo = self._deps(all_flags=False)
+        deps = dataclasses.replace(
+            deps, quote_port=Mock(spec=QuotePort), stale_quote_enabled=True
+        )
+        state = {key: value for key, value in self._state().items() if key != "implied_edge"}
+
+        _save_node(deps, {**state, "stale_quote": True})
+
+        written = set(repo.save_prediction.call_args.args[0])
+        assert "stale_quote" in written
+        assert written <= required_prediction_columns(deps)
+
+
+# ---------------------------------------------------------------------------
+# DAT-14: notowanie z czasem (Finnhub /quote) i rozliczenie na nieaktualnym
+# ---------------------------------------------------------------------------
+
 class TestTrendProbabilities:
     """ML-29 — za flagą `trend_probabilities_enabled` prompt prosi o rozkład
     P(BULLISH/BEARISH/SIDEWAYS), trend to argmax, pewność to max p, a rozkład trafia
@@ -5147,3 +5172,182 @@ class TestMarketFeatureSnapshot:
         call = repository_port.save_feature_snapshot.call_args
         assert set(call.args[1]) == set(FREE_SNAPSHOT_FEATURES)
         assert call.kwargs["feature_set_version"] == FEATURE_SET_VERSION == 3
+
+class TestStaleQuote:
+    """DAT-14: akcje i ETF biorą cenę z `QuotePort` (ten sam /quote, plus czas `t`).
+    Rozliczenie ceną sprzed sesji po predykcji nie liczy się do trafności (flaga
+    `stale_quote_enabled`) i nigdy nie płaci za diagnozę LLM."""
+
+    # Pon. 2026-10-19 12:00 UTC (8:00 ET): drugi przebieg przed otwarciem.
+    _NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+    _FRIDAY_CLOSE = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
+
+    @staticmethod
+    def _deps(repository_port: Mock, llm_port: Mock, **overrides) -> AgentGraphDeps:
+        from src.application.ports import QuotePort
+
+        fields = {
+            "market_port": Mock(spec=MarketDataPort),
+            "sentiment_port": Mock(spec=SentimentPort),
+            "news_port": Mock(spec=NewsPort),
+            "repository_port": repository_port,
+            "ml_port": Mock(spec=MLPredictionPort),
+            "llm_port": llm_port,
+            "threshold": Threshold(Decimal("0.02")),
+            "quote_port": Mock(spec=QuotePort),
+            "clock": lambda: TestStaleQuote._NOW,
+            **overrides,
+        }
+        return AgentGraphDeps(**fields)
+
+    @staticmethod
+    def _quote(price: str, quoted_at: datetime):
+        from src.domain.value_objects import Quote
+
+        return Quote(price=Money(Decimal(price)), quoted_at=quoted_at)
+
+    @staticmethod
+    def _asset(asset_type):
+        from src.domain.asset import Asset
+
+        return Asset(symbol="AAPL", asset_type=asset_type)
+
+    def test_stock_price_comes_from_the_quote_with_its_time(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _check_price_node
+        from src.domain.value_objects import AssetType
+
+        deps = self._deps(repository_port, llm_port)
+        deps.quote_port.get_quote.return_value = self._quote("105", self._FRIDAY_CLOSE)
+        state = {**_initial_state("100"), "asset": self._asset(AssetType.STOCK)}
+
+        update = _check_price_node(deps, state)
+
+        assert update["current_price"] == Decimal("105")
+        assert update["quoted_at"] == self._FRIDAY_CLOSE
+        # Piątkowe zamknięcie w poniedziałek przed otwarciem to najświeższa cena.
+        assert update["stale_quote"] is False
+        deps.market_port.get_current_price.assert_not_called()
+
+    def test_quote_older_than_the_last_started_session_is_flagged(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _check_price_node
+        from src.domain.value_objects import AssetType
+
+        midday = datetime(2026, 10, 19, 17, 0, tzinfo=UTC)
+        deps = self._deps(repository_port, llm_port, clock=lambda: midday)
+        deps.quote_port.get_quote.return_value = self._quote("105", self._FRIDAY_CLOSE)
+        state = {**_initial_state("100"), "asset": self._asset(AssetType.ETF)}
+
+        assert _check_price_node(deps, state)["stale_quote"] is True
+
+    def test_crypto_keeps_the_plain_price_without_a_quote_time(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _check_price_node
+        from src.domain.value_objects import AssetType
+
+        deps = self._deps(repository_port, llm_port)
+        deps.market_port.get_current_price.return_value = Money(Decimal("64000"))
+        state = {**_initial_state("63000"), "asset": self._asset(AssetType.CRYPTO)}
+
+        update = _check_price_node(deps, state)
+
+        assert update["current_price"] == Decimal("64000")
+        assert "quoted_at" not in update
+        deps.quote_port.get_quote.assert_not_called()
+
+    def _stale_settlement_state(self) -> dict:
+        from src.domain.value_objects import AssetType
+
+        return {
+            **_initial_state("100"),
+            "asset": self._asset(AssetType.STOCK),
+            "current_price": Decimal("100"),
+            # Ruch ponad próg — bez DAT-14 diagnoza LLM by poleciała.
+            "delta": Decimal("0.06"),
+            "quoted_at": self._FRIDAY_CLOSE,
+            "stale_quote": False,
+        }
+
+    @staticmethod
+    def _monday_prediction() -> Prediction:
+        return Prediction(
+            id="pred-1",
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100"),
+            predicted_target_price=Decimal("104"),
+            created_at=datetime(2026, 10, 19, 5, 30, tzinfo=UTC),
+        )
+
+    def test_settlement_on_a_quote_from_before_the_next_session_is_out_of_accuracy(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+        from src.domain.prediction import STALE_QUOTE_INSIGHT
+
+        repository_port.get_unverified_prediction.return_value = self._monday_prediction()
+        deps = self._deps(repository_port, llm_port, stale_quote_enabled=True)
+
+        _reflect_node(deps, self._stale_settlement_state())
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["stale_quote"] is True
+        assert kwargs["insight"] == STALE_QUOTE_INSIGHT
+        llm_port.analyze_mistake.assert_not_called()
+
+    def test_flag_off_settles_without_the_column_and_still_skips_the_diagnosis(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._monday_prediction()
+        deps = self._deps(repository_port, llm_port)
+
+        _reflect_node(deps, self._stale_settlement_state())
+
+        assert repository_port.update_prediction_accuracy.call_args.kwargs["stale_quote"] is None
+        llm_port.analyze_mistake.assert_not_called()
+
+    def test_quote_from_the_session_after_the_prediction_settles_as_usual(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._monday_prediction()
+        deps = self._deps(repository_port, llm_port, stale_quote_enabled=True)
+        state = {
+            **self._stale_settlement_state(),
+            "current_price": Decimal("106"),
+            "quoted_at": datetime(2026, 10, 19, 20, 0, tzinfo=UTC),
+        }
+
+        _reflect_node(deps, state)
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["is_trend_correct"] is True
+        assert "stale_quote" not in kwargs
+
+    def test_save_writes_the_quote_verdict_only_with_the_flag(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _save_node
+
+        repository_port.save_prediction.return_value = "pred-2"
+        state = {
+            **_initial_state("100"),
+            "current_price": Decimal("106"),
+            "delta": Decimal("0.06"),
+            "stale_quote": True,
+        }
+
+        _save_node(self._deps(repository_port, llm_port), state)
+        off = repository_port.save_prediction.call_args.args[0]
+        _save_node(self._deps(repository_port, llm_port, stale_quote_enabled=True), state)
+        on = repository_port.save_prediction.call_args.args[0]
+
+        assert "stale_quote" not in off
+        assert on["stale_quote"] is True

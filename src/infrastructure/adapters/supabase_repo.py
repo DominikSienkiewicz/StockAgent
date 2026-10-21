@@ -247,6 +247,32 @@ def _without_llm_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [row for row in rows if _LLM_FALLBACK_FLAG not in (row.get("data_quality_flags") or [])]
 
 
+# DAT-14 (migracja 055): rozliczenie z notowania sprzed sesji po predykcji.
+_STALE_QUOTE_COLUMN = "stale_quote"
+
+
+def _countable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Wiersze, które liczą się do trafności: bez atrap LLM (WIA-09) i bez
+    rozliczeń z nieaktualnego notowania (DAT-14, `stale_quote` = true).
+
+    Bez kolumny w SELECT (flaga off) `stale_quote` jest None, więc filtr nic nie tnie."""
+    return [
+        row
+        for row in _without_llm_fallback(rows)
+        if row.get(_STALE_QUOTE_COLUMN) is not True
+    ]
+
+
+def _optional_timestamp(value: Any) -> datetime | None:
+    """Znacznik czasu z wiersza PostgREST (ISO 8601) albo None, gdy go brak."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _resolved_window(query: Any, cutoff: datetime, since: datetime | None) -> Any:
     """Okno zamkniętych predykcji (ocenionych kierunkowo), od najświeższej.
 
@@ -383,10 +409,6 @@ def _deferred_diagnosis(row: Mapping[str, Any]) -> DeferredDiagnosis | None:
     )
 
 
-def _optional_timestamp(value: Any) -> datetime | None:
-    return datetime.fromisoformat(value) if isinstance(value, str) else None
-
-
 def _persona_vote_outcome(row: Mapping[str, Any]) -> PersonaVoteOutcome | None:
     """Wiersz RPC `persona_vote_outcomes` (045) → głos domeny; bez persony,
     rekomendacji albo cen nie ma czego oceniać → None."""
@@ -485,8 +507,12 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         persona_vote_outcomes_enabled: bool = False,
         crypto_symbols: Collection[str] = (),
         correction_category_enabled: bool = False,
+        stale_quote_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
+        # DAT-14: kolumna `stale_quote` istnieje od migracji 055 — bez flagi odczyty
+        # trafności jej nie wybierają (400 zabiłby raport), a zapis jej nie niesie.
+        self._stale_quote_enabled = stale_quote_enabled
         # ML-10: kolumny baseline'ów dryfu i „sam LLM" istnieją od migracji 028 —
         # bez flagi payload karty ich nie niesie (PGRST204 zgubiłby cały wiersz).
         self._scorecard_baselines_enabled = scorecard_baselines_enabled
@@ -509,6 +535,13 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         self._snapshot_table = snapshot_table
         self._council_votes_table = council_votes_table
         self._quota_alerts_table = quota_alerts_table
+
+    def _countable_columns(self, columns: str) -> str:
+        """DAT-14: SELECT odczytu trafności z kolumną `stale_quote`, gdy ją mamy
+        (flaga po migracji 055) — `_countable` odsiewa po niej rozliczenia."""
+        if not self._stale_quote_enabled:
+            return columns
+        return f"{columns}, {_STALE_QUOTE_COLUMN}"
 
     # -----------------------------------------------------------------------
     # Reads
@@ -639,6 +672,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             # WIA-18: wejście predykcji dla diagnozy błędu (select("*") je zwraca).
             news_summary=_optional_text(row.get("news_summary")),
             reasoning=_optional_text(row.get("reasoning_text")),
+            # DAT-14: reflect sprawdza, czy notowanie rozliczenia jest z sesji po niej.
+            created_at=_optional_timestamp(row.get("timestamp")),
         )
 
     def get_feature_store_data(
@@ -699,15 +734,17 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # predykcji (cichy cap PostgREST).
         query = _resolved_window(
             self._client.table(self._table).select(
-                "symbol, predicted_trend, is_trend_correct, timestamp, "
-                "reasoning_text, correction_insights, price_at_prediction, "
-                # WIA-56: kwit (migracja 020, na produkcji) do linii pod chybieniem.
-                "actual_price_after_12h, data_quality_flags, decision_receipts"
+                self._countable_columns(
+                    "symbol, predicted_trend, is_trend_correct, timestamp, "
+                    "reasoning_text, correction_insights, price_at_prediction, "
+                    # WIA-56: kwit (migracja 020, na produkcji) do linii pod chybieniem.
+                    "actual_price_after_12h, data_quality_flags, decision_receipts"
+                )
             ),
             cutoff,
             since,
         )
-        return _without_llm_fallback(_paginate(query))
+        return _countable(_paginate(query))
 
     def get_resolved_predictions(self, days: int) -> list[dict[str, Any]]:
         """Zamknięte predykcje (oceniony kierunek) z ostatnich `days` dni.
@@ -726,12 +763,12 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             columns += ", correction_category"
         query = (
             self._client.table(self._table)
-            .select(columns)
+            .select(self._countable_columns(columns))
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
         )
-        return _without_llm_fallback(_paginate(query))
+        return _countable(_paginate(query))
 
     def get_resolved_predictions_detailed(
         self, days: int, since: datetime | None = None
@@ -745,15 +782,18 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         cutoff = datetime.now(UTC) - timedelta(days=days)
         query = _resolved_window(
             self._client.table(self._table).select(
-                "id, symbol, predicted_trend, is_trend_correct, timestamp, "
-                "reasoning_text, correction_insights, price_at_prediction, "
-                "predicted_target_price, actual_price_after_12h, "
-                "confidence_score, council_verdict"
+                self._countable_columns(
+                    "id, symbol, predicted_trend, is_trend_correct, timestamp, "
+                    "reasoning_text, correction_insights, price_at_prediction, "
+                    "predicted_target_price, actual_price_after_12h, "
+                    "confidence_score, council_verdict"
+                )
             ),
             cutoff,
             since,
         )
-        return _paginate(query)
+        # DAT-14: bez `data_quality_flags` w SELECT `_countable` tnie tylko `stale_quote`.
+        return _countable(_paginate(query))
 
     def get_resolved_predictions_for_eval(
         self,
@@ -782,7 +822,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         Metoda concrete-only (nie część `RepositoryPort`) — to narzędzie
         offline-analizy, nie część runtime'owego kontraktu use case'ów."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        columns = (
+        columns = self._countable_columns(
             "predicted_trend, is_trend_correct, price_at_prediction, "
             "predicted_target_price, actual_price_after_12h, timestamp, "
             "data_quality_flags"
@@ -804,7 +844,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             .order("timestamp", desc=True)
         )
         try:
-            return _without_llm_fallback(_paginate(query))
+            return _countable(_paginate(query))
         except APIError as exc:
             missing = _missing_eval_column(exc, extra_fields)
             if missing is None:
@@ -859,14 +899,18 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # bez niego obcięta próbka była losowa przy każdym wywołaniu.
         query = (
             self._client.table(self._table)
-            .select("is_trend_correct, predicted_trend, data_quality_flags, timestamp")
+            .select(
+                self._countable_columns(
+                    "is_trend_correct, predicted_trend, data_quality_flags, timestamp"
+                )
+            )
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
         )
         rows = [
             r
-            for r in _without_llm_fallback(_paginate(query))
+            for r in _countable(_paginate(query))
             if r.get("is_trend_correct") is not None
         ]
         calls = [
@@ -1151,8 +1195,10 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         query = (
             self._client.table(self._table)
             .select(
-                "id, confidence_score, is_trend_correct, predicted_trend, timestamp, "
-                "reasoning_text, data_quality_flags"
+                self._countable_columns(
+                    "id, confidence_score, is_trend_correct, predicted_trend, timestamp, "
+                    "reasoning_text, data_quality_flags"
+                )
             )
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
@@ -1160,7 +1206,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             .order("timestamp", desc=True)
             .order("id", desc=True)
         )
-        return _without_llm_fallback(_paginate(query))
+        return _countable(_paginate(query))
 
     def save_calibration(
         self,
@@ -1877,17 +1923,20 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         is_trend_correct: bool,
         insight: str,
         correction_category: MistakeCategory | None = None,
+        *,
+        stale_quote: bool | None = None,
     ) -> None:
-        payload = _serialize_record(
-            {
-                "actual_price_after_12h": actual_price,
-                "accuracy_score": accuracy_score,
-                "is_trend_correct": is_trend_correct,
-                "correction_insights": insight,
-                **self._category_payload(correction_category),
-            },
-            _PREDICTION_PRICE_COLUMNS,
-        )
+        settlement: dict[str, Any] = {
+            "actual_price_after_12h": actual_price,
+            "accuracy_score": accuracy_score,
+            "is_trend_correct": is_trend_correct,
+            "correction_insights": insight,
+            **self._category_payload(correction_category),
+        }
+        # DAT-14: klucz tylko, gdy graf go podał (flaga po migracji 055) — PGRST204.
+        if stale_quote is not None:
+            settlement[_STALE_QUOTE_COLUMN] = stale_quote
+        payload = _serialize_record(settlement, _PREDICTION_PRICE_COLUMNS)
         # Idempotency guard: aktualizujemy tylko gdy actual_price_after_12h jest
         # NULL. Bez tego dwa równoczesne cykle (np. ręczny workflow_dispatch
         # nakładający się na scheduled run) mogłyby nadpisać już ocenioną

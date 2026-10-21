@@ -87,6 +87,7 @@ MIGRATION_FILES = [
     "052_model_scorecards_feature_stats.sql",
     "053_earnings_cache.sql",
     "054_council_votes_unique.sql",
+    "055_prediction_stale_quote.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1560,6 +1561,29 @@ class TestMigrations:
 
         assert psi == (pytest.approx(0.31),)
         assert data_type == ("jsonb",)
+    # -- Migracja 055: znacznik nieaktualnego notowania (DAT-14) ---------------
+
+    def test_stale_quote_column_is_a_nullable_boolean(self, pg_conn) -> None:
+        """Zapis bez flagi `stale_quote_enabled` zostawia NULL (nieznane); reflect
+        stawia true przy rozliczeniu z notowania sprzed sesji po predykcji."""
+        assert "stale_quote" in _columns(pg_conn, "prediction_logs")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('SQ_NULL', '2026-11-26T05:30:00+00:00', 100.0) RETURNING stale_quote"
+            )
+            assert cur.fetchone() == (None,)
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction, stale_quote) "
+                "VALUES ('SQ_SET', '2026-11-26T05:30:00+00:00', 100.0, false) RETURNING id"
+            )
+            prediction_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE prediction_logs SET stale_quote = true, actual_price_after_12h = 100.0 "
+                "WHERE id = %s RETURNING stale_quote",
+                (prediction_id,),
+            )
+            assert cur.fetchone() == (True,)
 
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 

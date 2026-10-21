@@ -156,6 +156,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "model_scorecard_feature_stats_enabled",
     # WIA-57: sam zapis kategorii diagnozy (046) i jej odczyt w panelu lessons.
     "correction_category_enabled",
+    # DAT-14: sam zapis znacznika `stale_quote` i odsiew trafności; prognoza ta sama.
+    "stale_quote_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -737,6 +739,10 @@ class Settings(BaseSettings):
     # samej godzinie nie dubluje ich wagi. Wymaga UNIQUE z migracji 054; do tego
     # czasu goły insert (upsert bez indeksu PostgREST odrzuca).
     council_votes_upsert_enabled: bool = False
+    # DAT-14: kolumna `prediction_logs.stale_quote` (migracja 055) — zapis znacznika
+    # nieaktualnego notowania i odsiew takich wierszy z trafności. Off w kodzie
+    # i w config.toml, dopóki produkcja nie ma migracji.
+    stale_quote_enabled: bool = False
     # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
     # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
     # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.

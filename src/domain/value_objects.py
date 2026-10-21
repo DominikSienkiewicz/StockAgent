@@ -5,7 +5,12 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 
-from src.domain.market_calendar import TradingSession, last_started_session, to_nyse_time
+from src.domain.market_calendar import (
+    TradingSession,
+    last_started_session,
+    next_open,
+    to_nyse_time,
+)
 
 # ARCH-38: lustro kolumn cenowych DECIMAL(14,4) (001_init.sql:24-34,
 # 002_price_snapshots.sql:15, 032_move_interval.sql). Python trzyma pełną
@@ -127,6 +132,16 @@ def is_stale(
     zamknięcie jest sprzed predykcji. Naiwny `datetime` to UTC."""
     session = last_session if last_session is not None else last_started_session(now)
     return to_nyse_time(quoted_at) < session.opens_at
+
+
+def settles_on_stale_quote(quoted_at: datetime, predicted_at: datetime) -> bool:
+    """DAT-14: czy notowanie jest za stare, by rozliczyć predykcję z `predicted_at`.
+
+    Rozliczenie wymaga ceny z sesji otwartej PO predykcji. W weekend, w święto NYSE
+    i w drugim przebiegu przed otwarciem /quote oddaje zamknięcie sprzed predykcji,
+    więc cena rozliczenia równa się cenie wejścia: BULLISH i BEARISH to pudło,
+    SIDEWAYS trafienie, choć rynek nic nie powiedział. Naiwny `datetime` to UTC."""
+    return to_nyse_time(quoted_at) < next_open(predicted_at)
 
 
 # TTL danych fundamentalnych w cache. Slow Loop odświeża je raz w tygodniu, więc

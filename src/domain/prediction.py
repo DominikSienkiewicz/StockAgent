@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
@@ -62,6 +63,9 @@ DIAGNOSIS_SKIPPED_INSIGHT = "Niska zmienność — diagnoza LLM pominięta (bez 
 # Tekst sprzed WIA-10 obiecywał „odłożenie”, którego nigdy nie było. Wiersze
 # z nim zostają w bazie, więc predykat musi go nadal rozpoznawać.
 LEGACY_DIAGNOSIS_DEFERRED_INSIGHT = "Niska zmienność — diagnoza LLM odłożona."
+# DAT-14: rozliczenie na notowaniu sprzed sesji po predykcji nie mówi nic o trafności,
+# więc nie ma czego diagnozować (płatny LLM pominięty).
+STALE_QUOTE_INSIGHT = "Nieaktualne notowanie — rozliczenie bez oceny i bez diagnozy LLM."
 
 # WIA-53: błędne predykcje z tymi placeholderami nie mają diagnozy, za którą
 # ktoś zapłacił — job Slow Loopa (`BackfillDiagnosesUseCase`) diagnozuje je
@@ -77,6 +81,7 @@ _PLACEHOLDER_INSIGHTS = frozenset(
         CORRECT_PREDICTION_INSIGHT,
         DIAGNOSIS_SKIPPED_INSIGHT,
         LEGACY_DIAGNOSIS_DEFERRED_INSIGHT,
+        STALE_QUOTE_INSIGHT,
     )
 )
 
@@ -147,6 +152,9 @@ class Prediction:
     # z repozytorium dla diagnozy błędu. None = brak zapisu (stare wiersze).
     news_summary: str | None = None
     reasoning: str | None = None
+    # DAT-14: chwila zapisu predykcji — rozliczenie wymaga notowania z sesji po niej.
+    # None = repozytorium jej nie podało (wtedy stęchłości rozliczenia nie oceniamy).
+    created_at: datetime | None = None
 
     def is_trend_correct(
         self, actual_price: Decimal, tolerance: Decimal | None = None

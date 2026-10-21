@@ -19,7 +19,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 
 | Relation | Migrations | Data class | RLS after `038` | Written by | Read by |
 |---|---|---|---|---|---|
-| `prediction_logs` | `001`, columns added up to `043` | Model output: predictions, council verdicts, receipts, settlements, embeddings | on, no policies | Fast Loop (prediction, settlement, calibration, attestation reveal) | Fast Loop (reflection, RAG, report, track record), tools (`evaluate`), Scorecard (public scorecard) |
+| `prediction_logs` | `001`, columns added up to `043`, `055` (`stale_quote`) | Model output: predictions, council verdicts, receipts, settlements, embeddings | on, no policies | Fast Loop (prediction, settlement, calibration, attestation reveal) | Fast Loop (reflection, RAG, report, track record), tools (`evaluate`), Scorecard (public scorecard) |
 | `price_snapshots` | `002`, `013` | Market data: one price per symbol and hour | on, no policies | Fast Loop (every cycle) | Fast Loop, Shock Watch (fallback reference price when the free quote has no fresh daily change, ALR-02), Deadman (database probe), Scorecard (IVV benchmark) |
 | `ml_feature_store` | materialized view, `001` rebuilt in `004`, `012`, `022`, `026`, `027`, `039`, `047`, `050` | Derived training features from `prediction_logs` | not applicable (a materialized view has no RLS; grants only) | Slow Loop and backtest refresh it (`refresh_ml_feature_store`) | Slow Loop, backtest |
 | `fundamentals_cache` | `006` | Market data: Alpha Vantage fundamentals cache | on, no policies | Fast Loop | Fast Loop |
