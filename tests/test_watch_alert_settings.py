@@ -1,4 +1,4 @@
-"""Ustawienia alertów watcha (grupa W2-4): cisza nocna pushy (ALR-09).
+"""Ustawienia grupy W2-4: cisza nocna pushy (ALR-09) i bramka dryfu (ALR-10).
 
 Osobny plik zamiast dopisków do `test_config.py` / `test_config_toml.py`:
 te same niezmienniki (domyślne wartości, klasyfikacja w `config_hash`,
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import NON_RECIPE_SETTINGS_FIELDS, Settings
+from src.config import NON_RECIPE_SETTINGS_FIELDS, RECIPE_SETTINGS_FIELDS, Settings
 
 CONFIG_TOML = Path(__file__).parent.parent / "config.toml"
 
@@ -60,3 +60,18 @@ class TestQuietHoursSettings:
         assert data["quiet_hours_enabled"] is True
         assert data["quiet_hours_start"] == "22:00"
         assert data["quiet_hours_end"] == "07:00"
+
+
+class TestDriftGateSettings:
+    """ALR-10: dryf otwiera bramkę częściej (≤ +1 pełny pipeline na symbol na epizod
+    dryfu), więc flaga jest domyślnie off i należy do przepisu predykcji."""
+
+    def test_defaults_off(self) -> None:
+        assert _settings().drift_gate_enabled is False
+
+    def test_flag_is_part_of_the_recipe(self) -> None:
+        assert "drift_gate_enabled" in RECIPE_SETTINGS_FIELDS
+        assert _settings(drift_gate_enabled=True).config_hash() != _settings().config_hash()
+
+    def test_real_config_toml_ships_the_drift_gate_off(self) -> None:
+        assert _toml()["drift_gate_enabled"] is False

@@ -3912,6 +3912,30 @@ class TestGateDeltaWiring:
         assert use_case_cls.call_args.args[0].gate_delta_enabled is True
 
 
+class TestDriftGateWiring:
+    """ALR-10 — flaga bramki dryfu z Settings trafia do `AgentGraphDeps`; off
+    (domyślnie) = use case nie czyta referencji dryfu, bramka jak przed ALR-10."""
+
+    def test_flag_defaults_off_in_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].drift_gate_enabled is False
+
+    def test_flag_reaches_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.drift_gate_enabled = True
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].drift_gate_enabled is True
+
+
 class TestStaleReferenceWiring:
     """FIN-14 — zegar cyklu dociera do use case'u (wiek referencji ceny liczy się
     od startu cyklu, jak nagłówek maila), a stęchłe referencje dowodzą historii."""

@@ -20,10 +20,11 @@ from src.application.agent_graph import (
     required_prediction_columns,
 )
 from src.application.cycle_telemetry import CycleTelemetry
-from src.application.ports import NewsPort, SentimentPort
+from src.application.ports import LatestPrediction, NewsPort, SentimentPort
 from src.domain.alpha_fusion import AlphaFusionScore
-from src.domain.asset import Asset, is_reference_stale
+from src.domain.asset import DRIFT_WINDOW_DAYS, Asset, drift_reference, is_reference_stale
 from src.domain.experiment import active_arms
+from src.domain.value_objects import Money
 
 logger = logging.getLogger(__name__)
 
@@ -208,12 +209,38 @@ class AnalyzeMarketUseCase:
         # Przekazujemy asset z klasyfikacją (STOCK/ETF), gdy dostępny z zewnątrz.
         if asset is not None:
             initial_state["asset"] = asset
+        # ALR-10: referencja dryfu tylko za flagą; brak = bramka jak przed ALR-10.
+        if self._deps.drift_gate_enabled:
+            reference = self._drift_reference(symbol, clock)
+            if reference is not None:
+                initial_state["drift_reference"] = reference
         # EXP-05: ramiona aktywnych eksperymentów per symbol-dzień UTC cyklu.
         arms = active_arms(self._experiments, symbol, _utc_day(clock))
         if arms:
             logger.info("experiment arms for %s: %s", symbol, arms)
             initial_state["experiment_arms"] = arms
         return initial_state
+
+    def _drift_reference(self, symbol: str, clock: datetime) -> Decimal | None:
+        """ALR-10: cena odniesienia dryfu z darmowych odczytów Supabase (ostatnia
+        predykcja, snapshoty z okna). Fail-closed: błąd albo odczyt spoza kontraktu
+        portu → None, czyli bramka bez dryfu — nigdy dodatkowa płatna analiza."""
+        try:
+            latest = self._repository.get_latest_prediction(symbol)
+            history = self._repository.get_price_history(symbol, DRIFT_WINDOW_DAYS)
+        except Exception:
+            logger.warning(
+                "ALR-10: nie odczytano referencji dryfu %s — bramka bez dryfu",
+                symbol,
+                exc_info=True,
+            )
+            return None
+        prediction = (
+            (latest.timestamp, latest.price.amount)
+            if isinstance(latest, LatestPrediction)
+            else None
+        )
+        return drift_reference(prediction, _price_points(history), clock)
 
     def _reference_at(self, symbol: str) -> datetime | None:
         """FIN-14: moment zapisu referencji ceny (darmowy odczyt `price_snapshots`).
@@ -232,6 +259,17 @@ class AnalyzeMarketUseCase:
                 exc_info=True,
             )
             return None
+
+
+def _price_points(history: object) -> list[tuple[datetime, Decimal]]:
+    """Punkty historii cen w kształcie kontraktu portu; reszta odpada (fail-closed)."""
+    if not isinstance(history, list):
+        return []
+    return [
+        (stamp, price.amount)
+        for stamp, price in (point for point in history if isinstance(point, tuple))
+        if isinstance(stamp, datetime) and isinstance(price, Money)
+    ]
 
 
 def _utc_day(clock: datetime) -> date:

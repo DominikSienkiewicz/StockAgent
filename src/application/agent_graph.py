@@ -145,6 +145,11 @@ class AgentState(TypedDict, total=False):
     stale_reference: bool
     current_price: Decimal
     delta: Decimal
+    # ALR-10: cena odniesienia dryfu (ostatnia predykcja z okna albo początek okna,
+    # podaje use case za `drift_gate_enabled`) i dryf od niej (ułamek, z check_price).
+    # Brak klucza = bramka jak przed ALR-10.
+    drift_reference: Decimal
+    drift: Decimal
     status: str
     # FIN-12: ruch przeszedł bramkę volatility, ale cykl wyczerpał sufit płatnych
     # wywołań LLM — symbol kończy jako 'ignored' bez analizy i bez snapshotu ceny.
@@ -602,6 +607,9 @@ class AgentGraphDeps:
     # EXP-01: delta, która otworzyła bramkę, w `gate_delta` (migracja 034). Off =
     # klucza nie ma w rekordzie — przed migracją dałby PGRST204.
     gate_delta_enabled: bool = False
+    # ALR-10: bramka widzi dryf od ostatniej predykcji (darmowe odczyty referencji
+    # w use case). Off = stan bez `drift_reference`, bramka jak przed ALR-10.
+    drift_gate_enabled: bool = False
     # EXP-05: definicje eksperymentów; use case liczy z nich ramiona per
     # symbol-dzień i podaje je w stanie (`experiment_arms`).
     experiments: tuple[Experiment, ...] = ()
@@ -642,10 +650,14 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]
     # cykl, który padł w połowie, nie zostawia snapshotu, więc retry reużyje
     # referencji z poprzedniego UKOŃCZONEGO cyklu (zamiast porównywać się do
     # świeżego snapshotu padłej próby → delta≈0 → cichy "ignore").
-    return {
+    update: dict[str, Any] = {
         "current_price": current.amount,
         "delta": delta.percentage,
     }
+    reference = state.get("drift_reference")
+    if reference is not None and reference > 0:
+        update["drift"] = PriceDelta.calculate(Money(reference), current).fraction
+    return update
 
 
 
@@ -806,11 +818,18 @@ def _reference_is_stale(state: AgentState) -> bool:
     return bool(state.get("stale_reference", False))
 
 
-def _gate_reason(passes: bool, stale: bool) -> str:
+def _drift_of(state: AgentState) -> PriceDelta | None:
+    """ALR-10: dryf od referencji policzony w check_price; None = bez dryfu."""
+    drift = state.get("drift")
+    return PriceDelta(drift) if drift is not None else None
+
+
+def _gate_reason(passes: bool, stale: bool, *, by_drift: bool = False) -> str:
     """ARCH-11: powód decyzji bramki do telemetrii cyklu. Stęchła referencja
-    zamyka bramkę niezależnie od ruchu (FIN-14), więc ma własny powód."""
+    zamyka bramkę niezależnie od ruchu (FIN-14), więc ma własny powód; bramka
+    otwarta samym dryfem (ALR-10) też."""
     if passes:
-        return "above_threshold"
+        return "drift_above_threshold" if by_drift else "above_threshold"
     return "stale_reference" if stale else "below_threshold"
 
 
@@ -839,6 +858,8 @@ class _GateVerdict:
     stale: bool
     threshold: Threshold
     asset: Asset
+    # ALR-10: bramkę otworzył sam dryf — ruch cyklu był pod progiem.
+    by_drift: bool = False
 
 
 def _gate_verdict(
@@ -847,15 +868,25 @@ def _gate_verdict(
     crypto_override: Threshold | None,
     *,
     reference_stale: bool = False,
+    drift: PriceDelta | None = None,
 ) -> _GateVerdict:
     """FIN-08: jeden helper każdej bramki volatility (główna, diagnoza reflect,
     tool-use, rada) — efektywny próg z domeny i werdykt `Asset.evaluate_volatility`."""
     asset = state.get("asset") or Asset(symbol=state["symbol"])
     chosen = _pick_threshold(state, default, crypto_override)
+    delta = PriceDelta(state["delta"])
     passes = asset.evaluate_volatility(
-        PriceDelta(state["delta"]), chosen, reference_stale=reference_stale
+        delta, chosen, reference_stale=reference_stale, drift=drift
     )
-    return _GateVerdict(passes=passes, stale=reference_stale, threshold=chosen, asset=asset)
+    # ALR-10: bramkę otworzył sam dryf, gdy bez niego ruch cyklu byłby pod progiem.
+    by_drift = (
+        drift is not None
+        and passes
+        and not asset.evaluate_volatility(delta, chosen, reference_stale=reference_stale)
+    )
+    return _GateVerdict(
+        passes=passes, stale=reference_stale, threshold=chosen, asset=asset, by_drift=by_drift
+    )
 
 
 def _volatility_verdict(deps: AgentGraphDeps, state: AgentState) -> _GateVerdict:
@@ -864,20 +895,23 @@ def _volatility_verdict(deps: AgentGraphDeps, state: AgentState) -> _GateVerdict
         deps.threshold,
         deps.crypto_threshold,
         reference_stale=_reference_is_stale(state),
+        drift=_drift_of(state),
     )
 
 
 def _log_gate_decision(state: AgentState, verdict: _GateVerdict, decision: str) -> None:
     # #13: decyzja bramki volatility musi być widoczna w logach — bez tego
     # nie dało się odróżnić zamierzonego "ignore" (FinOps) od cichego buga.
+    drift = state.get("drift")
     logger.info(
         "volatility gate for %s: |Δ|=%.4f threshold=%.4f asset_type=%s "
-        "stale_reference=%s → %s",
+        "stale_reference=%s drift=%s → %s",
         state["symbol"],
         abs(float(state["delta"])),
         float(verdict.threshold.value),
         verdict.asset.asset_type.value,
         verdict.stale,
+        "-" if drift is None else f"{float(drift):.4f}",
         decision,
     )
 
@@ -892,7 +926,9 @@ def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
     else:
         decision = "analyze" if passes else "ignore"
         deps.telemetry.record_gate(
-            state["symbol"], passes, _gate_reason(passes, verdict.stale)
+            state["symbol"],
+            passes,
+            _gate_reason(passes, verdict.stale, by_drift=verdict.by_drift),
         )
     _log_gate_decision(state, verdict, decision)
     if over_budget:
@@ -926,7 +962,8 @@ def _paid_phase_route(deps: AgentGraphDeps, state: AgentState) -> str:
     if _budget_exhausted(deps, symbol):
         deps.telemetry.record_gate(symbol, False, "budget_exhausted")
         return "budget_exhausted"
-    deps.telemetry.record_gate(symbol, True, _gate_reason(True, stale=False))
+    by_drift = _volatility_verdict(deps, state).by_drift
+    deps.telemetry.record_gate(symbol, True, _gate_reason(True, stale=False, by_drift=by_drift))
     return "analyze_sentiment"
 
 
@@ -993,8 +1030,13 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # od zmienności" — niezależna pozostaje TYLKO tania część (ocena);
     # kosztowna diagnoza LLM jest teraz związana z progiem volatility.
     # FIN-14: ta sama bramka — ruch od stęchłej referencji nie płaci za diagnozę.
+    # ALR-10: i ten sam dryf — powolny zjazd też odsłania błąd predykcji.
     diagnose_paid = _gate_verdict(
-        state, threshold, crypto_threshold, reference_stale=_reference_is_stale(state)
+        state,
+        threshold,
+        crypto_threshold,
+        reference_stale=_reference_is_stale(state),
+        drift=_drift_of(state),
     ).passes
 
     if diagnose_paid:
@@ -1643,6 +1685,8 @@ def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
         "experiment_arms": deps.experiment_arms_enabled,
         "commitment_hash": deps.attestation_publisher is not None,
         "commitment_salt": deps.attestation_publisher is not None,
+        # WIA-70 (migracja 043): dosłowny plaintext commitmentu, ta sama zasada.
+        "commitment_payload": deps.attestation_publisher is not None,
         "embedding": deps.embedding_port is not None,
     }
     return _ALWAYS_SAVED_PREDICTION_COLUMNS | {

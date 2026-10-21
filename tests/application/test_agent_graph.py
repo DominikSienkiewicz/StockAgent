@@ -1271,6 +1271,110 @@ class TestVolatilityBelowThreshold:
 # ---------------------------------------------------------------------------
 
 
+class TestCumulativeDriftGate:
+    """ALR-10: dryf od ostatniej predykcji (`drift_reference` w stanie, podaje go
+    use case za `drift_gate_enabled`) otwiera bramkę tym samym progiem i tymi
+    samymi mnożnikami co ruch cyklu. Bez referencji bramka jest jak przed ALR-10."""
+
+    @staticmethod
+    def _drifting_state(reference: str, **extra: object) -> dict:
+        return {**_initial_state("100.0"), "drift_reference": Decimal(reference), **extra}
+
+    def test_cumulative_drift_since_last_prediction_opens_gate(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Dziesiąty krok po -1,9%: ruch cyklu pod progiem 2%, od ostatniej predykcji
+        # (118,90) cena spadła o -17,5%.
+        market_port.get_current_price.return_value = Money(Decimal("98.1"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(self._drifting_state("118.9"))
+
+        assert final["status"] == "saved"
+        assert final["delta"] == Decimal("-0.019")
+        assert final["drift"] == pytest.approx(Decimal("-0.175"), abs=Decimal("0.001"))
+        repository_port.save_prediction.assert_called_once()
+
+    def test_small_drift_keeps_the_gate_closed_and_pays_nothing(
+        self, workflow, market_port, sentiment_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("98.1"))
+
+        final = workflow.compile().invoke(self._drifting_state("99.5"))
+
+        assert final["status"] == "ignored"
+        sentiment_port.get_social_score.assert_not_called()
+        llm_port.analyze.assert_not_called()
+
+    def test_regime_multiplier_tightens_the_drift_gate_too(
+        self, workflow, market_port, llm_port,
+    ):
+        # RISK_OFF ×2 → próg 4%; dryf -2,9% go nie przekracza.
+        market_port.get_current_price.return_value = Money(Decimal("98.1"))
+
+        final = workflow.compile().invoke(
+            self._drifting_state("101.0", regime_multiplier=2.0)
+        )
+
+        assert final["status"] == "ignored"
+        llm_port.analyze.assert_not_called()
+
+    def test_stale_reference_keeps_the_gate_closed_despite_drift(
+        self, workflow, market_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("98.1"))
+
+        final = workflow.compile().invoke(
+            self._drifting_state("118.9", stale_reference=True)
+        )
+
+        assert final["status"] == "ignored"
+        llm_port.analyze.assert_not_called()
+
+    def test_drift_also_pays_for_the_mistake_diagnosis(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Bramka reflect bierze ten sam dryf: błędna predykcja przy -17,5% dostaje diagnozę.
+        market_port.get_current_price.return_value = Money(Decimal("98.1"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+
+        workflow.compile().invoke(self._drifting_state("118.9"))
+
+        llm_port.analyze_mistake.assert_called_once()
+
+    def test_gate_reason_names_the_drift(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.cycle_telemetry import CycleTelemetry
+
+        telemetry = CycleTelemetry()
+        graph = create_agent_graph(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            telemetry=telemetry,
+        ))
+        market_port.get_current_price.return_value = Money(Decimal("98.1"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        graph.compile().invoke(self._drifting_state("118.9"))
+
+        assert telemetry.snapshot().gate_reasons == {"drift_above_threshold": 1}
+
+
 class TestCustomThreshold:
     def test_respects_injected_threshold(
         self,
@@ -4685,6 +4789,7 @@ class TestRequiredPredictionColumns:
         "experiment_arms",
         "commitment_hash",
         "commitment_salt",
+        "commitment_payload",
         "embedding",
     })
 

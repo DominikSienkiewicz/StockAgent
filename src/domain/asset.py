@@ -1,4 +1,5 @@
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -21,6 +22,10 @@ EPS_GROWTH_LOW = 0.10
 # godzin to stan sprzed pauzy, nie poprzedni cykl. 96 h mieści weekend (~60 h)
 # z jednym opuszczonym cyklem, a odcina tygodnie wstrzymanego crona.
 REFERENCE_MAX_AGE_HOURS = 96
+
+# ALR-10: okno dryfu — predykcja starsza niż tyle dni nie jest punktem odniesienia
+# (stan sprzed pauzy), a bez predykcji w oknie liczy się pierwsza cena okna.
+DRIFT_WINDOW_DAYS = 10
 
 
 @dataclass(frozen=True)
@@ -101,21 +106,61 @@ def effective_threshold(
     return Threshold(chosen.value * Decimal(str(multiplier)))
 
 
+def drift_reference(
+    last_prediction: tuple[datetime, Decimal] | None,
+    history: Sequence[tuple[datetime, Decimal]],
+    now: datetime,
+    *,
+    window_days: int = DRIFT_WINDOW_DAYS,
+) -> Decimal | None:
+    """ALR-10: cena, od której liczy się dryf — powolny zjazd złożony z kroków
+    pod progiem (10 × -1,9% = -17,5% bez żadnej analizy).
+
+    Najpierw cena ostatniej predykcji, o ile powstała w oknie `window_days`: po
+    analizie dryf liczy się od nowa, więc epizod kosztuje najwyżej jeden pipeline.
+    Bez predykcji w oknie — pierwsza cena `history` (snapshoty, rosnąco po czasie)
+    w oknie. Predykcja sprzed okna nie liczy się: po pauzie otworzyłaby bramkę
+    każdemu symbolowi, który ruszył się od tamtej pory. Nic w oknie albo cena ≤ 0
+    → None (bez dryfu). Naiwne daty czytamy jako UTC."""
+    window_start = _as_utc(now) - timedelta(days=window_days)
+    if last_prediction is not None:
+        stamp, price = last_prediction
+        if _as_utc(stamp) >= window_start and price > 0:
+            return price
+    for stamp, price in history:
+        if _as_utc(stamp) >= window_start:
+            return price if price > 0 else None
+    return None
+
+
+def _as_utc(moment: datetime) -> datetime:
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+
+
 @dataclass(frozen=True)
 class Asset:
     symbol: str
     asset_type: AssetType = field(default=AssetType.STOCK)
 
     def evaluate_volatility(
-        self, delta: PriceDelta, threshold: Threshold, *, reference_stale: bool = False
+        self,
+        delta: PriceDelta,
+        threshold: Threshold,
+        *,
+        reference_stale: bool = False,
+        drift: PriceDelta | None = None,
     ) -> bool:
         # Bramka operuje na UŁAMKU (fraction), nie procencie — próg też jest
         # ułamkiem (np. 0.02 = 2%).
         # FIN-14: ruch od stęchłej referencji to skumulowana zmiana wielu dni,
         # nie ruch cyklu — bramka zostaje zamknięta niezależnie od jego wielkości.
+        # Dryf (ALR-10) też: po pauzie najpierw re-baseline.
         if reference_stale:
             return False
-        return abs(delta.fraction) >= threshold.value
+        if abs(delta.fraction) >= threshold.value:
+            return True
+        # ALR-10: ten sam próg (z tymi samymi mnożnikami) dla ruchu od referencji dryfu.
+        return drift is not None and abs(drift.fraction) >= threshold.value
 
     def evaluate_valuation(
         self, fundamentals: Fundamentals | None

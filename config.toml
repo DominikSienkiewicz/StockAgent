@@ -282,6 +282,10 @@ council_personas_dir = "data/council_personas"
 volatility_threshold = "0.02"
 council_volatility_threshold = "0.03"
 crypto_volatility_threshold = "0.05"
+# ALR-10: bramka widzi dryf od ceny ostatniej predykcji z 10 dni (albo od pierwszej
+# ceny okna) — 10 × -1,9% to -17,5% bez analizy. Najwyżej +1 pełny pipeline na symbol
+# na epizod dryfu, więc decyzja o włączeniu należy do właściciela. Off.
+drift_gate_enabled = false
 # Osobny, wyższy próg dla pętli tool-use (#6) — tylko duże ruchy ją uruchamiają.
 tool_use_volatility_threshold = "0.05"
 

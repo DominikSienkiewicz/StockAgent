@@ -1462,6 +1462,8 @@ def build_use_case(
         interval_columns_enabled=settings.interval_coverage_enabled,
         # EXP-01: kolumna `gate_delta` (migracja 034) za flagą.
         gate_delta_enabled=settings.gate_delta_enabled,
+        # ALR-10: bramka widzi dryf od ostatniej predykcji (darmowe odczyty); off.
+        drift_gate_enabled=settings.drift_gate_enabled,
         # EXP-05: eksperymenty (ramię per symbol-dzień liczy use case); kolumna
         # `experiment_arms` (migracja 037) za flagą, kwit v2 za `receipts_enabled`.
         experiments=settings.experiment_definitions(),

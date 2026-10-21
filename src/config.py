@@ -208,6 +208,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # ALR-03: histereza przedłuża RISK_OFF, czyli wyższy efektywny próg bramki.
     "regime_hysteresis_enabled",
     "regime_exit_confirmations",
+    # ALR-10: dryf od ostatniej predykcji otwiera bramkę w cyklach pod progiem.
+    "drift_gate_enabled",
     "contagion_enabled",
     # PORT-05: sektory → `peer_groups` (contagion w prompcie, ekspozycja w sizingu).
     "sectors",
@@ -674,6 +676,10 @@ class Settings(BaseSettings):
 
     # ----- Agent config -----
     volatility_threshold: Decimal = Field(default=Decimal("0.02"))
+    # ALR-10: bramka widzi dryf — ruch od ceny ostatniej predykcji z okna 10 dni
+    # (albo od pierwszej ceny okna) z tym samym progiem i mnożnikami co ruch cyklu.
+    # Koszt: najwyżej +1 pełny pipeline na symbol na epizod dryfu. Off.
+    drift_gate_enabled: bool = False
     # Osobny, wyższy próg dla rady doradczej. Rada (N wywołań LLM person + chairman)
     # jest droga — przy małych Δ jej werdykt to prawie zawsze HOLD. Domyślnie
     # 3% — można podnieść do 5% przy ciasnym budżecie albo wyłączyć (0.0) dla
