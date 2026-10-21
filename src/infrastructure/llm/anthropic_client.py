@@ -29,9 +29,6 @@ DEFAULT_MAX_TOKENS = 768
 DEFAULT_TEMPERATURE = 0.2
 # GHA fast loop ma 15 min hard timeout; SDK domyślnie czeka 600s.
 DEFAULT_TIMEOUT = 30.0
-# Próg włączania ephemeral cache — Anthropic wymaga ≥1024 tok dla sonnet/opus.
-# Liczymy ~4 znaki/token jako bezpieczne oszacowanie.
-_CACHE_MIN_CHARS = 4096
 
 # Retry na 429 (rate limit) i 5xx (w tym 529 Overloaded) — analogicznie do
 # OpenAIAdapter. Claude jest domyślnym, głównym LLM, więc musi mieć tę samą
@@ -78,10 +75,15 @@ class AnthropicAdapter(LLMPort):
 
     Przełączenie z OpenAI = `LLM_PROVIDER=anthropic` w `.env` + ANTHROPIC_API_KEY.
 
-    Prompt caching: dla wystarczająco długich promptów (≥1024 tok ≈ 4096 znaków)
-    włączamy ephemeral cache_control na content bloku. Cache działa per
-    identyczny prefix — przy 2 cyklach dziennie ten sam template promptu
-    daje cache hit na strukturalnej części (rola/instrukcje/schemat).
+    Bez prompt cachingu (FIN-10): cache Anthropic trafia tylko w prefiks identyczny
+    aż do znacznika `cache_control`, a prompt predykcji niesie symbol już na
+    początku. Znacznik na końcu jedynego bloku zapisywał więc cache (~1,25× ceny
+    wejścia), którego żaden kolejny prompt nie czytał. Stała część promptu (rola,
+    instrukcje, schemat) ma wg audytu ~2 800 znaków (~700 tokenów), czyli mniej niż
+    minimum cache Sonneta (1024 tokeny) — wariant ze stałą częścią w `system` wymaga
+    najpierw pomiaru.
+    Tokeny cache z `response.usage` dalej trafiają do `usage_sink` — ledger pokaże,
+    gdyby zapis cache wrócił.
 
     Retry: 429 (rate limit) oraz 5xx/529 (Overloaded) i błędy połączenia są
     retry'owane z backoffem; inne błędy (np. 400) lecą natychmiast w górę.
@@ -116,26 +118,13 @@ class AnthropicAdapter(LLMPort):
         self._quota_monitor = quota_monitor
         self._usage_sink = usage_sink
 
-    @staticmethod
-    def _build_user_content(prompt: str) -> Any:
-        # Dla krótkich promptów cache_control byłby narzutem bez zysku
-        # (Anthropic odrzuca cache bloki <1024 tok). Zwracamy raw string.
-        # Typowane Any bo SDK używa wąskich TypedDict'ów (TextBlockParam),
-        # których konstruowanie dictem dla cache_control jest poprawne runtime
-        # ale niezgodne strukturalnie.
-        if len(prompt) < _CACHE_MIN_CHARS:
-            return prompt
-        return [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]
-
     def _call(self, prompt: str) -> str:
         response = self._call_with_retry(
             lambda: self._client.messages.create(
                 model=self._model,
                 max_tokens=self._max_tokens,
                 temperature=self._temperature,
-                messages=[
-                    {"role": "user", "content": self._build_user_content(prompt)}
-                ],
+                messages=[{"role": "user", "content": prompt}],
             )
         )
         if self._usage_sink is not None:
