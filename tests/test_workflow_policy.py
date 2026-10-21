@@ -116,3 +116,23 @@ def test_integration_smoke_uses_only_its_own_secrets() -> None:
 
     assert secrets, "smoke bez sekretów pominie każdy test na żywym API"
     assert all(name.startswith("SMOKE_") for name in secrets), sorted(secrets)
+
+
+# CI-07: SHA akcji (CI-08) nikt nie podbijał, a zależności nie były kuratorowane.
+# Dependabot co tydzień, jedna grupa na ekosystem — bez grup zalałby repo PR-ami.
+DEPENDABOT = ROOT / ".github" / "dependabot.yml"
+
+
+def test_dependabot_groups_weekly_updates_for_actions_and_uv() -> None:
+    spec = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+    updates = {update["package-ecosystem"]: update for update in spec["updates"]}
+
+    assert spec["version"] == 2
+    assert set(updates) == {"github-actions", "uv"}
+    for ecosystem, update in updates.items():
+        assert update["directory"] == "/", ecosystem
+        assert update["schedule"]["interval"] == "weekly", ecosystem
+        groups = update.get("groups") or {}
+        assert any(group.get("patterns") == ["*"] for group in groups.values()), (
+            f"{ecosystem}: bez grupy `*` każda zależność dostaje osobny PR"
+        )

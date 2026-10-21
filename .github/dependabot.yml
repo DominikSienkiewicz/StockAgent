@@ -1,0 +1,26 @@
+# CI-07: cotygodniowe podbicia SHA akcji (pinowanych po commicie, CI-08) i zależności
+# z uv.lock. Jedna grupa na ekosystem = jeden PR tygodniowo zamiast PR-a na pakiet.
+# PR-y Dependabota nie dostają sekretów repo, więc job SonarCloud się w nich pomija
+# (brak SONAR_TOKEN), a bramka ruff + mypy + pytest biegnie normalnie.
+# Strażnik: tests/test_workflow_policy.py.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    groups:
+      python-deps:
+        patterns: ["*"]
