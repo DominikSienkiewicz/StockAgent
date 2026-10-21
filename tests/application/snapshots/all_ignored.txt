@@ -22,6 +22,11 @@ HISTORIA TRAFNOŚCI (ostatnie 30 dni)
   Trafność kierunkowa (bez prognoz „bez ruchu”): 57,5% (95% CI 42–71%, n=40)
   Trafność łączna (z prognozami „bez ruchu”): 62,0% (95% CI 48–74%, n=50)  ·  Predykcji ocenionych: 50  ·  Poprawnych: 31
 
+KOSZT CYKLU
+----------------------------------------------------------------
+  0 płatnych wywołań — bramka volatility odcięła wszystkie symbole (cykl darmowy).
+  Uwaga: Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, nie faktura od dostawcy.
+
 POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------
   NVDA(0,40%), AMD(-0,70%), VOO(0,20%), ETH(-1,10%)

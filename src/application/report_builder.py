@@ -26,13 +26,15 @@ from src.application.report_charts import (
 )
 from src.application.report_consensus_shift import (
     render_consensus_shift_html,
+    render_consensus_shift_text,
 )
 from src.application.report_council_history import (
     InvestorHistory,
     render_council_history_html,
+    render_council_history_text,
 )
 from src.application.report_evidence import wilson_label
-from src.application.report_finops import render_finops_html
+from src.application.report_finops import render_finops_html, render_finops_text
 from src.application.report_formatting import (
     DATA_SOURCES_FOOTER_PL,
     DEFAULT_DISPLAY_TIMEZONE,
@@ -80,6 +82,7 @@ from src.application.report_lessons import LessonsReport
 from src.application.report_model_scorecard import (
     ModelScorecardView,
     render_model_scorecard_html,
+    render_model_scorecard_text,
 )
 from src.application.report_models import (
     ResolvedPrediction,
@@ -996,10 +999,14 @@ def _fill_text_slots(
     suggestions_text: str,
     portfolio_text: str = "",
     user_portfolio_text: str = "",
+    sections: Mapping[str, str] | None = None,
 ) -> str:
     """Wstawia treść w sloty plain-text. Pusty slot usuwa cały wiersz znacznika —
     tekst nie ma komentarzy HTML, więc znacznik byłby w nim dosłowną linią.
-    W HTML QUOTA/RISK_WATCH zostają przy pustej treści (`_SKIP_WHEN_EMPTY_SLOTS`)."""
+    W HTML QUOTA/RISK_WATCH zostają przy pustej treści (`_SKIP_WHEN_EMPTY_SLOTS`).
+
+    `sections` (MAIL-09): znacznik slotu → tekst sekcji z jej `render_*_text`, który
+    kończy się już pustą linią odstępu."""
     text = text.replace(
         f"{_QUOTA_BANNER_SLOT}\n",
         f"{quota_text}\n" if quota_text else "",
@@ -1030,11 +1037,16 @@ def _fill_text_slots(
         f"{onboarding_text}\n\n" if onboarding_text else "",
         1,
     ).replace(_ONBOARDING_SLOT, onboarding_text, 1)
-    return text.replace(
+    text = text.replace(
         f"{_SUGGESTIONS_SLOT}\n",
         f"{suggestions_text}\n\n" if suggestions_text else "",
         1,
     ).replace(_SUGGESTIONS_SLOT, suggestions_text, 1)
+    for slot, content in (sections or {}).items():
+        text = text.replace(f"{slot}\n", f"{content}\n" if content else "", 1).replace(
+            slot, content, 1
+        )
+    return text
 
 
 def _partition_by_status(
@@ -1219,6 +1231,32 @@ def _usd_pln_of(macro_risk_report: MacroRiskReport | None) -> Decimal | None:
     if macro_risk_report is None or macro_risk_report.polish_macro is None:
         return None
     return macro_risk_report.polish_macro.usd_pln
+
+
+def _build_model_scorecard_text(
+    model_scorecard: ModelScorecardView | None,
+    *,
+    now: datetime,
+    model_loaded: bool,
+) -> str:
+    """MAIL-09: karta kondycji modelu w wersji tekstowej (te same dane co HTML)."""
+    if model_scorecard is None:
+        return ""
+    return render_model_scorecard_text(
+        model_scorecard.summary,
+        trained_at=model_scorecard.trained_at,
+        now=now,
+        model_loaded=model_loaded,
+        candidate_rmse=model_scorecard.candidate_rmse,
+        baseline_rmse=model_scorecard.baseline_rmse,
+        directional_hit_rate=model_scorecard.directional_hit_rate,
+        folds=model_scorecard.folds,
+        metrics_symbol=model_scorecard.metrics_symbol,
+        n_samples=model_scorecard.metrics_n_samples,
+        evaluations=model_scorecard.evaluations,
+        drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
+        llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
+    )
 
 
 def _build_model_scorecard_html(
@@ -1627,6 +1665,15 @@ def build_html_report(
         lead_text=lead_text,
         onboarding_text=onboarding_text,
         suggestions_text=suggestions_text,
+        # MAIL-09: sekcje z rendererem tekstu, których wersja tekstowa nie miała.
+        sections={
+            _CONSENSUS_SHIFT_SLOT: render_consensus_shift_text(context.consensus_shifts or []),
+            _MODEL_SCORECARD_SLOT: _build_model_scorecard_text(
+                context.model_scorecard, now=started_at, model_loaded=context.ml_model_loaded
+            ),
+            _COUNCIL_HISTORY_SLOT: render_council_history_text(context.council_history or []),
+            _FINOPS_SLOT: render_finops_text(context.cycle_cost),
+        },
     )
     run_footer_text = _render_run_footer_text(context.run_context)
     if run_footer_text:
@@ -3004,6 +3051,8 @@ def _render_plain(
             resolved_predictions, resolved_window, resolved_note, sector_map=sector_map
         )
     )
+    # MAIL-09: zmiany nastawienia rady — jak w HTML, za rozliczeniami.
+    lines.append(_CONSENSUS_SHIFT_SLOT)
     lines.extend(_render_rebaselined_text(ignored, display_timezone))
     lines.extend(_render_trade_signals_text(trade_signals, symbol_chips))
     lines.extend(_render_risk_signals_text(risk_signals))
@@ -3021,10 +3070,13 @@ def _render_plain(
     # PORT-22: radar portfela (klastry, VaR, stress, „za mało historii”).
     lines.append(_PORTFOLIO_SLOT)
     lines.extend(_render_accuracy_history_text(accuracy_stats))
+    lines.append(_MODEL_SCORECARD_SLOT)
+    lines.append(_COUNCIL_HISTORY_SLOT)
     lines.extend(_render_mood_text(mood))
     # Wnioski z poprzednich cykli
     lines.extend(_render_reflections_text(saved))
     lines.append(_SUGGESTIONS_SLOT)
+    lines.append(_FINOPS_SLOT)
     lines.extend(_render_budget_exhausted_text(ignored))
     lines.extend(_render_ignored_text(ignored))
     lines.extend(_render_errors_text(errors))

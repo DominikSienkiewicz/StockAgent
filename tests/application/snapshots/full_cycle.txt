@@ -48,6 +48,10 @@ ZAMKNIĘTE PREDYKCJE (ostatnie 24h)
         dlaczego: Teza prognozy się potwierdziła.
   Suma: 2/3 · Trafność kierunkowa (bez prognoz „bez ruchu”): 50% (n=2) · Trafność łączna (z prognozami „bez ruchu”): 67% (n=3)
 
+=== 🔄 Zmiany nastawienia ===
+
+  NVDA: Odwrócenie SELL→BUY — 2 zmienionych głosów.
+
 NAJSILNIEJSZE SYGNAŁY
 ----------------------------------------------------------------
   Kierunek w kontekście Twojego portfela (tylko pozycje długie): spadek na trzymanej spółce to „ZREDUKUJ”, poza portfelem „UNIKAJ”, wzrost na już dużej pozycji „TRZYMAJ, nie dokładaj”. To sygnał modelu, nie rekomendacja.
@@ -121,6 +125,22 @@ HISTORIA TRAFNOŚCI (ostatnie 30 dni)
   Trafność kierunkowa (bez prognoz „bez ruchu”): 57,5% (95% CI 42–71%, n=40)
   Trafność łączna (z prognozami „bez ruchu”): 62,0% (95% CI 48–74%, n=50)  ·  Predykcji ocenionych: 50  ·  Poprawnych: 31
 
+KARTA KONDYCJI MODELU
+----------------------------------------------------------------
+  Ostatni trening: 2026-10-11
+  Przebieg — model wspólny (ALL): zaakceptowano 1, odrzucono 0, pominięto 0
+  Ewaluacje per symbol (bez zapisu wag): bramkę przeszło 2, nie przeszło 1, pominięto 0
+  RMSE kandydata 0,0212 vs baseline 0,0240 (+11,7%) — ALL, n=243
+  trafność kierunkowa 56%  ·  foldy walk-forward 5
+  Uwaga: Metryki dotyczą KANDYDATA na foldach walk-forward; finalny (shipowany) model jest refitowany na całości danych i nie jest ponownie walidowany.
+
+=== 🗳️ Rada — historia głosów ===
+
+  Buffett — ostatnie 30 dni na NVDA: BUY, BUY, HOLD
+    Bilans: BUY 2 · SELL 0 · HOLD 1
+  Soros — ostatnie 30 dni na NVDA: HOLD, SELL, SELL — najbardziej bearish głos
+    Bilans: BUY 0 · SELL 2 · HOLD 1
+
 NASTROJE PORTFELA
 ----------------------------------------------------------------
   Średni sentyment: +0,15 (Lekko pozytywny)
@@ -136,6 +156,16 @@ WARTE UWAGI (sektory w ruchu)
 ----------------------------------------------------------------
   Półprzewodniki/AI — gorący (NVDA +4,2%, AMD -3,5%)
       rozważ: AVGO, TXN, AMAT
+
+KOSZT CYKLU
+----------------------------------------------------------------
+  Szacunkowy koszt cyklu: ~$0,0381 (17 płatnych wywołań)
+    Model predykcyjny (LLM): 3 × ~$0,0100 = ~$0,0300
+    Rada doradcza (LLM): 2 × ~$0,0025 = ~$0,0050
+    Sentyment (Alpha Vantage): 3 × ~$0,0005 = ~$0,0015
+    Newsy: 3 × ~$0,0005 = ~$0,0015
+    Embeddingi (RAG): 6 × ~$0,0000 = ~$0,0001
+  Uwaga: Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, nie faktura od dostawcy.
 
 POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------

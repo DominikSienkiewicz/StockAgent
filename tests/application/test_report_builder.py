@@ -3745,3 +3745,63 @@ def test_footer_lists_data_sources():
     # Stopka źródeł stoi pod zastrzeżeniem, a stopka przebiegu zostaje ostatnia.
     assert html.index("nie stanowi rekomendacji") < html.index("Źródła danych")
     assert text.index("Źródła danych") < text.index("przebieg #77")
+
+
+class TestPlainTextSlots:
+    """MAIL-09 (G47): wersja tekstowa niesie te same sekcje co HTML tam, gdzie
+    istnieje renderer tekstu — klient bez HTML dostawał raport bez kosztu cyklu,
+    zmian nastawienia rady, karty modelu i historii głosów."""
+
+    _STARTED = datetime(2026, 5, 14, tzinfo=UTC)
+
+    def _text(self, context: ReportContext) -> str:
+        _, text = build_html_report([_saved_result()], self._STARTED, 1.0, context)
+        return text
+
+    def test_plain_text_contains_finops_when_cost_given(self):
+        from src.domain.finops import estimate_cycle_cost
+
+        text = self._text(ReportContext(cycle_cost=estimate_cycle_cost({"llm": 3})))
+
+        assert "KOSZT CYKLU" in text
+        # Zaplecze, jak w HTML: koszt za separatorem, przed pominiętymi i błędami.
+        assert text.index("ZAPLECZE") < text.index("KOSZT CYKLU")
+
+    def test_plain_text_contains_consensus_shifts_in_the_today_zone(self):
+        from src.domain.consensus_shift import ConsensusShift, ShiftKind
+
+        shift = ConsensusShift(
+            kind=ShiftKind.FLIP, previous_recommendation="SELL",
+            current_recommendation="BUY", votes_changed=2,
+            sentiment_delta=0.3, consensus_delta=0.1, gap_hours=24.0,
+        )
+
+        text = self._text(ReportContext(consensus_shifts=[("AAPL", shift)]))
+
+        assert "=== 🔄 Zmiany nastawienia ===" in text
+        assert text.index("Zmiany nastawienia") < text.index("ZAPLECZE")
+
+    def test_plain_text_contains_model_scorecard_and_council_history(self):
+        from src.application.report_council_history import InvestorHistory
+
+        view = ModelScorecardView(
+            summary=summarize_run(["trained_successfully"]),
+            trained_at=datetime(2026, 5, 13, tzinfo=UTC),
+        )
+        history = [
+            InvestorHistory(investor_name="Soros", symbol="AAPL",
+                            recommendations=("HOLD", "SELL", "SELL")),
+        ]
+
+        text = self._text(ReportContext(model_scorecard=view, council_history=history))
+
+        assert "KARTA KONDYCJI MODELU" in text
+        assert "=== 🗳️ Rada — historia głosów ===" in text
+        assert text.index("ZAPLECZE") < text.index("KARTA KONDYCJI MODELU")
+
+    def test_empty_sections_leave_no_slot_markers(self):
+        text = self._text(ReportContext())
+
+        assert "SLOT" not in text
+        assert "KOSZT CYKLU" not in text
+        assert "\n\n\n" not in text

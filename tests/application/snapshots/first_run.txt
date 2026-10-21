@@ -21,6 +21,11 @@ ZAPLECZE
 Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, pominięte symbole i błędy.
 ================================================================
 
+KOSZT CYKLU
+----------------------------------------------------------------
+  0 płatnych wywołań — bramka volatility odcięła wszystkie symbole (cykl darmowy).
+  Uwaga: Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, nie faktura od dostawcy.
+
 POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------
   NVDA(0,00%), AMD(0,00%), BTC(0,00%)
