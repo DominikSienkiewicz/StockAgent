@@ -119,3 +119,57 @@ class TestStaleReference:
 
         assert asset.evaluate_volatility(delta, threshold) is True
         assert asset.evaluate_volatility(delta, threshold, reference_stale=True) is False
+
+
+class TestEffectiveThreshold:
+    """FIN-08: jedna reguła progu bramki w domenie — wybór progu klasy aktywa,
+    potem iloczyn mnożników reżimu i earnings, nigdy poniżej progu bazowego."""
+
+    def test_stock_without_multipliers_keeps_the_base(self) -> None:
+        from src.domain.asset import effective_threshold
+        from src.domain.value_objects import AssetType
+
+        base = Threshold(Decimal("0.02"))
+
+        assert effective_threshold(base, AssetType.STOCK, Threshold(Decimal("0.05"))) is base
+
+    def test_crypto_takes_its_override(self) -> None:
+        from src.domain.asset import effective_threshold
+        from src.domain.value_objects import AssetType
+
+        chosen = effective_threshold(
+            Threshold(Decimal("0.02")), AssetType.CRYPTO, Threshold(Decimal("0.05"))
+        )
+
+        assert chosen.value == Decimal("0.05")
+
+    def test_crypto_without_override_falls_back_to_the_base(self) -> None:
+        from src.domain.asset import effective_threshold
+        from src.domain.value_objects import AssetType
+
+        chosen = effective_threshold(Threshold(Decimal("0.02")), AssetType.CRYPTO, None)
+
+        assert chosen.value == Decimal("0.02")
+
+    def test_regime_and_earnings_multipliers_compound_on_the_chosen_threshold(self) -> None:
+        from src.domain.asset import effective_threshold
+        from src.domain.value_objects import AssetType
+
+        chosen = effective_threshold(
+            Threshold(Decimal("0.02")),
+            AssetType.CRYPTO,
+            Threshold(Decimal("0.05")),
+            regime_multiplier=2.0,
+            earnings_multiplier=1.5,
+        )
+
+        assert chosen.value == Decimal("0.150")
+
+    def test_a_multiplier_below_one_never_loosens_the_gate(self) -> None:
+        from src.domain.asset import effective_threshold
+
+        base = Threshold(Decimal("0.02"))
+
+        assert effective_threshold(base, None, None, regime_multiplier=0.5).value == Decimal(
+            "0.02"
+        )

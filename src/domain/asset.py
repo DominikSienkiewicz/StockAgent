@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -73,6 +74,31 @@ def is_reference_stale(
     )
     aware_now = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
     return aware_now - aware_reference > timedelta(hours=max_age_hours)
+
+
+def effective_threshold(
+    base: Threshold,
+    asset_type: AssetType | None,
+    crypto_override: Threshold | None,
+    *,
+    regime_multiplier: float = 1.0,
+    earnings_multiplier: float = 1.0,
+) -> Threshold:
+    """FIN-08: efektywny próg bramki volatility — jedna reguła dla każdej bramki.
+
+    CRYPTO ma własną zmienność (3-5% dziennie), więc dostaje `crypto_override`,
+    gdy jest podany. Potem mnożniki: reżim rynku (#7) i bliskość earnings (#6)
+    mnożą się, a oba są >= 1.0 z kontraktu domeny — bramka tylko się zacieśnia.
+    `max(..., 1.0)` to pas bezpieczeństwa, gdyby kiedyś przeciekła wartość < 1."""
+    chosen = (
+        crypto_override
+        if asset_type is AssetType.CRYPTO and crypto_override is not None
+        else base
+    )
+    multiplier = max(regime_multiplier * earnings_multiplier, 1.0)
+    if math.isclose(multiplier, 1.0):
+        return chosen
+    return Threshold(chosen.value * Decimal(str(multiplier)))
 
 
 @dataclass(frozen=True)

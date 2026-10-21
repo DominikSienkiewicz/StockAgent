@@ -2028,6 +2028,63 @@ class TestToolUseResearchAgent:
         tool_use_port.analyze_with_tools.assert_not_called()
         llm_port.analyze.assert_called_once()
 
+    def test_tool_use_gate_applies_regime_multiplier(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # FIN-08: RISK-OFF (×2) podnosi próg tool-use 5% → 10%, tak jak główną
+        # bramkę 2% → 4%. Ruch -6% przechodzi główną bramkę, ale nie odpala
+        # kosztownej pętli tool-use — idzie zwykły llm_port.analyze.
+        tool_use_port = Mock(spec=ToolUseLLMPort)
+        workflow = create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            tool_use_port=tool_use_port,
+            research_tools=self._tools(),
+            tool_use_threshold=Threshold(Decimal("0.05")),
+        ))
+        market_port.get_current_price.return_value = Money(Decimal("94.0"))  # -6%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(
+            {**_initial_state("100.0"), "regime_multiplier": 2.0}
+        )
+
+        assert final["status"] == "saved"
+        tool_use_port.analyze_with_tools.assert_not_called()
+        llm_port.analyze.assert_called_once()
+
+    def test_tool_use_gate_applies_earnings_multiplier(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # FIN-08: IMMINENT earnings (×1.5) — próg tool-use 5% → 7.5%, ruch -6% bez pętli.
+        tool_use_port = Mock(spec=ToolUseLLMPort)
+        workflow = create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            tool_use_port=tool_use_port,
+            research_tools=self._tools(),
+            tool_use_threshold=Threshold(Decimal("0.05")),
+        ))
+        market_port.get_current_price.return_value = Money(Decimal("94.0"))  # -6%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(
+            {**_initial_state("100.0"), "earnings_multiplier": 1.5}
+        )
+
+        assert final["status"] == "saved"
+        tool_use_port.analyze_with_tools.assert_not_called()
+
     def test_tool_loop_failure_degrades_gracefully(
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,

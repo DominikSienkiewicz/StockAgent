@@ -46,7 +46,7 @@ from src.application.prompts import (
 from src.application.rag_rerank import rerank_analogs
 from src.application.usage_ledger import usage_scope
 from src.domain.alpha_fusion import AlphaFusionScore
-from src.domain.asset import Asset, PriceDelta
+from src.domain.asset import Asset, PriceDelta, effective_threshold
 from src.domain.attestation import SCHEMA_VERSION as ATTESTATION_SCHEMA_VERSION
 from src.domain.attestation import (
     canonicalize,
@@ -786,30 +786,17 @@ def _pick_threshold(
     default: Threshold,
     crypto_override: Threshold | None,
 ) -> Threshold:
-    """Wybiera próg per asset_type. CRYPTO ma osobną zmienność (3-5%
-    dziennie natywnie), więc bramka 2% dla akcji byłaby bezsensowna."""
+    """Efektywny próg bramki dla symbolu ze stanu. Regułę (próg klasy aktywa
+    i mnożniki reżimu #7 oraz earnings #6) liczy domena (`effective_threshold`,
+    FIN-08); graf podaje tylko klasę aktywa i mnożniki cyklu."""
     asset = state.get("asset")
-    if (
-        asset is not None
-        and asset.asset_type is AssetType.CRYPTO
-        and crypto_override is not None
-    ):
-        base = crypto_override
-    else:
-        base = default
-    # #7: reżim rynku może tylko ZACIEŚNIĆ próg (mnożnik ≥ 1.0 gwarantowany
-    # przez RegimeDetector) — w RISK-OFF mniej cykli odpala płatne porty.
-    # #6: bramka earnings działa tak samo i MNOŻY się z reżimem — predykcja 12h
-    # tuż przed raportem kwartalnym to rzut monetą, więc zaostrzamy próg zamiast
-    # palić tokeny na analizę, którą zaora raport. Oba mnożniki są >= 1.0
-    # (kontrakt domenowy), więc iloczyn też — bramka nigdy się nie ROZLUŹNIA.
-    # `max(..., 1.0)` to pas bezpieczeństwa, gdyby kiedyś przeciekła wartość < 1.
-    regime_mult = state.get("regime_multiplier", 1.0) or 1.0
-    earnings_mult = state.get("earnings_multiplier", 1.0) or 1.0
-    mult = max(regime_mult * earnings_mult, 1.0)
-    if not math.isclose(mult, 1.0):
-        return Threshold(base.value * Decimal(str(mult)))
-    return base
+    return effective_threshold(
+        default,
+        asset.asset_type if asset is not None else None,
+        crypto_override,
+        regime_multiplier=state.get("regime_multiplier", 1.0) or 1.0,
+        earnings_multiplier=state.get("earnings_multiplier", 1.0) or 1.0,
+    )
 
 
 
@@ -854,13 +841,30 @@ class _GateVerdict:
     asset: Asset
 
 
-def _volatility_verdict(deps: AgentGraphDeps, state: AgentState) -> _GateVerdict:
+def _gate_verdict(
+    state: AgentState,
+    default: Threshold,
+    crypto_override: Threshold | None,
+    *,
+    reference_stale: bool = False,
+) -> _GateVerdict:
+    """FIN-08: jeden helper każdej bramki volatility (główna, diagnoza reflect,
+    tool-use, rada) — efektywny próg z domeny i werdykt `Asset.evaluate_volatility`."""
     asset = state.get("asset") or Asset(symbol=state["symbol"])
-    delta = PriceDelta(state["delta"])
-    chosen = _pick_threshold(state, deps.threshold, deps.crypto_threshold)
-    stale = _reference_is_stale(state)
-    passes = asset.evaluate_volatility(delta, chosen, reference_stale=stale)
-    return _GateVerdict(passes=passes, stale=stale, threshold=chosen, asset=asset)
+    chosen = _pick_threshold(state, default, crypto_override)
+    passes = asset.evaluate_volatility(
+        PriceDelta(state["delta"]), chosen, reference_stale=reference_stale
+    )
+    return _GateVerdict(passes=passes, stale=reference_stale, threshold=chosen, asset=asset)
+
+
+def _volatility_verdict(deps: AgentGraphDeps, state: AgentState) -> _GateVerdict:
+    return _gate_verdict(
+        state,
+        deps.threshold,
+        deps.crypto_threshold,
+        reference_stale=_reference_is_stale(state),
+    )
 
 
 def _log_gate_decision(state: AgentState, verdict: _GateVerdict, decision: str) -> None:
@@ -988,13 +992,10 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # UWAGA: to zawęża dotychczasową regułę "reflect jest w pełni niezależny
     # od zmienności" — niezależna pozostaje TYLKO tania część (ocena);
     # kosztowna diagnoza LLM jest teraz związana z progiem volatility.
-    gate_asset = state.get("asset") or Asset(symbol=symbol)
-    gate_delta = PriceDelta(state["delta"])
-    gate_threshold = _pick_threshold(state, threshold, crypto_threshold)
     # FIN-14: ta sama bramka — ruch od stęchłej referencji nie płaci za diagnozę.
-    diagnose_paid = gate_asset.evaluate_volatility(
-        gate_delta, gate_threshold, reference_stale=_reference_is_stale(state)
-    )
+    diagnose_paid = _gate_verdict(
+        state, threshold, crypto_threshold, reference_stale=_reference_is_stale(state)
+    ).passes
 
     if diagnose_paid:
         # Counterfactual dissent-replay (#8): który dysydent rady trafił ruch,
@@ -1128,13 +1129,13 @@ def _call_prediction_llm(
     deps: AgentGraphDeps, state: AgentState, prompt: str, symbol: str
 ) -> dict[str, Any]:
     """Jedno płatne wywołanie predykcji: pętla tool-use albo `llm_port.analyze`."""
+    # FIN-08: próg tool-use mnożą reżim i earnings jak każdą bramkę — w RISK-OFF
+    # mniej symboli odpala pętlę. Krypto nie ma osobnego progu tool-use (None).
     if (
         deps.tool_use_port is not None
         and deps.research_tools
         and deps.tool_use_threshold is not None
-        and (state.get("asset") or Asset(symbol=symbol)).evaluate_volatility(
-            PriceDelta(state["delta"]), deps.tool_use_threshold
-        )
+        and _gate_verdict(state, deps.tool_use_threshold, None).passes
     ):
         _log_paid_call(
             deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools"
@@ -1521,17 +1522,13 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # przepuściła (predict_node odpalił) — tu odsiewamy dodatkowo średnie
     # zmienności, dla których N wywołań LLM rady się ekonomicznie nie opłaca.
     if council_threshold is not None:
-        asset = state.get("asset") or Asset(symbol=state["symbol"])
-        delta = PriceDelta(state["delta"])
-        chosen = _pick_threshold(
-            state, council_threshold, crypto_council_threshold
-        )
-        if not asset.evaluate_volatility(delta, chosen):
+        verdict = _gate_verdict(state, council_threshold, crypto_council_threshold)
+        if not verdict.passes:
             logger.info(
                 "council_node skipped for %s — |Δ|=%.4f < threshold=%.4f",
                 state["symbol"],
                 abs(float(state["delta"])),
-                float(chosen.value),
+                float(verdict.threshold.value),
             )
             return {"council_verdict": None}
     sentiment = state.get("sentiment") or {}
