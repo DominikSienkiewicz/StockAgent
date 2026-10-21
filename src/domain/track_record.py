@@ -62,6 +62,21 @@ class NaiveBaselines:
             return "BEARISH", self.always_bearish
         return "BULLISH", self.always_bullish
 
+    @property
+    def best_any(self) -> tuple[str, float] | None:
+        """WIA-22: najlepsza z trzech strategii, także „zawsze SIDEWAYS”.
+
+        p0 dla trafności liczonej z trzema opcjami (persona rady: KUP /
+        SPRZEDAJ / TRZYMAJ — TRZYMAJ to zakład na brak ruchu). Remis wygrywa
+        kierunek, bo `best_directional` jest pierwszy.
+        """
+        directional = self.best_directional
+        if directional is None or self.always_sideways is None:
+            return None
+        if self.always_sideways > directional[1]:
+            return "SIDEWAYS", self.always_sideways
+        return directional
+
 
 def naive_baselines(
     changes: Sequence[float], tolerance: float = DEFAULT_TOLERANCE

@@ -199,3 +199,62 @@ class TestUninformativeConfidenceGate:
         )
 
         assert main_agent._build_signal_calibration(self._settings(), repo)
+
+
+class TestPersonaLeaderboardWiring:
+    """WIA-30: ranking person po dolnej granicy Wilsona; WIA-22: werdykt na
+    baseline'ie i n_eff z okna scorecardu."""
+
+    @staticmethod
+    def _repo(stats: dict[str, tuple[float, int]]) -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_accuracy_stats.return_value = None
+        repo.get_recently_resolved_predictions.return_value = []
+        repo.get_recent_quota_alerts.return_value = []
+        repo.get_council_vote_history.return_value = []
+        repo.get_persona_track_record.return_value = stats
+        return repo
+
+    def test_report_context_ranks_personas_by_the_wilson_lower_bound(self) -> None:
+        monitor = MagicMock()
+        monitor.alerts = []
+        repo = self._repo({"A": (1.0, 5), "B": (0.8, 50)})
+
+        *_, ranking = main_agent._fetch_report_context(repo, monitor, ["AAPL"])
+
+        assert [r.investor_name for r in ranking] == ["B", "A"]
+
+    @staticmethod
+    def _stats() -> object:
+        from src.application.report_track_record import TrackRecordStats
+        from src.domain.track_record import ScoredCall, assess_directional_hit_rate
+
+        calls = [
+            ScoredCall(
+                cycle=f"2026-09-{day + 1:02d}",
+                predicted_trend="BULLISH",
+                is_correct=(day + i) % 2 == 0,
+                realized_change=0.01 if (day + i) % 2 == 0 else -0.01,
+            )
+            for day in range(20)
+            for i in range(2)
+        ]
+        return TrackRecordStats(hit_rate=assess_directional_hit_rate(calls, n_boot=0))
+
+    def test_personas_get_a_verdict_from_the_track_record_window(self) -> None:
+        from src.domain.persona_track_record import rank_personas
+
+        records = rank_personas({"Buffett": (0.9, 60), "Wood": (0.5, 60)}, rank_by="wilson")
+
+        assessed = main_agent._assess_personas(records, self._stats())  # type: ignore[arg-type]
+
+        assert [r.investor_name for r in assessed] == ["Buffett", "Wood"]
+        assert all(r.verdict is not None for r in assessed)
+        assert assessed[0].significant is True
+
+    def test_without_track_record_evidence_personas_stay_unassessed(self) -> None:
+        from src.domain.persona_track_record import rank_personas
+
+        records = rank_personas({"Buffett": (0.9, 60)})
+
+        assert main_agent._assess_personas(records, None) == records

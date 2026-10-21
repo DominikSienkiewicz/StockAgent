@@ -264,3 +264,19 @@ class TestClusterBootstrapStatistic:
 
         assert cluster_bootstrap_statistic_ci(cycles, lambda _: None, n_boot=50) is None
 
+
+
+class TestVerdictPlExplicitDecision:
+    """WIA-22: po korekcie BH-FDR decyzję podejmuje procedura, nie surowe p < α."""
+
+    def test_explicit_decision_overrides_the_alpha_cut(self) -> None:
+        verdict = verdict_pl(0.03, 50, 50.0, significant=False)
+
+        assert verdict.startswith("nieodróżnialne od rzutu monetą")
+        assert "p=0.03" in verdict
+
+    def test_explicit_rejection_reads_significant(self) -> None:
+        assert verdict_pl(0.2, 50, 50.0, significant=True).startswith("istotnie lepsze")
+
+    def test_without_decision_the_alpha_cut_stays(self) -> None:
+        assert verdict_pl(0.03, 50, 50.0).startswith("istotnie lepsze")

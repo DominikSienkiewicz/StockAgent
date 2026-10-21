@@ -133,7 +133,12 @@ from src.domain.macro_risk import MacroAlertLevel
 from src.domain.market_calendar import closure_reason, to_nyse_time
 from src.domain.number_format import format_money_pl, format_number_pl
 from src.domain.peer_group import build_peer_context
-from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
+from src.domain.persona_track_record import (
+    PersonaTrackRecord,
+    assess_against_track_record,
+    rank_personas,
+    sort_personas,
+)
 from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
@@ -2676,11 +2681,11 @@ def _fetch_report_context(
 
     # #3: leaderboard person. Surowe (hit_rate, votes) z RPC, ranking i próg
     # min_votes liczy domena. Brak migracji 018 / błąd RPC → pusty ranking
-    # → sekcja sama się chowa, cykl leci dalej.
+    # → sekcja sama się chowa, cykl leci dalej. WIA-30: po dolnej granicy Wilsona.
     persona_track_record: list[PersonaTrackRecord] = []
     try:
         persona_track_record = rank_personas(
-            repository.get_persona_track_record(PERSONA_TRACK_RECORD_DAYS)
+            repository.get_persona_track_record(PERSONA_TRACK_RECORD_DAYS), rank_by="wilson"
         )
     except Exception:
         logger.exception("Failed to fetch persona track record")
@@ -2691,6 +2696,19 @@ def _fetch_report_context(
         council_history,
         persona_track_record,
     )
+
+
+def _assess_personas(
+    records: list[PersonaTrackRecord], stats: TrackRecordStats | None
+) -> list[PersonaTrackRecord]:
+    """WIA-22: werdykt istotności person (BH-FDR) na parametrach z okna scorecardu,
+    bez migracji; WIA-30: ranking po dolnej granicy Wilsona na n_eff — tym samym
+    przedziale, który pokazuje wiersz. Bez dowodu trafności okna
+    (`equity_curve_enabled` off, brak danych) ranking zostaje bez werdyktu."""
+    evidence = None if stats is None else stats.hit_rate
+    if not records or evidence is None:
+        return records
+    return sort_personas(assess_against_track_record(records, evidence), "wilson")
 
 
 def _without_owner_portfolio(context: ReportContext) -> ReportContext:
@@ -2769,6 +2787,7 @@ def _dispatch_reports(
             settings, repository, paper_costs
         )
         track_record_stats = _build_track_record_stats(settings, repository, paper_costs)
+        persona_track_record = _assess_personas(persona_track_record, track_record_stats)
         # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
         signal_calibration_buckets = _build_signal_calibration(settings, repository)
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".

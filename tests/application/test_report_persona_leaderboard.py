@@ -103,3 +103,43 @@ class TestPersonaWilsonInterval:
 
         assert "68%" in html
         assert "95% CI 47–84%" in html
+
+
+class TestPersonaVerdict:
+    """WIA-22: werdykt istotności persony (test dwumianowy na n_eff vs najlepszy
+    naiwny baseline, BH-FDR po personach) i jedno zdanie o przybliżeniu."""
+
+    @staticmethod
+    def _assessed(significant: bool) -> PersonaTrackRecord:
+        return PersonaTrackRecord(
+            investor_name="Buffett",
+            hit_rate=15 / 22,
+            votes=22,
+            n_eff=11.0,
+            p_value=0.034,
+            significant=significant,
+        )
+
+    def test_assessed_persona_shows_its_verdict_with_a_decimal_comma(self) -> None:
+        html = render_persona_leaderboard_html([self._assessed(False)])
+
+        assert "nieodróżnialne od rzutu monetą (p=0,03, n=22, n_eff≈11)" in html
+
+    def test_significant_persona_reads_significant(self) -> None:
+        html = render_persona_leaderboard_html([self._assessed(True)])
+
+        assert "istotnie lepsze od naiwnego baseline" in html
+
+    def test_interval_and_sample_use_n_eff(self) -> None:
+        html = render_persona_leaderboard_html([self._assessed(False)])
+
+        assert "95% CI 47–84%" not in html
+        assert "22 głosy (n_eff≈11)" in html
+
+    def test_approximation_note_only_with_verdicts(self) -> None:
+        assessed = render_persona_leaderboard_html([self._assessed(False)])
+        plain = render_persona_leaderboard_html([_record("Buffett", 0.68, 22)])
+
+        assert "przybliżenie" in assessed
+        assert "BH-FDR" in assessed
+        assert "przybliżenie" not in plain

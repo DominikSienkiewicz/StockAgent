@@ -104,6 +104,7 @@ def verdict_pl(
     alpha: float = DEFAULT_ALPHA,
     *,
     mark: DecimalMark = DecimalMark.POINT,
+    significant: bool | None = None,
 ) -> str:
     """Polski werdykt istotności, np. „nieodróżnialne od rzutu monetą (p=0.41, n=37)”.
 
@@ -111,14 +112,16 @@ def verdict_pl(
     werdykt dopisuje, że zakłada niezależne próby (p-wartość jest wtedy zbyt
     optymistyczna przy skorelowanych predykcjach jednego cyklu). `mark` to znak
     dziesiętny p-wartości: kropka dla strony publicznej, przecinek dla maila
-    (MAIL-58, zaokrąglenie ROUND_HALF_UP).
+    (MAIL-58, zaokrąglenie ROUND_HALF_UP). `significant` (WIA-22) podaje
+    decyzję wprost — np. po korekcie BH-FDR — zamiast porównania `p < alpha`;
+    p-wartość w nawiasie zostaje surowa.
     """
     details = f"{_format_p(p, mark)}, n={n}"
     if n_eff is not None:
         details += f", n_eff≈{n_eff:.0f}"
     else:
         details += "; zakłada niezależne próby"
-    if p < alpha:
+    if (p < alpha) if significant is None else significant:
         return f"istotnie lepsze od naiwnego baseline'u ({details})"
     return f"nieodróżnialne od rzutu monetą ({details})"
 
