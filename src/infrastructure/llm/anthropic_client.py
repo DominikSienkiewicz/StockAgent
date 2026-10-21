@@ -12,7 +12,7 @@ from anthropic import Anthropic, APIConnectionError, APIStatusError
 from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
-from src.infrastructure.llm._json_text import strip_code_block
+from src.infrastructure.llm._json_text import parse_json_object, strip_code_block
 from src.infrastructure.llm._usage import anthropic_usage, report_usage
 
 # Centralny model id (rodzina Claude 4.x). Świadomie BEZ daty w komentarzu —
@@ -302,14 +302,14 @@ class AnthropicAdapter(LLMPort):
             raise ValueError("Anthropic returned empty content for analyze().")
         cleaned = self._strip_code_block(text).strip()
         try:
-            return json.loads(cleaned)  # type: ignore[no-any-return]
+            return parse_json_object(cleaned)
         except json.JSONDecodeError:
             # Fallback: proza wokół JSON-a / komentarz po obiekcie. Wyłuskaj
             # pierwszy zbalansowany {...} i spróbuj sparsować jego.
             candidate = self._extract_first_json_object(cleaned)
             if candidate is not None:
                 try:
-                    return json.loads(candidate)  # type: ignore[no-any-return]
+                    return parse_json_object(candidate)
                 except json.JSONDecodeError:
                     pass
             raise ValueError(

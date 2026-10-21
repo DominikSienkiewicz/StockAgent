@@ -316,6 +316,15 @@ class TestJsonParsing:
         with pytest.raises(ValueError, match="JSON"):
             adapter.analyze_with_tools("Predict.", [tool])
 
+    def test_rejects_top_level_json_scalar(self, adapter_with_client):
+        # ARCH-01: liczba to poprawny JSON, ale werdykt musi być obiektem.
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _final_response("42")
+        tool = _make_tool(MagicMock(return_value={}))
+
+        with pytest.raises(ValueError, match="JSON object"):
+            adapter.analyze_with_tools("Predict.", [tool])
+
 
 class TestConfiguration:
     def test_is_tool_use_llm_port(self):

@@ -10,6 +10,7 @@ from openai import OpenAI
 from src.application.ports import Tool, ToolUseLLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.infrastructure.adapters._http import redact_secrets
+from src.infrastructure.llm._json_text import parse_json_object
 from src.infrastructure.llm._usage import openai_chat_usage, report_usage
 from src.infrastructure.llm.openai_client import (
     DEFAULT_TIMEOUT,
@@ -175,7 +176,7 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
                 "OpenAI tool-use returned empty content for the final answer."
             )
         try:
-            return json.loads(content)  # type: ignore[no-any-return]
+            return parse_json_object(content)
         except json.JSONDecodeError as exc:
             raise ValueError(
                 f"OpenAI tool-use returned invalid JSON: {content[:200]!r}"

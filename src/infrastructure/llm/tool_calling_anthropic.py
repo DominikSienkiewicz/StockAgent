@@ -10,6 +10,7 @@ from anthropic import Anthropic
 from src.application.ports import Tool, ToolUseLLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.infrastructure.adapters._http import redact_secrets
+from src.infrastructure.llm._json_text import parse_json_object
 from src.infrastructure.llm._usage import anthropic_usage, report_usage
 from src.infrastructure.llm.anthropic_client import (
     DEFAULT_TIMEOUT,
@@ -172,12 +173,12 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
         # Mode, więc owija JSON w ```json``` albo prozę.
         cleaned = AnthropicAdapter._strip_code_block(text).strip()
         try:
-            return json.loads(cleaned)  # type: ignore[no-any-return]
+            return parse_json_object(cleaned)
         except json.JSONDecodeError:
             candidate = AnthropicAdapter._extract_first_json_object(cleaned)
             if candidate is not None:
                 try:
-                    return json.loads(candidate)  # type: ignore[no-any-return]
+                    return parse_json_object(candidate)
                 except json.JSONDecodeError:
                     pass
             raise ValueError(

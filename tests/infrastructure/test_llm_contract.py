@@ -92,3 +92,15 @@ def test_adapters_reject_prose_without_json_the_same_way(provider: str) -> None:
 
     with pytest.raises(ValueError, match="JSON"):
         adapter.analyze("prompt")
+
+
+@pytest.mark.parametrize("content", ['["BUY"]', '"BUY"', "0.8", "null"])
+@pytest.mark.parametrize("provider", sorted(ADAPTERS))
+def test_adapters_reject_json_that_is_not_an_object_the_same_way(
+    provider: str, content: str
+) -> None:
+    # ARCH-01: poprawny JSON bez obiektu na wierzchu nie może udawać dict-a.
+    adapter = ADAPTERS[provider](content)
+
+    with pytest.raises(ValueError, match="JSON object"):
+        adapter.analyze("prompt")

@@ -153,6 +153,15 @@ class TestAnalyze:
         with pytest.raises(ValueError, match="JSON"):
             adapter.analyze("Predict.")
 
+    def test_analyze_rejects_top_level_json_array(self, adapter_with_client):
+        # ARCH-01: lista to poprawny JSON, ale nie obiekt — dawniej wracała jako
+        # „dict” i padała dopiero na `.get` w grafie.
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _message_response('["BUY", "HOLD"]')
+
+        with pytest.raises(ValueError, match="JSON object"):
+            adapter.analyze("Predict.")
+
 
 class TestAnalyzeMistake:
     def test_returns_plain_text_content(self, adapter_with_client):

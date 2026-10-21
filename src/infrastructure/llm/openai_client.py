@@ -12,7 +12,7 @@ from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitErr
 from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
-from src.infrastructure.llm._json_text import strip_code_block
+from src.infrastructure.llm._json_text import parse_json_object, strip_code_block
 from src.infrastructure.llm._usage import openai_chat_usage, report_usage
 
 DEFAULT_MODEL = "gpt-4o"
@@ -204,14 +204,14 @@ class OpenAIAdapter(LLMPort):
             )
 
         try:
-            return json.loads(content)  # type: ignore[no-any-return]
+            return parse_json_object(content)
         except json.JSONDecodeError:
             pass
         # NIEZ-44: JSON w bloku ```json``` parsujemy jak AnthropicAdapter — failover
         # przełącza dostawców, więc ta sama odpowiedź ma dać ten sam dict.
         fenced = strip_code_block(content)
         try:
-            return json.loads(fenced)  # type: ignore[no-any-return]
+            return parse_json_object(fenced)
         except json.JSONDecodeError as exc:
             raise ValueError(
                 f"OpenAI returned invalid JSON: {content[:200]!r}"
