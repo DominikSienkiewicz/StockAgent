@@ -493,3 +493,56 @@ class TestDataCoverageLine:
         plain = render_model_scorecard_html(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
 
         assert "Pokrycie danych" not in plain
+
+class TestFeatureDriftWarning:
+    """ML-21: wiersz modelu wspólnego z `feature_stats` (migracja 052) niesie PSI
+    ostatnich 30 dni próbki względem jej starszej części; PSI > 0.25 to ostrzeżenie
+    w karcie. Wiersz bez statystyk (przed migracją, flaga off) renderuje się jak dawniej."""
+
+    @staticmethod
+    def _rows_with_psi(**psi: float | None) -> list[dict[str, object]]:
+        rows = _pooled_run_rows("trained_successfully")
+        rows[-1] = {
+            **rows[-1],
+            "feature_stats": {
+                name: {"mean": 0.0, "std": 1.0, "psi_recent_30d": value}
+                for name, value in psi.items()
+            },
+        }
+        return rows
+
+    def test_view_lists_features_above_the_psi_threshold_largest_first(self) -> None:
+        view = build_scorecard_view(
+            self._rows_with_psi(price_delta=0.31, news_volume_24h=0.52, av_llm_agreement=0.04)
+        )
+
+        assert view is not None
+        assert [(d.feature, d.psi) for d in view.drifted_features] == [
+            ("news_volume_24h", 0.52),
+            ("price_delta", 0.31),
+        ]
+
+    def test_rows_without_feature_stats_have_no_drift(self) -> None:
+        view = build_scorecard_view(_pooled_run_rows("trained_successfully"))
+
+        assert view is not None
+        assert view.drifted_features == ()
+
+    def test_html_and_text_warn_about_the_drifted_features(self) -> None:
+        view = build_scorecard_view(self._rows_with_psi(price_delta=0.31, x=None))
+        assert view is not None
+
+        for render in (render_model_scorecard_html, render_model_scorecard_text):
+            out = render(
+                view.summary,
+                trained_at=_FRESH,
+                now=_NOW,
+                drifted_features=view.drifted_features,
+            )
+            assert "Dryf cech" in out
+            assert "price_delta 0,31" in out
+
+    def test_no_warning_without_drift(self) -> None:
+        for render in (render_model_scorecard_html, render_model_scorecard_text):
+            out = render(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
+            assert "Dryf cech" not in out

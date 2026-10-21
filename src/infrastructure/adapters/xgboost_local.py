@@ -11,6 +11,7 @@ import xgboost as xgb
 
 from src.application.ports import MLPredictionPort
 from src.domain.backtest import purged_train_end, summarize_folds
+from src.domain.drift import bin_fractions, quantile_edges, recent_window_psi
 from src.domain.value_objects import Money
 
 # Hiperparametry dobrane pod dane finansowe (zapobieganie overfittingowi).
@@ -110,9 +111,9 @@ class XGBoostAdapter(MLPredictionPort):
             "drift_baseline_rmse": summary.mean_drift_baseline_rmse,
             "llm_baseline_rmse": summary.mean_llm_baseline_rmse,
             "candidate_holdout_directional_hit_rate": summary.mean_hit_rate,
-            # Per-feature drift stats (mean/std) — obserwowalne niezależnie od
-            # werdyktu bramki, żeby porównać rozkład cech z poprzednim runem.
-            "feature_stats": _feature_distribution_stats(feature_frame),
+            # Per-feature drift stats (mean/std, ML-21: biny kwantylowe i PSI
+            # ostatnich 30 dni) — obserwowalne niezależnie od werdyktu bramki.
+            "feature_stats": _feature_distribution_stats(feature_frame, stamps),
             "metric_note": METRIC_NOTE,
         }
 
@@ -366,18 +367,28 @@ def _single_split_bounds(n_samples: int) -> tuple[int, int]:
 
 
 def _feature_distribution_stats(
-    features: pd.DataFrame,
-) -> dict[str, dict[str, float]]:
-    """Per-feature mean/std — prosty drift-detector rozkładu cech wejściowych.
+    features: pd.DataFrame, stamps: list[datetime] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Per-feature rozkład cech wejściowych — drift-detector (ML-21).
 
-    Porównanie tych statystyk między runami pozwala wykryć dryf danych (zmianę
-    rozkładu cech), który może cicho degradować model mimo „zielonej" bramki."""
-    stats: dict[str, dict[str, float]] = {}
+    `mean`/`std` jak dawniej, plus biny kwantylowe całej próbki (`edges`,
+    `fractions`) — odniesienie, z którym da się porównać późniejszy rozkład —
+    oraz `psi_recent_30d`: PSI ostatnich 30 dni próbki względem jej starszej
+    części (domena `recent_window_psi`). Bez znaczników czasu albo przy zbyt małej
+    próbce PSI jest None. Dryf może cicho degradować model mimo „zielonej" bramki."""
+    stats: dict[str, dict[str, Any]] = {}
     for column in features.columns:
         series = pd.to_numeric(features[column], errors="coerce")
+        values = [float(value) for value in series]
+        edges = quantile_edges(values)
         stats[str(column)] = {
             "mean": float(series.mean()),
             "std": float(series.std(ddof=0)),
+            "edges": list(edges),
+            "fractions": list(bin_fractions(values, edges)),
+            "psi_recent_30d": (
+                recent_window_psi(values, stamps) if stamps is not None else None
+            ),
         }
     return stats
 

@@ -1173,6 +1173,26 @@ class TestModelScorecardRunIdFlag:
         assert "model_scorecard_run_id_enabled" in NON_RECIPE_SETTINGS_FIELDS
 
 
+class TestModelScorecardFeatureStatsFlag:
+    """ML-21: rozkład cech treningu w karcie dopiero po migracji 052 — domyślnie off,
+    poza przepisem (sam zapis w Slow Loopie)."""
+
+    def test_defaults_off(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.model_scorecard_feature_stats_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "model_scorecard_feature_stats_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, model_scorecard_feature_stats_enabled=True
+        ).config_hash()
+        assert flipped == baseline
+
+
 class TestNyseClosureSkipFlag:
     """FIN-34: w dzień zamknięcia NYSE Fast Loop pomija akcje. Flaga w kodzie
     domyślnie off (testy entry pointów nie zależą od daty), `config.toml` ją włącza."""

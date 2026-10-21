@@ -22,6 +22,7 @@ IMPORTUJEMY z domeny i renderujemy dosłownie — nie przepisujemy jej treści.
 from __future__ import annotations
 
 import html as _html
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -36,6 +37,7 @@ from src.domain.backtest import (
     strongest_baseline,
 )
 from src.domain.coverage import CoverageReport
+from src.domain.drift import PSI_DRIFT_THRESHOLD, FeatureDrift, drifted_features
 from src.domain.model_scorecard import (
     METRIC_NOTE,
     POOLED_MODEL_SYMBOL,
@@ -113,6 +115,18 @@ def _baselines_line(
     return f"Baseline'y bramki (RMSE): {values} — najsilniejszy: {strongest}"
 
 
+def _drift_line(drifts: tuple[FeatureDrift, ...]) -> str:
+    """ML-21: ostrzeżenie o cechach z istotnym dryfem albo "" gdy go nie ma.
+
+    PSI liczy trening: ostatnie 30 dni próbki względem jej starszej części (bez
+    `feature_snapshots` rozkład samego servingu jest nieznany)."""
+    if not drifts:
+        return ""
+    listed = " · ".join(f"{d.feature} {_number(d.psi, decimals=2)}" for d in drifts)
+    threshold = _number(PSI_DRIFT_THRESHOLD, decimals=2)
+    return f"Dryf cech (PSI > {threshold}, ostatnie 30 dni próbki vs starsza część): {listed}"
+
+
 def _verdict_label(evaluations: EvaluationSummary | None) -> str:
     """Etykieta werdyktu: z podziałem na model wspólny albo zbiorczy przebieg (legacy)."""
     if evaluations is None:
@@ -165,6 +179,7 @@ def render_model_scorecard_html(
     drift_baseline_rmse: float | None = None,
     llm_baseline_rmse: float | None = None,
     coverage: CoverageReport | None = None,
+    drifted_features: tuple[FeatureDrift, ...] = (),
 ) -> str:
     """Renderuje sekcję HTML karty kondycji modelu lub "" gdy brak danych.
 
@@ -247,6 +262,13 @@ def render_model_scorecard_html(
             + f"{_html.escape(coverage_line)}</div>"
         )
 
+    drift = _drift_line(drifted_features)
+    if drift:
+        rows.append(
+            f"<div style='font-size: 12px; color: {_STALE_TEXT_COLOR}; font-weight: 600; "
+            f"margin-bottom: 4px;'>⚠️ {_html.escape(drift)}</div>"
+        )
+
     rows.append(
         f"<div style='font-size: 11px; color: {_COLOR_MUTED}; margin-top: 6px; "
         f"font-style: italic;'>{_html.escape(METRIC_NOTE)}</div>"
@@ -276,6 +298,7 @@ def render_model_scorecard_text(
     evaluations: EvaluationSummary | None = None,
     drift_baseline_rmse: float | None = None,
     llm_baseline_rmse: float | None = None,
+    drifted_features: tuple[FeatureDrift, ...] = (),
 ) -> str:
     """Renderuje sekcję plain-text karty kondycji modelu lub "" gdy brak danych.
 
@@ -320,6 +343,10 @@ def render_model_scorecard_text(
     if metric_bits:
         lines.append(f"  {'  ·  '.join(metric_bits)}")
 
+    drift = _drift_line(drifted_features)
+    if drift:
+        lines.append(f"  ⚠ {drift}")
+
     lines.append(f"  Uwaga: {METRIC_NOTE}")
     lines.append("")
     return "\n".join(lines)
@@ -335,7 +362,10 @@ class ModelScorecardView:
     `summary` to jego werdykt, a ewaluacje per symbol są liczone osobno. None —
     przebieg sprzed ML-13, `summary` agreguje wszystkie wiersze jak dawniej.
     `drift_baseline_rmse` / `llm_baseline_rmse` (ML-10, migracja 028) pochodzą
-    z tego samego wiersza co metryki kandydata; None = wiersz ich nie ma."""
+    z tego samego wiersza co metryki kandydata; None = wiersz ich nie ma.
+    `drifted_features` (ML-21, migracja 052) to cechy z PSI ostatnich 30 dni
+    powyżej progu z `feature_stats` tego wiersza; pusta krotka = brak dryfu
+    albo wiersz bez statystyk."""
 
     summary: RunSummary
     trained_at: datetime
@@ -350,6 +380,23 @@ class ModelScorecardView:
     llm_baseline_rmse: float | None = None
     # DAT-16: pokrycie danych okna track recordu; None = zdanie się chowa.
     coverage: CoverageReport | None = None
+    drifted_features: tuple[FeatureDrift, ...] = ()
+
+
+def _feature_drifts(row: Mapping[str, Any] | None) -> tuple[FeatureDrift, ...]:
+    """ML-21: cechy z istotnym dryfem z `feature_stats` wiersza karty. Kolumna
+    sprzed migracji 052, zapis bez flagi albo zły kształt JSON → brak dryfu."""
+    stats = row.get("feature_stats") if row else None
+    if not isinstance(stats, Mapping):
+        return ()
+    psi_by_feature: dict[str, float | None] = {}
+    for name, entry in stats.items():
+        psi = entry.get("psi_recent_30d") if isinstance(entry, Mapping) else None
+        if isinstance(psi, int | float) and not isinstance(psi, bool):
+            psi_by_feature[str(name)] = float(psi)
+        else:
+            psi_by_feature[str(name)] = None
+    return drifted_features(psi_by_feature)
 
 
 def _parse_timestamp(raw: object) -> datetime | None:
@@ -430,4 +477,5 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
         evaluations=evaluations,
         drift_baseline_rmse=metrics.get("drift_baseline_rmse") if metrics else None,
         llm_baseline_rmse=metrics.get("llm_baseline_rmse") if metrics else None,
+        drifted_features=_feature_drifts(metrics),
     )

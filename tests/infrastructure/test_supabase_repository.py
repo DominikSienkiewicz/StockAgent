@@ -2305,6 +2305,56 @@ class TestModelScorecardRunId:
         assert "run_id" not in payload
 
 
+class TestModelScorecardFeatureStats:
+    """ML-21: `feature_stats` z treningu (biny kwantylowe + PSI) trafia do karty
+    tylko za flagą — kolumna JSONB istnieje od migracji 052, a nowy klucz przed nią
+    to PGRST204 i przepadły wiersz karty."""
+
+    _STATS: dict[str, Any] = {
+        "price_delta": {
+            "mean": 0.001,
+            "std": 0.02,
+            "edges": [-0.01, 0.0, 0.01],
+            "fractions": [0.25, 0.25, 0.25, 0.25],
+            "psi_recent_30d": 0.31,
+        }
+    }
+
+    def test_flag_off_payload_has_no_feature_stats(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_model_scorecard("ALL", {"status": "skipped", "feature_stats": self._STATS})
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "feature_stats" not in payload
+
+    def test_save_model_scorecard_persists_feature_stats(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co",
+            key="anon-key",
+            scorecard_feature_stats_enabled=True,
+        )
+
+        repo.save_model_scorecard(
+            "ALL", {"status": "trained_successfully", "feature_stats": self._STATS}
+        )
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload["feature_stats"] == self._STATS
+
+    def test_flag_on_without_stats_sends_no_key(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co",
+            key="anon-key",
+            scorecard_feature_stats_enabled=True,
+        )
+
+        repo.save_model_scorecard("ALL", {"status": "skipped"})
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "feature_stats" not in payload
+
+
 class TestSettledAtWindows:
     """WIA-19: okno „rozliczone od `since`” filtruje i sortuje po `settled_at`
     (migracja 029). Bez `since` zapytanie nie dotyka kolumny, której przed

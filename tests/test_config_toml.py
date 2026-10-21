@@ -425,6 +425,12 @@ def test_real_config_toml_ships_the_scorecard_run_id_off_until_migration() -> No
     assert data["model_scorecard_run_id_enabled"] is False
 
 
+def test_real_config_toml_ships_the_scorecard_feature_stats_off_until_migration() -> None:
+    """ML-21: kolumna `model_scorecards.feature_stats` dopiero po migracji 052."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["model_scorecard_feature_stats_enabled"] is False
+
+
 def test_real_config_toml_ships_the_llm_failover_off() -> None:
     """NIEZ-44: zapasowy dostawca LLM gotowy w kodzie, ale wyłączony — w pliku jest
     tylko zakomentowany przykład, dopóki właściciel nie doda klucza drugiego dostawcy."""

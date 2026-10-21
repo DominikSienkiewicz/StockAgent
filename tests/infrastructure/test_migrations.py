@@ -73,6 +73,7 @@ MIGRATION_FILES = [
     "048_normalize_predicted_trend.sql",
     "049_model_scorecards_run_id.sql",
     "050_feature_store_label_horizon.sql",
+    "052_model_scorecards_feature_stats.sql",
     "053_earnings_cache.sql",
     "054_council_votes_unique.sql",
 ]
@@ -1477,6 +1478,33 @@ class TestMigrations:
             comment = cur.fetchone()[0]
 
         assert "horyzont etykiety" in comment
+
+    # -- Migracja 052: rozkład cech treningu w karcie modelu (ML-21) -----------
+
+    def test_model_scorecards_feature_stats_is_a_nullable_jsonb(self, pg_conn) -> None:
+        """Wiersz z `feature_stats` (biny + PSI) i wiersz bez niego (historia,
+        flaga off) zapisują się obok siebie; PSI czyta się zapytaniem JSONB."""
+        assert "feature_stats" in _columns(pg_conn, "model_scorecards")
+        stats = '{"price_delta": {"edges": [0.0], "fractions": [0.5, 0.5], "psi_recent_30d": 0.31}}'
+        with _rolled_back(pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status, feature_stats) VALUES "
+                "('ALL', 'trained_successfully', %s::jsonb), ('AAPL', 'skipped', NULL)",
+                (stats,),
+            )
+            cur.execute(
+                "SELECT (feature_stats -> 'price_delta' ->> 'psi_recent_30d')::float "
+                "FROM model_scorecards WHERE symbol = 'ALL' AND feature_stats IS NOT NULL"
+            )
+            psi = cur.fetchone()
+            cur.execute(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = 'model_scorecards' AND column_name = 'feature_stats'"
+            )
+            data_type = cur.fetchone()
+
+        assert psi == (pytest.approx(0.31),)
+        assert data_type == ("jsonb",)
 
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 

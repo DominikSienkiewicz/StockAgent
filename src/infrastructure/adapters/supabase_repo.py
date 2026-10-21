@@ -380,6 +380,7 @@ class SupabaseRepository(RepositoryPort):
         scorecard_baselines_enabled: bool = False,
         scorecard_run_id_enabled: bool = False,
         council_votes_upsert_enabled: bool = False,
+        scorecard_feature_stats_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
         # ML-10: kolumny baseline'ów dryfu i „sam LLM" istnieją od migracji 028 —
@@ -390,6 +391,8 @@ class SupabaseRepository(RepositoryPort):
         # NIEZ-14: upsert głosów potrzebuje UNIQUE z migracji 054 — bez niego
         # PostgREST odrzuca `on_conflict` (42P10), więc do tego czasu goły insert.
         self._council_votes_upsert_enabled = council_votes_upsert_enabled
+        # ML-21: kolumna JSONB `feature_stats` istnieje od migracji 052 — ta sama zasada.
+        self._scorecard_feature_stats_enabled = scorecard_feature_stats_enabled
         self._table = table_name
         self._view = feature_view
         self._snapshot_table = snapshot_table
@@ -1375,6 +1378,9 @@ class SupabaseRepository(RepositoryPort):
             payload["llm_baseline_rmse"] = result.get("llm_baseline_rmse")
         if self._scorecard_run_id_enabled and run_id is not None:
             payload["run_id"] = run_id
+        feature_stats = result.get("feature_stats")
+        if self._scorecard_feature_stats_enabled and feature_stats is not None:
+            payload["feature_stats"] = feature_stats
         self._client.table("model_scorecards").insert(payload).execute()
 
     def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:

@@ -653,3 +653,40 @@ class TestStrongerBaselines:
 
         assert all("llm_baseline_rmse" not in fold for fold in folds)
         assert all("drift_baseline_rmse" in fold for fold in folds)
+
+
+class TestFeatureStatsBins:
+    """ML-21: `feature_stats` niesie biny kwantylowe rozkładu treningu i PSI
+    ostatnich 30 dni próbki względem jej starszej części (mean/std zostają)."""
+
+    def test_stats_carry_quantile_bins_summing_to_one(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=120)
+
+        stats = adapter.train(features, target)["feature_stats"]
+
+        for name in FEATURE_NAMES:
+            assert {"mean", "std", "edges", "fractions", "psi_recent_30d"} <= set(stats[name])
+            assert len(stats[name]["fractions"]) == len(stats[name]["edges"]) + 1
+            assert sum(stats[name]["fractions"]) == pytest.approx(1.0)
+        # Cecha dyskretna (sygnał LLM −1/0/+1) dostaje granice z wartości próby.
+        assert stats["llm_trend_signal"]["edges"] == [-1.0, 0.0, 1.0]
+
+    def test_psi_flags_a_feature_shifted_in_the_last_30_days(
+        self, adapter: XGBoostAdapter
+    ):
+        features, target = _synthetic_dataset(n=200)
+        stamps = pd.Series(pd.date_range("2026-05-01", periods=200, freq="D", tz="UTC"))
+        # Ostatnie 30 dni: rozkład price_delta przesunięty o +0.2 (dryf).
+        features.loc[170:, "price_delta"] += 0.2
+
+        stats = adapter.train(features, target, timestamps=stamps)["feature_stats"]
+
+        assert stats["price_delta"]["psi_recent_30d"] > 0.25
+        assert stats["av_relevance_avg"]["psi_recent_30d"] < 0.25
+
+    def test_psi_is_none_without_timestamps(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=120)
+
+        stats = adapter.train(features, target)["feature_stats"]
+
+        assert stats["price_delta"]["psi_recent_30d"] is None

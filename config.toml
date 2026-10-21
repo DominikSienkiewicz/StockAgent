@@ -86,6 +86,9 @@ model_scorecard_baselines_enabled = false
 # ML-24: wiersze karty niosą `run_id` przebiegu Slow Loopa (re-run tego samego
 # dnia nie skleja się z cronem). UWAGA: włącz DOPIERO po migracji 049 (PGRST204).
 model_scorecard_run_id_enabled = false
+# ML-21: karta zapisuje rozkład cech treningu (biny kwantylowe + PSI ostatnich 30 dni)
+# i ostrzega przy PSI > 0.25. UWAGA: włącz DOPIERO po migracji 052 (PGRST204).
+model_scorecard_feature_stats_enabled = false
 # #8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
 # spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Włączone.
 cycle_diff_enabled = true

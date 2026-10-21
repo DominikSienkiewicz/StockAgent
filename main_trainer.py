@@ -91,6 +91,7 @@ def build_repository(settings: Settings) -> RepositoryPort:
         key=settings.supabase_key,
         scorecard_baselines_enabled=settings.model_scorecard_baselines_enabled,
         scorecard_run_id_enabled=settings.model_scorecard_run_id_enabled,
+        scorecard_feature_stats_enabled=settings.model_scorecard_feature_stats_enabled,
     )
     if settings.db_writes_enabled:
         return repository

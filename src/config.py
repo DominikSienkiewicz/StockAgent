@@ -145,6 +145,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
 
     # NIEZ-14: upsert zamiast insertu głosów rady — te same głosy, bez duplikatów.
     "council_votes_upsert_enabled",
+    # ML-21: sam zapis rozkładu cech treningu (biny + PSI) w karcie; prognoza ta sama.
+    "model_scorecard_feature_stats_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -484,6 +486,10 @@ class Settings(BaseSettings):
     # 049), więc re-run tego samego dnia nie skleja się z cronem. Off: nowy klucz
     # przed migracją → PGRST204 i przepadły wiersz karty.
     model_scorecard_run_id_enabled: bool = False
+    # ML-21: wiersze karty niosą `feature_stats` treningu — biny kwantylowe cech
+    # i PSI ostatnich 30 dni próbki (kolumna JSONB z migracji 052); karta ostrzega
+    # przy PSI > 0.25. Off: nowy klucz przed migracją → PGRST204 i przepadły wiersz.
+    model_scorecard_feature_stats_enabled: bool = False
     # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
     # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
     cycle_diff_enabled: bool = False
