@@ -3248,3 +3248,73 @@ def test_other_postgrest_error_is_logged_with_its_type_not_as_migration(
 
     assert not _mentions_migration(caplog)
     assert any("APIError" in record.getMessage() for record in caplog.records)
+
+
+class TestMissingPredictionColumns:
+    """FIN-05: preflight kolumn `prediction_logs` — select `limit 0`, brak kolumny
+    rozpoznawany wyłącznie po 42703. Blip sieci nie może wyglądać jak brak migracji,
+    bo wyłączyłby cały cykl."""
+
+    @staticmethod
+    def _execute(client: MagicMock) -> MagicMock:
+        return client.table.return_value.select.return_value.limit.return_value.execute
+
+    def test_no_missing_columns_on_a_migrated_database(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        missing = repo.missing_prediction_columns(frozenset({"symbol", "gate_delta"}))
+
+        assert missing == frozenset()
+        mock_client.table.assert_called_with("prediction_logs")
+        mock_client.table.return_value.select.assert_called_once_with("gate_delta,symbol")
+        mock_client.table.return_value.select.return_value.limit.assert_called_once_with(0)
+
+    def test_reports_every_undefined_column_one_query_each(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        def undefined(column: str) -> APIError:
+            return APIError(
+                {"code": "42703", "message": f"column prediction_logs.{column} does not exist"}
+            )
+
+        self._execute(mock_client).side_effect = [
+            undefined("gate_delta"),
+            undefined("recipe_version"),
+            MagicMock(data=[]),
+        ]
+
+        missing = repo.missing_prediction_columns(
+            frozenset({"symbol", "gate_delta", "recipe_version"})
+        )
+
+        assert missing == frozenset({"gate_delta", "recipe_version"})
+        selects = [c.args[0] for c in mock_client.table.return_value.select.call_args_list]
+        assert selects == ["gate_delta,recipe_version,symbol", "recipe_version,symbol", "symbol"]
+
+    def test_network_error_propagates_instead_of_counting_as_missing(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._execute(mock_client).side_effect = httpx.ConnectError("connection reset")
+
+        with pytest.raises(httpx.ConnectError):
+            repo.missing_prediction_columns(frozenset({"symbol"}))
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            {"code": "57014", "message": "canceling statement due to statement timeout"},
+            {"code": "42703", "message": "column prediction_logs.other does not exist"},
+        ],
+        ids=["other-code", "unrequested-column"],
+    )
+    def test_other_api_errors_propagate(
+        self, repo: SupabaseRepository, mock_client: MagicMock, error: dict[str, str]
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        self._execute(mock_client).side_effect = APIError(error)
+
+        with pytest.raises(APIError):
+            repo.missing_prediction_columns(frozenset({"symbol"}))

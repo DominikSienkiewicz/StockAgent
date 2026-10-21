@@ -107,6 +107,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_latest_snapshot_at",
         "get_last_scorecard_at",
         "probe_database",
+        "missing_prediction_columns",
         "get_last_price_snapshot",
         "get_sent_shock_alerts",
         "get_shock_alert_times",
@@ -236,6 +237,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def probe_database(self) -> None:
         self._delegate.probe_database()
+
+    def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
+        return self._delegate.missing_prediction_columns(columns)
 
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         return self._delegate.get_last_price_snapshot(symbol)

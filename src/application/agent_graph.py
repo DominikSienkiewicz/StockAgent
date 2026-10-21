@@ -1603,6 +1603,52 @@ def _resolve_news_vector(
         return None
 
 
+# FIN-05: kolumny `prediction_logs`, które `_save_node` zapisuje w każdym rekordzie.
+_ALWAYS_SAVED_PREDICTION_COLUMNS: frozenset[str] = frozenset({
+    "symbol",
+    "price_at_prediction",
+    "sentiment_score",
+    "av_relevance_avg",
+    "news_volume_24h",
+    "high_relevance_count",
+    "av_llm_agreement",
+    "news_summary",
+    "predicted_trend",
+    "predicted_target_price",
+    "confidence_score",
+    "reasoning_text",
+    "council_verdict",
+    "data_quality_flags",
+    "alpha_fusion_score",
+})
+
+
+def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
+    """FIN-05: każda kolumna `prediction_logs`, którą `_save_node` może zapisać przy
+    tych zależnościach — klucze opcjonalne wyłącznie za ich flagą albo portem.
+
+    DI sprawdza je raz na cykl, przed płatnymi węzłami: brakująca kolumna
+    (niezaaplikowana migracja) kończyłaby zapis błędem po opłaconej analizie,
+    w każdym symbolu i w każdym cyklu. Test pilnuje, że lista pokrywa rekord."""
+    optional = {
+        "regime": deps.vector_memory_enabled or deps.regime_tagging_enabled,
+        "decision_receipts": deps.receipts_enabled,
+        "feature_set_version": deps.feature_set_version_enabled,
+        "recipe_version": deps.recipe_version_enabled and deps.recipe is not None,
+        "edge_sigma": deps.options_port is not None,
+        "interval_low": deps.interval_columns_enabled,
+        "interval_high": deps.interval_columns_enabled,
+        "gate_delta": deps.gate_delta_enabled,
+        "experiment_arms": deps.experiment_arms_enabled,
+        "commitment_hash": deps.attestation_publisher is not None,
+        "commitment_salt": deps.attestation_publisher is not None,
+        "embedding": deps.embedding_port is not None,
+    }
+    return _ALWAYS_SAVED_PREDICTION_COLUMNS | {
+        column for column, written in optional.items() if written
+    }
+
+
 def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     vector_memory_enabled = deps.vector_memory_enabled
     repository_port = deps.repository_port

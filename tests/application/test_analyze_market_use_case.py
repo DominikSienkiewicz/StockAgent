@@ -346,6 +346,18 @@ class TestMlModelLoaded:
         assert use_case.ml_model_loaded is True
 
 
+class TestRequiredPredictionColumns:
+    """FIN-05: use case podaje DI listę kolumn zapisu liczoną z tych samych deps."""
+
+    def test_matches_the_graph_rule_for_its_deps(self, use_case) -> None:
+        from src.application.agent_graph import required_prediction_columns
+
+        assert use_case.required_prediction_columns() == required_prediction_columns(
+            use_case._deps
+        )
+        assert "symbol" in use_case.required_prediction_columns()
+
+
 class TestThresholdInjection:
     def test_respects_custom_threshold(
         self,

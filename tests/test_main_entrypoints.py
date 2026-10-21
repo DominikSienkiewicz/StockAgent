@@ -6062,3 +6062,69 @@ class TestFinnhubSharedRateLimiter:
         assert macro is not None and macro._market._rate_limiter is shared
         assert options is not None and options._rate_limiter is shared
         assert use_case._deps.market_port._equity._rate_limiter is shared
+
+class TestPredictionColumnsPreflight:
+    """FIN-05: przed pierwszym symbolem Fast Loop sprawdza, czy `prediction_logs` ma
+    każdą kolumnę, którą zapisze ten config. Brak = exit 1 i instrukcja DB Migrate,
+    zanim cykl zapłaci za analizy, których zapis i tak padnie."""
+
+    _COLUMNS = frozenset({"symbol", "gate_delta"})
+
+    def _run(self, settings, mocker, **preflight):
+        from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+        check = mocker.patch.object(SupabaseRepository, "missing_prediction_columns", **preflight)
+        fake_uc = MagicMock()
+        fake_uc.required_prediction_columns.return_value = self._COLUMNS
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        fake_uc.telemetry.snapshot.return_value.paid_calls = {}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+        return main_agent.main(settings), check, fake_uc, dispatch
+
+    def test_missing_columns_stop_the_cycle_before_any_symbol(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="main_agent"):
+            exit_code, check, fake_uc, dispatch = self._run(
+                settings, mocker, return_value=frozenset({"gate_delta"})
+            )
+
+        assert exit_code == 1
+        check.assert_called_once_with(self._COLUMNS)
+        fake_uc.run.assert_not_called()
+        dispatch.assert_not_called()
+        assert "gate_delta" in caplog.text
+        assert "DB Migrate" in caplog.text
+
+    def test_inconclusive_preflight_lets_the_cycle_run(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        import httpx
+
+        with caplog.at_level(logging.WARNING, logger="main_agent"):
+            exit_code, _, fake_uc, dispatch = self._run(
+                settings, mocker, side_effect=httpx.ConnectError("connection reset")
+            )
+
+        assert exit_code == 0
+        assert fake_uc.run.called
+        dispatch.assert_called_once()
+        assert "preflight inconclusive (ConnectError)" in caplog.text
+
+    def test_read_only_run_skips_the_preflight(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.db_writes_enabled = False
+
+        exit_code, check, fake_uc, _ = self._run(
+            settings, mocker, return_value=frozenset({"gate_delta"})
+        )
+
+        assert exit_code == 0
+        check.assert_not_called()
+        assert fake_uc.run.called

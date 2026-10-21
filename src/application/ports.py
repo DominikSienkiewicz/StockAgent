@@ -450,6 +450,12 @@ class RepositoryPort(ABC):
         aktywności, a wtedy każdy job pada na połączeniu. Wyjątek = baza nie odpowiada."""
 
     @abstractmethod
+    def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
+        """FIN-05 — które z `columns` nie istnieją w `prediction_logs` (select bez
+        wierszy). Brak kolumny to wyłącznie kod 42703; każdy inny błąd (sieć, timeout,
+        wstrzymany projekt) leci wyjątkiem, żeby wołający nie wziął go za brak migracji."""
+
+    @abstractmethod
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         """#11 — najnowszy snapshot ceny WRAZ ze znacznikiem czasu.
 

@@ -4638,3 +4638,112 @@ class TestTwoPhaseGraphs:
         repository_port.save_price_snapshot.assert_not_called()
         sentiment_port.get_social_score.assert_not_called()
         assert dict(deps.telemetry.snapshot().gate_reasons) == {"budget_exhausted": 1}
+
+
+# ---------------------------------------------------------------------------
+# FIN-05: preflight kolumn prediction_logs — lista z tego samego źródła co zapis
+# ---------------------------------------------------------------------------
+
+
+class TestRequiredPredictionColumns:
+    """FIN-05: DI sprawdza raz na cykl, czy baza ma każdą kolumnę, którą zapisze
+    `_save_node`. Lista musi pokrywać rekord przy każdej kombinacji flag — kolumna
+    pominięta w liście to znów zapis padający po opłaconej analizie."""
+
+    _OPTIONAL = frozenset({
+        "regime",
+        "decision_receipts",
+        "feature_set_version",
+        "recipe_version",
+        "edge_sigma",
+        "interval_low",
+        "interval_high",
+        "gate_delta",
+        "experiment_arms",
+        "commitment_hash",
+        "commitment_salt",
+        "embedding",
+    })
+
+    @staticmethod
+    def _state() -> dict:
+        from types import SimpleNamespace
+
+        return {
+            "symbol": "AAPL",
+            "previous_price": Decimal("100"),
+            "current_price": Decimal("106"),
+            "delta": Decimal("0.06"),
+            "llm_analysis": {
+                "trend_direction": "BULLISH",
+                "confidence_score": 0.8,
+                "av_agreement": 0.7,
+                "reasoning": "Momentum.",
+            },
+            "sentiment": {"av_sentiment_score": 0.3, "news_volume_24h": 4},
+            "news": [{"title": "Reuters: Apple beats", "source": "Reuters"}],
+            "ml_target_price": Decimal("108"),
+            "implied_edge": SimpleNamespace(edge_sigma=1.4),
+            "move_interval": SimpleNamespace(low=-0.01, high=0.03),
+            "experiment_arms": {"blind_council": "control"},
+            "news_embedding": [0.1, 0.2],
+            "regime_context": "NEUTRAL",
+        }
+
+    @staticmethod
+    def _deps(*, all_flags: bool) -> tuple[AgentGraphDeps, Mock]:
+        from src.application.ports import AttestationPublisherPort, OptionsFlowPort
+
+        repo = Mock(spec=RepositoryPort)
+        repo.save_prediction.return_value = "pred-1"
+        optional_ports = {
+            "embedding_port": Mock(spec=EmbeddingPort),
+            "options_port": Mock(spec=OptionsFlowPort),
+            "attestation_publisher": Mock(spec=AttestationPublisherPort),
+        }
+        flags = {
+            "vector_memory_enabled": True,
+            "regime_tagging_enabled": True,
+            "receipts_enabled": True,
+            "feature_set_version_enabled": True,
+            "recipe": _recipe(),
+            "recipe_version_enabled": True,
+            "interval_columns_enabled": True,
+            "gate_delta_enabled": True,
+            "experiment_arms_enabled": True,
+        }
+        deps = AgentGraphDeps(
+            market_port=Mock(spec=MarketDataPort),
+            sentiment_port=Mock(spec=SentimentPort),
+            news_port=Mock(spec=NewsPort),
+            repository_port=repo,
+            ml_port=Mock(spec=MLPredictionPort),
+            llm_port=Mock(spec=LLMPort),
+            threshold=Threshold(Decimal("0.02")),
+            **({**optional_ports, **flags} if all_flags else {}),
+        )
+        return deps, repo
+
+    def test_required_columns_cover_every_optional_key_save_node_writes(self) -> None:
+        from src.application.agent_graph import _save_node, required_prediction_columns
+
+        deps, repo = self._deps(all_flags=True)
+
+        _save_node(deps, self._state())
+
+        written = set(repo.save_prediction.call_args.args[0])
+        assert written >= self._OPTIONAL, "stan testu nie wywołał każdego klucza opcjonalnego"
+        assert written <= required_prediction_columns(deps)
+
+    def test_flags_off_require_no_optional_column(self) -> None:
+        from src.application.agent_graph import _save_node, required_prediction_columns
+
+        deps, repo = self._deps(all_flags=False)
+        # Edge powstaje wyłącznie z portem opcji (`_resolve_implied_edge`).
+        state = {key: value for key, value in self._state().items() if key != "implied_edge"}
+
+        _save_node(deps, state)
+
+        required = required_prediction_columns(deps)
+        assert set(repo.save_prediction.call_args.args[0]) <= required
+        assert not required & self._OPTIONAL

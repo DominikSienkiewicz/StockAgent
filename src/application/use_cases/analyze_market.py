@@ -17,6 +17,7 @@ from src.application.agent_graph import (
     create_agent_graph,
     create_gate_graph,
     create_paid_graph,
+    required_prediction_columns,
 )
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.ports import NewsPort, SentimentPort
@@ -94,6 +95,11 @@ class AnalyzeMarketUseCase:
         """G03: czy port ML ma wagi. Raport bierze stąd fakt o cold-starcie,
         zamiast zgadywać go z porównania ceny docelowej z bieżącą."""
         return self._ml_port.is_trained
+
+    def required_prediction_columns(self) -> frozenset[str]:
+        """FIN-05: kolumny `prediction_logs`, które zapis predykcji tego cyklu może
+        dotknąć — DI sprawdza je w bazie raz, przed pierwszym symbolem."""
+        return required_prediction_columns(self._deps)
 
     def run(
         self,

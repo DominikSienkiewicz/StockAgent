@@ -3257,6 +3257,35 @@ def main(
     return run_with_heartbeat(resolved, lambda: _run_fast_loop(resolved, clock))
 
 
+def prediction_columns_missing(
+    repository: RepositoryPort, use_case: AnalyzeMarketUseCase
+) -> bool:
+    """FIN-05: preflight kolumn `prediction_logs` raz na cykl, przed płatnymi węzłami.
+
+    Brak kolumny, którą ten config zapisuje (niezaaplikowana migracja), to ERROR
+    z instrukcją i koniec cyklu — inaczej każdy symbol za bramką płaciłby za analizę,
+    której zapis padnie. Niekonkluzywny preflight (sieć, timeout) to WARNING i cykl
+    biegnie dalej: blip nie może wyłączyć cyklu."""
+    try:
+        missing = sorted(
+            repository.missing_prediction_columns(use_case.required_prediction_columns())
+        )
+    except Exception as exc:
+        logger.warning(
+            "prediction_logs column preflight inconclusive (%s) — the cycle continues",
+            type(exc).__name__,
+        )
+        return False
+    if not missing:
+        return False
+    logger.error(
+        "prediction_logs lacks columns this config writes: %s — run the 'DB Migrate' "
+        "workflow (or switch their flags off); cycle stopped before any paid call",
+        ", ".join(missing),
+    )
+    return True
+
+
 def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
     """Jeden przebieg Fast Loopa; kod wyjścia jak `main()` (0 / 1 / 2)."""
     if refuses_stub_writes(settings):
@@ -3299,6 +3328,8 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
         run_context=run_context,
         usage_ledger=usage_ledger,
     )
+    if settings.db_writes_enabled and prediction_columns_missing(repository, use_case):
+        return 1
     # Mail i stary push osobno: tekst pushu nie niesie sekcji portfela.
     notifier = build_notifier(settings, quota_monitor=quota_monitor, include_push=False)
     legacy_push_notifier = build_legacy_push_notifier(settings, quota_monitor=quota_monitor)

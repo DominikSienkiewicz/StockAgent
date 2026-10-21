@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -162,6 +163,17 @@ class MissingColumnError(RuntimeError):
     def __init__(self, column: str) -> None:
         super().__init__(f"column prediction_logs.{column} does not exist")
         self.column = column
+
+
+# FIN-05: select po nieistniejącej kolumnie — Postgres `undefined_column`.
+_UNDEFINED_COLUMN_CODE = "42703"
+_UNDEFINED_COLUMN_MESSAGE = re.compile(r'column "?(?:\w+\.)?"?(\w+)"? does not exist')
+
+
+def _undefined_column(exc: APIError) -> str | None:
+    """Nazwa kolumny z komunikatu 42703 („column prediction_logs.x does not exist”)."""
+    match = _UNDEFINED_COLUMN_MESSAGE.search(exc.message or "")
+    return match.group(1) if match else None
 
 
 def _missing_eval_column(exc: APIError, fields: Sequence[str]) -> str | None:
@@ -1102,6 +1114,31 @@ class SupabaseRepository(RepositoryPort):
         response = self._client.table("price_snapshots").select("timestamp").limit(1).execute()
         if not isinstance(response.data, list):
             raise RuntimeError("Supabase: odpowiedź bez listy wierszy price_snapshots")
+
+    def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
+        """FIN-05: select `limit 0` po `columns`. PostgREST zgłasza jedną brakującą
+        kolumnę na raz (42703), więc po każdej usuwamy ją z selecta i pytamy dalej —
+        najwyżej jedno zapytanie na brakującą kolumnę. Inny błąd albo 42703 bez
+        rozpoznanej kolumny z `columns` leci dalej: to nie dowód braku migracji."""
+        remaining = set(columns)
+        missing: set[str] = set()
+        while remaining:
+            try:
+                (
+                    self._client.table(self._table)
+                    .select(",".join(sorted(remaining)))
+                    .limit(0)
+                    .execute()
+                )
+            except APIError as exc:
+                column = _undefined_column(exc)
+                if exc.code != _UNDEFINED_COLUMN_CODE or column not in remaining:
+                    raise
+                remaining.discard(column)
+                missing.add(column)
+                continue
+            break
+        return frozenset(missing)
 
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         response = (
