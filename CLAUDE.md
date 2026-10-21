@@ -12,7 +12,7 @@ Każda zmiana w kodzie musi przejść **wszystkie trzy**:
 
 ```bash
 uv run ruff check .
-uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py)
+uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py + ratchet tests/, od tests/domain)
 uv run pytest -m "not integration and not containers"   # jak CI; kontenerowe: uv run pytest -m containers (Docker)
 ```
 
@@ -31,10 +31,11 @@ domain  ←  application  ←  infrastructure
 - **`src/application/`** — porty (interfejsy ABC w `ports.py`), use cases, graf
   LangGraph, prompty, report builder. Zna `domain`, **nie zna** konkretnych adapterów.
 - **`src/infrastructure/`** — adaptery implementujące porty. Jedyne miejsce z I/O.
-- **`main_agent.py` / `main_trainer.py` / `main_watch.py` / `main_deadman.py` / `main_tools.py`** — DI Container.
+- **`main_agent.py` / `main_trainer.py` / `main_watch.py` / `main_deadman.py` / `main_tools.py` / `main_scorecard.py`** — DI Container.
   Jedyne miejsce, gdzie konkretne adaptery są łączone z use case'ami. `main_watch.py` (#11)
   i `main_deadman.py` (NIEZ-11) reużywają fabryk z `main_agent` i NIE WOŁAJĄ żadnego
-  płatnego portu ani `save_price_snapshot`.
+  płatnego portu ani `save_price_snapshot`. `main_scorecard.py` (WIA-52) tylko czyta bazę
+  i zapisuje plik strony — bez płatnych portów i bez zapisu do bazy.
   Każde narzędzie jednorazowe to podkomenda `main_tools.py`, które jako jedyne składa dla niego
   `Settings` i adaptery, a `src/tools/` trzyma wyłącznie czyste funkcje — osobny `main_<x>.py`
   dostaje tylko entry-point z własnym workflow (ARCH-39, bez wyjątków).
