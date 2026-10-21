@@ -46,6 +46,11 @@ from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.calibrate_confidence import (
     PAID_LLM_CALLS_PER_RUN as JUDGE_LLM_CALLS,
 )
+from src.application.use_cases.monitor_output_drift import (
+    MonitorOutputDriftUseCase,
+    RowsReader,
+    drift_alert,
+)
 from src.application.use_cases.reference_signal import RunReferenceSignalUseCase
 from src.application.use_cases.train_model import POOLED_MODEL_SYMBOL, TrainModelUseCase
 from src.application.use_cases.weekly_recap import (
@@ -86,16 +91,21 @@ def build_repository(settings: Settings) -> RepositoryPort:
     ML-10: `model_scorecard_baselines_enabled` dokłada do karty baseline'y dryfu
     i „sam LLM" (kolumny z migracji 028). BEZ-08: bez `db_writes_enabled`
     owinięte w `ReadOnlyRepository` — lokalny trening niczego nie zapisuje."""
-    repository = SupabaseRepository(
+    repository = _supabase_repository(settings)
+    if settings.db_writes_enabled:
+        return repository
+    return ReadOnlyRepository(repository)
+
+
+def _supabase_repository(settings: Settings) -> SupabaseRepository:
+    """Jedyne miejsce, gdzie Slow Loop konstruuje klienta Supabase."""
+    return SupabaseRepository(
         url=settings.supabase_url,
         key=settings.supabase_key,
         scorecard_baselines_enabled=settings.model_scorecard_baselines_enabled,
         scorecard_run_id_enabled=settings.model_scorecard_run_id_enabled,
         scorecard_feature_stats_enabled=settings.model_scorecard_feature_stats_enabled,
     )
-    if settings.db_writes_enabled:
-        return repository
-    return ReadOnlyRepository(repository)
 
 
 def build_use_case(settings: Settings, *, run_id: str | None = None) -> TrainModelUseCase:
@@ -444,6 +454,50 @@ def _run_reference_signal(
     logger.info("Reference signal — %s", summary)
 
 
+# NIEZ-19: pewność (migracja 016) jest zawsze; przepis (030) tylko przy jego zapisie.
+_DRIFT_EXTRA_FIELDS = ("confidence_score",)
+
+
+def _drift_rows_reader(settings: Settings) -> RowsReader:
+    """Odczyt monitora wyjść LLM: rozliczone predykcje bez atrap po awarii LLM.
+    `recipe_version` tylko z `recipe_version_enabled` — to ona oznacza migrację 030."""
+    reader = _supabase_repository(settings)
+
+    def read_rows(days: int) -> list[dict[str, Any]]:
+        return reader.get_resolved_predictions_for_eval(
+            days,
+            with_recipe=settings.recipe_version_enabled,
+            extra_fields=_DRIFT_EXTRA_FIELDS,
+        )
+
+    return read_rows
+
+
+def _run_output_drift(
+    settings: Settings,
+    quota_monitor: QuotaMonitor,
+    now: datetime | None = None,
+    read_rows: RowsReader | None = None,
+) -> None:
+    """NIEZ-19: tydzień do tygodnia — udział klas, średnia pewność i bias wyjść LLM.
+    Skok to WARNING w `quota_monitor` (banner maila po zapisie alertów). Zero
+    płatnych wywołań; błąd kroku tylko loguje."""
+    moment = now or datetime.now(UTC)
+    try:
+        report = MonitorOutputDriftUseCase(read_rows or _drift_rows_reader(settings)).run(
+            now=moment
+        )
+    except Exception:
+        logger.exception("Output drift monitor failed — pomijam")
+        return
+    alert = drift_alert(report, moment)
+    if alert is None:
+        logger.info("Output drift — %s", report.describe_pl())
+        return
+    logger.warning("Output drift — %s", alert.message)
+    quota_monitor.record(alert)
+
+
 def _run_calibration_judge(
     repository: RepositoryPort, llm_port: LLMPort, *, brier_score_enabled: bool = False
 ) -> None:
@@ -550,6 +604,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     failures += _train_pooled_model(settings, use_case, trainable, tally)
     tally.failures, tally.total = failures, len(trainable) + 1
     _run_reference_signal(settings, repository)
+    _run_output_drift(settings, quota_monitor)
 
     usage_ledger = UsageLedger()
     paid_llm = _SlowLoopPaidLLM(settings, quota_monitor, usage_ledger)
