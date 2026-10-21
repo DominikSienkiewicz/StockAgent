@@ -198,7 +198,7 @@ class TestEmbeddingAdapterFactory:
 
 
 class TestMainAgent:
-    def test_build_use_case_wires_all_adapters(self, settings, mock_external_clients):
+    def test_build_use_case_builds_without_error(self, settings, mock_external_clients):
         use_case = main_agent.build_use_case(settings)
         assert use_case is not None
 
@@ -506,7 +506,7 @@ class TestFastLoopFundamentalsPort:
 
 
 class TestMainTrainer:
-    def test_build_use_case_wires_supabase_and_xgboost(self, settings, mock_external_clients):
+    def test_build_use_case_builds_without_error(self, settings, mock_external_clients):
         use_case = main_trainer.build_use_case(settings)
         assert use_case is not None
 
@@ -572,7 +572,7 @@ class TestMainTrainer:
 class TestMainBacktest:
     """Offline walk-forward backtest harness (T3) — DI + top-level main()."""
 
-    def test_build_use_case_wires_supabase_and_xgboost(
+    def test_build_use_case_builds_without_error(
         self, settings, mock_external_clients
     ):
         use_case = main_backtest.build_use_case(settings)
