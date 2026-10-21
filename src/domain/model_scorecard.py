@@ -22,6 +22,11 @@ POOLED_MODEL_SYMBOL = "ALL"
 # jako stała modułu — pojedyncze źródło prawdy dla reguły świeżości.
 MODEL_STALE_AFTER_DAYS = 21
 
+# ML-15: okno odczytu karty. Musi sięgać dalej niż próg STALE — przy oknie 30 dni
+# (`track_record_days`) karta znikała po 30 dniach i odznaka STALE była widoczna
+# tylko w dniach 22–30. Dwa progi świeżości dają trzy tygodnie odznaki.
+MODEL_SCORECARD_WINDOW_DAYS = 2 * MODEL_STALE_AFTER_DAYS
+
 # Wiersze jednego przebiegu Slow Loopa dzielą minuty; kolejne przebiegi — tydzień.
 # Przerwa dłuższa niż ta granica zaczyna poprzedni przebieg (ML-03). Ręczny re-run
 # tego samego dnia skleja się z cronem — rozdzieli je dopiero `run_id` (ML-24).

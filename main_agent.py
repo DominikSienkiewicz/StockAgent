@@ -131,6 +131,7 @@ from src.domain.hedge import equity_hedge_symbols
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.market_calendar import closure_reason, to_nyse_time
+from src.domain.model_scorecard import MODEL_SCORECARD_WINDOW_DAYS
 from src.domain.number_format import format_money_pl, format_number_pl
 from src.domain.peer_group import build_peer_context
 from src.domain.persona_track_record import (
@@ -2465,11 +2466,13 @@ def _build_model_scorecard(
     settings: Settings, repository: RepositoryPort
 ) -> ModelScorecardView | None:
     """#12 — widok karty kondycji modelu. Flaga OFF / brak migracji 019 / błąd
-    odczytu → None → sekcja sama się chowa, cykl leci dalej."""
+    odczytu → None → sekcja sama się chowa, cykl leci dalej. ML-15: okno odczytu
+    to `MODEL_SCORECARD_WINDOW_DAYS`, nie `track_record_days` — karta starsza niż
+    próg świeżości zostaje widoczna z odznaką STALE."""
     if not settings.model_scorecard_enabled:
         return None
     try:
-        rows = repository.get_recent_model_scorecards(settings.track_record_days)
+        rows = repository.get_recent_model_scorecards(MODEL_SCORECARD_WINDOW_DAYS)
     except Exception:
         logger.exception("Failed to fetch model scorecards")
         return None

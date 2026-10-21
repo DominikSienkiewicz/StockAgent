@@ -1271,6 +1271,33 @@ class TestModelScorecardPersistence:
         repo.save_model_scorecard.assert_not_called()
 
 
+class TestModelScorecardWindow:
+    """ML-15 — karta czyta 2 × `MODEL_STALE_AFTER_DAYS`, a nie `track_record_days`:
+    przy oknie 30 dni odznaka STALE (po 21 dniach) była widoczna tylko w dniach 22–30."""
+
+    def test_card_older_than_the_track_record_window_shows_as_stale(self, settings) -> None:
+        from src.domain.model_scorecard import MODEL_STALE_AFTER_DAYS, is_stale
+
+        now = datetime.now(UTC)
+        trained_at = now - timedelta(days=35)
+        settings.model_scorecard_enabled = True
+        settings.track_record_days = 30
+        row = {
+            "symbol": "ALL",
+            "status": "trained_successfully",
+            "timestamp": trained_at.isoformat(),
+        }
+        repo = MagicMock(spec=RepositoryPort)
+        # Okno odczytu jak w adapterze: wiersz wraca tylko, gdy mieści się w `days`.
+        repo.get_recent_model_scorecards.side_effect = lambda days: [row] if days >= 35 else []
+
+        view = main_agent._build_model_scorecard(settings, repo)
+
+        assert view is not None
+        assert is_stale(view.trained_at, now)
+        repo.get_recent_model_scorecards.assert_called_once_with(2 * MODEL_STALE_AFTER_DAYS)
+
+
 class TestConsensusShiftWiring:
     """#8 — flipy rady. Graceful w callerze, tłumienie stęchłych porównań."""
 
