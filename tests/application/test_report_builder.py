@@ -3602,3 +3602,90 @@ class TestBudgetExhaustedReport:
         assert "poniżej progu" not in html.split("🪙 Krypto")[1]
         assert "budżet cyklu" in html.split("🪙 Krypto")[1]
         assert "budżet cyklu" in text.split("KRYPTO")[1]
+
+
+class TestPositionAwareSignals:
+    """PORT-08: przy znanym portfelu 🎯 sygnały mówią „ZREDUKUJ” o trzymanej
+    spółce i „UNIKAJ” o nietrzymanej zamiast gołego „SPRZEDAJ” (sugestia shorta
+    dla inwestora long-only)."""
+
+    _AS_OF = datetime(2026, 5, 14, tzinfo=UTC)
+
+    @staticmethod
+    def _bearish(symbol: str) -> SymbolResult:
+        return SymbolResult(
+            symbol=symbol, status="saved", trend="BEARISH", delta=Decimal("-0.03"),
+            confidence_score=0.8, current_price=Decimal("100"),
+            target_price=Decimal("95"),
+        )
+
+    @staticmethod
+    def _flat_msft() -> SymbolResult:
+        return SymbolResult(
+            symbol="MSFT", status="ignored", delta=Decimal("0"), current_price=Decimal("100")
+        )
+
+    def _portfolio(self) -> Portfolio:
+        return Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("12"),
+                         purchase_price=Decimal("100"), purchase_date=self._AS_OF.date()),
+                Position(symbol="MSFT", quantity=Decimal("88"),
+                         purchase_price=Decimal("100"), purchase_date=self._AS_OF.date()),
+            ),
+            as_of=self._AS_OF,
+        )
+
+    def _signals_html(self, context: ReportContext) -> str:
+        html, _ = build_html_report(
+            [self._bearish("AAPL"), self._bearish("TSLA"), self._flat_msft()],
+            self._AS_OF, 1.0, context,
+        )
+        start = html.index("🎯 Najsilniejsze sygnały")
+        return html[start:html.index("<h2", start + 1)]
+
+    def test_bearish_signal_says_reduce_on_a_holding_and_avoid_elsewhere(self):
+        section = self._signals_html(ReportContext(user_portfolio=self._portfolio()))
+
+        assert "ZREDUKUJ (12% portfela)" in section
+        assert "UNIKAJ" in section
+        assert "SPRZEDAJ" not in section
+        assert "nie rekomendacja" in section
+
+    def test_plain_text_uses_the_same_position_labels(self):
+        _, text = build_html_report(
+            [self._bearish("AAPL"), self._bearish("TSLA"), self._flat_msft()],
+            self._AS_OF, 1.0, ReportContext(user_portfolio=self._portfolio()),
+        )
+
+        signals = text.split("NAJSILNIEJSZE SYGNAŁY")[1].split("\n\n")[0]
+        assert "ZREDUKUJ (12% portfela)" in signals
+        assert "UNIKAJ" in signals
+        assert "SPRZEDAJ" not in signals
+
+    def test_without_a_known_portfolio_the_signal_is_unchanged(self):
+        section = self._signals_html(ReportContext())
+
+        assert "SPRZEDAJ" in section
+        assert "UNIKAJ" not in section
+        assert "ZREDUKUJ" not in section
+
+    def test_avoid_signal_does_not_suggest_a_position_size(self):
+        verdict = CouncilVerdict(
+            final_recommendation="SELL", consensus_strength=0.9, summary="Rada: SELL.",
+            dissenting_views=(),
+            investor_opinions=(
+                InvestorOpinion(investor_name="A", recommendation="SELL",
+                                confidence=0.9, reasoning="x", key_factors=()),
+            ),
+        )
+        unheld = dataclasses.replace(self._bearish("TSLA"), council_verdict=verdict)
+
+        html, _ = build_html_report(
+            [unheld], self._AS_OF, 1.0, ReportContext(user_portfolio=self._portfolio())
+        )
+
+        start = html.index("🎯 Najsilniejsze sygnały")
+        section = html[start:html.index("<h2", start + 1)]
+        assert "UNIKAJ" in section
+        assert "% portfela" not in section

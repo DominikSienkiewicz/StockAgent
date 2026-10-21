@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from enum import Enum
 
 # Progi reguły Kelly-lite. Trzymane w domenie — to decyzja biznesowa o apetycie
 # na ryzyko, nie szczegół prezentacji. Mocny konsensus rady, niski rozłam i
@@ -159,11 +160,16 @@ def _apply_exposure(
     cluster = (
         _clamp(cluster_exposure, 0.0, 1.0) if cluster_exposure is not None else 0.0
     )
-    if weight >= SATURATED_WEIGHT_THRESHOLD or cluster >= SATURATED_CLUSTER_THRESHOLD:
+    if _saturated(weight, cluster):
         return "starter"
     if weight >= CROWDED_WEIGHT_THRESHOLD or cluster >= CROWDED_CLUSTER_THRESHOLD:
         return _DOWNGRADE[tier]
     return tier
+
+
+def _saturated(weight: float, cluster: float) -> bool:
+    """Ekspozycja tak duża, że dokładanie nie ma sensu — symbol albo jego klaster."""
+    return weight >= SATURATED_WEIGHT_THRESHOLD or cluster >= SATURATED_CLUSTER_THRESHOLD
 
 
 def _apply_risk(
@@ -208,3 +214,58 @@ def _fmt_pct(value: float) -> str:
     if value == int(value):
         return str(int(value))
     return f"{value:g}"
+
+
+class PositionAction(Enum):
+    """PORT-08: kierunek sygnału modelu w kontekście pozycji czytelnika.
+
+    Portfel jest long-only (`Position.quantity > 0`), więc spadek nie jest
+    sugestią shorta: na trzymanym symbolu znaczy „zredukuj”, poza portfelem
+    „unikaj”. Etykiety są ostrożne — to sygnał modelu, nie rekomendacja (MAIL-08).
+    """
+
+    BUY = "BUY"
+    HOLD = "HOLD"
+    REDUCE = "REDUCE"
+    AVOID = "AVOID"
+    WATCH = "WATCH"
+
+    @property
+    def label(self) -> str:
+        return _POSITION_ACTION_LABELS[self]
+
+
+_POSITION_ACTION_LABELS = {
+    PositionAction.BUY: "KUP",
+    PositionAction.HOLD: "TRZYMAJ, nie dokładaj",
+    PositionAction.REDUCE: "ZREDUKUJ",
+    PositionAction.AVOID: "UNIKAJ",
+    PositionAction.WATCH: "OBSERWUJ",
+}
+
+
+def position_action(
+    trend: str | None,
+    current_weight: float | None,
+    cluster_exposure: float | None = None,
+) -> PositionAction:
+    """PORT-08: trend modelu + udział symbolu w portfelu → kierunek dla czytelnika.
+
+    - BEARISH na trzymanym symbolu (waga > 0) → REDUCE, na nietrzymanym → AVOID.
+    - BULLISH przy nasyconej ekspozycji (symbol ≥ `SATURATED_WEIGHT_THRESHOLD` albo
+      klaster ≥ `SATURATED_CLUSTER_THRESHOLD`, te same progi co sizing) → HOLD,
+      inaczej BUY.
+    - Brak kierunku (SIDEWAYS, brak albo nieznany trend) → WATCH.
+
+    `current_weight` None albo 0 = symbolu nie ma w portfelu. Wołający podaje wagi
+    tylko wtedy, gdy zna portfel czytelnika.
+    """
+    weight = _clamp(current_weight, 0.0, 1.0) if current_weight is not None else 0.0
+    if trend == "BEARISH":
+        return PositionAction.REDUCE if weight > 0.0 else PositionAction.AVOID
+    if trend == "BULLISH":
+        cluster = (
+            _clamp(cluster_exposure, 0.0, 1.0) if cluster_exposure is not None else 0.0
+        )
+        return PositionAction.HOLD if _saturated(weight, cluster) else PositionAction.BUY
+    return PositionAction.WATCH

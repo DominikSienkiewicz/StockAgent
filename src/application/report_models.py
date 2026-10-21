@@ -11,7 +11,7 @@ from src.domain.cycle_maturity import SkipReason
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.provenance import ProvenanceBadge
-from src.domain.sizing import SizeBand
+from src.domain.sizing import PositionAction, SizeBand
 from src.domain.value_objects import ValuationVerdict
 
 
@@ -138,6 +138,11 @@ class TradeSignal:
     # pewność bez korekty). None = brak kalibracji. Mała próba skacze, więc
     # raport pokazuje n obok pewności skalibrowanej.
     calibration_bucket_count: int | None = None
+    # PORT-08: kierunek w kontekście portfela czytelnika (ZREDUKUJ / UNIKAJ / TRZYMAJ
+    # zamiast gołego SPRZEDAJ) i waga pozycji. None = portfel nieznany — raport
+    # pokazuje `direction` jak przed PORT-08.
+    position_action: PositionAction | None = None
+    position_weight: Decimal | None = None
 
 
 @dataclass(frozen=True)

@@ -27,7 +27,7 @@ from src.domain.market_calendar import (
     upcoming_session,
 )
 from src.domain.mistake_taxonomy import parse_mistake_category
-from src.domain.sizing import SizeBand, suggest_band
+from src.domain.sizing import PositionAction, SizeBand, position_action, suggest_band
 
 DIVERGENCE_PRICE_THRESHOLD = Decimal("0.02")
 DIVERGENCE_SENTIMENT_THRESHOLD = 0.2
@@ -73,7 +73,11 @@ def build_trade_signals(
 
     WIA-13: przy cold-starcie ML (`r.ml_cold_start`) prognozy ruchu nie ma, więc
     `strength` = sama (skalibrowana) pewność. To inna skala niż pewność × ruch,
-    dlatego sygnały z prognozą modelu stoją w rankingu przed sygnałami cold-start."""
+    dlatego sygnały z prognozą modelu stoją w rankingu przed sygnałami cold-start.
+
+    PORT-08: gdy znamy portfel (`portfolio_weights` nie None), sygnał niesie
+    kierunek w kontekście pozycji — spadek na trzymanym symbolu to ZREDUKUJ,
+    poza portfelem UNIKAJ, wzrost na nasyconej pozycji TRZYMAJ. Ranking bez zmian."""
     signals: list[TradeSignal] = []
     for r in results:
         if r.status != "saved":
@@ -109,9 +113,28 @@ def build_trade_signals(
             calibrated_confidence=calibrated,
             ml_cold_start=r.ml_cold_start,
             calibration_bucket_count=bucket_count,
+            position_action=_position_action_for(r, portfolio_weights, cluster_exposures),
+            position_weight=portfolio_weights.get(r.symbol) if portfolio_weights else None,
         ))
     signals.sort(key=lambda s: (not s.ml_cold_start, s.strength), reverse=True)
     return signals[:top_n]
+
+
+def _position_action_for(
+    r: SymbolResult,
+    weights: Mapping[str, Decimal] | None,
+    cluster_exposures: Mapping[str, Decimal] | None,
+) -> PositionAction | None:
+    """PORT-08: kierunek w kontekście portfela; None, gdy portfela nie znamy."""
+    if weights is None:
+        return None
+    weight = weights.get(r.symbol)
+    cluster = cluster_exposures.get(r.symbol) if cluster_exposures else None
+    return position_action(
+        r.trend,
+        float(weight) if weight is not None else None,
+        cluster_exposure=float(cluster) if cluster is not None else None,
+    )
 
 
 def _calibration_bucket_count(

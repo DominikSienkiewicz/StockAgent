@@ -1,6 +1,13 @@
 import pytest
 
-from src.domain.sizing import SizeBand, suggest_band
+from src.domain.sizing import (
+    SATURATED_CLUSTER_THRESHOLD,
+    SATURATED_WEIGHT_THRESHOLD,
+    PositionAction,
+    SizeBand,
+    position_action,
+    suggest_band,
+)
 
 
 class TestSuggestBand:
@@ -270,3 +277,41 @@ class TestSizingKnowsPortfolioRisk:
             assert _TIER_RANK[risky.tier] <= _TIER_RANK[base.tier], (
                 consensus, dissent, hit, weight, cluster, var, dd, hedge
             )
+
+
+class TestPositionAction:
+    """PORT-08: kierunek sygnału w kontekście pozycji czytelnika long-only.
+
+    Goły „SPRZEDAJ” o spółce, której czytelnik nie ma, to sugestia shorta — spadek
+    na nietrzymanym symbolu znaczy „unikaj”, na trzymanym „zredukuj”, a wzrost na
+    pozycji już nasyconej — „trzymaj, nie dokładaj”."""
+
+    def test_bearish_on_unheld_symbol_maps_to_avoid(self) -> None:
+        assert position_action("BEARISH", None) is PositionAction.AVOID
+        assert position_action("BEARISH", 0.12) is PositionAction.REDUCE
+
+    def test_zero_weight_is_not_a_holding(self) -> None:
+        assert position_action("BEARISH", 0.0) is PositionAction.AVOID
+
+    def test_bullish_on_a_saturated_position_holds_instead_of_adding(self) -> None:
+        assert position_action("BULLISH", SATURATED_WEIGHT_THRESHOLD) is PositionAction.HOLD
+        assert position_action("BULLISH", 0.12) is PositionAction.BUY
+        assert position_action("BULLISH", None) is PositionAction.BUY
+
+    def test_saturated_cluster_also_holds(self) -> None:
+        action = position_action("BULLISH", 0.05, cluster_exposure=SATURATED_CLUSTER_THRESHOLD)
+
+        assert action is PositionAction.HOLD
+
+    @pytest.mark.parametrize("trend", ["SIDEWAYS", None, "FLAT"])
+    def test_no_direction_means_watch(self, trend: str | None) -> None:
+        assert position_action(trend, 0.2) is PositionAction.WATCH
+
+    def test_labels_are_polish_and_cautious(self) -> None:
+        assert [action.label for action in PositionAction] == [
+            "KUP",
+            "TRZYMAJ, nie dokładaj",
+            "ZREDUKUJ",
+            "UNIKAJ",
+            "OBSERWUJ",
+        ]

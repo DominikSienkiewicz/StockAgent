@@ -180,6 +180,7 @@ from src.domain.portfolio import (
 from src.domain.prediction import is_substantive_insight
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
+from src.domain.sizing import PositionAction, SizeBand
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
     ValuationVerdict,
@@ -319,6 +320,20 @@ _SIGNALS_COLD_START_NOTE = (
     "Model ML bez wag (cold-start): ranking wg pewności LLM, skalibrowanej historią, "
     "gdy jest próbka — bez prognozy ruchu."
 )
+# PORT-08: język ostrożny (MAR/KNF) — kierunek w kontekście portfela to nadal sygnał modelu.
+_SIGNALS_POSITION_NOTE = (
+    "Kierunek w kontekście Twojego portfela (tylko pozycje długie): spadek na "
+    "trzymanej spółce to „ZREDUKUJ”, poza portfelem „UNIKAJ”, wzrost na już dużej "
+    "pozycji „TRZYMAJ, nie dokładaj”. To sygnał modelu, nie rekomendacja."
+)
+# PORT-08: kolor kierunku po akcji pozycji — spadek czerwony, wzrost zielony.
+_POSITION_ACTION_TONE = {
+    PositionAction.BUY: "KUP",
+    PositionAction.HOLD: "OBSERWUJ",
+    PositionAction.REDUCE: "SPRZEDAJ",
+    PositionAction.AVOID: "SPRZEDAJ",
+    PositionAction.WATCH: "OBSERWUJ",
+}
 
 
 def _signed_move(value: float) -> str:
@@ -1697,6 +1712,31 @@ def _strength_label(rank: int, sig: TradeSignal) -> str:
     return f"#{rank} · ruch {move_pct} × {basis} {confidence_pct}"
 
 
+def _signal_label(sig: TradeSignal) -> str:
+    """PORT-08: kierunek sygnału — przy znanym portfelu w kontekście pozycji
+    („ZREDUKUJ (12% portfela)”), inaczej KUP / SPRZEDAJ / OBSERWUJ jak dotąd."""
+    action = sig.position_action
+    if action is None:
+        return sig.direction
+    held = action in (PositionAction.REDUCE, PositionAction.HOLD)
+    if held and sig.position_weight is not None:
+        return f"{action.label} ({_pct(sig.position_weight, decimals=0)} portfela)"
+    return action.label
+
+
+def _signal_tone(sig: TradeSignal) -> str:
+    action = sig.position_action
+    return sig.direction if action is None else _POSITION_ACTION_TONE[action]
+
+
+def _signal_size_band(sig: TradeSignal) -> SizeBand | None:
+    """Banda wielkości to sugestia wejścia — przy „UNIKAJ”, „ZREDUKUJ” i „TRZYMAJ,
+    nie dokładaj” sprzeczna z kierunkiem, więc jej nie pokazujemy (PORT-08)."""
+    if sig.position_action in (None, PositionAction.BUY):
+        return sig.size_band
+    return None
+
+
 def _render_trade_signals_html(
     trade_signals: list[TradeSignal], symbol_chips: Mapping[str, str] | None = None
 ) -> str:
@@ -1712,17 +1752,22 @@ def _render_trade_signals_html(
             "<div style='font-size: 12px; color: #6b7280; margin-bottom: 8px;'>"
             f"{_html(_SIGNALS_COLD_START_NOTE)}</div>"
         )
+    if any(sig.position_action is not None for sig in trade_signals):
+        parts.append(
+            "<div style='font-size: 12px; color: #6b7280; margin-bottom: 8px;'>"
+            f"{_html(_SIGNALS_POSITION_NOTE)}</div>"
+        )
     for rank, sig in enumerate(trade_signals, start=1):
         dir_color = {
             "KUP": PALETTE.positive,
             "SPRZEDAJ": PALETTE.negative,
             "OBSERWUJ": PALETTE.neutral,
-        }[sig.direction]
+        }[_signal_tone(sig)]
         dir_bg = {
             "KUP": "#f0fdf4",
             "SPRZEDAJ": "#fef2f2",
             "OBSERWUJ": "#f9fafb",
-        }[sig.direction]
+        }[_signal_tone(sig)]
         forecast_html = (
             f'<span style="color: #6b7280;">prognoza <strong>{_COLD_START_FORECAST}</strong></span>'
             if sig.ml_cold_start
@@ -1732,10 +1777,11 @@ def _render_trade_signals_html(
             )
         )
         # Q7: pasmo wielkości pozycji (Kelly-lite z konsensusu rady + hit-rate).
+        size_band = _signal_size_band(sig)
         size_html = (
             f'<span style="color: #6b7280; font-size: 12px;">'
-            f"{_html(sig.size_band.label)}</span>"
-            if sig.size_band
+            f"{_html(size_band.label)}</span>"
+            if size_band
             else ""
         )
         parts.append(f"""
@@ -1743,7 +1789,7 @@ def _render_trade_signals_html(
                           border-left: 4px solid {dir_color}; border-radius: 4px;
                           font-size: 13px; display: flex; gap: 12px; align-items: center;">
                 <span style="font-weight: 700; color: {dir_color}; min-width: 90px;">
-                  {sig.direction}
+                  {_html(_signal_label(sig))}
                 </span>
                 <span style="font-weight: 600; min-width: 60px;">{_html(_company_label(sig.symbol))}</span>
                 <span style="color: #4b5563;">
@@ -2623,13 +2669,16 @@ def _render_trade_signals_text(
     lines = ["NAJSILNIEJSZE SYGNAŁY", "-" * 64]
     if any(sig.ml_cold_start for sig in trade_signals):
         lines.append(f"  {_SIGNALS_COLD_START_NOTE}")
+    if any(sig.position_action is not None for sig in trade_signals):
+        lines.append(f"  {_SIGNALS_POSITION_NOTE}")
     for rank, sig in enumerate(trade_signals, start=1):
-        size_txt = f"  [{sig.size_band.label}]" if sig.size_band else ""
+        size_band = _signal_size_band(sig)
+        size_txt = f"  [{size_band.label}]" if size_band else ""
         forecast = (
             _COLD_START_FORECAST if sig.ml_cold_start else _pct(sig.expected_change, signed=True)
         )
         lines.append(
-            f"  {sig.direction:9s} {_company_label(sig.symbol):40s} "
+            f"  {_signal_label(sig):9s} {_company_label(sig.symbol):40s} "
             f"pewność {_confidence_text(sig)}  "
             f"prognoza {forecast:>8s}  "
             f"{_strength_label(rank, sig)}{size_txt}"

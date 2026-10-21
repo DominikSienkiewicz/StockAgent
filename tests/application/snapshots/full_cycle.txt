@@ -50,8 +50,9 @@ ZAMKNIĘTE PREDYKCJE (ostatnie 24h)
 
 NAJSILNIEJSZE SYGNAŁY
 ----------------------------------------------------------------
-  KUP       NVDA (NVIDIA Corporation)                pewność 82%  prognoza   +2,50%  #1 · ruch 2,5% × pewność 82%  [Pozycja startowa 1-2% portfela]
-  SPRZEDAJ  AMD (Advanced Micro Devices Inc.)        pewność 71%  prognoza   -1,75%  #2 · ruch 1,8% × pewność 71%  [Pozycja startowa 1-2% portfela]
+  Kierunek w kontekście Twojego portfela (tylko pozycje długie): spadek na trzymanej spółce to „ZREDUKUJ”, poza portfelem „UNIKAJ”, wzrost na już dużej pozycji „TRZYMAJ, nie dokładaj”. To sygnał modelu, nie rekomendacja.
+  TRZYMAJ, nie dokładaj (37% portfela) NVDA (NVIDIA Corporation)                pewność 82%  prognoza   +2,50%  #1 · ruch 2,5% × pewność 82%
+  ZREDUKUJ (63% portfela) AMD (Advanced Micro Devices Inc.)        pewność 71%  prognoza   -1,75%  #2 · ruch 1,8% × pewność 71%
   KUP       BTC (Bitcoin)                            pewność 64%  prognoza   +1,63%  #3 · ruch 1,6% × pewność 64%
 
 SYGNAŁY OSTRZEGAWCZE
