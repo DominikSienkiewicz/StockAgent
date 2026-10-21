@@ -189,7 +189,7 @@ _THU_CLOSE = datetime(2026, 10, 15, 20, 0, tzinfo=UTC)
 _FRI_MIDDAY = datetime(2026, 10, 16, 17, 0, tzinfo=UTC)
 
 
-def _quote(quoted_at: datetime):
+def _quote(quoted_at: datetime) -> None:
     from src.domain.value_objects import Quote
 
     return Quote(price=Money(Decimal("182.5")), quoted_at=quoted_at)
