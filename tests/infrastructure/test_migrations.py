@@ -147,6 +147,44 @@ def _apply_migrations(conn: psycopg2.extensions.connection) -> None:
             cur.execute(sql)
 
 
+MIGRATED_DB = "migrated_schema"
+
+
+@pytest.fixture(scope="module")
+def migrated_pg_conn(
+    pg_conn: psycopg2.extensions.connection,
+) -> Iterator[psycopg2.extensions.connection]:
+    """TEST-08 — osobna baza w kontenerze `pg_conn` z kompletem migracji, które
+    aplikuje SAM fixture.
+
+    `pg_conn` zostaje surowy: schemat dostaje dopiero
+    `TestMigrations::test_migrations_apply_without_errors`, więc testy schematu
+    na `pg_conn` zależą od kolejności i uruchomione same (`-k`) padają. Nowy test,
+    któremu wystarcza gotowy schemat, bierze ten fixture — przechodzi w izolacji
+    i w dowolnej kolejności. Testy samego aplikowania migracji zostają na
+    `pg_conn`, a stan sprzed konkretnej migracji daje `fresh_pg`.
+
+    Baza jest wspólna dla całego modułu: test wstawiający wiersze używa
+    unikalnego symbolu albo `_rolled_back`. Druga baza w tym samym kontenerze,
+    nie drugi kontener — kolejne setki MB przy pełnym swapie."""
+    with pg_conn.cursor() as cur:
+        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(MIGRATED_DB)))
+        cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(MIGRATED_DB)))
+
+    info = pg_conn.info
+    conn = psycopg2.connect(
+        host=info.host,
+        port=info.port,
+        dbname=MIGRATED_DB,
+        user=info.user,
+        password=info.password,
+    )
+    conn.autocommit = True
+    _apply_migrations(conn)
+    yield conn
+    conn.close()
+
+
 def _columns(conn: psycopg2.extensions.connection, table: str) -> set[str]:
     with conn.cursor() as cur:
         cur.execute(
@@ -2792,6 +2830,23 @@ class TestMigration054CouncilVotesUnique:
             )
             assert cur.fetchall() == [("Michael Burry", "SELL"), ("Warren Buffett", "SELL")]
         assert "idx_council_votes_prediction_investor_uniq" in _indexes(conn, "council_votes")
+
+
+@pytest.mark.containers
+class TestMigratedPgConn:
+    """TEST-08: `migrated_pg_conn` ma komplet schematu niezależnie od kolejności
+    testów — ten test przechodzi także uruchomiony sam (`-k`)."""
+
+    def test_schema_is_complete_without_the_apply_test_running_first(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {"id", "symbol", "price", "timestamp"} <= _columns(
+            migrated_pg_conn, "price_snapshots"
+        )
+        assert "commitment_payload" in _columns(migrated_pg_conn, "prediction_logs")
+        assert "idx_council_votes_prediction_investor_uniq" in _indexes(
+            migrated_pg_conn, "council_votes"
+        )
 
 
 def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:
