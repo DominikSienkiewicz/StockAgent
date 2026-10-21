@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import sys
 
+from src.application.ml_features import FEATURE_SET_VERSION
 from src.application.use_cases.backtest import BacktestUseCase
 from src.config import Settings
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
@@ -29,6 +30,12 @@ def _fmt_optional(value: float | None, pattern: str) -> str:
     return "n/a" if value is None else pattern % value
 
 
+def _feature_set_version(settings: Settings) -> int | None:
+    """ML-51: ta sama próbka co trening — z `feature_set_filter_enabled` tylko
+    wiersze bieżącej wersji zestawu cech (kolumna z migracji 027)."""
+    return FEATURE_SET_VERSION if settings.feature_set_filter_enabled else None
+
+
 def build_use_case(settings: Settings) -> BacktestUseCase:
     """DI Container — backtest potrzebuje tylko bazy (cechy) + XGBoost (foldy)."""
     return BacktestUseCase(
@@ -37,6 +44,7 @@ def build_use_case(settings: Settings) -> BacktestUseCase:
             url=settings.supabase_url, key=settings.supabase_key
         ),
         cost_bps=settings.paper_cost_bps,
+        feature_set_version=_feature_set_version(settings),
     )
 
 
@@ -51,6 +59,7 @@ def main(settings: Settings | None = None) -> int:
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
         db_port=repository,
         cost_bps=settings.paper_cost_bps,
+        feature_set_version=_feature_set_version(settings),
     )
 
     logger.info("Backtest start — symbols=%s", settings.symbols)

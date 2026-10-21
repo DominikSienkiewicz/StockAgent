@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 
 from src.application.ml_features import (
@@ -27,12 +29,20 @@ class BacktestUseCase:
     """
 
     def __init__(
-        self, ml_port: MLPredictionPort, db_port: RepositoryPort, *, cost_bps: float = 0.0
+        self,
+        ml_port: MLPredictionPort,
+        db_port: RepositoryPort,
+        *,
+        cost_bps: float = 0.0,
+        feature_set_version: int | None = None,
     ) -> None:
+        """`feature_set_version` (ML-51) zawęża próbkę do wierszy tej wersji zestawu
+        cech, jak w `TrainModelUseCase`; None = cała historia (bez migracji 027)."""
         self._ml_port = ml_port
         self._db_port = db_port
         # WIA-50: jednostronny koszt obrotu do zwrotu netto strategii znakowej.
         self._cost_bps = cost_bps
+        self._feature_set_version = feature_set_version
 
     def run(self, symbol: str, *, refresh_view: bool = False) -> BacktestSummary:
         if refresh_view:
@@ -40,7 +50,7 @@ class BacktestUseCase:
             # backtest jest read-only nad istniejącym ml_feature_store).
             self._db_port.refresh_feature_store()
 
-        rows = self._db_port.get_feature_store_data(symbol)
+        rows = self._feature_rows(symbol)
         if not rows:
             return _too_few_samples_summary(0)
 
@@ -61,6 +71,13 @@ class BacktestUseCase:
             df[list(ML_FEATURE_COLUMNS)], df[TARGET_COLUMN], timestamps=stamps
         )
         return summarize_folds(folds, cost_bps=self._cost_bps)
+
+    def _feature_rows(self, symbol: str) -> list[dict[str, Any]]:
+        if self._feature_set_version is None:
+            return self._db_port.get_feature_store_data(symbol)
+        return self._db_port.get_feature_store_data(
+            symbol, feature_set_version=self._feature_set_version
+        )
 
 
 def _too_few_samples_summary(n_valid: int) -> BacktestSummary:

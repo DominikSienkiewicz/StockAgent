@@ -3,6 +3,7 @@ from unittest.mock import Mock
 import pandas as pd
 import pytest
 
+from src.application.ml_features import FEATURE_SET_VERSION
 from src.application.ports import MLPredictionPort, RepositoryPort
 from src.application.use_cases.backtest import MIN_BACKTEST_SAMPLES, BacktestUseCase
 from src.domain.backtest import BacktestSummary
@@ -215,3 +216,27 @@ class TestTradingCosts:
         ]
 
         assert use_case.run("AAPL").mean_net_return == pytest.approx(0.003)
+
+
+class TestFeatureSetVersion:
+    """ML-51: backtest czyta tę samą próbkę co trening — przy fladze
+    `feature_set_filter_enabled` wyłącznie wiersze bieżącej wersji zestawu cech."""
+
+    def test_reads_only_the_current_feature_set_version(self, ml_port, repository_port) -> None:
+        repository_port.get_feature_store_data.return_value = []
+        use_case = BacktestUseCase(
+            ml_port=ml_port, db_port=repository_port, feature_set_version=FEATURE_SET_VERSION
+        )
+
+        use_case.run("AAPL")
+
+        repository_port.get_feature_store_data.assert_called_once_with(
+            "AAPL", feature_set_version=FEATURE_SET_VERSION
+        )
+
+    def test_without_a_version_reads_the_whole_history(self, use_case, repository_port) -> None:
+        repository_port.get_feature_store_data.return_value = []
+
+        use_case.run("AAPL")
+
+        repository_port.get_feature_store_data.assert_called_once_with("AAPL")

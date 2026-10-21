@@ -92,6 +92,8 @@ receipts_enabled = true
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 027 (inaczej PGRST204 / 400).
 # Filtr odcina historię: póki wierszy bieżącej wersji jest mniej niż minimum
 # treningu, Slow Loop jawnie pomija model wspólny (status skipped + n_samples).
+# ML-51: filtr obejmuje też main_backtest. Włącz go dopiero przy >= 75 wierszach
+# bieżącej wersji w widoku (minimum bramki walk-forward przy 4 foldach).
 feature_set_version_enabled = false
 feature_set_filter_enabled = false
 # WIA-20: kolumna `recipe_version` (migracja 030) — wersja przepisu predykcji

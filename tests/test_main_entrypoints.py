@@ -425,6 +425,24 @@ class TestMainBacktest:
         for client in paid_clients:
             client.assert_not_called()
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_backtest_follows_the_feature_set_filter(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        # ML-51: offline werdykt na tej samej próbce co trening (`main_trainer`).
+        from src.application.ml_features import FEATURE_SET_VERSION
+
+        use_case_cls = mocker.patch("main_backtest.BacktestUseCase")
+        use_case_cls.return_value.run.side_effect = RuntimeError("bez foldów")
+        settings.feature_set_filter_enabled = enabled
+
+        main_backtest.build_use_case(settings)
+        main_backtest.main(settings)
+
+        expected = FEATURE_SET_VERSION if enabled else None
+        versions = [c.kwargs["feature_set_version"] for c in use_case_cls.call_args_list]
+        assert versions == [expected, expected]
+
 
 class TestBuildMacroRiskUseCase:
     """Factory MonitorMacroRisk — DI Risk Watch w main_agent.py."""
