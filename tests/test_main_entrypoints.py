@@ -479,7 +479,9 @@ class TestMainBacktest:
 
         main_backtest.build_use_case(settings)
         mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
-        assert main_backtest.main(settings) == 0
+        # NIEZ-18: wszystkie symbole padły → exit 1; test pilnuje tylko, że żaden
+        # płatny klient nie powstał.
+        assert main_backtest.main(settings) == 1
 
         for client in paid_clients:
             client.assert_not_called()
