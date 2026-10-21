@@ -2,6 +2,27 @@
 
 Stack, prerequisites, local setup, and CI. Tunables live in [configuration.md](configuration.md).
 
+## What you need before you see anything
+
+The fastest look at the email skips the loop: `uv run python main_tools.py render-sample-report` writes the email of a fictional cycle to `build/sample-report/` with no account, key, database or network (DX-01, see [Build commands](#build-commands)). A real cycle needs accounts first (DX-02):
+
+| Account | What it is for | With the committed `config.toml` |
+|---|---|---|
+| Supabase (free plan) | The database every entry point reads and writes. The [Supabase CLI](https://supabase.com/docs/guides/cli) applies the 50+ migrations in `supabase/migrations/` (step 3 below) | required |
+| Finnhub (free) | The quote behind every cycle | required |
+| Alpha Vantage (free, ideally two or more keys) | News and sentiment for each symbol past the volatility gate | required with `PAID_CALLS_ENABLED=true` |
+| OpenAI | The advisory council and the news embeddings | required with `PAID_CALLS_ENABLED=true` |
+| Anthropic | The main analysis (`llm_provider = "anthropic"`) | required unless `llm_provider = "openai"` |
+| Resend | The email (`notifications_enabled = true`) | required unless you read the web digest instead (`web_digest_enabled = true`) |
+
+That is six accounts with the committed configuration and four at the least (`llm_provider = "openai"` and the web digest instead of the email). Without `PAID_CALLS_ENABLED=true` a local run builds stubs in place of Alpha Vantage, OpenAI and Anthropic ([below](#local-runs-make-no-paid-calls-by-default)), so Supabase and Finnhub are enough to watch the pipeline run, but every prediction is then a neutral stub. Once the accounts exist, expect this:
+
+1. **First run: no signals.** A new deployment has no previous price, so every symbol is a cold start and the email opens with `👋 Dzień 1 — buduję punkt odniesienia` under its own welcome subject ([the report email](report-email.md)).
+2. **Second run: the first signals**, only for symbols that moved at least `volatility_threshold` (|Δ| ≥ 2%, crypto 5%) since the first run. A quiet day still has none, and costs nothing.
+3. **The cycle after a prediction: its settlement.** A prediction is scored by the next cycle once it is at least `reflection_min_age_hours` (6 h) old, and then appears under `📊 Zamknięte predykcje`.
+4. **The first Sunday recap** (`📅 Tydzień StockAgenta`) needs at least 5 predictions closed in the week (`MIN_CLOSED_PREDICTIONS_FOR_RECAP` in `src/domain/weekly_recap.py`); with fewer, no recap email goes out.
+5. **The XGBoost leg** stays on the no-change baseline, labelled cold-start, until the Slow Loop has at least 50 settled predictions and a candidate passes the walk-forward gate ([how it works](how-it-works.md), step 10).
+
 ## Tech stack
 
 - **Python 3.12** with `from __future__ import annotations`
