@@ -3324,6 +3324,8 @@ class TestMarketFeaturesWiring:
         call_ = fake_uc.prepare_market_features.call_args
         assert list(call_.args[0]) == ["AAPL", "VOO"]
         assert call_.kwargs["now"].tzinfo is not None
+        # ML-32: klasy aktywów do mediany klasy i szerokości rynku.
+        assert set(call_.kwargs["asset_types"]) == {"AAPL", "VOO"}
         # Faza cech idzie przed pierwszym symbolem grafu.
         names = [c[0] for c in fake_uc.method_calls]
         assert names.index("prepare_market_features") < names.index("run")

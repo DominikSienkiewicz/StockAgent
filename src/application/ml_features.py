@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.domain.cross_section import CROSS_SECTION_FEATURE_NAMES
 from src.domain.price_features import PRICE_FEATURE_NAMES
 
 # Kontrakt cech XGBoost — IDENTYCZNY w treningu (widok ml_feature_store) i w
@@ -74,9 +75,13 @@ FREE_SNAPSHOT_FEATURES = (
 )
 GATED_SNAPSHOT_EXTRAS = ("confidence_score", "data_quality_flags")
 
-# ML-31: cechy rynkowe cyklu (wersja 4) liczone przed grafem z darmowych źródeł
-# i dokładane do cech darmowych w KAŻDYM cyklu. Brak danych = None (maska braków).
-MARKET_SNAPSHOT_FEATURES: tuple[str, ...] = PRICE_FEATURE_NAMES
+# ML-31/ML-32: cechy rynkowe cyklu (wersja 4) liczone przed grafem z darmowych
+# źródeł i dokładane do cech darmowych w KAŻDYM cyklu: cenowe symbolu i jego ruch
+# na tle uniwersum. Brak danych = None (maska braków).
+MARKET_SNAPSHOT_FEATURES: tuple[str, ...] = (
+    *PRICE_FEATURE_NAMES,
+    *CROSS_SECTION_FEATURE_NAMES,
+)
 
 # Target = zwrot do następnego cyklu (~24 h w dni robocze, ~72 h przez weekend)
 # `(cena_po_12h - cena) / cena`, nie cena bezwzględna; nazwa `_12h` jest historyczna.

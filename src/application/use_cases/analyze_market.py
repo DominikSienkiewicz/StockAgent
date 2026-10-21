@@ -4,7 +4,7 @@ import dataclasses
 import logging
 import threading
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -26,7 +26,7 @@ from src.application.ports import LatestPrediction, NewsPort, SentimentPort
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import DRIFT_WINDOW_DAYS, Asset, drift_reference, is_reference_stale
 from src.domain.experiment import active_arms
-from src.domain.value_objects import Money
+from src.domain.value_objects import AssetType, Money
 
 logger = logging.getLogger(__name__)
 
@@ -110,14 +110,19 @@ class AnalyzeMarketUseCase:
         return required_prediction_columns(self._deps)
 
     def prepare_market_features(
-        self, symbols: Sequence[str], *, now: datetime | None = None
+        self,
+        symbols: Sequence[str],
+        *,
+        asset_types: Mapping[str, AssetType] | None = None,
+        now: datetime | None = None,
     ) -> None:
         """ML-31: cechy rynkowe symboli cyklu — RAZ, przed pierwszym `run`/`run_gate`.
 
         Bez flag `market_features_enabled` i `feature_snapshots_enabled` nic nie robi
         (zero odczytów — cechy i tak nie miałyby dokąd trafić). Z nimi czyta kurs
         (zapamiętany dla `check_price`) i historię snapshotów każdego symbolu; zero
-        płatnych wywołań. Błąd per symbol daje puste cechy."""
+        płatnych wywołań. Błąd per symbol daje puste cechy. `asset_types` (ML-32,
+        brak = STOCK) to klasy aktywów symboli do mediany klasy i szerokości rynku."""
         if not (self._deps.market_features_enabled and self._deps.feature_snapshots_enabled):
             return
         self._market_features = collect_market_features(
@@ -125,7 +130,17 @@ class AnalyzeMarketUseCase:
             market_port=self._deps.market_port,
             repository=self._repository,
             as_of=now if now is not None else datetime.now(UTC),
+            asset_types=asset_types or {},
+            gate_thresholds=self._base_gate_thresholds(),
         )
+
+    def _base_gate_thresholds(self) -> dict[AssetType, float]:
+        """ML-32: bazowy próg bramki klasy aktywa (bez mnożników reżimu i earnings)."""
+        base = float(self._deps.threshold.value)
+        crypto = self._deps.crypto_threshold
+        thresholds = dict.fromkeys(AssetType, base)
+        thresholds[AssetType.CRYPTO] = float(crypto.value) if crypto is not None else base
+        return thresholds
 
     def run(
         self,

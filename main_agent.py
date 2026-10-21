@@ -3501,8 +3501,12 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
         on_banner=regime_banners.append,
     )
 
-    # ML-31: cechy rynkowe cyklu — raz, przed grafem (no-op bez flagi).
-    use_case.prepare_market_features(eligible, now=started_at)
+    # ML-31/ML-32: cechy rynkowe cyklu — raz, przed grafem (no-op bez flagi).
+    use_case.prepare_market_features(
+        eligible,
+        asset_types={s: _classify_asset(s, crypto_set, etf_set) for s in eligible},
+        now=started_at,
+    )
 
     loop_results, failures, alpha_signals, alpha_prices = _analyze_symbols(
         eligible,

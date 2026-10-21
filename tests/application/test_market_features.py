@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -14,10 +15,13 @@ from src.application.market_features import (
     collect_market_features,
 )
 from src.application.ports import MarketDataPort, RepositoryPort
+from src.domain.cross_section import CROSS_SECTION_FEATURE_NAMES
 from src.domain.price_features import PRICE_FEATURE_NAMES
-from src.domain.value_objects import Money
+from src.domain.value_objects import AssetType, Money
 
 _NOW = datetime(2026, 10, 21, 20, 0, tzinfo=UTC)
+_THRESHOLDS = {AssetType.STOCK: 0.02, AssetType.ETF: 0.02, AssetType.CRYPTO: 0.05}
+_UNIVERSE: dict[str, Any] = {"asset_types": {}, "gate_thresholds": _THRESHOLDS}
 
 
 def _history(prices: list[float]) -> list[tuple[datetime, Money]]:
@@ -58,10 +62,12 @@ class TestCollectMarketFeatures:
         repository.get_price_history.return_value = _history([100.0, 104.0])
 
         features = collect_market_features(
-            ["AAPL"], market_port=market, repository=repository, as_of=_NOW
+            ["AAPL"], market_port=market, repository=repository, as_of=_NOW, **_UNIVERSE
         )
 
-        assert set(features["AAPL"]) == set(PRICE_FEATURE_NAMES)
+        assert set(features["AAPL"]) == set(PRICE_FEATURE_NAMES) | set(
+            CROSS_SECTION_FEATURE_NAMES
+        )
         assert features["AAPL"]["ret_1"] == pytest.approx(110.0 / 104.0 - 1.0)
         assert features["AAPL"]["ret_20"] is None
         repository.get_price_history.assert_called_once_with("AAPL", PRICE_HISTORY_DAYS)
@@ -73,7 +79,8 @@ class TestCollectMarketFeatures:
         repository.get_price_history.return_value = _history([49.0])
 
         features = collect_market_features(
-            ["SSNLF", "MSFT"], market_port=market, repository=repository, as_of=_NOW
+            ["SSNLF", "MSFT"], market_port=market, repository=repository, as_of=_NOW,
+            **_UNIVERSE,
         )
 
         assert all(value is None for value in features["SSNLF"].values())
@@ -86,7 +93,7 @@ class TestCollectMarketFeatures:
         repository.get_price_history.side_effect = RuntimeError("PGRST")
 
         features = collect_market_features(
-            ["AAPL"], market_port=market, repository=repository, as_of=_NOW
+            ["AAPL"], market_port=market, repository=repository, as_of=_NOW, **_UNIVERSE
         )
 
         assert all(value is None for value in features["AAPL"].values())
@@ -98,9 +105,46 @@ class TestCollectMarketFeatures:
         repository.get_price_history.return_value = []
 
         collect_market_features(
-            ["AAPL", "AAPL"], market_port=market, repository=repository, as_of=_NOW
+            ["AAPL", "AAPL"], market_port=market, repository=repository, as_of=_NOW,
+            **_UNIVERSE,
         )
 
         # Jeden kurs i jeden odczyt historii na symbol, zero zapisów.
         market.get_current_price.assert_called_once_with("AAPL")
         assert [c[0] for c in repository.method_calls] == ["get_price_history"]
+
+
+class TestCrossSectionPhase:
+    """ML-32 — cechy cross-sectional liczone po zebraniu kursów WSZYSTKICH symboli;
+    symbol bez kursu nie wchodzi do uniwersum i ma None."""
+
+    def test_rank_and_excess_vs_ivv_use_the_whole_cycle(self) -> None:
+        quotes = {"AAPL": "97", "MSFT": "101", "IVV": "99", "BTC": "104", "SSNLF": None}
+        market = Mock(spec=MarketDataPort)
+
+        def quote(symbol: str) -> Money:
+            price = quotes[symbol]
+            if price is None:
+                raise ValueError("no quote")
+            return Money(Decimal(price))
+
+        market.get_current_price.side_effect = quote
+        repository = Mock(spec=RepositoryPort)
+        repository.get_price_history.return_value = _history([100.0])
+
+        features = collect_market_features(
+            list(quotes),
+            market_port=market,
+            repository=repository,
+            as_of=_NOW,
+            asset_types={"IVV": AssetType.ETF, "BTC": AssetType.CRYPTO},
+            gate_thresholds=_THRESHOLDS,
+        )
+
+        assert features["AAPL"]["ret_1_rank"] == 0.0
+        assert features["BTC"]["ret_1_rank"] == 1.0
+        assert features["AAPL"]["ret_1_excess_vs_benchmark"] == pytest.approx(-0.02)
+        assert features["MSFT"]["ret_1_excess_vs_class_median"] == pytest.approx(0.02)
+        # |Δ| ≥ próg klasy: AAPL (−3%) tak, MSFT (+1%) i IVV (−1%) nie, BTC (+4% < 5%) nie.
+        assert features["IVV"]["breadth"] == pytest.approx(0.25)
+        assert all(features["SSNLF"][name] is None for name in CROSS_SECTION_FEATURE_NAMES)

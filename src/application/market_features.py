@@ -1,9 +1,11 @@
-"""Faza cech rynkowych cyklu (ML-31) — raz na cykl, PRZED grafem.
+"""Faza cech rynkowych cyklu (ML-31, ML-32) — raz na cykl, PRZED grafem.
 
 Za flagą `market_features_enabled` use case zbiera dla każdego symbolu cyklu kurs
 (port rynku) i historię snapshotów (`price_snapshots`, darmowy odczyt Supabase),
-a domena liczy z nich cechy point-in-time (`price_features`). Cechy trafiają do
-stanu grafu i dalej do `feature_snapshots` jako zestaw cech w wersji 4.
+a domena liczy z nich cechy point-in-time (`price_features`). Po zebraniu kursów
+WSZYSTKICH symboli domena dokłada cechy cross-sectional (`cross_section_features`):
+rangę ruchu w uniwersum, ruch ponad IVV i medianę klasy, szerokość rynku. Cechy
+trafiają do stanu grafu i dalej do `feature_snapshots` jako zestaw cech w wersji 4.
 
 FinOps: zero płatnych wywołań. Kurs pobrany tutaj zapamiętuje `CycleQuoteCache`,
 więc `check_price` tego samego cyklu go reużywa — liczba requestów o cenę się nie
@@ -14,13 +16,14 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
 from src.application.ports import MarketDataPort, RepositoryPort
+from src.domain.cross_section import CrossSectionFeatures, SymbolMove, cross_section_features
 from src.domain.price_features import PriceFeatures, price_features
-from src.domain.value_objects import Money
+from src.domain.value_objects import AssetType, Money
 
 logger = logging.getLogger(__name__)
 
@@ -81,20 +84,51 @@ def _symbol_price_features(
     return price_features(points, as_of)
 
 
+def _universe_moves(
+    prices: Mapping[str, PriceFeatures],
+    asset_types: Mapping[str, AssetType],
+    gate_thresholds: Mapping[AssetType, float],
+) -> dict[str, SymbolMove]:
+    """ML-32: uniwersum cyklu — symbole ze znanym ret_1. Symbol bez kursu albo bez
+    wczorajszego zamknięcia nie wchodzi do rangi, mediany ani szerokości rynku."""
+    moves: dict[str, SymbolMove] = {}
+    for symbol, features in prices.items():
+        if features.ret_1 is None:
+            continue
+        asset_type = asset_types.get(symbol, AssetType.STOCK)
+        moves[symbol] = SymbolMove(
+            ret_1=features.ret_1,
+            asset_class=asset_type.value,
+            gate_threshold=gate_thresholds[asset_type],
+        )
+    return moves
+
+
 def collect_market_features(
     symbols: Sequence[str],
     *,
     market_port: MarketDataPort,
     repository: RepositoryPort,
     as_of: datetime,
+    asset_types: Mapping[str, AssetType],
+    gate_thresholds: Mapping[AssetType, float],
 ) -> dict[str, dict[str, Any]]:
-    """Cechy rynkowe każdego symbolu cyklu (`PRICE_FEATURE_NAMES`, None = brak).
+    """Cechy rynkowe każdego symbolu cyklu (cenowe + cross-sectional, None = brak).
 
+    `asset_types` (brak = STOCK) wyznacza klasę do mediany, a `gate_thresholds`
+    bazowy próg bramki klasy (bez mnożników reżimu i earnings) do szerokości rynku.
     Pojedynczy błąd per symbol nie przerywa fazy — symbol dostaje puste cechy."""
-    features: dict[str, dict[str, Any]] = {}
+    prices: dict[str, PriceFeatures] = {}
     for symbol in dict.fromkeys(symbols):
         computed = _symbol_price_features(
             symbol, market_port=market_port, repository=repository, as_of=as_of
         )
-        features[symbol] = (computed or PriceFeatures()).as_features()
-    return features
+        prices[symbol] = computed or PriceFeatures()
+    cross = cross_section_features(_universe_moves(prices, asset_types, gate_thresholds))
+    return {
+        symbol: {
+            **features.as_features(),
+            **cross.get(symbol, CrossSectionFeatures()).as_features(),
+        }
+        for symbol, features in prices.items()
+    }
