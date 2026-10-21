@@ -225,3 +225,57 @@ def test_config_toml_migration_comments_point_at_existing_files() -> None:
 
     assert cited, "config.toml nie wskazuje żadnej migracji — wzorzec przestał działać"
     assert sorted(cited - migrations) == []
+
+
+# DOC-13: tabela „niezmiennik → test” w how-it-works i README. Każdy wiersz
+# linkuje plik testu i nazywa test (`Klasa::test_x` albo `test_x`), który w tym
+# pliku istnieje — inaczej tabela obiecywałaby strażnika, którego nie ma.
+INVARIANT_TABLES = {
+    "docs/how-it-works.md": "## Invariants and the tests behind them",
+    "README.md": "## Invariants under test",
+}
+MIN_INVARIANTS = 7
+
+
+def _section_of(text: str, heading: str) -> str:
+    start = text.index(heading)
+    end = text.find("\n## ", start + 1)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def _test_ids_in(path: Path) -> set[str]:
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    ids: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            ids.add(node.name)
+        elif isinstance(node, ast.ClassDef):
+            ids.update(
+                f"{node.name}::{item.name}"
+                for item in node.body
+                if isinstance(item, ast.FunctionDef) and item.name.startswith("test_")
+            )
+    return ids
+
+
+@pytest.mark.parametrize("doc", sorted(INVARIANT_TABLES))
+def test_invariant_table_links_tests_that_exist(doc: str) -> None:
+    path = ROOT / doc
+    section = _section_of(path.read_text(encoding="utf-8"), INVARIANT_TABLES[doc])
+    rows = [line for line in section.splitlines() if line.startswith("| ") and "](" in line]
+
+    assert len(rows) >= MIN_INVARIANTS
+    problems = []
+    for row in rows:
+        files = [
+            (path.parent / target).resolve()
+            for target in re.findall(r"\]\(([^)#]+\.py)\)", row)
+        ]
+        named = re.findall(r"`((?:\w+::)?test_\w+)`", row)
+        known = set().union(*(_test_ids_in(file) for file in files if file.is_file()))
+        if not files or not named or not set(named) <= known:
+            problems.append((row[:60], sorted(set(named) - known)))
+
+    assert problems == []

@@ -50,6 +50,21 @@ Each claim links the file that backs it, and each of those runs in CI.
   → every relative link in tracked Markdown must resolve, in the same pytest gate that runs
   locally and in CI.
 
+## Invariants under test
+
+The rules that keep the loop cheap and a bad day survivable, each with the test that fails when it breaks; [how it works](docs/how-it-works.md#invariants-and-the-tests-behind-them) says why each one matters. A test checks that every named test still exists.
+
+| Invariant | Enforced by |
+|---|---|
+| The volatility gate never loosens: the regime, earnings and drift multipliers can only raise the threshold | [`tests/domain/test_asset.py`](tests/domain/test_asset.py) `TestEffectiveThreshold::test_a_multiplier_below_one_never_loosens_the_gate`; [`tests/domain/test_earnings.py`](tests/domain/test_earnings.py) `test_threshold_multiplier_never_loosens_gate` |
+| A symbol below the gate costs nothing: no sentiment, news, prediction or paid diagnosis, and a fully gated cycle says so in the email | [`tests/application/test_analyze_market_use_case.py`](tests/application/test_analyze_market_use_case.py) `TestRun::test_ignores_minor_change_below_threshold`; [`tests/application/test_agent_graph.py`](tests/application/test_agent_graph.py) `TestReflectMistakeDiagnosisGatedByVolatility::test_skips_paid_diagnosis_when_below_threshold_but_still_records`; [`tests/application/test_report_finops.py`](tests/application/test_report_finops.py) `test_free_cycle_renders_explicitly_html` |
+| A symbol cut by the cycle's paid-call ceiling ends without an analysis and without a price snapshot | [`tests/application/test_agent_graph.py`](tests/application/test_agent_graph.py) `TestPaidCallBudget::test_third_symbol_routed_to_ignore_with_budget_exhausted_flag` |
+| The threshold is validated: `Settings` refuses a volatility threshold of 0 | [`tests/test_config.py`](tests/test_config.py) `test_zero_volatility_threshold_rejected` |
+| One failing symbol never fails the cycle; the Fast Loop exits 1 only when every symbol failed | [`tests/test_main_entrypoints.py`](tests/test_main_entrypoints.py) `TestMainAgent::test_main_returns_zero_on_partial_failure`, `TestMainAgent::test_main_returns_one_when_all_symbols_fail`, `TestAnalyzeSymbolsParallel::test_parallel_single_failure_isolated` |
+| Writes are idempotent: predictions and price snapshots are upserts on `(symbol, timestamp_hour)`, and only a terminal node writes the snapshot | [`tests/infrastructure/test_supabase_repository.py`](tests/infrastructure/test_supabase_repository.py) `TestSavePrediction::test_upsert_uses_symbol_timestamp_hour_conflict_key`, `TestSavePriceSnapshot::test_upsert_uses_symbol_timestamp_hour_conflict_key`; [`tests/application/test_agent_graph.py`](tests/application/test_agent_graph.py) `TestPriceSnapshot::test_snapshot_not_written_when_cycle_crashes_before_terminal` |
+| `main_watch.py` and `main_deadman.py` build no paid port, and the watch writes no price snapshot | [`tests/test_main_watch.py`](tests/test_main_watch.py) `test_watch_starts_with_stubbed_paid_ports_and_database_writes`, `TestWatchCycle::test_watch_never_writes_a_price_snapshot`; [`tests/test_main_deadman.py`](tests/test_main_deadman.py) `test_deadman_builds_no_paid_adapter` |
+| CI is under test: the quality job runs ruff and mypy on every entry point, and an active Fast Loop cron needs the deadman, the cost ceiling and the weekly budget | [`tests/test_quality_gate_sync.py`](tests/test_quality_gate_sync.py) `test_ci_quality_job_runs_ruff_and_mypy`, `test_ci_lints_and_typechecks_every_entrypoint`; [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py) `test_enabled_fast_loop_schedule_requires_deadman` |
+
 ## Status
 
 **The daily report run is paused** since 2026-08-17, when commit `02fc397` commented out
