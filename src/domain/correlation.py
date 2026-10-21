@@ -14,6 +14,8 @@ import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 
+from src.domain.value_objects import require_finite
+
 # Minimalna liczba par zwrotów potrzebna, by korelacja miała sens.
 _MIN_RETURNS = 2
 
@@ -73,8 +75,11 @@ def pearson(a: list[float], b: list[float]) -> float:
     Wyrównuje długości do wspólnego prefiksu (misaligned history). Gdy
     którakolwiek seria ma zerową wariancję (stała), zwraca 0.0 zamiast
     NaN — brak zmienności = brak mierzalnej współzależności. Za krótkie
-    serie (<2 punktów) też dają 0.0.
+    serie (<2 punktów) też dają 0.0. NaN/inf w którejkolwiek serii →
+    `ValueError` (PORT-09): domknięcie `min`/`max` zamieniało NaN w 1.0.
     """
+    require_finite(a, "pearson series")
+    require_finite(b, "pearson series")
     n = min(len(a), len(b))
     if n < _MIN_RETURNS:
         return 0.0

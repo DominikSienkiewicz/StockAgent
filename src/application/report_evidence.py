@@ -23,6 +23,7 @@ snapshotów `price_snapshots`), z tymi samymi kosztami. Brak danych IVV to jawne
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -107,8 +108,13 @@ def cycle_key(prediction: ResolvedPrediction) -> str:
 
 
 def _realized_change(prediction: ResolvedPrediction) -> float | None:
+    """Zmiana ceny jako float; poza zakresem floata (inf) → None (PORT-09):
+    krzywe domeny odrzucają NaN/inf, więc taka predykcja wypada sama."""
     change = prediction.actual_change_pct
-    return None if change is None else float(change)
+    if change is None:
+        return None
+    value = float(change)
+    return value if math.isfinite(value) else None
 
 
 def scored_calls(resolved: Sequence[ResolvedPrediction]) -> list[ScoredCall]:

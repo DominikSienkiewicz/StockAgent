@@ -133,9 +133,10 @@ def evaluate_edge(
       - pomiędzy → ALIGNED.
 
     Brak IV / `iv <= 0` / `horizon_hours <= 0` → NO_SIGNAL (`edge_sigma` i
-    `implied_move` = None, nigdy dzielenia przez zero).
+    `implied_move` = None, nigdy dzielenia przez zero). IV NaN/inf to dane bez
+    sensu — także NO_SIGNAL (PORT-09: inf dawał MARKET_AHEAD, NaN — ALIGNED).
     """
-    if iv is None:
+    if iv is None or not math.isfinite(iv):
         return ImpliedEdge(
             label=EdgeLabel.NO_SIGNAL,
             edge_sigma=None,

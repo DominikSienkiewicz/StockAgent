@@ -181,3 +181,10 @@ class TestAlignByUtcDay:
 
     def test_empty_input_yields_empty_mapping(self) -> None:
         assert align_by_utc_day({}) == {}
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf])
+def test_pearson_non_finite_return_raises(bad: float) -> None:
+    # PORT-09: NaN w zwrotach dawał pearson 1.0 (domknięcie min/max połyka NaN).
+    with pytest.raises(ValueError, match="finite"):
+        pearson([0.01, bad, -0.02], [0.02, 0.01, -0.01])

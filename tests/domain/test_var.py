@@ -108,3 +108,15 @@ class TestConditionalVar:
         cvar = conditional_var([-0.30, -0.20, -0.10, 0.0, 0.05], 0.90)
         assert isinstance(cvar, float)
         assert math.isfinite(cvar)
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_non_finite_return_raises(bad: float) -> None:
+    # PORT-09: jeden NaN dawał po cichu VaR 0.0 — błąd danych ma być głośny
+    # (use case łapie ValueError per symbol), nie udawać braku ryzyka.
+    returns = [-0.10, bad, 0.02, 0.05]
+
+    with pytest.raises(ValueError, match="finite"):
+        historical_var(returns, 0.95)
+    with pytest.raises(ValueError, match="finite"):
+        conditional_var(returns, 0.95)

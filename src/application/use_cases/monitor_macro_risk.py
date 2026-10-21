@@ -33,7 +33,7 @@ from src.domain.macro_risk import (
     MacroRiskSignal,
 )
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
-from src.domain.value_objects import Money
+from src.domain.value_objects import Money, require_finite
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,12 @@ class MonitorMacroRiskUseCase:
         out: dict[str, list[float]] = {}
         for symbol, prices in aligned.items():
             rets = returns_from_prices(prices)
+            try:
+                # PORT-09: korelacja hedge'a rzuca na NaN/inf — symbol wypada sam.
+                require_finite(rets, f"returns of {symbol}")
+            except ValueError:
+                logger.warning("risk_watch: %s has non-finite returns — skipped", symbol)
+                continue
             if len(rets) >= 2:
                 out[symbol] = rets
         return out

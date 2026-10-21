@@ -504,3 +504,34 @@ class TestDiscriminationEvidence:
         from src.domain.calibration_curve import discrimination_evidence
 
         assert discrimination_evidence([]) is None
+
+class TestOutOfRangeConfidence:
+    """PORT-09: pewność spoza [0, 1] (skala 0–100 albo NaN) wypada z diagramu
+    i jest liczona, zamiast windować ECE do 42."""
+
+    def test_ece_stays_in_unit_interval_for_out_of_range_confidence(self) -> None:
+        samples = [(0.7, True), (85.0, False), (0.6, False), (float("nan"), True)]
+
+        buckets = reliability_curve(samples)
+
+        assert sum(bucket.count for bucket in buckets) == 2
+        assert 0.0 <= expected_calibration_error(buckets) <= 1.0
+
+    def test_counts_rejected_confidences(self) -> None:
+        from src.domain.calibration_curve import out_of_range_confidences
+
+        samples = [(0.7, True), (85.0, False), (-0.1, True), (float("nan"), True), (1.0, True)]
+
+        assert out_of_range_confidences(samples) == 3
+
+    @pytest.mark.parametrize(("raw", "expected"), [(1.7, 1.0), (-0.2, 0.0)])
+    def test_calibrated_confidence_clamps_on_graceful_paths(
+        self, raw: float, expected: float
+    ) -> None:
+        bucket = CalibrationBucket(
+            lower=0.5, upper=0.6, count=20, mean_confidence=0.55, hit_rate=0.5
+        )
+
+        assert calibrated_confidence(raw, []) == expected
+        assert calibrated_confidence(raw, [bucket]) == expected
+        assert calibrated_confidence(raw, [bucket], min_count=0) == expected

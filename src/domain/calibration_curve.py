@@ -85,9 +85,14 @@ def reliability_curve(
 
     `equal_mass` (WIA-58): patrz `_equal_mass_curve`. Nieznana strategia →
     `ValueError`.
+
+    PORT-09: próbka z pewnością spoza `[0, 1]` (skala 0–100, NaN) nie trafia
+    do żadnego kubełka — inaczej 85 lądowało w ostatnim słupku i windowało ECE
+    do ~84. Ile takich próbek odrzucono, mówi `out_of_range_confidences`.
     """
     if strategy not in ("equal_width", "equal_mass"):
         raise ValueError(f"Unknown bucket strategy: {strategy!r}")
+    samples = [sample for sample in samples if _in_unit_interval(sample[0])]
     if not samples or n_buckets <= 0:
         return []
     if strategy == "equal_mass":
@@ -157,6 +162,17 @@ def _equal_mass_curve(
     ]
 
 
+def _in_unit_interval(confidence: float) -> bool:
+    """Czy pewność leży w `[0, 1]`; NaN nie leży nigdzie."""
+    return 0.0 <= confidence <= 1.0
+
+
+def out_of_range_confidences(samples: Sequence[tuple[float, bool]]) -> int:
+    """Liczba próbek, które `reliability_curve` odrzuca: pewność spoza `[0, 1]`
+    albo NaN (PORT-09). Wołający może ją pokazać obok diagramu."""
+    return sum(1 for confidence, _ in samples if not _in_unit_interval(confidence))
+
+
 def expected_calibration_error(buckets: Sequence[CalibrationBucket]) -> float:
     """Expected Calibration Error — ważona licznością średnia rozjazdu.
 
@@ -220,17 +236,25 @@ def calibrated_confidence(
     - brak kubełka pasującego do `raw` → zwraca `raw`,
     - `min_count <= 0` (brak sensownego progu) → zwraca `raw`.
 
-    Wynik jest zawsze przycięty do przedziału `[0, 1]`.
+    Wynik jest zawsze przycięty do przedziału `[0, 1]` — także na ścieżkach
+    graceful (PORT-09), żeby surowe 1.7 nie wyszło z kalibracji jako 170%.
+    NaN zostaje NaN: nie ma pozycji na osi, a przycięcie zrobiłoby z niego 100%.
     """
     if not buckets or min_count <= 0:
-        return raw
+        return _clamp_unit_interval(raw)
     bucket = find_bucket(raw, buckets)
     if bucket is None:
-        return raw
+        return _clamp_unit_interval(raw)
     weight = bucket.count / (bucket.count + min_count)
     calibrated = raw + weight * (bucket.hit_rate - raw)
     # Przycięcie do [0, 1] — zabezpieczenie przed zdegenerowanymi danymi.
-    return max(0.0, min(1.0, calibrated))
+    return _clamp_unit_interval(calibrated)
+
+
+def _clamp_unit_interval(value: float) -> float:
+    if math.isnan(value):
+        return value
+    return max(0.0, min(1.0, value))
 
 
 def brier_score(samples: Sequence[tuple[float, bool]]) -> float:

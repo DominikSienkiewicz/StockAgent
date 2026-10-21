@@ -378,6 +378,31 @@ class TestHedgeEffectiveness:
 
         assert report.hedges[0].label == "odwrócony"
 
+    def test_hedge_with_non_finite_returns_drops_out_alone(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        # PORT-09: NaN w zwrotach dawał pearson 1.0 → fałszywy „odwrócony” hedge.
+        self._wire(
+            market_port, repository_port,
+            {"AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
+             "SH": _history("100", "90", "94.5", "75.6", "80.06"),
+             "BRK": _history("100", "1e400", "94.5", "75.6", "80.06")},
+        )
+        uc = MonitorMacroRiskUseCase(
+            market_port=market_port,
+            repository_port=repository_port,
+            book_symbols=["AAPL"],
+            hedge_enabled=True,
+        )
+        report = uc.run(
+            {
+                "SH": MacroRiskInstrumentType.INVERSE_EQUITY,
+                "BRK": MacroRiskInstrumentType.INVERSE_EQUITY,
+            }
+        )
+
+        assert [h.hedge_symbol for h in report.hedges] == ["SH"]
+
     def test_no_book_symbols_yields_no_hedges(
         self, market_port: Mock, repository_port: Mock
     ) -> None:

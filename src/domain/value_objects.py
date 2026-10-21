@@ -1,4 +1,5 @@
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -69,6 +70,16 @@ def clamp_unit(value: float) -> tuple[float, bool]:
         raise ValueError("clamp_unit requires a number, got NaN")
     clamped = min(max(value, 0.0), 1.0)
     return clamped, clamped != value
+
+
+def require_finite(values: Iterable[float], what: str) -> None:
+    """PORT-09: dane wejściowe matematyki ryzyka (zwroty, zmiany cen) muszą być
+    skończone. NaN po cichu przechodzi przez `min`/`max`/sortowanie i daje VaR 0.0
+    albo korelację 1.0, więc zamiast tego `ValueError` — use case łapie go per
+    symbol, a reszta sekcji liczy się dalej."""
+    for value in values:
+        if not math.isfinite(value):
+            raise ValueError(f"{what} must be finite numbers (got {value})")
 
 
 class AssetType(Enum):
