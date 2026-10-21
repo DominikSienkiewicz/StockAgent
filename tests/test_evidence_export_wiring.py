@@ -17,7 +17,7 @@ import yaml
 
 import main_trainer
 from src.application.ports import ArchiveReceipt, EvidenceSourcePort
-from src.config import NON_RECIPE_SETTINGS_FIELDS, Settings
+from src.config import SECRET_SETTINGS_FIELDS, Settings
 from src.infrastructure.adapters.age_archive import is_age_recipient
 
 ROOT = Path(__file__).parent.parent
@@ -106,9 +106,8 @@ def test_failed_export_does_not_break_the_run(
     assert "Evidence export failed" in caplog.text
 
 
-def test_recipient_is_outside_the_recipe_hash() -> None:
-    # Klucz publiczny nic nie odszyfruje; poza przepisem, bo nie zmienia prognozy.
-    assert "backup_age_recipient" in NON_RECIPE_SETTINGS_FIELDS
+def test_recipient_is_a_secret_settings_field() -> None:
+    assert "backup_age_recipient" in SECRET_SETTINGS_FIELDS
 
 
 def _steps() -> list[dict[str, Any]]:

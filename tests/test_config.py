@@ -921,6 +921,7 @@ class TestSecretValues:
         "slack_webhook_url": "https://hooks.slack.com/services/0014",
         "edgar_user_agent": "StockAgent/1.0 (contact-0015@example.com)",
         "heartbeat_url": "https://hc-ping.com/check-0016",
+        "backup_age_recipient": "age1recipient-0017",
     }
 
     def test_fixture_covers_every_secret_field(self):

@@ -72,6 +72,9 @@ SECRET_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "edgar_user_agent",
     # NIEZ-13: URL pingu heartbeatu niesie UUID checku — kto go zna, ten pinguje.
     "heartbeat_url",
+    # NIEZ-32: klucz odbiorcy kopii — wartość per deployment, jak sekret (placeholder
+    # w `.env.example`); w logach redagowany.
+    "backup_age_recipient",
 })
 
 # WIA-20: pola niesekretne, które NIE zmieniają prognozy, więc nie wchodzą do
@@ -163,8 +166,6 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "calibration_score_version_enabled",
     # NIEZ-25: sonda Models API w Slow Loopie — sam odczyt katalogu dostawcy.
     "model_probe_enabled",
-    # NIEZ-32: klucz PUBLICZNY odbiorcy kopii (z sekretu repo, ale nic nie odszyfruje).
-    "backup_age_recipient",
     "feature_set_filter_enabled",
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
