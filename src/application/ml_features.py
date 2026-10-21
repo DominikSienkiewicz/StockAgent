@@ -69,6 +69,10 @@ TARGET_COLUMN = "target_return"
 # (`src.domain.backtest.purged_train_end`).
 TIMESTAMP_COLUMN = "timestamp"
 
+# ML-25: chwila rozliczenia wiersza widoku (migracja 050, obok `label_horizon_hours`).
+# Dziś tylko do pomiaru nakładania etykiet; purge dalej idzie stałym horyzontem.
+SETTLED_AT_COLUMN = "settled_at"
+
 
 def in_label_time_order(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series | None]:
     """Wiersze rosnąco po czasie i ich znaczniki (UTC) do purgu horyzontu etykiety.

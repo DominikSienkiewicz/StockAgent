@@ -7,7 +7,9 @@ from src.domain.backtest import (
     MIN_OOS_POINTS,
     MIN_REL_IMPROVEMENT,
     BacktestSummary,
+    LabelOverlap,
     beats_baseline,
+    count_label_overlaps,
     purged_train_end,
     summarize_folds,
 )
@@ -324,3 +326,37 @@ def test_costs_do_not_move_the_rmse_verdict() -> None:
     folds = _strategy_folds((0.002, 1.0))
 
     assert summarize_folds(folds, cost_bps=50).verdict == summarize_folds(folds).verdict
+
+
+class TestCountLabelOverlaps:
+    """ML-25: ile wierszy rozlicza się dopiero po następnym wierszu swojego symbolu
+    — pomiar, bez którego purge stałym `LABEL_HORIZON` jest strzałem w ciemno."""
+
+    _T0 = datetime(2026, 10, 2, 9, 30, tzinfo=UTC)
+
+    def test_counts_rows_settled_after_the_next_row_of_their_symbol(self):
+        day = timedelta(days=1)
+        rows = [
+            # Piątek rozliczony w poniedziałek dopiero po poniedziałkowym wierszu.
+            ("AAPL", self._T0, self._T0 + 3 * day + timedelta(hours=1)),
+            ("AAPL", self._T0 + 3 * day, self._T0 + 4 * day - timedelta(hours=1)),
+            ("AAPL", self._T0 + 4 * day, None),
+            # Inny symbol: jego „następny wiersz" to wiersz tego samego symbolu.
+            ("BTC", self._T0 + timedelta(hours=1), self._T0 + timedelta(hours=20)),
+            ("BTC", self._T0 + day, self._T0 + 2 * day),
+        ]
+
+        assert count_label_overlaps(rows) == LabelOverlap(measured=3, overlapping=1)
+
+    def test_order_of_rows_does_not_matter(self):
+        rows = [
+            ("AAPL", self._T0 + timedelta(hours=24), None),
+            ("AAPL", self._T0, self._T0 + timedelta(hours=30)),
+        ]
+
+        assert count_label_overlaps(rows) == LabelOverlap(measured=1, overlapping=1)
+
+    def test_rows_without_settled_at_or_next_row_are_not_measured(self):
+        rows = [("AAPL", self._T0, None), ("MSFT", self._T0, self._T0 + timedelta(hours=26))]
+
+        assert count_label_overlaps(rows) == LabelOverlap(measured=0, overlapping=0)

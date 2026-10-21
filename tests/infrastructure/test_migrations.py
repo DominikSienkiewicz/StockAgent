@@ -72,6 +72,7 @@ MIGRATION_FILES = [
     "047_ml_feature_store_lag_over_all_predictions.sql",
     "048_normalize_predicted_trend.sql",
     "049_model_scorecards_run_id.sql",
+    "050_feature_store_label_horizon.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1428,6 +1429,52 @@ class TestMigrations:
 
         assert same_run == ["AAPL", "ALL"]
         assert data_type == ("uuid",)
+
+    # -- Migracja 050: settled_at i horyzont etykiety w widoku (ML-25) ---------
+
+    def test_ml_feature_store_exposes_settled_at_and_label_horizon(self, pg_conn) -> None:
+        """Wiersz rozliczony po 26 h ma `label_horizon_hours = 26`; dolna granica
+        backfillu 029 (`settled_at = timestamp`) to brak pomiaru, nie 0 h."""
+        assert {"settled_at", "label_horizon_hours"} <= _columns(pg_conn, "ml_feature_store")
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM prediction_logs WHERE symbol LIKE 'LH050_%'")
+            # INSERT z jawnym settled_at — trigger 029 stempluje tylko UPDATE.
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, actual_price_after_12h, settled_at) "
+                "VALUES "
+                "('LH050_LATE', '2026-08-07T10:00:00+00:00', 100.0, 101.0, "
+                " '2026-08-08T12:00:00+00:00'), "
+                "('LH050_FLOOR', '2026-08-07T10:00:00+00:00', 100.0, 101.0, "
+                " '2026-08-07T10:00:00+00:00')"
+            )
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute(
+                "SELECT symbol, settled_at IS NOT NULL, label_horizon_hours "
+                "FROM ml_feature_store WHERE symbol LIKE 'LH050_%'"
+            )
+            rows = {symbol: (settled, horizon) for symbol, settled, horizon in cur.fetchall()}
+
+        assert rows["LH050_LATE"] == (True, pytest.approx(26.0))
+        assert rows["LH050_FLOOR"] == (True, None)
+
+    def test_feature_store_after_050_keeps_the_lag_and_the_indexes(self, pg_conn) -> None:
+        """050 odtwarza widok z 047: LAG po wszystkich predykcjach, oba indeksy,
+        komentarze kolumn i zamknięte role API (sprawdza je test emulacji ról)."""
+        assert {
+            "idx_ml_feature_store_id",
+            "idx_ml_feature_store_symbol_timestamp",
+        } <= _indexes(pg_conn, "ml_feature_store")
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT refresh_ml_feature_store()")
+            cur.execute(
+                "SELECT col_description('ml_feature_store'::regclass, attnum) "
+                "FROM pg_attribute WHERE attrelid = 'ml_feature_store'::regclass "
+                "AND attname = 'label_horizon_hours'"
+            )
+            comment = cur.fetchone()[0]
+
+        assert "horyzont etykiety" in comment
 
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 

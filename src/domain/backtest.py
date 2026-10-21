@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import statistics
 from bisect import bisect_right
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -109,6 +109,39 @@ def purged_train_end(
     """
     cutoff = timestamps[valid_start] - horizon
     return bisect_right(timestamps, cutoff, 0, valid_start)
+
+
+@dataclass(frozen=True)
+class LabelOverlap:
+    """ML-25: pomiar nakładania etykiet przed decyzją o purge'u po `settled_at`.
+
+    `measured` — wiersze z chwilą rozliczenia i z następnym wierszem tego samego
+    symbolu; `overlapping` — te z nich, których etykieta dojrzała dopiero PO
+    chwili następnego wiersza (`settled_at` > jego `timestamp`)."""
+
+    measured: int
+    overlapping: int
+
+
+def count_label_overlaps(
+    rows: Iterable[tuple[str, datetime, datetime | None]],
+) -> LabelOverlap:
+    """Liczy wiersze `(symbol, timestamp, settled_at)` rozliczone po następnym
+    wierszu swojego symbolu. Kolejność wejścia nie ma znaczenia; wiersz bez
+    `settled_at` albo ostatni w symbolu nie jest mierzony."""
+    by_symbol: dict[str, list[tuple[datetime, datetime | None]]] = {}
+    for symbol, stamp, settled_at in rows:
+        by_symbol.setdefault(symbol, []).append((stamp, settled_at))
+    measured = overlapping = 0
+    for series in by_symbol.values():
+        series.sort(key=lambda item: item[0])
+        for (_, settled_at), (next_stamp, _) in zip(series, series[1:], strict=False):
+            if settled_at is None:
+                continue
+            measured += 1
+            if settled_at > next_stamp:
+                overlapping += 1
+    return LabelOverlap(measured=measured, overlapping=overlapping)
 
 
 def _oos_points(folds: Sequence[Mapping[str, float]]) -> int | None:
