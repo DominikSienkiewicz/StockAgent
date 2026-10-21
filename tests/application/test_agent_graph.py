@@ -160,7 +160,9 @@ def _setup_full_analysis_mocks(
 
 
 # ---------------------------------------------------------------------------
-# Price snapshot — zapisywany w KAŻDYM cyklu (cold-start deadlock fix)
+# Price snapshot — zapisuje go węzeł TERMINALNY (save / ignore) każdego
+# UKOŃCZONEGO cyklu, nie check_price (cold-start deadlock fix, #6). Cykl, który
+# padł w połowie, i symbol odcięty sufitem budżetu (FIN-12) nie zostawiają snapshotu.
 # ---------------------------------------------------------------------------
 
 
