@@ -116,7 +116,9 @@ class RepositoryPort(ABC):
         gdy brak historii."""
 
     @abstractmethod
-    def get_last_prediction_price(self, symbol: str) -> Money | None:
+    def get_last_prediction_price(
+        self, symbol: str, *, before: datetime | None = None
+    ) -> Money | None:
         """Cena OSTATNIEJ zalogowanej predykcji (`prediction_logs.price_at_prediction`).
 
         Referencja dla cechy `price_delta` w inference. Widok `ml_feature_store`
@@ -124,7 +126,12 @@ class RepositoryPort(ABC):
         POPRZEDNIEJ predykcji. Fast Loop musi użyć tej samej referencji (nie
         ostatniego snapshotu ceny), inaczej cecha ma inny rozkład w treningu i
         w predykcji (train/serve skew). Zwraca None gdy brak wcześniejszej
-        predykcji dla symbolu (pierwszy cykl — widok i tak takie wiersze odsiewa)."""
+        predykcji dla symbolu (pierwszy cykl — widok i tak takie wiersze odsiewa).
+
+        `before` (ML-18) to chwila bieżącej predykcji: odczyt pomija wiersze z jej
+        godziny UTC i późniejsze. Zapis predykcji to upsert po
+        `(symbol, timestamp_hour)`, więc re-run w tej samej godzinie nadpisze
+        wiersz z tej godziny — w widoku LAG go nie zobaczy. None = bez filtra."""
 
     @abstractmethod
     def save_price_snapshot(self, symbol: str, price: Money) -> None:

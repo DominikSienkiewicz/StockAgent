@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -352,6 +353,40 @@ class TestPriceDeltaFeatureContract:
 
         # Model przewiduje zwrot → predict potrzebuje bieżącej ceny do rekonstrukcji.
         assert ml_port.predict.call_args.kwargs.get("current_price") == Decimal("90.0")
+
+    def test_reference_excludes_the_row_this_cycle_will_overwrite(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ):
+        # ML-18: zapis predykcji to upsert po (symbol, timestamp_hour), więc re-run
+        # w tej samej godzinie nadpisze jej wiersz. Referencja price_delta musi
+        # pochodzić sprzed tej godziny — chwila predykcji z zegara w AgentGraphDeps.
+        moment = datetime(2026, 10, 21, 14, 37, tzinfo=UTC)
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        graph = create_agent_graph(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            clock=lambda: moment,
+        ))
+
+        graph.compile().invoke(_initial_state("100.0"))
+
+        repository_port.get_last_prediction_price.assert_called_once_with(
+            "AAPL", before=moment
+        )
 
 
 # ---------------------------------------------------------------------------

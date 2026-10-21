@@ -147,8 +147,10 @@ class ReadOnlyRepository(RepositoryPort):
     def get_price_history(self, symbol: str, days: int) -> list[tuple[datetime, Money]]:
         return self._delegate.get_price_history(symbol, days)
 
-    def get_last_prediction_price(self, symbol: str) -> Money | None:
-        return self._delegate.get_last_prediction_price(symbol)
+    def get_last_prediction_price(
+        self, symbol: str, *, before: datetime | None = None
+    ) -> Money | None:
+        return self._delegate.get_last_prediction_price(symbol, before=before)
 
     def get_latest_regime_state(self) -> RegimeState | None:
         return self._delegate.get_latest_regime_state()

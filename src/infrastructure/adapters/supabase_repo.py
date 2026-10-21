@@ -204,6 +204,14 @@ def _utc_day_key(stamp: Any) -> str:
     return moment.date().isoformat()
 
 
+def _utc_hour_start(moment: datetime) -> datetime:
+    """Początek godziny UTC chwili — ta sama granica co generowana kolumna
+    `timestamp_hour` (`date_trunc('hour', timestamp, 'UTC')`, migracja 013).
+    Chwila bez strefy to UTC."""
+    utc = moment.astimezone(UTC) if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    return utc.replace(minute=0, second=0, microsecond=0)
+
+
 def _serialize(value: Any) -> Any:
     """Decimal → str (JSON-safe, zachowuje precyzję) — pozostałe typy bez zmian."""
     if isinstance(value, Decimal):
@@ -346,18 +354,21 @@ class SupabaseRepository(RepositoryPort):
             )
         return out
 
-    def get_last_prediction_price(self, symbol: str) -> Money | None:
+    def get_last_prediction_price(
+        self, symbol: str, *, before: datetime | None = None
+    ) -> Money | None:
         # Cena ostatniej zalogowanej predykcji — referencja dla cechy price_delta
         # w inference (musi pokrywać się z LAG(price_at_prediction) w widoku
         # ml_feature_store, inaczej cecha ma inny rozkład w treningu i predykcji).
-        response = (
+        query = (
             self._client.table(self._table)
             .select("price_at_prediction")
             .eq("symbol", symbol)
-            .order("timestamp", desc=True)
-            .limit(1)
-            .execute()
         )
+        if before is not None:
+            # ML-18: bez wiersza z godziny, którą ten zapis nadpisze upsertem.
+            query = query.lt("timestamp_hour", _utc_hour_start(before).isoformat())
+        response = query.order("timestamp", desc=True).limit(1).execute()
         rows = _rows(response)
         if not rows or rows[0].get("price_at_prediction") is None:
             return None

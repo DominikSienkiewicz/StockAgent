@@ -20,6 +20,8 @@ ML_FEATURE_COLUMNS = (
 # Inference: predict_node bierze RepositoryPort.get_last_prediction_price (cenę
 #   ostatniej zalogowanej predykcji), NIE ostatni snapshot ceny (ten napędza
 #   wyłącznie bramkę volatility). Obie ścieżki muszą używać tej samej referencji.
+#   ML-18: odczyt pomija wiersz z bieżącej godziny UTC — upsert po
+#   (symbol, timestamp_hour) go nadpisze, więc widok nigdy go nie zobaczy.
 
 # Wersja zestawu cech (DAT-09) — rośnie, gdy cecha o TEJ SAMEJ nazwie zmienia
 # znaczenie (nowa kolumna to osobna zmiana kontraktu). Historia:

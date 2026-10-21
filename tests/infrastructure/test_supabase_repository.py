@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -180,6 +180,41 @@ class TestGetLastPredictionPrice:
         mock_client.table.return_value.select.return_value.eq.assert_called_with(
             "symbol", "VOO"
         )
+
+    def test_excludes_rows_from_the_current_hour(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ML-18: re-run w tej samej godzinie UTC nadpisze upsertem wiersz z tej
+        # godziny — delta liczona od niego byłaby deltą od samej siebie.
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "lt", "order", "limit"],
+            [{"price_at_prediction": 150.0}],
+        )
+
+        price = repo.get_last_prediction_price(
+            "AAPL", before=datetime(2026, 10, 21, 14, 37, 12, tzinfo=UTC)
+        )
+
+        assert price == Money(Decimal("150.0"))
+        lt = mock_client.table.return_value.select.return_value.eq.return_value.lt
+        lt.assert_called_once_with("timestamp_hour", "2026-10-21T14:00:00+00:00")
+
+    def test_before_in_another_zone_is_cut_to_the_utc_hour(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # `timestamp_hour` to date_trunc('hour', timestamp, 'UTC') (migracja 013).
+        _set_chain_response(
+            mock_client, ["table", "select", "eq", "lt", "order", "limit"], data=[]
+        )
+        warsaw = timezone(timedelta(hours=2))
+
+        repo.get_last_prediction_price(
+            "AAPL", before=datetime(2026, 10, 21, 16, 5, tzinfo=warsaw)
+        )
+
+        lt = mock_client.table.return_value.select.return_value.eq.return_value.lt
+        lt.assert_called_once_with("timestamp_hour", "2026-10-21T14:00:00+00:00")
 
 
 # ---------------------------------------------------------------------------

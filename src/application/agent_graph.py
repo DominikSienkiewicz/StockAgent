@@ -7,7 +7,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal, TypedDict
 
@@ -502,6 +502,11 @@ def _vindicated_context(
     return ", ".join(f"{op.investor_name} ({op.recommendation})" for op in vindicated)
 
 
+def _utc_now() -> datetime:
+    """Domyślny zegar grafu (`AgentGraphDeps.clock`)."""
+    return datetime.now(UTC)
+
+
 def _build_fetch_fundamentals_node(
     port: FundamentalsPort,
 ) -> Callable[[AgentState], dict[str, Any]]:
@@ -616,6 +621,9 @@ class AgentGraphDeps:
     # FIN-12: sufit płatnych wywołań LLM cyklu (`PAID_LLM_SOURCES`). None = bez
     # limitu. Decyzję podejmuje domena (`paid_budget_allows`) po bramce volatility.
     paid_call_cap: int | None = None
+    # ML-18: chwila predykcji. Referencja `price_delta` pomija wiersz z jej godziny
+    # UTC, który zapis tej predykcji nadpisze upsertem. Testy wstrzykują stały zegar.
+    clock: Callable[[], datetime] = _utc_now
 
     def __post_init__(self) -> None:
         if self.paid_call_meter is None:
@@ -1419,8 +1427,12 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # predykcji — tak jak LAG(price_at_prediction) w widoku ml_feature_store.
     # state["delta"] (zmiana od snapshotu) napędza bramkę volatility, ale ma
     # inny interwał niż trening → użycie go tutaj dawało train/serve skew.
+    # ML-18: bez wiersza z bieżącej godziny — upsert tej predykcji go nadpisze,
+    # więc w widoku LAG liczy się od predykcji z wcześniejszej godziny.
     current_price = state["current_price"]
-    last_pred_price = repository_port.get_last_prediction_price(state["symbol"])
+    last_pred_price = repository_port.get_last_prediction_price(
+        state["symbol"], before=deps.clock()
+    )
     if last_pred_price is not None and last_pred_price.amount != 0:
         ml_price_delta = float(
             (current_price - last_pred_price.amount) / last_pred_price.amount
