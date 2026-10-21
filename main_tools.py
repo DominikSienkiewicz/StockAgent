@@ -16,6 +16,7 @@ Użycie:
     uv run python main_tools.py cost-envelope
     uv run python main_tools.py render-sample-report [--out-dir build/sample-report]
     uv run python main_tools.py render-graph-diagram [--out-dir docs]
+    uv run python main_tools.py repo-stats [--out docs/repo-stats.json]
     uv run python main_tools.py explain <prediction_id> | --symbol X --date RRRR-MM-DD
     uv run python main_tools.py persona-ablation [--days N] [--window-days N]
 """
@@ -59,6 +60,7 @@ from src.tools.render_sample_report import (
     SAMPLE_TEXT_NAME,
     render_sample_report,
 )
+from src.tools.repo_stats import REPO_STATS_NAME, RepoStats, compute_repo_stats
 
 if TYPE_CHECKING:
     from src.application.ports import PositionsImportPort
@@ -67,6 +69,8 @@ if TYPE_CHECKING:
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
 Handler = Callable[[argparse.Namespace], int]
+
+_REPO_ROOT = Path(__file__).resolve().parent
 
 
 def _now() -> datetime:
@@ -97,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cost_envelope(subcommands)
     _add_render_sample_report(subcommands)
     _add_render_graph_diagram(subcommands)
+    _add_repo_stats(subcommands)
     _add_explain(subcommands)
     _add_persona_ablation(subcommands)
     return parser
@@ -418,6 +423,47 @@ def _run_render_graph_diagram(args: argparse.Namespace) -> int:
         path = out_dir / name
         path.write_text(diagram, encoding="utf-8")
         print(f"✅ diagram grafu: {path}")
+    return 0
+
+
+def collect_repo_stats(root: Path = _REPO_ROOT) -> RepoStats:
+    """DOC-18: liczby repo z plików `.py` w `src/` i `tests/` oraz z nazw migracji."""
+    sources = {
+        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+        for directory in ("src", "tests")
+        for path in sorted((root / directory).rglob("*.py"))
+        if "__pycache__" not in path.parts
+    }
+    migrations = [path.name for path in (root / "supabase" / "migrations").glob("*.sql")]
+    return compute_repo_stats(sources, migrations)
+
+
+def _add_repo_stats(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subcommands.add_parser(
+        "repo-stats",
+        help="Count tests, migrations, ports, adapters and domain modules into a JSON file.",
+        description=(
+            "DOC-18: the repository numbers the docs quote (test functions by AST, "
+            "migrations, ABC ports, adapter modules, domain modules, a stdlib-only check "
+            "of the domain). No keys, no database, no network."
+        ),
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=Path("docs") / REPO_STATS_NAME,
+        help="Output JSON file (default: docs/repo-stats.json).",
+    )
+    parser.set_defaults(handler=_run_repo_stats)
+
+
+def _run_repo_stats(args: argparse.Namespace) -> int:
+    """DOC-18: zapis liczb repo — bez `Settings`, kluczy i sieci; exit 0."""
+    out: Path = args.out
+    stats_json = collect_repo_stats().to_json()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(stats_json, encoding="utf-8")
+    print(stats_json, end="")
     return 0
 
 

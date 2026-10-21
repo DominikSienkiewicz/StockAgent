@@ -14,7 +14,7 @@ Stack, prerequisites, local setup, and CI. Tunables live in [configuration.md](c
 - **Resend.com** — HTML email, sandbox sender without domain verification
 - **Pydantic Settings** v2 — typed env vars from `.env` with validators (CSV → list)
 - **requests** + `urllib3.Retry` — shared session with exponential backoff on 429 / 5xx
-- **pytest 9** + **pytest-mock** — 640+ passing tests + skipped live-API / Docker-container tests
+- **pytest 9** + **pytest-mock** — 4,500+ test functions (`def test_`, counted by `uv run python main_tools.py repo-stats` into [`docs/repo-stats.json`](repo-stats.json), DOC-18) + skipped live-API / Docker-container tests
 - **ruff** — lint (E, W, F, I, B, UP, SIM rule sets)
 - **mypy** strict mode — every file fully typed
 - **GitHub Actions CI** — ruff + mypy + pytest + SonarCloud scan on every push / PR
@@ -191,6 +191,7 @@ uv run python main_tools.py persona-ablation --days 90  # does persona weighting
 uv run python main_tools.py cost-envelope  # estimated min/max paid calls and USD of one Fast Loop cycle for config.toml, plus the worst week at the FIN-12 ceiling against fast_loop_weekly_budget_usd (offline, zero paid calls)
 uv run python main_tools.py render-sample-report  # the report email of a fixed, fictional cycle into build/sample-report/ (HTML + plain text); no keys, no database, no network, zero paid calls (`--out-dir` to change the directory)
 uv run python main_tools.py render-graph-diagram  # docs/graph.mmd and docs/graph-without-fundamentals.mmd, the Fast Loop graph drawn by LangGraph from create_agent_graph (DOC-17); rerun after a graph change, a test compares nodes and edges
+uv run python main_tools.py repo-stats  # docs/repo-stats.json: test functions (AST), migrations, ABC ports, adapter modules, domain modules and a stdlib-only check of the domain; numbers quoted in the docs are written as "N+" and a test fails when one is above the count or more than 25% below it (DOC-18)
 uv run pytest -m "not integration and not containers" # the quality gate, as in CI
 uv run pytest                                   # everything, including live-API tests (real keys, paid calls, a real email)
 uv run pytest -m containers                    # Docker/Postgres schema tests

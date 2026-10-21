@@ -375,3 +375,24 @@ def test_render_graph_diagram_writes_both_variants_without_settings(
         encoding="utf-8"
     )
     assert "graph.mmd" in capsys.readouterr().out
+
+
+# --- DOC-18: repo-stats -----------------------------------------------------------
+
+
+def test_repo_stats_writes_the_counts_without_settings(
+    mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    from_env = mocker.patch("src.config.Settings.from_env", side_effect=AssertionError)
+    out = tmp_path / "stats.json"
+
+    code = main_tools.main(["repo-stats", "--out", str(out)])
+
+    assert code == 0
+    from_env.assert_not_called()
+    stats = json.loads(out.read_text(encoding="utf-8"))
+    assert stats["domain_stdlib_only"] is True
+    assert stats["test_functions"] > 0 and stats["migrations"] > 0
+    assert '"ports"' in capsys.readouterr().out
