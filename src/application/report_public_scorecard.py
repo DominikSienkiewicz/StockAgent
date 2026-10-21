@@ -31,6 +31,7 @@ from decimal import Decimal
 
 from src.application.data_coverage import coverage_line_pl
 from src.application.report_evidence import (
+    ENTRY_PRICE_NOTE_PL,
     NO_BENCHMARK_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
     PUBLIC_BENCHMARK_LABEL,
@@ -434,6 +435,8 @@ def _render_methodology_section(protocol: EvaluationProtocol | None = None) -> s
         "strategie „zawsze wzrost / spadek / bez ruchu” policzone na tych "
         "samych predykcjach oraz test dwumianowy względem lepszej z naiwnych "
         "strategii kierunkowych.</p>"
+        f"<p>{_html.escape(ENTRY_PRICE_NOTE_PL)} Od tej ceny liczymy i trafność, "
+        "i paper-PnL.</p>"
         "<p>Pewność oceniamy Brier score i Brier Skill Score względem prognozy "
         "klimatologicznej (stała stopa bazowa). ECE publikujemy pomocniczo: "
         "przepewny model jest gorszy niż niepewny, ale ECE bywa zerowe także "

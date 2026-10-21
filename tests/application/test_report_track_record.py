@@ -60,6 +60,20 @@ class TestEquityCurve:
         assert "2,0%" in html       # max_drawdown
 
 
+class TestEntryPriceNote:
+    """WIA-34: trafność i paper-PnL liczą lukę na otwarciu, której czytelnik maila
+    przed sesją nie kupi — notka pod podsumowaniem krzywej mówi to wprost."""
+
+    def test_equity_summary_says_the_entry_is_the_last_close(self) -> None:
+        html = render_track_record_html(_curve(), None, None)
+
+        assert "ostatnie zamknięcie" in html
+        assert "lukę na otwarciu" in html
+
+    def test_no_curve_no_entry_note(self) -> None:
+        assert "ostatnie zamknięcie" not in render_track_record_html(None, None, None)
+
+
 class TestCalibration:
     def test_renders_buckets_and_ece(self) -> None:
         buckets = [

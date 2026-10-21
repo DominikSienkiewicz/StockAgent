@@ -113,6 +113,18 @@ def test_methodology_section_is_honest_polish_copy() -> None:
     assert "pomyłk" in html.lower() or "słab" in html.lower()
 
 
+def test_methodology_says_the_entry_is_the_last_close() -> None:
+    """WIA-34: wejście = cena z chwili predykcji (poza sesją ostatnie zamknięcie),
+    więc wynik obejmuje lukę na otwarciu — metodologia nie może tego przemilczeć."""
+    resolved = [_resolved("AAA", "BULLISH", True)]
+
+    html = render_public_scorecard_html(resolved, None, [(0.8, True)])
+
+    methodology = html[html.index("<h2>Metodologia</h2>"):]
+    assert "ostatnie zamknięcie" in methodology
+    assert "lukę na otwarciu" in methodology
+
+
 def test_hard_anti_pii_no_symbols_emails_or_amounts_leak() -> None:
     """TWARDY test anty-PII — najważniejszy w tym zadaniu.
 

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from src.application.report_evidence import (
     BENCHMARK_METHOD_PL,
+    ENTRY_PRICE_NOTE_PL,
     NO_BENCHMARK_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
     PaperCosts,
@@ -173,6 +174,7 @@ def _render_equity_html(curve: EquityCurve, stats: TrackRecordStats) -> str:
     summary = _render_equity_summary_html(curve, stats.costs)
     assumptions = (
         f"<p style='{_NOTE_STYLE}'>{_html.escape(portfolio_assumptions(stats.costs))} "
+        f"{_html.escape(ENTRY_PRICE_NOTE_PL)} "
         f"{_html.escape(PORTFOLIO_METHOD_CHANGE_PL)}</p>"
     )
     basket = None if stats.benchmark is None else stats.benchmark.basket

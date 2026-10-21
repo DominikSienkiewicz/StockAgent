@@ -56,6 +56,12 @@ PORTFOLIO_METHOD_CHANGE_PL = (
     f"Metodologia zmieniona {PORTFOLIO_METHOD_SINCE}: wcześniej każdą transakcję "
     "składano szeregowo na 100% kapitału, więc starsze wyniki nie są porównywalne."
 )
+# WIA-34: wejście to cena z chwili predykcji. Fast Loop chodzi przed sesją, więc
+# to ostatnie zamknięcie — trafność i paper-PnL liczą lukę na otwarciu.
+ENTRY_PRICE_NOTE_PL = (
+    "Cena wejścia to cena z chwili predykcji (poza sesją: ostatnie zamknięcie), "
+    "więc wynik obejmuje lukę na otwarciu, której przed sesją nie da się kupić."
+)
 _EPOCH = datetime.min.replace(tzinfo=UTC)
 
 # WIA-21: benchmark rynku — ETF S&P 500 z watchlisty, więc ma snapshot w każdym
