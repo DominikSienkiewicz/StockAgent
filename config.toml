@@ -161,6 +161,15 @@ shock_alerts_enabled = true
 quiet_hours_enabled = true
 quiet_hours_start = "22:00"
 quiet_hours_end = "07:00"
+# ALR-11: alerty poziomów cenowych w watchu („daj znać, gdy NVDA przebije 150”): push
+# przy PRZEKROCZENIU poziomu między dwoma przebiegami watcha, alert wyłącza się po
+# trafieniu. Zero płatnych API, watch nie zapisuje `price_snapshots` — poprzedni odczyt
+# żyje przy alercie. UWAGA: włącz DOPIERO po migracji 057.
+price_level_alerts_enabled = false
+# Lista startowa — watch dopisuje brakujące poziomy do tabeli `price_level_alerts`
+# (zapisanych, także wyłączonych po trafieniu, nie rusza). Przykład wpisu:
+#   { symbol = "NVDA", level = 150, direction = "ABOVE", note = "realizacja części zysku" }
+price_alerts = []
 # NIEZ-11: deadman (main_deadman.py, cron raz dziennie, zero płatnych API) mailuje
 # przez Resend, gdy job zamilkł dłużej niż przerwa w godzinach. 0 = job świadomie
 # wstrzymany: Fast Loop stoi (decyzja 2). Slow Loop chodzi co niedzielę — 192 h to

@@ -22,6 +22,7 @@ from src.domain.persona_track_record import PersonaVoteOutcome
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
+from src.domain.price_levels import PriceLevel, PriceLevelAlert
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
@@ -607,6 +608,30 @@ class RepositoryPort(ABC):
         (`shock_alerts.created_at`, migracja 021). Watch tłumi nią alert krypto
         ze zmiany 24 h, póki okno zawiera ruch już zaalarmowany. Pusty słownik =
         brak alertów / brak migracji 021."""
+
+    @abstractmethod
+    def get_active_price_levels(self) -> list[PriceLevelAlert]:
+        """ALR-11 — aktywne alerty poziomów cenowych z ostatnim odczytem watcha
+        (tabela `price_level_alerts`, migracja 057). Adapter SUROWY — watch czyta
+        tylko za flagą `price_level_alerts_enabled` i sam łapie błąd."""
+
+    @abstractmethod
+    def add_price_levels(self, levels: Sequence[PriceLevel]) -> None:
+        """ALR-11 — dopisuje poziomy (lista startowa z config.toml). Poziom już
+        zapisany (`UNIQUE(symbol, level, direction)`) zostaje bez zmian — także
+        wyłączony po trafieniu, więc ponowne dopisanie go nie wskrzesza."""
+
+    @abstractmethod
+    def record_price_level_reading(self, alert_id: str, price: Decimal) -> None:
+        """ALR-11 — zapisuje odczyt ceny jako `last_seen_price`: poprzedni odczyt
+        następnego przebiegu (watch nie zapisuje `price_snapshots`)."""
+
+    @abstractmethod
+    def mark_price_level_triggered(
+        self, alert_id: str, price: Decimal, triggered_at: datetime
+    ) -> None:
+        """ALR-11 — wyłącza alert po trafieniu (`active = false`, `triggered_at`,
+        cena trafienia w `last_seen_price`)."""
 
     @abstractmethod
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:

@@ -4256,3 +4256,98 @@ class TestFundamentalsMarketCap:
 
         assert result is not None
         assert result.market_cap == expected
+
+
+# ---------------------------------------------------------------------------
+# ALR-11: `price_level_alerts` (migracja 057)
+# ---------------------------------------------------------------------------
+
+
+class TestPriceLevelAlerts:
+    def test_active_levels_map_to_domain_alerts(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.price_levels import LevelDirection
+
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "order"],
+            [
+                {
+                    "id": 7,
+                    "symbol": "NVDA",
+                    "level": 150,
+                    "direction": "ABOVE",
+                    "note": "realizacja części zysku",
+                    "last_seen_price": 148.5,
+                },
+                {
+                    "id": 8,
+                    "symbol": "BTC",
+                    "level": "60000.5",
+                    "direction": "BELOW",
+                    "note": None,
+                    "last_seen_price": None,
+                },
+            ],
+        )
+
+        nvda, btc = repo.get_active_price_levels()
+
+        mock_client.table.assert_called_with("price_level_alerts")
+        mock_client.table.return_value.select.return_value.eq.assert_called_with("active", True)
+        assert nvda.id == "7"
+        assert nvda.level.level == Decimal("150")
+        assert nvda.level.direction is LevelDirection.ABOVE
+        assert nvda.level.note == "realizacja części zysku"
+        assert nvda.last_seen_price == Decimal("148.5")
+        assert btc.level.level == Decimal("60000.5")
+        assert btc.last_seen_price is None
+
+    def test_adding_levels_never_overwrites_a_saved_one(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.price_levels import LevelDirection, PriceLevel
+
+        repo.add_price_levels(
+            [PriceLevel("NVDA", Decimal("150"), LevelDirection.ABOVE, "zysk")]
+        )
+
+        upsert = mock_client.table.return_value.upsert
+        assert upsert.call_args.args[0] == [
+            {"symbol": "NVDA", "level": "150", "direction": "ABOVE", "note": "zysk"}
+        ]
+        assert upsert.call_args.kwargs == {
+            "on_conflict": "symbol,level,direction",
+            "ignore_duplicates": True,
+        }
+
+    def test_no_levels_no_request(self, repo: SupabaseRepository, mock_client: MagicMock) -> None:
+        repo.add_price_levels([])
+
+        mock_client.table.assert_not_called()
+
+    def test_reading_updates_only_an_active_alert(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.record_price_level_reading("7", Decimal("151.25"))
+
+        update = mock_client.table.return_value.update
+        assert update.call_args.args[0] == {"last_seen_price": "151.25"}
+        update.return_value.eq.assert_called_with("id", "7")
+        update.return_value.eq.return_value.eq.assert_called_with("active", True)
+
+    def test_trigger_disables_the_alert_with_its_time_and_price(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        moment = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+
+        repo.mark_price_level_triggered("7", Decimal("151.2"), moment)
+
+        update = mock_client.table.return_value.update
+        assert update.call_args.args[0] == {
+            "active": False,
+            "triggered_at": moment.isoformat(),
+            "last_seen_price": "151.2",
+        }
+        update.return_value.eq.assert_called_with("id", "7")

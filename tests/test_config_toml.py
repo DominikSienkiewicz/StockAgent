@@ -527,3 +527,11 @@ def test_real_config_toml_ships_the_market_cap_write_off_until_migration() -> No
     """DAT-21: kolumna `fundamentals_cache.market_cap` powstaje w migracji 056."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["fundamentals_market_cap_enabled"] is False
+
+
+def test_real_config_toml_ships_the_price_level_alerts_off_until_migration() -> None:
+    """ALR-11: tabela `price_level_alerts` powstaje w migracji 057; lista startowa
+    jest pusta — poziomy dopisuje właściciel."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["price_level_alerts_enabled"] is False
+    assert data["price_alerts"] == []

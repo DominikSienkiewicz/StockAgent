@@ -43,6 +43,7 @@ from src.domain.prediction import (
     TrendDirection,
     normalize_trend,
 )
+from src.domain.price_levels import LevelDirection, PriceLevel, PriceLevelAlert
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.reference_signal import (
     REFERENCE_RECIPE_VERSION,
@@ -78,6 +79,9 @@ LLM_CALLS_TABLE = "llm_calls"
 CYCLE_RUNS_TABLE = "cycle_runs"
 # FIN-11: data najbliższego raportu per symbol (migracja 053).
 EARNINGS_CACHE_TABLE = "earnings_cache"
+# ALR-11 (migracja 057): alerty poziomów cenowych ustawiane przez użytkownika.
+PRICE_LEVEL_ALERTS_TABLE = "price_level_alerts"
+_PRICE_LEVEL_UNIQUE = "symbol,level,direction"
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -261,6 +265,21 @@ def _countable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for row in _without_llm_fallback(rows)
         if row.get(_STALE_QUOTE_COLUMN) is not True
     ]
+
+
+def _price_level_alert(row: Mapping[str, Any]) -> PriceLevelAlert:
+    """Wiersz `price_level_alerts` → encja domeny (NUMERIC przez tekst do Decimal)."""
+    last_seen = row.get("last_seen_price")
+    return PriceLevelAlert(
+        id=str(row["id"]),
+        level=PriceLevel(
+            symbol=str(row["symbol"]),
+            level=Decimal(str(row["level"])),
+            direction=LevelDirection(str(row["direction"])),
+            note=_optional_text(row.get("note")),
+        ),
+        last_seen_price=Decimal(str(last_seen)) if last_seen is not None else None,
+    )
 
 
 def _optional_float(value: Any) -> float | None:
@@ -1603,6 +1622,60 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             if key not in latest or stamp > latest[key]:
                 latest[key] = stamp
         return latest
+
+    def get_active_price_levels(self) -> list[PriceLevelAlert]:
+        # SUROWO, bez try/except — watch czyta za flagą i sam degraduje (ALR-11).
+        response = (
+            self._client.table(PRICE_LEVEL_ALERTS_TABLE)
+            .select("id, symbol, level, direction, note, last_seen_price")
+            .eq("active", True)
+            .order("id", desc=False)
+            .execute()
+        )
+        return [_price_level_alert(row) for row in _rows(response)]
+
+    def add_price_levels(self, levels: Sequence[PriceLevel]) -> None:
+        if not levels:
+            return
+        rows = [
+            {
+                "symbol": level.symbol,
+                "level": str(level.level),
+                "direction": level.direction.value,
+                "note": level.note,
+            }
+            for level in levels
+        ]
+        # ON CONFLICT DO NOTHING: zapisany poziom (także wyłączony po trafieniu)
+        # zostaje, jaki był — lista z config.toml go nie wskrzesza.
+        self._client.table(PRICE_LEVEL_ALERTS_TABLE).upsert(
+            rows, on_conflict=_PRICE_LEVEL_UNIQUE, ignore_duplicates=True
+        ).execute()
+
+    def record_price_level_reading(self, alert_id: str, price: Decimal) -> None:
+        (
+            self._client.table(PRICE_LEVEL_ALERTS_TABLE)
+            .update({"last_seen_price": str(price)})
+            .eq("id", alert_id)
+            .eq("active", True)
+            .execute()
+        )
+
+    def mark_price_level_triggered(
+        self, alert_id: str, price: Decimal, triggered_at: datetime
+    ) -> None:
+        (
+            self._client.table(PRICE_LEVEL_ALERTS_TABLE)
+            .update(
+                {
+                    "active": False,
+                    "triggered_at": triggered_at.isoformat(),
+                    "last_seen_price": str(price),
+                }
+            )
+            .eq("id", alert_id)
+            .execute()
+        )
 
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
         # SUROWO, bez try/except — graceful degradation robi caller

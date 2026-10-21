@@ -89,6 +89,7 @@ MIGRATION_FILES = [
     "054_council_votes_unique.sql",
     "055_prediction_stale_quote.sql",
     "056_fundamentals_market_cap.sql",
+    "057_price_level_alerts.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1603,6 +1604,51 @@ class TestMigrations:
             )
             assert int(cur.fetchone()[0]) == 4123456789012
 
+    # -- Migracja 057: alerty poziomów cenowych (ALR-11) ------------------------
+
+    def test_price_level_alerts_keep_one_row_per_level_and_direction(self, pg_conn) -> None:
+        """Lista startowa z config.toml dopisuje się upsertem ON CONFLICT DO NOTHING —
+        poziom wyłączony po trafieniu zostaje wyłączony."""
+        assert {
+            "id", "symbol", "level", "direction", "note", "active",
+            "last_seen_price", "triggered_at", "created_at",
+        } <= _columns(pg_conn, "price_level_alerts")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO price_level_alerts (symbol, level, direction, note) "
+                "VALUES ('PL_NVDA', 150, 'ABOVE', 'realizacja części zysku') "
+                "RETURNING active, last_seen_price, triggered_at"
+            )
+            assert cur.fetchone() == (True, None, None)
+            cur.execute(
+                "UPDATE price_level_alerts SET active = false, triggered_at = NOW() "
+                "WHERE symbol = 'PL_NVDA'"
+            )
+            cur.execute(
+                "INSERT INTO price_level_alerts (symbol, level, direction) "
+                "VALUES ('PL_NVDA', 150.0, 'ABOVE'), ('PL_NVDA', 150, 'BELOW') "
+                "ON CONFLICT (symbol, level, direction) DO NOTHING"
+            )
+            cur.execute(
+                "SELECT direction, active FROM price_level_alerts "
+                "WHERE symbol = 'PL_NVDA' ORDER BY direction"
+            )
+            assert cur.fetchall() == [("ABOVE", False), ("BELOW", True)]
+        assert "price_level_alerts_active_idx" in _indexes(pg_conn, "price_level_alerts")
+
+    @pytest.mark.parametrize(
+        ("level", "direction"), [("0", "ABOVE"), ("-5", "BELOW"), ("150", "SIDEWAYS")]
+    )
+    def test_price_level_alerts_reject_a_bad_level_or_direction(
+        self, pg_conn, level: str, direction: str
+    ) -> None:
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO price_level_alerts (symbol, level, direction) "
+                "VALUES ('PL_BAD', %s, %s)",
+                (level, direction),
+            )
+
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 
     def test_every_public_table_has_row_level_security(self, pg_conn) -> None:
@@ -2030,6 +2076,40 @@ class TestSupabaseRoleEmulation:
             _set_role(cur, "anon")
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 cur.execute("SELECT 1 FROM reference_predictions LIMIT 1")
+
+    def test_price_level_alerts_are_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        """ALR-11: nowa tabela po 038 — RLS włączony w 057, anon i authenticated bez
+        prawa, a service_role (watch) dopisuje poziom, czyta aktywne i wyłącza trafiony."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'price_level_alerts'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [
+                _has_table_privilege(cur, role, "price_level_alerts") for role in PUBLIC_API_ROLES
+            ]
+
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO price_level_alerts (symbol, level, direction) "
+                "VALUES ('PL_SR', 150, 'ABOVE') RETURNING id"
+            )
+            alert_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE price_level_alerts SET active = false, last_seen_price = 151.2, "
+                "triggered_at = NOW() WHERE id = %s",
+                (alert_id,),
+            )
+            cur.execute("SELECT count(*) FROM price_level_alerts WHERE symbol = 'PL_SR' AND active")
+            assert cur.fetchone() == (0,)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM price_level_alerts LIMIT 1")
 
     def test_service_role_executes_the_rpc_functions(self, supabase_like_conn) -> None:
         """RPC, które aplikacja woła przez PostgREST. `refresh_ml_feature_store`

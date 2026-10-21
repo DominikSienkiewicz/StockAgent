@@ -26,6 +26,10 @@ Dwa nienaruszalne kontrakty:
    uczy użytkownika ignorować kanał. Egzekwowany dwustopniowo: predykatem
    domenowym `should_emit` i twardym `UNIQUE(symbol, alert_date)` z migracji 021.
 
+ALR-11: ten sam przebieg sprawdza alerty poziomów cenowych użytkownika
+(`scan_price_levels`, flaga `price_level_alerts_enabled`, tabela z migracji 057) —
+darmowe ceny, przekroczenie liczone od `last_seen_price` alertu, nie od snapshotu.
+
 Użycie:
     uv run python main_watch.py
 """
@@ -58,8 +62,9 @@ from src.application.report_formatting import format_local
 from src.application.report_ops import render_watch_summary_markdown
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
-from src.domain.number_format import format_pct_pl
+from src.domain.number_format import format_number_pl, format_pct_pl
 from src.domain.portfolio import Portfolio
+from src.domain.price_levels import LevelDirection, PriceLevelAlert
 from src.domain.quiet_hours import is_quiet
 from src.domain.shock import (
     ROLLING_CHANGE_WINDOW,
@@ -468,6 +473,107 @@ def scan_watch(
     )
 
 
+def _level_text(value: Decimal) -> str:
+    """Poziom po polsku z tyloma miejscami, ile ma wpis („150”, „150,5”)."""
+    exponent = value.normalize().as_tuple().exponent
+    decimals = -exponent if isinstance(exponent, int) and exponent < 0 else 0
+    return format_number_pl(value, signed=False, decimals=decimals)
+
+
+def _render_level_alert(
+    alert: PriceLevelAlert, price: Decimal, *, detected_at: datetime, display_timezone: str
+) -> tuple[str, str]:
+    """ALR-11: „🎯 NVDA przebiła 150 (Twoja notatka: realizacja części zysku)”."""
+    level = alert.level
+    verb = "przebiła" if level.direction is LevelDirection.ABOVE else "spadła do"
+    subject = f"🎯 {level.symbol} {verb} {_level_text(level.level)}"
+    headline = f"{subject} (Twoja notatka: {level.note})" if level.note else subject
+    body = "\n".join(
+        [
+            f"{headline}.",
+            f"Cena: {format_number_pl(price, signed=False, decimals=2)} "
+            f"(stan na {format_local(detected_at, display_timezone)}).",
+            "Alert wyłączony po trafieniu — nowy poziom dopiszesz w price_alerts (config.toml).",
+        ]
+    )
+    return subject, body
+
+
+def _level_prices(
+    market: MarketDataPort, symbols: set[str], unsupported: set[str]
+) -> dict[str, Decimal]:
+    """Darmowe ceny symboli z aktywnymi alertami — jeden /quote na symbol. Błąd
+    symbolu kosztuje WARNING i pominięcie jego alertów w tym przebiegu."""
+    prices: dict[str, Decimal] = {}
+    for symbol in sorted(symbols - unsupported):
+        try:
+            prices[symbol] = market.get_current_price(symbol).amount
+        except Exception:
+            logger.warning("Price levels: no free quote for %s", symbol, exc_info=True)
+    return prices
+
+
+def scan_price_levels(
+    settings: Settings,
+    *,
+    repository: RepositoryPort,
+    market: MarketDataPort,
+    push_notifier: ReportNotifierPort | None,
+    now: datetime | None = None,
+) -> int:
+    """ALR-11: jeden przebieg alertów poziomów cenowych. Zwraca liczbę wysłanych.
+
+    Flaga `price_level_alerts_enabled` off → zero odczytów i zapisów (przed migracją
+    057 tabeli nie ma). Lista startowa `price_alerts` dopisuje brakujące poziomy.
+    Przekroczenie liczy domena (`PriceLevelAlert.is_hit`) od `last_seen_price` —
+    watch nie zapisuje `price_snapshots`. Push przed zapisem trafienia (lepiej dwa
+    razy niż wcale); bez kanału push trafienie czeka nietknięte na następny przebieg.
+    Zero płatnych portów."""
+    if not settings.price_level_alerts_enabled:
+        return 0
+    moment = now or datetime.now(UTC)
+    seeds = settings.price_level_seeds()
+    try:
+        if seeds:
+            repository.add_price_levels(seeds)
+        alerts = repository.get_active_price_levels()
+    except Exception:
+        logger.exception("Price levels unavailable (apply migration 057) — skipped")
+        return 0
+    prices = _level_prices(
+        market,
+        {alert.level.symbol for alert in alerts},
+        set(settings.symbols_unsupported_price),
+    )
+    silent = _silent_delivery(settings, moment)
+    sent = 0
+    for alert in alerts:
+        price = prices.get(alert.level.symbol)
+        if price is None:
+            continue
+        try:
+            if not alert.is_hit(price):
+                repository.record_price_level_reading(alert.id, price)
+                continue
+            if push_notifier is None:
+                logger.error(
+                    "Price level %s %s hit, but no push channel", alert.level.symbol, alert.id
+                )
+                continue
+            subject, body = _render_level_alert(
+                alert, price, detected_at=moment, display_timezone=settings.display_timezone
+            )
+            push_notifier.send_report(
+                subject=subject, html_body=body, plain_text=body, silent=silent
+            )
+            repository.mark_price_level_triggered(alert.id, price, moment)
+            sent += 1
+        except Exception:
+            logger.exception("Price level alert %s failed", alert.id)
+    logger.info("Price levels done — %d alert(ów) wysłanych", sent)
+    return sent
+
+
 def run_watch(
     settings: Settings,
     *,
@@ -521,16 +627,21 @@ def _run_watch(settings: Settings) -> int:
             "SLACK_WEBHOOK_URL) — wykryte szoki nie zostaną wysłane ani zapisane."
         )
     market = build_market_port(settings)
+    repository = build_repository(settings)
     scan = partial(
         scan_watch,
         settings,
-        repository=build_repository(settings),
+        repository=repository,
         market=market,
         push_notifier=push_notifier,
     )
     # ALR-02: router darmowych cen (Finnhub /quote, CoinGecko) jest też źródłem dziennej
     # zmiany. Port ceny bez tej zdolności → przebieg wyłącznie na snapshotach.
     outcome = scan(daily_change=market) if isinstance(market, DailyChangePort) else scan()
+    # ALR-11: alerty poziomów cenowych — te same darmowe ceny i kanały push.
+    scan_price_levels(
+        settings, repository=repository, market=market, push_notifier=push_notifier
+    )
     write_step_summary(
         lambda: render_watch_summary_markdown(
             checked=outcome.checked,

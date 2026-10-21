@@ -1559,3 +1559,47 @@ class TestDiagnosisBackfillSettings:
         assert {"diagnosis_backfill_enabled", "diagnosis_backfill_max_calls"} <= (
             NON_RECIPE_SETTINGS_FIELDS
         )
+
+class TestPriceAlerts:
+    """ALR-11: lista startowa `price_alerts` z config.toml i flaga watcha (off do
+    migracji 057). Wpis jest walidowany przy starcie — literówka w kierunku albo
+    poziom ≤ 0 zatrzymuje start, zamiast po cichu nie alarmować."""
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_entries_become_domain_levels(self, env):
+        from src.domain.price_levels import LevelDirection, PriceLevel
+
+        settings = self._settings(
+            price_alerts=[
+                {"symbol": " nvda ", "level": "150", "direction": "ABOVE", "note": "zysk"},
+                {"symbol": "BTC", "level": 60000, "direction": "BELOW"},
+            ]
+        )
+
+        assert settings.price_level_seeds() == (
+            PriceLevel("NVDA", Decimal("150"), LevelDirection.ABOVE, "zysk"),
+            PriceLevel("BTC", Decimal("60000"), LevelDirection.BELOW),
+        )
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"symbol": "NVDA", "level": "150", "direction": "UP"},
+            {"symbol": "NVDA", "level": "0", "direction": "ABOVE"},
+            {"symbol": "NVDA", "level": "150", "direction": "ABOVE", "notes": "literówka"},
+        ],
+    )
+    def test_bad_entry_stops_the_start(self, env, entry):
+        with pytest.raises(ValueError):
+            self._settings(price_alerts=[entry])
+
+    def test_defaults_are_off_and_empty_and_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        settings = self._settings()
+
+        assert settings.price_level_alerts_enabled is False
+        assert settings.price_level_seeds() == ()
+        assert {"price_level_alerts_enabled", "price_alerts"} <= NON_RECIPE_SETTINGS_FIELDS

@@ -45,6 +45,7 @@ from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.persona_track_record import PersonaVoteOutcome
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
+from src.domain.price_levels import PriceLevel, PriceLevelAlert
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
@@ -123,6 +124,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_last_price_snapshot",
         "get_sent_shock_alerts",
         "get_shock_alert_times",
+        "get_active_price_levels",
         "get_previous_verdict",
         "get_recent_model_scorecards",
         "get_council_vote_history",
@@ -144,6 +146,9 @@ class ReadOnlyRepository(RepositoryPort):
         "save_backfilled_diagnosis",
         "mark_commitment_revealed",
         "save_shock_alert",
+        "add_price_levels",
+        "record_price_level_reading",
+        "mark_price_level_triggered",
         "save_model_scorecard",
         "save_council_votes",
         "save_llm_calls",
@@ -283,6 +288,9 @@ class ReadOnlyRepository(RepositoryPort):
     def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
         return self._delegate.get_shock_alert_times(since)
 
+    def get_active_price_levels(self) -> list[PriceLevelAlert]:
+        return self._delegate.get_active_price_levels()
+
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
         return self._delegate.get_previous_verdict(symbol)
 
@@ -386,6 +394,17 @@ class ReadOnlyRepository(RepositoryPort):
         self, symbol: str, alert_date: date, delta: float, direction: str
     ) -> None:
         self._skipped.skip("save_shock_alert")
+
+    def add_price_levels(self, levels: Sequence[PriceLevel]) -> None:
+        self._skipped.skip("add_price_levels")
+
+    def record_price_level_reading(self, alert_id: str, price: Decimal) -> None:
+        self._skipped.skip("record_price_level_reading")
+
+    def mark_price_level_triggered(
+        self, alert_id: str, price: Decimal, triggered_at: datetime
+    ) -> None:
+        self._skipped.skip("mark_price_level_triggered")
 
     def save_model_scorecard(
         self, symbol: str, result: Mapping[str, Any], *, run_id: str | None = None

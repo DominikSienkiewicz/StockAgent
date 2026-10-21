@@ -61,6 +61,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `052` | `model_scorecard_feature_stats_enabled` | The training feature distribution and the 30-day PSI on every scorecard row (ML-21); the model card warns above `0.25`. |
 | `055` | `stale_quote_enabled` | Predictions and settlements made on a stale quote get `prediction_logs.stale_quote = true` and drop out of the hit rate (DAT-14). |
 | `056` | `fundamentals_market_cap_enabled` | The Slow Loop stores the market capitalisation from the same `OVERVIEW` response; the significant insider purchase threshold scales with it (DAT-21). |
+| `057` | `price_level_alerts_enabled` | The watch alerts on user-set price levels from `price_alerts` (ALR-11); the list ships empty, add levels first. |
 
 ### 5. Add the `HEARTBEAT_URL` secret
 

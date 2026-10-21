@@ -40,6 +40,7 @@ from src.domain.finops import (
     weekly_cost_budget,
 )
 from src.domain.macro_risk import MacroRiskInstrumentType
+from src.domain.price_levels import LevelDirection, PriceLevel
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
 
 # Ścieżka do config.toml zakotwiczona w ROOCIE repo (src/config.py → ../config.toml),
@@ -93,6 +94,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "quiet_hours_enabled",
     "quiet_hours_start",
     "quiet_hours_end",
+    # ALR-11: alerty poziomów cenowych watcha — push poza cyklem, nie prognoza.
+    "price_level_alerts_enabled",
+    "price_alerts",
     "subscriptions_enabled",
     "web_digest_enabled",
     "web_digest_path",
@@ -323,6 +327,18 @@ class ExperimentSettings(BaseModel):
     end: date
     primary_metric: ExperimentMetric
     enabled: bool = False
+
+
+class PriceAlertSettings(BaseModel):
+    """ALR-11: jeden wpis listy startowej `price_alerts` z `config.toml` — poziom
+    cenowy, który watch dopisuje do tabeli `price_level_alerts` (migracja 057)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    symbol: str = Field(min_length=1)
+    level: Decimal = Field(gt=0, allow_inf_nan=False)
+    direction: Literal["ABOVE", "BELOW"]
+    note: str | None = None
 
 
 class ModelPriceSettings(BaseModel):
@@ -897,6 +913,13 @@ class Settings(BaseSettings):
     quiet_hours_enabled: bool = False
     quiet_hours_start: time = time(22, 0)
     quiet_hours_end: time = time(7, 0)
+    # ALR-11: alerty poziomów cenowych w watchu (tabela `price_level_alerts`, migracja
+    # 057): push przy przekroczeniu poziomu, alert wyłącza się po trafieniu. Off w kodzie
+    # i w config.toml, dopóki produkcja nie ma migracji — przy off zero odczytów i zapisów.
+    price_level_alerts_enabled: bool = False
+    # ALR-11: lista startowa poziomów; watch dopisuje brakujące do tabeli (zapisanych,
+    # także wyłączonych po trafieniu, nie rusza).
+    price_alerts: list[PriceAlertSettings] = Field(default_factory=list)
 
     # ----- Dystrybucja (U2/U3 — opcjonalne, niewrażliwe → config.toml) -----
     # U2: personalizowany fan-out — każdy subskrybent (tabela `subscribers`)
@@ -1025,6 +1048,18 @@ class Settings(BaseSettings):
         start, zamiast po cichu zbierać dane z testu A/A."""
         validate_experiments(self.experiment_definitions())
         return self
+
+    def price_level_seeds(self) -> tuple[PriceLevel, ...]:
+        """ALR-11: lista startowa `price_alerts` jako poziomy domeny."""
+        return tuple(
+            PriceLevel(
+                symbol=alert.symbol.strip().upper(),
+                level=alert.level,
+                direction=LevelDirection(alert.direction),
+                note=alert.note,
+            )
+            for alert in self.price_alerts
+        )
 
     def llm_price_table(self) -> dict[str, ModelPrice]:
         """FIN-13: domenowy cennik per model z `llm_pricing`."""
