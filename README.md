@@ -146,7 +146,7 @@ rendered from fictional data, with English labels added for this screenshot; sec
 section it is described in [the report email](docs/report-email.md).
 
 <details>
-<summary>Annotated sample email (fictional data, rendered 2026-10-20)</summary>
+<summary>Annotated sample email (fictional data, rendered 2026-10-22)</summary>
 
 ![Annotated sample of the report email, rendered from fictional data](docs/img/report-email.png)
 
@@ -156,7 +156,9 @@ The same sample as HTML is [docs/img/report-email.html](docs/img/report-email.ht
 shows its source; open it locally in a browser). Render it yourself without any key, database
 or network: `uv run python main_tools.py render-sample-report` writes the HTML and the
 plain-text version to `build/sample-report/`. The screenshot is not regenerated
-automatically, so it can lag behind the email after a report change.
+automatically, so it can lag behind the email after a report change. The repository's social
+preview, [docs/img/social-preview.png](docs/img/social-preview.png), is the top of the same
+sample at 1280 × 640.
 
 ## Documentation
 
