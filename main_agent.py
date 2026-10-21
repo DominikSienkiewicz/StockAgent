@@ -75,6 +75,8 @@ from src.application.report_council_history import InvestorHistory
 from src.application.report_evidence import (
     BENCHMARK_SYMBOL,
     PaperCosts,
+    accuracy_drop_alert,
+    accuracy_drop_evidence,
     benchmark_comparison,
     hit_rate_evidence,
     portfolio_curve,
@@ -2757,6 +2759,7 @@ def _build_track_record_stats(
     evidence = None
     scores = None
     benchmark = None
+    accuracy_drop = None
     if settings.equity_curve_enabled:
         resolved: list[ResolvedPrediction] = []
         try:
@@ -2764,6 +2767,8 @@ def _build_track_record_stats(
                 repository.get_resolved_predictions(settings.track_record_days)
             )
             evidence = hit_rate_evidence(resolved)
+            # NIEZ-20: data istotnego spadku trafności (Page-Hinkley per cykl).
+            accuracy_drop = accuracy_drop_evidence(resolved)
         except Exception:
             logger.exception("Failed to compute hit-rate evidence for track record")
         if resolved and costs is not None:
@@ -2790,7 +2795,8 @@ def _build_track_record_stats(
         except Exception:
             logger.exception("Failed to measure interval coverage for track record")
     paper_costs = costs if settings.equity_curve_enabled else None
-    if all(part is None for part in (evidence, scores, coverage, paper_costs, benchmark)):
+    parts = (evidence, scores, coverage, paper_costs, benchmark, accuracy_drop)
+    if all(part is None for part in parts):
         return None
     return TrackRecordStats(
         hit_rate=evidence,
@@ -2799,6 +2805,7 @@ def _build_track_record_stats(
         costs=paper_costs,
         benchmark=benchmark,
         sideways_scores=sideways_scores,
+        accuracy_drop=accuracy_drop,
     )
 
 
@@ -2980,6 +2987,13 @@ def _dispatch_reports(
         )
         track_record_stats = _build_track_record_stats(settings, repository, paper_costs)
         persona_track_record = _assess_personas(persona_track_record, track_record_stats)
+        # NIEZ-20: alarm detektora trafności do bannera tego maila (bez zapisu —
+        # liczony na nowo w każdym cyklu, więc nie dubluje wierszy `quota_alerts`).
+        if track_record_stats is not None and track_record_stats.accuracy_drop is not None:
+            recent_alerts = [
+                *recent_alerts,
+                accuracy_drop_alert(track_record_stats.accuracy_drop, started_at),
+            ]
         # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
         signal_calibration_buckets = _build_signal_calibration(settings, repository)
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".

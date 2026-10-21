@@ -32,7 +32,9 @@ from src.application.report_formatting import POLISH_NUMBERS, NumberStyle
 from src.application.report_models import ResolvedPrediction
 from src.domain.benchmark import BenchmarkComparison, compare_with_benchmarks, window_change
 from src.domain.calibration_curve import ProbabilityScores
+from src.domain.change_detection import AccuracyDrop, detect_accuracy_drop
 from src.domain.equity_curve import EquityCurve, PaperTrade, paper_portfolio_curve
+from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.significance import MIN_BOOTSTRAP_CYCLES
 from src.domain.statistics import wilson_interval
 from src.domain.track_record import (
@@ -390,4 +392,32 @@ def murphy_label(scores: ProbabilityScores, *, numbers: NumberStyle = POLISH_NUM
     return (
         f"REL {_score(scores.reliability, numbers)} · RES {_score(scores.resolution, numbers)} · "
         f"UNC {_score(scores.uncertainty, numbers)}"
+    )
+
+
+# NIEZ-20: źródło alertu bannera, gdy detektor zmiany zobaczy spadek trafności.
+ACCURACY_DROP_ALERT_SOURCE = "Detektor trafności"
+_ACCURACY_DROP_ACTION_PL = (
+    "Porównaj przepisy i dostawcę modelu z okresu przed i po dacie zmiany "
+    "(`main_tools.py evaluate --by-recipe`); po pauzie crona sprawdź, czy dane wejściowe "
+    "wróciły do normy."
+)
+
+
+def accuracy_drop_evidence(resolved: Sequence[ResolvedPrediction]) -> AccuracyDrop | None:
+    """NIEZ-20: data istotnego spadku trafności kierunkowej (Page-Hinkley per
+    cykl) albo None — brak danych, za krótka historia albo brak zmiany."""
+    if not resolved:
+        return None
+    return detect_accuracy_drop(scored_calls(resolved))
+
+
+def accuracy_drop_alert(drop: AccuracyDrop, now: datetime) -> QuotaAlert:
+    """NIEZ-20: WARNING do bannera maila z tym samym zdaniem co Track Record."""
+    return QuotaAlert(
+        source=ACCURACY_DROP_ALERT_SOURCE,
+        severity=QuotaSeverity.WARNING,
+        message=drop.describe_pl(),
+        action=_ACCURACY_DROP_ACTION_PL,
+        occurred_at=now,
     )

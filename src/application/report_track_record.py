@@ -51,6 +51,7 @@ from src.domain.calibration_curve import (
     ProbabilityScores,
     expected_calibration_error,
 )
+from src.domain.change_detection import AccuracyDrop
 from src.domain.conformal import IntervalCoverage
 from src.domain.equity_curve import EquityCurve
 from src.domain.number_format import DecimalMark
@@ -92,6 +93,7 @@ class TrackRecordStats:
       „Na tle rynku: brak danych benchmarku”,
     - `sideways_scores` — Brier prognoz „bez ruchu” liczony osobno (WIA-39);
       `scores` i krzywa kalibracji są wtedy wyłącznie kierunkowe.
+    - `accuracy_drop` — data istotnego spadku trafności (NIEZ-20); None = brak alarmu.
     """
 
     hit_rate: HitRateEvidence | None = None
@@ -100,6 +102,8 @@ class TrackRecordStats:
     costs: PaperCosts | None = None
     benchmark: BenchmarkComparison | None = None
     sideways_scores: ProbabilityScores | None = None
+    # NIEZ-20: istotny spadek trafności (Page-Hinkley); None = brak alarmu.
+    accuracy_drop: AccuracyDrop | None = None
 
 
 def render_track_record_html(
@@ -168,6 +172,7 @@ def _render_compact_html(
         + _render_equity_summary_html(equity_curve, stats.costs)
         + _render_benchmark_line_html(stats.benchmark)
         + hit_rate
+        + _render_accuracy_drop_html(stats.accuracy_drop)
         + f"<p style='{_NOTE_STYLE}'>{_COMPACT_NOTE_PL}</p>"
     )
 
@@ -209,6 +214,7 @@ def _render_equity_html(curve: EquityCurve, stats: TrackRecordStats) -> str:
         + assumptions
         + _render_benchmark_html(stats.benchmark)
         + _render_evidence_html(stats.hit_rate)
+        + _render_accuracy_drop_html(stats.accuracy_drop)
         + _render_sparkline_html(curve, basket)
     )
 
@@ -251,6 +257,16 @@ def _render_evidence_html(evidence: HitRateEvidence | None) -> str:
     if note:
         parts.append(note)
     return f"<p style='{_NOTE_STYLE}'>{_html.escape(' · '.join(parts))}</p>"
+
+
+def _render_accuracy_drop_html(drop: AccuracyDrop | None) -> str:
+    """NIEZ-20: „trafność spadła istotnie od <data>” albo "" bez alarmu."""
+    if drop is None:
+        return ""
+    return (
+        "<p style='font-size: 13px; margin: 0 0 6px 0; color: #b45309;'>"
+        f"<strong>⚠️ {_html.escape(drop.describe_pl())}</strong></p>"
+    )
 
 
 def _render_sparkline_html(curve: EquityCurve, basket: EquityCurve | None = None) -> str:
