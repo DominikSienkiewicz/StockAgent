@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import logging
+import threading
+from datetime import UTC, datetime
 from typing import Any
 
 from src.application.ports import LLMPort
+from src.application.quota_monitor import QuotaMonitor
+from src.domain.quota import QuotaAlert, QuotaSeverity
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +36,11 @@ class CascadingLLMAdapter(LLMPort):
 
     Sam jest `LLMPort`, więc reszta systemu (graf, use case'y) nie wie, że pod
     spodem siedzą dwa modele — wstrzykiwany jest jak każdy inny adapter LLM.
+
+    NIEZ-17: gdy frontier padnie, zwracamy opłacony już wynik taniego modelu
+    (WARNING przy każdej awarii, alert do `quota_monitor` raz na instancję —
+    niedziałający routing nie może się schować). Rezerwacja eskalacji idzie pod
+    lockiem: symbole cyklu biegną równolegle, a sufit jest wspólny.
     """
 
     def __init__(
@@ -40,16 +49,21 @@ class CascadingLLMAdapter(LLMPort):
         frontier: LLMPort,
         routing_floor: float = DEFAULT_ROUTING_FLOOR,
         max_escalations: int = DEFAULT_MAX_ESCALATIONS,
+        quota_monitor: QuotaMonitor | None = None,
     ) -> None:
         self._cheap = cheap
         self._frontier = frontier
         self._routing_floor = routing_floor
         self._max_escalations = max_escalations
+        self._quota_monitor = quota_monitor
         # Licznik wykonanych eskalacji (rośnie). Po osiągnięciu max przestajemy
         # eskalować. Per-instancja ⇒ per-cykl przy jednej instancji na cykl.
         self._escalations_used = 0
         # Flaga, by log o wyczerpaniu budżetu poszedł dokładnie raz.
         self._exhaustion_logged = False
+        self._frontier_failure_alerted = False
+        # Chroni check-then-act licznika i obu flag przy równoległych symbolach.
+        self._lock = threading.Lock()
 
     def analyze(self, prompt: str) -> dict[str, Any]:
         cheap_result = self._cheap.analyze(prompt)
@@ -60,25 +74,37 @@ class CascadingLLMAdapter(LLMPort):
             return cheap_result
 
         # Wynik niepewny — eskalujemy tylko gdy budżet jeszcze jest.
-        if self._escalations_used >= self._max_escalations:
-            self._log_exhaustion_once()
+        escalation = self._reserve_escalation()
+        if escalation is None:
             return cheap_result
 
-        self._escalations_used += 1
         logger.info(
             "Escalating to frontier LLM: cheap confidence %.3f < floor %.3f "
             "(escalation %d/%d)",
             confidence,
             self._routing_floor,
-            self._escalations_used,
+            escalation,
             self._max_escalations,
         )
-        return self._frontier.analyze(prompt)
+        try:
+            return self._frontier.analyze(prompt)
+        except Exception as exc:
+            self._report_frontier_failure(exc)
+            return cheap_result
 
     def analyze_mistake(self, prompt: str) -> str:
         # Świadomy wybór: diagnoza błędu to free-form tekst (correction insight),
         # nie warto za nią płacić frontier modelem — delegujemy zawsze do taniego.
         return self._cheap.analyze_mistake(prompt)
+
+    def _reserve_escalation(self) -> int | None:
+        """Numer zarezerwowanej eskalacji albo None, gdy sufit jest wyczerpany."""
+        with self._lock:
+            if self._escalations_used >= self._max_escalations:
+                self._log_exhaustion_once()
+                return None
+            self._escalations_used += 1
+            return self._escalations_used
 
     def _log_exhaustion_once(self) -> None:
         if self._exhaustion_logged:
@@ -89,6 +115,33 @@ class CascadingLLMAdapter(LLMPort):
             "results for the rest of this instance's lifetime.",
             self._escalations_used,
             self._max_escalations,
+        )
+
+    def _report_frontier_failure(self, exc: Exception) -> None:
+        # Sam typ błędu: komunikat SDK potrafi nieść URL albo fragment odpowiedzi.
+        logger.warning(
+            "Frontier LLM failed (%s) — serving the paid cheap LLM result instead",
+            type(exc).__name__,
+        )
+        with self._lock:
+            first = not self._frontier_failure_alerted
+            self._frontier_failure_alerted = True
+        if not first or self._quota_monitor is None:
+            return
+        self._quota_monitor.record(
+            QuotaAlert(
+                source="Routing modeli (frontier)",
+                severity=QuotaSeverity.WARNING,
+                message=(
+                    f"Model frontier nie odpowiedział ({type(exc).__name__}) — niepewne "
+                    "wyniki taniego modelu poszły bez eskalacji."
+                ),
+                action=(
+                    "Sprawdź klucz, model i status dostawcy z ROUTER_FRONTIER_PROVIDER / "
+                    "ROUTER_FRONTIER_MODEL albo wyłącz MODEL_ROUTING_ENABLED."
+                ),
+                occurred_at=datetime.now(UTC),
+            )
         )
 
 

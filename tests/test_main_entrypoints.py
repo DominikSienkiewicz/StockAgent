@@ -77,6 +77,30 @@ class TestLLMProviderFactory:
             main_agent.build_llm_adapter(settings)
 
 
+class TestModelRoutingWiring:
+    """NIEZ-17: sufit eskalacji kaskady przychodzi z Settings, a awaria frontiera
+    trafia alertem do monitora kwot cyklu."""
+
+    def test_cascade_takes_the_escalation_cap_and_the_quota_monitor(
+        self, settings, mocker
+    ) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+        from src.infrastructure.llm.cascading import CascadingLLMAdapter
+
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+        mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
+        settings.model_routing_enabled = True
+        settings.anthropic_api_key = "sk-ant-test"
+        settings.routing_max_escalations = 2
+        monitor = QuotaMonitor()
+
+        llm = main_agent.build_llm_adapter(settings, quota_monitor=monitor)
+
+        assert isinstance(llm, CascadingLLMAdapter)
+        assert llm._max_escalations == 2
+        assert llm._quota_monitor is monitor
+
+
 class TestCouncilLLMFactory:
     """Heterogeniczna strategia LLM — rada doradcza (15+1 wywołań × 22 symbole
     = ~94% wszystkich callsów) może działać na tańszym modelu niż główna

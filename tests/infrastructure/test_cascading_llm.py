@@ -9,6 +9,7 @@ testować WYŁĄCZNIE logikę routingu (bez sieci, bez konkretnych adapterów).
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 from unittest.mock import Mock
 
@@ -221,3 +222,104 @@ class TestAnalyzeMistake:
         assert result == "diagnoza"
         cheap.analyze_mistake.assert_called_once_with("why wrong?")
         frontier.analyze_mistake.assert_not_called()
+
+
+class TestFrontierFailure:
+    """NIEZ-17: opłacony wynik taniego modelu nie przepada, gdy frontier padnie —
+    adapter zwraca go z WARNING-iem i alertem, żeby niedziałający routing nie
+    schował się za cichym fallbackiem."""
+
+    def test_frontier_failure_falls_back_to_cheap_result(
+        self, cheap, frontier, caplog
+    ) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+
+        cheap.analyze.return_value = _result(0.2, "cheap")
+        frontier.analyze.side_effect = RuntimeError("frontier 400: model not found")
+        monitor = QuotaMonitor()
+        adapter = CascadingLLMAdapter(
+            cheap=cheap, frontier=frontier, quota_monitor=monitor
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = adapter.analyze("p")
+
+        assert result == _result(0.2, "cheap")
+        frontier.analyze.assert_called_once_with("p")
+        assert any("RuntimeError" in r.getMessage() for r in caplog.records)
+        assert [alert.severity for alert in monitor.alerts] == [QuotaSeverity.WARNING]
+
+    def test_repeated_frontier_failures_alert_once_per_instance(
+        self, cheap, frontier
+    ) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        cheap.analyze.return_value = _result(0.2, "cheap")
+        frontier.analyze.side_effect = RuntimeError("down")
+        monitor = QuotaMonitor()
+        adapter = CascadingLLMAdapter(
+            cheap=cheap, frontier=frontier, max_escalations=3, quota_monitor=monitor
+        )
+
+        for prompt in ("p1", "p2", "p3"):
+            assert adapter.analyze(prompt)["_source"] == "cheap"
+
+        assert frontier.analyze.call_count == 3
+        assert len(monitor.alerts) == 1
+
+    def test_frontier_failure_without_monitor_still_returns_cheap(
+        self, cheap, frontier
+    ) -> None:
+        cheap.analyze.return_value = _result(0.2, "cheap")
+        frontier.analyze.side_effect = TimeoutError("frontier timeout")
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier)
+
+        assert adapter.analyze("p")["_source"] == "cheap"
+
+
+class _RendezvousCap(int):
+    """Sufit eskalacji, który zatrzymuje każde porównanie z licznikiem, aż do niego
+    dojdą wszystkie wątki (albo minie `patience`).
+
+    Na CPython 3.12 z GIL między porównaniem licznika a jego inkrementacją nie ma
+    punktu przełączenia wątku, więc wyścig nie odtwarza się sam. Ten int wymusza
+    przeplot: bez locka wszystkie wątki porównują stary licznik i każdy eskaluje;
+    z lockiem porównania idą po kolei, a każde czeka najwyżej `patience`."""
+
+    def __new__(cls, value: int, *, parties: int, patience: float) -> _RendezvousCap:
+        cap = super().__new__(cls, value)
+        cap._parties = parties
+        cap._patience = patience
+        cap._arrived = 0
+        cap._guard = threading.Lock()
+        cap._everyone_here = threading.Event()
+        return cap
+
+    def __le__(self, other: object) -> bool:  # `used >= cap` woła odbicie `cap <= used`
+        with self._guard:
+            self._arrived += 1
+            if self._arrived >= self._parties:
+                self._everyone_here.set()
+        self._everyone_here.wait(self._patience)
+        return int(self) <= other  # type: ignore[operator]
+
+
+class TestEscalationConcurrency:
+    def test_escalation_cap_holds_under_concurrency(self, cheap, frontier) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        threads = 4
+        cheap.analyze.return_value = _result(0.1, "cheap")
+        frontier.analyze.return_value = _result(0.9, "frontier")
+        adapter = CascadingLLMAdapter(
+            cheap=cheap,
+            frontier=frontier,
+            max_escalations=_RendezvousCap(1, parties=threads, patience=0.2),
+        )
+
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            sources = list(pool.map(lambda p: adapter.analyze(p)["_source"], ["p"] * threads))
+
+        assert frontier.analyze.call_count == 1
+        assert sorted(sources) == ["cheap", "cheap", "cheap", "frontier"]

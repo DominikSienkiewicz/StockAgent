@@ -191,6 +191,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "debate_mode_enabled",
     "model_routing_enabled",
     "routing_floor",
+    # NIEZ-17: sufit eskalacji decyduje, który model odpowiada niepewnym symbolom.
+    "routing_max_escalations",
     "router_cheap_model",
     "router_frontier_provider",
     "router_frontier_model",
@@ -379,6 +381,8 @@ class Settings(BaseSettings):
     # ----- Model routing (#2 — tani model + eskalacja do frontier) -----
     model_routing_enabled: bool = False
     routing_floor: float = 0.6
+    # NIEZ-17: najwyżej tyle eskalacji do frontiera na cykl (jedna kaskada na cykl).
+    routing_max_escalations: int = Field(default=5, ge=0)
     router_cheap_model: str = "gpt-5-mini"
     router_frontier_provider: Literal["openai", "anthropic"] = "anthropic"
     router_frontier_model: str = "claude-sonnet-4-6"

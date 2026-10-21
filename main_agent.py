@@ -357,7 +357,11 @@ def _build_primary_llm(
             usage_sink,
         )
         return CascadingLLMAdapter(
-            cheap=cheap, frontier=frontier, routing_floor=settings.routing_floor
+            cheap=cheap,
+            frontier=frontier,
+            routing_floor=settings.routing_floor,
+            max_escalations=settings.routing_max_escalations,
+            quota_monitor=quota_monitor,
         )
 
     if settings.llm_provider == "anthropic":

@@ -26,6 +26,8 @@ debate_mode_enabled = false
 # confidence < routing_floor. Domyślnie off (główna analiza wg llm_provider).
 model_routing_enabled = false
 routing_floor = 0.6
+# NIEZ-17: sufit eskalacji do frontiera na cykl; awaria frontiera zwraca wynik taniego.
+routing_max_escalations = 5
 router_cheap_model = "gpt-5-mini"
 router_frontier_provider = "anthropic"
 router_frontier_model = "claude-sonnet-4-6"
