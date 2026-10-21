@@ -138,7 +138,9 @@ def test_default_window_is_track_record_days(settings: Settings, mocker: Any) ->
 
     main_scorecard.main([], settings.model_copy(update={"track_record_days": 45}))
 
-    repository.get_resolved_predictions.assert_called_once_with(45)
+    # DAT-16: pokrycie danych czyta to samo okno drugi raz — każdy odczyt z oknem.
+    assert repository.get_resolved_predictions.call_args_list
+    assert {c.args for c in repository.get_resolved_predictions.call_args_list} == {(45,)}
     repository.get_resolved_for_calibration.assert_called_once_with(45)
 
 
@@ -149,7 +151,9 @@ def test_days_widens_every_read_and_the_disclosed_window(settings: Settings, moc
 
     assert main_scorecard.main(["--days", "120"], settings) == 0
 
-    repository.get_resolved_predictions.assert_called_once_with(120)
+    # DAT-16: pokrycie danych czyta to samo okno drugi raz — każdy odczyt z oknem.
+    assert repository.get_resolved_predictions.call_args_list
+    assert {c.args for c in repository.get_resolved_predictions.call_args_list} == {(120,)}
     repository.get_resolved_for_calibration.assert_called_once_with(120)
     assert "ostatnie 120 dni" in publisher.publish.call_args.args[0]
 
