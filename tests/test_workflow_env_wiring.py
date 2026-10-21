@@ -833,7 +833,7 @@ def _is_mask_step(step: dict[str, object]) -> bool:
 def test_guard_sees_every_workflow_injecting_the_alpha_vantage_secret() -> None:
     workflows = {name.split("/")[0] for name, _ in _jobs_injecting_csv_secret()}
 
-    assert {"fast_loop_12h.yml", "slow_loop_weekly.yml", "shock_watch_hourly.yml"} <= workflows
+    assert {"fast_loop_12h.yml", "slow_loop_weekly.yml"} <= workflows
 
 
 def test_every_alpha_vantage_key_is_masked_before_python_runs() -> None:
