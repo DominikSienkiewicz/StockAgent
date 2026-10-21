@@ -9,6 +9,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+# DAT-21: próg znaczącego zakupu — kod P od officera za co najmniej tyle USD.
+SIGNIFICANT_BUY_MIN_USD = 100_000.0
+
+
+@dataclass(frozen=True)
+class InsiderBuy:
+    """Największy rynkowy zakup (kod P, poza planem 10b5-1) insidera w oknie.
+
+    `role` — `officerTitle` z Form 4 (np. „CEO”; pusty, gdy brak tytułu albo
+    kupuje członek rady); `is_officer` odróżnia zarząd od rady; `filing_url` —
+    Form 4 tej transakcji. `value_usd` to suma zakupów P z jednego Form 4."""
+
+    role: str
+    value_usd: float
+    is_officer: bool = True
+    filing_url: str | None = None
+
 
 class InsiderSignal(Enum):
     """Kierunek przepływu insiderów wyprowadzony ze snapshotu transakcji."""
@@ -28,7 +45,13 @@ class InsiderFlowSnapshot:
 
     `filings_seen`/`filings_parsed` (DAT-03): ile Form 4 z okna adapter widział
     i ile z nich sparsował. Bez nich niesparsowane filingi wyglądały jak okno bez
-    transakcji. Domyślne zera = snapshot bez tej wiedzy, traktowany jak dowód."""
+    transakcji. Domyślne zera = snapshot bez tej wiedzy, traktowany jak dowód.
+
+    DAT-21 (pola opcjonalne, None = adapter ich nie policzył): `net_value_usd` —
+    kupna P minus sprzedaże S w USD (akcje × cena), BEZ transakcji z planów
+    10b5-1; `largest_buy` — największy zakup officera (albo członka rady, gdy
+    officer nie kupował); `latest_filing_url` — najnowszy Form 4 okna.
+    `net_shares` zostaje bez zmian: waży w Alpha Fusion, a zmiana wymaga A/B."""
 
     symbol: str
     net_shares: float
@@ -37,6 +60,19 @@ class InsiderFlowSnapshot:
     window_days: int
     filings_seen: int = 0
     filings_parsed: int = 0
+    net_value_usd: float | None = None
+    largest_buy: InsiderBuy | None = None
+    latest_filing_url: str | None = None
+
+    def significant_buy(
+        self, min_value_usd: float = SIGNIFICANT_BUY_MIN_USD
+    ) -> InsiderBuy | None:
+        """DAT-21: znaczący zakup = kod P od officera za ≥ `min_value_usd` USD.
+        Liczba akcji nie mówi o skali (10 000 akcji po 5 USD i po 900 USD)."""
+        buy = self.largest_buy
+        if buy is None or not buy.is_officer or buy.value_usd < min_value_usd:
+            return None
+        return buy
 
     def has_evidence(self) -> bool:
         """Czy snapshot mówi coś o insiderach. Okno bez Form 4 to dowód braku

@@ -25,6 +25,14 @@ kolejny symbol spróbuje ponownie. Każdy request do sec.gov przechodzi przez
 `_RequestPacer` z minimalnym odstępem `SEC_MIN_REQUEST_INTERVAL_SECONDS` (polityka
 SEC: najwyżej 10 requestów na sekundę). 403 z SEC nie trafia do globalnego
 `RETRY_STATUS_FORCELIST` — to odmowa, nie chwilowa awaria.
+
+DAT-21: z tego samego XML-a czytamy też cenę (`transactionPricePerShare`),
+relację właściciela (`isOfficer`/`officerTitle`/`isDirector`; sam 10% owner to
+fundusz, nie insider) i znacznik planu 10b5-1 (`aff10b5One`, Form 4 od 2023 —
+pole dotyczy całego filingu). Transakcje planowe nie zasilają `net_value_usd`
+ani `largest_buy`; brak znacznika (starsze Form 4) to transakcja uznaniowa.
+`net_shares` i liczniki liczą się jak dotąd. Kody inne niż P/S (przydziały A,
+opcje M, podatek F) są pomijane.
 """
 
 from __future__ import annotations
@@ -34,12 +42,13 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
 import requests
 
 from src.application.ports import InsiderFlowPort
-from src.domain.insider_flow import InsiderFlowSnapshot
+from src.domain.insider_flow import InsiderBuy, InsiderFlowSnapshot
 from src.infrastructure.adapters._http import build_session
 
 DEFAULT_TIMEOUT = 10.0
@@ -55,6 +64,8 @@ ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{doc}"
 # Kody transakcji Form 4 (tabela nonDerivative).
 BUY_CODE = "P"  # purchase — kupno
 SELL_CODE = "S"  # sale — sprzedaż
+# Wartości „zaznaczonego” pola logicznego Form 4 (`1` albo `true`).
+_TRUE_FLAGS = frozenset({"1", "true"})
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +86,35 @@ def _find_local(element: ET.Element, name: str) -> ET.Element | None:
 def _findall_local(element: ET.Element, name: str) -> list[ET.Element]:
     """Wszyscy potomkowie o lokalnej nazwie `name` (tolerancja na namespace)."""
     return [d for d in element.iter() if _local_name(d.tag) == name]
+
+
+@dataclass(frozen=True)
+class _Form4Summary:
+    """Wynik jednego Form 4: przepływ akcji (jak przed DAT-21) i wartości."""
+
+    net_shares: float
+    buy_count: int
+    sell_count: int
+    net_value_usd: float
+    largest_buy: InsiderBuy | None
+
+
+def _stronger_buy(current: InsiderBuy | None, candidate: InsiderBuy | None) -> InsiderBuy | None:
+    """Zakup officera wygrywa z zakupem członka rady, potem większa kwota."""
+    if candidate is None:
+        return current
+    if current is None:
+        return candidate
+    return max(current, candidate, key=lambda buy: (buy.is_officer, buy.value_usd))
+
+
+def _is_flag_set(element: ET.Element | None) -> bool:
+    """Pole logiczne Form 4 (np. `<isOfficer>1</isOfficer>`) — brak = fałsz."""
+    if element is None:
+        return False
+    value_el = _find_local(element, "value")
+    text = value_el.text if value_el is not None else element.text
+    return (text or "").strip().lower() in _TRUE_FLAGS
 
 
 def _padded_cik(cik_raw: int | str | None) -> str | None:
@@ -178,15 +218,18 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             buy_count = 0
             sell_count = 0
             filings_parsed = 0
+            net_value_usd = 0.0
+            largest_buy: InsiderBuy | None = None
             for accession, primary_doc in filings:
                 parsed = self._parse_form4(cik, accession, primary_doc)
                 if parsed is None:
                     # Pojedynczy zepsuty filing nie wywala agregacji.
                     continue
-                delta_net, buys, sells = parsed
-                net_shares += delta_net
-                buy_count += buys
-                sell_count += sells
+                net_shares += parsed.net_shares
+                buy_count += parsed.buy_count
+                sell_count += parsed.sell_count
+                net_value_usd += parsed.net_value_usd
+                largest_buy = _stronger_buy(largest_buy, parsed.largest_buy)
                 filings_parsed += 1
 
             return InsiderFlowSnapshot(
@@ -197,6 +240,11 @@ class EdgarInsiderAdapter(InsiderFlowPort):
                 window_days=self._window_days,
                 filings_seen=len(filings),
                 filings_parsed=filings_parsed,
+                net_value_usd=net_value_usd,
+                largest_buy=largest_buy,
+                latest_filing_url=(
+                    _filing_url(cik, *filings[0]) if filings else None
+                ),
             )
         except Exception:
             # Opcjonalne źródło alpha — żaden błąd nie może wywalić cyklu.
@@ -296,8 +344,8 @@ class EdgarInsiderAdapter(InsiderFlowPort):
 
     def _parse_form4(
         self, cik: str, accession: str, primary_doc: str
-    ) -> tuple[float, int, int] | None:
-        """Fetch + parsuje pojedynczy Form 4 → (net_shares, buy_count, sell_count).
+    ) -> _Form4Summary | None:
+        """Fetch + parsuje pojedynczy Form 4 (akcje, wartość USD, rola).
 
         None gdy fetch lub parse XML padnie (filing pomijany w agregacji)."""
         accession_no_dashes = accession.replace("-", "")
@@ -321,21 +369,60 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             logger.warning("EDGAR Form 4 XML parse failed (%s)", accession)
             return None
 
+        planned = _is_flag_set(_find_local(root, "aff10b5One"))
         net_shares = 0.0
         buy_count = 0
         sell_count = 0
+        net_value = 0.0
+        bought_value = 0.0
         for transaction in _findall_local(root, "nonDerivativeTransaction"):
             code = self._transaction_code(transaction)
             shares = self._transaction_shares(transaction)
             if shares is None:
                 continue
+            if code not in (BUY_CODE, SELL_CODE):
+                continue
+            sign = 1.0 if code == BUY_CODE else -1.0
+            net_shares += sign * shares
             if code == BUY_CODE:
-                net_shares += shares
                 buy_count += 1
-            elif code == SELL_CODE:
-                net_shares -= shares
+            else:
                 sell_count += 1
-        return net_shares, buy_count, sell_count
+            price = self._transaction_price(transaction)
+            if planned or price is None:
+                continue
+            net_value += sign * shares * price
+            if code == BUY_CODE:
+                bought_value += shares * price
+        filing_url = _filing_url(cik, accession, primary_doc)
+        return _Form4Summary(
+            net_shares=net_shares,
+            buy_count=buy_count,
+            sell_count=sell_count,
+            net_value_usd=net_value,
+            largest_buy=self._insider_buy(root, bought_value, filing_url),
+        )
+
+    @staticmethod
+    def _insider_buy(root: ET.Element, value_usd: float, filing_url: str) -> InsiderBuy | None:
+        """Zakup z filingu jako `InsiderBuy` — tylko officer albo członek rady
+        (sam 10% owner to zwykle fundusz, nie insider znający spółkę)."""
+        if value_usd <= 0:
+            return None
+        relationship = _find_local(root, "reportingOwnerRelationship")
+        if relationship is None:
+            return None
+        is_officer = _is_flag_set(_find_local(relationship, "isOfficer"))
+        if not is_officer and not _is_flag_set(_find_local(relationship, "isDirector")):
+            return None
+        title_el = _find_local(relationship, "officerTitle")
+        title = (title_el.text or "").strip() if title_el is not None else ""
+        return InsiderBuy(
+            role=title if is_officer else "",
+            value_usd=value_usd,
+            is_officer=is_officer,
+            filing_url=filing_url,
+        )
 
     @staticmethod
     def _transaction_code(transaction: ET.Element) -> str | None:
@@ -349,19 +436,35 @@ class EdgarInsiderAdapter(InsiderFlowPort):
 
     @staticmethod
     def _transaction_shares(transaction: ET.Element) -> float | None:
-        shares_el = _find_local(transaction, "transactionShares")
-        if shares_el is None:
-            return None
-        # <transactionShares> ma zwykle wewnętrzny <value> — szukamy go,
-        # a w razie braku bierzemy bezpośredni tekst węzła.
-        value_el = _find_local(shares_el, "value")
-        text = value_el.text if value_el is not None else shares_el.text
-        if text is None:
-            return None
-        try:
-            return float(text.strip())
-        except ValueError:
-            return None
+        return _amount(transaction, "transactionShares")
+
+    @staticmethod
+    def _transaction_price(transaction: ET.Element) -> float | None:
+        """Cena za akcję; brak (sam przypis) albo niedodatnia → None."""
+        price = _amount(transaction, "transactionPricePerShare")
+        return price if price is not None and price > 0 else None
+
+
+def _amount(transaction: ET.Element, name: str) -> float | None:
+    """Liczba z pola kwoty transakcji. Pole ma zwykle wewnętrzny <value> —
+    szukamy go, a w razie braku bierzemy bezpośredni tekst węzła."""
+    amount_el = _find_local(transaction, name)
+    if amount_el is None:
+        return None
+    value_el = _find_local(amount_el, "value")
+    text = value_el.text if value_el is not None else amount_el.text
+    if text is None or not text.strip():
+        return None
+    try:
+        return float(text.strip())
+    except ValueError:
+        return None
+
+
+def _filing_url(cik: str, accession: str, primary_doc: str) -> str:
+    """Link do Form 4 dla człowieka — `primaryDocument` bez zmian, więc
+    z prefiksem `xsl…/` to widok HTML renderowany przez SEC."""
+    return ARCHIVE_URL.format(cik=int(cik), accession=accession.replace("-", ""), doc=primary_doc)
 
 
 class NullInsiderFlowAdapter(InsiderFlowPort):

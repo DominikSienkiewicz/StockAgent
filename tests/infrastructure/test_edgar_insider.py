@@ -603,6 +603,162 @@ class TestTickerMapAndPacing:
         sleep.assert_not_called()
 
 
+def _price_xml(price: float | None) -> str:
+    # Cena bywa pusta (sam przypis) — wtedy element nie ma <value>.
+    return "" if price is None else f"<value>{price}</value>"
+
+
+def _form4_owner_xml(
+    *,
+    transactions: list[tuple[str, float, float | None]],
+    officer_title: str | None = None,
+    is_officer: bool = False,
+    is_director: bool = False,
+    ten_percent_owner: bool = False,
+    plan: str | None = None,
+) -> str:
+    """Form 4 z właścicielem i transakcjami `(kod, akcje, cena)` — kształt jak
+    w EDGAR (ownershipDocument z reportingOwnerRelationship i aff10b5One)."""
+    title = f"<officerTitle>{officer_title}</officerTitle>" if officer_title else ""
+    plan_xml = f"<aff10b5One>{plan}</aff10b5One>" if plan is not None else ""
+    rows = "".join(
+        f"""
+    <nonDerivativeTransaction>
+      <transactionCoding><transactionCode>{code}</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>{shares}</value></transactionShares>
+        <transactionPricePerShare>{_price_xml(price)}</transactionPricePerShare>
+      </transactionAmounts>
+    </nonDerivativeTransaction>"""
+        for code, shares, price in transactions
+    )
+    return f"""<?xml version="1.0"?>
+<ownershipDocument xmlns="http://www.sec.gov/edgar/ownership">
+  {plan_xml}
+  <reportingOwner>
+    <reportingOwnerRelationship>
+      <isDirector>{int(is_director)}</isDirector>
+      <isOfficer>{int(is_officer)}</isOfficer>
+      {title}
+      <isTenPercentOwner>{int(ten_percent_owner)}</isTenPercentOwner>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>{rows}
+  </nonDerivativeTable>
+</ownershipDocument>"""
+
+
+class TestDollarValueAndRole:
+    """DAT-21: wartość transakcji w USD, rola insidera, wykluczenie planów
+    10b5-1 z przepływu wartości i link do Form 4 — z tego samego XML-a."""
+
+    @staticmethod
+    def _patch(mocker, buy_xml: str, sell_xml: str) -> None:
+        def get(url: str, **_: object) -> Mock:
+            if "company_tickers.json" in url:
+                return _ok_json(_company_tickers())
+            if "submissions" in url:
+                return _ok_json(_two_form4_submissions())
+            if "form4_buy.xml" in url:
+                return _ok_text(buy_xml)
+            return _ok_text(sell_xml)
+
+        mocker.patch("requests.Session.get", side_effect=get)
+
+    def test_parses_officer_purchase_value(self, adapter: EdgarInsiderAdapter, mocker) -> None:
+        buy = _form4_owner_xml(
+            transactions=[("P", 10_000.0, 120.0)], officer_title="CEO", is_officer=True
+        )
+        self._patch(mocker, buy, _form4_owner_xml(transactions=[]))
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        assert snap is not None
+        assert snap.net_value_usd == pytest.approx(1_200_000.0)
+        assert snap.largest_buy is not None
+        assert snap.largest_buy.role == "CEO"
+        assert snap.largest_buy.value_usd == pytest.approx(1_200_000.0)
+        assert snap.largest_buy.filing_url == (
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/form4_buy.xml"
+        )
+        assert snap.significant_buy() == snap.largest_buy
+
+    def test_10b5_1_sale_is_excluded_from_net_flow(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        buy = _form4_owner_xml(
+            transactions=[("P", 100.0, 50.0)], officer_title="CFO", is_officer=True
+        )
+        planned_sale = _form4_owner_xml(
+            transactions=[("S", 5_000.0, 200.0)],
+            officer_title="CEO",
+            is_officer=True,
+            plan="1",
+        )
+        self._patch(mocker, buy, planned_sale)
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        assert snap is not None
+        # Planowa sprzedaż CEO nie zasila przepływu wartości...
+        assert snap.net_value_usd == pytest.approx(5_000.0)
+        # ...a net_shares (waga w Alpha Fusion) zostaje jak dotąd — bez A/B bez zmian.
+        assert snap.net_shares == pytest.approx(-4_900.0)
+
+    def test_filing_without_plan_marker_counts_as_discretionary(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        # Starsze Form 4 nie mają aff10b5One — brak znacznika to nie dowód planu.
+        sale = _form4_owner_xml(transactions=[("S", 1_000.0, 10.0)], is_director=True)
+        self._patch(mocker, _form4_owner_xml(transactions=[]), sale)
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        assert snap is not None
+        assert snap.net_value_usd == pytest.approx(-10_000.0)
+
+    def test_ten_percent_owner_purchase_is_not_an_insider_buy(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        fund = _form4_owner_xml(transactions=[("P", 50_000.0, 100.0)], ten_percent_owner=True)
+        self._patch(mocker, fund, _form4_owner_xml(transactions=[]))
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        assert snap is not None
+        assert snap.largest_buy is None
+        assert snap.net_value_usd == pytest.approx(5_000_000.0)
+
+    def test_grants_and_unpriced_rows_do_not_add_value(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        buy = _form4_owner_xml(
+            transactions=[("A", 9_999.0, 0.0), ("P", 10.0, None)],
+            officer_title="CEO",
+            is_officer=True,
+        )
+        self._patch(mocker, buy, _form4_owner_xml(transactions=[]))
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        assert snap is not None
+        assert snap.net_value_usd == pytest.approx(0.0)
+        assert snap.largest_buy is None
+        assert snap.buy_count == 1
+
+    def test_latest_filing_url_points_to_the_newest_form4(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        self._patch(mocker, _form4_owner_xml(transactions=[]), _form4_owner_xml(transactions=[]))
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        assert snap is not None
+        assert snap.latest_filing_url == (
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/form4_buy.xml"
+        )
+
+
 class TestNullInsiderFlowAdapter:
     def test_returns_none_without_io(self, mocker) -> None:
         mock_get = mocker.patch("requests.Session.get")

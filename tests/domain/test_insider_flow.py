@@ -89,3 +89,45 @@ class TestHasEvidence:
     def test_no_filings_in_the_window_is_evidence_of_no_trades(self) -> None:
         snap = InsiderFlowSnapshot("AAPL", 0.0, 0, 0, 90, filings_seen=0, filings_parsed=0)
         assert snap.has_evidence()
+
+
+class TestSignificantBuy:
+    """DAT-21: liczba akcji nie mówi o skali — 10 000 akcji po 5 USD i po 900 USD
+    to różne sygnały. Znaczący zakup = kod P od officera za co najmniej 100k USD."""
+
+    @staticmethod
+    def _with_buy(value_usd: float, *, is_officer: bool = True) -> InsiderFlowSnapshot:
+        from src.domain.insider_flow import InsiderBuy
+
+        return InsiderFlowSnapshot(
+            symbol="AAPL",
+            net_shares=10_000.0,
+            buy_count=1,
+            sell_count=0,
+            window_days=90,
+            largest_buy=InsiderBuy(role="CEO", value_usd=value_usd, is_officer=is_officer),
+        )
+
+    def test_signal_uses_dollar_value_threshold(self) -> None:
+        cheap = self._with_buy(10_000 * 5.0)
+        large = self._with_buy(1_000 * 900.0)
+
+        assert cheap.significant_buy() is None
+        assert large.significant_buy() is not None
+        assert large.significant_buy() == large.largest_buy
+
+    def test_director_buy_is_not_significant(self) -> None:
+        assert self._with_buy(500_000.0, is_officer=False).significant_buy() is None
+
+    def test_threshold_is_inclusive_and_configurable(self) -> None:
+        exact = self._with_buy(100_000.0)
+
+        assert exact.significant_buy() is not None
+        assert exact.significant_buy(min_value_usd=250_000.0) is None
+
+    def test_snapshot_without_value_data_has_no_significant_buy(self) -> None:
+        snapshot = _snap(5000.0, buy_count=3)
+
+        assert snapshot.significant_buy() is None
+        assert snapshot.net_value_usd is None
+        assert snapshot.latest_filing_url is None

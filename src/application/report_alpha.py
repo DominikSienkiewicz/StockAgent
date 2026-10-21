@@ -13,7 +13,7 @@ from src.application.alpha_signals import AlphaSignals
 from src.application.report_formatting import number, pct
 from src.domain.analyst_consensus import AnalystRating
 from src.domain.earnings import EarningsProximity
-from src.domain.insider_flow import InsiderSignal
+from src.domain.insider_flow import InsiderBuy, InsiderSignal
 from src.domain.macro_rates import YieldCurveSnapshot, YieldCurveState
 from src.domain.options_flow import OptionsSentiment
 from src.domain.social_velocity import SocialTrend
@@ -21,6 +21,10 @@ from src.domain.social_velocity import SocialTrend
 _DASH = "—"
 # DAT-03: Form 4 widziane, ale żaden niesparsowany — to nie jest spokojne okno.
 _INSIDER_NO_EVIDENCE = "brak danych EDGAR"
+
+# DAT-21: link do Form 4 tylko na SEC — URL pochodzi z danych zewnętrznych.
+_SEC_URL_PREFIX = "https://www.sec.gov/"
+_OFFICER_FALLBACK_ROLE = "członek zarządu"
 
 _INSIDER_LABEL = {
     InsiderSignal.NET_BUYING: "kupno insiderów",
@@ -85,7 +89,41 @@ def render_alpha_html(
         parts.append(_render_yield_curve_html(yield_curve))
     if rows:
         parts.append(_render_signals_table_html(rows, prices))
+        parts.extend(_render_significant_buys_html(rows))
     return "".join(parts)
+
+
+def _render_significant_buys_html(rows: list[AlphaSignals]) -> list[str]:
+    """DAT-21: linia na znaczący zakup officera (kod P ≥ 100k USD) z kwotą
+    i linkiem do Form 4 — etykieta w tabeli nie mówi o skali."""
+    lines: list[str] = []
+    for sig in rows:
+        buy = sig.insider.significant_buy() if sig.insider is not None else None
+        if buy is not None:
+            lines.append(_significant_buy_line(sig.symbol, buy))
+    return lines
+
+
+def _significant_buy_line(symbol: str, buy: InsiderBuy) -> str:
+    role = buy.role or _OFFICER_FALLBACK_ROLE
+    text = f"{symbol} — {role} kupił akcje za {_usd_amount(buy.value_usd)}"
+    url = buy.filing_url
+    link = (
+        f" (<a href='{_html.escape(url, quote=True)}'>Form 4 →</a>)"
+        if url is not None and url.startswith(_SEC_URL_PREFIX)
+        else ""
+    )
+    return (
+        "<p style='font-size: 13px; margin: 4px 0;'>🟢 "
+        f"{_html.escape(text)}{link}</p>"
+    )
+
+
+def _usd_amount(value_usd: float) -> str:
+    """„1,2 mln USD” / „250 tys. USD” — skala zakupu czytelna na pierwszy rzut oka."""
+    if value_usd >= 1_000_000:
+        return f"{number(value_usd / 1_000_000, decimals=1)} mln USD"
+    return f"{number(value_usd / 1_000, decimals=0)} tys. USD"
 
 
 def _render_yield_curve_html(curve: YieldCurveSnapshot) -> str:
