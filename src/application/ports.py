@@ -273,6 +273,12 @@ class RepositoryPort(ABC):
         """Upsert jednego wiersza per symbol (nadpisuje poprzedni snapshot)."""
 
     @abstractmethod
+    def get_fundamentals_fetched_at(self, symbols: Sequence[str]) -> dict[str, datetime]:
+        """DAT-19: `fetched_at` wpisów cache fundamentów dla `symbols`, BEZ filtra
+        TTL — rotacja refreshu wybiera po nim najdawniej odświeżone spółki.
+        Symbol bez wpisu nie trafia do wyniku."""
+
+    @abstractmethod
     def save_quota_alert(self, alert: QuotaAlert) -> None:
         """Persystuje pojedynczy alert wyczerpania limitu / subskrypcji.
 

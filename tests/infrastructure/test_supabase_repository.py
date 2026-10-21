@@ -3128,3 +3128,30 @@ class TestResolvedForCalibrationTrendAndCycle:
         assert "predicted_trend" in selected
         assert "timestamp" in selected
 
+class TestGetFundamentalsFetchedAt:
+    """DAT-19: wiek wpisów cache (bez filtra TTL) — podstawa rotacji refreshu."""
+
+    def test_maps_symbols_with_an_entry_to_their_fetched_at(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "in_"],
+            [
+                {"symbol": "AAPL", "fetched_at": "2026-10-11T06:00:00+00:00"},
+                {"symbol": "MSFT", "fetched_at": None},
+            ],
+        )
+
+        result = repo.get_fundamentals_fetched_at(["AAPL", "MSFT", "GOOGL"])
+
+        assert result == {"AAPL": datetime(2026, 10, 11, 6, 0, tzinfo=UTC)}
+        mock_client.table.assert_called_with("fundamentals_cache")
+        in_call = mock_client.table.return_value.select.return_value.in_
+        assert in_call.call_args.args == ("symbol", ["AAPL", "MSFT", "GOOGL"])
+
+    def test_no_symbols_means_no_query(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        assert repo.get_fundamentals_fetched_at([]) == {}
+        mock_client.table.assert_not_called()

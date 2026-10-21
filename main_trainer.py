@@ -54,6 +54,7 @@ from src.application.use_cases.weekly_recap import (
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
 from src.config import Settings
 from src.domain.finops import slow_loop_paid_budget
+from src.domain.fundamentals_refresh import refresh_budget, select_refresh_batch
 from src.infrastructure.adapters.alpha_vantage_fundamentals import (
     AlphaVantageFundamentalsAdapter,
 )
@@ -120,6 +121,8 @@ def _refresh_fundamentals_cache(
 
     Odświeżamy tylko spółki (STOCK) — ETF-y nie mają EPS/P/E. Pojedynczy błąd
     nie wywala całego cyklu. FIN-35: lokalnie bez płatnych wywołań nie pytamy AV.
+    DAT-19: tylko partia mieszcząca się w dziennym limicie kluczy, wybrana przez
+    domenę (najpierw bez wpisu, potem najdawniej odświeżone).
     """
     if not settings.paid_calls_enabled:
         logger.info("Fundamentals refresh skipped — lokalnie bez płatnych wywołań")
@@ -132,11 +135,37 @@ def _refresh_fundamentals_cache(
         ),
     )
     stock_symbols = [s for s in settings.symbols if s not in settings.symbols_etf]
-    for symbol in stock_symbols:
+    batch = select_refresh_batch(
+        _fundamentals_fetched_at(repository, stock_symbols),
+        refresh_budget(len(settings.alpha_vantage_api_keys)),
+    )
+    logger.info(
+        "Fundamentals refresh — %d of %d companies this run (missing and oldest first)",
+        len(batch),
+        len(stock_symbols),
+    )
+    for symbol in batch:
         try:
             fundamentals_port.get_fundamentals(symbol)
         except Exception:
             logger.exception("Fundamentals refresh failed for %s", symbol)
+
+
+def _fundamentals_fetched_at(
+    repository: RepositoryPort, symbols: list[str]
+) -> dict[str, datetime | None]:
+    """DAT-19: wiek wpisu cache per spółka (None = brak wpisu). Błąd odczytu
+    → wszystkie jak bez wpisu: partia idzie wtedy alfabetycznie, jak przed rotacją
+    szła kolejnością listy."""
+    try:
+        known = repository.get_fundamentals_fetched_at(symbols)
+    except Exception:
+        logger.exception("Fundamentals cache ages unavailable — refresh without rotation")
+        known = {}
+    return {
+        symbol: stamp if isinstance(stamp := known.get(symbol), datetime) else None
+        for symbol in symbols
+    }
 
 
 def _persist_quota_alerts(

@@ -701,6 +701,23 @@ class SupabaseRepository(RepositoryPort):
             fetched_at=datetime.fromisoformat(row["fetched_at"]),
         )
 
+    def get_fundamentals_fetched_at(self, symbols: Sequence[str]) -> dict[str, datetime]:
+        """DAT-19: wiek wpisów cache bez filtra TTL (rotacja refreshu)."""
+        if not symbols:
+            return {}
+        response = (
+            self._client.table("fundamentals_cache")
+            .select("symbol, fetched_at")
+            .in_("symbol", list(symbols))
+            .execute()
+        )
+        fetched: dict[str, datetime] = {}
+        for row in _rows(response):
+            stamp = row.get("fetched_at")
+            if isinstance(stamp, str):
+                fetched[str(row.get("symbol"))] = datetime.fromisoformat(stamp)
+        return fetched
+
     def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
         """Upsert jednego wiersza per symbol (nadpisuje poprzedni snapshot)."""
         payload: dict[str, Any] = {

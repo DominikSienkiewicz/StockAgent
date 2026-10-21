@@ -92,6 +92,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_recently_resolved_predictions",
         "get_resolved_predictions",
         "get_cached_fundamentals",
+        "get_fundamentals_fetched_at",
         "get_recent_quota_alerts",
         "find_similar_predictions",
         "get_council_votes_for_prediction",
@@ -182,6 +183,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_cached_fundamentals(self, symbol: str) -> Fundamentals | None:
         return self._delegate.get_cached_fundamentals(symbol)
+
+    def get_fundamentals_fetched_at(self, symbols: Sequence[str]) -> dict[str, datetime]:
+        return self._delegate.get_fundamentals_fetched_at(symbols)
 
     def get_recent_quota_alerts(self, hours: int) -> list[QuotaAlert]:
         return self._delegate.get_recent_quota_alerts(hours)

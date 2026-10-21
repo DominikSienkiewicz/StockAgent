@@ -321,6 +321,28 @@ class TestMainTrainer:
         use_case = main_trainer.build_use_case(settings)
         assert use_case is not None
 
+    def test_refresh_fetches_only_selected_batch(self, settings, mocker) -> None:
+        # DAT-19: przy 1 kluczu (budżet 12 spółek) refresh bierze spółki bez wpisu
+        # w cache i najstarsze, a nie zawsze pierwsze 12 z listy.
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.alpha_vantage_api_keys = ["av1"]
+        settings.symbols_etf = []
+        settings.symbols = [f"S{i:02d}" for i in range(1, 16)]
+        now = datetime.now(UTC)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_fundamentals_fetched_at.return_value = {
+            f"S{i:02d}": now - timedelta(days=i) for i in range(3, 16)
+        }
+        mocker.patch("main_trainer.AlphaVantageFundamentalsAdapter")
+        cached = mocker.patch("main_trainer.CachedFundamentalsAdapter")
+
+        main_trainer._refresh_fundamentals_cache(settings, repository, QuotaMonitor())
+
+        fetched = [c.args[0] for c in cached.return_value.get_fundamentals.call_args_list]
+        assert fetched == ["S01", "S02", *[f"S{i:02d}" for i in range(15, 5, -1)]]
+        repository.get_fundamentals_fetched_at.assert_called_once_with(settings.symbols)
+
     def test_main_returns_zero_on_success(self, settings, mock_external_clients, mocker):
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "skipped", "reason": "not enough data"}
