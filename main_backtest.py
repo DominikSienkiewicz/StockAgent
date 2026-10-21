@@ -16,6 +16,7 @@ import logging
 import sys
 
 from src.application.ml_features import FEATURE_SET_VERSION
+from src.application.ports import RepositoryPort
 from src.application.use_cases.backtest import BacktestUseCase
 from src.config import Settings
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
@@ -36,16 +37,27 @@ def _feature_set_version(settings: Settings) -> int | None:
     return FEATURE_SET_VERSION if settings.feature_set_filter_enabled else None
 
 
-def build_use_case(settings: Settings) -> BacktestUseCase:
-    """DI Container — backtest potrzebuje tylko bazy (cechy) + XGBoost (foldy)."""
+def build_use_case(
+    settings: Settings,
+    *,
+    repository: RepositoryPort | None = None,
+    cost_bps: float | None = None,
+) -> BacktestUseCase:
+    """DI Container — backtest potrzebuje tylko bazy (cechy) + XGBoost (foldy).
+
+    `cost_bps` (WIA-50) domyślnie koszt akcji/ETF; krypto podaje własny."""
     return BacktestUseCase(
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
-        db_port=SupabaseRepository(
-            url=settings.supabase_url, key=settings.supabase_key
-        ),
-        cost_bps=settings.paper_cost_bps,
+        db_port=repository
+        or SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key),
+        cost_bps=settings.paper_cost_bps if cost_bps is None else cost_bps,
         feature_set_version=_feature_set_version(settings),
     )
+
+
+def backtest_symbols(settings: Settings) -> list[str]:
+    """NIEZ-18: akcje, ETF-y i krypto — kolejność z configu, bez duplikatów."""
+    return list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
 
 
 def main(settings: Settings | None = None) -> int:
@@ -54,15 +66,19 @@ def main(settings: Settings | None = None) -> int:
     repository = SupabaseRepository(
         url=settings.supabase_url, key=settings.supabase_key
     )
-    # WIA-50: backtest iteruje `symbols` (bez krypto), więc koszt akcji/ETF.
-    use_case = BacktestUseCase(
-        ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
-        db_port=repository,
-        cost_bps=settings.paper_cost_bps,
-        feature_set_version=_feature_set_version(settings),
+    symbols = backtest_symbols(settings)
+    crypto = set(settings.crypto_symbols)
+    stock_backtest = build_use_case(settings, repository=repository)
+    # WIA-50: krypto ma własny koszt obrotu; bez krypto drugi use case nie powstaje.
+    crypto_backtest = (
+        build_use_case(
+            settings, repository=repository, cost_bps=settings.crypto_paper_cost_bps
+        )
+        if crypto
+        else stock_backtest
     )
 
-    logger.info("Backtest start — symbols=%s", settings.symbols)
+    logger.info("Backtest start — symbols=%s", symbols)
     # Świeży widok raz na cały przebieg; pojedyncze symbole już go nie odświeżają.
     try:
         repository.refresh_feature_store()
@@ -71,7 +87,10 @@ def main(settings: Settings | None = None) -> int:
             "refresh_feature_store failed — backtest na ostatnim widoku"
         )
 
-    for symbol in settings.symbols:
+    for symbol in symbols:
+        is_crypto = symbol in crypto
+        use_case = crypto_backtest if is_crypto else stock_backtest
+        cost_bps = settings.crypto_paper_cost_bps if is_crypto else settings.paper_cost_bps
         try:
             summary = use_case.run(symbol, refresh_view=False)
             # ML-20: IC i jego t-stat obok RMSE — zawsze z liczbą foldów, bo przy
@@ -95,12 +114,12 @@ def main(settings: Settings | None = None) -> int:
                 _fmt_optional(summary.ic_t_stat, "%.2f"),
                 _fmt_optional(summary.mean_net_return, "%.5f"),
                 _fmt_optional(summary.turnover, "%.2f"),
-                settings.paper_cost_bps,
+                cost_bps,
             )
         except Exception:
             logger.exception("Backtest failed for %s", symbol)
 
-    logger.info("Backtest done — symbols=%d", len(settings.symbols))
+    logger.info("Backtest done — symbols=%d", len(symbols))
     return 0
 
 

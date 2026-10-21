@@ -490,6 +490,57 @@ class TestMainBacktest:
         assert versions == [expected, expected]
 
 
+class TestBacktestCoverage:
+    """NIEZ-18: backtest iterował same `symbols`, więc krypto nigdy nie dostawało
+    oceny offline. Krypto idzie przez ten sam `build_use_case`, z kosztem obrotu
+    krypto (WIA-50)."""
+
+    @staticmethod
+    def _summary():
+        from src.domain.backtest import BacktestSummary
+
+        return BacktestSummary(
+            n_folds=4,
+            mean_candidate_rmse=0.03,
+            mean_baseline_rmse=0.05,
+            mean_hit_rate=0.6,
+            improvement_pct=40.0,
+            beats_baseline=True,
+            verdict="model bije baseline o 40.0%",
+        )
+
+    def test_backtest_covers_crypto_symbols(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.crypto_symbols = ["BTC"]
+        by_cost: dict[float, MagicMock] = {}
+
+        def use_case(*, cost_bps: float, **_: object) -> MagicMock:
+            fake = by_cost.setdefault(cost_bps, MagicMock())
+            fake.run.return_value = self._summary()
+            return fake
+
+        mocker.patch("main_backtest.BacktestUseCase", side_effect=use_case)
+
+        main_backtest.main(settings)
+
+        stock = by_cost[settings.paper_cost_bps]
+        crypto = by_cost[settings.crypto_paper_cost_bps]
+        assert [c.args[0] for c in stock.run.call_args_list] == ["AAPL", "VOO"]
+        assert [c.args[0] for c in crypto.run.call_args_list] == ["BTC"]
+
+    def test_main_builds_the_backtest_through_build_use_case(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        build = mocker.patch("main_backtest.build_use_case")
+        build.return_value.run.return_value = self._summary()
+
+        main_backtest.main(settings)
+
+        build.assert_called_once()
+        assert build.call_args.args == (settings,)
+
+
 class TestBuildMacroRiskUseCase:
     """Factory MonitorMacroRisk — DI Risk Watch w main_agent.py."""
 
