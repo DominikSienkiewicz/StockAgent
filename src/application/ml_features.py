@@ -16,7 +16,9 @@ ML_FEATURE_COLUMNS = (
 
 # Kontrakt interwału cechy `price_delta` (krytyczny — train/serve skew):
 #   price_delta = (cena_bieżąca - cena_POPRZEDNIEJ_predykcji) / cena_poprzedniej.
-# Trening: widok liczy to jako LAG(price_at_prediction) po prediction_logs.
+# Trening: widok liczy to jako LAG(price_at_prediction) po CAŁEJ prediction_logs
+#   (ML-17, migracja 047): także po predykcjach otwartych i oflagowanych —
+#   filtry rozliczenia i flag jakości działają dopiero po LAG.
 # Inference: predict_node bierze RepositoryPort.get_last_prediction_price (cenę
 #   ostatniej zalogowanej predykcji), NIE ostatni snapshot ceny (ten napędza
 #   wyłącznie bramkę volatility). Obie ścieżki muszą używać tej samej referencji.

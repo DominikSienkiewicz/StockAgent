@@ -29,7 +29,7 @@ Merge the pending branches into `main` and push. The workflows run the code of t
 
 ### 3. Run DB Migrate for `026`–`043`
 
-Run **🗄️ DB Migrate (manual)** from the Actions tab with `dry_run` on, check that the log lists `026_feature_store_clean_rows.sql` to `043_attestation_payload.sql`, then run it again with `dry_run` off. `026` and `039` rebuild the `ml_feature_store` view and `038` enables RLS; none of the three has a flag.
+Run **🗄️ DB Migrate (manual)** from the Actions tab with `dry_run` on, check that the log lists `026_feature_store_clean_rows.sql` to `042_reference_predictions.sql`, then run it again with `dry_run` off. `026` and `039` rebuild the `ml_feature_store` view and `038` enables RLS; none of the three has a flag. `047` rebuilds the view again with `LAG` over every logged prediction (ML-17), also without a flag.
 
 ### 4. Turn on the flags the migrations unlock
 

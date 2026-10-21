@@ -69,6 +69,7 @@ MIGRATION_FILES = [
     "042_reference_predictions.sql",
     "043_attestation_payload.sql",
     "044_calibration_score_version.sql",
+    "047_ml_feature_store_lag_over_all_predictions.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1318,6 +1319,62 @@ class TestMigrations:
                 "(symbol, timestamp, price_at_prediction, calibration_score_version) "
                 "VALUES ('CSV_BAD', '2026-11-03T21:30:00+00:00', 100.0, 3)"
             )
+
+    # -- Migracja 047: LAG po wszystkich zalogowanych predykcjach (ML-17) -------
+
+    def test_price_delta_lags_over_all_logged_predictions_not_only_settled(
+        self, pg_conn
+    ) -> None:
+        """Inference bierze cenę ostatniej ZALOGOWANEJ predykcji, rozliczonej czy
+        nie. Ceny 100 (rozliczona), 110 (otwarta), 121 (rozliczona): delta trzeciej
+        to 121/110 − 1 = 0,10, a LAG po samych rozliczonych dawał 121/100 − 1 = 0,21."""
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM prediction_logs WHERE symbol = 'QF_LAG047'")
+            cur.execute(
+                "INSERT INTO prediction_logs "
+                "(symbol, timestamp, price_at_prediction, actual_price_after_12h) VALUES "
+                "('QF_LAG047', '2026-08-01T10:00:00+00:00', 100.0, 101.0), "
+                "('QF_LAG047', '2026-08-02T10:00:00+00:00', 110.0, NULL), "
+                "('QF_LAG047', '2026-08-03T10:00:00+00:00', 121.0, 122.0)"
+            )
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute(
+                "SELECT price_current, price_prev_12h, price_prev_24h, price_delta "
+                "FROM ml_feature_store WHERE symbol = 'QF_LAG047' ORDER BY timestamp"
+            )
+            rows = [tuple(float(v) if v is not None else None for v in r) for r in cur]
+
+        # Otwarta predykcja nie ma etykiety, więc nie trenuje — ale jest w LAG.
+        assert [row[0] for row in rows] == [100.0, 121.0]
+        assert rows[1][1] == pytest.approx(110.0)
+        assert rows[1][2] == pytest.approx(100.0)
+        assert rows[1][3] == pytest.approx(0.10)
+
+    def test_feature_store_after_047_keeps_the_feature_contract(self, pg_conn) -> None:
+        """047 odtwarza widok 1:1 z 039 (kolumny, oba indeksy, REFRESH CONCURRENTLY)
+        i opisuje prawdziwą semantykę `price_prev_12h` / `price_prev_24h`."""
+        assert {
+            "price_delta",
+            "av_sentiment_score",
+            "news_volume_24h",
+            "alpha_fusion_score",
+            "feature_set_version",
+            "target_return",
+        } <= _columns(pg_conn, "ml_feature_store")
+        assert {
+            "idx_ml_feature_store_id",
+            "idx_ml_feature_store_symbol_timestamp",
+        } <= _indexes(pg_conn, "ml_feature_store")
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT refresh_ml_feature_store()")
+            cur.execute(
+                "SELECT col_description('ml_feature_store'::regclass, attnum) "
+                "FROM pg_attribute WHERE attrelid = 'ml_feature_store'::regclass "
+                "AND attname = 'price_prev_12h'"
+            )
+            comment = cur.fetchone()[0]
+
+        assert "POPRZEDNIEJ zalogowanej predykcji" in comment
 
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 
