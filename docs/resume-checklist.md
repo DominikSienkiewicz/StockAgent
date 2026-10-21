@@ -52,6 +52,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `041` | `cycle_runs_enabled` | |
 | `042` | `reference_signal_enabled` | The free weekly reference signal in the Slow Loop (WIA-24); it can run before the Fast Loop resumes. |
 | `044` | `calibration_score_version_enabled` | The calibration judge stores the Brier rule with `calibration_score_version = 2` (WIA-37); only matters with `calibration_judge_enabled`. |
+| `049` | `model_scorecard_run_id_enabled` | One `run_id` per Slow Loop run on every scorecard row (ML-24); a same-day re-run no longer merges with the cron run. |
 
 ### 5. Add the `HEARTBEAT_URL` secret
 

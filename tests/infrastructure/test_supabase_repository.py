@@ -2147,6 +2147,42 @@ class TestModelScorecardBaselines:
         assert payload["baseline_rmse"] == 0.024
 
 
+class TestModelScorecardRunId:
+    """ML-24: `run_id` przebiegu trafia do karty tylko za flagą — kolumna istnieje
+    od migracji 049, a nowy klucz przed nią to PGRST204 i przepadły wiersz karty."""
+
+    _RUN_ID = "5f0c6c1e-8a43-4d3a-9b0c-2f1d3e4a5b6c"
+
+    def test_flag_off_payload_has_no_run_id(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_model_scorecard("ALL", {"status": "skipped"}, run_id=self._RUN_ID)
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "run_id" not in payload
+
+    def test_flag_on_payload_carries_the_run_id(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", scorecard_run_id_enabled=True
+        )
+
+        repo.save_model_scorecard("AAPL", {"status": "skipped"}, run_id=self._RUN_ID)
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload["run_id"] == self._RUN_ID
+        assert payload["symbol"] == "AAPL"
+
+    def test_flag_on_without_a_run_id_sends_no_key(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", scorecard_run_id_enabled=True
+        )
+
+        repo.save_model_scorecard("AAPL", {"status": "skipped"})
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "run_id" not in payload
+
+
 class TestSettledAtWindows:
     """WIA-19: okno „rozliczone od `since`” filtruje i sortuje po `settled_at`
     (migracja 029). Bez `since` zapytanie nie dotyka kolumny, której przed

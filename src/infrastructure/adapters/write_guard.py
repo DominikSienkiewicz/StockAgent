@@ -326,7 +326,9 @@ class ReadOnlyRepository(RepositoryPort):
     ) -> None:
         self._skipped.skip("save_shock_alert")
 
-    def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
+    def save_model_scorecard(
+        self, symbol: str, result: Mapping[str, Any], *, run_id: str | None = None
+    ) -> None:
         self._skipped.skip("save_model_scorecard")
 
     def save_council_votes(

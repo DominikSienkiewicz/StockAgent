@@ -81,6 +81,9 @@ model_scorecard_enabled = true
 # ML-10: karta zapisuje też baseline'y „dryf średniej" i „sam LLM" (bramka bije
 # najsilniejszy z trzech). UWAGA: włącz DOPIERO po migracji 028 (inaczej PGRST204).
 model_scorecard_baselines_enabled = false
+# ML-24: wiersze karty niosą `run_id` przebiegu Slow Loopa (re-run tego samego
+# dnia nie skleja się z cronem). UWAGA: włącz DOPIERO po migracji 049 (PGRST204).
+model_scorecard_run_id_enabled = false
 # #8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
 # spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Włączone.
 cycle_diff_enabled = true

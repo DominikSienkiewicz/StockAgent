@@ -43,12 +43,15 @@ class TrainModelUseCase:
         db_port: RepositoryPort,
         *,
         feature_set_version: int | None = None,
+        run_id: str | None = None,
     ) -> None:
         """`feature_set_version` (DAT-09) zawęża próbkę do wierszy tej wersji
-        zestawu cech; None = cała historia (bez migracji 027)."""
+        zestawu cech; None = cała historia (bez migracji 027). `run_id` (ML-24)
+        to identyfikator przebiegu Slow Loopa w wierszu karty modelu wspólnego."""
         self._ml_port = ml_port
         self._db_port = db_port
         self._feature_set_version = feature_set_version
+        self._run_id = run_id
 
     def refresh_feature_store(self) -> None:
         self._db_port.refresh_feature_store()
@@ -105,10 +108,18 @@ class TrainModelUseCase:
             )
         if record_scorecard:
             try:
-                self._db_port.save_model_scorecard(POOLED_MODEL_SYMBOL, result)
+                self._save_pooled_scorecard(result)
             except Exception:
                 logger.exception("Failed to persist the pooled model scorecard")
         return result
+
+    def _save_pooled_scorecard(self, result: dict[str, Any]) -> None:
+        if self._run_id is None:
+            self._db_port.save_model_scorecard(POOLED_MODEL_SYMBOL, result)
+        else:
+            self._db_port.save_model_scorecard(
+                POOLED_MODEL_SYMBOL, result, run_id=self._run_id
+            )
 
     def _train_pooled(self, symbols: Sequence[str]) -> dict[str, Any]:
         rows = [

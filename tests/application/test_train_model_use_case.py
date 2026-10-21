@@ -304,6 +304,19 @@ def test_pooled_scorecard_row_is_recorded_as_all(use_case, repository_port, ml_p
     assert POOLED_MODEL_SYMBOL == "ALL"
 
 
+def test_pooled_scorecard_row_carries_the_run_id(ml_port, repository_port):
+    # ML-24: jeden `run_id` na przebieg Slow Loopa — wiersz ALL i wiersze per symbol
+    # grupuje on, a nie przerwa czasowa (re-run tego samego dnia).
+    repository_port.get_feature_store_data.return_value = []
+    use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, run_id="run-1")
+
+    result = use_case.run_pooled(["AAPL"], record_scorecard=True)
+
+    repository_port.save_model_scorecard.assert_called_once_with(
+        POOLED_MODEL_SYMBOL, result, run_id="run-1"
+    )
+
+
 def test_pooled_skip_is_recorded_too(use_case, repository_port, ml_port):
     # Deadman czyta najnowszy wiersz scorecardu — przebieg bez modelu też jest śladem.
     repository_port.get_feature_store_data.return_value = []

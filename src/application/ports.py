@@ -469,13 +469,17 @@ class RepositoryPort(ABC):
         (`_fetch_report_context`), zgodnie ze stylem repo. None = brak historii."""
 
     @abstractmethod
-    def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
+    def save_model_scorecard(
+        self, symbol: str, result: Mapping[str, Any], *, run_id: str | None = None
+    ) -> None:
         """#12 — zapisuje jeden przebieg treningu walk-forward (migracja 019).
 
         Slow Loop zapisuje wiersz per symbol (ewaluacja bez zapisu wag) i jeden
         wiersz modelu wspólnego z `symbol = "ALL"` (ML-13), więc `symbol` jest
         wymagany — bez niego scorecardy są nierozróżnialne.
-        `result` to surowe wyjście `MLPredictionPort.train()` albo wynik `skipped`."""
+        `result` to surowe wyjście `MLPredictionPort.train()` albo wynik `skipped`.
+        `run_id` (ML-24, migracja 049) — identyfikator przebiegu wspólny dla
+        wszystkich jego wierszy; None = bez identyfikatora (grupuje heurystyka)."""
 
     @abstractmethod
     def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:

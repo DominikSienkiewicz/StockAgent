@@ -1289,6 +1289,53 @@ class TestModelScorecardPersistence:
         repo.save_model_scorecard.assert_not_called()
 
 
+class TestModelScorecardRunId:
+    """ML-24 — main_trainer losuje jeden uuid4 na przebieg; niesie go każdy wiersz
+    karty (per symbol i model wspólny), więc re-run tego samego dnia to osobny przebieg."""
+
+    def test_one_run_id_for_every_scorecard_row_of_a_run(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        import uuid
+
+        settings.model_scorecard_enabled = True
+        settings.symbols = ["AAPL", "MSFT"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "evaluated_passed_gate"}
+        fake_uc.run_pooled.return_value = {"status": "skipped"}
+        build = mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repo = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repo)
+
+        main_trainer.main(settings)
+        main_trainer.main(settings)
+
+        first, second = (c.kwargs["run_id"] for c in build.call_args_list)
+        saved = [c.kwargs["run_id"] for c in repo.save_model_scorecard.call_args_list]
+        assert saved == [first, first, second, second]
+        assert first != second
+        assert str(uuid.UUID(first)) == first
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_trainer_repository_follows_the_run_id_flag(
+        self, settings, mocker, enabled: bool
+    ) -> None:
+        supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
+        settings = settings.model_copy(update={"model_scorecard_run_id_enabled": enabled})
+
+        main_trainer.build_repository(settings)
+
+        assert supabase_cls.call_args.kwargs["scorecard_run_id_enabled"] is enabled
+
+    def test_build_use_case_hands_the_run_id_to_the_use_case(self, settings, mocker) -> None:
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")
+
+        main_trainer.build_use_case(settings, run_id="run-1")
+
+        assert use_case_cls.call_args.kwargs["run_id"] == "run-1"
+
+
 class TestModelScorecardWindow:
     """ML-15 — karta czyta 2 × `MODEL_STALE_AFTER_DAYS`, a nie `track_record_days`:
     przy oknie 30 dni odznaka STALE (po 21 dniach) była widoczna tylko w dniach 22–30."""

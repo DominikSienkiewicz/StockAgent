@@ -71,6 +71,7 @@ MIGRATION_FILES = [
     "044_calibration_score_version.sql",
     "047_ml_feature_store_lag_over_all_predictions.sql",
     "048_normalize_predicted_trend.sql",
+    "049_model_scorecards_run_id.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1399,6 +1400,34 @@ class TestMigrations:
             )
             cur.execute("SELECT count(*) FROM prediction_logs WHERE symbol = 'TR_048'")
             assert cur.fetchone() == (4,)
+
+    # -- Migracja 049: run_id przebiegu w karcie modelu (ML-24) ----------------
+
+    def test_model_scorecards_run_id_is_a_nullable_indexed_uuid(self, pg_conn) -> None:
+        """Wiersze jednego przebiegu dzieli `run_id`; wiersz bez niego (historia,
+        flaga off) dalej się zapisuje."""
+        assert "run_id" in _columns(pg_conn, "model_scorecards")
+        assert "idx_model_scorecards_run_id" in _indexes(pg_conn, "model_scorecards")
+        run_id = "5f0c6c1e-8a43-4d3a-9b0c-2f1d3e4a5b6c"
+        with _rolled_back(pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status, run_id) VALUES "
+                "('ALL', 'skipped', %s), ('AAPL', 'skipped', %s), ('MSFT', 'skipped', NULL)",
+                (run_id, run_id),
+            )
+            cur.execute(
+                "SELECT symbol FROM model_scorecards WHERE run_id = %s ORDER BY symbol",
+                (run_id,),
+            )
+            same_run = [row[0] for row in cur.fetchall()]
+            cur.execute(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = 'model_scorecards' AND column_name = 'run_id'"
+            )
+            data_type = cur.fetchone()
+
+        assert same_run == ["AAPL", "ALL"]
+        assert data_type == ("uuid",)
 
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 

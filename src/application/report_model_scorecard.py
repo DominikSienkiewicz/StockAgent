@@ -41,7 +41,7 @@ from src.domain.model_scorecard import (
     RunSummary,
     improvement_pct,
     is_stale,
-    latest_run_indices,
+    latest_run_indices_by_id,
     summarize_evaluations,
     summarize_run,
 )
@@ -368,8 +368,9 @@ def _newest_metrics_row(
 def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | None:
     """Składa widok z surowych wierszy `model_scorecards`.
 
-    Agreguje wyłącznie NAJNOWSZY przebieg (`latest_run_indices`, ML-03) — okno
-    odczytu niesie kilka tygodniowych przebiegów, które dawniej się sklejały.
+    Agreguje wyłącznie NAJNOWSZY przebieg (`latest_run_indices_by_id`): wiersze
+    z `run_id` (ML-24) grupuje identyfikator, historię bez niego przerwa czasowa
+    (ML-03) — okno odczytu niesie kilka przebiegów, które dawniej się sklejały.
     Werdykt główny to wiersz(e) modelu wspólnego `ALL`, a ewaluacje per symbol
     idą do `evaluations` (decyzja 3); bez wiersza `ALL` werdykt agreguje cały
     przebieg jak przed ML-13. Metryki bierze z najnowszego wdrożonego kandydata
@@ -379,8 +380,9 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
     Brak wierszy albo brak dającej się sparsować daty → None (sekcja się chowa).
     """
     stamps = [_parse_timestamp(r.get("timestamp")) for r in rows]
+    run_ids = [str(r["run_id"]) if r.get("run_id") else None for r in rows]
     run: list[tuple[datetime, dict[str, Any]]] = []
-    for idx in latest_run_indices(stamps):
+    for idx in latest_run_indices_by_id(stamps, run_ids):
         stamp = stamps[idx]
         if stamp is not None:
             run.append((stamp, rows[idx]))

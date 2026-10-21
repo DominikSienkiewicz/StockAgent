@@ -136,6 +136,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # EXP-05: sam zapis ramion w kolumnie; definicje eksperymentów są w przepisie.
     "experiment_arms_enabled",
     "model_scorecard_baselines_enabled",
+    # ML-24: sam identyfikator przebiegu treningu w karcie; prognoza ta sama.
+    "model_scorecard_run_id_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -436,6 +438,10 @@ class Settings(BaseSettings):
     # bramka walk-forward musi pobić obok „zwrot = 0" (kolumny z migracji 028).
     # Off: nowy klucz przed migracją → PGRST204 i przepadły wiersz karty.
     model_scorecard_baselines_enabled: bool = False
+    # ML-24: wiersze karty niosą `run_id` przebiegu Slow Loopa (kolumna z migracji
+    # 049), więc re-run tego samego dnia nie skleja się z cronem. Off: nowy klucz
+    # przed migracją → PGRST204 i przepadły wiersz karty.
+    model_scorecard_run_id_enabled: bool = False
     # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
     # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
     cycle_diff_enabled: bool = False

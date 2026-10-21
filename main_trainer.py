@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import uuid
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -86,23 +87,26 @@ def build_repository(settings: Settings) -> RepositoryPort:
         url=settings.supabase_url,
         key=settings.supabase_key,
         scorecard_baselines_enabled=settings.model_scorecard_baselines_enabled,
+        scorecard_run_id_enabled=settings.model_scorecard_run_id_enabled,
     )
     if settings.db_writes_enabled:
         return repository
     return ReadOnlyRepository(repository)
 
 
-def build_use_case(settings: Settings) -> TrainModelUseCase:
+def build_use_case(settings: Settings, *, run_id: str | None = None) -> TrainModelUseCase:
     """DI Container — Slow Loop potrzebuje tylko bazy + XGBoost.
 
     DAT-09: z `feature_set_filter_enabled` trening bierze wyłącznie wiersze
-    bieżącej wersji zestawu cech (kolumna z migracji 027)."""
+    bieżącej wersji zestawu cech (kolumna z migracji 027). ML-24: `run_id`
+    przebiegu trafia do wiersza karty modelu wspólnego."""
     return TrainModelUseCase(
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
         db_port=build_repository(settings),
         feature_set_version=(
             FEATURE_SET_VERSION if settings.feature_set_filter_enabled else None
         ),
+        run_id=run_id,
     )
 
 
@@ -153,12 +157,15 @@ def _persist_quota_alerts(
 
 
 def _persist_model_scorecard(
-    repository: RepositoryPort, symbol: str, result: Mapping[str, Any]
+    repository: RepositoryPort,
+    symbol: str,
+    result: Mapping[str, Any],
+    run_id: str | None = None,
 ) -> None:
     """#12: karta kondycji modelu. Zapis best-effort (wzorzec
     `save_quota_alert`) — brak migracji 019 nie może wywalić treningu."""
     try:
-        repository.save_model_scorecard(symbol, result)
+        repository.save_model_scorecard(symbol, result, run_id=run_id)
     except Exception:
         logger.exception("Failed to persist model scorecard for %s", symbol)
 
@@ -199,6 +206,7 @@ def _train_symbols(
     use_case: TrainModelUseCase,
     trainable: list[str],
     tally: _TrainingTally | None = None,
+    run_id: str | None = None,
 ) -> int:
     """Ewaluuje każdy symbol z osobna (bez zapisu wag, ML-13) i zwraca liczbę
     niepowodzeń. Błąd jednego symbolu nie przerywa ewaluacji pozostałych."""
@@ -210,7 +218,7 @@ def _train_symbols(
             if tally is not None:
                 tally.record_symbol(result)
             if settings.model_scorecard_enabled:
-                _persist_model_scorecard(repository, symbol, result)
+                _persist_model_scorecard(repository, symbol, result, run_id)
         except Exception:
             logger.exception("Training failed for symbol %s", symbol)
             failures += 1
@@ -452,7 +460,9 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     warn_if_paid_calls_disabled(settings)
     quota_monitor = QuotaMonitor()
     repository = build_repository(settings)
-    use_case = build_use_case(settings)
+    # ML-24: jeden identyfikator na przebieg — wspólny dla wszystkich wierszy karty.
+    run_id = str(uuid.uuid4())
+    use_case = build_use_case(settings, run_id=run_id)
 
     logger.info("Slow Loop start — symbols=%s", settings.symbols)
     try:
@@ -470,7 +480,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     # przechodziły retrainu — model krypto zostawał na zawsze przy cold-starcie.
     # `dict.fromkeys` zachowuje kolejność i deduplikuje symbol obecny w obu listach.
     trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
-    failures = _train_symbols(settings, repository, use_case, trainable, tally)
+    failures = _train_symbols(settings, repository, use_case, trainable, tally, run_id)
     failures += _train_pooled_model(settings, use_case, trainable, tally)
     tally.failures, tally.total = failures, len(trainable) + 1
     _run_reference_signal(settings, repository)

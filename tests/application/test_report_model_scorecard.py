@@ -238,6 +238,22 @@ class TestBuildScorecardView:
         assert view.summary.total == 2
         assert view.summary.accepted == 1
 
+    def test_rerun_on_the_same_day_is_its_own_run_by_run_id(self) -> None:
+        # ML-24: re-run 10 minut po cronie sklejał się z nim („zaakceptowano 1,
+        # odrzucono 1" z dwóch przebiegów); z `run_id` liczy się tylko ostatni.
+        rows = [
+            {"symbol": "ALL", "status": "trained_successfully", "run_id": "rerun",
+             "timestamp": "2026-10-11T03:50:00+00:00"},
+            {"symbol": "ALL", "status": "skipped_validation_failed", "run_id": "cron",
+             "timestamp": "2026-10-11T03:40:00+00:00"},
+        ]
+
+        view = build_scorecard_view(rows)
+
+        assert view is not None
+        assert view.summary.total == 1
+        assert view.summary.accepted == 1
+
     def test_metrics_come_from_the_newest_accepted_row_with_its_symbol_and_n(self) -> None:
         # Najnowszy wiersz z metrykami to odrzucony kandydat MSFT — dawniej karta
         # pokazywała jego RMSE bez nazwy, jakby to był wdrożony model.
