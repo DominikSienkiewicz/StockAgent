@@ -27,9 +27,9 @@ Put the project's secret key (`sb_secret_…`, Supabase dashboard → Project Se
 
 Merge the pending branches into `main` and push. The workflows run the code of the branch they start on, so the crons only pick up waves A to R once they are on `main`.
 
-### 3. Run DB Migrate for `026`–`043`
+### 3. Run DB Migrate for `026`–`054`
 
-Run **🗄️ DB Migrate (manual)** from the Actions tab with `dry_run` on, check that the log lists `026_feature_store_clean_rows.sql` to `042_reference_predictions.sql`, then run it again with `dry_run` off. `026` and `039` rebuild the `ml_feature_store` view and `038` enables RLS; none of the three has a flag. `047` rebuilds the view again with `LAG` over every logged prediction (ML-17), and `050` adds `settled_at` and `label_horizon_hours` to it (ML-25); neither has a flag. `048` (ML-19) upper-cases and trims `prediction_logs.predicted_trend`, then adds the `prediction_logs_predicted_trend_known` CHECK (`BULLISH`, `BEARISH`, `SIDEWAYS` or `NULL`) as `NOT VALID`, so history is not scanned; its `NOTICE` in the log counts the rows still outside the list. Such a row rejects every later `UPDATE` (settlement, calibration) until its trend is fixed by hand; when the count is `0`, `ALTER TABLE prediction_logs VALIDATE CONSTRAINT prediction_logs_predicted_trend_known` finishes the job.
+Run **🗄️ DB Migrate (manual)** from the Actions tab with `dry_run` on, check that the log lists `026_feature_store_clean_rows.sql` to `054_council_votes_unique.sql` (`045`, `046`, `051` and `052` are reserved for work still in progress and do not exist yet), then run it again with `dry_run` off. `026` and `039` rebuild the `ml_feature_store` view and `038` enables RLS; none of the three has a flag. `047` rebuilds the view again with `LAG` over every logged prediction (ML-17), and `050` adds `settled_at` and `label_horizon_hours` to it (ML-25); neither has a flag. `048` (ML-19) upper-cases and trims `prediction_logs.predicted_trend`, then adds the `prediction_logs_predicted_trend_known` CHECK (`BULLISH`, `BEARISH`, `SIDEWAYS` or `NULL`) as `NOT VALID`, so history is not scanned; its `NOTICE` in the log counts the rows still outside the list. Such a row rejects every later `UPDATE` (settlement, calibration) until its trend is fixed by hand; when the count is `0`, `ALTER TABLE prediction_logs VALIDATE CONSTRAINT prediction_logs_predicted_trend_known` finishes the job.
 
 ### 4. Turn on the flags the migrations unlock
 
@@ -53,6 +53,8 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `042` | `reference_signal_enabled` | The free weekly reference signal in the Slow Loop (WIA-24); it can run before the Fast Loop resumes. |
 | `044` | `calibration_score_version_enabled` | The calibration judge stores the Brier rule with `calibration_score_version = 2` (WIA-37); only matters with `calibration_judge_enabled`. |
 | `049` | `model_scorecard_run_id_enabled` | One `run_id` per Slow Loop run on every scorecard row (ML-24); a same-day re-run no longer merges with the cron run. |
+| `053` | `earnings_cache_enabled` | The Fast Loop reads the earnings date only from `earnings_cache`, which the Slow Loop refreshes (FIN-11); it is part of `config_hash`, so turning it on starts a new `recipe_version` segment. |
+| `054` | `council_votes_upsert_enabled` | Council votes are upserted on the unique `(prediction_id, investor_name)` key (NIEZ-14), so a retried save no longer duplicates them. |
 
 ### 5. Add the `HEARTBEAT_URL` secret
 
