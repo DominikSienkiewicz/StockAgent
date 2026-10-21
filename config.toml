@@ -112,6 +112,10 @@ recipe_version_enabled = false
 # `feature_snapshots`, migracja 031) — cechy darmowe ze stanu cyklu zawsze, cechy
 # LLM tylko za bramką, zero nowych wywołań. UWAGA: włącz DOPIERO po migracji 031.
 feature_snapshots_enabled = false
+# ML-31: cechy rynkowe cyklu w `feature_snapshots` (zmienność i momentum z darmowych
+# snapshotów cen) + wersja zestawu cech 4 w stemplach (filtr treningu też po 4).
+# Działa tylko z feature_snapshots_enabled; bez nowej migracji, zero płatnych wywołań.
+market_features_enabled = false
 # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze — liczony w cyklu
 # z rozliczonych predykcji, bez migracji. Flaga dokłada zapis `interval_low/high`
 # i pokrycie zrealizowane vs nominalne w Track Record. UWAGA: włącz DOPIERO po

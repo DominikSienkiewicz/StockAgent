@@ -1481,6 +1481,8 @@ def build_agent_graph_deps(
         recipe_version_enabled=settings.recipe_version_enabled,
         # ML-14: off → graf nie dotyka tabeli `feature_snapshots` (migracja 031).
         feature_snapshots_enabled=settings.feature_snapshots_enabled,
+        # ML-31: cechy rynkowe w wektorze i wersja zestawu cech 4 (bez migracji).
+        market_features_enabled=settings.market_features_enabled,
         # ML-34: przedział w mailu zawsze; kolumny `interval_*` (migracja 032) za flagą.
         move_calibration=build_move_calibration(settings, supabase_repo),
         interval_columns_enabled=settings.interval_coverage_enabled,
@@ -3498,6 +3500,9 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
         cycle_at=started_at,
         on_banner=regime_banners.append,
     )
+
+    # ML-31: cechy rynkowe cyklu — raz, przed grafem (no-op bez flagi).
+    use_case.prepare_market_features(eligible, now=started_at)
 
     loop_results, failures, alpha_signals, alpha_prices = _analyze_symbols(
         eligible,

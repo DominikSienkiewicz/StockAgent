@@ -702,3 +702,61 @@ class TestTwoPhaseCycle:
             use_case.run_gate(symbol)
 
         assert len(compiled) == 1
+
+
+class TestMarketFeaturesPhase:
+    """ML-31 — `prepare_market_features` liczy cechy rynkowe raz na cykl przed
+    grafem; kurs z tej fazy reużywa `check_price`, więc requestów o cenę nie
+    przybywa. Bez flagi faza nic nie czyta."""
+
+    def _use_case(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, enabled: bool,
+    ) -> AnalyzeMarketUseCase:
+        return AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            feature_snapshots_enabled=True,
+            market_features_enabled=enabled,
+        ))
+
+    def test_cycle_quote_is_fetched_once_and_features_reach_the_snapshot(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        now = datetime(2026, 10, 21, 20, 0, tzinfo=UTC)
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_price_history.return_value = [
+            (now - timedelta(days=1), Money(Decimal("100.0")))
+        ]
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))  # -0.5%
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )
+
+        use_case.prepare_market_features(["AAPL"], now=now)
+        result = use_case.run("AAPL", now=now)
+
+        assert result["status"] == "ignored"
+        market_port.get_current_price.assert_called_once_with("AAPL")
+        features = repository_port.save_feature_snapshot.call_args.args[1]
+        assert features["ret_1"] == pytest.approx(-0.005)
+        assert features["price"] == pytest.approx(99.5)
+
+    def test_flag_off_phase_reads_nothing(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=False,
+        )
+
+        use_case.prepare_market_features(["AAPL", "MSFT"])
+
+        market_port.get_current_price.assert_not_called()
+        repository_port.get_price_history.assert_not_called()

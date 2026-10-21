@@ -4,6 +4,7 @@ import dataclasses
 import logging
 import threading
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -20,6 +21,7 @@ from src.application.agent_graph import (
     required_prediction_columns,
 )
 from src.application.cycle_telemetry import CycleTelemetry
+from src.application.market_features import CycleQuoteCache, collect_market_features
 from src.application.ports import LatestPrediction, NewsPort, SentimentPort
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import DRIFT_WINDOW_DAYS, Asset, drift_reference, is_reference_stale
@@ -66,6 +68,9 @@ class AnalyzeMarketUseCase:
     """
 
     def __init__(self, deps: AgentGraphDeps) -> None:
+        if deps.market_features_enabled:
+            # ML-31: faza cech pobiera kurs przed grafem, a `check_price` go reużywa.
+            deps = dataclasses.replace(deps, market_port=CycleQuoteCache(deps.market_port))
         self._deps = deps
         self._repository = deps.repository_port
         # Telemetria CAŁEGO cyklu (ARCH-11) — jedna na use case, nie na symbol.
@@ -84,6 +89,8 @@ class AnalyzeMarketUseCase:
         # (faza 1 idzie równolegle, stąd lock).
         self._gate_app: CompiledStateGraph[AgentState] | None = None
         self._gate_app_lock = threading.Lock()
+        # ML-31: cechy rynkowe per symbol z `prepare_market_features` (raz na cykl).
+        self._market_features: dict[str, dict[str, Any]] = {}
 
     @property
     def paid_calls(self) -> Counter[str]:
@@ -101,6 +108,24 @@ class AnalyzeMarketUseCase:
         """FIN-05: kolumny `prediction_logs`, które zapis predykcji tego cyklu może
         dotknąć — DI sprawdza je w bazie raz, przed pierwszym symbolem."""
         return required_prediction_columns(self._deps)
+
+    def prepare_market_features(
+        self, symbols: Sequence[str], *, now: datetime | None = None
+    ) -> None:
+        """ML-31: cechy rynkowe symboli cyklu — RAZ, przed pierwszym `run`/`run_gate`.
+
+        Bez flag `market_features_enabled` i `feature_snapshots_enabled` nic nie robi
+        (zero odczytów — cechy i tak nie miałyby dokąd trafić). Z nimi czyta kurs
+        (zapamiętany dla `check_price`) i historię snapshotów każdego symbolu; zero
+        płatnych wywołań. Błąd per symbol daje puste cechy."""
+        if not (self._deps.market_features_enabled and self._deps.feature_snapshots_enabled):
+            return
+        self._market_features = collect_market_features(
+            symbols,
+            market_port=self._deps.market_port,
+            repository=self._repository,
+            as_of=now if now is not None else datetime.now(UTC),
+        )
 
     def run(
         self,
@@ -214,6 +239,9 @@ class AnalyzeMarketUseCase:
             reference = self._drift_reference(symbol, clock)
             if reference is not None:
                 initial_state["drift_reference"] = reference
+        market_features = self._market_features.get(symbol)
+        if market_features is not None:
+            initial_state["market_features"] = dict(market_features)
         # EXP-05: ramiona aktywnych eksperymentów per symbol-dzień UTC cyklu.
         arms = active_arms(self._experiments, symbol, _utc_day(clock))
         if arms:

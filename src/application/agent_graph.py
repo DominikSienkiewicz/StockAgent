@@ -16,10 +16,11 @@ from langgraph.graph import END, StateGraph
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.decision_receipt import RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2
 from src.application.ml_features import (
-    FEATURE_SET_VERSION,
     FREE_SNAPSHOT_FEATURES,
     GATED_SNAPSHOT_EXTRAS,
+    MARKET_SNAPSHOT_FEATURES,
     ML_FEATURE_COLUMNS,
+    feature_set_version,
 )
 from src.application.ports import (
     LLM_FAILOVER_MODEL_KEY,
@@ -224,6 +225,10 @@ class AgentState(TypedDict, total=False):
     # #6 bramka earnings — mnożnik progu (≥1.0) zależny od bliskości raportu
     # kwartalnego. Mnoży się z regime_multiplier w `_pick_threshold`.
     earnings_multiplier: float
+
+    # ML-31: cechy rynkowe cyklu policzone przed grafem (use case, flaga
+    # `market_features_enabled`). Brak klucza = symbol bez cech rynkowych (None).
+    market_features: dict[str, Any]
 
     # EXP-05: ramiona AKTYWNYCH eksperymentów tego symbolu-dnia `{id: ramię}`,
     # przydzielone przez use case. Brak klucza = cykl jak bez eksperymentów.
@@ -641,6 +646,10 @@ class AgentGraphDeps:
     # ML-14: wektor cech w KAŻDYM cyklu do `feature_snapshots` (migracja 031).
     # Off = graf nie dotyka tabeli, której przed migracją nie ma.
     feature_snapshots_enabled: bool = False
+    # ML-31: cechy rynkowe cyklu (stan `market_features`) w `feature_snapshots`
+    # i wersja zestawu cech 4 w obu stemplach. Use case owija wtedy port rynku
+    # w `CycleQuoteCache`. Off = zestaw i wersja 3 bez zmian.
+    market_features_enabled: bool = False
     # ML-34: okna kalibracyjne przedziału ruchu per klasa aktywa (rozliczone
     # predykcje, rosnąco po czasie), czytane RAZ na cykl w DI. None = bez przedziału.
     move_calibration: Mapping[AssetType, Sequence[CalibrationPoint]] | None = None
@@ -734,7 +743,8 @@ def _free_snapshot_features(deps: AgentGraphDeps, state: AgentState) -> dict[str
 
     Zero wywołań portów: wszystko policzyły już check_price, bramka i DI przed
     grafem (reżim, mnożniki, Alpha Fusion). Brak źródła → None, nie 0.0 —
-    cisza nie może udawać neutralnego rynku w raporcie selekcji."""
+    cisza nie może udawać neutralnego rynku w raporcie selekcji. ML-31: z flagą
+    `market_features_enabled` dochodzą `MARKET_SNAPSHOT_FEATURES` ze stanu."""
     asset = state.get("asset") or Asset(symbol=state["symbol"])
     delta = state["delta"]
     fusion = state.get("alpha_fusion")
@@ -753,7 +763,11 @@ def _free_snapshot_features(deps: AgentGraphDeps, state: AgentState) -> dict[str
         "asset_type": asset.asset_type.value,
         "valuation_verdict": verdict.value if verdict is not None else None,
     }
-    return {name: raw[name] for name in FREE_SNAPSHOT_FEATURES}
+    free = {name: raw[name] for name in FREE_SNAPSHOT_FEATURES}
+    if deps.market_features_enabled:
+        market = state.get("market_features") or {}
+        free.update({name: market.get(name) for name in MARKET_SNAPSHOT_FEATURES})
+    return free
 
 
 def _gated_snapshot_features(state: AgentState) -> dict[str, Any]:
@@ -788,7 +802,7 @@ def _persist_feature_snapshot(
             state["symbol"],
             features,
             gated=gated,
-            feature_set_version=FEATURE_SET_VERSION,
+            feature_set_version=feature_set_version(deps.market_features_enabled),
         )
     except Exception:
         logger.exception(
@@ -1819,7 +1833,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # DAT-09: wersja zestawu cech, z którą policzono wejścia tej predykcji —
     # trening oddziela nią wiersze sprzed zmiany znaczenia `news_volume_24h`.
     if deps.feature_set_version_enabled:
-        record["feature_set_version"] = FEATURE_SET_VERSION
+        record["feature_set_version"] = feature_set_version(deps.market_features_enabled)
 
     # WIA-20: wersja przepisu — track record segmentuje się po niej. NIEZ-44: po
     # failoverze to przepis z modelem zapasowego (osobny segment).

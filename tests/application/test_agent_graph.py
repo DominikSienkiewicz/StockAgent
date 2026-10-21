@@ -4999,3 +4999,86 @@ class TestTrendProbabilities:
         assert "trend_probabilities" not in record
         assert record["predicted_trend"] == "BEARISH"
         assert record["confidence_score"] == pytest.approx(0.85)
+
+
+class TestMarketFeatureSnapshot:
+    """ML-31 — za flagą `market_features_enabled` wektor `feature_snapshots` dostaje
+    cechy rynkowe cyklu ze stanu (`market_features`), a oba stemple wersję 4.
+    Off = zestaw i wersja 3 bez zmian (pilnują tego testy ML-14 i DAT-09)."""
+
+    def _deps(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        **flags,
+    ) -> AgentGraphDeps:
+        return AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            feature_snapshots_enabled=True,
+            **flags,
+        )
+
+    def test_ignored_cycle_writes_the_market_features_at_version_4(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.ml_features import (
+            FREE_SNAPSHOT_FEATURES,
+            MARKET_FEATURE_SET_VERSION,
+            MARKET_SNAPSHOT_FEATURES,
+        )
+
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))  # -1%
+        state = {
+            **_initial_state("100.0"),
+            "market_features": {"ret_1": -0.01, "ret_1_over_vol_20": -0.8, "ret_20": None},
+        }
+
+        create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            market_features_enabled=True,
+        )).compile().invoke(state)
+
+        call = repository_port.save_feature_snapshot.call_args
+        features = call.args[1]
+        assert call.kwargs["feature_set_version"] == MARKET_FEATURE_SET_VERSION == 4
+        assert set(features) == set(FREE_SNAPSHOT_FEATURES) | set(MARKET_SNAPSHOT_FEATURES)
+        assert features["ret_1"] == pytest.approx(-0.01)
+        assert features["ret_1_over_vol_20"] == pytest.approx(-0.8)
+        # Brak cechy w stanie = None (maska braków), nie 0.0.
+        assert features["ret_20"] is None
+        assert features["dist_from_20d_high"] is None
+
+    def test_saved_prediction_is_stamped_with_version_4(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            market_features_enabled=True, feature_set_version_enabled=True,
+        )).compile().invoke(_initial_state("100.0"))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert record["feature_set_version"] == 4
+        snapshot = repository_port.save_feature_snapshot.call_args
+        assert snapshot.kwargs == {"gated": True, "feature_set_version": 4}
+
+    def test_flag_off_ignores_market_features_in_the_state(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.application.ml_features import FEATURE_SET_VERSION, FREE_SNAPSHOT_FEATURES
+
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))
+        state = {**_initial_state("100.0"), "market_features": {"ret_1": -0.01}}
+
+        create_agent_graph(self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )).compile().invoke(state)
+
+        call = repository_port.save_feature_snapshot.call_args
+        assert set(call.args[1]) == set(FREE_SNAPSHOT_FEATURES)
+        assert call.kwargs["feature_set_version"] == FEATURE_SET_VERSION == 3

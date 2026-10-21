@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.domain.price_features import PRICE_FEATURE_NAMES
+
 # Kontrakt cech XGBoost — IDENTYCZNY w treningu (widok ml_feature_store) i w
 # inference (agent_graph.predict_node). Kolejność musi się zgadzać z widokiem.
 ML_FEATURE_COLUMNS = (
@@ -37,6 +39,19 @@ ML_FEATURE_COLUMNS = (
 # a Slow Loop może trenować wyłącznie na wierszach bieżącej wersji.
 FEATURE_SET_VERSION = 3
 
+# Brief W2 (decyzja właściciela): `feature_snapshots` za flagą `market_features_enabled`
+# dostaje cechy rynkowe cyklu i wtedy obie ścieżki stemplują wersję 4:
+#   4 — jak 3, plus `MARKET_SNAPSHOT_FEATURES` w `feature_snapshots.features`.
+# Wektor modelu (`ML_FEATURE_COLUMNS`, widok `ml_feature_store`) się NIE zmienia,
+# ale Slow Loop z filtrem wersji trenuje na wierszach wersji z tej samej flagi.
+# Flaga off: zestaw i wersja 3 bez zmian.
+MARKET_FEATURE_SET_VERSION = 4
+
+
+def feature_set_version(market_features_enabled: bool) -> int:
+    """Wersja zestawu cech cyklu: 4 z cechami rynkowymi, inaczej `FEATURE_SET_VERSION`."""
+    return MARKET_FEATURE_SET_VERSION if market_features_enabled else FEATURE_SET_VERSION
+
 # ML-14: klucze cech DARMOWYCH w `feature_snapshots.features` (migracja 031).
 # Fast Loop zapisuje je w KAŻDYM ukończonym cyklu, także ignored, wyłącznie z
 # danych już obecnych w stanie grafu — bez żadnego nowego wywołania zewnętrznego.
@@ -58,6 +73,10 @@ FREE_SNAPSHOT_FEATURES = (
     "valuation_verdict",
 )
 GATED_SNAPSHOT_EXTRAS = ("confidence_score", "data_quality_flags")
+
+# ML-31: cechy rynkowe cyklu (wersja 4) liczone przed grafem z darmowych źródeł
+# i dokładane do cech darmowych w KAŻDYM cyklu. Brak danych = None (maska braków).
+MARKET_SNAPSHOT_FEATURES: tuple[str, ...] = PRICE_FEATURE_NAMES
 
 # Target = zwrot do następnego cyklu (~24 h w dni robocze, ~72 h przez weekend)
 # `(cena_po_12h - cena) / cena`, nie cena bezwzględna; nazwa `_12h` jest historyczna.

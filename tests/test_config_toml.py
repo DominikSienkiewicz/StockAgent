@@ -437,6 +437,12 @@ def test_real_config_toml_ships_the_trend_probabilities_off_until_migration() ->
     assert data["trend_probabilities_enabled"] is False
 
 
+def test_real_config_toml_ships_the_market_features_off() -> None:
+    """ML-31: cechy rynkowe i wersja zestawu cech 4 — świadome włączenie właściciela."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["market_features_enabled"] is False
+
+
 def test_real_config_toml_ships_the_llm_failover_off() -> None:
     """NIEZ-44: zapasowy dostawca LLM gotowy w kodzie, ale wyłączony — w pliku jest
     tylko zakomentowany przykład, dopóki właściciel nie doda klucza drugiego dostawcy."""

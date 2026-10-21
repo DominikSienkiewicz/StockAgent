@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from src.application.ml_features import FEATURE_SET_VERSION
+from src.application.ml_features import feature_set_version
 from src.application.ports import RepositoryPort
 from src.application.use_cases.backtest import BacktestUseCase
 from src.config import Settings
@@ -33,8 +33,11 @@ def _fmt_optional(value: float | None, pattern: str) -> str:
 
 def _feature_set_version(settings: Settings) -> int | None:
     """ML-51: ta sama próbka co trening — z `feature_set_filter_enabled` tylko
-    wiersze bieżącej wersji zestawu cech (kolumna z migracji 027)."""
-    return FEATURE_SET_VERSION if settings.feature_set_filter_enabled else None
+    wiersze bieżącej wersji zestawu cech (kolumna z migracji 027); ML-31: 4 przy
+    `market_features_enabled`, jak stempel Fast Loopa."""
+    if not settings.feature_set_filter_enabled:
+        return None
+    return feature_set_version(settings.market_features_enabled)
 
 
 def build_use_case(

@@ -33,7 +33,7 @@ from main_agent import (
 )
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
-from src.application.ml_features import FEATURE_SET_VERSION
+from src.application.ml_features import feature_set_version
 from src.application.ports import LLMPort, RepositoryPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_ops import render_trainer_summary_markdown
@@ -107,8 +107,11 @@ def build_use_case(settings: Settings, *, run_id: str | None = None) -> TrainMod
     return TrainModelUseCase(
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
         db_port=build_repository(settings),
+        # ML-31: wersja z tej samej flagi co stempel Fast Loopa (4 z cechami rynkowymi).
         feature_set_version=(
-            FEATURE_SET_VERSION if settings.feature_set_filter_enabled else None
+            feature_set_version(settings.market_features_enabled)
+            if settings.feature_set_filter_enabled
+            else None
         ),
         run_id=run_id,
     )

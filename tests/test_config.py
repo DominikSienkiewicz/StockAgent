@@ -539,6 +539,25 @@ class TestFeatureSnapshotsFlag:
         assert flipped == baseline
 
 
+class TestMarketFeaturesFlag:
+    """ML-31: cechy rynkowe w `feature_snapshots` i wersja zestawu cech 4 —
+    domyślnie off (zestaw i wersja 3 bez zmian) i poza przepisem: prompt, wektor
+    modelu i progi się nie zmieniają, a wpływ na wagi łapie `model_version`."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).market_features_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "market_features_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, market_features_enabled=True
+        ).config_hash()
+        assert flipped == baseline
+
+
 class TestIntervalCoverageFlag:
     """ML-34: zapis kolumn przedziału (migracja 032) i pokrycie w Track Record.
     Przedział to prezentacja niepewności, nie prognoza — flaga jest poza

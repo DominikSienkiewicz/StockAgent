@@ -132,6 +132,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "regime_tagging_enabled",
     # ML-14: sam zapis wektora cech; prognoza cyklu jest identyczna z flagą i bez.
     "feature_snapshots_enabled",
+    # ML-31: cechy rynkowe w wektorze i wersja zestawu cech 4 — prompt, wektor modelu
+    # i progi bez zmian; kurs cyklu pobierany tylko wcześniej (`CycleQuoteCache`).
+    # Wpływ na wagi (filtr wersji w treningu) łapie `model_version`.
+    "market_features_enabled",
     # ML-34: zapis kolumn przedziału + pokrycie w Track Record. Przedział opisuje
     # niepewność prognozy, nie zmienia trendu, celu ani rekomendacji.
     "interval_coverage_enabled",
@@ -517,6 +521,11 @@ class Settings(BaseSettings):
     # za bramką. Zero nowych wywołań zewnętrznych. Off: przed migracją tabeli nie
     # ma, więc każdy cykl kończyłby się błędem zapisu w logu.
     feature_snapshots_enabled: bool = False
+    # ML-31: `feature_snapshots` dostaje cechy rynkowe cyklu (zmienność i momentum
+    # z historii `price_snapshots`), a stemple wersji zestawu cech idą jako 4 (trening
+    # i backtest filtrują wtedy po 4). Działa tylko z `feature_snapshots_enabled`
+    # (migracja 031); nowej migracji nie wymaga. Zero płatnych wywołań. Off.
+    market_features_enabled: bool = False
     # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze, liczony
     # w cyklu bez migracji. Ta flaga dokłada zapis `interval_low/high` (migracja
     # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz

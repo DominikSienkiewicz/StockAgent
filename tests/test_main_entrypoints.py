@@ -3281,6 +3281,54 @@ class TestFeatureSetVersionWiring:
         assert use_case_cls.call_args.kwargs["feature_set_version"] is None
 
 
+class TestMarketFeaturesWiring:
+    """ML-31 — `market_features_enabled` dociera do grafu, a wersja zestawu cech 4
+    do filtra treningu i backtestu (ta sama próbka co stempel Fast Loopa)."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_flag_reaches_graph_deps(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.market_features_enabled = enabled
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].market_features_enabled is enabled
+
+    @pytest.mark.parametrize(("market", "expected"), [(False, 3), (True, 4)])
+    def test_slow_loop_and_backtest_filter_on_the_flagged_version(
+        self, settings, mock_external_clients, mocker, market: bool, expected: int
+    ) -> None:
+        trainer_cls = mocker.patch("main_trainer.TrainModelUseCase")
+        backtest_cls = mocker.patch("main_backtest.BacktestUseCase")
+        settings.feature_set_filter_enabled = True
+        settings.market_features_enabled = market
+
+        main_trainer.build_use_case(settings)
+        main_backtest.build_use_case(settings)
+
+        assert trainer_cls.call_args.kwargs["feature_set_version"] == expected
+        assert backtest_cls.call_args.kwargs["feature_set_version"] == expected
+
+    def test_fast_loop_prepares_the_market_features_before_the_graph(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+
+        main_agent.main(settings)
+
+        fake_uc.prepare_market_features.assert_called_once()
+        call_ = fake_uc.prepare_market_features.call_args
+        assert list(call_.args[0]) == ["AAPL", "VOO"]
+        assert call_.kwargs["now"].tzinfo is not None
+        # Faza cech idzie przed pierwszym symbolem grafu.
+        names = [c[0] for c in fake_uc.method_calls]
+        assert names.index("prepare_market_features") < names.index("run")
+
+
 class TestModelScorecardBaselinesWiring:
     """ML-10 — `model_scorecard_baselines_enabled` dociera do repozytorium, które
     zapisuje karty: use case'u (wiersz ALL) i kroków per symbol w `main()`."""
