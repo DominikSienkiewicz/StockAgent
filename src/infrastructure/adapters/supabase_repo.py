@@ -135,6 +135,26 @@ def _is_missing_column(exc: APIError, column: str) -> bool:
     return exc.code in _MISSING_COLUMN_CODES and column in (exc.message or "")
 
 
+# NIEZ-16: kody, które naprawdę znaczą brak obiektu schematu — funkcji RPC
+# (PGRST202, 42883), tabeli (PGRST205, 42P01) albo kolumny (jak wyżej). Tylko
+# wtedy odczyt graceful wskazuje migrację; zerwane połączenie, timeout albo
+# wstrzymany projekt to inna diagnoza, logowana z typem wyjątku.
+_MISSING_SCHEMA_CODES = (
+    frozenset({"PGRST202", "PGRST205", "42P01", "42883"}) | _MISSING_COLUMN_CODES
+)
+
+
+def _log_degraded_read(source: str, skipped: str, migration: str, exc: Exception) -> None:
+    """WARNING odczytu graceful: „apply migration” wyłącznie przy brakującym obiekcie
+    schematu, każdy inny błąd z typem wyjątku i tracebackiem."""
+    if isinstance(exc, APIError) and exc.code in _MISSING_SCHEMA_CODES:
+        logger.warning("%s unavailable — %s (apply migration %s).", source, skipped, migration)
+        return
+    logger.warning(
+        "%s failed (%s) — %s.", source, type(exc).__name__, skipped, exc_info=True
+    )
+
+
 class MissingColumnError(RuntimeError):
     """Odczyt prosił o kolumnę, której baza jeszcze nie ma — migracja nie
     została zaaplikowana. `column` to nazwa kolumny `prediction_logs`."""
@@ -880,11 +900,9 @@ class SupabaseRepository(RepositoryPort):
             params["filter_regime"] = canonical_regime_key(regime)
         try:
             response = self._client.rpc("match_news_embeddings", params).execute()
-        except Exception:
-            logger.warning(
-                "match_news_embeddings RPC unavailable — RAG retrieval skipped "
-                "(apply migration 011 to enable).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "match_news_embeddings RPC", "RAG retrieval skipped", "011", exc
             )
             return []
         return _rows(response)
@@ -939,11 +957,9 @@ class SupabaseRepository(RepositoryPort):
             response = self._client.rpc(
                 "persona_accuracy_weights", {"window_days": window_days}
             ).execute()
-        except Exception:
-            logger.warning(
-                "persona_accuracy_weights RPC unavailable — ważenie person pominięte "
-                "(zaaplikuj migrację 015).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "persona_accuracy_weights RPC", "persona weighting skipped", "015", exc
             )
             return {}
         out: dict[str, float] = {}
@@ -966,11 +982,9 @@ class SupabaseRepository(RepositoryPort):
             response = self._client.rpc(
                 "persona_accuracy_stats", {"window_days": window_days}
             ).execute()
-        except Exception:
-            logger.warning(
-                "persona_accuracy_stats RPC unavailable — leaderboard person "
-                "pominięty (zaaplikuj migrację 018).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "persona_accuracy_stats RPC", "persona leaderboard skipped", "018", exc
             )
             return {}
         out: dict[str, tuple[float, int]] = {}
@@ -993,12 +1007,8 @@ class SupabaseRepository(RepositoryPort):
                 if not _is_missing_column(exc, _COMMITMENT_PAYLOAD_COLUMN):
                     raise
             return self._unrevealed_commitments(days, with_payload=False)
-        except Exception:
-            logger.warning(
-                "Attestation columns unavailable — reveal sweep pominięty "
-                "(zaaplikuj migrację 024).",
-                exc_info=True,
-            )
+        except Exception as exc:
+            _log_degraded_read("Attestation columns", "reveal sweep skipped", "024", exc)
             return []
 
     def _unrevealed_commitments(
@@ -1135,11 +1145,9 @@ class SupabaseRepository(RepositoryPort):
                 .gte("alert_date", since.isoformat())
                 .execute()
             )
-        except Exception:
-            logger.warning(
-                "shock_alerts niedostępne — debounce tylko w pamięci "
-                "(zaaplikuj migrację 021).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "shock_alerts", "debounce kept in memory only", "021", exc
             )
             return set()
         sent: set[tuple[str, date]] = set()
@@ -1160,11 +1168,9 @@ class SupabaseRepository(RepositoryPort):
                 .gte("created_at", since.isoformat())
                 .execute()
             )
-        except Exception:
-            logger.warning(
-                "shock_alerts niedostępne — bez okna 24 h dla krypto "
-                "(zaaplikuj migrację 021).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "shock_alerts", "no 24 h crypto window this run", "021", exc
             )
             return {}
         latest: dict[str, datetime] = {}
@@ -1239,11 +1245,9 @@ class SupabaseRepository(RepositoryPort):
                 .order("timestamp", desc=True)
                 .execute()
             )
-        except Exception:
-            logger.warning(
-                "model_scorecards niedostępne — karta kondycji modelu pominięta "
-                "(zaaplikuj migrację 019).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "model_scorecards", "model health card skipped", "019", exc
             )
             return []
         return list(_rows(response))

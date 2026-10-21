@@ -3155,3 +3155,96 @@ class TestGetFundamentalsFetchedAt:
     ) -> None:
         assert repo.get_fundamentals_fetched_at([]) == {}
         mock_client.table.assert_not_called()
+
+# NIEZ-16: diagnoza „zaaplikuj migrację” tylko dla brakującego obiektu schematu
+# ---------------------------------------------------------------------------
+
+def _persona_accuracy(repo: SupabaseRepository) -> Any:
+    from src.domain.value_objects import AssetType
+
+    return repo.get_persona_accuracy(AssetType.STOCK)
+
+
+# Odczyty graceful: błąd → pusty wynik. Każdy dawniej logował każdy wyjątek jako
+# brak migracji, także zerwane połączenie.
+_GRACEFUL_READS: dict[str, Callable[[SupabaseRepository], Any]] = {
+    "find_similar_predictions": lambda r: r.find_similar_predictions([0.1, 0.2]),
+    "get_persona_accuracy": _persona_accuracy,
+    "get_persona_track_record": lambda r: r.get_persona_track_record(),
+    "get_unrevealed_commitments": lambda r: r.get_unrevealed_commitments(),
+    "get_sent_shock_alerts": lambda r: r.get_sent_shock_alerts(date(2026, 10, 1)),
+    "get_shock_alert_times": lambda r: r.get_shock_alert_times(
+        datetime(2026, 10, 1, tzinfo=UTC)
+    ),
+    "get_recent_model_scorecards": lambda r: r.get_recent_model_scorecards(),
+}
+
+
+def _fail_every_request(client: MagicMock, error: Exception) -> None:
+    client.rpc.side_effect = error
+    client.table.side_effect = error
+
+
+def _mentions_migration(caplog: pytest.LogCaptureFixture) -> bool:
+    return any(
+        "migrat" in record.getMessage().lower() or "migrac" in record.getMessage().lower()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize("read", sorted(_GRACEFUL_READS))
+def test_network_error_is_not_reported_as_missing_migration(
+    read: str,
+    repo: SupabaseRepository,
+    mock_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    _fail_every_request(mock_client, httpx.ConnectError("connection reset by peer"))
+
+    with caplog.at_level(logging.WARNING):
+        result = _GRACEFUL_READS[read](repo)
+
+    assert not result
+    assert not _mentions_migration(caplog)
+    assert any("ConnectError" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("code", ["PGRST202", "PGRST205", "42P01", "42883"])
+def test_missing_schema_object_still_points_at_the_migration(
+    code: str,
+    repo: SupabaseRepository,
+    mock_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from postgrest.exceptions import APIError
+
+    _fail_every_request(mock_client, APIError({"code": code, "message": "not found"}))
+
+    with caplog.at_level(logging.WARNING):
+        assert repo.get_persona_track_record() == {}
+
+    assert _mentions_migration(caplog)
+
+
+def test_other_postgrest_error_is_logged_with_its_type_not_as_migration(
+    repo: SupabaseRepository,
+    mock_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from postgrest.exceptions import APIError
+
+    _fail_every_request(
+        mock_client, APIError({"code": "57014", "message": "canceling statement due to timeout"})
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert repo.get_recent_model_scorecards() == []
+
+    assert not _mentions_migration(caplog)
+    assert any("APIError" in record.getMessage() for record in caplog.records)
