@@ -21,10 +21,14 @@ os.environ.pop("GITHUB_STEP_SUMMARY", None)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    # TEST-02: jawna (i jedyna) droga do przepisania golden snapshotów maila.
+    # TEST-02: jawna (i jedyna) droga do przepisania golden snapshotów maila;
+    # TEST-10: ta sama dla golden promptów.
     parser.addoption(
         "--update-golden",
         action="store_true",
         default=False,
-        help="przepisz snapshoty tests/application/snapshots/ zamiast je porównywać",
+        help=(
+            "przepisz snapshoty tests/application/snapshots/ i tests/golden/prompts/ "
+            "zamiast je porównywać"
+        ),
     )
