@@ -255,6 +255,10 @@ cycle_runs_enabled = false
 # NIEZ-14: głosy rady upsertem po (prediction_id, investor_name) zamiast insertu —
 # re-run w tej samej godzinie nie dubluje głosów. UWAGA: włącz DOPIERO po migracji 054.
 council_votes_upsert_enabled = false
+# WIA-57: kategoria przyczyny błędu z diagnozy (MACRO, EARNINGS, …) w kolumnie
+# `correction_category` i histogram „3 z 5 błędów: makro” w panelu lessons.
+# UWAGA: włącz DOPIERO po migracji 046.
+correction_category_enabled = false
 # WIA-24: darmowy sygnał referencyjny `reference-v1` (docs/reference-protocol-v1.md) —
 # raz na przebieg Slow Loopa własny odczyt /quote (Finnhub, CoinGecko), rozliczenie
 # zeszłotygodniowego wywołania i nowe wywołanie ze znaku zmiany tygodniowej. Zapis do

@@ -644,6 +644,56 @@ class TestGetUnverifiedPrediction:
 # ---------------------------------------------------------------------------
 
 
+class TestCorrectionCategory:
+    """WIA-57: kolumna `correction_category` istnieje od migracji 046 — zapis
+    i odczyt tylko za flagą, inaczej PGRST204 zgubiłby rozliczenie predykcji."""
+
+    @staticmethod
+    def _update(repo: SupabaseRepository, mock_client: MagicMock) -> dict[str, Any]:
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [{"id": "u"}])
+        repo.update_prediction_accuracy(
+            prediction_id="u",
+            actual_price=Decimal("99.0"),
+            accuracy_score=0.5,
+            is_trend_correct=False,
+            insight="Zignorowałem Fed.",
+            correction_category=MistakeCategory.MACRO,
+        )
+        payload: dict[str, Any] = mock_client.table.return_value.update.call_args.args[0]
+        return payload
+
+    def test_flag_off_keeps_the_column_out_of_the_payload(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        assert "correction_category" not in self._update(repo, mock_client)
+
+    def test_flag_on_writes_the_category(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", correction_category_enabled=True
+        )
+
+        assert self._update(repo, mock_client)["correction_category"] == "MACRO"
+
+    def test_lessons_read_selects_the_column_only_with_the_flag(
+        self, mock_client: MagicMock
+    ) -> None:
+        select = mock_client.table.return_value.select
+        _set_chain_response(
+            mock_client, ["table", "select", "gte", "not_", "is_", "order", "range"], []
+        )
+        plain = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
+        flagged = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", correction_category_enabled=True
+        )
+
+        plain.get_resolved_predictions(30)
+        assert "correction_category" not in select.call_args.args[0]
+        flagged.get_resolved_predictions(30)
+        assert "correction_category" in select.call_args.args[0]
+
+
 class TestUpdatePredictionAccuracy:
     def test_updates_record_with_price_accuracy_and_insight(
         self, repo: SupabaseRepository, mock_client: MagicMock

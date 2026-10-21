@@ -459,6 +459,69 @@ class TestSelfReflectionOnWrongPrediction:
         assert "Burry" in prompt
 
 
+class TestReflectMistakeCategory:
+    """WIA-57: diagnoza zwraca JSON {category, insight}; `analyze_mistake` dalej
+    oddaje tekst, więc reflect parsuje go z fallbackiem OTHER. Kategoria idzie
+    do repozytorium osobnym kwargiem — kolumnę 046 zapisuje adapter za flagą."""
+
+    def _diagnose(self, answer: str, market_port, sentiment_port, news_port,
+                  repository_port, ml_port, llm_port, workflow) -> dict:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        llm_port.analyze_mistake.return_value = answer
+        final = workflow.compile().invoke(_initial_state("100.0"))
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        return {"kwargs": kwargs, "final": final}
+
+    def test_json_diagnosis_stores_the_insight_and_its_category(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        result = self._diagnose(
+            '{"category": "MACRO", "insight": "Zignorowałem decyzję Fed."}',
+            market_port, sentiment_port, news_port, repository_port, ml_port,
+            llm_port, workflow,
+        )
+
+        assert result["kwargs"]["insight"] == "Zignorowałem decyzję Fed."
+        assert result["kwargs"]["correction_category"] == "MACRO"
+        assert "Zignorowałem decyzję Fed." in result["final"]["reflection_context"]
+        assert "category" not in result["final"]["reflection_context"]
+
+    def test_plain_text_diagnosis_falls_back_to_other(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        result = self._diagnose(
+            "Zignorowałem szerszy kontekst makro.",
+            market_port, sentiment_port, news_port, repository_port, ml_port,
+            llm_port, workflow,
+        )
+
+        assert result["kwargs"]["insight"] == "Zignorowałem szerszy kontekst makro."
+        assert result["kwargs"]["correction_category"] == "OTHER"
+
+    def test_placeholders_carry_no_category(
+        self, workflow, market_port, repository_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))
+        repository_port.get_unverified_prediction.return_value = Prediction(
+            id="stale-uuid",
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100.0"),
+            predicted_target_price=Decimal("105.0"),
+        )
+
+        workflow.compile().invoke(_initial_state("100.0"))
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs.get("correction_category") is None
+
+
 # ---------------------------------------------------------------------------
 # #16 — paid analyze_mistake bounded by volatility gate; cheap bookkeeping
 #        (accuracy/trend/update) runs ALWAYS, regardless of current volatility.

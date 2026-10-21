@@ -753,6 +753,21 @@ class TestResolvedPostMortem:
         assert r.actual_price == Decimal("106.0")
         assert r.actual_change_pct == Decimal("0.06")
 
+    def test_parse_reads_the_mistake_category(self):
+        # WIA-57: kolumna `correction_category` (migracja 046); brak albo śmieć → None.
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        base = {"symbol": "NVDA", "predicted_trend": "BULLISH", "is_trend_correct": False}
+        rows = [
+            {**base, "correction_category": "MACRO"},
+            {**base, "correction_category": "???"},
+            base,
+        ]
+
+        parsed = parse_resolved_predictions(rows)
+
+        assert [r.correction_category for r in parsed] == [MistakeCategory.MACRO, None, None]
+
     def test_miss_shows_reasoning_actual_move_and_diagnosis(self):
         resolved = [
             ResolvedPrediction(

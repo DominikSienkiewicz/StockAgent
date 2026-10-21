@@ -26,6 +26,7 @@ from src.domain.market_calendar import (
     to_nyse_time,
     upcoming_session,
 )
+from src.domain.mistake_taxonomy import parse_mistake_category
 from src.domain.sizing import SizeBand, suggest_band
 
 DIVERGENCE_PRICE_THRESHOLD = Decimal("0.02")
@@ -250,6 +251,7 @@ def parse_resolved_predictions(
             actual_price=_to_decimal(row.get("actual_price_after_12h")),
             predicted_at=_to_datetime(row.get("timestamp")),
             receipt=read_decision_receipt(row.get("decision_receipts")),
+            correction_category=parse_mistake_category(row.get("correction_category")),
         ))
     return out
 

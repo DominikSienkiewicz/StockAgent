@@ -24,6 +24,7 @@ brak predykcji. Sama wystarcza, żeby sekcja się pokazała."""
 from __future__ import annotations
 
 import html as _html
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from src.application.report_evidence import (
@@ -54,6 +55,7 @@ from src.domain.calibration_curve import (
 from src.domain.change_detection import AccuracyDrop
 from src.domain.conformal import IntervalCoverage
 from src.domain.equity_curve import EquityCurve
+from src.domain.mistake_taxonomy import MISTAKE_CATEGORY_LABELS_PL, MistakeCategory
 from src.domain.number_format import DecimalMark
 from src.domain.track_record import HitRateEvidence
 
@@ -410,6 +412,24 @@ def _render_coverage_html(coverage: IntervalCoverage) -> str:
     )
 
 
+# WIA-57: tyle kategorii pokazuje histogram w mailu (reszta tylko w sumie).
+_CATEGORY_HISTOGRAM_TOP = 3
+
+
+def _category_histogram(counts: Mapping[MistakeCategory, int]) -> str:
+    """„3 z 5 błędów: makro · 2 z 5: wyniki spółki” — mianownik to błędy
+    z kategorią, bo starsze diagnozy (sprzed migracji 046) jej nie mają."""
+    total = sum(counts.values())
+    if not total:
+        return ""
+    lines = [
+        f"{count} z {total}{' błędów' if index == 0 else ''}: "
+        f"{MISTAKE_CATEGORY_LABELS_PL[category]}"
+        for index, (category, count) in enumerate(list(counts.items())[:_CATEGORY_HISTOGRAM_TOP])
+    ]
+    return " · ".join(lines)
+
+
 def _render_lessons_html(lessons: LessonsReport) -> str:
     """T4 — panel „lessons learned": błędne predykcje z diagnozą + motyw."""
     parts: list[str] = []
@@ -424,6 +444,12 @@ def _render_lessons_html(lessons: LessonsReport) -> str:
         f"📓 Lessons learned ({lessons.total_mistakes} błędów z diagnozą)"
         f"{theme_note}:</p>"
     )
+    categories = _category_histogram(lessons.category_counts)
+    if categories:
+        parts.append(
+            "<p style='font-size: 12px; color: #6b7280; margin: 0 0 6px 0;'>"
+            f"Przyczyny: {_html.escape(categories)}</p>"
+        )
     items: list[str] = []
     for item in lessons.items:
         change = (

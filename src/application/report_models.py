@@ -9,6 +9,7 @@ from src.domain.conformal import MoveInterval
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import SkipReason
 from src.domain.feature_attribution import FeatureContribution
+from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.provenance import ProvenanceBadge
 from src.domain.sizing import SizeBand
 from src.domain.value_objects import ValuationVerdict
@@ -171,6 +172,9 @@ class ResolvedPrediction:
     # WIA-56: kwit decyzyjny (migracja 020) do linii pod chybieniem; None = brak
     # kwitu albo nieznana wersja schematu.
     receipt: DecisionReceipt | None = None
+    # WIA-57: kategoria przyczyny błędu (`correction_category`, migracja 046);
+    # None = brak kategorii (wiersz sprzed migracji albo odczyt bez flagi).
+    correction_category: MistakeCategory | None = None
 
     @property
     def actual_change_pct(self) -> Decimal | None:

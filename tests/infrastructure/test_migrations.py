@@ -77,6 +77,7 @@ MIGRATION_FILES = [
     "043_attestation_payload.sql",
     "044_calibration_score_version.sql",
     "045_persona_vote_outcomes.sql",
+    "046_correction_category.sql",
     "047_ml_feature_store_lag_over_all_predictions.sql",
     "048_normalize_predicted_trend.sql",
     "049_model_scorecards_run_id.sql",
@@ -2448,6 +2449,51 @@ class TestMigration045PersonaVoteOutcomes:
                 "SELECT obj_description('persona_vote_outcomes(integer)'::regprocedure)"
             )
             assert "WIA-51" in cur.fetchone()[0]
+
+
+@pytest.mark.containers
+class TestMigration046CorrectionCategory:
+    """WIA-57: kategoria przyczyny błędu z diagnozy — kolumna z CHECK zbioru
+    `MistakeCategory`; NULL dla wierszy bez kategorii."""
+
+    def test_correction_category_accepts_every_domain_category_and_null(
+        self, pg_conn
+    ) -> None:
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        _apply_migrations(pg_conn)
+        assert "correction_category" in _columns(pg_conn, "prediction_logs")
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM prediction_logs WHERE symbol LIKE 'CC046_%'")
+            for index, category in enumerate([*MistakeCategory, None]):
+                cur.execute(
+                    "INSERT INTO prediction_logs (symbol, timestamp, correction_category) "
+                    "VALUES (%s, NOW() - %s * interval '1 hour', %s)",
+                    (f"CC046_{index}", index, None if category is None else category.value),
+                )
+            cur.execute(
+                "SELECT count(*) FROM prediction_logs WHERE symbol LIKE 'CC046_%'"
+            )
+            assert cur.fetchone() == (len(MistakeCategory) + 1,)
+
+    def test_correction_category_rejects_a_value_outside_the_taxonomy(self, pg_conn) -> None:
+        with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, correction_category) "
+                "VALUES ('CC046_BAD', 'ASTROLOGY')"
+            )
+
+    def test_046_is_idempotent(self, pg_conn) -> None:
+        migration = (MIGRATIONS_DIR / "046_correction_category.sql").read_text()
+        with pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT col_description('prediction_logs'::regclass, attnum) "
+                "FROM pg_attribute WHERE attrelid = 'prediction_logs'::regclass "
+                "AND attname = 'correction_category'"
+            )
+            assert "WIA-57" in cur.fetchone()[0]
 
 
 @pytest.mark.containers

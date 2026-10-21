@@ -123,6 +123,7 @@ def _supabase_repository(settings: Settings) -> SupabaseRepository:
         scorecard_baselines_enabled=settings.model_scorecard_baselines_enabled,
         scorecard_run_id_enabled=settings.model_scorecard_run_id_enabled,
         scorecard_feature_stats_enabled=settings.model_scorecard_feature_stats_enabled,
+        correction_category_enabled=settings.correction_category_enabled,
     )
 
 

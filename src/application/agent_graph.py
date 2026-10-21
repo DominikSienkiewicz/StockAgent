@@ -76,6 +76,7 @@ from src.domain.implied_edge import (
     evaluate_edge,
     model_move_from_prices,
 )
+from src.domain.mistake_taxonomy import parse_mistake_diagnosis
 from src.domain.prediction import (
     CORRECT_PREDICTION_INSIGHT,
     DIAGNOSIS_SKIPPED_INSIGHT,
@@ -1124,12 +1125,15 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
             _timed_node("reflect_analyze_mistake", symbol, deps.telemetry),
             usage_scope(source="llm", node="reflect", symbol=symbol),
         ):
-            insight = llm_port.analyze_mistake(prompt)
+            answer = llm_port.analyze_mistake(prompt)
+        # WIA-57: JSON {category, insight}; odpowiedź bez niego → OTHER + cały tekst.
+        diagnosis = parse_mistake_diagnosis(answer)
+        insight, category = diagnosis.insight, diagnosis.category
     else:
         # Niska zmienność — nie palimy budżetu LLM na diagnozę. Predykcja
         # i tak zostaje zamknięta z accuracy/trend, więc diagnoza jest
         # POMINIĘTA, nie odłożona: nic jej później nie ponawia.
-        insight = DIAGNOSIS_SKIPPED_INSIGHT
+        insight, category = DIAGNOSIS_SKIPPED_INSIGHT, None
 
     repository_port.update_prediction_accuracy(
         prediction_id=last.id,
@@ -1137,6 +1141,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         accuracy_score=accuracy,
         is_trend_correct=trend_correct,
         insight=insight,
+        correction_category=category,
     )
     return {"reflection_context": f"Ostatni błąd: {insight}"}
 

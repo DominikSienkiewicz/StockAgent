@@ -113,6 +113,45 @@ class TestLessons:
         assert "rynek wycenił słabszy popyt" in html
         assert "popyt" in html
 
+    def test_renders_the_category_histogram(self) -> None:
+        # WIA-57: „3 z 5 błędów: makro” obok listy lekcji.
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        lessons = LessonsReport(
+            items=(
+                LessonItem(
+                    symbol="AAPL",
+                    predicted_trend="BULLISH",
+                    insight="zignorowałem decyzję Fed",
+                    actual_change_pct=None,
+                ),
+            ),
+            total_mistakes=6,
+            recurring_theme=None,
+            category_counts={MistakeCategory.MACRO: 3, MistakeCategory.EARNINGS: 2},
+        )
+
+        html = render_track_record_html(None, None, lessons)
+
+        assert "3 z 5 błędów: makro" in html
+        assert "2 z 5: wyniki spółki" in html
+
+    def test_without_categories_there_is_no_histogram(self) -> None:
+        lessons = LessonsReport(
+            items=(
+                LessonItem(
+                    symbol="AAPL",
+                    predicted_trend="BULLISH",
+                    insight="rynek wycenił słabszy popyt",
+                    actual_change_pct=None,
+                ),
+            ),
+            total_mistakes=1,
+            recurring_theme=None,
+        )
+
+        assert "błędów:" not in render_track_record_html(None, None, lessons)
+
     def test_lesson_insight_html_escaped(self) -> None:
         lessons = LessonsReport(
             items=(

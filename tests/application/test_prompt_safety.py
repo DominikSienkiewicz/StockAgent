@@ -354,6 +354,17 @@ class TestMistakeDiagnosisPromptInputs:
         assert "BEARISH" in prompt
         assert "Fed holds" in prompt
 
+    def test_asks_for_a_category_from_the_taxonomy(self) -> None:
+        # WIA-57: JSON {category, insight} z zamkniętego zbioru kategorii domeny.
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        prompt = self._prompt("Fed holds", "Popyt rośnie.")
+
+        assert '"category"' in prompt
+        assert '"insight"' in prompt
+        for category in MistakeCategory:
+            assert category.value in prompt
+
 
 class TestPredictionPromptHeadlineList:
     """ML-09: `news_titles` (lista) ma pierwszeństwo przed sklejonym

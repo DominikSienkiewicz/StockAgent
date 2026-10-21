@@ -503,3 +503,9 @@ def test_real_config_toml_ships_the_persona_vote_outcomes_off_until_migration() 
     """WIA-51: RPC `persona_vote_outcomes` powstaje dopiero w migracji 045 (DB Migrate)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["persona_vote_outcomes_enabled"] is False
+
+
+def test_real_config_toml_ships_the_correction_category_off_until_migration() -> None:
+    """WIA-57: kolumna `correction_category` powstaje dopiero w migracji 046 (DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["correction_category_enabled"] is False

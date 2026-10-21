@@ -885,6 +885,7 @@ def build_repository(settings: Settings) -> RepositoryPort:
         council_votes_upsert_enabled=settings.council_votes_upsert_enabled,
         persona_vote_outcomes_enabled=settings.persona_vote_outcomes_enabled,
         crypto_symbols=settings.crypto_symbols,
+        correction_category_enabled=settings.correction_category_enabled,
     )
     if settings.db_writes_enabled:
         return repository

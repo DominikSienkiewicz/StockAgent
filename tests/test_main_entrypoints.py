@@ -5249,6 +5249,32 @@ def test_build_repository_passes_the_persona_vote_outcomes_flag(
     assert list(repo_cls.call_args.kwargs["crypto_symbols"]) == ["BTC", "ETH"]
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_build_repository_passes_the_correction_category_flag(
+    settings, mocker, enabled: bool
+) -> None:
+    # WIA-57: kolumna z migracji 046 — zapis kategorii diagnozy i odczyt lessons.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.correction_category_enabled = enabled
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["correction_category_enabled"] is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_trainer_repository_passes_the_correction_category_flag(
+    settings, mocker, enabled: bool
+) -> None:
+    # WIA-53/57: backfill diagnoz w Slow Loopie zapisuje kategorię tą samą flagą.
+    repo_cls = mocker.patch("main_trainer.SupabaseRepository")
+    settings.correction_category_enabled = enabled
+
+    main_trainer.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["correction_category_enabled"] is enabled
+
+
 def test_build_repository_writes_when_db_writes_enabled(settings, mocker) -> None:
     from src.domain.value_objects import Money
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository

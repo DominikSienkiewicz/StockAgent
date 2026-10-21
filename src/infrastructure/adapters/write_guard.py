@@ -40,6 +40,7 @@ from src.application.report_council_history import InvestorHistory
 from src.domain.council import InvestorOpinion
 from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
+from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.persona_track_record import PersonaVoteOutcome
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
@@ -334,6 +335,7 @@ class ReadOnlyRepository(RepositoryPort):
         accuracy_score: float,
         is_trend_correct: bool,
         insight: str,
+        correction_category: MistakeCategory | None = None,
     ) -> None:
         self._skipped.skip("update_prediction_accuracy")
 

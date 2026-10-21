@@ -10,10 +10,11 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from src.application.report_models import ResolvedPrediction
+from src.domain.mistake_taxonomy import MistakeCategory, count_categories
 from src.domain.prediction import is_substantive_insight
 
 # Polskie stopwordy (oraz krótkie spójniki) — nie mogą wygrać jako motyw.
@@ -47,6 +48,9 @@ class LessonsReport:
     items: tuple[LessonItem, ...]
     total_mistakes: int
     recurring_theme: str | None
+    # WIA-57: histogram kategorii przyczyn (malejąco) z błędów z diagnozą;
+    # pusty, gdy żaden błąd nie ma kategorii (przed migracją 046 albo bez flagi).
+    category_counts: dict[MistakeCategory, int] = field(default_factory=dict)
 
 
 def _is_mistake_with_insight(prediction: ResolvedPrediction) -> bool:
@@ -95,7 +99,8 @@ def build_lessons(
     Zachowuje wyłącznie błędy z niepustą diagnozą (insight), w kolejności
     wejścia (most-recent-first). `total_mistakes` liczy wszystkie kwalifikujące
     się błędy PRZED przycięciem do `limit`. `recurring_theme` to najczęstszy
-    nietrywialny keyword w diagnozach (lub None)."""
+    nietrywialny keyword w diagnozach (lub None), a `category_counts` (WIA-57)
+    — histogram kategorii przyczyn tych samych błędów."""
     mistakes = [p for p in resolved if _is_mistake_with_insight(p)]
 
     items = tuple(
@@ -117,4 +122,5 @@ def build_lessons(
         items=items,
         total_mistakes=len(mistakes),
         recurring_theme=recurring_theme,
+        category_counts=count_categories(p.correction_category for p in mistakes),
     )

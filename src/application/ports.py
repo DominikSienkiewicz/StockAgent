@@ -16,6 +16,7 @@ from src.domain.fx import FxRate
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_series import MacroSeriesSnapshot
+from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.options_flow import OptionsFlowSnapshot
 from src.domain.persona_track_record import PersonaVoteOutcome
 from src.domain.polish_macro import PolishMacroSnapshot
@@ -261,10 +262,14 @@ class RepositoryPort(ABC):
         accuracy_score: float,
         is_trend_correct: bool,
         insight: str,
+        correction_category: MistakeCategory | None = None,
     ) -> None:
         """Zamyka predykcję feedbackiem. `accuracy_score` (bliskość ceny do
         celu) napędza trening; `is_trend_correct` (zgodność kierunku) napędza
-        trafność raportu — to dwie różne miary, nie wolno ich mylić."""
+        trafność raportu — to dwie różne miary, nie wolno ich mylić.
+
+        `correction_category` (WIA-57) — kategoria przyczyny błędu z diagnozy;
+        kolumnę z migracji 046 zapisuje adapter tylko za swoją flagą."""
 
     @abstractmethod
     def get_feature_store_data(

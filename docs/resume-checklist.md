@@ -53,6 +53,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `042` | `reference_signal_enabled` | The free weekly reference signal in the Slow Loop (WIA-24); it can run before the Fast Loop resumes. |
 | `044` | `calibration_score_version_enabled` | The calibration judge stores the Brier rule with `calibration_score_version = 2` (WIA-37); only matters with `calibration_judge_enabled`. |
 | `045` | `persona_vote_outcomes_enabled` | Persona weights and the persona track record score HOLD on crypto with the crypto flat band (WIA-51); part of `config_hash`, so turning it on starts a new `recipe_version` segment. |
+| `046` | `correction_category_enabled` | Each paid mistake diagnosis stores its cause category, and the lessons panel shows a histogram of the categories (WIA-57). |
 | `049` | `model_scorecard_run_id_enabled` | One `run_id` per Slow Loop run on every scorecard row (ML-24); a same-day re-run no longer merges with the cron run. |
 | `053` | `earnings_cache_enabled` | The Fast Loop reads the earnings date only from `earnings_cache`, which the Slow Loop refreshes (FIN-11); it is part of `config_hash`, so turning it on starts a new `recipe_version` segment. |
 | `054` | `council_votes_upsert_enabled` | Council votes are upserted on the unique `(prediction_id, investor_name)` key (NIEZ-14), so a retried save no longer duplicates them. |

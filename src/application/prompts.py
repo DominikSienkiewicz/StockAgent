@@ -224,6 +224,13 @@ def _saved_input_block(news_summary: str, reasoning: str) -> str:
     return "\n".join(lines)
 
 
+# WIA-57: kategorie `MistakeCategory` wpisane wprost — `prompt_sha256` hashuje bajty
+# tego pliku, więc zmiana zbioru musi zmienić ten plik (test pilnuje zgodności).
+_DIAGNOSIS_CATEGORIES = (
+    'MACRO" | "EARNINGS" | "STALE_NEWS" | "SECTOR_ROTATION" | "SENTIMENT_TRAP" | "NOISE" | "OTHER'
+)
+
+
 def get_mistake_diagnosis_prompt(
     last_trend: str,
     last_news_summary: str,
@@ -267,5 +274,10 @@ Nagłówki newsów i Twoje uzasadnienie z tamtej prognozy:
 
 Zidentyfikuj, dlaczego te dane wprowadziły Cię w błąd (np. zignorowałeś
 szerszy kontekst rynkowy, news był fake-newsem, sentyment był manipulowany).
-Odpowiedz zwięźle, max 3 zdania.
+Zwróć czysty JSON (bez bloków markdown):
+{{"category": "{_DIAGNOSIS_CATEGORIES}", "insight": "zwięźle, max 3 zdania"}}
+Kategoria przyczyny: MACRO = makro, stopy, dane gospodarcze; EARNINGS = wyniki
+lub raport spółki; STALE_NEWS = newsy już w cenie albo nieaktualne;
+SECTOR_ROTATION = przepływ kapitału między sektorami; SENTIMENT_TRAP = sentyment
+bez pokrycia w faktach; NOISE = ruch bez wyraźnej przyczyny; OTHER = nic z tych.
 """.strip()

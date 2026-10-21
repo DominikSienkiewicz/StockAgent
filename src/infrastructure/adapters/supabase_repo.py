@@ -30,6 +30,7 @@ from src.domain.council import (
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
+from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.persona_track_record import (
     PersonaVoteOutcome,
     persona_accuracy_weights,
@@ -427,6 +428,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         scorecard_feature_stats_enabled: bool = False,
         persona_vote_outcomes_enabled: bool = False,
         crypto_symbols: Collection[str] = (),
+        correction_category_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
         # ML-10: kolumny baseline'ów dryfu i „sam LLM" istnieją od migracji 028 —
@@ -443,6 +445,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # (pasmo HOLD krypto z `crypto_symbols`). Bez migracji RPC nie istnieje.
         self._persona_vote_outcomes_enabled = persona_vote_outcomes_enabled
         self._crypto_symbols = frozenset(symbol.upper() for symbol in crypto_symbols)
+        # WIA-57: kolumna `correction_category` istnieje od migracji 046 — zapis
+        # i odczyt panelu lessons tylko z flagą (inaczej PGRST204 / 42703).
+        self._correction_category_enabled = correction_category_enabled
         self._table = table_name
         self._view = feature_view
         self._snapshot_table = snapshot_table
@@ -656,13 +661,16 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         lessons). `parse_resolved_predictions` parsuje oba kształty. Paginacja
         (#8) — pełen zbiór, nie obcięte ~1000 wierszy PostgREST."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
+        columns = (
+            "symbol, predicted_trend, is_trend_correct, timestamp, "
+            "reasoning_text, correction_insights, price_at_prediction, "
+            "actual_price_after_12h, data_quality_flags"
+        )
+        if self._correction_category_enabled:
+            columns += ", correction_category"
         query = (
             self._client.table(self._table)
-            .select(
-                "symbol, predicted_trend, is_trend_correct, timestamp, "
-                "reasoning_text, correction_insights, price_at_prediction, "
-                "actual_price_after_12h, data_quality_flags"
-            )
+            .select(columns)
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
@@ -1766,6 +1774,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         accuracy_score: float,
         is_trend_correct: bool,
         insight: str,
+        correction_category: MistakeCategory | None = None,
     ) -> None:
         payload = _serialize_record(
             {
@@ -1773,6 +1782,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
                 "accuracy_score": accuracy_score,
                 "is_trend_correct": is_trend_correct,
                 "correction_insights": insight,
+                **self._category_payload(correction_category),
             },
             _PREDICTION_PRICE_COLUMNS,
         )
@@ -1787,3 +1797,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             .is_("actual_price_after_12h", "null")
             .execute()
         )
+
+    def _category_payload(self, category: MistakeCategory | None) -> dict[str, str]:
+        """WIA-57: klucz `correction_category` (migracja 046) tylko za flagą."""
+        if category is None or not self._correction_category_enabled:
+            return {}
+        return {"correction_category": category.value}

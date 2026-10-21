@@ -154,6 +154,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "council_votes_upsert_enabled",
     # ML-21: sam zapis rozkładu cech treningu (biny + PSI) w karcie; prognoza ta sama.
     "model_scorecard_feature_stats_enabled",
+    # WIA-57: sam zapis kategorii diagnozy (046) i jej odczyt w panelu lessons.
+    "correction_category_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -491,6 +493,10 @@ class Settings(BaseSettings):
     equity_curve_enabled: bool = False
     calibration_curve_enabled: bool = False
     lessons_enabled: bool = False
+    # WIA-57: kategoria przyczyny błędu z diagnozy LLM w `correction_category`
+    # (migracja 046) i jej histogram w panelu lessons. Off: nowy klucz przed
+    # migracją → PGRST204 i przepadłe rozliczenie predykcji.
+    correction_category_enabled: bool = False
     # #9: surowa pewność LLM korygowana historycznym hit-rate'em swojego kubełka
     # kalibracji. Steruje rankingiem "🎯 Najsilniejsze sygnały" (strength =
     # pewność × |Δ|). Niezależna od `calibration_curve_enabled` — tamta flaga
