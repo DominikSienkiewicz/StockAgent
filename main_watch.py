@@ -34,13 +34,23 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from functools import partial
 
+from src.application.alert_context import (
+    AlertContext,
+    PositionContext,
+    position_context,
+    render_alert_context,
+)
 from src.application.ports import (
     DailyChangePort,
+    LatestPrediction,
     MarketDataPort,
+    PreviousVerdict,
     ReportNotifierPort,
     RepositoryPort,
 )
@@ -49,6 +59,7 @@ from src.application.report_ops import render_watch_summary_markdown
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
 from src.domain.number_format import format_pct_pl
+from src.domain.portfolio import Portfolio
 from src.domain.quiet_hours import is_quiet
 from src.domain.shock import (
     ROLLING_CHANGE_WINDOW,
@@ -74,20 +85,113 @@ ROLLING_24H_BASIS = "w ciągu ostatnich 24 h"
 
 
 def _render_alert(
-    alert: ShockAlert, *, basis: str, detected_at: datetime, display_timezone: str
+    alert: ShockAlert,
+    *,
+    basis: str,
+    detected_at: datetime,
+    display_timezone: str,
+    context_lines: Sequence[str] = (),
 ) -> tuple[str, str]:
     """Treść pusha — krótka i jednoznaczna (temat, ciało). Po polsku, także liczby
     („-5,2%”, MAIL-58). Chwila wykrycia w strefie odbiorcy (MAIL-14) — logi watcha
-    zostają w UTC. `basis` mówi, wobec czego liczony jest ruch."""
+    zostają w UTC. `basis` mówi, wobec czego liczony jest ruch. `context_lines`
+    (ALR-08: pozycja, rada, ostatnia predykcja) stoją między ruchem a stopką."""
     arrow = "📉" if alert.direction.name == "DOWN" else "📈"
     move = format_pct_pl(alert.delta.percent, signed=True)
     subject = f"{arrow} Szok rynkowy: {alert.symbol} {move}"
-    body = (
+    lines = [
         f"{arrow} {alert.symbol} {move} {basis} "
-        f"(stan na {format_local(detected_at, display_timezone)}).\n"
-        "Alert poza cyklem — pełna analiza w najbliższym dziennym digeście."
-    )
-    return subject, body
+        f"(stan na {format_local(detected_at, display_timezone)}).",
+        *context_lines,
+        "Alert poza cyklem — pełna analiza w najbliższym dziennym digeście.",
+    ]
+    return subject, "\n".join(lines)
+
+
+def _load_user_portfolio(settings: Settings) -> Portfolio | None:
+    """ALR-08: portfel z fabryki Fast Loopa — ta sama flaga `portfolio_positions_enabled`
+    i ta sama reguła (błąd albo brak pozycji → None). Sam odczyt Supabase."""
+    # Import lokalny — fabryka żyje w DI Containerze Fast Loopa.
+    from main_agent import _build_user_portfolio
+
+    return _build_user_portfolio(settings)
+
+
+class _AlertContextReader:
+    """ALR-08: darmowe odczyty kontekstu alertu, każdy best-effort.
+
+    Błąd odczytu kosztuje tylko WARNING i linię kontekstu mniej — alert idzie dalej.
+    Wynik spoza kontraktu portu (inny typ) traktujemy jak brak danych, żeby push nie
+    niósł śmieci. Portfel czytamy raz na przebieg, przy pierwszym alercie; ceny pozycji
+    to darmowy /quote. Żadnego zapisu — zwłaszcza snapshotu ceny."""
+
+    def __init__(
+        self,
+        repository: RepositoryPort,
+        market: MarketDataPort,
+        portfolio_loader: Callable[[], Portfolio | None],
+    ) -> None:
+        self._repository = repository
+        self._market = market
+        self._portfolio_loader = portfolio_loader
+        self._portfolio: Portfolio | None = None
+        self._portfolio_read = False
+
+    def read(self, symbol: str) -> AlertContext:
+        return AlertContext(
+            position=self._position(symbol),
+            verdict=self._verdict(symbol),
+            prediction=self._prediction(symbol),
+        )
+
+    def _verdict(self, symbol: str) -> PreviousVerdict | None:
+        try:
+            verdict = self._repository.get_previous_verdict(symbol)
+        except Exception:
+            logger.warning(
+                "Alert context: previous verdict of %s unavailable", symbol, exc_info=True
+            )
+            return None
+        return verdict if isinstance(verdict, PreviousVerdict) else None
+
+    def _prediction(self, symbol: str) -> LatestPrediction | None:
+        try:
+            latest = self._repository.get_latest_prediction(symbol)
+        except Exception:
+            logger.warning(
+                "Alert context: latest prediction of %s unavailable", symbol, exc_info=True
+            )
+            return None
+        return latest if isinstance(latest, LatestPrediction) else None
+
+    def _position(self, symbol: str) -> PositionContext | None:
+        portfolio = self._user_portfolio()
+        if portfolio is None or symbol not in {lot.symbol for lot in portfolio.positions}:
+            return None
+        return position_context(portfolio, symbol, self._held_prices(portfolio))
+
+    def _user_portfolio(self) -> Portfolio | None:
+        if not self._portfolio_read:
+            self._portfolio_read = True
+            try:
+                loaded = self._portfolio_loader()
+            except Exception:
+                logger.warning("Alert context: portfolio unavailable", exc_info=True)
+                loaded = None
+            self._portfolio = loaded if isinstance(loaded, Portfolio) else None
+        return self._portfolio
+
+    def _held_prices(self, portfolio: Portfolio) -> dict[str, Decimal]:
+        prices: dict[str, Decimal] = {}
+        for symbol in sorted({lot.symbol for lot in portfolio.positions}):
+            try:
+                price = self._market.get_current_price(symbol)
+            except Exception:
+                logger.warning("Alert context: no free quote for %s", symbol, exc_info=True)
+                continue
+            if isinstance(price, Money):
+                prices[symbol] = price.amount
+        return prices
 
 
 def _classify(symbol: str, crypto_symbols: set[str]) -> Asset:
@@ -238,6 +342,7 @@ def scan_watch(
     push_notifier: ReportNotifierPort | None,
     now: datetime | None = None,
     daily_change: DailyChangePort | None = None,
+    portfolio_loader: Callable[[], Portfolio | None] | None = None,
 ) -> WatchOutcome:
     """Jeden przebieg watcha.
 
@@ -249,6 +354,8 @@ def scan_watch(
     `daily_change` (ALR-02): świeży odczyt rozstrzyga o symbolu sam, bez snapshotu
     i bez ceny bieżącej — jedno źródło, najwyżej jeden alert. None → wyłącznie
     snapshoty, jak przed ALR-02.
+    `portfolio_loader` (ALR-08): skąd wziąć portfel do linii „Twoja pozycja”;
+    None → fabryka Fast Loopa (za `portfolio_positions_enabled`).
     """
     if not settings.shock_alerts_enabled:
         logger.info("Shock watch wyłączony (shock_alerts_enabled=false).")
@@ -270,6 +377,9 @@ def scan_watch(
         already_sent = set()
     crypto_alert_times = _crypto_alert_times(repository, daily_change, symbols, crypto, moment)
     silent = _silent_delivery(settings, moment)
+    context_reader = _AlertContextReader(
+        repository, market, portfolio_loader or partial(_load_user_portfolio, settings)
+    )
 
     sent = 0
     failures = 0
@@ -325,6 +435,11 @@ def scan_watch(
                 basis=basis,
                 detected_at=moment,
                 display_timezone=settings.display_timezone,
+                context_lines=render_alert_context(
+                    context_reader.read(symbol),
+                    now=moment,
+                    display_timezone=settings.display_timezone,
+                ),
             )
             push_notifier.send_report(
                 subject=subject, html_body=body, plain_text=body, silent=silent
@@ -361,10 +476,12 @@ def run_watch(
     push_notifier: ReportNotifierPort,
     now: datetime | None = None,
     daily_change: DailyChangePort | None = None,
+    portfolio_loader: Callable[[], Portfolio | None] | None = None,
 ) -> int:
     """Jeden przebieg watcha. Zwraca liczbę WYSŁANYCH alertów.
 
-    `daily_change=None` → wyłącznie snapshoty Fast Loopa (zachowanie sprzed ALR-02)."""
+    `daily_change=None` → wyłącznie snapshoty Fast Loopa (zachowanie sprzed ALR-02).
+    `portfolio_loader` jak w `scan_watch` (ALR-08)."""
     return scan_watch(
         settings,
         repository=repository,
@@ -372,6 +489,7 @@ def run_watch(
         push_notifier=push_notifier,
         now=now,
         daily_change=daily_change,
+        portfolio_loader=portfolio_loader,
     ).sent
 
 

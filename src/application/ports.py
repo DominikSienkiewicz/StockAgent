@@ -81,6 +81,16 @@ class PreviousVerdict:
 
 
 @dataclass(frozen=True)
+class LatestPrediction:
+    """ALR-08/ALR-10 — ostatnia zalogowana predykcja symbolu: cena wejścia, chwila
+    zapisu i uzasadnienie LLM (`reasoning_text`, None = brak)."""
+
+    price: Money
+    timestamp: datetime
+    reasoning: str | None
+
+
+@dataclass(frozen=True)
 class CycleRun:
     """NIEZ-29 — jeden przebieg pętli (wiersz `cycle_runs`, migracja 041).
 
@@ -161,6 +171,14 @@ class RepositoryPort(ABC):
         godziny UTC i późniejsze. Zapis predykcji to upsert po
         `(symbol, timestamp_hour)`, więc re-run w tej samej godzinie nadpisze
         wiersz z tej godziny — w widoku LAG go nie zobaczy. None = bez filtra."""
+
+    @abstractmethod
+    def get_latest_prediction(self, symbol: str) -> LatestPrediction | None:
+        """ALR-08/ALR-10 — ostatnia predykcja symbolu (`prediction_logs`) z chwilą
+        i uzasadnieniem: kontekst alertu szoku i referencja dryfu bramki.
+
+        Adapter jest SUROWY (bez try/except) — degradację robi caller. None = brak
+        predykcji albo wiersz bez ceny lub chwili."""
 
     @abstractmethod
     def save_price_snapshot(self, symbol: str, price: Money) -> None:

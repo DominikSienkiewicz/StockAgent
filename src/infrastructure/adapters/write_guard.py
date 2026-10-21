@@ -29,6 +29,7 @@ from typing import Any, ClassVar
 from src.application.ports import (
     AttestationPublisherPort,
     CycleRun,
+    LatestPrediction,
     OpenReferenceCall,
     PositionsImportPort,
     PreviousVerdict,
@@ -87,6 +88,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_last_price",
         "get_price_history",
         "get_last_prediction_price",
+        "get_latest_prediction",
         "get_latest_regime_state",
         "get_unverified_prediction",
         "get_feature_store_data",
@@ -160,6 +162,9 @@ class ReadOnlyRepository(RepositoryPort):
         self, symbol: str, *, before: datetime | None = None
     ) -> Money | None:
         return self._delegate.get_last_prediction_price(symbol, before=before)
+
+    def get_latest_prediction(self, symbol: str) -> LatestPrediction | None:
+        return self._delegate.get_latest_prediction(symbol)
 
     def get_latest_regime_state(self) -> RegimeState | None:
         return self._delegate.get_latest_regime_state()

@@ -13,6 +13,7 @@ from supabase import create_client
 
 from src.application.ports import (
     CycleRun,
+    LatestPrediction,
     OpenReferenceCall,
     PreviousVerdict,
     RepositoryPort,
@@ -439,6 +440,30 @@ class SupabaseRepository(RepositoryPort):
         if not rows or rows[0].get("price_at_prediction") is None:
             return None
         return Money(Decimal(str(rows[0]["price_at_prediction"])))
+
+    def get_latest_prediction(self, symbol: str) -> LatestPrediction | None:
+        # SUROWO, bez try/except — watch i bramka dryfu degradują same.
+        response = (
+            self._client.table(self._table)
+            .select("price_at_prediction, timestamp, reasoning_text")
+            .eq("symbol", symbol)
+            .order("timestamp", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        price, stamp = row.get("price_at_prediction"), row.get("timestamp")
+        if price is None or not isinstance(stamp, str):
+            return None
+        reasoning = (_optional_text(row.get("reasoning_text")) or "").strip()
+        return LatestPrediction(
+            price=Money(Decimal(str(price))),
+            timestamp=datetime.fromisoformat(stamp),
+            reasoning=reasoning or None,
+        )
 
     def get_unverified_prediction(
         self, symbol: str, min_age_hours: int = 0, max_age_hours: int | None = None

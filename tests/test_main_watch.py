@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import main_watch
-from src.application.ports import RepositoryPort
+from src.application.ports import PreviousVerdict, RepositoryPort
 from src.config import Settings
 from src.domain.value_objects import Money
 
@@ -747,3 +747,188 @@ class TestQuietHoursWatch:
         push = self._push(settings, self._NIGHT)
 
         assert push.send_report.call_args.kwargs["silent"] is False
+
+
+def _previous_verdict(recommendation: str, strength: float, at: datetime) -> PreviousVerdict:
+    from src.domain.council import CouncilVerdict
+
+    verdict = CouncilVerdict(
+        final_recommendation=recommendation,  # type: ignore[arg-type]
+        consensus_strength=strength,
+        summary="Rada widzi popyt na AI.",
+        dissenting_views=(),
+        investor_opinions=(),
+    )
+    return PreviousVerdict(verdict=verdict, sentiment_score=0.3, timestamp=at)
+
+
+class TestAlertContext:
+    """ALR-08: push szoku mówi, czy ruch dotyczy Twojej pozycji i co rada
+    sądziła ostatnio — same darmowe odczyty, a każdy z nich jest best-effort."""
+
+    _NOW = datetime(2026, 10, 16, 15, 7, tzinfo=UTC)  # pt 17:07 w Warszawie
+
+    def _repo(self) -> MagicMock:
+        repo = _repo("100", age_hours=1.0, now=self._NOW)
+        repo.get_previous_verdict.return_value = None
+        repo.get_latest_prediction.return_value = None
+        return repo
+
+    @staticmethod
+    def _market(prices: dict[str, str]) -> MagicMock:
+        market = MagicMock()
+        market.get_current_price.side_effect = lambda symbol: Money(Decimal(prices[symbol]))
+        return market
+
+    def _body(
+        self,
+        settings,
+        repo: MagicMock,
+        *,
+        portfolio: object = None,
+        prices: dict[str, str] | None = None,
+    ) -> str:
+        settings.display_timezone = "Europe/Warsaw"
+        push = MagicMock()
+        sent = main_watch.run_watch(
+            settings,
+            repository=repo,
+            market=self._market(prices or {"AAPL": "90"}),
+            push_notifier=push,
+            now=self._NOW,
+            portfolio_loader=lambda: portfolio,
+        )
+        assert sent == 1
+        body: str = push.send_report.call_args.kwargs["plain_text"]
+        return body
+
+    def _portfolio(self) -> object:
+        from src.domain.portfolio import Portfolio, Position
+
+        return Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("10"), purchase_price=Decimal("80")),
+                Position(symbol="MSFT", quantity=Decimal("1"), purchase_price=Decimal("300")),
+            ),
+            as_of=self._NOW - timedelta(days=1),
+        )
+
+    def test_alert_body_includes_previous_verdict_and_position(self, settings) -> None:
+        repo = self._repo()
+        repo.get_previous_verdict.return_value = _previous_verdict(
+            "BUY", 0.72, self._NOW - timedelta(days=1)
+        )
+
+        body = self._body(
+            settings, repo, portfolio=self._portfolio(), prices={"AAPL": "90", "MSFT": "300"}
+        )
+
+        assert "Rada wczoraj: KUP, zgoda 72%" in body
+        # AAPL 10 × 90 = 900 z 1200 wartości portfela; 90 / 80 − 1 = +12,5%.
+        assert "Twoja pozycja: 75% portfela, +12,5% od zakupu" in body
+        assert body.startswith("📉 AAPL -10,0% od ostatniego snapshotu ceny")
+        assert body.rstrip().endswith("pełna analiza w najbliższym dziennym digeście.")
+
+    def test_week_old_verdict_carries_its_age(self, settings) -> None:
+        repo = self._repo()
+        repo.get_previous_verdict.return_value = _previous_verdict(
+            "SELL", 0.55, self._NOW - timedelta(days=8)
+        )
+
+        body = self._body(settings, repo)
+
+        assert "Rada 8 dni temu: SPRZEDAJ, zgoda 55%" in body
+
+    def test_alert_quotes_the_last_prediction_reasoning(self, settings) -> None:
+        from src.application.ports import LatestPrediction
+
+        repo = self._repo()
+        repo.get_latest_prediction.return_value = LatestPrediction(
+            price=Money(Decimal("101")),
+            timestamp=self._NOW,
+            reasoning="Słabsze prognozy marż. " + "x" * 400,
+        )
+
+        body = self._body(settings, repo)
+
+        line = next(row for row in body.splitlines() if "Ostatnia predykcja" in row)
+        assert line.startswith("🧠 Ostatnia predykcja (dziś): Słabsze prognozy marż.")
+        assert line.endswith("…")
+        assert len(line) < 320
+
+    def test_symbol_outside_the_portfolio_gets_no_position_line(self, settings) -> None:
+        from src.domain.portfolio import Portfolio, Position
+
+        portfolio = Portfolio(
+            positions=(
+                Position(symbol="MSFT", quantity=Decimal("1"), purchase_price=Decimal("1")),
+            ),
+            as_of=self._NOW,
+        )
+
+        body = self._body(settings, self._repo(), portfolio=portfolio)
+
+        assert "Twoja pozycja" not in body
+
+    def test_stale_portfolio_is_marked(self, settings) -> None:
+        from src.domain.portfolio import Portfolio, Position
+
+        portfolio = Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("1"), purchase_price=Decimal("90")),
+            ),
+            as_of=self._NOW - timedelta(days=40),
+        )
+
+        body = self._body(settings, self._repo(), portfolio=portfolio)
+
+        assert "Twoja pozycja: 100% portfela, +0,0% od zakupu" in body
+        assert "stan portfela z 06.09.2026 — może być nieaktualny" in body
+
+    def test_failing_context_reads_keep_the_alert(self, settings) -> None:
+        repo = self._repo()
+        repo.get_previous_verdict.side_effect = RuntimeError("Supabase 503")
+        repo.get_latest_prediction.side_effect = RuntimeError("Supabase 503")
+
+        def broken_portfolio() -> object:
+            raise RuntimeError("positions down")
+
+        settings.display_timezone = "Europe/Warsaw"
+        push = MagicMock()
+        outcome = main_watch.scan_watch(
+            settings,
+            repository=repo,
+            market=self._market({"AAPL": "90"}),
+            push_notifier=push,
+            now=self._NOW,
+            portfolio_loader=broken_portfolio,
+        )
+
+        assert outcome.sent == 1 and outcome.failures == 0
+        body = push.send_report.call_args.kwargs["plain_text"]
+        assert "Rada" not in body and "Twoja pozycja" not in body
+
+    def test_context_never_writes_a_price_snapshot(self, settings) -> None:
+        repo = self._repo()
+
+        self._body(settings, repo, portfolio=self._portfolio(), prices={"AAPL": "90", "MSFT": "1"})
+
+        repo.save_price_snapshot.assert_not_called()
+
+    def test_portfolio_flag_off_reads_no_positions(self, settings, mocker) -> None:
+        # Domyślny loader to fabryka Fast Loopa: bez `portfolio_positions_enabled`
+        # nie dotyka tabeli `positions`.
+        positions_port = mocker.patch("main_agent.build_positions_port")
+        settings.portfolio_positions_enabled = False
+        push = MagicMock()
+
+        main_watch.run_watch(
+            settings,
+            repository=self._repo(),
+            market=self._market({"AAPL": "90"}),
+            push_notifier=push,
+            now=self._NOW,
+        )
+
+        push.send_report.assert_called_once()
+        positions_port.assert_not_called()

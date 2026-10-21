@@ -217,6 +217,58 @@ class TestGetLastPredictionPrice:
         lt.assert_called_once_with("timestamp_hour", "2026-10-21T14:00:00+00:00")
 
 
+class TestGetLatestPrediction:
+    """ALR-08/ALR-10: ostatnia predykcja symbolu z chwilą i uzasadnieniem — kontekst
+    alertu szoku i referencja dryfu bramki volatility."""
+
+    def test_returns_price_time_and_reasoning(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "order", "limit"],
+            [
+                {
+                    "price_at_prediction": 187.25,
+                    "timestamp": "2026-10-15T13:30:00+00:00",
+                    "reasoning_text": "  Popyt na AI.  ",
+                }
+            ],
+        )
+
+        latest = repo.get_latest_prediction("AAPL")
+
+        assert latest is not None
+        assert latest.price == Money(Decimal("187.25"))
+        assert latest.timestamp == datetime(2026, 10, 15, 13, 30, tzinfo=UTC)
+        assert latest.reasoning == "Popyt na AI."
+        mock_client.table.assert_called_with("prediction_logs")
+        mock_client.table.return_value.select.return_value.eq.assert_called_with(
+            "symbol", "AAPL"
+        )
+        mock_client.table.return_value.select.return_value.eq.return_value.order.assert_called_with(
+            "timestamp", desc=True
+        )
+
+    def test_none_without_predictions(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "select", "eq", "order", "limit"], [])
+
+        assert repo.get_latest_prediction("AAPL") is None
+
+    def test_row_without_price_or_time_is_no_prediction(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "order", "limit"],
+            [{"price_at_prediction": None, "timestamp": "2026-10-15T13:30:00+00:00"}],
+        )
+
+        assert repo.get_latest_prediction("AAPL") is None
+
+
 # ---------------------------------------------------------------------------
 # save_prediction
 # ---------------------------------------------------------------------------
