@@ -118,6 +118,25 @@ class TestNullNotifier:
         assert "skip" in caplog.text.lower()
 
 
+
+def test_silent_mail_is_the_same_mail(notifier, mocker):
+    # ALR-09: mail nie ma dźwięku do wyciszenia — `silent` niczego w nim nie zmienia.
+    mock_post = mocker.patch("requests.Session.post", return_value=_ok_response())
+
+    notifier.send_report("S", "<p>H</p>", "T", silent=True)
+    silent_payload = mock_post.call_args.kwargs["json"]
+    notifier.send_report("S", "<p>H</p>", "T")
+
+    assert mock_post.call_args.kwargs["json"] == silent_payload
+
+
+def test_null_notifier_accepts_silent(caplog):
+    caplog.set_level(logging.INFO)
+
+    NullNotifier().send_report("Cichy subject", "html", "text", silent=True)
+
+    assert "Cichy subject" in caplog.text
+
 @pytest.mark.integration
 class TestResendLive:
     def test_sends_real_email(self):

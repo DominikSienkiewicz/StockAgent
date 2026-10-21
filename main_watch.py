@@ -49,6 +49,7 @@ from src.application.report_ops import render_watch_summary_markdown
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
 from src.domain.number_format import format_pct_pl
+from src.domain.quiet_hours import is_quiet
 from src.domain.shock import (
     ROLLING_CHANGE_WINDOW,
     SNAPSHOT_MAX_AGE_HOURS,
@@ -205,6 +206,17 @@ class WatchOutcome:
         return self.total > 0 and self.failures == self.total
 
 
+def _silent_delivery(settings: Settings, moment: datetime) -> bool:
+    """ALR-09: czy push tego przebiegu ma dotrzeć bez dźwięku (cisza nocna
+    w strefie odbiorcy). Flaga off → push zawsze z dźwiękiem, jak przed ALR-09."""
+    return settings.quiet_hours_enabled and is_quiet(
+        moment,
+        settings.display_timezone,
+        settings.quiet_hours_start,
+        settings.quiet_hours_end,
+    )
+
+
 def _watched_stocks(settings: Settings, moment: datetime) -> list[str]:
     """FIN-34: w dzień zamknięcia NYSE ceny akcji stoją — ta sama reguła i ten sam
     log co w Fast Loopie; krypto handluje w święta, więc zostaje."""
@@ -257,6 +269,7 @@ def scan_watch(
         logger.exception("Failed to read shock alert history — debounce in-memory only")
         already_sent = set()
     crypto_alert_times = _crypto_alert_times(repository, daily_change, symbols, crypto, moment)
+    silent = _silent_delivery(settings, moment)
 
     sent = 0
     failures = 0
@@ -314,7 +327,7 @@ def scan_watch(
                 display_timezone=settings.display_timezone,
             )
             push_notifier.send_report(
-                subject=subject, html_body=body, plain_text=body
+                subject=subject, html_body=body, plain_text=body, silent=silent
             )
             _persist_shock_alert(repository, symbol, today, alert)
             already_sent.add((symbol, today))

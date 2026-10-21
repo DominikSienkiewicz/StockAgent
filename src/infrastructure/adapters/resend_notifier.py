@@ -47,7 +47,10 @@ class ResendNotifier(ReportNotifierPort):
         self._session = build_session()
         self._quota_monitor = quota_monitor
 
-    def send_report(self, subject: str, html_body: str, plain_text: str) -> None:
+    def send_report(
+        self, subject: str, html_body: str, plain_text: str, *, silent: bool = False
+    ) -> None:
+        # ALR-09: mail nie ma dźwięku do wyciszenia — `silent` jest ignorowane.
         # Każdy niedostarczony mail kończy się alertem CRITICAL: trafi do bazy i
         # pojawi się w NASTĘPNYM mailu (ten paradoksalnie nie poszedł).
         try:
@@ -163,6 +166,8 @@ class NullNotifier(ReportNotifierPort):
     Pozwala main_agent.py mieć zawsze `notifier`, niezależnie od konfiguracji.
     """
 
-    def send_report(self, subject: str, html_body: str, plain_text: str) -> None:
+    def send_report(
+        self, subject: str, html_body: str, plain_text: str, *, silent: bool = False
+    ) -> None:
         logger.info("Notifications disabled — skipping email. Subject: %s", subject)
         logger.debug("Report (plain text):\n%s", plain_text)

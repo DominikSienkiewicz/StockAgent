@@ -153,3 +153,16 @@ def test_network_alert_omits_webhook_url(mocker, caplog) -> None:
     assert "ConnectionError" in alert.message
     for text in (alert.message, alert.action, caplog.text):
         assert "T000/B000/XXXX" not in text
+
+
+def test_silent_send_posts_the_same_text_without_a_mention(mocker) -> None:
+    # ALR-09: incoming webhook nie ma flagi cichej wiadomości — cisza nocna znaczy
+    # tu brak @-wzmianki, a adapter żadnej nie dokleja, więc treść jest ta sama.
+    notifier = SlackNotifier(webhook_url=WEBHOOK)
+    mock_post = mocker.patch("requests.Session.post", return_value=_resp(200))
+
+    notifier.send_report("S", "<p>H</p>", "T", silent=True)
+
+    body = mock_post.call_args.kwargs["json"]
+    assert body == {"text": "S\n\nT"}
+    assert "<!" not in body["text"] and "@" not in body["text"]

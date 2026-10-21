@@ -694,3 +694,56 @@ class TestCryptoRollingWindowCooldown:
 
         assert sent == 1
         assert "AAPL" in push.send_report.call_args.kwargs["subject"]
+
+
+class TestQuietHoursWatch:
+    """ALR-09: szok w nocy (czas odbiorcy) dociera bez dźwięku — informacja zostaje,
+    pobudka o 3:00 nie. Poza oknem ciszy i z flagą off push brzmi jak dotąd."""
+
+    _NIGHT = datetime(2026, 10, 16, 1, 30, tzinfo=UTC)  # 03:30 w Warszawie
+    _DAY = datetime(2026, 10, 16, 8, 30, tzinfo=UTC)  # 10:30 w Warszawie
+
+    def _push(self, settings, now: datetime) -> MagicMock:
+        settings.display_timezone = "Europe/Warsaw"
+        push = MagicMock()
+        main_watch.run_watch(
+            settings,
+            repository=_repo("100", age_hours=1.0, now=now),
+            market=_market("90"),
+            push_notifier=push,
+            now=now,
+        )
+        push.send_report.assert_called_once()
+        return push
+
+    def test_night_alert_is_delivered_silently(self, settings) -> None:
+        settings.quiet_hours_enabled = True
+
+        push = self._push(settings, self._NIGHT)
+
+        assert push.send_report.call_args.kwargs["silent"] is True
+
+    def test_daytime_alert_keeps_the_sound(self, settings) -> None:
+        settings.quiet_hours_enabled = True
+
+        push = self._push(settings, self._DAY)
+
+        assert push.send_report.call_args.kwargs["silent"] is False
+
+    def test_flag_off_never_silences(self, settings) -> None:
+        settings.quiet_hours_enabled = False
+
+        push = self._push(settings, self._NIGHT)
+
+        assert push.send_report.call_args.kwargs["silent"] is False
+
+    def test_window_comes_from_settings(self, settings) -> None:
+        from datetime import time
+
+        settings.quiet_hours_enabled = True
+        settings.quiet_hours_start = time(1, 0)
+        settings.quiet_hours_end = time(2, 0)
+
+        push = self._push(settings, self._NIGHT)
+
+        assert push.send_report.call_args.kwargs["silent"] is False

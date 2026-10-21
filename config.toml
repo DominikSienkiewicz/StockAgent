@@ -132,6 +132,11 @@ settled_at_windows_enabled = false
 # co godzinę jest wstrzymany razem z Fast Loopem (jedyne źródło referencji cen),
 # więc watch rusza wyłącznie z ręcznego dispatchu.
 shock_alerts_enabled = true
+# ALR-09: cisza nocna pushy watcha (czas `display_timezone`) — w oknie 22:00–07:00
+# szok dociera bez dźwięku zamiast budzić. Alerty CRITICAL ciszy nie znają. Włączone.
+quiet_hours_enabled = true
+quiet_hours_start = "22:00"
+quiet_hours_end = "07:00"
 # NIEZ-11: deadman (main_deadman.py, cron raz dziennie, zero płatnych API) mailuje
 # przez Resend, gdy job zamilkł dłużej niż przerwa w godzinach. 0 = job świadomie
 # wstrzymany: Fast Loop stoi (decyzja 2). Slow Loop chodzi co niedzielę — 192 h to

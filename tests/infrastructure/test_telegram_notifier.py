@@ -165,3 +165,21 @@ def test_network_alert_omits_bot_token(mocker, caplog) -> None:
     assert "ConnectionError" in alert.message
     for text in (alert.message, alert.action, caplog.text):
         assert "SECRET-bot-token" not in text
+
+
+def test_silent_sets_disable_notification(notifier: TelegramNotifier, mocker) -> None:
+    # ALR-09: w oknie ciszy nocnej wiadomość dociera, ale bez dźwięku.
+    mock_post = mocker.patch("requests.Session.post", return_value=_resp(200))
+
+    notifier.send_report("S", "<p>H</p>", "T", silent=True)
+
+    assert mock_post.call_args.kwargs["json"]["disable_notification"] is True
+
+
+def test_default_send_keeps_the_notification_sound(notifier: TelegramNotifier, mocker) -> None:
+    # ALR-09: poza ciszą payload jest dokładnie taki jak przed zmianą portu.
+    mock_post = mocker.patch("requests.Session.post", return_value=_resp(200))
+
+    notifier.send_report("S", "<p>H</p>", "T")
+
+    assert "disable_notification" not in mock_post.call_args.kwargs["json"]

@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import tomllib
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
@@ -86,6 +86,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "notifications_enabled",
     "messenger_digest_enabled",
     "realtime_alerts_enabled",
+    # ALR-09: cisza nocna pushy watcha — sposób dostarczenia, nie prognoza.
+    "quiet_hours_enabled",
+    "quiet_hours_start",
+    "quiet_hours_end",
     "subscriptions_enabled",
     "web_digest_enabled",
     "web_digest_path",
@@ -779,6 +783,12 @@ class Settings(BaseSettings):
     # Real-time alerty CRITICAL (U4): pushuj alert kwoty w chwili zdarzenia,
     # out-of-band od dziennego maila. NIEWRAŻLIWY flag → config.toml.
     realtime_alerts_enabled: bool = False
+    # ALR-09: cisza nocna pushy watcha szoku w strefie `display_timezone` — w oknie
+    # [start, end) push dociera bez dźwięku (Telegram `disable_notification`), nie
+    # znika. Okno może przechodzić przez północ. Alerty CRITICAL ciszy nie znają. Off.
+    quiet_hours_enabled: bool = False
+    quiet_hours_start: time = time(22, 0)
+    quiet_hours_end: time = time(7, 0)
 
     # ----- Dystrybucja (U2/U3 — opcjonalne, niewrażliwe → config.toml) -----
     # U2: personalizowany fan-out — każdy subskrybent (tabela `subscribers`)

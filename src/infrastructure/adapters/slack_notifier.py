@@ -41,7 +41,11 @@ class SlackNotifier(ReportNotifierPort):
         self._session = build_session(retry_post=False)
         self._quota_monitor = quota_monitor
 
-    def send_report(self, subject: str, html_body: str, plain_text: str) -> None:
+    def send_report(
+        self, subject: str, html_body: str, plain_text: str, *, silent: bool = False
+    ) -> None:
+        # ALR-09: incoming webhook nie ma flagi cichej wiadomości; cisza to brak
+        # @-wzmianki, a adapter żadnej nie dokleja — `silent` niczego tu nie zmienia.
         # Kanał push konsumuje plain_text — HTML maila jest tu nieprzydatny.
         text = f"{subject}\n\n{plain_text}"
         try:

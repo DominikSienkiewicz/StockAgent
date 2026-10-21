@@ -728,10 +728,16 @@ class EmbeddingPort(ABC):
 
 
 class ReportNotifierPort(ABC):
-    """Wysyłka raportów z cyklu (np. email przez Resend)."""
+    """Wysyłka raportów z cyklu (np. email przez Resend).
+
+    `silent` (ALR-09): wiadomość ma dotrzeć bez dźwięku — cisza nocna pushy watcha.
+    Kanał bez takiej opcji (mail) wysyła to samo co zwykle. Alerty CRITICAL
+    operacyjne wołają bez `silent`, więc cisza ich nie dotyczy."""
 
     @abstractmethod
-    def send_report(self, subject: str, html_body: str, plain_text: str) -> None: ...
+    def send_report(
+        self, subject: str, html_body: str, plain_text: str, *, silent: bool = False
+    ) -> None: ...
 
 
 class HeartbeatPort(ABC):
