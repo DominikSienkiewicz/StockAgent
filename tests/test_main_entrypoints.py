@@ -347,6 +347,50 @@ class TestMainAgent:
         assert analyze.call_args.kwargs["cycle_at"] == dispatch.call_args.kwargs["started_at"]
 
 
+class TestProductionConfigWiring:
+    """TEST-04 (G64): produkcyjna kombinacja flag z `config.toml` przechodzi przez DI.
+
+    Fixture `settings` ma czyste defaulty (conftest wyłącza źródło TOML), więc
+    włączone w produkcji flagi nigdy razem nie trafiały do `build_use_case`. Tu
+    źródło TOML jest aktywne, sekrety idą jako kwargs, a SDK są zmockowane na
+    poziomie modułów adapterów — żadnego `importorskip`, bo brak SDK to błąd P0
+    (G05), a nie powód do pominięcia testu."""
+
+    _SDK_CLIENTS = (
+        "src.infrastructure.adapters.supabase_repo.create_client",
+        "src.infrastructure.llm.openai_client.OpenAI",
+        "src.infrastructure.llm.openai_embeddings.OpenAI",
+        "src.infrastructure.llm.tool_calling_openai.OpenAI",
+        "src.infrastructure.llm.anthropic_client.Anthropic",
+        "src.infrastructure.llm.tool_calling_anthropic.Anthropic",
+    )
+
+    def test_build_use_case_with_production_config_toml(self, monkeypatch, mocker):
+        from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
+
+        monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
+        monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
+        for target in self._SDK_CLIENTS:
+            mocker.patch(target)
+        # Przełączniki płatnego przebiegu jak w workflow Fast Loopa (env GHA).
+        production = Settings(
+            _env_file=None,
+            openai_api_key="sk-test",
+            anthropic_api_key="sk-ant-test",
+            finnhub_api_key="fh",
+            alpha_vantage_api_keys=["av1", "av2"],
+            supabase_url="https://test.supabase.co",
+            supabase_key="service",
+            db_writes_enabled=True,
+            paid_calls_enabled=True,
+        )
+        assert production.llm_provider == "anthropic", "config.toml nie został wczytany"
+
+        use_case = main_agent.build_use_case(production)
+
+        assert isinstance(use_case, AnalyzeMarketUseCase)
+
+
 class TestMainTrainer:
     def test_build_use_case_wires_supabase_and_xgboost(self, settings, mock_external_clients):
         use_case = main_trainer.build_use_case(settings)
