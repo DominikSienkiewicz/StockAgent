@@ -208,3 +208,22 @@ def test_trainer_summary_names_a_failed_feature_store_refresh() -> None:
     )
 
     assert "| Feature store refresh | failed |" in markdown
+
+
+def test_cycle_summary_lists_http_requests_per_host() -> None:
+    # NIEZ-24: żądania per host i klasy statusów — sam host, bez ścieżki i query.
+    markdown = _render(
+        http_calls={
+            "finnhub.io": {"requests": 40, "2xx": 38, "429": 2, "retries": 2},
+            "www.alphavantage.co": {"requests": 3, "2xx": 3},
+        }
+    )
+
+    assert "### HTTP requests by host" in markdown
+    assert "| Host | Requests | 2xx | 4xx | 429 | 5xx | Retries |" in markdown
+    assert "| finnhub.io | 40 | 38 | 0 | 2 | 0 | 2 |" in markdown
+    assert "| www.alphavantage.co | 3 | 3 | 0 | 0 | 0 | 0 |" in markdown
+
+
+def test_cycle_summary_without_http_meter_has_no_http_section() -> None:
+    assert "HTTP requests by host" not in _render()

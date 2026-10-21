@@ -28,6 +28,7 @@ from src.application.agent_graph import AgentGraphDeps, AgentState
 from src.application.alpha_signals import AlphaSignals
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.data_coverage import build_data_coverage
+from src.application.http_metering import HttpCallMeter
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.move_interval import (
     CALIBRATION_LOOKBACK_DAYS,
@@ -155,7 +156,7 @@ from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
 from src.infrastructure.adapters._finnhub_common import FINNHUB_REQUESTS_PER_MINUTE
-from src.infrastructure.adapters._http import RateLimiter, redact_secrets
+from src.infrastructure.adapters._http import RateLimiter, metered_http, redact_secrets
 from src.infrastructure.adapters.advisory_council import (
     COUNCIL_MAX_PERSONAS,
     LLMAdvisoryCouncil,
@@ -3329,6 +3330,7 @@ def _write_cycle_summary(
             duration_s=duration_s,
             quota_alerts=quota_alerts,
             delivered=delivered,
+            http_calls=telemetry.snapshot().http_calls,
         )
     )
 
@@ -3388,7 +3390,7 @@ def main(
     """`clock` to zegar cyklu: dzień NYSE (FIN-34) i `started_at` raportu."""
     resolved = settings or Settings.from_env()
     configure_logging("main_agent", resolved.secret_values())
-    return run_with_heartbeat(resolved, lambda: _run_fast_loop(resolved, clock))
+    return run_with_heartbeat(resolved, lambda: _run_fast_loop_metered(resolved, clock))
 
 
 def prediction_columns_missing(
@@ -3420,8 +3422,21 @@ def prediction_columns_missing(
     return True
 
 
-def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
-    """Jeden przebieg Fast Loopa; kod wyjścia jak `main()` (0 / 1 / 2)."""
+def _run_fast_loop_metered(settings: Settings, clock: Callable[[], datetime]) -> int:
+    """NIEZ-24: przebieg z jednym miernikiem żądań HTTP — liczy każdą sesję
+    `build_session()` adapterów, bez zmian w ich kodzie."""
+    meter = HttpCallMeter()
+    with metered_http(meter):
+        return _run_fast_loop(settings, clock, http_meter=meter)
+
+
+def _run_fast_loop(
+    settings: Settings,
+    clock: Callable[[], datetime],
+    http_meter: HttpCallMeter | None = None,
+) -> int:
+    """Jeden przebieg Fast Loopa; kod wyjścia jak `main()` (0 / 1 / 2).
+    `http_meter` (NIEZ-24) trafia do telemetrii cyklu, a z niej do step summary."""
     if refuses_stub_writes(settings):
         return STUB_WRITES_REFUSED_EXIT_CODE
     # FIN-34: w dzień zamknięcia NYSE ceny akcji stoją — akcje nie idą do grafu.
@@ -3462,6 +3477,8 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
         run_context=run_context,
         usage_ledger=usage_ledger,
     )
+    if http_meter is not None:
+        use_case.telemetry.bind_http_meter(http_meter)
     if settings.db_writes_enabled and prediction_columns_missing(repository, use_case):
         return 1
     # Mail i stary push osobno: tekst pushu nie niesie sekcji portfela.
@@ -3612,6 +3629,7 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
         delivered, notifier=notifier, subscribers=subscribers, settings=settings
     )
     run_duration = time.perf_counter() - started_perf
+    logger.info("HTTP requests per host: %s", dict(use_case.telemetry.snapshot().http_calls))
     _write_cycle_summary(
         results=results,
         telemetry=use_case.telemetry,

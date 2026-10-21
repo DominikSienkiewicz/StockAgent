@@ -8,19 +8,31 @@ BEZ-07: `requests` wkleja pełny URL (z `?token=` / `&apikey=`) do treści
 `HTTPError` i błędów sieci, a ten tekst trafia do maila, `quota_alerts`
 i publicznych logów GHA. Adaptery z sekretem w URL-u wołają więc
 `safe_get` i `raise_for_status_redacted` zamiast gołych metod `requests`.
+
+NIEZ-24: każda sesja ma hook odpowiedzi, który liczy żądanie per host w
+`HttpCallMeter` — jawnie podanym (`build_session(meter=...)`) albo zainstalowanym
+na przebieg przez `metered_http`. Dzięki temu licznik obejmuje wszystkie adaptery
+bez zmian w ich kodzie.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+from src.application.http_metering import HttpCallMeter
+
+logger = logging.getLogger(__name__)
 
 # Retry dla błędów, które zwykle są przejściowe:
 #   429 — rate limit, 500/502/503/504 — chwilowa awaria po stronie API.
@@ -33,7 +45,52 @@ RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
 RETRY_AFTER_MAX_SECONDS = 10
 
 
-def build_session(*, retry_post: bool = True) -> requests.Session:
+# NIEZ-24: miernik przebiegu dla sesji bez jawnego `meter`. Czytany przy KAŻDEJ
+# odpowiedzi, nie przy budowie sesji — liczą się też sesje zbudowane wcześniej.
+_installed_meter: HttpCallMeter | None = None
+
+
+@contextmanager
+def metered_http(meter: HttpCallMeter) -> Iterator[HttpCallMeter]:
+    """Na czas bloku żądania sesji bez własnego miernika liczą się w `meter`.
+    Po wyjściu wraca poprzedni miernik (zagnieżdżenie i testy niczego nie gubią)."""
+    global _installed_meter
+    previous, _installed_meter = _installed_meter, meter
+    try:
+        yield meter
+    finally:
+        _installed_meter = previous
+
+
+def _response_hook(meter: HttpCallMeter | None) -> Callable[..., requests.Response]:
+    def hook(response: requests.Response, *_args: Any, **_kwargs: Any) -> requests.Response:
+        target = meter if meter is not None else _installed_meter
+        if target is None:
+            return response
+        try:
+            target.record(
+                urlsplit(response.url or "").hostname or "unknown",
+                response.status_code,
+                retries=_retry_count(response),
+                elapsed_s=response.elapsed.total_seconds(),
+            )
+        except Exception:
+            # Pomiar to obserwowalność — jego błąd nie może zepsuć żądania adaptera.
+            logger.debug("HTTP meter failed to record a response", exc_info=True)
+        return response
+
+    return hook
+
+
+def _retry_count(response: requests.Response) -> int:
+    """Liczba ponowień urllib3 za tą odpowiedzią (`raw.retries.history`)."""
+    retries = getattr(response.raw, "retries", None)
+    return len(getattr(retries, "history", ()) or ())
+
+
+def build_session(
+    *, retry_post: bool = True, meter: HttpCallMeter | None = None
+) -> requests.Session:
     """Zwraca `requests.Session` z zamontowanym retry na https://.
 
     https-only: wszystkie API agenta (Finnhub, Alpha Vantage, CoinGecko, NBP,
@@ -42,8 +99,12 @@ def build_session(*, retry_post: bool = True) -> requests.Session:
 
     `retry_post=False` dla API bez klucza idempotencji (Telegram, webhook Slacka):
     POST powtórzony po 5xx, który serwer jednak przyjął, dubluje wiadomość.
+
+    `meter` (NIEZ-24) — miernik tej sesji; None = miernik z `metered_http`, o ile
+    jest zainstalowany.
     """
     session = requests.Session()
+    session.hooks["response"].append(_response_hook(meter))
     retry = Retry(
         total=RETRY_TOTAL,
         backoff_factor=RETRY_BACKOFF_FACTOR,
