@@ -539,12 +539,12 @@ class TestParseRecommendation:
             ("hOlD", "HOLD"),
         ],
     )
-    def test_known_values_are_parsed_case_insensitively(self, raw, expected):
+    def test_known_values_are_parsed_case_insensitively(self, raw: str, expected: str) -> None:
         assert parse_recommendation(raw, "HOLD") == expected
 
     @pytest.mark.parametrize("raw", ["STRONG_BUY", "", None, 1, ["BUY"]])
-    def test_unknown_values_fall_back_to_the_default(self, raw):
+    def test_unknown_values_fall_back_to_the_default(self, raw: object) -> None:
         assert parse_recommendation(raw, "HOLD") == "HOLD"
 
-    def test_without_a_default_unknown_value_is_none(self):
+    def test_without_a_default_unknown_value_is_none(self) -> None:
         assert parse_recommendation("STRONG_BUY") is None
