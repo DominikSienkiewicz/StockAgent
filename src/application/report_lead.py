@@ -2,9 +2,10 @@
 
 Lead to najmocniejszy sygnał cyklu wyeksponowany na wejściu: czytelnik ma w 5
 sekund wiedzieć, „czy coś się pali". Domena (`build_lead`) już ustaliła
-priorytety (CRITICAL quota > rada podzielona > silny konsensus > werdykt) i
-zamroziła kolejność — ten moduł jest CZYSTO prezentacyjny: przepisuje gotowe
-`LeadItem`-y do HTML/plain-text i NIE zmienia ich kolejności ani doboru.
+priorytety (CRITICAL quota > portfel > rada podzielona > flip rady > silny
+konsensus > werdykt) i zamroziła kolejność — ten moduł jest CZYSTO prezentacyjny:
+przepisuje gotowe `LeadItem`-y do HTML/plain-text i NIE zmienia ich kolejności
+ani doboru.
 
 Sekcja samosupresująca: pusty lead → `render_*` zwraca "" (orkiestrator po
 prostu jej nie renderuje).

@@ -808,6 +808,7 @@ def to_lead_signals(
     results: list[SymbolResult],
     resolved: list[ResolvedPrediction],
     portfolio_weights: Mapping[str, Decimal] | None = None,
+    consensus_shifts: Sequence[tuple[str, ConsensusShift]] | None = None,
 ) -> list[LeadSignal]:
     """Mapuje DTO raportu na domenowe `LeadSignal` (#1).
 
@@ -818,6 +819,9 @@ def to_lead_signals(
     PORT-10: `portfolio_weights` (z `Portfolio.weights`) daje sygnałom wagę
     pozycji. Status "saved" znaczy, że ruch przeszedł bramkę volatility (graf
     poszedł do analizy) — tylko taki ruch pozycji może być leadem.
+
+    MAIL-19: `consensus_shifts` (#8, z `ReportContext`) dają sygnałom zmianę
+    nastawienia rady — odwrócenie (FLIP) ma w leadzie własny tier.
     """
     # MAIL-15: etykieta trafia do leadu i tematu maila — po polsku, ze wspólnego
     # słownika domeny („trafiona prognoza wzrostu”), nie „predykcja BULLISH”.
@@ -828,6 +832,7 @@ def to_lead_signals(
         )
         for r in resolved
     }
+    shifts = dict(consensus_shifts or ())
     signals: list[LeadSignal] = []
     for r in results:
         if r.delta is None:
@@ -843,6 +848,7 @@ def to_lead_signals(
                     portfolio_weights.get(r.symbol) if portfolio_weights else None
                 ),
                 crossed_volatility_gate=r.status == "saved",
+                consensus_shift=shifts.get(r.symbol),
             )
         )
     return signals
@@ -883,7 +889,9 @@ def build_cycle_lead(
         if context.user_portfolio is not None
         else None
     )
-    signals = to_lead_signals(results, context.resolved_predictions or [], weights)
+    signals = to_lead_signals(
+        results, context.resolved_predictions or [], weights, context.consensus_shifts
+    )
     return build_lead(signals, context.quota_alerts or [])
 
 

@@ -1766,6 +1766,44 @@ class TestLeadSection:
         assert "NVDA -4,2%, rada PODZIELONA" in html
         assert "NVDA -4,2%, rada PODZIELONA" in text
 
+    def test_council_flip_from_the_context_leads_the_report_and_its_subject(self):
+        # MAIL-19: flip rady był tylko w sekcji #8 w połowie maila, a temat mówił
+        # o czymś innym — teraz to lead, więc i temat (lead_headline).
+        from src.domain.consensus_shift import ConsensusShift, ShiftKind
+        from src.domain.digest_lead import lead_headline
+
+        verdict = CouncilVerdict(
+            final_recommendation="SELL",
+            consensus_strength=0.6,
+            summary="Rada zmieniła zdanie po wynikach.",
+            dissenting_views=(),
+            investor_opinions=(
+                InvestorOpinion(
+                    investor_name="A", recommendation="SELL",
+                    confidence=0.8, reasoning="x", key_factors=(),
+                ),
+            ),
+        )
+        flipped = SymbolResult(
+            symbol="NVDA", status="saved", delta=Decimal("-0.042"),
+            current_price=Decimal("180.00"), trend="BEARISH", council_verdict=verdict,
+        )
+        shift = ConsensusShift(
+            kind=ShiftKind.FLIP, previous_recommendation="BUY",
+            current_recommendation="SELL", votes_changed=1,
+            sentiment_delta=-0.3, consensus_delta=0.0, gap_hours=24.0,
+        )
+        context = ReportContext(consensus_shifts=[("NVDA", shift)])
+
+        html, text = build_html_report(
+            [flipped], datetime(2026, 5, 14, tzinfo=UTC), 1.0, context
+        )
+
+        headline = "NVDA -4,2%: rada odwróciła się KUP→SPRZEDAJ"
+        assert headline in html
+        assert headline in text
+        assert lead_headline(report_builder.build_cycle_lead([flipped], context)) == headline
+
 
 class TestSkipReasonMapping:
     """#4 — `skip_reason` rozdziela przyczyny pominięcia. Bez tego powitalny

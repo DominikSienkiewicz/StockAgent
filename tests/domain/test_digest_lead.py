@@ -19,6 +19,7 @@ from typing import Literal
 
 import pytest
 
+from src.domain.consensus_shift import ConsensusShift, ShiftKind
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.digest_lead import (
     LeadItem,
@@ -415,3 +416,88 @@ class TestLeadItemSymbol:
 
     def test_quota_item_has_no_symbol(self) -> None:
         assert [item.symbol for item in build_lead([], [_critical_alert()])] == [None]
+
+
+def _shift(
+    kind: ShiftKind = ShiftKind.FLIP,
+    previous: str = "BUY",
+    current: str = "SELL",
+) -> ConsensusShift:
+    return ConsensusShift(
+        kind=kind,
+        previous_recommendation=previous,
+        current_recommendation=current,
+        votes_changed=4,
+        sentiment_delta=-0.4,
+        consensus_delta=0.1,
+        gap_hours=24.0,
+    )
+
+
+class TestConsensusFlip:
+    """MAIL-19: odwrócenie rady (FLIP, BUY↔SELL) to najbardziej actionable zmiana
+    nastawienia — ma własny tier leadu między radą podzieloną a silnym konsensusem."""
+
+    def test_flip_outranks_strong_consensus_but_not_split(self) -> None:
+        flip = LeadSignal(
+            "NVDA", Decimal("1.0"), _consensus_verdict("SELL"), consensus_shift=_shift()
+        )
+        consensus = LeadSignal("AAA", Decimal("8.0"), _consensus_verdict("BUY"))
+        big_flip = LeadSignal(
+            "NVDA", Decimal("9.0"), _consensus_verdict("SELL"), consensus_shift=_shift()
+        )
+        split = LeadSignal("BBB", Decimal("1.0"), _split_verdict())
+
+        assert "NVDA" in build_lead([consensus, flip])[0].headline
+        over_flip = build_lead([big_flip, split])
+        assert "PODZIELONA" in over_flip[0].headline
+        assert "NVDA" in over_flip[1].headline
+
+    def test_flip_headline_names_both_recommendations_in_polish(self) -> None:
+        signal = LeadSignal(
+            "NVDA", Decimal("-4.2"), _consensus_verdict("SELL"), consensus_shift=_shift()
+        )
+
+        item = build_lead([signal])[0]
+
+        assert item.icon == "🔄"
+        assert item.headline == "NVDA -4,2%: rada odwróciła się KUP→SPRZEDAJ"
+        assert item.detail == "Rada zgodna co do kierunku."
+        assert item.symbol == "NVDA"
+
+    def test_stale_comparison_never_leads_as_a_flip(self) -> None:
+        signal = LeadSignal(
+            "NVDA",
+            Decimal("-4.2"),
+            _consensus_verdict("SELL"),
+            consensus_shift=_shift(ShiftKind.STALE_COMPARISON),
+        )
+
+        assert build_lead([signal])[0].headline == "NVDA -4,2%, rada zgodna: SPRZEDAJ"
+
+    def test_softening_is_not_a_flip(self) -> None:
+        signal = LeadSignal(
+            "NVDA",
+            Decimal("-4.2"),
+            _consensus_verdict("HOLD", 0.5),
+            consensus_shift=_shift(ShiftKind.SOFTENING, current="HOLD"),
+        )
+
+        assert build_lead([signal]) == []
+
+    def test_flip_stays_below_a_signal_against_your_position(self) -> None:
+        flip = LeadSignal(
+            "AMD", Decimal("-9.0"), _consensus_verdict("SELL"), consensus_shift=_shift()
+        )
+        split = LeadSignal("BBB", Decimal("0.5"), _split_verdict())
+        against = LeadSignal(
+            "NVDA",
+            Decimal("-1.0"),
+            _consensus_verdict("SELL"),
+            position_weight=Decimal("0.24"),
+            crossed_volatility_gate=True,
+        )
+
+        items = build_lead([flip, split, against])
+
+        assert [item.symbol for item in items] == ["NVDA", "BBB", "AMD"]

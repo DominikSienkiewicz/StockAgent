@@ -10,11 +10,14 @@ Kolejność priorytetów (malejąco) jest wiążąca i zamrożona testami:
     2. sygnał przeciw Twojej pozycji — rada SPRZEDAJ na pozycji ≥ 10% portfela
     3. ruch Twojej pozycji          — pozycja ≥ 10% portfela ponad bramką volatility
     4. rada PODZIELONA + duże |Δ|  — fundamentalny brak zgody co do kierunku
-    5. największy |Δ| z silnym konsensusem
-    6. werdykt zamkniętej predykcji
+    5. rada się ODWRÓCIŁA (FLIP)   — KUP↔SPRZEDAJ względem poprzedniego cyklu
+    6. największy |Δ| z silnym konsensusem
+    7. werdykt zamkniętej predykcji
 
 PORT-10 (decyzja 2026-10-19): tiery 2–3 istnieją tylko, gdy wołający poda wagę
 pozycji (`LeadSignal.position_weight`). Bez portfela lead działa jak wcześniej.
+MAIL-19: tier 5 wymaga `LeadSignal.consensus_shift` rodzaju FLIP; porównanie
+stęchłe (STALE_COMPARISON) nigdy nie trafia do leadu.
 
 NAJWIĘKSZE RYZYKO, które ten moduł świadomie neutralizuje: ranking NIE MOŻE
 promować sensacji (dużego ruchu ceny) kosztem faktycznie krytycznych sygnałów.
@@ -34,6 +37,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
+from src.domain.consensus_shift import ConsensusShift, ShiftKind
 from src.domain.council import CouncilVerdict
 from src.domain.number_format import format_pct_pl
 from src.domain.polish_labels import council_recommendation_label
@@ -44,10 +48,11 @@ from src.domain.quota import QuotaAlert, QuotaSeverity
 # `council_verdict` bywa None, a mnożenie wyzerowałoby symbole bez rady.
 # Odstępy między bazami (1000) są większe niż `_MAGNITUDE_CAP`, więc priorytet
 # ZAWSZE bije magnitudę — to gwarancja invariantu anti-sensacja.
-_CRITICAL_QUOTA_SCORE = 6000.0
-_AGAINST_POSITION_SCORE = 5000.0
-_POSITION_MOVE_SCORE = 4000.0
-_SPLIT_SCORE = 3000.0
+_CRITICAL_QUOTA_SCORE = 7000.0
+_AGAINST_POSITION_SCORE = 6000.0
+_POSITION_MOVE_SCORE = 5000.0
+_SPLIT_SCORE = 4000.0
+_FLIP_SCORE = 3000.0
 _STRONG_CONSENSUS_SCORE = 2000.0
 _CLOSED_VERDICT_SCORE = 1000.0
 
@@ -95,6 +100,8 @@ class LeadSignal:
       (0.24 = 24%), None = symbol spoza portfela albo portfela brak.
     - `crossed_volatility_gate` — ruch przekroczył próg bramki volatility w tym
       cyklu (symbol przeszedł do analizy); pod bramką ruch pozycji nie jest leadem.
+    - `consensus_shift` (MAIL-19) — zmiana nastawienia rady względem poprzedniego
+      cyklu; do leadu wchodzi tylko FLIP. None = brak porównania.
     """
 
     symbol: str
@@ -103,6 +110,7 @@ class LeadSignal:
     resolved_label: str | None = None
     position_weight: Decimal | None = None
     crossed_volatility_gate: bool = False
+    consensus_shift: ConsensusShift | None = None
 
 
 @dataclass(frozen=True)
@@ -210,7 +218,12 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
         )
         return _Candidate(score=_SPLIT_SCORE + magnitude, item=item)
 
-    # Priorytet 5 — silny konsensus rady. W obrębie tieru decyduje |Δ|.
+    # Priorytet 5 — rada odwróciła się względem poprzedniego cyklu (MAIL-19).
+    flip = _flip_candidate(signal, delta_label, magnitude)
+    if flip is not None:
+        return flip
+
+    # Priorytet 6 — silny konsensus rady. W obrębie tieru decyduje |Δ|.
     if verdict is not None and verdict.has_strong_consensus():
         item = LeadItem(
             icon="🔥",
@@ -223,7 +236,7 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
         )
         return _Candidate(score=_STRONG_CONSENSUS_SCORE + magnitude, item=item)
 
-    # Priorytet 6 — werdykt zamkniętej predykcji.
+    # Priorytet 7 — werdykt zamkniętej predykcji.
     if signal.resolved_label:
         item = LeadItem(
             icon="📊",
@@ -234,6 +247,26 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
         return _Candidate(score=_CLOSED_VERDICT_SCORE + magnitude, item=item)
 
     return None
+
+
+def _flip_candidate(
+    signal: LeadSignal, delta_label: str, magnitude: float
+) -> _Candidate | None:
+    """MAIL-19: odwrócenie rady (KUP↔SPRZEDAJ). Tylko FLIP — stęchłe porównanie
+    (`STALE_COMPARISON`) i złagodzenie nie są leadem."""
+    shift = signal.consensus_shift
+    if shift is None or shift.kind is not ShiftKind.FLIP:
+        return None
+    previous = council_recommendation_label(shift.previous_recommendation)
+    current = council_recommendation_label(shift.current_recommendation)
+    verdict = signal.council_verdict
+    item = LeadItem(
+        icon="🔄",
+        headline=f"{signal.symbol} {delta_label}: rada odwróciła się {previous}→{current}",
+        detail=verdict.summary if verdict is not None else "",
+        symbol=signal.symbol,
+    )
+    return _Candidate(score=_FLIP_SCORE + magnitude, item=item)
 
 
 def build_lead(
