@@ -1315,3 +1315,32 @@ class TestLazyPerSymbol:
         client.sentiment_for("BTC")
 
         assert mock_get.call_args.kwargs["params"]["tickers"] == "CRYPTO:BTC"
+
+
+@pytest.mark.integration
+class TestAlphaVantageLive:
+    """Integracyjne — wymaga ALPHA_VANTAGE_API_KEYS (w smoke CI-05 osobny klucz
+    `SMOKE_ALPHA_VANTAGE_API_KEY`). Pomijane domyślnie.
+
+    Klasyfikator soft-limitu (DAT-06) zna tylko `feed` oraz markery `Information`
+    i `Note`. Gdy AV zmieni kształt odpowiedzi (np. `Error Message` przy złym kluczu),
+    adapter potraktowałby ją jak feed bez artykułów — newsy znikają po cichu."""
+
+    def test_live_feed_or_known_soft_limit(self) -> None:
+        import os
+
+        from src.infrastructure.adapters._alpha_vantage_common import is_soft_limit
+        from src.infrastructure.adapters.alpha_vantage_client import _NEWS_DATA_KEYS
+
+        raw_keys = os.environ.get("ALPHA_VANTAGE_API_KEYS", "")
+        keys = [key.strip() for key in raw_keys.split(",") if key.strip()]
+        if not keys:
+            pytest.skip("ALPHA_VANTAGE_API_KEYS not set")
+
+        client = AlphaVantageClient(api_keys=keys[:1], symbols=["AAPL"])
+        payload = client._fetch_batch(["AAPL"], keys[0])
+
+        # Same nazwy pól: treść markera potrafi zawierać klucz.
+        assert "feed" in payload or is_soft_limit(payload, _NEWS_DATA_KEYS), (
+            f"nierozpoznana odpowiedź Alpha Vantage, pola: {sorted(payload)}"
+        )
