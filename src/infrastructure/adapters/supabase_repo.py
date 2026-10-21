@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, NamedTuple, cast
@@ -30,6 +30,11 @@ from src.domain.council import (
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
+from src.domain.persona_track_record import (
+    PersonaVoteOutcome,
+    persona_accuracy_weights,
+    persona_hit_stats,
+)
 from src.domain.prediction import Prediction, TrendDirection, normalize_trend
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.reference_signal import (
@@ -331,6 +336,32 @@ def _stored_receipt(row: Mapping[str, Any]) -> StoredReceipt:
     )
 
 
+def _optional_timestamp(value: Any) -> datetime | None:
+    return datetime.fromisoformat(value) if isinstance(value, str) else None
+
+
+def _persona_vote_outcome(row: Mapping[str, Any]) -> PersonaVoteOutcome | None:
+    """Wiersz RPC `persona_vote_outcomes` (045) → głos domeny; bez persony,
+    rekomendacji albo cen nie ma czego oceniać → None."""
+    name = row.get("investor_name")
+    recommendation = row.get("recommendation")
+    price = row.get("price_at_prediction")
+    actual = row.get("actual_price_after_12h")
+    if name is None or recommendation is None or price is None or actual is None:
+        return None
+    return PersonaVoteOutcome(
+        prediction_id=str(row.get("prediction_id") or ""),
+        investor_name=str(name),
+        recommendation=str(recommendation),
+        confidence=float(row.get("confidence") or 0.0),
+        symbol=str(row.get("symbol") or ""),
+        price_at_prediction=Decimal(str(price)),
+        actual_price=Decimal(str(actual)),
+        predicted_at=_optional_timestamp(row.get("predicted_at")),
+        settled_at=_optional_timestamp(row.get("settled_at")),
+    )
+
+
 def _rows(response: Any) -> list[dict[str, Any]]:
     """Narrow supabase response.data (JSON union) do list[dict]."""
     data = response.data or []
@@ -394,6 +425,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         scorecard_run_id_enabled: bool = False,
         council_votes_upsert_enabled: bool = False,
         scorecard_feature_stats_enabled: bool = False,
+        persona_vote_outcomes_enabled: bool = False,
+        crypto_symbols: Collection[str] = (),
     ) -> None:
         self._client = create_client(url, key)
         # ML-10: kolumny baseline'ów dryfu i „sam LLM" istnieją od migracji 028 —
@@ -406,6 +439,10 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         self._council_votes_upsert_enabled = council_votes_upsert_enabled
         # ML-21: kolumna JSONB `feature_stats` istnieje od migracji 052 — ta sama zasada.
         self._scorecard_feature_stats_enabled = scorecard_feature_stats_enabled
+        # WIA-51: wagi i ranking person z surowych głosów RPC 045 regułą domeny
+        # (pasmo HOLD krypto z `crypto_symbols`). Bez migracji RPC nie istnieje.
+        self._persona_vote_outcomes_enabled = persona_vote_outcomes_enabled
+        self._crypto_symbols = frozenset(symbol.upper() for symbol in crypto_symbols)
         self._table = table_name
         self._view = feature_view
         self._snapshot_table = snapshot_table
@@ -1087,6 +1124,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # (dziś council_votes nie nosi typu → waga globalna). Graceful: brak RPC
         # / błąd → {} (ważenie wyłączone, każda persona waży 1.0).
         _ = asset_type
+        if self._persona_vote_outcomes_enabled:
+            outcomes = self._graceful_vote_outcomes(window_days, "persona weighting skipped")
+            return persona_accuracy_weights(outcomes, self._crypto_symbols)
         try:
             response = self._client.rpc(
                 "persona_accuracy_weights", {"window_days": window_days}
@@ -1112,6 +1152,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # zwraca surowy hit-rate ORAZ COUNT(*) głosów. RPC z 015 niesie tylko
         # przeskalowaną wagę, z której nie da się odtworzyć wielkości próbki.
         # Graceful: brak RPC / błąd → {} (leaderboard sam się chowa).
+        if self._persona_vote_outcomes_enabled:
+            outcomes = self._graceful_vote_outcomes(window_days, "persona leaderboard skipped")
+            return persona_hit_stats(outcomes, self._crypto_symbols)
         try:
             response = self._client.rpc(
                 "persona_accuracy_stats", {"window_days": window_days}
@@ -1130,6 +1173,29 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
                 continue
             out[str(name)] = (float(hit_rate), int(votes))
         return out
+
+    def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
+        # WIA-51: surowe wiersze, więc czytamy stronami — PostgREST obcina wynik
+        # RPC do `max_rows`, a 90 dni × watchlista × 7 person to dziesiątki tysięcy.
+        query = (
+            self._client.rpc("persona_vote_outcomes", {"window_days": window_days})
+            .order("predicted_at")
+            .order("prediction_id")
+            .order("investor_name")
+        )
+        return [
+            outcome
+            for row in _paginate(query)
+            if (outcome := _persona_vote_outcome(row)) is not None
+        ]
+
+    def _graceful_vote_outcomes(self, window_days: int, skipped: str) -> list[PersonaVoteOutcome]:
+        """Głosy RPC 045 albo pusta lista z WARNING-iem (brak migracji, błąd sieci)."""
+        try:
+            return self.get_persona_vote_outcomes(window_days)
+        except Exception as exc:
+            _log_degraded_read("persona_vote_outcomes RPC", skipped, "045", exc)
+            return []
 
     def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:
         # Graceful: brak migracji 024 → [] (sweep nie ma czego ujawnić). WIA-70:

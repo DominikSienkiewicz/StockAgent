@@ -14,12 +14,19 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import psycopg2
 import pytest
 from psycopg2 import sql
 from testcontainers.postgres import PostgresContainer
+
+from src.domain.persona_track_record import (
+    PersonaVoteOutcome,
+    persona_accuracy_weights_as_of,
+    persona_hit_stats,
+)
 
 # `supabase db push` czyta WYŁĄCZNIE `supabase/migrations/` — trzymamy je tam,
 # żeby CLI i testy kontenerowe widziały dokładnie ten sam zbiór plików.
@@ -69,6 +76,7 @@ MIGRATION_FILES = [
     "042_reference_predictions.sql",
     "043_attestation_payload.sql",
     "044_calibration_score_version.sql",
+    "045_persona_vote_outcomes.sql",
     "047_ml_feature_store_lag_over_all_predictions.sql",
     "048_normalize_predicted_trend.sql",
     "049_model_scorecards_run_id.sql",
@@ -1976,6 +1984,13 @@ class TestSupabaseRoleEmulation:
             cur.execute("SELECT count(*) FROM persona_accuracy_stats(90)")
             assert cur.fetchone() == (0,)
 
+    def test_service_role_executes_persona_vote_outcomes(self, supabase_like_conn) -> None:
+        """WIA-51: RPC 045 woła aplikacja — EXECUTE tylko dla service_role."""
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "service_role")
+            cur.execute("SELECT count(*) FROM persona_vote_outcomes(90)")
+            assert cur.fetchone() == (0,)
+
 
 @pytest.fixture
 def fresh_pg():
@@ -2313,6 +2328,126 @@ class TestMigration037BackfillsExperimentArms:
             cur.execute(migration)
             cur.execute("SELECT experiment_arms FROM prediction_logs WHERE symbol = 'EB_ARMS'")
             assert cur.fetchone() == ({"EXP-03": "memory"},)
+
+
+@pytest.mark.containers
+class TestMigration045PersonaVoteOutcomes:
+    """WIA-51: RPC 045 zwraca SUROWE rozliczone głosy person, a trafność liczy
+    domena — SQL z 015/018 oceniał HOLD na krypto pasmem akcji ±0.5%.
+    WIA-46: oś czasu `predicted_at` / `settled_at` pozwala policzyć wagi, które
+    Fast Loop znał w chwili predykcji."""
+
+    @staticmethod
+    def _settled_vote(
+        cur: psycopg2.extensions.cursor,
+        symbol: str,
+        investor: str,
+        recommendation: str,
+        actual: float,
+        *,
+        age: str,
+        settled_age: str | None,
+    ) -> None:
+        # INSERT z jawnym settled_at — trigger 029 stempluje tylko UPDATE.
+        cur.execute(
+            "INSERT INTO prediction_logs "
+            "(symbol, timestamp, price_at_prediction, actual_price_after_12h, settled_at) "
+            "VALUES (%s, NOW() - %s::interval, 100.0, %s, NOW() - %s::interval) "
+            "RETURNING id",
+            (symbol, age, actual, settled_age),
+        )
+        prediction_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO council_votes "
+            "(prediction_id, symbol, investor_name, recommendation, confidence) "
+            "VALUES (%s, %s, %s, %s, 0.7)",
+            (prediction_id, symbol, investor, recommendation),
+        )
+
+    @staticmethod
+    def _outcomes(cur: psycopg2.extensions.cursor) -> list[PersonaVoteOutcome]:
+        cur.execute(
+            "SELECT prediction_id, investor_name, recommendation, confidence, symbol, "
+            "price_at_prediction, actual_price_after_12h, predicted_at, settled_at "
+            "FROM persona_vote_outcomes(%s)",
+            (90,),
+        )
+        return [
+            PersonaVoteOutcome(
+                prediction_id=str(pid),
+                investor_name=name,
+                recommendation=rec,
+                confidence=conf,
+                symbol=symbol,
+                price_at_prediction=Decimal(str(price)),
+                actual_price=Decimal(str(actual)),
+                predicted_at=predicted_at,
+                settled_at=settled_at,
+            )
+            for pid, name, rec, conf, symbol, price, actual, predicted_at, settled_at
+            in cur.fetchall()
+        ]
+
+    def test_persona_vote_outcomes_return_raw_settled_votes(self, pg_conn) -> None:
+        _apply_migrations(pg_conn)
+        with pg_conn.cursor() as cur:
+            # Izolacja: RPC czyta całą tabelę, a kontener dzielą testy modułu.
+            cur.execute("DELETE FROM council_votes")
+            self._settled_vote(
+                cur, "PVO_BTC", "Buffett", "HOLD", 102.0, age="3 days", settled_age="2 days"
+            )
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction) "
+                "VALUES ('PVO_OPEN', 100.0) RETURNING id"
+            )
+            open_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO council_votes "
+                "(prediction_id, symbol, investor_name, recommendation, confidence) "
+                "VALUES (%s, 'PVO_OPEN', 'Buffett', 'BUY', 0.7)",
+                (open_id,),
+            )
+            outcomes = self._outcomes(cur)
+
+        (outcome,) = outcomes
+        assert (outcome.investor_name, outcome.recommendation, outcome.symbol) == (
+            "Buffett", "HOLD", "PVO_BTC"
+        )
+        assert outcome.actual_price == Decimal("102.0000")
+        assert outcome.settled_at is not None and outcome.predicted_at is not None
+        assert outcome.settled_at > outcome.predicted_at
+        # Ta sama liczba, dwie oceny: domena z pasmem krypto, SQL 018 bez niego.
+        assert persona_hit_stats(outcomes, crypto_symbols={"PVO_BTC"}) == {"Buffett": (1.0, 1)}
+
+    def test_persona_weights_as_of_ignore_votes_settled_after_cutoff(self, pg_conn) -> None:
+        _apply_migrations(pg_conn)
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM council_votes")
+            cur.execute("SELECT NOW() - interval '2 days'")
+            cutoff = cur.fetchone()[0]
+            self._settled_vote(
+                cur, "PVO_EARLY", "Wood", "BUY", 110.0, age="5 days", settled_age="4 days"
+            )
+            self._settled_vote(
+                cur, "PVO_LATE", "Burry", "BUY", 110.0, age="3 days", settled_age="1 day"
+            )
+            outcomes = self._outcomes(cur)
+
+        weights = persona_accuracy_weights_as_of(outcomes, as_of=cutoff, window_days=90)
+
+        assert weights == {"Wood": pytest.approx(1.5)}
+
+    def test_045_is_idempotent_and_keeps_the_old_rpcs(self, pg_conn) -> None:
+        migration = (MIGRATIONS_DIR / "045_persona_vote_outcomes.sql").read_text()
+        with pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute("SELECT count(*) FROM persona_accuracy_weights(90)")
+            cur.execute("SELECT count(*) FROM persona_accuracy_stats(90)")
+            cur.execute(
+                "SELECT obj_description('persona_vote_outcomes(integer)'::regprocedure)"
+            )
+            assert "WIA-51" in cur.fetchone()[0]
 
 
 @pytest.mark.containers

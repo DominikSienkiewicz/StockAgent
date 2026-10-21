@@ -24,11 +24,21 @@ i korekta BH-FDR po personach (7 person = 7 porównań naraz).
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Literal
 
+from src.domain.council import Recommendation, parse_recommendation
 from src.domain.number_format import DecimalMark
+from src.domain.prediction import (
+    PREDICTION_HORIZON_HOURS,
+    Prediction,
+    TrendDirection,
+    sideways_tolerance_for,
+)
 from src.domain.significance import (
     DEFAULT_FDR_Q,
     benjamini_hochberg,
@@ -37,6 +47,7 @@ from src.domain.significance import (
 )
 from src.domain.statistics import wilson_interval
 from src.domain.track_record import HitRateEvidence
+from src.domain.value_objects import AssetType
 
 # Minimalna próbka, przy której hit-rate persony przestaje być szumem.
 DEFAULT_MIN_VOTES = 5
@@ -196,3 +207,153 @@ def assess_against_track_record(
     return assess_persona_significance(
         records, baseline=baseline[1], design_effect=directional / evidence.n_eff, q=q
     )
+
+
+# ---------------------------------------------------------------------------
+# WIA-51 (G45): reguła trafności głosu persony w domenie
+# ---------------------------------------------------------------------------
+
+# Waga konsensusu jak w RPC 015: 0.5 + trafność, przycięta do [0.5, 1.5].
+MIN_PERSONA_WEIGHT = 0.5
+MAX_PERSONA_WEIGHT = 1.5
+
+# Rekomendacja persony jako kierunek predykcji — ta sama reguła co `reflect`.
+_TREND_OF: dict[Recommendation, TrendDirection] = {
+    "BUY": TrendDirection.BULLISH,
+    "SELL": TrendDirection.BEARISH,
+    "HOLD": TrendDirection.SIDEWAYS,
+}
+
+
+@dataclass(frozen=True)
+class PersonaVoteOutcome:
+    """WIA-51 — jeden rozliczony głos persony: surowy wiersz RPC
+    `persona_vote_outcomes` (migracja 045), jeszcze bez oceny.
+
+    Ocena należy do domeny (`persona_vote_correct`), bo SQL nie zna klasy
+    aktywa — `symbol` pozwala wybrać pasmo HOLD krypto. `predicted_at`
+    i `settled_at` niosą oś czasu dla wag prequential (WIA-46)."""
+
+    prediction_id: str
+    investor_name: str
+    recommendation: str
+    confidence: float
+    symbol: str
+    price_at_prediction: Decimal
+    actual_price: Decimal
+    predicted_at: datetime | None
+    settled_at: datetime | None
+
+    def is_correct(self, crypto_symbols: Collection[str] = ()) -> bool:
+        """Trafność głosu z pasmem HOLD klasy aktywa jego symbolu."""
+        asset_type = AssetType.CRYPTO if self.symbol.upper() in crypto_symbols else None
+        return persona_vote_correct(
+            self.recommendation, self.price_at_prediction, self.actual_price, asset_type
+        )
+
+
+def persona_vote_correct(
+    recommendation: str,
+    price_at_prediction: Decimal,
+    actual_price: Decimal,
+    asset_type: AssetType | None = None,
+) -> bool:
+    """WIA-51 — czy rekomendacja persony potwierdziła się na rozliczonej cenie.
+
+    BUY = wzrost, SELL = spadek, HOLD = ruch w paśmie „bez ruchu” klasy aktywa
+    (`sideways_tolerance_for`: krypto ±2.5%, reszta ±0.5%) — dokładnie reguła
+    `Prediction.is_trend_correct`, którą `reflect` ocenia predykcję. SQL z 015
+    i 018 oceniał HOLD na krypto pasmem akcji, czyli 5× ostrzej niż domena.
+    Rekomendacja spoza BUY/SELL/HOLD to głos chybiony (jak `ELSE 0.0` w SQL)."""
+    parsed = parse_recommendation(recommendation)
+    if parsed is None:
+        return False
+    call = Prediction(
+        symbol="",
+        predicted_trend=_TREND_OF[parsed],
+        price_at_prediction=price_at_prediction,
+        predicted_target_price=price_at_prediction,
+    )
+    return call.is_trend_correct(actual_price, tolerance=sideways_tolerance_for(asset_type))
+
+
+def persona_hit_stats(
+    outcomes: Iterable[PersonaVoteOutcome], crypto_symbols: Collection[str] = ()
+) -> dict[str, tuple[float, int]]:
+    """`{investor_name: (hit_rate, liczba_głosów)}` — kontrakt RPC 018 liczony
+    regułą domeny; wejście `rank_personas`."""
+    votes: Counter[str] = Counter()
+    hits: Counter[str] = Counter()
+    for outcome in outcomes:
+        votes[outcome.investor_name] += 1
+        hits[outcome.investor_name] += outcome.is_correct(crypto_symbols)
+    return {name: (hits[name] / count, count) for name, count in votes.items()}
+
+
+def persona_weight(hit_rate: float) -> float:
+    """Waga persony w konsensusie: `0.5 + hit_rate` w [0.5, 1.5] (jak RPC 015)."""
+    return max(MIN_PERSONA_WEIGHT, min(MAX_PERSONA_WEIGHT, MIN_PERSONA_WEIGHT + hit_rate))
+
+
+def persona_accuracy_weights(
+    outcomes: Iterable[PersonaVoteOutcome], crypto_symbols: Collection[str] = ()
+) -> dict[str, float]:
+    """`{investor_name: waga}` — kontrakt RPC 015 na tej samej regule co
+    `persona_hit_stats`, więc wagi i leaderboard nie mogą się rozjechać."""
+    return {
+        name: persona_weight(hit_rate)
+        for name, (hit_rate, _) in persona_hit_stats(outcomes, crypto_symbols).items()
+    }
+
+
+# ---------------------------------------------------------------------------
+# WIA-46: wagi prequential — tylko głosy rozliczone przed chwilą predykcji
+# ---------------------------------------------------------------------------
+
+
+def outcome_known_at(outcome: PersonaVoteOutcome) -> datetime | None:
+    """Najwcześniejsza chwila, w której wynik głosu był znany.
+
+    `settled_at` (trigger 029), gdy jest późniejszy niż predykcja. Backfill 029
+    zostawia dolną granicę `settled_at = timestamp`, a wiersz bez stempla nie ma
+    nic — wtedy przybliżamy chwilą predykcji plus horyzont prognozy
+    (`PREDICTION_HORIZON_HOURS`): wcześniej wyniku nie było. Bez chwili
+    predykcji głosu nie da się umieścić na osi czasu → None."""
+    if outcome.predicted_at is None:
+        return None
+    if outcome.settled_at is not None and outcome.settled_at > outcome.predicted_at:
+        return outcome.settled_at
+    return outcome.predicted_at + timedelta(hours=PREDICTION_HORIZON_HOURS)
+
+
+def outcomes_known_before(
+    outcomes: Iterable[PersonaVoteOutcome], as_of: datetime, window_days: int
+) -> list[PersonaVoteOutcome]:
+    """Głosy z okna `window_days` przed `as_of`, rozliczone ŚCIŚLE przed `as_of`.
+
+    Okno liczy się po chwili predykcji, jak `pl.timestamp >= NOW() - okno`
+    w RPC 015, tylko od `as_of` zamiast od dziś."""
+    start = as_of - timedelta(days=window_days)
+    selected: list[PersonaVoteOutcome] = []
+    for outcome in outcomes:
+        known_at = outcome_known_at(outcome)
+        if known_at is None or outcome.predicted_at is None:
+            continue
+        if outcome.predicted_at >= start and known_at < as_of:
+            selected.append(outcome)
+    return selected
+
+
+def persona_accuracy_weights_as_of(
+    outcomes: Iterable[PersonaVoteOutcome],
+    *,
+    as_of: datetime,
+    window_days: int = 90,
+    crypto_symbols: Collection[str] = (),
+) -> dict[str, float]:
+    """WIA-46 — wagi person, które Fast Loop MÓGŁ znać w chwili `as_of`.
+
+    RPC 015 liczy okno od NOW(), więc retrospektywne „czy ważenie pomaga”
+    użyłoby wag znających przyszłość i zawyżyło wynik."""
+    known = outcomes_known_before(outcomes, as_of, window_days)
+    return persona_accuracy_weights(known, crypto_symbols)

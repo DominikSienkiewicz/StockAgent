@@ -40,6 +40,7 @@ from src.application.report_council_history import InvestorHistory
 from src.domain.council import InvestorOpinion
 from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
+from src.domain.persona_track_record import PersonaVoteOutcome
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.quota import QuotaAlert
@@ -106,6 +107,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_resolved_for_calibration",
         "get_persona_accuracy",
         "get_persona_track_record",
+        "get_persona_vote_outcomes",
         "get_resolved_predictions_detailed",
         "get_settled_moves",
         "get_unrevealed_commitments",
@@ -230,6 +232,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_persona_track_record(self, window_days: int = 90) -> dict[str, tuple[float, int]]:
         return self._delegate.get_persona_track_record(window_days=window_days)
+
+    def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
+        return self._delegate.get_persona_vote_outcomes(window_days=window_days)
 
     def get_resolved_predictions_detailed(
         self, days: int, since: datetime | None = None

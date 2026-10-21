@@ -17,6 +17,7 @@ from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_series import MacroSeriesSnapshot
 from src.domain.options_flow import OptionsFlowSnapshot
+from src.domain.persona_track_record import PersonaVoteOutcome
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
@@ -442,6 +443,16 @@ class RepositoryPort(ABC):
         z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
         "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
         → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
+    def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
+        """WIA-51 — rozliczone głosy person z okna `window_days` (po chwili
+        predykcji), bez oceny: RPC `persona_vote_outcomes` (migracja 045).
+
+        Trafność liczy domena (`persona_vote_correct`), a oś czasu
+        `predicted_at` / `settled_at` zasila wagi prequential (WIA-46). Błąd
+        RPC (np. brak migracji) leci do wołającego — tryb graceful mają
+        `get_persona_accuracy` i `get_persona_track_record`."""
 
     @abstractmethod
     def get_resolved_predictions_detailed(

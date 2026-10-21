@@ -5234,6 +5234,21 @@ def test_build_repository_passes_the_council_votes_upsert_flag(
     assert repo_cls.call_args.kwargs["council_votes_upsert_enabled"] is enabled
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_build_repository_passes_the_persona_vote_outcomes_flag(
+    settings, mocker, enabled: bool
+) -> None:
+    # WIA-51: RPC 045 i pasmo HOLD krypto — flaga i symbole krypto trafiają do adaptera.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.persona_vote_outcomes_enabled = enabled
+    settings.crypto_symbols = ["BTC", "ETH"]
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["persona_vote_outcomes_enabled"] is enabled
+    assert list(repo_cls.call_args.kwargs["crypto_symbols"]) == ["BTC", "ETH"]
+
+
 def test_build_repository_writes_when_db_writes_enabled(settings, mocker) -> None:
     from src.domain.value_objects import Money
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository

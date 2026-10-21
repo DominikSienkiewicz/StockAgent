@@ -1504,3 +1504,20 @@ class TestFastLoopWeeklyBudget:
             tool_use.fast_loop_weekly_budget(personas=7).cycle_worst_usd
             > base.fast_loop_weekly_budget(personas=7).cycle_worst_usd
         )
+
+
+class TestPersonaVoteOutcomesFlag:
+    """WIA-51: wagi i ranking person z surowych głosów RPC 045 regułą domeny —
+    flaga odczytu wymagającego migracji, domyślnie off. Zmienia wagi konsensusu
+    (przy `persona_weighting_enabled`), więc należy do przepisu."""
+
+    def test_defaults_off(self, env):
+        assert (
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).persona_vote_outcomes_enabled
+            is False
+        )
+
+    def test_is_part_of_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert "persona_vote_outcomes_enabled" in RECIPE_SETTINGS_FIELDS

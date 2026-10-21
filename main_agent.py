@@ -883,6 +883,8 @@ def build_repository(settings: Settings) -> RepositoryPort:
         url=settings.supabase_url,
         key=settings.supabase_key,
         council_votes_upsert_enabled=settings.council_votes_upsert_enabled,
+        persona_vote_outcomes_enabled=settings.persona_vote_outcomes_enabled,
+        crypto_symbols=settings.crypto_symbols,
     )
     if settings.db_writes_enabled:
         return repository

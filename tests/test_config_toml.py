@@ -497,3 +497,9 @@ def test_real_config_toml_ships_the_council_votes_upsert_off_until_migration() -
     """NIEZ-14: upsert głosów wymaga indeksu UNIQUE z migracji 054 (ręczny DB Migrate)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["council_votes_upsert_enabled"] is False
+
+
+def test_real_config_toml_ships_the_persona_vote_outcomes_off_until_migration() -> None:
+    """WIA-51: RPC `persona_vote_outcomes` powstaje dopiero w migracji 045 (DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["persona_vote_outcomes_enabled"] is False

@@ -206,6 +206,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "council_llm_provider",
     "council_llm_model",
     "persona_weighting_enabled",
+    # WIA-51: reguła trafności z domeny zmienia wagi konsensusu (przy ważeniu person).
+    "persona_vote_outcomes_enabled",
     "debate_mode_enabled",
     "model_routing_enabled",
     "routing_floor",
@@ -430,6 +432,10 @@ class Settings(BaseSettings):
 
     # ----- Rada: ważenie person (#3) i tryb debaty (#1) -----
     persona_weighting_enabled: bool = False
+    # WIA-51: wagi person i ich ranking liczy domena z surowych głosów RPC
+    # `persona_vote_outcomes` (migracja 045): HOLD na krypto w paśmie ±2.5%, nie
+    # akcyjnym ±0.5%. Off: RPC 015/018 — przed migracją 045 funkcji nie ma.
+    persona_vote_outcomes_enabled: bool = False
     debate_mode_enabled: bool = False
 
     # ----- Model routing (#2 — tani model + eskalacja do frontier) -----

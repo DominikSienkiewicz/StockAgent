@@ -9,18 +9,27 @@ obok hit-rate'u, żeby warstwa prezentacji mogła ją pokazać.
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 
 from src.domain.persona_track_record import (
     DEFAULT_MIN_VOTES,
     PersonaTrackRecord,
+    PersonaVoteOutcome,
     assess_against_track_record,
     assess_persona_significance,
+    outcome_known_at,
+    persona_accuracy_weights,
+    persona_accuracy_weights_as_of,
+    persona_hit_stats,
+    persona_vote_correct,
     rank_personas,
     sort_personas,
 )
 from src.domain.track_record import HitRateEvidence, ScoredCall, assess_directional_hit_rate
+from src.domain.value_objects import AssetType
 
 
 class TestRankPersonas:
@@ -234,3 +243,127 @@ class TestAssessAgainstTrackRecord:
         empty = assess_directional_hit_rate([], n_boot=0)
 
         assert assess_against_track_record(records, empty) == records
+
+
+_T0 = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
+
+
+def _outcome(
+    *,
+    investor: str = "Buffett",
+    recommendation: str = "HOLD",
+    symbol: str = "AAPL",
+    price: str = "100",
+    actual: str = "102",
+    predicted_at: datetime = _T0,
+    settled_at: datetime | None = None,
+    prediction_id: str = "p-1",
+    confidence: float = 0.8,
+) -> PersonaVoteOutcome:
+    return PersonaVoteOutcome(
+        prediction_id=prediction_id,
+        investor_name=investor,
+        recommendation=recommendation,
+        confidence=confidence,
+        symbol=symbol,
+        price_at_prediction=Decimal(price),
+        actual_price=Decimal(actual),
+        predicted_at=predicted_at,
+        settled_at=settled_at,
+    )
+
+
+class TestPersonaVoteCorrect:
+    """WIA-51 (G45): reguła trafności głosu persony żyje w domenie, ze stałymi
+    z `prediction.py` — SQL z 015/018 oceniał HOLD na krypto pasmem ±0.5%."""
+
+    def test_hold_on_crypto_uses_crypto_tolerance(self) -> None:
+        # +2% mieści się w paśmie krypto ±2.5%, a w paśmie akcji ±0.5% już nie.
+        assert persona_vote_correct("HOLD", Decimal("100"), Decimal("102"), AssetType.CRYPTO)
+
+    def test_hold_on_stock_keeps_the_stock_tolerance(self) -> None:
+        assert not persona_vote_correct("HOLD", Decimal("100"), Decimal("102"))
+        assert persona_vote_correct("HOLD", Decimal("100"), Decimal("100.4"))
+
+    def test_buy_and_sell_follow_the_direction_of_the_move(self) -> None:
+        assert persona_vote_correct("BUY", Decimal("100"), Decimal("101"))
+        assert not persona_vote_correct("BUY", Decimal("100"), Decimal("99"))
+        assert persona_vote_correct("SELL", Decimal("100"), Decimal("99"))
+        assert not persona_vote_correct("SELL", Decimal("100"), Decimal("101"))
+
+    def test_recommendation_is_parsed_like_the_council_parses_it(self) -> None:
+        assert persona_vote_correct(" buy ", Decimal("100"), Decimal("101"))
+
+    def test_unknown_recommendation_is_a_miss(self) -> None:
+        # Jak `ELSE 0.0` w SQL: głos się liczy, ale nie jest trafieniem.
+        assert not persona_vote_correct("STRONG_BUY", Decimal("100"), Decimal("101"))
+
+
+class TestPersonaHitStats:
+    def test_crypto_tolerance_is_chosen_per_symbol(self) -> None:
+        outcomes = [
+            _outcome(symbol="BTC", prediction_id="p-btc"),
+            _outcome(symbol="AAPL", prediction_id="p-aapl"),
+        ]
+
+        stats = persona_hit_stats(outcomes, crypto_symbols=frozenset({"BTC"}))
+
+        assert stats == {"Buffett": (0.5, 2)}
+
+    def test_stats_count_every_settled_vote_per_persona(self) -> None:
+        outcomes = [
+            _outcome(investor="Wood", recommendation="BUY", actual="110"),
+            _outcome(investor="Wood", recommendation="BUY", actual="90", prediction_id="p-2"),
+            _outcome(investor="Burry", recommendation="SELL", actual="90"),
+        ]
+
+        assert persona_hit_stats(outcomes) == {"Wood": (0.5, 2), "Burry": (1.0, 1)}
+
+    def test_weights_use_the_same_rule_as_the_stats(self) -> None:
+        # Waga konsensusu jak w 015: 0.5 + trafność, w [0.5, 1.5].
+        outcomes = [
+            _outcome(symbol="BTC", prediction_id="p-btc"),
+            _outcome(symbol="AAPL", prediction_id="p-aapl"),
+            _outcome(investor="Wood", recommendation="BUY", actual="90"),
+        ]
+
+        weights = persona_accuracy_weights(outcomes, crypto_symbols=frozenset({"BTC"}))
+
+        assert weights == {"Buffett": pytest.approx(1.0), "Wood": pytest.approx(0.5)}
+
+
+class TestPersonaWeightsAsOf:
+    """WIA-46: ocena prequential — waga z chwili predykcji zna wyłącznie głosy
+    rozliczone PRZED nią, a nie całe okno liczone od dziś."""
+
+    def test_weights_as_of_ignore_votes_settled_after_cutoff(self) -> None:
+        cutoff = _T0 + timedelta(days=2)
+        outcomes = [
+            _outcome(investor="Wood", recommendation="BUY", actual="110",
+                     settled_at=_T0 + timedelta(days=1)),
+            _outcome(investor="Burry", recommendation="BUY", actual="110",
+                     settled_at=cutoff + timedelta(hours=1), prediction_id="p-2"),
+        ]
+
+        weights = persona_accuracy_weights_as_of(outcomes, as_of=cutoff, window_days=90)
+
+        assert weights == {"Wood": pytest.approx(1.5)}
+
+    def test_missing_or_floor_settlement_counts_from_the_horizon(self) -> None:
+        # Bez stempla albo z dolną granicą backfillu 029 (`settled_at = timestamp`)
+        # wynik znamy najwcześniej po horyzoncie prognozy (12 h).
+        floor = _outcome(settled_at=_T0)
+        missing = _outcome(settled_at=None)
+
+        assert outcome_known_at(floor) == _T0 + timedelta(hours=12)
+        assert outcome_known_at(missing) == _T0 + timedelta(hours=12)
+        assert persona_accuracy_weights_as_of(
+            [floor], as_of=_T0 + timedelta(hours=11), window_days=90
+        ) == {}
+
+    def test_window_counts_back_from_the_cutoff(self) -> None:
+        cutoff = _T0 + timedelta(days=30)
+        old = _outcome(predicted_at=_T0, settled_at=_T0 + timedelta(hours=13))
+
+        assert persona_accuracy_weights_as_of([old], as_of=cutoff, window_days=7) == {}
+        assert persona_accuracy_weights_as_of([old], as_of=cutoff, window_days=31) != {}

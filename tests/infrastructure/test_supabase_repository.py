@@ -1015,6 +1015,134 @@ class TestGetPersonaTrackRecord:
         assert repo.get_persona_track_record() == {}
 
 
+_VOTE_OUTCOME_CHAIN = ["rpc", "order", "order", "order", "range"]
+
+
+def _vote_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "prediction_id": "p-1",
+        "investor_name": "Buffett",
+        "recommendation": "HOLD",
+        "confidence": 0.8,
+        "symbol": "BTC",
+        "price_at_prediction": "100.0000",
+        "actual_price_after_12h": "102.0000",
+        "predicted_at": "2026-09-01T10:00:00+00:00",
+        "settled_at": "2026-09-02T05:30:00+00:00",
+    }
+    row.update(overrides)
+    return row
+
+
+class TestPersonaVoteOutcomes:
+    """WIA-51 — RPC `persona_vote_outcomes` (migracja 045) zwraca surowe głosy;
+    trafność i wagi liczy domena z pasmem HOLD klasy aktywa."""
+
+    @staticmethod
+    def _flagged_repo() -> SupabaseRepository:
+        return SupabaseRepository(
+            url="https://test.supabase.co",
+            key="anon-key",
+            persona_vote_outcomes_enabled=True,
+            crypto_symbols=["btc"],
+        )
+
+    def test_maps_rpc_rows_to_domain_outcomes(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.persona_track_record import PersonaVoteOutcome
+
+        _set_chain_response(mock_client, _VOTE_OUTCOME_CHAIN, [_vote_row()])
+
+        (outcome,) = repo.get_persona_vote_outcomes(window_days=30)
+
+        assert outcome == PersonaVoteOutcome(
+            prediction_id="p-1",
+            investor_name="Buffett",
+            recommendation="HOLD",
+            confidence=0.8,
+            symbol="BTC",
+            price_at_prediction=Decimal("100.0000"),
+            actual_price=Decimal("102.0000"),
+            predicted_at=datetime(2026, 9, 1, 10, 0, tzinfo=UTC),
+            settled_at=datetime(2026, 9, 2, 5, 30, tzinfo=UTC),
+        )
+        assert mock_client.rpc.call_args.args == ("persona_vote_outcomes", {"window_days": 30})
+
+    def test_skips_rows_without_prices_or_persona(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            _VOTE_OUTCOME_CHAIN,
+            [
+                _vote_row(actual_price_after_12h=None),
+                _vote_row(investor_name=None),
+                _vote_row(settled_at=None),
+            ],
+        )
+
+        (outcome,) = repo.get_persona_vote_outcomes()
+
+        assert outcome.settled_at is None
+
+    def test_flag_scores_hold_on_crypto_with_the_crypto_tolerance(
+        self, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            _VOTE_OUTCOME_CHAIN,
+            [_vote_row(), _vote_row(prediction_id="p-2", symbol="AAPL")],
+        )
+
+        stats = self._flagged_repo().get_persona_track_record(window_days=90)
+
+        # BTC +2% mieści się w paśmie krypto, AAPL +2% nie — RPC 018 dałoby 0/2.
+        assert stats == {"Buffett": (0.5, 2)}
+        assert mock_client.rpc.call_args.args[0] == "persona_vote_outcomes"
+
+    def test_flag_derives_weights_from_the_same_rule(self, mock_client: MagicMock) -> None:
+        from src.domain.value_objects import AssetType
+
+        _set_chain_response(
+            mock_client,
+            _VOTE_OUTCOME_CHAIN,
+            [_vote_row(), _vote_row(prediction_id="p-2", symbol="AAPL")],
+        )
+
+        weights = self._flagged_repo().get_persona_accuracy(AssetType.STOCK)
+
+        assert weights == {"Buffett": pytest.approx(1.0)}
+        assert mock_client.rpc.call_args.args[0] == "persona_vote_outcomes"
+
+    def test_flag_without_migration_degrades_to_empty(
+        self, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.domain.value_objects import AssetType
+
+        mock_client.rpc.side_effect = APIError(
+            {"code": "PGRST202", "message": "function persona_vote_outcomes not found"}
+        )
+        repo = self._flagged_repo()
+
+        with caplog.at_level(logging.WARNING):
+            assert repo.get_persona_track_record() == {}
+            assert repo.get_persona_accuracy(AssetType.STOCK) == {}
+
+        assert "apply migration 045" in caplog.text
+
+    def test_without_flag_the_old_rpcs_stay(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["rpc"], [])
+
+        repo.get_persona_track_record()
+
+        assert mock_client.rpc.call_args.args[0] == "persona_accuracy_stats"
+
+
 class TestGetCouncilVoteHistory:
     def test_groups_rows_into_investor_histories(
         self, repo: SupabaseRepository, mock_client: MagicMock
