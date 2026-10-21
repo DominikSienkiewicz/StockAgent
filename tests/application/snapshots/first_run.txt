@@ -21,11 +21,6 @@ ZAPLECZE
 Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, pominięte symbole i błędy.
 ================================================================
 
-NASTROJE PORTFELA
-----------------------------------------------------------------
-  Średni sentyment: +0,00 (Neutralny)
-  Wysoka pewność (≥70%): 0 / 0  ·  Newsów: 0
-
 POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------
   NVDA(0,00%), AMD(0,00%), BTC(0,00%)

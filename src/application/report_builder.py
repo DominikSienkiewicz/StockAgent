@@ -2470,8 +2470,23 @@ def _render_credibility_bar_html(accuracy_stats: Mapping[str, Any] | None) -> st
     )
 
 
+# MAIL-10: średnia bez ani jednego sentymentu to brak danych, nie „+0,00 (Neutralny)”.
+_NO_SENTIMENT_LABEL = "brak danych"
+
+
+def _mood_average(mood: Mapping[str, Any]) -> tuple[str, str]:
+    """(średni sentyment, etykieta) — „—” i „brak danych”, gdy cykl nie ma sentymentu."""
+    if not mood.get("sentiment_count"):
+        return "—", _NO_SENTIMENT_LABEL
+    return _number(mood["avg_sentiment"], decimals=2, signed=True), mood["avg_sentiment_label"]
+
+
 def _render_mood_html(mood: dict[str, Any]) -> str:
-    """📊 Nastroje portfela — sentyment cyklu w Zapleczu."""
+    """📊 Nastroje portfela — sentyment cyklu w Zapleczu. MAIL-10: cykl bez
+    zapisanych predykcji (dzień zdegradowany, same pominięte) nie ma boxu."""
+    if mood["saved_count"] == 0:
+        return ""
+    average, average_label = _mood_average(mood)
     bullish_part = (
         f"<strong>{_html(_company_label(mood['most_bullish'].symbol))}</strong> "
         f"({_number(mood['most_bullish'].sentiment_score, decimals=2, signed=True)})"
@@ -2489,8 +2504,8 @@ def _render_mood_html(mood: dict[str, Any]) -> str:
           📊 Nastroje portfela
         </div>
         <div style="color: #1e40af; line-height: 1.7;">
-          Średni sentyment: <strong>{_number(mood['avg_sentiment'], decimals=2, signed=True)}</strong>
-          ({mood['avg_sentiment_label']})<br/>
+          Średni sentyment: <strong>{average}</strong>
+          ({average_label})<br/>
           Najbardziej pozytywny: {bullish_part} · Najbardziej negatywny: {bearish_part}<br/>
           Predykcje z wysoką pewnością (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}
           · Łącznie newsów: {mood['total_news']}
@@ -2775,11 +2790,15 @@ def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list
 
 
 def _render_mood_text(mood: dict[str, Any]) -> list[str]:
-    """Sekcja 'Nastroje portfela' (plain) — w Zapleczu, jak w HTML."""
+    """Sekcja 'Nastroje portfela' (plain) — w Zapleczu, jak w HTML (MAIL-10: bez
+    zapisanych predykcji sekcji nie ma)."""
+    if mood["saved_count"] == 0:
+        return []
+    average, average_label = _mood_average(mood)
     lines = [
         "NASTROJE PORTFELA",
         "-" * 64,
-        f"  Średni sentyment: {_number(mood['avg_sentiment'], decimals=2, signed=True)} ({mood['avg_sentiment_label']})",
+        f"  Średni sentyment: {average} ({average_label})",
     ]
     if mood["most_bullish"]:
         mb = mood["most_bullish"]

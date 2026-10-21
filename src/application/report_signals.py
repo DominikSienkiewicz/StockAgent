@@ -325,7 +325,11 @@ def _to_decimal(value: Any) -> Decimal | None:
 
 
 def build_portfolio_mood(results: list[SymbolResult]) -> dict[str, Any]:
-    """Liczy agregaty dla całego portfela: avg sentiment, top mover, etc."""
+    """Liczy agregaty dla całego portfela: avg sentiment, top mover, etc.
+
+    MAIL-10: `sentiment_count` mówi, z ilu sentymentów jest średnia — przy 0
+    `avg_sentiment` 0.0 to brak danych, nie neutralny nastrój, i raport tak go
+    pokazuje."""
     saved = [r for r in results if r.status == "saved"]
     with_sentiment = [r for r in results if r.sentiment_score is not None]
     sentiments = [r.sentiment_score for r in with_sentiment if r.sentiment_score is not None]
@@ -341,6 +345,7 @@ def build_portfolio_mood(results: list[SymbolResult]) -> dict[str, Any]:
     return {
         "avg_sentiment": avg,
         "avg_sentiment_label": score_to_pl_label(avg),
+        "sentiment_count": len(sentiments),
         "most_bullish": most_bullish,
         "most_bearish": most_bearish,
         "high_confidence_count": high_conf,

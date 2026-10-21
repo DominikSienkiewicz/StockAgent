@@ -3689,3 +3689,40 @@ class TestPositionAwareSignals:
         section = html[start:html.index("<h2", start + 1)]
         assert "UNIKAJ" in section
         assert "% portfela" not in section
+
+
+class TestDegradedDayMood:
+    """MAIL-10 (G46): dzień bez danych nie udaje neutralnego nastroju — box
+    „Nastroje portfela” znika, gdy nic nie zapisano, a bez sentymentów średnia
+    to „—”, nie zmyślone „+0,00 (Neutralny)”."""
+
+    _STARTED = datetime(2026, 5, 14, tzinfo=UTC)
+
+    def test_all_ignored_cycle_has_no_fake_neutral_mood(self):
+        html, text = build_html_report(
+            [_ignored_result("MSFT"), _ignored_result("AAPL")], self._STARTED, 1.0
+        )
+
+        assert "Nastroje portfela" not in html
+        assert "NASTROJE PORTFELA" not in text
+        assert "Średni sentyment" not in html
+        assert "Średni sentyment" not in text
+        assert "0 / 0" not in html
+
+    def test_saved_cycle_without_sentiment_shows_no_average(self):
+        degraded = dataclasses.replace(
+            _saved_result(), sentiment_score=None, sentiment_label=None
+        )
+
+        html, text = build_html_report([degraded], self._STARTED, 1.0)
+
+        assert "Nastroje portfela" in html
+        assert "Średni sentyment: <strong>—</strong> (brak danych)" in html
+        assert "  Średni sentyment: — (brak danych)" in text
+        assert "+0,00 (Neutralny)" not in text
+
+    def test_saved_cycle_with_sentiment_keeps_the_average(self):
+        html, text = build_html_report([_saved_result()], self._STARTED, 1.0)
+
+        assert "Średni sentyment: <strong>+0,42</strong>" in html
+        assert "  Średni sentyment: +0,42" in text
