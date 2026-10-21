@@ -391,6 +391,27 @@ class TestProductionConfigWiring:
         assert isinstance(use_case, AnalyzeMarketUseCase)
 
 
+class TestFastLoopFundamentalsPort:
+    """TEST-06 (G70): Fast Loop czyta fundamenty wyłącznie z cache Supabase.
+
+    Port fundamentów idzie przez graf PRZED bramką volatility, więc delegat
+    z prawdziwym klientem Alpha Vantage kosztowałby request na każdy symbol
+    w każdym cyklu. Cache miss ma skończyć się brakiem danych, nie HTTP."""
+
+    def test_fast_loop_fundamentals_cache_miss_makes_no_http_call(self, mocker):
+        get = mocker.patch("requests.Session.get")
+        post = mocker.patch("requests.Session.post")
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_cached_fundamentals.return_value = None
+
+        port = main_agent.build_fast_loop_fundamentals_port(repository)
+
+        assert port.get_fundamentals("AAPL") is None
+        get.assert_not_called()
+        post.assert_not_called()
+        repository.save_fundamentals.assert_not_called()
+
+
 class TestMainTrainer:
     def test_build_use_case_wires_supabase_and_xgboost(self, settings, mock_external_clients):
         use_case = main_trainer.build_use_case(settings)

@@ -1266,6 +1266,59 @@ class TestVolatilityBelowThreshold:
         )
 
 
+
+class TestVolatilityGateIsSystemic:
+    """TEST-06 (G70): bramka udowodniona dla całego grafu naraz, nie port po porcie.
+
+    Każdy opcjonalny port Fast Loopa jest podpięty jako `Mock(spec=...)`, a ruch
+    +0.5% leży pod progiem 2%. Wyjątkiem jest `fundamentals_port`: z założenia
+    idzie przed bramką i czyta wyłącznie cache (fabryka przypięta w
+    tests/test_main_entrypoints.py)."""
+
+    def test_no_optional_paid_port_touched_when_gated(
+        self, market_port: Mock, repository_port: Mock
+    ) -> None:
+        from src.application.ports import (
+            AdvisoryCouncilPort,
+            AttestationPublisherPort,
+            FundamentalsPort,
+            OptionsFlowPort,
+        )
+        from src.domain.asset import Asset
+
+        gated_ports: dict[str, Mock] = {
+            "sentiment_port": Mock(spec=SentimentPort),
+            "news_port": Mock(spec=NewsPort),
+            "ml_port": Mock(spec=MLPredictionPort),
+            "llm_port": Mock(spec=LLMPort),
+            "embedding_port": Mock(spec=EmbeddingPort),
+            "council_port": Mock(spec=AdvisoryCouncilPort),
+            "tool_use_port": Mock(spec=ToolUseLLMPort),
+            "options_port": Mock(spec=OptionsFlowPort),
+            "attestation_publisher": Mock(spec=AttestationPublisherPort),
+        }
+        fundamentals_port = Mock(spec=FundamentalsPort)
+        fundamentals_port.get_fundamentals.return_value = None
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))  # +0.5%
+        gate = Threshold(Decimal("0.02"))
+
+        final = create_agent_graph(AgentGraphDeps(
+            market_port=market_port,
+            repository_port=repository_port,
+            threshold=gate,
+            council_threshold=gate,
+            tool_use_threshold=gate,
+            fundamentals_port=fundamentals_port,
+            vector_memory_enabled=True,
+            **gated_ports,
+        )).compile().invoke({**_initial_state("100.0"), "asset": Asset("AAPL")})
+
+        assert final["status"] == "ignored"
+        touched = {name: port.mock_calls for name, port in gated_ports.items() if port.mock_calls}
+        assert touched == {}
+        fundamentals_port.get_fundamentals.assert_called_once_with("AAPL")
+
+
 # ---------------------------------------------------------------------------
 # Threshold injection
 # ---------------------------------------------------------------------------

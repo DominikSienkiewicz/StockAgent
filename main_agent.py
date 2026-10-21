@@ -42,6 +42,7 @@ from src.application.ports import (
     CycleRun,
     EarningsCalendarPort,
     EmbeddingPort,
+    FundamentalsPort,
     FxRatePort,
     HeartbeatPort,
     InsiderFlowPort,
@@ -1348,6 +1349,14 @@ def warn_if_paid_calls_disabled(settings: Settings) -> None:
     )
 
 
+def build_fast_loop_fundamentals_port(repository: RepositoryPort) -> FundamentalsPort:
+    """TEST-06 (G70): fundamenty Fast Loopa wyłącznie z cache Supabase.
+
+    Port idzie przez graf PRZED bramką volatility, więc delegat jest Null — cache
+    miss to brak danych, nie płatny request Alpha Vantage (odświeża Slow Loop)."""
+    return CachedFundamentalsAdapter(repo=repository, delegate=NullFundamentalsAdapter())
+
+
 def build_use_case(
     settings: Settings,
     repository: RepositoryPort | None = None,
@@ -1376,11 +1385,7 @@ def build_use_case(
         if settings.paid_calls_enabled
         else _local_stub_ports()
     )
-    # Fast loop: delegate = Null — nie woła płatnego AV, czyta tylko cache Supabase.
-    fundamentals_port = CachedFundamentalsAdapter(
-        repo=supabase_repo,
-        delegate=NullFundamentalsAdapter(),
-    )
+    fundamentals_port = build_fast_loop_fundamentals_port(supabase_repo)
     # Routing: krypto → CoinGecko, reszta → Finnhub. Use case widzi jeden port.
     market_port = RoutingMarketDataPort(
         equity=FinnhubAdapter(
