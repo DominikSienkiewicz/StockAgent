@@ -593,6 +593,7 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
 _COUNCIL_LINE_TEMPLATE = _env.from_string(
     "<span class='b7 {{ tone }}'>{{ label }}</span>"
     " · zgodność {{ strength_pct }}%"
+    "{% if failed %} · ⚠️ odpowiedziało {{ answered }}/{{ size }}{% endif %}"
     "{% if is_split %} · ⚠️ podzielona{% endif %} · "
     "🟢 {{ dist['BUY'] }} KUP · 🔴 {{ dist['SELL'] }} SPRZEDAJ · 🟡 {{ dist['HOLD'] }} TRZYMAJ"
     " — „{{ summary }}”"
@@ -609,6 +610,9 @@ def _render_council_line(verdict: CouncilVerdict) -> str:
         label=council_recommendation_label(final),
         tone=COUNCIL_TONE.get(final, "nt"),
         strength_pct=int(verdict.consensus_strength * 100),
+        failed=verdict.failed_personas,
+        answered=len(verdict.investor_opinions),
+        size=verdict.council_size(),
         is_split=verdict.is_split_decision(),
         dist=verdict.vote_distribution(),
         summary=verdict.summary,

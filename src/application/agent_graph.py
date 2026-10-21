@@ -421,6 +421,9 @@ _LLM_UNIT_FIELDS: tuple[tuple[str, str], ...] = (
 
 # NIEZ-44: flaga jakości predykcji od zapasowego dostawcy LLM (track record ją odsiewa).
 LLM_FAILOVER_FLAG = "llm_failover"
+# MAIL-12: rada miała zagłosować, ale nie dała werdyktu (żadna persona nie
+# odpowiedziała albo adapter rzucił). Predykcja zostaje w track recordzie.
+COUNCIL_UNAVAILABLE_FLAG = "council_unavailable"
 # Znacznik failovera bez modelu — przepis i tak nie może udawać głównego modelu.
 _UNKNOWN_FAILOVER_MODEL = "unknown"
 
@@ -1681,7 +1684,15 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
             "council_node failed for %s — continuing without verdict",
             state["symbol"],
         )
-        verdict = None
+        # MAIL-12: brak werdyktu po awarii ≠ rada pominięta progiem — flaga trafia
+        # do zapisu i do odznak proweniencji w mailu.
+        return {
+            "council_verdict": None,
+            "data_quality_flags": [
+                *(state.get("data_quality_flags") or []),
+                COUNCIL_UNAVAILABLE_FLAG,
+            ],
+        }
     return {"council_verdict": verdict}
 
 

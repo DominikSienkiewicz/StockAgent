@@ -15,7 +15,7 @@ from src.application.ports import (
     SentimentPort,
 )
 from src.domain.asset import Asset
-from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.council import CouncilUnavailableError, CouncilVerdict, InvestorOpinion
 from src.domain.value_objects import AssetType, Money, Threshold
 
 
@@ -214,6 +214,31 @@ class TestCouncilNodeIntegration:
 
         council_port.analyze.assert_not_called()
         assert result.get("council_verdict") is None
+
+    def test_failed_council_is_flagged_in_data_quality(self):
+        # MAIL-12: rada, która padła, i rada pominięta progiem dawały ten sam brak
+        # werdyktu — flaga odróżnia awarię w zapisie i w odznakach maila.
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.side_effect = CouncilUnavailableError("AAPL: no persona answered")
+        graph, repo = _make_graph_with_repo(council_port=council_port)
+
+        result = graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("173.00")})
+
+        assert result.get("council_verdict") is None
+        assert "council_unavailable" in result["data_quality_flags"]
+        record = repo.save_prediction.call_args.args[0]
+        assert "council_unavailable" in record["data_quality_flags"]
+
+    def test_council_skipped_by_threshold_is_not_flagged(self):
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = _make_verdict()
+        graph, _ = _make_graph_with_repo(
+            council_port=council_port, council_threshold=Threshold(Decimal("0.5"))
+        )
+
+        result = graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("176.00")})
+
+        assert "council_unavailable" not in (result.get("data_quality_flags") or [])
 
 
 class TestCouncilVolatilityThreshold:

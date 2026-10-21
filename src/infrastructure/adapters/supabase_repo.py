@@ -448,7 +448,17 @@ def _deserialize_verdict(raw: dict[str, Any]) -> CouncilVerdict:
         summary=str(raw.get("summary", "")),
         dissenting_views=tuple(raw.get("dissenting_views") or ()),
         investor_opinions=opinions,
+        failed_personas=_failed_personas_of(raw.get("failed_personas")),
     )
+
+
+def _failed_personas_of(raw: Any) -> int:
+    """MAIL-12: liczba person bez głosu z JSONB. Brak pola (werdykt sprzed MAIL-12)
+    albo wartość nieczytelna → 0; nie zgadujemy awarii z treści opinii."""
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
 
 
 class SupabaseRepository(RepositoryPort, EvidenceSourcePort):

@@ -115,12 +115,22 @@ class CouncilVerdict:
     summary: str
     dissenting_views: tuple[str, ...]
     investor_opinions: tuple[InvestorOpinion, ...]
+    # MAIL-12: persony wezwane w tym cyklu, które nie oddały głosu (błąd LLM albo
+    # limit czasu). Ich głosu nie ma w `investor_opinions` (NIEZ-09). 0 = cała rada
+    # odpowiedziała — tak czytamy też werdykty zapisane przed tym polem.
+    failed_personas: int = 0
 
     def __post_init__(self) -> None:
         # Tuple zamiast list — frozen=True nie chroni przed mutacją kolekcji
         # w miejscu; koercja daje realną niezmienność (i przyjmuje listę callera).
         object.__setattr__(self, "dissenting_views", tuple(self.dissenting_views))
         object.__setattr__(self, "investor_opinions", tuple(self.investor_opinions))
+        if self.failed_personas < 0:
+            raise ValueError(f"failed_personas must be >= 0, got {self.failed_personas}")
+
+    def council_size(self) -> int:
+        """Skład rady wezwanej w cyklu: oddane głosy + persony, które padły."""
+        return len(self.investor_opinions) + self.failed_personas
 
     def has_strong_consensus(
         self, threshold: float = STRONG_CONSENSUS_THRESHOLD

@@ -111,6 +111,40 @@ class TestCouncilVerdict:
         assert len(v.investor_opinions) == 2
 
 
+class TestFailedPersonas:
+    """MAIL-12: werdykt mówi, ile person nie oddało głosu — mail odróżnia radę
+    pominiętą progiem od rady, która częściowo padła."""
+
+    def _verdict(self, failed: int = 0) -> CouncilVerdict:
+        return CouncilVerdict(
+            final_recommendation="BUY",
+            consensus_strength=0.8,
+            summary="Test.",
+            dissenting_views=(),
+            investor_opinions=(_make_opinion("BUY"), _make_opinion("HOLD")),
+            failed_personas=failed,
+        )
+
+    def test_defaults_to_zero_so_old_verdicts_mean_a_full_council(self) -> None:
+        verdict = CouncilVerdict(
+            final_recommendation="BUY",
+            consensus_strength=0.8,
+            summary="Test.",
+            dissenting_views=(),
+            investor_opinions=(_make_opinion("BUY"),),
+        )
+
+        assert verdict.failed_personas == 0
+        assert verdict.council_size() == 1
+
+    def test_council_size_counts_answered_and_failed_personas(self) -> None:
+        assert self._verdict(failed=3).council_size() == 5
+
+    def test_negative_failed_count_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="failed_personas"):
+            self._verdict(failed=-1)
+
+
 class TestCouncilVerdictBehavior:
     """Metody domenowe — zastępują ad-hoc logikę w grafie/raporcie.
 

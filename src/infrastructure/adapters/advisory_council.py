@@ -274,4 +274,6 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
             summary=str(raw.get("summary") or ""),
             dissenting_views=tuple(str(v) for v in (raw.get("dissenting_views") or [])),
             investor_opinions=tuple(resolved_opinions),
+            # MAIL-12: mail pokazuje „odpowiedziało X/N”, gdy części person zabrakło.
+            failed_personas=len(personas) - len(resolved_opinions),
         )

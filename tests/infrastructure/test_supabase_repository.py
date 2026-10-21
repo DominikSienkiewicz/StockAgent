@@ -2080,6 +2080,30 @@ class TestGetPreviousVerdict:
         assert previous.verdict.investor_opinions[0].recommendation == "SELL"
         assert "STRONG_BUY" in caplog.text
 
+    def test_verdict_without_failed_personas_reads_as_full_council(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # MAIL-12: JSONB sprzed pola nie zgaduje awarii z treści opinii — 0.
+        self._set_verdict_chain(mock_client, [self._row()])
+
+        previous = repo.get_previous_verdict("NVDA")
+
+        assert previous is not None
+        assert previous.verdict.failed_personas == 0
+
+    @pytest.mark.parametrize(("raw", "expected"), [(3, 3), ("2", 2), (-1, 0), ("x", 0)])
+    def test_verdict_reads_failed_personas_from_jsonb(
+        self, repo: SupabaseRepository, mock_client: MagicMock, raw: object, expected: int
+    ) -> None:
+        row = self._row()
+        row["council_verdict"]["failed_personas"] = raw
+        self._set_verdict_chain(mock_client, [row])
+
+        previous = repo.get_previous_verdict("NVDA")
+
+        assert previous is not None
+        assert previous.verdict.failed_personas == expected
+
 
 class TestShockAlerts:
     """#11 — dedup alertów szoku (migracja 021, UNIQUE(symbol, alert_date))."""
