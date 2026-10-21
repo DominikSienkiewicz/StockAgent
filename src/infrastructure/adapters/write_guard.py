@@ -38,6 +38,7 @@ from src.application.ports import (
     StoredReceipt,
 )
 from src.application.report_council_history import InvestorHistory
+from src.domain.attestation import StoredCommitment
 from src.domain.council import InvestorOpinion
 from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
@@ -117,6 +118,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_unrevealed_commitments",
         "attestation_columns_available",
         "get_current_hour_commitment_salt",
+        "get_current_hour_commitment",
         "get_latest_snapshot_at",
         "get_last_scorecard_at",
         "probe_database",
@@ -266,6 +268,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_current_hour_commitment_salt(self, symbol: str) -> str | None:
         return self._delegate.get_current_hour_commitment_salt(symbol)
+
+    def get_current_hour_commitment(self, symbol: str) -> StoredCommitment | None:
+        return self._delegate.get_current_hour_commitment(symbol)
 
     def get_latest_snapshot_at(self) -> datetime | None:
         return self._delegate.get_latest_snapshot_at()

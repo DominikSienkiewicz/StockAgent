@@ -49,13 +49,15 @@ from src.application.rag_rerank import rerank_analogs
 from src.application.usage_ledger import usage_scope
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import Asset, PriceDelta, effective_threshold
-from src.domain.attestation import SCHEMA_VERSION as ATTESTATION_SCHEMA_VERSION
 from src.domain.attestation import (
+    REVEAL_STATUS_SUPERSEDED,
+    StoredCommitment,
     canonicalize,
     commit_canonical,
     new_salt,
     prediction_commitment_payload,
 )
+from src.domain.attestation import SCHEMA_VERSION as ATTESTATION_SCHEMA_VERSION
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
 from src.domain.council import (
     CouncilInput,
@@ -1366,13 +1368,22 @@ def _run_ml_prediction(
     return ml_target, feature_attribution
 
 
+@dataclasses.dataclass(frozen=True)
+class _SealedCommitment:
+    """Hash do publikacji po zapisie i — przy nadpisaniu innej predykcji w tej
+    samej godzinie — commitment, który trzeba wtedy ujawnić jako „superseded"."""
+
+    commitment: str
+    superseded: StoredCommitment | None
+
+
 def _seal_commitment(
     deps: AgentGraphDeps,
     record: dict[str, Any],
     *,
     council: CouncilVerdict | None,
     recipe: PredictionRecipe | None,
-) -> str | None:
+) -> _SealedCommitment | None:
     """#16 — dokleja do rekordu SHA-256 commitment, sól i zahashowany plaintext.
 
     Commit-reveal: publikujemy sam HASH treści predykcji + losowej soli.
@@ -1386,7 +1397,7 @@ def _seal_commitment(
     Klucze dokładane TYLKO gdy publisher istnieje — nowe kolumny przed migracjami
     024 i 043 dałyby PGRST204 i zabiły zapis całej predykcji (gate jak
     `receipts_enabled`; DI daje publisher dopiero, gdy kolumny istnieją).
-    Zwraca hash do publikacji PO zapisie (WIA-01) albo None, gdy atestacja off.
+    Zwraca commitment do publikacji PO zapisie (WIA-01) albo None, gdy atestacja off.
 
     WIA-41: werdykt rady powstaje po predict, więc commitment liczymy tutaj,
     w save_node — razem z pewnością i przepisem, z którego FAKTYCZNIE powstała
@@ -1409,35 +1420,70 @@ def _seal_commitment(
     )
     # WIA-70: hash liczony z tych samych bajtów, które zapisujemy i ujawnimy dosłownie.
     plaintext = canonicalize(payload, schema_version=ATTESTATION_SCHEMA_VERSION)
-    salt = _commitment_salt(deps, record["symbol"])
+    salt, superseded = _commitment_salt(deps, record["symbol"], plaintext)
     commitment = commit_canonical(plaintext, salt)
     record["commitment_hash"] = commitment
     record["commitment_salt"] = salt
     record["commitment_payload"] = plaintext
-    return commitment
+    return _SealedCommitment(commitment=commitment, superseded=superseded)
 
 
-def _commitment_salt(deps: AgentGraphDeps, symbol: str) -> str:
-    """WIA-01: sól wiersza z tej samej godziny albo świeża.
+def _commitment_salt(
+    deps: AgentGraphDeps, symbol: str, plaintext: str
+) -> tuple[str, StoredCommitment | None]:
+    """WIA-01: sól wiersza z tej samej godziny albo świeża, plus commitment,
+    który ten zapis nadpisze INNĄ predykcją.
 
     Upsert (symbol, timestamp_hour) nadpisuje wiersz przy retry LangGraph albo
-    re-runie GHA. Z nową solą opublikowany wcześniej hash tej samej predykcji
-    zostałby bez soli w bazie — nie do ujawnienia, czyli jak ukryte pudło.
-    Wartość spoza kontraktu portu (nie tekst, pusta) traktujemy jak brak."""
+    re-runie GHA. Ten sam payload z tą samą solą daje ten sam, już opublikowany
+    hash — bez revealu. Inny payload zabrałby z bazy sól i plaintext starego,
+    opublikowanego hasha (nie do ujawnienia, czyli jak ukryte pudło), więc stary
+    commitment idzie do revealu „superseded", a nowa predykcja dostaje świeżą
+    sól — stara będzie jawna. Bez odczytu hasha (błąd, brak kolumny) zostaje
+    reuse soli. Wartość spoza kontraktu portu (nie tekst, pusta) = brak."""
     existing = deps.repository_port.get_current_hour_commitment_salt(symbol)
-    return existing if isinstance(existing, str) and existing else new_salt()
+    if not (isinstance(existing, str) and existing):
+        return new_salt(), None
+    stored = deps.repository_port.get_current_hour_commitment(symbol)
+    if not isinstance(stored, StoredCommitment):
+        return existing, None
+    if stored.is_superseded_by(plaintext):
+        return new_salt(), stored
+    return stored.salt, None
 
 
-def _publish_commitment(deps: AgentGraphDeps, symbol: str, commitment: str) -> None:
+def _superseded_reveal_record(symbol: str, stored: StoredCommitment) -> dict[str, Any]:
+    """WIA-01 — reveal nadpisanego commitmentu: sól i dosłowny plaintext od razu,
+    bo po upsercie nie ma ich już w bazie (sweep nigdy by ich nie ujawnił)."""
+    record: dict[str, Any] = {
+        "symbol": symbol,
+        "commitment": stored.commitment,
+        "salt": stored.salt,
+        "status": REVEAL_STATUS_SUPERSEDED,
+    }
+    if stored.payload is not None:
+        record["payload"] = stored.payload
+    return record
+
+
+def _publish_commitment(deps: AgentGraphDeps, symbol: str, sealed: _SealedCommitment) -> None:
     """#16 — publikuje sam hash (bez soli). WIA-01: wołane DOPIERO po udanym
-    `save_prediction` — hash bez zapisanej soli nigdy nie zostałby ujawniony.
+    `save_prediction` — hash bez zapisanej soli nigdy nie zostałby ujawniony,
+    a nieudany zapis zostawia nadpisywany wiersz nietknięty (ujawni go sweep).
     Awaria publikacji nigdy nie wywala cyklu."""
     if deps.attestation_publisher is None:
         return
+    if sealed.superseded is not None:
+        try:
+            deps.attestation_publisher.publish_reveal(
+                _superseded_reveal_record(symbol, sealed.superseded)
+            )
+        except Exception:
+            logger.exception("Superseded commitment reveal failed for %s", symbol)
     try:
         # Publikujemy WYŁĄCZNIE hash — sól zostaje w bazie do czasu revealu.
         deps.attestation_publisher.publish_commitment(
-            {"symbol": symbol, "commitment": commitment}
+            {"symbol": symbol, "commitment": sealed.commitment}
         )
     except Exception:
         logger.exception("Attestation commitment publish failed for %s", symbol)
@@ -1984,7 +2030,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         record["stale_quote"] = stale_quote
 
     # #16: commit-reveal (migracje 024, 043); publikacja dopiero po zapisie.
-    commitment = _seal_commitment(deps, record, council=council_verdict, recipe=recipe)
+    sealed = _seal_commitment(deps, record, council=council_verdict, recipe=recipe)
 
     # Embedding podsumowania newsów → pgvector (reużyty z predict_node lub
     # policzony tu w fallbacku; graceful — przy braku zapisujemy bez wektora).
@@ -1994,8 +2040,8 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
     prediction_id = repository_port.save_prediction(record)
     # WIA-01: hash trafia do publicznego logu dopiero, gdy sól jest w bazie.
-    if commitment is not None:
-        _publish_commitment(deps, state["symbol"], commitment)
+    if sealed is not None:
+        _publish_commitment(deps, state["symbol"], sealed)
 
     # Strukturalny audit trail rady — JSONB blob w prediction_logs zostaje
     # (wstecz-kompat), ale głosy lecą też do osobnej tabeli, żeby dało się

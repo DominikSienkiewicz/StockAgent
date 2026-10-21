@@ -3588,6 +3588,96 @@ class TestCurrentHourCommitmentSalt:
 
         assert repo.get_current_hour_commitment_salt("AAPL") is None
 
+
+class TestCurrentHourCommitment:
+    """WIA-01: commitment wiersza (symbol, bieżąca godzina UTC). Graf porównuje go
+    z nowym payloadem — inny payload nadpisze wiersz, więc stary commitment trzeba
+    ujawnić jako „superseded", póki sól i plaintext są jeszcze w bazie."""
+
+    @staticmethod
+    def _builder(mock_client: MagicMock, rows: list[dict[str, Any]]) -> MagicMock:
+        builder = _fluent_query(mock_client, [])
+        builder.limit.return_value = builder
+        builder.execute.return_value = MagicMock(data=rows)
+        return builder
+
+    def test_reads_hash_salt_and_payload_of_this_hour_row(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.attestation import StoredCommitment
+
+        builder = self._builder(
+            mock_client,
+            [
+                {
+                    "commitment_hash": "a" * 64,
+                    "commitment_salt": "f" * 32,
+                    "commitment_payload": '{"schema_version":2}',
+                }
+            ],
+        )
+        before = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+
+        stored = repo.get_current_hour_commitment("AAPL")
+
+        after = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        assert stored == StoredCommitment(
+            commitment="a" * 64, salt="f" * 32, payload='{"schema_version":2}'
+        )
+        columns = builder.select.call_args.args[0]
+        assert {c.strip() for c in columns.split(",")} == {
+            "commitment_hash",
+            "commitment_salt",
+            "commitment_payload",
+        }
+        filters = {call.args[0]: call.args[1] for call in builder.eq.call_args_list}
+        assert filters["symbol"] == "AAPL"
+        assert datetime.fromisoformat(filters["timestamp_hour"]) in {before, after}
+
+    def test_row_without_payload_keeps_the_hash_and_salt(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Wiersz sprzed 043: porównanie idzie po hashu, reveal bez plaintextu.
+        self._builder(
+            mock_client,
+            [
+                {
+                    "commitment_hash": "a" * 64,
+                    "commitment_salt": "f" * 32,
+                    "commitment_payload": None,
+                }
+            ],
+        )
+
+        stored = repo.get_current_hour_commitment("AAPL")
+
+        assert stored is not None
+        assert stored.payload is None
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            [],
+            [{"commitment_hash": None, "commitment_salt": "f" * 32, "commitment_payload": None}],
+            [{"commitment_hash": "a" * 64, "commitment_salt": None, "commitment_payload": None}],
+        ],
+    )
+    def test_no_complete_commitment_this_hour_means_none(
+        self, repo: SupabaseRepository, mock_client: MagicMock, rows: list[dict[str, Any]]
+    ) -> None:
+        self._builder(mock_client, rows)
+
+        assert repo.get_current_hour_commitment("AAPL") is None
+
+    def test_read_failure_degrades_to_none(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = self._builder(mock_client, [])
+        builder.execute.side_effect = Exception("column commitment_payload does not exist")
+
+        assert repo.get_current_hour_commitment("AAPL") is None
+
+
 class TestSaveCalibrationScoreVersion:
     """WIA-37: kolumna `calibration_score_version` (migracja 044) idzie do zapisu
     tylko z wersją; bez niej payload nie ma nowego klucza (PGRST204 przed 044)."""

@@ -40,6 +40,7 @@ import json
 import math
 import secrets
 from collections.abc import Mapping
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -156,6 +157,30 @@ def verify(
 def verify_canonical(canonical: str, salt: str, commitment: str) -> bool:
     """`verify` dla dosłownego plaintextu z revealu v2 (bez ponownej kanonizacji)."""
     return hmac.compare_digest(commit_canonical(canonical, salt), commitment.lower())
+
+
+# WIA-01: status revealu commitmentu nadpisanego w tej samej godzinie UTC. Wchodzi
+# do publicznego ledgera revealów — weryfikator odróżnia po nim nadpisanie od rozliczenia.
+REVEAL_STATUS_SUPERSEDED = "superseded"
+
+
+@dataclass(frozen=True)
+class StoredCommitment:
+    """WIA-01 — commitment, który leży już w wierszu (symbol, godzina UTC).
+
+    `payload` to dosłowny plaintext z kolumny `commitment_payload` (043);
+    None w wierszu sprzed migracji."""
+
+    commitment: str
+    salt: str
+    payload: str | None
+
+    def is_superseded_by(self, canonical: str) -> bool:
+        """Czy zapis `canonical` nadpisze INNĄ predykcję niż ta zahashowana.
+
+        Porównanie hashem z tą samą solą, nie tekstem payloadu: działa też dla
+        wiersza bez plaintextu, a retry tej samej predykcji daje ten sam hash."""
+        return not verify_canonical(canonical, self.salt, self.commitment)
 
 
 def prediction_commitment_payload(

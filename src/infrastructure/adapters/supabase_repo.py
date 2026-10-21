@@ -22,6 +22,7 @@ from src.application.ports import (
     StoredReceipt,
 )
 from src.application.report_council_history import InvestorHistory
+from src.domain.attestation import StoredCommitment
 from src.domain.council import (
     CouncilVerdict,
     InvestorOpinion,
@@ -1449,6 +1450,40 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             return None
         rows = _rows(response)
         return str(rows[0]["commitment_salt"]) if rows else None
+
+    def get_current_hour_commitment(self, symbol: str) -> StoredCommitment | None:
+        # Ta sama godzina co w `get_current_hour_commitment_salt` (klucz upsertu z 013).
+        hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        try:
+            response = (
+                self._client.table(self._table)
+                .select(f"commitment_hash, commitment_salt, {_COMMITMENT_PAYLOAD_COLUMN}")
+                .eq("symbol", symbol)
+                .eq("timestamp_hour", hour.isoformat())
+                .not_.is_("commitment_hash", "null")
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "Stored commitment of %s unavailable — bez revealu nadpisania",
+                symbol,
+                exc_info=True,
+            )
+            return None
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        commitment, salt = row.get("commitment_hash"), row.get("commitment_salt")
+        if not commitment or not salt:
+            return None
+        payload = row.get(_COMMITMENT_PAYLOAD_COLUMN)
+        return StoredCommitment(
+            commitment=str(commitment),
+            salt=str(salt),
+            payload=None if payload is None else str(payload),
+        )
 
     def attestation_columns_available(self) -> bool:
         try:

@@ -9,6 +9,7 @@ from typing import Any
 
 from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
+from src.domain.attestation import StoredCommitment
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.earnings import CachedEarningsDate, EarningsEvent
 from src.domain.finops import LLMCallEntry, LLMUsage
@@ -547,6 +548,14 @@ class RepositoryPort(ABC):
 
         Ponowny zapis w tej godzinie (retry LangGraph, re-run GHA) nadpisuje wiersz:
         z tą samą solą ten sam payload daje ten sam, już opublikowany hash."""
+
+    @abstractmethod
+    def get_current_hour_commitment(self, symbol: str) -> StoredCommitment | None:
+        """WIA-01 — hash, sól i plaintext commitmentu wiersza `symbol` z bieżącej
+        godziny UTC. None = brak wiersza z hashem i solą albo błąd odczytu.
+
+        Inny payload nadpisze ten wiersz, więc graf ujawnia stary commitment jako
+        „superseded", póki jego sól i plaintext są jeszcze w bazie."""
 
     @abstractmethod
     def attestation_columns_available(self) -> bool:

@@ -321,3 +321,28 @@ def test_confidence_is_a_quantized_decimal_string_not_a_float() -> None:
 def test_verify_canonical_rejects_a_tampered_confidence() -> None:
     tampered = _CANON_V2.replace('"confidence_score":"0.8500"', '"confidence_score":"0.9500"')
     assert attestation.verify_canonical(tampered, _SALT_E, _HASH_V2) is False
+
+
+# --- WIA-01: commitment zapisany w wierszu tej samej godziny UTC ---
+
+
+def test_stored_commitment_is_not_superseded_by_its_own_plaintext() -> None:
+    # Retry tej samej predykcji: ta sama sól da ten sam, już opublikowany hash.
+    stored = attestation.StoredCommitment(commitment=_HASH_1, salt=_SALT_A, payload=_CANON_1)
+    assert stored.is_superseded_by(_CANON_1) is False
+
+
+def test_stored_commitment_is_superseded_by_another_plaintext() -> None:
+    stored = attestation.StoredCommitment(commitment=_HASH_1, salt=_SALT_A, payload=_CANON_1)
+    assert stored.is_superseded_by(_CANON_1.replace('"up"', '"down"')) is True
+
+
+def test_superseded_check_compares_hashes_not_the_stored_payload() -> None:
+    # Wiersz bez `commitment_payload` (sprzed 043) też da się porównać: hash + sól.
+    stored = attestation.StoredCommitment(commitment=_HASH_1, salt=_SALT_A, payload=None)
+    assert stored.is_superseded_by(_CANON_1) is False
+
+
+def test_superseded_reveal_status_is_frozen() -> None:
+    # Status trafia do publicznego ledgera revealów — weryfikator filtruje po nim.
+    assert attestation.REVEAL_STATUS_SUPERSEDED == "superseded"

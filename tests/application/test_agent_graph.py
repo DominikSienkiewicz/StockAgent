@@ -3303,6 +3303,183 @@ class TestAttestationCommitment:
 
         repository_port.get_current_hour_commitment_salt.assert_not_called()
 
+    @staticmethod
+    def _stored(payload: str, salt: str):
+        """Commitment, który leży już w wierszu (symbol, bieżąca godzina UTC)."""
+        import hashlib
+
+        from src.domain.attestation import StoredCommitment
+
+        digest = hashlib.sha256((payload + salt).encode("utf-8")).hexdigest()
+        return StoredCommitment(commitment=digest, salt=salt, payload=payload)
+
+    def _with_stored_commitment(self, repository_port, stored) -> None:
+        repository_port.get_current_hour_commitment_salt.return_value = stored.salt
+        repository_port.get_current_hour_commitment.return_value = stored
+
+    _OTHER_PAYLOAD = '{"predicted_trend":"BEARISH","schema_version":2,"symbol":"AAPL"}'
+
+    def test_rerun_with_another_payload_reveals_the_superseded_commitment(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-01: upsert nadpisze wiersz INNĄ predykcją. Hash starej jest już
+        # w ledgerze, a jej sól i plaintext zaraz znikną z bazy — bez revealu
+        # „superseded" zostałby hash nie do ujawnienia, czyli ukryte pudło.
+        import hashlib
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        stored = self._stored(self._OTHER_PAYLOAD, "e" * 32)
+        self._with_stored_commitment(repository_port, stored)
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+
+        self._run(ports, publisher)
+
+        repository_port.get_current_hour_commitment.assert_called_once_with("AAPL")
+        publisher.publish_reveal.assert_called_once_with({
+            "symbol": "AAPL",
+            "commitment": stored.commitment,
+            "salt": "e" * 32,
+            "payload": self._OTHER_PAYLOAD,
+            "status": "superseded",
+        })
+        record = repository_port.save_prediction.call_args.args[0]
+        # Sól starej predykcji jest już jawna — nowa dostaje świeżą.
+        assert record["commitment_salt"] != "e" * 32
+        digest = hashlib.sha256(
+            (record["commitment_payload"] + record["commitment_salt"]).encode("utf-8")
+        )
+        assert record["commitment_hash"] == digest.hexdigest()
+        publisher.publish_commitment.assert_called_once_with(
+            {"symbol": "AAPL", "commitment": record["commitment_hash"]}
+        )
+
+    def test_retry_with_the_same_payload_reuses_the_salt_without_a_reveal(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-01: retry LangGraph / re-run GHA tej samej predykcji to nie nadpisanie —
+        # ta sama sól daje ten sam, już opublikowany hash i nic nie jest ujawniane.
+        from src.domain.attestation import StoredCommitment
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        self._run(ports, self._publisher())
+        first = repository_port.save_prediction.call_args.args[0]
+        stored = StoredCommitment(
+            commitment=first["commitment_hash"],
+            salt=first["commitment_salt"],
+            payload=first["commitment_payload"],
+        )
+        self._with_stored_commitment(repository_port, stored)
+        publisher = self._publisher()
+
+        self._run(ports, publisher)
+
+        retried = repository_port.save_prediction.call_args.args[0]
+        assert retried["commitment_salt"] == stored.salt
+        assert retried["commitment_hash"] == stored.commitment
+        publisher.publish_reveal.assert_not_called()
+
+    def test_superseded_commitment_is_not_revealed_when_the_save_fails(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Nieudany zapis zostawia stary wiersz nietknięty — ujawni go zwykły sweep
+        # po rozliczeniu; reveal „superseded" kłamałby, że został nadpisany.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        self._with_stored_commitment(
+            repository_port, self._stored(self._OTHER_PAYLOAD, "e" * 32)
+        )
+        repository_port.save_prediction.side_effect = RuntimeError("supabase down")
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+
+        with pytest.raises(RuntimeError, match="supabase down"):
+            self._run(ports, publisher)
+
+        publisher.publish_reveal.assert_not_called()
+
+    def test_superseded_reveal_failure_never_breaks_the_cycle(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        self._with_stored_commitment(
+            repository_port, self._stored(self._OTHER_PAYLOAD, "e" * 32)
+        )
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+        publisher.publish_reveal.side_effect = OSError("disk full")
+
+        final = self._run(ports, publisher)
+
+        assert final["status"] == "saved"
+        publisher.publish_commitment.assert_called_once()
+
+    def test_unreadable_stored_commitment_keeps_reusing_the_salt(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Bez hasha nie wiadomo, czy payload jest inny — zostaje dotychczasowe
+        # zachowanie: ta sama sól (retry da ten sam hash), bez revealu.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        repository_port.get_current_hour_commitment_salt.return_value = "f" * 32
+        repository_port.get_current_hour_commitment.return_value = None
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+
+        self._run(ports, publisher)
+
+        assert repository_port.save_prediction.call_args.args[0]["commitment_salt"] == "f" * 32
+        publisher.publish_reveal.assert_not_called()
+
+    def test_first_save_of_the_hour_does_not_read_a_stored_commitment(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # Bez soli w tej godzinie nie ma czego nadpisać — zero dodatkowych odczytów.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        repository_port.get_current_hour_commitment_salt.return_value = None
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+
+        self._run(ports, publisher)
+
+        repository_port.get_current_hour_commitment.assert_not_called()
+        publisher.publish_reveal.assert_not_called()
+
 
 class TestPaidCallMeter:
     """FinOps transparency — agent raportuje własny rachunek. Licznik zbiera
