@@ -88,3 +88,51 @@ def test_threshold_multiplier_returns_float() -> None:
 
     result = earnings_threshold_multiplier(EarningsProximity.IMMINENT)
     assert isinstance(result, float)
+
+
+class TestCachedEarningsDate:
+    """FIN-11: cache Slow Loopa trzyma datę raportu, nie liczbę dni — Fast Loop liczy
+    `days_until` od dnia cyklu, więc wpis z niedzieli działa cały tydzień."""
+
+    def test_event_counts_days_from_the_cycle_day(self) -> None:
+        from datetime import UTC, date, datetime
+
+        from src.domain.earnings import CachedEarningsDate
+
+        cached = CachedEarningsDate(
+            symbol="AAPL",
+            report_date=date(2026, 10, 29),
+            fetched_at=datetime(2026, 10, 25, 3, 0, tzinfo=UTC),
+        )
+
+        event = cached.event(today=date(2026, 10, 27))
+
+        assert event == EarningsEvent("AAPL", days_until=2, report_date="2026-10-29")
+        assert event is not None and event.proximity() is EarningsProximity.IMMINENT
+
+    def test_report_on_the_cycle_day_is_still_upcoming(self) -> None:
+        from datetime import UTC, date, datetime
+
+        from src.domain.earnings import CachedEarningsDate
+
+        cached = CachedEarningsDate("AAPL", date(2026, 10, 27), datetime(2026, 10, 25, tzinfo=UTC))
+
+        assert cached.event(today=date(2026, 10, 27)) == EarningsEvent(
+            "AAPL", days_until=0, report_date="2026-10-27"
+        )
+
+    def test_report_already_published_gives_no_event(self) -> None:
+        from datetime import UTC, date, datetime
+
+        from src.domain.earnings import CachedEarningsDate
+
+        cached = CachedEarningsDate("AAPL", date(2026, 10, 22), datetime(2026, 10, 18, tzinfo=UTC))
+
+        assert cached.event(today=date(2026, 10, 27)) is None
+
+    def test_cache_ttl_covers_the_fast_loop_week_after_the_sunday_refresh(self) -> None:
+        # Slow Loop: niedziela 03:00 UTC; Fast Loop: pon–pt. Po 6 dniach wpis wygasa,
+        # więc następna niedziela odświeża go z Alpha Vantage.
+        from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS
+
+        assert 5 * 24 < EARNINGS_CACHE_TTL_HOURS < 7 * 24

@@ -185,6 +185,10 @@ insider_flow_enabled = true
 # sentymentu (~39/dzień). Darmowy AV = 25 req/dzień/klucz, więc wymaga >= 4 kluczy.
 # Włącz dopiero, gdy masz tyle w ALPHA_VANTAGE_API_KEYS. Odblokowuje bramkę earnings (#6).
 earnings_calendar_enabled = false
+# FIN-11 (wymaga migracji 053): z kalendarzem bramka earnings czyta datę raportu
+# z `earnings_cache`, który Slow Loop odświeża raz w tygodniu wszystkimi kluczami AV —
+# Fast Loop nie płaci wtedy za kalendarz. Off, dopóki DB Migrate nie założy tabeli.
+earnings_cache_enabled = false
 # FIN-32: najgorszy przypadek doby AV (cała watchlista za bramką, +1 na symbol przy
 # kalendarzu wyników) ponad 25 × liczba kluczy → WARNING w logu i w bannerze maila.
 # true = błąd startu zamiast ostrzeżenia. Off, bo liczba kluczy żyje w sekretach.

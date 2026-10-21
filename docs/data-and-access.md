@@ -35,6 +35,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `llm_calls` | `040` | Operational: one row per LLM or embedding request (tokens, cost, run, node, symbol), no prompt text | on, no policies | Fast Loop, Slow Loop (`cost_ledger_enabled`) | nobody in the app yet |
 | `cycle_runs` | `041` | Operational: one row per loop run (run id and attempt, start, duration, symbol counts, paid calls per source, email delivered), no symbols | on, no policies | Fast Loop (`cycle_runs_enabled`) | nobody in the app yet |
 | `reference_predictions` | `042` | Model output: the free reference signal (WIA-24) — one row per weekly read with its call and settlement, `recipe_version = 'reference-v1'`, kept out of `prediction_logs` | on, no policies | Slow Loop (`reference_signal_enabled`) | Slow Loop (baseline read and open calls) |
+| `earnings_cache` | `053` | Market data: the next earnings report date per stock symbol from Alpha Vantage (FIN-11) | on, no policies | Slow Loop (`earnings_cache_enabled`) | Fast Loop (earnings gate) |
 
 The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges):
 
@@ -81,7 +82,8 @@ Nothing is deleted automatically: there is no retention job and no TTL in the da
   updated once, when its call is settled). Deleting a prediction also deletes its `council_votes`
   (`ON DELETE CASCADE`).
 - `fundamentals_cache` holds one row per symbol, overwritten on refresh. The 144-hour TTL is
-  applied when the row is read, not by deleting it.
+  applied when the row is read, not by deleting it. `earnings_cache` works the same way: one
+  report date per stock symbol, overwritten by the weekly refresh, read only within 144 hours.
 - `positions` is replaced as a whole by `main_tools.py import-positions --apply`: the new rows
   are inserted and the old ones deleted.
 - `subscribers` is maintained by hand. Deleting a row removes that recipient's email address

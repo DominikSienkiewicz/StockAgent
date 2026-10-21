@@ -55,9 +55,11 @@ from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
 from src.config import Settings
 from src.domain.finops import slow_loop_paid_budget
 from src.domain.fundamentals_refresh import refresh_budget, select_refresh_batch
+from src.infrastructure.adapters.alpha_vantage_earnings import AlphaVantageEarningsAdapter
 from src.infrastructure.adapters.alpha_vantage_fundamentals import (
     AlphaVantageFundamentalsAdapter,
 )
+from src.infrastructure.adapters.cached_earnings import CachedEarningsAdapter
 from src.infrastructure.adapters.cached_fundamentals import CachedFundamentalsAdapter
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.write_guard import ReadOnlyRepository
@@ -166,6 +168,36 @@ def _fundamentals_fetched_at(
         symbol: stamp if isinstance(stamp := known.get(symbol), datetime) else None
         for symbol in symbols
     }
+
+
+def _refresh_earnings_cache(settings: Settings, repository: RepositoryPort) -> None:
+    """FIN-11: raz w tygodniu odświeża `earnings_cache` (migracja 053) z Alpha
+    Vantage — Fast Loop czyta datę raportu wyłącznie z cache, przed bramką
+    volatility nie płaci za kalendarz.
+
+    Wszystkie klucze AV (rotacja przy soft-limicie), bo fundamenty tego samego
+    przebiegu zużywają już pierwszy klucz. Tylko spółki: ETF i krypto nie mają
+    raportów. Wpis młodszy niż TTL (np. ponowny przebieg w tym samym tygodniu) nie
+    kosztuje requestu. Pojedynczy błąd nie przerywa odświeżania."""
+    if not (settings.earnings_calendar_enabled and settings.earnings_cache_enabled):
+        return
+    if not settings.paid_calls_enabled:
+        logger.info("Earnings cache refresh skipped — lokalnie bez płatnych wywołań")
+        return
+    if not settings.alpha_vantage_api_keys:
+        logger.warning("Earnings cache refresh skipped — ALPHA_VANTAGE_API_KEYS is empty")
+        return
+    first_key, *reserve_keys = settings.alpha_vantage_api_keys
+    calendar = CachedEarningsAdapter(
+        repo=repository,
+        delegate=AlphaVantageEarningsAdapter(api_key=first_key, reserve_keys=reserve_keys),
+    )
+    stock_symbols = [s for s in settings.symbols if s not in settings.symbols_etf]
+    for symbol in stock_symbols:
+        try:
+            calendar.get_next_earnings(symbol)
+        except Exception:
+            logger.exception("Earnings cache refresh failed for %s", symbol)
 
 
 def _persist_quota_alerts(
@@ -503,6 +535,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
         return 1
 
     _refresh_fundamentals_cache(settings, repository, quota_monitor)
+    _refresh_earnings_cache(settings, repository)
     persisted_alerts = _persist_quota_alerts(repository, quota_monitor)
 
     # BUG: trener widział tylko `settings.symbols`, więc BTC/ETH NIGDY nie

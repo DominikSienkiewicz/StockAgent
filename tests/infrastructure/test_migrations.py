@@ -73,6 +73,7 @@ MIGRATION_FILES = [
     "048_normalize_predicted_trend.sql",
     "049_model_scorecards_run_id.sql",
     "050_feature_store_label_horizon.sql",
+    "053_earnings_cache.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -2305,6 +2306,60 @@ class TestMigration048NormalizesPredictedTrend:
             "NT_NULL": None,
         }
         assert validated == [False]
+
+@pytest.mark.containers
+class TestMigration053EarningsCache:
+    """FIN-11: `earnings_cache` — jedna data raportu na spółkę, odświeżana upsertem
+    w Slow Loopie, zamknięta dla ról publicznych jak każda tabela po 038."""
+
+    def test_earnings_cache_holds_one_report_date_per_symbol(self, pg_conn) -> None:
+        _apply_migrations(pg_conn)
+
+        assert _columns(pg_conn, "earnings_cache") == {"symbol", "report_date", "fetched_at"}
+        assert "idx_earnings_cache_fetched_at" in _indexes(pg_conn, "earnings_cache")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO earnings_cache (symbol, report_date) VALUES ('EC_AAPL', '2026-10-29')"
+            )
+            cur.execute(
+                "INSERT INTO earnings_cache (symbol, report_date, fetched_at) "
+                "VALUES ('EC_AAPL', '2026-10-30', '2026-11-01T03:00:00+00:00') "
+                "ON CONFLICT (symbol) DO UPDATE SET report_date = EXCLUDED.report_date, "
+                "fetched_at = EXCLUDED.fetched_at"
+            )
+            cur.execute(
+                "SELECT count(*), max(report_date)::text FROM earnings_cache "
+                "WHERE symbol = 'EC_AAPL'"
+            )
+            assert cur.fetchone() == (1, "2026-10-30")
+            with pytest.raises(psycopg2.errors.NotNullViolation):
+                cur.execute("INSERT INTO earnings_cache (symbol) VALUES ('EC_NONE')")
+
+    def test_earnings_cache_is_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'earnings_cache'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [
+                _has_table_privilege(cur, role, "earnings_cache") for role in PUBLIC_API_ROLES
+            ]
+
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO earnings_cache (symbol, report_date) VALUES ('EC_SR', '2026-10-29')"
+            )
+            cur.execute("SELECT report_date::text FROM earnings_cache WHERE symbol = 'EC_SR'")
+            assert cur.fetchone() == ("2026-10-29",)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM earnings_cache LIMIT 1")
+
 
 def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:
     """`supabase db push` czyta wyłącznie `supabase/migrations/`.

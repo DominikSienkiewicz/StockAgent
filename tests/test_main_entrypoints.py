@@ -6128,3 +6128,161 @@ class TestPredictionColumnsPreflight:
         assert exit_code == 0
         check.assert_not_called()
         assert fake_uc.run.called
+
+
+class TestAlphaEnrichmentWiring:
+    """FIN-11: bramka earnings czyta datę raportu z `earnings_cache` (migracja 053),
+    który odświeża Slow Loop. Fast Loop nie woła Alpha Vantage przed bramką volatility
+    — z flagą `earnings_cache_enabled` dostaje cache z delegatem Null."""
+
+    @staticmethod
+    def _cache_on(settings) -> None:
+        settings.earnings_calendar_enabled = True
+        settings.earnings_cache_enabled = True
+
+    def test_fast_loop_earnings_never_calls_alpha_vantage(self, settings, mocker) -> None:
+        import requests
+
+        get = mocker.patch.object(requests.Session, "get")
+        self._cache_on(settings)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_cached_earnings.return_value = None
+
+        enrichment = main_agent.build_alpha_enrichment(settings, repository=repository)
+
+        assert enrichment.fetch_earnings("AAPL") is None
+        repository.get_cached_earnings.assert_called_once_with("AAPL")
+        repository.save_earnings.assert_not_called()
+        get.assert_not_called()
+
+    def test_fast_loop_takes_the_report_date_from_the_cache(self, settings, mocker) -> None:
+        import requests
+
+        from src.domain.earnings import CachedEarningsDate
+
+        get = mocker.patch.object(requests.Session, "get")
+        self._cache_on(settings)
+        repository = MagicMock(spec=RepositoryPort)
+        soon = datetime.now(UTC).date() + timedelta(days=1)
+        repository.get_cached_earnings.return_value = CachedEarningsDate(
+            "AAPL", soon, datetime.now(UTC)
+        )
+
+        event = main_agent.build_alpha_enrichment(
+            settings, repository=repository
+        ).fetch_earnings("AAPL")
+
+        assert event == EarningsEvent("AAPL", days_until=1, report_date=soon.isoformat())
+        get.assert_not_called()
+
+    def test_without_the_cache_flag_the_live_calendar_stays(self, settings) -> None:
+        from src.infrastructure.adapters.alpha_vantage_earnings import (
+            AlphaVantageEarningsAdapter,
+        )
+
+        settings.earnings_calendar_enabled = True
+
+        enrichment = main_agent.build_alpha_enrichment(
+            settings, repository=MagicMock(spec=RepositoryPort)
+        )
+
+        assert isinstance(enrichment._earnings, AlphaVantageEarningsAdapter)
+
+    def test_cache_flag_without_a_repository_reads_nothing(self, settings) -> None:
+        from src.infrastructure.adapters.alpha_vantage_earnings import (
+            NullEarningsCalendarAdapter,
+        )
+
+        self._cache_on(settings)
+
+        enrichment = main_agent.build_alpha_enrichment(settings)
+
+        assert isinstance(enrichment._earnings, NullEarningsCalendarAdapter)
+
+    def test_fast_loop_hands_its_repository_to_the_enrichment(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        repository = MagicMock(spec=RepositoryPort)
+        repository.missing_prediction_columns.return_value = frozenset()
+        mocker.patch("main_agent.build_repository", return_value=repository)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        build = mocker.patch(
+            "main_agent.build_alpha_enrichment", side_effect=main_agent.build_alpha_enrichment
+        )
+        mocker.patch("main_agent._run_risk_watch", return_value=None)
+        mocker.patch("main_agent._resolve_regime", return_value=(None, 1.0))
+        mocker.patch("main_agent._analyze_symbols", return_value=([], 0, {}, {}))
+        mocker.patch("main_agent._build_portfolio_radar", return_value=None)
+        mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings)
+
+        assert build.call_args.kwargs["repository"] is repository
+
+
+class TestSlowLoopEarningsCache:
+    """FIN-11: Slow Loop raz w tygodniu odświeża `earnings_cache` z Alpha Vantage
+    całą listą kluczy — tylko dla spółek (ETF i krypto nie mają raportów)."""
+
+    def _refresh(self, settings, mocker) -> tuple[MagicMock, MagicMock]:
+        av = mocker.patch("main_trainer.AlphaVantageEarningsAdapter")
+        cache = mocker.patch("main_trainer.CachedEarningsAdapter")
+        settings.symbols = ["AAPL", "VOO", "MSFT"]
+        settings.symbols_etf = ["VOO"]
+        settings.crypto_symbols = ["BTC"]
+        main_trainer._refresh_earnings_cache(settings, MagicMock(spec=RepositoryPort))
+        return av, cache
+
+    def test_refreshes_stocks_with_every_alpha_vantage_key(self, settings, mocker) -> None:
+        settings.earnings_calendar_enabled = True
+        settings.earnings_cache_enabled = True
+
+        av, cache = self._refresh(settings, mocker)
+
+        av.assert_called_once_with(api_key="av1", reserve_keys=["av2"])
+        assert cache.call_args.kwargs["delegate"] is av.return_value
+        assert [c.args[0] for c in cache.return_value.get_next_earnings.call_args_list] == [
+            "AAPL",
+            "MSFT",
+        ]
+
+    def test_one_failing_symbol_does_not_stop_the_refresh(self, settings, mocker) -> None:
+        settings.earnings_calendar_enabled = True
+        settings.earnings_cache_enabled = True
+        cache = mocker.patch("main_trainer.CachedEarningsAdapter")
+        mocker.patch("main_trainer.AlphaVantageEarningsAdapter")
+        cache.return_value.get_next_earnings.side_effect = [RuntimeError("table missing"), None]
+        settings.symbols = ["AAPL", "MSFT"]
+
+        main_trainer._refresh_earnings_cache(settings, MagicMock(spec=RepositoryPort))
+
+        assert cache.return_value.get_next_earnings.call_count == 2
+
+    @pytest.mark.parametrize(
+        ("calendar", "cache_flag", "paid"),
+        [(True, False, True), (False, True, True), (True, True, False)],
+        ids=["cache-off", "calendar-off", "local-without-paid-calls"],
+    )
+    def test_refresh_is_skipped(self, settings, mocker, calendar, cache_flag, paid) -> None:
+        settings.earnings_calendar_enabled = calendar
+        settings.earnings_cache_enabled = cache_flag
+        settings.paid_calls_enabled = paid
+
+        av, cache = self._refresh(settings, mocker)
+
+        av.assert_not_called()
+        cache.assert_not_called()
+
+    def test_slow_loop_runs_the_refresh(self, settings, mock_external_clients, mocker) -> None:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        mocker.patch("main_trainer.AlphaVantageFundamentalsAdapter")
+        refresh = mocker.patch("main_trainer._refresh_earnings_cache")
+
+        main_trainer.main(settings)
+
+        refresh.assert_called_once()

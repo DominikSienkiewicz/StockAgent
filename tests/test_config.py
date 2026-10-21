@@ -1023,6 +1023,22 @@ class TestAlphaVantageBudget:
 
         assert settings.av_budget().worst_case == 4
 
+    def test_earnings_from_the_slow_loop_cache_cost_the_fast_loop_nothing(self, env):
+        # FIN-11: kalendarz z `earnings_cache` — Fast Loop pyta AV tylko o newsy.
+        settings = self._settings(
+            symbols=["AAPL", "MSFT"],
+            earnings_calendar_enabled=True,
+            earnings_cache_enabled=True,
+        )
+
+        assert settings.av_budget().worst_case == 2
+
+    def test_earnings_cache_is_off_by_default_and_part_of_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert self._settings().earnings_cache_enabled is False
+        assert "earnings_cache_enabled" in RECIPE_SETTINGS_FIELDS
+
     def test_strict_flag_stops_startup(self, env):
         with pytest.raises(ValueError, match="Alpha Vantage"):
             self._settings(symbols=self._WATCHLIST, av_budget_strict=True)

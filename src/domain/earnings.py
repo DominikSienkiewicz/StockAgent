@@ -8,7 +8,13 @@ albo podbić niepewność prognozy."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from enum import Enum
+
+# FIN-11: ważność wpisu `earnings_cache`. Slow Loop odświeża cache w niedzielę
+# o 03:00 UTC, Fast Loop biegnie pon–pt: 6 dni pokrywa cały tydzień cykli, a wpis
+# z poprzedniej niedzieli jest już stary, więc kolejne odświeżenie pyta AV od nowa.
+EARNINGS_CACHE_TTL_HOURS = 144
 
 
 class EarningsProximity(Enum):
@@ -41,6 +47,29 @@ class EarningsEvent:
         if self.days_until <= near_days:
             return EarningsProximity.NEAR
         return EarningsProximity.FAR
+
+
+@dataclass(frozen=True)
+class CachedEarningsDate:
+    """FIN-11: data najbliższego raportu z cache Slow Loopa.
+
+    Cache trzyma datę, nie `days_until` — liczba dni zmienia się codziennie, więc
+    liczy ją dopiero cykl, który czyta wpis (`event`)."""
+
+    symbol: str
+    report_date: date
+    fetched_at: datetime
+
+    def event(self, today: date) -> EarningsEvent | None:
+        """Zdarzenie dla cyklu z dnia `today`; None, gdy raport już się odbył."""
+        days_until = (self.report_date - today).days
+        if days_until < 0:
+            return None
+        return EarningsEvent(
+            symbol=self.symbol,
+            days_until=days_until,
+            report_date=self.report_date.isoformat(),
+        )
 
 
 # Mnożniki progu volatility per bliskość earnings. Im bliżej raportu, tym

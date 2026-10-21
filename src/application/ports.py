@@ -10,7 +10,7 @@ from typing import Any
 from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
-from src.domain.earnings import EarningsEvent
+from src.domain.earnings import CachedEarningsDate, EarningsEvent
 from src.domain.finops import LLMCallEntry, LLMUsage
 from src.domain.fx import FxRate
 from src.domain.insider_flow import InsiderFlowSnapshot
@@ -288,6 +288,15 @@ class RepositoryPort(ABC):
         """DAT-19: `fetched_at` wpisów cache fundamentów dla `symbols`, BEZ filtra
         TTL — rotacja refreshu wybiera po nim najdawniej odświeżone spółki.
         Symbol bez wpisu nie trafia do wyniku."""
+
+    @abstractmethod
+    def get_cached_earnings(self, symbol: str) -> CachedEarningsDate | None:
+        """FIN-11 — data najbliższego raportu z `earnings_cache` (migracja 053), gdy
+        wpis jest młodszy niż EARNINGS_CACHE_TTL_HOURS; filtr TTL po stronie repo."""
+
+    @abstractmethod
+    def save_earnings(self, entry: CachedEarningsDate) -> None:
+        """FIN-11 — upsert daty raportu per symbol (Slow Loop odświeża cache)."""
 
     @abstractmethod
     def save_quota_alert(self, alert: QuotaAlert) -> None:

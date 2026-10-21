@@ -1033,12 +1033,18 @@ def alpha_per_symbol_enabled(settings: Settings) -> bool:
 
 
 def build_alpha_enrichment(
-    settings: Settings, quota_monitor: QuotaMonitor | None = None
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    *,
+    repository: RepositoryPort | None = None,
 ) -> AlphaEnrichmentUseCase:
     """DI dla nowych źródeł alpha (Dane). Każdy port to realny adapter (gdy
     flaga on) albo Null-adapter (default → zero I/O). EDGAR/Reddit są darmowe;
     earnings reużywa klucza AV; opcje/analitycy reużywają klucza Finnhub
-    i jego limitera procesu (DAT-12)."""
+    i jego limitera procesu (DAT-12).
+
+    FIN-11: z `earnings_cache_enabled` kalendarz wyników czyta wyłącznie
+    `earnings_cache` z `repository` (delegat Null) — Fast Loop nie woła AV."""
     from src.infrastructure.adapters.alpha_vantage_earnings import (
         AlphaVantageEarningsAdapter,
         NullEarningsCalendarAdapter,
@@ -1065,15 +1071,21 @@ def build_alpha_enrichment(
         if settings.insider_flow_enabled
         else NullInsiderFlowAdapter()
     )
-    # FIN-35: kalendarz wyników to płatne zapytanie AV — lokalnie bez płatnych
-    # wywołań zostaje Null-adapter.
-    earnings: EarningsCalendarPort = (
-        AlphaVantageEarningsAdapter(api_key=settings.alpha_vantage_api_keys[0])
-        if settings.earnings_calendar_enabled
+    earnings: EarningsCalendarPort = NullEarningsCalendarAdapter()
+    if settings.earnings_calendar_enabled and settings.earnings_cache_enabled:
+        # FIN-11: sam odczyt cache (delegat Null); bez repozytorium nie ma czego czytać.
+        if repository is not None:
+            from src.infrastructure.adapters.cached_earnings import CachedEarningsAdapter
+
+            earnings = CachedEarningsAdapter(repo=repository, delegate=earnings)
+    elif (
+        settings.earnings_calendar_enabled
         and settings.alpha_vantage_api_keys
         and settings.paid_calls_enabled
-        else NullEarningsCalendarAdapter()
-    )
+    ):
+        # FIN-35: kalendarz wyników to płatne zapytanie AV — lokalnie bez płatnych
+        # wywołań zostaje Null-adapter.
+        earnings = AlphaVantageEarningsAdapter(api_key=settings.alpha_vantage_api_keys[0])
     options: OptionsFlowPort = (
         FinnhubOptionsAdapter(
             api_key=settings.finnhub_api_key,
@@ -3354,7 +3366,7 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
 
     # Dane: enrichment alpha (per-symbol) + krzywa rentowności (raz na cykl).
     # Wszystko domyślnie Null/None → zero I/O, póki flagi off.
-    alpha_use_case = build_alpha_enrichment(settings, quota_monitor)
+    alpha_use_case = build_alpha_enrichment(settings, quota_monitor, repository=repository)
     collect_alpha = alpha_per_symbol_enabled(settings)
     yield_curve = build_macro_rates_port(settings).fetch_yield_curve()
     results: list[SymbolResult] = []

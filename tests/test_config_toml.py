@@ -430,3 +430,9 @@ def test_real_config_toml_weekly_budget_covers_its_worst_case(
         f"tygodniowy worst case {weekly.worst_case_usd:.2f} USD > budżet "
         f"{settings.fast_loop_weekly_budget_usd:.2f} USD w config.toml"
     )
+
+
+def test_real_config_toml_ships_the_earnings_cache_off_until_migration() -> None:
+    """FIN-11: `earnings_cache` powstaje dopiero w migracji 053 (ręczny DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["earnings_cache_enabled"] is False

@@ -36,6 +36,7 @@ from src.application.ports import (
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import InvestorOpinion
+from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
@@ -93,6 +94,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_resolved_predictions",
         "get_cached_fundamentals",
         "get_fundamentals_fetched_at",
+        "get_cached_earnings",
         "get_recent_quota_alerts",
         "find_similar_predictions",
         "get_council_votes_for_prediction",
@@ -125,6 +127,7 @@ class ReadOnlyRepository(RepositoryPort):
         "update_prediction_accuracy",
         "refresh_feature_store",
         "save_fundamentals",
+        "save_earnings",
         "save_quota_alert",
         "save_calibration",
         "mark_commitment_revealed",
@@ -187,6 +190,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_fundamentals_fetched_at(self, symbols: Sequence[str]) -> dict[str, datetime]:
         return self._delegate.get_fundamentals_fetched_at(symbols)
+
+    def get_cached_earnings(self, symbol: str) -> CachedEarningsDate | None:
+        return self._delegate.get_cached_earnings(symbol)
 
     def get_recent_quota_alerts(self, hours: int) -> list[QuotaAlert]:
         return self._delegate.get_recent_quota_alerts(hours)
@@ -312,6 +318,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
         self._skipped.skip("save_fundamentals")
+
+    def save_earnings(self, entry: CachedEarningsDate) -> None:
+        self._skipped.skip("save_earnings")
 
     def save_quota_alert(self, alert: QuotaAlert) -> None:
         self._skipped.skip("save_quota_alert")

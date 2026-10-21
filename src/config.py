@@ -208,6 +208,9 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "alpha_fusion_enabled",
     "insider_flow_enabled",
     "earnings_calendar_enabled",
+    # FIN-11: cache Slow Loopa (do 6 dni) zamiast AV w cyklu — inna świeżość wejścia
+    # bramki earnings i alpha fusion; pole niejednoznaczne zostaje w przepisie.
+    "earnings_cache_enabled",
     "options_flow_enabled",
     "social_velocity_enabled",
     "yield_curve_enabled",
@@ -554,6 +557,9 @@ class Settings(BaseSettings):
     # domyślnie Null; realny adapter włącza dopiero flaga (+ ewentualny klucz).
     insider_flow_enabled: bool = False
     earnings_calendar_enabled: bool = False
+    # FIN-11 (wymaga migracji 053): Fast Loop czyta datę raportu z `earnings_cache`
+    # (odświeżanego w Slow Loopie) zamiast pytać AV o każdy symbol w każdym cyklu.
+    earnings_cache_enabled: bool = False
     options_flow_enabled: bool = False
     social_velocity_enabled: bool = False
     yield_curve_enabled: bool = False
@@ -1114,10 +1120,12 @@ class Settings(BaseSettings):
     def av_budget(self) -> AvBudget:
         """FIN-32: worst case doby AV dla pełnej watchlisty Fast Loopa (WIA-11:
         `symbols` + `crypto_symbols` − `symbols_unsupported_price`). Na symbol:
-        jedno NEWS_SENTIMENT i jedno EARNINGS_CALENDAR przy włączonym kalendarzu."""
+        jedno NEWS_SENTIMENT i jedno EARNINGS_CALENDAR przy włączonym kalendarzu —
+        chyba że kalendarz idzie z cache Slow Loopa (FIN-11)."""
+        live_calendar = self.earnings_calendar_enabled and not self.earnings_cache_enabled
         return av_daily_budget(
             n_av_symbols=self._eligible_symbol_count(),
-            requests_per_symbol=2 if self.earnings_calendar_enabled else 1,
+            requests_per_symbol=2 if live_calendar else 1,
             cycles_per_day=self.fast_loop_cycles_per_day,
             n_keys=len(self.alpha_vantage_api_keys),
         )

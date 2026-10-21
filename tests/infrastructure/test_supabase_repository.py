@@ -3318,3 +3318,71 @@ class TestMissingPredictionColumns:
 
         with pytest.raises(APIError):
             repo.missing_prediction_columns(frozenset({"symbol"}))
+
+
+class TestEarningsCache:
+    """FIN-11 (migracja 053): data najbliższego raportu per symbol — Slow Loop
+    zapisuje, Fast Loop czyta tylko wpis młodszy niż TTL."""
+
+    def test_save_upserts_the_report_date_per_symbol(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.earnings import CachedEarningsDate
+
+        _set_chain_response(mock_client, ["table", "upsert"], [])
+
+        repo.save_earnings(
+            CachedEarningsDate(
+                "AAPL", date(2026, 10, 29), datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
+            )
+        )
+
+        mock_client.table.assert_called_with("earnings_cache")
+        assert mock_client.table.return_value.upsert.call_args.args[0] == {
+            "symbol": "AAPL",
+            "report_date": "2026-10-29",
+            "fetched_at": "2026-10-25T03:00:00+00:00",
+        }
+
+    def test_get_reads_a_fresh_row(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.earnings import CachedEarningsDate
+
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "gte"],
+            [
+                {
+                    "symbol": "AAPL",
+                    "report_date": "2026-10-29",
+                    "fetched_at": "2026-10-25T03:00:00+00:00",
+                }
+            ],
+        )
+
+        assert repo.get_cached_earnings("AAPL") == CachedEarningsDate(
+            "AAPL", date(2026, 10, 29), datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
+        )
+        mock_client.table.assert_called_with("earnings_cache")
+        mock_client.table.return_value.select.return_value.eq.assert_called_once_with(
+            "symbol", "AAPL"
+        )
+
+    def test_get_filters_by_the_cache_ttl(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS
+
+        _set_chain_response(mock_client, ["table", "select", "eq", "gte"], [])
+
+        before = datetime.now(UTC)
+        assert repo.get_cached_earnings("AAPL") is None
+        after = datetime.now(UTC)
+
+        gte = mock_client.table.return_value.select.return_value.eq.return_value.gte
+        column, cutoff = gte.call_args.args
+        ttl = timedelta(hours=EARNINGS_CACHE_TTL_HOURS)
+        assert column == "fetched_at"
+        assert before - ttl - timedelta(minutes=1) <= datetime.fromisoformat(cutoff)
+        assert datetime.fromisoformat(cutoff) <= after - ttl + timedelta(minutes=1)

@@ -19,6 +19,7 @@ from src.application.ports import (
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
 from src.domain.prediction import Prediction, TrendDirection, normalize_trend
@@ -55,6 +56,8 @@ REFERENCE_PREDICTIONS_TABLE = "reference_predictions"
 LLM_CALLS_TABLE = "llm_calls"
 # NIEZ-29: historia przebiegów pętli (migracja 041).
 CYCLE_RUNS_TABLE = "cycle_runs"
+# FIN-11: data najbliższego raportu per symbol (migracja 053).
+EARNINGS_CACHE_TABLE = "earnings_cache"
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -761,6 +764,36 @@ class SupabaseRepository(RepositoryPort):
             "fetched_at": fundamentals.fetched_at.isoformat(),
         }
         self._client.table("fundamentals_cache").upsert(payload).execute()
+
+    def get_cached_earnings(self, symbol: str) -> CachedEarningsDate | None:
+        # FIN-11: TTL po stronie repo, jak fundamenty — adapter nie zna świeżości.
+        cutoff = datetime.now(UTC) - timedelta(hours=EARNINGS_CACHE_TTL_HOURS)
+        response = (
+            self._client.table(EARNINGS_CACHE_TABLE)
+            .select("symbol, report_date, fetched_at")
+            .eq("symbol", symbol)
+            .gte("fetched_at", cutoff.isoformat())
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        return CachedEarningsDate(
+            symbol=str(row["symbol"]),
+            report_date=date.fromisoformat(row["report_date"]),
+            fetched_at=datetime.fromisoformat(row["fetched_at"]),
+        )
+
+    def save_earnings(self, entry: CachedEarningsDate) -> None:
+        # Jeden wiersz per symbol (PK `symbol`) — upsert nadpisuje poprzednią datę.
+        self._client.table(EARNINGS_CACHE_TABLE).upsert(
+            {
+                "symbol": entry.symbol,
+                "report_date": entry.report_date.isoformat(),
+                "fetched_at": entry.fetched_at.isoformat(),
+            }
+        ).execute()
 
     # -----------------------------------------------------------------------
     # Writes
