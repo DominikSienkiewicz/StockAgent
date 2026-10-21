@@ -53,6 +53,7 @@ All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff,
 | **Resend.com** | Sandbox sender `onboarding@resend.dev` | Free tier 100 mails/day. No domain verification required — just a verified recipient. |
 | **NBP** (`/exchangerates/rates/A`) | 30-day window for EUR & USD vs PLN | Free, no API key, no rate limit. Used by `NbpClient` (implements `MacroIndicatorsPort`) to compute 30-day FX-stress for the Risk Watch section. |
 | **CoinGecko** (`/simple/price`) | One request per cycle for the configured crypto basket | Free, no API key, no meaningful rate limit. Used by `CoinGeckoAdapter` (implements `MarketDataPort`) for crypto prices. Maps clean tickers (`BTC`, `ETH`) to CoinGecko coin ids (`bitcoin`, `ethereum`). |
+| **SEC EDGAR** (`company_tickers.json`, `submissions`, Form 4 XML) | Ticker → CIK map downloaded once per adapter instance, then submissions + up to 20 Form 4 per symbol | Free, no key; the `User-Agent` must carry a contact. Requests are spaced at least 0.12 s apart (SEC allows 10 per second) and a failed map download is retried by the next symbol (DAT-10). |
 
 ## Symbols (default portfolio of 43)
 

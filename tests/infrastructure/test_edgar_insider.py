@@ -526,6 +526,83 @@ class TestFilingEvidence:
         assert snap.has_evidence()
 
 
+class TestTickerMapAndPacing:
+    """DAT-10: company_tickers.json (kilka MB) pobierany raz na instancję zamiast
+    per symbol, a requesty do sec.gov mają minimalny odstęp (limit SEC 10/s)."""
+
+    @staticmethod
+    def _get(tickers_status: list[int]) -> tuple[list[str], object]:
+        urls: list[str] = []
+        statuses = iter(tickers_status)
+
+        def get(url: str, **_: object) -> Mock:
+            urls.append(url)
+            if "company_tickers.json" in url:
+                status = next(statuses, 200)
+                return _ok_json(_company_tickers()) if status == 200 else _error_response(status)
+            if "submissions" in url:
+                return _ok_json(_two_form4_submissions())
+            return _ok_text(_form4_xml(code="P", shares=10.0))
+
+        return urls, get
+
+    def test_ticker_map_fetched_once_per_instance(self, mocker) -> None:
+        urls, get = self._get([200])
+        mocker.patch("requests.Session.get", side_effect=get)
+        adapter = EdgarInsiderAdapter(user_agent=USER_AGENT)
+
+        assert adapter.get_insider_flow("AAPL") is not None
+        assert adapter.get_insider_flow("MSFT") is not None
+
+        assert sum("company_tickers.json" in url for url in urls) == 1
+
+    def test_failed_ticker_map_fetch_is_not_cached(self, mocker) -> None:
+        urls, get = self._get([503, 200])
+        mocker.patch("requests.Session.get", side_effect=get)
+        adapter = EdgarInsiderAdapter(user_agent=USER_AGENT)
+
+        assert adapter.get_insider_flow("AAPL") is None
+        assert adapter.get_insider_flow("AAPL") is not None
+
+        assert sum("company_tickers.json" in url for url in urls) == 2
+
+    def test_requests_to_sec_keep_the_minimum_interval(self, mocker) -> None:
+        _, get = self._get([200])
+        mocker.patch("requests.Session.get", side_effect=get)
+        clock = [100.0]
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        adapter = EdgarInsiderAdapter(
+            user_agent=USER_AGENT, clock=lambda: clock[0], sleep=sleep
+        )
+
+        adapter.get_insider_flow("AAPL")
+
+        # 4 requesty (mapa, submissions, 2 × Form 4) przy zamrożonym zegarze:
+        # pierwszy bez czekania, każdy kolejny czeka pełny odstęp 0.12 s.
+        assert sleeps == pytest.approx([0.12, 0.12, 0.12])
+
+    def test_no_wait_when_requests_are_already_spaced(self, mocker) -> None:
+        _, get = self._get([200])
+        clock = [0.0]
+
+        def slow_get(url: str, **kwargs: object) -> Mock:
+            clock[0] += 0.5  # sieć sama rozkłada requesty
+            return get(url, **kwargs)
+
+        mocker.patch("requests.Session.get", side_effect=slow_get)
+        sleep = Mock()
+        adapter = EdgarInsiderAdapter(user_agent=USER_AGENT, clock=lambda: clock[0], sleep=sleep)
+
+        adapter.get_insider_flow("AAPL")
+
+        sleep.assert_not_called()
+
+
 class TestNullInsiderFlowAdapter:
     def test_returns_none_without_io(self, mocker) -> None:
         mock_get = mocker.patch("requests.Session.get")
