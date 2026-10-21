@@ -24,6 +24,7 @@ from typing import Any
 from main_agent import (
     STUB_WRITES_REFUSED_EXIT_CODE,
     build_notifier,
+    build_push_channels,
     llm_fallback_available,
     persist_llm_calls,
     refuses_stub_writes,
@@ -34,7 +35,7 @@ from main_agent import (
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.ml_features import feature_set_version
-from src.application.ports import LLMPort, RepositoryPort, UsageSink
+from src.application.ports import LLMPort, ModelCatalogPort, RepositoryPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_ops import render_trainer_summary_markdown
 from src.application.report_weekly_recap import (
@@ -51,6 +52,7 @@ from src.application.use_cases.monitor_output_drift import (
     RowsReader,
     drift_alert,
 )
+from src.application.use_cases.probe_models import ModelProbe, ProbeModelsUseCase
 from src.application.use_cases.reference_signal import RunReferenceSignalUseCase
 from src.application.use_cases.train_model import POOLED_MODEL_SYMBOL, TrainModelUseCase
 from src.application.use_cases.weekly_recap import (
@@ -60,16 +62,27 @@ from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
 from src.config import Settings
 from src.domain.finops import slow_loop_paid_budget
 from src.domain.fundamentals_refresh import refresh_budget, select_refresh_batch
+from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
 from src.infrastructure.adapters.alpha_vantage_earnings import AlphaVantageEarningsAdapter
 from src.infrastructure.adapters.alpha_vantage_fundamentals import (
     AlphaVantageFundamentalsAdapter,
 )
 from src.infrastructure.adapters.cached_earnings import CachedEarningsAdapter
 from src.infrastructure.adapters.cached_fundamentals import CachedFundamentalsAdapter
+from src.infrastructure.adapters.composite_notifier import CompositeNotifier
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.write_guard import ReadOnlyRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+from src.infrastructure.llm.anthropic_client import DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL
 from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
+from src.infrastructure.llm.model_catalog import (
+    AnthropicModelCatalog,
+    LocalStubModelCatalog,
+    OpenAIModelCatalog,
+)
+from src.infrastructure.llm.openai_client import DEFAULT_MODEL as OPENAI_DEFAULT_MODEL
+from src.infrastructure.llm.openai_embeddings import DEFAULT_MODEL as EMBEDDING_MODEL
 from src.infrastructure.llm.unavailable import UnavailableLLMAdapter
 from src.infrastructure.logging_setup import configure_logging
 
@@ -498,6 +511,92 @@ def _run_output_drift(
     quota_monitor.record(alert)
 
 
+def _default_model(provider: str) -> str:
+    """Model adaptera dostawcy bez jawnego `model=` (jak `main_agent`)."""
+    return ANTHROPIC_DEFAULT_MODEL if provider == "anthropic" else OPENAI_DEFAULT_MODEL
+
+
+def _probed_models(settings: Settings) -> list[ModelProbe]:
+    """NIEZ-25: modele, które agent faktycznie woła — te same reguły wyboru co
+    fabryki `main_agent` (główny albo router, rada, zapasowy) plus embeddingi."""
+    probes: list[ModelProbe] = []
+    if settings.model_routing_enabled:
+        probes.append(ModelProbe("openai", settings.router_cheap_model, "router (tani)"))
+        probes.append(
+            ModelProbe(
+                settings.router_frontier_provider,
+                settings.router_frontier_model,
+                "router (frontier)",
+            )
+        )
+    else:
+        provider = settings.llm_provider
+        probes.append(ModelProbe(provider, _default_model(provider), "główny LLM"))
+    if settings.council_llm_provider is not None or settings.council_llm_model is not None:
+        council = settings.council_llm_provider or settings.llm_provider
+        model = settings.council_llm_model or _default_model(council)
+        probes.append(ModelProbe(council, model, "rada"))
+    if settings.llm_fallback_provider is not None:
+        fallback = settings.llm_fallback_provider
+        model = settings.llm_fallback_model or _default_model(fallback)
+        probes.append(ModelProbe(fallback, model, "zapasowy LLM"))
+    probes.append(ModelProbe("openai", EMBEDDING_MODEL, "embeddingi"))
+    return probes
+
+
+def _model_catalogs(settings: Settings) -> dict[str, ModelCatalogPort]:
+    """Katalog per dostawca z kluczem; FIN-35: lokalnie atrapa bez requestów."""
+    if not settings.paid_calls_enabled:
+        stub = LocalStubModelCatalog()
+        return {"anthropic": stub, "openai": stub}
+    catalogs: dict[str, ModelCatalogPort] = {}
+    if settings.anthropic_api_key:
+        catalogs["anthropic"] = AnthropicModelCatalog(api_key=settings.anthropic_api_key)
+    if settings.openai_api_key:
+        catalogs["openai"] = OpenAIModelCatalog(api_key=settings.openai_api_key)
+    return catalogs
+
+
+def _push_critical_alerts(settings: Settings, alerts: list[QuotaAlert]) -> None:
+    """NIEZ-25: CRITICAL sondy idzie od razu pushem (ta sama reguła co alerty
+    real-time Fast Loopa: `realtime_alerts_enabled` i kanał Telegram/Slack)."""
+    critical = [alert for alert in alerts if alert.severity is QuotaSeverity.CRITICAL]
+    if not critical or not settings.realtime_alerts_enabled:
+        return
+    channels = build_push_channels(settings, quota_monitor=None)
+    if not channels:
+        logger.warning("Model probe: brak kanału push — CRITICAL tylko w quota_alerts")
+        return
+    try:
+        DelegatingAlertNotifier(CompositeNotifier(channels)).send_alert(critical)
+    except Exception:
+        logger.exception("Model probe: push alertu nie wyszedł")
+
+
+def _run_model_probe(
+    settings: Settings,
+    quota_monitor: QuotaMonitor,
+    now: datetime | None = None,
+    catalogs: dict[str, ModelCatalogPort] | None = None,
+) -> None:
+    """NIEZ-25: czy skonfigurowane modele LLM istnieją (Models API, bez tokenów).
+    Brak modelu = CRITICAL (banner maila i push), błąd sondy = WARNING. Błąd
+    kroku tylko loguje — trening i recap idą dalej."""
+    if not settings.model_probe_enabled:
+        return
+    try:
+        use_case = ProbeModelsUseCase(
+            catalogs if catalogs is not None else _model_catalogs(settings)
+        )
+        alerts = use_case.run(_probed_models(settings), now=now or datetime.now(UTC))
+    except Exception:
+        logger.exception("Model probe failed — pomijam")
+        return
+    for alert in alerts:
+        quota_monitor.record(alert)
+    _push_critical_alerts(settings, alerts)
+
+
 def _run_calibration_judge(
     repository: RepositoryPort, llm_port: LLMPort, *, brier_score_enabled: bool = False
 ) -> None:
@@ -605,6 +704,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     tally.failures, tally.total = failures, len(trainable) + 1
     _run_reference_signal(settings, repository)
     _run_output_drift(settings, quota_monitor)
+    _run_model_probe(settings, quota_monitor)
 
     usage_ledger = UsageLedger()
     paid_llm = _SlowLoopPaidLLM(settings, quota_monitor, usage_ledger)

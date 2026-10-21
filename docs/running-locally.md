@@ -284,7 +284,7 @@ scripts/gh-secrets-check.sh
 scripts/gh-secrets-sync.sh [--dry-run] [-y]
 ```
 
-Both accept `-R owner/repo` (default: auto-detected from the git remote) and `-f <env-file>` (default: `<repo>/.env`). `.env` keys that no workflow references are reported but never pushed. `FRED_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and `SLACK_WEBHOOK_URL` *are* referenced (Fast Loop and Shock Watch), so add them to `.env` and the sync pushes them; without them the yield-curve vote and the push channels stay silent. Auth uses your `gh auth login` token, or a `GH_TOKEN` from `.env` if present (a fine-grained PAT needs `Secrets: Read and write`).
+Both accept `-R owner/repo` (default: auto-detected from the git remote) and `-f <env-file>` (default: `<repo>/.env`). `.env` keys that no workflow references are reported but never pushed. `FRED_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and `SLACK_WEBHOOK_URL` *are* referenced (Fast Loop, Shock Watch, and the Slow Loop for the model probe's push, NIEZ-25), so add them to `.env` and the sync pushes them; without them the yield-curve vote and the push channels stay silent. Auth uses your `gh auth login` token, or a `GH_TOKEN` from `.env` if present (a fine-grained PAT needs `Secrets: Read and write`).
 
 A third helper reads the **production state** in one pass, without changing anything:
 

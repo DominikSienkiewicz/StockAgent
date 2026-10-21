@@ -111,6 +111,7 @@ Every adapter that has a paid / metered quota writes a `QuotaAlert` to a shared 
 | `FinnhubAnalystAdapter`, `FinnhubOptionsAdapter` | `WARNING` on 429 (the shared 60 req/min budget is exhausted and that symbol's signal is skipped). A 401/403 is logged as one `WARNING` per endpoint per run (a rejected key or a premium endpoint) instead of passing for missing data (DAT-12). |
 | `ResendNotifier` | `CRITICAL` on 429 (free 100 mails/day), any other 4xx, any 5xx and a network error or timeout — email was not delivered. The alert appears in the **next** report once delivery recovers, and the push digest says the mail did not arrive. |
 | Slow Loop output drift monitor | `WARNING` when the LLM's output distribution shifted week over week (NIEZ-19, see **LLM output drift** above). |
+| Slow Loop model probe (`model_probe_enabled`) | `CRITICAL` when the provider's Models API does not know a configured model (main LLM, router, council, fallback, embeddings), with the provider as the source; `WARNING` when the probe itself failed (NIEZ-25, see [configuration](configuration.md)). |
 
 All alerts from the current cycle are persisted to the `quota_alerts` table (migration `010_quota_alerts.sql`) — including the ones raised while the report itself is being sent. The report builder pulls **the last week (7 × 24 + 3 h)** of alerts, so a Sunday Slow Loop alert still reaches Monday's mail, and renders them as a coloured banner at the **very top** of the e-mail (above the NYSE session line). Severity drives the banner colour and ordering — `CRITICAL` rows come first.
 

@@ -161,6 +161,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "calibration_judge_enabled",
     # WIA-37: wersja reguły zapisywanej przez sędziego (Slow Loop) — prognoza ta sama.
     "calibration_score_version_enabled",
+    # NIEZ-25: sonda Models API w Slow Loopie — sam odczyt katalogu dostawcy.
+    "model_probe_enabled",
     "feature_set_filter_enabled",
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
@@ -461,6 +463,8 @@ class Settings(BaseSettings):
     # WIA-37: sędzia zapisuje właściwą regułę Briera (v2) z kolumną
     # `calibration_score_version` (migracja 044). Off: reguła liniowa v1 bez klucza.
     calibration_score_version_enabled: bool = False
+    # NIEZ-25: tygodniowa sonda Models API (Slow Loop, bez tokenów, bez migracji).
+    model_probe_enabled: bool = False
 
     # ----- Risk: VaR / stress-test / hedge-effectiveness -----
     # Wszystkie liczone z DARMOWEJ historii snapshotów (zero płatnych portów),

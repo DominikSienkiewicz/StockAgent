@@ -980,3 +980,16 @@ class AnalystConsensusPort(ABC):
 
     @abstractmethod
     def get_consensus(self, symbol: str) -> AnalystConsensus | None: ...
+
+
+class ModelCatalogPort(ABC):
+    """NIEZ-25: katalog modeli dostawcy LLM (Models API — nie zużywa tokenów).
+
+    `validate_model_id` sprawdza tylko prefiks id, więc wycofany model kończy się
+    cichym total outage dopiero przy pierwszym wywołaniu. Sonda Slow Loopa pyta
+    katalog o każdy skonfigurowany model raz w tygodniu."""
+
+    @abstractmethod
+    def is_available(self, model_id: str) -> bool:
+        """True = dostawca zna model, False = nie zna (404). Błąd sieci albo
+        uprawnień klucza to wyjątek, nie False — to nie jest brak modelu."""
