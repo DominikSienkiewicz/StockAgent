@@ -59,7 +59,8 @@ FREE_SNAPSHOT_FEATURES = (
 )
 GATED_SNAPSHOT_EXTRAS = ("confidence_score", "data_quality_flags")
 
-# Target = ZWROT 12h `(cena_po_12h - cena) / cena`, nie cena bezwzględna.
+# Target = zwrot do następnego cyklu (~24 h w dni robocze, ~72 h przez weekend)
+# `(cena_po_12h - cena) / cena`, nie cena bezwzględna; nazwa `_12h` jest historyczna.
 # Baseline persystencji (cena bez zmian) to wtedy „zwrot = 0", więc bramka
 # „pobij baseline" jest sensowna; XGBoost uczy się RUCHU, nie poziomu ceny.
 TARGET_COLUMN = "target_return"

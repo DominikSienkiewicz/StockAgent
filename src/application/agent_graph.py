@@ -1158,7 +1158,7 @@ def _run_ml_prediction(
     ``(ml_target, feature_attribution)``."""
     if not ml_port.is_trained:
         return current_price, ()
-    # Model przewiduje ZWROT 12h; predict() rekonstruuje cenę bezwzględną
+    # Model przewiduje zwrot do następnego cyklu; predict() rekonstruuje cenę bezwzględną
     # z bieżącej ceny (cena*(1+zwrot)).
     ml_target = ml_port.predict(features, current_price=current_price).amount
     feature_attribution: tuple[FeatureContribution, ...] = ()
@@ -1280,10 +1280,11 @@ def _alpha_fusion_value(fusion: AlphaFusionScore | None) -> float:
     return fusion.score if fusion is not None else 0.0
 
 
-# #18: horyzont predykcji. Nazwy `*_12h` są historyczne — pętla chodzi raz na
-# dobę handlową, ale kontrakt predykcji (i kolumna `actual_price_after_12h`)
-# pozostaje 12-godzinny, więc taki horyzont skalujemy sqrt-time.
-_EDGE_HORIZON_HOURS = 12.0
+# #18, WIA-28: horyzont predykcji to zwrot do następnego cyklu — pętla chodzi
+# raz na dobę handlową, więc ~24 h w dni robocze i ~72 h przez weekend. Nazwy
+# `*_12h` (`target_price_12h`, `actual_price_after_12h`) są historyczne i zostają
+# jako kontrakt parsera i kolumn. Stałe 24 h ZANIŻA horyzont predykcji z piątku.
+_EDGE_HORIZON_HOURS = 24.0
 
 
 def _resolve_implied_edge(

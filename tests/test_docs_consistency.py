@@ -91,3 +91,11 @@ def test_eighth_feature_pattern_matches_both_languages() -> None:
     assert EIGHTH_FEATURE_CLAIM.search("dokłada ósmą cechę ML")
     assert EIGHTH_FEATURE_CLAIM.search("as an eighth feature")
     assert not EIGHTH_FEATURE_CLAIM.search("kandydat na cechę ML")
+
+def test_how_it_works_names_the_prediction_horizon_honestly() -> None:
+    # WIA-28: pętla chodzi raz na dobę handlową, więc „12h return” to fałsz
+    # widoczny dla quanta — horyzont to zwrot do następnego cyklu.
+    text = (ROOT / "docs" / "how-it-works.md").read_text(encoding="utf-8")
+
+    assert "predicts a 12h _return_" not in text
+    assert "return to the next cycle" in text

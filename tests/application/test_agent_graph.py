@@ -2554,6 +2554,29 @@ class TestImpliedEdge:
         record = repository_port.save_prediction.call_args.args[0]
         assert "edge_sigma" in record
 
+    def test_implied_move_spans_one_trading_day_not_twelve_hours(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-28: predykcja sięga następnego cyklu (raz na dobę handlową), więc
+        # implied move rynku opcji skalujemy na 24 h, nie na historyczne „12h”.
+        from src.domain.implied_edge import implied_move_12h, model_move_from_prices
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        options = self._options(0.45)
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._make(ports, options).compile().invoke(_initial_state("100.0"))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        model_move = abs(model_move_from_prices(90.0, 89.5))
+        assert record["edge_sigma"] == pytest.approx(model_move / implied_move_12h(0.45, 24.0))
+
     def test_no_options_port_leaves_the_cycle_identical(
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,
