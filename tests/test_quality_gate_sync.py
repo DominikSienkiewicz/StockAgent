@@ -182,3 +182,43 @@ def test_ci_sync_asserts_lockfile_is_current(job: str) -> None:
     )
     assert not [sync for sync in syncs if {"--locked", "--frozen"} <= set(sync)]
 
+
+# CI-04: SonarCloud i jego coverage widziały tylko `src/`, a entry-pointy (`main_*.py`,
+# ponad 2 tys. linii, w tym logika main_agent) wypadały z odznak Coverage i Quality
+# Gate. Spadku pokrycia nie ratujemy wykluczeniami.
+SONAR_PROPERTIES = ROOT / "sonar-project.properties"
+
+
+def _sonar_property(key: str) -> list[str]:
+    for line in SONAR_PROPERTIES.read_text(encoding="utf-8").splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name.strip() == key:
+            return [item.strip() for item in value.split(",") if item.strip()]
+    return []
+
+
+def _sonar_coverage_targets() -> list[str]:
+    commands = [run for run in _job_runs("sonarcloud") if _pytest_marker(run) is not None]
+    assert commands, "job `sonarcloud` nie uruchamia pytest"
+    tokens = shlex.split(commands[0].split("#", 1)[0])
+    return [token.removeprefix("--cov=") for token in tokens if token.startswith("--cov=")]
+
+
+@pytest.mark.parametrize("entrypoint", _entrypoints())
+def test_sonar_sources_cover_every_entrypoint(entrypoint: str) -> None:
+    sources = _sonar_property("sonar.sources")
+
+    assert "src" in sources
+    assert entrypoint in sources, f"sonar.sources = {sources} pomija {entrypoint}"
+    assert not _sonar_property("sonar.exclusions"), "pokrycia nie ratujemy wykluczeniami"
+
+
+@pytest.mark.parametrize("entrypoint", _entrypoints())
+def test_sonar_coverage_measures_every_entrypoint(entrypoint: str) -> None:
+    targets = _sonar_coverage_targets()
+
+    assert "src" in targets
+    assert entrypoint.removesuffix(".py") in targets, (
+        f"pytest w jobie sonarcloud mierzy {targets} — bez `--cov={entrypoint[:-3]}` "
+        f"Sonar pokazuje {entrypoint} jako niepokryty w całości."
+    )

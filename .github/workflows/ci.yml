@@ -92,9 +92,13 @@ jobs:
       # Coverage for SonarCloud. Mirrors CI's test selection minus integration (real
       # API keys); container tests use testcontainers (Docker is on the ubuntu runner).
       # Writes coverage.xml at the repo root, where sonar-project.properties expects it.
+      # CI-04: `--cov` obejmuje też każdy entry-point (`main_*.py` w sonar.sources).
       - name: 🧪 Pytest with coverage
         if: ${{ env.SONAR_TOKEN != '' }}
-        run: uv run --frozen --no-build --no-sync pytest -m "not integration" --cov=src --cov-report=xml
+        run: >-
+          uv run --frozen --no-build --no-sync pytest -m "not integration"
+          --cov=src --cov=main_agent --cov=main_backtest --cov=main_deadman --cov=main_scorecard
+          --cov=main_tools --cov=main_trainer --cov=main_watch --cov-report=xml
 
       - name: 🔍 SonarCloud Scan
         if: ${{ env.SONAR_TOKEN != '' }}
