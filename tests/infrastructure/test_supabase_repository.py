@@ -3496,3 +3496,98 @@ def test_expire_without_stale_rows_writes_nothing(
 
     assert repo.expire_unverified_predictions("NVDA", older_than_hours=96) == 0
     mock_client.table.return_value.update.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# WIA-56: odczyt kwitów decyzyjnych (migracja 020)
+# ---------------------------------------------------------------------------
+
+_RECEIPT_ROW: dict[str, Any] = {
+    "id": "pred-1",
+    "symbol": "NVDA",
+    "timestamp": "2026-08-14T05:31:00+00:00",
+    "predicted_trend": "BULLISH",
+    "is_trend_correct": False,
+    "decision_receipts": {"schema_version": 1, "effective_threshold": "0.03"},
+}
+
+
+def test_get_receipt_maps_the_row_and_its_raw_receipt(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_chain_response(mock_client, ["table", "select", "eq", "limit"], [_RECEIPT_ROW])
+
+    stored = repo.get_receipt("pred-1")
+
+    assert stored is not None
+    assert (stored.prediction_id, stored.symbol, stored.predicted_trend) == (
+        "pred-1",
+        "NVDA",
+        "BULLISH",
+    )
+    assert stored.predicted_at == datetime(2026, 8, 14, 5, 31, tzinfo=UTC)
+    assert stored.is_trend_correct is False
+    assert stored.payload == {"schema_version": 1, "effective_threshold": "0.03"}
+    select = mock_client.table.return_value.select
+    assert "decision_receipts" in select.call_args.args[0]
+    select.return_value.eq.assert_called_once_with("id", "pred-1")
+
+
+def test_get_receipt_of_an_unknown_prediction_is_none(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_chain_response(mock_client, ["table", "select", "eq", "limit"], [])
+
+    assert repo.get_receipt("pred-404") is None
+
+
+def test_receipt_that_is_not_a_json_object_maps_to_none(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_chain_response(
+        mock_client,
+        ["table", "select", "eq", "limit"],
+        [{**_RECEIPT_ROW, "decision_receipts": None, "is_trend_correct": None}],
+    )
+
+    stored = repo.get_receipt("pred-1")
+
+    assert stored is not None
+    assert stored.payload is None
+    assert stored.is_trend_correct is None
+
+
+def test_find_receipts_reads_one_utc_day_of_the_symbol(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_chain_response(
+        mock_client, ["table", "select", "eq", "gte", "lt", "order"], [_RECEIPT_ROW]
+    )
+
+    found = repo.find_receipts("NVDA", date(2026, 8, 14))
+
+    assert [stored.prediction_id for stored in found] == ["pred-1"]
+    select = mock_client.table.return_value.select
+    select.return_value.eq.assert_called_once_with("symbol", "NVDA")
+    select.return_value.eq.return_value.gte.assert_called_once_with(
+        "timestamp", "2026-08-14T00:00:00+00:00"
+    )
+    select.return_value.eq.return_value.gte.return_value.lt.assert_called_once_with(
+        "timestamp", "2026-08-15T00:00:00+00:00"
+    )
+
+
+def test_recently_resolved_rows_carry_the_receipt_for_the_post_mortem(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    """WIA-56: linia kwitu pod chybieniem w mailu czyta `decision_receipts`
+    z tego samego odczytu zamkniętych predykcji (migracja 020 jest na produkcji)."""
+    chain = mock_client.table.return_value
+    order_builder = (
+        chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+    )
+    _set_paginated_response(order_builder, [[]])
+
+    repo.get_recently_resolved_predictions(24)
+
+    assert "decision_receipts" in chain.select.call_args.args[0]

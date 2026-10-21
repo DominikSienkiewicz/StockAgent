@@ -16,6 +16,7 @@ from src.application.ports import (
     OpenReferenceCall,
     PreviousVerdict,
     RepositoryPort,
+    StoredReceipt,
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import CouncilVerdict, InvestorOpinion
@@ -292,6 +293,25 @@ def _optional_text(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
+# WIA-56: kolumny kwitu decyzyjnego z kontekstem predykcji (migracja 020).
+_RECEIPT_COLUMNS = "id, symbol, timestamp, predicted_trend, is_trend_correct, decision_receipts"
+
+
+def _stored_receipt(row: Mapping[str, Any]) -> StoredReceipt:
+    """Wiersz `prediction_logs` → `StoredReceipt`; kwit niebędący obiektem JSON → None."""
+    payload = row.get("decision_receipts")
+    stamp = row.get("timestamp")
+    correct = row.get("is_trend_correct")
+    return StoredReceipt(
+        prediction_id=str(row["id"]),
+        symbol=str(row.get("symbol") or "?"),
+        predicted_at=datetime.fromisoformat(stamp) if isinstance(stamp, str) else None,
+        predicted_trend=_optional_text(row.get("predicted_trend")),
+        is_trend_correct=correct if isinstance(correct, bool) else None,
+        payload=payload if isinstance(payload, Mapping) else None,
+    )
+
+
 def _rows(response: Any) -> list[dict[str, Any]]:
     """Narrow supabase response.data (JSON union) do list[dict]."""
     data = response.data or []
@@ -523,7 +543,8 @@ class SupabaseRepository(RepositoryPort):
             self._client.table(self._table).select(
                 "symbol, predicted_trend, is_trend_correct, timestamp, "
                 "reasoning_text, correction_insights, price_at_prediction, "
-                "actual_price_after_12h, data_quality_flags"
+                # WIA-56: kwit (migracja 020, na produkcji) do linii pod chybieniem.
+                "actual_price_after_12h, data_quality_flags, decision_receipts"
             ),
             cutoff,
             since,
@@ -1395,6 +1416,30 @@ class SupabaseRepository(RepositoryPort):
                 )
             )
         return out
+
+    def get_receipt(self, prediction_id: str) -> StoredReceipt | None:
+        response = (
+            self._client.table(self._table)
+            .select(_RECEIPT_COLUMNS)
+            .eq("id", prediction_id)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        return _stored_receipt(rows[0]) if rows else None
+
+    def find_receipts(self, symbol: str, day: date) -> list[StoredReceipt]:
+        start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+        response = (
+            self._client.table(self._table)
+            .select(_RECEIPT_COLUMNS)
+            .eq("symbol", symbol)
+            .gte("timestamp", start.isoformat())
+            .lt("timestamp", (start + timedelta(days=1)).isoformat())
+            .order("timestamp", desc=False)
+            .execute()
+        )
+        return [_stored_receipt(row) for row in _rows(response)]
 
     def save_council_votes(
         self,

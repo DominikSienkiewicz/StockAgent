@@ -102,6 +102,24 @@ class CycleRun:
 
 
 @dataclass(frozen=True)
+class StoredReceipt:
+    """WIA-56 — kwit decyzyjny predykcji z kontekstem jej wiersza `prediction_logs`.
+
+    `payload` to surowy JSONB `decision_receipts` (migracja 020) albo None, gdy
+    predykcja kwitu nie ma (zapis sprzed migracji albo bez `receipts_enabled`).
+    Wersję schematu rozpoznaje czytający (`read_decision_receipt`), więc nieznana
+    wersja dociera do niego jako dane, nie jako wyjątek adaptera.
+    `is_trend_correct` None = predykcja jeszcze nierozliczona."""
+
+    prediction_id: str
+    symbol: str
+    predicted_at: datetime | None
+    predicted_trend: str | None
+    is_trend_correct: bool | None
+    payload: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True)
 class OpenReferenceCall:
     """WIA-24 — nierozliczone wywołanie sygnału referencyjnego z id wiersza
     `reference_predictions` (migracja 042), którym rozlicza je kolejny przebieg."""
@@ -350,6 +368,16 @@ class RepositoryPort(ABC):
         Napędza counterfactual dissent-replay: gdy predykcja okazała się błędna,
         self-reflection sprawdza, który dysydent rady miał rację. Pusta lista =
         brak zapisanych głosów (rada padła / pominięta progiem)."""
+
+    @abstractmethod
+    def get_receipt(self, prediction_id: str) -> StoredReceipt | None:
+        """WIA-56 — kwit decyzyjny jednej predykcji; None, gdy nie ma takiej
+        predykcji. Odczyt darmowy, tylko do audytu („dlaczego?”)."""
+
+    @abstractmethod
+    def find_receipts(self, symbol: str, day: date) -> list[StoredReceipt]:
+        """WIA-56 — kwity wszystkich predykcji symbolu z jednego dnia UTC,
+        od najstarszej. Pusta lista = brak predykcji tego dnia."""
 
     @abstractmethod
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:

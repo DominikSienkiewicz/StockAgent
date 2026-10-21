@@ -277,3 +277,50 @@ def test_render_sample_report_writes_both_bodies_without_settings(
     assert html.startswith("<") and "Krypto" in html
     assert "przebieg #sample" in text
     assert "report-email.html" in capsys.readouterr().out
+
+# --- WIA-56: explain ----------------------------------------------------------
+
+
+def test_explain_by_prediction_id_reads_the_receipt(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mocker.patch("src.config.Settings.from_env")
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.get_receipt.return_value = None
+
+    code = main_tools.main(["explain", "pred-404"])
+
+    assert code == 0
+    repo_cls.return_value.get_receipt.assert_called_once_with("pred-404")
+    assert "nie znaleziono predykcji pred-404" in capsys.readouterr().out
+
+
+def test_explain_by_symbol_and_date_reads_that_utc_day(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mocker.patch("src.config.Settings.from_env")
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.find_receipts.return_value = []
+
+    code = main_tools.main(["explain", "--symbol", "nvda", "--date", "2026-08-14"])
+
+    assert code == 0
+    repo_cls.return_value.find_receipts.assert_called_once_with("NVDA", date(2026, 8, 14))
+    assert "brak predykcji NVDA z 2026-08-14 (UTC)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["explain"],
+        ["explain", "--symbol", "NVDA"],
+        ["explain", "pred-1", "--symbol", "NVDA", "--date", "2026-08-14"],
+        ["explain", "pred-1", "--date", "2026-08-14"],
+        ["explain", "--symbol", "NVDA", "--date", "14.08.2026"],
+    ],
+)
+def test_explain_needs_an_id_or_a_symbol_with_a_date(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main_tools.main(argv)
+
+    assert exit_info.value.code == 2

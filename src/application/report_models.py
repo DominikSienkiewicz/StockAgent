@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
+from src.application.decision_receipt import DecisionReceipt
 from src.domain.conformal import MoveInterval
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import SkipReason
@@ -167,6 +168,9 @@ class ResolvedPrediction:
     # Moment predykcji (`prediction_logs.timestamp`). Jego dzień UTC to klucz
     # cyklu: predykcje jednego cyklu są skorelowane (WIA-17, WIA-23).
     predicted_at: datetime | None = None
+    # WIA-56: kwit decyzyjny (migracja 020) do linii pod chybieniem; None = brak
+    # kwitu albo nieznana wersja schematu.
+    receipt: DecisionReceipt | None = None
 
     @property
     def actual_change_pct(self) -> Decimal | None:

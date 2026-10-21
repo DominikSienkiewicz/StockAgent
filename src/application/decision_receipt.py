@@ -11,19 +11,27 @@ a JSONB nie ma migracji kolumn, więc wersję niesie pole `schema_version`:
 
 Każda wersja jest nadzbiorem poprzedniej, a czytnik toleruje brak każdego
 opcjonalnego klucza. Nieznanej wersji nie zgaduje — zwraca None.
+
+WIA-56: kwit przestaje być write-only — `receipt_line_pl` skraca go do jednej
+linii pod chybieniem w mailu, a `src/tools/explain.py` pokazuje go w całości.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from src.application.report_formatting import number, pct
 from src.domain.recipe import RECIPE_FIELDS
 
 RECEIPT_SCHEMA_V1 = 1
 RECEIPT_SCHEMA_V2 = 2
-_SUPPORTED_SCHEMAS = frozenset({RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2})
+SUPPORTED_RECEIPT_SCHEMAS = frozenset({RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2})
+# Analogi w linii maila: tyle najbliższych, krótkie id jak skrót commita.
+_LINE_ANALOGS = 3
+_SHORT_ID = 8
 
 
 @dataclass(frozen=True)
@@ -49,7 +57,7 @@ def read_decision_receipt(payload: object) -> DecisionReceipt | None:
         return None
     schema_version = payload.get("schema_version")
     # `type is int`, bo `True in {1, 2}` — bool nie jest wersją schematu.
-    if type(schema_version) is not int or schema_version not in _SUPPORTED_SCHEMAS:
+    if type(schema_version) is not int or schema_version not in SUPPORTED_RECEIPT_SCHEMAS:
         return None
     threshold = payload.get("effective_threshold")
     return DecisionReceipt(
@@ -64,6 +72,44 @@ def read_decision_receipt(payload: object) -> DecisionReceipt | None:
             else {}
         ),
     )
+
+
+def effective_threshold_pct(receipt: DecisionReceipt) -> str | None:
+    """Próg efektywny jako procent po polsku („3,0%”); brak albo śmieć → None."""
+    if receipt.effective_threshold is None:
+        return None
+    try:
+        return pct(Decimal(receipt.effective_threshold), decimals=1)
+    except InvalidOperation:
+        return None
+
+
+def similarity_label(precedent: Mapping[str, Any]) -> str | None:
+    """Podobieństwo analogu („0,91”); brak albo nieliczbowe → None."""
+    value = precedent.get("similarity")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return number(value, decimals=2)
+
+
+def receipt_line_pl(receipt: DecisionReceipt) -> str:
+    """WIA-56: jedna linia kwitu pod chybieniem, np. „stała na analogach
+    #3f2a1b9c (0,91), #77aa0e12 (0,87) przy progu 3,0%”.
+
+    Analog bez `id` (zapis sprzed #13) nie da się wskazać, więc go pomijamy."""
+    analogs: list[str] = []
+    for precedent in receipt.precedents:
+        analog_id = precedent.get("id")
+        if not analog_id:
+            continue
+        similarity = similarity_label(precedent)
+        suffix = f" ({similarity})" if similarity is not None else ""
+        analogs.append(f"#{str(analog_id)[:_SHORT_ID]}{suffix}")
+    threshold = effective_threshold_pct(receipt)
+    if not analogs:
+        return "bez analogów RAG" + (f", przy progu {threshold}" if threshold else "")
+    line = "stała na analogach " + ", ".join(analogs[:_LINE_ANALOGS])
+    return line + (f" przy progu {threshold}" if threshold else "")
 
 
 def _mappings(value: object) -> tuple[Mapping[str, Any], ...]:

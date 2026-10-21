@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from src.application.alpha_signals import AlphaSignals
+from src.application.decision_receipt import receipt_line_pl
 from src.application.portfolio_fx import effective_pln_rates
 from src.application.report_alpha import render_alpha_html
 from src.application.report_charts import (
@@ -486,6 +487,14 @@ def _resolved_why(p: ResolvedPrediction) -> str:
     return "Kierunek się nie potwierdził."
 
 
+def _resolved_receipt_line(p: ResolvedPrediction) -> str | None:
+    """WIA-56: pod chybieniem jedna linia z kwitu — na czym predykcja stała.
+    Trafiona nie potrzebuje audytu, a brak kwitu to brak linii."""
+    if p.is_correct or p.receipt is None:
+        return None
+    return receipt_line_pl(p.receipt)
+
+
 def _render_resolved_item_html(p: ResolvedPrediction, sector_map: Mapping[str, str]) -> str:
     mark = "✅" if p.is_correct else "❌"
     color = PALETTE.positive if p.is_correct else PALETTE.negative
@@ -516,6 +525,12 @@ def _render_resolved_item_html(p: ResolvedPrediction, sector_map: Mapping[str, s
         f"<strong style='color: {color};'>Dlaczego:</strong> "
         f"<span style='color: #4b5563;'>{_html(_resolved_why(p))}</span></div>"
     )
+    receipt = _resolved_receipt_line(p)
+    if receipt:
+        why_line += (
+            "<div style='font-size: 11px; color: #4b5563; margin-top: 2px;'>"
+            f"🧾 <strong>Kwit:</strong> {_html(receipt)}</div>"
+        )
     return f"""
       <div style="margin-bottom: 8px; padding: 8px 10px; background: #fafafa;
                   border-left: 3px solid {color}; border-radius: 4px;
@@ -2654,6 +2669,9 @@ def _render_resolved_predictions_text(
                 f"        faktycznie: {prices}({_pct(p.actual_change_pct, signed=True)})"
             )
         lines.append(f"        dlaczego: {_resolved_why(p)}")
+        receipt = _resolved_receipt_line(p)
+        if receipt:
+            lines.append(f"        kwit: {receipt}")
     lines.append(
         f"  Suma: {correct}/{len(resolved_predictions)} · "
         f"{_resolved_accuracy_pair(resolved_predictions)}"

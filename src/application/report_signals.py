@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from src.application.decision_receipt import read_decision_receipt
 from src.application.report_formatting import format_local, number, pct, score_to_pl_label
 from src.application.report_models import (
     ResolvedPrediction,
@@ -248,6 +249,7 @@ def parse_resolved_predictions(
             price_at_prediction=_to_decimal(row.get("price_at_prediction")),
             actual_price=_to_decimal(row.get("actual_price_after_12h")),
             predicted_at=_to_datetime(row.get("timestamp")),
+            receipt=read_decision_receipt(row.get("decision_receipts")),
         ))
     return out
 

@@ -15,6 +15,7 @@ Użycie:
         [--experiment ID] [--discrimination]
     uv run python main_tools.py cost-envelope
     uv run python main_tools.py render-sample-report [--out-dir build/sample-report]
+    uv run python main_tools.py explain <prediction_id> | --symbol X --date RRRR-MM-DD
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -42,6 +43,7 @@ from src.tools.evaluate import (
     render_evaluation,
     with_asset_class,
 )
+from src.tools.explain import explain_prediction, explain_symbol_day
 from src.tools.import_positions import (
     PositionsCsvError,
     format_plan,
@@ -90,6 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_import_positions(subcommands)
     _add_cost_envelope(subcommands)
     _add_render_sample_report(subcommands)
+    _add_explain(subcommands)
     return parser
 
 
@@ -377,6 +380,48 @@ def _run_render_sample_report(args: argparse.Namespace) -> int:
     html_path.write_text(report.html, encoding="utf-8")
     text_path.write_text(report.text, encoding="utf-8")
     print(f"✅ przykładowy raport: {html_path} i {text_path}")
+    return 0
+
+
+def _add_explain(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subcommands.add_parser(
+        "explain",
+        help="Explain a prediction from its decision receipt (read-only).",
+        description=(
+            "WIA-56: RAG analogues with similarity, SHAP-lite attributions, the effective "
+            "threshold and the council votes of one prediction (by id) or of every "
+            "prediction of a symbol on one UTC day. Read-only, zero paid calls."
+        ),
+    )
+    parser.add_argument("prediction_id", nargs="?", help="Id predykcji (prediction_logs.id).")
+    parser.add_argument(
+        "--symbol", type=str.upper, help="Symbol (razem z --date): predykcje z tego dnia."
+    )
+    parser.add_argument(
+        "--date",
+        type=date.fromisoformat,
+        metavar="RRRR-MM-DD",
+        help="Dzień UTC predykcji (razem z --symbol).",
+    )
+    parser.set_defaults(handler=_run_explain, explain_parser=parser)
+
+
+def _run_explain(args: argparse.Namespace) -> int:
+    """WIA-56: „dlaczego?” — kwit po id albo po symbolu i dniu; exit 0 zawsze."""
+    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+    by_id = args.prediction_id is not None
+    by_day = args.symbol is not None and args.date is not None
+    partial_day = (args.symbol is None) != (args.date is None)
+    if by_id == by_day or partial_day:
+        parser: argparse.ArgumentParser = args.explain_parser
+        parser.error("podaj <prediction_id> albo --symbol X razem z --date RRRR-MM-DD")
+    settings = _load_settings()
+    repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    if by_id:
+        print(explain_prediction(repo, args.prediction_id))
+    else:
+        print(explain_symbol_day(repo, args.symbol, args.date))
     return 0
 
 

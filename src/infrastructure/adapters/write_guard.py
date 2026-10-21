@@ -33,6 +33,7 @@ from src.application.ports import (
     PositionsImportPort,
     PreviousVerdict,
     RepositoryPort,
+    StoredReceipt,
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.council import InvestorOpinion
@@ -98,6 +99,8 @@ class ReadOnlyRepository(RepositoryPort):
         "get_recent_quota_alerts",
         "find_similar_predictions",
         "get_council_votes_for_prediction",
+        "get_receipt",
+        "find_receipts",
         "get_resolved_for_calibration",
         "get_persona_accuracy",
         "get_persona_track_record",
@@ -205,6 +208,12 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_council_votes_for_prediction(self, prediction_id: str) -> list[InvestorOpinion]:
         return self._delegate.get_council_votes_for_prediction(prediction_id)
+
+    def get_receipt(self, prediction_id: str) -> StoredReceipt | None:
+        return self._delegate.get_receipt(prediction_id)
+
+    def find_receipts(self, symbol: str, day: date) -> list[StoredReceipt]:
+        return self._delegate.find_receipts(symbol, day)
 
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
         return self._delegate.get_resolved_for_calibration(days)
