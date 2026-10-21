@@ -334,7 +334,7 @@ class TestCountLabelOverlaps:
 
     _T0 = datetime(2026, 10, 2, 9, 30, tzinfo=UTC)
 
-    def test_counts_rows_settled_after_the_next_row_of_their_symbol(self):
+    def test_counts_rows_settled_after_the_next_row_of_their_symbol(self) -> None:
         day = timedelta(days=1)
         rows = [
             # Piątek rozliczony w poniedziałek dopiero po poniedziałkowym wierszu.
@@ -348,7 +348,7 @@ class TestCountLabelOverlaps:
 
         assert count_label_overlaps(rows) == LabelOverlap(measured=3, overlapping=1)
 
-    def test_order_of_rows_does_not_matter(self):
+    def test_order_of_rows_does_not_matter(self) -> None:
         rows = [
             ("AAPL", self._T0 + timedelta(hours=24), None),
             ("AAPL", self._T0, self._T0 + timedelta(hours=30)),
@@ -356,7 +356,7 @@ class TestCountLabelOverlaps:
 
         assert count_label_overlaps(rows) == LabelOverlap(measured=1, overlapping=1)
 
-    def test_rows_without_settled_at_or_next_row_are_not_measured(self):
+    def test_rows_without_settled_at_or_next_row_are_not_measured(self) -> None:
         rows = [("AAPL", self._T0, None), ("MSFT", self._T0, self._T0 + timedelta(hours=26))]
 
         assert count_label_overlaps(rows) == LabelOverlap(measured=0, overlapping=0)

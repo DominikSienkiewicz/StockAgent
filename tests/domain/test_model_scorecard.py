@@ -196,21 +196,21 @@ class TestLatestRunIndicesById:
     """ML-24: wiersze z `run_id` grupuje identyfikator przebiegu, nie przerwa
     czasowa — ręczny re-run kilka minut po cronie to osobny przebieg."""
 
-    def test_rerun_minutes_after_the_cron_is_a_separate_run(self):
+    def test_rerun_minutes_after_the_cron_is_a_separate_run(self) -> None:
         cron = datetime(2026, 10, 11, 3, 30)
         stamps = [cron + timedelta(minutes=40), cron + timedelta(minutes=35), cron, cron]
         run_ids = ["rerun", "rerun", "cron", "cron"]
 
         assert latest_run_indices_by_id(stamps, run_ids) == [0, 1]
 
-    def test_newest_row_without_run_id_falls_back_to_the_time_gap(self):
+    def test_newest_row_without_run_id_falls_back_to_the_time_gap(self) -> None:
         # Historia sprzed migracji 049 (albo flaga off) — heurystyka ML-03.
         latest = datetime(2026, 10, 11, 3, 30)
         stamps = [latest, latest - timedelta(minutes=5), latest - timedelta(days=7)]
 
         assert latest_run_indices_by_id(stamps, [None, None, "older"]) == [0, 1]
 
-    def test_rows_without_timestamp_are_left_out(self):
+    def test_rows_without_timestamp_are_left_out(self) -> None:
         latest = datetime(2026, 10, 11, 3, 30)
 
         assert latest_run_indices_by_id([None, latest], ["run", "run"]) == [1]
