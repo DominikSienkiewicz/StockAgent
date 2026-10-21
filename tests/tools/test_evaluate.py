@@ -819,3 +819,92 @@ class TestExperimentEvaluation:
         assert code == 1
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_not_called()
         assert "EXP-99" in capsys.readouterr().err
+
+
+def _discrimination_row(
+    trend: str,
+    correct: bool,
+    confidence: float,
+    *,
+    day: int = 0,
+    council: str | None = None,
+    consensus: float | None = None,
+    actual: float = 101.0,
+) -> dict:
+    row = _row(trend, correct, 100, 101, actual)
+    row["timestamp"] = f"2026-09-{day + 1:02d}T05:30:00+00:00"
+    row["confidence_score"] = confidence
+    row["council_recommendation"] = council
+    row["council_consensus"] = consensus
+    return row
+
+
+class TestDiscrimination:
+    """WIA-38: czy pewność LLM i siła konsensusu rady odróżniają trafienia od pudeł."""
+
+    def test_llm_and_council_auc_on_directional_calls(self):
+        from src.tools.evaluate import summarize_discrimination
+
+        rows = [
+            _discrimination_row("BULLISH", True, 0.9, council="BUY", consensus=0.9, actual=103),
+            _discrimination_row("BULLISH", False, 0.6, council="BUY", consensus=0.5, actual=98),
+            _discrimination_row(
+                "BEARISH", True, 0.8, day=1, council="SELL", consensus=0.4, actual=97
+            ),
+            _discrimination_row(
+                "BEARISH", False, 0.7, day=1, council="SELL", consensus=0.8, actual=102
+            ),
+            # SIDEWAYS i HOLD nie stawiają zakładu na kierunek — poza AUC.
+            _discrimination_row("SIDEWAYS", True, 0.95, day=1, council="HOLD", consensus=0.9),
+        ]
+
+        report = summarize_discrimination(rows)
+
+        assert report.llm is not None and report.llm.n == 4
+        assert report.llm.auc == pytest.approx(1.0)
+        assert report.council is not None and report.council.n == 4
+        assert report.council.auc == pytest.approx(0.5)
+
+    def test_rows_without_confidence_or_council_are_left_out(self):
+        from src.tools.evaluate import summarize_discrimination
+
+        rows = [_discrimination_row("BULLISH", True, 0.9)]
+        rows[0]["confidence_score"] = None
+
+        report = summarize_discrimination(rows)
+
+        assert report.llm is None
+        assert report.council is None
+
+    def test_formatted_section_prints_auc_n_eff_and_coverage(self):
+        from src.tools.evaluate import format_discrimination, summarize_discrimination
+
+        rows = [
+            _discrimination_row("BULLISH", i % 2 == 0, 0.9 if i % 2 == 0 else 0.6, day=i)
+            for i in range(10)
+        ]
+
+        text = format_discrimination(summarize_discrimination(rows))
+
+        assert "Czy pewność coś znaczy" in text
+        assert "AUC 1.00" in text
+        assert "n=10" in text
+        assert "trafność top 20%: 100.0%" in text
+        assert "rada" in text and "za mało danych" in text
+
+    def test_discrimination_flag_reads_confidence_and_council_fields(self, mocker, capsys):
+        import main_tools
+
+        mocker.patch("src.config.Settings.from_env")
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        read = repo_cls.return_value.get_resolved_predictions_for_eval
+        read.return_value = [_discrimination_row("BULLISH", True, 0.9)]
+
+        code = main_tools.main(["evaluate", "--discrimination"])
+
+        assert code == 0
+        assert read.call_args.kwargs == {
+            "days": 30,
+            "extra_fields": ("confidence_score", "council_consensus", "council_recommendation"),
+        }
+        assert "Czy pewność coś znaczy" in capsys.readouterr().out

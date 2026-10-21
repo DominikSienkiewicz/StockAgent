@@ -45,6 +45,13 @@ z migracji 037, a bez niej opcjonalny klucz kwitu v2). Dla każdej metryki czę�
 promptu: średnia per ramię z n i n_eff, różnica zabieg − kontrola i 95% CI
 z bootstrapu blokowego po dniach UTC; metryka główna oznaczona ★.
 
+Rozróżnianie (WIA-38): `--discrimination` sprawdza, czy pewność coś znaczy — AUC
+(Mann–Whitney) pewności LLM względem trafienia kierunku i siły konsensusu rady
+względem trafienia BUY/SELL, z n, n_eff, 95% CI z bootstrapu po dniach UTC
+i trafnością top 20% / 50% / 100% predykcji wg pewności. AUC ≈ 0.5 znaczy, że
+kalibracja tylko przesuwa wszystkich do stopy bazowej, a ranking po pewności
+jest szumem.
+
 Uruchom (ARCH-39: składanie `Settings` i repozytorium żyje w `main_tools.py`,
 tu zostają czyste funkcje):
     uv run python main_tools.py evaluate
@@ -54,6 +61,7 @@ tu zostają czyste funkcje):
     uv run python main_tools.py evaluate --by component --by regime
     uv run python main_tools.py evaluate --echo
     uv run python main_tools.py evaluate --experiment EXP-02 --days 90
+    uv run python main_tools.py evaluate --discrimination
 
 Exit code: 0 zawsze (narzędzie raportujące, nie bramka CI).
 """
@@ -66,7 +74,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from src.domain.equity_curve import DirectionalHitRate, directional_hit_rate
+from src.domain.calibration_curve import (
+    DiscriminationEvidence,
+    discrimination_evidence,
+    risk_coverage_curve,
+)
+from src.domain.equity_curve import DirectionalHitRate, directional_hit_rate, signal_of
 from src.domain.experiment import (
     ArmComparison,
     Experiment,
@@ -95,7 +108,12 @@ from src.domain.segment_evidence import (
     trend_hit,
 )
 from src.domain.significance import DEFAULT_FDR_Q, MIN_BOOTSTRAP_CYCLES
-from src.domain.track_record import HitRateEvidence, ScoredCall, assess_directional_hit_rate
+from src.domain.track_record import (
+    HitRateEvidence,
+    ScoredCall,
+    assess_directional_hit_rate,
+    group_by_cycle,
+)
 from src.domain.value_objects import AssetType
 
 # Prefiks wersji w raporcie CLI — pełny sha256 nic nie mówi człowiekowi.
@@ -141,6 +159,15 @@ EXPERIMENT_FIELDS: tuple[str, ...] = (
 EXPERIMENT_ARMS_UNAVAILABLE = (
     "kolumna experiment_arms niedostępna — uruchom migrację 037; ramiona z kwitu decyzyjnego"
 )
+# WIA-38: pewność LLM (016) i werdykt rady (005) — pola czytane na żądanie
+# `--discrimination`.
+DISCRIMINATION_FIELDS: tuple[str, ...] = (
+    "confidence_score",
+    "council_recommendation",
+    "council_consensus",
+)
+# Punkty krzywej ryzyko–pokrycie drukowane w CLI.
+_DISCRIMINATION_COVERAGES: tuple[float, ...] = (0.2, 0.5, 1.0)
 # Kolumny, bez których raport idzie dalej: komunikat i ponowny odczyt bez nich.
 OPTIONAL_COLUMNS: Mapping[str, str] = {
     GATE_DELTA_FIELD: GATE_DELTA_UNAVAILABLE,
@@ -558,6 +585,7 @@ def evaluation_reads(
     segmentations: Sequence[str],
     echo: bool,
     experiment: bool = False,
+    discrimination: bool = False,
 ) -> tuple[dict[str, Any], set[str]]:
     """Co odczytać z repozytorium: flagi segmentów wersji i dodatkowe kolumny.
 
@@ -575,6 +603,8 @@ def evaluation_reads(
         fields.add(GATE_DELTA_FIELD)
     if experiment:
         fields.update(EXPERIMENT_FIELDS)
+    if discrimination:
+        fields.update(DISCRIMINATION_FIELDS)
     return reads, fields
 
 
@@ -592,9 +622,10 @@ def render_evaluation(
     by_universe: bool,
     echo: bool,
     experiment: Experiment | None = None,
+    discrimination: bool = False,
 ) -> str:
-    """Pełny tekst raportu CLI: nagłówek, segmenty wersji, `--by`, test echa
-    i porównanie ramion eksperymentu."""
+    """Pełny tekst raportu CLI: nagłówek, segmenty wersji, `--by`, test echa,
+    porównanie ramion eksperymentu i rozróżnianie pewności (WIA-38)."""
     report = summarize_evaluation(rows, segment_by=segmentations)
     sections = [format_report(report, days)]
     if by_recipe:
@@ -608,7 +639,106 @@ def render_evaluation(
         sections.append(format_echo(summarize_echo(rows)))
     if experiment is not None:
         sections.append(format_experiment(summarize_experiment(rows, experiment)))
+    if discrimination:
+        sections.append(format_discrimination(summarize_discrimination(rows)))
     return "\n".join(sections)
+
+
+@dataclass(frozen=True)
+class DiscriminationReport:
+    """WIA-38: AUC i krzywa ryzyko–pokrycie pewności LLM i konsensusu rady.
+
+    None = brak zakładów kierunkowych z pewnością (pewność LLM sprzed migracji
+    016, rada pominięta progiem albo HOLD)."""
+
+    llm: DiscriminationEvidence | None
+    llm_coverage: tuple[tuple[float, float], ...]
+    council: DiscriminationEvidence | None
+    council_coverage: tuple[tuple[float, float], ...]
+
+
+def _llm_sample(row: Mapping[str, Any]) -> tuple[float, bool] | None:
+    """(pewność LLM, trafienie kierunku) dla predykcji BULLISH/BEARISH albo None."""
+    confidence = _to_float(row.get("confidence_score"))
+    correct = row.get("is_trend_correct")
+    if confidence is None or correct is None or signal_of(str(row.get("predicted_trend"))) == 0:
+        return None
+    return confidence, bool(correct)
+
+
+def _council_sample(row: Mapping[str, Any]) -> tuple[float, bool] | None:
+    """(siła konsensusu rady, trafienie BUY/SELL) albo None — HOLD nie stawia zakładu."""
+    trend = council_trend(_text(row.get("council_recommendation")))
+    consensus = _to_float(row.get("council_consensus"))
+    change = _realized_change(row)
+    if trend is None or signal_of(trend) == 0 or consensus is None or change is None:
+        return None
+    return consensus, trend_hit(trend, change)
+
+
+def _discrimination_of(
+    keyed: list[tuple[str, tuple[float, bool]]],
+) -> tuple[DiscriminationEvidence | None, tuple[tuple[float, float], ...]]:
+    by_cycle = group_by_cycle(keyed)
+    samples = [sample for _, sample in keyed]
+    coverage = tuple(risk_coverage_curve(samples, _DISCRIMINATION_COVERAGES))
+    return discrimination_evidence(by_cycle), coverage
+
+
+def summarize_discrimination(rows: list[dict[str, Any]]) -> DiscriminationReport:
+    """Rozróżnianie pewności LLM i rady na tych samych rozliczonych wierszach."""
+    llm: list[tuple[str, tuple[float, bool]]] = []
+    council: list[tuple[str, tuple[float, bool]]] = []
+    for row in rows:
+        cycle = _cycle_key(row.get("timestamp"))
+        if (sample := _llm_sample(row)) is not None:
+            llm.append((cycle, sample))
+        if (sample := _council_sample(row)) is not None:
+            council.append((cycle, sample))
+    llm_evidence, llm_coverage = _discrimination_of(llm)
+    council_evidence, council_coverage = _discrimination_of(council)
+    return DiscriminationReport(
+        llm=llm_evidence,
+        llm_coverage=llm_coverage,
+        council=council_evidence,
+        council_coverage=council_coverage,
+    )
+
+
+def _discrimination_lines(
+    label: str,
+    evidence: DiscriminationEvidence | None,
+    coverage: tuple[tuple[float, float], ...],
+) -> list[str]:
+    if evidence is None or evidence.auc is None:
+        return [f"  {label}: {INSUFFICIENT_DATA_PL} (brak trafień albo pudeł z pewnością)"]
+    spread = (
+        f" [{evidence.interval[0]:.2f}; {evidence.interval[1]:.2f}]"
+        if evidence.interval is not None
+        else f" (za mało cykli na bootstrap, k < {MIN_BOOTSTRAP_CYCLES})"
+    )
+    points = " · ".join(
+        f"trafność top {share * 100:.0f}%: {rate * 100:.1f}%" for share, rate in coverage
+    )
+    return [
+        f"  {label}: AUC {evidence.auc:.2f}{spread}, n={evidence.n}, "
+        f"n_eff≈{evidence.n_eff:.0f}",
+        f"    {points}",
+    ]
+
+
+def format_discrimination(report: DiscriminationReport) -> str:
+    """Sekcja CLI „Czy pewność coś znaczy” — AUC 0.5 to pewność bez informacji."""
+    lines = ["  Czy pewność coś znaczy (WIA-38; AUC 0.5 = losowo, 1.0 = idealnie):"]
+    lines += _discrimination_lines(
+        "LLM (confidence_score vs trafienie kierunku)", report.llm, report.llm_coverage
+    )
+    lines += _discrimination_lines(
+        "rada (consensus_strength vs trafienie BUY/SELL)",
+        report.council,
+        report.council_coverage,
+    )
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)

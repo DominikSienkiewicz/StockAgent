@@ -12,7 +12,7 @@ Użycie:
     uv run python main_tools.py <podkomenda> [opcje]
     uv run python main_tools.py import-positions --csv pozycje.csv [--apply]
     uv run python main_tools.py evaluate [--days N] [--by-recipe] [--by X] [--echo]
-        [--experiment ID]
+        [--experiment ID] [--discrimination]
     uv run python main_tools.py cost-envelope
     uv run python main_tools.py render-sample-report [--out-dir build/sample-report]
 """
@@ -138,6 +138,14 @@ def _add_evaluate(subcommands: argparse._SubParsersAction[argparse.ArgumentParse
             "z CI blokowym; ramiona z kolumny (migracja 037) albo z kwitu v2."
         ),
     )
+    parser.add_argument(
+        "--discrimination",
+        action="store_true",
+        help=(
+            "Czy pewność coś znaczy (WIA-38): AUC pewności LLM i konsensusu rady "
+            "z CI blokowym i trafnością top-k% wg pewności."
+        ),
+    )
     parser.set_defaults(handler=_run_evaluate)
 
 
@@ -159,6 +167,7 @@ def _run_evaluate(args: argparse.Namespace) -> int:
         segmentations=segmentations,
         echo=args.echo,
         experiment=experiment is not None,
+        discrimination=args.discrimination,
     )
     rows, read_fields = _read_evaluation_rows(repo, args.days, reads, fields)
     if "asset_class" in segmentations:
@@ -172,6 +181,7 @@ def _run_evaluate(args: argparse.Namespace) -> int:
             by_universe=args.by_universe,
             echo=GATE_DELTA_FIELD in read_fields,
             experiment=experiment,
+            discrimination=args.discrimination,
         )
     )
     return 0

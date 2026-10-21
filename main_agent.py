@@ -115,6 +115,8 @@ from src.domain.asset import Asset
 from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
+    confidence_reorders_ranking,
+    discrimination_evidence,
     probability_scores,
     reliability_curve,
 )
@@ -2487,6 +2489,17 @@ def _build_signal_calibration(
         logger.exception("Failed to fetch calibration samples for signal ranking")
         return None
     # WIA-39: ranking kalibrujemy krzywą kierunkową — SIDEWAYS trafia za darmo.
+    split = split_calibration_samples(rows)
+    # WIA-38: pewność, która nie odróżnia trafień od pudeł, nie przestawia rankingu.
+    discrimination = discrimination_evidence(split.directional_by_cycle, n_boot=0)
+    if discrimination is not None and not confidence_reorders_ranking(discrimination):
+        logger.warning(
+            "Confidence AUC %.2f at n_eff≈%.0f carries no ranking information — "
+            "signals ranked on raw confidence",
+            discrimination.auc,
+            discrimination.n_eff,
+        )
+        return None
     return directional_calibration_curve(rows)
 
 

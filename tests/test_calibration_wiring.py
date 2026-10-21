@@ -156,3 +156,46 @@ class TestScorecardCalibrationCycles:
             ((0.9, False),),
             ((0.6, True),),
         )
+
+
+def _rows_by_day(days: int, per_day: int, hit: object) -> list[dict[str, object]]:
+    return [
+        {
+            "confidence_score": 0.6 + 0.3 * (i % 2),
+            "is_trend_correct": hit(day, i),  # type: ignore[operator]
+            "predicted_trend": "BULLISH",
+            "timestamp": f"2026-09-{day + 1:02d}T05:30:00+00:00",
+        }
+        for day in range(days)
+        for i in range(per_day)
+    ]
+
+
+class TestUninformativeConfidenceGate:
+    """WIA-38: AUC < 0.55 przy n_eff ≥ 50 → skalibrowana pewność nie przestawia
+    rankingu (surowa pewność, jak bez historii)."""
+
+    @staticmethod
+    def _settings() -> MagicMock:
+        settings = MagicMock()
+        settings.calibrated_confidence_enabled = True
+        settings.track_record_days = 30
+        return settings
+
+    def test_uninformative_confidence_leaves_the_ranking_raw(self) -> None:
+        # Trafienie zależy od dnia, nie od pewności: AUC = 0.5 na 60 cyklach.
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.return_value = _rows_by_day(
+            30, 4, lambda day, i: (day + i // 2) % 2 == 0
+        ) + _rows_by_day(30, 4, lambda day, i: (day + i // 2) % 2 == 1)
+
+        assert main_agent._build_signal_calibration(self._settings(), repo) is None
+
+    def test_informative_confidence_keeps_the_calibration(self) -> None:
+        # Pewność 0.9 trafia, 0.6 pudłuje: AUC = 1.
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.return_value = _rows_by_day(
+            60, 2, lambda day, i: i % 2 == 1
+        )
+
+        assert main_agent._build_signal_calibration(self._settings(), repo)

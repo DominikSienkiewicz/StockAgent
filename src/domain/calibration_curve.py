@@ -19,6 +19,11 @@ dają 2–3 niepuste. `strategy="equal_mass"` dzieli próbki po randze na kubeł
 równoliczne (granice kwantylowe). ECE przy małym n jest obciążone w górę —
 `debiased_ece` odejmuje ECE oczekiwane przy idealnej kalibracji, a
 `calibration_error_evidence` dokłada n_eff i przedział z bootstrapu po cyklach.
+
+WIA-38: kalibracja zakłada, że pewność niesie informację. `discrimination_auc`
+(Mann–Whitney) i `risk_coverage_curve` sprawdzają, czy wyższa pewność znaczy
+częstsze trafienie, a `confidence_reorders_ranking` to reguła: AUC < 0.55 przy
+n_eff ≥ 50 → skalibrowana pewność nie przestawia rankingu sygnałów.
 """
 
 from __future__ import annotations
@@ -35,6 +40,14 @@ BucketStrategy = Literal["equal_width", "equal_mass"]
 
 # WIA-58: liczba symulacji Bernoulliego w korekcie obciążenia ECE.
 DEFAULT_ECE_SIMULATIONS = 200
+
+# WIA-38: poniżej tego AUC pewność nie odróżnia trafień od pudeł…
+MIN_INFORMATIVE_AUC = 0.55
+# …ale wyłączamy ranking dopiero przy tej efektywnej liczności — przy mniejszej
+# próbie przedział AUC jest za szeroki, żeby o tym rozstrzygać.
+MIN_RANKING_DISCRIMINATION_N_EFF = 50
+# Pokrycia krzywej ryzyko–pokrycie: top 10%, 20%, …, 100% predykcji wg pewności.
+DEFAULT_COVERAGES: tuple[float, ...] = tuple(round(0.1 * k, 1) for k in range(1, 11))
 
 
 @dataclass(frozen=True)
@@ -400,4 +413,106 @@ def calibration_error_evidence(
             seed=seed,
         ),
     )
+
+
+def discrimination_auc(samples: Sequence[tuple[float, bool]]) -> float | None:
+    """WIA-38 — AUC pewności: P(pewność trafienia > pewność pudła), remis = ½.
+
+    Statystyka Manna–Whitneya z rang (remisy dostają średnią rangę), O(n log n).
+    0.5 = pewność nie odróżnia trafień od pudeł, 1.0 = każde trafienie ma wyższą
+    pewność niż każde pudło. Bez trafień albo bez pudeł → None (nieokreślone).
+    """
+    hits = sum(1 for _, hit in samples if hit)
+    misses = len(samples) - hits
+    if hits == 0 or misses == 0:
+        return None
+    ordered = sorted(samples, key=lambda sample: sample[0])
+    hit_rank_sum = 0.0
+    start = 0
+    while start < len(ordered):
+        end = start
+        while end < len(ordered) and ordered[end][0] == ordered[start][0]:
+            end += 1
+        # Rangi start+1 … end mają wspólną średnią rangę.
+        average_rank = (start + 1 + end) / 2
+        hit_rank_sum += average_rank * sum(1 for _, hit in ordered[start:end] if hit)
+        start = end
+    return (hit_rank_sum - hits * (hits + 1) / 2) / (hits * misses)
+
+
+def risk_coverage_curve(
+    samples: Sequence[tuple[float, bool]],
+    coverages: Sequence[float] = DEFAULT_COVERAGES,
+) -> list[tuple[float, float]]:
+    """WIA-38 — trafność przy zostawieniu top-k% predykcji wg pewności.
+
+    Zwraca pary `(pokrycie, hit-rate)`. Krzywa rosnąca w lewo znaczy, że
+    pewność porządkuje trafienia; płaska — że ranking po pewności jest szumem.
+    Remis pewności na granicy top-k wchodzi proporcjonalnie (średnią trafność
+    remisującej grupy), więc stała pewność daje dokładnie stopę bazową w
+    każdym punkcie. Brak próbek → [].
+    """
+    if not samples:
+        return []
+    ordered = sorted(samples, key=lambda sample: sample[0], reverse=True)
+    n = len(ordered)
+    curve: list[tuple[float, float]] = []
+    for coverage in coverages:
+        k = max(1, min(n, math.ceil(round(coverage * n, 9))))
+        threshold = ordered[k - 1][0]
+        higher = [hit for confidence, hit in ordered if confidence > threshold]
+        tied = [hit for confidence, hit in ordered if confidence == threshold]
+        tied_rate = sum(tied) / len(tied)
+        hits = sum(higher) + (k - len(higher)) * tied_rate
+        curve.append((coverage, hits / k))
+    return curve
+
+
+@dataclass(frozen=True)
+class DiscriminationEvidence:
+    """AUC pewności z tym, co pozwala je ocenić (WIA-38).
+
+    - `auc` — None, gdy w próbie nie ma trafień albo pudeł,
+    - `interval` — percentylowy przedział AUC z bootstrapu po cyklach; None przy
+      < `significance.MIN_BOOTSTRAP_CYCLES` cyklach,
+    - `n` / `n_eff` — liczba próbek i efektywna liczność trafień po cyklach.
+    """
+
+    n: int
+    n_eff: float
+    auc: float | None
+    interval: tuple[float, float] | None
+
+
+def discrimination_evidence(
+    samples_by_cycle: Sequence[Sequence[tuple[float, bool]]],
+    *,
+    n_boot: int = 2000,
+    seed: int = 0,
+) -> DiscriminationEvidence | None:
+    """AUC, n_eff i przedział z bootstrapu losującego całe cykle; brak próbek → None."""
+    samples = [sample for cycle in samples_by_cycle for sample in cycle]
+    if not samples:
+        return None
+    return DiscriminationEvidence(
+        n=len(samples),
+        n_eff=effective_n([[hit for _, hit in cycle] for cycle in samples_by_cycle]),
+        auc=discrimination_auc(samples),
+        interval=cluster_bootstrap_statistic_ci(
+            samples_by_cycle, discrimination_auc, n_boot=n_boot, seed=seed
+        ),
+    )
+
+
+def confidence_reorders_ranking(evidence: DiscriminationEvidence) -> bool:
+    """WIA-38 — reguła: czy skalibrowana pewność może przestawiać ranking sygnałów.
+
+    False tylko przy `auc < MIN_INFORMATIVE_AUC` na próbie `n_eff >=
+    MIN_RANKING_DISCRIMINATION_N_EFF`: wtedy pewność nie odróżnia trafień od
+    pudeł, a kalibracja przesuwałaby wszystkich do stopy bazowej. Mniejsza
+    próba albo AUC nieokreślone → True (zachowanie jak przed WIA-38).
+    """
+    if evidence.auc is None or evidence.n_eff < MIN_RANKING_DISCRIMINATION_N_EFF:
+        return True
+    return evidence.auc >= MIN_INFORMATIVE_AUC
 

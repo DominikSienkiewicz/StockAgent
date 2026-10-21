@@ -376,3 +376,131 @@ class TestCalibrationErrorEvidence:
     def test_no_samples_no_evidence(self) -> None:
         assert calibration_error_evidence([]) is None
 
+
+
+class TestDiscrimination:
+    """WIA-38: kalibracja (#9) zakłada, że pewność niesie informację. Jeśli LLM
+    zawsze mówi ~0.7, kalibracja tylko przesuwa wszystkich do stopy bazowej,
+    a ranking po pewności jest szumem. AUC (Mann–Whitney) i krzywa
+    ryzyko–pokrycie mówią, czy wyższa pewność znaczy częstsze trafienie."""
+
+    def test_auc_is_half_when_confidence_independent_of_outcome(self) -> None:
+        from src.domain.calibration_curve import discrimination_auc
+
+        samples = [(0.6, True), (0.6, False), (0.8, True), (0.8, False)]
+
+        assert discrimination_auc(samples) == pytest.approx(0.5)
+
+    def test_auc_is_one_when_all_hits_have_higher_confidence(self) -> None:
+        from src.domain.calibration_curve import discrimination_auc
+
+        samples = [(0.55, False), (0.6, False), (0.7, True), (0.9, True)]
+
+        assert discrimination_auc(samples) == pytest.approx(1.0)
+
+    def test_ties_count_as_half(self) -> None:
+        from src.domain.calibration_curve import discrimination_auc
+
+        # Jedno trafienie i jedno pudło z tą samą pewnością → AUC 0.5.
+        assert discrimination_auc([(0.7, True), (0.7, False)]) == pytest.approx(0.5)
+
+    def test_auc_is_undefined_without_hits_or_misses(self) -> None:
+        from src.domain.calibration_curve import discrimination_auc
+
+        assert discrimination_auc([(0.7, True), (0.8, True)]) is None
+        assert discrimination_auc([]) is None
+
+    def test_risk_coverage_is_flat_for_uninformative_confidence(self) -> None:
+        from src.domain.calibration_curve import risk_coverage_curve
+
+        samples = [(0.7, i % 5 < 3) for i in range(50)]
+
+        curve = risk_coverage_curve(samples)
+
+        assert [coverage for coverage, _ in curve] == pytest.approx(
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        )
+        assert all(rate == pytest.approx(0.6) for _, rate in curve)
+
+    def test_risk_coverage_rises_when_confidence_ranks_hits_first(self) -> None:
+        from src.domain.calibration_curve import risk_coverage_curve
+
+        samples = [(0.9, True)] * 5 + [(0.6, False)] * 5
+
+        curve = dict(risk_coverage_curve(samples, coverages=(0.5, 1.0)))
+
+        assert curve[0.5] == pytest.approx(1.0)
+        assert curve[1.0] == pytest.approx(0.5)
+
+    def test_risk_coverage_of_no_samples_is_empty(self) -> None:
+        from src.domain.calibration_curve import risk_coverage_curve
+
+        assert risk_coverage_curve([]) == []
+
+
+class TestConfidenceRanksSignals:
+    """WIA-38, reguła domenowa: AUC < 0.55 przy n_eff ≥ 50 → skalibrowana
+    pewność nie przestawia rankingu sygnałów. Przy mniejszej próbie AUC jest
+    zbyt szerokie, żeby cokolwiek wyłączać."""
+
+    @staticmethod
+    def _evidence(auc: float | None, n_eff: float) -> object:
+        from src.domain.calibration_curve import DiscriminationEvidence
+
+        return DiscriminationEvidence(n=200, n_eff=n_eff, auc=auc, interval=None)
+
+    @pytest.mark.parametrize(
+        ("auc", "n_eff", "expected"),
+        [
+            (0.52, 60.0, False),
+            (0.549, 50.0, False),
+            (0.55, 60.0, True),
+            (0.52, 49.9, True),
+            (None, 80.0, True),
+        ],
+    )
+    def test_uninformative_confidence_does_not_reorder_the_ranking(
+        self, auc: float | None, n_eff: float, expected: bool
+    ) -> None:
+        from src.domain.calibration_curve import (
+            DiscriminationEvidence,
+            confidence_reorders_ranking,
+        )
+
+        evidence = self._evidence(auc, n_eff)
+        assert isinstance(evidence, DiscriminationEvidence)
+
+        assert confidence_reorders_ranking(evidence) is expected
+
+    def test_thresholds(self) -> None:
+        from src.domain.calibration_curve import (
+            MIN_INFORMATIVE_AUC,
+            MIN_RANKING_DISCRIMINATION_N_EFF,
+        )
+
+        assert MIN_INFORMATIVE_AUC == 0.55
+        assert MIN_RANKING_DISCRIMINATION_N_EFF == 50
+
+
+class TestDiscriminationEvidence:
+    """WIA-38: przy małym n AUC ma szeroki przedział — bootstrap po cyklach."""
+
+    def test_evidence_carries_auc_n_eff_and_interval(self) -> None:
+        from src.domain.calibration_curve import discrimination_evidence
+
+        rng = random.Random(4)
+        cycles = [_perfectly_calibrated(rng, 8) for _ in range(25)]
+
+        evidence = discrimination_evidence(cycles, n_boot=200, seed=1)
+
+        assert evidence is not None
+        assert evidence.n == 200
+        assert evidence.auc is not None
+        assert evidence.interval is not None
+        low, high = evidence.interval
+        assert low <= evidence.auc <= high
+
+    def test_no_samples_no_evidence(self) -> None:
+        from src.domain.calibration_curve import discrimination_evidence
+
+        assert discrimination_evidence([]) is None
