@@ -26,7 +26,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `council_votes` | `007`, `054` (unique vote per persona and prediction) | Model output: one vote per persona and prediction | on, no policies | Fast Loop | Fast Loop (persona weights and track record) |
 | `quota_alerts` | `010` | Operational: API quota exhaustion events | on, no policies | Fast Loop, Slow Loop | Fast Loop (report banner) |
 | `subscribers` | `014` | **Personal data**: recipient email addresses and watchlists | on, no policies | nobody in the app (edited by hand in Supabase) | Fast Loop (`subscriptions_enabled`) |
-| `model_scorecards` | `019`, `028`, `049` | Model output: walk-forward evaluation of each training run | on, no policies | Slow Loop | Fast Loop (report), Deadman (last training run) |
+| `model_scorecards` | `019`, `028`, `049`, `052` | Model output: walk-forward evaluation of each training run and its feature distribution | on, no policies | Slow Loop | Fast Loop (report), Deadman (last training run) |
 | `shock_alerts` | `021` | Operational: one sent price-shock alert per symbol and day | on, no policies | Shock Watch | Shock Watch (debounce) |
 | `positions` | `023`, `035` | **Owner's financial data**: holdings, quantities, average cost | on, no policies | tools (`import-positions --apply`) | Fast Loop (`portfolio_positions_enabled`), tools |
 | `feature_snapshots` | `031` | Derived features: the vector each prediction was made from | on, no policies | Fast Loop (`feature_snapshots_enabled`) | nobody yet |
