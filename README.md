@@ -216,6 +216,11 @@ claim is written next to the code, where a change has to face it.
    attestation log are implemented and unit-tested but not deployed (see the
    [resume checklist](docs/resume-checklist.md)), and with the daily run paused since
    2026-08-17 no live track record is accumulating.
+6. **A short track record is an anecdote.** Telling a 55% hit rate from a coin flip with a
+   one-sided test (α = 0.05, 80% power) takes about 617 settled directional predictions in
+   `n_eff` (`required_n` in [`src/domain/significance.py`](src/domain/significance.py)). The
+   public scorecard prints that number, the window's `n_eff` and, at the window's pace, the
+   date the sample would suffice; while the daily run is paused there is no inflow and no date.
 
 Each channel carries its own honesty note:
 

@@ -18,7 +18,9 @@ from __future__ import annotations
 import math
 import random
 from collections.abc import Callable, Sequence
+from datetime import date, timedelta
 from decimal import Decimal
+from statistics import NormalDist
 
 from src.domain.number_format import DecimalMark, format_number_pl
 
@@ -59,6 +61,42 @@ def binomial_test_greater(k: int, n: int, p0: float) -> float:
         math.comb(n, i) * p0**i * (1.0 - p0) ** (n - i) for i in range(k, n + 1)
     )
     return min(1.0, tail)
+
+
+# DOC-16: moc testu, którą zakłada kalkulator próby — konwencja 80%.
+DEFAULT_POWER = 0.80
+
+
+def required_n(
+    p0: float, p1: float, *, alpha: float = DEFAULT_ALPHA, power: float = DEFAULT_POWER
+) -> int:
+    """DOC-16: ile niezależnych predykcji kierunkowych (w n_eff) potrzeba, żeby
+    jednostronny test proporcji na poziomie `alpha` odróżnił trafność `p1` od `p0`
+    z mocą `power` (przybliżenie normalne).
+
+    55% wobec 50% przy α = 0,05 i mocy 80% to 617: wynik z 40 predykcji to
+    anegdota, nie dowód. Pytanie bez odpowiedzi (`p1 <= p0`, wartości spoza
+    (0, 1)) → ValueError."""
+    if not 0.0 < p0 < p1 < 1.0:
+        raise ValueError(f"required_n needs 0 < p0 < p1 < 1 (got p0={p0}, p1={p1})")
+    if not (0.0 < alpha < 1.0 and 0.0 < power < 1.0):
+        raise ValueError(f"alpha and power must be in (0, 1) (got {alpha}, {power})")
+    normal = NormalDist()
+    z_alpha = normal.inv_cdf(1.0 - alpha)
+    z_beta = normal.inv_cdf(power)
+    spread = z_alpha * math.sqrt(p0 * (1.0 - p0)) + z_beta * math.sqrt(p1 * (1.0 - p1))
+    return math.ceil((spread / (p1 - p0)) ** 2)
+
+
+def sample_reached_on(have: float, required: int, *, window_days: int, today: date) -> date | None:
+    """DOC-16: dzień, w którym przy tempie okna (`have` w `window_days` dni) próba
+    dojdzie do `required`. Zero napływu (pauza Fast Loopa) → None, bo „nigdy”
+    to też informacja; próba już wystarczająca → `today`."""
+    if have >= required:
+        return today
+    if have <= 0 or window_days <= 0:
+        return None
+    return today + timedelta(days=math.ceil((required - have) * window_days / have))
 
 
 def benjamini_hochberg(pvalues: Sequence[float], q: float = DEFAULT_FDR_Q) -> list[bool]:

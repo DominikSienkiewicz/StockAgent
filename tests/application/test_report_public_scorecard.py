@@ -574,3 +574,38 @@ def test_coverage_line_counts_unsettled_symbols_without_naming_them() -> None:
     assert "najdłuższa luka 2026-08-17 – 2026-08-31 (11 sesji)" in html
     assert "1 symbol bez rozliczeń w oknie" in html
     assert "SSNLF" not in html
+
+
+class TestRequiredSampleLine:
+    """DOC-16: metodologia mówi, ile predykcji trzeba, i kiedy będą przy tym tempie."""
+
+    @staticmethod
+    def _methodology(html: str) -> str:
+        return html[html.index("<h2>Metodologia</h2>"):]
+
+    def test_methodology_names_the_sample_that_tells_55_from_50(self) -> None:
+        resolved = [_resolved("AAA", "BULLISH", True)]
+
+        html = render_public_scorecard_html(resolved, None, [(0.8, True)])
+
+        methodology = self._methodology(html)
+        assert "α = 0.05 jednostronnie, moc 80%" in methodology
+        assert "~617 rozliczonych predykcji kierunkowych" in methodology
+
+    def test_with_a_window_it_projects_the_date_at_the_current_pace(self) -> None:
+        resolved = [_dated("BULLISH", True, day) for day in range(1, 13)]
+
+        html = render_public_scorecard_html(
+            resolved, None, None, generated_on=date(2026, 10, 22), window_days=30
+        )
+
+        methodology = self._methodology(html)
+        assert "W oknie jest n_eff≈12" in methodology
+        assert "ok. 2030-12-13" in methodology
+
+    def test_without_inflow_it_says_so_instead_of_a_date(self) -> None:
+        html = render_public_scorecard_html(
+            [], None, [(0.8, True)], generated_on=date(2026, 10, 22), window_days=30
+        )
+
+        assert "brak napływu danych" in self._methodology(html)

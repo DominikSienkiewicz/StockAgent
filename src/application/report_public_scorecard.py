@@ -62,6 +62,7 @@ from src.domain.calibration_curve import (
 from src.domain.coverage import CoverageReport
 from src.domain.equity_curve import EquityCurve
 from src.domain.evaluation_protocol import EvaluationProtocol
+from src.domain.significance import DEFAULT_ALPHA, DEFAULT_POWER, required_n, sample_reached_on
 from src.domain.track_record import HitRateEvidence
 
 # Parametry div-sparkline (technika z report_track_record._render_sparkline_html):
@@ -147,7 +148,14 @@ def render_public_scorecard_html(
         _render_coverage(coverage),
         _render_calibration_section(buckets, samples, calibration_by_cycle),
         _render_equity_section(equity, costs, benchmark),
-        _render_methodology_section(protocol),
+        _render_methodology_section(
+            protocol,
+            required_sample=_render_required_sample(
+                hit_rate_evidence(predictions) if predictions else None,
+                generated_on,
+                window_days,
+            ),
+        ),
     ]
     body = "".join(section for section in sections if section)
     return _wrap_page(body, str(generated_on))
@@ -412,7 +420,41 @@ def _render_equity_sparkline(
     return f"<table class='sparkline'>{rows}</table>"
 
 
-def _render_methodology_section(protocol: EvaluationProtocol | None = None) -> str:
+# DOC-16: pytanie, na które track record ma kiedyś odpowiedzieć — 55% wobec rzutu monetą.
+_POWER_BASELINE = 0.50
+_POWER_TARGET = 0.55
+
+
+def _render_required_sample(
+    evidence: HitRateEvidence | None, generated_on: date | str, window_days: int | None
+) -> str:
+    """DOC-16: ile predykcji trzeba, żeby odróżnić 55% od 50%, i kiedy będą przy
+    tempie okna. Bez okna sama liczba; zero napływu to „brak napływu danych”."""
+    required = required_n(_POWER_BASELINE, _POWER_TARGET)
+    text = (
+        f"Odróżnienie trafności {_POWER_TARGET:.0%} od {_POWER_BASELINE:.0%} "
+        f"(α = {DEFAULT_ALPHA} jednostronnie, moc {DEFAULT_POWER:.0%}) wymaga "
+        f"~{required} rozliczonych predykcji kierunkowych w n_eff — wynik z "
+        "kilkudziesięciu predykcji to anegdota, nie dowód."
+    )
+    if window_days is not None and isinstance(generated_on, date):
+        have = 0.0 if evidence is None else evidence.n_eff
+        reached = sample_reached_on(have, required, window_days=window_days, today=generated_on)
+        if reached is None:
+            text += " W oknie nie ma predykcji kierunkowych: brak napływu danych, więc nie ma daty."
+        elif reached == generated_on:
+            text += f" W oknie jest n_eff≈{have:.0f}, więc próba już wystarcza."
+        else:
+            text += (
+                f" W oknie jest n_eff≈{have:.0f}; przy obecnym tempie ({have:.0f} w "
+                f"{window_days} dni) próba wystarczy ok. {reached.isoformat()}."
+            )
+    return f"<p>{_html.escape(text)}</p>"
+
+
+def _render_methodology_section(
+    protocol: EvaluationProtocol | None = None, *, required_sample: str = ""
+) -> str:
     """Sekcja „Metodologia" — uczciwe, polskie copy o okresach słabości.
 
     Publicznie żenujący hit-rate w słabym okresie to FEATURE, nie bug:
@@ -435,6 +477,7 @@ def _render_methodology_section(protocol: EvaluationProtocol | None = None) -> s
         "strategie „zawsze wzrost / spadek / bez ruchu” policzone na tych "
         "samych predykcjach oraz test dwumianowy względem lepszej z naiwnych "
         "strategii kierunkowych.</p>"
+        f"{required_sample}"
         f"<p>{_html.escape(ENTRY_PRICE_NOTE_PL)} Od tej ceny liczymy i trafność, "
         "i paper-PnL.</p>"
         "<p>Pewność oceniamy Brier score i Brier Skill Score względem prognozy "
