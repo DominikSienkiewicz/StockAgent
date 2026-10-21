@@ -9,7 +9,7 @@ import tomllib
 from datetime import date, time
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
@@ -317,6 +317,22 @@ def _required_secret(value: str | None, env_name: str) -> str:
     return value
 
 
+class _StrictTomlSource(TomlConfigSettingsSource):
+    """TEST-03 (G64): źródło `config.toml`, które odrzuca klucze spoza `Settings`.
+
+    `extra = "ignore"` zostaje dla env i `.env` (niosą klucze innych narzędzi),
+    ale w commitowanym pliku konfiguracji literówka (`weekly_recap_enable`) po
+    cichu zostawiałaby default — także płatnej ścieżki."""
+
+    def __call__(self) -> dict[str, Any]:
+        unknown = sorted(set(self.toml_data) - set(self.settings_cls.model_fields))
+        if unknown:
+            raise ValueError(
+                f"Nieznane klucze w {self.toml_file_path}: {', '.join(unknown)}"
+            )
+        return super().__call__()
+
+
 class Settings(BaseSettings):
     """Konfiguracja runtime — dwa rozłączne źródła:
 
@@ -367,7 +383,7 @@ class Settings(BaseSettings):
             # `STOCKAGENT_TOML_FILE` pozwala testom wskazać tymczasowy plik.
             toml_file = os.environ.get("STOCKAGENT_TOML_FILE", _DEFAULT_TOML_FILE)
             sources.append(
-                TomlConfigSettingsSource(settings_cls, toml_file=toml_file)
+                _StrictTomlSource(settings_cls, toml_file=toml_file)
             )
         sources.append(file_secret_settings)
         return tuple(sources)

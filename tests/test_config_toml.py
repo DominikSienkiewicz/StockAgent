@@ -103,6 +103,37 @@ def test_config_toml_found_regardless_of_cwd(
     assert s.notifications_enabled is data["notifications_enabled"]
 
 
+def test_unknown_toml_key_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """TEST-03 (G64): literówka w kluczu `config.toml` przerywa start, zamiast po
+    cichu zostawić default (tu: `weekly_recap_enabled` zostałby wyłączony)."""
+    monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
+    toml = tmp_path / "config.toml"
+    toml.write_text("weekly_recap_enable = true\n", encoding="utf-8")
+    monkeypatch.setenv("STOCKAGENT_TOML_FILE", str(toml))
+
+    with pytest.raises(ValueError, match="weekly_recap_enable"):
+        Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+
+
+def test_unknown_env_variable_is_still_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TEST-03: ścisłe jest tylko źródło TOML — env i `.env` niosą klucze innych
+    narzędzi (SONAR_TOKEN, GH_TOKEN), więc `extra = "ignore"` dla nich zostaje."""
+    monkeypatch.setenv("SONAR_TOKEN", "not-a-setting")
+
+    settings = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+
+    assert not hasattr(settings, "sonar_token")
+
+
+def test_every_real_config_toml_key_is_a_settings_field() -> None:
+    """TEST-03: produkcyjny `config.toml` nie ma klucza spoza `Settings`."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+
+    assert set(data) - set(Settings.model_fields) == set()
+
+
 def test_env_overrides_toml(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

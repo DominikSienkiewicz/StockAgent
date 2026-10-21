@@ -6,6 +6,8 @@ The tunables and the feature flags. Setup steps are in [running-locally.md](runn
 
 All tunable parameters are a `Settings` Pydantic model in [`src/config.py`](../src/config.py) with validators. Non-secret values are set in committed [`config.toml`](../config.toml); secrets come from `.env` / GitHub Secrets. Precedence: **env var → `.env` → `config.toml` → the code defaults below** (so any field can be overridden ad-hoc via an env var). The `Default` column is the in-code fallback when a field is absent everywhere; `config.toml` ships the actual production values.
 
+An unknown key in `config.toml` stops the start with a `ValueError` that names it (TEST-03), so a typo such as `weekly_recap_enable` cannot silently leave a flag at its code default. Only that file is strict: environment variables and `.env` also carry keys of other tools (`SONAR_TOKEN`, `GH_TOKEN`) and unknown names there are ignored.
+
 | Field | Default | Description |
 |---|---|---|
 | `llm_provider` | `openai` | `openai` or `anthropic` (production `config.toml` sets `anthropic`). |
