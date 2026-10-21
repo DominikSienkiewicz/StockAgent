@@ -32,3 +32,20 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "zamiast je porównywać"
         ),
     )
+
+
+# TEST-11: markery testów, które z definicji potrzebują sieci (prawdziwe API,
+# kontener Postgresa na localhost). Reszta biegnie z `--disable-socket`.
+NETWORK_MARKERS = ("integration", "containers")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Testom sieciowym oddaje gniazda markerem `enable_socket` z pytest-socket.
+
+    Marker, a nie fixture: pytest-socket blokuje gniazda w swoim
+    `pytest_runtest_setup`, PRZED fixture'ami testu, więc fixture funkcyjny
+    odblokowałby sieć dopiero po starcie fixture'ów modułowych (`pg_conn`
+    stawia kontener, zanim ruszy pierwszy test)."""
+    for item in items:
+        if any(item.get_closest_marker(marker) for marker in NETWORK_MARKERS):
+            item.add_marker(pytest.mark.enable_socket)

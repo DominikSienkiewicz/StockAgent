@@ -224,6 +224,8 @@ SAP.DE,4,182.10,EUR,
 
 **Prompt golden files (TEST-10).** `tests/application/test_prompt_golden.py` renders every prompt of the paid path — the prediction, the council investor, its revision round, the chairman, the mistake diagnosis and the weekly recap narrative — from fixed synthetic input and compares each one byte for byte with `tests/golden/prompts/<name>.txt` (UTF-8, `\n` line endings), printing a unified diff on a difference. The input is invented on purpose (no real headlines) and includes a prompt-injection attempt, so the golden file also shows what the untrusted-data fence leaves of it. A diff there is exactly what the model will see after the change. When a prompt changes on purpose, rewrite the files with the `--update-golden` command above, review `git diff tests/golden/prompts/` and commit them with the change.
 
+**Unit tests have no network (TEST-11).** pytest runs with pytest-socket's `--disable-socket --allow-unix-socket` (`addopts` in `pyproject.toml`): a test that opens an internet socket or resolves a host name fails with `SocketBlockedError` instead of reaching a paid API or sending a real email with the keys exported in your shell. Tests marked `integration` or `containers` get the network back: `tests/conftest.py` adds pytest-socket's `enable_socket` marker to them at collection, before module-scoped fixtures such as the Postgres container start. Unix sockets stay open for the Docker client. A new test that needs the network must carry one of those two markers.
+
 ## Branch workflow
 
 Work happens on a feature branch in its own worktree under `.worktrees/`, never on `main`. Three helpers in [`scripts/`](../scripts/) cover the cycle:

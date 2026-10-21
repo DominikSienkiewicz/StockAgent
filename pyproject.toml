@@ -44,6 +44,7 @@ dev = [
     "httpx>=0.28.1",
     "pyyaml>=6.0.3",
     "docker>=7.1.0",
+    "pytest-socket>=0.8.1",
 ]
 
 # Alias wstecznej zgodności: SDK jest już zależnością rdzeniową, ale
@@ -69,6 +70,10 @@ addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
+    # TEST-11: testy jednostkowe bez sieci; `integration` i `containers` dostają
+    # ją z powrotem w tests/conftest.py. Gniazda unixowe zostają dla Dockera.
+    "--disable-socket",
+    "--allow-unix-socket",
 ]
 markers = [
     "integration: testy integracyjne (sieć / DB) — pomijalne lokalnie",
