@@ -91,6 +91,7 @@ from src.application.report_models import ResolvedPrediction
 from src.application.report_onboarding import onboarding_subject
 from src.application.report_ops import render_cycle_summary_markdown
 from src.application.report_public_scorecard import render_public_scorecard_html
+from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
 from src.application.signal_calibration import (
@@ -2622,6 +2623,25 @@ def _build_track_record(
     return equity_curve, calibration_buckets, lessons
 
 
+def _build_symbol_track_record(
+    settings: Settings, repository: RepositoryPort
+) -> SymbolTrackRecordView | None:
+    """WIA-35: trafność kierunkowa per symbol do chipu przy predykcji i sygnale.
+
+    Ta sama flaga i to samo okno co krzywa kapitału; darmowy odczyt zamkniętych
+    predykcji, zero płatnych wywołań. Błąd odczytu → mail bez chipów."""
+    if not settings.equity_curve_enabled:
+        return None
+    try:
+        resolved = parse_resolved_predictions(
+            repository.get_resolved_predictions(settings.track_record_days)
+        )
+    except Exception:
+        logger.exception("Failed to fetch resolved predictions for per-symbol track record")
+        return None
+    return symbol_track_record_view(resolved, settings.track_record_days)
+
+
 def _build_track_record_stats(
     settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
 ) -> TrackRecordStats | None:
@@ -2910,6 +2930,7 @@ def _dispatch_reports(
             calibration_buckets=calibration_buckets,
             lessons=lessons,
             track_record_stats=track_record_stats,
+            symbol_track_record=_build_symbol_track_record(settings, repository),
             signal_calibration_buckets=signal_calibration_buckets,
             cycle_maturity=maturity,
             portfolio_sectors=sectors,

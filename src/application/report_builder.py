@@ -130,6 +130,7 @@ from src.application.report_suggestions import (
     render_suggestions_html,
     render_suggestions_text,
 )
+from src.application.report_symbol_record import SymbolTrackRecordView, symbol_chip_labels
 from src.application.report_templates import _env, render_template
 from src.application.report_track_record import (
     TrackRecordStats,
@@ -1273,6 +1274,9 @@ class ReportContext:
     cycle_cost: CycleCost | None = None
     # WIA-17/22/23/31/32/36: dowód trafności i Brier pod sekcją Track Record.
     track_record_stats: TrackRecordStats | None = None
+    # WIA-35: trafność kierunkowa per symbol z okna track recordu — chip przy
+    # predykcji i sygnale. None = mail bez chipów.
+    symbol_track_record: SymbolTrackRecordView | None = None
     # MAIL-14: strefa (IANA) czasu startu cyklu w nagłówku HTML i tekstu.
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
     # MAIL-42: przebieg, który wygenerował mail — stopka z numerem, krótkim SHA
@@ -1512,6 +1516,7 @@ def build_html_report(
         _RESOLVED_WINDOW_THIS_CYCLE if context.resolved_this_cycle else _RESOLVED_WINDOW_24H
     )
     resolved_note = _resolved_note(context, resolved_window)
+    symbol_chips = symbol_chip_labels(context.symbol_track_record, (r.symbol for r in saved))
     html = _render_html(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
@@ -1522,6 +1527,7 @@ def build_html_report(
         full_detail=full_detail,
         sector_map=sector_map,
         forecast_horizon=forecast_horizon,
+        symbol_chips=symbol_chips,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1553,6 +1559,7 @@ def build_html_report(
         settlements_unavailable=context.resolved_unavailable,
         sector_map=sector_map,
         forecast_horizon=forecast_horizon,
+        symbol_chips=symbol_chips,
     )
     text = _fill_text_slots(
         text,
@@ -1649,10 +1656,15 @@ def _strength_label(rank: int, sig: TradeSignal) -> str:
     return f"#{rank} · ruch {move_pct} × {basis} {confidence_pct}"
 
 
-def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
-    """🎯 Najsilniejsze sygnały transakcyjne. Pusty string, gdy brak sygnałów."""
+def _render_trade_signals_html(
+    trade_signals: list[TradeSignal], symbol_chips: Mapping[str, str] | None = None
+) -> str:
+    """🎯 Najsilniejsze sygnały transakcyjne. Pusty string, gdy brak sygnałów.
+
+    `symbol_chips` (WIA-35): trafność kierunkowa na danym symbolu pod wierszem."""
     if not trade_signals:
         return ""
+    chips = symbol_chips or {}
     parts = [_section_h2("🎯 Najsilniejsze sygnały")]
     if any(sig.ml_cold_start for sig in trade_signals):
         parts.append(
@@ -1703,6 +1715,12 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
                 </span>
               </div>
             """)
+        chip = chips.get(sig.symbol)
+        if chip:
+            parts.append(
+                "<div style='font-size: 12px; color: #6b7280; margin: -4px 0 8px 18px;'>"
+                f"{_html(chip)}</div>"
+            )
     return "".join(parts)
 
 
@@ -2041,9 +2059,12 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
             """
 
 
-def _render_reasoning_block_html(r: SymbolResult, sector_map: Mapping[str, str]) -> str:
+def _render_reasoning_block_html(
+    r: SymbolResult, sector_map: Mapping[str, str], chip: str | None = None
+) -> str:
     """Blok 'Uzasadnienia' dla jednej predykcji. Pusty string, gdy nie ma
-    czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji)."""
+    czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji).
+    `chip` (WIA-35) — trafność kierunkowa na symbolu, pod oczekiwanym ruchem."""
     # Q5/Q6: blok renderujemy też, gdy są analogi (precedent receipts)
     # lub odznaki proweniencji — nawet bez reasoning/rady.
     badges_html = _provenance_badges_html(r.provenance_badges)
@@ -2077,6 +2098,8 @@ def _render_reasoning_block_html(r: SymbolResult, sector_map: Mapping[str, str])
         move_line = f'<div class="rm">Oczekiwany ruch: {move_text}{conf_part}</div>'
     if r.move_interval is not None:
         move_line += f'<div class="rm">{_move_interval_label(r.move_interval)}</div>'
+    if chip:
+        move_line += f'<div class="rm">{_html(chip)}</div>'
     # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
     # (finding #35). Escapowanie title/source jest tu domyślne.
     news_block = _render_news_block_html(r.top_news)
@@ -2114,6 +2137,7 @@ def _render_saved_section_html(
     *,
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
+    symbol_chips: Mapping[str, str] | None = None,
 ) -> str:
     """🔮 Sekcja wygenerowanych predykcji: tabela + wykres prognozy +
     uzasadnienia. Pusty string, gdy w tym cyklu nic nie zapisano.
@@ -2156,8 +2180,11 @@ def _render_saved_section_html(
     def has_full_block(r: SymbolResult) -> bool:
         return full_detail is None or r.symbol in full_detail
 
+    chips = symbol_chips or {}
     parts.extend(
-        _render_reasoning_block_html(r, sector_map) for r in saved if has_full_block(r)
+        _render_reasoning_block_html(r, sector_map, chips.get(r.symbol))
+        for r in saved
+        if has_full_block(r)
     )
     parts.append(
         _render_compact_predictions_html([r for r in saved if not has_full_block(r)])
@@ -2407,6 +2434,7 @@ def _render_html(
     full_detail: frozenset[str] | None = None,
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
+    symbol_chips: Mapping[str, str] | None = None,
 ) -> str:
     sections = []
 
@@ -2472,11 +2500,15 @@ def _render_html(
     )
     sections.append(_CONSENSUS_SHIFT_SLOT)
     sections.append(_render_rebaselined_html(ignored, display_timezone))
-    sections.append(_render_trade_signals_html(trade_signals))
+    sections.append(_render_trade_signals_html(trade_signals, symbol_chips))
     sections.append(_render_risk_signals_html(risk_signals))
     sections.append(
         _render_saved_section_html(
-            saved, full_detail, sector_map=sector_map, forecast_horizon=forecast_horizon
+            saved,
+            full_detail,
+            sector_map=sector_map,
+            forecast_horizon=forecast_horizon,
+            symbol_chips=symbol_chips,
         )
     )
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
@@ -2539,10 +2571,13 @@ def _render_html(
 # ---------------------------------------------------------------------------
 
 
-def _render_trade_signals_text(trade_signals: list[TradeSignal]) -> list[str]:
+def _render_trade_signals_text(
+    trade_signals: list[TradeSignal], symbol_chips: Mapping[str, str] | None = None
+) -> list[str]:
     """Sekcja 'Najsilniejsze sygnały' (plain). Pusta lista, gdy brak sygnałów."""
     if not trade_signals:
         return []
+    chips = symbol_chips or {}
     lines = ["NAJSILNIEJSZE SYGNAŁY", "-" * 64]
     if any(sig.ml_cold_start for sig in trade_signals):
         lines.append(f"  {_SIGNALS_COLD_START_NOTE}")
@@ -2557,6 +2592,9 @@ def _render_trade_signals_text(trade_signals: list[TradeSignal]) -> list[str]:
             f"prognoza {forecast:>8s}  "
             f"{_strength_label(rank, sig)}{size_txt}"
         )
+        chip = chips.get(sig.symbol)
+        if chip:
+            lines.append(f"            {chip}")
     lines.append("")
     return lines
 
@@ -2676,9 +2714,11 @@ def _render_reflections_text(saved: list[SymbolResult]) -> list[str]:
     return lines
 
 
-def _render_prediction_text(r: SymbolResult, sector_map: Mapping[str, str]) -> list[str]:
+def _render_prediction_text(
+    r: SymbolResult, sector_map: Mapping[str, str], chip: str | None = None
+) -> list[str]:
     """Linie jednej predykcji (plain): nagłówek + sentyment + sygnał modelu +
-    proweniencja + reasoning + analogi + newsy + wycena."""
+    trafność na symbolu (WIA-35) + proweniencja + reasoning + analogi + newsy + wycena."""
     conf_part = (
         f" · pewność {_pct(r.confidence_score, decimals=0)}"
         if r.confidence_score is not None
@@ -2707,6 +2747,8 @@ def _render_prediction_text(r: SymbolResult, sector_map: Mapping[str, str]) -> l
     ]
     if r.move_interval is not None:
         lines.append(f"         {_move_interval_label(r.move_interval)}")
+    if chip:
+        lines.append(f"         {chip}")
     # Q6: odznaki proweniencji (pomijamy FRESH — brak szumu).
     badge_labels = [
         b.label for b in r.provenance_badges
@@ -2740,7 +2782,10 @@ def _render_prediction_text(r: SymbolResult, sector_map: Mapping[str, str]) -> l
 
 
 def _render_saved_section_text(
-    saved: list[SymbolResult], sector_map: Mapping[str, str], forecast_horizon: str = ""
+    saved: list[SymbolResult],
+    sector_map: Mapping[str, str],
+    forecast_horizon: str = "",
+    symbol_chips: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Sekcja 'Predykcje' (plain). Pusta lista, gdy nic nie zapisano."""
     if not saved:
@@ -2748,8 +2793,9 @@ def _render_saved_section_text(
     lines = ["PREDYKCJE", "-" * 64]
     if forecast_horizon:
         lines.append(f"  {_FORECAST_HORIZON_PREFIX}{forecast_horizon}")
+    chips = symbol_chips or {}
     for r in saved:
-        lines.extend(_render_prediction_text(r, sector_map))
+        lines.extend(_render_prediction_text(r, sector_map, chips.get(r.symbol)))
     lines.append("")
     return lines
 
@@ -2804,6 +2850,7 @@ def _render_plain(
     settlements_unavailable: bool = False,
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
+    symbol_chips: Mapping[str, str] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
@@ -2840,9 +2887,9 @@ def _render_plain(
         )
     )
     lines.extend(_render_rebaselined_text(ignored, display_timezone))
-    lines.extend(_render_trade_signals_text(trade_signals))
+    lines.extend(_render_trade_signals_text(trade_signals, symbol_chips))
     lines.extend(_render_risk_signals_text(risk_signals))
-    lines.extend(_render_saved_section_text(saved, sector_map, forecast_horizon))
+    lines.extend(_render_saved_section_text(saved, sector_map, forecast_horizon, symbol_chips))
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
     crypto_text = _render_crypto_section_text(results, display_timezone)
     if crypto_text:
