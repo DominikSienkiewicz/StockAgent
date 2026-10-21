@@ -15,6 +15,7 @@ tautologią „moduł zgadza się sam ze sobą".
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any, cast
 
 import pytest
 
@@ -277,7 +278,8 @@ def _payload_v2(**overrides: object) -> dict[str, object]:
         "protocol_sha256": "b" * 64,
     }
     fields.update(overrides)
-    return attestation.prediction_commitment_payload(**fields)
+    # Pola jak w sygnaturze funkcji; mypy strict (TEST-13) nie zawęża `**dict[str, object]`.
+    return attestation.prediction_commitment_payload(**cast(dict[str, Any], fields))
 
 
 def test_canonicalize_golden_v2() -> None:
