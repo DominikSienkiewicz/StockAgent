@@ -111,41 +111,181 @@ def test_dependency_sync_installs_anthropic_extra() -> None:
 # Adaptery piszą wyłącznie na dysk runnera, który znika po jobie — bez kroku
 # publikacji włączona flaga to twierdzenie bez pokrycia.
 PUBLIC_ARTIFACT_FLAGS = ("attestation_enabled", "public_scorecard_enabled")
+# Pliki ledgera atestacji (#16), które musi zabrać trwały `git push`.
+ATTESTATION_LEDGER_KEYS = ("attestation_commitments_path", "attestation_reveals_path")
 
 
-def _agent_workflows() -> dict[str, list[dict[str, object]]]:
-    """Kroki wszystkich jobów, które uruchamiają `main_agent.py` (per workflow)."""
-    found: dict[str, list[dict[str, object]]] = {}
-    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
-        spec = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for job in spec.get("jobs", {}).values():
-            steps = job.get("steps", [])
-            if any("main_agent.py" in str(s.get("run", "")) for s in steps):
-                found.setdefault(path.name, []).extend(steps)
-    return found
+def _job_needs(job: Mapping[str, Any]) -> list[str]:
+    needs = job.get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
 
 
-def _has_durable_publish_step(steps: list[dict[str, object]]) -> bool:
-    return any(
-        str(s.get("uses", "")).startswith("actions/deploy-pages")
-        or "git push" in str(s.get("run", ""))
-        for s in steps
+def _agent_publication_steps(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Kroki jobów z `main_agent.py` i jobów, które na nie czekają (`needs`, także
+    przechodnio) — deploy Pages scorecardu idzie w osobnym jobie (WIA-16)."""
+    jobs: Mapping[str, Any] = spec.get("jobs") or {}
+    selected = {
+        name
+        for name, job in jobs.items()
+        if any("main_agent.py" in str(step.get("run", "")) for step in job.get("steps", []))
+    }
+    grown = bool(selected)
+    while grown:
+        dependents = {name for name, job in jobs.items() if selected & set(_job_needs(job))}
+        grown = not dependents <= selected
+        selected |= dependents
+    return [step for name, job in jobs.items() if name in selected for step in job.get("steps", [])]
+
+
+def _agent_workflows() -> dict[str, list[dict[str, Any]]]:
+    """Kroki publikacji (`_agent_publication_steps`) każdego workflowu z `main_agent.py`."""
+    found = {name: _agent_publication_steps(spec) for name, spec in _all_workflow_specs().items()}
+    return {name: steps for name, steps in found.items() if steps}
+
+
+def _publishes_scorecard_to_pages(config: Mapping[str, Any], steps: list[dict[str, Any]]) -> bool:
+    """Artefakt Pages z katalogu scorecardu i `actions/deploy-pages`."""
+    scorecard_dir = posixpath.dirname(_normalized(str(config["public_scorecard_path"])))
+    uploaded = any(
+        str(step.get("uses", "")).startswith("actions/upload-pages-artifact")
+        and _pages_upload_path(step) == scorecard_dir
+        for step in steps
     )
+    deployed = any(str(step.get("uses", "")).startswith("actions/deploy-pages") for step in steps)
+    return uploaded and deployed
+
+
+def _pushes_attestation_ledger(config: Mapping[str, Any], steps: list[dict[str, Any]]) -> bool:
+    """`git add` obu plików ledgera i `git push` — deploy Pages podmienia całą witrynę,
+    więc dopisywanej historii commitmentów nie przechowa."""
+    scripts = [str(step.get("run", "")) for step in steps]
+    added = [path for script in scripts for path in _git_added_paths(script)]
+    ledger = [_normalized(str(config[key])) for key in ATTESTATION_LEDGER_KEYS]
+    covered = all(any(_contains(path, entry) for path in added) for entry in ledger)
+    return covered and any(_git_pushes(script) for script in scripts)
+
+
+PUBLICATION_MECHANISMS = {
+    "attestation_enabled": _pushes_attestation_ledger,
+    "public_scorecard_enabled": _publishes_scorecard_to_pages,
+}
+
+
+def _missing_publications(config: Mapping[str, Any], steps: list[dict[str, Any]]) -> list[str]:
+    """Włączone flagi publicznych artefaktów bez swojego mechanizmu publikacji."""
+    return [
+        flag
+        for flag in PUBLIC_ARTIFACT_FLAGS
+        if config.get(flag) is True and not PUBLICATION_MECHANISMS[flag](config, steps)
+    ]
 
 
 def test_enabled_public_artifacts_have_a_durable_publish_step() -> None:
     config = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
-    enabled = [flag for flag in PUBLIC_ARTIFACT_FLAGS if config.get(flag) is True]
     workflows = _agent_workflows()
     assert workflows, "żaden workflow nie uruchamia main_agent.py"
 
-    unpublished = [
-        name for name, steps in workflows.items() if not _has_durable_publish_step(steps)
-    ]
-    assert not (enabled and unpublished), (
-        f"config.toml włącza {enabled}, ale {unpublished} nie ma kroku "
-        "`actions/deploy-pages` ani `git push` — artefakt ginie z dyskiem runnera."
+    unpublished = {
+        name: missing
+        for name, steps in workflows.items()
+        if (missing := _missing_publications(config, steps))
+    }
+    assert not unpublished, (
+        f"config.toml włącza {unpublished} bez publikacji — artefakt ginie z dyskiem "
+        "runnera. `public_scorecard_enabled` wymaga uploadu katalogu scorecardu "
+        "i `actions/deploy-pages`, `attestation_enabled` — `git add` ledgera i `git push`, "
+        "w jobie agenta albo w jobie, który na niego czeka (`needs`)."
     )
+
+
+def _agent_job(*steps: dict[str, Any]) -> dict[str, Any]:
+    return {"steps": [{"run": "uv run python main_agent.py"}, *steps]}
+
+
+SCORECARD_UPLOAD = {
+    "uses": "actions/upload-pages-artifact@v3",
+    "with": {"path": "public/scorecard"},
+}
+SCORECARD_ONLY = {"public_scorecard_enabled": True, "attestation_enabled": False}
+ATTESTATION_ONLY = {"public_scorecard_enabled": False, "attestation_enabled": True}
+
+
+def _scorecard_deploy_workflow(needs: str | list[str] | None) -> dict[str, Any]:
+    deploy: dict[str, Any] = {"steps": [{"uses": "actions/deploy-pages@v4"}]}
+    if needs is not None:
+        deploy["needs"] = needs
+    return {"jobs": {"agent": _agent_job(SCORECARD_UPLOAD), "deploy": deploy}}
+
+
+@pytest.mark.parametrize("needs", ["agent", ["agent"]])
+def test_durable_guard_accepts_a_scorecard_deploy_in_a_job_that_needs_the_agent(
+    needs: str | list[str],
+) -> None:
+    steps = _agent_publication_steps(_scorecard_deploy_workflow(needs))
+
+    assert _missing_publications(_repo_config(**SCORECARD_ONLY), steps) == []
+
+
+def test_durable_guard_follows_needs_transitively() -> None:
+    spec = _scorecard_deploy_workflow("relay")
+    spec["jobs"]["relay"] = {"needs": ["agent"], "steps": [{"run": "echo relay"}]}
+
+    steps = _agent_publication_steps(spec)
+
+    assert _missing_publications(_repo_config(**SCORECARD_ONLY), steps) == []
+
+
+def test_durable_guard_ignores_a_deploy_job_without_needs() -> None:
+    steps = _agent_publication_steps(_scorecard_deploy_workflow(None))
+
+    assert _missing_publications(_repo_config(**SCORECARD_ONLY), steps) == [
+        "public_scorecard_enabled"
+    ]
+
+
+def test_durable_guard_catches_an_enabled_scorecard_without_a_deploy() -> None:
+    steps = _agent_publication_steps({"jobs": {"agent": _agent_job(SCORECARD_UPLOAD)}})
+
+    assert _missing_publications(_repo_config(**SCORECARD_ONLY), steps) == [
+        "public_scorecard_enabled"
+    ]
+
+
+def test_durable_guard_never_counts_a_pages_deploy_for_the_attestation_ledger() -> None:
+    config = _repo_config(public_scorecard_enabled=True, attestation_enabled=True)
+    steps = _agent_publication_steps(_scorecard_deploy_workflow("agent"))
+
+    assert _missing_publications(config, steps) == ["attestation_enabled"]
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "git add public/attestation && git commit -m ledger && git push",
+        "git -C public/attestation add commitments.jsonl reveals.jsonl\n"
+        "git -C public/attestation commit -m ledger\n"
+        "git -C public/attestation push",
+    ],
+)
+def test_durable_guard_accepts_a_git_push_of_the_attestation_ledger(script: str) -> None:
+    steps = _agent_publication_steps({"jobs": {"agent": _agent_job({"run": script})}})
+
+    assert _missing_publications(_repo_config(**ATTESTATION_ONLY), steps) == []
+
+
+def test_durable_guard_never_counts_a_push_without_the_ledger() -> None:
+    script = "git add data/models/price_predictor.ubj && git commit -m weights && git push"
+    steps = _agent_publication_steps({"jobs": {"agent": _agent_job({"run": script})}})
+
+    assert _missing_publications(_repo_config(**ATTESTATION_ONLY), steps) == [
+        "attestation_enabled"
+    ]
+
+
+def test_real_fast_loop_publishes_the_scorecard_once_its_flag_is_on() -> None:
+    steps = _agent_workflows()["fast_loop_12h.yml"]
+
+    assert _missing_publications(_repo_config(**SCORECARD_ONLY), steps) == []
 
 
 # BEZ-09: `web_digest_enabled` zapisuje PEŁNY prywatny digest (watchlista, a przy
@@ -207,10 +347,9 @@ def _git_subcommand(tokens: list[str], index: int) -> tuple[int, str]:
     return index, workdir
 
 
-def _git_added_paths(script: str) -> list[str]:
-    """Ścieżki każdego `git add` w skrypcie kroku, względem katalogu repo (także
-    `git -C <dir> add`); zgarnięcie całego drzewa jako katalog roboczy."""
-    added: list[str] = []
+def _git_commands(script: str) -> list[tuple[str, str, list[str]]]:
+    """(katalog roboczy, podkomenda, argumenty) każdego wywołania gita w skrypcie kroku."""
+    commands: list[tuple[str, str, list[str]]] = []
     for command in re.split(r"&&|\|\||[;\n]", script):
         try:
             tokens = shlex.split(command)
@@ -218,14 +357,28 @@ def _git_added_paths(script: str) -> list[str]:
             tokens = command.split()
         for start in (i for i, token in enumerate(tokens) if token == "git"):
             subcommand, workdir = _git_subcommand(tokens, start + 1)
-            if tokens[subcommand : subcommand + 1] != ["add"]:
-                continue
-            for arg in tokens[subcommand + 1 :]:
-                if arg in GIT_ADD_SWEEP_FLAGS:
-                    added.append(workdir)
-                elif not arg.startswith("-"):
-                    added.append(_in_workdir(workdir, _normalized(arg)))
+            if subcommand < len(tokens):
+                commands.append((workdir, tokens[subcommand], tokens[subcommand + 1 :]))
+    return commands
+
+
+def _git_added_paths(script: str) -> list[str]:
+    """Ścieżki każdego `git add` w skrypcie kroku, względem katalogu repo (także
+    `git -C <dir> add`); zgarnięcie całego drzewa jako katalog roboczy."""
+    added: list[str] = []
+    for workdir, subcommand, args in _git_commands(script):
+        if subcommand != "add":
+            continue
+        for arg in args:
+            if arg in GIT_ADD_SWEEP_FLAGS:
+                added.append(workdir)
+            elif not arg.startswith("-"):
+                added.append(_in_workdir(workdir, _normalized(arg)))
     return added
+
+
+def _git_pushes(script: str) -> bool:
+    return any(subcommand == "push" for _, subcommand, _ in _git_commands(script))
 
 
 def _third_party_pages_action(step: Mapping[str, Any]) -> tuple[str, str] | None:
@@ -501,8 +654,7 @@ def _pages_artifact_violations(upload: Mapping[str, Any], scorecard_file: str) -
 
 def _pages_deploy_job_violations(name: str, job: Mapping[str, Any], build_job: str) -> list[str]:
     violations: list[str] = []
-    needs = job.get("needs") or []
-    if build_job not in ([needs] if isinstance(needs, str) else needs):
+    if build_job not in _job_needs(job):
         violations.append(f"job `{name}` nie czeka na `{build_job}` (`needs`)")
     if f"needs.{build_job}.outputs." not in str(job.get("if", "")):
         violations.append(f"job `{name}` rusza także bez artefaktu (`if` bez outputs)")
