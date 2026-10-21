@@ -56,7 +56,7 @@ NAJSILNIEJSZE SYGNAŁY
 
 SYGNAŁY OSTRZEGAWCZE
 ----------------------------------------------------------------
-  ⚠ AMD (Advanced Micro Devices Inc.): [Niezgodność AV↔LLM] LLM nie zgadza się z AV (zgoda=0,25) -> potencjalny fake news / manipulacja
+  ⚠ AMD (Advanced Micro Devices Inc.): [Niezgodność AV↔LLM] LLM nie zgadza się z AV (zgoda=0,25) -> rozbieżne odczyty sentymentu
   ⚠ BTC (Bitcoin): [Słaby sygnał] tylko 2 relevantnych newsów — decyzja na słabych danych
 
 PREDYKCJE

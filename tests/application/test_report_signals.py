@@ -301,6 +301,23 @@ def test_divergence_signal_writes_the_numbers_the_polish_way() -> None:
     assert "cena rośnie 3,00% ale sentyment -0,45 -> możliwa korekta lub pump" in descriptions
 
 
+def test_conflict_copy_is_descriptive_not_diagnostic() -> None:
+    # WIA-47: niezgodność AV↔LLM nie jest zweryfikowana na wynikach (evaluate
+    # --by risk_signal), więc mail opisuje rozbieżność zamiast diagnozować
+    # „fake news / manipulację”.
+    from src.application.report_signals import detect_risk_signals
+
+    result = SymbolResult(symbol="AMD", status="saved", av_llm_agreement=0.25)
+
+    (signal,) = detect_risk_signals([result])
+
+    assert signal.type == "AV_LLM_CONFLICT"
+    assert "zgoda=0,25" in signal.description
+    assert "rozbieżne" in signal.description
+    assert "fake news" not in signal.description
+    assert "manipulacja" not in signal.description
+
+
 class TestBuildTradeSignalsPortfolioRisk:
     """PORT-04: ryzyko realnego portfela (VaR, obsunięcie, hedge) trafia do
     `suggest_band` i może bandę wyłącznie zwęzić."""

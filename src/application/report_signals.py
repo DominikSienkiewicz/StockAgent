@@ -159,14 +159,36 @@ def _size_band_for(
     )
 
 
+def divergence_direction(delta: Decimal | float | None, sentiment: float | None) -> int:
+    """WIA-47: reguła DIVERGENCE — +1 cena rośnie mimo negatywnego sentymentu,
+    -1 spada mimo pozytywnego, 0 bez rozbieżności. Brak danych też 0 (wołający
+    rozróżnia go sam). Ta sama reguła dla maila i `evaluate --by risk_signal`."""
+    if delta is None or sentiment is None:
+        return 0
+    move = Decimal(str(delta))
+    if move > DIVERGENCE_PRICE_THRESHOLD and sentiment < -DIVERGENCE_SENTIMENT_THRESHOLD:
+        return 1
+    if move < -DIVERGENCE_PRICE_THRESHOLD and sentiment > DIVERGENCE_SENTIMENT_THRESHOLD:
+        return -1
+    return 0
+
+
+def is_av_llm_conflict(agreement: float | None) -> bool:
+    """WIA-47: reguła AV_LLM_CONFLICT — zgoda LLM z Alpha Vantage poniżej progu."""
+    return agreement is not None and agreement < AV_LLM_CONFLICT_THRESHOLD
+
+
+def is_low_signal(news_volume: int | None) -> bool:
+    """WIA-47: reguła LOW_SIGNAL — decyzja na mniej niż progu relevantnych newsów."""
+    return news_volume is not None and news_volume < LOW_SIGNAL_NEWS_THRESHOLD
+
+
 def _divergence_signal(r: SymbolResult) -> RiskSignal | None:
     """Rozbieżność cena↔sentyment — możliwy pump albo niedoszacowane odbicie."""
     if r.delta is None or r.sentiment_score is None:
         return None
-    if (
-        r.delta > DIVERGENCE_PRICE_THRESHOLD
-        and r.sentiment_score < -DIVERGENCE_SENTIMENT_THRESHOLD
-    ):
+    direction = divergence_direction(r.delta, r.sentiment_score)
+    if direction > 0:
         return RiskSignal(
             symbol=r.symbol, type="DIVERGENCE", severity="high",
             description=(
@@ -174,10 +196,7 @@ def _divergence_signal(r: SymbolResult) -> RiskSignal | None:
                 f"{number(r.sentiment_score, decimals=2, signed=True)} -> możliwa korekta lub pump"
             ),
         )
-    if (
-        r.delta < -DIVERGENCE_PRICE_THRESHOLD
-        and r.sentiment_score > DIVERGENCE_SENTIMENT_THRESHOLD
-    ):
+    if direction < 0:
         return RiskSignal(
             symbol=r.symbol, type="DIVERGENCE", severity="high",
             description=(
@@ -189,21 +208,21 @@ def _divergence_signal(r: SymbolResult) -> RiskSignal | None:
 
 
 def _av_llm_conflict_signal(r: SymbolResult) -> RiskSignal | None:
-    """LLM kontra Alpha Vantage — potencjalny fake news / manipulacja."""
-    if r.av_llm_agreement is None or r.av_llm_agreement >= AV_LLM_CONFLICT_THRESHOLD:
+    """LLM kontra Alpha Vantage — rozbieżne odczyty sentymentu."""
+    if r.av_llm_agreement is None or not is_av_llm_conflict(r.av_llm_agreement):
         return None
     return RiskSignal(
         symbol=r.symbol, type="AV_LLM_CONFLICT", severity="high",
         description=(
             f"LLM nie zgadza się z AV (zgoda={number(r.av_llm_agreement, decimals=2)})"
-            " -> potencjalny fake news / manipulacja"
+            " -> rozbieżne odczyty sentymentu"
         ),
     )
 
 
 def _low_signal_signal(r: SymbolResult) -> RiskSignal | None:
     """Decyzja podjęta na zbyt małej liczbie relevantnych newsów."""
-    if r.news_volume is None or r.news_volume >= LOW_SIGNAL_NEWS_THRESHOLD:
+    if not is_low_signal(r.news_volume):
         return None
     return RiskSignal(
         symbol=r.symbol, type="LOW_SIGNAL", severity="medium",

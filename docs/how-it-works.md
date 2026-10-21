@@ -146,10 +146,12 @@ Output lands in the e-mail as a dedicated **🚨 Risk Watch** section (signals t
 | Type | Trigger | Meaning |
 |---|---|---|
 | 🚨 **DIVERGENCE** | `\|delta\| > 2%` & sentiment opposes the price direction | Possible correction / pump / unusual market dynamics |
-| 🚨 **AV_LLM_CONFLICT** | `av_agreement < 0.3` | LLM disagrees with AV — potential fake news / manipulation |
+| 🚨 **AV_LLM_CONFLICT** | `av_agreement < 0.3` | LLM disagrees with AV — the two sentiment readings diverge (the email describes the gap, it no longer calls it fake news or manipulation) |
 | ⚠️ **LOW_SIGNAL** | `news_volume < 3` | Decision built on a tiny news sample — low confidence |
 
 Each signal lands in a dedicated section in the email with a red/yellow accent stripe.
+
+The three triggers are heuristics, not verified diagnoses (WIA-47). `uv run python main_tools.py evaluate --by risk_signal` checks them against outcomes with the same rules (`divergence_direction`, `is_av_llm_conflict`, `is_low_signal` in `src/application/report_signals.py`): the LLM's directional hit rate on rows with and without each signal, with `n`, a Wilson interval on `n_eff` and a Benjamini–Hochberg correction across the six segments; a row without the input is `brak danych`, not `bez` (DIVERGENCE needs `gate_delta`, migration `034`). `--by council_agreement` splits the same hit rate by whether the council's recommendation agreed with the LLM trend. Only a signal that predicts misses would justify lowering the confidence; until then the email copy stays descriptive.
 
 ## Trade signals (top BUY / SELL)
 

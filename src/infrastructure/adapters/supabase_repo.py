@@ -136,6 +136,10 @@ _EVAL_EXTRA_FIELDS: dict[str, _EvalField] = {
     "alpha_fusion_score": _EvalField("alpha_fusion_score", "alpha_fusion_score"),  # 022
     "edge_sigma": _EvalField("edge_sigma", "edge_sigma"),  # 025
     "gate_delta": _EvalField("gate_delta", "gate_delta"),  # 034
+    # WIA-47 — wejścia heurystyk RiskSignal (001, 004).
+    "sentiment_score": _EvalField("sentiment_score", "sentiment_score"),
+    "av_llm_agreement": _EvalField("av_llm_agreement", "av_llm_agreement"),
+    "news_volume_24h": _EvalField("news_volume_24h", "news_volume_24h"),
     # EXP-05 — konsensus rady (005) i ramiona eksperymentów: kolumna (037)
     # oraz opcjonalny klucz kwitu v2 (020), z którego CLI czyta przed migracją.
     "council_consensus": _EvalField(

@@ -32,6 +32,12 @@ trafność LLM po kontekście. Każdy segment ma n, Wilsona na n_eff, naiwny
 baseline i korektę BH-FDR w rodzinie segmentów; n < 10 → „za mało danych”.
 Kolumny segmentu czytane są tylko na żądanie (każda istnieje od swojej migracji).
 
+Heurystyki maila (WIA-47): `--by risk_signal` dzieli trafność LLM na wiersze
+z sygnałem DIVERGENCE / AV_LLM_CONFLICT / LOW_SIGNAL i bez niego (reguły z
+`report_signals`, brak wejścia = „brak danych”, DIVERGENCE wymaga `gate_delta`
+z migracji 034), a `--by council_agreement` — na radę zgodną i niezgodną z LLM.
+Dopiero sygnał, który przewiduje chybienie, uzasadnia wejście do kalibracji.
+
 Test echa (EXP-01): `--echo` sprawdza, czy trend LLM to tylko znak delty, która
 otworzyła bramkę (`prediction_logs.gate_delta`, WYMAGA migracji 034): odsetek
 echa i odwrócenia, hit-rate baseline'ów „znak ruchu” / „przeciwny znak” na tych
@@ -59,6 +65,7 @@ tu zostają czyste funkcje):
     uv run python main_tools.py evaluate --by-recipe
     uv run python main_tools.py evaluate --by-universe
     uv run python main_tools.py evaluate --by component --by regime
+    uv run python main_tools.py evaluate --by risk_signal --by council_agreement
     uv run python main_tools.py evaluate --echo
     uv run python main_tools.py evaluate --experiment EXP-02 --days 90
     uv run python main_tools.py evaluate --discrimination
@@ -74,6 +81,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from src.application.report_signals import (
+    divergence_direction,
+    is_av_llm_conflict,
+    is_low_signal,
+)
 from src.domain.calibration_curve import (
     DiscriminationEvidence,
     discrimination_evidence,
@@ -128,8 +140,23 @@ SEGMENT_FIELDS: dict[str, tuple[str, ...]] = {
     "confidence_bucket": ("confidence_score",),
     "alpha_fusion_sign": ("alpha_fusion_score",),
     "edge_label": ("edge_sigma",),
+    # WIA-47: wejścia heurystyk RiskSignal z maila; delta bramki istnieje od 034.
+    "risk_signal": ("sentiment_score", "av_llm_agreement", "news_volume_24h", "gate_delta"),
+    "council_agreement": ("council_recommendation",),
 }
 SEGMENTATIONS: tuple[str, ...] = tuple(SEGMENT_FIELDS)
+
+# WIA-47: segmenty heurystyk RiskSignal — każda osobno: z sygnałem, bez, brak danych.
+RISK_SIGNAL_TYPES: tuple[str, ...] = ("DIVERGENCE", "AV_LLM_CONFLICT", "LOW_SIGNAL")
+_WITH_SIGNAL = "z sygnałem"
+_WITHOUT_SIGNAL = "bez"
+_NO_SIGNAL_DATA = "brak danych"
+RISK_SIGNAL_SEGMENTS: tuple[str, ...] = tuple(
+    f"{kind}: {state}" for kind in RISK_SIGNAL_TYPES for state in (_WITH_SIGNAL, _WITHOUT_SIGNAL)
+)
+COUNCIL_AGREES = "rada zgodna z LLM"
+COUNCIL_DISAGREES = "rada niezgodna z LLM"
+NO_COUNCIL = "bez rady"
 
 _SEGMENT_LABELS = {
     "component": "komponent",
@@ -138,6 +165,8 @@ _SEGMENT_LABELS = {
     "confidence_bucket": "kubełek pewności",
     "alpha_fusion_sign": "znak Alpha Fusion",
     "edge_label": "edge vs opcje",
+    "risk_signal": "sygnał ryzyka z maila (trafność LLM z sygnałem i bez)",
+    "council_agreement": "rada vs trend LLM",
 }
 _SEGMENT_KEY_WIDTH = 16
 
@@ -334,7 +363,50 @@ def _assess_segmentation(
         return assess_segments(
             (pair for r in flagged for pair in _component_calls(r)), expected_keys=COMPONENTS
         )
+    if segmentation == "risk_signal":
+        return assess_segments(
+            ((key, _scored_call(r)) for r in flagged for key in _risk_signal_keys(r)),
+            expected_keys=RISK_SIGNAL_SEGMENTS,
+        )
+    if segmentation == "council_agreement":
+        return assess_segments(
+            ((_council_agreement_key(r), _scored_call(r)) for r in flagged),
+            expected_keys=(COUNCIL_AGREES, COUNCIL_DISAGREES, NO_COUNCIL),
+        )
     return assess_segments((_segment_key(r, segmentation), _scored_call(r)) for r in flagged)
+
+
+def _risk_signal_keys(row: dict[str, Any]) -> Iterable[str]:
+    """WIA-47: segment wiersza dla każdej heurystyki — reguły te same co w mailu
+    (`report_signals`). Brak wejścia (np. `gate_delta` sprzed migracji 034) to
+    „brak danych”, a nie „bez sygnału”."""
+    delta = _to_float(row.get("gate_delta"))
+    sentiment = _to_float(row.get("sentiment_score"))
+    agreement = _to_float(row.get("av_llm_agreement"))
+    news = _to_float(row.get("news_volume_24h"))
+    divergence = (
+        None if delta is None or sentiment is None else divergence_direction(delta, sentiment) != 0
+    )
+    yield f"DIVERGENCE: {_signal_state(divergence)}"
+    conflict = None if agreement is None else is_av_llm_conflict(agreement)
+    yield f"AV_LLM_CONFLICT: {_signal_state(conflict)}"
+    low_signal = None if news is None else is_low_signal(int(news))
+    yield f"LOW_SIGNAL: {_signal_state(low_signal)}"
+
+
+def _signal_state(present: bool | None) -> str:
+    if present is None:
+        return _NO_SIGNAL_DATA
+    return _WITH_SIGNAL if present else _WITHOUT_SIGNAL
+
+
+def _council_agreement_key(row: dict[str, Any]) -> str:
+    """WIA-47: czy rekomendacja rady (BUY/SELL/HOLD) mówi to samo co trend LLM."""
+    trend = council_trend(_text(row.get("council_recommendation")))
+    if trend is None:
+        return NO_COUNCIL
+    predicted = str(row.get("predicted_trend") or "").strip().upper()
+    return COUNCIL_AGREES if trend == predicted else COUNCIL_DISAGREES
 
 
 def _component_calls(row: dict[str, Any]) -> Iterable[tuple[str, ScoredCall]]:
