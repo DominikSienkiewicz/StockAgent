@@ -52,6 +52,22 @@ def test_all_settings_required_secrets_are_mapped() -> None:
     )
 
 
+# BEZ-12: płatni dostawcy, których watch nigdy nie woła. Settings wymaga dwóch
+# pierwszych kluczy do konstrukcji, więc w env stoją niepuste atrapy, nie sekrety.
+PAID_PROVIDER_KEYS = ("OPENAI_API_KEY", "ALPHA_VANTAGE_API_KEYS", "ANTHROPIC_API_KEY")
+
+
+def test_paid_provider_keys_are_dummies_in_free_watch() -> None:
+    env = _run_watch_env()
+
+    real = [key for key in PAID_PROVIDER_KEYS if "secrets." in str(env.get(key, ""))]
+    assert not real, (
+        f"shock_watch_hourly.yml podaje darmowemu watchowi prawdziwe płatne klucze {real} "
+        f"— wystarczy atrapa, watch ich nie woła."
+    )
+    assert all(str(env.get(key, "")).strip() for key in PAID_PROVIDER_KEYS[:2])
+
+
 def _schedule(workflow: str) -> object:
     spec = yaml.safe_load((ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8"))
     # PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True.

@@ -789,6 +789,19 @@ def test_slow_loop_commits_weights_even_when_training_step_failed() -> None:
     assert str(commit_step.get("if", "")).replace(" ", "") == "${{!cancelled()}}"
 
 
+def test_slow_loop_write_permission_is_scoped_to_the_trainer_job() -> None:
+    # BEZ-12: `contents: write` na poziomie workflowu dostałby każdy dopisany job.
+    # Push wag idzie domyślnym GITHUB_TOKEN, więc checkout nie potrzebuje `token:`.
+    workflow = ROOT / ".github" / "workflows" / "slow_loop_weekly.yml"
+    spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    job = spec["jobs"]["retrain-predictive-model"]
+    checkout = next(s for s in job["steps"] if "actions/checkout" in str(s.get("uses", "")))
+
+    assert "write" not in dict(spec.get("permissions") or {}).values()
+    assert job.get("permissions") == {"contents": "write"}
+    assert "token" not in dict(checkout.get("with") or {})
+
+
 # BEZ-03: GitHub maskuje sekret tylko w całości. Element sekretu CSV (jeden klucz
 # z `ALPHA_VANTAGE_API_KEYS=k1,k2`) wyszedłby w logu jawnie, więc każdy job, który
 # wstrzykuje ten sekret, rejestruje `::add-mask::` per klucz, zanim ruszy Python.

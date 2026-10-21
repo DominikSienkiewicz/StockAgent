@@ -7,21 +7,21 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # KRYTYCZNE — job musi pushować zaktualizowany .ubj
+  contents: read    # BEZ-12: zapis dostaje wyłącznie job trenera, nie cały workflow
 
 jobs:
   retrain-predictive-model:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write   # KRYTYCZNE — job musi pushować zaktualizowany .ubj
 
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
         with:
+          # Push wag idzie domyślnym GITHUB_TOKEN z `contents: write` tego joba.
           fetch-depth: 1
-          # Token z prawem zapisu (default GITHUB_TOKEN wystarcza
-          # przy ustawionym permissions.contents=write powyżej)
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 🙈 Mask each Alpha Vantage key
         # BEZ-03: GitHub maskuje sekret CSV tylko w całości — pojedynczy klucz z listy
