@@ -106,3 +106,31 @@ jobs:
       - name: 🔍 SonarCloud Scan
         if: ${{ env.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+
+  lowest-direct:
+    name: Lowest direct dependencies
+    # CI-12: dolne granice z pyproject.toml muszą się dać zainstalować i przejść testy.
+    # Tylko z ręcznego uruchomienia CI (Actions → CI → Run workflow): resolver bierze
+    # najniższe dozwolone wersje zależności bezpośrednich (także dev) i nadpisuje
+    # uv.lock tylko na runnerze. Czerwony job = podnieś dolną granicę w pyproject.toml.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+
+      - name: 📦 Sync dependencies at their declared lower bounds
+        run: uv sync --resolution lowest-direct --extra anthropic --no-build --no-install-project
+
+      - name: 🧪 Pytest (unit tests on the lowest direct dependencies)
+        run: uv run --no-sync pytest -m "not integration and not containers"

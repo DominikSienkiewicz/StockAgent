@@ -8,18 +8,20 @@ authors = [{ name = "Dominik Sienkiewicz" }]
 license = { text = "MIT" }
 
 dependencies = [
+    # CI-12: dolna granica = najniższa wersja, którą instaluje i testuje job `lowest-direct`
+    # w ci.yml; tests/test_dependency_bounds.py pilnuje, że ma ten sam major co uv.lock.
     # Graf agenta (StateGraph Fast Loopa). RAG to własny kod na pgvector, bez langchain.
     "langgraph>=1.2,<2",
     # Data & DB
-    "supabase>=2.4.5",
+    "supabase>=2.30",            # supabase-py wydaje pakiety w lockstepie z postgrest
     "postgrest>=2.30",           # importowany wprost (APIError) w supabase_repo.py
-    "pydantic>=2.7.0",
+    "pydantic>=2.11.7",          # niżej lowest-direct nie schodzi (wymogi zależności przechodnich)
     "pydantic-settings>=2.2.0",
     # ML (Slow Loop)
-    "xgboost>=2.0.0",
-    "scikit-learn>=1.4.0",       # wymagane przez xgboost.XGBRegressor (sklearn API)
-    "pandas>=2.2.0",
-    "numpy>=1.26.0",
+    "xgboost>=3.0",
+    "scikit-learn>=1.4.2",       # wymagane przez xgboost.XGBRegressor (sklearn API); 1.4.2 = numpy 2
+    "pandas>=3.0",
+    "numpy>=2.0",
     # Utilities
     "requests>=2.31.0",
     "python-dotenv>=1.0.1",
