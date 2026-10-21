@@ -5497,6 +5497,71 @@ class TestSlowLoopPaidBudget:
         ), [rec.message for rec in caplog.records]
 
 
+class TestDiagnosisBackfillJob:
+    """WIA-53: job spłaty długu diagnoz w Slow Loopie — za flagą, z przydziałem
+    z tygodniowego budżetu FIN-30 (ostatni w kolejce: recap > sędzia > diagnozy)."""
+
+    def _trainer(self, settings, mocker) -> MagicMock:
+        from src.application.ports import LLMPort
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        mocker.patch("main_trainer.build_notifier", return_value=MagicMock())
+        mocker.patch("main_agent.build_llm_adapter", return_value=MagicMock(spec=LLMPort))
+        recap_cls = mocker.patch("main_trainer.WeeklyRecapUseCase")
+        recap_cls.return_value.run.return_value = {"status": "skipped_below_threshold"}
+        judge_cls = mocker.patch(
+            "src.application.use_cases.calibrate_confidence.CalibrateConfidenceUseCase"
+        )
+        judge_cls.return_value.run.return_value = {"status": "calibrated"}
+        backfill_cls = mocker.patch("main_trainer.BackfillDiagnosesUseCase")
+        backfill_cls.return_value.run.return_value = {"status": "backfilled"}
+        settings.symbols = ["AAPL"]
+        settings.paid_calls_enabled = True
+        return backfill_cls
+
+    def test_off_by_default(self, settings, mock_external_clients, mocker) -> None:
+        backfill_cls = self._trainer(settings, mocker)
+
+        main_trainer.main(settings)
+
+        backfill_cls.assert_not_called()
+
+    def test_job_gets_its_cap_through_a_budgeted_port(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.application.metering import BudgetedLLMPort
+
+        backfill_cls = self._trainer(settings, mocker)
+        settings.diagnosis_backfill_enabled = True
+        settings.diagnosis_backfill_max_calls = 5
+        settings.slow_loop_max_paid_llm_calls_per_week = 15
+
+        main_trainer.main(settings)
+
+        kwargs = backfill_cls.call_args.kwargs
+        assert kwargs["max_paid_calls"] == 5
+        assert isinstance(kwargs["llm_port"], BudgetedLLMPort)
+        backfill_cls.return_value.run.assert_called_once()
+
+    def test_weekly_cap_trims_the_backfill_first(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        backfill_cls = self._trainer(settings, mocker)
+        settings.weekly_recap_enabled = True
+        settings.calibration_judge_enabled = True
+        settings.diagnosis_backfill_enabled = True
+        settings.diagnosis_backfill_max_calls = 5
+        settings.slow_loop_max_paid_llm_calls_per_week = 3
+
+        main_trainer.main(settings)
+
+        # Sufit 3: recap 1 + sędzia 1 → na diagnozy zostaje 1.
+        assert backfill_cls.call_args.kwargs["max_paid_calls"] == 1
+
+
 class TestNyseClosedDay:
     """FIN-34: w dzień zamknięcia NYSE (święto, weekend) Fast Loop pomija akcje
     z jawnym logiem. Krypto handluje w święta, więc idzie normalnie; bez krypto

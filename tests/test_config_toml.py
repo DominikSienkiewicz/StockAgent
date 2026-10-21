@@ -509,3 +509,10 @@ def test_real_config_toml_ships_the_correction_category_off_until_migration() ->
     """WIA-57: kolumna `correction_category` powstaje dopiero w migracji 046 (DB Migrate)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["correction_category_enabled"] is False
+
+
+def test_real_config_toml_ships_the_diagnosis_backfill_off_with_its_cap() -> None:
+    """WIA-53: job spłaty diagnoz off; cap 5 mieści się w tygodniu Slow Loopa (15)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["diagnosis_backfill_enabled"] is False
+    assert data["diagnosis_backfill_max_calls"] == 5

@@ -1537,3 +1537,25 @@ class TestCorrectionCategoryFlag:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "correction_category_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestDiagnosisBackfillSettings:
+    """WIA-53: job Slow Loopa diagnozujący błędne predykcje bez diagnozy — off,
+    z capem płatnych wywołań na przebieg; inny job niż Fast Loop, poza przepisem."""
+
+    def test_defaults_off_with_a_cap_of_five(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.diagnosis_backfill_enabled is False
+        assert settings.diagnosis_backfill_max_calls == 5
+
+    def test_negative_cap_is_rejected(self, env):
+        with pytest.raises(ValueError):
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS, diagnosis_backfill_max_calls=-1)
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert {"diagnosis_backfill_enabled", "diagnosis_backfill_max_calls"} <= (
+            NON_RECIPE_SETTINGS_FIELDS
+        )

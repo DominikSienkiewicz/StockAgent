@@ -63,6 +63,14 @@ DIAGNOSIS_SKIPPED_INSIGHT = "Niska zmienność — diagnoza LLM pominięta (bez 
 # z nim zostają w bazie, więc predykat musi go nadal rozpoznawać.
 LEGACY_DIAGNOSIS_DEFERRED_INSIGHT = "Niska zmienność — diagnoza LLM odłożona."
 
+# WIA-53: błędne predykcje z tymi placeholderami nie mają diagnozy, za którą
+# ktoś zapłacił — job Slow Loopa (`BackfillDiagnosesUseCase`) diagnozuje je
+# w tygodniowym budżecie. „Trafiona predykcja.” nie wymaga diagnozy.
+UNDIAGNOSED_MISTAKE_PLACEHOLDERS: tuple[str, ...] = (
+    DIAGNOSIS_SKIPPED_INSIGHT,
+    LEGACY_DIAGNOSIS_DEFERRED_INSIGHT,
+)
+
 _PLACEHOLDER_INSIGHTS = frozenset(
     text.casefold()
     for text in (

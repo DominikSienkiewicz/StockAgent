@@ -133,6 +133,24 @@ class StoredReceipt:
 
 
 @dataclass(frozen=True)
+class DeferredDiagnosis:
+    """WIA-53 — błędna predykcja bez płatnej diagnozy, z jej persystowanym wejściem.
+
+    `prediction` niesie nagłówki (`news_summary`), uzasadnienie i ceny wejścia
+    i celu; `actual_price` — cenę rozliczenia; `placeholder` — tekst, który dziś
+    stoi w `correction_insights` (zapis go podmienia tylko, gdy wciąż tam jest);
+    `receipt` — surowy JSONB `decision_receipts` (020) albo None.
+    `is_trend_correct` None = wiersz bez oceny kierunku."""
+
+    prediction: Prediction
+    actual_price: Decimal
+    is_trend_correct: bool | None
+    placeholder: str
+    predicted_at: datetime | None = None
+    receipt: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class OpenReferenceCall:
     """WIA-24 — nierozliczone wywołanie sygnału referencyjnego z id wiersza
     `reference_predictions` (migracja 042), którym rozlicza je kolejny przebieg."""
@@ -448,6 +466,25 @@ class RepositoryPort(ABC):
         z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
         "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
         → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
+    def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
+        """WIA-53 — do `limit` najświeższych BŁĘDNYCH predykcji (`is_trend_correct`
+        = false), których `correction_insights` to placeholder bez diagnozy
+        (`UNDIAGNOSED_MISTAKE_PLACEHOLDERS`). Atrapy po awarii LLM odpadają."""
+
+    @abstractmethod
+    def save_backfilled_diagnosis(
+        self,
+        prediction_id: str,
+        insight: str,
+        *,
+        replaces: str,
+        correction_category: MistakeCategory | None = None,
+    ) -> None:
+        """WIA-53 — podmienia `correction_insights` na diagnozę, ale tylko gdy
+        kolumna wciąż niesie `replaces` (inaczej nic nie zapisuje). Kategoria
+        (WIA-57, migracja 046) jak w `update_prediction_accuracy`."""
 
     @abstractmethod
     def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:

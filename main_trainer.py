@@ -45,6 +45,7 @@ from src.application.report_weekly_recap import (
 )
 from src.application.run_context import RunContext
 from src.application.usage_ledger import UsageLedger
+from src.application.use_cases.backfill_diagnoses import BackfillDiagnosesUseCase
 from src.application.use_cases.calibrate_confidence import (
     PAID_LLM_CALLS_PER_RUN as JUDGE_LLM_CALLS,
 )
@@ -97,6 +98,8 @@ WEEKLY_RECAP_DAYS = 7
 # pierwszeństwo przy przycinaniu budżetem tygodniowym.
 RECAP_JOB = "recap"
 JUDGE_JOB = "judge"
+# WIA-53: spłata długu diagnoz — ostatnia w kolejce, więc przycinana pierwsza.
+DIAGNOSIS_JOB = "diagnosis"
 # NIEZ-44: rezerwa przydziału joba na request do zapasowego dostawcy LLM.
 FALLBACK_LLM_CALLS_PER_JOB = 1
 # NIEZ-32: katalog zaszyfrowanej kopii; workflow uploaduje z niego wyłącznie *.age.
@@ -374,12 +377,15 @@ def _build_llm_or_unavailable(
 def _requested_llm_calls(settings: Settings, extra_per_job: int = 0) -> dict[str, int]:
     """FIN-30: płatne wywołania LLM włączonych jobów przebiegu. Recap idzie przed
     sędzią kalibracji: to on trafia do użytkownika, więc przycięcie bierze sędziego.
+    Spłata diagnoz (WIA-53) jest ostatnia — przycięcie bierze ją pierwszą.
     `extra_per_job` (NIEZ-44) — rezerwa na request do zapasowego dostawcy LLM."""
     requested: dict[str, int] = {}
     if settings.weekly_recap_enabled:
         requested[RECAP_JOB] = RECAP_LLM_CALLS + extra_per_job
     if settings.calibration_judge_enabled:
         requested[JUDGE_JOB] = JUDGE_LLM_CALLS + extra_per_job
+    if settings.diagnosis_backfill_enabled:
+        requested[DIAGNOSIS_JOB] = settings.diagnosis_backfill_max_calls + extra_per_job
     return requested
 
 
@@ -413,6 +419,10 @@ class _SlowLoopPaidLLM:
         )
         self.telemetry = CycleTelemetry()
         logger.info("Slow Loop LLM budget — allowed=%s cap=%s", self._allowed, self._cap)
+
+    def allowed(self, job: str) -> int:
+        """Przydział joba z domeny (z rezerwą NIEZ-44 na zapasowego dostawcę)."""
+        return self._allowed.get(job, 0)
 
     def port_for(self, job: str) -> LLMPort:
         # NIEZ-44: jeden przydział na job — dzieli go request do zapasowego dostawcy.
@@ -653,6 +663,22 @@ def _run_calibration_judge(
         logger.exception("Calibration judge failed — pomijam")
 
 
+def _run_diagnosis_backfill(
+    repository: RepositoryPort, llm_port: LLMPort, max_paid_calls: int
+) -> None:
+    """WIA-53: diagnozy błędnych predykcji, którym bramka volatility pominęła
+    płatną diagnozę. Sekwencyjnie, po treningu — poza wyścigiem `symbol_concurrency`
+    Fast Loopa. Best-effort: błąd kroku nie zmienia exit code'u."""
+    try:
+        result = BackfillDiagnosesUseCase(
+            repository_port=repository, llm_port=llm_port, max_paid_calls=max_paid_calls
+        ).run()
+    except Exception:
+        logger.exception("Diagnosis backfill failed — pomijam")
+        return
+    logger.info("Diagnosis backfill — %s", result)
+
+
 def _send_weekly_recap(
     settings: Settings,
     repository: RepositoryPort,
@@ -753,6 +779,13 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
 
     if settings.weekly_recap_enabled:
         _send_weekly_recap(settings, repository, quota_monitor, paid_llm.port_for(RECAP_JOB))
+    if settings.diagnosis_backfill_enabled:
+        # Rezerwa NIEZ-44 zostaje na zapasowego dostawcę — wierszy nie więcej niż cap.
+        _run_diagnosis_backfill(
+            repository,
+            paid_llm.port_for(DIAGNOSIS_JOB),
+            min(settings.diagnosis_backfill_max_calls, paid_llm.allowed(DIAGNOSIS_JOB)),
+        )
     paid_llm.log_spend()
     persist_llm_calls(
         settings=settings,

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from src.application._prompt_safety import fence_untrusted
+from src.application.decision_receipt import (
+    DecisionReceipt,
+    effective_threshold_pct,
+    similarity_label,
+)
 
 # BEZ-06: analog to kilka nagłówków z wynikiem i wnioskiem, więc dostaje własny
 # limit — domyślne 300 znaków fence'a po cichu ucinało wnioski.
@@ -207,6 +213,31 @@ _SAVED_NEWS_SEPARATOR = " | "
 _REASONING_ITEM_PREFIX = "Uzasadnienie prognozy: "
 
 
+def _receipt_block(receipt: DecisionReceipt | None) -> str:
+    """WIA-53: kwit decyzji z chwili prognozy — próg efektywny i analogi RAG
+    (trend, wynik, podobieństwo, nagłówki) w jednym fence'ie. Pusty bez kwitu."""
+    if receipt is None:
+        return ""
+    threshold = effective_threshold_pct(receipt)
+    lines = [f"\n\nKwit decyzji z chwili prognozy: próg efektywny {threshold or 'nieznany'}."]
+    analogs = [_analog_item(precedent) for precedent in receipt.precedents]
+    if analogs:
+        lines.append("Analogi RAG, na których stała prognoza:")
+        lines.append(fence_untrusted("ANALOGS", analogs))
+    else:
+        lines.append("Prognoza nie miała analogów RAG.")
+    return "\n".join(lines)
+
+
+def _analog_item(precedent: Mapping[str, Any]) -> str:
+    correct = precedent.get("is_trend_correct")
+    outcome = "nierozliczony" if correct is None else ("trafiony" if correct else "chybiony")
+    similarity = similarity_label(precedent)
+    detail = f", podobieństwo {similarity}" if similarity is not None else ""
+    trend = precedent.get("predicted_trend") or "?"
+    return f"{trend}, {outcome}{detail}: {precedent.get('summary') or ''}"
+
+
 def _saved_input_block(news_summary: str, reasoning: str) -> str:
     """Zapisane wejście predykcji jako JEDEN fence: każdy nagłówek osobnym
     punktem (z własnym limitem długości), uzasadnienie ostatnim. Jeden fence,
@@ -240,6 +271,7 @@ def get_mistake_diagnosis_prompt(
     entry_price: str = "",
     target_price: str = "",
     last_reasoning: str = "",
+    receipt: DecisionReceipt | None = None,
 ) -> str:
     """Prompt dla LLM-a w węźle reflect — diagnoza błędnej predykcji.
 
@@ -251,7 +283,11 @@ def get_mistake_diagnosis_prompt(
     WIA-18: `last_news_summary` (zapisane nagłówki) i `last_reasoning` pochodzą
     z bazy, czyli pośrednio z newsów stron trzecich — idą wyłącznie przez
     `fence_untrusted`. `entry_price` i `target_price` (puste = pominięte)
-    pozwalają ocenić skalę błędu, a nie tylko jego kierunek."""
+    pozwalają ocenić skalę błędu, a nie tylko jego kierunek.
+
+    `receipt` (WIA-53, kwit z migracji 020) — próg efektywny i analogi RAG,
+    na których stała prognoza; analogi to tekst z bazy, więc idą przez
+    `fence_untrusted`. None = blok pominięty (reflect w Fast Loopie)."""
     dissent_block = (
         f"\nWybroniony dysydent rady (głosował przeciw finalnej decyzji, ale "
         f"trafił ruch): {vindicated_context}. Rozważ, czy jego teza była "
@@ -270,7 +306,7 @@ W poprzednim cyklu przewidziałeś trend: {last_trend}.{price_line}
 Aktualna cena to {actual_price}, prognoza była błędna.{dissent_block}
 
 Nagłówki newsów i Twoje uzasadnienie z tamtej prognozy:
-{_saved_input_block(last_news_summary, last_reasoning)}
+{_saved_input_block(last_news_summary, last_reasoning)}{_receipt_block(receipt)}
 
 Zidentyfikuj, dlaczego te dane wprowadziły Cię w błąd (np. zignorowałeś
 szerszy kontekst rynkowy, news był fake-newsem, sentyment był manipulowany).

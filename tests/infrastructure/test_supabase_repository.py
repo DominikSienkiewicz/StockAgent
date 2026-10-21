@@ -1193,6 +1193,136 @@ class TestPersonaVoteOutcomes:
         assert mock_client.rpc.call_args.args[0] == "persona_accuracy_stats"
 
 
+_DEFERRED_CHAIN = ["table", "select", "in_", "eq", "order", "range"]
+
+
+def _deferred_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "id": "p-1",
+        "symbol": "AAPL",
+        "timestamp": "2026-08-01T10:00:00+00:00",
+        "predicted_trend": "BULLISH",
+        "price_at_prediction": "100.0000",
+        "predicted_target_price": "104.0000",
+        "actual_price_after_12h": "97.0000",
+        "news_summary": "Nagłówek | Drugi",
+        "reasoning_text": "Popyt rośnie.",
+        "correction_insights": "Niska zmienność — diagnoza LLM pominięta (bez ponowienia).",
+        "is_trend_correct": False,
+        "data_quality_flags": [],
+        "decision_receipts": {"schema_version": 1, "effective_threshold": "0.03"},
+    }
+    row.update(overrides)
+    return row
+
+
+class TestDeferredDiagnoses:
+    """WIA-53 — błędne predykcje z placeholderem zamiast diagnozy i zapis
+    diagnozy, który podmienia tylko przeczytany placeholder."""
+
+    def test_reads_wrong_predictions_with_a_placeholder_newest_first(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.prediction import UNDIAGNOSED_MISTAKE_PLACEHOLDERS
+
+        _set_chain_response(mock_client, _DEFERRED_CHAIN, [_deferred_row()])
+
+        (row,) = repo.get_deferred_diagnoses(limit=5)
+
+        select = mock_client.table.return_value.select
+        select.return_value.in_.assert_called_once_with(
+            "correction_insights", list(UNDIAGNOSED_MISTAKE_PLACEHOLDERS)
+        )
+        select.return_value.in_.return_value.eq.assert_called_once_with(
+            "is_trend_correct", False
+        )
+        select.return_value.in_.return_value.eq.return_value.order.assert_called_once_with(
+            "timestamp", desc=True
+        )
+        assert row.prediction.id == "p-1"
+        assert row.prediction.news_summary == "Nagłówek | Drugi"
+        assert row.prediction.reasoning == "Popyt rośnie."
+        assert row.actual_price == Decimal("97.0000")
+        assert row.is_trend_correct is False
+        assert row.placeholder.startswith("Niska zmienność")
+        assert row.receipt == {"schema_version": 1, "effective_threshold": "0.03"}
+
+    def test_skips_llm_fallback_rows_and_caps_at_the_limit(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        rows = [
+            _deferred_row(id="fallback", data_quality_flags=["llm_analysis_failed"]),
+            _deferred_row(id="p-1"),
+            _deferred_row(id="p-2"),
+            _deferred_row(id="no-price", actual_price_after_12h=None),
+        ]
+        _set_chain_response(mock_client, _DEFERRED_CHAIN, rows)
+
+        out = repo.get_deferred_diagnoses(limit=1)
+
+        assert [row.prediction.id for row in out] == ["p-1"]
+
+    def test_without_migration_020_reads_without_the_receipt(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        ok = MagicMock()
+        row_without_receipt = _deferred_row()
+        del row_without_receipt["decision_receipts"]
+        ok.data = [row_without_receipt]
+        missing = APIError(
+            {"code": "42703", "message": "column prediction_logs.decision_receipts does not exist"}
+        )
+        range_ = mock_client.table.return_value.select.return_value.in_.return_value
+        range_.eq.return_value.order.return_value.range.return_value.execute.side_effect = [
+            missing,
+            ok,
+        ]
+
+        (row,) = repo.get_deferred_diagnoses(limit=5)
+
+        assert row.receipt is None
+        second_select = mock_client.table.return_value.select.call_args.args[0]
+        assert "decision_receipts" not in second_select
+
+    def test_save_replaces_only_the_placeholder_it_read(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        _set_chain_response(mock_client, ["table", "update", "eq", "eq"], [])
+
+        repo.save_backfilled_diagnosis(
+            "p-1", "Zignorowałem Fed.", replaces="placeholder",
+            correction_category=MistakeCategory.MACRO,
+        )
+
+        update = mock_client.table.return_value.update
+        # Flaga 046 off — bez klucza kategorii.
+        assert update.call_args.args[0] == {"correction_insights": "Zignorowałem Fed."}
+        update.return_value.eq.assert_called_once_with("id", "p-1")
+        update.return_value.eq.return_value.eq.assert_called_once_with(
+            "correction_insights", "placeholder"
+        )
+
+    def test_save_writes_the_category_with_the_flag(self, mock_client: MagicMock) -> None:
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        _set_chain_response(mock_client, ["table", "update", "eq", "eq"], [])
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", correction_category_enabled=True
+        )
+
+        repo.save_backfilled_diagnosis(
+            "p-1", "Zignorowałem Fed.", replaces="placeholder",
+            correction_category=MistakeCategory.MACRO,
+        )
+
+        payload = mock_client.table.return_value.update.call_args.args[0]
+        assert payload["correction_category"] == "MACRO"
+
+
 class TestGetCouncilVoteHistory:
     def test_groups_rows_into_investor_histories(
         self, repo: SupabaseRepository, mock_client: MagicMock

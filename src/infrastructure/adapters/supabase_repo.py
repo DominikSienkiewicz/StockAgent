@@ -13,6 +13,7 @@ from supabase import create_client
 
 from src.application.ports import (
     CycleRun,
+    DeferredDiagnosis,
     EvidenceSourcePort,
     LatestPrediction,
     OpenReferenceCall,
@@ -36,7 +37,12 @@ from src.domain.persona_track_record import (
     persona_accuracy_weights,
     persona_hit_stats,
 )
-from src.domain.prediction import Prediction, TrendDirection, normalize_trend
+from src.domain.prediction import (
+    UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
+    Prediction,
+    TrendDirection,
+    normalize_trend,
+)
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.reference_signal import (
     REFERENCE_RECIPE_VERSION,
@@ -334,6 +340,42 @@ def _stored_receipt(row: Mapping[str, Any]) -> StoredReceipt:
         predicted_trend=_optional_text(row.get("predicted_trend")),
         is_trend_correct=correct if isinstance(correct, bool) else None,
         payload=payload if isinstance(payload, Mapping) else None,
+    )
+
+
+# WIA-53: wejście diagnozy błędnej predykcji (kwit `decision_receipts` osobno, 020).
+_DEFERRED_COLUMNS = (
+    "id, symbol, timestamp, predicted_trend, price_at_prediction, "
+    "predicted_target_price, actual_price_after_12h, news_summary, reasoning_text, "
+    "correction_insights, is_trend_correct, data_quality_flags"
+)
+
+
+def _deferred_diagnosis(row: Mapping[str, Any]) -> DeferredDiagnosis | None:
+    """Wiersz `prediction_logs` → `DeferredDiagnosis`; bez cen nie ma czego diagnozować."""
+    price = row.get("price_at_prediction")
+    actual = row.get("actual_price_after_12h")
+    if price is None or actual is None or row.get("id") is None:
+        return None
+    trend, _ = normalize_trend(row.get("predicted_trend"))
+    target = row.get("predicted_target_price")
+    receipt = row.get("decision_receipts")
+    correct = row.get("is_trend_correct")
+    return DeferredDiagnosis(
+        prediction=Prediction(
+            id=str(row["id"]),
+            symbol=str(row.get("symbol") or "?"),
+            predicted_trend=trend,
+            price_at_prediction=Decimal(str(price)),
+            predicted_target_price=Decimal(str(target if target is not None else price)),
+            news_summary=_optional_text(row.get("news_summary")),
+            reasoning=_optional_text(row.get("reasoning_text")),
+        ),
+        actual_price=Decimal(str(actual)),
+        is_trend_correct=correct if isinstance(correct, bool) else None,
+        placeholder=str(row.get("correction_insights") or ""),
+        predicted_at=_optional_timestamp(row.get("timestamp")),
+        receipt=receipt if isinstance(receipt, Mapping) else None,
     )
 
 
@@ -1181,6 +1223,52 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
                 continue
             out[str(name)] = (float(hit_rate), int(votes))
         return out
+
+    def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
+        # WIA-53: kandydatów jest kilkaset (dług z wstrzymanego Fast Loopa), więc
+        # czytamy całość stronami i odsiewamy atrapy po awarii LLM w Pythonie
+        # (`_without_llm_fallback`), zanim przytniemy do `limit`. Graceful 020:
+        # bez kolumny kwitu czytamy bez niej, a prompt idzie bez bloku kwitu.
+        try:
+            rows = self._deferred_rows(with_receipt=True)
+        except APIError as exc:
+            if not _is_missing_column(exc, "decision_receipts"):
+                raise
+            rows = self._deferred_rows(with_receipt=False)
+        deferred = [
+            item for row in _without_llm_fallback(rows) if (item := _deferred_diagnosis(row))
+        ]
+        return deferred[: max(0, limit)]
+
+    def _deferred_rows(self, *, with_receipt: bool) -> list[dict[str, Any]]:
+        columns = _DEFERRED_COLUMNS + (", decision_receipts" if with_receipt else "")
+        query = (
+            self._client.table(self._table)
+            .select(columns)
+            .in_("correction_insights", list(UNDIAGNOSED_MISTAKE_PLACEHOLDERS))
+            .eq("is_trend_correct", False)
+            .order("timestamp", desc=True)
+        )
+        return _paginate(query)
+
+    def save_backfilled_diagnosis(
+        self,
+        prediction_id: str,
+        insight: str,
+        *,
+        replaces: str,
+        correction_category: MistakeCategory | None = None,
+    ) -> None:
+        # WIA-53: warunek na placeholder — wiersz zdiagnozowany w międzyczasie
+        # (ręczny run, drugi przebieg) nie zostaje nadpisany.
+        payload = {"correction_insights": insight, **self._category_payload(correction_category)}
+        (
+            self._client.table(self._table)
+            .update(payload)
+            .eq("id", prediction_id)
+            .eq("correction_insights", replaces)
+            .execute()
+        )
 
     def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
         # WIA-51: surowe wiersze, więc czytamy stronami — PostgREST obcina wynik

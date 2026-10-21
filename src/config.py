@@ -179,6 +179,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "fast_loop_weekly_budget_usd",
     # FIN-30: tygodniowy sufit LLM Slow Loopa (recap, sędzia) — inny job, nie Fast Loop.
     "slow_loop_max_paid_llm_calls_per_week",
+    # WIA-53: job Slow Loopa diagnozujący błędne predykcje bez diagnozy — przepisuje
+    # dane (wnioski w lessons i RAG), nie przepis predykcji, jak sędzia kalibracji.
+    "diagnosis_backfill_enabled",
+    "diagnosis_backfill_max_calls",
     # FIN-34: dzień zamknięcia NYSE decyduje, CZY akcje idą do grafu, nie jak.
     "nyse_closure_skip_enabled",
     # EXP-27: cykl dwufazowy zmienia kolejność analizy (malejące |Δ|) i to, kogo
@@ -476,6 +480,12 @@ class Settings(BaseSettings):
     calibration_score_version_enabled: bool = False
     # NIEZ-25: tygodniowa sonda Models API (Slow Loop, bez tokenów, bez migracji).
     model_probe_enabled: bool = False
+    # WIA-53: job Slow Loopa diagnozuje błędne predykcje, którym bramka volatility
+    # pominęła płatną diagnozę (placeholder w `correction_insights`), najwyżej
+    # `diagnosis_backfill_max_calls` na przebieg — w tygodniowym budżecie FIN-30,
+    # po recapie i sędzi. Bez migracji (kolumny 001/009, kwit 020 opcjonalnie).
+    diagnosis_backfill_enabled: bool = False
+    diagnosis_backfill_max_calls: int = Field(default=5, ge=0)
 
     # ----- Risk: VaR / stress-test / hedge-effectiveness -----
     # Wszystkie liczone z DARMOWEJ historii snapshotów (zero płatnych portów),

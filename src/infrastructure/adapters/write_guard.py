@@ -29,6 +29,7 @@ from typing import Any, ClassVar
 from src.application.ports import (
     AttestationPublisherPort,
     CycleRun,
+    DeferredDiagnosis,
     LatestPrediction,
     OpenReferenceCall,
     PositionsImportPort,
@@ -109,6 +110,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_persona_accuracy",
         "get_persona_track_record",
         "get_persona_vote_outcomes",
+        "get_deferred_diagnoses",
         "get_resolved_predictions_detailed",
         "get_settled_moves",
         "get_unrevealed_commitments",
@@ -139,6 +141,7 @@ class ReadOnlyRepository(RepositoryPort):
         "save_earnings",
         "save_quota_alert",
         "save_calibration",
+        "save_backfilled_diagnosis",
         "mark_commitment_revealed",
         "save_shock_alert",
         "save_model_scorecard",
@@ -236,6 +239,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
         return self._delegate.get_persona_vote_outcomes(window_days=window_days)
+
+    def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
+        return self._delegate.get_deferred_diagnoses(limit)
 
     def get_resolved_predictions_detailed(
         self, days: int, since: datetime | None = None
@@ -341,6 +347,16 @@ class ReadOnlyRepository(RepositoryPort):
 
     def refresh_feature_store(self) -> None:
         self._skipped.skip("refresh_feature_store")
+
+    def save_backfilled_diagnosis(
+        self,
+        prediction_id: str,
+        insight: str,
+        *,
+        replaces: str,
+        correction_category: MistakeCategory | None = None,
+    ) -> None:
+        self._skipped.skip("save_backfilled_diagnosis")
 
     def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
         self._skipped.skip("save_fundamentals")
