@@ -59,6 +59,23 @@ All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff,
 | **CoinGecko** (`/simple/price`) | One request per cycle for the configured crypto basket | Free, no API key, no meaningful rate limit. Used by `CoinGeckoAdapter` (implements `MarketDataPort`) for crypto prices. Maps clean tickers (`BTC`, `ETH`) to CoinGecko coin ids (`bitcoin`, `ethereum`). |
 | **SEC EDGAR** (`company_tickers.json`, `submissions`, Form 4 XML) | Ticker → CIK map downloaded once per adapter instance, then submissions + up to 20 Form 4 per symbol | Free, no key; the `User-Agent` must carry a contact. Requests are spaced at least 0.12 s apart (SEC allows 10 per second) and a failed map download is retried by the next symbol (DAT-10). |
 
+## Data sources and terms
+
+The email footer attributes the data in one line, `Źródła danych (w zależności od konfiguracji): …` (MAIL-07, `DATA_SOURCES_FOOTER_PL` in `src/application/report_formatting.py`), in the HTML and the plain text, under the investment disclaimer and before the run footer. It is a fixed list hedged with "depending on the configuration", because which sources feed a cycle depends on the flags in `config.toml`: update the constant when a source is added or removed.
+
+The email itself goes to the owner. Third-party data leaves that inbox only through the subscriber fan-out (`subscriptions_enabled`, off by default) and the web digest (`web_digest_enabled`, off by default), which publishes the full HTML. The push digest carries tickers, model signals, the lead headlines and the scorecard, but no quotes, headlines or scores of a provider, and the public scorecard carries aggregates of the agent's own predictions only.
+
+| Source | What reaches the email | Redistribution beyond the owner | Terms of service status |
+|---|---|---|---|
+| **Finnhub** | US prices and Δ, analyst consensus and price target, the option put/call ratio (Alpha Signals) | Subscriber emails and the web digest, when enabled | Not reviewed — check before enabling subscribers or the web digest |
+| **CoinGecko** | Crypto prices and Δ (🪙 Krypto) | Subscriber emails and the web digest, when enabled | Not reviewed |
+| **Alpha Vantage** | News headlines with links, sentiment scores, valuation from fundamentals, earnings dates | Subscriber emails and the web digest, when enabled | Not reviewed |
+| **SEC EDGAR** | Insider Form 4 counts and net shares (Alpha Signals) | Subscriber emails and the web digest, when enabled | Not reviewed |
+| **Reddit** | Mention counts per symbol (social velocity, Alpha Signals) | Subscriber emails and the web digest, when enabled | Not reviewed |
+| **FRED** | Yield curve: 10Y, 2Y, fed funds (Alpha Signals) | Subscriber emails and the web digest, when enabled | Not reviewed |
+| **NBP** | EUR and USD rates against PLN (Risk Watch, P/L in złoty) | Subscriber emails and the web digest, when enabled | Not reviewed |
+| **Anthropic / OpenAI** | Model output: the reasoning, council votes and summaries | Subscriber emails and the web digest, when enabled | Not reviewed |
+
 ## Symbols (default portfolio of 43)
 
 ```text

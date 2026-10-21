@@ -29,5 +29,6 @@ POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------
 Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.
 Symboli: 4 · predykcji: 0 · pominiętych: 4 · błędów: 0 · czas trwania: 74,2s
+Źródła danych (w zależności od konfiguracji): ceny — Finnhub i CoinGecko; newsy, sentyment, fundamenty i kalendarz wyników — Alpha Vantage; konsensus analityków i opcje — Finnhub; transakcje insiderów — SEC EDGAR; wzmianki — Reddit; stopy procentowe — FRED; kursy walut — NBP; analiza i rada — modele LLM (Anthropic, OpenAI).
 ----------------------------------------------------------------
 przebieg #18234567890 · commit 6eff942 · logi: https://github.com/example/StockAgent/actions/runs/18234567890

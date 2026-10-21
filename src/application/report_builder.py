@@ -34,6 +34,7 @@ from src.application.report_council_history import (
 from src.application.report_evidence import wilson_label
 from src.application.report_finops import render_finops_html
 from src.application.report_formatting import (
+    DATA_SOURCES_FOOTER_PL,
     DEFAULT_DISPLAY_TIMEZONE,
     INVESTMENT_DISCLAIMER,
     PALETTE,
@@ -2660,6 +2661,7 @@ def _render_html(
       <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 11px; color: {PALETTE.muted};">
         <div style="margin-bottom: 8px; color: #6b7280;">{_html(INVESTMENT_DISCLAIMER)}</div>
         {_render_technical_footer_html(results, saved, ignored, errors, duration_seconds)}
+        <div style="margin-bottom: 8px;">{_html(DATA_SOURCES_FOOTER_PL)}</div>
         StockAgent · Agentic RAG + Continual Learning · raport automatyczny
         {_RUN_FOOTER_SLOT}
       </div>
@@ -3033,6 +3035,7 @@ def _render_plain(
         "-" * 64,
         INVESTMENT_DISCLAIMER,
         _technical_footer_text(results, saved, ignored, errors, duration_seconds),
+        DATA_SOURCES_FOOTER_PL,
     ])
 
     return "\n".join(lines)

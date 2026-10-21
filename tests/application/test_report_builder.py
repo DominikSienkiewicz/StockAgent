@@ -3726,3 +3726,22 @@ class TestDegradedDayMood:
 
         assert "Średni sentyment: <strong>+0,42</strong>" in html
         assert "  Średni sentyment: +0,42" in text
+
+
+def test_footer_lists_data_sources():
+    # MAIL-07: mail nie przypisywał danych Alpha Vantage, Finnhub ani CoinGecko.
+    # Lista zależy od flag, więc stopka mówi to wprost („w zależności od konfiguracji”).
+    run = RunContext(run_id="77", git_sha="abc1234def")
+
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(run_context=run),
+    )
+
+    for body in (html, text):
+        assert "Źródła danych (w zależności od konfiguracji):" in body
+        for source in ("Alpha Vantage", "Finnhub", "CoinGecko", "SEC EDGAR", "FRED", "NBP"):
+            assert source in body
+    # Stopka źródeł stoi pod zastrzeżeniem, a stopka przebiegu zostaje ostatnia.
+    assert html.index("nie stanowi rekomendacji") < html.index("Źródła danych")
+    assert text.index("Źródła danych") < text.index("przebieg #77")

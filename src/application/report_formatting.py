@@ -237,6 +237,17 @@ INVESTMENT_DISCLAIMER = (
 # Wariant pushu: ma się zmieścić w budżecie digestu (MAX_DIGEST_CHARS).
 MESSENGER_DISCLAIMER = "ℹ️ Sygnały modelu nie stanowią rekomendacji inwestycyjnej."
 
+# MAIL-07: atrybucja źródeł danych w stopce maila (HTML i tekst). Lista zależy od
+# flag w config.toml, więc stopka mówi to wprost zamiast udawać, że każde źródło
+# zasila każdy cykl. Warunki dostawców: docs/how-it-works.md („Data sources and terms”).
+DATA_SOURCES_FOOTER_PL = (
+    "Źródła danych (w zależności od konfiguracji): ceny — Finnhub i CoinGecko; "
+    "newsy, sentyment, fundamenty i kalendarz wyników — Alpha Vantage; konsensus "
+    "analityków i opcje — Finnhub; transakcje insiderów — SEC EDGAR; wzmianki — "
+    "Reddit; stopy procentowe — FRED; kursy walut — NBP; analiza i rada — modele "
+    "LLM (Anthropic, OpenAI)."
+)
+
 
 # MAIL-14: strefa czasu w temacie, nagłówku maila i pushu. Logi zostają w UTC.
 DEFAULT_DISPLAY_TIMEZONE = "Europe/Warsaw"
