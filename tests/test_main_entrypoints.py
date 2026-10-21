@@ -21,6 +21,7 @@ from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.value_objects import Threshold
 
 
 @pytest.fixture
@@ -345,6 +346,97 @@ class TestMainAgent:
         main_agent.main(settings)
 
         assert analyze.call_args.kwargs["cycle_at"] == dispatch.call_args.kwargs["started_at"]
+
+
+class TestBuildAgentGraphDeps:
+    """TEST-09 (G56): fabryka deps grafu sprawdzana na polach, nie przez `is not None`.
+
+    `test_build_use_case_wires_all_adapters` dowodzi tylko, że DI nie rzuca —
+    port podpięty pod złe pole albo atrapa w płatnym przebiegu przeszłyby."""
+
+    def test_tool_use_disabled_wires_no_tool_use_port(self, settings, mock_external_clients):
+        settings.tool_use_enabled = False
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert deps.tool_use_port is None
+        assert list(deps.research_tools) == []
+        assert deps.tool_use_threshold is None
+
+    def test_tool_use_enabled_wires_port_tools_and_their_threshold(
+        self, settings, mock_external_clients, mocker
+    ):
+        mocker.patch("src.infrastructure.llm.tool_calling_openai.OpenAI")
+        from src.infrastructure.llm.tool_calling_openai import ToolCallingOpenAIAdapter
+
+        settings.tool_use_enabled = True
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert isinstance(deps.tool_use_port, ToolCallingOpenAIAdapter)
+        assert deps.research_tools
+        assert deps.tool_use_threshold == Threshold(settings.tool_use_volatility_threshold)
+
+    def test_paid_run_wires_the_alpha_vantage_feeds_council_and_embeddings(
+        self, settings, mock_external_clients
+    ):
+        from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
+        from src.infrastructure.adapters.alpha_vantage_adapters import (
+            AlphaVantageNewsAdapter,
+            AlphaVantageSentimentAdapter,
+        )
+        from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert isinstance(deps.sentiment_port, AlphaVantageSentimentAdapter)
+        assert isinstance(deps.news_port, AlphaVantageNewsAdapter)
+        assert isinstance(deps.council_port, LLMAdvisoryCouncil)
+        assert isinstance(deps.embedding_port, OpenAIEmbeddingAdapter)
+        assert deps.threshold == Threshold(settings.volatility_threshold)
+        assert deps.paid_call_cap == settings.max_paid_llm_calls_per_cycle
+
+    def test_stub_run_wires_no_council_embeddings_or_tool_use(
+        self, settings, mock_external_clients
+    ):
+        from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
+
+        settings.paid_calls_enabled = False
+        settings.db_writes_enabled = False
+        settings.tool_use_enabled = True
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert isinstance(deps.llm_port, LocalStubLLMAdapter)
+        assert deps.council_port is None
+        assert deps.embedding_port is None
+        assert deps.tool_use_port is None
+
+    def test_zero_council_threshold_leaves_no_council_gate(self, settings, mock_external_clients):
+        settings.council_volatility_threshold = Decimal("0")
+
+        assert main_agent.build_agent_graph_deps(settings).council_threshold is None
+
+    def test_fundamentals_port_reads_only_the_cache(self, settings, mocker):
+        get = mocker.patch("requests.Session.get")
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_cached_fundamentals.return_value = None
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+
+        deps = main_agent.build_agent_graph_deps(settings, repository=repository)
+
+        assert deps.repository_port is repository
+        assert deps.fundamentals_port is not None
+        assert deps.fundamentals_port.get_fundamentals("AAPL") is None
+        get.assert_not_called()
+
+    def test_build_use_case_runs_on_the_factory_deps(self, settings, mock_external_clients, mocker):
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        factory = mocker.spy(main_agent, "build_agent_graph_deps")
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0] is factory.spy_return
 
 
 class TestProductionConfigWiring:

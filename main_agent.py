@@ -1364,7 +1364,23 @@ def build_use_case(
     run_context: RunContext | None = None,
     usage_ledger: UsageLedger | None = None,
 ) -> AnalyzeMarketUseCase:
-    """DI Container — buduje wszystkie adaptery i wstrzykuje do Use Case'a.
+    """DI Container — Use Case Fast Loopa na deps z `build_agent_graph_deps`."""
+    return AnalyzeMarketUseCase(
+        build_agent_graph_deps(settings, repository, quota_monitor, run_context, usage_ledger)
+    )
+
+
+def build_agent_graph_deps(
+    settings: Settings,
+    repository: RepositoryPort | None = None,
+    quota_monitor: QuotaMonitor | None = None,
+    run_context: RunContext | None = None,
+    usage_ledger: UsageLedger | None = None,
+) -> AgentGraphDeps:
+    """Buduje wszystkie adaptery Fast Loopa w jeden obiekt `AgentGraphDeps`.
+
+    TEST-09 (G56): publiczna, żeby testy sprawdzały pola deps (który port pod
+    którym polem, atrapy vs produkcja), a nie tylko to, że DI nie rzuca.
 
     FIN-35: płatne porty (LLM, rada, Alpha Vantage, embeddingi, tool-use) są
     produkcyjne tylko przy `paid_calls_enabled`; inaczej graf dostaje atrapy
@@ -1423,7 +1439,7 @@ def build_use_case(
         if tool_use_port is not None
         else None
     )
-    return AnalyzeMarketUseCase(AgentGraphDeps(
+    return AgentGraphDeps(
         market_port=market_port,
         sentiment_port=paid.sentiment,
         news_port=paid.news,
@@ -1490,7 +1506,7 @@ def build_use_case(
         telemetry=telemetry,
         # FIN-12: sufit płatnych wywołań LLM cyklu; None = bez limitu.
         paid_call_cap=settings.max_paid_llm_calls_per_cycle,
-    ))
+    )
 
 
 def cycle_cost(
