@@ -324,3 +324,35 @@ def test_explain_needs_an_id_or_a_symbol_with_a_date(argv: list[str]) -> None:
         main_tools.main(argv)
 
     assert exit_info.value.code == 2
+
+
+# --- WIA-46: persona-ablation -------------------------------------------------
+
+
+def test_persona_ablation_reads_the_history_behind_the_scored_window(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = mocker.patch("src.config.Settings.from_env").return_value
+    settings.crypto_symbols = ["BTC"]
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.get_persona_vote_outcomes.return_value = []
+
+    code = main_tools.main(["persona-ablation", "--days", "30", "--window-days", "60"])
+
+    assert code == 0
+    # Wagi pierwszej ocenianej predykcji potrzebują pełnego okna historii przed nią.
+    repo_cls.return_value.get_persona_vote_outcomes.assert_called_once_with(window_days=90)
+    assert "persona_weighting_enabled" in capsys.readouterr().out
+
+
+def test_persona_ablation_without_migration_045_says_so(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mocker.patch("src.config.Settings.from_env")
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.get_persona_vote_outcomes.side_effect = RuntimeError("PGRST202")
+
+    code = main_tools.main(["persona-ablation"])
+
+    assert code == 1
+    assert "045" in capsys.readouterr().err

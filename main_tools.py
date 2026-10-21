@@ -16,6 +16,7 @@ Użycie:
     uv run python main_tools.py cost-envelope
     uv run python main_tools.py render-sample-report [--out-dir build/sample-report]
     uv run python main_tools.py explain <prediction_id> | --symbol X --date RRRR-MM-DD
+    uv run python main_tools.py persona-ablation [--days N] [--window-days N]
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +51,7 @@ from src.tools.import_positions import (
     parse_positions_csv,
     plan_import,
 )
+from src.tools.persona_ablation import format_ablation, replay_persona_weighting
 from src.tools.render_sample_report import (
     SAMPLE_HTML_NAME,
     SAMPLE_TEXT_NAME,
@@ -93,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cost_envelope(subcommands)
     _add_render_sample_report(subcommands)
     _add_explain(subcommands)
+    _add_persona_ablation(subcommands)
     return parser
 
 
@@ -422,6 +425,56 @@ def _run_explain(args: argparse.Namespace) -> int:
         print(explain_prediction(repo, args.prediction_id))
     else:
         print(explain_symbol_day(repo, args.symbol, args.date))
+    return 0
+
+
+def _add_persona_ablation(
+    subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subcommands.add_parser(
+        "persona-ablation",
+        help="Does persona weighting help out of sample? (read-only, needs migration 045).",
+        description=(
+            "WIA-46: replays the council verdict of every past prediction with the persona "
+            "weights known at that moment (votes settled before it) and without weights."
+        ),
+    )
+    parser.add_argument(
+        "--days", type=int, default=90, help="Okno (dni) ocenianych predykcji (default: 90)."
+    )
+    parser.add_argument(
+        "--window-days",
+        type=int,
+        default=90,
+        help="Okno wag person przed każdą predykcją, jak w Fast Loopie (default: 90).",
+    )
+    parser.set_defaults(handler=_run_persona_ablation)
+
+
+def _run_persona_ablation(args: argparse.Namespace) -> int:
+    """WIA-46: wagi prequential kontra brak wag; exit 1 tylko bez danych RPC 045."""
+    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+    settings = _load_settings()
+    repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    since = _now() - timedelta(days=args.days)
+    try:
+        # Historia sięga okno wag dalej niż najstarsza oceniana predykcja.
+        outcomes = repo.get_persona_vote_outcomes(window_days=args.days + args.window_days)
+    except Exception as exc:
+        print(
+            f"❌ RPC persona_vote_outcomes niedostępne ({type(exc).__name__}) — "
+            "uruchom migrację 045 (DB Migrate).",
+            file=sys.stderr,
+        )
+        return 1
+    report = replay_persona_weighting(
+        outcomes,
+        since=since,
+        window_days=args.window_days,
+        crypto_symbols=settings.crypto_symbols,
+    )
+    print(format_ablation(report, days=args.days, window_days=args.window_days))
     return 0
 
 

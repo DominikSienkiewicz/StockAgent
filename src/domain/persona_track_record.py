@@ -326,22 +326,23 @@ def outcome_known_at(outcome: PersonaVoteOutcome) -> datetime | None:
     return outcome.predicted_at + timedelta(hours=PREDICTION_HORIZON_HOURS)
 
 
-def outcomes_known_before(
-    outcomes: Iterable[PersonaVoteOutcome], as_of: datetime, window_days: int
-) -> list[PersonaVoteOutcome]:
-    """Głosy z okna `window_days` przed `as_of`, rozliczone ŚCIŚLE przed `as_of`.
+def is_known_before(outcome: PersonaVoteOutcome, as_of: datetime, window_days: int) -> bool:
+    """Czy głos należy do wag z chwili `as_of`: predykcja z okna `window_days`
+    przed `as_of` i wynik znany ŚCIŚLE przed `as_of`.
 
     Okno liczy się po chwili predykcji, jak `pl.timestamp >= NOW() - okno`
     w RPC 015, tylko od `as_of` zamiast od dziś."""
-    start = as_of - timedelta(days=window_days)
-    selected: list[PersonaVoteOutcome] = []
-    for outcome in outcomes:
-        known_at = outcome_known_at(outcome)
-        if known_at is None or outcome.predicted_at is None:
-            continue
-        if outcome.predicted_at >= start and known_at < as_of:
-            selected.append(outcome)
-    return selected
+    known_at = outcome_known_at(outcome)
+    if known_at is None or outcome.predicted_at is None:
+        return False
+    return outcome.predicted_at >= as_of - timedelta(days=window_days) and known_at < as_of
+
+
+def outcomes_known_before(
+    outcomes: Iterable[PersonaVoteOutcome], as_of: datetime, window_days: int
+) -> list[PersonaVoteOutcome]:
+    """Głosy, które Fast Loop znał w chwili `as_of` (`is_known_before`)."""
+    return [outcome for outcome in outcomes if is_known_before(outcome, as_of, window_days)]
 
 
 def persona_accuracy_weights_as_of(
