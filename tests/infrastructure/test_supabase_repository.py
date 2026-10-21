@@ -3414,3 +3414,85 @@ class TestEarningsCache:
         assert column == "fetched_at"
         assert before - ttl - timedelta(minutes=1) <= datetime.fromisoformat(cutoff)
         assert datetime.fromisoformat(cutoff) <= after - ttl + timedelta(minutes=1)
+
+# WIA-49: expire_unverified_predictions — jawne wygaszanie zamiast ciszy
+# ---------------------------------------------------------------------------
+
+
+def _expiry_select_builder(mock_client: MagicMock) -> MagicMock:
+    """Builder, na którym `_paginate` woła `.range(...)` w odczycie kandydatów."""
+    chain = mock_client.table.return_value
+    return (
+        chain.select.return_value.eq.return_value.is_.return_value.lt.return_value
+        .order.return_value.order.return_value
+    )
+
+
+def test_expire_unverified_predictions_updates_only_older_rows(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    """Predykcja starsza niż okno oceny nigdy nie zostanie rozliczona — dostaje
+    flagę `expired_unverified` w `data_quality_flags`, a NIE `actual_price`
+    (cena trafiłaby do ml_feature_store jako fałszywa etykieta)."""
+    _set_paginated_response(
+        _expiry_select_builder(mock_client),
+        [[
+            {"id": "a", "data_quality_flags": []},
+            {"id": "b", "data_quality_flags": ["av_keys_exhausted"]},
+            {"id": "c", "data_quality_flags": ["expired_unverified"]},
+            {"id": "d", "data_quality_flags": None},
+        ]],
+    )
+    _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [{"id": "x"}])
+    before = datetime.now(UTC)
+
+    expired = repo.expire_unverified_predictions("NVDA", older_than_hours=96)
+
+    assert expired == 3
+    chain = mock_client.table.return_value
+    chain.select.assert_called_once_with("id, data_quality_flags")
+    chain.select.return_value.eq.assert_called_once_with("symbol", "NVDA")
+    chain.select.return_value.eq.return_value.is_.assert_called_once_with(
+        "actual_price_after_12h", "null"
+    )
+    lt = chain.select.return_value.eq.return_value.is_.return_value.lt
+    column, cutoff = lt.call_args.args
+    assert column == "timestamp"
+    assert before - timedelta(hours=96, seconds=5) <= datetime.fromisoformat(cutoff)
+    assert datetime.fromisoformat(cutoff) <= datetime.now(UTC) - timedelta(hours=96)
+    payloads = [update.args[0] for update in chain.update.call_args_list]
+    assert payloads == [
+        {"data_quality_flags": ["expired_unverified"]},
+        {"data_quality_flags": ["av_keys_exhausted", "expired_unverified"]},
+        {"data_quality_flags": ["expired_unverified"]},
+    ]
+    assert [call.args for call in chain.update.return_value.eq.call_args_list] == [
+        ("id", "a"),
+        ("id", "b"),
+        ("id", "d"),
+    ]
+    # Strażnik wyścigu: wiersz rozliczony w międzyczasie nie dostaje flagi.
+    chain.update.return_value.eq.return_value.is_.assert_called_with(
+        "actual_price_after_12h", "null"
+    )
+
+
+def test_expire_counts_only_rows_the_update_actually_changed(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_paginated_response(
+        _expiry_select_builder(mock_client), [[{"id": "a", "data_quality_flags": []}]]
+    )
+    # Wiersz rozliczony między odczytem a zapisem: update nie dotyka żadnego wiersza.
+    _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [])
+
+    assert repo.expire_unverified_predictions("NVDA", older_than_hours=96) == 0
+
+
+def test_expire_without_stale_rows_writes_nothing(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_paginated_response(_expiry_select_builder(mock_client), [[]])
+
+    assert repo.expire_unverified_predictions("NVDA", older_than_hours=96) == 0
+    mock_client.table.return_value.update.assert_not_called()

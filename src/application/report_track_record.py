@@ -15,7 +15,11 @@ wszystkie trzy są puste (`render_* → ""`).
 podsekcji: pod T1 dowód trafności kierunkowej (Wilson na n_eff, baseline'y,
 werdykt istotności), pod T2 Brier / BSS / log loss i rozkład Murphy'ego. Same
 statystyki nie wskrzeszają schowanej podsekcji. Pokrycie przedziałów 80% (ML-34)
-to osobna podsekcja: pokazuje się, gdy jest choć jeden rozliczony przedział."""
+to osobna podsekcja: pokazuje się, gdy jest choć jeden rozliczony przedział.
+
+WIA-49: linia „N predykcji wygasło bez oceny” stoi pod nagłówkiem, gdy cykl
+oznaczył jakąkolwiek predykcję jako wygasłą — cichy brak oceny wyglądałby jak
+brak predykcji. Sama wystarcza, żeby sekcja się pokazała."""
 
 from __future__ import annotations
 
@@ -39,7 +43,7 @@ from src.application.report_evidence import (
     probability_label,
     uncertainty_note,
 )
-from src.application.report_formatting import number, pct, pct_range
+from src.application.report_formatting import number, pct, pct_range, plural_pl
 from src.application.report_lessons import LessonsReport
 from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
@@ -63,6 +67,10 @@ _BENCHMARK_BAR_COLOR = "#9ca3af"
 _SECTION_HEADER = (
     "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
     "📈 Track Record — skuteczność i kalibracja</h2>"
+)
+_EXPIRED_NOTE_PL = (
+    "za stare, by rozliczyć je bieżącą ceną, więc nie wchodzą ani do trafności, "
+    "ani do treningu modelu."
 )
 # Budżet MAIL-06: w duży dzień zostają same kluczowe liczby.
 _COMPACT_NOTE_PL = (
@@ -101,17 +109,20 @@ def render_track_record_html(
     stats: TrackRecordStats | None = None,
     *,
     compact: bool = False,
+    expired_count: int = 0,
 ) -> str:
     """Fragment HTML sekcji Track Record. Pusty string, gdy wszystkie trzy
-    podsekcje są puste.
+    podsekcje są puste i nic nie wygasło.
 
     `compact` (budżet MAIL-06, duży dzień) zostawia same kluczowe liczby:
     paper-PnL z kosztem, linię agent · koszyk · IVV i trafność z przedziałem
-    i n — bez sparklinii, kalibracji, pokrycia i lekcji."""
+    i n — bez sparklinii, kalibracji, pokrycia i lekcji. `expired_count`
+    (WIA-49) — predykcje, które ten cykl oznaczył jako wygasłe bez oceny."""
     stats = stats or TrackRecordStats()
+    expired = _render_expired_html(expired_count)
     if compact:
-        return _render_compact_html(equity_curve, stats)
-    subsections: list[str] = []
+        return _render_compact_html(equity_curve, stats, expired)
+    subsections: list[str] = [expired] if expired else []
     if equity_curve is not None and equity_curve.n_trades > 0:
         subsections.append(_render_equity_html(equity_curve, stats))
     if calibration_buckets:
@@ -128,10 +139,24 @@ def render_track_record_html(
     return _SECTION_HEADER + "".join(subsections)
 
 
-def _render_compact_html(equity_curve: EquityCurve | None, stats: TrackRecordStats) -> str:
-    """Duży dzień: nagłówek, podsumowanie krzywej, linia benchmarku i trafność."""
-    if equity_curve is None or equity_curve.n_trades == 0:
+def _render_expired_html(count: int) -> str:
+    """WIA-49 — „3 predykcje wygasły bez oceny — …” albo "" przy zerze."""
+    if count <= 0:
         return ""
+    noun = plural_pl(count, "predykcja wygasła", "predykcje wygasły", "predykcji wygasło")
+    return (
+        f"<p style='font-size: 13px; margin: 0 0 8px 0;'>⏳ <strong>{count} {noun} "
+        f"bez oceny</strong> — {_EXPIRED_NOTE_PL}</p>"
+    )
+
+
+def _render_compact_html(
+    equity_curve: EquityCurve | None, stats: TrackRecordStats, expired: str = ""
+) -> str:
+    """Duży dzień: nagłówek, wygasłe (WIA-49), podsumowanie krzywej, linia
+    benchmarku i trafność."""
+    if equity_curve is None or equity_curve.n_trades == 0:
+        return _SECTION_HEADER + expired if expired else ""
     evidence = stats.hit_rate
     hit_rate = ""
     if evidence is not None and evidence.hit_rate.rate is not None:
@@ -139,6 +164,7 @@ def _render_compact_html(equity_curve: EquityCurve | None, stats: TrackRecordSta
         hit_rate = f"<p style='{_NOTE_STYLE}'>{_html.escape(line)}</p>"
     return (
         _SECTION_HEADER
+        + expired
         + _render_equity_summary_html(equity_curve, stats.costs)
         + _render_benchmark_line_html(stats.benchmark)
         + hit_rate

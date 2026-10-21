@@ -1277,6 +1277,8 @@ class ReportContext:
     # WIA-35: trafność kierunkowa per symbol z okna track recordu — chip przy
     # predykcji i sygnale. None = mail bez chipów.
     symbol_track_record: SymbolTrackRecordView | None = None
+    # WIA-49: predykcje, które ten cykl oznaczył jako wygasłe bez oceny.
+    expired_unverified: int = 0
     # MAIL-14: strefa (IANA) czasu startu cyklu w nagłówku HTML i tekstu.
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
     # MAIL-42: przebieg, który wygenerował mail — stopka z numerem, krótkim SHA
@@ -1496,6 +1498,7 @@ def build_html_report(
         context.equity_curve, context.calibration_buckets, context.lessons,
         context.track_record_stats,
         compact=len(saved) > _FULL_DETAIL_TOP_N,
+        expired_count=context.expired_unverified,
     )
     # Dane: sekcja Alpha Signals (insider/analitycy/opcje/social/earnings per
     # symbol + krzywa rentowności FRED). render zwraca "" gdy brak danych.

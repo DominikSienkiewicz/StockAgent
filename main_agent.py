@@ -2623,6 +2623,29 @@ def _build_track_record(
     return equity_curve, calibration_buckets, lessons
 
 
+def _expire_stale_predictions(
+    settings: Settings, repository: RepositoryPort, symbols: Sequence[str]
+) -> int:
+    """WIA-49: oznacza nierozliczone predykcje starsze niż okno oceny reflect.
+
+    `reflect_node` nie oceni już predykcji starszej niż `reflection_max_age_hours`
+    (WIA-04), więc bez jawnego wygaszenia zostałaby po cichu bez oceny — w mailu
+    wyglądałoby to jak brak predykcji. 0 wyłącza granicę wieku, więc nic nie
+    wygasa. Zapis idzie przez strażnika BEZ-08; błąd symbolu nie psuje cyklu."""
+    max_age = settings.reflection_max_age_hours
+    if max_age <= 0:
+        return 0
+    expired = 0
+    for symbol in symbols:
+        try:
+            expired += repository.expire_unverified_predictions(symbol, max_age)
+        except Exception:
+            logger.exception("Failed to expire stale predictions of %s", symbol)
+    if expired:
+        logger.info("Expired %d unverified prediction(s) older than %dh", expired, max_age)
+    return expired
+
+
 def _build_symbol_track_record(
     settings: Settings, repository: RepositoryPort
 ) -> SymbolTrackRecordView | None:
@@ -3466,6 +3489,8 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
         run_context=run_context,
     )
     cost = cycle_cost(settings, use_case.telemetry, usage_ledger)
+    # WIA-49: po pętli (reflect już ocenił, co mógł) — darmowy zapis flag.
+    expired_unverified = _expire_stale_predictions(settings, repository, all_symbols)
 
     # ---- Wysyłka raportu ----
     delivered = _dispatch_reports(
@@ -3491,6 +3516,7 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
             cycle_cost=cost,
             ml_model_loaded=use_case.ml_model_loaded,
             run_context=run_context,
+            expired_unverified=expired_unverified,
         ),
     )
     report_delivery = _report_delivery(

@@ -195,6 +195,10 @@ def _missing_eval_column(exc: APIError, fields: Sequence[str]) -> str | None:
 # LLM („SIDEWAYS 50%”). Taki wiersz nie jest predykcją i nie może zasilać
 # hit-rate ani kalibracji (WIA-09).
 _LLM_FALLBACK_FLAG = "llm_analysis_failed"
+# WIA-49: ślad wygaśnięcia predykcji, której reflect już nigdy nie oceni. Żyje
+# w `data_quality_flags` (migracja 008), więc nie wymaga nowej kolumny; wiersz
+# nie dostaje ceny, więc i tak nie wchodzi do ml_feature_store ani do trafności.
+EXPIRED_UNVERIFIED_FLAG = "expired_unverified"
 
 
 def _without_llm_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1531,6 +1535,35 @@ class SupabaseRepository(RepositoryPort):
         self._client.table(REFERENCE_PREDICTIONS_TABLE).update(record).eq(
             "id", record_id
         ).execute()
+
+    def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:
+        cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours)
+        # Ostra granica (`lt`) dopełnia `gte` z `get_unverified_prediction`: wiersz
+        # albo jeszcze czeka na ocenę, albo wygasa — nigdy jedno i drugie.
+        query = (
+            self._client.table(self._table)
+            .select("id, data_quality_flags")
+            .eq("symbol", symbol)
+            .is_("actual_price_after_12h", "null")
+            .lt("timestamp", cutoff.isoformat())
+        )
+        expired = 0
+        for row in _paginate(query.order("timestamp", desc=False).order("id", desc=False)):
+            flags = list(row.get("data_quality_flags") or [])
+            if EXPIRED_UNVERIFIED_FLAG in flags:
+                continue
+            # Flagi per wiersz: dopisujemy do istniejących (np. av_keys_exhausted),
+            # a strażnik `actual_price IS NULL` pomija wiersz rozliczony w międzyczasie.
+            response = (
+                self._client.table(self._table)
+                .update({"data_quality_flags": [*flags, EXPIRED_UNVERIFIED_FLAG]})
+                .eq("id", row["id"])
+                .is_("actual_price_after_12h", "null")
+                .execute()
+            )
+            if _rows(response):
+                expired += 1
+        return expired
 
     def update_prediction_accuracy(
         self,

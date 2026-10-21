@@ -205,6 +205,17 @@ class RepositoryPort(ABC):
         nie wchodzi do hit-rate ani ml_feature_store. None = bez granicy."""
 
     @abstractmethod
+    def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:
+        """WIA-49: oznacza jako wygasłe nierozliczone predykcje symbolu starsze niż
+        `older_than_hours` — te, których `get_unverified_prediction` z tym samym
+        `max_age_hours` już nigdy nie poda do oceny. Zwraca liczbę oznaczonych.
+
+        Wygaśnięcie to jawny ślad w danych zamiast ciszy, która wygląda jak brak
+        predykcji. NIE wpisuje `actual_price_after_12h` (wiersz trafiłby do
+        ml_feature_store z fałszywą etykietą) ani oceny kierunku. Idempotentne:
+        wiersz już oznaczony nie liczy się drugi raz."""
+
+    @abstractmethod
     def update_prediction_accuracy(
         self,
         prediction_id: str,

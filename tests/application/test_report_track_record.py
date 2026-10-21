@@ -425,3 +425,30 @@ class TestSidewaysCalibration:
         html = render_track_record_html(None, self._BUCKETS, None, TrackRecordStats())
 
         assert "SIDEWAYS" not in html
+
+def test_expired_predictions_count_is_rendered() -> None:
+    """WIA-49: cichy brak oceny wygląda jak brak predykcji — sekcja mówi wprost,
+    ile predykcji wygasło bez oceny, nawet gdy reszta Track Record jest pusta.
+    Copy idzie polską odmianą liczebnika (3 predykcje wygasły / 5 predykcji wygasło)."""
+    html = render_track_record_html(None, None, None, expired_count=3)
+
+    assert "Track Record" in html
+    assert "3 predykcje wygasły bez oceny" in html
+    assert "5 predykcji wygasło bez oceny" in render_track_record_html(
+        None, None, None, expired_count=5
+    )
+    assert "1 predykcja wygasła bez oceny" in render_track_record_html(
+        None, None, None, expired_count=1
+    )
+
+
+def test_no_expired_predictions_no_line() -> None:
+    assert render_track_record_html(None, None, None, expired_count=0) == ""
+    assert "wygas" not in render_track_record_html(_curve(), None, None)
+
+
+def test_compact_track_record_keeps_the_expired_count() -> None:
+    html = render_track_record_html(_curve(), None, None, compact=True, expired_count=2)
+
+    assert "2 predykcje wygasły bez oceny" in html
+    assert "wersja zwarta" in html

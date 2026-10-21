@@ -121,6 +121,7 @@ class ReadOnlyRepository(RepositoryPort):
     })
     WRITE_METHODS: ClassVar[frozenset[str]] = frozenset({
         "save_price_snapshot",
+        "expire_unverified_predictions",
         "save_feature_snapshot",
         "save_regime_state",
         "save_prediction",
@@ -302,6 +303,10 @@ class ReadOnlyRepository(RepositoryPort):
     def save_prediction(self, prediction: dict[str, Any]) -> str:
         self._skipped.skip("save_prediction")
         return f"{DRY_RUN_PREDICTION_PREFIX}{uuid.uuid4()}"
+
+    def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:
+        self._skipped.skip("expire_unverified_predictions")
+        return 0
 
     def update_prediction_accuracy(
         self,
