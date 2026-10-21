@@ -29,7 +29,7 @@ Merge the pending branches into `main` and push. The workflows run the code of t
 
 ### 3. Run DB Migrate for `026`–`043`
 
-Run **🗄️ DB Migrate (manual)** from the Actions tab with `dry_run` on, check that the log lists `026_feature_store_clean_rows.sql` to `042_reference_predictions.sql`, then run it again with `dry_run` off. `026` and `039` rebuild the `ml_feature_store` view and `038` enables RLS; none of the three has a flag. `047` rebuilds the view again with `LAG` over every logged prediction (ML-17), also without a flag.
+Run **🗄️ DB Migrate (manual)** from the Actions tab with `dry_run` on, check that the log lists `026_feature_store_clean_rows.sql` to `042_reference_predictions.sql`, then run it again with `dry_run` off. `026` and `039` rebuild the `ml_feature_store` view and `038` enables RLS; none of the three has a flag. `047` rebuilds the view again with `LAG` over every logged prediction (ML-17), also without a flag. `048` (ML-19) upper-cases and trims `prediction_logs.predicted_trend`, then adds the `prediction_logs_predicted_trend_known` CHECK (`BULLISH`, `BEARISH`, `SIDEWAYS` or `NULL`) as `NOT VALID`, so history is not scanned; its `NOTICE` in the log counts the rows still outside the list. Such a row rejects every later `UPDATE` (settlement, calibration) until its trend is fixed by hand; when the count is `0`, `ALTER TABLE prediction_logs VALIDATE CONSTRAINT prediction_logs_predicted_trend_known` finishes the job.
 
 ### 4. Turn on the flags the migrations unlock
 

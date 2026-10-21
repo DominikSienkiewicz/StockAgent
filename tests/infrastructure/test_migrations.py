@@ -70,6 +70,7 @@ MIGRATION_FILES = [
     "043_attestation_payload.sql",
     "044_calibration_score_version.sql",
     "047_ml_feature_store_lag_over_all_predictions.sql",
+    "048_normalize_predicted_trend.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1376,6 +1377,29 @@ class TestMigrations:
 
         assert "POPRZEDNIEJ zalogowanej predykcji" in comment
 
+    # -- Migracja 048: kanoniczny predicted_trend + CHECK NOT VALID (ML-19) ---
+
+    @pytest.mark.parametrize("trend", ["UP", " bullish ", "Bearish"])
+    def test_predicted_trend_check_rejects_unknown_value(self, pg_conn, trend) -> None:
+        """Schemat sam blokuje kolejne zatrucia: tylko kanoniczne wartości."""
+        with _rolled_back(pg_conn) as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, predicted_trend) VALUES ('TR_048', %s)",
+                (trend,),
+            )
+
+    def test_predicted_trend_check_accepts_canonical_values_and_null(self, pg_conn) -> None:
+        with _rolled_back(pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, predicted_trend) VALUES "
+                "('TR_048', '2026-08-01T10:00:00+00:00', 'BULLISH'), "
+                "('TR_048', '2026-08-02T10:00:00+00:00', 'BEARISH'), "
+                "('TR_048', '2026-08-03T10:00:00+00:00', 'SIDEWAYS'), "
+                "('TR_048', '2026-08-04T10:00:00+00:00', NULL)"
+            )
+            cur.execute("SELECT count(*) FROM prediction_logs WHERE symbol = 'TR_048'")
+            assert cur.fetchone() == (4,)
+
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 
     def test_every_public_table_has_row_level_security(self, pg_conn) -> None:
@@ -2156,6 +2180,55 @@ class TestMigration037BackfillsExperimentArms:
             cur.execute(migration)
             cur.execute("SELECT experiment_arms FROM prediction_logs WHERE symbol = 'EB_ARMS'")
             assert cur.fetchone() == ({"EXP-03": "memory"},)
+
+
+@pytest.mark.containers
+class TestMigration048NormalizesPredictedTrend:
+    """ML-19: UPDATE do UPPER(TRIM) idzie PRZED CHECK, a CHECK jest NOT VALID —
+    inaczej migracja padłaby na pierwszym historycznym wierszu spoza listy."""
+
+    def test_048_normalizes_existing_trends_before_the_check(self, fresh_pg) -> None:
+        conn = fresh_pg
+        migration = (MIGRATIONS_DIR / "048_normalize_predicted_trend.sql").read_text()
+        idx = MIGRATION_FILES.index("048_normalize_predicted_trend.sql")
+        with conn.cursor() as cur:
+            for filename in MIGRATION_FILES[:idx]:
+                cur.execute((MIGRATIONS_DIR / filename).read_text())
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, predicted_trend) VALUES "
+                "('NT_SPACED', '2026-06-01T10:00:00+00:00', ' bullish '), "
+                "('NT_MIXED', '2026-06-01T10:00:00+00:00', 'Bearish'), "
+                "('NT_LEGACY', '2026-06-01T10:00:00+00:00', 'UP'), "
+                "('NT_NULL', '2026-06-01T10:00:00+00:00', NULL)"
+            )
+
+            # Wiersz spoza listy w historii nie wywala migracji (NOT VALID).
+            cur.execute(migration)
+            # Idempotencja: powtórka nie dubluje ograniczenia ani nie pada.
+            cur.execute(migration)
+
+            cur.execute(
+                "SELECT symbol, predicted_trend FROM prediction_logs WHERE symbol LIKE 'NT_%'"
+            )
+            trends = dict(cur.fetchall())
+            cur.execute(
+                "SELECT convalidated FROM pg_constraint "
+                "WHERE conname = 'prediction_logs_predicted_trend_known'"
+            )
+            validated = [row[0] for row in cur.fetchall()]
+
+            with pytest.raises(psycopg2.errors.CheckViolation):
+                cur.execute(
+                    "INSERT INTO prediction_logs (symbol, predicted_trend) VALUES ('NT_NEW', 'UP')"
+                )
+
+        assert trends == {
+            "NT_SPACED": "BULLISH",
+            "NT_MIXED": "BEARISH",
+            "NT_LEGACY": "UP",
+            "NT_NULL": None,
+        }
+        assert validated == [False]
 
 def test_migrations_live_where_the_supabase_cli_looks_for_them() -> None:
     """`supabase db push` czyta wyłącznie `supabase/migrations/`.
