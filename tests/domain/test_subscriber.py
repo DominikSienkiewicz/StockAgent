@@ -98,3 +98,13 @@ class TestMaskedEmail:
 
     def test_address_without_at_sign_is_fully_masked(self) -> None:
         assert masked_email("not-an-email") == "***"
+
+
+class TestSubscriberRepr:
+    def test_repr_omits_the_email_address(self) -> None:
+        # BEZ-11: repo i logi GHA są publiczne — `%r` subskrybenta w logu albo
+        # w tracebacku nie może nieść pełnego adresu.
+        sub = Subscriber(email="friend@example.com", symbols=frozenset({"AAPL"}))
+
+        assert "friend@example.com" not in repr(sub)
+        assert "AAPL" in repr(sub)
