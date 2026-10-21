@@ -111,9 +111,12 @@ against the realised price, and fed back into the next run.
 
 ## One pass, end to end
 
-`price + snapshot` → `self-reflection on the last prediction` → `fundamentals` →
+`price` → `self-reflection on the last prediction` → `cached fundamentals` →
 **volatility gate** → `sentiment + news` → `LLM cross-validation` → `local XGBoost (baseline until trained)` →
-`7-persona advisory council` → `persist + RAG` → `HTML email`.
+`7-persona advisory council` → `persist + RAG + price snapshot` → `HTML email`. Below the gate a symbol
+ends in `ignore` (price snapshot only), and past it, once the cycle's paid-call ceiling is spent, in
+`budget_exhausted` (no snapshot). The diagram in [how it works](docs/how-it-works.md#how-it-works) is
+generated from the graph's code, and a test fails when the two drift apart.
 
 The gate is the point: below the threshold no paid API is touched at all. A cycle where
 every symbol was filtered reports **zero paid calls**, and the report prints that bill.

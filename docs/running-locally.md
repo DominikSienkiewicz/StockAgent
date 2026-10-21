@@ -190,6 +190,7 @@ uv run python main_scorecard.py --days 120  # public scorecard page from the dat
 uv run python main_tools.py persona-ablation --days 90  # does persona weighting help out of sample (WIA-46): council verdicts with the weights known at each prediction vs without weights, with a sign test (needs migration 045)
 uv run python main_tools.py cost-envelope  # estimated min/max paid calls and USD of one Fast Loop cycle for config.toml, plus the worst week at the FIN-12 ceiling against fast_loop_weekly_budget_usd (offline, zero paid calls)
 uv run python main_tools.py render-sample-report  # the report email of a fixed, fictional cycle into build/sample-report/ (HTML + plain text); no keys, no database, no network, zero paid calls (`--out-dir` to change the directory)
+uv run python main_tools.py render-graph-diagram  # docs/graph.mmd and docs/graph-without-fundamentals.mmd, the Fast Loop graph drawn by LangGraph from create_agent_graph (DOC-17); rerun after a graph change, a test compares nodes and edges
 uv run pytest -m "not integration and not containers" # the quality gate, as in CI
 uv run pytest                                   # everything, including live-API tests (real keys, paid calls, a real email)
 uv run pytest -m containers                    # Docker/Postgres schema tests

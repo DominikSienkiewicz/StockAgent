@@ -1,0 +1,34 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	check_price(check_price)
+	reflect(reflect)
+	analyze_sentiment(analyze_sentiment)
+	fetch_news(fetch_news)
+	predict(predict)
+	council(council)
+	save(save)
+	ignore(ignore)
+	budget_exhausted(budget_exhausted)
+	fetch_fundamentals(fetch_fundamentals)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> check_price;
+	analyze_sentiment --> fetch_news;
+	check_price --> reflect;
+	council --> save;
+	fetch_fundamentals -.-> analyze_sentiment;
+	fetch_fundamentals -.-> budget_exhausted;
+	fetch_fundamentals -.-> ignore;
+	fetch_news --> predict;
+	predict --> council;
+	reflect --> fetch_fundamentals;
+	budget_exhausted --> __end__;
+	ignore --> __end__;
+	save --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

@@ -356,3 +356,22 @@ def test_persona_ablation_without_migration_045_says_so(
 
     assert code == 1
     assert "045" in capsys.readouterr().err
+
+# --- DOC-17: render-graph-diagram -----------------------------------------------
+
+
+def test_render_graph_diagram_writes_both_variants_without_settings(
+    mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from_env = mocker.patch("src.config.Settings.from_env", side_effect=AssertionError)
+
+    code = main_tools.main(["render-graph-diagram", "--out-dir", str(tmp_path)])
+
+    assert code == 0
+    from_env.assert_not_called()
+    production = (tmp_path / "graph.mmd").read_text(encoding="utf-8")
+    assert "fetch_fundamentals" in production
+    assert "fetch_fundamentals" not in (tmp_path / "graph-without-fundamentals.mmd").read_text(
+        encoding="utf-8"
+    )
+    assert "graph.mmd" in capsys.readouterr().out

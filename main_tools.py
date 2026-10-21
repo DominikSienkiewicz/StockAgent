@@ -15,6 +15,7 @@ Użycie:
         [--experiment ID] [--discrimination]
     uv run python main_tools.py cost-envelope
     uv run python main_tools.py render-sample-report [--out-dir build/sample-report]
+    uv run python main_tools.py render-graph-diagram [--out-dir docs]
     uv run python main_tools.py explain <prediction_id> | --symbol X --date RRRR-MM-DD
     uv run python main_tools.py persona-ablation [--days N] [--window-days N]
 """
@@ -52,6 +53,7 @@ from src.tools.import_positions import (
     plan_import,
 )
 from src.tools.persona_ablation import format_ablation, replay_persona_weighting
+from src.tools.render_graph_diagram import graph_diagrams
 from src.tools.render_sample_report import (
     SAMPLE_HTML_NAME,
     SAMPLE_TEXT_NAME,
@@ -94,6 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_import_positions(subcommands)
     _add_cost_envelope(subcommands)
     _add_render_sample_report(subcommands)
+    _add_render_graph_diagram(subcommands)
     _add_explain(subcommands)
     _add_persona_ablation(subcommands)
     return parser
@@ -383,6 +386,38 @@ def _run_render_sample_report(args: argparse.Namespace) -> int:
     html_path.write_text(report.html, encoding="utf-8")
     text_path.write_text(report.text, encoding="utf-8")
     print(f"✅ przykładowy raport: {html_path} i {text_path}")
+    return 0
+
+
+def _add_render_graph_diagram(
+    subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subcommands.add_parser(
+        "render-graph-diagram",
+        help="Write the Fast Loop graph as Mermaid, generated from create_agent_graph.",
+        description=(
+            "DOC-17: docs/graph.mmd (the production graph, with fetch_fundamentals) and "
+            "docs/graph-without-fundamentals.mmd, drawn by LangGraph from the code. "
+            "No keys, no database, no network."
+        ),
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("docs"),
+        help="Directory for the .mmd files (default: docs).",
+    )
+    parser.set_defaults(handler=_run_render_graph_diagram)
+
+
+def _run_render_graph_diagram(args: argparse.Namespace) -> int:
+    """DOC-17: zapis diagramów grafu — bez `Settings`, kluczy i sieci; exit 0."""
+    out_dir: Path = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name, diagram in graph_diagrams().items():
+        path = out_dir / name
+        path.write_text(diagram, encoding="utf-8")
+        print(f"✅ diagram grafu: {path}")
     return 0
 
 

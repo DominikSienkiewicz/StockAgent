@@ -21,6 +21,45 @@ Finnhub (US prices) ──► check_price ──► reflect ──► fetch_fund
                  HTML report (inline charts) ──► Resend.com email
 ```
 
+The graph itself, drawn by LangGraph from `create_agent_graph` in [`src/application/agent_graph.py`](../src/application/agent_graph.py): the production variant with `fetch_fundamentals` ([graph.mmd](graph.mmd)); without a fundamentals port the gate follows `reflect` directly ([graph-without-fundamentals.mmd](graph-without-fundamentals.mmd)). Dotted edges are the conditional routes of the volatility gate: `ignore` below the threshold, `budget_exhausted` past it once the cycle's paid-call ceiling is spent, `analyze_sentiment` otherwise. `uv run python main_tools.py render-graph-diagram` regenerates both files, and [`tests/tools/test_render_graph_diagram.py`](../tests/tools/test_render_graph_diagram.py) fails when their nodes or edges, or those of the block below, differ from the code (DOC-17).
+
+```mermaid
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	check_price(check_price)
+	reflect(reflect)
+	analyze_sentiment(analyze_sentiment)
+	fetch_news(fetch_news)
+	predict(predict)
+	council(council)
+	save(save)
+	ignore(ignore)
+	budget_exhausted(budget_exhausted)
+	fetch_fundamentals(fetch_fundamentals)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> check_price;
+	analyze_sentiment --> fetch_news;
+	check_price --> reflect;
+	council --> save;
+	fetch_fundamentals -.-> analyze_sentiment;
+	fetch_fundamentals -.-> budget_exhausted;
+	fetch_fundamentals -.-> ignore;
+	fetch_news --> predict;
+	predict --> council;
+	reflect --> fetch_fundamentals;
+	budget_exhausted --> __end__;
+	ignore --> __end__;
+	save --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
 1. **Fetch price + snapshot** — `FinnhubAdapter` pulls the current quote for each US ticker. `check_price_node` saves a **price snapshot in every cycle** (`price_snapshots` table) so the next cycle always has a reference point — this breaks the cold-start deadlock. The one exception is a symbol cut by the cycle's paid-call budget (FIN-12, step 4): it keeps its old reference, because a snapshot at today's price would make the next cycle measure Δ from that price and the move past the threshold would vanish without an analysis. Free tier is US-only; dotted tickers (`CSPX.L`, `BAS.DE`) get a 403 and are handled gracefully.
 2. **Self-Reflection (runs every cycle, before the volatility gate)** — `reflect_node` reads the last unverified prediction. Rows saved before the LLM answer was normalised (step 6) may hold a lower-case, `NULL` or invalid `predicted_trend`; they are read with the same rule (`normalize_trend` in `src/domain/prediction.py`), so one old row cannot block the oldest-first queue. It computes two independent domain metrics and persists both: `accuracy_score` (how close the price landed to the numeric target — feeds XGBoost training) and `is_trend_correct` (whether the directional call matched reality — feeds the report's hit-rate). If the prediction was directionally wrong, the LLM diagnoses why ("I ignored hawkish Fed signals"). The diagnosis prompt carries that prediction's own inputs read back from `prediction_logs`: the entry price, the target, each saved headline and the original reasoning. The headlines and the reasoning are untrusted text, so both go through one `fence_untrusted` block; when a row has no saved headlines, the prompt says so instead of showing an empty block. The insight is injected into the next prediction's prompt as `<reflection_context>`. The **cheap bookkeeping** (`accuracy_score` / `is_trend_correct` / persisting the outcome) runs every cycle regardless of volatility, so every prediction is scored on the **next cycle**; the **paid `analyze_mistake` LLM diagnosis** is now gated by the same volatility decision as the prediction pipeline (on a flat, below-threshold cycle it records the outcome with a "diagnosis skipped (not retried)" note instead of spending an LLM call — a FinOps bound on backward-looking spend; the prediction is closed in that cycle, so nothing runs the diagnosis later). That note, the "correct prediction" note written for hits and the "diagnosis deferred" text that older rows still carry are placeholders, not lessons: `is_substantive_insight` (`src/domain/prediction.py`) keeps them out of the lessons panel, the "lesson" of a RAG analog, the report's "why" line and the weekly recap. **Prediction horizon, honestly:** the loop runs at most once per trading day (not every 12h despite the legacy `*_12h` names; with the cron paused, only as often as you dispatch it manually), so a prediction is resolved ~24h later on weekdays and ~72h later across a weekend. **Entry price, honestly:** a prediction is scored from the price at the moment it was made — before the session that is the previous close — so the hit rate and the paper-PnL include the opening gap, which a reader of the morning email cannot buy (the Track Record note and the public scorecard's methodology say so). The email's predictions section says which session that is: `Horyzont prognozy: następny cykl · najbliższe zamknięcie NYSE: pt 27.11 13:00 ET (skrócona sesja)` names the first NYSE close after the cycle started, from the session calendar in `src/domain/market_calendar.py` (NYSE holidays and 1:00 p.m. ET early closes for 2026–2028, so Thanksgiving and weekends are skipped). A `reflection_min_age_hours` guard (config, default `6`) skips predictions too fresh to score fairly — so an overlapping manual `workflow_dispatch` can't prematurely close a prediction made minutes earlier and pollute the accuracy signal. A `reflection_max_age_hours` bound (config, default `96`) skips predictions too old to score fairly: after a pause in the schedule, a prediction from weeks ago is not scored against today's price; it stays unresolved and stays out of the hit rate and `ml_feature_store`. After the symbol loop, `main_agent` flags such a prediction `expired_unverified` in `data_quality_flags` (`RepositoryPort.expire_unverified_predictions`, WIA-49) — it never gets a price, so it cannot reach `ml_feature_store` — and the email's Track Record says how many predictions expired in that cycle.
 3. **Fundamentals (slow loop refreshes, fast loop reads cache)** — `fetch_fundamentals_node` runs after `reflect` and before the volatility gate. The `FundamentalsPort` is implemented by `AlphaVantageFundamentalsAdapter` (2 API requests per stock symbol: `OVERVIEW` + `EARNINGS`) wrapped in `CachedFundamentalsAdapter` (decorator pattern). In the **slow loop**, real API calls populate the `fundamentals_cache` Supabase table. In the **fast loop**, a `NullFundamentalsAdapter` delegate skips API calls and reads from cache only. A cached row counts as fresh for `FUNDAMENTALS_CACHE_TTL_HOURS = 144` (6 days): long enough for the Fast Loop to see it most of the week, short enough that the next weekly Slow Loop always finds it stale and refreshes it. ETF symbols (configured via `SYMBOLS_ETF`) always skip fetching — they have no meaningful per-share EPS/P/E. The domain evaluates a deterministic `ValuationVerdict` (`UNDERVALUED / FAIR / OVERVALUED / UNKNOWN`) based primarily on PEG ratio, with PE/growth qualifiers; ETFs always get `UNKNOWN`. The verdict is surfaced to the Council prompt as a `Valuation snapshot` block and rendered as a dedicated **Wycena fundamentalna** section in the email report.
