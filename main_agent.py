@@ -67,6 +67,7 @@ from src.application.report_builder import (
     ReportContext,
     SymbolResult,
     build_cycle_lead,
+    build_cycle_signals,
     build_html_report,
     parse_resolved_predictions,
     to_symbol_result,
@@ -92,7 +93,7 @@ from src.application.report_model_scorecard import (
     ModelScorecardView,
     build_scorecard_view,
 )
-from src.application.report_models import ResolvedPrediction
+from src.application.report_models import ResolvedPrediction, TradeSignal
 from src.application.report_onboarding import onboarding_subject
 from src.application.report_ops import render_cycle_summary_markdown
 from src.application.report_public_scorecard import render_public_scorecard_html
@@ -565,8 +566,13 @@ def _dispatch_push_digest(
     email_delivered: bool = True,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     resolved_unavailable: bool = False,
+    lead_items: Sequence[LeadItem] = (),
+    ranked_signals: Sequence[TradeSignal] = (),
 ) -> None:
     """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
+
+    MAIL-20: `lead_items` i `ranked_signals` to lead i ranking sygnałów maila
+    właściciela — push mówi, co najważniejsze, w tej samej kolejności.
 
     Gałąź U2 (subskrybenci) w ogóle pomijała `notifier.send_report`, więc push
     nie szedł, gdy ktokolwiek był zapisany. Skrót liczymy nad PEŁNYMI wynikami
@@ -581,6 +587,8 @@ def _dispatch_push_digest(
             email_delivered=email_delivered,
             display_timezone=display_timezone,
             resolved_unavailable=resolved_unavailable,
+            lead_items=lead_items,
+            ranked_signals=ranked_signals,
         )
         push_notifier.send_report(
             subject=subject, html_body=digest, plain_text=digest
@@ -3180,6 +3188,8 @@ def _dispatch_reports(
                 email_delivered=email_delivered,
                 resolved_unavailable=resolved is None,
                 display_timezone=settings.display_timezone,
+                lead_items=build_cycle_lead(results, report_context),
+                ranked_signals=build_cycle_signals(results, report_context),
             )
     except Exception:
         logger.exception("Failed to send report")

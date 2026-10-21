@@ -9,11 +9,14 @@ stały zestaw sekcji. Te testy zamrażają oba niezmienniki.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from src.application.report_messenger import MAX_DIGEST_CHARS, build_messenger_digest
 from src.application.report_models import ResolvedPrediction, SymbolResult
+from src.application.report_signals import build_trade_signals
+from src.domain.digest_lead import LeadItem
 
 _STARTED_AT = datetime(2026, 7, 10, 14, 30)
 
@@ -212,3 +215,76 @@ def test_scorecard_on_read_failure_does_not_claim_nothing_closed() -> None:
 
     assert "Scorecard: rozliczenia niedostępne (błąd odczytu)" in digest
     assert "brak zamkniętych predykcji" not in digest
+
+
+# --- MAIL-20: lead i ranking sygnałów zamiast listy strzałek -----------------
+
+
+def _ranked_input() -> list[SymbolResult]:
+    """Watchlista A, B, C; siła = pewność × |ruch| × 100 → A 1,0 · B 5,0 · C 3,0."""
+    return [
+        SymbolResult(symbol="AAA", status="saved", trend="BULLISH", confidence_score=0.5,
+                     current_price=Decimal("100"), target_price=Decimal("102")),
+        SymbolResult(symbol="BBB", status="saved", trend="BEARISH", confidence_score=0.5,
+                     current_price=Decimal("100"), target_price=Decimal("90")),
+        SymbolResult(symbol="CCC", status="saved", trend="BULLISH", confidence_score=0.5,
+                     current_price=Decimal("100"), target_price=Decimal("106")),
+    ]
+
+
+def _signals_line(digest: str) -> str:
+    return next(line for line in digest.splitlines() if line.startswith("Sygnały:"))
+
+
+def test_digest_lists_signals_in_ranking_order() -> None:
+    results = _ranked_input()
+    ranked = build_trade_signals(results)
+
+    line = _signals_line(
+        build_messenger_digest(results, _STARTED_AT, [], ranked_signals=ranked)
+    )
+
+    assert [s.strength for s in ranked] == [5.0, 3.0, 1.0]
+    assert line.index("BBB") < line.index("CCC") < line.index("AAA")
+
+
+def test_digest_shows_at_most_three_signals_with_calibrated_confidence() -> None:
+    results = [*_ranked_input(), _saved("DDD")]
+    ranked = [
+        dataclasses.replace(sig, calibrated_confidence=0.41) if sig.symbol == "BBB" else sig
+        for sig in build_trade_signals(results)
+    ]
+
+    line = _signals_line(
+        build_messenger_digest(results, _STARTED_AT, [], ranked_signals=ranked)
+    )
+
+    assert line.startswith("Sygnały: 1. 📉 BBB 41%")
+    assert "2. 📈 CCC 50%" in line
+    assert "3. 📈 AAA 50%" in line
+    assert "DDD" not in line
+    assert line.endswith("…+1 więcej")
+
+
+def test_digest_opens_with_up_to_three_lead_items() -> None:
+    lead = [
+        LeadItem(icon="⚖️", headline=f"S{i} -4,2%, rada PODZIELONA", detail="x")
+        for i in range(4)
+    ]
+
+    lines = build_messenger_digest([], _STARTED_AT, [], lead_items=lead).splitlines()
+
+    assert lines[1:4] == [f"⚖️ S{i} -4,2%, rada PODZIELONA" for i in range(3)]
+    assert "S3" not in "\n".join(lines)
+    assert lines[4].startswith("Cykl:")
+
+
+def test_long_lead_headline_is_clipped_and_keeps_the_limit() -> None:
+    lead = [LeadItem(icon="🔥", headline="N" * 2000, detail="")]
+    results = [_saved("Z" * 100 + f"-{i}") for i in range(60)]
+
+    digest = build_messenger_digest(results, _STARTED_AT, [], lead_items=lead)
+
+    assert len(digest) <= MAX_DIGEST_CHARS
+    for marker in ("StockAgent", "Cykl:", "Scorecard:", "Sygnały:"):
+        assert marker in digest

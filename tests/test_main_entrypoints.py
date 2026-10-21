@@ -1546,6 +1546,69 @@ class TestMessengerDigestSplit:
         sent = push.send_report.call_args.kwargs["plain_text"]
         assert len(sent) <= MAX_DIGEST_CHARS
 
+    def test_dispatch_sends_the_lead_and_the_ranked_signals_to_the_push(
+        self, settings, mocker
+    ) -> None:
+        # MAIL-20: push mówi, co najważniejsze — lead i ranking sygnałów, nie
+        # pierwsze symbole watchlisty w jej kolejności.
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.council import InvestorOpinion
+
+        settings.messenger_digest_enabled = True
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch("main_agent._build_user_portfolio", return_value=None)
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        push = MagicMock()
+        mocker.patch("main_agent.build_push_notifier", return_value=push)
+        split = CouncilVerdict(
+            final_recommendation="HOLD", consensus_strength=0.5, summary="1 KUP / 1 SPRZEDAJ",
+            dissenting_views=(),
+            investor_opinions=(
+                InvestorOpinion(investor_name="A", recommendation="BUY",
+                                confidence=0.8, reasoning="x", key_factors=()),
+                InvestorOpinion(investor_name="B", recommendation="SELL",
+                                confidence=0.8, reasoning="x", key_factors=()),
+            ),
+        )
+        results = [
+            main_agent.SymbolResult(
+                symbol="AAPL", status="saved", delta=Decimal("0.03"), trend="BULLISH",
+                confidence_score=0.5, current_price=Decimal("100"),
+                target_price=Decimal("101"),
+            ),
+            main_agent.SymbolResult(
+                symbol="NVDA", status="saved", delta=Decimal("-0.042"), trend="BEARISH",
+                confidence_score=0.8, current_price=Decimal("100"),
+                target_price=Decimal("95"), council_verdict=split,
+            ),
+        ]
+
+        main_agent._dispatch_reports(
+            results=results,
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=QuotaMonitor(),
+            notifier=MagicMock(),
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL", "NVDA"],
+            context=main_agent.ReportContext(),
+        )
+
+        digest = push.send_report.call_args.kwargs["plain_text"]
+        assert "⚖️ NVDA -4,2%, rada PODZIELONA" in digest
+        signals = next(line for line in digest.splitlines() if line.startswith("Sygnały:"))
+        assert signals.index("NVDA") < signals.index("AAPL")
+
     def test_push_failure_never_breaks_the_cycle(self) -> None:
         push = MagicMock()
         push.send_report.side_effect = Exception("Telegram 400")

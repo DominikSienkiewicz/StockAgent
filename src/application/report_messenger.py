@@ -9,18 +9,25 @@ Telegrama) i stałym zestawem sekcji.
 Czysta funkcja render-only: zero I/O, zero portów, zero płatnych wywołań.
 Wejście to warstwowe DTO (`SymbolResult`, `ResolvedPrediction`) z
 `report_models`. Treść po polsku — to komunikat wysyłany użytkownikowi.
+
+MAIL-20: push mówi, co najważniejsze — do 3 pozycji leadu (`build_cycle_lead`)
+i czołówka rankingu sygnałów (`build_cycle_signals`), te same co w mailu, zamiast
+pierwszych symboli watchlisty w jej kolejności.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 
 from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
     MESSENGER_DISCLAIMER,
     format_local,
+    pct,
 )
-from src.application.report_models import ResolvedPrediction, SymbolResult
+from src.application.report_models import ResolvedPrediction, SymbolResult, TradeSignal
+from src.domain.digest_lead import LeadItem
 
 # Twardy limit długości digestu. Ostrzejszy niż 4096 Telegrama — zostawiamy
 # margines na ewentualny prefiks/formatowanie kanału i emoji liczone jako
@@ -48,6 +55,14 @@ _DISCLAIMER_TAIL = f"\n{MESSENGER_DISCLAIMER}"
 
 _TREND_ARROWS = {"BULLISH": "📈", "BEARISH": "📉"}
 _TREND_NEUTRAL = "➡️"
+
+# MAIL-20: tyle pozycji leadu i sygnałów z rankingu niesie push.
+_MAX_LEAD_ITEMS = 3
+_MAX_RANKED_SIGNALS = 3
+# Sufit długości linii leadu — nagłówek rady bywa długi, a sekcje wymagane
+# (Cykl, Scorecard, Sygnały) muszą zmieścić się w limicie pod leadem.
+_MAX_LEAD_LINE = 160
+_DIRECTION_ARROWS = {"KUP": "📈", "SPRZEDAJ": "📉"}
 
 
 def _shorten(symbol: str) -> str:
@@ -89,11 +104,45 @@ def _scorecard_line(resolved: list[ResolvedPrediction], *, unavailable: bool) ->
     return f"Scorecard: ✅ {correct} / ❌ {incorrect} ({len(resolved)} zamkniętych)"
 
 
-def _signals_line(results: list[SymbolResult]) -> str:
-    """Linia sygnałów: strzałka + ticker, z ucięciem i podsumowaniem reszty."""
+def _lead_lines(lead_items: Sequence[LeadItem]) -> list[str]:
+    """MAIL-20: do 3 pozycji leadu — ikona i nagłówek, przycięte do `_MAX_LEAD_LINE`."""
+    lines = []
+    for item in lead_items[:_MAX_LEAD_ITEMS]:
+        line = f"{item.icon} {item.headline}"
+        if len(line) > _MAX_LEAD_LINE:
+            line = line[: _MAX_LEAD_LINE - 1] + _ELLIPSIS
+        lines.append(line)
+    return lines
+
+
+def _ranked_entry(rank: int, signal: TradeSignal) -> str:
+    """„1. 📈 NVDA 72%” — pewność skalibrowana, gdy jest historia (#9)."""
+    confidence = (
+        signal.confidence
+        if signal.calibrated_confidence is None
+        else signal.calibrated_confidence
+    )
+    arrow = _DIRECTION_ARROWS.get(signal.direction, _TREND_NEUTRAL)
+    return f"{rank}. {arrow} {_shorten(signal.symbol)} {pct(confidence, decimals=0)}"
+
+
+def _signals_line(
+    results: list[SymbolResult], ranked_signals: Sequence[TradeSignal] = ()
+) -> str:
+    """Linia sygnałów: czołówka rankingu (MAIL-20) albo — bez rankingu — strzałka
+    + ticker w kolejności cyklu, z ucięciem i podsumowaniem reszty."""
     saved = [r for r in results if r.status == "saved"]
     if not saved:
         return "Sygnały: brak"
+    if ranked_signals:
+        top = ranked_signals[:_MAX_RANKED_SIGNALS]
+        line = "Sygnały: " + " · ".join(
+            _ranked_entry(rank, signal) for rank, signal in enumerate(top, start=1)
+        )
+        remaining = len(saved) - len(top)
+        if remaining > 0:
+            line += f" {_ELLIPSIS}+{remaining} więcej"
+        return line
     shown = saved[:_MAX_SIGNALS]
     entries = [f"{_arrow(r.trend)} {_shorten(r.symbol)}" for r in shown]
     line = "Sygnały: " + " · ".join(entries)
@@ -111,8 +160,10 @@ def build_messenger_digest(
     email_delivered: bool = True,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     resolved_unavailable: bool = False,
+    lead_items: Sequence[LeadItem] = (),
+    ranked_signals: Sequence[TradeSignal] = (),
 ) -> str:
-    """Buduje zwięzły digest push (~5 linii) dla Telegrama/Slacka.
+    """Buduje zwięzły digest push (~5–8 linii) dla Telegrama/Slacka.
 
     Zestaw sekcji jest stały (nagłówek, cykl, scorecard, sygnały, zastrzeżenie
     MAIL-08) — to zamraża kontrakt formatu przeciw dryfowi. Wynik jest ZAWSZE ≤ `MAX_DIGEST_CHARS`,
@@ -130,6 +181,9 @@ def build_messenger_digest(
         display_timezone: strefa (IANA) godziny w nagłówku; `started_at` jest w UTC.
         resolved_unavailable: True, gdy odczyt zamkniętych predykcji padł
             (MAIL-25) — scorecard mówi o awarii zamiast „brak”.
+        lead_items: lead cyklu (MAIL-20) — do 3 pozycji zaraz pod nagłówkiem.
+        ranked_signals: ranking sygnałów cyklu (MAIL-20) — linia sygnałów
+            pokazuje jego czołówkę zamiast symboli w kolejności watchlisty.
 
     Returns:
         Gotowy tekst push, ≤ `MAX_DIGEST_CHARS` znaków.
@@ -138,9 +192,10 @@ def build_messenger_digest(
     lines = [
         _header_line(started_at, display_timezone),
         *([] if email_delivered else [UNDELIVERED_EMAIL_LINE]),
+        *_lead_lines(lead_items),
         _cycle_line(results),
         _scorecard_line(resolved, unavailable=resolved_unavailable),
-        _signals_line(results),
+        _signals_line(results, ranked_signals),
     ]
     digest = "\n".join(lines)
     # Twardy clamp — ostateczna gwarancja kontraktu długości niezależnie od

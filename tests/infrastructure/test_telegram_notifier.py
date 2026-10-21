@@ -183,3 +183,15 @@ def test_default_send_keeps_the_notification_sound(notifier: TelegramNotifier, m
     notifier.send_report("S", "<p>H</p>", "T")
 
     assert "disable_notification" not in mock_post.call_args.kwargs["json"]
+
+
+def test_sends_html_parse_mode_with_escaped_text(notifier: TelegramNotifier, mocker) -> None:
+    # MAIL-20: Telegram w trybie HTML — temat pogrubiony, a cała treść (symbole,
+    # nagłówki leadu z rady) escapowana, żeby „<” nie dało 400 ani znacznika.
+    mock_post = mocker.patch("requests.Session.post", return_value=_resp(200))
+
+    notifier.send_report("A<B & C", "<p>H</p>", "x <script> & y")
+
+    body = mock_post.call_args.kwargs["json"]
+    assert body["parse_mode"] == "HTML"
+    assert body["text"] == "<b>A&lt;B &amp; C</b>\n\nx &lt;script&gt; &amp; y"

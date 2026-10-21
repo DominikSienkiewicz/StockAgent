@@ -6,7 +6,6 @@ Czysta logika prezentacji — bez I/O, łatwo testowalne.
 from __future__ import annotations
 
 import dataclasses
-import functools
 import html
 import re
 import urllib.parse
@@ -200,6 +199,7 @@ __all__ = [
     "ValuationSection",
     "build_correlation_chart_html",
     "build_cycle_lead",
+    "build_cycle_signals",
     "build_delta_chart_html",
     "build_forecast_chart_html",
     "build_html_report",
@@ -914,6 +914,51 @@ def build_cycle_lead(
     return build_lead(signals, context.quota_alerts or [])
 
 
+# Tyle sygnałów pokazuje sekcja „🎯 Najsilniejsze sygnały” (domyślne `top_n`).
+_TOP_SIGNALS = 5
+
+
+def build_cycle_signals(
+    results: list[SymbolResult], context: ReportContext, *, top_n: int = _TOP_SIGNALS
+) -> list[TradeSignal]:
+    """Ranking sygnałów cyklu — jedno źródło dla 🎯 sekcji maila i pushu (MAIL-20).
+
+    Q7: hit-rate cyklu (z `accuracy_stats`) napędza pasmo wielkości pozycji.
+    #9: kubełki kalibracji (flaga `calibrated_confidence_enabled`) liczą ranking
+    na pewności skorygowanej historią; None → surowa pewność.
+    #15 faza 2 / PORT-04 / PORT-08: gdy znamy realny portfel, sizing widzi
+    istniejącą ekspozycję (symbolu i klastra) i ryzyko portfela, a sygnał niesie
+    kierunek w kontekście pozycji. Bez portfela — jak przed tymi wpisami.
+    """
+    hit_rate, hit_sample = _sizing_track_record(context.accuracy_stats)
+    portfolio = context.user_portfolio
+    current_prices = _report_prices(results, context)
+    weight_prices = (
+        _weight_prices(portfolio, current_prices, _pln_rates_of(context))
+        if portfolio is not None
+        else current_prices
+    )
+    sizing_risk = (
+        context.position_risk
+        if portfolio is not None and context.position_risk is not None
+        else PositionRisk()
+    )
+    return build_trade_signals(
+        results,
+        top_n=top_n,
+        hit_rate=hit_rate,
+        hit_sample=hit_sample,
+        calibration_buckets=context.signal_calibration_buckets,
+        portfolio_weights=portfolio.weights(weight_prices) if portfolio is not None else None,
+        cluster_exposures=_cluster_exposure_per_symbol(
+            portfolio, context.portfolio_clusters, weight_prices
+        ),
+        portfolio_var=sizing_risk.var,
+        drawdown=sizing_risk.drawdown,
+        hedge_effective=sizing_risk.hedge_effective,
+    )
+
+
 # MAIL-13: wypełniacz za treścią preheadera — bez niego klient poczty dociąga do
 # podglądu dalszy tekst maila („📊 StockAgent — raport cyklu Czas rozpoczęcia…”).
 _PREHEADER_FILLER = "&zwnj;&nbsp;" * 100
@@ -1439,44 +1484,11 @@ def build_html_report(
     mood = build_portfolio_mood(results)
     session = market_status(started_at)
     forecast_horizon = forecast_horizon_label(started_at)
-    # Q7: hit-rate cyklu (z accuracy_stats) napędza pasmo wielkości pozycji.
-    hit_rate, hit_sample = _sizing_track_record(context.accuracy_stats)
-    # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
-    # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
-    # skorygowanej historią. None → surowa pewność, jak przed #9.
     current_prices = _report_prices(results, context)
-    # #15 faza 2: gdy znamy realny portfel, sizing widzi istniejącą ekspozycję
-    # (symbolu i jego klastra) i może zaproponować wyłącznie WĘŻSZĄ bandę.
     pln_rates = _pln_rates_of(context)
-    weight_prices = (
-        _weight_prices(context.user_portfolio, current_prices, pln_rates)
-        if context.user_portfolio is not None
-        else current_prices
-    )
-    portfolio_weights = (
-        context.user_portfolio.weights(weight_prices) if context.user_portfolio is not None else None
-    )
-    cluster_exposures = _cluster_exposure_per_symbol(
-        context.user_portfolio, context.portfolio_clusters, weight_prices
-    )
-    sizing_risk = (
-        context.position_risk
-        if context.user_portfolio is not None and context.position_risk is not None
-        else PositionRisk()
-    )
-    rank_signals = functools.partial(
-        build_trade_signals,
-        results,
-        hit_rate=hit_rate,
-        hit_sample=hit_sample,
-        calibration_buckets=context.signal_calibration_buckets,
-        portfolio_weights=portfolio_weights,
-        cluster_exposures=cluster_exposures,
-        portfolio_var=sizing_risk.var,
-        drawdown=sizing_risk.drawdown,
-        hedge_effective=sizing_risk.hedge_effective,
-    )
-    trade_signals = rank_signals()
+    # MAIL-06: pełny ranking (pełna rada dla top N); 🎯 sekcja bierze jego czołówkę.
+    ranked_signals = build_cycle_signals(results, context, top_n=len(results))
+    trade_signals = ranked_signals[:_TOP_SIGNALS]
     risk_signals = detect_risk_signals(results)
     macro_risk_html = (
         render_risk_watch_html(context.macro_risk_report) if context.macro_risk_report else ""
@@ -1498,9 +1510,7 @@ def build_html_report(
     # typy domenowe — `src/domain/digest_lead.py` ich nie importuje.
     lead_items = build_cycle_lead(results, context)
     # MAIL-06: pełna rada dla top N wg siły sygnału i symboli z leadu.
-    full_detail = _full_detail_symbols(
-        saved, rank_signals(top_n=len(results)), lead_items
-    )
+    full_detail = _full_detail_symbols(saved, ranked_signals, lead_items)
     lead_html = render_lead_html(lead_items)
     lead_text = render_lead_text(lead_items)
     onboarding_html, onboarding_text = _build_onboarding_blocks(
