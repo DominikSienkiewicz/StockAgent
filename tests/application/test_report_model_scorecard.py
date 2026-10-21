@@ -464,3 +464,32 @@ class TestThreeBaselines:
             )
             assert "dryf średniej" not in out
             assert "sam LLM" not in out
+
+
+class TestDataCoverageLine:
+    """DAT-16: karta kondycji mówi, ile sesji okna ma dane i które symbole nie
+    mają rozliczeń — track record z dziurami nie udaje ciągłości."""
+
+    def test_coverage_line_names_the_unsettled_symbols(self) -> None:
+        from datetime import date
+
+        from src.domain.coverage import CoverageGap, CoverageReport
+
+        coverage = CoverageReport(
+            expected=22,
+            covered=20,
+            longest_gap=CoverageGap(first=date(2026, 7, 1), last=date(2026, 7, 2), sessions=2),
+            unsettled_symbols=("SSNLF",),
+        )
+
+        out = render_model_scorecard_html(
+            _summary(1, 0, 0), trained_at=_FRESH, now=_NOW, coverage=coverage
+        )
+
+        assert "Pokrycie danych: 91% sesji ze snapshotem ceny (20 z 22)" in out
+        assert "bez rozliczeń w oknie: SSNLF" in out
+
+    def test_without_coverage_the_card_is_unchanged(self) -> None:
+        plain = render_model_scorecard_html(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
+
+        assert "Pokrycie danych" not in plain

@@ -1862,6 +1862,48 @@ class TestWeeklyRecapWiring:
         judge_uc.run.assert_called_once()
 
 
+class TestModelScorecardCoverage:
+    """DAT-16: karta kondycji niesie pokrycie danych okna z symbolami bez rozliczeń."""
+
+    def test_scorecard_view_carries_the_data_coverage(self, settings, mocker) -> None:
+        from src.application.report_model_scorecard import ModelScorecardView
+        from src.domain.model_scorecard import summarize_run
+
+        settings.model_scorecard_enabled = True
+        settings.symbols = ["AAPL", "SSNLF"]
+        settings.crypto_symbols = []
+        view = ModelScorecardView(
+            summary=summarize_run(["trained_successfully"]),
+            trained_at=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+        mocker.patch("main_agent.build_scorecard_view", return_value=view)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_price_history.return_value = []
+        repository.get_resolved_predictions.return_value = [{"symbol": "AAPL"}]
+
+        scorecard = main_agent._build_model_scorecard(settings, repository)
+
+        assert scorecard is not None and scorecard.coverage is not None
+        assert scorecard.coverage.unsettled_symbols == ("SSNLF",)
+
+    def test_coverage_failure_keeps_the_scorecard(self, settings, mocker) -> None:
+        from src.application.report_model_scorecard import ModelScorecardView
+        from src.domain.model_scorecard import summarize_run
+
+        settings.model_scorecard_enabled = True
+        view = ModelScorecardView(
+            summary=summarize_run(["trained_successfully"]),
+            trained_at=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+        mocker.patch("main_agent.build_scorecard_view", return_value=view)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_resolved_predictions.side_effect = RuntimeError("supabase down")
+
+        scorecard = main_agent._build_model_scorecard(settings, repository)
+
+        assert scorecard == view
+
+
 class TestPublicScorecard:
     """#10 — publiczny scorecard. DRUGA instancja publishera (nie ta od
     prywatnego digestu!) i metryki liczone niezależnie od flag track-recordu."""
@@ -1925,6 +1967,22 @@ class TestPublicScorecard:
 
         page = publisher.publish.call_args.args[0]
         assert "NVDA" not in page
+
+    def test_page_states_data_coverage_without_naming_symbols(self) -> None:
+        # DAT-16: luka i symbol bez rozliczeń są na stronie tylko jako liczby.
+        settings = self._settings(True)
+        settings.symbols = ["NVDA", "SSNLF"]
+        settings.crypto_symbols = []
+        repo = self._repo()
+        repo.get_price_history.return_value = []
+        publisher = MagicMock()
+
+        main_agent._publish_public_scorecard(settings, repo, publisher)
+
+        page = publisher.publish.call_args.args[0]
+        assert "Pokrycie danych: 0% sesji" in page
+        assert "1 symbol bez rozliczeń w oknie" in page
+        assert "SSNLF" not in page
 
     def test_repository_error_never_breaks_the_cycle(self) -> None:
         repo = MagicMock(spec=RepositoryPort)

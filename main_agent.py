@@ -27,6 +27,7 @@ from typing import Any, NamedTuple
 from src.application.agent_graph import AgentGraphDeps, AgentState
 from src.application.alpha_signals import AlphaSignals
 from src.application.cycle_telemetry import CycleTelemetry
+from src.application.data_coverage import build_data_coverage
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.move_interval import (
     CALIBRATION_LOOKBACK_DAYS,
@@ -122,6 +123,7 @@ from src.domain.calibration_curve import (
 )
 from src.domain.conformal import CalibrationPoint
 from src.domain.consensus_shift import ConsensusShift, detect_shift
+from src.domain.coverage import CoverageReport
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
@@ -836,6 +838,7 @@ def render_public_scorecard_page(
         benchmark=benchmark,
         protocol=load_evaluation_protocol(),
         calibration_by_cycle=calibration.directional_by_cycle,
+        coverage=_data_coverage(settings, repository),
     )
 
 
@@ -2504,7 +2507,27 @@ def _build_model_scorecard(
     except Exception:
         logger.exception("Failed to fetch model scorecards")
         return None
-    return build_scorecard_view(rows)
+    view = build_scorecard_view(rows)
+    if view is None:
+        return None
+    # DAT-16: karta mówi też, ile sesji okna ma dane i które symbole nie mają rozliczeń.
+    return dataclasses.replace(view, coverage=_data_coverage(settings, repository))
+
+
+def _data_coverage(settings: Settings, repository: RepositoryPort) -> CoverageReport | None:
+    """DAT-16 — pokrycie danych okna track recordu z darmowych odczytów
+    (snapshoty cen, rozliczenia). Błąd → None: zdanie się chowa, cykl leci dalej."""
+    try:
+        return build_data_coverage(
+            repository,
+            symbols=settings.symbols,
+            crypto_symbols=settings.crypto_symbols,
+            days=settings.track_record_days,
+            now=datetime.now(UTC),
+        )
+    except Exception:
+        logger.exception("Data coverage failed — scorecards without the coverage line")
+        return None
 
 
 def _build_signal_calibration(

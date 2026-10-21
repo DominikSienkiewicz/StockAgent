@@ -29,6 +29,7 @@ from collections.abc import Sequence
 from datetime import date, timedelta
 from decimal import Decimal
 
+from src.application.data_coverage import coverage_line_pl
 from src.application.report_evidence import (
     NO_BENCHMARK_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
@@ -57,6 +58,7 @@ from src.domain.calibration_curve import (
     probability_scores,
     reliability_curve,
 )
+from src.domain.coverage import CoverageReport
 from src.domain.equity_curve import EquityCurve
 from src.domain.evaluation_protocol import EvaluationProtocol
 from src.domain.track_record import HitRateEvidence
@@ -94,8 +96,8 @@ def render_public_scorecard_html(
     costs: PaperCosts | None = None,
     benchmark: BenchmarkComparison | None = None,
     protocol: EvaluationProtocol | None = None,
-
     calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]] | None = None,
+    coverage: CoverageReport | None = None,
 ) -> str:
     """Renderuje publiczny scorecard kalibracji jako samodzielną stronę HTML.
 
@@ -120,10 +122,11 @@ def render_public_scorecard_html(
       - `protocol` — protokół ewaluacji z hashem (WIA-42), renderowany w sekcji
         metodologii; ten sam sha256 niesie każdy commitment v2. None = sekcja
         bez protokołu, jak przed WIA-42.
-
       - `calibration_by_cycle` — te same próbki pogrupowane po cyklu (dniu UTC,
         WIA-58); z nimi ECE dostaje kubełki równoliczne, korektę obciążenia,
         n_eff i przedział z bootstrapu po cyklach. None = sama liczba ECE.
+      - `coverage` — pokrycie danych okna (DAT-16): odsetek sesji ze snapshotem,
+        najdłuższa luka i LICZBA symboli bez rozliczeń (nigdy ich nazwy).
 
     Samosupresja: brak jakichkolwiek danych → `""` (nie publikujemy pustej
     strony). Wszystko, co idzie do outputu, jest escapowane.
@@ -140,6 +143,7 @@ def render_public_scorecard_html(
 
     sections: list[str] = [
         _render_headline(predictions, generated_on, window_days),
+        _render_coverage(coverage),
         _render_calibration_section(buckets, samples, calibration_by_cycle),
         _render_equity_section(equity, costs, benchmark),
         _render_methodology_section(protocol),
@@ -180,6 +184,12 @@ def _render_headline(
         f"{_render_evidence(evidence)}"
         "</section>"
     )
+
+
+def _render_coverage(coverage: CoverageReport | None) -> str:
+    """DAT-16: zdanie o pokryciu danych — bez symboli (inwariant strony)."""
+    line = "" if coverage is None else coverage_line_pl(coverage, list_symbols=False)
+    return f"<p class='window'>{_html.escape(line)}</p>" if line else ""
 
 
 def _render_window(generated_on: date | str, window_days: int | None) -> str:

@@ -1195,6 +1195,7 @@ def _build_model_scorecard_html(
         evaluations=model_scorecard.evaluations,
         drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
         llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
+        coverage=model_scorecard.coverage,
     )
 
 

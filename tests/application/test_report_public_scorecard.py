@@ -542,3 +542,23 @@ class TestCalibrationErrorInterval:
         )
 
         assert "równoliczn" in html
+
+def test_coverage_line_counts_unsettled_symbols_without_naming_them() -> None:
+    # DAT-16: pokrycie i luka są na stronie, ale symbole bez rozliczeń tylko jako liczba.
+    from src.domain.coverage import CoverageGap, CoverageReport
+
+    coverage = CoverageReport(
+        expected=22,
+        covered=11,
+        longest_gap=CoverageGap(first=date(2026, 8, 17), last=date(2026, 8, 31), sessions=11),
+        unsettled_symbols=("SSNLF",),
+    )
+
+    html = render_public_scorecard_html(
+        [_resolved("AAA", "BULLISH", True)], None, [(0.8, True)], coverage=coverage
+    )
+
+    assert "Pokrycie danych: 50% sesji ze snapshotem ceny (11 z 22)" in html
+    assert "najdłuższa luka 2026-08-17 – 2026-08-31 (11 sesji)" in html
+    assert "1 symbol bez rozliczeń w oknie" in html
+    assert "SSNLF" not in html

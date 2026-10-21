@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from src.application.data_coverage import coverage_line_pl
 from src.application.report_formatting import number as _number
 from src.application.report_formatting import pct as _pct
 from src.domain.backtest import (
@@ -34,6 +35,7 @@ from src.domain.backtest import (
     ZERO_BASELINE_LABEL,
     strongest_baseline,
 )
+from src.domain.coverage import CoverageReport
 from src.domain.model_scorecard import (
     METRIC_NOTE,
     POOLED_MODEL_SYMBOL,
@@ -162,6 +164,7 @@ def render_model_scorecard_html(
     evaluations: EvaluationSummary | None = None,
     drift_baseline_rmse: float | None = None,
     llm_baseline_rmse: float | None = None,
+    coverage: CoverageReport | None = None,
 ) -> str:
     """Renderuje sekcję HTML karty kondycji modelu lub "" gdy brak danych.
 
@@ -169,6 +172,7 @@ def render_model_scorecard_html(
     opcjonalne (przebieg z samymi odrzutami/pominięciami może ich nie mieć);
     `metrics_symbol` i `n_samples` podpisują, czyje to metryki. Z `evaluations`
     `summary` to werdykt modelu wspólnego, a ewaluacje per symbol idą osobną linią.
+    `coverage` (DAT-16) dokłada zdanie o pokryciu danych z symbolami bez rozliczeń.
     """
     if summary is None:
         return ""
@@ -234,6 +238,13 @@ def render_model_scorecard_html(
         rows.append(
             f"<div style='font-size: 12px; color: #374151; margin-bottom: 4px;'>"
             f"{' · '.join(metric_bits)}</div>"
+        )
+
+    coverage_line = "" if coverage is None else coverage_line_pl(coverage, list_symbols=True)
+    if coverage_line:
+        rows.append(
+            "<div style='font-size: 12px; color: #374151; margin-bottom: 4px;'>"
+            + f"{_html.escape(coverage_line)}</div>"
         )
 
     rows.append(
@@ -337,6 +348,8 @@ class ModelScorecardView:
     evaluations: EvaluationSummary | None = None
     drift_baseline_rmse: float | None = None
     llm_baseline_rmse: float | None = None
+    # DAT-16: pokrycie danych okna track recordu; None = zdanie się chowa.
+    coverage: CoverageReport | None = None
 
 
 def _parse_timestamp(raw: object) -> datetime | None:
