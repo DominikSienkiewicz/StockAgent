@@ -90,9 +90,12 @@ def pearson(a: list[float], b: list[float]) -> float:
     cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys, strict=True))
     var_x = sum((x - mean_x) ** 2 for x in xs)
     var_y = sum((y - mean_y) ** 2 for y in ys)
-    if var_x == 0 or var_y == 0:
+    # Pierwiastki osobno: iloczyn bardzo małych wariancji schodzi do 0.0
+    # (np. 1e-90 × 1e-281), choć każda z nich jest dodatnia.
+    denominator = math.sqrt(var_x) * math.sqrt(var_y)
+    if denominator == 0:
         return 0.0
-    corr = cov / math.sqrt(var_x * var_y)
+    corr = cov / denominator
     # Domknięcie do [-1, 1] — błędy zmiennoprzecinkowe potrafią dać 1.0000002.
     return max(-1.0, min(1.0, corr))
 
