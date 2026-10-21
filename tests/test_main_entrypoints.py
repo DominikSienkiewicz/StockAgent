@@ -440,8 +440,21 @@ class TestMainBacktest:
     def test_main_survives_single_symbol_failure(
         self, settings, mock_external_clients, mocker
     ):
+        from src.domain.backtest import BacktestSummary
+
         fake_uc = MagicMock()
-        fake_uc.run.side_effect = RuntimeError("XGBoost boom")
+        fake_uc.run.side_effect = [
+            RuntimeError("XGBoost boom"),
+            BacktestSummary(
+                n_folds=4,
+                mean_candidate_rmse=0.03,
+                mean_baseline_rmse=0.05,
+                mean_hit_rate=0.6,
+                improvement_pct=40.0,
+                beats_baseline=True,
+                verdict="model bije baseline o 40.0%",
+            ),
+        ]
         mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
 
         # Pojedynczy błąd per-symbol nie wywala harnessa.
@@ -488,6 +501,16 @@ class TestMainBacktest:
         expected = FEATURE_SET_VERSION if enabled else None
         versions = [c.kwargs["feature_set_version"] for c in use_case_cls.call_args_list]
         assert versions == [expected, expected]
+
+    def test_main_returns_one_when_all_symbols_fail(
+        self, settings, mock_external_clients, mocker
+    ):
+        # NIEZ-18: jak Fast Loop — exit 1 tylko, gdy padły wszystkie symbole.
+        fake_uc = MagicMock()
+        fake_uc.run.side_effect = RuntimeError("XGBoost boom")
+        mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
+
+        assert main_backtest.main(settings) == 1
 
 
 class TestBacktestCoverage:

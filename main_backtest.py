@@ -87,6 +87,7 @@ def main(settings: Settings | None = None) -> int:
             "refresh_feature_store failed — backtest na ostatnim widoku"
         )
 
+    failures = 0
     for symbol in symbols:
         is_crypto = symbol in crypto
         use_case = crypto_backtest if is_crypto else stock_backtest
@@ -117,10 +118,12 @@ def main(settings: Settings | None = None) -> int:
                 cost_bps,
             )
         except Exception:
+            failures += 1
             logger.exception("Backtest failed for %s", symbol)
 
-    logger.info("Backtest done — symbols=%d", len(symbols))
-    return 0
+    logger.info("Backtest done — symbols=%d failures=%d", len(symbols), failures)
+    # NIEZ-18: jak Fast Loop — exit 1 tylko, gdy padły wszystkie symbole.
+    return 1 if symbols and failures == len(symbols) else 0
 
 
 if __name__ == "__main__":
