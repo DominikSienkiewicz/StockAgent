@@ -99,3 +99,129 @@ def test_how_it_works_names_the_prediction_horizon_honestly() -> None:
 
     assert "predicts a 12h _return_" not in text
     assert "return to the next cycle" in text
+
+
+# DOC-08: liczby w how-it-works mają odpowiadać kodowi, nie dawnym wartościom.
+
+
+def test_how_it_works_reflection_default_matches_settings() -> None:
+    from src.config import Settings
+
+    text = (ROOT / "docs" / "how-it-works.md").read_text(encoding="utf-8")
+    quoted = re.search(r"`reflection_min_age_hours` guard \(config, default `(\d+)`\)", text)
+
+    assert quoted is not None
+    assert int(quoted.group(1)) == Settings.model_fields["reflection_min_age_hours"].default
+
+
+def test_how_it_works_quotes_the_anthropic_max_tokens() -> None:
+    from src.infrastructure.llm.anthropic_client import DEFAULT_MAX_TOKENS
+
+    text = (ROOT / "docs" / "how-it-works.md").read_text(encoding="utf-8")
+    quoted = re.findall(r"max_tokens (\d+)", text)
+
+    assert quoted, "how-it-works nie podaje max_tokens adaptera Anthropic"
+    assert {int(value) for value in quoted} == {DEFAULT_MAX_TOKENS}
+
+
+# DOC-19: flagi jako tabela sprawdzana testem — proza z uzasadnieniami zostaje
+# niżej, ale default kodu, wartość w config.toml, migracja, sekret i status
+# wdrożenia stoją w jednym miejscu, które nie może się rozjechać z kodem.
+FLAG_TABLE_HEADING = "## Flag reference"
+DEPLOYED = "deployed"
+NOT_DEPLOYED = "built, not deployed"
+# Produkcja ma migracje do 025; 026+ czekają na ręczny DB Migrate
+# (docs/resume-checklist.md, krok 3). Po migracji podnieś próg i statusy.
+PRODUCTION_MIGRATED_THROUGH = 25
+
+
+def _config_doc() -> str:
+    return (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+
+
+def _flag_rows() -> dict[str, list[str]]:
+    text = _config_doc()
+    start = text.index(FLAG_TABLE_HEADING)
+    end = text.find("\n## ", start + 1)
+    rows: dict[str, list[str]] = {}
+    for line in text[start:end].splitlines():
+        row = re.match(r"^\| `(\w+)` \|(.*)\|\s*$", line)
+        if row:
+            rows[row.group(1)] = [cell.strip() for cell in row.group(2).split("|")]
+    return rows
+
+
+def _bool_fields() -> dict[str, object]:
+    from src.config import Settings
+
+    return {
+        name: field.default
+        for name, field in Settings.model_fields.items()
+        if field.annotation in (bool, bool | None)
+    }
+
+
+def _literal(value: object) -> str:
+    if value is None:
+        return "None"
+    return "true" if value is True else "false" if value is False else repr(value)
+
+
+def _first_code(cell: str) -> str | None:
+    found = re.search(r"`([^`]+)`", cell)
+    return found.group(1) if found else None
+
+
+def _toml() -> dict[str, object]:
+    import tomllib
+
+    return tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
+
+
+def test_flag_table_matches_settings_and_config() -> None:
+    from src.config import SECRET_SETTINGS_FIELDS
+
+    rows = _flag_rows()
+    flags = _bool_fields()
+    toml = _toml()
+    migrations = {path.name[:3] for path in (ROOT / "supabase" / "migrations").glob("*.sql")}
+
+    assert sorted(rows) == sorted(flags), "tabela flag ≠ pola bool w Settings"
+    problems = []
+    for flag, cells in rows.items():
+        default, in_toml, migration, secret, _paid, status = cells
+        if _first_code(default) != _literal(flags[flag]):
+            problems.append(f"{flag}: default kodu {default!r}")
+        if flag in toml:
+            if _first_code(in_toml) != _literal(toml[flag]):
+                problems.append(f"{flag}: config.toml {in_toml!r} ≠ {toml[flag]!r}")
+        elif not in_toml.startswith("—"):
+            problems.append(f"{flag}: nie ma go w config.toml, a tabela mówi {in_toml!r}")
+        numbers = re.findall(r"`(\d{3})`", migration)
+        if (migration != "—") != bool(numbers) or not set(numbers) <= migrations:
+            problems.append(f"{flag}: migracja {migration!r} nie wskazuje istniejącego pliku")
+        names = re.findall(r"`([A-Z_]+)`", secret)
+        if (secret != "—") != bool(names) or any(
+            name.lower() not in SECRET_SETTINGS_FIELDS for name in names
+        ):
+            problems.append(f"{flag}: sekret {secret!r} spoza SECRET_SETTINGS_FIELDS")
+        if status not in (DEPLOYED, NOT_DEPLOYED):
+            problems.append(f"{flag}: status {status!r}")
+        elif flag in toml:
+            live = toml[flag] is True and all(
+                int(number) <= PRODUCTION_MIGRATED_THROUGH for number in numbers
+            )
+            if (status == DEPLOYED) != live:
+                problems.append(f"{flag}: status {status!r} przy config.toml {toml[flag]!r}")
+
+    assert problems == []
+
+
+def test_config_toml_migration_comments_point_at_existing_files() -> None:
+    text = (ROOT / "config.toml").read_text(encoding="utf-8")
+    migrations = {path.name[:3] for path in (ROOT / "supabase" / "migrations").glob("*.sql")}
+
+    cited = set(re.findall(r"migracj\w*\s+(\d{3})", text))
+
+    assert cited, "config.toml nie wskazuje żadnej migracji — wzorzec przestał działać"
+    assert sorted(cited - migrations) == []
