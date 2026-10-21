@@ -1,6 +1,6 @@
 """Smoke testy entry pointów — DI wiring oraz top-level main() z mockami sieci."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock, call
 
@@ -20,6 +20,7 @@ from src.domain.earnings import EarningsEvent
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel
+from src.domain.macro_series import MacroSeriesSnapshot, SeriesObservation
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Threshold
 
@@ -1139,6 +1140,113 @@ class TestResolveRegimeYieldCurveVote:
         macro = self._macro(MacroAlertLevel.CRITICAL)
 
         assert main_agent._resolve_regime(settings, macro, None) == ("", 1.0)
+
+
+class TestResolveRegimeMacroSeriesVotes:
+    """DAT-22 — percentyl VIX z roku i zmiana spreadu HY wchodzą do RegimeDetector
+    jako głosy, tylko z `macro_series_enabled` (Settings jako MagicMock: brak
+    snapshotu nie może głosować nawet przy prawdziwej fladze)."""
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.regime_aware_enabled = True
+        settings.yield_curve_enabled = False
+        settings.macro_series_enabled = True
+        settings.regime_threshold_max_multiplier = 2.0
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    @staticmethod
+    def _stressed_vix() -> MacroSeriesSnapshot:
+        start = date(2025, 10, 1)
+        values = [15.0 + (i % 7) for i in range(250)] + [35.0]
+        return MacroSeriesSnapshot(
+            vix=tuple(
+                SeriesObservation(start + timedelta(days=i), v) for i, v in enumerate(values)
+            )
+        )
+
+    @staticmethod
+    def _macro(level: MacroAlertLevel) -> MagicMock:
+        report = MagicMock()
+        report.overall_alert = level
+        return report
+
+    def test_vix_in_the_top_decile_forces_risk_off(self) -> None:
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(),
+            self._macro(MacroAlertLevel.NORMAL),
+            None,
+            macro_series=self._stressed_vix(),
+        )
+
+        assert multiplier == 2.0
+
+    def test_flag_off_casts_no_macro_vote(self) -> None:
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(macro_series_enabled=False),
+            self._macro(MacroAlertLevel.NORMAL),
+            None,
+            macro_series=self._stressed_vix(),
+        )
+
+        assert multiplier == 1.0
+
+    def test_missing_snapshot_casts_no_vote(self) -> None:
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.NORMAL), None
+        )
+
+        assert multiplier == 1.0
+
+
+class TestMacroSeriesWiring:
+    """DAT-22 — port FRED tylko z flagą i kluczem; snapshot cyklu trafia do reżimu
+    i do fazy cech rynkowych."""
+
+    def test_port_is_null_without_the_flag(self, settings) -> None:
+        from src.infrastructure.adapters.fred_client import NullMacroSeriesAdapter
+
+        settings.fred_api_key = "fred-key"
+
+        assert isinstance(main_agent.build_macro_series_port(settings), NullMacroSeriesAdapter)
+
+    def test_port_is_null_without_a_key(self, settings) -> None:
+        from src.infrastructure.adapters.fred_client import NullMacroSeriesAdapter
+
+        settings.macro_series_enabled = True
+        settings.fred_api_key = None
+
+        assert isinstance(main_agent.build_macro_series_port(settings), NullMacroSeriesAdapter)
+
+    def test_port_is_fred_with_the_flag_and_a_key(self, settings) -> None:
+        from src.infrastructure.adapters.fred_client import FredClient
+
+        settings.macro_series_enabled = True
+        settings.fred_api_key = "fred-key"
+
+        assert isinstance(main_agent.build_macro_series_port(settings), FredClient)
+
+    def test_cycle_snapshot_reaches_the_regime_and_the_feature_phase(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        snapshot = MacroSeriesSnapshot(nfci=SeriesObservation(date(2026, 10, 16), -0.5))
+        port = MagicMock()
+        port.fetch_macro_series.return_value = snapshot
+        mocker.patch("main_agent.build_macro_series_port", return_value=port)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        resolve = mocker.patch("main_agent._resolve_regime", return_value=("", 1.0))
+
+        main_agent.main(settings)
+
+        assert resolve.call_args.kwargs["macro_series"] is snapshot
+        macro = fake_uc.prepare_market_features.call_args.kwargs["macro_features"]
+        assert macro["nfci"] == -0.5
+        assert macro["macro_observed_on"] == {"NFCI": "2026-10-16"}
 
 
 class TestProcessOneSymbolEarningsGate:

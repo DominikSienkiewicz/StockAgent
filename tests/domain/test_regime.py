@@ -276,3 +276,41 @@ class TestHysteresisFinOps:
         assert detector.threshold_multiplier(
             effective, 2.0
         ) >= detector.threshold_multiplier(raw, 2.0)
+
+
+class TestMacroSeriesVotes:
+    """DAT-22 — percentyl VIX z roku i zmiana spreadu HY to stabilniejsze zmienne
+    stanu niż dzienna zmiana VIXY; wchodzą do `RegimeDetector` jako głosy."""
+
+    def test_vix_percentile_above_90_maps_to_critical_input(self) -> None:
+        from src.domain.macro_series import vix_percentile_alert_level
+
+        level = vix_percentile_alert_level(92.0)
+
+        assert level is MacroAlertLevel.CRITICAL
+        assert RegimeDetector().classify(MacroAlertLevel.NORMAL, [level]) is (
+            MarketRegime.RISK_OFF
+        )
+
+    @pytest.mark.parametrize(
+        ("percentile", "expected"),
+        [
+            (90.0, MacroAlertLevel.ELEVATED),
+            (75.0, MacroAlertLevel.ELEVATED),
+            (74.9, MacroAlertLevel.NORMAL),
+        ],
+    )
+    def test_vix_percentile_bands(self, percentile: float, expected: MacroAlertLevel) -> None:
+        from src.domain.macro_series import vix_percentile_alert_level
+
+        assert vix_percentile_alert_level(percentile) is expected
+
+    def test_a_single_elevated_macro_vote_only_moves_to_neutral(self) -> None:
+        from src.domain.macro_series import credit_spread_alert_level
+
+        level = credit_spread_alert_level(0.30)
+
+        assert level is MacroAlertLevel.ELEVATED
+        assert RegimeDetector().classify(MacroAlertLevel.NORMAL, [level]) is (
+            MarketRegime.NEUTRAL
+        )

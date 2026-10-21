@@ -626,6 +626,24 @@ class TestRegimeHysteresisSettings:
         assert self._settings(regime_exit_confirmations=3).config_hash() != baseline
 
 
+class TestMacroSeriesFlag:
+    """DAT-22: zmienne stanu z FRED — domyślnie off; głosy VIX i spreadu HY mogą
+    zacieśnić próg bramki, więc flaga należy do przepisu."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).macro_series_enabled is False
+
+    def test_belongs_to_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert "macro_series_enabled" in RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, macro_series_enabled=True
+        ).config_hash()
+        assert flipped != baseline
+
+
 class TestTrendProbabilitiesFlag:
     """ML-29: rozkład trzech klas w prompcie i kolumna z migracji 051 — domyślnie
     off, a że zmienia prompt i rozkład pewności, należy do przepisu."""

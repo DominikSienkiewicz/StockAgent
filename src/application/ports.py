@@ -15,6 +15,7 @@ from src.domain.finops import LLMCallEntry, LLMUsage
 from src.domain.fx import FxRate
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
+from src.domain.macro_series import MacroSeriesSnapshot
 from src.domain.options_flow import OptionsFlowSnapshot
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
@@ -959,6 +960,17 @@ class MacroRatesPort(ABC):
 
     @abstractmethod
     def fetch_yield_curve(self) -> YieldCurveSnapshot | None: ...
+
+
+class MacroSeriesPort(ABC):
+    """DAT-22: zmienne stanu z FRED (VIXCLS, VXNCLS, BAMLH0A0HYM2, T10Y2Y, NFCI) —
+    raz na cykl, nie per symbol.
+
+    Obserwacje z dni <= `as_of` (point-in-time), każda z dniem obserwacji, nie
+    pobrania. None gdy źródło niedostępne / brak klucza."""
+
+    @abstractmethod
+    def fetch_macro_series(self, as_of: date) -> MacroSeriesSnapshot | None: ...
 
 
 class AnalystConsensusPort(ABC):

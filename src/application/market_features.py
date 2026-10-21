@@ -1,11 +1,12 @@
-"""Faza cech rynkowych cyklu (ML-31, ML-32) — raz na cykl, PRZED grafem.
+"""Faza cech rynkowych cyklu (ML-31, ML-32, DAT-22) — raz na cykl, PRZED grafem.
 
 Za flagą `market_features_enabled` use case zbiera dla każdego symbolu cyklu kurs
 (port rynku) i historię snapshotów (`price_snapshots`, darmowy odczyt Supabase),
 a domena liczy z nich cechy point-in-time (`price_features`). Po zebraniu kursów
 WSZYSTKICH symboli domena dokłada cechy cross-sectional (`cross_section_features`):
 rangę ruchu w uniwersum, ruch ponad IVV i medianę klasy, szerokość rynku. Cechy
-trafiają do stanu grafu i dalej do `feature_snapshots` jako zestaw cech w wersji 4.
+trafiają do stanu grafu i dalej do `feature_snapshots` jako zestaw cech w wersji 4,
+razem z cechami makro cyklu z FRED (DAT-22, pobranymi raz przez DI).
 
 FinOps: zero płatnych wywołań. Kurs pobrany tutaj zapamiętuje `CycleQuoteCache`,
 więc `check_price` tego samego cyklu go reużywa — liczba requestów o cenę się nie
@@ -112,11 +113,13 @@ def collect_market_features(
     as_of: datetime,
     asset_types: Mapping[str, AssetType],
     gate_thresholds: Mapping[AssetType, float],
+    macro_features: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Cechy rynkowe każdego symbolu cyklu (cenowe + cross-sectional, None = brak).
+    """Cechy rynkowe każdego symbolu cyklu (cenowe + cross-sectional + makro, None = brak).
 
     `asset_types` (brak = STOCK) wyznacza klasę do mediany, a `gate_thresholds`
     bazowy próg bramki klasy (bez mnożników reżimu i earnings) do szerokości rynku.
+    `macro_features` (DAT-22) to cechy makro cyklu — wspólne dla wszystkich symboli.
     Pojedynczy błąd per symbol nie przerywa fazy — symbol dostaje puste cechy."""
     prices: dict[str, PriceFeatures] = {}
     for symbol in dict.fromkeys(symbols):
@@ -129,6 +132,7 @@ def collect_market_features(
         symbol: {
             **features.as_features(),
             **cross.get(symbol, CrossSectionFeatures()).as_features(),
+            **(macro_features or {}),
         }
         for symbol, features in prices.items()
     }

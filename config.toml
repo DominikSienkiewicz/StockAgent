@@ -274,6 +274,10 @@ llm_pricing."text-embedding-3-small" = { input = 0.02 }
 options_flow_enabled = false
 social_velocity_enabled = true
 yield_curve_enabled = true
+# DAT-22: VIX, VXN, spread HY, T10Y2Y i NFCI z FRED (darmowe, klucz yield curve) — raz
+# na cykl. Głosy VIX/HY w reżimie zacieśniają próg (zmiana przepisu), cechy idą do
+# feature_snapshots z market_features_enabled. Bez migracji. Off do decyzji właściciela.
+macro_series_enabled = false
 analyst_consensus_enabled = true
 vector_memory_enabled = false
 # Trafia dosłownie do nagłówka `User-Agent` requestów do sec.gov (EdgarInsiderAdapter)

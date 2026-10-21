@@ -229,6 +229,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "options_flow_enabled",
     "social_velocity_enabled",
     "yield_curve_enabled",
+    # DAT-22: głosy VIX i spreadu HY w reżimie zacieśniają próg bramki.
+    "macro_series_enabled",
     "analyst_consensus_enabled",
     "vector_memory_enabled",
     "tool_use_enabled",
@@ -622,6 +624,11 @@ class Settings(BaseSettings):
     options_flow_enabled: bool = False
     social_velocity_enabled: bool = False
     yield_curve_enabled: bool = False
+    # DAT-22: zmienne stanu rynku z FRED (VIXCLS, VXNCLS, BAMLH0A0HYM2, T10Y2Y, NFCI),
+    # raz na cykl, darmowe (ten sam `fred_api_key`). Z `regime_aware_enabled` percentyl
+    # VIX z roku i 5-sesyjna zmiana spreadu HY to głosy reżimu (mogą tylko zacieśnić
+    # próg); z `market_features_enabled` cechy trafiają do `feature_snapshots`. Off.
+    macro_series_enabled: bool = False
     analyst_consensus_enabled: bool = False
     # Cross-Asset Vector Memory — tagowanie embeddingów reżimem + filtr w RAG
     # (migracja 017). Bez flagi RAG działa jak dotąd (bez filtra reżimu).

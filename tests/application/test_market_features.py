@@ -148,3 +148,20 @@ class TestCrossSectionPhase:
         # |Δ| ≥ próg klasy: AAPL (−3%) tak, MSFT (+1%) i IVV (−1%) nie, BTC (+4% < 5%) nie.
         assert features["IVV"]["breadth"] == pytest.approx(0.25)
         assert all(features["SSNLF"][name] is None for name in CROSS_SECTION_FEATURE_NAMES)
+
+
+def test_macro_features_of_the_cycle_reach_every_symbol() -> None:
+    # DAT-22: cechy makro są wspólne dla cyklu — ta sama wartość u każdego symbolu.
+    market = Mock(spec=MarketDataPort)
+    market.get_current_price.return_value = Money(Decimal("10"))
+    repository = Mock(spec=RepositoryPort)
+    repository.get_price_history.return_value = []
+    macro = {"vix_percentile_1y": 93.0, "macro_observed_on": {"VIXCLS": "2026-10-20"}}
+
+    features = collect_market_features(
+        ["AAPL", "BTC"], market_port=market, repository=repository, as_of=_NOW,
+        macro_features=macro, **_UNIVERSE,
+    )
+
+    assert features["AAPL"]["vix_percentile_1y"] == features["BTC"]["vix_percentile_1y"] == 93.0
+    assert features["BTC"]["macro_observed_on"] == {"VIXCLS": "2026-10-20"}

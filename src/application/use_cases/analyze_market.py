@@ -114,6 +114,7 @@ class AnalyzeMarketUseCase:
         symbols: Sequence[str],
         *,
         asset_types: Mapping[str, AssetType] | None = None,
+        macro_features: Mapping[str, Any] | None = None,
         now: datetime | None = None,
     ) -> None:
         """ML-31: cechy rynkowe symboli cyklu — RAZ, przed pierwszym `run`/`run_gate`.
@@ -122,7 +123,8 @@ class AnalyzeMarketUseCase:
         (zero odczytów — cechy i tak nie miałyby dokąd trafić). Z nimi czyta kurs
         (zapamiętany dla `check_price`) i historię snapshotów każdego symbolu; zero
         płatnych wywołań. Błąd per symbol daje puste cechy. `asset_types` (ML-32,
-        brak = STOCK) to klasy aktywów symboli do mediany klasy i szerokości rynku."""
+        brak = STOCK) to klasy aktywów symboli do mediany klasy i szerokości rynku;
+        `macro_features` (DAT-22) to cechy makro cyklu, te same dla każdego symbolu."""
         if not (self._deps.market_features_enabled and self._deps.feature_snapshots_enabled):
             return
         self._market_features = collect_market_features(
@@ -132,6 +134,7 @@ class AnalyzeMarketUseCase:
             as_of=now if now is not None else datetime.now(UTC),
             asset_types=asset_types or {},
             gate_thresholds=self._base_gate_thresholds(),
+            macro_features=macro_features,
         )
 
     def _base_gate_thresholds(self) -> dict[AssetType, float]:

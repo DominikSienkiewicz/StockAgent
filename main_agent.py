@@ -48,6 +48,7 @@ from src.application.ports import (
     InsiderFlowPort,
     LLMPort,
     MacroRatesPort,
+    MacroSeriesPort,
     MarketDataPort,
     NewsPort,
     OptionsFlowPort,
@@ -135,6 +136,7 @@ from src.domain.finops import CycleCost, estimate_cycle_cost, rank_by_magnitude
 from src.domain.hedge import equity_hedge_symbols
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
+from src.domain.macro_series import MacroSeriesSnapshot, macro_features, macro_series_votes
 from src.domain.market_calendar import closure_reason, to_nyse_time
 from src.domain.model_scorecard import MODEL_SCORECARD_WINDOW_DAYS
 from src.domain.number_format import format_money_pl, format_number_pl
@@ -1138,6 +1140,18 @@ def build_macro_rates_port(settings: Settings) -> MacroRatesPort:
     return NullMacroRatesAdapter()
 
 
+def build_macro_series_port(settings: Settings) -> MacroSeriesPort:
+    """DAT-22: zmienne stanu z FRED — realny port przy `macro_series_enabled` i kluczu
+    FRED, inaczej Null (zero I/O)."""
+    if settings.macro_series_enabled and settings.fred_api_key:
+        from src.infrastructure.adapters.fred_client import FredClient
+
+        return FredClient(api_key=settings.fred_api_key)
+    from src.infrastructure.adapters.fred_client import NullMacroSeriesAdapter
+
+    return NullMacroSeriesAdapter()
+
+
 def _provider_default_model(provider: str) -> str:
     """Model, którego adapter danego providera używa bez jawnego `model=`."""
     if provider == "anthropic":
@@ -1634,6 +1648,7 @@ def _resolve_regime(
     repository: RepositoryPort | None = None,
     cycle_at: datetime | None = None,
     on_banner: Callable[[RegimeBanner], None] | None = None,
+    macro_series: MacroSeriesSnapshot | None = None,
 ) -> tuple[str, float]:
     """#7: reżim rynku z overall_alert (zacieśnia próg + label do promptu).
     Zwraca (regime_context, regime_multiplier). Off / brak raportu → ("", 1.0).
@@ -1652,6 +1667,10 @@ def _resolve_regime(
     inwersja daje tylko NEUTRAL. To celowe: inwersje bywają wielomiesięczne,
     a weto trzymałoby agenta w risk-off przez cały ten czas.
     Snapshot jest już pobrany przed tym wywołaniem — zero dodatkowego fetchu.
+
+    DAT-22: z `macro_series_enabled` percentyl VIX z roku i 5-sesyjna zmiana
+    spreadu HY dokładają po głosie (`macro_series_votes`) — tak samo jak krzywa:
+    CRITICAL daje RISK_OFF, pojedynczy ELEVATED tylko NEUTRAL.
     """
     if not (settings.regime_aware_enabled and macro_risk_report is not None):
         return "", 1.0
@@ -1660,6 +1679,8 @@ def _resolve_regime(
     risk_signals: list[MacroAlertLevel] = []
     if settings.yield_curve_enabled and yield_curve is not None:
         risk_signals.append(yield_curve_alert_level(yield_curve.state()))
+    if settings.macro_series_enabled and macro_series is not None:
+        risk_signals.extend(macro_series_votes(macro_series))
 
     detector = RegimeDetector()
     raw_regime = detector.classify(macro_risk_report.overall_alert, risk_signals)
@@ -3466,6 +3487,8 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
     alpha_use_case = build_alpha_enrichment(settings, quota_monitor, repository=repository)
     collect_alpha = alpha_per_symbol_enabled(settings)
     yield_curve = build_macro_rates_port(settings).fetch_yield_curve()
+    # DAT-22: VIX, VXN, HY OAS, T10Y2Y, NFCI — raz na cykl (Null bez flagi: zero I/O).
+    macro_series = build_macro_series_port(settings).fetch_macro_series(started_at.date())
     results: list[SymbolResult] = []
     unsupported = set(settings.symbols_unsupported_price)
     crypto_set = set(settings.crypto_symbols)
@@ -3499,12 +3522,14 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
         repository=repository,
         cycle_at=started_at,
         on_banner=regime_banners.append,
+        macro_series=macro_series,
     )
 
-    # ML-31/ML-32: cechy rynkowe cyklu — raz, przed grafem (no-op bez flagi).
+    # ML-31/ML-32/DAT-22: cechy rynkowe cyklu — raz, przed grafem (no-op bez flagi).
     use_case.prepare_market_features(
         eligible,
         asset_types={s: _classify_asset(s, crypto_set, etf_set) for s in eligible},
+        macro_features=macro_features(macro_series) if macro_series is not None else None,
         now=started_at,
     )
 
