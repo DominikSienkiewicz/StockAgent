@@ -25,12 +25,12 @@ import logging
 from collections.abc import Collection
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, cast
+from typing import Any
 
 from src.application._prompt_safety import fence_untrusted
 from src.application.ports import LLMPort, RepositoryPort
 from src.application.report_weekly_recap import best_title, hero_verdict, worst_title
-from src.domain.council import InvestorOpinion
+from src.domain.council import InvestorOpinion, Recommendation, parse_recommendation
 from src.domain.prediction import Prediction, TrendDirection, is_substantive_insight
 from src.domain.value_objects import AssetType
 from src.domain.weekly_recap import (
@@ -40,10 +40,6 @@ from src.domain.weekly_recap import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Dozwolone rekomendacje rady — do walidacji wartości z JSONB.
-_RECOMMENDATIONS = ("BUY", "SELL", "HOLD")
-
 
 def _to_decimal(value: Any) -> Decimal | None:
     """Bezpieczna koercja do `Decimal` — None gdy wartość skażona / brak."""
@@ -55,9 +51,19 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _recommendation_or_hold(raw: Any, field: str) -> Recommendation:
+    """ARCH-03: rekomendacja z JSONB bez rozróżniania wielkości liter; wartość spoza
+    BUY/SELL/HOLD → HOLD z ostrzeżeniem (skażony zapis widać w logu, nie w recapie)."""
+    parsed = parse_recommendation(raw)
+    if parsed is None:
+        logger.warning("council_verdict: unknown %s %r — read as HOLD", field, raw)
+        return "HOLD"
+    return parsed
+
+
 def _parse_council(
     raw: Any,
-) -> tuple[tuple[InvestorOpinion, ...], str]:
+) -> tuple[tuple[InvestorOpinion, ...], Recommendation]:
     """Rekonstruuje głosy rady i finalną rekomendację z JSONB `council_verdict`.
 
     Werdykt zapisywany jest jako `dataclasses.asdict(CouncilVerdict)` (migracja
@@ -72,22 +78,21 @@ def _parse_council(
     for item in raw.get("investor_opinions") or []:
         if not isinstance(item, dict):
             continue
-        rec = str(item.get("recommendation", "HOLD"))
-        if rec not in _RECOMMENDATIONS:
-            rec = "HOLD"
         opinions.append(
             InvestorOpinion(
                 investor_name=str(item.get("investor_name", "")),
-                recommendation=cast(Any, rec),
+                recommendation=_recommendation_or_hold(
+                    item.get("recommendation", "HOLD"), "recommendation"
+                ),
                 confidence=float(item.get("confidence") or 0.0),
                 reasoning=str(item.get("reasoning", "")),
                 key_factors=tuple(item.get("key_factors") or ()),
             )
         )
 
-    final = str(raw.get("final_recommendation", "HOLD"))
-    if final not in _RECOMMENDATIONS:
-        final = "HOLD"
+    final = _recommendation_or_hold(
+        raw.get("final_recommendation", "HOLD"), "final_recommendation"
+    )
     return tuple(opinions), final
 
 
@@ -130,7 +135,7 @@ def _to_closed_prediction(
         confidence=float(row.get("confidence_score") or 0.0),
         correction_insight=insight if is_substantive_insight(insight) else "",
         council_opinions=opinions,
-        council_recommendation=cast(Any, recommendation),
+        council_recommendation=recommendation,
         recorded_trend_correct=_recorded_verdict(row.get("is_trend_correct")),
         asset_type=AssetType.CRYPTO if symbol.upper() in crypto_symbols else None,
     )

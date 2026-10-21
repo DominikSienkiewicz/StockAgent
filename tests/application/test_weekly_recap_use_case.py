@@ -11,9 +11,12 @@ Zamrażają wiążące wymagania FinOps/UX:
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import Mock
+
+import pytest
 
 from src.application.ports import LLMPort, RepositoryPort
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
@@ -155,6 +158,41 @@ class TestWeeklyRecapCouncilMapping:
 
         names = [op.investor_name for op in recap.worst.vindicated_dissenters]
         assert "Soros" in names
+
+    @staticmethod
+    def _loser_with(verdict: dict[str, Any]) -> list[dict[str, Any]]:
+        loser = _row(
+            "LOSER", trend="BULLISH", base="100", target="130", actual="90",
+            conf=0.9, verdict=verdict,
+        )
+        winners = [_row(f"WIN{i}", base="100", target="100", actual="100") for i in range(5)]
+        return [loser, *winners]
+
+    def _recap(self, verdict: dict[str, Any]) -> Any:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_predictions_detailed.return_value = self._loser_with(verdict)
+        llm = Mock(spec=LLMPort)
+        llm.analyze.return_value = {"narrative": "n"}
+        return _use_case(repo, llm).run()["recap"]
+
+    def test_lowercase_votes_are_read_case_insensitively(self) -> None:
+        # ARCH-03 (decyzja W2-9): „buy”/„sell” z JSONB to BUY/SELL, nie HOLD —
+        # inaczej dysydent SELL przy spadku nie zostałby wybroniony.
+        recap = self._recap(
+            _verdict(final="buy", opinions=(("Soros", "sell", 0.9, "przegrzanie"),))
+        )
+
+        assert [op.investor_name for op in recap.worst.vindicated_dissenters] == ["Soros"]
+
+    def test_unknown_recommendation_falls_back_to_hold_with_a_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            self._recap(
+                _verdict(final="STRONG_BUY", opinions=(("Soros", "SELL", 0.9, "x"),))
+            )
+
+        assert "STRONG_BUY" in caplog.text
 
 
 class TestWeeklyRecapPromptSafety:

@@ -6,7 +6,7 @@ import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Literal, NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 from postgrest.exceptions import APIError
 from supabase import create_client
@@ -20,7 +20,12 @@ from src.application.ports import (
     StoredReceipt,
 )
 from src.application.report_council_history import InvestorHistory
-from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.council import (
+    CouncilVerdict,
+    InvestorOpinion,
+    Recommendation,
+    parse_recommendation,
+)
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
@@ -319,13 +324,25 @@ def _rows(response: Any) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], data)
 
 
+def _recommendation_or_hold(raw: Any, field: str) -> Recommendation:
+    """ARCH-03: rekomendacja z JSONB bez rozróżniania wielkości liter; wartość spoza
+    BUY/SELL/HOLD → HOLD z ostrzeżeniem, zamiast wpuścić ją do werdyktu rady."""
+    parsed = parse_recommendation(raw)
+    if parsed is None:
+        logger.warning("council_verdict: unknown %s %r — read as HOLD", field, raw)
+        return "HOLD"
+    return parsed
+
+
 def _deserialize_verdict(raw: dict[str, Any]) -> CouncilVerdict:
     """Odtwarza `CouncilVerdict` z JSONB (migracja 005). Opinie inwestorów są
     zapisane jako lista dictów — mapujemy je z powrotem na value objecty."""
     opinions = tuple(
         InvestorOpinion(
             investor_name=str(o.get("investor_name", "")),
-            recommendation=cast(Any, o.get("recommendation", "HOLD")),
+            recommendation=_recommendation_or_hold(
+                o.get("recommendation", "HOLD"), "recommendation"
+            ),
             confidence=float(o.get("confidence") or 0.0),
             reasoning=str(o.get("reasoning", "")),
             key_factors=tuple(o.get("key_factors") or ()),
@@ -333,7 +350,9 @@ def _deserialize_verdict(raw: dict[str, Any]) -> CouncilVerdict:
         for o in raw.get("investor_opinions") or []
     )
     return CouncilVerdict(
-        final_recommendation=cast(Any, raw.get("final_recommendation", "HOLD")),
+        final_recommendation=_recommendation_or_hold(
+            raw.get("final_recommendation", "HOLD"), "final_recommendation"
+        ),
         consensus_strength=float(raw.get("consensus_strength") or 0.0),
         summary=str(raw.get("summary", "")),
         dissenting_views=tuple(raw.get("dissenting_views") or ()),
@@ -1398,14 +1417,13 @@ class SupabaseRepository(RepositoryPort):
         rows = _paginate(query.order("timestamp", desc=True).order("id", desc=True))
         # Grupowanie per (inwestor, symbol); kolejność malejąca po czasie
         # zachowana (rekomendacje od najnowszej).
-        grouped: dict[tuple[str, str], list[Literal["BUY", "SELL", "HOLD"]]] = {}
+        grouped: dict[tuple[str, str], list[Recommendation]] = {}
         for row in rows:
             name = str(row.get("investor_name") or "")
             sym = str(row.get("symbol") or "")
-            rec_raw = row.get("recommendation")
-            if not name or not sym or rec_raw not in ("BUY", "SELL", "HOLD"):
+            rec = parse_recommendation(row.get("recommendation"))
+            if not name or not sym or rec is None:
                 continue
-            rec = cast("Literal['BUY', 'SELL', 'HOLD']", rec_raw)
             grouped.setdefault((name, sym), []).append(rec)
         return [
             InvestorHistory(
@@ -1428,8 +1446,8 @@ class SupabaseRepository(RepositoryPort):
         )
         out: list[InvestorOpinion] = []
         for row in _rows(response):
-            rec = row.get("recommendation")
-            if rec not in ("BUY", "SELL", "HOLD"):
+            rec = parse_recommendation(row.get("recommendation"))
+            if rec is None:
                 continue
             out.append(
                 InvestorOpinion(

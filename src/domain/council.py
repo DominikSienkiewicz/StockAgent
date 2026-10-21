@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, overload
 
 from src.domain.value_objects import AssetType, Fundamentals, ValuationVerdict
 
@@ -55,13 +55,40 @@ STRONG_CONSENSUS_THRESHOLD = 0.7
 CONFIDENCE_HIGH_THRESHOLD = 0.75
 CONFIDENCE_LOW_THRESHOLD = 0.5
 
-_RECOMMENDATIONS: tuple[Literal["BUY", "SELL", "HOLD"], ...] = ("BUY", "SELL", "HOLD")
+# ARCH-03: jedno źródło prawdy dla rekomendacji rady — odpowiedź LLM, JSONB
+# z bazy i głosy z `council_votes` parsują się tą samą regułą.
+type Recommendation = Literal["BUY", "SELL", "HOLD"]
+
+_RECOMMENDATIONS: tuple[Recommendation, ...] = ("BUY", "SELL", "HOLD")
+_RECOMMENDATION_BY_KEY: dict[str, Recommendation] = {rec: rec for rec in _RECOMMENDATIONS}
+
+
+@overload
+def parse_recommendation(raw: object, default: Recommendation) -> Recommendation: ...
+
+
+@overload
+def parse_recommendation(raw: object, default: None = None) -> Recommendation | None: ...
+
+
+def parse_recommendation(
+    raw: object, default: Recommendation | None = None
+) -> Recommendation | None:
+    """Rekomendacja z danych nieufnych (LLM, JSONB): "buy" i " Sell " też pasują.
+
+    Wartość spoza BUY/SELL/HOLD (np. "STRONG_BUY"), pusta albo nie-string →
+    `default`. Bez `default` caller dostaje None i sam decyduje: zastąpić HOLD-em
+    (z ostrzeżeniem w logu) albo pominąć rekord.
+    """
+    if not isinstance(raw, str):
+        return default
+    return _RECOMMENDATION_BY_KEY.get(raw.strip().upper(), default)
 
 
 @dataclass(frozen=True)
 class InvestorOpinion:
     investor_name: str
-    recommendation: Literal["BUY", "SELL", "HOLD"]
+    recommendation: Recommendation
     confidence: float
     reasoning: str
     key_factors: tuple[str, ...]
@@ -83,7 +110,7 @@ class InvestorOpinion:
 
 @dataclass(frozen=True)
 class CouncilVerdict:
-    final_recommendation: Literal["BUY", "SELL", "HOLD"]
+    final_recommendation: Recommendation
     consensus_strength: float
     summary: str
     dissenting_views: tuple[str, ...]
@@ -162,7 +189,7 @@ class CouncilVerdict:
 def derive_consensus(
     opinions: list[InvestorOpinion],
     weights: Mapping[str, float] | None = None,
-) -> tuple[Literal["BUY", "SELL", "HOLD"], float]:
+) -> tuple[Recommendation, float]:
     """Wylicza autorytatywną rekomendację rady i siłę konsensusu z REALNYCH głosów.
 
     Decyzja należy do domeny, nie do chairman-LLM: bierzemy faktyczne opinie
@@ -217,7 +244,7 @@ def derive_consensus(
     return winner, strength
 
 
-_DIRECTION_TO_REC: dict[str, Literal["BUY", "SELL", "HOLD"]] = {
+_DIRECTION_TO_REC: dict[str, Recommendation] = {
     "UP": "BUY",
     "DOWN": "SELL",
     "FLAT": "HOLD",
@@ -227,7 +254,7 @@ _DIRECTION_TO_REC: dict[str, Literal["BUY", "SELL", "HOLD"]] = {
 def vindicated_dissenters(
     opinions: Sequence[InvestorOpinion],
     actual_direction: Literal["UP", "DOWN", "FLAT"],
-    final_recommendation: Literal["BUY", "SELL", "HOLD"],
+    final_recommendation: Recommendation,
 ) -> tuple[InvestorOpinion, ...]:
     """Inwestorzy 'wybronieni' przez rynek: głosowali zgodnie z RZECZYWISTYM
     ruchem (BUY↔UP, SELL↔DOWN, HOLD↔FLAT), ale niezgodnie z finalną

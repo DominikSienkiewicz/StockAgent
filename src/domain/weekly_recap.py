@@ -37,7 +37,7 @@ from src.domain.calibration_curve import (
     probability_scores,
     reliability_curve,
 )
-from src.domain.council import InvestorOpinion, vindicated_dissenters
+from src.domain.council import InvestorOpinion, Recommendation, vindicated_dissenters
 from src.domain.prediction import Prediction, sideways_tolerance_for
 from src.domain.value_objects import AssetType
 
@@ -74,7 +74,7 @@ class ClosedPrediction:
     confidence: float
     correction_insight: str = ""
     council_opinions: tuple[InvestorOpinion, ...] = ()
-    council_recommendation: Literal["BUY", "SELL", "HOLD"] = "HOLD"
+    council_recommendation: Recommendation = "HOLD"
     recorded_trend_correct: bool | None = None
     asset_type: AssetType | None = None
 

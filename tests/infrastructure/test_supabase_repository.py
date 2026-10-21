@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -1038,6 +1039,26 @@ class TestGetCouncilVoteHistory:
         assert soros.recommendations == ("SELL", "HOLD")  # newest-first
         assert soros.window_days == 30
 
+    def test_lowercase_vote_counts_and_unknown_vote_is_skipped(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ARCH-03: ta sama reguła co przy werdykcie — „sell” to SELL, a głos
+        # spoza BUY/SELL/HOLD nie wchodzi do historii.
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "in_", "gte", "order", "order", "range"],
+            [
+                {"investor_name": "Soros", "symbol": "NVDA",
+                 "recommendation": "sell", "timestamp": "2026-06-10T00:00:00+00:00"},
+                {"investor_name": "Soros", "symbol": "NVDA",
+                 "recommendation": "STRONG_BUY", "timestamp": "2026-06-09T00:00:00+00:00"},
+            ],
+        )
+
+        result = repo.get_council_vote_history(["NVDA"], window_days=30)
+
+        assert [h.recommendations for h in result] == [("SELL",)]
+
     def test_returns_empty_when_no_votes(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
@@ -1729,6 +1750,27 @@ class TestGetPreviousVerdict:
         self._set_verdict_chain(mock_client, [])
 
         assert repo.get_previous_verdict("NVDA") is None
+
+    def test_previous_verdict_sanitizes_unknown_recommendation(
+        self,
+        repo: SupabaseRepository,
+        mock_client: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # ARCH-03: JSONB przechodził przez `cast(Any)` bez walidacji, więc
+        # „STRONG_BUY” wchodził do `CouncilVerdict` jako rekomendacja rady.
+        row = self._row()
+        row["council_verdict"]["final_recommendation"] = "STRONG_BUY"
+        row["council_verdict"]["investor_opinions"][0]["recommendation"] = "sell"
+        self._set_verdict_chain(mock_client, [row])
+
+        with caplog.at_level(logging.WARNING):
+            previous = repo.get_previous_verdict("NVDA")
+
+        assert previous is not None
+        assert previous.verdict.final_recommendation == "HOLD"
+        assert previous.verdict.investor_opinions[0].recommendation == "SELL"
+        assert "STRONG_BUY" in caplog.text
 
 
 class TestShockAlerts:

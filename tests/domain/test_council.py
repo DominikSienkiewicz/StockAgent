@@ -9,6 +9,7 @@ from src.domain.council import (
     CouncilVerdict,
     InvestorOpinion,
     derive_consensus,
+    parse_recommendation,
     vindicated_dissenters,
 )
 from src.domain.value_objects import AssetType
@@ -521,3 +522,29 @@ class TestCouncilInput:
             asset_type=AssetType.ETF,
         )
         assert isinstance(data.news_articles, tuple)
+
+
+class TestParseRecommendation:
+    """ARCH-03: jedna reguła parsowania rekomendacji dla odpowiedzi LLM i odczytów
+    z bazy (decyzja W2-9: wielkość liter bez znaczenia, nieznane → default)."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("BUY", "BUY"),
+            ("SELL", "SELL"),
+            ("HOLD", "HOLD"),
+            ("buy", "BUY"),
+            (" Sell ", "SELL"),
+            ("hOlD", "HOLD"),
+        ],
+    )
+    def test_known_values_are_parsed_case_insensitively(self, raw, expected):
+        assert parse_recommendation(raw, "HOLD") == expected
+
+    @pytest.mark.parametrize("raw", ["STRONG_BUY", "", None, 1, ["BUY"]])
+    def test_unknown_values_fall_back_to_the_default(self, raw):
+        assert parse_recommendation(raw, "HOLD") == "HOLD"
+
+    def test_without_a_default_unknown_value_is_none(self):
+        assert parse_recommendation("STRONG_BUY") is None

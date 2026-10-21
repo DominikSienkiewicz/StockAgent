@@ -55,7 +55,12 @@ from src.domain.attestation import (
     prediction_commitment_payload,
 )
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
-from src.domain.council import CouncilInput, CouncilVerdict, vindicated_dissenters
+from src.domain.council import (
+    CouncilInput,
+    CouncilVerdict,
+    Recommendation,
+    vindicated_dissenters,
+)
 from src.domain.experiment import (
     ARM_BLIND_COUNCIL,
     ARM_NO_MEMORY,
@@ -468,7 +473,7 @@ def _normalize_llm_analysis(raw: dict[str, Any]) -> tuple[dict[str, Any], list[s
     return analysis, flags
 
 
-_TREND_TO_REC: dict[str, Literal["BUY", "SELL", "HOLD"]] = {
+_TREND_TO_REC: dict[str, Recommendation] = {
     "BULLISH": "BUY",
     "BEARISH": "SELL",
     "SIDEWAYS": "HOLD",

@@ -1,6 +1,7 @@
 # tests/infrastructure/test_advisory_council.py
 from __future__ import annotations
 
+import logging
 import time
 from decimal import Decimal
 from unittest.mock import Mock
@@ -266,6 +267,22 @@ class TestConfidenceClamp:
         opinion = _parse_opinion("Inv", {"recommendation": "BUY", "confidence": 85})
         assert 0.0 <= opinion.confidence <= 1.0
 
+
+
+class TestRecommendationParsing:
+    """ARCH-03: rekomendacja persony przez domenowe `parse_recommendation`."""
+
+    def test_lowercase_recommendation_is_accepted(self) -> None:
+        assert _parse_opinion("Inv", {"recommendation": " sell "}).recommendation == "SELL"
+
+    def test_unknown_recommendation_is_hold_with_a_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            opinion = _parse_opinion("Inv", {"recommendation": "STRONG_BUY"})
+
+        assert opinion.recommendation == "HOLD"
+        assert "STRONG_BUY" in caplog.text
 
 class TestPersonaCap:
     """Finding #11: liczba wywołań LLM ograniczona górnym capem person."""
