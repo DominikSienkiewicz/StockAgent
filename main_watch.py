@@ -74,7 +74,7 @@ from src.domain.shock import (
     should_emit,
 )
 from src.domain.value_objects import AssetType, Money, Threshold
-from src.infrastructure.logging_redaction import configure_logging
+from src.infrastructure.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -495,9 +495,7 @@ def run_watch(
 
 def main(settings: Settings | None = None) -> int:
     resolved = settings or Settings()  # type: ignore[call-arg]
-    configure_logging(
-        resolved.secret_values(), fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    )
+    configure_logging("main_watch", resolved.secret_values())
     # Import lokalny — reguła pingu żyje w DI Containerze Fast Loopa.
     from main_agent import run_with_heartbeat
 

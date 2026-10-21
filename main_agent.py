@@ -190,7 +190,7 @@ from src.infrastructure.adapters.write_guard import (
 )
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
-from src.infrastructure.logging_redaction import configure_logging
+from src.infrastructure.logging_setup import configure_logging, symbol_context
 from src.infrastructure.persona_loader import load_council_personas, personas_sha256
 from src.infrastructure.recipe_fingerprints import ml_model_version, prompt_templates_sha256
 
@@ -1811,31 +1811,35 @@ def _process_one_symbol(
     świadomą, odwracalną decyzją; o promocji do cech modelu rozstrzyga
     porównanie A/B (EXP-19), nie intuicja dobierającego wagi.
     Off → `alpha_fusion=None` → prompt i zapis jak przed #14.
+
+    NIEZ-21: symbol trafia do każdej linii logu z tego wywołania — także z wątku
+    puli i z wątków rady (`copy_context`).
     """
-    try:
-        inputs = _symbol_inputs(
-            symbol,
-            crypto_set=crypto_set,
-            etf_set=etf_set,
-            collect_alpha=collect_alpha,
-            alpha_use_case=alpha_use_case,
-            earnings_gate_enabled=earnings_gate_enabled,
-            alpha_fusion_enabled=alpha_fusion_enabled,
-        )
-        raw = use_case.run(
-            symbol,
-            asset=inputs.asset,
-            regime_context=regime_context,
-            regime_multiplier=regime_multiplier,
-            earnings_multiplier=inputs.earnings_multiplier,
-            alpha_fusion=inputs.alpha_fusion,
-            peer_context=peer_ctx,
-            # FIN-14: wiek referencji ceny liczy się od startu cyklu.
-            now=cycle_at,
-        )
-        return _finished_symbol(symbol, raw, inputs.alpha_signal, collect_alpha, cycle_at)
-    except Exception as exc:
-        return _failed_symbol(symbol, exc, secret_values)
+    with symbol_context(symbol):
+        try:
+            inputs = _symbol_inputs(
+                symbol,
+                crypto_set=crypto_set,
+                etf_set=etf_set,
+                collect_alpha=collect_alpha,
+                alpha_use_case=alpha_use_case,
+                earnings_gate_enabled=earnings_gate_enabled,
+                alpha_fusion_enabled=alpha_fusion_enabled,
+            )
+            raw = use_case.run(
+                symbol,
+                asset=inputs.asset,
+                regime_context=regime_context,
+                regime_multiplier=regime_multiplier,
+                earnings_multiplier=inputs.earnings_multiplier,
+                alpha_fusion=inputs.alpha_fusion,
+                peer_context=peer_ctx,
+                # FIN-14: wiek referencji ceny liczy się od startu cyklu.
+                now=cycle_at,
+            )
+            return _finished_symbol(symbol, raw, inputs.alpha_signal, collect_alpha, cycle_at)
+        except Exception as exc:
+            return _failed_symbol(symbol, exc, secret_values)
 
 
 class _SymbolInputs(NamedTuple):
@@ -3383,7 +3387,7 @@ def main(
 ) -> int:
     """`clock` to zegar cyklu: dzień NYSE (FIN-34) i `started_at` raportu."""
     resolved = settings or Settings.from_env()
-    configure_logging(resolved.secret_values())
+    configure_logging("main_agent", resolved.secret_values())
     return run_with_heartbeat(resolved, lambda: _run_fast_loop(resolved, clock))
 
 

@@ -37,7 +37,8 @@ def configure_logging(
     level: int = logging.INFO,
     fmt: str = DEFAULT_LOG_FORMAT,
 ) -> None:
-    """Jedyna konfiguracja logów `main_*.py`: `logging.basicConfig(level, fmt)`
+    """Warstwa redakcji pod `logging_setup.configure_logging` (NIEZ-21), którą
+    wołają `main_*.py`: `logging.basicConfig(level, fmt)`
     (no-op, gdy root ma już handlery), po czym każdy handler roota dostaje
     `RedactingFormatter` z `secret_values`. Ponowne wywołanie podmienia
     wartości zamiast owijać formatter drugi raz."""

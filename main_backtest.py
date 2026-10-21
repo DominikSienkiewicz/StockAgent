@@ -21,7 +21,7 @@ from src.application.use_cases.backtest import BacktestUseCase
 from src.config import Settings
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
-from src.infrastructure.logging_redaction import configure_logging
+from src.infrastructure.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def backtest_symbols(settings: Settings) -> list[str]:
 
 def main(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
-    configure_logging(settings.secret_values())
+    configure_logging("main_backtest", settings.secret_values())
     repository = SupabaseRepository(
         url=settings.supabase_url, key=settings.supabase_key
     )

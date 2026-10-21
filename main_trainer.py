@@ -66,7 +66,7 @@ from src.infrastructure.adapters.write_guard import ReadOnlyRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
 from src.infrastructure.llm.unavailable import UnavailableLLMAdapter
-from src.infrastructure.logging_redaction import configure_logging
+from src.infrastructure.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -505,7 +505,7 @@ def _send_weekly_recap(
 
 def main(settings: Settings | None = None) -> int:
     resolved = settings or Settings.from_env()
-    configure_logging(resolved.secret_values())
+    configure_logging("main_trainer", resolved.secret_values())
     # NIEZ-13: ping zewnętrznego heartbeatu na koniec (ok = exit 0).
     return run_with_heartbeat(resolved, lambda: _run_with_summary(resolved))
 

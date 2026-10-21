@@ -74,10 +74,10 @@ def _load_settings() -> Settings:
     """`Settings` z env plus logi z redakcją jego sekretów (BEZ-02). Poziom
     WARNING jak dotąd: narzędzie pisze wynik na stdout, logi tylko przy kłopocie."""
     from src.config import Settings
-    from src.infrastructure.logging_redaction import configure_logging
+    from src.infrastructure.logging_setup import configure_logging
 
     settings = Settings.from_env()
-    configure_logging(settings.secret_values(), level=logging.WARNING)
+    configure_logging("main_tools", settings.secret_values(), level=logging.WARNING)
     return settings
 
 
