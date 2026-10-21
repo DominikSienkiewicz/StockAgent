@@ -154,3 +154,31 @@ def test_mypy_ratchet_keeps_the_typed_test_directories() -> None:
     assert "tests/domain" in files
     missing = [directory for directory in MYPY_RATCHET if directory not in files]
     assert not missing, f"[tool.mypy].files zgubiło katalogi ratchetu: {missing}"
+
+
+def _job_runs(job: str) -> list[str]:
+    steps = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"][job]["steps"]
+    return [str(step.get("run", "")) for step in steps]
+
+
+# CI-11: `uv sync --frozen` instaluje z locka bez sprawdzenia zgodności z pyproject.toml,
+# więc PR zmieniający zależność bez `uv lock` przechodził zielono. Joby bramki
+# synchronizują z `--locked` (albo mają krok `uv lock --check`); workflowy produkcyjne
+# zostają przy `--frozen`. Flagi się wykluczają, więc `--locked` zastępuje `--frozen`.
+GATE_JOBS = ("quality", "sonarcloud")
+
+
+@pytest.mark.parametrize("job", GATE_JOBS)
+def test_ci_sync_asserts_lockfile_is_current(job: str) -> None:
+    runs = _job_runs(job)
+    syncs = [run.split() for run in runs if "uv sync" in run]
+
+    assert syncs, f"job `{job}` w ci.yml nie ma kroku `uv sync`"
+    lock_checked = any("uv lock --check" in run for run in runs)
+    unchecked = [" ".join(sync) for sync in syncs if "--locked" not in sync]
+    assert lock_checked or not unchecked, (
+        f"job `{job}` synchronizuje bez sprawdzenia locka: {unchecked} — "
+        "PR ze zmienioną zależnością bez `uv lock` przeszedłby zielono."
+    )
+    assert not [sync for sync in syncs if {"--locked", "--frozen"} <= set(sync)]
+

@@ -5,7 +5,7 @@ Stack, prerequisites, local setup, and CI. Tunables live in [configuration.md](c
 ## Tech stack
 
 - **Python 3.12** with `from __future__ import annotations`
-- **[uv](https://github.com/astral-sh/uv)** (Astral) — dependency manager, `uv sync --frozen` in CI
+- **[uv](https://github.com/astral-sh/uv)** (Astral) — dependency manager. The CI gate syncs with `uv sync --locked`, which fails when `uv.lock` no longer matches `pyproject.toml` (a dependency changed without `uv lock`, CI-11); the production workflows install the committed lock with `--frozen`
 - **[LangGraph](https://langchain-ai.github.io/langgraph/) 1.2** — decision graph with `StateGraph[AgentState]`
 - **OpenAI Python SDK** v2 — `gpt-5-mini` advisory council + `text-embedding-3-small` embeddings, JSON mode
 - **Anthropic Python SDK** (core dependency) — Claude Sonnet 4.6, **default model for the main analysis**

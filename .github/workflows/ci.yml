@@ -29,7 +29,9 @@ jobs:
           enable-cache: true
 
       - name: 📦 Sync dependencies (incl. dev + anthropic extra)
-        run: uv sync --frozen --extra anthropic --no-build --no-install-project
+        # CI-11: `--locked` pada, gdy uv.lock nie zgadza się z pyproject.toml (zmiana
+        # zależności bez `uv lock`); `--frozen` instalowałby po cichu stary lock.
+        run: uv sync --locked --extra anthropic --no-build --no-install-project
 
       - name: 🔍 Ruff (lint)
         run: uv run --frozen --no-build --no-sync ruff check .
@@ -85,7 +87,7 @@ jobs:
 
       - name: 📦 Sync dependencies (incl. dev + anthropic extra)
         if: ${{ env.SONAR_TOKEN != '' }}
-        run: uv sync --frozen --extra anthropic --no-build --no-install-project
+        run: uv sync --locked --extra anthropic --no-build --no-install-project
 
       # Coverage for SonarCloud. Mirrors CI's test selection minus integration (real
       # API keys); container tests use testcontainers (Docker is on the ubuntu runner).
