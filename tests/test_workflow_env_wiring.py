@@ -1063,3 +1063,101 @@ def test_resume_guard_reads_the_real_deadman_schedule() -> None:
     # Parser crona musi widzieć prawdziwy `on: schedule` (klucz True w PyYAML) —
     # inaczej warunkowy test wyżej byłby pomijany także przy odkomentowanym cronie.
     assert _scheduled_deadmen(_all_workflow_specs()) == ["deadman_daily.yml"]
+
+
+# CI-08: tag akcji (`@v4`) jest ruchomy — właściciel repo akcji przesuwa go na dowolny
+# commit, także pod jobem z `contents: write`. Każde `uses:` wskazuje więc pełny SHA
+# commitu, a komentarz `# vX.Y.Z` obok mówi człowiekowi i Dependabotowi, jaka to wersja.
+# Linie, nie YAML: komentarz z wersją ginie przy parsowaniu.
+_USES_LINE = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S.*?)\s*$")
+_PINNED_USES = re.compile(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}\s+#\s*v\d+(?:\.\d+)*")
+
+
+def _uses_lines(text: str) -> list[str]:
+    """Wartości `uses:` (z komentarzem) każdej linii workflowu."""
+    return [match.group(1) for line in text.splitlines() if (match := _USES_LINE.match(line))]
+
+
+def _unpinned_actions(text: str) -> list[str]:
+    """`uses:` bez pełnego SHA i komentarza wersji; akcje lokalne (`./`) są w repo."""
+    return [
+        uses
+        for uses in _uses_lines(text)
+        if not uses.startswith("./") and not _PINNED_USES.fullmatch(uses)
+    ]
+
+
+def _parsed_uses(spec: Mapping[str, Any]) -> list[str]:
+    jobs: Mapping[str, Any] = spec.get("jobs") or {}
+    return [str(job["uses"]) for job in jobs.values() if "uses" in job] + [
+        str(step["uses"]) for step in _workflow_steps(spec) if "uses" in step
+    ]
+
+
+def test_every_action_is_pinned_by_sha() -> None:
+    workflows_dir = ROOT / ".github" / "workflows"
+    unpinned: dict[str, list[str]] = {}
+    for path in sorted([*workflows_dir.glob("*.yml"), *workflows_dir.glob("*.yaml")]):
+        text = path.read_text(encoding="utf-8")
+        # Strażnik skanu linii: tyle samo `uses:` co w sparsowanym YAML-u.
+        assert len(_uses_lines(text)) == len(_parsed_uses(yaml.safe_load(text))), path.name
+        if found := _unpinned_actions(text):
+            unpinned[path.name] = found
+
+    assert not unpinned, (
+        f"akcje bez pełnego SHA commitu i komentarza `# vX.Y.Z`: {unpinned} — "
+        "SHA tagu: `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`."
+    )
+
+
+@pytest.mark.parametrize(
+    "uses",
+    [
+        "actions/checkout@v4",
+        "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+        "actions/checkout@main # v4",
+        "actions/checkout@11d5960 # v4.4.0",
+    ],
+)
+def test_pin_guard_rejects_tags_short_shas_and_missing_versions(uses: str) -> None:
+    assert _unpinned_actions(f"      - uses: {uses}\n") == [uses]
+
+
+def test_pin_guard_accepts_a_full_sha_with_its_version_and_local_actions() -> None:
+    text = (
+        "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n"
+        "        uses: ./.github/actions/setup\n"
+    )
+
+    assert _unpinned_actions(text) == []
+
+
+# CI-09: `version: latest` instaluje przy każdym przebiegu inną binarkę, a Supabase CLI
+# wykonuje DDL na produkcji. Podbicie wersji to świadomy commit — sprawdź wtedy, że
+# parser nazw migracji (`^([0-9]+)_(.*)\.sql$`, CLAUDE.md) się nie zmienił.
+def _setup_inputs(action: str) -> list[dict[str, Any]]:
+    return [
+        dict(step.get("with") or {})
+        for spec in _all_workflow_specs().values()
+        for step in _workflow_steps(spec)
+        if str(step.get("uses", "")).startswith(f"{action}@")
+    ]
+
+
+def test_supabase_cli_version_is_pinned() -> None:
+    inputs = _setup_inputs("supabase/setup-cli")
+
+    assert inputs, "żaden workflow nie instaluje Supabase CLI"
+    versions = [str(step_inputs.get("version", "")) for step_inputs in inputs]
+    assert all(re.fullmatch(r"\d+\.\d+\.\d+", version) for version in versions), versions
+
+
+def test_no_workflow_installs_a_tool_at_latest() -> None:
+    latest = [
+        f"{name}: {step.get('uses')}"
+        for name, spec in _all_workflow_specs().items()
+        for step in _workflow_steps(spec)
+        if str(dict(step.get("with") or {}).get("version", "")).strip().lower() == "latest"
+    ]
+
+    assert latest == []

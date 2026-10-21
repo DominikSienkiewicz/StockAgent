@@ -27,12 +27,14 @@ jobs:
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: ⚡ Install Supabase CLI
         uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1.7.1
         with:
-          version: latest
+          # CI-09: konkretna wersja, nie `latest` — binarka wykonuje DDL na produkcji.
+          # Przy podbiciu sprawdź parser nazw migracji (`^([0-9]+)_(.*)\.sql$`).
+          version: 2.121.0
 
       - name: 🔍 Dry run — co zostałoby zaaplikowane
         # Zawsze, także przed realnym pushem: log pokazuje listę migracji,
