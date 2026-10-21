@@ -45,6 +45,7 @@ dev = [
     "pyyaml>=6.0.3",
     "docker>=7.1.0",
     "pytest-socket>=0.8.1",
+    "hypothesis>=6.170.5",
 ]
 
 # Alias wstecznej zgodności: SDK jest już zależnością rdzeniową, ale

@@ -13,11 +13,18 @@ zdejmują ją lokalnie przez `monkeypatch.delenv`.
 import os
 
 import pytest
+from hypothesis import settings as hypothesis_settings
 
 os.environ["STOCKAGENT_DISABLE_TOML"] = "1"
 # NIEZ-22: w CI (GitHub Actions) zmienna wskazuje summary jobu testów — testy
 # entry pointów dopisywałyby do niej podsumowania cykli zbudowanych z mocków.
 os.environ.pop("GITHUB_STEP_SUMMARY", None)
+
+# TEST-12: profil testów własności. 200 przykładów na własność i bez deadline'u —
+# maszyna i runner CI pod obciążeniem robiłyby z limitu czasu flaky test.
+# `HYPOTHESIS_PROFILE=default` przywraca ustawienia biblioteki.
+hypothesis_settings.register_profile("ci", max_examples=200, deadline=None)
+hypothesis_settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

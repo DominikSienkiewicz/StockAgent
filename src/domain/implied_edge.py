@@ -134,31 +134,34 @@ def evaluate_edge(
 
     Brak IV / `iv <= 0` / `horizon_hours <= 0` → NO_SIGNAL (`edge_sigma` i
     `implied_move` = None, nigdy dzielenia przez zero). IV NaN/inf to dane bez
-    sensu — także NO_SIGNAL (PORT-09: inf dawał MARKET_AHEAD, NaN — ALIGNED).
+    sensu — także NO_SIGNAL (PORT-09: inf dawał MARKET_AHEAD, NaN — ALIGNED);
+    TEST-12: tak samo NaN albo nieskończoność horyzontu i ruchu modelu.
     """
     if iv is None or not math.isfinite(iv):
-        return ImpliedEdge(
-            label=EdgeLabel.NO_SIGNAL,
-            edge_sigma=None,
-            implied_move=None,
-            model_move=model_move,
-        )
+        return _no_signal(model_move)
 
     implied_move = implied_move_12h(iv, horizon_hours)
-    if implied_move <= 0.0:
-        # iv <= 0 lub horyzont <= 0 — dane bez sensu, brak sygnału.
-        return ImpliedEdge(
-            label=EdgeLabel.NO_SIGNAL,
-            edge_sigma=None,
-            implied_move=None,
-            model_move=model_move,
-        )
+    if not math.isfinite(implied_move) or implied_move <= 0.0:
+        # iv <= 0 lub horyzont <= 0 (albo NaN / inf) — dane bez sensu, brak sygnału.
+        return _no_signal(model_move)
 
     edge_sigma = abs(model_move) / implied_move
+    if not math.isfinite(edge_sigma):
+        # Ruch modelu NaN / inf albo IV tak bliska zera, że iloraz wychodzi poza float.
+        return _no_signal(model_move)
     return ImpliedEdge(
         label=_label_for(edge_sigma),
         edge_sigma=edge_sigma,
         implied_move=implied_move,
+        model_move=model_move,
+    )
+
+
+def _no_signal(model_move: float) -> ImpliedEdge:
+    return ImpliedEdge(
+        label=EdgeLabel.NO_SIGNAL,
+        edge_sigma=None,
+        implied_move=None,
         model_move=model_move,
     )
 

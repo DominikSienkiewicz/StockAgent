@@ -1,6 +1,7 @@
 # src/domain/sizing.py
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 # Progi reguły Kelly-lite. Trzymane w domenie — to decyzja biznesowa o apetycie
@@ -115,6 +116,10 @@ def suggest_band(
     consensus = _clamp(consensus_strength, 0.0, 1.0)
     dissent = _clamp(dissent_ratio, 0.0, 1.0)
     if hit_sample is not None and hit_sample < MIN_HIT_SAMPLE:
+        hit_rate = None
+    # TEST-12: NaN i nieskończoność to brak track recordu, nie hit-rate 100%
+    # (`_clamp` zamieniał NaN i +inf na 1.0, czyli na pełną bandę).
+    if hit_rate is not None and not math.isfinite(hit_rate):
         hit_rate = None
     clamped_hit_rate = _clamp(hit_rate, 0.0, 1.0) if hit_rate is not None else None
 

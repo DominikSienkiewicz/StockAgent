@@ -13,7 +13,7 @@ def calibration_error(samples: Sequence[tuple[float, bool]]) -> float:
     Każdy sample to (confidence∈[0,1], czy_trafiona_kierunkowo). Pusta → 0.0."""
     if not samples:
         return 0.0
-    mean_conf = sum(c for c, _ in samples) / len(samples)
+    mean_conf = sum(_unit_confidence(c) for c, _ in samples) / len(samples)
     accuracy = sum(1 for _, ok in samples if ok) / len(samples)
     return abs(mean_conf - accuracy)
 
@@ -33,7 +33,13 @@ def calibration_score(confidence: float, correct: bool) -> float:
     przepewność. Zostaje dla wierszy v1; nowe wyniki liczy
     `brier_calibration_score`."""
     outcome = 1.0 if correct else 0.0
-    return 1.0 - abs(confidence - outcome)
+    return 1.0 - abs(_unit_confidence(confidence) - outcome)
+
+
+def _unit_confidence(confidence: float) -> float:
+    """TEST-12: pewność spoza skali (wiersze sprzed `clamp_unit`, np. 85 z LLM-a
+    na skali 0–100) przycięta do [0, 1], żeby kalibracja nie wyszła poza [0, 1]."""
+    return min(max(confidence, 0.0), 1.0)
 
 
 def brier_calibration_score(confidence: float, correct: bool) -> float:
