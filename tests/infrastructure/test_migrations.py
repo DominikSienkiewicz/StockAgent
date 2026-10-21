@@ -10,6 +10,7 @@ Uruchomienie:
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -89,20 +90,25 @@ MIGRATION_FILES = [
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
+# CI-06: krok `containers` w ci.yml ustawia 1 — brak demona to wtedy porażka, nie skip.
+REQUIRE_DOCKER_ENV = "REQUIRE_DOCKER"
 
 
-@pytest.fixture(scope="module")
-def pg_conn():
-    """Kontener Postgres z pgvector — żyje przez cały moduł testów.
+@contextmanager
+def _pgvector_connection() -> Iterator[psycopg2.extensions.connection]:
+    """Kontener Postgres z pgvector i połączenie z autocommit — wspólne dla
+    `pg_conn` i `fresh_pg`.
 
-    Skipuje cały moduł gdy Docker nie jest dostępny (CI bez demona, lokalnie
-    bez Docker Desktop).
+    Bez demona Dockera skipuje (lokalnie bez Docker Desktop), chyba że
+    `REQUIRE_DOCKER=1`: zielony krok CI z zerem wykonanych testów niczego nie dowodzi.
     """
     import docker
 
     try:
         docker.from_env().ping()
-    except Exception:
+    except Exception as exc:
+        if os.environ.get(REQUIRE_DOCKER_ENV) == "1":
+            pytest.fail(f"Docker daemon niedostępny, a {REQUIRE_DOCKER_ENV}=1: {exc}")
         pytest.skip("Docker daemon niedostępny — pomijam testy kontenerowe")
 
     with PostgresContainer(PGVECTOR_IMAGE) as container:
@@ -114,8 +120,21 @@ def pg_conn():
             password=container.password,
         )
         conn.autocommit = True
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+
+@pytest.fixture(scope="module")
+def pg_conn():
+    """Kontener Postgres z pgvector — żyje przez cały moduł testów.
+
+    Skipuje cały moduł gdy Docker nie jest dostępny (CI bez demona, lokalnie
+    bez Docker Desktop) — poza `REQUIRE_DOCKER=1` (`_pgvector_connection`).
+    """
+    with _pgvector_connection() as conn:
         yield conn
-        conn.close()
 
 
 def _apply_migrations(conn: psycopg2.extensions.connection) -> None:
@@ -1998,24 +2017,8 @@ def fresh_pg():
     """Świeży, IZOLOWANY kontener Postgres (function scope) — dla testów, które
     muszą zacząć od stanu PRZED konkretną migracją (nie da się tego uzyskać w
     module-scoped kontenerze, gdzie wszystkie migracje są już zaaplikowane)."""
-    import docker
-
-    try:
-        docker.from_env().ping()
-    except Exception:
-        pytest.skip("Docker daemon niedostępny — pomijam testy kontenerowe")
-
-    with PostgresContainer(PGVECTOR_IMAGE) as container:
-        conn = psycopg2.connect(
-            host=container.get_container_host_ip(),
-            port=container.get_exposed_port(5432),
-            dbname=container.dbname,
-            user=container.username,
-            password=container.password,
-        )
-        conn.autocommit = True
+    with _pgvector_connection() as conn:
         yield conn
-        conn.close()
 
 
 @pytest.mark.containers
@@ -2715,3 +2718,35 @@ def test_migration_versions_sort_lexicographically_in_numeric_order() -> None:
 
     assert versions == sorted(versions)
     assert versions == [f"{int(v):03d}" for v in versions]
+
+
+def _docker_without_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    import docker
+
+    def _no_daemon() -> object:
+        raise ConnectionError("brak demona Dockera")
+
+    monkeypatch.setattr(docker, "from_env", _no_daemon)
+
+
+def test_require_docker_turns_missing_daemon_into_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CI-06: krok kontenerowy był zielony przy zerze wykonanych testów — brak
+    demona dawał skip. Z `REQUIRE_DOCKER=1` (krok `containers` w ci.yml) to porażka.
+    Bez markera `containers`: fabryka ma działać właśnie wtedy, gdy Dockera nie ma."""
+    _docker_without_daemon(monkeypatch)
+    monkeypatch.setenv("REQUIRE_DOCKER", "1")
+
+    with pytest.raises(pytest.fail.Exception, match="REQUIRE_DOCKER"), _pgvector_connection():
+        pass
+
+
+def test_missing_docker_daemon_still_skips_without_require_docker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _docker_without_daemon(monkeypatch)
+    monkeypatch.delenv("REQUIRE_DOCKER", raising=False)
+
+    with pytest.raises(pytest.skip.Exception), _pgvector_connection():
+        pass

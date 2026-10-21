@@ -222,3 +222,13 @@ def test_sonar_coverage_measures_every_entrypoint(entrypoint: str) -> None:
         f"pytest w jobie sonarcloud mierzy {targets} — bez `--cov={entrypoint[:-3]}` "
         f"Sonar pokazuje {entrypoint} jako niepokryty w całości."
     )
+
+
+def test_ci_container_step_requires_docker() -> None:
+    # CI-06: bez `REQUIRE_DOCKER=1` brak demona daje skip całego modułu i zielony krok
+    # z zerem wykonanych testów kontenerowych.
+    steps = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["quality"]["steps"]
+    container_steps = [s for s in steps if _pytest_marker(str(s.get("run", ""))) == "containers"]
+
+    assert len(container_steps) == 1
+    assert dict(container_steps[0].get("env") or {}).get("REQUIRE_DOCKER") == "1"

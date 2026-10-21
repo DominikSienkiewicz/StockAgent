@@ -51,6 +51,9 @@ jobs:
 
       - name: 🐳 Pytest (container schema tests)
         # Testy migracji SQL odpalają Postgres + pgvector przez testcontainers.
+        env:
+          # CI-06: brak demona Dockera = porażka kroku, nie zielony skip zera testów.
+          REQUIRE_DOCKER: "1"
         run: uv run --frozen --no-build --no-sync pytest -m containers
 
   sonarcloud:
