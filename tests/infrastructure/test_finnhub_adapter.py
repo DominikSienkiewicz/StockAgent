@@ -285,3 +285,14 @@ class TestGetDailyChange:
         from src.application.ports import DailyChangePort
 
         assert issubclass(FinnhubAdapter, DailyChangePort)
+
+
+def test_quote_request_takes_a_token_from_the_shared_limiter(mocker) -> None:
+    # DAT-12: wszystkie adaptery Finnhub dzielą jeden limiter procesu.
+    limiter = Mock()
+    adapter = FinnhubAdapter(api_key="test-key", rate_limiter=limiter)
+    mocker.patch("requests.Session.get", return_value=_ok_response({"c": 189.5}))
+
+    adapter.get_current_price("AAPL")
+
+    limiter.acquire.assert_called_once()

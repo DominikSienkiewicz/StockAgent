@@ -5930,3 +5930,31 @@ class TestFastLoopWeeklyBudgetBanner:
 
         assert alerts == []
         assert "weekly budget not checked" in caplog.text
+
+
+class TestFinnhubSharedRateLimiter:
+    """DAT-12: limit Finnhub jest per klucz — każdy adapter Finnhub procesu
+    bierze tokeny z tego samego limitera (limiter na instancji by go nie widział)."""
+
+    def test_every_finnhub_adapter_shares_the_process_limiter(
+        self, settings, mock_external_clients
+    ) -> None:
+        from src.domain.macro_risk import MacroRiskInstrumentType
+
+        settings.options_flow_enabled = True
+        settings.analyst_consensus_enabled = True
+        settings.risk_symbols = ["SH"]
+        settings.risk_symbol_types = {"SH": MacroRiskInstrumentType.INVERSE_EQUITY}
+        shared = main_agent.FINNHUB_RATE_LIMITER
+
+        enrichment = main_agent.build_alpha_enrichment(settings)
+        macro = main_agent.build_macro_risk_use_case(settings, MagicMock(spec=RepositoryPort))
+        options = main_agent.build_options_port(settings)
+        use_case = main_agent.build_use_case(settings)
+
+        assert main_agent.build_market_port(settings)._equity._rate_limiter is shared
+        assert enrichment._analyst._rate_limiter is shared
+        assert enrichment._options._rate_limiter is shared
+        assert macro is not None and macro._market._rate_limiter is shared
+        assert options is not None and options._rate_limiter is shared
+        assert use_case._deps.market_port._equity._rate_limiter is shared

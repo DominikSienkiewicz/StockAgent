@@ -11,6 +11,7 @@ from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.shock import DailyChange
 from src.domain.value_objects import Money
 from src.infrastructure.adapters._http import (
+    RateLimiter,
     build_session,
     raise_for_status_redacted,
     safe_get,
@@ -36,12 +37,15 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort):
         base_url: str = DEFAULT_BASE_URL,
         timeout: int = DEFAULT_TIMEOUT,
         quota_monitor: QuotaMonitor | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._session = build_session()
         self._quota_monitor = quota_monitor
+        # DAT-12: wspólny limiter procesu (jeden na klucz Finnhub) z DI.
+        self._rate_limiter = rate_limiter
 
     def get_current_price(self, symbol: str) -> Money:
         payload = self._fetch_quote(symbol)
@@ -74,6 +78,8 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort):
         )
 
     def _fetch_quote(self, symbol: str) -> dict[str, Any]:
+        if self._rate_limiter is not None:
+            self._rate_limiter.acquire()
         response = safe_get(
             self._session,
             f"{self._base_url}/quote",

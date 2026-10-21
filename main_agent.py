@@ -147,7 +147,8 @@ from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
-from src.infrastructure.adapters._http import redact_secrets
+from src.infrastructure.adapters._finnhub_common import FINNHUB_REQUESTS_PER_MINUTE
+from src.infrastructure.adapters._http import RateLimiter, redact_secrets
 from src.infrastructure.adapters.advisory_council import (
     COUNCIL_MAX_PERSONAS,
     LLMAdvisoryCouncil,
@@ -204,6 +205,10 @@ QUOTA_ALERT_LOOKBACK_HOURS = 7 * 24 + 3
 PERSONA_TRACK_RECORD_DAYS = 90
 
 logger = logging.getLogger(__name__)
+
+# DAT-12: limit Finnhub jest per klucz, więc limiter jest JEDEN na proces — każdy
+# adapter Finnhub (/quote, analitycy, opcje) dostaje ten sam obiekt.
+FINNHUB_RATE_LIMITER = RateLimiter(FINNHUB_REQUESTS_PER_MINUTE)
 
 
 def _ignored_result(symbol: str) -> SymbolResult:
@@ -707,21 +712,29 @@ def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
     return ReadOnlyAttestationPublisher(publisher)
 
 
-def build_options_port(settings: Settings) -> OptionsFlowPort | None:
+def build_options_port(
+    settings: Settings, quota_monitor: QuotaMonitor | None = None
+) -> OptionsFlowPort | None:
     """#18 — port opcji dla grafu (fetch IV w `_predict_node`, za bramką
     volatility). None gdy `options_flow_enabled=false` → sygnał nie powstaje."""
     if not settings.options_flow_enabled:
         return None
     from src.infrastructure.adapters.finnhub_options import FinnhubOptionsAdapter
 
-    return FinnhubOptionsAdapter(api_key=settings.finnhub_api_key)
+    return FinnhubOptionsAdapter(
+        api_key=settings.finnhub_api_key,
+        quota_monitor=quota_monitor,
+        rate_limiter=FINNHUB_RATE_LIMITER,
+    )
 
 
 def build_market_port(settings: Settings) -> MarketDataPort:
     """Darmowe źródła ceny: krypto → CoinGecko, reszta → Finnhub.
     Wydzielone z `build_use_case`, bo `main_watch` (#11) potrzebuje samej ceny."""
     return RoutingMarketDataPort(
-        equity=FinnhubAdapter(api_key=settings.finnhub_api_key),
+        equity=FinnhubAdapter(
+            api_key=settings.finnhub_api_key, rate_limiter=FINNHUB_RATE_LIMITER
+        ),
         crypto=CoinGeckoAdapter(),
         crypto_symbols=settings.crypto_symbols,
     )
@@ -991,7 +1004,9 @@ def build_macro_risk_use_case(
     # bazowy (akcje + krypto). Flag-gated; book = analizowane symbole.
     book_symbols = list(settings.symbols) + list(settings.crypto_symbols)
     return MonitorMacroRiskUseCase(
-        market_port=FinnhubAdapter(api_key=settings.finnhub_api_key),
+        market_port=FinnhubAdapter(
+            api_key=settings.finnhub_api_key, rate_limiter=FINNHUB_RATE_LIMITER
+        ),
         repository_port=repository,
         macro_port=macro_port,
         book_symbols=book_symbols,
@@ -1010,10 +1025,13 @@ def alpha_per_symbol_enabled(settings: Settings) -> bool:
     )
 
 
-def build_alpha_enrichment(settings: Settings) -> AlphaEnrichmentUseCase:
+def build_alpha_enrichment(
+    settings: Settings, quota_monitor: QuotaMonitor | None = None
+) -> AlphaEnrichmentUseCase:
     """DI dla nowych źródeł alpha (Dane). Każdy port to realny adapter (gdy
     flaga on) albo Null-adapter (default → zero I/O). EDGAR/Reddit są darmowe;
-    earnings reużywa klucza AV; opcje/analitycy reużywają klucza Finnhub."""
+    earnings reużywa klucza AV; opcje/analitycy reużywają klucza Finnhub
+    i jego limitera procesu (DAT-12)."""
     from src.infrastructure.adapters.alpha_vantage_earnings import (
         AlphaVantageEarningsAdapter,
         NullEarningsCalendarAdapter,
@@ -1050,7 +1068,11 @@ def build_alpha_enrichment(settings: Settings) -> AlphaEnrichmentUseCase:
         else NullEarningsCalendarAdapter()
     )
     options: OptionsFlowPort = (
-        FinnhubOptionsAdapter(api_key=settings.finnhub_api_key)
+        FinnhubOptionsAdapter(
+            api_key=settings.finnhub_api_key,
+            quota_monitor=quota_monitor,
+            rate_limiter=FINNHUB_RATE_LIMITER,
+        )
         if settings.options_flow_enabled
         else NullOptionsFlowAdapter()
     )
@@ -1060,7 +1082,11 @@ def build_alpha_enrichment(settings: Settings) -> AlphaEnrichmentUseCase:
         else NullSocialVelocityAdapter()
     )
     analyst: AnalystConsensusPort = (
-        FinnhubAnalystAdapter(api_key=settings.finnhub_api_key)
+        FinnhubAnalystAdapter(
+            api_key=settings.finnhub_api_key,
+            quota_monitor=quota_monitor,
+            rate_limiter=FINNHUB_RATE_LIMITER,
+        )
         if settings.analyst_consensus_enabled
         else NullAnalystConsensusAdapter()
     )
@@ -1331,7 +1357,9 @@ def build_use_case(
     # Routing: krypto → CoinGecko, reszta → Finnhub. Use case widzi jeden port.
     market_port = RoutingMarketDataPort(
         equity=FinnhubAdapter(
-            api_key=settings.finnhub_api_key, quota_monitor=quota_monitor
+            api_key=settings.finnhub_api_key,
+            quota_monitor=quota_monitor,
+            rate_limiter=FINNHUB_RATE_LIMITER,
         ),
         crypto=CoinGeckoAdapter(quota_monitor=quota_monitor),
         crypto_symbols=settings.crypto_symbols,
@@ -1416,7 +1444,7 @@ def build_use_case(
         experiment_arms_enabled=settings.experiment_arms_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
-        options_port=build_options_port(settings),
+        options_port=build_options_port(settings, quota_monitor),
         # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
         # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji. WIA-70:
         # flaga on bez kolumn 024/043 → cykl bez atestacji, predykcje zapisane.
@@ -3268,7 +3296,7 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
 
     # Dane: enrichment alpha (per-symbol) + krzywa rentowności (raz na cykl).
     # Wszystko domyślnie Null/None → zero I/O, póki flagi off.
-    alpha_use_case = build_alpha_enrichment(settings)
+    alpha_use_case = build_alpha_enrichment(settings, quota_monitor)
     collect_alpha = alpha_per_symbol_enabled(settings)
     yield_curve = build_macro_rates_port(settings).fetch_yield_curve()
     results: list[SymbolResult] = []

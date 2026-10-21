@@ -43,7 +43,7 @@ All HTTP adapters retry transient failures (429 / 5xx) with exponential backoff,
 
 | Source | Filter / parameters | Notes |
 |---|---|---|
-| **Finnhub** (`/quote`) | One request per ticker, 60 req/min free tier | US exchanges only. `.L` / `.DE` / `.NL` tickers → 403. |
+| **Finnhub** (`/quote`) | One request per ticker, 60 req/min free tier | US exchanges only. `.L` / `.DE` / `.NL` tickers → 403. The limit is per key, so every Finnhub adapter of the process (quotes, analyst consensus, option chain) takes tokens from one shared token bucket at 55 req/min (DAT-12) and waits instead of drawing a 429. |
 | **Alpha Vantage** `NEWS_SENTIMENT` | One request per ticker, `limit=50`, `time_from = now − 24h`, client-side relevance filter ≥ 0.5 | **AND filter on tickers** = a separate request per symbol. Rate limit 25 req/day × N keys = N × 25/day. |
 | **Alpha Vantage** `OVERVIEW` + `EARNINGS` | 2 requests per stock symbol per slow-loop refresh | Used by `AlphaVantageFundamentalsAdapter`. Free tier = 25 req/day → max ~12 stock symbols per refresh with a single key. Multi-key rotation via `ALPHA_VANTAGE_API_KEYS` (CSV) already supported. ETF symbols (`SYMBOLS_ETF`) are skipped. |
 | **Supabase** (Postgres + pgvector) | `prediction_logs` + `price_snapshots` + `fundamentals_cache` tables + materialized view `ml_feature_store` | Service role key. RPC `refresh_ml_feature_store` is called before training. |
@@ -102,6 +102,7 @@ Every adapter that has a paid / metered quota writes a `QuotaAlert` to a shared 
 | `OpenAIAdapter` | `WARNING` when a 429 / 5xx / connection error was retried but eventually succeeded (you're at the TPM edge). `CRITICAL` when retries are exhausted and the call failed. Retries happen only in the adapter (the SDK's own are off) and one wait is capped at 20 s. Source field includes the model: `OpenAI (gpt-5-mini)`. |
 | `AnthropicAdapter` (default main LLM) | Same retry/backoff as OpenAI on 429 / 5xx / 529 (Overloaded) / connection errors. `WARNING` after a successful retry, `CRITICAL` when retries are exhausted. Source field includes the model: `Anthropic (claude-sonnet-4-6)`. |
 | `FinnhubAdapter` | `CRITICAL` on 429 (free tier 60 req/min hit). |
+| `FinnhubAnalystAdapter`, `FinnhubOptionsAdapter` | `WARNING` on 429 (the shared 60 req/min budget is exhausted and that symbol's signal is skipped). A 401/403 is logged as one `WARNING` per endpoint per run (a rejected key or a premium endpoint) instead of passing for missing data (DAT-12). |
 | `ResendNotifier` | `CRITICAL` on 429 (free 100 mails/day), any other 4xx, any 5xx and a network error or timeout — email was not delivered. The alert appears in the **next** report once delivery recovers, and the push digest says the mail did not arrive. |
 
 All alerts from the current cycle are persisted to the `quota_alerts` table (migration `010_quota_alerts.sql`) — including the ones raised while the report itself is being sent. The report builder pulls **the last week (7 × 24 + 3 h)** of alerts, so a Sunday Slow Loop alert still reaches Monday's mail, and renders them as a coloured banner at the **very top** of the e-mail (above the NYSE session line). Severity drives the banner colour and ordering — `CRITICAL` rows come first.

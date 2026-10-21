@@ -68,3 +68,57 @@ class TestRetryLimits:
         retry.sleep(HTTPResponse(status=429, headers={"Retry-After": "3600"}))
 
         assert sleep.call_args.args[0] <= 10
+
+
+class TestRateLimiter:
+    """DAT-12: token bucket współdzielony przez adaptery jednego API w procesie."""
+
+    @staticmethod
+    def _limiter(rate_per_minute: int):
+        from src.infrastructure.adapters._http import RateLimiter
+
+        clock = [0.0]
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        limiter = RateLimiter(rate_per_minute, clock=lambda: clock[0], sleep=sleep)
+        return limiter, clock, sleeps
+
+    def test_burst_up_to_the_rate_does_not_wait(self):
+        limiter, _, sleeps = self._limiter(55)
+
+        for _ in range(55):
+            limiter.acquire()
+
+        assert sleeps == []
+
+    def test_request_over_the_budget_waits_for_one_token(self):
+        limiter, _, sleeps = self._limiter(60)
+
+        for _ in range(61):
+            limiter.acquire()
+
+        # 60/min = 1 token na sekundę: 61. request czeka pełną sekundę.
+        assert sleeps == [1.0]
+
+    def test_tokens_refill_with_time(self):
+        limiter, clock, sleeps = self._limiter(60)
+        for _ in range(60):
+            limiter.acquire()
+
+        clock[0] += 30.0
+        for _ in range(30):
+            limiter.acquire()
+
+        assert sleeps == []
+
+    def test_rate_must_be_positive(self):
+        import pytest
+
+        from src.infrastructure.adapters._http import RateLimiter
+
+        with pytest.raises(ValueError):
+            RateLimiter(0)
