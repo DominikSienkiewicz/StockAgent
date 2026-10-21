@@ -14,6 +14,7 @@ import requests
 from src.application.ports import ReportNotifierPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.subscriber import masked_email
 from src.infrastructure.adapters._http import build_session, raise_for_status_redacted
 
 logger = logging.getLogger(__name__)
@@ -135,8 +136,9 @@ class ResendNotifier(ReportNotifierPort):
             )
         raise_for_status_redacted(response)
         message_id = response.json().get("id", "<no-id>")
+        # BEZ-11: repo i logi GHA są publiczne — adres odbiorcy tylko zamaskowany.
         logger.info(
-            "Resend: sent report to %s (id=%s)", self._recipient, message_id
+            "Resend: sent report to %s (id=%s)", masked_email(self._recipient), message_id
         )
 
     def _emit_quota_alert(
