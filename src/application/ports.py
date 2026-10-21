@@ -751,7 +751,9 @@ class MLPredictionPort(ABC):
         SZCZEGÓŁ każdego foldu zamiast średniej: lista dictów z kluczami
         `train_end`, `valid_end`, `n_train`, `n_valid`, `candidate_rmse`,
         `baseline_rmse` (zwrot=0), `hit_rate` (trafność kierunku) oraz (ML-20)
-        `ic` (korelacja rang Spearmana), `sign_strategy_return` i `turnover`.
+        `ic` (korelacja rang Spearmana), `sign_strategy_return` i `turnover`,
+        a (EXP-04) `sum_loss_diff` / `sum_loss_diff_sq` względem „zwrot 0” i te
+        same sumy z prefiksem `drift_` / `llm_` dla testu sparowanego w domenie.
         `timestamps` działają jak w `train()`: purge horyzontu etykiety w foldach.
         Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
 

@@ -33,6 +33,22 @@ ZERO_BASELINE_LABEL = "zwrot 0"
 DRIFT_BASELINE_LABEL = "dryf średniej"
 LLM_BASELINE_LABEL = "sam LLM"
 
+# EXP-04: test sparowany „DM-lite” (Diebold–Mariano bez korekty HAC). Na każdym
+# punkcie OOS d = strata² baseline'u − strata² kandydata; foldy niosą Σd i Σd²,
+# a kandydat musi mieć z = średnia(d) / SE > PAIRED_Z_CRIT. 2.0 ≈ jednostronne
+# α 0,023 dla JEDNEGO testu — wagi shipuje jeden model wspólny. Bonferroni dla
+# 45 symboli (~2.8) dotyczyłby ocen per symbol, które wag nie zapisują.
+# Bez korekty autokorelacji i korelacji między symbolami z jest zawyżone, więc
+# test to warunek konieczny, nie dowód umiejętności.
+PAIRED_Z_CRIT = 2.0
+
+# Prefiks kluczy Σd / Σd² w foldzie per baseline (ten sam, który rozstrzyga margines).
+_PAIRED_PREFIX = {
+    ZERO_BASELINE_LABEL: "",
+    DRIFT_BASELINE_LABEL: "drift_",
+    LLM_BASELINE_LABEL: "llm_",
+}
+
 # Horyzont etykiety: target to zwrot 12h, więc wiersz z chwili t „zna" rynek do
 # t + 12h. Wiersz treningowy, którego etykieta dojrzewa po starcie walidacji,
 # przecieka do foldu (ML-13).
@@ -82,6 +98,27 @@ class BacktestSummary:
     mean_llm_baseline_rmse: float | None = None
     mean_net_return: float | None = None
     turnover: float | None = None
+    paired_z: float | None = None
+
+
+def paired_loss_z(folds: Sequence[Mapping[str, float]], prefix: str = "") -> float | None:
+    """EXP-04: statystyka z sparowanej różnicy strat kwadratowych po wszystkich
+    punktach OOS foldów (klucze `{prefix}sum_loss_diff`, `{prefix}sum_loss_diff_sq`,
+    `n_valid`). None, gdy foldy nie niosą sum albo jest mniej niż 2 punkty;
+    zerowy rozrzut daje ±inf (albo 0 przy zerowej średniej)."""
+    sum_key, sq_key = f"{prefix}sum_loss_diff", f"{prefix}sum_loss_diff_sq"
+    if not folds or not all(
+        sum_key in fold and sq_key in fold and "n_valid" in fold for fold in folds
+    ):
+        return None
+    n = sum(fold["n_valid"] for fold in folds)
+    if n < 2:
+        return None
+    mean = sum(fold[sum_key] for fold in folds) / n
+    variance = (sum(fold[sq_key] for fold in folds) - n * mean**2) / (n - 1)
+    if variance <= 0:
+        return math.copysign(math.inf, mean) if mean else 0.0
+    return mean / math.sqrt(variance / n)
 
 
 def beats_baseline(candidate_rmse: float, baseline_rmse: float) -> bool:
@@ -271,10 +308,17 @@ def summarize_folds(
     binding_label, binding_rmse = strongest_baseline(mean_baseline, mean_drift, mean_llm)
     passed = beats_baseline(mean_candidate, binding_rmse)
     mean_net_return, turnover = _net_strategy_stats(folds, cost_bps)
+    paired_z = paired_loss_z(folds, _PAIRED_PREFIX[binding_label])
 
     if n_oos_points is not None and n_oos_points < MIN_OOS_POINTS:
         passed = False
         verdict = f"za mało punktów OOS ({n_oos_points} < {MIN_OOS_POINTS})"
+    elif passed and paired_z is not None and paired_z <= PAIRED_Z_CRIT:
+        passed = False
+        verdict = (
+            f"model nie bije baseline'u „{binding_label}” istotnie "
+            f"(test sparowany z={paired_z:.1f} ≤ {PAIRED_Z_CRIT:.1f})"
+        )
     else:
         verdict = _verdict(
             mean_candidate,
@@ -300,4 +344,5 @@ def summarize_folds(
         mean_llm_baseline_rmse=mean_llm,
         mean_net_return=mean_net_return,
         turnover=turnover,
+        paired_z=paired_z,
     )

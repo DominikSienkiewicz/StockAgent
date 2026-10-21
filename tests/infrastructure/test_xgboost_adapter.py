@@ -690,3 +690,42 @@ class TestFeatureStatsBins:
         stats = adapter.train(features, target)["feature_stats"]
 
         assert stats["price_delta"]["psi_recent_30d"] is None
+
+class TestPairedLossTest:
+    """EXP-04: foldy niosą Σd i Σd² różnicy strat (baseline − kandydat), a domena
+    wymaga istotnego z — sam margines 2% na średniej 4 foldów przepuszczał szum."""
+
+    def test_folds_carry_paired_loss_sums_for_every_baseline(
+        self, adapter: XGBoostAdapter
+    ) -> None:
+        features, target = _synthetic_dataset(n=200)
+
+        folds = adapter.walk_forward_report(features, target)
+
+        for fold in folds:
+            for prefix in ("", "drift_", "llm_"):
+                assert f"{prefix}sum_loss_diff" in fold
+                assert fold[f"{prefix}sum_loss_diff_sq"] >= 0.0
+            # Średnia d to różnica średnich strat: RMSE_baseline² − RMSE_kandydata².
+            assert fold["sum_loss_diff"] / fold["n_valid"] == pytest.approx(
+                fold["baseline_rmse"] ** 2 - fold["candidate_rmse"] ** 2
+            )
+
+    def test_pure_noise_is_rejected_across_seeds(self, model_path: str) -> None:
+        # 80 wierszy → 4 foldy po 16 = 64 punkty OOS (≥ MIN_OOS_POINTS). Przy samym
+        # marginesie część ziaren szumu (normalnego i grubogonowego) przechodziła.
+        passed = []
+        for seed in range(10):
+            rng = np.random.default_rng(seed)
+            features = pd.DataFrame({name: rng.normal(0, 1, 80) for name in FEATURE_NAMES})
+            for kind, noise in (
+                ("normal", rng.normal(0, 0.05, 80)),
+                ("student-t", rng.standard_t(2, 80) * 0.02),
+            ):
+                result = XGBoostAdapter(model_path=model_path).train(
+                    features, pd.Series(noise), persist=False
+                )
+                if result["status"] == "evaluated_passed_gate":
+                    passed.append((kind, seed))
+
+        assert passed == []

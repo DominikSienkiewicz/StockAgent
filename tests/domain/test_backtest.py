@@ -360,3 +360,94 @@ class TestCountLabelOverlaps:
         rows = [("AAPL", self._T0, None), ("MSFT", self._T0, self._T0 + timedelta(hours=26))]
 
         assert count_label_overlaps(rows) == LabelOverlap(measured=0, overlapping=0)
+
+
+# EXP-04: test sparowany „DM-lite”. Średnia RMSE z 4 foldów bez testu istotności
+# przepuszcza szum, gdy różnica strat na pojedynczych punktach ma duży rozrzut.
+_MEAN_LOSS_DIFF = 0.0200**2 - 0.0194**2
+
+
+def _paired_folds(
+    spread: float, *, prefix: str = "", extra: dict[str, float] | None = None
+) -> list[dict[str, float]]:
+    """4 foldy po 30 punktów OOS, kandydat 3% lepszy od „zwrot 0” (margines 2%
+    przechodzi); sumy d i d² dają średnią różnicę strat i odchylenie `spread`."""
+    return [
+        {
+            "candidate_rmse": 0.0194,
+            "baseline_rmse": 0.0200,
+            "hit_rate": 0.5,
+            "n_valid": 30.0,
+            f"{prefix}sum_loss_diff": 30 * _MEAN_LOSS_DIFF,
+            f"{prefix}sum_loss_diff_sq": 30 * (_MEAN_LOSS_DIFF**2 + spread**2),
+            **(extra or {}),
+        }
+        for _ in range(4)
+    ]
+
+
+def test_margin_without_a_significant_paired_difference_does_not_pass() -> None:
+    from src.domain.backtest import PAIRED_Z_CRIT
+
+    summary = summarize_folds(_paired_folds(spread=1e-3))
+
+    assert summary.improvement_pct > MIN_REL_IMPROVEMENT * 100
+    assert summary.paired_z is not None and summary.paired_z < PAIRED_Z_CRIT
+    assert summary.beats_baseline is False
+    assert "istotnie" in summary.verdict
+
+
+def test_significant_paired_difference_keeps_the_pass() -> None:
+    from src.domain.backtest import PAIRED_Z_CRIT
+
+    summary = summarize_folds(_paired_folds(spread=1e-5))
+
+    assert summary.paired_z is not None and summary.paired_z > PAIRED_Z_CRIT
+    assert summary.beats_baseline is True
+
+
+def test_folds_without_paired_sums_keep_the_margin_rule() -> None:
+    folds = [
+        {"candidate_rmse": 0.0194, "baseline_rmse": 0.0200, "hit_rate": 0.5, "n_valid": 30.0}
+        for _ in range(4)
+    ]
+
+    summary = summarize_folds(folds)
+
+    assert summary.paired_z is None
+    assert summary.beats_baseline is True
+
+
+def test_paired_test_runs_against_the_binding_baseline() -> None:
+    # Dryf (0.0199) jest najsilniejszy; względem niego różnica strat to szum,
+    # choć względem „zwrot 0” byłaby istotna.
+    drift_mean = 0.0199**2 - 0.0194**2
+    extra = {
+        "drift_baseline_rmse": 0.0199,
+        "drift_sum_loss_diff": 30 * drift_mean,
+        "drift_sum_loss_diff_sq": 30 * (drift_mean**2 + 1e-6),
+    }
+
+    summary = summarize_folds(_paired_folds(spread=1e-5, extra=extra))
+
+    assert summary.beats_baseline is False
+    assert "dryf średniej" in summary.verdict
+
+
+def test_paired_loss_z_is_the_mean_difference_over_its_standard_error() -> None:
+    from math import sqrt
+
+    from src.domain.backtest import paired_loss_z
+
+    folds = _paired_folds(spread=1e-4)
+    n = 120
+    sd = sqrt(n * 1e-4**2 / (n - 1))
+
+    assert paired_loss_z(folds) == pytest.approx(_MEAN_LOSS_DIFF / (sd / sqrt(n)))
+
+
+def test_paired_loss_z_is_undefined_without_sums_or_points() -> None:
+    from src.domain.backtest import paired_loss_z
+
+    assert paired_loss_z([{"n_valid": 30.0}]) is None
+    assert paired_loss_z([{"sum_loss_diff": 1.0, "sum_loss_diff_sq": 1.0}]) is None

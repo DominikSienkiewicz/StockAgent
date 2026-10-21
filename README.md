@@ -32,7 +32,9 @@ Each claim links the file that backs it, and each of those runs in CI.
 - **A model ships only if it beats naive baselines out of sample.** →
   [`src/infrastructure/adapters/xgboost_local.py`](src/infrastructure/adapters/xgboost_local.py)
   → expanding-window walk-forward folds against the no-change, mean-drift and LLM-only
-  baselines; so far it has shipped nothing, and the report says so.
+  baselines, a 2% margin and a paired loss test; so far it has shipped nothing, and the
+  report says so. Passing is necessary, not sufficient: it keeps out a model worse than a
+  free rule, it does not prove skill.
 - **Every external source is a port with a safe fallback.** →
   [`src/application/ports.py`](src/application/ports.py) (`InsiderFlowPort`) →
   [`src/infrastructure/adapters/edgar_insider.py`](src/infrastructure/adapters/edgar_insider.py)

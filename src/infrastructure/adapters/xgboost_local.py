@@ -198,6 +198,7 @@ class XGBoostAdapter(MLPredictionPort):
             out.append(
                 {
                     **_training_part_baselines(train_y, valid_x, valid_y),
+                    **_paired_loss_sums(train_y, valid_x, valid_y, preds),
                     "train_end": float(train_end),
                     "valid_end": float(valid_end),
                     "n_train": float(fit_end),
@@ -297,22 +298,50 @@ class XGBoostAdapter(MLPredictionPort):
         return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
 
 
-def _training_part_baselines(
-    train_y: pd.Series, valid_x: pd.DataFrame, valid_y: pd.Series
-) -> dict[str, float]:
-    """ML-10: RMSE baseline'ów „dryf średniej" i „sam LLM" na walidacji foldu.
+def _baseline_predictions(
+    train_y: pd.Series, valid_x: pd.DataFrame, size: int
+) -> dict[str, Any]:
+    """ML-10: prognozy baseline'ów „dryf" i „llm" na walidacji foldu.
 
     Dryf przewiduje stały średni target części treningowej. „Sam LLM" przewiduje
     `llm_trend_signal` × średni |target| części treningowej — kierunek z LLM,
-    skala z historii. Bez kolumny sygnału LLM zwracamy tylko dryf.
+    skala z historii. Bez kolumny sygnału LLM zostaje tylko dryf.
     """
-    drift = float(train_y.mean())
-    baselines = {"drift_baseline_rmse": _rmse(valid_y, np.full(len(valid_y), drift))}
+    predictions: dict[str, Any] = {"drift": np.full(size, float(train_y.mean()))}
     if LLM_SIGNAL_FEATURE in valid_x.columns:
         scale = float(train_y.abs().mean())
-        llm_preds = np.asarray(valid_x[LLM_SIGNAL_FEATURE], dtype=float) * scale
-        baselines["llm_baseline_rmse"] = _rmse(valid_y, llm_preds)
-    return baselines
+        predictions["llm"] = np.asarray(valid_x[LLM_SIGNAL_FEATURE], dtype=float) * scale
+    return predictions
+
+
+def _training_part_baselines(
+    train_y: pd.Series, valid_x: pd.DataFrame, valid_y: pd.Series
+) -> dict[str, float]:
+    """ML-10: RMSE baseline'ów „dryf średniej" i „sam LLM" na walidacji foldu."""
+    return {
+        f"{name}_baseline_rmse": _rmse(valid_y, preds)
+        for name, preds in _baseline_predictions(train_y, valid_x, len(valid_y)).items()
+    }
+
+
+def _paired_loss_sums(
+    train_y: pd.Series, valid_x: pd.DataFrame, valid_y: pd.Series, preds: Any
+) -> dict[str, float]:
+    """EXP-04: Σd i Σd² foldu, d = strata² baseline'u − strata² kandydata na punkt.
+
+    Klucze bez prefiksu dotyczą „zwrot 0", z prefiksem `drift_` / `llm_` — tych
+    baseline'ów; test sparowany liczy z nich domena (`paired_loss_z`)."""
+    actual = np.asarray(valid_y, dtype=float)
+    candidate_loss = (actual - np.asarray(preds, dtype=float)) ** 2
+    baselines = {"": np.zeros(len(actual))}
+    for name, baseline in _baseline_predictions(train_y, valid_x, len(actual)).items():
+        baselines[f"{name}_"] = baseline
+    sums: dict[str, float] = {}
+    for prefix, baseline in baselines.items():
+        diff = (actual - baseline) ** 2 - candidate_loss
+        sums[f"{prefix}sum_loss_diff"] = float(diff.sum())
+        sums[f"{prefix}sum_loss_diff_sq"] = float((diff**2).sum())
+    return sums
 
 
 def _global_time_order(timestamps: Any, n_samples: int) -> list[datetime] | None:
