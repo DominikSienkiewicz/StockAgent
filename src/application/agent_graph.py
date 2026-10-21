@@ -1522,13 +1522,13 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # przepuściła (predict_node odpalił) — tu odsiewamy dodatkowo średnie
     # zmienności, dla których N wywołań LLM rady się ekonomicznie nie opłaca.
     if council_threshold is not None:
-        verdict = _gate_verdict(state, council_threshold, crypto_council_threshold)
-        if not verdict.passes:
+        gate = _gate_verdict(state, council_threshold, crypto_council_threshold)
+        if not gate.passes:
             logger.info(
                 "council_node skipped for %s — |Δ|=%.4f < threshold=%.4f",
                 state["symbol"],
                 abs(float(state["delta"])),
-                float(verdict.threshold.value),
+                float(gate.threshold.value),
             )
             return {"council_verdict": None}
     sentiment = state.get("sentiment") or {}
