@@ -51,15 +51,39 @@ class TestSettings:
         assert settings.supabase_url == "https://test.supabase.co"
 
     def test_raises_when_required_key_missing(self, env):
+        # ARCH-05: brak klucza zatrzymuje fabrykę, która go woła, nie konstrukcję.
         env.delenv("FINNHUB_API_KEY")
-        with pytest.raises(ValueError, match="finnhub_api_key"):
-            Settings(_env_file=None)
+        with pytest.raises(ValueError, match="FINNHUB_API_KEY"):
+            Settings(_env_file=None).require_finnhub_api_key()
 
     def test_alpha_vantage_is_required(self, env):
         env.delenv("ALPHA_VANTAGE_API_KEYS")
         env.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
         with pytest.raises(ValueError, match="alpha_vantage"):
-            Settings(_env_file=None)
+            Settings(_env_file=None).require_alpha_vantage_api_keys()
+
+    def test_settings_constructs_without_paid_keys(self, env):
+        # ARCH-05: darmowe joby (watch, deadman) nie potrzebują atrap płatnych kluczy.
+        for key in ("OPENAI_API_KEY", "FINNHUB_API_KEY", "ALPHA_VANTAGE_API_KEYS"):
+            env.delenv(key)
+
+        settings = Settings(_env_file=None)
+
+        assert settings.openai_api_key is None
+        assert settings.finnhub_api_key is None
+        assert settings.alpha_vantage_api_keys == []
+
+    def test_require_openai_api_key_names_the_variable(self, env):
+        env.delenv("OPENAI_API_KEY")
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            Settings(_env_file=None).require_openai_api_key()
+
+    def test_require_helpers_return_the_configured_keys(self, env):
+        settings = Settings(_env_file=None)
+
+        assert settings.require_openai_api_key() == "sk-test"
+        assert settings.require_finnhub_api_key() == "fh-test"
+        assert settings.require_alpha_vantage_api_keys() == ["av-test"]
 
     def test_parses_alpha_vantage_keys_csv(self, env):
         env.setenv("ALPHA_VANTAGE_API_KEYS", "key1, key2 , key3")

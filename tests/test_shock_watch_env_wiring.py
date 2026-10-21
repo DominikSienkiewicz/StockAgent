@@ -128,3 +128,30 @@ def test_watch_wires_the_free_price_router_as_its_daily_change_source(mocker) ->
 
     assert isinstance(source, DailyChangePort)
     assert isinstance(source, RoutingMarketDataPort)
+
+
+def test_watch_starts_without_paid_provider_keys(mocker) -> None:
+    # ARCH-05: Settings nie żąda kluczy płatnych dostawców, więc watch startuje bez
+    # OPENAI_API_KEY i ALPHA_VANTAGE_API_KEYS — atrapy w workflow są zbędne.
+    import main_watch
+    from src.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        finnhub_api_key="fh",
+        supabase_url="https://test.supabase.co",
+        supabase_key="anon",
+        symbols=["AAPL"],
+        shock_alerts_enabled=True,
+        telegram_bot_token="tg-token",
+        telegram_chat_id="42",
+    )
+    mocker.patch("main_agent.build_repository")
+    mocker.patch("main_agent.build_push_notifier")
+    scan_watch = mocker.patch(
+        "main_watch.scan_watch", return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1)
+    )
+
+    main_watch.main(settings)
+
+    scan_watch.assert_called_once()

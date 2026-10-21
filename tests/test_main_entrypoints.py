@@ -162,6 +162,13 @@ class TestCouncilLLMFactory:
 
 
 class TestEmbeddingAdapterFactory:
+    def test_raises_naming_the_key_when_openai_key_is_missing(self, settings):
+        # ARCH-05: klucz jest opcjonalny w Settings, więc żąda go fabryka.
+        settings.openai_api_key = None
+
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            main_agent.build_embedding_adapter(settings)
+
     def test_returns_openai_embeddings_for_openai_provider(self, settings, mocker):
         mocker.patch("src.infrastructure.llm.openai_embeddings.OpenAI")
         from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter

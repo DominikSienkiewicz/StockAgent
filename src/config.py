@@ -310,6 +310,13 @@ class ModelPriceSettings(BaseModel):
     cache_write: float | None = Field(default=None, ge=0)
 
 
+def _required_secret(value: str | None, env_name: str) -> str:
+    """ARCH-05: sekret wymagany przez fabrykę adaptera; pusty albo brak → ValueError."""
+    if not value:
+        raise ValueError(f"{env_name} is required by this entry point but is not set.")
+    return value
+
+
 class Settings(BaseSettings):
     """Konfiguracja runtime — dwa rozłączne źródła:
 
@@ -367,7 +374,10 @@ class Settings(BaseSettings):
 
     # ----- LLM -----
     llm_provider: Literal["openai", "anthropic"] = "openai"
-    openai_api_key: str
+    # ARCH-05: klucze płatnych dostawców nie są wymagane do KONSTRUKCJI Settings —
+    # darmowe joby (watch, deadman) startują bez nich. Klucza żąda fabryka adaptera
+    # (`require_*`), więc jego brak zatrzymuje start entry pointu, który go woła.
+    openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     # NIEZ-44: zapasowy dostawca głównej analizy — dostaje request tylko, gdy główny
     # rzuci po swoich retry (4xx poza 429 nie przełącza). Wymaga klucza drugiego
@@ -604,7 +614,7 @@ class Settings(BaseSettings):
     council_personas_dir: str = "data/council_personas"
 
     # ----- Market / sentiment / news -----
-    finnhub_api_key: str
+    finnhub_api_key: str | None = None
     # Alpha Vantage akceptuje CSV — wiele kluczy rotujemy, gdy jeden wyczerpie
     # dzienny limit (25 req/dobę free). Wpisz w .env: ALPHA_VANTAGE_API_KEYS=k1,k2,k3
     alpha_vantage_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
@@ -1112,16 +1122,12 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _resolve_alpha_vantage_keys(self) -> Settings:
         """Backward-compat: jeśli ALPHA_VANTAGE_API_KEYS puste, próbujemy
-        starego `ALPHA_VANTAGE_API_KEY` (single). Po resolucji wymagamy ≥1 klucza."""
+        starego `ALPHA_VANTAGE_API_KEY` (single). Brak kluczy nie jest błędem
+        konstrukcji (ARCH-05) — wymaga ich `require_alpha_vantage_api_keys`."""
         if not self.alpha_vantage_api_keys:
             legacy = os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()
             if legacy:
                 object.__setattr__(self, "alpha_vantage_api_keys", [legacy])
-        if not self.alpha_vantage_api_keys:
-            raise ValueError(
-                "alpha_vantage_api_keys is required — set ALPHA_VANTAGE_API_KEYS "
-                "(comma-separated) or legacy ALPHA_VANTAGE_API_KEY in env."
-            )
         return self
 
     @model_validator(mode="after")
@@ -1130,7 +1136,11 @@ class Settings(BaseSettings):
         `av_keys_exhausted` w środku cyklu. Domyślnie WARNING i start dalej —
         liczba kluczy w sekretach produkcji nie jest znana z repo, więc błąd
         mógłby zablokować start już dziś; `av_budget_strict` daje twardy błąd.
-        Walidator działa w każdym entry poincie; banner maila dokłada Fast Loop."""
+        Walidator działa w każdym entry poincie; banner maila dokłada Fast Loop.
+        Bez kluczy (ARCH-05: job bez Alpha Vantage) nie ma czego liczyć — entry
+        point, który woła AV, zatrzyma `require_alpha_vantage_api_keys`."""
+        if not self.alpha_vantage_api_keys:
+            return self
         budget = self.av_budget()
         if budget.ok:
             return self
@@ -1193,6 +1203,23 @@ class Settings(BaseSettings):
             "Add keys to ALPHA_VANTAGE_API_KEYS or shrink the watchlist; "
             "av_budget_strict = true turns this warning into a startup error."
         )
+
+    def require_openai_api_key(self) -> str:
+        """ARCH-05: klucz OpenAI dla fabryki adaptera; brak → ValueError przy starcie."""
+        return _required_secret(self.openai_api_key, "OPENAI_API_KEY")
+
+    def require_finnhub_api_key(self) -> str:
+        """ARCH-05: klucz Finnhub dla fabryki adaptera; brak → ValueError przy starcie."""
+        return _required_secret(self.finnhub_api_key, "FINNHUB_API_KEY")
+
+    def require_alpha_vantage_api_keys(self) -> list[str]:
+        """ARCH-05: ≥1 klucz Alpha Vantage dla fabryki adaptera; brak → ValueError."""
+        if not self.alpha_vantage_api_keys:
+            raise ValueError(
+                "alpha_vantage_api_keys is required — set ALPHA_VANTAGE_API_KEYS "
+                "(comma-separated) or legacy ALPHA_VANTAGE_API_KEY in env."
+            )
+        return self.alpha_vantage_api_keys
 
     def config_hash(self) -> str:
         """WIA-20: sha256 posortowanych pól przepisu (progi, modele, providerzy,

@@ -253,7 +253,7 @@ def _build_single_llm(
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
     return OpenAIAdapter(
-        api_key=settings.openai_api_key,
+        api_key=settings.require_openai_api_key(),
         model=model,
         quota_monitor=quota_monitor,
         usage_sink=usage_sink,
@@ -346,7 +346,7 @@ def _build_primary_llm(
         from src.infrastructure.llm.openai_client import OpenAIAdapter
 
         cheap = OpenAIAdapter(
-            api_key=settings.openai_api_key,
+            api_key=settings.require_openai_api_key(),
             model=settings.router_cheap_model,
             quota_monitor=quota_monitor,
             usage_sink=usage_sink,
@@ -383,7 +383,7 @@ def _build_primary_llm(
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
     return OpenAIAdapter(
-        api_key=settings.openai_api_key,
+        api_key=settings.require_openai_api_key(),
         quota_monitor=quota_monitor,
         usage_sink=usage_sink,
     )
@@ -422,7 +422,7 @@ def build_tool_use_adapter(
     from src.infrastructure.llm.tool_calling_openai import ToolCallingOpenAIAdapter
 
     return ToolCallingOpenAIAdapter(
-        api_key=settings.openai_api_key,
+        api_key=settings.require_openai_api_key(),
         max_rounds=settings.tool_use_max_rounds,
         quota_monitor=quota_monitor,
         secret_values=settings.secret_values(),
@@ -730,7 +730,7 @@ def build_options_port(
     from src.infrastructure.adapters.finnhub_options import FinnhubOptionsAdapter
 
     return FinnhubOptionsAdapter(
-        api_key=settings.finnhub_api_key,
+        api_key=settings.require_finnhub_api_key(),
         quota_monitor=quota_monitor,
         rate_limiter=FINNHUB_RATE_LIMITER,
     )
@@ -741,7 +741,7 @@ def build_market_port(settings: Settings) -> MarketDataPort:
     Wydzielone z `build_use_case`, bo `main_watch` (#11) potrzebuje samej ceny."""
     return RoutingMarketDataPort(
         equity=FinnhubAdapter(
-            api_key=settings.finnhub_api_key, rate_limiter=FINNHUB_RATE_LIMITER
+            api_key=settings.require_finnhub_api_key(), rate_limiter=FINNHUB_RATE_LIMITER
         ),
         crypto=CoinGeckoAdapter(),
         crypto_symbols=settings.crypto_symbols,
@@ -934,7 +934,7 @@ def build_council_llm_adapter(
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
     return OpenAIAdapter(
-        api_key=settings.openai_api_key,
+        api_key=settings.require_openai_api_key(),
         model=settings.council_llm_model or OPENAI_DEFAULT,
         quota_monitor=quota_monitor,
         usage_sink=usage_sink,
@@ -988,8 +988,8 @@ def build_embedding_adapter(
     """Embeddingi — OpenAI niezależnie od LLM_PROVIDER.
 
     Anthropic nie udostępnia natywnego embeddings API; OpenAI to nasz jedyny
-    provider w stacku. `openai_api_key` jest wymaganym polem w `Settings`
-    (bez default), więc jest zawsze obecne — embeddingi działają również
+    provider w stacku. Fabryka żąda klucza OpenAI (`require_openai_api_key`,
+    ARCH-05) niezależnie od LLM_PROVIDER — embeddingi działają również
     gdy LLM_PROVIDER=anthropic. Dzięki temu kolumna `embedding` w
     `prediction_logs` (pgvector) jest wypełniona dla wszystkich deploymentów,
     a similarity search nad newsami nie zależy od wyboru LLM.
@@ -997,7 +997,9 @@ def build_embedding_adapter(
     from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
 
     return OpenAIEmbeddingAdapter(
-        api_key=settings.openai_api_key, quota_monitor=quota_monitor, usage_sink=usage_sink
+        api_key=settings.require_openai_api_key(),
+        quota_monitor=quota_monitor,
+        usage_sink=usage_sink,
     )
 
 
@@ -1018,7 +1020,7 @@ def build_macro_risk_use_case(
     book_symbols = list(settings.symbols) + list(settings.crypto_symbols)
     return MonitorMacroRiskUseCase(
         market_port=FinnhubAdapter(
-            api_key=settings.finnhub_api_key, rate_limiter=FINNHUB_RATE_LIMITER
+            api_key=settings.require_finnhub_api_key(), rate_limiter=FINNHUB_RATE_LIMITER
         ),
         repository_port=repository,
         macro_port=macro_port,
@@ -1094,7 +1096,7 @@ def build_alpha_enrichment(
         earnings = AlphaVantageEarningsAdapter(api_key=settings.alpha_vantage_api_keys[0])
     options: OptionsFlowPort = (
         FinnhubOptionsAdapter(
-            api_key=settings.finnhub_api_key,
+            api_key=settings.require_finnhub_api_key(),
             quota_monitor=quota_monitor,
             rate_limiter=FINNHUB_RATE_LIMITER,
         )
@@ -1108,7 +1110,7 @@ def build_alpha_enrichment(
     )
     analyst: AnalystConsensusPort = (
         FinnhubAnalystAdapter(
-            api_key=settings.finnhub_api_key,
+            api_key=settings.require_finnhub_api_key(),
             quota_monitor=quota_monitor,
             rate_limiter=FINNHUB_RATE_LIMITER,
         )
@@ -1271,7 +1273,7 @@ def _alpha_vantage_client(
     settings: Settings, symbols: Sequence[str], quota_monitor: QuotaMonitor | None
 ) -> AlphaVantageClient:
     return AlphaVantageClient(
-        api_keys=settings.alpha_vantage_api_keys,
+        api_keys=settings.require_alpha_vantage_api_keys(),
         symbols=list(symbols),
         crypto_symbols=settings.crypto_symbols,
         quota_monitor=quota_monitor,
@@ -1382,7 +1384,7 @@ def build_use_case(
     # Routing: krypto → CoinGecko, reszta → Finnhub. Use case widzi jeden port.
     market_port = RoutingMarketDataPort(
         equity=FinnhubAdapter(
-            api_key=settings.finnhub_api_key,
+            api_key=settings.require_finnhub_api_key(),
             quota_monitor=quota_monitor,
             rate_limiter=FINNHUB_RATE_LIMITER,
         ),

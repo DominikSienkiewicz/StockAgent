@@ -132,7 +132,7 @@ def _refresh_fundamentals_cache(
     fundamentals_port = CachedFundamentalsAdapter(
         repo=repository,
         delegate=AlphaVantageFundamentalsAdapter(
-            api_keys=settings.alpha_vantage_api_keys,
+            api_keys=settings.require_alpha_vantage_api_keys(),
             quota_monitor=quota_monitor,
         ),
     )
