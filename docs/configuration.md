@@ -70,7 +70,7 @@ An unknown key in `config.toml` stops the start with a `ValueError` that names i
 | `var_confidence` | `0.95` | Confidence level of VaR/CVaR in the 🎯 Portfolio Radar (`portfolio_var_enabled`): the empirical percentile of the loss tail, `0.95` = the loss exceeded in about 5% of the worst periods. Free, from `price_snapshots`. |
 | `lessons_enabled` | `false` | Adds the lessons learned (the substantive `reflect` diagnoses of the `track_record_days` window) to the 📈 Track Record. Production `config.toml` sets `true`. Render-only, zero paid calls. |
 | `crypto_paper_cost_bps` | `25` | The same one-way cost for `crypto_symbols` (WIA-50), also in the backtest of the crypto symbols (NIEZ-18). Must be ≥ 0, outside `config_hash`. |
-| `notifications_enabled` | `false` | Enables email delivery |
+| `notifications_enabled` | `false` | Enables email delivery: the owner digest and every per-subscriber email of the fan-out (MAIL-11); with it off no email goes out even when `RESEND_API_KEY` is set |
 | `digest_from_email` | `onboarding@resend.dev` | Resend sandbox sender |
 | `display_timezone` | `Europe/Warsaw` | IANA time zone for the times people read: the email subject, the HTML and plain-text header, the push digest header and the shock-alert push (e.g. `pt 16.10 07:30`, daylight saving included). Logs, the database and the quota banner stay in UTC. An unknown zone name fails settings validation at startup. |
 | `realtime_alerts_enabled` | `false` | Pushes a CRITICAL quota alert to Telegram or Slack when it happens (U4), out of band from the daily email, which still carries it in its banner. Needs the push secrets; free. Off in `config.toml`. |

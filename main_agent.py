@@ -528,6 +528,27 @@ def build_notifier(
     return CompositeNotifier(channels)
 
 
+def build_subscriber_notifier(
+    settings: Settings,
+    email: str,
+    quota_monitor: QuotaMonitor | None = None,
+) -> ReportNotifierPort:
+    """Kanał e-mail jednego subskrybenta fan-outu (MAIL-11).
+
+    Ten sam guard co `build_notifier`: bez `notifications_enabled` albo bez
+    `RESEND_API_KEY` subskrybent dostaje `NullNotifier`, więc flaga z
+    config.toml wyłącza KAŻDĄ wysyłkę maila, nie tylko tę do właściciela.
+    """
+    if settings.notifications_enabled and settings.resend_api_key and email:
+        return ResendNotifier(
+            api_key=settings.resend_api_key,
+            sender=settings.digest_from_email,
+            recipient=email,
+            quota_monitor=quota_monitor,
+        )
+    return NullNotifier()
+
+
 def build_legacy_push_notifier(
     settings: Settings, quota_monitor: QuotaMonitor | None = None
 ) -> ReportNotifierPort | None:
@@ -3159,12 +3180,7 @@ def _dispatch_reports(
                     symbols_for(sub, all_syms), include_portfolio=owner
                 )
                 try:
-                    ResendNotifier(
-                        api_key=settings.resend_api_key,
-                        sender=settings.digest_from_email,
-                        recipient=sub.email,
-                        quota_monitor=quota_monitor,
-                    ).send_report(
+                    build_subscriber_notifier(settings, sub.email, quota_monitor).send_report(
                         subject=subject if owner else public_subject,
                         html_body=sub_html,
                         plain_text=sub_text,

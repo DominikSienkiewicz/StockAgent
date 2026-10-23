@@ -3301,11 +3301,17 @@ class TestDispatchReports:
     FRIEND = "friend@example.com"
 
     def _fan_out(
-        self, settings: Settings, mocker, results: list | None = None
+        self,
+        settings: Settings,
+        mocker,
+        results: list | None = None,
+        *,
+        notifications_enabled: bool = True,
     ) -> dict[str, dict[str, str]]:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.subscriber import Subscriber
 
+        settings.notifications_enabled = notifications_enabled
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
@@ -3352,6 +3358,14 @@ class TestDispatchReports:
             context=main_agent.ReportContext(),
         )
         return sent
+
+    def test_fan_out_respects_notifications_disabled(self, settings, mocker) -> None:
+        # MAIL-11: `notifications_enabled=false` wyłącza też fan-out do subskrybentów,
+        # nie tylko pojedynczą wysyłkę — sam klucz Resend nie wystarcza.
+        sent = self._fan_out(settings, mocker, notifications_enabled=False)
+
+        assert sent == {}
+        main_agent.ResendNotifier.assert_not_called()
 
     def test_subscriber_digest_omits_owner_portfolio(self, settings, mocker) -> None:
         sent = self._fan_out(settings, mocker)
