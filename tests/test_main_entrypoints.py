@@ -7083,3 +7083,68 @@ class TestMarketCapWiring:
         settings = settings.model_copy(update={"insider_flow_enabled": True})
 
         assert main_agent.build_alpha_enrichment(settings)._market_caps is None
+
+
+class TestRegimeChangeWiring:
+    """ALR-05 (krok 2): `_resolve_regime` podaje zmianę reżimu do bannera (a stąd
+    do leadu) wyłącznie z histerezy — flaga `regime_hysteresis_enabled` po migracji 033."""
+
+    _CYCLE_AT = datetime(2026, 10, 19, 13, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.regime_aware_enabled = True
+        settings.yield_curve_enabled = False
+        settings.regime_threshold_max_multiplier = 1.5
+        settings.regime_hysteresis_enabled = True
+        settings.regime_exit_confirmations = 1
+        settings.volatility_threshold = Decimal("0.02")
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    def _banner(self, settings: MagicMock, level: MacroAlertLevel, previous: object) -> object:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_latest_regime_state.return_value = previous
+        macro = MagicMock()
+        macro.overall_alert = level
+        banners: list[object] = []
+        main_agent._resolve_regime(
+            settings, macro, None, repository=repo, cycle_at=self._CYCLE_AT,
+            on_banner=banners.append,
+        )
+        [banner] = banners
+        return banner
+
+    def test_entering_risk_off_reaches_the_banner(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeChange, RegimeState
+
+        banner = self._banner(
+            self._settings(), MacroAlertLevel.CRITICAL, RegimeState(regime=MarketRegime.NEUTRAL)
+        )
+
+        assert banner.change == RegimeChange(
+            previous=MarketRegime.NEUTRAL, current=MarketRegime.RISK_OFF
+        )
+
+    def test_leaving_risk_off_reaches_the_banner(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        banner = self._banner(
+            self._settings(), MacroAlertLevel.NORMAL, RegimeState(regime=MarketRegime.RISK_OFF)
+        )
+
+        assert banner.change is not None
+        assert banner.change.previous is MarketRegime.RISK_OFF
+
+    def test_without_hysteresis_there_is_no_change(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        banner = self._banner(
+            self._settings(regime_hysteresis_enabled=False),
+            MacroAlertLevel.CRITICAL,
+            RegimeState(regime=MarketRegime.NEUTRAL),
+        )
+
+        assert banner.change is None

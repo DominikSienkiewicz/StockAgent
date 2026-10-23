@@ -12,18 +12,22 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from src.domain.number_format import format_number_pl, format_pct_pl
-from src.domain.regime import MarketRegime
+from src.domain.regime import MarketRegime, RegimeChange
 
 
 @dataclass(frozen=True)
 class RegimeBanner:
     """Reżim efektywny cyklu (po histerezie), mnożnik progu (≥ 1.0), próg akcji
-    przed mnożnikiem (ułamek, `volatility_threshold`) i powód klasyfikacji."""
+    przed mnożnikiem (ułamek, `volatility_threshold`) i powód klasyfikacji.
+
+    `change` (ALR-05, krok 2): wejście w RISK_OFF albo wyjście z niego względem
+    poprzedniego cyklu — tylko z histerezy (`regime_history`); trafia do leadu."""
 
     regime: MarketRegime
     multiplier: float
     base_threshold: Decimal
     reason: str
+    change: RegimeChange | None = None
 
 
 def render_regime_line(banner: RegimeBanner) -> str:

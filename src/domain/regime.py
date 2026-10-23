@@ -193,3 +193,32 @@ def apply_hysteresis(
     if streak >= exit_confirmations:
         return RegimeState(regime=raw)
     return RegimeState(regime=MarketRegime.RISK_OFF, pending=raw, streak=streak)
+
+
+@dataclass(frozen=True)
+class RegimeChange:
+    """ALR-05 — przejście reżimu EFEKTYWNEGO (po histerezie) względem poprzedniego
+    cyklu: wejście w RISK_OFF albo wyjście z niego. Tylko te przejścia zmieniają
+    próg bramki (NEUTRAL i RISK_ON mają ten sam mnożnik 1.0)."""
+
+    previous: MarketRegime
+    current: MarketRegime
+
+    @property
+    def enters_risk_off(self) -> bool:
+        return self.current is MarketRegime.RISK_OFF
+
+
+def risk_off_change(
+    previous: MarketRegime | None, current: MarketRegime
+) -> RegimeChange | None:
+    """ALR-05: zmiana reżimu warta leadu maila albo None.
+
+    `previous` to reżim efektywny z `regime_history` (histereza ALR-03); bez niego
+    (flaga off, brak historii) zmiany nie ma — surowy reżim migałby codziennie.
+    Przejście NEUTRAL ↔ RISK_ON nie rusza progu, więc też nie jest zmianą."""
+    if previous is None:
+        return None
+    if (previous is MarketRegime.RISK_OFF) == (current is MarketRegime.RISK_OFF):
+        return None
+    return RegimeChange(previous=previous, current=current)

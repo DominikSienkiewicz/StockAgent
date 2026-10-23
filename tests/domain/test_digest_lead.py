@@ -551,3 +551,49 @@ class TestSignificantInsiderBuyTier:
 
         assert items[0].symbol is None
         assert [item.symbol for item in items[1:]] == ["AAA", "BBB"]
+
+
+class TestRegimeChangeTier:
+    """ALR-05: zmiana reżimu tuż pod CRITICAL quota — dotyczy całego cyklu (próg
+    bramki rośnie albo wraca), więc bije sygnały pojedynczych symboli."""
+
+    @staticmethod
+    def _against_position() -> LeadSignal:
+        return LeadSignal(
+            symbol="NVDA",
+            price_delta_pct=Decimal("-9.9"),
+            council_verdict=_consensus_verdict("SELL"),
+            position_weight=Decimal("0.60"),
+            crossed_volatility_gate=True,
+        )
+
+    def test_entering_risk_off_sits_right_below_a_critical_quota(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeChange
+
+        change = RegimeChange(previous=MarketRegime.NEUTRAL, current=MarketRegime.RISK_OFF)
+
+        items = build_lead(
+            [self._against_position()], [_critical_alert()], regime_change=change
+        )
+
+        assert "Alpha Vantage" in items[0].headline
+        assert items[1].headline == "Rynek przeszedł w RISK_OFF, analiza rzadsza"
+        assert items[1].icon == "🌧️"
+        assert items[1].symbol is None
+        assert "Sygnał przeciw Twojej pozycji" in items[2].headline
+
+    def test_leaving_risk_off_names_the_new_regime(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeChange
+
+        change = RegimeChange(previous=MarketRegime.RISK_OFF, current=MarketRegime.NEUTRAL)
+
+        (item,) = build_lead([], regime_change=change)
+
+        assert item.headline == "Rynek wyszedł z RISK_OFF (NEUTRAL), analiza częstsza"
+
+    def test_without_a_change_the_lead_is_unchanged(self) -> None:
+        signals = [self._against_position()]
+
+        assert build_lead(signals, [_critical_alert()], regime_change=None) == build_lead(
+            signals, [_critical_alert()]
+        )

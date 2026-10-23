@@ -924,7 +924,9 @@ def build_cycle_lead(
     signals = to_lead_signals(
         results, context.resolved_predictions or [], weights, context.consensus_shifts, context.alpha_signals
     )
-    return build_lead(signals, context.quota_alerts or [])
+    # ALR-05: zmiana reżimu (tylko z histerezy) tuż pod CRITICAL quota.
+    regime_change = context.regime.change if context.regime is not None else None
+    return build_lead(signals, context.quota_alerts or [], regime_change=regime_change)
 
 
 # Tyle sygnałów pokazuje sekcja „🎯 Najsilniejsze sygnały” (domyślne `top_n`).

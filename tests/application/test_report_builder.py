@@ -3847,3 +3847,39 @@ class TestInsiderBuyLead:
         items = build_cycle_lead(results, ReportContext(alpha_signals=self._alpha()))
 
         assert items[0].headline == "NVDA +1,2%: CEO kupił akcje za 1,2 mln USD"
+
+
+class TestRegimeChangeLead:
+    """ALR-05 (krok 2): zmiana reżimu z nagłówka maila otwiera też lead (i temat)."""
+
+    def test_cycle_lead_opens_with_the_regime_change(self):
+        from src.application.report_builder import build_cycle_lead
+        from src.application.report_regime import RegimeBanner
+        from src.domain.regime import MarketRegime, RegimeChange
+
+        banner = RegimeBanner(
+            regime=MarketRegime.RISK_OFF,
+            multiplier=1.5,
+            base_threshold=Decimal("0.02"),
+            reason="2 głosy ELEVATED",
+            change=RegimeChange(previous=MarketRegime.NEUTRAL, current=MarketRegime.RISK_OFF),
+        )
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.01"))]
+
+        items = build_cycle_lead(results, ReportContext(regime=banner))
+
+        assert items[0].headline == "Rynek przeszedł w RISK_OFF, analiza rzadsza"
+
+    def test_banner_without_a_change_adds_no_lead(self):
+        from src.application.report_builder import build_cycle_lead
+        from src.application.report_regime import RegimeBanner
+        from src.domain.regime import MarketRegime
+
+        banner = RegimeBanner(
+            regime=MarketRegime.RISK_OFF,
+            multiplier=1.5,
+            base_threshold=Decimal("0.02"),
+            reason="alert CRITICAL",
+        )
+
+        assert build_cycle_lead([], ReportContext(regime=banner)) == []

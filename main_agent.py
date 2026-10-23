@@ -155,7 +155,7 @@ from src.domain.persona_track_record import (
 from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
-from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis
+from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis, risk_off_change
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
@@ -1713,12 +1713,12 @@ def _resolve_regime(
 
     detector = RegimeDetector()
     raw_regime = detector.classify(macro_risk_report.overall_alert, risk_signals)
-    regime = (
+    regime, previous_regime = (
         _apply_regime_hysteresis(
             settings, repository, raw_regime, cycle_at or datetime.now(UTC)
         )
         if repository is not None
-        else raw_regime
+        else (raw_regime, None)
     )
     regime_multiplier = detector.threshold_multiplier(
         regime, settings.regime_threshold_max_multiplier
@@ -1743,6 +1743,8 @@ def _resolve_regime(
                 multiplier=regime_multiplier,
                 base_threshold=settings.volatility_threshold,
                 reason=reason,
+                # ALR-05 krok 2: zmiana względem poprzedniego cyklu tylko z histerezy.
+                change=risk_off_change(previous_regime, regime),
             )
         )
     return regime_context, regime_multiplier
@@ -1753,9 +1755,11 @@ def _apply_regime_hysteresis(
     repository: RepositoryPort,
     raw_regime: MarketRegime,
     cycle_at: datetime,
-) -> MarketRegime:
+) -> tuple[MarketRegime, MarketRegime | None]:
     """ALR-03: reżim efektywny po histerezie — odczyt ostatniego stanu i zapis
-    nowego wiersza `regime_history`, raz na cykl.
+    nowego wiersza `regime_history`, raz na cykl. Drugi element to reżim
+    efektywny poprzedniego cyklu (ALR-05: lead przy zmianie); None, gdy
+    histereza nie zadziałała (flaga off, błąd odczytu, brak historii).
 
     Flaga off albo błąd odczytu (np. brak migracji 033) → surowy reżim, czyli
     dokładnie zachowanie sprzed ALR-03; po błędzie odczytu nie zapisujemy, żeby
@@ -1764,7 +1768,7 @@ def _apply_regime_hysteresis(
     RISK_OFF (wyższy próg — strona bezpieczna dla FinOps).
     """
     if not settings.regime_hysteresis_enabled:
-        return raw_regime
+        return raw_regime, None
     try:
         previous = repository.get_latest_regime_state()
     except Exception:
@@ -1772,7 +1776,7 @@ def _apply_regime_hysteresis(
             "regime_history read failed — surowy reżim %s bez histerezy",
             raw_regime.value,
         )
-        return raw_regime
+        return raw_regime, None
     state = apply_hysteresis(previous, raw_regime, settings.regime_exit_confirmations)
     try:
         repository.save_regime_state(cycle_at, raw_regime, state)
@@ -1788,7 +1792,7 @@ def _apply_regime_hysteresis(
             state.streak,
             settings.regime_exit_confirmations,
         )
-    return state.regime
+    return state.regime, previous.regime if previous is not None else None
 
 
 def _classify_asset(symbol: str, crypto_set: set[str], etf_set: set[str]) -> AssetType:
