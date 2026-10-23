@@ -152,6 +152,17 @@ Every on/off switch of `Settings` in one table (DOC-19); why each one exists and
 | `quiet_hours_enabled` | `false` | `true` | — | — | 0 | deployed |
 | `subscriptions_enabled` | `false` | `false` | `014` | `RESEND_API_KEY` | 0 | built, not deployed |
 | `web_digest_enabled` | `false` | `false` | — | — | 0 | built, not deployed |
+| `persona_vote_outcomes_enabled` | `false` | `false` | `045` | — | 0 (one free RPC read per asset class) | built, not deployed |
+| `correction_category_enabled` | `false` | `false` | `046` | — | 0 (the same paid diagnosis answers in JSON) | built, not deployed |
+| `diagnosis_backfill_enabled` | `false` | `false` | — | — | up to `diagnosis_backfill_max_calls` LLM calls a run (Slow Loop budget) | built, not deployed |
+| `trend_probabilities_enabled` | `false` | `false` | `051` | — | 0 (one more schema field in the same prompt) | built, not deployed |
+| `model_scorecard_feature_stats_enabled` | `false` | `false` | `052` | — | 0 | built, not deployed |
+| `stale_quote_enabled` | `false` | `false` | `055` | — | 0 (the time `t` of the same `/quote` request) | built, not deployed |
+| `fundamentals_market_cap_enabled` | `false` | `false` | `056` | — | 0 (parsed from the `OVERVIEW` response the Slow Loop already fetches) | built, not deployed |
+| `price_level_alerts_enabled` | `false` | `false` | `057` | — | 0 (inside the free Shock Watch) | built, not deployed |
+| `market_features_enabled` | `false` | `false` | `031` | — | 0 (free price snapshots) | built, not deployed |
+| `macro_series_enabled` | `false` | `false` | — | `FRED_API_KEY` | 0 (FRED, free) | built, not deployed |
+| `model_probe_enabled` | `false` | `true` | — | — | 0 (Models API, no tokens; weekly Slow Loop) | deployed |
 
 ## Feature flags
 
