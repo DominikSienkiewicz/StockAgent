@@ -158,10 +158,10 @@ def test_real_config_toml_tags_predictions_with_the_regime() -> None:
     assert "regime_tagging_enabled" not in data
 
 
-def test_real_config_toml_ships_regime_hysteresis_off_until_migration() -> None:
-    """ALR-03: bez migracji 033 odczyt/zapis `regime_history` by padał."""
+def test_real_config_toml_ships_regime_hysteresis_on_after_migration() -> None:
+    """ALR-03: migracja 033 (`regime_history`) jest na produkcji od 2026-10-23."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["regime_hysteresis_enabled"] is False
+    assert data["regime_hysteresis_enabled"] is True
     assert data["regime_exit_confirmations"] == 2
 
 
@@ -219,10 +219,10 @@ def test_real_config_toml_sets_the_paper_pnl_costs() -> None:
     assert data["crypto_paper_cost_bps"] == 25
 
 
-def test_real_config_toml_ships_the_experiment_arms_column_off_until_migration() -> None:
-    """EXP-05: kolumna `experiment_arms` istnieje dopiero po migracji 037."""
+def test_real_config_toml_ships_the_experiment_arms_column_on_after_migration() -> None:
+    """EXP-05: kolumna `experiment_arms` (migracja 037) jest na produkcji od 2026-10-23."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["experiment_arms_enabled"] is False
+    assert data["experiment_arms_enabled"] is True
 
 
 def test_real_config_toml_defines_the_blind_council_experiment_inactive() -> None:
@@ -316,10 +316,10 @@ def test_real_config_toml_skips_stocks_on_closed_nyse_days() -> None:
     assert data["nyse_closure_skip_enabled"] is True
 
 
-def test_real_config_toml_ships_the_cost_ledger_off_until_migration() -> None:
-    """FIN-13: zapis `llm_calls` dopiero po migracji 040 (ręczny DB Migrate)."""
+def test_real_config_toml_ships_the_cost_ledger_on_after_migration() -> None:
+    """FIN-13: migracja 040 (`llm_calls`) jest na produkcji od 2026-10-23."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["cost_ledger_enabled"] is False
+    assert data["cost_ledger_enabled"] is True
 
 
 def test_real_config_toml_prices_only_configured_models() -> None:
@@ -382,10 +382,10 @@ def test_real_config_toml_ships_the_two_phase_cycle_off() -> None:
     assert data["two_phase_cycle_enabled"] is False
 
 
-def test_real_config_toml_ships_the_cycle_runs_history_off_until_migration() -> None:
-    """NIEZ-29: zapis `cycle_runs` dopiero po migracji 041 (ręczny DB Migrate)."""
+def test_real_config_toml_ships_the_cycle_runs_history_on_after_migration() -> None:
+    """NIEZ-29: migracja 041 (`cycle_runs`) jest na produkcji od 2026-10-23."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["cycle_runs_enabled"] is False
+    assert data["cycle_runs_enabled"] is True
 
 
 def test_real_config_toml_ships_the_llm_failover_off() -> None:
@@ -399,10 +399,10 @@ def test_real_config_toml_ships_the_llm_failover_off() -> None:
     assert "# llm_fallback_provider = " in text
 
 
-def test_real_config_toml_ships_the_reference_signal_off_until_migration() -> None:
-    """WIA-24: tabela `reference_predictions` dopiero po migracji 042 (ręczny DB Migrate)."""
+def test_real_config_toml_ships_the_reference_signal_on_after_migration() -> None:
+    """WIA-24: migracja 042 (`reference_predictions`) jest na produkcji od 2026-10-23."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["reference_signal_enabled"] is False
+    assert data["reference_signal_enabled"] is True
 
 
 def test_real_config_toml_weekly_budget_covers_its_worst_case(
