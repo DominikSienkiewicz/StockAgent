@@ -911,6 +911,28 @@ def test_env_example_ships_a_heartbeat_placeholder() -> None:
     assert values == ["https://hc-ping.com/your-check-uuid"]
 
 
+def test_env_example_leaves_gh_token_empty() -> None:
+    """scripts/gh-secrets-*.sh eksportują każdy niepusty GH_TOKEN z `.env` jako token
+    `gh`, więc placeholder skopiowany z szablonu przesłaniał działający login."""
+    lines = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    values = [line.split("=", 1)[1] for line in lines if line.startswith("GH_TOKEN=")]
+
+    assert values == [""]
+
+
+def test_env_example_ships_a_session_pooler_db_url_placeholder() -> None:
+    """DB Migrate czyta `secrets.SUPABASE_DB_URL`. Direct connection (`db.<ref>`) jest
+    tylko IPv6, a runnery GitHuba nie mają IPv6 — działa jedynie session pooler (5432)."""
+    lines = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    values = [line.split("=", 1)[1] for line in lines if line.startswith("SUPABASE_DB_URL=")]
+
+    assert len(values) == 1
+    assert re.fullmatch(
+        r"postgresql://postgres\.[^:@]+:[^@]+@[^/]+\.pooler\.supabase\.com:5432/postgres",
+        values[0],
+    )
+
+
 # WIA-11: warunki wznowienia crona Fast Loopa sprawdzalne z repo. Cron zakomentowano
 # w 02fc397 (decyzja 2), a cisza 08-17…10-15 przeszła bez alarmu — włączony
 # `schedule` wymaga deadmana z aktywnym cronem, sufitu kosztu cyklu, budżetu
