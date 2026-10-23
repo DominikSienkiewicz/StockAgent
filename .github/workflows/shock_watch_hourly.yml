@@ -1,8 +1,8 @@
 name: 🚨 Shock Watch (hourly, free)
 
 on:
-  # ⏸️ Harmonogram WSTRZYMANY — odkomentowuje go właściciel. Od ALR-02 watch może
-  # wrócić SAM, bez Fast Loopa (fast_loop_12h.yml): ruch liczy z dziennej zmiany
+  # Harmonogram wznowiony 2026-10-23 (wstrzymany od 2026-10-16, `f886da0`). Od ALR-02
+  # watch działa SAM, bez Fast Loopa (fast_loop_12h.yml): ruch liczy z dziennej zmiany
   # darmowego /quote (Finnhub `dp`, CoinGecko zmiana 24 h), a snapshot Fast Loopa
   # jest tylko fallbackiem. Watch nigdy nie zapisuje snapshotu ceny. Strażnik
   # `tests/test_shock_watch_env_wiring.py` pilnuje, że cron bez Fast Loopa ma
@@ -12,8 +12,8 @@ on:
   # całą dobę. Wymaga migracji 021 i `shock_alerts_enabled = true`.
   # W dzień zamknięcia NYSE (święto, weekend) watch sam pomija akcje i sprawdza samo
   # krypto (FIN-34, `nyse_closure_skip_enabled` w config.toml) — cron zostaje 24/7.
-  # schedule:
-  #   - cron: '7 * * * *'   # co godzinę, o :07 (rozsmarowanie obciążenia GHA)
+  schedule:
+    - cron: '7 * * * *'   # co godzinę, o :07 (rozsmarowanie obciążenia GHA)
   workflow_dispatch:
 
 permissions:

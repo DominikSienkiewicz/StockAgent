@@ -152,9 +152,9 @@ trend_probabilities_enabled = false
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 029 (inaczej 400 i sekcja znika).
 settled_at_windows_enabled = true
 # #11: darmowy watch szoku rynkowego poza cyklem (main_watch.py, migracja 021).
-# Zero płatnych API — tylko Finnhub/CoinGecko + Supabase. Włączone, ale cron
-# co godzinę jest wstrzymany razem z Fast Loopem (jedyne źródło referencji cen),
-# więc watch rusza wyłącznie z ręcznego dispatchu.
+# Zero płatnych API — tylko Finnhub/CoinGecko + Supabase. Cron co godzinę
+# (shock_watch_hourly.yml) wznowiony 2026-10-23; bez kanału push (TELEGRAM_* albo
+# SLACK_WEBHOOK_URL) watch loguje błąd i niczego nie wysyła.
 shock_alerts_enabled = true
 # ALR-09: cisza nocna pushy watcha (czas `display_timezone`) — w oknie 22:00–07:00
 # szok dociera bez dźwięku zamiast budzić. Alerty CRITICAL ciszy nie znają. Włączone.
