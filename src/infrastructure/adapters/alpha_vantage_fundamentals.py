@@ -287,4 +287,6 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
             peg_ratio=peg_ratio,
             eps_growth_yoy=eps_growth,
             fetched_at=datetime.now(UTC),
+            # DAT-21: z tej samej odpowiedzi OVERVIEW — zero nowych requestów.
+            market_cap=_parse_float(overview.get("MarketCapitalization")),
         )

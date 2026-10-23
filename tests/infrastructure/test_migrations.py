@@ -88,6 +88,7 @@ MIGRATION_FILES = [
     "053_earnings_cache.sql",
     "054_council_votes_unique.sql",
     "055_prediction_stale_quote.sql",
+    "056_fundamentals_market_cap.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -1584,6 +1585,23 @@ class TestMigrations:
                 (prediction_id,),
             )
             assert cur.fetchone() == (True,)
+
+    # -- Migracja 056: kapitalizacja w cache fundamentów (DAT-21) --------------
+
+    def test_fundamentals_cache_market_cap_is_a_nullable_number(self, pg_conn) -> None:
+        """Upsert bez flagi zostawia NULL (próg 100k USD); z flagą trzyma pełne USD."""
+        assert "market_cap" in _columns(pg_conn, "fundamentals_cache")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO fundamentals_cache (symbol, trailing_pe) VALUES ('MC_NULL', 30) "
+                "RETURNING market_cap"
+            )
+            assert cur.fetchone() == (None,)
+            cur.execute(
+                "INSERT INTO fundamentals_cache (symbol, market_cap) "
+                "VALUES ('MC_SET', 4123456789012) RETURNING market_cap"
+            )
+            assert int(cur.fetchone()[0]) == 4123456789012
 
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 

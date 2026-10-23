@@ -270,6 +270,10 @@ correction_category_enabled = false
 # sesji NYSE i rozliczenie na notowaniu sprzed sesji po predykcji (weekend, święto)
 # wypadają z trafności. UWAGA: włącz DOPIERO po migracji 055.
 stale_quote_enabled = false
+# DAT-21: kapitalizacja (`MarketCapitalization` z tej samej odpowiedzi OVERVIEW, zero
+# nowych requestów AV) w `fundamentals_cache.market_cap` — próg znaczącego zakupu
+# insidera rośnie z wielkością spółki. UWAGA: włącz DOPIERO po migracji 056.
+fundamentals_market_cap_enabled = false
 # WIA-24: darmowy sygnał referencyjny `reference-v1` (docs/reference-protocol-v1.md) —
 # raz na przebieg Slow Loopa własny odczyt /quote (Finnhub, CoinGecko), rozliczenie
 # zeszłotygodniowego wywołania i nowe wywołanie ze znaku zmiany tygodniowej. Zapis do

@@ -501,3 +501,53 @@ class TestConsensusFlip:
         items = build_lead([flip, split, against])
 
         assert [item.symbol for item in items] == ["NVDA", "BBB", "AMD"]
+
+class TestSignificantInsiderBuyTier:
+    """DAT-21: znaczący zakup insidera to osobny tier między radą PODZIELONĄ
+    a silnym konsensusem — kolejność pozostałych tierów bez zmian."""
+
+    _LABEL = "CEO kupił akcje za 1,2 mln USD"
+
+    def _insider(self, symbol: str, delta: str = "1.0") -> LeadSignal:
+        return LeadSignal(
+            symbol=symbol, price_delta_pct=Decimal(delta), insider_buy_label=self._LABEL
+        )
+
+    def test_insider_buy_sits_between_a_split_council_and_a_strong_consensus(self) -> None:
+        split = LeadSignal("AAA", Decimal("0.5"), _split_verdict())
+        insider = self._insider("BBB", "0.5")
+        # Większy ruch konsensusu nie przeskakuje tieru (anti-sensacja).
+        consensus = LeadSignal("CCC", Decimal("9.0"), _consensus_verdict())
+
+        items = build_lead([consensus, insider, split])
+
+        assert [item.symbol for item in items] == ["AAA", "BBB", "CCC"]
+        assert items[1].headline == f"BBB +0,5%: {self._LABEL}"
+        assert items[1].icon == "🟢"
+
+    def test_insider_buy_takes_the_place_of_the_symbols_strong_consensus(self) -> None:
+        signal = LeadSignal(
+            "NVDA",
+            Decimal("2.0"),
+            _consensus_verdict(),
+            insider_buy_label=self._LABEL,
+        )
+
+        (item,) = build_lead([signal])
+
+        assert self._LABEL in item.headline
+        assert item.detail == "Rada zgodna co do kierunku."
+
+    def test_without_a_council_the_detail_names_the_form4_purchase(self) -> None:
+        (item,) = build_lead([self._insider("NVDA")])
+
+        assert "Form 4" in item.detail
+
+    def test_critical_quota_and_split_council_stay_above_it(self) -> None:
+        split = LeadSignal("AAA", Decimal("0.1"), _split_verdict())
+        insider = self._insider("BBB", "9.9")
+
+        items = build_lead([insider, split], [_critical_alert()])
+
+        assert items[0].symbol is None
+        assert [item.symbol for item in items[1:]] == ["AAA", "BBB"]

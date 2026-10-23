@@ -170,3 +170,29 @@ class TestSignificantInsiderBuy:
 
         assert "kupił akcje" in html
         assert "evil.example" not in html
+
+
+class TestInsiderThresholdFromMarketCap:
+    """DAT-21: próg linii znaczącego zakupu skaluje się kapitalizacją z cache."""
+
+    @staticmethod
+    def _signals(market_cap: float | None) -> dict[str, AlphaSignals]:
+        from src.domain.insider_flow import InsiderBuy
+
+        insider = InsiderFlowSnapshot(
+            "NVDA",
+            10_000.0,
+            1,
+            0,
+            90,
+            largest_buy=InsiderBuy(role="CEO", value_usd=1_200_000.0),
+        )
+        return {"NVDA": AlphaSignals(symbol="NVDA", insider=insider, market_cap=market_cap)}
+
+    def test_buy_below_the_cap_scaled_threshold_has_no_line(self) -> None:
+        assert "kupił akcje" not in render_alpha_html(self._signals(4e12), None)
+
+    def test_buy_above_the_cap_scaled_threshold_keeps_its_line(self) -> None:
+        html = render_alpha_html(self._signals(100e9), None)
+
+        assert "NVDA — CEO kupił akcje za 1,2 mln USD" in html

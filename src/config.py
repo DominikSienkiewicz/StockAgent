@@ -158,6 +158,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "correction_category_enabled",
     # DAT-14: sam zapis znacznika `stale_quote` i odsiew trafności; prognoza ta sama.
     "stale_quote_enabled",
+    # DAT-21: sam zapis kapitalizacji w cache fundamentów (próg zakupu insidera w mailu).
+    "fundamentals_market_cap_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -743,6 +745,10 @@ class Settings(BaseSettings):
     # nieaktualnego notowania i odsiew takich wierszy z trafności. Off w kodzie
     # i w config.toml, dopóki produkcja nie ma migracji.
     stale_quote_enabled: bool = False
+    # DAT-21: kolumna `fundamentals_cache.market_cap` (migracja 056) — Slow Loop zapisuje
+    # kapitalizację z OVERVIEW. Off w kodzie i w config.toml, dopóki produkcja nie ma
+    # migracji; odczyt (`select("*")`) działa i bez niej.
+    fundamentals_market_cap_enabled: bool = False
     # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
     # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
     # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.

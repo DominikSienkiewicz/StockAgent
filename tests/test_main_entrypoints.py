@@ -7046,3 +7046,40 @@ class TestStaleQuoteWiring:
         main_agent.build_repository(settings)
 
         assert repo_cls.call_args.kwargs["stale_quote_enabled"] is enabled
+
+
+class TestMarketCapWiring:
+    """DAT-21: Slow Loop zapisuje kapitalizację w cache za flagą (migracja 056),
+    a Fast Loop czyta ją wyłącznie z cache — dla progu znaczącego zakupu insidera."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_trainer_repository_follows_the_market_cap_flag(
+        self, settings, mocker, enabled: bool
+    ) -> None:
+        supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
+        settings = settings.model_copy(update={"fundamentals_market_cap_enabled": enabled})
+
+        main_trainer.build_repository(settings)
+
+        assert supabase_cls.call_args.kwargs["fundamentals_market_cap_enabled"] is enabled
+
+    def test_alpha_enrichment_reads_the_market_cap_from_the_cache_only(
+        self, settings, mocker
+    ) -> None:
+        get = mocker.patch("requests.Session.get")
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_cached_fundamentals.return_value = None
+        settings = settings.model_copy(update={"insider_flow_enabled": True})
+
+        enrichment = main_agent.build_alpha_enrichment(settings, repository=repository)
+        port = enrichment._market_caps
+
+        assert port is not None
+        assert port.get_fundamentals("NVDA") is None
+        repository.get_cached_fundamentals.assert_called_with("NVDA")
+        get.assert_not_called()
+
+    def test_without_a_repository_the_threshold_stays_fixed(self, settings) -> None:
+        settings = settings.model_copy(update={"insider_flow_enabled": True})
+
+        assert main_agent.build_alpha_enrichment(settings)._market_caps is None

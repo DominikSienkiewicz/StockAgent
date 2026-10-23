@@ -4193,3 +4193,66 @@ class TestStaleQuote:
         selects = mock_client.table.return_value.select.call_args_list
         assert len(selects) == len(readers)
         assert all("stale_quote" in c.args[0] for c in selects)
+
+
+# ---------------------------------------------------------------------------
+# DAT-21: `fundamentals_cache.market_cap` (migracja 056)
+# ---------------------------------------------------------------------------
+
+
+class TestFundamentalsMarketCap:
+    """Upsert niesie kapitalizację tylko za flagą (przed migracją PGRST204 zgubiłby
+    cały wpis cache); odczyt `select("*")` bierze ją, gdy kolumna jest."""
+
+    @staticmethod
+    def _fundamentals() -> Fundamentals:
+        return Fundamentals(
+            trailing_pe=25.4,
+            forward_pe=None,
+            peg_ratio=None,
+            eps_growth_yoy=None,
+            fetched_at=datetime(2026, 10, 18, tzinfo=UTC),
+            market_cap=3.5e12,
+        )
+
+    def test_flag_off_upsert_has_no_market_cap_key(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "upsert"], [])
+
+        repo.save_fundamentals("AAPL", self._fundamentals())
+
+        assert "market_cap" not in mock_client.table.return_value.upsert.call_args.args[0]
+
+    def test_flag_on_upsert_carries_the_market_cap(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", fundamentals_market_cap_enabled=True
+        )
+        _set_chain_response(mock_client, ["table", "upsert"], [])
+
+        repo.save_fundamentals("AAPL", self._fundamentals())
+
+        payload = mock_client.table.return_value.upsert.call_args.args[0]
+        assert payload["market_cap"] == pytest.approx(3.5e12)
+
+    @pytest.mark.parametrize(("stored", "expected"), [("3500000000000", 3.5e12), (None, None)])
+    def test_cached_fundamentals_read_the_market_cap_when_present(
+        self,
+        repo: SupabaseRepository,
+        mock_client: MagicMock,
+        stored: str | None,
+        expected: float | None,
+    ) -> None:
+        row: dict[str, Any] = {
+            "symbol": "AAPL",
+            "trailing_pe": 25.4,
+            "fetched_at": "2026-10-18T00:00:00+00:00",
+        }
+        if stored is not None:
+            row["market_cap"] = stored
+        _set_chain_response(mock_client, ["table", "select", "eq", "gte"], [row])
+
+        result = repo.get_cached_fundamentals("AAPL")
+
+        assert result is not None
+        assert result.market_cap == expected

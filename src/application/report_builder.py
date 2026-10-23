@@ -17,7 +17,7 @@ from typing import Any
 from src.application.alpha_signals import AlphaSignals
 from src.application.decision_receipt import receipt_line_pl
 from src.application.portfolio_fx import effective_pln_rates
-from src.application.report_alpha import render_alpha_html
+from src.application.report_alpha import render_alpha_html, significant_buy_label
 from src.application.report_charts import (
     build_correlation_chart_html,
     build_delta_chart_html,
@@ -828,6 +828,7 @@ def to_lead_signals(
     resolved: list[ResolvedPrediction],
     portfolio_weights: Mapping[str, Decimal] | None = None,
     consensus_shifts: Sequence[tuple[str, ConsensusShift]] | None = None,
+    alpha_signals: Mapping[str, AlphaSignals] | None = None,
 ) -> list[LeadSignal]:
     """Mapuje DTO raportu na domenowe `LeadSignal` (#1).
 
@@ -841,6 +842,8 @@ def to_lead_signals(
 
     MAIL-19: `consensus_shifts` (#8, z `ReportContext`) dają sygnałom zmianę
     nastawienia rady — odwrócenie (FLIP) ma w leadzie własny tier.
+    DAT-21: `alpha_signals` daje znaczący zakup insidera (próg z kapitalizacji)
+    jako gotowy tekst — ten sam co linia w sekcji alfy.
     """
     # MAIL-15: etykieta trafia do leadu i tematu maila — po polsku, ze wspólnego
     # słownika domeny („trafiona prognoza wzrostu”), nie „predykcja BULLISH”.
@@ -868,9 +871,19 @@ def to_lead_signals(
                 ),
                 crossed_volatility_gate=r.status == "saved",
                 consensus_shift=shifts.get(r.symbol),
+                insider_buy_label=_insider_buy_label(alpha_signals, r.symbol),
             )
         )
     return signals
+
+
+def _insider_buy_label(
+    alpha_signals: Mapping[str, AlphaSignals] | None, symbol: str
+) -> str | None:
+    """DAT-21: tekst znaczącego zakupu insidera symbolu albo None."""
+    signal = alpha_signals.get(symbol) if alpha_signals else None
+    buy = signal.significant_insider_buy() if signal is not None else None
+    return significant_buy_label(buy) if buy is not None else None
 
 
 def _weight_prices(
@@ -909,7 +922,7 @@ def build_cycle_lead(
         else None
     )
     signals = to_lead_signals(
-        results, context.resolved_predictions or [], weights, context.consensus_shifts
+        results, context.resolved_predictions or [], weights, context.consensus_shifts, context.alpha_signals
     )
     return build_lead(signals, context.quota_alerts or [])
 

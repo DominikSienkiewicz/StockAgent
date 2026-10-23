@@ -6,11 +6,24 @@ infrastrukturze i mapuje surowe filingi na ten model."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
 # DAT-21: próg znaczącego zakupu — kod P od officera za co najmniej tyle USD.
+# Obowiązuje, gdy kapitalizacja spółki jest nieznana.
 SIGNIFICANT_BUY_MIN_USD = 100_000.0
+# DAT-21: próg jako ułamek kapitalizacji — 100k USD przy spółce za 100 mld USD,
+# 4 mln USD przy 4 bln USD. Ta sama kwota znaczy co innego w małej i dużej spółce.
+SIGNIFICANT_BUY_MIN_CAP_FRACTION = 1e-6
+
+
+def significant_buy_threshold(market_cap: float | None) -> float:
+    """DAT-21: próg znaczącego zakupu w USD — ułamek kapitalizacji, a bez niej
+    (brak w cache, zero, NaN) stałe `SIGNIFICANT_BUY_MIN_USD`."""
+    if market_cap is None or not math.isfinite(market_cap) or market_cap <= 0:
+        return SIGNIFICANT_BUY_MIN_USD
+    return market_cap * SIGNIFICANT_BUY_MIN_CAP_FRACTION
 
 
 @dataclass(frozen=True)

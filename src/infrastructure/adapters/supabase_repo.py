@@ -263,6 +263,16 @@ def _countable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _optional_float(value: Any) -> float | None:
+    """Liczba z kolumny NUMERIC (PostgREST oddaje float albo tekst) albo None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _optional_timestamp(value: Any) -> datetime | None:
     """Znacznik czasu z wiersza PostgREST (ISO 8601) albo None, gdy go brak."""
     if not isinstance(value, str) or not value:
@@ -508,11 +518,15 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         crypto_symbols: Collection[str] = (),
         correction_category_enabled: bool = False,
         stale_quote_enabled: bool = False,
+        fundamentals_market_cap_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
         # DAT-14: kolumna `stale_quote` istnieje od migracji 055 — bez flagi odczyty
         # trafności jej nie wybierają (400 zabiłby raport), a zapis jej nie niesie.
         self._stale_quote_enabled = stale_quote_enabled
+        # DAT-21: kolumna `fundamentals_cache.market_cap` istnieje od migracji 056 —
+        # bez flagi upsert jej nie niesie (PGRST204 zgubiłby cały wpis cache).
+        self._fundamentals_market_cap_enabled = fundamentals_market_cap_enabled
         # ML-10: kolumny baseline'ów dryfu i „sam LLM" istnieją od migracji 028 —
         # bez flagi payload karty ich nie niesie (PGRST204 zgubiłby cały wiersz).
         self._scorecard_baselines_enabled = scorecard_baselines_enabled
@@ -968,6 +982,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             peg_ratio=row.get("peg_ratio"),
             eps_growth_yoy=row.get("eps_growth_yoy"),
             fetched_at=datetime.fromisoformat(row["fetched_at"]),
+            # DAT-21: `select("*")` — przed migracją 056 klucza po prostu nie ma.
+            market_cap=_optional_float(row.get("market_cap")),
         )
 
     def get_fundamentals_fetched_at(self, symbols: Sequence[str]) -> dict[str, datetime]:
@@ -997,6 +1013,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             "eps_growth_yoy": fundamentals.eps_growth_yoy,
             "fetched_at": fundamentals.fetched_at.isoformat(),
         }
+        if self._fundamentals_market_cap_enabled:
+            payload["market_cap"] = fundamentals.market_cap
         self._client.table("fundamentals_cache").upsert(payload).execute()
 
     def get_cached_earnings(self, symbol: str) -> CachedEarningsDate | None:

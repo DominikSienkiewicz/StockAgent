@@ -3805,3 +3805,45 @@ class TestPlainTextSlots:
         assert "SLOT" not in text
         assert "KOSZT CYKLU" not in text
         assert "\n\n\n" not in text
+
+class TestInsiderBuyLead:
+    """DAT-21: znaczący zakup insidera z sekcji alfy trafia do leadu i tematu maila
+    tym samym tekstem, z progiem z kapitalizacji spółki."""
+
+    @staticmethod
+    def _alpha(market_cap: float | None = None) -> dict:
+        from src.application.alpha_signals import AlphaSignals
+        from src.domain.insider_flow import InsiderBuy, InsiderFlowSnapshot
+
+        insider = InsiderFlowSnapshot(
+            "NVDA",
+            10_000.0,
+            1,
+            0,
+            90,
+            largest_buy=InsiderBuy(role="CEO", value_usd=1_200_000.0),
+        )
+        return {"NVDA": AlphaSignals(symbol="NVDA", insider=insider, market_cap=market_cap)}
+
+    def test_lead_signal_carries_the_alpha_section_label(self):
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+
+        (signal,) = to_lead_signals(results, [], None, alpha_signals=self._alpha())
+
+        assert signal.insider_buy_label == "CEO kupił akcje za 1,2 mln USD"
+
+    def test_buy_below_the_cap_scaled_threshold_is_no_lead(self):
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+
+        (signal,) = to_lead_signals(results, [], None, alpha_signals=self._alpha(market_cap=4e12))
+
+        assert signal.insider_buy_label is None
+
+    def test_cycle_lead_opens_with_the_insider_buy(self):
+        from src.application.report_builder import build_cycle_lead
+
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+
+        items = build_cycle_lead(results, ReportContext(alpha_signals=self._alpha()))
+
+        assert items[0].headline == "NVDA +1,2%: CEO kupił akcje za 1,2 mln USD"

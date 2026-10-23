@@ -94,19 +94,27 @@ def render_alpha_html(
 
 
 def _render_significant_buys_html(rows: list[AlphaSignals]) -> list[str]:
-    """DAT-21: linia na znaczący zakup officera (kod P ≥ 100k USD) z kwotą
-    i linkiem do Form 4 — etykieta w tabeli nie mówi o skali."""
+    """DAT-21: linia na znaczący zakup officera (kod P ≥ ułamek kapitalizacji,
+    bez niej ≥ 100k USD) z kwotą i linkiem do Form 4 — etykieta w tabeli nie mówi
+    o skali."""
     lines: list[str] = []
     for sig in rows:
-        buy = sig.insider.significant_buy() if sig.insider is not None else None
+        # DAT-21: próg z kapitalizacji spółki (cache fundamentów), bez niej 100k USD.
+        buy = sig.significant_insider_buy()
         if buy is not None:
             lines.append(_significant_buy_line(sig.symbol, buy))
     return lines
 
 
-def _significant_buy_line(symbol: str, buy: InsiderBuy) -> str:
+def significant_buy_label(buy: InsiderBuy) -> str:
+    """DAT-21: „CEO kupił akcje za 1,2 mln USD” — ta sama treść w sekcji alfy
+    i w leadzie maila."""
     role = buy.role or _OFFICER_FALLBACK_ROLE
-    text = f"{symbol} — {role} kupił akcje za {_usd_amount(buy.value_usd)}"
+    return f"{role} kupił akcje za {_usd_amount(buy.value_usd)}"
+
+
+def _significant_buy_line(symbol: str, buy: InsiderBuy) -> str:
+    text = f"{symbol} — {significant_buy_label(buy)}"
     url = buy.filing_url
     link = (
         f" (<a href='{_html.escape(url, quote=True)}'>Form 4 →</a>)"

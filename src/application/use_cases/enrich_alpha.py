@@ -17,11 +17,13 @@ from src.application.alpha_signals import AlphaSignals
 from src.application.ports import (
     AnalystConsensusPort,
     EarningsCalendarPort,
+    FundamentalsPort,
     InsiderFlowPort,
     OptionsFlowPort,
     SocialVelocityPort,
 )
 from src.domain.earnings import EarningsEvent
+from src.domain.insider_flow import InsiderFlowSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +41,16 @@ class AlphaEnrichmentUseCase:
         options_port: OptionsFlowPort,
         social_port: SocialVelocityPort,
         analyst_port: AnalystConsensusPort,
+        market_cap_port: FundamentalsPort | None = None,
     ) -> None:
         self._insider = insider_port
         self._earnings = earnings_port
         self._options = options_port
         self._social = social_port
         self._analyst = analyst_port
+        # DAT-21: fundamenty WYŁĄCZNIE z cache (DI) — kapitalizacja do progu
+        # znaczącego zakupu insidera. None = próg stały, jak przed DAT-21.
+        self._market_caps = market_cap_port
 
     def fetch_earnings(self, symbol: str) -> EarningsEvent | None:
         """#6 — pobiera najbliższy raport kwartalny gracefully (błąd → None).
@@ -71,14 +77,24 @@ class AlphaEnrichmentUseCase:
             if earnings_prefetched
             else self._safe(self._earnings.get_next_earnings, symbol, "earnings")
         )
+        insider = self._safe(self._insider.get_insider_flow, symbol, "insider")
         return AlphaSignals(
             symbol=symbol,
-            insider=self._safe(self._insider.get_insider_flow, symbol, "insider"),
+            insider=insider,
             earnings=earnings_signal,
             options=self._safe(self._options.get_options_flow, symbol, "options"),
             social=self._safe(self._social.get_social_velocity, symbol, "social"),
             analyst=self._safe(self._analyst.get_consensus, symbol, "analyst"),
+            market_cap=self._market_cap(symbol, insider),
         )
+
+    def _market_cap(self, symbol: str, insider: InsiderFlowSnapshot | None) -> float | None:
+        """DAT-21: kapitalizacja tylko, gdy jest zakup insidera do oceny — inaczej
+        zero odczytów cache."""
+        if self._market_caps is None or insider is None or insider.largest_buy is None:
+            return None
+        fundamentals = self._safe(self._market_caps.get_fundamentals, symbol, "market cap")
+        return fundamentals.market_cap if fundamentals is not None else None
 
     @staticmethod
     def _safe(

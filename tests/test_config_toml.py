@@ -521,3 +521,9 @@ def test_real_config_toml_ships_the_stale_quote_flag_off_until_migration() -> No
     """DAT-14: kolumna `prediction_logs.stale_quote` powstaje w migracji 055."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["stale_quote_enabled"] is False
+
+
+def test_real_config_toml_ships_the_market_cap_write_off_until_migration() -> None:
+    """DAT-21: kolumna `fundamentals_cache.market_cap` powstaje w migracji 056."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["fundamentals_market_cap_enabled"] is False

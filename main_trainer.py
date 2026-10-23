@@ -127,6 +127,8 @@ def _supabase_repository(settings: Settings) -> SupabaseRepository:
         scorecard_run_id_enabled=settings.model_scorecard_run_id_enabled,
         scorecard_feature_stats_enabled=settings.model_scorecard_feature_stats_enabled,
         correction_category_enabled=settings.correction_category_enabled,
+        # DAT-21: kapitalizacja w cache fundamentów (migracja 056) za flagą.
+        fundamentals_market_cap_enabled=settings.fundamentals_market_cap_enabled,
     )
 
 

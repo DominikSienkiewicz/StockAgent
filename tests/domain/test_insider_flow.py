@@ -7,6 +7,8 @@ transakcji (zero buy_count + sell_count → NEUTRAL niezależnie od net_shares).
 
 from __future__ import annotations
 
+import pytest
+
 from src.domain.insider_flow import InsiderFlowSnapshot, InsiderSignal
 
 
@@ -131,3 +133,38 @@ class TestSignificantBuy:
         assert snapshot.significant_buy() is None
         assert snapshot.net_value_usd is None
         assert snapshot.latest_filing_url is None
+
+
+class TestSignificantBuyThreshold:
+    """DAT-21: próg znaczącego zakupu jako ułamek kapitalizacji — 1,2 mln USD to
+    sygnał w spółce za 100 mld USD, a szum w spółce za 4 bln USD. Bez kapitalizacji
+    próg zostaje 100k USD."""
+
+    def test_threshold_scales_with_the_market_cap(self) -> None:
+        from src.domain.insider_flow import significant_buy_threshold
+
+        assert significant_buy_threshold(100e9) == pytest.approx(100_000.0)
+        assert significant_buy_threshold(4e12) == pytest.approx(4_000_000.0)
+
+    @pytest.mark.parametrize("market_cap", [None, 0.0, -5.0, float("nan"), float("inf")])
+    def test_without_a_usable_market_cap_the_threshold_is_100k_usd(
+        self, market_cap: float | None
+    ) -> None:
+        from src.domain.insider_flow import SIGNIFICANT_BUY_MIN_USD, significant_buy_threshold
+
+        assert significant_buy_threshold(market_cap) == SIGNIFICANT_BUY_MIN_USD
+
+    def test_the_same_purchase_is_significant_only_in_the_smaller_company(self) -> None:
+        from src.domain.insider_flow import InsiderBuy, significant_buy_threshold
+
+        snapshot = InsiderFlowSnapshot(
+            symbol="NVDA",
+            net_shares=10_000.0,
+            buy_count=1,
+            sell_count=0,
+            window_days=90,
+            largest_buy=InsiderBuy(role="CEO", value_usd=1_200_000.0),
+        )
+
+        assert snapshot.significant_buy(significant_buy_threshold(100e9)) is not None
+        assert snapshot.significant_buy(significant_buy_threshold(4e12)) is None

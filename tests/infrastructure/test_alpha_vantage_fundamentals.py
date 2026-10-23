@@ -430,3 +430,29 @@ def test_rejected_key_log_omits_the_key(caplog) -> None:
 
     assert "rejected" in caplog.text
     assert "fund-secret-key" not in caplog.text
+
+
+# --- DAT-21: kapitalizacja z tej samej odpowiedzi OVERVIEW ----------------------
+
+
+def test_market_cap_comes_from_the_same_overview_response() -> None:
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"])
+    overview = {**OVERVIEW_JSON, "MarketCapitalization": "3512345678901"}
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = [_mock_response(overview), _mock_response(EARNINGS_JSON)]
+        fundamentals = adapter.get_fundamentals("AAPL")
+
+    assert fundamentals is not None
+    assert fundamentals.market_cap == pytest.approx(3_512_345_678_901.0)
+    # Zero nowych requestów: OVERVIEW + EARNINGS jak dotąd.
+    assert mock_get.call_count == 2
+
+
+def test_missing_market_cap_is_none() -> None:
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"])
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = [_mock_response(OVERVIEW_JSON), _mock_response(EARNINGS_JSON)]
+        fundamentals = adapter.get_fundamentals("AAPL")
+
+    assert fundamentals is not None
+    assert fundamentals.market_cap is None

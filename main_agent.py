@@ -1142,6 +1142,13 @@ def build_alpha_enrichment(
         options_port=options,
         social_port=social,
         analyst_port=analyst,
+        # DAT-21: kapitalizacja z cache fundamentów (zero requestów AV) do progu
+        # znaczącego zakupu insidera; bez repozytorium próg stały.
+        market_cap_port=(
+            build_fast_loop_fundamentals_port(repository)
+            if settings.insider_flow_enabled and repository is not None
+            else None
+        ),
     )
 
 

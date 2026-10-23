@@ -157,3 +157,6 @@ class Fundamentals:
     peg_ratio: float | None
     eps_growth_yoy: float | None
     fetched_at: datetime
+    # DAT-21: kapitalizacja w USD (`MarketCapitalization` z tej samej odpowiedzi
+    # OVERVIEW); skaluje próg znaczącego zakupu insidera. None = źródło jej nie dało.
+    market_cap: float | None = None
