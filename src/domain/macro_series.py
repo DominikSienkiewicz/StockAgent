@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Literal, TypedDict
 
 from src.domain.macro_risk import MacroAlertLevel
 
@@ -33,7 +33,18 @@ HY_OAS_CHANGE_OBSERVATIONS = 5
 HY_OAS_ELEVATED_CHANGE = 0.25
 HY_OAS_CRITICAL_CHANGE = 0.50
 
-MACRO_FEATURE_NAMES: tuple[str, ...] = (
+MacroFeatureName = Literal[
+    "vix_level",
+    "vix_percentile_1y",
+    "vxn_level",
+    "hy_oas",
+    "hy_oas_change_5d",
+    "term_spread_10y2y",
+    "nfci",
+    "macro_observed_on",
+]
+
+MACRO_FEATURE_NAMES: tuple[MacroFeatureName, ...] = (
     "vix_level",
     "vix_percentile_1y",
     "vxn_level",
@@ -125,11 +136,24 @@ def macro_series_votes(snapshot: MacroSeriesSnapshot) -> tuple[MacroAlertLevel, 
     return tuple(votes)
 
 
+class MacroFeatures(TypedDict):
+    """Cechy makro cyklu w kolejności `MACRO_FEATURE_NAMES` + dni obserwacji serii."""
+
+    vix_level: float | None
+    vix_percentile_1y: float | None
+    vxn_level: float | None
+    hy_oas: float | None
+    hy_oas_change_5d: float | None
+    term_spread_10y2y: float | None
+    nfci: float | None
+    macro_observed_on: dict[str, str]
+
+
 def _latest(window: Sequence[SeriesObservation]) -> SeriesObservation | None:
     return window[-1] if window else None
 
 
-def macro_features(snapshot: MacroSeriesSnapshot) -> dict[str, Any]:
+def macro_features(snapshot: MacroSeriesSnapshot) -> MacroFeatures:
     """Cechy makro cyklu (`MACRO_FEATURE_NAMES`); brak serii = None.
 
     `macro_observed_on` to mapa seria → dzień obserwacji (ISO), żeby trening nie
