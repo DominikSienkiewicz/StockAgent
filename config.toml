@@ -50,7 +50,7 @@ regime_threshold_max_multiplier = 2.0
 # ALR-03: histereza reżimu — wejście w RISK-OFF od razu, wyjście po N kolejnych
 # surowych odczytach (N = przebiegi Fast Loopa, przy ręcznych dispatchach nie dni).
 # Stan w tabeli `regime_history`. UWAGA: włącz DOPIERO po migracji 033.
-regime_hysteresis_enabled = false
+regime_hysteresis_enabled = true
 regime_exit_confirmations = 2
 # Contagion (#5): werdykty spółek z tego samego sektora z tego cyklu do promptu.
 # Grupy (`peer_groups`) idą z `sectors` niżej. Off.
@@ -95,7 +95,7 @@ messenger_digest_enabled = true
 model_scorecard_enabled = true
 # ML-10: karta zapisuje też baseline'y „dryf średniej" i „sam LLM" (bramka bije
 # najsilniejszy z trzech). UWAGA: włącz DOPIERO po migracji 028 (inaczej PGRST204).
-model_scorecard_baselines_enabled = false
+model_scorecard_baselines_enabled = true
 # ML-24: wiersze karty niosą `run_id` przebiegu Slow Loopa (re-run tego samego
 # dnia nie skleja się z cronem). UWAGA: włącz DOPIERO po migracji 049 (PGRST204).
 model_scorecard_run_id_enabled = false
@@ -115,16 +115,16 @@ receipts_enabled = true
 # treningu, Slow Loop jawnie pomija model wspólny (status skipped + n_samples).
 # ML-51: filtr obejmuje też main_backtest. Włącz go dopiero przy >= 75 wierszach
 # bieżącej wersji w widoku (minimum bramki walk-forward przy 4 foldach).
-feature_set_version_enabled = false
-feature_set_filter_enabled = false
+feature_set_version_enabled = true
+feature_set_filter_enabled = true
 # WIA-20: kolumna `recipe_version` (migracja 030) — wersja przepisu predykcji
 # (modele, szablon promptu, persony, config, wagi ML). Pola przepisu w kwicie v2
 # idą już z `receipts_enabled`. UWAGA: włącz DOPIERO po migracji 030 (PGRST204).
-recipe_version_enabled = false
+recipe_version_enabled = true
 # ML-14: wektor cech point-in-time w KAŻDYM cyklu, także ignored (tabela
 # `feature_snapshots`, migracja 031) — cechy darmowe ze stanu cyklu zawsze, cechy
 # LLM tylko za bramką, zero nowych wywołań. UWAGA: włącz DOPIERO po migracji 031.
-feature_snapshots_enabled = false
+feature_snapshots_enabled = true
 # ML-31: cechy rynkowe cyklu w `feature_snapshots` (zmienność i momentum z darmowych
 # snapshotów cen) + wersja zestawu cech 4 w stemplach (filtr treningu też po 4).
 # Działa tylko z feature_snapshots_enabled; bez nowej migracji, zero płatnych wywołań.
@@ -133,16 +133,16 @@ market_features_enabled = false
 # z rozliczonych predykcji, bez migracji. Flaga dokłada zapis `interval_low/high`
 # i pokrycie zrealizowane vs nominalne w Track Record. UWAGA: włącz DOPIERO po
 # migracji 032 (inaczej PGRST204 i przepadły zapis predykcji).
-interval_coverage_enabled = false
+interval_coverage_enabled = true
 # EXP-01: delta ceny, która otworzyła bramkę volatility, w `prediction_logs.gate_delta`
 # — test echa momentum w `uv run python main_tools.py evaluate --echo` (offline, nie
 # w mailu). Historia z backfillu migracji. UWAGA: włącz DOPIERO po migracji 034 (PGRST204).
-gate_delta_enabled = false
+gate_delta_enabled = true
 # EXP-05: eksperymenty w pętli (definicje `experiments.<id>.*` na końcu pliku) —
 # ramię per symbol-dzień UTC = sha256(id|symbol|dzień) mod liczba ramion. Ramię
 # idzie do kwitu v2 (za receipts_enabled, bez migracji); ta flaga dokłada kolumnę
 # `prediction_logs.experiment_arms`. UWAGA: włącz DOPIERO po migracji 037 (PGRST204).
-experiment_arms_enabled = false
+experiment_arms_enabled = true
 # ML-29: prompt prosi o rozkład P(BULLISH/BEARISH/SIDEWAYS) (+~20 tokenów wyjścia, zero
 # nowych wywołań); trend = argmax, pewność = max p, rozkład w `trend_probabilities`.
 # Zmienia prompt → nowy przepis. UWAGA: włącz DOPIERO po migracji 051 (PGRST204).
@@ -150,7 +150,7 @@ trend_probabilities_enabled = false
 # WIA-19: okna „zamknięte predykcje” po chwili rozliczenia (`settled_at`, migracja
 # 029): sekcja maila = rozliczone w tym cyklu, recap = rozliczone w ostatnich 7 dniach.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 029 (inaczej 400 i sekcja znika).
-settled_at_windows_enabled = false
+settled_at_windows_enabled = true
 # #11: darmowy watch szoku rynkowego poza cyklem (main_watch.py, migracja 021).
 # Zero płatnych API — tylko Finnhub/CoinGecko + Supabase. Włączone, ale cron
 # co godzinę jest wstrzymany razem z Fast Loopem (jedyne źródło referencji cen),
@@ -195,11 +195,11 @@ portfolio_positions_enabled = true
 # `purchase_date`, migracja 035) — odczyt w raporcie i zapis importu CSV
 # (`main_tools.py import-positions`). UWAGA: włącz DOPIERO po migracji 035
 # (inaczej PGRST204 przy imporcie).
-positions_currency_enabled = false
+positions_currency_enabled = true
 # PORT-11: P/L w zł po kursie NBP z dnia zakupu — kursy z NBP (darmowe) idą za
 # `nbp_enabled`; ta flaga dokłada tylko cache kursów z minionych dni w tabeli
 # `fx_rates`. UWAGA: włącz DOPIERO po migracji 036 (inaczej błędy w logu).
-fx_rates_cache_enabled = false
+fx_rates_cache_enabled = true
 # #17: niedzielna retrospektywa („Tydzień StockAgenta"). Koszt: 1 wywołanie LLM
 # TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Włączone.
 weekly_recap_enabled = true
@@ -263,11 +263,11 @@ two_phase_cycle_enabled = false
 # (tokeny, koszt, przebieg, węzeł, symbol; bez treści promptu), zapis batchem po
 # przebiegu Fast i Slow Loopa. UWAGA: włącz DOPIERO po migracji 040 (inaczej błąd
 # zapisu w logu). Sekcja „Koszt cyklu” liczy koszt z tokenów i bez tej flagi.
-cost_ledger_enabled = false
+cost_ledger_enabled = true
 # NIEZ-29: historia przebiegów — jeden wiersz `cycle_runs` na koniec cyklu Fast Loopa
 # (run_id jak w `llm_calls` + numer próby runu, liczby cyklu, płatne wywołania per
 # źródło, czy mail wyszedł; bez symboli). UWAGA: włącz DOPIERO po migracji 041.
-cycle_runs_enabled = false
+cycle_runs_enabled = true
 # NIEZ-14: głosy rady upsertem po (prediction_id, investor_name) zamiast insertu —
 # re-run w tej samej godzinie nie dubluje głosów. UWAGA: włącz DOPIERO po migracji 054.
 council_votes_upsert_enabled = false
@@ -298,7 +298,7 @@ session_close_settlement_enabled = false
 # zeszłotygodniowego wywołania i nowe wywołanie ze znaku zmiany tygodniowej. Zapis do
 # osobnej tabeli `reference_predictions`, nigdy do `prediction_logs` ani
 # `price_snapshots`; zero płatnych wywołań. UWAGA: włącz DOPIERO po migracji 042.
-reference_signal_enabled = false
+reference_signal_enabled = true
 # FIN-13: cennik LLM per model — standard tier, USD za 1M tokenów, stan na dzień
 # `llm_pricing_as_of`. Źródła:
 #   https://platform.claude.com/docs/en/about-claude/pricing
