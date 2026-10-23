@@ -361,13 +361,13 @@ risk_symbol_types = { EPOL = "SOVEREIGN_PROXY", SH = "INVERSE_EQUITY", PSQ = "IN
 # EXP-02: ślepa rada — ramię `blind` bez linii „Trend wg głównego analityka agenta
 # … (pewność …)” w promptach person (runda 1 i rewizja). Te same wywołania rady
 # w obu ramionach. Rada odpala tylko przy |Δ| ≥ council_volatility_threshold, więc
-# potrwa tygodnie. NIEAKTYWNY do wznowienia Fast Loopa — okno ustaw przy wznowieniu.
+# potrwa tygodnie. Aktywny od pierwszego cyklu po wznowieniu Fast Loopa (2026-10-26).
 experiments.EXP-02.hypothesis = "Persony bez trendu i pewności głównego LLM głosują niezależnie, więc rada jest trafniejsza i rzadziej powtarza werdykt LLM."
 experiments.EXP-02.arms = ["sighted", "blind"]
-experiments.EXP-02.start = 2026-11-02
+experiments.EXP-02.start = 2026-10-26
 experiments.EXP-02.end = 2027-01-29
 experiments.EXP-02.primary_metric = "council_hit_rate"
-experiments.EXP-02.enabled = false
+experiments.EXP-02.enabled = true
 
 # EXP-03: A/B pamięci — ramię `no_memory` bez lekcji z reflect (`reflection_context`)
 # i bez analogów RAG (`similar_context`) w prompcie predykcji; bez zapytania RAG,
@@ -375,10 +375,10 @@ experiments.EXP-02.enabled = false
 # korpusu analogów (koszt bez zmian, brak dziury po eksperymencie). Rozliczenie
 # poprzedniej predykcji (reflect) bez zmian. RAG biegnie zawsze, gdy jest adapter
 # embeddingów (vector_memory_enabled dokłada tylko filtr reżimu); dzień bez analogu
-# mierzy same lekcje. NIEAKTYWNY do wznowienia Fast Loopa — okno ustaw przy wznowieniu.
+# mierzy same lekcje. Aktywny od pierwszego cyklu po wznowieniu Fast Loopa (2026-10-26).
 experiments.EXP-03.hypothesis = "Lekcje z rozliczonych pomyłek i analogi RAG w prompcie poprawiają trafność i kalibrację predykcji."
 experiments.EXP-03.arms = ["memory", "no_memory"]
-experiments.EXP-03.start = 2026-11-02
+experiments.EXP-03.start = 2026-10-26
 experiments.EXP-03.end = 2027-01-29
 experiments.EXP-03.primary_metric = "hit_rate"
-experiments.EXP-03.enabled = false
+experiments.EXP-03.enabled = true
