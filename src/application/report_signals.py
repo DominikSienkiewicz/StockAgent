@@ -8,6 +8,7 @@ from typing import Any
 from src.application.decision_receipt import read_decision_receipt
 from src.application.report_formatting import format_local, number, pct, score_to_pl_label
 from src.application.report_models import (
+    PortfolioMood,
     ResolvedPrediction,
     RiskSignal,
     SymbolResult,
@@ -324,17 +325,16 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
 
 
-def build_portfolio_mood(results: list[SymbolResult]) -> dict[str, Any]:
+def build_portfolio_mood(results: list[SymbolResult]) -> PortfolioMood:
     """Liczy agregaty dla całego portfela: avg sentiment, top mover, etc.
 
-    MAIL-10: `sentiment_count` mówi, z ilu sentymentów jest średnia — przy 0
-    `avg_sentiment` 0.0 to brak danych, nie neutralny nastrój, i raport tak go
-    pokazuje."""
+    MAIL-10: bez ani jednego sentymentu średnia i jej etykieta to None (brak
+    danych), nie 0.0 udające neutralny nastrój."""
     saved = [r for r in results if r.status == "saved"]
     with_sentiment = [r for r in results if r.sentiment_score is not None]
     sentiments = [r.sentiment_score for r in with_sentiment if r.sentiment_score is not None]
 
-    avg = sum(sentiments) / len(sentiments) if sentiments else 0.0
+    avg = sum(sentiments) / len(sentiments) if sentiments else None
     most_bullish = max(with_sentiment, key=lambda r: r.sentiment_score or 0, default=None)
     most_bearish = min(with_sentiment, key=lambda r: r.sentiment_score or 0, default=None)
     high_conf = sum(
@@ -342,16 +342,16 @@ def build_portfolio_mood(results: list[SymbolResult]) -> dict[str, Any]:
     )
     total_news = sum(r.news_volume or 0 for r in results)
 
-    return {
-        "avg_sentiment": avg,
-        "avg_sentiment_label": score_to_pl_label(avg),
-        "sentiment_count": len(sentiments),
-        "most_bullish": most_bullish,
-        "most_bearish": most_bearish,
-        "high_confidence_count": high_conf,
-        "saved_count": len(saved),
-        "total_news": total_news,
-    }
+    return PortfolioMood(
+        avg_sentiment=avg,
+        avg_sentiment_label=score_to_pl_label(avg) if avg is not None else None,
+        sentiment_count=len(sentiments),
+        most_bullish=most_bullish,
+        most_bearish=most_bearish,
+        high_confidence_count=high_conf,
+        saved_count=len(saved),
+        total_news=total_news,
+    )
 
 
 def market_status(now_utc: datetime) -> dict[str, str]:

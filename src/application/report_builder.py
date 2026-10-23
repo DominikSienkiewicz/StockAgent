@@ -84,6 +84,7 @@ from src.application.report_model_scorecard import (
     render_model_scorecard_text,
 )
 from src.application.report_models import (
+    PortfolioMood,
     ResolvedPrediction,
     RiskSignal,
     SimilarPrecedent,
@@ -190,6 +191,7 @@ from src.domain.value_objects import (
 )
 
 __all__ = [
+    "PortfolioMood",
     "ResolvedPrediction",
     "RiskSignal",
     "SimilarPrecedent",
@@ -2547,28 +2549,28 @@ def _render_credibility_bar_html(accuracy_stats: Mapping[str, Any] | None) -> st
 _NO_SENTIMENT_LABEL = "brak danych"
 
 
-def _mood_average(mood: Mapping[str, Any]) -> tuple[str, str]:
+def _mood_average(mood: PortfolioMood) -> tuple[str, str]:
     """(średni sentyment, etykieta) — „—” i „brak danych”, gdy cykl nie ma sentymentu."""
-    if not mood.get("sentiment_count"):
+    if mood.avg_sentiment is None or mood.avg_sentiment_label is None:
         return "—", _NO_SENTIMENT_LABEL
-    return _number(mood["avg_sentiment"], decimals=2, signed=True), mood["avg_sentiment_label"]
+    return _number(mood.avg_sentiment, decimals=2, signed=True), mood.avg_sentiment_label
 
 
-def _render_mood_html(mood: dict[str, Any]) -> str:
+def _render_mood_html(mood: PortfolioMood) -> str:
     """📊 Nastroje portfela — sentyment cyklu w Zapleczu. MAIL-10: cykl bez
     zapisanych predykcji (dzień zdegradowany, same pominięte) nie ma boxu."""
-    if mood["saved_count"] == 0:
+    if mood.saved_count == 0:
         return ""
     average, average_label = _mood_average(mood)
     bullish_part = (
-        f"<strong>{_html(_company_label(mood['most_bullish'].symbol))}</strong> "
-        f"({_number(mood['most_bullish'].sentiment_score, decimals=2, signed=True)})"
-        if mood["most_bullish"] else "—"
+        f"<strong>{_html(_company_label(mood.most_bullish.symbol))}</strong> "
+        f"({_number(mood.most_bullish.sentiment_score, decimals=2, signed=True)})"
+        if mood.most_bullish else "—"
     )
     bearish_part = (
-        f"<strong>{_html(_company_label(mood['most_bearish'].symbol))}</strong> "
-        f"({_number(mood['most_bearish'].sentiment_score, decimals=2, signed=True)})"
-        if mood["most_bearish"] else "—"
+        f"<strong>{_html(_company_label(mood.most_bearish.symbol))}</strong> "
+        f"({_number(mood.most_bearish.sentiment_score, decimals=2, signed=True)})"
+        if mood.most_bearish else "—"
     )
     return f"""
       <div style="padding: 12px 14px; background: #eff6ff; border-left: 3px solid #2563eb;
@@ -2580,8 +2582,8 @@ def _render_mood_html(mood: dict[str, Any]) -> str:
           Średni sentyment: <strong>{average}</strong>
           ({average_label})<br/>
           Najbardziej pozytywny: {bullish_part} · Najbardziej negatywny: {bearish_part}<br/>
-          Predykcje z wysoką pewnością (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}
-          · Łącznie newsów: {mood['total_news']}
+          Predykcje z wysoką pewnością (≥70%): {mood.high_confidence_count} / {mood.saved_count}
+          · Łącznie newsów: {mood.total_news}
         </div>
       </div>
     """
@@ -2594,7 +2596,7 @@ def _render_html(
     errors: list[SymbolResult],
     started_local: str,
     duration_seconds: float,
-    mood: dict[str, Any],
+    mood: PortfolioMood,
     session: dict[str, str],
     accuracy_stats: dict[str, Any] | None,
     trade_signals: list[TradeSignal],
@@ -2863,10 +2865,10 @@ def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list
     return lines
 
 
-def _render_mood_text(mood: dict[str, Any]) -> list[str]:
+def _render_mood_text(mood: PortfolioMood) -> list[str]:
     """Sekcja 'Nastroje portfela' (plain) — w Zapleczu, jak w HTML (MAIL-10: bez
     zapisanych predykcji sekcji nie ma)."""
-    if mood["saved_count"] == 0:
+    if mood.saved_count == 0:
         return []
     average, average_label = _mood_average(mood)
     lines = [
@@ -2874,15 +2876,15 @@ def _render_mood_text(mood: dict[str, Any]) -> list[str]:
         "-" * 64,
         f"  Średni sentyment: {average} ({average_label})",
     ]
-    if mood["most_bullish"]:
-        mb = mood["most_bullish"]
+    if mood.most_bullish:
+        mb = mood.most_bullish
         lines.append(f"  Najbardziej pozytywny: {_company_label(mb.symbol)} ({_number(mb.sentiment_score, decimals=2, signed=True)})")
-    if mood["most_bearish"]:
-        mbe = mood["most_bearish"]
+    if mood.most_bearish:
+        mbe = mood.most_bearish
         lines.append(f"  Najbardziej negatywny: {_company_label(mbe.symbol)} ({_number(mbe.sentiment_score, decimals=2, signed=True)})")
     lines.append(
-        f"  Wysoka pewność (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}"
-        f"  ·  Newsów: {mood['total_news']}"
+        f"  Wysoka pewność (≥70%): {mood.high_confidence_count} / {mood.saved_count}"
+        f"  ·  Newsów: {mood.total_news}"
     )
     lines.append("")
     return lines
@@ -3023,7 +3025,7 @@ def _render_plain(
     errors: list[SymbolResult],
     started_local: str,
     duration_seconds: float,
-    mood: dict[str, Any],
+    mood: PortfolioMood,
     session: dict[str, str],
     accuracy_stats: dict[str, Any] | None,
     trade_signals: list[TradeSignal],

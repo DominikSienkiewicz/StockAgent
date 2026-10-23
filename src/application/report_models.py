@@ -146,6 +146,23 @@ class TradeSignal:
 
 
 @dataclass(frozen=True)
+class PortfolioMood:
+    """📊 Nastroje portfela — agregaty sentymentu jednego cyklu (MAIL-10).
+
+    `avg_sentiment` i `avg_sentiment_label` są None, gdy cykl nie ma ani jednego
+    sentymentu: brak danych to nie neutralny nastrój „+0,00”."""
+
+    avg_sentiment: float | None
+    avg_sentiment_label: str | None
+    sentiment_count: int
+    most_bullish: SymbolResult | None
+    most_bearish: SymbolResult | None
+    high_confidence_count: int
+    saved_count: int
+    total_news: int
+
+
+@dataclass(frozen=True)
 class RiskSignal:
     symbol: str
     type: str

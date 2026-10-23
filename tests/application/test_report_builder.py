@@ -6,6 +6,7 @@ import pytest
 
 from src.application import report_builder
 from src.application.report_builder import (
+    PortfolioMood,
     ReportContext,
     ResolvedPrediction,
     RiskSignal,
@@ -426,18 +427,33 @@ class TestPortfolioMood:
         ]
         mood = build_portfolio_mood(results)
         # avg = (0.4 + -0.3 + 0.1) / 3 ≈ 0.0667
-        assert abs(mood["avg_sentiment"] - 0.0667) < 0.001
-        assert mood["most_bullish"].symbol == "A"
-        assert mood["most_bearish"].symbol == "B"
-        assert mood["high_confidence_count"] == 1
-        assert mood["saved_count"] == 2
+        assert mood.avg_sentiment is not None
+        assert abs(mood.avg_sentiment - 0.0667) < 0.001
+        assert mood.most_bullish is not None
+        assert mood.most_bullish.symbol == "A"
+        assert mood.most_bearish is not None
+        assert mood.most_bearish.symbol == "B"
+        assert mood.high_confidence_count == 1
+        assert mood.saved_count == 2
+
+    def test_no_sentiment_gives_no_average(self):
+        # MAIL-10: bez ani jednego sentymentu średniej nie ma (None), a nie 0.0
+        # udające neutralny nastrój; wynik to zamrożony dataclass, nie dict.
+        mood = build_portfolio_mood([SymbolResult(symbol="A", status="ignored")])
+
+        assert isinstance(mood, PortfolioMood)
+        assert mood.avg_sentiment is None
+        assert mood.avg_sentiment_label is None
+        assert mood.sentiment_count == 0
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            mood.__setattr__("saved_count", 1)
 
     def test_handles_empty_results(self):
         mood = build_portfolio_mood([])
-        assert mood["avg_sentiment"] == pytest.approx(0.0)
-        assert mood["most_bullish"] is None
-        assert mood["most_bearish"] is None
-        assert mood["saved_count"] == 0
+        assert mood.avg_sentiment is None
+        assert mood.most_bullish is None
+        assert mood.most_bearish is None
+        assert mood.saved_count == 0
 
 
 class TestMarketStatus:
