@@ -80,3 +80,22 @@ def test_guard_rejects_a_bare_basic_config(tmp_path: Path) -> None:
     assert not any(
         _passes_settings_secrets(call) for call in calls if _callee(call) == "configure_logging"
     )
+
+
+def _imports_configure_logging_from(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {
+        node.module or ""
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and any(alias.name == "configure_logging" for alias in node.names)
+    }
+
+
+@pytest.mark.parametrize("module", ENTRY_POINTS)
+def test_entry_point_logs_with_the_run_context(module: str) -> None:
+    """NIEZ-21: entry-point bierze `configure_logging` z `logging_setup`, nie z warstwy
+    redakcji — inaczej jego linie nie mają run_id, entry_point ani symbolu (JSON w GHA)."""
+    assert _imports_configure_logging_from(ROOT / module) == {"src.infrastructure.logging_setup"}, (
+        f"{module} konfiguruje logi z pominięciem logging_setup (NIEZ-21)"
+    )

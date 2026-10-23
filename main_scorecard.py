@@ -32,7 +32,7 @@ import sys
 from collections.abc import Sequence
 
 from src.config import Settings
-from src.infrastructure.logging_redaction import configure_logging
+from src.infrastructure.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None, settings: Settings | None = None) -> int:
     args = build_parser().parse_args(argv)
     settings = settings or Settings.from_env()
-    configure_logging(
-        settings.secret_values(), fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    )
+    configure_logging("main_scorecard", settings.secret_values())
     if not settings.public_scorecard_enabled:
         logger.info(
             "Public scorecard wyłączony (public_scorecard_enabled = false) — brak artefaktu"
