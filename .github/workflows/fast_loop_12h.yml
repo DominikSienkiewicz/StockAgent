@@ -1,21 +1,18 @@
 name: 🟢 Fast Loop (12h Agentic RAG)
 
 on:
-  # ⏸️ Codzienne generowanie i wysyłanie raportów WYŁĄCZONE (na razie).
-  # Harmonogram (cron) jest zakomentowany — agent nie startuje automatycznie,
-  # więc nic nie generuje ani nie wysyła. Zostaje wyłącznie ręczne wymuszenie
-  # z panelu Actions (workflow_dispatch). Aby przywrócić codzienne uruchomienia,
-  # odkomentuj blok `schedule` poniżej.
-  # schedule:
-  #   # 05:30 UTC = 07:30 CEST (lato) / 06:30 CET (zima)
-  #   # GHA cron jest fixed-UTC i nie ma DST — w październiku przy zmianie czasu
-  #   # na CET godziny przesuwają się o 1h wstecz w czasie polskim.
-  #   # Aby zachować 7:30 PL przez cały rok, zmień na '30 6' w CET.
-  #   # GHA cron to best-effort — opóźnienia 5-60 min są normalne.
-  #   # Tylko dni robocze (pon-pt) — w weekendy giełda jest zamknięta.
-  #   # Święta NYSE pomija sam agent (FIN-34, `nyse_closure_skip_enabled` w config.toml):
-  #   # w dzień zamknięcia akcje nie idą do grafu, krypto tak; cron zostaje `1-5`.
-  #   - cron: '30 5 * * 1-5'
+  # Codzienny cykl wznowiony 2026-10-23 (docs/resume-checklist.md, krok 10);
+  # pauza trwała od 2026-08-17 (`02fc397`, decyzja 2).
+  schedule:
+    # 05:30 UTC = 07:30 CEST (lato) / 06:30 CET (zima)
+    # GHA cron jest fixed-UTC i nie ma DST — w październiku przy zmianie czasu
+    # na CET godziny przesuwają się o 1h wstecz w czasie polskim.
+    # Aby zachować 7:30 PL przez cały rok, zmień na '30 6' w CET.
+    # GHA cron to best-effort — opóźnienia 5-60 min są normalne.
+    # Tylko dni robocze (pon-pt) — w weekendy giełda jest zamknięta.
+    # Święta NYSE pomija sam agent (FIN-34, `nyse_closure_skip_enabled` w config.toml):
+    # w dzień zamknięcia akcje nie idą do grafu, krypto tak; cron zostaje `1-5`.
+    - cron: '30 5 * * 1-5'
   workflow_dispatch:   # ręczne wymuszenie z panelu Actions
 
 permissions:

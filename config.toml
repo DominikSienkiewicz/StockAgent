@@ -124,11 +124,11 @@ settled_at_windows_enabled = false
 shock_alerts_enabled = true
 # NIEZ-11: deadman (main_deadman.py, cron raz dziennie, zero płatnych API) mailuje
 # przez Resend, gdy job zamilkł dłużej niż przerwa w godzinach. 0 = job świadomie
-# wstrzymany: Fast Loop stoi (decyzja 2). Slow Loop chodzi co niedzielę — 192 h to
-# tydzień plus dzień zapasu na opóźnienia crona GitHuba. Fast Loop liczy się w dniach
-# handlowych NYSE: przerwa to zapas od północy ET każdego dnia handlowego (weekend
-# i święto nie alarmują) — przy wznowieniu np. 26 (alarm po dwóch dniach bez cyklu).
-liveness_fast_loop_max_gap_h = 0
+# wstrzymany. Slow Loop chodzi co niedzielę — 192 h to tydzień plus dzień zapasu na
+# opóźnienia crona GitHuba. Fast Loop liczy się w dniach handlowych NYSE: przerwa to
+# zapas od północy ET każdego dnia handlowego (weekend i święto nie alarmują) —
+# 26 = alarm po dwóch dniach handlowych bez cyklu (cron wznowiony 2026-10-23).
+liveness_fast_loop_max_gap_h = 26
 liveness_slow_loop_max_gap_h = 192
 # #14: Alpha Fusion Score (migracja 022) — ważona fuzja insider/opcje/analitycy/
 # social/earnings. Trafia do promptu LLM i jako ósma cecha ML. Włączone.
@@ -179,7 +179,7 @@ earnings_calendar_enabled = false
 # true = błąd startu zamiast ostrzeżenia. Off, bo liczba kluczy żyje w sekretach.
 av_budget_strict = false
 # FIN-32: cykle Fast Loopa na dobę w tym budżecie = uruchomienia na dobę z harmonogramu
-# `.github/workflows/fast_loop_12h.yml` (cron zakomentowany → 1). Test strażnik pilnuje
+# `.github/workflows/fast_loop_12h.yml` (cron '30 5 * * 1-5' → 1). Test strażnik pilnuje
 # zgodności — zmieniasz cron, zmień i to.
 fast_loop_cycles_per_day = 1
 # FIN-12: sufit płatnych wywołań LLM jednego cyklu Fast Loopa (predykcja, diagnoza
