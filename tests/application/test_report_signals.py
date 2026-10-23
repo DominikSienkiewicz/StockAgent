@@ -298,7 +298,27 @@ def test_divergence_signal_writes_the_numbers_the_polish_way() -> None:
 
     descriptions = [s.description for s in detect_risk_signals([result])]
 
-    assert "cena rośnie 3,00% ale sentyment -0,45 -> możliwa korekta lub pump" in descriptions
+    assert "cena rośnie 3,00% ale sentyment -0,45 -> rozbieżność cena–sentyment" in descriptions
+
+
+@pytest.mark.parametrize(
+    ("delta", "sentiment"), [(Decimal("0.03"), -0.45), (Decimal("-0.03"), 0.45)]
+)
+def test_divergence_copy_is_descriptive_not_diagnostic(delta: Decimal, sentiment: float) -> None:
+    # WIA-47: DIVERGENCE to niezweryfikowana heurystyka — mail opisuje rozbieżność
+    # zamiast wróżyć „korektę lub pump” albo „okazję lub odbicie”.
+    from src.application.report_signals import detect_risk_signals
+
+    result = SymbolResult(
+        symbol="NVDA", status="saved", delta=delta, sentiment_score=sentiment
+    )
+
+    (signal,) = detect_risk_signals([result])
+
+    assert signal.type == "DIVERGENCE"
+    assert signal.description.endswith("-> rozbieżność cena–sentyment")
+    for diagnosis in ("pump", "korekta", "okazja", "odbicie"):
+        assert diagnosis not in signal.description
 
 
 def test_conflict_copy_is_descriptive_not_diagnostic() -> None:

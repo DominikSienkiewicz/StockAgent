@@ -207,28 +207,28 @@ def is_low_signal(news_volume: int | None) -> bool:
     return news_volume is not None and news_volume < LOW_SIGNAL_NEWS_THRESHOLD
 
 
+# WIA-47: heurystyka nie jest zweryfikowana na wynikach (evaluate --by risk_signal),
+# więc mail opisuje rozbieżność zamiast diagnozy „korekta lub pump” / „okazja lub odbicie”.
+_DIVERGENCE_COPY = "-> rozbieżność cena–sentyment"
+
+
 def _divergence_signal(r: SymbolResult) -> RiskSignal | None:
-    """Rozbieżność cena↔sentyment — możliwy pump albo niedoszacowane odbicie."""
+    """Rozbieżność cena↔sentyment — opis, nie diagnoza (WIA-47)."""
     if r.delta is None or r.sentiment_score is None:
         return None
     direction = divergence_direction(r.delta, r.sentiment_score)
-    if direction > 0:
-        return RiskSignal(
-            symbol=r.symbol, type="DIVERGENCE", severity="high",
-            description=(
-                f"cena rośnie {pct(r.delta)} ale sentyment "
-                f"{number(r.sentiment_score, decimals=2, signed=True)} -> możliwa korekta lub pump"
-            ),
-        )
-    if direction < 0:
-        return RiskSignal(
-            symbol=r.symbol, type="DIVERGENCE", severity="high",
-            description=(
-                f"cena spada {pct(r.delta)} ale sentyment "
-                f"{number(r.sentiment_score, decimals=2, signed=True)} -> okazja lub odbicie?"
-            ),
-        )
-    return None
+    if direction == 0:
+        return None
+    move = "rośnie" if direction > 0 else "spada"
+    return RiskSignal(
+        symbol=r.symbol,
+        type="DIVERGENCE",
+        severity="high",
+        description=(
+            f"cena {move} {pct(r.delta)} ale sentyment "
+            f"{number(r.sentiment_score, decimals=2, signed=True)} {_DIVERGENCE_COPY}"
+        ),
+    )
 
 
 def _av_llm_conflict_signal(r: SymbolResult) -> RiskSignal | None:

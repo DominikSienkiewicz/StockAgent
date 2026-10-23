@@ -216,7 +216,7 @@ Output lands in the e-mail as a dedicated **🚨 Risk Watch** section (signals t
 
 | Type | Trigger | Meaning |
 |---|---|---|
-| 🚨 **DIVERGENCE** | `\|delta\| > 2%` & sentiment opposes the price direction | Possible correction / pump / unusual market dynamics |
+| 🚨 **DIVERGENCE** | `\|delta\| > 2%` & sentiment opposes the price direction | The price and the sentiment point in opposite directions; the email says `-> rozbieżność cena–sentyment` and no longer guesses a correction, pump or rebound |
 | 🚨 **AV_LLM_CONFLICT** | `av_agreement < 0.3` | LLM disagrees with AV — the two sentiment readings diverge (the email describes the gap, it no longer calls it fake news or manipulation) |
 | ⚠️ **LOW_SIGNAL** | `news_volume < 3` | Decision built on a tiny news sample — low confidence |
 
