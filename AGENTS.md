@@ -53,8 +53,10 @@ Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
 - **Bramka volatility**: płatne porty (LLM, Alpha Vantage, embeddingi) **nie mogą**
   być wołane, gdy zmiana ceny < `volatility_threshold`. Logika progu żyje w domenie
   (`Asset.evaluate_volatility`) — graf jest tylko wykonawcą.
-- **Cold-start**: `check_price_node` zapisuje snapshot ceny w KAŻDYM cyklu
-  (`price_snapshots`), żeby następny cykl miał punkt odniesienia.
+- **Cold-start**: snapshot ceny (`price_snapshots`) zapisuje węzeł TERMINALNY każdego
+  ukończonego cyklu — `save_node` albo `ignore_node` (`_persist_price_snapshot`), nie
+  `check_price_node` — żeby następny cykl miał punkt odniesienia. Cykl padły w połowie
+  nie zostawia snapshotu, więc retry liczy Δ od ostatniego ukończonego cyklu (#6).
 - **Self-Reflection**: `reflect_node` działa PRZED bramką volatility — ocena
   przeszłej predykcji jest niezależna od tego, czy bieżący cykl robi nową prognozę.
 - **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. `main_agent.main()`

@@ -78,8 +78,10 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   (`slow_loop_paid_budget`), wywołanie ponad przydział odrzuca `BudgetedLLMPort`
   przed dostawcą, a licznikiem jest ten sam `MeteredLLMPort` + `CycleTelemetry`
   co w Fast Loopie.
-- **Cold-start**: `check_price_node` zapisuje snapshot ceny w KAŻDYM cyklu
-  (`price_snapshots`), żeby następny cykl miał punkt odniesienia.
+- **Cold-start**: snapshot ceny (`price_snapshots`) zapisuje węzeł TERMINALNY każdego
+  ukończonego cyklu — `save_node` albo `ignore_node` (`_persist_price_snapshot`), nie
+  `check_price_node` — żeby następny cykl miał punkt odniesienia. Cykl padły w połowie
+  nie zostawia snapshotu, więc retry liczy Δ od ostatniego ukończonego cyklu (#6).
   Jedyny wyjątek (FIN-12): symbol odcięty sufitem płatnych wywołań cyklu
   (`max_paid_llm_calls_per_cycle`, węzeł `budget_exhausted`) kończy jako 'ignored'
   BEZ snapshotu ceny — inaczej następny cykl liczyłby Δ od nowej ceny i ruch ponad
