@@ -3,7 +3,7 @@
 Ewaluuje każdy symbol osobno (bez zapisu wag), a potem trenuje JEDEN wspólny model
 XGBoost na zebranych logach predykcyjnych wszystkich symboli (ML-13). Plik wag
 (.ubj) powstaje tylko, gdy kandydat przejdzie bramkę walk-forward; workflow GHA
-commituje go wtedy do repo.
+wysyła go wtedy jako asset Release `model-latest` (CI-13), skąd pobiera go Fast Loop.
 
 Użycie:
     uv run python main_trainer.py

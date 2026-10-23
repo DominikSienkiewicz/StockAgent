@@ -9,18 +9,25 @@ on:
 permissions:
   contents: read    # BEZ-12: zapis dostaje wyłącznie job trenera, nie cały workflow
 
+# CI-13: dwa treningi naraz (cron + ręczne wymuszenie) nadpisywałyby sobie asset
+# wag. Drugi run czeka w kolejce — anulowanie w połowie uploadu zostawiłoby
+# Release bez pliku.
+concurrency:
+  group: slow-loop
+  cancel-in-progress: false
+
 jobs:
   retrain-predictive-model:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: write   # KRYTYCZNE — job musi pushować zaktualizowany .ubj
+      contents: write   # CI-13: tworzy Release `model-latest` i podmienia jego asset wag
 
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # Push wag idzie domyślnym GITHUB_TOKEN z `contents: write` tego joba.
+          # Upload wag idzie domyślnym GITHUB_TOKEN z `contents: write` tego joba.
           fetch-depth: 1
 
       - name: 🙈 Mask each Alpha Vantage key
@@ -103,28 +110,36 @@ jobs:
           retention-days: 90
           if-no-files-found: ignore
 
-      - name: 💾 Commit and push updated model
+      - name: 💾 Upload model weights (Release model-latest)
+        # CI-13 (G78): wagi idą jako asset Release `model-latest`, nie commit na main —
+        # bot nie omija branch protection, a binaria nie puchną w historii gita.
+        # Fast Loop pobiera ten asset przed runem. Asset jest nadpisywany co tydzień,
+        # więc sha256 trafia do notatek Release i podsumowania joba; predykcje niosą
+        # go w przepisie (`model_version`, WIA-20).
         # ML-04: trener kończy się exit 1, gdy padł choć jeden symbol — wagi wspólnego
         # modelu, jeśli powstały, i tak trzeba zapisać. Anulowanie (timeout) pomija krok.
         if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          MODEL_PATH: data/models/price_predictor.ubj
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          git config --global user.name "AI Model Trainer"
-          git config --global user.email "ml-trainer@users.noreply.github.com"
-
-          MODEL_PATH="data/models/price_predictor.ubj"
-
+          # Plik wag nie jest w repo, więc istnieje tylko, gdy ten run go wytrenował.
           if [ ! -f "$MODEL_PATH" ]; then
-            echo "Trener nie wyprodukował pliku modelu (prawdopodobnie za mało danych) — pomijam commit."
+            echo "Trener nie wyprodukował pliku modelu (bramka albo za mało danych) — pomijam upload."
             exit 0
           fi
 
-          git add "$MODEL_PATH"
-          if git diff --cached --quiet -- "$MODEL_PATH"; then
-            echo "Brak zmian w modelu wag po treningu."
-          else
-            git commit -m "chore(ml): update XGBoost model weights [skip ci]"
-            git push
+          SHA256=$(sha256sum "$MODEL_PATH" | cut -d' ' -f1)
+          NOTES="sha256: ${SHA256} · trening: ${RUN_URL}"
+          if ! gh release view model-latest >/dev/null 2>&1; then
+            gh release create model-latest --title "Model weights (latest)" \
+              --notes "$NOTES" --latest=false
           fi
+          gh release upload model-latest "$MODEL_PATH" --clobber
+          gh release edit model-latest --notes "$NOTES"
+          echo "Wagi modelu w Release model-latest, sha256: ${SHA256}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 📮 Mail o porażce jobu
         # NIEZ-23: GitHub mailuje o porażce crona tylko autora ostatniej zmiany crona,

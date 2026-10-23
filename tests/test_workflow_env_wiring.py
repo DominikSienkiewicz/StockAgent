@@ -785,8 +785,69 @@ def test_slow_loop_commits_weights_even_when_training_step_failed() -> None:
     workflow = ROOT / ".github" / "workflows" / "slow_loop_weekly.yml"
     spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
     steps = [s for job in spec["jobs"].values() for s in job.get("steps", [])]
-    commit_step = next(s for s in steps if "git push" in str(s.get("run", "")))
+    commit_step = next(s for s in steps if "gh release upload" in str(s.get("run", "")))
     assert str(commit_step.get("if", "")).replace(" ", "") == "${{!cancelled()}}"
+
+
+# CI-13 (G78): wagi modelu żyją jako asset Release `model-latest`, nie commit na
+# main — bot nie omija branch protection. Slow Loop wysyła plik `ml_model_path`,
+# Fast Loop pobiera go przed agentem, a dwa treningi nigdy nie biegną naraz.
+MODEL_RELEASE_TAG = "model-latest"
+SLOW_LOOP = ROOT / ".github" / "workflows" / "slow_loop_weekly.yml"
+
+
+def _slow_loop_spec() -> dict[str, Any]:
+    spec: dict[str, Any] = yaml.safe_load(SLOW_LOOP.read_text(encoding="utf-8"))
+    return spec
+
+
+def _ml_model_path() -> str:
+    return str(_repo_config()["ml_model_path"])
+
+
+def _release_step(steps: list[dict[str, Any]], command: str) -> dict[str, Any] | None:
+    return next(
+        (s for s in steps if f"{command} {MODEL_RELEASE_TAG}" in str(s.get("run", ""))), None
+    )
+
+
+def test_slow_loop_never_pushes_to_main() -> None:
+    steps = _workflow_steps(_slow_loop_spec())
+    scripts = [str(step.get("run", "")) for step in steps]
+
+    assert not [run for run in scripts if re.search(r"\bgit\s+(push|commit)\b", run)], (
+        "Slow Loop commituje albo pushuje do repo — wagi idą do Release model-latest."
+    )
+
+
+def test_slow_loop_uploads_the_weights_file_to_the_model_release() -> None:
+    upload = _release_step(_workflow_steps(_slow_loop_spec()), "gh release upload")
+
+    assert upload is not None, "Slow Loop nie wysyła wag do Release model-latest"
+    assert _ml_model_path() in str(upload.get("run", "")) + str(upload.get("env", ""))
+    assert "--clobber" in str(upload.get("run", ""))
+    assert dict(upload.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}"
+
+
+def test_slow_loop_runs_queue_instead_of_cancelling() -> None:
+    concurrency = _slow_loop_spec().get("concurrency") or {}
+
+    assert concurrency.get("group") == "slow-loop"
+    assert concurrency.get("cancel-in-progress") is False
+
+
+def test_fast_loop_downloads_the_weights_before_the_agent_runs() -> None:
+    steps = _steps()
+    download = _release_step(steps, "gh release download")
+    agent = next(s for s in steps if str(s.get("run", "")).endswith("main_agent.py"))
+
+    assert download is not None, "Fast Loop nie pobiera wag z Release model-latest"
+    assert steps.index(download) < steps.index(agent)
+    model_path = _ml_model_path()
+    run = str(download.get("run", ""))
+    assert posixpath.basename(model_path) in run
+    assert posixpath.dirname(model_path) in run
+    assert dict(download.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}"
 
 
 def test_slow_loop_write_permission_is_scoped_to_the_trainer_job() -> None:

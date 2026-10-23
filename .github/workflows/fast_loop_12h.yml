@@ -64,6 +64,23 @@ jobs:
         # `--extra anthropic` to zachowany alias, pilnowany przez test_workflow_env_wiring.
         run: uv sync --frozen --extra anthropic --no-build --no-install-project
 
+      - name: 📦 Download model weights (Release model-latest)
+        # CI-13: wagi XGBoost trzyma Release `model-latest` (upload w Slow Loopie), nie
+        # repo. Brak Release albo assetu (przed pierwszym modelem, który przeszedł
+        # bramkę) = cold start, jak bez pliku wag: agent leci na baseline, a przepis
+        # predykcji zapisuje `model_version = cold_start` zamiast sha256 wag.
+        # Sam odczyt — wystarcza `contents: read` workflowu.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release download model-latest --pattern price_predictor.ubj \
+              --dir data/models --clobber; then
+            sha256sum data/models/price_predictor.ubj
+          else
+            echo "::warning::Brak wag w Release model-latest — Fast Loop bez modelu ML (cold start)."
+          fi
+
       - name: 🧠 Run Agent (LangGraph + XGBoost + LLM)
         # Tu wstrzykujemy WYŁĄCZNIE sekrety (plus przełączniki DB_WRITES_ENABLED
         # i PAID_CALLS_ENABLED niżej).
