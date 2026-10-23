@@ -20,17 +20,21 @@ email with charts and its own running hit-rate.
 
 ## Status
 
-**The daily report run is paused** since 2026-08-17, when commit `02fc397` commented out
-its cron; it starts only on manual `workflow_dispatch`. The reason is decision 2: the loop's
-cost and its silent failures. Every weekday run paid for LLM, council and Alpha Vantage
-calls, and a run that failed or did not start raised no alarm. Waves A to R have since added
-a ceiling on the paid calls of a cycle, an explicit weekly budget, a daily deadman, an
-external heartbeat and explicit write and paid-call switches in the workflows. The hourly
-price-shock check is paused too (`f886da0`), but it can resume on its own: it reads each
-symbol's change for the day from the same free quote and uses the daily run's snapshots
-only as a fallback. Two jobs still run on schedule: the weekly model retraining, and a free
-daily deadman that mails when a job that should run has gone quiet. The retraining has not
-shipped weights yet. Its last run (2026-10-11) still trained one model per symbol and
+**The daily report run resumed on 2026-10-23** on weekdays at 05:30 UTC
+(`30 5 * * 1-5`), after a pause from 2026-08-17 (commit `02fc397`, decision 2: the loop's
+cost and its silent failures). Waves A to R added what the resume needed: a ceiling on the
+paid calls of a cycle, an explicit weekly budget, a daily deadman that now also alerts after
+two trading days without a daily run, an external heartbeat and explicit write and
+paid-call switches in the workflows. The hourly price-shock check resumed the same day; it
+reads each symbol's change for the day from a free quote and does not depend on the daily
+run. Four jobs run on schedule: the daily run, the hourly shock check, the weekly model
+retraining and the free daily deadman. The blind-council and memory A/B experiments run
+from 2026-10-26 to 2027-01-29.
+
+The resume moved to a new, empty Supabase database, so every history starts again from
+zero: the first daily run only records reference prices, and the retraining has nothing to
+train on until predictions settle. It has not shipped weights yet. Its last run on the old
+database (2026-10-11) still trained one model per symbol and
 skipped all 45: the best-covered symbol had 17 settled predictions against the 50 required,
 288 across all symbols. Training now fits one shared
 model on the pooled predictions of every symbol, so the 50-sample minimum applies to that
@@ -40,18 +44,17 @@ direction alone. Until a run ships them, the XGBoost leg runs on the no-change b
 and the report and the council prompt label it as cold-start.
 
 **Resume.** The conditions and the owner's steps, in order, are in the
-[resume checklist](docs/resume-checklist.md): the secret Supabase key, the pending
-migrations and the flags they unlock, the heartbeat secret, the experiment windows, the
-deadman's gap for the daily run, and uncommenting the crons last. Once the daily run's cron
-is active, `tests/test_workflow_env_wiring.py` fails unless a deadman runs on a cron and the
+[resume checklist](docs/resume-checklist.md), with the steps still open at its top: the
+heartbeat secret, the attestation flags and a push channel for the shock check. While the
+daily run's cron is active, `tests/test_workflow_env_wiring.py` fails unless a deadman runs on a cron and the
 cost ceiling, the weekly budget, the liveness gap and the write and paid-call switches are in
 place. Every run, scheduled or manual, is listed on the
 [GitHub Actions workflows page](https://github.com/DominikSienkiewicz/StockAgent/actions).
 
 **Database risk: the Supabase Free plan.** The Supabase project is on the Free plan, which
-pauses a project after 7 days without activity. While the daily run and the shock check are
-paused, the only job that writes to the database is the weekly retraining, so one late
-GitHub cron run can be enough for a pause; until the project is restored in the Supabase
+pauses a project after 7 days without activity. The daily run and the shock check write on
+every weekday, but if both stop again, the only job that writes to the database is the weekly
+retraining, and one late GitHub cron run can be enough for a pause; until the project is restored in the Supabase
 dashboard, every job fails on connect. The daily deadman therefore starts each run with a
 read-only query of one `price_snapshots` row through PostgREST, with no paid keys, and mails
 when the database does not answer. It is a monitor, not a keepalive: it reports a pause that
