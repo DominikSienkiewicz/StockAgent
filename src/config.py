@@ -253,6 +253,9 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "ml_model_path",
     # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
     "experiments",
+    # ML-29: prompt prosi o rozkład trzech klas, a trend i pewność idą z argmaxu —
+    # inny format odpowiedzi to inny rozkład pewności, więc nowy przepis.
+    "trend_probabilities_enabled",
 })
 
 
@@ -534,6 +537,12 @@ class Settings(BaseSettings):
     # trafia też do kwitu v2 (za `receipts_enabled`, bez migracji). Off: nowy
     # klucz przed migracją → PGRST204 i śmierć zapisu całej predykcji.
     experiment_arms_enabled: bool = False
+    # ML-29: prompt prosi o rozkład P(BULLISH/BEARISH/SIDEWAYS); trend = argmax,
+    # pewność = max p (domena `ProbabilityForecast`, fallback na stare pola), a rozkład
+    # trafia do `prediction_logs.trend_probabilities` (migracja 051). Zmienia prompt,
+    # więc należy do przepisu. Off: nowy klucz przed migracją → PGRST204 i śmierć
+    # zapisu całej predykcji.
+    trend_probabilities_enabled: bool = False
     # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
     # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr

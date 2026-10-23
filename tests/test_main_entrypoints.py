@@ -4215,6 +4215,21 @@ class TestDriftGateWiring:
 
         assert use_case_cls.call_args.args[0].drift_gate_enabled is True
 
+class TestTrendProbabilitiesWiring:
+    """ML-29 — flaga z Settings trafia do `AgentGraphDeps`; off (domyślnie) = prompt
+    bez rozkładu i rekord bez `trend_probabilities` (kolumna dopiero w migracji 051)."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_flag_reaches_graph_deps(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.trend_probabilities_enabled = enabled
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].trend_probabilities_enabled is enabled
+
 
 class TestStaleReferenceWiring:
     """FIN-14 — zegar cyklu dociera do use case'u (wiek referencji ceny liczy się

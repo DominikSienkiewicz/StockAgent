@@ -431,6 +431,12 @@ def test_real_config_toml_ships_the_scorecard_feature_stats_off_until_migration(
     assert data["model_scorecard_feature_stats_enabled"] is False
 
 
+def test_real_config_toml_ships_the_trend_probabilities_off_until_migration() -> None:
+    """ML-29: kolumna `prediction_logs.trend_probabilities` dopiero po migracji 051."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["trend_probabilities_enabled"] is False
+
+
 def test_real_config_toml_ships_the_llm_failover_off() -> None:
     """NIEZ-44: zapasowy dostawca LLM gotowy w kodzie, ale wyłączony — w pliku jest
     tylko zakomentowany przykład, dopóki właściciel nie doda klucza drugiego dostawcy."""

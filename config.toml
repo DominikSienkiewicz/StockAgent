@@ -126,6 +126,10 @@ gate_delta_enabled = false
 # idzie do kwitu v2 (za receipts_enabled, bez migracji); ta flaga dokłada kolumnę
 # `prediction_logs.experiment_arms`. UWAGA: włącz DOPIERO po migracji 037 (PGRST204).
 experiment_arms_enabled = false
+# ML-29: prompt prosi o rozkład P(BULLISH/BEARISH/SIDEWAYS) (+~20 tokenów wyjścia, zero
+# nowych wywołań); trend = argmax, pewność = max p, rozkład w `trend_probabilities`.
+# Zmienia prompt → nowy przepis. UWAGA: włącz DOPIERO po migracji 051 (PGRST204).
+trend_probabilities_enabled = false
 # WIA-19: okna „zamknięte predykcje” po chwili rozliczenia (`settled_at`, migracja
 # 029): sekcja maila = rozliczone w tym cyklu, recap = rozliczone w ostatnich 7 dniach.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 029 (inaczej 400 i sekcja znika).

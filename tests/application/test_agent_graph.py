@@ -4928,3 +4928,74 @@ class TestRequiredPredictionColumns:
         required = required_prediction_columns(deps)
         assert set(repo.save_prediction.call_args.args[0]) <= required
         assert not required & self._OPTIONAL
+
+class TestTrendProbabilities:
+    """ML-29 — za flagą `trend_probabilities_enabled` prompt prosi o rozkład
+    P(BULLISH/BEARISH/SIDEWAYS), trend to argmax, pewność to max p, a rozkład trafia
+    do kolumny `trend_probabilities` (migracja 051). Off = prompt, trend i rekord
+    jak przed ML-29 (przed migracją nowy klucz to PGRST204 i śmierć zapisu)."""
+
+    _DISTRIBUTION = {"BULLISH": 0.2, "BEARISH": 0.1, "SIDEWAYS": 0.7}
+
+    def _run(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, enabled: bool, probabilities: object = None,
+    ) -> tuple[dict, str]:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        if probabilities is not None:
+            llm_port.analyze.return_value = {
+                **llm_port.analyze.return_value,
+                "probabilities": probabilities,
+            }
+        create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            trend_probabilities_enabled=enabled,
+        )).compile().invoke(_initial_state("100.0"))
+        record = repository_port.save_prediction.call_args.args[0]
+        prompt = llm_port.analyze.call_args.args[0]
+        return record, prompt
+
+    def test_save_node_persists_trend_probabilities(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        # LLM deklaruje BEARISH 0.85, ale jego własny rozkład stawia na SIDEWAYS.
+        record, prompt = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True, probabilities=self._DISTRIBUTION,
+        )
+
+        assert '"probabilities"' in prompt
+        assert record["trend_probabilities"] == pytest.approx(self._DISTRIBUTION)
+        assert record["predicted_trend"] == "SIDEWAYS"
+        assert record["confidence_score"] == pytest.approx(0.7)
+
+    def test_flag_off_keeps_the_prompt_trend_and_record(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        record, prompt = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=False, probabilities=self._DISTRIBUTION,
+        )
+
+        assert "probabilities" not in prompt
+        assert "trend_probabilities" not in record
+        assert record["predicted_trend"] == "BEARISH"
+        assert record["confidence_score"] == pytest.approx(0.85)
+
+    def test_flag_on_without_a_distribution_falls_back_to_the_old_fields(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        record, _ = self._run(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )
+
+        assert "trend_probabilities" not in record
+        assert record["predicted_trend"] == "BEARISH"
+        assert record["confidence_score"] == pytest.approx(0.85)

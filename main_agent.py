@@ -1492,6 +1492,8 @@ def build_agent_graph_deps(
         # `experiment_arms` (migracja 037) za flagą, kwit v2 za `receipts_enabled`.
         experiments=settings.experiment_definitions(),
         experiment_arms_enabled=settings.experiment_arms_enabled,
+        # ML-29: rozkład trendu w prompcie i kolumna (migracja 051) za flagą.
+        trend_probabilities_enabled=settings.trend_probabilities_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings, quota_monitor),

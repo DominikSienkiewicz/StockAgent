@@ -73,6 +73,7 @@ MIGRATION_FILES = [
     "048_normalize_predicted_trend.sql",
     "049_model_scorecards_run_id.sql",
     "050_feature_store_label_horizon.sql",
+    "051_trend_probabilities.sql",
     "052_model_scorecards_feature_stats.sql",
     "053_earnings_cache.sql",
     "054_council_votes_unique.sql",
@@ -1478,6 +1479,32 @@ class TestMigrations:
             comment = cur.fetchone()[0]
 
         assert "horyzont etykiety" in comment
+
+    # -- Migracja 051: rozkład trendu predykcji (ML-29) ------------------------
+
+    def test_prediction_logs_trend_probabilities_is_a_nullable_jsonb(self, pg_conn) -> None:
+        """Predykcja z rozkładem i bez niego (flaga off, fallback) zapisują się
+        obok siebie; p klasy czyta się zapytaniem JSONB."""
+        assert "trend_probabilities" in _columns(pg_conn, "prediction_logs")
+        distribution = '{"BULLISH": 0.2, "BEARISH": 0.1, "SIDEWAYS": 0.7}'
+        with _rolled_back(pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, predicted_trend, "
+                "trend_probabilities) VALUES "
+                "('TP_051', '2026-10-01T10:00:00+00:00', 'SIDEWAYS', %s::jsonb), "
+                "('TP_051', '2026-10-02T10:00:00+00:00', 'BULLISH', NULL)",
+                (distribution,),
+            )
+            cur.execute(
+                "SELECT (trend_probabilities ->> 'SIDEWAYS')::float FROM prediction_logs "
+                "WHERE symbol = 'TP_051' AND trend_probabilities IS NOT NULL"
+            )
+            sideways = cur.fetchone()
+            cur.execute("SELECT count(*) FROM prediction_logs WHERE symbol = 'TP_051'")
+            count = cur.fetchone()
+
+        assert sideways == (pytest.approx(0.7),)
+        assert count == (2,)
 
     # -- Migracja 052: rozkład cech treningu w karcie modelu (ML-21) -----------
 

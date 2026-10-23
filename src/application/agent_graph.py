@@ -69,6 +69,7 @@ from src.domain.experiment import (
 )
 from src.domain.feature_attribution import FeatureContribution, top_contributions
 from src.domain.finops import PAID_LLM_SOURCES, paid_budget_allows
+from src.domain.forecast import ProbabilityForecast
 from src.domain.implied_edge import (
     ImpliedEdge,
     evaluate_edge,
@@ -78,6 +79,7 @@ from src.domain.prediction import (
     CORRECT_PREDICTION_INSIGHT,
     DIAGNOSIS_SKIPPED_INSIGHT,
     Prediction,
+    TrendDirection,
     is_substantive_insight,
     normalize_trend,
     sideways_tolerance_for,
@@ -179,6 +181,9 @@ class AgentState(TypedDict, total=False):
     # NIEZ-44: (dostawca, model) zapasowego LLM, gdy analizę zrobił on, a nie główny.
     # Brak klucza = główny LLM. Zmienia przepis zapisany przy predykcji.
     llm_failover: tuple[str, str]
+    # ML-29: rozkład P(BULLISH/BEARISH/SIDEWAYS) z odpowiedzi LLM po normalizacji.
+    # None = flaga off albo LLM nie podał poprawnego rozkładu (trend ze starych pól).
+    trend_probabilities: dict[str, float] | None
     ml_target_price: Decimal
     # ML-14: wektor cech dokładnie w postaci podanej modelowi (`ML_FEATURE_COLUMNS`)
     # — trafia do `feature_snapshots`, żeby trening nie odtwarzał go widokiem SQL.
@@ -473,6 +478,39 @@ def _normalize_llm_analysis(raw: dict[str, Any]) -> tuple[dict[str, Any], list[s
     return analysis, flags
 
 
+def _apply_probability_forecast(
+    analysis: dict[str, Any], symbol: str
+) -> tuple[dict[str, Any], dict[str, float] | None]:
+    """ML-29: trend i pewność z rozkładu P(BULLISH/BEARISH/SIDEWAYS) odpowiedzi.
+
+    Reguła żyje w domenie (`ProbabilityForecast`): argmax to trend, max p to
+    pewność; brak albo bezużyteczny rozkład → analiza bez zmian (stare pola).
+    Zwraca `(analiza, rozkład_albo_None)`. Rozjazd z deklarowanym trendem LLM
+    tylko logujemy — obowiązuje rozkład, bo to on trafia do punktacji."""
+    forecast = ProbabilityForecast.from_llm(
+        analysis.get("probabilities"),
+        fallback_trend=TrendDirection(analysis["trend_direction"]),
+        fallback_confidence=_float_or_default(analysis.get("confidence_score"), 0.5),
+    )
+    distribution = forecast.as_dict()
+    if distribution is None:
+        return analysis, None
+    if forecast.trend.value != analysis["trend_direction"]:
+        logger.info(
+            "trend probabilities for %s point to %s, the declared trend was %s — "
+            "the distribution wins",
+            symbol,
+            forecast.trend.value,
+            analysis["trend_direction"],
+        )
+    derived = {
+        **analysis,
+        "trend_direction": forecast.trend.value,
+        "confidence_score": forecast.confidence,
+    }
+    return derived, distribution
+
+
 _TREND_TO_REC: dict[str, Recommendation] = {
     "BULLISH": "BUY",
     "BEARISH": "SELL",
@@ -621,6 +659,10 @@ class AgentGraphDeps:
     # EXP-05: kolumna `experiment_arms` (migracja 037). Off = klucza nie ma
     # w rekordzie — przed migracją dałby PGRST204.
     experiment_arms_enabled: bool = False
+    # ML-29: prompt prosi o rozkład trzech klas, trend = argmax, pewność = max p,
+    # a rozkład idzie do kolumny `trend_probabilities` (migracja 051). Off = prompt,
+    # analiza i rekord jak przed ML-29 — przed migracją klucz dałby PGRST204.
+    trend_probabilities_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     attestation_publisher: AttestationPublisherPort | None = None
     # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
@@ -1437,12 +1479,16 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         # #14: pusty string przy braku fuzji → blok nie wchodzi do promptu.
         alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
         include_memory=memory,
+        include_probabilities=deps.trend_probabilities_enabled,
     )
     raw_analysis, llm_failed = _run_llm_analysis(deps, state, prompt, symbol)
     failover, raw_analysis = _split_failover_marker(raw_analysis)
     # ML-07: kanonizacja PRZED pierwszym odczytem — rada, zapis i raport
     # czytają już ten sam znormalizowany dict, nie surowy tekst modelu.
     llm_analysis, analysis_flags = _normalize_llm_analysis(raw_analysis)
+    trend_probabilities: dict[str, float] | None = None
+    if deps.trend_probabilities_enabled:
+        llm_analysis, trend_probabilities = _apply_probability_forecast(llm_analysis, symbol)
 
     # 2. ML — twarda predykcja liczbowa (multi-feature)
     # #21: trend_direction walidowany jak pola liczbowe — present-but-invalid
@@ -1537,6 +1583,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     return {
         **failover_state,
         "llm_analysis": llm_analysis,
+        "trend_probabilities": trend_probabilities,
         "ml_target_price": ml_target,
         "ml_features": features,
         "ml_cold_start": ml_cold_start,
@@ -1692,6 +1739,8 @@ def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
         "commitment_salt": deps.attestation_publisher is not None,
         # WIA-70 (migracja 043): dosłowny plaintext commitmentu, ta sama zasada.
         "commitment_payload": deps.attestation_publisher is not None,
+        # ML-29 (migracja 051): rozkład trzech klas, tylko z flagą.
+        "trend_probabilities": deps.trend_probabilities_enabled,
         "embedding": deps.embedding_port is not None,
     }
     return _ALWAYS_SAVED_PREDICTION_COLUMNS | {
@@ -1806,6 +1855,12 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     arms = state.get("experiment_arms")
     if deps.experiment_arms_enabled and arms:
         record["experiment_arms"] = dict(arms)
+
+    # ML-29: rozkład trzech klas (migracja 051) — RPS i 3-klasowy Brier. Bez
+    # poprawnego rozkładu od LLM klucza nie ma, kolumna zostaje NULL.
+    trend_probabilities = state.get("trend_probabilities")
+    if deps.trend_probabilities_enabled and trend_probabilities is not None:
+        record["trend_probabilities"] = dict(trend_probabilities)
 
     # #16: commit-reveal (migracje 024, 043); publikacja dopiero po zapisie.
     commitment = _seal_commitment(deps, record, council=council_verdict, recipe=recipe)
