@@ -7,6 +7,7 @@ bo celowo weryfikują, że źródło TOML działa i wpina wartości do `Settings
 from __future__ import annotations
 
 import tomllib
+from datetime import date
 from pathlib import Path
 from typing import get_args
 
@@ -15,6 +16,9 @@ import pytest
 from src.config import Settings
 
 CONFIG_TOML = Path(__file__).parent.parent / "config.toml"
+# Pierwszy cykl Fast Loopa po wznowieniu crona 2026-10-23 (poniedziałek).
+RESUME_DAY = date(2026, 10, 26)
+EXPERIMENTS_END = date(2027, 1, 29)
 # TEST-21 (G79): dozwolony zbiór providerów bierzemy z kontraktu `Settings`
 # (Literal), nie z bieżącej konfiguracji produkcji.
 _LLM_PROVIDERS = frozenset(get_args(Settings.model_fields["llm_provider"].annotation))
@@ -266,22 +270,24 @@ def test_real_config_toml_ships_the_experiment_arms_column_on_after_migration() 
     assert data["experiment_arms_enabled"] is True
 
 
-def test_real_config_toml_defines_the_blind_council_experiment_inactive() -> None:
-    """EXP-02: zdefiniowany, ale nieaktywny do wznowienia Fast Loopa."""
+def test_real_config_toml_runs_the_blind_council_experiment_from_the_resume() -> None:
+    """EXP-02: aktywny od pierwszego cyklu po wznowieniu Fast Loopa."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     experiment = data["experiments"]["EXP-02"]
     assert experiment["arms"] == ["sighted", "blind"]
     assert experiment["primary_metric"] == "council_hit_rate"
-    assert experiment["enabled"] is False
+    assert (experiment["start"], experiment["end"]) == (RESUME_DAY, EXPERIMENTS_END)
+    assert experiment["enabled"] is True
 
 
-def test_real_config_toml_defines_the_memory_experiment_inactive() -> None:
-    """EXP-03: zdefiniowany, ale nieaktywny do wznowienia Fast Loopa."""
+def test_real_config_toml_runs_the_memory_experiment_from_the_resume() -> None:
+    """EXP-03: aktywny od pierwszego cyklu po wznowieniu Fast Loopa."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     experiment = data["experiments"]["EXP-03"]
     assert experiment["arms"] == ["memory", "no_memory"]
     assert experiment["primary_metric"] == "hit_rate"
-    assert experiment["enabled"] is False
+    assert (experiment["start"], experiment["end"]) == (RESUME_DAY, EXPERIMENTS_END)
+    assert experiment["enabled"] is True
 
 
 # --- FIN-32: kadencja Fast Loopa w budżecie AV = harmonogram workflow ----------
