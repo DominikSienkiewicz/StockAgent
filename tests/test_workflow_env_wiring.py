@@ -852,7 +852,8 @@ def test_fast_loop_downloads_the_weights_before_the_agent_runs() -> None:
 
 def test_slow_loop_write_permission_is_scoped_to_the_trainer_job() -> None:
     # BEZ-12: `contents: write` na poziomie workflowu dostałby każdy dopisany job.
-    # Push wag idzie domyślnym GITHUB_TOKEN, więc checkout nie potrzebuje `token:`.
+    # Upload wag do Release (CI-13) idzie domyślnym GITHUB_TOKEN, więc checkout nie
+    # potrzebuje `token:`.
     workflow = ROOT / ".github" / "workflows" / "slow_loop_weekly.yml"
     spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
     job = spec["jobs"]["retrain-predictive-model"]
