@@ -352,7 +352,7 @@ class TestMainAgent:
 class TestBuildAgentGraphDeps:
     """TEST-09 (G56): fabryka deps grafu sprawdzana na polach, nie przez `is not None`.
 
-    `test_build_use_case_wires_all_adapters` dowodzi tylko, że DI nie rzuca —
+    `test_build_use_case_builds_without_error` dowodzi tylko, że DI nie rzuca —
     port podpięty pod złe pole albo atrapa w płatnym przebiegu przeszłyby."""
 
     def test_tool_use_disabled_wires_no_tool_use_port(self, settings, mock_external_clients):
