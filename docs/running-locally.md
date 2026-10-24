@@ -214,6 +214,7 @@ uv run python main_tools.py cost-envelope  # estimated min/max paid calls and US
 uv run python main_tools.py render-sample-report  # the report email of a fixed, fictional cycle into build/sample-report/ (HTML + plain text); no keys, no database, no network, zero paid calls (`--out-dir` to change the directory)
 uv run python main_tools.py render-graph-diagram  # docs/graph.mmd and docs/graph-without-fundamentals.mmd, the Fast Loop graph drawn by LangGraph from create_agent_graph (DOC-17); rerun after a graph change, a test compares nodes and edges
 uv run python main_tools.py repo-stats  # docs/repo-stats.json: test functions (AST), migrations, ABC ports, adapter modules, domain modules and a stdlib-only check of the domain; numbers quoted in the docs are written as "N+" and a test fails when one is above the count or more than 25% below it (DOC-18)
+uv run python main_tools.py verify-attestation --commitments /tmp/attestation-log/commitments.jsonl --reveals /tmp/attestation-log/reveals.jsonl  # check the commit-reveal ledger offline (WIA-26): OK and exit 0, or FAIL and exit 1; no keys, no database, no network (see configuration.md, Verify it yourself)
 uv run pytest -m "not integration and not containers" # the quality gate, as in CI
 uv run pytest                                   # everything, including live-API tests (real keys, paid calls, a real email)
 uv run pytest -m containers                    # Docker/Postgres schema tests

@@ -396,3 +396,95 @@ def test_repo_stats_writes_the_counts_without_settings(
     assert stats["domain_stdlib_only"] is True
     assert stats["test_functions"] > 0 and stats["migrations"] > 0
     assert '"ports"' in capsys.readouterr().out
+
+
+# --- WIA-26: verify-attestation ------------------------------------------------
+
+
+def _write_ledger(tmp_path: Path, *, tamper: bool = False) -> tuple[str, str]:
+    import json
+
+    from src.domain import attestation
+
+    payload = attestation.prediction_commitment_payload(
+        symbol="AAPL",
+        predicted_trend="BULLISH",
+        predicted_target_price=Decimal("101.5"),
+        price_at_prediction=Decimal("100"),
+    )
+    plaintext = attestation.canonicalize(payload, schema_version=attestation.SCHEMA_VERSION)
+    salt = "0123456789abcdef0123456789abcdef"
+    commitment = attestation.commit_canonical(plaintext, salt)
+    reveal = {
+        "symbol": "AAPL",
+        "commitment": commitment,
+        "salt": "f" * 32 if tamper else salt,
+        "payload": plaintext,
+    }
+    commitments_path = tmp_path / "commitments.jsonl"
+    reveals_path = tmp_path / "reveals.jsonl"
+    commitments_path.write_text(
+        json.dumps({"symbol": "AAPL", "commitment": commitment}) + "\n", encoding="utf-8"
+    )
+    reveals_path.write_text(json.dumps(reveal) + "\n", encoding="utf-8")
+    return str(commitments_path), str(reveals_path)
+
+
+def test_verify_attestation_prints_ok_and_exits_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commitments, reveals = _write_ledger(tmp_path)
+
+    code = main_tools.main(
+        ["verify-attestation", "--commitments", commitments, "--reveals", reveals]
+    )
+
+    assert code == 0
+    assert capsys.readouterr().out.splitlines()[-1].startswith("OK")
+
+
+def test_verify_attestation_prints_fail_and_exits_one_for_a_tampered_reveal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commitments, reveals = _write_ledger(tmp_path, tamper=True)
+
+    code = main_tools.main(
+        ["verify-attestation", "--commitments", commitments, "--reveals", reveals]
+    )
+
+    assert code == 1
+    assert capsys.readouterr().out.splitlines()[-1].startswith("FAIL")
+
+
+def test_verify_attestation_exits_two_for_a_missing_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main_tools.main(
+        [
+            "verify-attestation",
+            "--commitments", str(tmp_path / "missing.jsonl"),
+            "--reveals", str(tmp_path / "missing-too.jsonl"),
+        ]
+    )
+
+    assert code == 2
+    assert "missing.jsonl" in capsys.readouterr().err
+
+
+def test_verify_attestation_needs_no_settings_and_no_network(
+    tmp_path: Path, mocker: Any
+) -> None:
+    # Weryfikator ma działać u sceptyka, który nie ma żadnych kluczy.
+    from_env = mocker.patch("src.config.Settings.from_env")
+    commitments, reveals = _write_ledger(tmp_path)
+
+    main_tools.main(["verify-attestation", "--commitments", commitments, "--reveals", reveals])
+
+    from_env.assert_not_called()
+
+
+def test_verify_attestation_defaults_to_the_published_ledger_paths() -> None:
+    args = main_tools.build_parser().parse_args(["verify-attestation"])
+
+    assert str(args.commitments) == "public/attestation/commitments.jsonl"
+    assert str(args.reveals) == "public/attestation/reveals.jsonl"

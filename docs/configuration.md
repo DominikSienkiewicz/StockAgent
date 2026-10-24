@@ -300,6 +300,20 @@ The last line is the week of **Fast Loop weekly budget (WIA-11)** below: the sam
 
 **Repository variables:** none. All non-secret config lives in committed [`config.toml`](../config.toml), read directly by `Settings` — so there is nothing to map in the workflow `env:` and no `vars.*` drift to guard. The workflow injects only the secrets above; the split (secrets mapped, non-secret config kept out) is guarded by [`tests/test_workflow_env_wiring.py`](../tests/test_workflow_env_wiring.py).
 
+### Verify it yourself
+
+Once `attestation_enabled` is on and the first predictions have settled, anyone can check the commit-reveal log from a clone of the repository, with no key, no database and no network after the first command (WIA-26):
+
+```bash
+git clone --depth 1 --branch attestation-log https://github.com/DominikSienkiewicz/StockAgent.git /tmp/attestation-log
+uv run python main_tools.py verify-attestation --commitments /tmp/attestation-log/commitments.jsonl --reveals /tmp/attestation-log/reveals.jsonl
+echo "exit code: $?"
+```
+
+The second command prints a line per problem and ends with one verdict line, `OK: all N reveals reproduce their published commitments` or `FAIL: …`; the exit code is `0` for OK and `1` for FAIL (`2` when a file cannot be read). For every reveal it recomputes SHA-256(`payload` + `salt`) and compares it with the hash published in `commitments.jsonl` (`src.domain.attestation.verify_canonical`), and it checks that the symbol, trend and prices in the reveal row match the hashed payload, so a column edited after the fact fails too. A reveal whose hash was never published, a salt or payload that was changed, an unreadable line and a commitment line without a hash all give `FAIL`. Commitments that are not revealed yet are only counted (`N not revealed yet`): a prediction may simply not have settled, but a count that keeps growing is the thing to watch. Lines written before WIA-25 (symbol and hash only) and reveals from before migration `043` (no `payload`, rebuilt from their columns with schema `1`) are still read.
+
+What a green result proves is bounded, as in the status above: every revealed prediction is exactly the one that was hashed into a published commitment, and the history of `attestation-log` shows whether a line was ever removed or rewritten (`git -C /tmp/attestation-log log --stat`). It does not prove when a commitment was made, because git commit dates are forgeable, and it says nothing about predictions that were never committed. The verifiable track record starts at the first push of the ledger (WIA-27).
+
 ## Experiments
 
 `experiments` (EXP-05) defines A/B experiments that run inside the Fast Loop. Questions such as "does RAG help" or "is a blind council better" are causal; a before/after comparison mixes the change with the market, while a random assignment per symbol and day answers them on the same period and the same stocks. Each experiment is a block of dotted keys in [`config.toml`](../config.toml):

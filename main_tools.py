@@ -19,6 +19,7 @@ Użycie:
     uv run python main_tools.py repo-stats [--out docs/repo-stats.json]
     uv run python main_tools.py explain <prediction_id> | --symbol X --date RRRR-MM-DD
     uv run python main_tools.py persona-ablation [--days N] [--window-days N]
+    uv run python main_tools.py verify-attestation [--commitments PATH] [--reveals PATH]
 """
 
 from __future__ import annotations
@@ -61,6 +62,13 @@ from src.tools.render_sample_report import (
     render_sample_report,
 )
 from src.tools.repo_stats import REPO_STATS_NAME, RepoStats, compute_repo_stats
+from src.tools.verify_attestation import (
+    DEFAULT_COMMITMENTS_PATH,
+    DEFAULT_REVEALS_PATH,
+    format_report,
+    parse_jsonl,
+    verify_ledger,
+)
 
 if TYPE_CHECKING:
     from src.application.ports import PositionsImportPort
@@ -104,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_repo_stats(subcommands)
     _add_explain(subcommands)
     _add_persona_ablation(subcommands)
+    _add_verify_attestation(subcommands)
     return parser
 
 
@@ -557,6 +566,52 @@ def _run_persona_ablation(args: argparse.Namespace) -> int:
     )
     print(format_ablation(report, days=args.days, window_days=args.window_days))
     return 0
+
+
+def _add_verify_attestation(
+    subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subcommands.add_parser(
+        "verify-attestation",
+        help="Check the published commit-reveal ledger offline (no keys, no database, no network).",
+        description=(
+            "WIA-26: for every reveal in reveals.jsonl recomputes SHA-256(payload + salt) and "
+            "compares it with the commitment published in commitments.jsonl. Prints OK and "
+            "exits 0, or FAIL and exits 1; exits 2 when a file cannot be read."
+        ),
+    )
+    parser.add_argument(
+        "--commitments",
+        type=Path,
+        default=Path(DEFAULT_COMMITMENTS_PATH),
+        help=f"Commitments ledger (default: {DEFAULT_COMMITMENTS_PATH}).",
+    )
+    parser.add_argument(
+        "--reveals",
+        type=Path,
+        default=Path(DEFAULT_REVEALS_PATH),
+        help=f"Reveals ledger (default: {DEFAULT_REVEALS_PATH}).",
+    )
+    parser.set_defaults(handler=_run_verify_attestation)
+
+
+def _run_verify_attestation(args: argparse.Namespace) -> int:
+    """WIA-26: odczyt dwóch plików ledgera i werdykt — bez `Settings`, kluczy i sieci.
+
+    Exit 0 = OK, 1 = FAIL (reveal nie odtwarza commitmentu albo ledger uszkodzony),
+    2 = pliku nie da się odczytać (jak błąd użycia)."""
+    texts: dict[str, str] = {}
+    for label, path in (("commitments", args.commitments), ("reveals", args.reveals)):
+        try:
+            texts[label] = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"❌ nie da się odczytać {path}: {exc.strerror or exc}", file=sys.stderr)
+            return 2
+    commitments, bad_commitments = parse_jsonl(texts["commitments"], Path(args.commitments).name)
+    reveals, bad_reveals = parse_jsonl(texts["reveals"], Path(args.reveals).name)
+    report = verify_ledger(commitments, reveals, malformed=[*bad_commitments, *bad_reveals])
+    print(format_report(report))
+    return 0 if report.ok else 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
