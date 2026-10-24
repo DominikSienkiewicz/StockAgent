@@ -147,7 +147,10 @@ class TestScorecardCalibrationCycles:
                 strict=True,
             )
         ]
-        render = mocker.patch("main_agent.render_public_scorecard_html", return_value="")
+        render = mocker.patch(
+            "src.application.use_cases.publish_public_scorecard.render_public_scorecard_html",
+            return_value="",
+        )
 
         main_agent._publish_public_scorecard(settings, repo, MagicMock())
 

@@ -19,7 +19,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -27,7 +27,6 @@ from typing import Any, NamedTuple
 from src.application.agent_graph import AgentGraphDeps, AgentState
 from src.application.alpha_signals import AlphaSignals
 from src.application.cycle_telemetry import CycleTelemetry
-from src.application.data_coverage import build_data_coverage
 from src.application.http_metering import HttpCallMeter
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.move_interval import (
@@ -75,11 +74,9 @@ from src.application.report_builder import (
 )
 from src.application.report_council_history import InvestorHistory
 from src.application.report_evidence import (
-    BENCHMARK_SYMBOL,
     PaperCosts,
     accuracy_drop_alert,
     accuracy_drop_evidence,
-    benchmark_comparison,
     hit_rate_evidence,
     portfolio_curve,
 )
@@ -97,7 +94,6 @@ from src.application.report_model_scorecard import (
 from src.application.report_models import ResolvedPrediction, TradeSignal
 from src.application.report_onboarding import onboarding_subject
 from src.application.report_ops import render_cycle_summary_markdown
-from src.application.report_public_scorecard import render_public_scorecard_html
 from src.application.report_regime import RegimeBanner
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
 from src.application.report_track_record import TrackRecordStats
@@ -107,6 +103,7 @@ from src.application.signal_calibration import (
     split_calibration_samples,
 )
 from src.application.tools import build_research_tools
+from src.application.track_record_window import window_benchmark, window_coverage
 from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidPhase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
@@ -119,11 +116,15 @@ from src.application.use_cases.portfolio_risk import (
     PortfolioRiskUseCase,
     PositionRisk,
 )
+from src.application.use_cases.publish_public_scorecard import (
+    PublicScorecardOptions,
+    PublishPublicScorecardUseCase,
+    render_public_scorecard,
+)
 from src.application.use_cases.reveal_attestations import RevealAttestationsUseCase
 from src.config import Settings, load_evaluation_protocol
 from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
-from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
     confidence_reorders_ranking,
@@ -812,78 +813,25 @@ def _paper_costs(settings: Settings) -> PaperCosts:
     )
 
 
-def _benchmark_comparison(
-    settings: Settings,
-    repository: RepositoryPort,
-    resolved: list[ResolvedPrediction],
-    costs: PaperCosts,
-) -> BenchmarkComparison | None:
-    """WIA-21: agent obok koszyka i IVV — te same okna, te same koszty.
-
-    IVV czytamy z darmowych `price_snapshots` (zero płatnych portów), o dzień
-    dłużej niż okno predykcji: snapshot startu najstarszego cyklu bywa zapisany
-    minuty przed predykcją, czyli tuż przed odcięciem okna. Błąd odczytu IVV
-    zostawia koszyk i jawny brak danych benchmarku.
-    """
-    try:
-        history = [
-            (stamp, float(price.amount))
-            for stamp, price in repository.get_price_history(
-                BENCHMARK_SYMBOL, settings.track_record_days + 1
-            )
-        ]
-    except Exception:
-        logger.exception("Failed to read %s snapshots for the benchmark", BENCHMARK_SYMBOL)
-        history = []
-    try:
-        return benchmark_comparison(
-            resolved,
-            costs,
-            history,
-            settle_after=timedelta(hours=settings.reflection_min_age_hours),
-        )
-    except Exception:
-        logger.exception("Failed to compare the equity curve with benchmarks")
-        return None
+def _public_scorecard_options(settings: Settings) -> PublicScorecardOptions:
+    """ARCH-02: okno i źródła publicznego scorecardu z `Settings` (bez konwersji —
+    use case liczy z nich dokładnie to, co liczył composition root)."""
+    return PublicScorecardOptions(
+        window_days=settings.track_record_days,
+        settle_after_hours=settings.reflection_min_age_hours,
+        symbols=settings.symbols,
+        crypto_symbols=settings.crypto_symbols,
+        load_protocol=load_evaluation_protocol,
+    )
 
 
 def render_public_scorecard_page(
     settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
 ) -> str:
-    """#10 — strona z agregatami (N, hit-rate, Brier, ECE, krzywe) z okna
-    `track_record_days`; "" gdy okno nie ma danych.
-
-    Metryki liczone z `resolved`/`cal_rows` NIEZALEŻNIE od flag
-    `equity_curve_enabled` / `calibration_curve_enabled` — tamte sterują
-    sekcjami prywatnego maila, nie publicznym dowodem. Krzywa kapitału to
-    portfel o równej wadze per cykl (WIA-17), po kosztach `costs` (WIA-50;
-    None = brutto); strona ujawnia okno i datę generacji (WIA-33).
-    Błąd odczytu leci wyżej: Fast Loop go połyka, `main_scorecard` kończy exit 1.
-    """
-    resolved = parse_resolved_predictions(
-        repository.get_resolved_predictions(settings.track_record_days)
-    )
-    # WIA-39/WIA-58: kierunkowe próbki; cykle dają n_eff i bootstrap ECE.
-    calibration = split_calibration_samples(
-        repository.get_resolved_for_calibration(settings.track_record_days)
-    )
-    benchmark = (
-        None
-        if costs is None
-        else _benchmark_comparison(settings, repository, resolved, costs)
-    )
-    return render_public_scorecard_html(
-        resolved,
-        portfolio_curve(resolved, costs),
-        calibration.directional,
-        generated_on=datetime.now(UTC).date(),
-        window_days=settings.track_record_days,
-        costs=costs,
-        benchmark=benchmark,
-        protocol=load_evaluation_protocol(),
-        calibration_by_cycle=calibration.directional_by_cycle,
-        coverage=_data_coverage(settings, repository),
-    )
+    """#10 — strona publicznego scorecardu z okna `track_record_days` ("" bez
+    danych); renderuje `render_public_scorecard`. Błąd odczytu leci wyżej:
+    Fast Loop go połyka, `main_scorecard` kończy exit 1."""
+    return render_public_scorecard(repository, _public_scorecard_options(settings), costs)
 
 
 def _publish_public_scorecard(
@@ -892,18 +840,13 @@ def _publish_public_scorecard(
     publisher: WebPublisherPort,
     costs: PaperCosts | None = None,
 ) -> None:
-    """#10 — publikuje `render_public_scorecard_page` w cyklu Fast Loopa.
-
-    Best-effort: błąd odczytu ani `OSError` przy zapisie nie wywalają cyklu.
-    """
+    """#10 — publikacja strony w cyklu Fast Loopa za `public_scorecard_enabled`
+    (`PublishPublicScorecardUseCase`, best-effort)."""
     if not settings.public_scorecard_enabled:
         return
-    try:
-        page = render_public_scorecard_page(settings, repository, costs)
-        if page:
-            publisher.publish(page)
-    except Exception:
-        logger.exception("Public scorecard publish failed — pomijam")
+    PublishPublicScorecardUseCase(
+        repository, publisher, _public_scorecard_options(settings)
+    ).run(costs)
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
@@ -2606,19 +2549,13 @@ def _build_model_scorecard(
 
 
 def _data_coverage(settings: Settings, repository: RepositoryPort) -> CoverageReport | None:
-    """DAT-16 — pokrycie danych okna track recordu z darmowych odczytów
-    (snapshoty cen, rozliczenia). Błąd → None: zdanie się chowa, cykl leci dalej."""
-    try:
-        return build_data_coverage(
-            repository,
-            symbols=settings.symbols,
-            crypto_symbols=settings.crypto_symbols,
-            days=settings.track_record_days,
-            now=datetime.now(UTC),
-        )
-    except Exception:
-        logger.exception("Data coverage failed — scorecards without the coverage line")
-        return None
+    """DAT-16 — pokrycie danych okna track recordu (`window_coverage`)."""
+    return window_coverage(
+        repository,
+        symbols=settings.symbols,
+        crypto_symbols=settings.crypto_symbols,
+        days=settings.track_record_days,
+    )
 
 
 def _build_signal_calibration(
@@ -2765,7 +2702,13 @@ def _build_track_record_stats(
         except Exception:
             logger.exception("Failed to compute hit-rate evidence for track record")
         if resolved and costs is not None:
-            benchmark = _benchmark_comparison(settings, repository, resolved, costs)
+            benchmark = window_benchmark(
+                repository,
+                resolved,
+                costs,
+                window_days=settings.track_record_days,
+                settle_after_hours=settings.reflection_min_age_hours,
+            )
     sideways_scores = None
     if settings.calibration_curve_enabled:
         try:
