@@ -124,10 +124,11 @@ class TestRun:
 
         ml_port.train.assert_called_once()
         features, target = ml_port.train.call_args.args
-        assert isinstance(features, pd.DataFrame)
-        assert list(features.columns) == EXPECTED_ML_FEATURES
+        # ARCH-09: port dostaje wiersze cech w kolejności kontraktu, nie DataFrame.
+        assert isinstance(features, list)
+        assert all(list(row) == EXPECTED_ML_FEATURES for row in features)
         # Target = target_return (zwrot 12h z widoku), nie cena bezwzględna
-        assert isinstance(target, pd.Series)
+        assert isinstance(target, list)
         assert len(features) == len(target)
 
     def test_uses_view_price_delta_without_recompute(
@@ -147,7 +148,7 @@ class TestRun:
 
         features, _ = ml_port.train.call_args.args
         # Wszystkie wiersze dostały price_delta=0.5 — porównanie tolerancyjne na float.
-        assert np.allclose(features["price_delta"], 0.5)
+        assert np.allclose([row["price_delta"] for row in features], 0.5)
 
     def test_drops_rows_when_view_price_delta_is_null(
         self, use_case, repository_port, ml_port
@@ -165,7 +166,7 @@ class TestRun:
 
         features, _ = ml_port.train.call_args.args
         assert len(features) == len(rows) - 1
-        assert bool(np.isfinite(features["price_delta"]).all())
+        assert bool(np.isfinite([row["price_delta"] for row in features]).all())
 
     def test_returns_ml_train_result(self, use_case, repository_port, ml_port):
         repository_port.get_feature_store_data.return_value = _feature_store_rows(
@@ -242,7 +243,7 @@ def test_pooled_training_calls_train_once_with_rows_of_all_symbols(
 
     ml_port.train.assert_called_once()
     features, target = ml_port.train.call_args.args
-    assert list(features.columns) == EXPECTED_ML_FEATURES
+    assert list(features[0]) == EXPECTED_ML_FEATURES
     assert len(features) == len(target) == 60
     # Jeden zapis wag: model wspólny trenuje w trybie domyślnym (persist=True).
     assert ml_port.train.call_args.kwargs.get("persist", True) is True

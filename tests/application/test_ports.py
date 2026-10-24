@@ -1,5 +1,7 @@
 import inspect
 import typing
+from collections.abc import Mapping, Sequence
+from datetime import datetime
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -88,3 +90,13 @@ def test_ml_train_returns_domain_training_report() -> None:
     hints = typing.get_type_hints(MLPredictionPort.train)
 
     assert hints["return"] is TrainingReport
+
+
+def test_ml_train_takes_feature_rows_not_a_dataframe() -> None:
+    # ARCH-09: application nie przekazuje DataFrame przez port — wiersze cech,
+    # target i znaczniki czasu to zwykłe sekwencje; ramkę buduje adapter.
+    hints = typing.get_type_hints(MLPredictionPort.train)
+
+    assert hints["features"] == Sequence[Mapping[str, float | None]]
+    assert hints["target"] == Sequence[float]
+    assert hints["timestamps"] == Sequence[datetime] | None

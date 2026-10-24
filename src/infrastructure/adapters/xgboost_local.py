@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -94,11 +95,11 @@ class XGBoostAdapter(MLPredictionPort):
 
     def train(
         self,
-        features: Any,
-        target: Any,
+        features: Sequence[Mapping[str, float | None]],
+        target: Sequence[float],
         *,
         persist: bool = True,
-        timestamps: Any = None,
+        timestamps: Sequence[datetime] | None = None,
         target_unit: TargetUnit = TargetUnit.RETURN,
     ) -> TrainingReport:
         feature_frame = _feature_frame(features)
@@ -329,7 +330,8 @@ class XGBoostAdapter(MLPredictionPort):
 
 
 def _feature_frame(features: Any) -> pd.DataFrame:
-    """Ramka cech z DataFrame albo z sekwencji wierszy `{cecha: wartość}`.
+    """Ramka cech z sekwencji wierszy `{cecha: wartość}` (ARCH-09: port nie niesie
+    DataFrame; `walk_forward_report` backtestu podaje ją jeszcze wprost).
 
     ML-52: brak (None) — także w całej kolumnie, np. cechy makro bez FRED — staje się
     NaN, czyli brakiem XGBoost. Kolumny już liczbowe zostają bez zmian."""

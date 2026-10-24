@@ -133,10 +133,10 @@ class TrainModelUseCase:
         df, stamps = in_label_time_order(df)
 
         return self._ml_port.train(
-            df[list(ML_FEATURE_COLUMNS)],
-            df[TARGET_COLUMN],
+            _feature_rows_of(df),
+            df[TARGET_COLUMN].tolist(),
             persist=False,
-            timestamps=stamps,
+            timestamps=None if stamps is None else _moments(stamps),
         )
 
     def run_pooled(
@@ -302,9 +302,9 @@ class TrainModelUseCase:
                 )
 
         return self._ml_port.train(
-            df[list(ML_FEATURE_COLUMNS)],
-            target,
-            timestamps=df["_global_time"],
+            _feature_rows_of(df),
+            target.tolist(),
+            timestamps=_moments(df["_global_time"]),
             **self._target_unit(),
         )
 
@@ -395,6 +395,20 @@ def _llm_rows(
         if usable_for_llm_model(item.snapshot.gated, item.snapshot.features)
         and (vector := llm_model_vector(item.snapshot.features)) is not None
     ]
+
+
+def _feature_rows_of(df: pd.DataFrame) -> list[dict[str, float | None]]:
+    """ARCH-09: wiersze `ML_FEATURE_COLUMNS` ramki widoku jako sekwencja słowników
+    w kolejności kontraktu — port nie przyjmuje DataFrame."""
+    return [
+        {name: float(value) for name, value in row.items()}
+        for row in df[list(ML_FEATURE_COLUMNS)].to_dict("records")
+    ]
+
+
+def _moments(stamps: pd.Series) -> list[datetime]:
+    """Znaczniki czasu (UTC) wierszy jako `datetime` — wejście purgu walk-forward."""
+    return [stamp.to_pydatetime() for stamp in stamps]
 
 
 def _valid_rows(rows: list[dict[str, Any]]) -> pd.DataFrame:

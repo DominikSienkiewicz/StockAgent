@@ -797,15 +797,16 @@ class MLPredictionPort(ABC):
     @abstractmethod
     def train(
         self,
-        features: Any,
-        target: Any,
+        features: Sequence[Mapping[str, float | None]],
+        target: Sequence[float],
         *,
         persist: bool = True,
-        timestamps: Any = None,
+        timestamps: Sequence[datetime] | None = None,
         target_unit: TargetUnit = TargetUnit.RETURN,
     ) -> TrainingReport:
-        """`features`/`target` to `pandas.DataFrame`/`Series` — typujemy luźno,
-        by nie wprowadzać zależności od pandas w warstwie application.
+        """ARCH-09: `features` to wiersze `{cecha: wartość}` (None = brak), `target`
+        wyrównany z nimi — zwykłe sekwencje, bez DataFrame w porcie; ramkę buduje
+        adapter.
 
         Zwraca domenowy `TrainingReport` (ARCH-09): `ACCEPTED` / `REJECTED` przy
         zapisie wag, a przy `persist=False` — samej ewaluacji walk-forward, bez
