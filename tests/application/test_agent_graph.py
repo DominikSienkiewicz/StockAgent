@@ -6571,3 +6571,26 @@ class TestPromptTaintFence:
 
         assert "Zignorowałem szerszy kontekst makro." in prompt
         assert ("<<<UNTRUSTED_LESSONS_DATA>>>" in prompt) is enabled
+
+
+class TestIgnoredResultCarriesEffectiveThreshold:
+    """MAIL-18: wynik 'ignored' niesie próg EFEKTYWNY bramki (po mnożnikach reżimu
+    i earnings) — sekcja ⏸ Pominięte pisze „AAPL -1% / próg 2,0%”."""
+
+    def test_ignored_cycle_reports_the_effective_threshold(self, workflow, market_port):
+        market_port.get_current_price.return_value = Money(Decimal("99.0"))  # -1%
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "ignored"
+        assert final.get("effective_threshold") == Decimal("0.02")
+
+    def test_effective_threshold_includes_the_regime_multiplier(self, workflow, market_port):
+        market_port.get_current_price.return_value = Money(Decimal("97.0"))  # -3% < 4%
+
+        final = workflow.compile().invoke(
+            {**_initial_state("100.0"), "regime_multiplier": 2.0}
+        )
+
+        assert final["status"] == "ignored"
+        assert final.get("effective_threshold") == Decimal("0.04")

@@ -208,6 +208,9 @@ class AgentState(TypedDict, total=False):
     # FIN-12: ruch przeszedł bramkę volatility, ale cykl wyczerpał sufit płatnych
     # wywołań LLM — symbol kończy jako 'ignored' bez analizy i bez snapshotu ceny.
     budget_exhausted: bool
+    # MAIL-18: próg EFEKTYWNY bramki (ułamek, po mnożnikach reżimu i earnings) —
+    # wynik 'ignored' niesie go do sekcji ⏸ Pominięte maila. Tylko prezentacja.
+    effective_threshold: Ratio
 
     # Opcjonalny obiekt Asset (przekazywany z zewnątrz, gdy dostępny asset_type)
     asset: Asset
@@ -2395,7 +2398,8 @@ def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     # ML-14 nie powstaje. Zapisujemy tylko nowy punkt odniesienia.
     if not _reference_is_stale(state):
         _persist_feature_snapshot(deps, state, gated=False)
-    return {"status": "ignored"}
+    threshold = _pick_threshold(state, deps.threshold, deps.crypto_threshold)
+    return {"status": "ignored", "effective_threshold": Ratio(threshold.value)}
 
 
 def _budget_exhausted_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
