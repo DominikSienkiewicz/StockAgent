@@ -128,7 +128,8 @@ feature_snapshots_enabled = true
 # ML-31: cechy rynkowe cyklu w `feature_snapshots` (zmienność i momentum z darmowych
 # snapshotów cen) + wersja zestawu cech 4 w stemplach (filtr treningu też po 4).
 # Działa tylko z feature_snapshots_enabled; bez nowej migracji, zero płatnych wywołań.
-market_features_enabled = false
+# Włączone 2026-10-25 decyzją właściciela: wektory v4 zbierają się pod ML-52.
+market_features_enabled = true
 # ML-52: model wspólny (wagi serwowane przez Fast Loop) z wektorów feature_snapshots
 # wersji 4 (cykle gated, wektor z servingu, etykieta 12 h z price_snapshots) zamiast
 # z widoku ml_feature_store. Bez nowej migracji (031 jest na produkcji), ale wymaga

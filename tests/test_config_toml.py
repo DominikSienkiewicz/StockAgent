@@ -453,10 +453,11 @@ def test_real_config_toml_ships_the_trend_probabilities_off_until_migration() ->
     assert data["trend_probabilities_enabled"] is False
 
 
-def test_real_config_toml_ships_the_market_features_off() -> None:
-    """ML-31: cechy rynkowe i wersja zestawu cech 4 — świadome włączenie właściciela."""
+def test_real_config_toml_ships_the_market_features_on() -> None:
+    """ML-31: cechy rynkowe i wersja zestawu cech 4 — włączone świadomie przez
+    właściciela 2026-10-25 (wektory v4 dla treningu ML-52)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["market_features_enabled"] is False
+    assert data["market_features_enabled"] is True
 
 
 def test_real_config_toml_ships_the_snapshot_training_off() -> None:
