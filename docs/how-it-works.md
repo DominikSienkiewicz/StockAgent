@@ -135,7 +135,7 @@ The email itself goes to the owner. Third-party data leaves that inbox only thro
 | **NBP** | EUR and USD rates against PLN (Risk Watch, P/L in złoty) | Subscriber emails, when enabled | Not reviewed |
 | **Anthropic / OpenAI** | Model output: the reasoning, council votes and summaries | Subscriber emails, when enabled | Not reviewed |
 
-## Symbols (default portfolio of 43)
+## Symbols (the watchlist in `config.toml`)
 
 ```text
 AAPL,AMZN,GOOGL,MSFT,META,NVDA,TSLA,AMD,NET,PLTR,
@@ -147,7 +147,7 @@ VT,QUAL,IHI,VB,EWY,IVV,XDWD.DE,IUSN.DE
 
 Sector mix: 🤖 AI / semis (NVDA, AMD, TSM, ASML, ASMIY, MU, QCOM, INTC, SNDK) · ☁️ cloud / software (MSFT, ORCL, NET, SAP, PLTR, IBM, TEAM, FROG, SNOW, DDOG) · 🔐 cybersecurity (CRWD, PANW, OKTA, S, SAIL) · 📱 big tech (AAPL, AMZN, GOOGL, META) · 🖥️ hardware (DELL, SSNLF) · 🚗 mobility (TSLA, UBER) · 🏭 industrial / pharma (SIEGY, NVO) · 💰 financials (BLK) · 📊 ETFs (VT, QUAL, IHI, VB, EWY, IVV, XDWD.DE, IUSN.DE).
 
-Configurable via `SYMBOLS` in `.env` (CSV).
+This is the `symbols` list of [`config.toml`](../config.toml), the file that production reads. The code default of `symbols` is the three-ticker smoke portfolio `AAPL, MSFT, NVDA`; the `SYMBOLS` environment variable (CSV) overrides either for a one-off run.
 
 The list was picked by hand (2026-06) with knowledge of how these companies had already risen, so it carries survivorship bias: a long bias on it is not skill. The track record and the public scorecard therefore show the naive "always BULLISH" baseline on the same predictions, and the recipe of every prediction records a `universe_version` (sha256 of the sorted `symbols` + `crypto_symbols`) so that a changed watchlist starts a new segment ([configuration.md](configuration.md), `recipe_version_enabled`).
 

@@ -71,3 +71,46 @@ def test_accuracy_claim_pattern_ignores_the_corrected_wording() -> None:
     )
 
     assert not ACCURACY_FEEDS_TRAINING.search(corrected)
+
+
+# DOC-35: dwa zdania, które każdy da się sprawdzić jednym grepem, a mimo to
+# kłamały — RAG działa od migracji 011, a „default portfolio of 43” to lista z
+# config.toml, nie domyślna wartość kodu (ta ma trzy tickery).
+def test_ports_do_not_call_the_rag_similarity_search_a_future_feature() -> None:
+    text = (ROOT / "src" / "application" / "ports.py").read_text(encoding="utf-8")
+
+    assert not re.search(r"przyszł\w*\s+similarity", text), (
+        "find_similar_predictions działa od migracji 011 (RAG w predict_node)"
+    )
+
+
+def _how_it_works() -> str:
+    return (ROOT / "docs" / "how-it-works.md").read_text(encoding="utf-8")
+
+
+def test_how_it_works_symbols_section_lists_the_shipped_watchlist() -> None:
+    import tomllib
+
+    text = _how_it_works()
+    start = text.index("\n## Symbols")
+    section = text[start : text.index("\n## ", start + 1)]
+    heading = section.strip().splitlines()[0]
+    block = re.search(r"```text\n(.*?)```", section, re.S)
+    assert block is not None, "sekcja Symbols nie ma bloku z listą"
+    listed = [symbol.strip() for symbol in block.group(1).replace("\n", "").split(",") if symbol]
+    shipped = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))["symbols"]
+
+    assert "default" not in heading.lower(), (
+        f"{heading!r}: lista to watchlista z config.toml, domyślne trzy tickery to smoke-test"
+    )
+    assert listed == shipped
+
+
+def test_how_it_works_names_the_code_default_of_symbols() -> None:
+    from src.config import Settings
+
+    factory = Settings.model_fields["symbols"].default_factory
+    assert factory is not None
+    smoke_portfolio = ", ".join(factory())  # type: ignore[call-arg]
+
+    assert f"`{smoke_portfolio}`" in _how_it_works()

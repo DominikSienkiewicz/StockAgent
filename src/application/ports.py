@@ -1055,7 +1055,8 @@ class EmbeddingPort(ABC):
     """Generowanie wektorów embeddingu dla tekstu (np. OpenAI embeddings).
 
     Wektor podsumowania newsów trafia do `prediction_logs.embedding` (pgvector),
-    co umożliwia przyszły similarity search nad historycznymi sytuacjami."""
+    z którego `find_similar_predictions` (RAG w `predict_node`, od migracji 011)
+    wyszukuje historyczne sytuacje."""
 
     @abstractmethod
     def embed(self, text: str) -> list[float]: ...
