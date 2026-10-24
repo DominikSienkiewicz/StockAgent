@@ -7085,6 +7085,45 @@ class TestFastLoopWeeklyBudgetBanner:
         assert "weekly budget not checked" in caplog.text
 
 
+class TestDeribitOptionsPort:
+    """DAT-18: z `deribit_dvol_enabled` port opcji grafu kieruje krypto do Deribit
+    DVOL (implied edge BTC/ETH); bez flagi DI jak dotąd."""
+
+    def test_flag_off_keeps_the_options_port_as_before(self, settings) -> None:
+        assert main_agent.build_options_port(settings) is None
+
+    def test_flag_routes_crypto_to_deribit_and_stocks_to_null(self, settings) -> None:
+        from src.infrastructure.adapters.deribit_dvol import DeribitDvolAdapter
+        from src.infrastructure.adapters.finnhub_options import NullOptionsFlowAdapter
+        from src.infrastructure.adapters.routing_options_flow import RoutingOptionsFlowPort
+
+        settings.deribit_dvol_enabled = True
+        settings.crypto_symbols = ["BTC"]
+
+        port = main_agent.build_options_port(settings)
+
+        assert isinstance(port, RoutingOptionsFlowPort)
+        assert isinstance(port._crypto, DeribitDvolAdapter)
+        assert isinstance(port._equity, NullOptionsFlowAdapter)
+        assert port._crypto_symbols == {"BTC"}
+
+    def test_flag_keeps_finnhub_for_stocks_when_options_flow_is_on(self, settings) -> None:
+        from src.infrastructure.adapters.finnhub_options import FinnhubOptionsAdapter
+
+        settings.deribit_dvol_enabled = True
+        settings.options_flow_enabled = True
+
+        port = main_agent.build_options_port(settings)
+
+        assert isinstance(port._equity, FinnhubOptionsAdapter)
+
+    def test_flag_is_off_by_default_and_outside_the_recipe(self, settings) -> None:
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert settings.deribit_dvol_enabled is False
+        assert "deribit_dvol_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
 class TestFinnhubSharedRateLimiter:
     """DAT-12: limit Finnhub jest per klucz — każdy adapter Finnhub procesu
     bierze tokeny z tego samego limitera (limiter na instancji by go nie widział)."""

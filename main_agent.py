@@ -810,15 +810,32 @@ def build_options_port(
     settings: Settings, quota_monitor: QuotaMonitor | None = None
 ) -> OptionsFlowPort | None:
     """#18 — port opcji dla grafu (fetch IV w `_predict_node`, za bramką
-    volatility). None gdy `options_flow_enabled=false` → sygnał nie powstaje."""
-    if not settings.options_flow_enabled:
-        return None
-    from src.infrastructure.adapters.finnhub_options import FinnhubOptionsAdapter
+    volatility). None, gdy `options_flow_enabled` i `deribit_dvol_enabled` są off
+    → sygnał nie powstaje. DAT-18: z `deribit_dvol_enabled` krypto idzie do Deribit
+    DVOL, a akcje do Finnhuba (albo Null bez `options_flow_enabled`)."""
+    from src.infrastructure.adapters.finnhub_options import (
+        FinnhubOptionsAdapter,
+        NullOptionsFlowAdapter,
+    )
 
-    return FinnhubOptionsAdapter(
-        api_key=settings.require_finnhub_api_key(),
-        quota_monitor=quota_monitor,
-        rate_limiter=FINNHUB_RATE_LIMITER,
+    if not settings.options_flow_enabled and not settings.deribit_dvol_enabled:
+        return None
+    equity: OptionsFlowPort = (
+        FinnhubOptionsAdapter(
+            api_key=settings.require_finnhub_api_key(),
+            quota_monitor=quota_monitor,
+            rate_limiter=FINNHUB_RATE_LIMITER,
+        )
+        if settings.options_flow_enabled
+        else NullOptionsFlowAdapter()
+    )
+    if not settings.deribit_dvol_enabled:
+        return equity
+    from src.infrastructure.adapters.deribit_dvol import DeribitDvolAdapter
+    from src.infrastructure.adapters.routing_options_flow import RoutingOptionsFlowPort
+
+    return RoutingOptionsFlowPort(
+        equity=equity, crypto=DeribitDvolAdapter(), crypto_symbols=settings.crypto_symbols
     )
 
 

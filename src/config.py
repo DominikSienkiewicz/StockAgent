@@ -212,6 +212,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
     "fast_loop_cycles_per_day",
+    # DAT-18: DVOL zasila wyłącznie implied edge, sygnał informacyjny bez roli
+    # decyzyjnej (#18) — sam zapis `edge_sigma` dla krypto; prompt i fuzja bez zmian.
+    "deribit_dvol_enabled",
     # FIN-12: sufit kosztu cyklu decyduje, KTÓRE symbole dostają analizę, nie jaką —
     # prognoza przeanalizowanego symbolu jest identyczna z sufitem i bez.
     "max_paid_llm_calls_per_cycle",
@@ -783,6 +786,10 @@ class Settings(BaseSettings):
     # WIA-28: horyzont edge (#18) akcji i ETF z kalendarza NYSE — godziny do
     # następnego dnia handlowego (~72 h w piątek) zamiast stałych 24 h. Off.
     edge_calendar_horizon_enabled: bool = False
+    # DAT-18: port opcji grafu kieruje BTC/ETH do Deribit DVOL (publiczne API, bez
+    # klucza) — implied edge (#18) i kolumna `edge_sigma` dla krypto. Off; włączenie
+    # dopiero po falsyfikacji hipotezy edge_sigma (WIA-75), docs/configuration.md.
+    deribit_dvol_enabled: bool = False
     social_velocity_enabled: bool = False
     yield_curve_enabled: bool = False
     # DAT-22: zmienne stanu rynku z FRED (VIXCLS, VXNCLS, BAMLH0A0HYM2, T10Y2Y, NFCI),
