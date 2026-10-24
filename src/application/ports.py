@@ -32,6 +32,7 @@ from src.domain.session_close import SessionCloseSettlement
 from src.domain.shock import DailyChange
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
+from src.domain.training_labels import FeatureSnapshot
 from src.domain.value_objects import AssetType, Fundamentals, Money, Quote
 
 
@@ -811,6 +812,24 @@ class MLPredictionPort(ABC):
         same sumy z prefiksem `drift_` / `llm_` dla testu sparowanego w domenie.
         `timestamps` działają jak w `train()`: purge horyzontu etykiety w foldach.
         Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
+
+
+class TrainingDataPort(ABC):
+    """ML-52: odczyty Slow Loopa do treningu z zapisanych wektorów cech.
+
+    Wektory cykli (`feature_snapshots`, migracja 031) i szereg snapshotów cen,
+    z którego domena dokleja etykietę point-in-time (`label_snapshots`)."""
+
+    @abstractmethod
+    def get_feature_snapshots(self, feature_set_version: int) -> list[FeatureSnapshot]:
+        """Wszystkie wektory danej wersji zestawu cech (paginacja), rosnąco po
+        `as_of`, z `features` dokładnie w postaci zapisanej przez cykl."""
+
+    @abstractmethod
+    def get_price_series(
+        self, symbols: Sequence[str], *, since: datetime
+    ) -> dict[str, list[tuple[datetime, float]]]:
+        """Snapshoty cen symboli od `since` (paginacja), per symbol rosnąco po czasie."""
 
 
 # NIEZ-44: klucze, którymi adapter failover znakuje wynik `LLMPort.analyze` od

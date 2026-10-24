@@ -22,6 +22,7 @@ from src.application.ports import (
     PreviousVerdict,
     RepositoryPort,
     StoredReceipt,
+    TrainingDataPort,
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
@@ -59,6 +60,7 @@ from src.domain.regime_key import canonical_regime_key
 from src.domain.session_close import SessionCloseSettlement
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
+from src.domain.training_labels import FeatureSnapshot
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
     AssetType,
@@ -340,6 +342,26 @@ def _optional_timestamp(value: Any) -> datetime | None:
         return None
 
 
+def _feature_snapshot(row: Mapping[str, Any], feature_set_version: int) -> FeatureSnapshot | None:
+    """Wiersz `feature_snapshots` jako domenowy wektor; bez symbolu, chwili albo
+    obiektu JSON cech → None (wiersz pominięty, nie zgadujemy)."""
+    symbol = row.get("symbol")
+    as_of = _optional_timestamp(row.get("as_of"))
+    features = row.get("features")
+    if not isinstance(symbol, str) or not symbol or as_of is None:
+        return None
+    if not isinstance(features, Mapping):
+        return None
+    version = row.get("feature_set_version")
+    return FeatureSnapshot(
+        symbol=symbol,
+        as_of=as_of,
+        gated=row.get("gated") is True,
+        features=dict(features),
+        feature_set_version=version if isinstance(version, int) else feature_set_version,
+    )
+
+
 def _resolved_window(query: Any, cutoff: datetime, since: datetime | None) -> Any:
     """Okno zamkniętych predykcji (ocenionych kierunkowo), od najświeższej.
 
@@ -581,7 +603,7 @@ def _failed_personas_of(raw: Any) -> int:
         return 0
 
 
-class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
+class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
     """Adapter dla Supabase (PostgreSQL via PostgREST).
 
     Tabela `prediction_logs` + zmaterializowany widok `ml_feature_store`
@@ -795,6 +817,46 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             # nieznana). Kolumna istnieje dopiero po migracji 027.
             query = query.eq("feature_set_version", feature_set_version)
         return _paginate(query.order("timestamp", desc=False).order("id", desc=False))
+
+    def get_feature_snapshots(self, feature_set_version: int) -> list[FeatureSnapshot]:
+        # ML-52: wektor czytany z JSONB bez żadnego przeliczania — trening dostaje
+        # dokładnie to, co cykl zapisał (i podał modelowi). `id` jako drugi klucz:
+        # granica strony deterministyczna przy równych `as_of` (NIEZ-15).
+        query = (
+            self._client.table(DEFAULT_FEATURE_SNAPSHOT_TABLE)
+            .select("symbol, as_of, gated, features, feature_set_version")
+            .eq("feature_set_version", feature_set_version)
+        )
+        rows = _paginate(query.order("as_of", desc=False).order("id", desc=False))
+        return [
+            snapshot
+            for row in rows
+            if (snapshot := _feature_snapshot(row, feature_set_version)) is not None
+        ]
+
+    def get_price_series(
+        self, symbols: Sequence[str], *, since: datetime
+    ) -> dict[str, list[tuple[datetime, float]]]:
+        # ML-52: szereg cen do etykiety point-in-time — jeden odczyt dla wszystkich
+        # symboli treningu zamiast `get_price_history` per symbol.
+        wanted = list(dict.fromkeys(symbols))
+        if not wanted:
+            return {}
+        query = (
+            self._client.table(self._snapshot_table)
+            .select("symbol, timestamp, price")
+            .in_("symbol", wanted)
+            .gte("timestamp", since.isoformat())
+        )
+        series: dict[str, list[tuple[datetime, float]]] = {}
+        for row in _paginate(query.order("timestamp", desc=False).order("id", desc=False)):
+            moment = _optional_timestamp(row.get("timestamp"))
+            price = _optional_float(row.get("price"))
+            symbol = row.get("symbol")
+            if moment is None or price is None or not isinstance(symbol, str):
+                continue
+            series.setdefault(symbol, []).append((moment, price))
+        return series
 
     def refresh_feature_store(self) -> None:
         """Wywołuje RPC `refresh_ml_feature_store` (zdef. w migrations/001_init.sql).

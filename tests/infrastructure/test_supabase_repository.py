@@ -4631,3 +4631,102 @@ class TestPortErrorTaxonomy:
 
         with pytest.raises(ProviderUnavailable):
             repo.get_last_prediction_price("AAPL")
+
+
+class TestTrainingDataReads:
+    """ML-52: Slow Loop czyta zapisane wektory cech (`feature_snapshots`, 031) i szereg
+    snapshotów cen do etykiety — wektor dokładnie w postaci zapisanej przez cykl."""
+
+    def test_feature_snapshots_of_one_version_are_read_as_saved_vectors(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        vector = {"price": 100.0, "snapshot_delta": 0.0123, "regime": "RISK_ON", "x": None}
+        builder = _fluent_query(
+            mock_client,
+            [[
+                {
+                    "symbol": "AAPL",
+                    "as_of": "2026-10-01T07:30:00+00:00",
+                    "gated": True,
+                    "features": vector,
+                    "feature_set_version": 4,
+                }
+            ]],
+        )
+
+        [snapshot] = repo.get_feature_snapshots(4)
+
+        mock_client.table.assert_called_with("feature_snapshots")
+        builder.eq.assert_called_with("feature_set_version", 4)
+        assert [c.args[0] for c in builder.order.call_args_list] == ["as_of", "id"]
+        assert snapshot.symbol == "AAPL"
+        assert snapshot.as_of == datetime(2026, 10, 1, 7, 30, tzinfo=UTC)
+        assert snapshot.gated is True
+        assert snapshot.feature_set_version == 4
+        assert dict(snapshot.features) == vector
+
+    def test_feature_snapshot_rows_without_time_or_vector_are_skipped(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        good = {
+            "symbol": "AAPL",
+            "as_of": "2026-10-01T07:30:00+00:00",
+            "gated": False,
+            "features": {"price": 1.0},
+            "feature_set_version": 4,
+        }
+        _fluent_query(
+            mock_client,
+            [[{**good, "as_of": None}, {**good, "features": "[]"}, {**good, "symbol": ""}, good]],
+        )
+
+        assert len(repo.get_feature_snapshots(4)) == 1
+
+    def test_feature_snapshots_are_read_past_one_page(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        row = {
+            "symbol": "AAPL",
+            "as_of": "2026-10-01T07:30:00+00:00",
+            "gated": False,
+            "features": {"price": 1.0},
+            "feature_set_version": 4,
+        }
+        builder = _fluent_query(mock_client, [[row] * 1000, [row] * 3])
+
+        assert len(repo.get_feature_snapshots(4)) == 1003
+        assert builder.range.call_count == 2
+
+    def test_price_series_groups_snapshots_by_symbol_in_time_order(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        since = datetime(2026, 9, 1, tzinfo=UTC)
+        builder = _fluent_query(
+            mock_client,
+            [[
+                {"symbol": "AAPL", "timestamp": "2026-10-01T07:30:00+00:00", "price": 100.0},
+                {"symbol": "BTC", "timestamp": "2026-10-01T07:31:00+00:00", "price": "60000.5"},
+                {"symbol": "AAPL", "timestamp": "2026-10-02T07:30:00+00:00", "price": 101.0},
+                {"symbol": "AAPL", "timestamp": None, "price": 1.0},
+            ]],
+        )
+
+        series = repo.get_price_series(["AAPL", "BTC"], since=since)
+
+        mock_client.table.assert_called_with("price_snapshots")
+        builder.in_.assert_called_with("symbol", ["AAPL", "BTC"])
+        builder.gte.assert_called_with("timestamp", since.isoformat())
+        assert [c.args[0] for c in builder.order.call_args_list] == ["timestamp", "id"]
+        assert series == {
+            "AAPL": [
+                (datetime(2026, 10, 1, 7, 30, tzinfo=UTC), 100.0),
+                (datetime(2026, 10, 2, 7, 30, tzinfo=UTC), 101.0),
+            ],
+            "BTC": [(datetime(2026, 10, 1, 7, 31, tzinfo=UTC), 60000.5)],
+        }
+
+    def test_price_series_without_symbols_reads_nothing(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        assert repo.get_price_series([], since=datetime(2026, 9, 1, tzinfo=UTC)) == {}
+        mock_client.table.assert_not_called()
