@@ -7150,3 +7150,109 @@ class TestReportReads:
 
         assert repository.get_resolved_for_calibration.call_count == 1
         assert repository.get_resolved_predictions.call_count == 1
+
+
+def _assembled_report() -> object:
+    from src.application.report_evidence import PaperCosts
+    from src.application.track_record_window import TrackRecordReads
+    from src.application.use_cases.assemble_report import AssembledReport
+
+    return AssembledReport(
+        context=main_agent.ReportContext(),
+        reads=TrackRecordReads(MagicMock(spec=RepositoryPort), 30),
+        costs=PaperCosts(),
+    )
+
+
+def test_deliver_report_returns_outcome_per_channel(settings, mocker) -> None:
+    # ARCH-08: wysyłka mówi, który kanał wyszedł, a który padł — zamiast
+    # jednego bool spod `except Exception` całej fazy.
+    from src.application.quota_monitor import QuotaMonitor
+    from src.application.report_delivery import ChannelDelivery, DeliveryStatus, ReportChannel
+
+    settings.messenger_digest_enabled = True
+    settings.attestation_enabled = False
+    settings.public_scorecard_enabled = False
+    mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+    mocker.patch("main_agent.build_push_notifier", return_value=MagicMock())
+    notifier = MagicMock()
+    notifier.send_report.side_effect = RuntimeError("Resend 503")
+    web_publisher = MagicMock()
+    web_publisher.publish.return_value = "public/digest/index.html"
+
+    outcome = main_agent.deliver_report(
+        _assembled_report(),  # type: ignore[arg-type]
+        results=[],
+        started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+        duration=1.0,
+        failures=0,
+        settings=settings,
+        repository=MagicMock(spec=RepositoryPort),
+        quota_monitor=QuotaMonitor(),
+        notifier=notifier,
+        web_publisher=web_publisher,
+        subscribers=[],
+        all_symbols=["AAPL"],
+    )
+
+    assert outcome.channels == (
+        ChannelDelivery(ReportChannel.WEB, DeliveryStatus.SENT),
+        ChannelDelivery(ReportChannel.EMAIL, DeliveryStatus.FAILED),
+        ChannelDelivery(ReportChannel.PUSH_DIGEST, DeliveryStatus.SENT),
+    )
+    assert outcome.report_sent is True
+    assert outcome.delivered is False
+
+
+def test_deliver_report_lists_each_subscriber_under_a_masked_address(settings, mocker) -> None:
+    # ARCH-08: fan-out (U2) daje kanał na subskrybenta; adres jak w logu, zamaskowany.
+    from src.application.quota_monitor import QuotaMonitor
+    from src.application.report_delivery import ChannelDelivery, DeliveryStatus, ReportChannel
+    from src.domain.subscriber import Subscriber, masked_email
+
+    settings.messenger_digest_enabled = False
+    settings.attestation_enabled = False
+    settings.public_scorecard_enabled = False
+    settings.notifications_enabled = True
+    settings.resend_api_key = "re_test"
+    mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+
+    def resend(*, recipient: str, **_: object) -> MagicMock:
+        channel = MagicMock()
+        if recipient == "late@example.com":
+            channel.send_report.side_effect = RuntimeError("Resend 503")
+        return channel
+
+    mocker.patch("main_agent.ResendNotifier", side_effect=resend)
+    web_publisher = MagicMock()
+    web_publisher.publish.return_value = ""
+
+    outcome = main_agent.deliver_report(
+        _assembled_report(),  # type: ignore[arg-type]
+        results=[],
+        started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+        duration=1.0,
+        failures=0,
+        settings=settings,
+        repository=MagicMock(spec=RepositoryPort),
+        quota_monitor=QuotaMonitor(),
+        notifier=MagicMock(),
+        web_publisher=web_publisher,
+        subscribers=[
+            Subscriber(email="early@example.com", symbols=frozenset()),
+            Subscriber(email="late@example.com", symbols=frozenset()),
+        ],
+        all_symbols=["AAPL"],
+    )
+
+    assert outcome.channels == (
+        ChannelDelivery(ReportChannel.WEB, DeliveryStatus.SKIPPED),
+        ChannelDelivery(
+            ReportChannel.EMAIL, DeliveryStatus.SENT, masked_email("early@example.com")
+        ),
+        ChannelDelivery(
+            ReportChannel.EMAIL, DeliveryStatus.FAILED, masked_email("late@example.com")
+        ),
+    )
+    assert outcome.delivered is False
+    assert "early@example.com" not in repr(outcome)

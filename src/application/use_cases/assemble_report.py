@@ -11,7 +11,7 @@ Zna tylko `RepositoryPort` i `ReportFlags` — application nie importuje
 `src.config`, więc `Settings` mapuje na flagi composition root (`main_agent`).
 Sekcje z adapterów (portfel właściciela, kursy NBP) i konfigurację prezentacji
 (mapa sektorów, strefa czasu) composition root dokłada wcześniej w `context`;
-renderem i wysyłką zajmuje się `main_agent.deliver_report`.
+renderem i wysyłką zajmuje się `main_agent.deliver_report` (ARCH-08).
 """
 
 from __future__ import annotations
@@ -479,10 +479,12 @@ def assess_personas(
 @dataclass(frozen=True)
 class AssembledReport:
     """Kontekst raportu cyklu gotowy do renderu i wysyłki oraz odczyty okna
-    track recordu, które po wysyłce bierze publiczny scorecard (ARCH-16)."""
+    track recordu i koszty paper-PnL, które po wysyłce bierze publiczny
+    scorecard (ARCH-16, WIA-50)."""
 
     context: ReportContext
     reads: TrackRecordReads
+    costs: PaperCosts
 
 
 class ReportAssembler:
@@ -581,4 +583,4 @@ class ReportAssembler:
             model_scorecard=model_scorecard,
             consensus_shifts=consensus_shifts,
         )
-        return AssembledReport(context=report_context, reads=reads)
+        return AssembledReport(context=report_context, reads=reads, costs=self._costs)

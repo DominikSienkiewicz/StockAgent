@@ -70,6 +70,12 @@ from src.application.report_builder import (
     build_html_report,
     to_symbol_result,
 )
+from src.application.report_delivery import (
+    ChannelDelivery,
+    DeliveryOutcome,
+    DeliveryStatus,
+    ReportChannel,
+)
 from src.application.report_evidence import (
     PaperCosts,
 )
@@ -100,6 +106,7 @@ from src.application.use_cases.assemble_report import (
     RESOLVED_PREDICTIONS_HOURS as RESOLVED_PREDICTIONS_HOURS,
 )
 from src.application.use_cases.assemble_report import (
+    AssembledReport,
     ReportAssembler,
     ReportFlags,
     assess_personas,
@@ -579,7 +586,7 @@ def _dispatch_push_digest(
     resolved_unavailable: bool = False,
     lead_items: Sequence[LeadItem] = (),
     ranked_signals: Sequence[TradeSignal] = (),
-) -> None:
+) -> bool:
     """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
 
     MAIL-20: `lead_items` i `ranked_signals` to lead i ranking sygnałów maila
@@ -588,7 +595,8 @@ def _dispatch_push_digest(
     Gałąź U2 (subskrybenci) w ogóle pomijała `notifier.send_report`, więc push
     nie szedł, gdy ktokolwiek był zapisany. Skrót liczymy nad PEŁNYMI wynikami
     cyklu — push to jeden kanał, nie personalizowana watchlista.
-    Best-effort: błąd kanału nie może wywalić cyklu.
+    Best-effort: błąd kanału nie może wywalić cyklu. Zwraca, czy skrót wyszedł
+    (ARCH-08: status kanału w `DeliveryOutcome`).
     """
     try:
         digest = build_messenger_digest(
@@ -606,6 +614,8 @@ def _dispatch_push_digest(
         )
     except Exception:
         logger.exception("Failed to send messenger digest")
+        return False
+    return True
 
 
 def build_positions_port(settings: Settings) -> PortfolioPositionsPort:
@@ -2604,9 +2614,9 @@ def _dispatch_reports(
     legacy_push_notifier: ReportNotifierPort | None = None,
     cycle_symbols: list[str] | None = None,
 ) -> bool:
-    """Faza wysyłki: dociągnięcie danych raportu, zbudowanie raportu i rozesłanie
-    — pojedynczo albo per subskrybent (raport tnięty do jego watchlisty). Cała
-    faza jest best-effort: błąd wysyłki nie psuje exit-code cyklu.
+    """Faza wysyłki: złożenie raportu (`ReportAssembler`) i rozesłanie
+    (`deliver_report`) — pojedynczo albo per subskrybent (raport tnięty do jego
+    watchlisty). Cała faza jest best-effort: błąd wysyłki nie psuje exit-code cyklu.
 
     Zwraca, czy mail wyszedł bez błędu (NIEZ-22/NIEZ-29: step summary i `cycle_runs`).
     False także wtedy, gdy raport nie powstał, bo padło coś przed wysyłką.
@@ -2620,15 +2630,12 @@ def _dispatch_reports(
     prezentacji dokłada `_report_inputs`, a sekcje z odczytów repozytorium
     `ReportAssembler` (ARCH-06)."""
     # NIEZ-03: alerty do tego miejsca zapisuje `fetch_report_context`; te, które
-    # powstaną później (np. Resend przy samej wysyłce), dopisuje `finally`.
+    # powstaną później (np. Resend przy samej wysyłce), zapisuje `deliver_report`.
     persisted_alerts = len(quota_monitor.alerts)
-    email_delivered = True
-    # Wyjątek PRZED wysyłką = raportu nie ma; po wysyłce wynik maila już jest znany.
-    report_sent = False
     try:
         # WIA-50: krzywa, jej etykieta i scorecard z tymi samymi kosztami.
-        paper_costs = _paper_costs(settings)
-        assembled = ReportAssembler(repository, _report_flags(settings), paper_costs).assemble(
+        assembler = ReportAssembler(repository, _report_flags(settings), _paper_costs(settings))
+        report = assembler.assemble(
             results=results,
             started_at=started_at,
             quota_monitor=quota_monitor,
@@ -2641,63 +2648,83 @@ def _dispatch_reports(
                 started_at=started_at,
             ),
         )
-        report_context = assembled.context
-        reads = assembled.reads
-        resolved = report_context.resolved_predictions
-        maturity = report_context.cycle_maturity or CycleMaturity.STEADY_STATE
-        user_portfolio = report_context.user_portfolio
+    except Exception:
+        # Wyjątek PRZED wysyłką = raportu nie ma.
+        logger.exception("Failed to send report")
+        _persist_quota_alerts(repository, quota_monitor.alerts[persisted_alerts:])
+        return False
+    return deliver_report(
+        report,
+        results=results,
+        started_at=started_at,
+        duration=duration,
+        failures=failures,
+        settings=settings,
+        repository=repository,
+        quota_monitor=quota_monitor,
+        notifier=notifier,
+        web_publisher=web_publisher,
+        subscribers=subscribers,
+        all_symbols=all_symbols,
+        legacy_push_notifier=legacy_push_notifier,
+        persisted_alerts=persisted_alerts,
+    ).delivered
 
-        def _build(
-            symbols_filter: frozenset[str] | None = None,
-            *,
-            user_portfolio_in_text: bool = True,
-            include_portfolio: bool = True,
-        ) -> tuple[str, str]:
-            # Raport subskrybenta różni się filtrem symboli (i bez portfela, gdy to
-            # nie właściciel — BEZ-01); stary push — brakiem sekcji portfela
-            # w tekście (kwoty P/L nie idą do komunikatorów).
-            recipient_context = dataclasses.replace(
-                report_context,
-                symbols_filter=symbols_filter,
-                user_portfolio_in_text=user_portfolio_in_text,
-            )
-            return build_html_report(
-                results, started_at, duration,
-                recipient_context
-                if include_portfolio
-                else _without_owner_portfolio(recipient_context),
-            )
 
-        html, text = _build()
-        analyzed = sum(1 for r in results if r.status == "saved")
+def deliver_report(
+    report: AssembledReport,
+    *,
+    results: list[SymbolResult],
+    started_at: datetime,
+    duration: float,
+    failures: int,
+    settings: Settings,
+    repository: RepositoryPort,
+    quota_monitor: QuotaMonitor,
+    notifier: ReportNotifierPort,
+    web_publisher: WebPublisherPort,
+    subscribers: list[Subscriber],
+    all_symbols: list[str],
+    legacy_push_notifier: ReportNotifierPort | None = None,
+    persisted_alerts: int = 0,
+) -> DeliveryOutcome:
+    """ARCH-08: render i rozesłanie złożonego raportu; wynik kanał po kanale.
+
+    Kolejność: digest web (U3), mail — pojedynczy z opcjonalnym starym pushem
+    albo fan-out per subskrybent (U2) — potem artefakty poboczne: publiczny
+    scorecard (#10), sweep revealów (#16) i skrót push (#5). Błąd kanału go
+    oznacza i nie zatrzymuje kolejnych; wyjątek spoza kanałów kończy fazę
+    (przed końcem wysyłki `report_sent` zostaje False). Nigdy nie rzuca.
+
+    Alerty kwot od indeksu `persisted_alerts` — powstałe po zapisie
+    w `fetch_report_context`, np. przy samej wysyłce — zapisuje PO wysyłce."""
+    channels: list[ChannelDelivery] = []
+    report_sent = False
+    try:
+        context = report.context
+        html, text = _render_report(context, results, started_at, duration)
         # Subject prefix gdy są CRITICAL — wymusza zwrócenie uwagi w skrzynce.
         max_sev = quota_monitor.max_severity()
         prefix = "⚠️ [QUOTA] " if max_sev is QuotaSeverity.CRITICAL else ""
+
         # #1: temat z leadu, liczony nad PEŁNYMI wynikami cyklu (nie per
         # subskrybent) — sekcje są re-slicowane, ale temat jest współdzielony.
         # PORT-10: ten sam lead co w treści, więc też świadomy portfela; obcy
         # subskrybenci dostają jeden wspólny wariant bez portfela (BEZ-01).
-        def _subject(context: ReportContext) -> str:
+        def subject_of(recipient_context: ReportContext) -> str:
             return _build_subject(
-                lead_items=build_cycle_lead(results, context),
-                analyzed=analyzed,
+                lead_items=build_cycle_lead(results, recipient_context),
+                analyzed=sum(1 for r in results if r.status == "saved"),
                 failures=failures,
                 started_at=started_at,
                 prefix=prefix,
-                maturity=maturity,
+                maturity=recipient_context.cycle_maturity or CycleMaturity.STEADY_STATE,
                 analyzed_total=len(results),
                 display_timezone=settings.display_timezone,
             )
 
-        subject = _subject(report_context)
-
-        # U3: publikacja statycznego digestu web (read-only dashboard).
-        try:
-            url = web_publisher.publish(html)
-            if url:
-                logger.info("Web digest opublikowany: %s", url)
-        except Exception:
-            logger.exception("Web digest publish failed")
+        subject = subject_of(context)
+        channels.append(_publish_web_digest(web_publisher, html))
 
         # U2: jeśli są subskrybenci, każdy dostaje raport TNIĘTY do swojej
         # watchlisty (analiza poszła RAZ nad unią — to tylko re-slicing). Bez
@@ -2706,36 +2733,43 @@ def _dispatch_reports(
             all_syms = frozenset(all_symbols)
             # BEZ-01: temat obcego subskrybenta z leadu bez portfela — inaczej
             # niósłby „… na AAPL (25% portfela)” właściciela.
-            public_subject = _subject(_without_owner_portfolio(report_context))
+            public_subject = subject_of(_without_owner_portfolio(context))
             for sub in subscribers:
                 owner = is_owner(sub, settings.digest_to_email)
-                if not owner and user_portfolio is not None:
+                if not owner and context.user_portfolio is not None:
                     logger.info(
                         "Digest dla %s bez portfela właściciela (adres ≠ DIGEST_TO_EMAIL)",
                         masked_email(sub.email),
                     )
-                sub_html, sub_text = _build(
-                    symbols_for(sub, all_syms), include_portfolio=owner
+                sub_html, sub_text = _render_report(
+                    context,
+                    results,
+                    started_at,
+                    duration,
+                    symbols_filter=symbols_for(sub, all_syms),
+                    include_portfolio=owner,
                 )
-                try:
-                    build_subscriber_notifier(settings, sub.email, quota_monitor).send_report(
+                channels.append(
+                    _send_subscriber_digest(
+                        settings,
+                        sub,
+                        quota_monitor,
                         subject=subject if owner else public_subject,
-                        html_body=sub_html,
-                        plain_text=sub_text,
+                        report=(sub_html, sub_text),
                     )
-                except Exception:
-                    logger.exception("Failed to send digest to %s", masked_email(sub.email))
-                    email_delivered = False
+                )
         else:
             # NIEZ-02: wyjątek Resend nie może wyciąć scorecardu, sweepu i pusha.
-            try:
-                notifier.send_report(subject=subject, html_body=html, plain_text=text)
-            except Exception:
-                logger.exception("Failed to send the email digest — dalsze kroki idą")
-                email_delivered = False
+            channels.append(_send_email_digest(notifier, subject, (html, text)))
             if legacy_push_notifier is not None:
-                _send_legacy_push(
-                    legacy_push_notifier, subject, _build(user_portfolio_in_text=False)
+                channels.append(
+                    _send_legacy_push(
+                        legacy_push_notifier,
+                        subject,
+                        _render_report(
+                            context, results, started_at, duration, user_portfolio_in_text=False
+                        ),
+                    )
                 )
         report_sent = True
 
@@ -2744,8 +2778,8 @@ def _dispatch_reports(
             settings,
             repository,
             build_public_scorecard_publisher(settings),
-            paper_costs,
-            reads=reads,
+            report.costs,
+            reads=report.reads,
         )
 
         # #16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,
@@ -2756,28 +2790,112 @@ def _dispatch_reports(
         # #5: push idzie RAZ, skrótem, poza gałęzią fan-outu — inaczej albo
         # ginie (subskrybenci), albo przekracza limit Telegrama (pełny raport).
         if settings.messenger_digest_enabled:
-            _dispatch_push_digest(
-                push_notifier=build_push_notifier(settings, quota_monitor),
+            push_notifier = build_push_notifier(settings, quota_monitor)
+            resolved = context.resolved_predictions
+            pushed = _dispatch_push_digest(
+                push_notifier=push_notifier,
                 results=results,
                 started_at=started_at,
                 resolved=resolved or [],
                 subject=subject,
-                email_delivered=email_delivered,
+                email_delivered=DeliveryOutcome(True, tuple(channels)).email_delivered,
                 resolved_unavailable=resolved is None,
                 display_timezone=settings.display_timezone,
-                lead_items=build_cycle_lead(results, report_context),
-                ranked_signals=build_cycle_signals(results, report_context),
+                lead_items=build_cycle_lead(results, context),
+                ranked_signals=build_cycle_signals(results, context),
+            )
+            channels.append(
+                ChannelDelivery(ReportChannel.PUSH_DIGEST, _channel_status(push_notifier, pushed))
             )
     except Exception:
         logger.exception("Failed to send report")
     finally:
         _persist_quota_alerts(repository, quota_monitor.alerts[persisted_alerts:])
-    return report_sent and email_delivered
+    return DeliveryOutcome(report_sent=report_sent, channels=tuple(channels))
+
+
+def _render_report(
+    context: ReportContext,
+    results: list[SymbolResult],
+    started_at: datetime,
+    duration: float,
+    *,
+    symbols_filter: frozenset[str] | None = None,
+    user_portfolio_in_text: bool = True,
+    include_portfolio: bool = True,
+) -> tuple[str, str]:
+    """HTML i tekst raportu dla jednego odbiorcy. Raport subskrybenta różni się
+    filtrem symboli (i bez portfela, gdy to nie właściciel — BEZ-01); stary
+    push — brakiem sekcji portfela w tekście (kwoty P/L nie idą do komunikatorów)."""
+    recipient_context = dataclasses.replace(
+        context,
+        symbols_filter=symbols_filter,
+        user_portfolio_in_text=user_portfolio_in_text,
+    )
+    return build_html_report(
+        results, started_at, duration,
+        recipient_context
+        if include_portfolio
+        else _without_owner_portfolio(recipient_context),
+    )
+
+
+def _channel_status(channel: ReportNotifierPort, sent: bool) -> DeliveryStatus:
+    """Wysłane przez `NullNotifier` (kanał wyłączony / bez sekretów) to SKIPPED."""
+    if not sent:
+        return DeliveryStatus.FAILED
+    return DeliveryStatus.SKIPPED if isinstance(channel, NullNotifier) else DeliveryStatus.SENT
+
+
+def _publish_web_digest(web_publisher: WebPublisherPort, html: str) -> ChannelDelivery:
+    """U3: statyczny digest web (read-only dashboard); "" z portu = SKIPPED."""
+    try:
+        url = web_publisher.publish(html)
+    except Exception:
+        logger.exception("Web digest publish failed")
+        return ChannelDelivery(ReportChannel.WEB, DeliveryStatus.FAILED)
+    if not url:
+        return ChannelDelivery(ReportChannel.WEB, DeliveryStatus.SKIPPED)
+    logger.info("Web digest opublikowany: %s", url)
+    return ChannelDelivery(ReportChannel.WEB, DeliveryStatus.SENT)
+
+
+def _send_email_digest(
+    notifier: ReportNotifierPort, subject: str, report: tuple[str, str]
+) -> ChannelDelivery:
+    """Pojedynczy mail właściciela (bez fan-outu)."""
+    html, text = report
+    try:
+        notifier.send_report(subject=subject, html_body=html, plain_text=text)
+    except Exception:
+        logger.exception("Failed to send the email digest — dalsze kroki idą")
+        return ChannelDelivery(ReportChannel.EMAIL, DeliveryStatus.FAILED)
+    return ChannelDelivery(ReportChannel.EMAIL, _channel_status(notifier, sent=True))
+
+
+def _send_subscriber_digest(
+    settings: Settings,
+    subscriber: Subscriber,
+    quota_monitor: QuotaMonitor,
+    *,
+    subject: str,
+    report: tuple[str, str],
+) -> ChannelDelivery:
+    """U2: mail jednego subskrybenta; `recipient` to adres zamaskowany jak w logu."""
+    html, text = report
+    recipient = masked_email(subscriber.email)
+    try:
+        channel = build_subscriber_notifier(settings, subscriber.email, quota_monitor)
+        channel.send_report(subject=subject, html_body=html, plain_text=text)
+    except Exception:
+        logger.exception("Failed to send digest to %s", recipient)
+        return ChannelDelivery(ReportChannel.EMAIL, DeliveryStatus.FAILED, recipient)
+    return ChannelDelivery(ReportChannel.EMAIL, _channel_status(channel, sent=True), recipient)
 
 
 def _send_legacy_push(
     push: ReportNotifierPort, subject: str, report: tuple[str, str]
-) -> None:
+) -> ChannelDelivery:
     """Stary push: pełny raport bez sekcji portfela. Best-effort — błąd kanału
     nie może zatrzymać scorecardu, sweepu ani zapisu alertów."""
     html, text = report
@@ -2785,6 +2903,8 @@ def _send_legacy_push(
         push.send_report(subject=subject, html_body=html, plain_text=text)
     except Exception:
         logger.exception("Failed to send the legacy push report")
+        return ChannelDelivery(ReportChannel.LEGACY_PUSH, DeliveryStatus.FAILED)
+    return ChannelDelivery(ReportChannel.LEGACY_PUSH, _channel_status(push, sent=True))
 
 
 def _record_av_budget_alert(settings: Settings, quota_monitor: QuotaMonitor) -> None:
