@@ -494,6 +494,7 @@ _PREDICTION_PRICE_COLUMNS = frozenset({
     "interval_low",
     "interval_high",
     "settlement_close_price",
+    "entry_price",
 })
 
 # WIA-61 (migracja 059): trafność kierunku na oficjalnym zamknięciu sesji.
@@ -712,6 +713,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         receipts_enabled: bool = True,
         scorecard_weights_sha256_enabled: bool = False,
         scorecard_provenance_enabled: bool = False,
+        executable_entry_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
         # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) zamiast ivfflat
@@ -739,6 +741,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # WIA-61: kolumny zamknięcia sesji istnieją od migracji 059 — bez flagi
         # odczyt trafności ich nie wybiera (400 zabiłby raport).
         self._session_close_settlement_enabled = session_close_settlement_enabled
+        # WIA-54: kolumna `entry_price` istnieje od migracji 072 — bez flagi odczyt
+        # track recordu jej nie wybiera (400 zabiłby raport).
+        self._executable_entry_enabled = executable_entry_enabled
         # ML-10: kolumny baseline'ów dryfu i „sam LLM" istnieją od migracji 028 —
         # bez flagi payload karty ich nie niesie (PGRST204 zgubiłby cały wiersz).
         self._scorecard_baselines_enabled = scorecard_baselines_enabled
@@ -1033,6 +1038,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         )
         if self._correction_category_enabled:
             columns += ", correction_category"
+        if self._executable_entry_enabled:
+            columns += ", entry_price"
         query = (
             self._client.table(self._table)
             .select(self._countable_columns(columns))
@@ -2506,6 +2513,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         *,
         stale_quote: bool | None = None,
         session_close: SessionCloseSettlement | None = None,
+        entry_price: Decimal | None = None,
     ) -> None:
         settlement: dict[str, Any] = {
             "actual_price_after_12h": actual_price,
@@ -2520,6 +2528,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # WIA-61: klucze tylko, gdy graf podał zamknięcie (flaga po migracji 059).
         if session_close is not None:
             settlement.update(_session_close_payload(session_close))
+        # WIA-54: klucz tylko, gdy graf podał cenę wykonalną (flaga po migracji 072).
+        if entry_price is not None:
+            settlement["entry_price"] = entry_price
         payload = _serialize_record(settlement, _PREDICTION_PRICE_COLUMNS)
         # Idempotency guard: aktualizujemy tylko gdy actual_price_after_12h jest
         # NULL. Bez tego dwa równoczesne cykle (np. ręczny workflow_dispatch

@@ -104,6 +104,7 @@ MIGRATION_FILES = [
     "065_persona_scoring.sql",
     "070_rpc_search_path.sql",
     "071_schema_version.sql",
+    "072_prediction_entry_price.sql",
     "075_shadow_predictions.sql",
 ]
 
@@ -3545,6 +3546,56 @@ class TestMigration063RagExactSearch:
 
         assert names == ["match_news_embeddings", "match_news_embeddings_exact"]
         assert "idx_prediction_logs_embedding" in _indexes(migrated_pg_conn, "prediction_logs")
+
+
+@pytest.mark.containers
+class TestMigration072PredictionEntryPrice:
+    """WIA-54: cena wykonalna od otwarcia sesji obok `price_at_prediction` —
+    dodatnia albo NULL (krypto, zaległe rozliczenie, stare wiersze), nigdy zero."""
+
+    def test_settlement_carries_the_executable_entry_next_to_the_quote(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert "entry_price" in _columns(migrated_pg_conn, "prediction_logs")
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) VALUES "
+                "('EP072', '2026-10-19T05:30:00+00:00', 100.0) RETURNING id"
+            )
+            prediction_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE prediction_logs SET actual_price_after_12h = 106.0, "
+                "entry_price = 105.12345 WHERE id = %s "
+                "RETURNING price_at_prediction, entry_price, actual_price_after_12h",
+                (prediction_id,),
+            )
+            row = cur.fetchone()
+
+        assert row == (Decimal("100.0000"), Decimal("105.1235"), Decimal("106.0000"))
+
+    def test_entry_price_rejects_zero(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, entry_price) "
+                "VALUES ('EP072_BAD', '2026-10-19T05:30:00+00:00', 0)"
+            )
+
+    def test_072_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "072_prediction_entry_price.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'prediction_logs'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%entry_price%'"
+            )
+            assert cur.fetchone() == (1,)
 
 
 def _full_analysis_record() -> dict[str, object]:

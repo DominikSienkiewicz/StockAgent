@@ -4949,6 +4949,56 @@ class TestSessionCloseSettlement:
 
 
 # ---------------------------------------------------------------------------
+# WIA-54: cena wykonalna od otwarcia sesji (migracja 072)
+# ---------------------------------------------------------------------------
+
+
+class TestExecutableEntryPrice:
+    """Rozliczenie niesie `entry_price` tylko, gdy graf go poda (flaga), a odczyt
+    track recordu wybiera kolumnę wyłącznie za flagą repozytorium — przed migracją
+    072 SELECT kolumny dałby 400, a klucz w UPDATE — PGRST204."""
+
+    _SETTLE = {
+        "prediction_id": "uuid-1",
+        "actual_price": Decimal("106.0"),
+        "accuracy_score": 0.96,
+        "is_trend_correct": True,
+        "insight": "x",
+    }
+
+    def test_settlement_carries_the_entry_price_only_when_given(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}])
+
+        repo.update_prediction_accuracy(**self._SETTLE)
+        plain = mock_client.table.return_value.update.call_args.args[0]
+        repo.update_prediction_accuracy(**self._SETTLE, entry_price=Decimal("105.12345"))
+        both = mock_client.table.return_value.update.call_args.args[0]
+
+        assert "entry_price" not in plain
+        # DECIMAL(14,4) jak pozostałe ceny (ARCH-38).
+        assert both["entry_price"] == "105.1235"
+
+    def test_track_record_selects_the_entry_price_only_with_the_flag(
+        self, mock_client: MagicMock
+    ) -> None:
+        select = mock_client.table.return_value.select
+        _set_chain_response(
+            mock_client, ["table", "select", "gte", "not_", "is_", "order", "range"], []
+        )
+        plain = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
+        flagged = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", executable_entry_enabled=True
+        )
+
+        plain.get_resolved_predictions(30)
+        assert "entry_price" not in select.call_args.args[0]
+        flagged.get_resolved_predictions(30)
+        assert "entry_price" in select.call_args.args[0]
+
+
+# ---------------------------------------------------------------------------
 # DAT-21: `fundamentals_cache.market_cap` (migracja 056)
 # ---------------------------------------------------------------------------
 

@@ -403,6 +403,7 @@ class ReadOnlyRepository(RepositoryPort):
         *,
         stale_quote: bool | None = None,
         session_close: SessionCloseSettlement | None = None,
+        entry_price: Decimal | None = None,
     ) -> None:
         self._skipped.skip("update_prediction_accuracy")
 

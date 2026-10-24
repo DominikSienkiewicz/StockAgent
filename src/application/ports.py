@@ -336,6 +336,7 @@ class RepositoryPort(ABC):
         *,
         stale_quote: bool | None = None,
         session_close: SessionCloseSettlement | None = None,
+        entry_price: Decimal | None = None,
     ) -> None:
         """Zamyka predykcję feedbackiem. `accuracy_score` (bliskość ceny do
         celu) służy recapowi tygodnia i eksportowi dowodów, a trening XGBoost
@@ -351,7 +352,10 @@ class RepositoryPort(ABC):
         `session_close` (WIA-61, migracja 059): oficjalne zamknięcie sesji z datą,
         źródłem i trafnością na nim — obok ceny /quote, która zostaje rozliczeniem.
         None = kolumn nie dotykamy (graf podaje je wyłącznie za
-        `session_close_settlement_enabled`)."""
+        `session_close_settlement_enabled`).
+        `entry_price` (WIA-54, migracja 072): cena wykonalna — otwarcie pierwszej
+        sesji po predykcji z tego samego notowania. None = kolumny nie dotykamy
+        (graf podaje ją wyłącznie za `executable_entry_enabled`)."""
 
     @abstractmethod
     def get_feature_store_data(
