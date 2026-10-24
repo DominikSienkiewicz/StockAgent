@@ -17,6 +17,9 @@ uv run pytest -m "not integration and not containers"   # jak CI; kontenerowe: u
 ```
 
 Nie zgłaszaj pracy jako ukończonej, dopóki te trzy nie są zielone.
+CI (job `quality`) uruchamia pytest dodatkowo z `--cov=src/domain --cov-branch --cov-fail-under=98`
+(CI-03). Próg tylko rośnie: ten sam numer w `[tool.coverage.report].fail_under` i w
+`COVERAGE_RATCHET` (`tests/test_quality_gate_sync.py`).
 
 ## Architektura — Hexagonal + DDD
 
@@ -60,11 +63,25 @@ Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
 - **Self-Reflection**: `reflect_node` działa PRZED bramką volatility — ocena
   przeszłej predykcji jest niezależna od tego, czy bieżący cykl robi nową prognozę.
 - **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. `main_agent.main()`
-  zwraca exit 1 tylko gdy **wszystkie** symbole padły.
+  zwraca exit 1 tylko gdy **wszystkie** symbole padły. Niedostarczenie raportu (mail
+  Fast Loopa albo recap Slow Loopa, gdy kanał jest skonfigurowany) też zostawia exit 0,
+  ale nie jest ciche: `flag_undelivered_report` (`main_agent.py`) drukuje adnotację
+  `::error title=StockAgent::Raport nie został dostarczony` i zapisuje alert CRITICAL
+  (`source` „Raport”) w `quota_alerts` (NIEZ-12).
+- **Błędy portów**: taksonomia `src/application/errors.py` (ARCH-33) — `PortError` →
+  `ProviderUnavailable`, `QuotaExhausted`, `MalformedPayload`, `NotFound`. Adapter
+  tłumaczy wyjątek dostawcy przez `as_port_error`, zachowując typ dostawcy. Nowy kod
+  łapie klasy taksonomii, nie `except Exception` — `tests/test_exception_ratchet.py`
+  pilnuje, żeby szerokich handlerów nie przybywało (obniżaj baseline, gdy któryś
+  znika). Sesje z `build_session()` mają circuit breaker per host na czas procesu
+  (NIEZ-31).
 
 ## Sekrety
 
 - **Nigdy** nie commituj `.env`. Do `.env.example` wpisuj wyłącznie placeholdery.
+- Konfiguracja niewrażliwa żyje w commitowanym `config.toml`; `.env` i `.env.example`
+  zawierają wyłącznie sekrety oraz przełączniki `DB_WRITES_ENABLED` i `PAID_CALLS_ENABLED`
+  (DOC-30).
 - Klucze API w GitHub Actions: jako Repository Secrets (workflowy czytają `${{ secrets.* }}`).
 
 ## Język

@@ -17,6 +17,9 @@ uv run pytest -m "not integration and not containers"   # jak CI; kontenerowe: u
 ```
 
 Nie zgłaszaj pracy jako ukończonej, dopóki te trzy nie są zielone.
+CI (job `quality`) uruchamia pytest dodatkowo z `--cov=src/domain --cov-branch --cov-fail-under=98`
+(CI-03). Próg tylko rośnie: ten sam numer w `[tool.coverage.report].fail_under` i w
+`COVERAGE_RATCHET` (`tests/test_quality_gate_sync.py`).
 
 ## Architektura — Hexagonal + DDD
 
@@ -46,9 +49,45 @@ Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
 Podłączenie portu do Fast Loopa = **jedno pole** w `AgentGraphDeps`
 (`application/agent_graph.py`). Ten sam obiekt biorą `create_agent_graph`
 i `AnalyzeMarketUseCase`, więc nie ma już trzech list argumentów do zsynchronizowania.
-Analogicznie nowa sekcja raportu = jedno pole w `ReportContext`
-(`application/report_builder.py`), które `main_agent._dispatch_reports` wypełnia
-przez `dataclasses.replace`.
+Węzeł grafu zwraca `AgentState`; nowy klucz stanu = pole w `AgentState`. LangGraph po
+cichu gubi klucz spoza schematu — pilnują tego mypy i
+`test_node_outputs_use_only_declared_state_keys` (ARCH-10).
+
+Analogicznie nowa sekcja maila = nowy moduł `src/application/report_<nazwa>.py`
+(renderery HTML i tekstu + obiekt `ReportSection`), jeden wpis w `REPORT_SECTIONS`
+(`application/reporting/registry.py`, kolejność maila) i jedno pole w `ReportContext`
+(`application/report_builder.py`), które sekcja deklaruje w `context_fields`. Pole
+czytane przez wspólne wejście sekcji (`SectionInput`) albo przez kilka sekcji trafia do
+`SHARED_CONTEXT_FIELDS`; `tests/application/test_report_registry.py` pilnuje, że każde
+pole ma dokładnie jednego konsumenta (ARCH-12). Pole z odczytów repozytorium wypełnia
+`ReportAssembler.assemble` (`application/use_cases/assemble_report.py`) przez
+`dataclasses.replace`; pole z adaptera (np. portfel właściciela) dokłada
+`main_agent._report_inputs`.
+
+`main_agent.py` zostaje DI rootem Fast Loopa: mapuje `Settings` na opcje use case'ów
+(`ReportFlags`, `CycleOptions`, `PublicScorecardOptions`), buduje adaptery i kanały
+wysyłki i wstrzykuje hooki świata (`time.sleep`, `redact_secrets`, `symbol_context`).
+Logika cyklu i raportu żyje w `src/application/use_cases/`: `run_cycle.py`
+(`RunFastLoopCycle` — przebieg symboli z jednym `CycleOptions`), `assemble_report.py`
+(`ReportAssembler` — zna tylko `RepositoryPort` i `ReportFlags`, nigdy `Settings`; okno
+track recordu czyta raz na dispatch `TrackRecordReads`), `publish_public_scorecard.py`
+i `reveal_attestations.py` (wyłącznie na portach). `main_agent.deliver_report`
+(composition, bo kanały buduje z `Settings`) składa i rozsyła raport i zwraca
+`DeliveryOutcome` (`application/report_delivery.py`) ze statusem każdego kanału
+(ARCH-02, ARCH-06, ARCH-07, ARCH-08).
+
+## Jednostki zmian względnych (ARCH-04)
+
+- `Ratio` = ułamek (0.025 = 2,5%), `Percent` = procent (2.5 = 2,5%) — NewType nad
+  `Decimal` w `src/domain/value_objects.py`. Sufiks `_pct` oznacza procent (`Percent`);
+  ułamek nosi typ `Ratio` i w nowym kodzie nazwę bez `_pct` (np. `fraction`, `delta`).
+- Ułamek zmienia się w procent wyłącznie przez `to_percent` — NewType nie chroni
+  arytmetyki (`Ratio * 100` to goły `Decimal`). Ręczne `* 100` tylko w formaterach
+  prezentacji (`report_formatting.pct`, `format_pct_pl`).
+- Stan grafu (`AgentState.delta`, `drift`) i `PriceDelta.fraction` to ułamki;
+  `PriceDelta.percentage` to zdeprecjonowany alias ułamka (do usunięcia, ARCH-14).
+- Starsze pola `_pct` z ułamkiem mają już typ `Ratio` i czekają na zmianę nazwy —
+  rozstrzyga typ, nie nazwa.
 
 ## TDD — testy przed implementacją
 
@@ -89,7 +128,18 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - **Self-Reflection**: `reflect_node` działa PRZED bramką volatility — ocena
   przeszłej predykcji jest niezależna od tego, czy bieżący cykl robi nową prognozę.
 - **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. `main_agent.main()`
-  zwraca exit 1 tylko gdy **wszystkie** symbole padły.
+  zwraca exit 1 tylko gdy **wszystkie** symbole padły. Niedostarczenie raportu (mail
+  Fast Loopa albo recap Slow Loopa, gdy kanał jest skonfigurowany) też zostawia exit 0,
+  ale nie jest ciche: `flag_undelivered_report` (`main_agent.py`) drukuje adnotację
+  `::error title=StockAgent::Raport nie został dostarczony` i zapisuje alert CRITICAL
+  (`source` „Raport”) w `quota_alerts` (NIEZ-12).
+- **Błędy portów**: taksonomia `src/application/errors.py` (ARCH-33) — `PortError` →
+  `ProviderUnavailable`, `QuotaExhausted`, `MalformedPayload`, `NotFound`. Adapter
+  tłumaczy wyjątek dostawcy przez `as_port_error`, zachowując typ dostawcy. Nowy kod
+  łapie klasy taksonomii, nie `except Exception` — `tests/test_exception_ratchet.py`
+  pilnuje, żeby szerokich handlerów nie przybywało (obniżaj baseline, gdy któryś
+  znika). Sesje z `build_session()` mają circuit breaker per host na czas procesu
+  (NIEZ-31).
 
 ## Migracje bazy
 
@@ -115,30 +165,19 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - **Nigdy** nie commituj `.env`. Do `.env.example` wpisuj wyłącznie placeholdery.
 - Klucze API w GitHub Actions: jako Repository Secrets (workflowy czytają `${{ secrets.* }}`).
 
-## Synchronizacja `.env` ↔ `.env.example`
+## Konfiguracja: `config.toml` vs `.env` (DOC-30)
 
-Plik `.env.example` to **template dla nowych deploymentów** — musi się rozwijać
-razem z `.env`, nie zostawać w tyle. Po każdej zmianie w `.env` zastosuj te
-reguły do `.env.example` w tym samym kroku:
-
-- **Sekrety** (API keys, tokeny, hasła, DB credentials, adresy mailowe odbiorców):
-  wyłącznie **placeholdery** typu `sk-...`, `re_...`,
-  `https://twoj-projekt.supabase.co`, `you@example.com`. Nigdy realnych wartości
-  z `.env`.
-- **Cała reszta** (konfiguracja niewrażliwa — `SYMBOLS`, `SYMBOLS_ETF`,
-  `RISK_SYMBOLS`, `RISK_SYMBOL_TYPES`, `SYMBOLS_UNSUPPORTED_PRICE`,
-  `VOLATILITY_THRESHOLD`, `SYMBOL_THROTTLE_SECONDS`, `NBP_ENABLED`,
-  `COUNCIL_LLM_MODEL`, `ML_MODEL_PATH`, `NOTIFICATIONS_ENABLED`,
-  `LLM_PROVIDER`, `DIGEST_FROM_EMAIL` itd.): **identyczne wartości** jak w `.env`.
-  Template pokazuje rzeczywistą produkcyjną konfigurację, żeby nowy deployment
-  startował z sensownym defaultem zamiast minimalistycznego szkieletu wymagającego
-  dośledzenia z README.
-
-Gdy pole jest **wrażliwe** (sekret) — placeholder w `.env.example`, prawdziwa
-wartość w `.env`. Gdy **niewrażliwe** — dokładnie ten sam string w obu plikach.
-
-Sygnał, że robisz to dobrze: `diff .env .env.example` pokazuje **tylko** linie
-z sekretami; każda inna różnica to dryf, który trzeba naprawić.
+- **Konfiguracja niewrażliwa** (symbole, progi, flagi, modele, budżety, harmonogramy
+  eksperymentów) żyje w commitowanym `config.toml` — jedyne źródło prawdy, wersjonowane
+  i walidowane przez `Settings` (klucz spoza `Settings` = błąd startu). Nie dopisuj jej do
+  `.env` ani do YAML-a workflowów.
+- **`.env` i `.env.example`** zawierają wyłącznie sekrety (klucze API, tokeny, URL-e baz,
+  adresy odbiorców) oraz przełączniki środowiska `DB_WRITES_ENABLED` i
+  `PAID_CALLS_ENABLED`. W `.env.example` sekrety mają tylko placeholdery (`sk-...`,
+  `re_...`, `https://twoj-projekt.supabase.co`, `you@example.com`); nowy sekret w `.env`
+  = ten sam klucz z placeholderem w `.env.example` w tym samym kroku.
+- Sygnał, że robisz to dobrze: `.env` i `.env.example` mają ten sam zestaw kluczy,
+  a różnią się wyłącznie wartościami sekretów.
 
 ## Język
 
