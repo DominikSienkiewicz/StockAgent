@@ -19,6 +19,12 @@ WIA-30: `rank_by="wilson"` sortuje po dolnej granicy 95% przedziału Wilsona —
 5/5 nie wyprzedza 40/50. WIA-22: `assess_persona_significance` dokłada werdykt
 istotności: test dwumianowy na n_eff względem najlepszego naiwnego baseline'u
 i korekta BH-FDR po personach (7 person = 7 porównań naraz).
+
+WIA-44: hit-rate ignoruje deklarowaną pewność głosu, więc nagradza przepewne
+persony („BUY 0.95” i pudło kosztuje tyle co „BUY 0.55”). `PersonaScoring`
+(RPC `persona_scoring_stats`, migracja 065) niesie też średni Brier i log loss
+pewności, a `rank_by="brier_skill"` układa leaderboard po Brier Skill względem
+stałej prognozy persony (`PersonaTrackRecord.brier_skill`).
 """
 
 from __future__ import annotations
@@ -52,7 +58,7 @@ from src.domain.value_objects import AssetType
 # Minimalna próbka, przy której hit-rate persony przestaje być szumem.
 DEFAULT_MIN_VOTES = 5
 
-RankBy = Literal["hit_rate", "wilson"]
+RankBy = Literal["hit_rate", "wilson", "brier_skill"]
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,21 @@ class PersonaTrackRecord:
     n_eff: float | None = None
     p_value: float | None = None
     significant: bool | None = None
+    brier: float | None = None
+    log_loss: float | None = None
+
+    @property
+    def brier_skill(self) -> float | None:
+        """WIA-44 — Brier Skill Score względem stałej prognozy persony: 1 − Brier /
+        (h·(1 − h)), gdzie h to jej hit-rate. 0 = pewność nie wnosi nic ponad
+        „zawsze h”, wartość ujemna = gorzej niż stała prognoza (przepewność).
+        None bez Briera albo gdy stała prognoza ma Brier 0 (h = 0 lub 1)."""
+        if self.brier is None:
+            return None
+        climatology = self.hit_rate * (1.0 - self.hit_rate)
+        if climatology <= 0.0:
+            return None
+        return 1.0 - self.brier / climatology
 
     @property
     def hit_rate_pct(self) -> int:
@@ -118,9 +139,24 @@ def sort_personas(
     dolna granica 95% przedziału Wilsona, więc mała idealna próba nie wyprzedza
     dużej, mocnej.
     """
+    if rank_by == "brier_skill":
+        return sorted(
+            records,
+            key=lambda r: (
+                -_skill_or_neutral(r), -r.wilson_lower, -r.votes, r.investor_name,
+            ),
+        )
     if rank_by == "wilson":
         return sorted(records, key=lambda r: (-r.wilson_lower, -r.votes, r.investor_name))
     return sorted(records, key=lambda r: (-r.hit_rate, -r.votes, r.investor_name))
+
+
+def _skill_or_neutral(record: PersonaTrackRecord) -> float:
+    """Klucz rankingu `brier_skill`: persona bez określonej umiejętności (stała
+    prognoza nie ma czego przegrać, np. 10/10) ma 0 — „bez przewagi”, nie ostatnie
+    miejsce. Dalej rozstrzyga dolna granica Wilsona."""
+    skill = record.brier_skill
+    return 0.0 if skill is None else skill
 
 
 def rank_personas(
@@ -149,6 +185,44 @@ def rank_personas(
         )
         for name, (hit_rate, votes) in stats.items()
         if votes > 0 and votes >= min_votes
+    ]
+    return sort_personas(records, rank_by)
+
+
+@dataclass(frozen=True)
+class PersonaScoring:
+    """WIA-44 — ocena persony z RPC `persona_scoring_stats` (migracja 065): hit-rate
+    i liczba głosów jak w 018 oraz średni Brier (confidence − trafienie)² i log loss
+    deklarowanej pewności głosu."""
+
+    hit_rate: float
+    votes: int
+    brier: float
+    log_loss: float
+
+
+def rank_scored_personas(
+    scoring: Mapping[str, PersonaScoring],
+    min_votes: int = DEFAULT_MIN_VOTES,
+    *,
+    rank_by: RankBy = "brier_skill",
+) -> list[PersonaTrackRecord]:
+    """WIA-44 — leaderboard z oceną Briera z `{investor_name: PersonaScoring}`.
+
+    Próg `min_votes`, przycinanie hit-rate'u i determinizm jak w `rank_personas`;
+    domyślnie kolejność po Brier Skill względem stałej prognozy persony, więc
+    przepewna persona (wysokie „BUY 0.95” przy tym samym hit-rate) spada pod
+    skalibrowaną. Brak danych → pusta lista."""
+    records = [
+        PersonaTrackRecord(
+            investor_name=name,
+            hit_rate=min(1.0, max(0.0, score.hit_rate)),
+            votes=score.votes,
+            brier=score.brier,
+            log_loss=score.log_loss,
+        )
+        for name, score in scoring.items()
+        if score.votes > 0 and score.votes >= min_votes
     ]
     return sort_personas(records, rank_by)
 
