@@ -1,4 +1,4 @@
-"""Testy publicznego scorecardu kalibracji (roadmap #10).
+"""Testy publicznego scorecardu kalibracji (R-10).
 
 Kluczowy test to TWARDA asercja anty-PII: renderer dostaje dane niosące symbol
 watchlisty, adres e-mail i kwoty (ceny), a strona publiczna NIE MOŻE ich

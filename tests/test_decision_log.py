@@ -41,8 +41,15 @@ REFERENCE_SOURCES = (
     "scripts/*.sh",
 )
 
-# Gdzie „roadmap #N” nie może już stać: czytelnik i konfiguracja.
-PHRASE_SOURCES = ("README.md", "config.toml", "docs/*.md", "src/config.py", "main_*.py")
+# Gdzie „roadmap #N” nie może już stać: czytelnik, konfiguracja i komentarze kodu.
+PHRASE_SOURCES = (
+    "README.md",
+    "config.toml",
+    "docs/*.md",
+    "src/**/*.py",
+    "main_*.py",
+    "tests/**/*.py",
+)
 
 
 def _text(path: Path) -> str:

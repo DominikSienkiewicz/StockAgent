@@ -1,4 +1,4 @@
-"""Testy sekcji "💼 Twój portfel" w raporcie e-mail (roadmap #15).
+"""Testy sekcji "💼 Twój portfel" w raporcie e-mail (R-15).
 
 Renderer jest CZYSTY: bierze agregat `Portfolio`, bieżące ceny, mapę klastrów,
 `now` i opcjonalny kurs USD/PLN — i produkuje fragment HTML/tekst. Zero I/O,

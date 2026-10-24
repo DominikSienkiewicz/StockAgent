@@ -1,6 +1,6 @@
 """Testy modułu wykresów raportu — wersja email-safe (inline HTML div-bary).
 
-Kontrakt po roadmap #2: trzy funkcje `build_*_url` zwracają teraz FRAGMENT
+Kontrakt po R-2: trzy funkcje `build_*_url` zwracają teraz FRAGMENT
 HTML (nie URL), bez żadnego zewnętrznego hosta (koniec z QuickChart.io).
 Dane portfela nie mogą wyciekać w URL-u do obcego serwisu, a Gmail/Outlook
 z blokadą zdalnych obrazków muszą zobaczyć wykres, nie dziurę."""

@@ -1,4 +1,4 @@
-"""Testy sekcji "Karta kondycji modelu" w raporcie e-mail (roadmap #12).
+"""Testy sekcji "Karta kondycji modelu" w raporcie e-mail (R-12).
 
 Sekcja ma zdjąć z niewidzialnej bramki retreningu ("nie shipuj modelu gorszego
 od baseline'u") welon: pokazać użytkownikowi, że model faktycznie bije naiwny

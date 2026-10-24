@@ -1,4 +1,4 @@
-"""Testy domeny niedzielnej retrospektywy „Tydzień StockAgenta" (roadmap #17).
+"""Testy domeny niedzielnej retrospektywy „Tydzień StockAgenta" (R-17).
 
 Deterministyczny wybór bohaterów tygodnia (strzał / wtopa po `accuracy_score`),
 reużycie `vindicated_dissenters` z rady oraz delta ECE z krzywej kalibracji.
@@ -70,7 +70,7 @@ def _n_closed(n: int) -> list[ClosedPrediction]:
 
 class TestSampleThresholdGate:
     def test_below_threshold_no_recap_email_goes_out(self) -> None:
-        # REGUŁA DOMENOWA (roadmap #17, „wymaganie, nie opcja"): przy < N
+        # REGUŁA DOMENOWA (R-17, „wymaganie, nie opcja"): przy < N
         # zamkniętych predykcji recap NIE POWSTAJE → mail NIE WYCHODZI.
         # Chudy tydzień nie może robić dramatu z szumu.
         thin_week = _n_closed(MIN_CLOSED_PREDICTIONS_FOR_RECAP - 1)
@@ -85,7 +85,7 @@ class TestSampleThresholdGate:
         assert build_weekly_recap([]) is None
 
     def test_threshold_constant_is_five(self) -> None:
-        # Próg jest jawną stałą modułu = 5 (roadmap #17).
+        # Próg jest jawną stałą modułu = 5 (R-17).
         assert MIN_CLOSED_PREDICTIONS_FOR_RECAP == 5
 
 

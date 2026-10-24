@@ -1,6 +1,6 @@
 """Wykresy raportu e-mail — email-safe, inline HTML (koniec z QuickChart).
 
-Roadmap #2: wcześniej trzy wykresy były `<img>` z QuickChart.io. To dwa
+R-2: wcześniej trzy wykresy były `<img>` z QuickChart.io. To dwa
 problemy naraz: Gmail/Outlook z blokadą zdalnych obrazków pokazywały dziury
 w sercu maila, a **dane portfela wyciekały w URL-u** do zewnętrznego serwisu.
 

@@ -1,6 +1,6 @@
 """Testy renderera sekcji "🔄 Zmiany nastawienia" (HTML + plain text).
 
-Roadmap #8, część renderująca. Czysta logika prezentacji, bez I/O: bierze
+R-8, część renderująca. Czysta logika prezentacji, bez I/O: bierze
 już-sklasyfikowane obiekty domenowe `ConsensusShift` (para `(symbol, shift)`)
 i produkuje fragment maila opisujący realny ruch narracji rady między cyklami.
 

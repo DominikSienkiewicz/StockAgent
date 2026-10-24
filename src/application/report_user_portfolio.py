@@ -1,4 +1,4 @@
-"""Render sekcji "💼 Twój portfel" w raporcie e-mail (roadmap #15).
+"""Render sekcji "💼 Twój portfel" w raporcie e-mail (R-15).
 
 Moment "to jest O MNIE": realny P/L per pozycja i łącznie, realne wagi kapitału,
 opcjonalnie kwoty w PLN po kursie USD/PLN oraz ostrzeżenie o koncentracji

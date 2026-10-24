@@ -1,4 +1,4 @@
-"""Render sekcji "Karta kondycji modelu" w raporcie e-mail (roadmap #12).
+"""Render sekcji "Karta kondycji modelu" w raporcie e-mail (R-12).
 
 Repo shipuje model tylko, gdy kandydat bije naiwny baseline persystencji
 ("zwrot=0"), ale ta bramka jest dla użytkownika NIEWIDZIALNA. Ta sekcja zdejmuje

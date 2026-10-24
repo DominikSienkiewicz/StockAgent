@@ -1,4 +1,4 @@
-"""Render sekcji "🔄 Zmiany nastawienia" w raporcie e-mail (roadmap #8).
+"""Render sekcji "🔄 Zmiany nastawienia" w raporcie e-mail (R-8).
 
 Day-over-day narracja rady: pokazuje, jak zmieniło się nastawienie między
 poprzednim a bieżącym cyklem — pełne odwrócenie (FLIP), osłabienie przekonania

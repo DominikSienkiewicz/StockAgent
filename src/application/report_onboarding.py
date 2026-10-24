@@ -1,4 +1,4 @@
-"""Render sekcji powitalnej "Dzień 1" w raporcie e-mail (roadmap #4).
+"""Render sekcji powitalnej "Dzień 1" w raporcie e-mail (R-4).
 
 Problem: pierwszy mail nowego deploymentu to ściana "⏸ Pominięte" (wszystkie
 symbole to cold-start — brak punktu odniesienia dla bramki volatility). Bez

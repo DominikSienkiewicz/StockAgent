@@ -1,4 +1,4 @@
-"""Publiczny scorecard kalibracji jako samodzielna strona HTML (roadmap #10).
+"""Publiczny scorecard kalibracji jako samodzielna strona HTML (R-10).
 
 Cały track record żyje w prywatnym mailu (i w prywatnym archiwum MAIL-24),
 który nie nadaje się do upublicznienia. Ten moduł

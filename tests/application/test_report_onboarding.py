@@ -1,4 +1,4 @@
-"""Testy sekcji powitalnej "Dzień 1" w raporcie e-mail (roadmap #4).
+"""Testy sekcji powitalnej "Dzień 1" w raporcie e-mail (R-4).
 
 Najważniejsze ryzyko zamrożone tu testem: pomylenie cold-startu z masową
 awarią źródeł. Renderer NIE decyduje sam o tonie — bierze `CycleMaturity`

@@ -1,4 +1,4 @@
-"""Domena niedzielnej retrospektywy „Tydzień StockAgenta" (roadmap #17).
+"""Domena niedzielnej retrospektywy „Tydzień StockAgenta" (R-17).
 
 Deterministyczny wybór bohaterów tygodnia z zamkniętych predykcji:
 - **strzał tygodnia** — trafienie kierunkowe o najwyższym `accuracy_score`
@@ -13,7 +13,7 @@ Deterministyczny wybór bohaterów tygodnia z zamkniętych predykcji:
 - **Brier i BSS** (WIA-36) — główne metryki pewności; ECE zostaje pomocniczo,
   bo „zawsze 55%” przy 55% trafień ma ECE = 0 i zerową umiejętność.
 
-REGUŁA DOMENOWA (roadmap #17, „wymaganie, nie opcja"): recap powstaje wyłącznie
+REGUŁA DOMENOWA (R-17, „wymaganie, nie opcja"): recap powstaje wyłącznie
 przy N >= `MIN_CLOSED_PREDICTIONS_FOR_RECAP` zamkniętych predykcjach. Poniżej
 progu funkcja zwraca `None` → mail NIE WYCHODZI. Powód: przy chudym tygodniu
 recap robiłby dramat z szumu.
