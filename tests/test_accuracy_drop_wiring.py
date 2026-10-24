@@ -101,7 +101,6 @@ def test_drop_alert_reaches_the_banner_of_this_report(settings: Settings, mocker
         repository=MagicMock(spec=RepositoryPort),
         quota_monitor=quota_monitor,
         notifier=MagicMock(),
-        web_publisher=MagicMock(),
         subscribers=[],
         all_symbols=["AAPL"],
         context=main_agent.ReportContext(),

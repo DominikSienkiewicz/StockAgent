@@ -512,7 +512,7 @@ class TestConfigHashScope:
         for field, value in {
             "display_timezone": "America/New_York",
             "notifications_enabled": True,
-            "web_digest_path": "elsewhere/index.html",
+            "public_scorecard_path": "elsewhere/index.html",
             "receipts_enabled": True,
             "recipe_version_enabled": True,
             "track_record_days": 90,

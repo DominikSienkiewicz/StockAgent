@@ -1,7 +1,7 @@
 """Publiczny scorecard kalibracji jako samodzielna strona HTML (roadmap #10).
 
-Cały track record żyje w prywatnym mailu; `web_digest_enabled` publikowałby
-PEŁNY prywatny digest, który nie nadaje się do upublicznienia. Ten moduł
+Cały track record żyje w prywatnym mailu (i w prywatnym archiwum MAIL-24),
+który nie nadaje się do upublicznienia. Ten moduł
 produkuje osobny, PUBLICZNY artefakt: kompletną, samodzielną stronę HTML
 zawierającą WYŁĄCZNIE agregaty — liczbę predykcji, hit-rate kierunkowy z
 przedziałem Wilsona, n_eff, naiwnymi baseline'ami i werdyktem istotności,

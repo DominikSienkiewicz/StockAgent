@@ -803,12 +803,9 @@ def build_market_port(settings: Settings) -> MarketDataPort:
 
 
 def build_public_scorecard_publisher(settings: Settings) -> WebPublisherPort:
-    """#10 — DRUGA instancja `FileWebPublisher`, z własną ścieżką.
-
-    Nie wolno reużyć instancji prywatnego digestu (`build_web_publisher`):
-    obie piszą do pliku, więc jedna nadpisałaby drugą — publiczny scorecard
-    zastąpiłby prywatny raport albo odwrotnie.
-    """
+    """#10 — `FileWebPublisher` publicznego scorecardu (same agregaty) na jego
+    własnej ścieżce; bez flagi Null. Prywatny digest nie idzie już na dysk —
+    leży w prywatnym archiwum (MAIL-24, BEZ-27)."""
     from src.infrastructure.adapters.web_publisher import (
         FileWebPublisher,
         NullWebPublisher,
@@ -886,18 +883,6 @@ def build_repository(settings: Settings) -> RepositoryPort:
     if settings.db_writes_enabled:
         return repository
     return ReadOnlyRepository(repository)
-
-
-def build_web_publisher(settings: Settings) -> WebPublisherPort:
-    """U3 — publisher statycznego digestu web. File gdy włączone, inaczej Null."""
-    from src.infrastructure.adapters.web_publisher import (
-        FileWebPublisher,
-        NullWebPublisher,
-    )
-
-    if settings.web_digest_enabled:
-        return FileWebPublisher(output_path=settings.web_digest_path)
-    return NullWebPublisher()
 
 
 def build_digest_archive(settings: Settings) -> DigestArchivePort | None:
@@ -2284,7 +2269,6 @@ def _dispatch_reports(
     repository: RepositoryPort,
     quota_monitor: QuotaMonitor,
     notifier: ReportNotifierPort,
-    web_publisher: WebPublisherPort,
     subscribers: list[Subscriber],
     all_symbols: list[str],
     context: ReportContext,
@@ -2337,7 +2321,6 @@ def _dispatch_reports(
         repository=repository,
         quota_monitor=quota_monitor,
         notifier=notifier,
-        web_publisher=web_publisher,
         subscribers=subscribers,
         all_symbols=all_symbols,
         legacy_push_notifier=legacy_push_notifier,
@@ -2356,7 +2339,6 @@ def deliver_report(
     repository: RepositoryPort,
     quota_monitor: QuotaMonitor,
     notifier: ReportNotifierPort,
-    web_publisher: WebPublisherPort,
     subscribers: list[Subscriber],
     all_symbols: list[str],
     legacy_push_notifier: ReportNotifierPort | None = None,
@@ -2364,9 +2346,10 @@ def deliver_report(
 ) -> DeliveryOutcome:
     """ARCH-08: render i rozesłanie złożonego raportu; wynik kanał po kanale.
 
-    Kolejność: digest web (U3), mail — pojedynczy z opcjonalnym starym pushem
-    albo fan-out per subskrybent (U2) — potem artefakty poboczne: publiczny
-    scorecard (#10), sweep revealów (#16) i skrót push (#5). Błąd kanału go
+    Kolejność: prywatne archiwum (MAIL-24, za flagą — link trafia do maila
+    i pushu), mail — pojedynczy z opcjonalnym starym pushem albo fan-out per
+    subskrybent (U2) — potem artefakty poboczne: publiczny scorecard (#10), sweep
+    revealów (#16) i skrót push (#5). Błąd kanału go
     oznacza i nie zatrzymuje kolejnych; wyjątek spoza kanałów kończy fazę
     (przed końcem wysyłki `report_sent` zostaje False). Nigdy nie rzuca.
 
@@ -2401,7 +2384,6 @@ def deliver_report(
             )
 
         subject = subject_of(context)
-        channels.append(_publish_web_digest(web_publisher, html))
         # MAIL-24: archiwum dostaje mail właściciela BEZ linku do samego siebie,
         # potem mail i push renderują się z podpisanym URL-em.
         archive = build_digest_archive(settings)
@@ -2542,19 +2524,6 @@ def _channel_status(channel: ReportNotifierPort, sent: bool) -> DeliveryStatus:
     if not sent:
         return DeliveryStatus.FAILED
     return DeliveryStatus.SKIPPED if isinstance(channel, NullNotifier) else DeliveryStatus.SENT
-
-
-def _publish_web_digest(web_publisher: WebPublisherPort, html: str) -> ChannelDelivery:
-    """U3: statyczny digest web (read-only dashboard); "" z portu = SKIPPED."""
-    try:
-        url = web_publisher.publish(html)
-    except Exception:
-        logger.exception("Web digest publish failed")
-        return ChannelDelivery(ReportChannel.WEB, DeliveryStatus.FAILED)
-    if not url:
-        return ChannelDelivery(ReportChannel.WEB, DeliveryStatus.SKIPPED)
-    logger.info("Web digest opublikowany: %s", url)
-    return ChannelDelivery(ReportChannel.WEB, DeliveryStatus.SENT)
 
 
 def _send_email_digest(
@@ -2937,7 +2906,6 @@ def _run_fast_loop(
     # Mail i stary push osobno: tekst pushu nie niesie sekcji portfela.
     notifier = build_notifier(settings, quota_monitor=quota_monitor, include_push=False)
     legacy_push_notifier = build_legacy_push_notifier(settings, quota_monitor=quota_monitor)
-    web_publisher = build_web_publisher(settings)  # U3
     # U2: lista subskrybentów (każdy z własną watchlistą). Brak / błąd → [].
     subscribers = []
     if settings.subscriptions_enabled:
@@ -3069,7 +3037,6 @@ def _run_fast_loop(
         repository=repository,
         quota_monitor=quota_monitor,
         notifier=notifier,
-        web_publisher=web_publisher,
         subscribers=subscribers,
         all_symbols=all_symbols,
         cycle_symbols=cycle_symbols,

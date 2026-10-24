@@ -67,7 +67,6 @@ def _deliver(settings: Settings, notifier: MagicMock, **overrides: object):
         "repository": MagicMock(spec=RepositoryPort),
         "quota_monitor": QuotaMonitor(),
         "notifier": notifier,
-        "web_publisher": MagicMock(publish=MagicMock(return_value="")),
         "subscribers": [],
         "all_symbols": ["AAPL"],
     }

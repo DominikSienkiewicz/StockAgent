@@ -121,18 +121,18 @@ The FinOps and resilience rules above hold because a test fails when they break 
 
 The email footer attributes the data in one line, `Źródła danych (w zależności od konfiguracji): …` (MAIL-07, `DATA_SOURCES_FOOTER_PL` in `src/application/report_formatting.py`), in the HTML and the plain text, under the investment disclaimer and before the run footer. It is a fixed list hedged with "depending on the configuration", because which sources feed a cycle depends on the flags in `config.toml`: update the constant when a source is added or removed.
 
-The email itself goes to the owner. Third-party data leaves that inbox only through the subscriber fan-out (`subscriptions_enabled`, off by default) and the web digest (`web_digest_enabled`, off by default), which publishes the full HTML. The push digest carries tickers, model signals, the lead headlines and the scorecard, but no quotes, headlines or scores of a provider, and the public scorecard carries aggregates of the agent's own predictions only.
+The email itself goes to the owner. Third-party data leaves that inbox only through the subscriber fan-out (`subscriptions_enabled`, off by default); the private archive (`digest_archive_enabled`, off by default) keeps the owner's email in a private Supabase Storage bucket behind a link valid for 7 days, which only the owner's email and push carry. The push digest carries tickers, model signals, the lead headlines and the scorecard, but no quotes, headlines or scores of a provider, and the public scorecard carries aggregates of the agent's own predictions only.
 
 | Source | What reaches the email | Redistribution beyond the owner | Terms of service status |
 |---|---|---|---|
-| **Finnhub** | US prices and Δ, analyst consensus and price target, the option put/call ratio (Alpha Signals) | Subscriber emails and the web digest, when enabled | Not reviewed — check before enabling subscribers or the web digest |
-| **CoinGecko** | Crypto prices and Δ (🪙 Krypto) | Subscriber emails and the web digest, when enabled | Not reviewed |
-| **Alpha Vantage** | News headlines with links, sentiment scores, valuation from fundamentals, earnings dates | Subscriber emails and the web digest, when enabled | Not reviewed |
-| **SEC EDGAR** | Insider Form 4 counts and net shares (Alpha Signals) | Subscriber emails and the web digest, when enabled | Not reviewed |
-| **Reddit** | Mention counts per symbol (social velocity, Alpha Signals) | Subscriber emails and the web digest, when enabled | Not reviewed |
-| **FRED** | Yield curve: 10Y, 2Y, fed funds (Alpha Signals) | Subscriber emails and the web digest, when enabled | Not reviewed |
-| **NBP** | EUR and USD rates against PLN (Risk Watch, P/L in złoty) | Subscriber emails and the web digest, when enabled | Not reviewed |
-| **Anthropic / OpenAI** | Model output: the reasoning, council votes and summaries | Subscriber emails and the web digest, when enabled | Not reviewed |
+| **Finnhub** | US prices and Δ, analyst consensus and price target, the option put/call ratio (Alpha Signals) | Subscriber emails, when enabled | Not reviewed — check before enabling subscribers |
+| **CoinGecko** | Crypto prices and Δ (🪙 Krypto) | Subscriber emails, when enabled | Not reviewed |
+| **Alpha Vantage** | News headlines with links, sentiment scores, valuation from fundamentals, earnings dates | Subscriber emails, when enabled | Not reviewed |
+| **SEC EDGAR** | Insider Form 4 counts and net shares (Alpha Signals) | Subscriber emails, when enabled | Not reviewed |
+| **Reddit** | Mention counts per symbol (social velocity, Alpha Signals) | Subscriber emails, when enabled | Not reviewed |
+| **FRED** | Yield curve: 10Y, 2Y, fed funds (Alpha Signals) | Subscriber emails, when enabled | Not reviewed |
+| **NBP** | EUR and USD rates against PLN (Risk Watch, P/L in złoty) | Subscriber emails, when enabled | Not reviewed |
+| **Anthropic / OpenAI** | Model output: the reasoning, council votes and summaries | Subscriber emails, when enabled | Not reviewed |
 
 ## Symbols (default portfolio of 43)
 

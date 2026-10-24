@@ -15,7 +15,6 @@ from enum import StrEnum
 class ReportChannel(StrEnum):
     """Kanał, którym raport cyklu wychodzi do odbiorcy."""
 
-    WEB = "web"
     # MAIL-24: prywatne archiwum digestu (Supabase Storage) — tylko za flagą.
     ARCHIVE = "archive"
     EMAIL = "email"

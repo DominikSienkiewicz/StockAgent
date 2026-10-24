@@ -20,7 +20,8 @@ ROOT = Path(__file__).parent.parent
 # +1 za zgodą właściciela (2026-10-25): krok ewaluacji ML-52 w Slow Loopie
 # (`main_trainer._evaluate_snapshot_models`) jest best-effort jak sąsiednie kroki.
 # Kontynuacja ARCH-33 w fali 2 ma sprowadzić liczbę z powrotem do <= 157.
-BROAD_HANDLER_BASELINE = 158
+# -1 (BEZ-27, 2026-10-25): z web digestem U3 zniknął `_publish_web_digest`.
+BROAD_HANDLER_BASELINE = 157
 _BROAD_NAMES = frozenset({"Exception", "BaseException"})
 
 

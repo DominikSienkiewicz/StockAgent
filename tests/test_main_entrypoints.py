@@ -1594,7 +1594,6 @@ class TestPolishNumbersInSubjectAndPush:
             repository=MagicMock(spec=RepositoryPort),
             quota_monitor=QuotaMonitor(),
             notifier=email,
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["NVDA"],
             context=main_agent.ReportContext(),
@@ -1719,7 +1718,6 @@ class TestMessengerDigestSplit:
             repository=MagicMock(spec=RepositoryPort),
             quota_monitor=QuotaMonitor(),
             notifier=MagicMock(),
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL", "NVDA"],
             context=main_agent.ReportContext(),
@@ -2456,17 +2454,6 @@ class TestPublicScorecard:
             self._settings(True), repo, MagicMock()
         )
 
-    def test_public_publisher_is_a_separate_instance_from_the_digest(self) -> None:
-        # Reużycie instancji prywatnego digestu nadpisałoby go publiczną stroną.
-        settings = self._settings(True)
-        settings.web_digest_enabled = True
-        settings.web_digest_path = "public/digest/index.html"
-
-        digest_pub = main_agent.build_web_publisher(settings)
-        public_pub = main_agent.build_public_scorecard_publisher(settings)
-
-        assert digest_pub is not public_pub
-
 
 class TestCryptoInTrainingLoop:
     """Bug: main_trainer trenował tylko settings.symbols, więc BTC/ETH NIGDY
@@ -2544,7 +2531,6 @@ class TestDispatchReportsDelivery:
             repository=repository,
             quota_monitor=quota_monitor,
             notifier=notifier,
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL"],
             context=main_agent.ReportContext(),
@@ -3106,7 +3092,6 @@ class TestHeldPositionsOutsideWatchlist:
             repository=repository,
             quota_monitor=QuotaMonitor(),
             notifier=MagicMock(),
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL", "VOO", "XDWD.DE"],
             context=main_agent.ReportContext(),
@@ -3221,7 +3206,6 @@ class TestPortfolioAwareSubject:
             repository=MagicMock(spec=RepositoryPort),
             quota_monitor=QuotaMonitor(),
             notifier=notifier,
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL", "VOO"],
             context=main_agent.ReportContext(),
@@ -3280,7 +3264,6 @@ class TestLegacyPushWithoutPortfolio:
             repository=MagicMock(spec=RepositoryPort),
             quota_monitor=QuotaMonitor(),
             notifier=email,
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL", "VOO"],
             context=main_agent.ReportContext(),
@@ -3393,7 +3376,6 @@ class TestDisplayTimezone:
             repository=MagicMock(spec=RepositoryPort),
             quota_monitor=QuotaMonitor(),
             notifier=email,
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL"],
             context=main_agent.ReportContext(),
@@ -3461,7 +3443,6 @@ class TestDispatchReports:
             repository=MagicMock(spec=RepositoryPort),
             quota_monitor=QuotaMonitor(),
             notifier=MagicMock(),
-            web_publisher=MagicMock(),
             subscribers=[
                 Subscriber(email="Owner@Example.com", symbols=frozenset()),
                 Subscriber(email=self.FRIEND, symbols=frozenset()),
@@ -3767,7 +3748,6 @@ class TestSettledAtWindowsWiring:
             repository=MagicMock(spec=RepositoryPort),
             quota_monitor=QuotaMonitor(),
             notifier=MagicMock(),
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL"],
             context=main_agent.ReportContext(),
@@ -3846,7 +3826,6 @@ class TestSettledAtWindowsWiring:
             repository=MagicMock(spec=RepositoryPort),
             quota_monitor=QuotaMonitor(),
             notifier=notifier,
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL"],
             context=main_agent.ReportContext(),
@@ -4680,7 +4659,6 @@ class TestPortfolioChangeDispatch:
             repository=MagicMock(spec=RepositoryPort),
             quota_monitor=QuotaMonitor(),
             notifier=email,
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL"],
             context=main_agent.ReportContext(),
@@ -5148,7 +5126,6 @@ class TestPaperCostWiring:
             repository=repository,
             quota_monitor=QuotaMonitor(),
             notifier=MagicMock(),
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL"],
             context=main_agent.ReportContext(),
@@ -6143,7 +6120,6 @@ class TestClosedDayHeldStockQuotes:
             repository=repository,
             quota_monitor=QuotaMonitor(),
             notifier=MagicMock(),
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL", "VOO", "BTC"],
             cycle_symbols=["BTC"],
@@ -7461,7 +7437,6 @@ class TestReportReads:
             repository=repository,
             quota_monitor=QuotaMonitor(),
             notifier=MagicMock(),
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL"],
             context=main_agent.ReportContext(),
@@ -7495,8 +7470,6 @@ def test_deliver_report_returns_outcome_per_channel(settings, mocker) -> None:
     mocker.patch("main_agent.build_push_notifier", return_value=MagicMock())
     notifier = MagicMock()
     notifier.send_report.side_effect = RuntimeError("Resend 503")
-    web_publisher = MagicMock()
-    web_publisher.publish.return_value = "public/digest/index.html"
 
     outcome = main_agent.deliver_report(
         _assembled_report,
@@ -7508,13 +7481,11 @@ def test_deliver_report_returns_outcome_per_channel(settings, mocker) -> None:
         repository=MagicMock(spec=RepositoryPort),
         quota_monitor=QuotaMonitor(),
         notifier=notifier,
-        web_publisher=web_publisher,
         subscribers=[],
         all_symbols=["AAPL"],
     )
 
     assert outcome.channels == (
-        ChannelDelivery(ReportChannel.WEB, DeliveryStatus.SENT),
         ChannelDelivery(ReportChannel.EMAIL, DeliveryStatus.FAILED),
         ChannelDelivery(ReportChannel.PUSH_DIGEST, DeliveryStatus.SENT),
     )
@@ -7542,8 +7513,6 @@ def test_deliver_report_lists_each_subscriber_under_a_masked_address(settings, m
         return channel
 
     mocker.patch("main_agent.ResendNotifier", side_effect=resend)
-    web_publisher = MagicMock()
-    web_publisher.publish.return_value = ""
 
     outcome = main_agent.deliver_report(
         _assembled_report,
@@ -7555,7 +7524,6 @@ def test_deliver_report_lists_each_subscriber_under_a_masked_address(settings, m
         repository=MagicMock(spec=RepositoryPort),
         quota_monitor=QuotaMonitor(),
         notifier=MagicMock(),
-        web_publisher=web_publisher,
         subscribers=[
             Subscriber(email="early@example.com", symbols=frozenset()),
             Subscriber(email="late@example.com", symbols=frozenset()),
@@ -7564,7 +7532,6 @@ def test_deliver_report_lists_each_subscriber_under_a_masked_address(settings, m
     )
 
     assert outcome.channels == (
-        ChannelDelivery(ReportChannel.WEB, DeliveryStatus.SKIPPED),
         ChannelDelivery(
             ReportChannel.EMAIL, DeliveryStatus.SENT, masked_email("early@example.com")
         ),

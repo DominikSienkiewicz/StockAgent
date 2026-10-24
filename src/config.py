@@ -99,8 +99,6 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "price_level_alerts_enabled",
     "price_alerts",
     "subscriptions_enabled",
-    "web_digest_enabled",
-    "web_digest_path",
     # MAIL-24: prywatne archiwum digestu i link w mailu — dostarczanie, nie prognoza.
     "digest_archive_enabled",
     "public_scorecard_enabled",
@@ -689,7 +687,7 @@ class Settings(BaseSettings):
     weekly_recap_enabled: bool = False
     # #10: publiczny scorecard kalibracji (landing page). WYŁĄCZNIE agregaty —
     # zero PII, zero symboli watchlisty, zero kwot. Osobny publisher i osobna
-    # ścieżka niż prywatny `web_digest`. Render-only, zero płatnych. Off.
+    # ścieżka, zero danych z prywatnego maila. Render-only, zero płatnych. Off.
     public_scorecard_enabled: bool = False
     public_scorecard_path: str = "public/scorecard/index.html"
     attestation_commitments_path: str = "public/attestation/commitments.jsonl"
@@ -986,13 +984,10 @@ class Settings(BaseSettings):
     # także wyłączonych po trafieniu, nie rusza).
     price_alerts: list[PriceAlertSettings] = Field(default_factory=list)
 
-    # ----- Dystrybucja (U2/U3 — opcjonalne, niewrażliwe → config.toml) -----
+    # ----- Dystrybucja (U2, MAIL-24 — opcjonalne, niewrażliwe → config.toml) -----
     # U2: personalizowany fan-out — każdy subskrybent (tabela `subscribers`)
     # dostaje raport tnięty do swojej watchlisty. Brak/false → pojedyncza wysyłka.
     subscriptions_enabled: bool = False
-    # U3: publikacja statycznego digestu web (read-only dashboard).
-    web_digest_enabled: bool = False
-    web_digest_path: str = "public/digest/index.html"
     # MAIL-24: pełny HTML cyklu w PRYWATNYM buckecie Supabase Storage `digests`
     # i link „Otwórz w przeglądarce” (podpisany URL, TTL 7 dni) w mailu właściciela
     # i w pushu; indeks w tabeli `digests` (migracja 061). Zapis do bazy i Storage,

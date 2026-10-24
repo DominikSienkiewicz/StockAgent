@@ -65,7 +65,7 @@ jobs:
       - name: 📤 Upload public scorecard (Pages artifact)
         id: scorecard-artifact
         # WIA-16: wyłącznie katalog scorecardu (dirname `public_scorecard_path`), nigdy
-        # `public/` — tam leży prywatny web digest. Brak pliku = brak artefaktu i deployu.
+        # `public/` — leży tam też dziennik atestacji. Brak pliku = brak artefaktu i deployu.
         if: hashFiles('public/scorecard/index.html') != ''
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:

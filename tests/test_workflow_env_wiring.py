@@ -288,18 +288,15 @@ def test_real_fast_loop_publishes_the_scorecard_once_its_flag_is_on() -> None:
     assert _missing_publications(_repo_config(**SCORECARD_ONLY), steps) == []
 
 
-# BEZ-09: `web_digest_enabled` zapisuje PEŁNY prywatny digest (watchlista, a przy
-# `portfolio_positions_enabled` sekcja „💼 Twój portfel” z kwotami w zł) do
-# `web_digest_path` pod `public/`. Deploy Pages albo commit `public/` przez git
-# wypchnąłby go publicznie jedną flagą, więc flaga jest zakazana obok każdego
-# takiego kroku, a artefakt Pages to wyłącznie katalog publicznego scorecardu.
-PRIVATE_ARTIFACT_FLAGS = ("web_digest_enabled",)
+# BEZ-09 / WIA-16: artefakt Pages to wyłącznie katalog publicznego scorecardu.
+# Deploy zastępuje całą stronę, a pod `public/` leży też dziennik atestacji. Prywatny
+# digest nie leży już na dysku — web digest U3 zastąpiło prywatne archiwum MAIL-24
+# (BEZ-27), więc dawny zakaz flagi `web_digest_enabled` obok Pages zniknął z nią.
 PUBLIC_ROOT = "public"
+# `git add` bez listy ścieżek, który zgarnia całe drzewo (katalog roboczy).
+GIT_ADD_SWEEP_FLAGS = ("-A", "--all")
 # Domyślny `path` akcji `actions/upload-pages-artifact`, gdy krok go nie podaje.
 PAGES_ARTIFACT_DEFAULT_PATH = "_site/"
-# `git add` bez listy ścieżek, który zgarnia całe drzewo — `public/` nie jest
-# w `.gitignore`, więc razem z nim leci digest.
-GIT_ADD_SWEEP_FLAGS = ("-A", "--all")
 # WIA-16: akcje gh-pages firm trzecich → (wejście z publikowanym katalogiem, jego
 # domyślna wartość). `publish_dir` ma domyślnie `./public`; `folder` jest wymagany,
 # więc brak wejścia liczymy jak całe drzewo.
@@ -328,10 +325,6 @@ def _normalized(path: str) -> str:
 def _contains(parent: str, path: str) -> bool:
     """Czy publikacja `parent` zabiera `path` (ten sam katalog albo jego wnętrze)."""
     return parent in (".", path) or path.startswith(parent + "/")
-
-
-def _overlaps(first: str, second: str) -> bool:
-    return _contains(first, second) or _contains(second, first)
 
 
 def _in_workdir(workdir: str, path: str) -> str:
@@ -386,13 +379,6 @@ def _third_party_pages_action(step: Mapping[str, Any]) -> tuple[str, str] | None
     return THIRD_PARTY_PAGES_ACTIONS.get(action)
 
 
-def _is_pages_deploy(step: Mapping[str, Any]) -> bool:
-    return (
-        str(step.get("uses", "")).startswith("actions/deploy-pages")
-        or _third_party_pages_action(step) is not None
-    )
-
-
 def _pages_upload_path(step: Mapping[str, Any]) -> str | None:
     """Katalog, który krok wysyła na Pages: artefakt `actions/upload-pages-artifact`
     albo katalog akcji gh-pages firmy trzeciej (WIA-16)."""
@@ -406,28 +392,16 @@ def _pages_upload_path(step: Mapping[str, Any]) -> str | None:
     return _normalized(str(inputs.get("path", PAGES_ARTIFACT_DEFAULT_PATH)))
 
 
-def _private_digest_publication_violations(
+def _pages_publication_violations(
     config: Mapping[str, Any], workflows: Mapping[str, Mapping[str, Any]]
 ) -> list[str]:
-    """Kroki, które opublikowałyby prywatny digest: deploy Pages albo `git add`
-    katalogu `public/` przy włączonym `web_digest_enabled`, oraz artefakt Pages
-    inny niż katalog publicznego scorecardu (nigdy `public/` ani katalog digestu)."""
+    """Kroki, które wysyłają na Pages coś innego niż katalog publicznego scorecardu
+    (dirname `public_scorecard_path`) — nigdy całe `public/`."""
     scorecard_dir = posixpath.dirname(_normalized(str(config["public_scorecard_path"])))
-    digest_dir = posixpath.dirname(_normalized(str(config["web_digest_path"])))
-    private_enabled = [flag for flag in PRIVATE_ARTIFACT_FLAGS if config.get(flag) is True]
     violations: list[str] = []
     for name, spec in workflows.items():
         for step in _workflow_steps(spec):
             label = f"{name}: {step.get('name') or step.get('uses') or step.get('run')}"
-            git_public = any(
-                _overlaps(path, PUBLIC_ROOT) for path in _git_added_paths(str(step.get("run", "")))
-            )
-            if private_enabled and (_is_pages_deploy(step) or git_public):
-                violations.append(
-                    f"{label} publikuje Pages albo `{PUBLIC_ROOT}/`, a config.toml włącza "
-                    f"{private_enabled} — prywatny digest (watchlista, kwoty portfela) "
-                    f"z `{digest_dir}/` trafiłby publicznie."
-                )
             upload = _pages_upload_path(step)
             if upload is None:
                 continue
@@ -436,10 +410,9 @@ def _private_digest_publication_violations(
                     f"{label} wysyła na Pages `{upload}` zamiast `{scorecard_dir}` "
                     f"(dirname `public_scorecard_path`)."
                 )
-            if _contains(upload, PUBLIC_ROOT) or _overlaps(upload, digest_dir):
+            if _contains(upload, PUBLIC_ROOT):
                 violations.append(
-                    f"{label} wysyła na Pages `{upload}`, czyli całe `{PUBLIC_ROOT}/` albo "
-                    f"prywatny digest z `{digest_dir}/`."
+                    f"{label} wysyła na Pages `{upload}`, czyli całe `{PUBLIC_ROOT}/`."
                 )
     return violations
 
@@ -462,50 +435,10 @@ def _pages_steps(path: str | None = "public/scorecard") -> tuple[dict[str, Any],
     return upload, {"uses": "actions/deploy-pages@v4"}
 
 
-def test_pages_upload_never_includes_private_digest() -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow(*_pages_steps())
-    )
-
-    assert any("prywatny digest" in violation for violation in violations), violations
-
-
-@pytest.mark.parametrize(
-    "script",
-    [
-        "git add public/scorecard public/attestation && git commit -m pages && git push",
-        "git add -A\ngit commit -m pages\ngit push",
-        "git add .; git push",
-        'git add -f "public/digest/index.html"',
-    ],
-)
-def test_git_publication_of_public_dir_forbids_private_digest(script: str) -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
-    )
-
-    assert any("prywatny digest" in violation for violation in violations), violations
-
-
-@pytest.mark.parametrize(
-    "script",
-    [
-        'MODEL_PATH="data/models/price_predictor.ubj"\ngit add "$MODEL_PATH"\ngit push',
-        "git add data/models/price_predictor.ubj && git commit -m weights && git push",
-    ],
-)
-def test_git_commit_outside_public_dir_allows_private_digest(script: str) -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
-    )
-
-    assert violations == []
-
-
 @pytest.mark.parametrize("path", ["public/scorecard", "./public/scorecard/"])
 def test_pages_upload_of_the_scorecard_dir_alone_is_allowed(path: str) -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=False), _synthetic_workflow(*_pages_steps(path))
+    violations = _pages_publication_violations(
+        _repo_config(), _synthetic_workflow(*_pages_steps(path))
     )
 
     assert violations == []
@@ -513,21 +446,21 @@ def test_pages_upload_of_the_scorecard_dir_alone_is_allowed(path: str) -> None:
 
 @pytest.mark.parametrize("path", ["public", "./public/", "public/digest", ".", None])
 def test_pages_upload_path_must_be_the_scorecard_dir(path: str | None) -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=False), _synthetic_workflow(*_pages_steps(path))
+    violations = _pages_publication_violations(
+        _repo_config(), _synthetic_workflow(*_pages_steps(path))
     )
 
     assert violations, f"artefakt Pages `{path}` przeszedł strażnika"
 
 
 def test_pages_upload_never_publishes_public_root_even_for_a_scorecard_there() -> None:
-    config = _repo_config(web_digest_enabled=False, public_scorecard_path="public/index.html")
+    config = _repo_config(public_scorecard_path="public/index.html")
 
-    violations = _private_digest_publication_violations(
+    violations = _pages_publication_violations(
         config, _synthetic_workflow(*_pages_steps("public"))
     )
 
-    assert violations, "artefakt Pages `public` zabrałby `public/digest/`"
+    assert violations, "artefakt Pages `public` zabrałby `public/attestation/`"
 
 
 # WIA-16: akcje gh-pages firm trzecich i `git -C <dir> add` publikują tak samo jak
@@ -546,25 +479,14 @@ def _third_party_pages_step(uses: str, key: str, path: str | None) -> dict[str, 
 
 
 @pytest.mark.parametrize(("uses", "key"), THIRD_PARTY_PAGES_STEPS)
-def test_third_party_pages_action_forbids_private_digest(uses: str, key: str) -> None:
-    step = _third_party_pages_step(uses, key, "./public/scorecard")
-
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow(step)
-    )
-
-    assert any("prywatny digest" in violation for violation in violations), violations
-
-
-@pytest.mark.parametrize(("uses", "key"), THIRD_PARTY_PAGES_STEPS)
 @pytest.mark.parametrize("path", ["public", "./public/", "public/digest", ".", None])
 def test_third_party_pages_action_must_publish_the_scorecard_dir(
     uses: str, key: str, path: str | None
 ) -> None:
     step = _third_party_pages_step(uses, key, path)
 
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=False), _synthetic_workflow(step)
+    violations = _pages_publication_violations(
+        _repo_config(), _synthetic_workflow(step)
     )
 
     assert violations, f"{uses} z `{key}: {path}` przeszedł strażnika"
@@ -576,45 +498,18 @@ def test_third_party_pages_action_of_the_scorecard_dir_alone_is_allowed(
 ) -> None:
     step = _third_party_pages_step(uses, key, "public/scorecard")
 
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=False), _synthetic_workflow(step)
+    violations = _pages_publication_violations(
+        _repo_config(), _synthetic_workflow(step)
     )
 
     assert violations == []
 
 
-@pytest.mark.parametrize(
-    "script",
-    [
-        "git -C public add . && git -C public commit -m pages && git -C public push",
-        "git -C public add -A",
-        "git -C public/scorecard add index.html && git push",
-        'git -C "./public" add "digest/index.html"',
-    ],
-)
-def test_git_dash_c_add_of_public_dir_forbids_private_digest(script: str) -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
-    )
-
-    assert any("prywatny digest" in violation for violation in violations), violations
-
-
-def test_git_dash_c_add_outside_public_dir_allows_private_digest() -> None:
-    script = "git -C data/models add price_predictor.ubj && git -C data/models push"
-
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
-    )
-
-    assert violations == []
-
-
-def test_real_workflows_never_publish_private_digest() -> None:
+def test_real_workflows_publish_only_the_scorecard_dir() -> None:
     workflows = _all_workflow_specs()
     assert {"fast_loop_12h.yml", "slow_loop_weekly.yml"} <= set(workflows)
 
-    violations = _private_digest_publication_violations(_repo_config(), workflows)
+    violations = _pages_publication_violations(_repo_config(), workflows)
 
     assert not violations, violations
 

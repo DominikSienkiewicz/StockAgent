@@ -222,7 +222,7 @@ fx_rates_cache_enabled = true
 # TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Włączone.
 weekly_recap_enabled = true
 # #10: publiczny scorecard kalibracji — wyłącznie agregaty (N, hit-rate, ECE),
-# zero PII i zero symboli. Osobna ścieżka niż prywatny web_digest. Wyłączone do
+# zero PII i zero symboli; prywatny mail tam nie trafia (MAIL-24). Wyłączone do
 # ustawienia Pages (Source: GitHub Actions); deploy: scorecard_pages.yml (WIA-52)
 # i job deploy-scorecard Fast Loopa (WIA-16), kolejność: docs/resume-checklist.md.
 public_scorecard_enabled = false
@@ -428,10 +428,8 @@ display_timezone = "Europe/Warsaw"
 # out-of-band od dziennego maila. Sekrety kanałów (TELEGRAM_*, SLACK_*) w .env.
 realtime_alerts_enabled = false
 # U2: personalizowany fan-out per subskrybent (tabela `subscribers`). false =
-# pojedyncza wysyłka na DIGEST_TO_EMAIL. U3: statyczny digest web (read-only).
+# pojedyncza wysyłka na DIGEST_TO_EMAIL.
 subscriptions_enabled = false
-web_digest_enabled = false
-web_digest_path = "public/digest/index.html"
 # MAIL-24: prywatne archiwum digestów — pełny HTML cyklu w prywatnym buckecie
 # Supabase Storage `digests` i link „Otwórz w przeglądarce” (podpisany URL, TTL 7 dni)
 # w mailu właściciela i w pushu. UWAGA: włącz DOPIERO po migracji 061 i sprawdzeniu,

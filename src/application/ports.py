@@ -1062,9 +1062,9 @@ class AttestationPublisherPort(ABC):
 
 
 class WebPublisherPort(ABC):
-    """Publikacja raportu HTML jako statyczny artefakt web (U3 — read-only
-    dashboard, alternatywa dla maila). Zwraca URL/ścieżkę albo "" gdy
-    wyłączone / błąd (publikacja nigdy nie wywala cyklu)."""
+    """Publikacja strony HTML jako statyczny artefakt web (publiczny scorecard #10).
+    Zwraca URL/ścieżkę albo "" gdy wyłączone / błąd (publikacja nigdy nie
+    wywala cyklu). Prywatny digest idzie do `DigestArchivePort` (MAIL-24)."""
 
     @abstractmethod
     def publish(self, html: str) -> str: ...

@@ -13,9 +13,9 @@ The fastest look at the email skips the loop: `uv run python main_tools.py rende
 | Alpha Vantage (free, ideally two or more keys) | News and sentiment for each symbol past the volatility gate | required with `PAID_CALLS_ENABLED=true` |
 | OpenAI | The advisory council and the news embeddings | required with `PAID_CALLS_ENABLED=true` |
 | Anthropic | The main analysis (`llm_provider = "anthropic"`) | required unless `llm_provider = "openai"` |
-| Resend | The email (`notifications_enabled = true`) | required unless you read the web digest instead (`web_digest_enabled = true`) |
+| Resend | The email (`notifications_enabled = true`) | required to receive the email; without it the cycle runs and logs, but nothing is delivered |
 
-That is six accounts with the committed configuration and four at the least (`llm_provider = "openai"` and the web digest instead of the email). Without `PAID_CALLS_ENABLED=true` a local run builds stubs in place of Alpha Vantage, OpenAI and Anthropic ([below](#local-runs-make-no-paid-calls-by-default)), so Supabase and Finnhub are enough to watch the pipeline run, but every prediction is then a neutral stub. Once the accounts exist, expect this:
+That is six accounts with the committed configuration and five at the least (`llm_provider = "openai"`). Without `PAID_CALLS_ENABLED=true` a local run builds stubs in place of Alpha Vantage, OpenAI and Anthropic ([below](#local-runs-make-no-paid-calls-by-default)), so Supabase and Finnhub are enough to watch the pipeline run, but every prediction is then a neutral stub. Once the accounts exist, expect this:
 
 1. **First run: no signals.** A new deployment has no previous price, so every symbol is a cold start and the email opens with `👋 Dzień 1 — buduję punkt odniesienia` under its own welcome subject ([the report email](report-email.md)).
 2. **Second run: the first signals**, only for symbols that moved at least `volatility_threshold` (|Δ| ≥ 2%, crypto 5%) since the first run. A quiet day still has none, and costs nothing.
