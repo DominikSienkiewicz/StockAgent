@@ -338,8 +338,10 @@ class RepositoryPort(ABC):
         session_close: SessionCloseSettlement | None = None,
     ) -> None:
         """Zamyka predykcję feedbackiem. `accuracy_score` (bliskość ceny do
-        celu) napędza trening; `is_trend_correct` (zgodność kierunku) napędza
-        trafność raportu — to dwie różne miary, nie wolno ich mylić.
+        celu) służy recapowi tygodnia i eksportowi dowodów, a trening XGBoost
+        uczy się na `target_return` z `ml_feature_store`; `is_trend_correct`
+        (zgodność kierunku) liczy trafność raportu — to dwie różne miary, nie
+        wolno ich mylić.
 
         `correction_category` (WIA-57) — kategoria przyczyny błędu z diagnozy;
         kolumnę z migracji 046 zapisuje adapter tylko za swoją flagą.

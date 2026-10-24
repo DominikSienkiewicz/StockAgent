@@ -1397,9 +1397,10 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     # Predykcje odczytane z repozytorium muszą mieć id (kontrakt RepositoryPort).
     assert last.id is not None, "Prediction from repository must have id"
 
-    # Domena liczy accuracy_score (0.0-1.0) — bliskość ceny do celu,
-    # to napędza trening XGBoost. is_trend_correct (zgodność kierunku)
-    # jest niezależną miarą i napędza trafność raportu.
+    # Domena liczy accuracy_score (0.0-1.0) — bliskość ceny do celu; czyta go
+    # recap tygodnia, a trening XGBoost uczy się na `target_return` z
+    # ml_feature_store. is_trend_correct (zgodność kierunku) jest niezależną
+    # miarą i liczy trafność raportu.
     accuracy = float(last.accuracy_score(current_price))
     # Pasmo SIDEWAYS zależy od klasy aktywa: ±0.5% to sensowny "brak ruchu" dla
     # akcji, ale przy dziennej zmienności BTC 3–5% uznawałoby niemal każdy dzień
