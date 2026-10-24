@@ -12,10 +12,11 @@ on:
 permissions:
   contents: read       # smoke nic nie zapisuje do repo
 
-# Drugi dispatch anuluje pierwszy — po co płacić dwa razy za ten sam smoke.
+# CI-10: drugi dispatch czeka w kolejce. Run w toku mógł już zapłacić za wywołania LLM,
+# a anulowanie niczego by nie oszczędziło, tylko zgubiło wynik.
 concurrency:
   group: integration-smoke
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   live-api-smoke:

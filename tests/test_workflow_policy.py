@@ -355,3 +355,53 @@ def test_non_pushing_checkouts_do_not_persist_credentials(workflow: str, name: s
             f"{workflow}:{name}: checkout bez `persist-credentials: false` zostawia token "
             "w .git/config joba, który niczego nie pushuje"
         )
+
+
+# Anulowanie zabija run, który już zapłacił za wywołanie (G81, FIN-18). Job „z płatnym
+# API" rozpoznajemy po tym, co faktycznie dostaje: włączone płatne wywołania albo sekret
+# LLM / Alpha Vantage (także `SMOKE_*`). Lista nie jest utrzymywana ręcznie; test niżej
+# pilnuje tylko, żeby rozpoznanie nie przestało łapać znanych jobów.
+_PAID_SECRET = re.compile(
+    r"secrets\.(?:SMOKE_)?(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|ALPHA_VANTAGE_API_KEYS?)\b"
+)
+EXPECTED_PAID_JOBS = frozenset(
+    {
+        ("fast_loop_12h.yml", "run-market-agent"),
+        ("slow_loop_weekly.yml", "retrain-predictive-model"),
+        ("integration_smoke.yml", "live-api-smoke"),
+    }
+)
+
+
+def _uses_paid_api(job: dict[str, Any]) -> bool:
+    envs = _step_envs(job)
+    return any(env.get("PAID_CALLS_ENABLED") == "true" for env in envs) or any(
+        _PAID_SECRET.search(str(value)) for env in envs for value in env.values()
+    )
+
+
+def _paid_jobs() -> list[tuple[str, str]]:
+    return [
+        (workflow, name)
+        for workflow, name in _job_ids()
+        if _uses_paid_api(_jobs(_workflow_specs()[workflow])[name])
+    ]
+
+
+def test_paid_job_detection_finds_the_known_paid_jobs() -> None:
+    assert set(_paid_jobs()) == EXPECTED_PAID_JOBS
+
+
+@pytest.mark.parametrize(("workflow", "name"), _paid_jobs())
+def test_paid_jobs_never_cancel_a_run_in_progress(workflow: str, name: str) -> None:
+    spec = _workflow_specs()[workflow]
+    levels = {
+        "workflow": _concurrency(spec)[1],
+        "job": _concurrency(_jobs(spec)[name])[1],
+    }
+
+    cancelling = {level: value for level, value in levels.items() if value not in (None, False)}
+    assert not cancelling, (
+        f"{workflow}:{name} woła płatne API, a `cancel-in-progress` nie jest false "
+        f"({cancelling}) — anulowanie zabiłoby run, który już zapłacił"
+    )
