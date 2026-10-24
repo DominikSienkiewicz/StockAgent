@@ -9,6 +9,9 @@ BEZ-07: `requests` wkleja pełny URL (z `?token=` / `&apikey=`) do treści
 i publicznych logów GHA. Adaptery z sekretem w URL-u wołają więc
 `safe_get` i `raise_for_status_redacted` zamiast gołych metod `requests`.
 
+ARCH-33: `translate_request_error` / `translate_http_error` zamieniają wyjątek
+`requests` na taksonomię portów (`src.application.errors`), zachowując jego typ.
+
 NIEZ-24: każda sesja ma hook odpowiedzi, który liczy żądanie per host w
 `HttpCallMeter` — jawnie podanym (`build_session(meter=...)`) albo zainstalowanym
 na przebieg przez `metered_http`. Dzięki temu licznik obejmuje wszystkie adaptery
@@ -30,7 +33,9 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from src.application.errors import PortError, ProviderUnavailable, QuotaExhausted
 from src.application.http_metering import HttpCallMeter
+from src.infrastructure.error_translation import as_port_error
 
 logger = logging.getLogger(__name__)
 
@@ -229,3 +234,29 @@ def safe_get(session: requests.Session, url: str, **kwargs: Any) -> requests.Res
 
 def _redacted_copy[E: requests.RequestException](exc: E) -> E:
     return type(exc)(redact_secrets(str(exc)), request=exc.request, response=exc.response)
+
+
+_RATE_LIMITED = 429
+_SERVER_ERROR = 500
+
+
+def http_error_kind(status_code: int) -> type[PortError]:
+    """ARCH-33: klasa taksonomii dla statusu HTTP błędnej odpowiedzi — 429 to kwota,
+    5xx to niedostępny dostawca, reszta 4xx to ogólny błąd portu."""
+    if status_code == _RATE_LIMITED:
+        return QuotaExhausted
+    if status_code >= _SERVER_ERROR:
+        return ProviderUnavailable
+    return PortError
+
+
+def translate_http_error(exc: requests.HTTPError, status_code: int) -> requests.HTTPError:
+    """`exc` z `raise_for_status_redacted` jako klasa taksonomii statusu (wciąż `HTTPError`)."""
+    return as_port_error(exc, http_error_kind(status_code))
+
+
+def translate_request_error(exc: requests.RequestException) -> requests.RequestException:
+    """Błąd sieci z `safe_get` w taksonomii: zerwane połączenie i timeout to niedostępny
+    dostawca, reszta (np. zły URL z konfiguracji) to ogólny błąd portu."""
+    transport = isinstance(exc, requests.ConnectionError | requests.Timeout)
+    return as_port_error(exc, ProviderUnavailable if transport else PortError)

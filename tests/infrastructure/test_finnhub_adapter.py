@@ -345,3 +345,83 @@ class TestGetQuote:
         from src.application.ports import QuotePort
 
         assert issubclass(FinnhubAdapter, QuotePort)
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: adapter tłumaczy błędy Finnhub na taksonomię portów, a przetłumaczony
+    wyjątek nadal jest typem `requests` (dotychczasowi wywołujący działają)."""
+
+    @staticmethod
+    def _real_response(status: int) -> requests.Response:
+        response = requests.Response()
+        response.status_code = status
+        response.reason = "Service Unavailable"
+        response.url = "https://finnhub.io/api/v1/quote?symbol=AAPL&token=test-token-123"
+        return response
+
+    def test_5xx_maps_to_provider_unavailable(self, adapter, mocker):
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch("requests.Session.get", return_value=self._real_response(503))
+
+        with pytest.raises(ProviderUnavailable) as excinfo:
+            adapter.get_quote("AAPL")
+
+        assert isinstance(excinfo.value, requests.HTTPError)
+        assert "test-token-123" not in str(excinfo.value)
+
+    def test_network_error_maps_to_provider_unavailable(self, adapter, mocker):
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=requests.ReadTimeout(
+                "Read timed out: /quote?symbol=AAPL&token=test-token-123"
+            ),
+        )
+
+        with pytest.raises(ProviderUnavailable) as excinfo:
+            adapter.get_current_price("AAPL")
+
+        assert isinstance(excinfo.value, requests.ReadTimeout)
+        assert "test-token-123" not in str(excinfo.value)
+        assert excinfo.value.__cause__ is None
+
+    def test_429_maps_to_quota_exhausted(self, adapter, mocker):
+        from src.application.errors import QuotaExhausted
+
+        mocker.patch("requests.Session.get", return_value=_error_response(429))
+
+        with pytest.raises(QuotaExhausted):
+            adapter.get_daily_change("AAPL")
+
+    def test_other_client_error_is_a_port_error(self, adapter, mocker):
+        from src.application.errors import PortError, ProviderUnavailable, QuotaExhausted
+
+        mocker.patch("requests.Session.get", return_value=_error_response(401))
+
+        with pytest.raises(PortError) as excinfo:
+            adapter.get_current_price("AAPL")
+
+        assert not isinstance(excinfo.value, ProviderUnavailable | QuotaExhausted)
+
+    @pytest.mark.parametrize(
+        "response",
+        [_error_response(403), _ok_response({"c": 0, "t": 1760630400})],
+        ids=["free-tier-403", "zero-price"],
+    )
+    def test_unknown_ticker_maps_to_not_found(self, adapter, mocker, response):
+        from src.application.errors import NotFound
+
+        mocker.patch("requests.Session.get", return_value=response)
+
+        with pytest.raises(NotFound):
+            adapter.get_quote("CSPX.L")
+
+    def test_quote_without_time_is_malformed_payload(self, adapter, mocker):
+        from src.application.errors import MalformedPayload
+
+        mocker.patch("requests.Session.get", return_value=_ok_response({"c": 182.5, "t": 0}))
+
+        with pytest.raises(MalformedPayload, match="quote"):
+            adapter.get_quote("AAPL")
