@@ -47,6 +47,7 @@ from src.domain.number_format import format_pct_pl
 from src.domain.polish_labels import council_recommendation_label
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.regime import RegimeChange
+from src.domain.value_objects import Percent
 
 # --- Bazy scoringu (ADDYTYWNE, nie multiplikatywne) -------------------------
 # Każdy kandydat dostaje: baza_priorytetu + magnituda(|Δ|). Suma, nie iloczyn —
@@ -98,8 +99,8 @@ class LeadSignal:
     Świadomie zbudowany z prymitywów i typów domenowych — report_builder mapuje
     tu swoje DTO (SymbolResult / ResolvedPrediction), których domena nie importuje.
 
-    - `price_delta_pct` to PROCENT (4.2 = 4,2%), nie ułamek. Mapper w warstwie
-      wyżej przelicza ułamek z `PriceDelta` przez `.percent`.
+    - `price_delta_pct` to PROCENT (`Percent`: 4.2 = 4,2%), nie ułamek. Mapper
+      w warstwie wyżej przelicza ułamek z `PriceDelta` przez `.percent`.
     - `council_verdict` bywa None (cykl bez rady — np. odcięty bramką volatility).
     - `resolved_label` to gotowy, sformatowany tekst werdyktu zamkniętej predykcji
       (np. „trafiona prognoza wzrostu") albo None, gdy nic się w tym cyklu nie zamknęło.
@@ -114,7 +115,7 @@ class LeadSignal:
     """
 
     symbol: str
-    price_delta_pct: Decimal
+    price_delta_pct: Percent
     council_verdict: CouncilVerdict | None = None
     resolved_label: str | None = None
     position_weight: Decimal | None = None

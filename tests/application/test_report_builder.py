@@ -1782,6 +1782,15 @@ class TestLeadSection:
         assert "NVDA -4,2%, rada PODZIELONA" in html
         assert "NVDA -4,2%, rada PODZIELONA" in text
 
+    def test_to_lead_signals_converts_fractional_delta_to_percent(self):
+        # ARCH-04: `SymbolResult.delta` to ułamek, a `LeadSignal.price_delta_pct`
+        # to `Percent` — przeliczenie należy do mappera, domena tylko formatuje.
+        results = [SymbolResult(symbol="NVDA", status="saved", delta=Decimal("-0.042"))]
+
+        (signal,) = to_lead_signals(results, [])
+
+        assert signal.price_delta_pct == Decimal("-4.2")
+
     def test_council_flip_from_the_context_leads_the_report_and_its_subject(self):
         # MAIL-19: flip rady był tylko w sekcji #8 w połowie maila, a temat mówił
         # o czymś innym — teraz to lead, więc i temat (lead_headline).

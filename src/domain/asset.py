@@ -8,8 +8,11 @@ from src.domain.value_objects import (
     AssetType,
     Fundamentals,
     Money,
+    Percent,
+    Ratio,
     Threshold,
     ValuationVerdict,
+    to_percent,
 )
 
 # Progi heurystyki wyceny — jawnie nazwane, łatwe do strojenia w testach.
@@ -41,11 +44,11 @@ class PriceDelta:
     fraction: Decimal
 
     @property
-    def percent(self) -> Decimal:
+    def percent(self) -> Percent:
         """Zmiana wyrażona w procentach (fraction * 100). Wygodny przelicznik
         dla warstwy prezentacji — nie używać do bramki volatility, która
         operuje na ułamku."""
-        return self.fraction * 100
+        return to_percent(Ratio(self.fraction))
 
     @property
     def percentage(self) -> Decimal:
