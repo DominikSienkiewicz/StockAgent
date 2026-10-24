@@ -6,14 +6,15 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal, overload
 
-from src.domain.value_objects import AssetType, Fundamentals, ValuationVerdict
+from src.domain.value_objects import AssetType, Fundamentals, Percent, ValuationVerdict
 
 
 @dataclass(frozen=True)
 class CouncilInput:
     symbol: str
     current_price: Decimal
-    price_delta_pct: Decimal
+    # ARCH-04: PROCENT (3.5 = 3,5%), nie ułamek — prompty person drukują go z „%”.
+    price_delta_pct: Percent
     sentiment_score: float
     news_articles: tuple[str, ...]
     llm_trend: str

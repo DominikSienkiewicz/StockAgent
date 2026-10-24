@@ -398,6 +398,38 @@ def test_node_outputs_use_only_declared_state_keys(
     assert undeclared == {}
 
 
+def test_council_input_carries_the_move_in_percent(
+    market_port: Mock,
+    sentiment_port: Mock,
+    news_port: Mock,
+    repository_port: Mock,
+    ml_port: Mock,
+    llm_port: Mock,
+) -> None:
+    # ARCH-04: stan grafu niesie ruch jako ułamek, a prompty person drukują
+    # `price_delta_pct` z „%” — styk musi przeliczyć -0.10 na -10%.
+    from src.application.ports import AdvisoryCouncilPort
+
+    council_port = Mock(spec=AdvisoryCouncilPort)
+    council_port.analyze.return_value = None
+    market_port.get_current_price.return_value = Money(Decimal("90.0"))
+    _setup_full_analysis_mocks(sentiment_port, news_port, repository_port, ml_port, llm_port)
+
+    create_agent_graph(AgentGraphDeps(
+        market_port=market_port,
+        sentiment_port=sentiment_port,
+        news_port=news_port,
+        repository_port=repository_port,
+        ml_port=ml_port,
+        llm_port=llm_port,
+        threshold=Threshold(Decimal("0.02")),
+        council_port=council_port,
+    )).compile().invoke(_initial_state("100.0"))
+
+    council_input = council_port.analyze.call_args.args[1]
+    assert council_input.price_delta_pct == Decimal("-10")
+
+
 # ---------------------------------------------------------------------------
 # P0: kontrakt cechy price_delta i rekonstrukcja ceny z ZWROTU
 # ---------------------------------------------------------------------------

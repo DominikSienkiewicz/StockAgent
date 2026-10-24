@@ -1841,7 +1841,7 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     data = CouncilInput(
         symbol=state["symbol"],
         current_price=state["current_price"],
-        price_delta_pct=state["delta"] * Decimal("100"),
+        price_delta_pct=to_percent(state["delta"]),
         sentiment_score=_float_or_default(sentiment.get("av_sentiment_score"), 0.0),
         news_articles=tuple(_news_titles(news, _NEWS_TITLES_LIMIT)),
         llm_trend=str(llm_analysis.get("trend_direction", "SIDEWAYS")),
