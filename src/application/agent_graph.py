@@ -15,7 +15,7 @@ from langgraph.graph import END, StateGraph
 
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.decision_receipt import RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2
-from src.application.errors import LLMOutputIncomplete
+from src.application.errors import LLMOutputIncomplete, PortError
 from src.application.ml_features import (
     FREE_SNAPSHOT_FEATURES,
     GATED_SNAPSHOT_EXTRAS,
@@ -1469,7 +1469,7 @@ def _ml_return_scale(deps: AgentGraphDeps, symbol: str) -> float | None:
     odczytu albo za krótka historia → None."""
     try:
         history = deps.repository_port.get_price_history(symbol, SIGMA_LOOKBACK.days)
-    except Exception:
+    except PortError:
         logger.warning("ML-11: brak historii snapshotów %s — bez σ", symbol, exc_info=True)
         return None
     points = [(moment, float(price.amount)) for moment, price in history]

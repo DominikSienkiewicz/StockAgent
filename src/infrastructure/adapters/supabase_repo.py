@@ -691,6 +691,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             return None
         return Money(Decimal(str(rows[0]["price"])))
 
+    @_translates_api_errors
     def get_price_history(
         self, symbol: str, days: int
     ) -> list[tuple[datetime, Money]]:
@@ -1880,6 +1881,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             timestamp=datetime.fromisoformat(stamp),
         )
 
+    @_translates_api_errors
     def save_model_scorecard(
         self, symbol: str, result: Mapping[str, Any], *, run_id: str | None = None
     ) -> None:

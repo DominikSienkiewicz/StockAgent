@@ -8,6 +8,7 @@ from typing import Any, TypedDict
 
 import pandas as pd
 
+from src.application.errors import PortError
 from src.application.ml_features import (
     ML_FEATURE_COLUMNS,
     SETTLED_AT_COLUMN,
@@ -191,7 +192,7 @@ class TrainModelUseCase:
             ):
                 try:
                     self._save_scorecard(symbol, report)
-                except Exception:
+                except PortError:
                     logger.exception("Failed to persist the %s scorecard", symbol)
         return result
 
