@@ -16,6 +16,7 @@ szumem — walk-forward gate decyduje, nie intuicja"):
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -55,7 +56,7 @@ def _social(mentions: int, baseline: float, sentiment: float | None) -> SocialVe
     )
 
 
-def _analyst(**counts: int) -> AnalystConsensus:
+def _analyst(**counts: Any) -> AnalystConsensus:
     return AnalystConsensus(symbol="AAPL", **counts)
 
 
