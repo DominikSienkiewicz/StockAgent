@@ -114,3 +114,55 @@ def test_how_it_works_names_the_code_default_of_symbols() -> None:
     smoke_portfolio = ", ".join(factory())  # type: ignore[call-arg]
 
     assert f"`{smoke_portfolio}`" in _how_it_works()
+
+
+# DOC-35: dwie linie bloku komend w running-locally.md były sklejone z kilku
+# poleceń i z duplikatami (scalenie dwóch gałęzi dokleiło sąsiednie wiersze
+# zamiast je rozdzielić). Blok komend ma mieć jedno polecenie na linię i żadnego
+# polecenia dwa razy.
+def _fenced_blocks(path: Path) -> list[list[tuple[int, str]]]:
+    blocks: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] | None = None
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if line.startswith("```"):
+            if current is None:
+                current = []
+            else:
+                blocks.append(current)
+                current = None
+        elif current is not None:
+            current.append((number, line))
+    return blocks
+
+
+def _command_of(line: str) -> str:
+    return line.split("#", 1)[0].strip()
+
+
+@pytest.mark.parametrize("pattern", ["README.md", "docs/*.md"])
+def test_command_blocks_hold_one_uv_command_per_line(pattern: str) -> None:
+    glued = [
+        f"{path.relative_to(ROOT)}:{number}"
+        for path in sorted(ROOT.glob(pattern))
+        for block in _fenced_blocks(path)
+        for number, line in block
+        if line.count("uv run ") > 1
+    ]
+
+    assert glued == [], f"kilka poleceń w jednej linii bloku komend: {glued}"
+
+
+@pytest.mark.parametrize("pattern", ["README.md", "docs/*.md"])
+def test_command_blocks_do_not_repeat_a_command(pattern: str) -> None:
+    repeated = []
+    for path in sorted(ROOT.glob(pattern)):
+        for block in _fenced_blocks(path):
+            seen: dict[str, int] = {}
+            for number, line in block:
+                command = _command_of(line)
+                if command.startswith("uv run") and command in seen:
+                    where = f"{path.relative_to(ROOT)}:{number}"
+                    repeated.append(f"{where} (jak w linii {seen[command]})")
+                seen.setdefault(command, number)
+
+    assert repeated == [], f"to samo polecenie dwa razy w jednym bloku: {repeated}"
