@@ -44,6 +44,7 @@ MAIL_ORDER = (
     "budget_exhausted",
     "ignored",
     "errors",
+    "footer",
 )
 
 

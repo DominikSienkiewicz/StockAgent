@@ -14,6 +14,7 @@ from src.application.report_consensus_shift import CONSENSUS_SHIFT_SECTION
 from src.application.report_council_history import COUNCIL_HISTORY_SECTION
 from src.application.report_crypto import CRYPTO_SECTION
 from src.application.report_finops import FINOPS_SECTION
+from src.application.report_footer import FOOTER_SECTION
 from src.application.report_header import (
     FIRST_SCREEN_SECTION,
     MASTHEAD_SECTION,
@@ -77,4 +78,5 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     BUDGET_EXHAUSTED_SECTION,
     IGNORED_SECTION,
     ERRORS_SECTION,
+    FOOTER_SECTION,
 )

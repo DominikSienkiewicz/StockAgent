@@ -4,7 +4,7 @@ What lands in the inbox and why each section is there. The pipeline that produce
 
 ## Sections in render order
 
-Every section of the cycle email, in the order `build_html_report` renders it, with its heading as the email prints it, the condition that shows it and its state in the committed [`config.toml`](../config.toml). Most sections hide themselves when they have no data. [`tests/test_docs_report_sections.py`](../tests/test_docs_report_sections.py) reads every `<h2>` / `<h3>` heading of `src/application/report_*.py` and fails when one is missing here (DOC-15). The details of each section follow under [Email anatomy](#email-anatomy).
+Every section of the cycle email, in the order `build_html_report` renders it (the registry `REPORT_SECTIONS` in [`src/application/reporting/registry.py`](../src/application/reporting/registry.py), one `src/application/report_<name>.py` module per section), with its heading as the email prints it, the condition that shows it and its state in the committed [`config.toml`](../config.toml). Most sections hide themselves when they have no data. [`tests/test_docs_report_sections.py`](../tests/test_docs_report_sections.py) reads every `<h2>` / `<h3>` heading of `src/application/report_*.py` and fails when one is missing here (DOC-15). The details of each section follow under [Email anatomy](#email-anatomy).
 
 | # | Section, as headed in the email | Zone | Shown when | Production (`config.toml`) | Plain text |
 |---|---|---|---|---|---|

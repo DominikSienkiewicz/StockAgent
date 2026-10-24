@@ -1,6 +1,10 @@
 """Buduje raport HTML+text z wyników cyklu Fast Loop.
 
-Czysta logika prezentacji — bez I/O, łatwo testowalne.
+Czysta logika prezentacji — bez I/O, łatwo testowalne. ARCH-12: mail składa się
+z sekcji rejestru (`src/application/reporting/registry.py`); tu żyje kontekst
+raportu (`ReportContext`), wspólne wejście sekcji liczone raz na render
+(`_section_input`), ranking leadu i sygnałów (też dla tematu i pushu) oraz
+mapowanie wyjścia grafu na `SymbolResult`.
 """
 
 from __future__ import annotations
@@ -14,48 +18,19 @@ from typing import Any
 
 from src.application.alpha_signals import AlphaSignals
 from src.application.portfolio_fx import effective_pln_rates
-from src.application.report_accuracy_history import ACCURACY_HISTORY_SECTION
-from src.application.report_alpha import ALPHA_SECTION, significant_buy_label
-from src.application.report_backoffice import BACKOFFICE_SECTION
+from src.application.report_alpha import significant_buy_label
 from src.application.report_charts import (
-    CORRELATION_CHART_SECTION,
-    DELTA_CHART_SECTION,
     build_correlation_chart_html,
     build_delta_chart_html,
     build_forecast_chart_html,
 )
-from src.application.report_consensus_shift import CONSENSUS_SHIFT_SECTION
-from src.application.report_council_history import (
-    COUNCIL_HISTORY_SECTION,
-    InvestorHistory,
-)
-from src.application.report_crypto import CRYPTO_SECTION
-from src.application.report_finops import FINOPS_SECTION
+from src.application.report_council_history import InvestorHistory
 from src.application.report_formatting import (
-    DATA_SOURCES_FOOTER_PL,
     DEFAULT_DISPLAY_TIMEZONE,
-    INVESTMENT_DISCLAIMER,
-    PALETTE,
     format_local,
-    safe_http_url,
 )
-from src.application.report_formatting import (
-    escape as _html,
-)
-from src.application.report_formatting import (
-    number as _number,
-)
-from src.application.report_header import (
-    FIRST_SCREEN_SECTION,
-    MASTHEAD_SECTION,
-    SESSION_SECTION,
-)
-from src.application.report_lead import LEAD_SECTION, PREHEADER_SECTION
 from src.application.report_lessons import LessonsReport
-from src.application.report_model_scorecard import (
-    MODEL_SCORECARD_SECTION,
-    ModelScorecardView,
-)
+from src.application.report_model_scorecard import ModelScorecardView
 from src.application.report_models import (
     PortfolioMood,
     ResolvedPrediction,
@@ -66,24 +41,9 @@ from src.application.report_models import (
     TradeSignal,
     ValuationSection,
 )
-from src.application.report_mood import MOOD_SECTION
-from src.application.report_onboarding import ONBOARDING_SECTION
-from src.application.report_persona_leaderboard import (
-    PERSONA_LEADERBOARD_SECTION,
-)
-from src.application.report_portfolio import PORTFOLIO_RADAR_SECTION
-from src.application.report_predictions import PREDICTIONS_SECTION, full_detail_symbols
-from src.application.report_quota_banner import QUOTA_BANNER_SECTION
-from src.application.report_reflections import REFLECTIONS_SECTION
-from src.application.report_regime import (
-    RegimeBanner,
-)
-from src.application.report_resolved import (
-    RESOLVED_PREDICTIONS_SECTION,
-    resolved_window,
-)
-from src.application.report_risk_signals import RISK_SIGNALS_SECTION
-from src.application.report_risk_watch import RISK_WATCH_SECTION
+from src.application.report_predictions import full_detail_symbols
+from src.application.report_regime import RegimeBanner
+from src.application.report_resolved import resolved_window
 from src.application.report_signals import (
     build_portfolio_mood,
     build_trade_signals,
@@ -91,25 +51,11 @@ from src.application.report_signals import (
     market_status,
     parse_resolved_predictions,
 )
-from src.application.report_skipped import (
-    BUDGET_EXHAUSTED_SECTION,
-    ERRORS_SECTION,
-    IGNORED_SECTION,
-    REBASELINED_SECTION,
-)
-from src.application.report_styles import (
-    EMAIL_STYLESHEET,
-)
-from src.application.report_suggestions import (
-    SUGGESTIONS_SECTION,
-)
+from src.application.report_styles import EMAIL_STYLESHEET
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_chip_labels
-from src.application.report_track_record import TRACK_RECORD_SECTION, TrackRecordStats
-from src.application.report_trade_signals import TRADE_SIGNALS_SECTION
-from src.application.report_user_portfolio import (
-    USER_PORTFOLIO_SECTION,
-    portfolio_change_view,
-)
+from src.application.report_track_record import TrackRecordStats
+from src.application.report_user_portfolio import portfolio_change_view
+from src.application.reporting.registry import REPORT_SECTIONS
 from src.application.reporting.section import SectionInput
 from src.application.run_context import RunContext
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
@@ -126,9 +72,7 @@ from src.domain.finops import CycleCost
 from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
-from src.domain.polish_labels import (
-    trend_forecast_label,
-)
+from src.domain.polish_labels import trend_forecast_label
 from src.domain.portfolio import (
     PlnRates,
     Portfolio,
@@ -163,10 +107,6 @@ __all__ = [
     "parse_resolved_predictions",
     "to_symbol_result",
 ]
-
-# MAIL-42: linia proweniencji w stopce (przebieg · commit · logi) — ostatni
-# znacznik slotu, podmieniany w build_html_report.
-_RUN_FOOTER_SLOT = "<!-- RUN_FOOTER_SLOT -->"
 
 
 def _sizing_track_record(
@@ -596,224 +536,17 @@ def build_html_report(
     """
     context = context or ReportContext()
     data = _section_input(results, started_at, duration_seconds, context)
-    results, saved, ignored, errors = data.results, data.saved, data.ignored, data.errors
-    html = _render_html(
-        data,
-        results, saved, ignored, errors, duration_seconds,
-    )
-    html = html.replace(_RUN_FOOTER_SLOT, _render_run_footer_html(context.run_context), 1)
-    html = _email_document(_compact_markup(html))
-    text = _render_plain(
-        data,
-        results, saved, ignored, errors, duration_seconds,
-    )
-    run_footer_text = _render_run_footer_text(context.run_context)
-    if run_footer_text:
-        text = f"{text}\n{run_footer_text}"
-    return html, text
+    return _email_document(_compact_markup(_render_html(data))), _render_text(data)
 
 
-# ---------------------------------------------------------------------------
-# Stopka: proweniencja przebiegu (MAIL-42)
-# ---------------------------------------------------------------------------
+def _render_html(data: SectionInput) -> str:
+    """ARCH-12: HTML maila — fragmenty sekcji rejestru w jego kolejności."""
+    return "".join(section.render_html(data) for section in REPORT_SECTIONS)
 
 
-def _run_footer_label(run_context: RunContext) -> str:
-    """„przebieg #77 · commit abc1234” — logi repo są publiczne, więc stopka nie
-    niesie nic poza numerem przebiegu, krótkim SHA i linkiem."""
-    return f"przebieg #{run_context.run_id} · commit {run_context.short_sha}"
-
-
-def _render_run_footer_html(run_context: RunContext | None) -> str:
-    if run_context is None:
-        return ""
-    label = _html(_run_footer_label(run_context))
-    url = safe_http_url(run_context.run_url)
-    logs = (
-        f' · <a href="{_html(url)}" style="color: {PALETTE.muted};">logi</a>'
-        if url is not None
-        else ""
-    )
-    return f"<br/>{label}{logs}"
-
-
-def _render_run_footer_text(run_context: RunContext | None) -> str:
-    if run_context is None:
-        return ""
-    url = safe_http_url(run_context.run_url)
-    logs = f" · logi: {url}" if url is not None else ""
-    return "\n".join(["-" * 64, f"{_run_footer_label(run_context)}{logs}"])
-
-
-# ---------------------------------------------------------------------------
-# HTML
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# MAIL-16: pierwszy ekran — liczby dla czytelnika, liczniki do stopki
-# ---------------------------------------------------------------------------
-
-def _render_technical_footer_html(
-    results: list[SymbolResult],
-    saved: list[SymbolResult],
-    ignored: list[SymbolResult],
-    errors: list[SymbolResult],
-    duration_seconds: float,
-) -> str:
-    """MAIL-16: liczniki pracy pipeline'u w stopce — błąd nadal jest czerwony."""
-    errors_color = PALETTE.negative if errors else PALETTE.muted
-    return (
-        '<div style="margin-bottom: 8px; color: #6b7280;">'
-        f"Symboli: <strong>{len(results)}</strong>"
-        f" · Predykcje: <strong>{len(saved)}</strong>"
-        f" · Pominięte: <strong>{len(ignored)}</strong>"
-        f' · <span style="color: {errors_color};">Błędy: <strong>{len(errors)}</strong></span>'
-        f" · Czas trwania: {_number(duration_seconds, decimals=1)}s"
-        "</div>"
-    )
-
-
-def _technical_footer_text(
-    results: list[SymbolResult],
-    saved: list[SymbolResult],
-    ignored: list[SymbolResult],
-    errors: list[SymbolResult],
-    duration_seconds: float,
-) -> str:
-    return (
-        f"Symboli: {len(results)} · predykcji: {len(saved)} · "
-        f"pominiętych: {len(ignored)} · błędów: {len(errors)} · "
-        f"czas trwania: {_number(duration_seconds, decimals=1)}s"
-    )
-
-
-# ---------------------------------------------------------------------------
-# MAIL-17: dwie strefy — „Na dziś” przed „Zapleczem”
-# ---------------------------------------------------------------------------
-
-def _render_html(
-    data: SectionInput,
-    results: list[SymbolResult],
-    saved: list[SymbolResult],
-    ignored: list[SymbolResult],
-    errors: list[SymbolResult],
-    duration_seconds: float,
-) -> str:
-    sections = [PREHEADER_SECTION.render_html(data)]
-
-    sections.append(MASTHEAD_SECTION.render_html(data))
-    sections.append(QUOTA_BANNER_SECTION.render_html(data))
-    sections.append(LEAD_SECTION.render_html(data))
-    sections.append(ONBOARDING_SECTION.render_html(data))
-    sections.append(SESSION_SECTION.render_html(data))
-    sections.append(FIRST_SCREEN_SECTION.render_html(data))
-    sections.append(USER_PORTFOLIO_SECTION.render_html(data))
-    # Zmiany od wczoraj: rozliczenia, zmiany nastawienia, nowy punkt odniesienia.
-    sections.append(RESOLVED_PREDICTIONS_SECTION.render_html(data))
-    sections.append(CONSENSUS_SHIFT_SECTION.render_html(data))
-    sections.append(REBASELINED_SECTION.render_html(data))
-    sections.append(TRADE_SIGNALS_SECTION.render_html(data))
-    sections.append(RISK_SIGNALS_SECTION.render_html(data))
-    sections.append(PREDICTIONS_SECTION.render_html(data))
-    # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
-    sections.append(CRYPTO_SECTION.render_html(data))
-
-    # MAIL-17: „Zaplecze” — kontekst i kontrola za separatorem. Przy przycięciu
-    # przez Gmaila znika ta część, nie akcyjna.
-    sections.append(BACKOFFICE_SECTION.render_html(data))
-    sections.append(RISK_WATCH_SECTION.render_html(data))
-    sections.append(PORTFOLIO_RADAR_SECTION.render_html(data))
-    sections.append(ALPHA_SECTION.render_html(data))
-    sections.append(TRACK_RECORD_SECTION.render_html(data))
-    sections.append(ACCURACY_HISTORY_SECTION.render_html(data))
-    sections.append(MODEL_SCORECARD_SECTION.render_html(data))
-    sections.append(PERSONA_LEADERBOARD_SECTION.render_html(data))
-    sections.append(COUNCIL_HISTORY_SECTION.render_html(data))
-    sections.append(MOOD_SECTION.render_html(data))
-    sections.append(DELTA_CHART_SECTION.render_html(data))
-    sections.append(REFLECTIONS_SECTION.render_html(data))
-    sections.append(SUGGESTIONS_SECTION.render_html(data))
-    sections.append(CORRELATION_CHART_SECTION.render_html(data))
-    sections.append(FINOPS_SECTION.render_html(data))
-    sections.append(BUDGET_EXHAUSTED_SECTION.render_html(data))
-    sections.append(IGNORED_SECTION.render_html(data))
-    sections.append(ERRORS_SECTION.render_html(data))
-
-    # MAIL-08: zastrzeżenie w stałej stopce, nie w sekcji warunkowej — sekcja,
-    # która się chowa, zabrałaby je ze sobą.
-    sections.append(f"""
-      <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 11px; color: {PALETTE.muted};">
-        <div style="margin-bottom: 8px; color: #6b7280;">{_html(INVESTMENT_DISCLAIMER)}</div>
-        {_render_technical_footer_html(results, saved, ignored, errors, duration_seconds)}
-        <div style="margin-bottom: 8px;">{_html(DATA_SOURCES_FOOTER_PL)}</div>
-        StockAgent · Agentic RAG + Continual Learning · raport automatyczny
-        {_RUN_FOOTER_SLOT}
-      </div>
-    </div>
-    """)
-
-    return "".join(sections)
-
-
-# ---------------------------------------------------------------------------
-# Plain text fallback
-# ---------------------------------------------------------------------------
-
-
-def _render_plain(
-    data: SectionInput,
-    results: list[SymbolResult],
-    saved: list[SymbolResult],
-    ignored: list[SymbolResult],
-    errors: list[SymbolResult],
-    duration_seconds: float,
-) -> str:
-    lines: list[str] = []
-    lines.extend(QUOTA_BANNER_SECTION.render_text(data))
-    lines.extend(LEAD_SECTION.render_text(data))
-    lines.extend(ONBOARDING_SECTION.render_text(data))
-    lines.extend(SESSION_SECTION.render_text(data))
-    lines.extend(FIRST_SCREEN_SECTION.render_text(data))
-    # MAIL-17: strefa „Na dziś”, kolejność jak w HTML.
-    lines.extend(USER_PORTFOLIO_SECTION.render_text(data))
-    # Zmiany od wczoraj: rozliczenia i nowy punkt odniesienia.
-    lines.extend(RESOLVED_PREDICTIONS_SECTION.render_text(data))
-    # MAIL-09: zmiany nastawienia rady — jak w HTML, za rozliczeniami.
-    lines.extend(CONSENSUS_SHIFT_SECTION.render_text(data))
-    lines.extend(REBASELINED_SECTION.render_text(data))
-    lines.extend(TRADE_SIGNALS_SECTION.render_text(data))
-    lines.extend(RISK_SIGNALS_SECTION.render_text(data))
-    lines.extend(PREDICTIONS_SECTION.render_text(data))
-    # Krypto — osobna sekcja (widoczna też gdy 'ignored').
-    lines.extend(CRYPTO_SECTION.render_text(data))
-
-    # MAIL-17: „Zaplecze” — kontekst i kontrola za separatorem.
-    lines.extend(BACKOFFICE_SECTION.render_text(data))
-    lines.extend(RISK_WATCH_SECTION.render_text(data))
-    # PORT-22: radar portfela (klastry, VaR, stress, „za mało historii”).
-    lines.extend(PORTFOLIO_RADAR_SECTION.render_text(data))
-    lines.extend(ACCURACY_HISTORY_SECTION.render_text(data))
-    lines.extend(MODEL_SCORECARD_SECTION.render_text(data))
-    lines.extend(COUNCIL_HISTORY_SECTION.render_text(data))
-    lines.extend(MOOD_SECTION.render_text(data))
-    lines.extend(REFLECTIONS_SECTION.render_text(data))
-    lines.extend(SUGGESTIONS_SECTION.render_text(data))
-    lines.extend(FINOPS_SECTION.render_text(data))
-    lines.extend(BUDGET_EXHAUSTED_SECTION.render_text(data))
-    lines.extend(IGNORED_SECTION.render_text(data))
-    lines.extend(ERRORS_SECTION.render_text(data))
-
-    # MAIL-08: zastrzeżenie zamyka treść; stopka techniczna (MAIL-16) i stopka
-    # przebiegu (MAIL-42) idą za nim.
-    lines.extend([
-        "-" * 64,
-        INVESTMENT_DISCLAIMER,
-        _technical_footer_text(results, saved, ignored, errors, duration_seconds),
-        DATA_SOURCES_FOOTER_PL,
-    ])
-
-    return "\n".join(lines)
+def _render_text(data: SectionInput) -> str:
+    """ARCH-12: wersja tekstowa — linie sekcji rejestru w tej samej kolejności."""
+    return "\n".join(line for section in REPORT_SECTIONS for line in section.render_text(data))
 
 
 # ---------------------------------------------------------------------------
