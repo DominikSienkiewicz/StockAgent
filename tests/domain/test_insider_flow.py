@@ -146,6 +146,14 @@ class TestSignificantBuyThreshold:
         assert significant_buy_threshold(100e9) == pytest.approx(100_000.0)
         assert significant_buy_threshold(4e12) == pytest.approx(4_000_000.0)
 
+    def test_threshold_never_drops_below_100k_usd(self) -> None:
+        # Decyzja właściciela: max(1e-6 × kapitalizacja, 100k USD) — zakup za
+        # 10 tys. USD w spółce za 10 mld USD to nie „znaczący zakup”.
+        from src.domain.insider_flow import SIGNIFICANT_BUY_MIN_USD, significant_buy_threshold
+
+        assert significant_buy_threshold(10e9) == SIGNIFICANT_BUY_MIN_USD
+        assert significant_buy_threshold(250e9) == pytest.approx(250_000.0)
+
     @pytest.mark.parametrize("market_cap", [None, 0.0, -5.0, float("nan"), float("inf")])
     def test_without_a_usable_market_cap_the_threshold_is_100k_usd(
         self, market_cap: float | None

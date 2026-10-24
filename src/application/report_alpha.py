@@ -94,12 +94,12 @@ def render_alpha_html(
 
 
 def _render_significant_buys_html(rows: list[AlphaSignals]) -> list[str]:
-    """DAT-21: linia na znaczący zakup officera (kod P ≥ ułamek kapitalizacji,
-    bez niej ≥ 100k USD) z kwotą i linkiem do Form 4 — etykieta w tabeli nie mówi
-    o skali."""
+    """DAT-21: linia na znaczący zakup officera (kod P ≥ max(ułamek kapitalizacji,
+    100k USD), bez kapitalizacji ≥ 100k USD) z kwotą i linkiem do Form 4 —
+    etykieta w tabeli nie mówi o skali."""
     lines: list[str] = []
     for sig in rows:
-        # DAT-21: próg z kapitalizacji spółki (cache fundamentów), bez niej 100k USD.
+        # DAT-21: próg z kapitalizacji spółki (cache fundamentów), nigdy poniżej 100k USD.
         buy = sig.significant_insider_buy()
         if buy is not None:
             lines.append(_significant_buy_line(sig.symbol, buy))
