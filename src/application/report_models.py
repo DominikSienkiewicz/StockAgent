@@ -12,7 +12,7 @@ from src.domain.feature_attribution import FeatureContribution
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.provenance import ProvenanceBadge
 from src.domain.sizing import PositionAction, SizeBand
-from src.domain.value_objects import ValuationVerdict
+from src.domain.value_objects import Ratio, ValuationVerdict
 
 
 @dataclass(frozen=True)
@@ -199,10 +199,12 @@ class ResolvedPrediction:
     correction_category: MistakeCategory | None = None
 
     @property
-    def actual_change_pct(self) -> Decimal | None:
-        """Faktyczna procentowa zmiana ceny od momentu predykcji do zamknięcia."""
+    def actual_change_pct(self) -> Ratio | None:
+        """Faktyczna zmiana ceny od momentu predykcji do zamknięcia jako UŁAMEK
+        (`Ratio`: 0.02 = +2%), mimo sufiksu `_pct` — formatery raportu mnożą go
+        przez 100 (ARCH-04)."""
         if self.price_at_prediction is None or self.actual_price is None:
             return None
         if self.price_at_prediction == 0:
             return None
-        return (self.actual_price - self.price_at_prediction) / self.price_at_prediction
+        return Ratio((self.actual_price - self.price_at_prediction) / self.price_at_prediction)
