@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import functools
 import logging
 import re
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, NamedTuple, cast
@@ -11,6 +12,7 @@ from typing import Any, NamedTuple, cast
 from postgrest.exceptions import APIError
 from supabase import create_client
 
+from src.application.errors import NotFound, PortError, ProviderUnavailable
 from src.application.ports import (
     CycleRun,
     DeferredDiagnosis,
@@ -63,6 +65,7 @@ from src.domain.value_objects import (
     Fundamentals,
     Money,
 )
+from src.infrastructure.error_translation import as_port_error
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +190,39 @@ def _log_degraded_read(source: str, skipped: str, migration: str, exc: Exception
     logger.warning(
         "%s failed (%s) — %s.", source, type(exc).__name__, skipped, exc_info=True
     )
+
+
+# ARCH-33: PostgREST nie dosięgnął bazy (PGRST000–003: brak połączenia, cache
+# schematu, timeout puli), Postgres przerwał zapytanie (57014 statement_timeout)
+# albo odrzucił połączenie (53300 too_many_connections).
+_UNAVAILABLE_CODES = frozenset(
+    {"PGRST000", "PGRST001", "PGRST002", "PGRST003", "57014", "53300"}
+)
+
+
+def _port_error_kind(exc: APIError) -> type[PortError]:
+    """Klasa taksonomii dla błędu PostgREST: brak bazy → niedostępny dostawca,
+    brak obiektu schematu albo kolumny → NotFound, reszta → ogólny błąd portu."""
+    if exc.code in _UNAVAILABLE_CODES:
+        return ProviderUnavailable
+    if exc.code in _MISSING_SCHEMA_CODES or exc.code in _MISSING_COLUMN_CODES:
+        return NotFound
+    return PortError
+
+
+def _translates_api_errors[**P, R](method: Callable[P, R]) -> Callable[P, R]:
+    """ARCH-33: `APIError` uciekający z metody wychodzi przetłumaczony na taksonomię
+    portów (wciąż `APIError` z kodem). Przyrostowo — metoda po metodzie, zaczynając
+    od zapisów i odczytów Fast Loopa bez własnej ścieżki degradacji."""
+
+    @functools.wraps(method)
+    def translating(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return method(*args, **kwargs)
+        except APIError as exc:
+            raise as_port_error(exc, _port_error_kind(exc)) from None
+
+    return translating
 
 
 class MissingColumnError(RuntimeError):
@@ -658,6 +694,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             )
         return out
 
+    @_translates_api_errors
     def get_last_prediction_price(
         self, symbol: str, *, before: datetime | None = None
     ) -> Money | None:
@@ -678,6 +715,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             return None
         return Money(Decimal(str(rows[0]["price_at_prediction"])))
 
+    @_translates_api_errors
     def get_latest_prediction(self, symbol: str) -> LatestPrediction | None:
         # SUROWO, bez try/except — watch i bramka dryfu degradują same.
         response = (
@@ -1112,6 +1150,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
     # Writes
     # -----------------------------------------------------------------------
 
+    @_translates_api_errors
     def save_price_snapshot(self, symbol: str, price: Money) -> None:
         # Upsert na (symbol, timestamp_hour) (#7) — re-run GHA / nakładający się
         # workflow_dispatch / retry LangGraph aktualizuje istniejący wiersz w tej
@@ -1181,6 +1220,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             }
         ).execute()
 
+    @_translates_api_errors
     def save_prediction(self, prediction: dict[str, Any]) -> str:
         # Upsert na (symbol, timestamp_hour) (#7) — idempotentny zapis predykcji.
         # Domyślny merge upsertu zwraca wiersz, więc nadal mamy z czego odczytać
@@ -1864,6 +1904,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             for (name, sym), recs in grouped.items()
         ]
 
+    @_translates_api_errors
     def get_council_votes_for_prediction(
         self, prediction_id: str
     ) -> list[InvestorOpinion]:

@@ -4551,3 +4551,56 @@ class TestPriceLevelAlerts:
             "last_seen_price": "151.2",
         }
         update.return_value.eq.assert_called_with("id", "7")
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: zapisy i odczyty Fast Loopa bez własnej degradacji tłumaczą PostgREST
+    `APIError` na taksonomię portów; wyjątek nadal jest `APIError` z kodem."""
+
+    @staticmethod
+    def _failing_upsert(mock_client: MagicMock, code: str) -> None:
+        from postgrest.exceptions import APIError
+
+        mock_client.table.return_value.upsert.return_value.execute.side_effect = APIError(
+            {"code": code, "message": "boom"}
+        )
+
+    @pytest.mark.parametrize(
+        ("code", "kind_name"),
+        [
+            ("PGRST003", "ProviderUnavailable"),
+            ("57014", "ProviderUnavailable"),
+            ("PGRST205", "NotFound"),
+            ("42P01", "NotFound"),
+            ("23505", "PortError"),
+        ],
+    )
+    def test_snapshot_write_error_is_translated(
+        self, repo: SupabaseRepository, mock_client: MagicMock, code: str, kind_name: str
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        import src.application.errors as errors
+
+        self._failing_upsert(mock_client, code)
+
+        with pytest.raises(getattr(errors, kind_name)) as excinfo:
+            repo.save_price_snapshot("AAPL", Money(Decimal("1")))
+
+        assert isinstance(excinfo.value, APIError)
+        assert excinfo.value.code == code
+
+    def test_last_prediction_price_read_error_is_provider_unavailable(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.application.errors import ProviderUnavailable
+
+        chain = mock_client.table.return_value.select.return_value.eq.return_value
+        chain.order.return_value.limit.return_value.execute.side_effect = APIError(
+            {"code": "PGRST000", "message": "could not connect"}
+        )
+
+        with pytest.raises(ProviderUnavailable):
+            repo.get_last_prediction_price("AAPL")
