@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from src.domain.macro_risk import MacroAlertLevel
+from src.domain.value_objects import Ratio
 
 
 def peak_from_history(prices: Sequence[Decimal]) -> Decimal:
@@ -48,15 +49,16 @@ class DrawdownSignal:
     peak_price: Decimal
 
     @property
-    def drawdown_fraction(self) -> Decimal:
-        """Procentowy spadek od szczytu: (current - peak) / peak (<= 0).
+    def drawdown_fraction(self) -> Ratio:
+        """Spadek od szczytu jako UŁAMEK (`Ratio`, ARCH-04):
+        (current - peak) / peak (<= 0), np. -0.12 = 12% pod szczytem.
 
         Cold-start guard: gdy peak=0 zwraca 0 (brak referencji), żeby nie
         wywoływać alertu, kiedy symbol nie ma jeszcze historii snapshotów.
         """
         if self.peak_price == 0:
-            return Decimal("0")
-        return (self.current_price - self.peak_price) / self.peak_price
+            return Ratio(Decimal("0"))
+        return Ratio((self.current_price - self.peak_price) / self.peak_price)
 
     def evaluate_drawdown(
         self,
