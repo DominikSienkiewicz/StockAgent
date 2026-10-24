@@ -564,3 +564,9 @@ def test_real_config_toml_ships_the_price_level_alerts_off_until_migration() -> 
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["price_level_alerts_enabled"] is False
     assert data["price_alerts"] == []
+
+
+def test_real_config_toml_keeps_crypto_on_the_shared_tool_use_threshold() -> None:
+    """FIN-08: bez własnego progu krypto bierze `tool_use_volatility_threshold`."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert "crypto_tool_use_volatility_threshold" not in data

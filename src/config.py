@@ -264,6 +264,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "vector_memory_enabled",
     "tool_use_enabled",
     "tool_use_volatility_threshold",
+    # FIN-08: osobny próg pętli tool-use dla krypto — steruje płatną ścieżką.
+    "crypto_tool_use_volatility_threshold",
     "tool_use_max_rounds",
     "council_personas_dir",
     "volatility_threshold",
@@ -722,6 +724,9 @@ class Settings(BaseSettings):
     # Osobny próg volatility — wyższy niż główny (2%), bo każda runda tool-use to
     # dodatkowe wywołanie LLM. Tylko ruchy ≥ tego progu uruchamiają pętlę.
     tool_use_volatility_threshold: Decimal = Field(default=Decimal("0.05"))
+    # FIN-08: osobny próg tool-use dla krypto (bramka główna rozróżnia je własnym
+    # `crypto_volatility_threshold`). None = krypto bierze `tool_use_volatility_threshold`.
+    crypto_tool_use_volatility_threshold: Decimal | None = None
     # Twardy cap rund tool-call (FinOps). Worst-case wywołań płatnych na analizę
     # = tool_use_max_rounds + 1 (ostatnie wymuszone bez toolów).
     tool_use_max_rounds: int = Field(default=3)
@@ -1202,11 +1207,12 @@ class Settings(BaseSettings):
         "council_volatility_threshold",
         "crypto_volatility_threshold",
         "tool_use_volatility_threshold",
+        "crypto_tool_use_volatility_threshold",
     )
     @classmethod
     def _validate_volatility_threshold(
-        cls, value: Decimal, info: ValidationInfo
-    ) -> Decimal:
+        cls, value: Decimal | None, info: ValidationInfo
+    ) -> Decimal | None:
         """Odrzuca progi volatility, które wyłączają bramkę FinOps.
 
         Ujemny próg sprawia, że `abs(delta) >= threshold` jest ZAWSZE
@@ -1215,7 +1221,10 @@ class Settings(BaseSettings):
         robi to samo (FIN-07), więc progi bramek płatnych portów muszą być > 0.
         Wyjątek: `council_volatility_threshold = 0.0` to udokumentowany
         "always run" disable switch drugiego sita rady — ten próg zostaje ≥ 0.
+        None (tylko opcjonalny próg tool-use krypto, FIN-08) = brak własnego progu.
         """
+        if value is None:
+            return None
         if info.field_name == _ALWAYS_RUN_THRESHOLD_FIELD:
             if value < 0:
                 raise ValueError(f"{info.field_name} must be non-negative (got {value})")

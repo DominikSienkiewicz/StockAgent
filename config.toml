@@ -370,6 +370,10 @@ crypto_volatility_threshold = "0.05"
 drift_gate_enabled = false
 # Osobny, wyższy próg dla pętli tool-use (#6) — tylko duże ruchy ją uruchamiają.
 tool_use_volatility_threshold = "0.05"
+# FIN-08: osobny próg pętli tool-use dla krypto (natywna zmienność BTC/ETH to 3-5%
+# dziennie). Brak klucza = krypto bierze `tool_use_volatility_threshold`, jak dotąd;
+# ustawienie to nowy przepis (config_hash). Przykład:
+# crypto_tool_use_volatility_threshold = "0.10"
 
 # --- Pętla / resilience ---
 symbol_throttle_seconds = 2.0

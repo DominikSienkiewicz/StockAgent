@@ -333,6 +333,45 @@ class TestCryptoSettings:
         settings = Settings(_env_file=None)
         assert settings.crypto_volatility_threshold == Decimal("0.08")
 
+    def test_crypto_tool_use_threshold_defaults_to_the_shared_one(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        # FIN-08: brak wartości = krypto bierze `tool_use_volatility_threshold`.
+        settings = Settings(_env_file=None)
+        assert settings.crypto_tool_use_volatility_threshold is None
+
+    def test_crypto_tool_use_threshold_reads_env(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        env.setenv("CRYPTO_TOOL_USE_VOLATILITY_THRESHOLD", "0.10")
+        settings = Settings(_env_file=None)
+        assert settings.crypto_tool_use_volatility_threshold == Decimal("0.10")
+
+    def test_zero_crypto_tool_use_threshold_rejected(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        # FIN-07: próg 0 bramki płatnej ścieżki przepuszcza każdy ruch.
+        with pytest.raises(
+            ValueError, match="crypto_tool_use_volatility_threshold must be positive"
+        ):
+            Settings(_env_file=None, crypto_tool_use_volatility_threshold=Decimal("0"))
+
+    def test_crypto_tool_use_threshold_is_part_of_the_recipe(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        # FIN-08: pole steruje płatną pętlą tool-use, więc należy do przepisu.
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        changed = Settings(
+            _env_file=None,
+            **REQUIRED_ENV_KWARGS,
+            crypto_tool_use_volatility_threshold=Decimal("0.10"),
+        ).config_hash()
+
+        assert "crypto_tool_use_volatility_threshold" in RECIPE_SETTINGS_FIELDS
+        assert changed != baseline
+
 
 class TestSymbolConcurrency:
     def _base(self, **overrides):

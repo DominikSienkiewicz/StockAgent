@@ -2482,6 +2482,83 @@ class TestToolUseResearchAgent:
         assert final["status"] == "saved"
         tool_use_port.analyze_with_tools.assert_not_called()
 
+    def _crypto_tool_use_workflow(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        tool_use_port, *, crypto_tool_use_threshold,
+    ):
+        return create_agent_graph(AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            crypto_threshold=Threshold(Decimal("0.05")),
+            tool_use_port=tool_use_port,
+            research_tools=self._tools(),
+            tool_use_threshold=Threshold(Decimal("0.05")),
+            crypto_tool_use_threshold=crypto_tool_use_threshold,
+        ))
+
+    def _crypto_state(self) -> dict:
+        from src.domain.asset import Asset
+        from src.domain.value_objects import AssetType
+
+        return {
+            "symbol": "BTC",
+            "previous_price": Decimal("100.0"),
+            "asset": Asset(symbol="BTC", asset_type=AssetType.CRYPTO),
+        }
+
+    def test_crypto_move_below_crypto_tool_threshold_skips_the_tool_loop(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # FIN-08: krypto -8% przechodzi bramkę główną krypto (5%) i próg tool-use akcji
+        # (5%), ale nie osobny próg tool-use krypto (10%) — zwykłe analyze, bez pętli.
+        tool_use_port = Mock(spec=ToolUseLLMPort)
+        tool_use_port.analyze_with_tools.return_value = {"trend_direction": "BEARISH"}
+        workflow = self._crypto_tool_use_workflow(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            tool_use_port, crypto_tool_use_threshold=Threshold(Decimal("0.10")),
+        )
+        market_port.get_current_price.return_value = Money(Decimal("92.0"))  # -8%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(self._crypto_state())
+
+        assert final["status"] == "saved"
+        tool_use_port.analyze_with_tools.assert_not_called()
+        llm_port.analyze.assert_called_once()
+
+    def test_crypto_without_its_own_tool_threshold_uses_the_shared_one(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # FIN-08: bez `crypto_tool_use_threshold` krypto bierze wspólny próg tool-use
+        # (5%), jak przed zmianą — ruch -8% odpala pętlę.
+        tool_use_port = Mock(spec=ToolUseLLMPort)
+        tool_use_port.analyze_with_tools.return_value = {
+            "trend_direction": "BEARISH",
+            "confidence_score": 0.9,
+            "av_agreement": 0.3,
+            "reasoning": "Po sprawdzeniu makro: pogorszenie.",
+        }
+        workflow = self._crypto_tool_use_workflow(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            tool_use_port, crypto_tool_use_threshold=None,
+        )
+        market_port.get_current_price.return_value = Money(Decimal("92.0"))  # -8%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        final = workflow.compile().invoke(self._crypto_state())
+
+        assert final["status"] == "saved"
+        tool_use_port.analyze_with_tools.assert_called_once()
+        llm_port.analyze.assert_not_called()
+
     def test_tool_loop_failure_degrades_gracefully(
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,

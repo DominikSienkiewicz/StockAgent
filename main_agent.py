@@ -1451,6 +1451,13 @@ def build_agent_graph_deps(
         if tool_use_port is not None
         else None
     )
+    # FIN-08: osobny próg tool-use krypto; brak = krypto bierze `tool_use_threshold`.
+    crypto_tool_use_threshold = (
+        Threshold(settings.crypto_tool_use_volatility_threshold)
+        if tool_use_port is not None
+        and settings.crypto_tool_use_volatility_threshold is not None
+        else None
+    )
     return AgentGraphDeps(
         market_port=market_port,
         sentiment_port=paid.sentiment,
@@ -1477,6 +1484,7 @@ def build_agent_graph_deps(
         tool_use_port=tool_use_port,
         research_tools=research_tools,
         tool_use_threshold=tool_use_threshold,
+        crypto_tool_use_threshold=crypto_tool_use_threshold,
         vector_memory_enabled=settings.vector_memory_enabled,
         regime_tagging_enabled=_regime_tagging_enabled(settings),
         receipts_enabled=settings.receipts_enabled,

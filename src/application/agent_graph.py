@@ -679,6 +679,9 @@ class AgentGraphDeps:
     tool_use_port: ToolUseLLMPort | None = None
     research_tools: Sequence[Tool] = ()
     tool_use_threshold: Threshold | None = None
+    # FIN-08: osobny próg tool-use dla krypto (`crypto_tool_use_volatility_threshold`).
+    # None = krypto bierze `tool_use_threshold`, jak przed FIN-08.
+    crypto_tool_use_threshold: Threshold | None = None
     vector_memory_enabled: bool = False
     # ML-38: tag reżimu w `prediction_logs.regime` (migracja 017) przy KAŻDEJ
     # predykcji, niezależnie od filtra RAG. DI ustawia go jak `regime_aware_enabled`;
@@ -1411,12 +1414,15 @@ def _call_prediction_llm(
 ) -> dict[str, Any]:
     """Jedno płatne wywołanie predykcji: pętla tool-use albo `llm_port.analyze`."""
     # FIN-08: próg tool-use mnożą reżim i earnings jak każdą bramkę — w RISK-OFF
-    # mniej symboli odpala pętlę. Krypto nie ma osobnego progu tool-use (None).
+    # mniej symboli odpala pętlę. Krypto bierze własny próg tool-use, gdy jest
+    # (None = wspólny `tool_use_threshold`).
     if (
         deps.tool_use_port is not None
         and deps.research_tools
         and deps.tool_use_threshold is not None
-        and _gate_verdict(state, deps.tool_use_threshold, None).passes
+        and _gate_verdict(
+            state, deps.tool_use_threshold, deps.crypto_tool_use_threshold
+        ).passes
     ):
         _log_paid_call(
             deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools"

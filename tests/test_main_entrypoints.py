@@ -396,6 +396,32 @@ class TestBuildAgentGraphDeps:
         assert deps.research_tools
         assert deps.tool_use_threshold == Threshold(settings.tool_use_volatility_threshold)
 
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [(None, None), (Decimal("0.10"), Threshold(Decimal("0.10")))],
+    )
+    def test_crypto_tool_use_threshold_reaches_the_tool_use_gate(
+        self, settings, mock_external_clients, mocker, configured, expected
+    ):
+        # FIN-08: osobny próg tool-use krypto; brak = wspólny próg (None w deps).
+        mocker.patch("src.infrastructure.llm.tool_calling_openai.OpenAI")
+        settings.tool_use_enabled = True
+        settings.crypto_tool_use_volatility_threshold = configured
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert deps.crypto_tool_use_threshold == expected
+
+    def test_crypto_tool_use_threshold_needs_the_tool_use_port(
+        self, settings, mock_external_clients
+    ):
+        settings.tool_use_enabled = False
+        settings.crypto_tool_use_volatility_threshold = Decimal("0.10")
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert deps.crypto_tool_use_threshold is None
+
     def test_paid_run_wires_the_alpha_vantage_feeds_council_and_embeddings(
         self, settings, mock_external_clients
     ):
