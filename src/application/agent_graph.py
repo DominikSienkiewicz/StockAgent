@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 
 from langgraph.graph import END, StateGraph
 
@@ -152,6 +152,24 @@ def _log_paid_call(
     deps.telemetry.record_paid_call(source)
 
 
+class SentimentPayload(TypedDict, total=False):
+    """Wynik `SentimentPort.get_social_score` w stanie grafu (ARCH-10).
+
+    Kontrakt adaptera Alpha Vantage NEWS_SENTIMENT (i jego atrapy): sentyment
+    ważony relevance i liczniki artykułów. Pola są opcjonalne, bo graf czyta je
+    przez `.get` z wartością domyślną, a brak pola flaguje jako `_missing`.
+    """
+
+    av_sentiment_score: float
+    av_sentiment_label: str
+    av_relevance_avg: float
+    news_volume_24h: int
+    high_relevance_count: int
+    # Feed zdegradowany (np. wyczerpane klucze AV, atrapa lokalnego runu) — graf
+    # dopisuje powód do `data_quality_flags`, bo zera nie znaczą spokojnego dnia.
+    degraded_reason: str
+
+
 class AgentState(TypedDict, total=False):
     symbol: str
     previous_price: Decimal
@@ -186,7 +204,7 @@ class AgentState(TypedDict, total=False):
     reflection_context: str
 
     # Zewnętrzne dane
-    sentiment: dict[str, Any] | None
+    sentiment: SentimentPayload | None
     news: list[dict[str, Any]]
 
     # Fundamenty i wycena
@@ -1278,7 +1296,9 @@ def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> AgentSta
         deps, "analyze_sentiment", symbol, "sentiment", "sentiment_port.get_social_score"
     )
     with _timed_node("analyze_sentiment", symbol, deps.telemetry):
-        return {"sentiment": sentiment_port.get_social_score(symbol)}
+        # Port zwraca luźny dict; jego kształt opisuje `SentimentPayload`.
+        payload = cast(SentimentPayload, sentiment_port.get_social_score(symbol))
+        return {"sentiment": payload}
 
 
 

@@ -7,6 +7,7 @@ a mail odznakę DEGRADED zamiast udawać spokojny rynek."""
 
 from __future__ import annotations
 
+from src.application.agent_graph import SentimentPayload
 from src.application.ports import LLMPort, NewsPort, SentimentPort
 from src.infrastructure.adapters.local_stubs import (
     PAID_CALLS_DISABLED,
@@ -56,6 +57,14 @@ def test_sentiment_stub_is_neutral_and_flagged_degraded() -> None:
         "av_sentiment_label": "Neutral",
         "degraded_reason": PAID_CALLS_DISABLED,
     }
+
+
+def test_sentiment_stub_payload_fits_the_graph_state_contract() -> None:
+    # ARCH-10: graf rzutuje wynik portu na `SentimentPayload` bez kopiowania, więc
+    # każdy klucz, który daje adapter (atrapa ma komplet pól AV), musi tam być.
+    payload = LocalStubSentimentAdapter().get_social_score("AAPL")
+
+    assert set(payload) <= set(SentimentPayload.__annotations__)
 
 
 def test_news_stub_returns_no_articles() -> None:
