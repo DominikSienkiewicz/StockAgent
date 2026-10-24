@@ -1014,3 +1014,96 @@ class TestPortErrorTaxonomy:
         adapter.get_insider_flow("AAPL")
 
         assert issubclass(self._logged_error_class(caplog), ProviderUnavailable)
+
+
+class TestCorporateEvents:
+    """DAT-17: raporty 8-K z tej samej odpowiedzi submissions co Form 4 — itemy,
+    dzień filingu i link, bez nowego requestu."""
+
+    @staticmethod
+    def _submissions_with_8k() -> dict:
+        payload = _submissions(
+            forms=["8-K", "4", "8-K", "8-K"],
+            dates=[_recent_date(1), _recent_date(2), _recent_date(5), _recent_date(40)],
+            accessions=[
+                "0000320193-26-000010",
+                "0000320193-26-000009",
+                "0000320193-26-000008",
+                "0000320193-26-000007",
+            ],
+            primary_docs=["aapl-8k.htm", "form4.xml", "aapl-8k-ceo.htm", "aapl-8k-old.htm"],
+        )
+        payload["filings"]["recent"]["items"] = ["2.02,9.01", "", "5.02", "1.01"]
+        return payload
+
+    def test_extracts_8k_items_from_submissions_fixture(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=[_ok_json(_company_tickers()), _ok_json(self._submissions_with_8k())],
+        )
+
+        snapshot = adapter.get_corporate_events("AAPL")
+
+        assert snapshot is not None
+        assert [(event.form, event.items) for event in snapshot.events] == [
+            ("8-K", ("2.02", "9.01")),
+            ("8-K", ("5.02",)),
+        ]
+        latest = snapshot.latest()
+        assert latest is not None and latest.is_earnings()
+        assert latest.filing_url == (
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000010/aapl-8k.htm"
+        )
+
+    def test_events_reuse_the_submissions_of_the_insider_flow(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        get = mocker.patch(
+            "requests.Session.get",
+            side_effect=[
+                _ok_json(_company_tickers()),
+                _ok_json(self._submissions_with_8k()),
+                _ok_text(_form4_xml(code="P", shares=100.0)),
+            ],
+        )
+
+        adapter.get_insider_flow("AAPL")
+        requests_for_flow = get.call_count
+        snapshot = adapter.get_corporate_events("AAPL")
+
+        assert snapshot is not None and len(snapshot.events) == 2
+        assert get.call_count == requests_for_flow
+
+    def test_unknown_ticker_has_no_events(self, adapter: EdgarInsiderAdapter, mocker) -> None:
+        mocker.patch("requests.Session.get", side_effect=[_ok_json(_company_tickers())])
+
+        assert adapter.get_corporate_events("ZZZZ") is None
+
+    def test_submissions_without_items_column_keep_the_events(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        payload = _submissions(
+            forms=["8-K"],
+            dates=[_recent_date(1)],
+            accessions=["0000320193-26-000010"],
+            primary_docs=["aapl-8k.htm"],
+        )
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=[_ok_json(_company_tickers()), _ok_json(payload)],
+        )
+
+        snapshot = adapter.get_corporate_events("AAPL")
+
+        assert snapshot is not None
+        assert [event.items for event in snapshot.events] == [()]
+
+    def test_failed_submissions_give_none(self, adapter: EdgarInsiderAdapter, mocker) -> None:
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=[_ok_json(_company_tickers()), _error_response(503)],
+        )
+
+        assert adapter.get_corporate_events("AAPL") is None

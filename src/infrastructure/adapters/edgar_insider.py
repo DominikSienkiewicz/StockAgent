@@ -39,6 +39,10 @@ opcje M, podatek F) są pomijane. Zakup niesie datę filingu z submissions
 
 ARCH-33: sieć, status i nieparsowalna treść każdego kroku wychodzą z `_get`
 i pomocników `_http` w taksonomii portów; kroki łapią `PortError`.
+
+DAT-17: ta sama odpowiedź submissions niesie raporty bieżące 8-K (kolumny `form`,
+`items`, `filingDate`) — `get_corporate_events` czyta je z odpowiedzi trzymanej
+per CIK na czas życia instancji, więc po `get_insider_flow` nie wysyła nic nowego.
 """
 
 from __future__ import annotations
@@ -55,7 +59,12 @@ from http import HTTPStatus
 import requests
 
 from src.application.errors import PortError
-from src.application.ports import InsiderFlowPort
+from src.application.ports import CorporateEventsPort, InsiderFlowPort
+from src.domain.corporate_events import (
+    CURRENT_REPORT_FORMS,
+    CorporateEvent,
+    CorporateEventSnapshot,
+)
 from src.domain.insider_flow import InsiderBuy, InsiderFlowSnapshot
 from src.infrastructure.adapters._http import (
     build_session,
@@ -67,6 +76,8 @@ from src.infrastructure.adapters._http import (
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_WINDOW_DAYS = 90
 DEFAULT_MAX_FORM4 = 20
+# DAT-17: okno raportów 8-K (dni kalendarzowe przed dniem cyklu).
+DEFAULT_EVENT_WINDOW_DAYS = 14
 # Polityka SEC: ≤ 10 requestów/s na użytkownika, niezależnie od liczby maszyn
 # (sec.gov/os/accessing-edgar-data). 0.12 s (~8 req/s) to zapas na drgania zegara
 # i na retry urllib3 z `build_session`, które idą poza pacerem.
@@ -212,8 +223,9 @@ class _RequestPacer:
             self._last = now
 
 
-class EdgarInsiderAdapter(InsiderFlowPort):
-    """Adapter InsiderFlowPort oparty o publiczne EDGAR Form 4."""
+class EdgarInsiderAdapter(InsiderFlowPort, CorporateEventsPort):
+    """Adapter InsiderFlowPort (Form 4) i CorporateEventsPort (8-K, DAT-17) oparty
+    o publiczne EDGAR."""
 
     def __init__(
         self,
@@ -226,6 +238,7 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         min_request_interval: float = SEC_MIN_REQUEST_INTERVAL_SECONDS,
         clock: Callable[[], float] = _monotonic,
         sleep: Callable[[float], None] = _sleep,
+        event_window_days: int = DEFAULT_EVENT_WINDOW_DAYS,
     ) -> None:
         self._user_agent = user_agent
         self._window_days = window_days
@@ -239,6 +252,10 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         # życia instancji; None w polu = jeszcze nie pobrana albo ostatnia próba padła.
         self._cik_by_ticker: dict[str, str | None] | None = None
         self._cik_lock = threading.Lock()
+        # DAT-17: odpowiedź submissions per CIK — Form 4 i 8-K z jednego requestu.
+        self._submissions_by_cik: dict[str, object] = {}
+        self._submissions_lock = threading.Lock()
+        self._event_window_days = event_window_days
         # Adapter żyje jeden cykl: po 403 SEC dalsze żądania tylko przedłużają
         # blokadę (dostęp wraca po 10 min poniżej progu), więc milkniemy do końca.
         self._blocked = False
@@ -259,6 +276,53 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             )
             return None
         return response
+
+    def get_corporate_events(self, symbol: str) -> CorporateEventSnapshot | None:
+        """DAT-17: raporty 8-K z okna `event_window_days`, od najnowszego. None, gdy
+        EDGAR nas zablokował, ticker nie ma CIK albo submissions są niedostępne."""
+        if self._blocked:
+            return None
+        cik = self._resolve_cik(symbol)
+        if cik is None:
+            return None
+        payload = self._submissions(cik)
+        recent = _recent_columns(payload) if payload is not None else None
+        if recent is None:
+            return None
+        return CorporateEventSnapshot(
+            symbol=symbol,
+            events=self._recent_current_reports(cik, recent),
+            window_days=self._event_window_days,
+        )
+
+    def _recent_current_reports(
+        self, cik: str, recent: dict[str, list[object]]
+    ) -> tuple[CorporateEvent, ...]:
+        cutoff = datetime.now(UTC).date() - timedelta(days=self._event_window_days)
+        items = recent.get("items", [])
+        events: list[CorporateEvent] = []
+        for index, (form, date_str, accession, doc) in enumerate(
+            zip(
+                recent["form"],
+                recent["filingDate"],
+                recent["accessionNumber"],
+                recent["primaryDocument"],
+                strict=False,
+            )
+        ):
+            filed_on = self._parse_date(date_str)
+            if str(form) not in CURRENT_REPORT_FORMS or filed_on is None or filed_on < cutoff:
+                continue
+            raw_items = items[index] if index < len(items) else ""
+            events.append(
+                CorporateEvent(
+                    form=str(form),
+                    items=_item_codes(raw_items),
+                    filed_on=filed_on,
+                    filing_url=_filing_url(cik, str(accession), str(doc)),
+                )
+            )
+        return tuple(events)
 
     def get_insider_flow(self, symbol: str) -> InsiderFlowSnapshot | None:
         if self._blocked:
@@ -368,38 +432,21 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         """Form 4 w oknie z datą filingu, od najnowszego (kolejność submissions).
 
         None gdy submissions niedostępne; pusta lista gdy brak Form 4."""
-        url = SUBMISSIONS_URL.format(cik=cik)
-        try:
-            response = self._get(url)
-            if response is None:
-                return None
-            raise_for_status_translated(response)
-            payload = json_payload(response)
-        except PortError:
-            logger.exception("EDGAR submissions fetch failed for CIK %s", cik)
+        payload = self._submissions(cik)
+        if payload is None:
             return None
-
-        recent = (
-            payload.get("filings", {}).get("recent", {})
-            if isinstance(payload, dict)
-            else {}
-        )
-        forms = recent.get("form", [])
-        dates = recent.get("filingDate", [])
-        accessions = recent.get("accessionNumber", [])
-        primary_docs = recent.get("primaryDocument", [])
-        if not (
-            isinstance(forms, list)
-            and isinstance(dates, list)
-            and isinstance(accessions, list)
-            and isinstance(primary_docs, list)
-        ):
+        recent = _recent_columns(payload)
+        if recent is None:
             return None
 
         cutoff = datetime.now(UTC).date() - timedelta(days=self._window_days)
         result: list[_Form4Filing] = []
         for form, date_str, accession, doc in zip(
-            forms, dates, accessions, primary_docs, strict=False
+            recent["form"],
+            recent["filingDate"],
+            recent["accessionNumber"],
+            recent["primaryDocument"],
+            strict=False,
         ):
             if str(form) != "4":
                 continue
@@ -410,6 +457,25 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             if len(result) >= self._max_form4:
                 break
         return result
+
+    def _submissions(self, cik: str) -> object | None:
+        """Odpowiedź submissions CIK (DAT-17: trzymana na czas życia instancji).
+        None, gdy pobranie padło — porażka nie jest zapamiętana."""
+        with self._submissions_lock:
+            if cik in self._submissions_by_cik:
+                return self._submissions_by_cik[cik]
+        try:
+            response = self._get(SUBMISSIONS_URL.format(cik=cik))
+            if response is None:
+                return None
+            raise_for_status_translated(response)
+            payload: object = json_payload(response)
+        except PortError:
+            logger.exception("EDGAR submissions fetch failed for CIK %s", cik)
+            return None
+        with self._submissions_lock:
+            self._submissions_by_cik[cik] = payload
+        return payload
 
     @staticmethod
     def _parse_date(date_str: object) -> date | None:
@@ -537,6 +603,29 @@ def _amount(transaction: ET.Element, name: str) -> float | None:
         return float(text.strip())
     except ValueError:
         return None
+
+
+_RECENT_COLUMNS = ("form", "filingDate", "accessionNumber", "primaryDocument")
+
+
+def _recent_columns(payload: object) -> dict[str, list[object]] | None:
+    """Kolumny `filings.recent` z submissions. Odpowiedź bez tej sekcji to pusta
+    historia (puste listy); kolumna nie-lista → None (kształt, którego nie znamy)."""
+    filings = payload.get("filings") if isinstance(payload, dict) else None
+    recent = filings.get("recent") if isinstance(filings, dict) else None
+    if not isinstance(recent, dict):
+        recent = {}
+    columns = {name: recent.get(name, []) for name in (*_RECENT_COLUMNS, "items")}
+    if not all(isinstance(columns[name], list) for name in _RECENT_COLUMNS):
+        return None
+    if not isinstance(columns["items"], list):
+        columns["items"] = []
+    return columns
+
+
+def _item_codes(raw: object) -> tuple[str, ...]:
+    """`items` 8-K z submissions („2.02,9.01”) → ("2.02", "9.01")."""
+    return tuple(code.strip() for code in str(raw or "").split(",") if code.strip())
 
 
 def _filing_url(cik: str, accession: str, primary_doc: str) -> str:

@@ -11,6 +11,7 @@ from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.attestation import CommitmentLedger, StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
+from src.domain.corporate_events import CorporateEventSnapshot
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.direction_variant import DirectionReport
@@ -1232,6 +1233,15 @@ class InsiderFlowPort(ABC):
 
     @abstractmethod
     def get_insider_flow(self, symbol: str) -> InsiderFlowSnapshot | None: ...
+
+
+class CorporateEventsPort(ABC):
+    """DAT-17: raporty bieżące SEC 8-K symbolu z ostatnich dni (wyniki, zmiany
+    w zarządzie, istotne umowy). Zwraca None, gdy źródło niedostępne albo symbol
+    nie ma CIK; Null-adapter zwraca None bez wywołania sieciowego."""
+
+    @abstractmethod
+    def get_corporate_events(self, symbol: str) -> CorporateEventSnapshot | None: ...
 
 
 class EarningsCalendarPort(ABC):
