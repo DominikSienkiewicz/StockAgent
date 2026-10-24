@@ -337,3 +337,30 @@ class TestCircuitBreaker:
                 skipped_symbols=frozenset({"AAPL", "META"}),
             ),
         )
+
+
+class TestFailedRequestsBySource:
+    """MAIL-21: błędne odpowiedzi z licznika HTTP przypisane dostawcom po hoście."""
+
+    def test_counts_rate_limits_and_server_errors_per_provider(self) -> None:
+        from src.infrastructure.adapters._http import failed_requests_by_source
+
+        snapshot = {
+            "finnhub.io": {"requests": 40, "2xx": 35, "429": 2, "5xx": 3},
+            "www.alphavantage.co": {"requests": 5, "2xx": 5},
+            "unknown.example": {"requests": 2, "5xx": 2},
+        }
+
+        assert failed_requests_by_source(snapshot) == {"Finnhub": 5, "unknown.example": 2}
+
+    def test_client_errors_count_only_for_sources_that_403_instead_of_404(self) -> None:
+        from src.infrastructure.adapters._http import failed_requests_by_source
+
+        snapshot = {
+            "www.sec.gov": {"requests": 3, "4xx": 1},
+            "data.sec.gov": {"requests": 2, "4xx": 2},
+            "www.reddit.com": {"requests": 1, "4xx": 1},
+            "finnhub.io": {"requests": 9, "4xx": 4},
+        }
+
+        assert failed_requests_by_source(snapshot) == {"EDGAR": 3, "Reddit": 1}

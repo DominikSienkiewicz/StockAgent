@@ -17,7 +17,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -37,6 +37,7 @@ from src.application.ports import (
     AdvisoryCouncilPort,
     AnalystConsensusPort,
     AttestationPublisherPort,
+    CircuitState,
     CycleRun,
     EarningsCalendarPort,
     EmbeddingPort,
@@ -94,6 +95,11 @@ from src.application.report_regime import RegimeBanner
 from src.application.report_symbol_record import SymbolTrackRecordView
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
+from src.application.source_health import (
+    SourceHealth,
+    assess_source_health,
+    degraded_symbols,
+)
 from src.application.tools import build_research_tools
 from src.application.track_record_window import (
     TrackRecordReads,
@@ -169,6 +175,7 @@ from src.domain.value_objects import AssetType, Threshold
 from src.infrastructure.adapters._finnhub_common import FINNHUB_REQUESTS_PER_MINUTE
 from src.infrastructure.adapters._http import (
     RateLimiter,
+    failed_requests_by_source,
     metered_http,
     process_circuits,
     redact_secrets,
@@ -2002,6 +2009,48 @@ def _build_subject(
     return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
 
 
+def enabled_sources(settings: Settings) -> dict[str, bool]:
+    """MAIL-21: które źródła ten przebieg w ogóle odpytuje — z tych samych flag
+    i kluczy, z których fabryki budują adaptery. Embeddingi są zawsze z OpenAI,
+    więc OpenAI pracuje przy każdym płatnym przebiegu (`build_embedding_adapter`)."""
+    paid = settings.paid_calls_enabled
+    llm_providers = {settings.llm_provider, settings.council_llm_provider or settings.llm_provider}
+    return {
+        "Finnhub": bool(settings.symbols),
+        "CoinGecko": bool(settings.crypto_symbols),
+        "Alpha Vantage": paid,
+        "EDGAR": settings.insider_flow_enabled,
+        "Reddit": settings.social_velocity_enabled,
+        "FRED": bool(settings.fred_api_key)
+        and (settings.yield_curve_enabled or settings.macro_series_enabled),
+        "NBP": settings.nbp_enabled,
+        "Anthropic": paid and "anthropic" in llm_providers,
+        "OpenAI": paid,
+    }
+
+
+def _llm_source(settings: Settings) -> str:
+    """Dostawca głównej analizy LLM — jego wina, gdy symbol dostał atrapę albo failover."""
+    return "Anthropic" if settings.llm_provider == "anthropic" else "OpenAI"
+
+
+def cycle_source_health(
+    settings: Settings,
+    results: list[SymbolResult],
+    *,
+    circuits: Iterable[CircuitState],
+    http_calls: Mapping[str, Mapping[str, int]],
+) -> tuple[SourceHealth, ...]:
+    """MAIL-21: linijka stanu każdego źródła — obwody HTTP procesu (NIEZ-31), flagi
+    jakości symboli i błędne odpowiedzi z licznika HTTP przebiegu (NIEZ-24)."""
+    return assess_source_health(
+        enabled=enabled_sources(settings),
+        circuits=circuits,
+        degraded=degraded_symbols(results, llm_source=_llm_source(settings)),
+        failed_requests=failed_requests_by_source(http_calls),
+    )
+
+
 def _report_flags(settings: Settings) -> ReportFlags:
     """ARCH-06: `Settings` → flagi i okna sekcji raportu (bez konwersji wartości)."""
     return ReportFlags(
@@ -2896,6 +2945,13 @@ def _run_fast_loop(
     logger.info("Fast Loop done — failures=%d/%d", failures, len(eligible))
     # NIEZ-31: otwarty obwód hosta (np. Finnhub) — jeden WARNING per host w bannerze.
     record_open_circuit_alerts(quota_monitor, process_circuits(), clock())
+    # MAIL-21: stan źródeł do maila — ten sam odczyt obwodów i licznik HTTP przebiegu.
+    source_health = cycle_source_health(
+        settings,
+        results,
+        circuits=process_circuits().circuit_states(),
+        http_calls=use_case.telemetry.snapshot().http_calls,
+    )
 
     # ---- Portfolio Radar (Q4 — korelacja/koncentracja watchlisty, darmowe) ----
     portfolio_risk_report = _build_portfolio_radar(settings, repository, all_symbols)
@@ -2941,6 +2997,7 @@ def _run_fast_loop(
                 as_of=to_nyse_time(started_at).date(),
                 max_age_days=settings.insider_lead_max_age_days,
             ),
+            source_health=source_health,
         ),
     )
     report_delivery = _report_delivery(

@@ -48,6 +48,7 @@ MAIL_ORDER = (
     "preheader",
     "masthead",
     "quota_banner",
+    "source_health",
     "lead",
     "onboarding",
     "session",

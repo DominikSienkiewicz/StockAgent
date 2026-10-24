@@ -107,6 +107,9 @@ class SymbolResult:
     effective_threshold: Decimal | None = None
     regime_multiplier: float = 1.0
     earnings_multiplier: float = 1.0
+    # MAIL-21: flagi jakości danych symbolu z grafu (`data_quality_flags`) —
+    # z nich linijka stanu źródeł przypisuje awarie dostawcom.
+    data_quality_flags: tuple[str, ...] = ()
 
     @property
     def expected_change(self) -> Decimal | None:

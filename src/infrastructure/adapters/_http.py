@@ -30,7 +30,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlsplit
@@ -40,7 +40,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from src.application.errors import PortError, ProviderUnavailable, QuotaExhausted
-from src.application.http_metering import HttpCallMeter
+from src.application.http_metering import RATE_LIMITED, HttpCallMeter
 from src.application.ports import CircuitState, CircuitStatePort
 from src.infrastructure.error_translation import as_port_error
 
@@ -119,6 +119,31 @@ _HOST_SOURCES = {
 }
 
 
+# MAIL-21: źródła, które odcinają klienta przez 403 (EDGAR bez nagłówka SEC, Reddit
+# bez OAuth), a 404 nie zwracają — u nich każde 4xx to błędna odpowiedź. U reszty
+# 4xx bywa zwykłym brakiem danych (404 na tickerze EU), więc się nie liczy.
+_SOURCES_FAILING_ON_4XX = frozenset({"EDGAR", "Reddit"})
+_FAILED_CLASSES: tuple[str, ...] = (RATE_LIMITED, "5xx")
+
+
+def source_of_host(host: str) -> str:
+    """Nazwa dostawcy dla człowieka; nieznany host = sam host."""
+    return _HOST_SOURCES.get(host, host)
+
+
+def failed_requests_by_source(http_calls: Mapping[str, Mapping[str, int]]) -> dict[str, int]:
+    """MAIL-21: błędne odpowiedzi per dostawca z migawki `HttpCallMeter` — 429 i 5xx
+    każdego hosta, a u źródeł z `_SOURCES_FAILING_ON_4XX` także 4xx. Bez zer."""
+    failed: dict[str, int] = {}
+    for host, counts in http_calls.items():
+        source = source_of_host(host)
+        classes = _FAILED_CLASSES + (("4xx",) if source in _SOURCES_FAILING_ON_4XX else ())
+        count = sum(counts.get(status_class, 0) for status_class in classes)
+        if count:
+            failed[source] = failed.get(source, 0) + count
+    return failed
+
+
 class CircuitOpenError(ProviderUnavailable, requests.ConnectionError):
     """NIEZ-31: obwód hosta otwarty — żądanie nie wyszło do sieci.
 
@@ -193,7 +218,7 @@ class CircuitBreakerRegistry(CircuitStatePort):
         with self._lock:
             return tuple(
                 CircuitState(
-                    source=_HOST_SOURCES.get(host, host),
+                    source=source_of_host(host),
                     host=host,
                     is_open=circuit.is_open,
                     consecutive_failures=circuit.consecutive_failures,

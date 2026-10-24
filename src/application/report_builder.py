@@ -58,6 +58,7 @@ from src.application.report_user_portfolio import portfolio_change_view
 from src.application.reporting.registry import REPORT_SECTIONS
 from src.application.reporting.section import SectionInput
 from src.application.run_context import RunContext
+from src.application.source_health import SourceHealth
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport, PositionRisk
 from src.domain.asset import PriceDelta
@@ -470,6 +471,9 @@ class ReportContext:
     # DAT-21: zakup insidera prowadzi maila tylko przez N dni od filingu. None =
     # bez okna (wołający bez daty cyklu, testy).
     insider_lead_window: InsiderLeadWindow | None = None
+    # MAIL-21: stan każdego źródła danych w cyklu (obwody HTTP, flagi jakości,
+    # błędne odpowiedzi). None = sekcja 📡 bez danych, jak przed MAIL-21.
+    source_health: tuple[SourceHealth, ...] | None = None
 
 
 def _section_input(
@@ -688,6 +692,7 @@ def to_symbol_result(
         effective_threshold=_as_decimal(raw.get("effective_threshold")),
         regime_multiplier=_multiplier_of(raw, "regime_multiplier"),
         earnings_multiplier=_multiplier_of(raw, "earnings_multiplier"),
+        data_quality_flags=tuple(str(flag) for flag in raw.get("data_quality_flags") or ()),
     )
 
 

@@ -9,38 +9,39 @@ Every section of the cycle email, in the order `build_html_report` renders it (t
 | # | Section, as headed in the email | Zone | Shown when | Production (`config.toml`) | Plain text |
 |---|---|---|---|---|---|
 | 1 | Quota banner (`🔴 KRYTYCZNY` / `⚠️ OSTRZEŻENIE`) | top | a quota alert in the last 7 × 24 + 3 h | no flag | yes |
-| 2 | Lead, reused as the subject | top | a lead item (the cycle's strongest signal); without one the preheader says `Brak sygnałów ponad próg` | no flag | yes |
-| 3 | `👋 Dzień 1 — buduję punkt odniesienia` | top | the first cycle of a deployment (`cycle_maturity`), with its own welcome subject | no flag | yes |
-| 4 | NYSE session line (`Sesja NYSE:`) and the market regime | Na dziś | always; the regime with `regime_aware_enabled` | `regime_aware_enabled = true` | yes |
-| 5 | First screen: `Twój portfel od ostatniego maila`, `Sygnały ponad próg`, `Rozliczone` | Na dziś | always; the portfolio box only for the owner with positions | `portfolio_positions_enabled = true` | yes |
-| 6 | Credibility bar (`Wiarygodność modelu`) | Na dziś | the accuracy statistics carry directional counts | no flag | yes |
-| 7 | `💼 Twój portfel` (STALE badge on an outdated table) | Na dziś | `portfolio_positions_enabled`, owner only; P/L in złoty with `nbp_enabled` | on; `nbp_enabled = true`, `positions_currency_enabled = false`, `fx_rates_cache_enabled = false` | yes |
-| 8 | `📊 Zamknięte predykcje (ostatnie 24h)`, or `(rozliczone w tym cyklu)` | Na dziś | always; an empty window says so | `settled_at_windows_enabled = false` (needs migration `029`) | yes |
-| 9 | `🔄 Zmiany nastawienia` | Na dziś | `cycle_diff_enabled` and a council flip or a sentiment or consensus jump | `cycle_diff_enabled = true` | no |
-| 10 | `🔄 Nowy punkt odniesienia` | Na dziś | a reference price older than 96 h | no flag | yes |
-| 11 | `🎯 Najsilniejsze sygnały` with the position-size band | Na dziś | a saved prediction with a direction; calibrated confidence with `calibrated_confidence_enabled`, the per-symbol hit rate with `equity_curve_enabled` | both `true` | yes |
-| 12 | `🚨 Sygnały ostrzegawcze` | Na dziś | a divergence, an AV/LLM conflict or a low-signal prediction | no flag | yes |
-| 13 | `🔮 Wygenerowane predykcje`, then the forecast chart, `💡 Uzasadnienia` (council table, `Wycena fundamentalna`, provenance badges, 80% interval, top news) and `📋 Pozostałe predykcje (skrót)` | Na dziś | a saved prediction; the short rows above 10 saved predictions | no flag | yes, every reasoning in full |
-| 14 | `🪙 Krypto` | Na dziś | `crypto_symbols` is not empty, gate or no gate | `crypto_symbols = ["BTC", "ETH"]` | yes |
-| 15 | `🗄️ Zaplecze` separator | — | always | — | yes (`ZAPLECZE`) |
-| 16 | `🚨 Risk Watch — sygnały makro` | Zaplecze | `risk_symbols` is not empty; the NBP block with `nbp_enabled`, hedges with `hedge_effectiveness_enabled` | 10 risk symbols, `nbp_enabled = true`, `hedge_effectiveness_enabled = false` | yes |
-| 17 | `🎯 Portfolio Radar — koncentracja i ryzyko` | Zaplecze | correlation clusters of `peer_groups` (derived from `sectors`); VaR/CVaR with `portfolio_var_enabled`, the stress test with `stress_test_enabled` | clusters on; `portfolio_var_enabled = false`, `stress_test_enabled = false` | yes |
-| 18 | `🛰️ Alpha Signals — dodatkowe źródła danych` | Zaplecze | any alpha source flag | `yield_curve_enabled`, `analyst_consensus_enabled` = `true`; `insider_flow_enabled`, `social_velocity_enabled`, `earnings_calendar_enabled`, `options_flow_enabled` = `false` | no |
-| 19 | `📈 Track Record — skuteczność i kalibracja` (equity curve, benchmark, hit rate with its verdict, Brier, calibration, lessons) | Zaplecze | `equity_curve_enabled`, `calibration_curve_enabled`, `lessons_enabled`; interval coverage with `interval_coverage_enabled` | the three `true`; `interval_coverage_enabled = false` (needs migration `032`) | no |
-| 20 | Accuracy history (`Trafność kierunkowa` next to `Trafność łączna`) | Zaplecze | the accuracy statistics have a sample | no flag | yes |
-| 21 | `🩺 Karta kondycji modelu` | Zaplecze | `model_scorecard_enabled` and a scorecard row in the last 42 days | `model_scorecard_enabled = true`, `model_scorecard_baselines_enabled = false` (needs migration `028`) | no |
-| 22 | `🏆 Rada — ranking wiarygodności` | Zaplecze | a persona with at least 5 settled votes in 90 days (migration `018`) | no flag | no |
-| 23 | `🗳️ Rada — historia głosów` | Zaplecze | stored council votes | no flag | no |
-| 24 | Portfolio mood (`📊 Nastroje portfela`) | Zaplecze | a saved prediction | no flag | yes |
-| 25 | Δ chart | Zaplecze | a symbol with a price change | no flag | no |
-| 26 | `🧠 Wnioski z poprzednich cykli (Self-Reflection)` | Zaplecze | a saved prediction with a substantive lesson | no flag | yes |
-| 27 | `💡 Warte uwagi (sektory w ruchu)` | Zaplecze | a hot sector with peers in `sector_peers` | `sector_peers` set for 8 sectors | yes |
-| 28 | `📈 Korelacja sentymentu z ruchem ceny` | Zaplecze | at least 3 points | no flag | no |
-| 29 | `💸 Koszt cyklu` | Zaplecze | always; a free cycle says so | `llm_pricing` set (as of `llm_pricing_as_of`) | no |
-| 30 | `💸 Pominięte — wyczerpany budżet cyklu` | Zaplecze | a symbol cut by `max_paid_llm_calls_per_cycle` | `max_paid_llm_calls_per_cycle = 100` | yes |
-| 31 | `⏸ Pominięte (poniżej progu zmienności)` | Zaplecze | a symbol below the volatility gate | no flag | yes |
-| 32 | `⚠️ Błędy` | Zaplecze | a symbol that failed | no flag | yes |
-| 33 | Footer: disclaimer, pipeline counters, run line | — | always | — | yes |
+| 2 | `📡 Stan źródeł danych` — one line per provider (Finnhub, CoinGecko, Alpha Vantage, EDGAR, Reddit, FRED, NBP, Anthropic, OpenAI): OK, degraded (N symbols / failed responses), unavailable (open HTTP circuit), disabled by flag | top | a provider is degraded or unavailable this cycle (MAIL-21); a quiet day hides it | no flag | yes |
+| 3 | Lead, reused as the subject | top | a lead item (the cycle's strongest signal); without one the preheader says `Brak sygnałów ponad próg` | no flag | yes |
+| 4 | `👋 Dzień 1 — buduję punkt odniesienia` | top | the first cycle of a deployment (`cycle_maturity`), with its own welcome subject | no flag | yes |
+| 5 | NYSE session line (`Sesja NYSE:`) and the market regime | Na dziś | always; the regime with `regime_aware_enabled` | `regime_aware_enabled = true` | yes |
+| 6 | First screen: `Twój portfel od ostatniego maila`, `Sygnały ponad próg`, `Rozliczone` | Na dziś | always; the portfolio box only for the owner with positions | `portfolio_positions_enabled = true` | yes |
+| 7 | Credibility bar (`Wiarygodność modelu`) | Na dziś | the accuracy statistics carry directional counts | no flag | yes |
+| 8 | `💼 Twój portfel` (STALE badge on an outdated table) | Na dziś | `portfolio_positions_enabled`, owner only; P/L in złoty with `nbp_enabled` | on; `nbp_enabled = true`, `positions_currency_enabled = false`, `fx_rates_cache_enabled = false` | yes |
+| 9 | `📊 Zamknięte predykcje (ostatnie 24h)`, or `(rozliczone w tym cyklu)` | Na dziś | always; an empty window says so | `settled_at_windows_enabled = false` (needs migration `029`) | yes |
+| 10 | `🔄 Zmiany nastawienia` | Na dziś | `cycle_diff_enabled` and a council flip or a sentiment or consensus jump | `cycle_diff_enabled = true` | no |
+| 11 | `🔄 Nowy punkt odniesienia` | Na dziś | a reference price older than 96 h | no flag | yes |
+| 12 | `🎯 Najsilniejsze sygnały` with the position-size band | Na dziś | a saved prediction with a direction; calibrated confidence with `calibrated_confidence_enabled`, the per-symbol hit rate with `equity_curve_enabled` | both `true` | yes |
+| 13 | `🚨 Sygnały ostrzegawcze` | Na dziś | a divergence, an AV/LLM conflict or a low-signal prediction | no flag | yes |
+| 14 | `🔮 Wygenerowane predykcje`, then the forecast chart, `💡 Uzasadnienia` (council table, `Wycena fundamentalna`, provenance badges, 80% interval, top news) and `📋 Pozostałe predykcje (skrót)` | Na dziś | a saved prediction; the short rows above 10 saved predictions | no flag | yes, every reasoning in full |
+| 15 | `🪙 Krypto` | Na dziś | `crypto_symbols` is not empty, gate or no gate | `crypto_symbols = ["BTC", "ETH"]` | yes |
+| 16 | `🗄️ Zaplecze` separator | — | always | — | yes (`ZAPLECZE`) |
+| 17 | `🚨 Risk Watch — sygnały makro` | Zaplecze | `risk_symbols` is not empty; the NBP block with `nbp_enabled`, hedges with `hedge_effectiveness_enabled` | 10 risk symbols, `nbp_enabled = true`, `hedge_effectiveness_enabled = false` | yes |
+| 18 | `🎯 Portfolio Radar — koncentracja i ryzyko` | Zaplecze | correlation clusters of `peer_groups` (derived from `sectors`); VaR/CVaR with `portfolio_var_enabled`, the stress test with `stress_test_enabled` | clusters on; `portfolio_var_enabled = false`, `stress_test_enabled = false` | yes |
+| 19 | `🛰️ Alpha Signals — dodatkowe źródła danych` | Zaplecze | any alpha source flag | `yield_curve_enabled`, `analyst_consensus_enabled` = `true`; `insider_flow_enabled`, `social_velocity_enabled`, `earnings_calendar_enabled`, `options_flow_enabled` = `false` | no |
+| 20 | `📈 Track Record — skuteczność i kalibracja` (equity curve, benchmark, hit rate with its verdict, Brier, calibration, lessons) | Zaplecze | `equity_curve_enabled`, `calibration_curve_enabled`, `lessons_enabled`; interval coverage with `interval_coverage_enabled` | the three `true`; `interval_coverage_enabled = false` (needs migration `032`) | no |
+| 21 | Accuracy history (`Trafność kierunkowa` next to `Trafność łączna`) | Zaplecze | the accuracy statistics have a sample | no flag | yes |
+| 22 | `🩺 Karta kondycji modelu` | Zaplecze | `model_scorecard_enabled` and a scorecard row in the last 42 days | `model_scorecard_enabled = true`, `model_scorecard_baselines_enabled = false` (needs migration `028`) | no |
+| 23 | `🏆 Rada — ranking wiarygodności` | Zaplecze | a persona with at least 5 settled votes in 90 days (migration `018`) | no flag | no |
+| 24 | `🗳️ Rada — historia głosów` | Zaplecze | stored council votes | no flag | no |
+| 25 | Portfolio mood (`📊 Nastroje portfela`) | Zaplecze | a saved prediction | no flag | yes |
+| 26 | Δ chart | Zaplecze | a symbol with a price change | no flag | no |
+| 27 | `🧠 Wnioski z poprzednich cykli (Self-Reflection)` | Zaplecze | a saved prediction with a substantive lesson | no flag | yes |
+| 28 | `💡 Warte uwagi (sektory w ruchu)` | Zaplecze | a hot sector with peers in `sector_peers` | `sector_peers` set for 8 sectors | yes |
+| 29 | `📈 Korelacja sentymentu z ruchem ceny` | Zaplecze | at least 3 points | no flag | no |
+| 30 | `💸 Koszt cyklu` | Zaplecze | always; a free cycle says so | `llm_pricing` set (as of `llm_pricing_as_of`) | no |
+| 31 | `💸 Pominięte — wyczerpany budżet cyklu` | Zaplecze | a symbol cut by `max_paid_llm_calls_per_cycle` | `max_paid_llm_calls_per_cycle = 100` | yes |
+| 32 | `⏸ Pominięte (poniżej progu zmienności)` | Zaplecze | a symbol below the volatility gate | no flag | yes |
+| 33 | `⚠️ Błędy` | Zaplecze | a symbol that failed | no flag | yes |
+| 34 | Footer: disclaimer, pipeline counters, run line | — | always | — | yes |
 
 A separate email goes out after the Sunday Slow Loop: `📅 Tydzień StockAgenta`, the weekly recap with its `🛡️ Wybronieni dysydenci rady` block, with `weekly_recap_enabled` (`true` in `config.toml`) and at least 5 closed predictions in the week; it costs one LLM call ([configuration](configuration.md)).
 

@@ -38,6 +38,7 @@ from src.application.report_skipped import (
     IGNORED_SECTION,
     REBASELINED_SECTION,
 )
+from src.application.report_source_health import SOURCE_HEALTH_SECTION
 from src.application.report_suggestions import SUGGESTIONS_SECTION
 from src.application.report_track_record import TRACK_RECORD_SECTION
 from src.application.report_trade_signals import TRADE_SIGNALS_SECTION
@@ -48,6 +49,7 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     PREHEADER_SECTION,
     MASTHEAD_SECTION,
     QUOTA_BANNER_SECTION,
+    SOURCE_HEALTH_SECTION,
     LEAD_SECTION,
     ONBOARDING_SECTION,
     SESSION_SECTION,
