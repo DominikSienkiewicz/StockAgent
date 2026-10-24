@@ -30,7 +30,7 @@ import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TextIO
 
 from src.tools.cost_envelope import (
     EnvelopeInputs,
@@ -45,6 +45,7 @@ from src.tools.evaluate import (
     evaluation_reads,
     fields_kwarg,
     render_evaluation,
+    render_evaluation_json,
     with_asset_class,
 )
 from src.tools.explain import explain_prediction, explain_symbol_day
@@ -169,6 +170,19 @@ def _add_evaluate(subcommands: argparse._SubParsersAction[argparse.ArgumentParse
             "z CI blokowym i trafnością top-k% wg pewności."
         ),
     )
+    parser.add_argument(
+        "--scores",
+        action="store_true",
+        help=(
+            "RMSE w zwrotach per klasa aktywa oraz Brier i log loss pewności LLM (WIA-40) — "
+            "czyta symbol i confidence_score (migracja 016)."
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Raport jako JSON do porównywania przebiegów (WIA-40); tylko JSON na stdout.",
+    )
     parser.set_defaults(handler=_run_evaluate)
 
 
@@ -191,10 +205,16 @@ def _run_evaluate(args: argparse.Namespace) -> int:
         echo=args.echo,
         experiment=experiment is not None,
         discrimination=args.discrimination,
+        scores=args.scores,
     )
-    rows, read_fields = _read_evaluation_rows(repo, args.days, reads, fields)
-    if "asset_class" in segmentations:
+    rows, read_fields = _read_evaluation_rows(
+        repo, args.days, reads, fields, notices=sys.stderr if args.json else sys.stdout
+    )
+    if "asset_class" in segmentations or args.scores:
         rows = with_asset_class(rows, settings.crypto_symbols, settings.symbols_etf)
+    if args.json:
+        print(render_evaluation_json(rows, days=args.days, segmentations=segmentations))
+        return 0
     print(
         render_evaluation(
             rows,
@@ -224,7 +244,12 @@ def _find_experiment(experiments: Sequence[Experiment], experiment_id: str) -> E
 
 
 def _read_evaluation_rows(
-    repo: SupabaseRepository, days: int, reads: dict[str, Any], fields: set[str]
+    repo: SupabaseRepository,
+    days: int,
+    reads: dict[str, Any],
+    fields: set[str],
+    *,
+    notices: TextIO = sys.stdout,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Odczyt wierszy ewaluacji i zbiór pól, które naprawdę odczytano.
 
@@ -242,7 +267,7 @@ def _read_evaluation_rows(
         except MissingColumnError as exc:
             if exc.column not in OPTIONAL_COLUMNS or exc.column not in remaining:
                 raise
-            print(OPTIONAL_COLUMNS[exc.column])
+            print(OPTIONAL_COLUMNS[exc.column], file=notices)
             remaining.discard(exc.column)
             continue
         return rows, remaining

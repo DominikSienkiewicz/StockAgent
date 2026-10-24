@@ -65,6 +65,12 @@ i trafnością top 20% / 50% / 100% predykcji wg pewności. AUC ≈ 0.5 znaczy, 
 kalibracja tylko przesuwa wszystkich do stopy bazowej, a ranking po pewności
 jest szumem.
 
+Skala i pewność (WIA-40): `--scores` dokłada RMSE w zwrotach per klasa aktywa
+(klasa wg bieżącego configu) oraz Brier i log loss pewności LLM; czyta symbol
+i `confidence_score` (016) tylko na żądanie. `--json` drukuje ten sam raport
+(nagłówek, dowód trafności, RMSE, klasy, pewność, segmenty `--by`) jako JSON —
+do porównywania przebiegów; komunikaty o brakujących kolumnach idą wtedy na stderr.
+
 Uruchom (ARCH-39: składanie `Settings` i repozytorium żyje w `main_tools.py`,
 tu zostają czyste funkcje):
     uv run python main_tools.py evaluate
@@ -76,6 +82,8 @@ tu zostają czyste funkcje):
     uv run python main_tools.py evaluate --echo
     uv run python main_tools.py evaluate --experiment EXP-02 --days 90
     uv run python main_tools.py evaluate --discrimination
+    uv run python main_tools.py evaluate --scores
+    uv run python main_tools.py evaluate --json > run.json
 
 Exit code: 0 zawsze (narzędzie raportujące, nie bramka CI).
 """
@@ -205,6 +213,9 @@ DISCRIMINATION_FIELDS: tuple[str, ...] = (
     "council_recommendation",
     "council_consensus",
 )
+# WIA-40: symbol (klasa aktywa) i pewność LLM (016) — pola czytane na żądanie
+# `--scores`, bo domyślny odczyt nie dotyka kolumn opcjonalnych.
+SCORES_FIELDS: tuple[str, ...] = ("symbol", "confidence_score")
 # Punkty krzywej ryzyko–pokrycie drukowane w CLI.
 _DISCRIMINATION_COVERAGES: tuple[float, ...] = (0.2, 0.5, 1.0)
 # Kolumny, bez których raport idzie dalej: komunikat i ponowny odczyt bez nich.
@@ -605,6 +616,93 @@ def format_report(report: EvalReport, days: int) -> str:
     return "\n".join(lines)
 
 
+def evaluation_to_dict(report: EvalReport, days: int) -> dict[str, Any]:
+    """Raport jako słownik JSON-owalny (WIA-40): liczby z nagłówka, dowód trafności,
+    RMSE w zwrotach z kodem werdyktu, klasy aktywa, pewność i segmenty `--by`.
+    Sekcje wersji, echa, eksperymentu i rozróżniania zostają tylko w tekście."""
+    return {
+        "days": days,
+        "sample_count": report.sample_count,
+        "hit_rate": report.hit_rate,
+        "directional": {
+            "hit_rate": report.directional_hit_rate,
+            "n": report.directional_count,
+            "sideways": report.sideways_count,
+        },
+        "evidence": _evidence_dict(report.evidence),
+        "rmse_return": {
+            "model": report.model_rmse_return,
+            "baseline": report.baseline_rmse_return,
+            "verdict": report.verdict.name.lower(),
+        },
+        "by_asset_class": {
+            asset_class: {
+                "n": error.n,
+                "model_rmse": error.model_rmse,
+                "baseline_rmse": error.baseline_rmse,
+                "verdict": error.verdict.name.lower(),
+            }
+            for asset_class, error in report.by_asset_class.items()
+        },
+        "confidence": _scores_dict(report.confidence_scores),
+        "segments": {
+            name: [_segment_dict(segment) for segment in segments]
+            for name, segments in report.segments.items()
+        },
+    }
+
+
+def _scores_dict(scores: ProbabilityScores | None) -> dict[str, Any] | None:
+    if scores is None:
+        return None
+    return {
+        "n": scores.n,
+        "brier": scores.brier,
+        "log_loss": scores.log_loss,
+        "climatology_brier": scores.climatology_brier,
+        "skill": scores.skill,
+    }
+
+
+def _evidence_dict(evidence: HitRateEvidence | None) -> dict[str, Any] | None:
+    if evidence is None:
+        return None
+    best = evidence.baselines.best_directional
+    return {
+        "directional_n": evidence.hit_rate.directional,
+        "cycles": evidence.cycles,
+        "n_eff": evidence.n_eff,
+        "interval": None if evidence.interval is None else list(evidence.interval),
+        "p_value": evidence.p_value,
+        "best_baseline": None if best is None else {"name": best[0], "rate": best[1]},
+    }
+
+
+def _segment_dict(segment: SegmentEvidence) -> dict[str, Any]:
+    evidence = segment.evidence
+    return {
+        "key": segment.key,
+        "n": segment.n,
+        "rate": segment.rate,
+        "n_eff": evidence.n_eff,
+        "interval": None if evidence.interval is None else list(evidence.interval),
+        "p_value": evidence.p_value,
+        "fdr_significant": segment.fdr_significant,
+        "insufficient": segment.insufficient,
+    }
+
+
+def render_evaluation_json(
+    rows: list[dict[str, Any]], *, days: int, segmentations: Sequence[str] = ()
+) -> str:
+    """JSON ewaluacji (posortowane klucze, stabilny diff między przebiegami)."""
+    report = summarize_evaluation(rows, segment_by=segmentations)
+    return json.dumps(
+        evaluation_to_dict(report, days), ensure_ascii=False, indent=2, sort_keys=True,
+        allow_nan=False,
+    )
+
+
 def _verdict_text(report: EvalReport) -> str:
     if report.verdict is BaselineVerdict.BEATS:
         return f"✅ {report.verdict.value}"
@@ -792,6 +890,7 @@ def evaluation_reads(
     echo: bool,
     experiment: bool = False,
     discrimination: bool = False,
+    scores: bool = False,
 ) -> tuple[dict[str, Any], set[str]]:
     """Co odczytać z repozytorium: flagi segmentów wersji i dodatkowe kolumny.
 
@@ -811,6 +910,8 @@ def evaluation_reads(
         fields.update(EXPERIMENT_FIELDS)
     if discrimination:
         fields.update(DISCRIMINATION_FIELDS)
+    if scores:
+        fields.update(SCORES_FIELDS)
     return reads, fields
 
 

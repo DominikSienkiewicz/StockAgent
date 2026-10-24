@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -8,6 +9,7 @@ from src.tools.evaluate import (
     BaselineVerdict,
     EvalReport,
     format_report,
+    render_evaluation_json,
     summarize_evaluation,
 )
 
@@ -292,6 +294,131 @@ class TestConfidenceScores:
 
         assert "Brier pewności" in text
         assert "Log loss pewności" in text
+
+
+class TestJsonOutput:
+    """WIA-40: `--json` — te same liczby maszynowo, do porównania przebiegów."""
+
+    def _rows(self) -> list[dict]:
+        return [
+            {
+                **_row("BULLISH", True, 100_000, 101_000, 100_000),
+                "asset_class": "CRYPTO",
+                "confidence_score": 0.9,
+                "timestamp": "2026-10-01T14:00:00+00:00",
+            },
+            {
+                **_row("BEARISH", False, 200, 190, 210),
+                "asset_class": "STOCK",
+                "confidence_score": 0.7,
+                "timestamp": "2026-10-02T14:00:00+00:00",
+            },
+        ]
+
+    def test_json_carries_the_headline_numbers_and_a_machine_verdict(self):
+        payload = json.loads(render_evaluation_json(self._rows(), days=30))
+
+        assert payload["days"] == 30
+        assert payload["sample_count"] == 2
+        assert payload["directional"] == {"hit_rate": 0.5, "n": 2, "sideways": 0}
+        assert payload["rmse_return"]["verdict"] in {"beats", "does_not_beat", "undetermined"}
+        assert payload["rmse_return"]["model"] == pytest.approx(
+            math.sqrt((0.01**2 + 0.1**2) / 2)
+        )
+
+    def test_json_lists_classes_and_confidence_scores(self):
+        payload = json.loads(render_evaluation_json(self._rows(), days=30))
+
+        assert sorted(payload["by_asset_class"]) == ["CRYPTO", "STOCK"]
+        assert payload["by_asset_class"]["CRYPTO"]["n"] == 1
+        assert payload["confidence"]["n"] == 2
+        assert payload["confidence"]["brier"] == pytest.approx(((0.9 - 1) ** 2 + 0.7**2) / 2)
+
+    def test_empty_run_is_valid_json_with_null_metrics(self):
+        payload = json.loads(render_evaluation_json([], days=7))
+
+        assert payload["sample_count"] == 0
+        assert payload["rmse_return"] == {
+            "model": None, "baseline": None, "verdict": "undetermined",
+        }
+        assert payload["confidence"] is None
+
+    def test_json_includes_requested_segments(self):
+        rows = [
+            {**_row("BULLISH", True, 100, 101, 101), "asset_class": "STOCK",
+             "timestamp": f"2026-10-{day:02d}T14:00:00+00:00"}
+            for day in range(1, 4)
+        ]
+
+        payload = json.loads(
+            render_evaluation_json(rows, days=30, segmentations=("asset_class",))
+        )
+
+        segment = payload["segments"]["asset_class"][0]
+        assert segment["key"] == "STOCK"
+        assert segment["n"] == 3
+
+
+class TestScoresCli:
+    """WIA-40: `--scores` czyta symbol i pewność (każde istnieje od swojej migracji,
+    więc tylko na żądanie), a `--json` oddaje wyłącznie JSON."""
+
+    def test_scores_flag_reads_symbol_and_confidence_and_classifies_symbols(
+        self, mocker, capsys
+    ):
+        import main_tools
+
+        settings = mocker.patch("src.config.Settings.from_env").return_value
+        settings.crypto_symbols = ["BTC"]
+        settings.symbols_etf = []
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        repo_cls.return_value.get_resolved_predictions_for_eval.return_value = [
+            {**_row("BULLISH", True, 100_000, 101_000, 100_000), "symbol": "BTC",
+             "confidence_score": 0.9},
+            {**_row("BULLISH", False, 200, 200, 210), "symbol": "AAPL", "confidence_score": 0.6},
+        ]
+
+        main_tools.main(["evaluate", "--scores"])
+
+        repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
+            days=30, extra_fields=("confidence_score", "symbol")
+        )
+        out = capsys.readouterr().out
+        assert "per klasa aktywa" in out
+        assert "CRYPTO" in out
+        assert "Brier pewności" in out
+
+    def test_json_flag_prints_only_json(self, mocker, capsys):
+        import main_tools
+
+        mocker.patch("src.config.Settings.from_env")
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        repo_cls.return_value.get_resolved_predictions_for_eval.return_value = [
+            _row("BULLISH", True, 100, 104, 105)
+        ]
+
+        code = main_tools.main(["evaluate", "--json"])
+
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["sample_count"] == 1
+
+    def test_json_flag_keeps_the_missing_column_notice_off_stdout(self, mocker, capsys):
+        import main_tools
+        from src.infrastructure.adapters.supabase_repo import MissingColumnError
+
+        mocker.patch("src.config.Settings.from_env")
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        repo_cls.return_value.get_resolved_predictions_for_eval.side_effect = [
+            MissingColumnError("gate_delta"),
+            [],
+        ]
+
+        main_tools.main(["evaluate", "--echo", "--json"])
+
+        captured = capsys.readouterr()
+        json.loads(captured.out)
+        assert "gate_delta" in captured.err
 
 
 class TestSignificanceVerdict:
