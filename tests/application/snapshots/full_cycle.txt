@@ -14,7 +14,7 @@
 STOCKAGENT — RAPORT CYKLU
 ================================================================
 Czas rozpoczęcia:  czw 15.10 12:30
-Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
+Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min (15:30 czasu PL)
 
 Twój portfel od ostatniego maila: -0,8% (-112,73 zł)
 Sygnały ponad próg: 3

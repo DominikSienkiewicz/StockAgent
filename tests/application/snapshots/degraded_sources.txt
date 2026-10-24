@@ -19,7 +19,7 @@ STAN ŹRÓDEŁ DANYCH
 STOCKAGENT — RAPORT CYKLU
 ================================================================
 Czas rozpoczęcia:  czw 15.10 12:30
-Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
+Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min (15:30 czasu PL)
 Wersja w przeglądarce (link ważny 7 dni): https://proj.supabase.co/storage/v1/object/sign/digests/20261015T1030Z-18234567890.html?token=signed
 
 Twój portfel od ostatniego maila: +0,2% (+$6,40)

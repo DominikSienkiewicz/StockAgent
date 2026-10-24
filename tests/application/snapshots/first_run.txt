@@ -13,7 +13,7 @@ Startuję dla 3 instrumenty. Ten cykl zapisuje pierwsze ceny jako punkt odniesie
 STOCKAGENT — RAPORT CYKLU
 ================================================================
 Czas rozpoczęcia:  czw 15.10 12:30
-Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
+Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min (15:30 czasu PL)
 
 Sygnały ponad próg: 0
 Rozliczone: brak (ostatnie 24h)

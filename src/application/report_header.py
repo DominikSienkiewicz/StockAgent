@@ -70,7 +70,7 @@ def _masthead_html(data: SectionInput) -> str:
 
 
 def _session_html(data: SectionInput) -> str:
-    session = market_status(data.started_at)
+    session = market_status(data.started_at, data.context.display_timezone)
     return f"""
       <div style="padding: 10px 14px; background: #f9fafb; border-radius: 4px;
                   margin-bottom: 16px; font-size: 13px;">
@@ -82,7 +82,7 @@ def _session_html(data: SectionInput) -> str:
 
 def _session_text(data: SectionInput) -> list[str]:
     """Blok tytułowy wersji tekstowej — za bannerami, przed pierwszym ekranem."""
-    session = market_status(data.started_at)
+    session = market_status(data.started_at, data.context.display_timezone)
     regime_text = render_regime_text(data.context.regime)
     return [
         "=" * 64,

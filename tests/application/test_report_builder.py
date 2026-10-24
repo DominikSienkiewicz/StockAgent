@@ -2567,6 +2567,18 @@ def test_header_shows_the_cycle_start_in_the_display_timezone():
     assert "05:30" not in text
 
 
+def test_header_session_line_gives_the_nyse_open_in_the_display_timezone():
+    # MAIL-29: sobota → „pon 19.10 09:30 ET” plus godzina polska, w HTML i w tekście.
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 17, 12, 0, tzinfo=UTC), 1.0,
+        ReportContext(display_timezone="Europe/Warsaw"),
+    )
+
+    expected = "Najbliższe otwarcie: pon 19.10 09:30 ET (15:30 czasu PL)"
+    assert expected in html
+    assert expected in text
+
+
 def test_header_shows_regime_and_multiplier():
     # ALR-05: reżim zacieśnia bramkę każdego cyklu — czytelnik widzi mniej predykcji,
     # więc nagłówek mówi, jaki reżim, jaki mnożnik progu i dlaczego. Liczby po

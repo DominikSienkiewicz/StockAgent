@@ -476,6 +476,71 @@ class TestMarketStatusCalendar:
         assert status["detail"] == "Najbliższe otwarcie: wt 20.01 09:30 ET"
 
 
+class TestMarketStatusLocalTime:
+    """MAIL-29: polski odbiorca myśli w godzinach 15:30–22:00, więc obok godzin ET
+    status sesji podaje godzinę w strefie wyświetlania maila (`display_timezone`)."""
+
+    def test_weekend_status_uses_polish_weekday_and_local_open(self) -> None:
+        # Sobota 2026-10-17: oba kraje na czasie letnim, 09:30 EDT = 15:30 CEST.
+        status = market_status(
+            datetime(2026, 10, 17, 12, 0, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Najbliższe otwarcie: pon 19.10 09:30 ET (15:30 czasu PL)"
+
+    def test_premarket_detail_names_the_local_open(self) -> None:
+        status = market_status(
+            datetime(2026, 10, 15, 10, 30, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Otwarcie za 3h 0min (15:30 czasu PL)"
+
+    def test_open_session_detail_names_the_local_close(self) -> None:
+        status = market_status(
+            datetime(2026, 10, 15, 15, 0, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Zamknięcie za 5h 0min (22:00 czasu PL)"
+
+    def test_early_close_is_converted_too(self) -> None:
+        # Piątek po Thanksgiving: zamknięcie 13:00 EST = 19:00 CET.
+        status = market_status(
+            datetime(2026, 11, 27, 15, 0, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Zamknięcie za 3h 0min (19:00 czasu PL)"
+
+    def test_tomorrow_wording_keeps_the_local_open(self) -> None:
+        status = market_status(
+            datetime(2026, 10, 15, 22, 0, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Otwarcie jutro 09:30 ET (15:30 czasu PL)"
+
+    def test_dst_gap_between_the_us_and_poland_shifts_the_local_hour(self) -> None:
+        # 28.10.2026: Polska już na CET (od 25.10), USA jeszcze na EDT (do 1.11),
+        # więc 09:30 ET to 14:30 w Warszawie, nie 15:30.
+        status = market_status(
+            datetime(2026, 10, 28, 22, 0, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Otwarcie jutro 09:30 ET (14:30 czasu PL)"
+
+    def test_other_display_timezone_is_called_local_not_polish(self) -> None:
+        status = market_status(
+            datetime(2026, 10, 17, 12, 0, tzinfo=UTC), display_timezone="Europe/London"
+        )
+
+        assert status["detail"] == (
+            "Najbliższe otwarcie: pon 19.10 09:30 ET (14:30 czasu lokalnego)"
+        )
+
+    def test_without_a_display_timezone_only_et_is_shown(self) -> None:
+        status = market_status(datetime(2026, 10, 17, 12, 0, tzinfo=UTC))
+
+        assert status["detail"] == "Najbliższe otwarcie: pon 19.10 09:30 ET"
+
+
 class TestForecastHorizonLabel:
     """ALR-15: etykieta horyzontu predykcji nazywa najbliższe zamknięcie sesji NYSE —
     cykl rozlicza prognozę ceną z następnego przebiegu, czyli po tej sesji."""

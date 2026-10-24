@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.application.decision_receipt import read_decision_receipt
 from src.application.report_formatting import format_local, number, pct, score_to_pl_label
@@ -38,6 +39,7 @@ LOW_SIGNAL_NEWS_THRESHOLD = 3
 
 # Strefa nazw dni i godzin sesji w mailu — ta sama, w której NYSE publikuje kalendarz.
 _NYSE_DISPLAY_TZ = "America/New_York"
+_WARSAW_TZ = "Europe/Warsaw"
 
 
 def build_trade_signals(
@@ -370,38 +372,50 @@ def build_portfolio_mood(results: list[SymbolResult]) -> PortfolioMood:
     )
 
 
-def market_status(now_utc: datetime) -> dict[str, str]:
+def market_status(now_utc: datetime, display_timezone: str | None = None) -> dict[str, str]:
     """Status sesji NYSE z kalendarzem świąt i skróconych sesji (ALR-15).
 
     Święto i skrócona sesja są nazwane wprost w etykiecie, a „najbliższe otwarcie”
-    pomija weekend i święta. Naiwny `datetime` = UTC."""
+    pomija weekend i święta. Naiwny `datetime` = UTC.
+
+    MAIL-29: z `display_timezone` (IANA) godzina otwarcia lub zamknięcia dostaje
+    dopisek z czasem odbiorcy, np. „(15:30 czasu PL)”; rozjazd DST USA/PL
+    przesuwa go o godzinę. `None` zostawia same godziny ET."""
     nyc = to_nyse_time(now_utc)
     session = session_on(nyc.date())
     if session is None:
         holiday = holiday_name(nyc.date())
         label = f"📅 Zamknięta (święto: {holiday})" if holiday else "🌙 Zamknięta (weekend)"
-        return {"label": label, "detail": f"Najbliższe otwarcie: {_format_et(next_open(nyc))}"}
+        return {
+            "label": label,
+            "detail": _next_open_detail(nyc, display_timezone, after_session=False),
+        }
     early_close = _early_close_note(session)
     if nyc < session.opens_at:
         return {
             "label": _with_note("🌅 Premarket", early_close),
-            "detail": f"Otwarcie za {_humanize_delta(session.opens_at - nyc)}",
+            "detail": f"Otwarcie za {_humanize_delta(session.opens_at - nyc)}"
+            f"{_local_time_note(session.opens_at, display_timezone)}",
         }
     if nyc < session.closes_at:
         return {
             "label": f"🟢 Otwarta ({early_close or 'regular hours'})",
-            "detail": f"Zamknięcie za {_humanize_delta(session.closes_at - nyc)}",
+            "detail": f"Zamknięcie za {_humanize_delta(session.closes_at - nyc)}"
+            f"{_local_time_note(session.closes_at, display_timezone)}",
         }
-    opening = next_open(nyc)
-    detail = (
-        "Otwarcie jutro 09:30 ET"
-        if opening.date() == nyc.date() + timedelta(days=1)
-        else f"Najbliższe otwarcie: {_format_et(opening)}"
-    )
     return {
         "label": _with_note("🌆 After-hours", early_close),
-        "detail": detail,
+        "detail": _next_open_detail(nyc, display_timezone, after_session=True),
     }
+
+
+def _next_open_detail(nyc: datetime, display_timezone: str | None, *, after_session: bool) -> str:
+    """Kiedy NYSE otworzy się następnym razem; „jutro” tylko po zakończonej sesji."""
+    opening = next_open(nyc)
+    local_note = _local_time_note(opening, display_timezone)
+    if after_session and opening.date() == nyc.date() + timedelta(days=1):
+        return f"Otwarcie jutro 09:30 ET{local_note}"
+    return f"Najbliższe otwarcie: {_format_et(opening)}{local_note}"
 
 
 def forecast_horizon_label(now_utc: datetime) -> str:
@@ -423,6 +437,17 @@ def _early_close_note(session: TradingSession) -> str | None:
 
 def _with_note(label: str, note: str | None) -> str:
     return f"{label} ({note})" if note else label
+
+
+def _local_time_note(moment: datetime, display_timezone: str | None) -> str:
+    """„ (15:30 czasu PL)” — godzina chwili w strefie wyświetlania; bez strefy pusto.
+
+    „PL” tylko dla Warszawy; inna strefa wyświetlania jest nazwana „lokalnym”."""
+    if display_timezone is None:
+        return ""
+    local = moment.astimezone(ZoneInfo(display_timezone))
+    zone = "czasu PL" if display_timezone == _WARSAW_TZ else "czasu lokalnego"
+    return f" ({local:%H:%M} {zone})"
 
 
 def _format_et(moment: datetime) -> str:
