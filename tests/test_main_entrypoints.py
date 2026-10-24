@@ -5793,6 +5793,18 @@ class TestSlowLoopPaidBudget:
         provider.analyze.assert_called_once_with("narracja")
         provider.analyze_mistake.assert_called_once_with("wniosek")
 
+    def test_judge_gets_the_minimum_sample_size(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # FIN-20: produkcja nie płaci za wniosek sędziego z chudej próby.
+        from src.application.use_cases.calibrate_confidence import MIN_JUDGE_SAMPLES
+
+        _, _, judge_cls = self._trainer(settings, mocker)
+
+        main_trainer.main(settings)
+
+        assert judge_cls.call_args.kwargs.get("min_samples") == MIN_JUDGE_SAMPLES
+
     def test_paid_calls_of_the_run_are_metered_and_logged(
         self, settings, mock_external_clients, mocker, caplog
     ) -> None:

@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 # sędziego do tygodniowego budżetu Slow Loopa.
 PAID_LLM_CALLS_PER_RUN = 1
 
+# FIN-20: najmniej rozliczonych predykcji z zapisaną pewnością, od których sędzia w ogóle
+# płaci za wniosek. Poniżej luka kalibracji to szum jednego dnia, nie ocena agenta.
+MIN_JUDGE_SAMPLES = 20
+
 
 def _judge_prompt(n: int, mean_conf: float, accuracy: float, gap: float) -> str:
     return f"""
@@ -45,6 +49,10 @@ class CalibrateConfidenceUseCase:
     zapis jest jak dotąd: reguła liniowa v1, bez kolumny wersji — przed migracją
     nowy klucz zwróciłby PGRST204, a wynik Briera bez wersji migracja
     oznaczyłaby jako v1.
+
+    `min_samples` (FIN-20): poniżej tylu użytecznych wierszy sędzia kończy
+    `skipped` przed płatnym wywołaniem i bez zapisu ocen. Domyślnie 1, czyli
+    jak dotąd; produkcja podaje `MIN_JUDGE_SAMPLES`.
     """
 
     def __init__(
@@ -53,10 +61,12 @@ class CalibrateConfidenceUseCase:
         llm_port: LLMPort,
         *,
         brier_score_enabled: bool = False,
+        min_samples: int = 1,
     ) -> None:
         self._repo = repository_port
         self._llm = llm_port
         self._brier_score_enabled = brier_score_enabled
+        self._min_samples = min_samples
 
     def run(self, days: int = 30) -> dict[str, Any]:
         rows = self._repo.get_resolved_for_calibration(days)
@@ -70,6 +80,14 @@ class CalibrateConfidenceUseCase:
             return {
                 "status": "skipped",
                 "reason": "Brak rozliczonych predykcji z zapisaną pewnością.",
+            }
+        if len(usable) < self._min_samples:
+            return {
+                "status": "skipped",
+                "reason": (
+                    f"Za mało rozliczonych predykcji z zapisaną pewnością "
+                    f"({len(usable)} < {self._min_samples}) — sędzia nie płaci za wniosek."
+                ),
             }
 
         samples = [

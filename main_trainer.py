@@ -762,9 +762,11 @@ def _run_calibration_judge(
 ) -> None:
     """#4: LLM-as-Judge kalibracji pewności (Slow Loop). FIN-30: jego wywołanie
     LLM liczy się do tygodniowego budżetu Slow Loopa, nie do budżetu Fast Loopa.
-    WIA-37: `brier_score_enabled` = reguła Briera v2 z kolumną wersji (migracja 044)."""
+    WIA-37: `brier_score_enabled` = reguła Briera v2 z kolumną wersji (migracja 044).
+    FIN-20: poniżej `MIN_JUDGE_SAMPLES` rozliczonych predykcji sędzia nie woła LLM."""
     try:
         from src.application.use_cases.calibrate_confidence import (
+            MIN_JUDGE_SAMPLES,
             CalibrateConfidenceUseCase,
         )
 
@@ -772,6 +774,7 @@ def _run_calibration_judge(
             repository_port=repository,
             llm_port=llm_port,
             brier_score_enabled=brier_score_enabled,
+            min_samples=MIN_JUDGE_SAMPLES,
         ).run(days=30)
         logger.info("Calibration judge — %s", cal_result.get("status"))
     except Exception:

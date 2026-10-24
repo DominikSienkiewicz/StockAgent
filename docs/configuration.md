@@ -106,7 +106,7 @@ Every on/off switch of `Settings` in one table (DOC-19); why each one exists and
 | `regime_aware_enabled` | `false` | `true` | — | — | 0; can only raise the threshold | deployed |
 | `regime_hysteresis_enabled` | `false` | `true` | `033` | — | 0 | deployed |
 | `contagion_enabled` | `false` | `false` | — | — | 0 (longer prompt, sequential symbols) | built, not deployed |
-| `calibration_judge_enabled` | `false` | `false` | `016` | — | 1 LLM call a week (Slow Loop budget) | built, not deployed |
+| `calibration_judge_enabled` | `false` | `false` | `016` | — | 1 LLM call a week (Slow Loop budget); none while fewer than 20 settled predictions carry a confidence (FIN-20, `MIN_JUDGE_SAMPLES`) | built, not deployed |
 | `calibration_score_version_enabled` | `false` | `false` | `044` | — | 0 | built, not deployed |
 | `portfolio_var_enabled` | `false` | `false` | — | — | 0 | built, not deployed |
 | `stress_test_enabled` | `false` | `false` | — | — | 0 | built, not deployed |
