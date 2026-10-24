@@ -13,6 +13,7 @@ import html as _html
 from decimal import Decimal
 
 from src.application.report_formatting import company_label, number, number_exact, pct
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.drawdown import DrawdownSignal
 from src.domain.hedge import HedgeAssessment
@@ -313,3 +314,23 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+# Bez raportu w HTML zostaje dawny znacznik slotu — niewidoczny komentarz, mail
+# bajt w bajt jak przed ARCH-12 (golden snapshot). Wersja tekstowa go nie ma.
+_EMPTY_HTML = "<!-- RISK_WATCH_SLOT -->"
+
+
+def _section_html(data: SectionInput) -> str:
+    report = data.context.macro_risk_report
+    return (render_risk_watch_html(report) if report else "") or _EMPTY_HTML
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    report = data.context.macro_risk_report
+    return text_block(render_risk_watch_text(report) if report else "")
+
+
+RISK_WATCH_SECTION = ReportSection(
+    key="risk_watch", render_html=_section_html, render_text=_section_text
+)

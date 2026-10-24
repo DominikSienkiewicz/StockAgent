@@ -46,6 +46,7 @@ from src.application.report_evidence import (
 )
 from src.application.report_formatting import number, pct, pct_range, plural_pl
 from src.application.report_lessons import LessonsReport
+from src.application.reporting.section import ReportSection, SectionInput, no_text
 from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
@@ -472,3 +473,34 @@ def _render_lessons_html(lessons: LessonsReport) -> str:
         + "</ul>"
     )
     return "".join(parts)
+
+
+def _section_html(data: SectionInput) -> str:
+    """T1/T2/T4 + WIA: krzywa kapitału, kalibracja, lekcje i dowód trafności.
+    Duży dzień (próg MAIL-06) dostaje wersję zwartą — zastrzeżenie musi
+    zmieścić się w 100 KB."""
+    context = data.context
+    return render_track_record_html(
+        context.equity_curve,
+        context.calibration_buckets,
+        context.lessons,
+        context.track_record_stats,
+        compact=data.large_day,
+        expired_count=context.expired_unverified,
+    )
+
+
+TRACK_RECORD_SECTION = ReportSection(
+    key="track_record",
+    render_html=_section_html,
+    render_text=no_text,
+    context_fields=frozenset(
+        {
+            "equity_curve",
+            "calibration_buckets",
+            "lessons",
+            "track_record_stats",
+            "expired_unverified",
+        }
+    ),
+)

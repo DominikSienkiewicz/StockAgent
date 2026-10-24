@@ -15,7 +15,8 @@ from typing import Any
 from src.application.alpha_signals import AlphaSignals
 from src.application.portfolio_fx import effective_pln_rates
 from src.application.report_accuracy_history import ACCURACY_HISTORY_SECTION
-from src.application.report_alpha import render_alpha_html, significant_buy_label
+from src.application.report_alpha import ALPHA_SECTION, significant_buy_label
+from src.application.report_backoffice import BACKOFFICE_SECTION
 from src.application.report_charts import (
     build_correlation_chart_html,
     build_delta_chart_html,
@@ -75,10 +76,7 @@ from src.application.report_onboarding import ONBOARDING_SECTION
 from src.application.report_persona_leaderboard import (
     render_persona_leaderboard_html,
 )
-from src.application.report_portfolio import (
-    render_correlation_html,
-    render_correlation_text,
-)
+from src.application.report_portfolio import PORTFOLIO_RADAR_SECTION
 from src.application.report_predictions import PREDICTIONS_SECTION, full_detail_symbols
 from src.application.report_quota_banner import QUOTA_BANNER_SECTION
 from src.application.report_regime import (
@@ -89,10 +87,7 @@ from src.application.report_resolved import (
     resolved_window,
 )
 from src.application.report_risk_signals import RISK_SIGNALS_SECTION
-from src.application.report_risk_watch import (
-    render_risk_watch_html,
-    render_risk_watch_text,
-)
+from src.application.report_risk_watch import RISK_WATCH_SECTION
 from src.application.report_signals import (
     build_portfolio_mood,
     build_trade_signals,
@@ -115,10 +110,7 @@ from src.application.report_suggestions import (
     render_suggestions_text,
 )
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_chip_labels
-from src.application.report_track_record import (
-    TrackRecordStats,
-    render_track_record_html,
-)
+from src.application.report_track_record import TRACK_RECORD_SECTION, TrackRecordStats
 from src.application.report_trade_signals import TRADE_SIGNALS_SECTION
 from src.application.report_user_portfolio import (
     USER_PORTFOLIO_SECTION,
@@ -181,16 +173,12 @@ __all__ = [
 # Markery slotów — placeholdery wstawiane przy renderze i podmieniane treścią
 # w build_html_report. Trzymane jako stałe (jedno źródło prawdy), żeby literówka
 # w jednym z dwóch miejsc (szablon ↔ replace) nie zostawiła cicho pustego slotu.
-_RISK_WATCH_SLOT = "<!-- RISK_WATCH_SLOT -->"
-_PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
 _COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
 _PERSONA_LEADERBOARD_SLOT = "<!-- PERSONA_LEADERBOARD_SLOT -->"
-_TRACK_RECORD_SLOT = "<!-- TRACK_RECORD_SLOT -->"
 # #12: karta kondycji modelu — tuż za Track Recordem (ta sama oś zaufania).
 _MODEL_SCORECARD_SLOT = "<!-- MODEL_SCORECARD_SLOT -->"
 # FinOps: „agent, który raportuje własny rachunek" — koszt cyklu.
 _FINOPS_SLOT = "<!-- FINOPS_SLOT -->"
-_ALPHA_SLOT = "<!-- ALPHA_SLOT -->"
 _SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
 # MAIL-42: linia proweniencji w stopce (przebieg · commit · logi).
 _RUN_FOOTER_SLOT = "<!-- RUN_FOOTER_SLOT -->"
@@ -399,12 +387,6 @@ def build_cycle_signals(
     )
 
 
-# Sloty pomijane przy pustej treści: nagłówek sekcji rysuje się w szablonie, więc
-# podmiana na "" zostawiłaby pustą ramkę. Nieusunięty znacznik jest komentarzem
-# HTML, czyli w mailu niewidoczny — to bezpieczniejszy z dwóch wyników.
-_SKIP_WHEN_EMPTY_SLOTS = frozenset({_RISK_WATCH_SLOT})
-
-
 # MAIL-06: ciąg białych znaków ASCII — wcięcia szablonów między tagami, w tekście
 # i w wieloliniowych atrybutach `style`. Twarda spacja (U+00A0) z formatera kwot
 # nie jest wcięciem i zostaje.
@@ -441,13 +423,9 @@ def _email_document(body: str) -> str:
 
 def _fill_html_slots(html: str, sections: Mapping[str, str]) -> str:
     """Wstawia treść w sloty HTML — klucz to znacznik slotu, wartość to gotowy
-    HTML sekcji.
-
-    Sloty spoza `_SKIP_WHEN_EMPTY_SLOTS` podmieniamy zawsze (też na ""), żeby
-    znacznik nie został w treści maila."""
+    HTML sekcji. Podmieniamy zawsze (też na ""), żeby znacznik nie został w treści
+    maila."""
     for slot, content in sections.items():
-        if not content and slot in _SKIP_WHEN_EMPTY_SLOTS:
-            continue
         html = html.replace(slot, content, 1)
     return html
 
@@ -455,27 +433,14 @@ def _fill_html_slots(html: str, sections: Mapping[str, str]) -> str:
 def _fill_text_slots(
     text: str,
     *,
-    macro_risk_text: str,
     suggestions_text: str,
-    portfolio_text: str = "",
     sections: Mapping[str, str] | None = None,
 ) -> str:
     """Wstawia treść w sloty plain-text. Pusty slot usuwa cały wiersz znacznika —
     tekst nie ma komentarzy HTML, więc znacznik byłby w nim dosłowną linią.
-    W HTML RISK_WATCH zostaje przy pustej treści (`_SKIP_WHEN_EMPTY_SLOTS`).
 
     `sections` (MAIL-09): znacznik slotu → tekst sekcji z jej `render_*_text`, który
     kończy się już pustą linią odstępu."""
-    text = text.replace(
-        f"{_RISK_WATCH_SLOT}\n",
-        f"{macro_risk_text}\n" if macro_risk_text else "",
-        1,
-    ).replace(_RISK_WATCH_SLOT, macro_risk_text, 1)
-    text = text.replace(
-        f"{_PORTFOLIO_SLOT}\n",
-        f"{portfolio_text}\n" if portfolio_text else "",
-        1,
-    ).replace(_PORTFOLIO_SLOT, portfolio_text, 1)
     text = text.replace(
         f"{_SUGGESTIONS_SLOT}\n",
         f"{suggestions_text}\n\n" if suggestions_text else "",
@@ -734,21 +699,6 @@ def build_html_report(
     results, saved, ignored, errors = data.results, data.saved, data.ignored, data.errors
     sector_map = data.sector_map
     mood = build_portfolio_mood(results)
-    macro_risk_html = (
-        render_risk_watch_html(context.macro_risk_report) if context.macro_risk_report else ""
-    )
-    # Q4: sekcja korelacji/koncentracji portfela (render_correlation_html zwraca
-    # "" gdy brak klastrów → sekcja sama się chowa).
-    portfolio_html = (
-        render_correlation_html(context.portfolio_risk_report)
-        if context.portfolio_risk_report
-        else ""
-    )
-    portfolio_text = (
-        render_correlation_text(context.portfolio_risk_report)
-        if context.portfolio_risk_report
-        else ""
-    )
     # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
     council_history_html = render_council_history_html(context.council_history or [])
     # #3: ranking wiarygodności person — ranking (z progiem min_votes) przychodzi
@@ -763,23 +713,6 @@ def build_html_report(
         context.model_scorecard,
         now=started_at,
         model_loaded=context.ml_model_loaded,
-    )
-    # T1/T2/T4: sekcja Track Record (krzywa kapitału, kalibracja, lessons).
-    # render zwraca "" gdy wszystkie trzy podsekcje puste. Duży dzień (próg
-    # MAIL-06) dostaje wersję zwartą — zastrzeżenie musi zmieścić się w 100 KB.
-    track_record_html = render_track_record_html(
-        context.equity_curve, context.calibration_buckets, context.lessons,
-        context.track_record_stats,
-        compact=data.large_day,
-        expired_count=context.expired_unverified,
-    )
-    # Dane: sekcja Alpha Signals (insider/analitycy/opcje/social/earnings per
-    # symbol + krzywa rentowności FRED). render zwraca "" gdy brak danych.
-    alpha_html = render_alpha_html(
-        context.alpha_signals or {}, context.yield_curve, context.alpha_prices
-    )
-    macro_risk_text = (
-        render_risk_watch_text(context.macro_risk_report) if context.macro_risk_report else ""
     )
     suggestions = build_sector_suggestions(results, sector_map, context.sector_peers or {})
     suggestions_html = render_suggestions_html(suggestions)
@@ -796,14 +729,10 @@ def build_html_report(
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
     html = _fill_html_slots(html, {
-        _RISK_WATCH_SLOT: macro_risk_html,
-        _PORTFOLIO_SLOT: portfolio_html,
         _COUNCIL_HISTORY_SLOT: council_history_html,
         _PERSONA_LEADERBOARD_SLOT: persona_leaderboard_html,
-        _TRACK_RECORD_SLOT: track_record_html,
         _MODEL_SCORECARD_SLOT: model_scorecard_html,
         _FINOPS_SLOT: finops_html,
-        _ALPHA_SLOT: alpha_html,
         _SUGGESTIONS_SLOT: suggestions_html,
         _RUN_FOOTER_SLOT: _render_run_footer_html(context.run_context),
     })
@@ -817,8 +746,6 @@ def build_html_report(
     )
     text = _fill_text_slots(
         text,
-        macro_risk_text=macro_risk_text,
-        portfolio_text=portfolio_text,
         suggestions_text=suggestions_text,
         # MAIL-09: sekcje z rendererem tekstu, których wersja tekstowa nie miała.
         sections={
@@ -932,17 +859,6 @@ def _technical_footer_text(
 # MAIL-17: dwie strefy — „Na dziś” przed „Zapleczem”
 # ---------------------------------------------------------------------------
 
-_BACKOFFICE_TITLE = "🗄️ Zaplecze"
-_BACKOFFICE_NOTE = (
-    "Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, "
-    "pominięte symbole i błędy."
-)
-_BACKOFFICE_SEPARATOR_HTML = (
-    '<div style="margin: 32px 0 8px 0; padding-top: 12px; border-top: 2px solid #d1d5db;">'
-    f'<div style="font-size: 18px; font-weight: 700; color: #374151;">{_BACKOFFICE_TITLE}</div>'
-    f'<div style="font-size: 12px; color: #6b7280;">{_BACKOFFICE_NOTE}</div>'
-    "</div>"
-)
 # MAIL-10: średnia bez ani jednego sentymentu to brak danych, nie „+0,00 (Neutralny)”.
 _NO_SENTIMENT_LABEL = "brak danych"
 
@@ -1021,16 +937,11 @@ def _render_html(
 
     # MAIL-17: „Zaplecze” — kontekst i kontrola za separatorem. Przy przycięciu
     # przez Gmaila znika ta część, nie akcyjna.
-    sections.append(_BACKOFFICE_SEPARATOR_HTML)
-    # Slot na sekcję Risk Watch — wypełniany przez build_html_report,
-    # gdy wywołujący przekaże MacroRiskReport. Bez slotu sekcja jest pomijana.
-    sections.append(_RISK_WATCH_SLOT)
-    # Slot na radar korelacji portfela (Q4) — wypełniany przez build_html_report.
-    sections.append(_PORTFOLIO_SLOT)
-    # Slot na sekcję Alpha Signals (Dane — insider/analitycy/opcje/social/FRED).
-    sections.append(_ALPHA_SLOT)
-    # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
-    sections.append(_TRACK_RECORD_SLOT)
+    sections.append(BACKOFFICE_SECTION.render_html(data))
+    sections.append(RISK_WATCH_SECTION.render_html(data))
+    sections.append(PORTFOLIO_RADAR_SECTION.render_html(data))
+    sections.append(ALPHA_SECTION.render_html(data))
+    sections.append(TRACK_RECORD_SECTION.render_html(data))
     sections.append(ACCURACY_HISTORY_SECTION.render_html(data))
     sections.append(_MODEL_SCORECARD_SLOT)
     # Slot na ranking wiarygodności person (#3) — "kto z rady miał rację".
@@ -1148,11 +1059,10 @@ def _render_plain(
     lines.extend(CRYPTO_SECTION.render_text(data))
 
     # MAIL-17: „Zaplecze” — kontekst i kontrola za separatorem.
-    lines.extend(["=" * 64, "ZAPLECZE", _BACKOFFICE_NOTE, "=" * 64, ""])
-    # Slot na sekcję Risk Watch w wariancie plain text — analogicznie do HTML.
-    lines.append(_RISK_WATCH_SLOT)
+    lines.extend(BACKOFFICE_SECTION.render_text(data))
+    lines.extend(RISK_WATCH_SECTION.render_text(data))
     # PORT-22: radar portfela (klastry, VaR, stress, „za mało historii”).
-    lines.append(_PORTFOLIO_SLOT)
+    lines.extend(PORTFOLIO_RADAR_SECTION.render_text(data))
     lines.extend(ACCURACY_HISTORY_SECTION.render_text(data))
     lines.append(_MODEL_SCORECARD_SLOT)
     lines.append(_COUNCIL_HISTORY_SLOT)

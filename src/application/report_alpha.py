@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from src.application.alpha_signals import AlphaSignals
 from src.application.report_formatting import number, pct
+from src.application.reporting.section import ReportSection, SectionInput, no_text
 from src.domain.analyst_consensus import AnalystRating
 from src.domain.earnings import EarningsProximity
 from src.domain.insider_flow import InsiderBuy, InsiderSignal
@@ -230,3 +231,17 @@ def _render_signal_row_html(sig: AlphaSignals, price: Decimal | None) -> str:
         + cell(earnings_txt)
         + "</tr>"
     )
+
+
+def _section_html(data: SectionInput) -> str:
+    context = data.context
+    return render_alpha_html(context.alpha_signals or {}, context.yield_curve, context.alpha_prices)
+
+
+# Insider, analitycy, opcje, social i earnings per symbol + krzywa rentowności FRED.
+ALPHA_SECTION = ReportSection(
+    key="alpha",
+    render_html=_section_html,
+    render_text=no_text,
+    context_fields=frozenset({"yield_curve", "alpha_prices"}),
+)

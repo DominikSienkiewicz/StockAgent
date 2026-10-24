@@ -19,6 +19,7 @@ from __future__ import annotations
 import html as _html
 
 from src.application.report_formatting import pct
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.risk_sample import RiskStat
 
@@ -214,3 +215,22 @@ def _render_clusters_html(clusters: list[tuple[str, ...]]) -> str:
         + "".join(rows)
         + "</ul>"
     )
+
+
+def _section_html(data: SectionInput) -> str:
+    report = data.context.portfolio_risk_report
+    return render_correlation_html(report) if report else ""
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    report = data.context.portfolio_risk_report
+    return text_block(render_correlation_text(report) if report else "")
+
+
+# Q4/PORT-22: koncentracja i ryzyko watchlisty (klastry, VaR, stress test).
+PORTFOLIO_RADAR_SECTION = ReportSection(
+    key="portfolio_radar",
+    render_html=_section_html,
+    render_text=_section_text,
+    context_fields=frozenset({"portfolio_risk_report"}),
+)
