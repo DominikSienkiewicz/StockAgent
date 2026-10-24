@@ -18,7 +18,7 @@ from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_series import MacroSeriesSnapshot
 from src.domain.mistake_taxonomy import MistakeCategory
-from src.domain.model_scorecard import TrainingReport
+from src.domain.model_scorecard import TargetUnit, TrainingReport
 from src.domain.options_flow import OptionsFlowSnapshot
 from src.domain.persona_track_record import PersonaVoteOutcome
 from src.domain.polish_macro import PolishMacroSnapshot
@@ -752,6 +752,11 @@ class RepositoryPort(ABC):
         """Rozliczenie wywołania: HIT / MISS z ceną odczytu albo EXPIRED bez ceny."""
 
 
+class ReturnScaleUnavailableError(RuntimeError):
+    """ML-11: model uczony w jednostkach σ (`TargetUnit.SIGMA`) nie dostał σ symbolu —
+    prognoza w złych jednostkach byłaby cichą pomyłką, więc predykcji nie ma."""
+
+
 class MLPredictionPort(ABC):
     """Lokalny model predykcyjny (np. XGBoost)."""
 
@@ -765,17 +770,29 @@ class MLPredictionPort(ABC):
 
     @abstractmethod
     def predict(
-        self, current_features: dict[str, float], current_price: Decimal
+        self,
+        current_features: dict[str, float],
+        current_price: Decimal,
+        *,
+        return_scale: float | None = None,
     ) -> Money:
         """Predykcja ceny docelowej 12h. Model przewiduje ZWROT — `current_price`
-        jest potrzebna do rekonstrukcji ceny bezwzględnej (`cena*(1+zwrot)`)."""
+        jest potrzebna do rekonstrukcji ceny bezwzględnej (`cena*(1+zwrot)`).
+
+        ML-11: model uczony w jednostkach σ mnoży prognozę przez `return_scale`
+        (σ symbolu z `return_sigma`); bez niej rzuca `ReturnScaleUnavailableError`.
+        Model w surowych zwrotach ignoruje `return_scale`."""
 
     @abstractmethod
-    def explain(self, current_features: dict[str, float]) -> dict[str, float]:
+    def explain(
+        self, current_features: dict[str, float], *, return_scale: float | None = None
+    ) -> dict[str, float]:
         """Q3 — znakowane wkłady per-cecha (SHAP-lite) w surową predykcję.
 
         Zwraca `{nazwa_cechy: wkład, ..., "_bias": base}`. Lokalny CPU, zero
-        płatnych wywołań. Rzuca RuntimeError gdy model nietrenowany (jak predict)."""
+        płatnych wywołań. Rzuca RuntimeError gdy model nietrenowany (jak predict).
+        ML-11: wkłady modelu w jednostkach σ są w tych samych jednostkach co
+        `predict` (× `return_scale`)."""
 
     @abstractmethod
     def train(
@@ -785,6 +802,7 @@ class MLPredictionPort(ABC):
         *,
         persist: bool = True,
         timestamps: Any = None,
+        target_unit: TargetUnit = TargetUnit.RETURN,
     ) -> TrainingReport:
         """`features`/`target` to `pandas.DataFrame`/`Series` — typujemy luźno,
         by nie wprowadzać zależności od pandas w warstwie application.
@@ -794,7 +812,11 @@ class MLPredictionPort(ABC):
         zapisu ani ładowania wag (ML-13, per-symbol pętla Slow Loopa) —
         `EVALUATION_PASSED` / `EVALUATION_FAILED`. `timestamps` (wyrównane
         z wierszami, rosnąco) włączają foldy po czasie GLOBALNYM z purgem horyzontu
-        etykiety — wymagane dla modelu wspólnego na wielu symbolach."""
+        etykiety — wymagane dla modelu wspólnego na wielu symbolach.
+
+        ML-11: `target_unit` mówi, w jakich jednostkach jest `target` (wołający
+        dzieli zwrot przez σ); metryki i baseline'y są wtedy w jednostkach σ,
+        a zapisane wagi niosą jednostkę, którą odczyta `predict`."""
 
     @abstractmethod
     def walk_forward_report(

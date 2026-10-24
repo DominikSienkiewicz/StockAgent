@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -9,10 +10,10 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
-from src.application.ports import MLPredictionPort
+from src.application.ports import MLPredictionPort, ReturnScaleUnavailableError
 from src.domain.backtest import BacktestSummary, purged_train_end, summarize_folds
 from src.domain.drift import bin_fractions, quantile_edges, recent_window_psi
-from src.domain.model_scorecard import TrainingOutcome, TrainingReport
+from src.domain.model_scorecard import TargetUnit, TrainingOutcome, TrainingReport
 from src.domain.value_objects import Money
 
 # Hiperparametry dobrane pod dane finansowe (zapobieganie overfittingowi).
@@ -47,6 +48,10 @@ METRIC_NOTE = (
     "all data and not re-validated"
 )
 
+# ML-11: atrybut boostera zapisywany w pliku `.ubj` — jednostka targetu modelu.
+# Plik bez atrybutu (sprzed ML-11) to model w surowych zwrotach.
+TARGET_UNIT_ATTR = "target_unit"
+
 
 class XGBoostAdapter(MLPredictionPort):
     """Adapter dla lokalnego modelu XGBoost (Local-First AI).
@@ -70,6 +75,7 @@ class XGBoostAdapter(MLPredictionPort):
         self._model_path = model_path
         self._params = params or DEFAULT_PARAMS
         self._model: xgb.XGBRegressor | None = None
+        self._target_unit = TargetUnit.RETURN
         self._load_if_exists()
 
     def _load_if_exists(self) -> None:
@@ -78,6 +84,9 @@ class XGBoostAdapter(MLPredictionPort):
         model = xgb.XGBRegressor()
         model.load_model(self._model_path)
         self._model = model
+        self._target_unit = TargetUnit(
+            model.get_booster().attr(TARGET_UNIT_ATTR) or TargetUnit.RETURN.value
+        )
 
     @property
     def is_trained(self) -> bool:
@@ -90,6 +99,7 @@ class XGBoostAdapter(MLPredictionPort):
         *,
         persist: bool = True,
         timestamps: Any = None,
+        target_unit: TargetUnit = TargetUnit.RETURN,
     ) -> TrainingReport:
         feature_frame = _feature_frame(features)
         target_series = pd.Series(target).reset_index(drop=True)
@@ -119,6 +129,7 @@ class XGBoostAdapter(MLPredictionPort):
                 feature_stats=feature_stats,
                 reason=reason,
                 model_path=model_path,
+                target_unit=target_unit,
             )
 
         if not persist:
@@ -147,10 +158,15 @@ class XGBoostAdapter(MLPredictionPort):
         # (finding #22, patrz METRIC_NOTE).
         model = xgb.XGBRegressor(**self._params)
         model.fit(feature_frame, target_series)
+        if target_unit is not TargetUnit.RETURN:
+            # ML-11: jednostka targetu jedzie w pliku wag — Fast Loop wie z modelu,
+            # czy mnożyć prognozę przez σ. Model w zwrotach zostaje bez atrybutu.
+            model.get_booster().set_attr(**{TARGET_UNIT_ATTR: target_unit.value})
         model_path = Path(self._model_path)
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model.save_model(self._model_path)
         self._model = model
+        self._target_unit = target_unit
         return report(TrainingOutcome.ACCEPTED, model_path=self._model_path)
 
     def _walk_forward_folds_detail(
@@ -225,21 +241,38 @@ class XGBoostAdapter(MLPredictionPort):
         return self._walk_forward_folds_detail(feature_frame, target_series, stamps)
 
     def predict(
-        self, current_features: dict[str, float], current_price: Decimal
+        self,
+        current_features: dict[str, float],
+        current_price: Decimal,
+        *,
+        return_scale: float | None = None,
     ) -> Money:
         if self._model is None:
             raise RuntimeError(
                 f"Model not trained — no weights at '{self._model_path}'. "
                 "Run TrainModelUseCase first (Slow Loop)."
             )
+        scale = self._return_scale(return_scale)
         frame = self._align_features(current_features)
-        # Model przewiduje ZWROT 12h; rekonstruujemy cenę bezwzględną:
-        # cena_docelowa = cena_bieżąca * (1 + zwrot).
-        predicted_return = float(self._model.predict(frame)[0])
+        # Model przewiduje ZWROT 12h (ML-11: albo zwrot / σ — wtedy × σ);
+        # rekonstruujemy cenę bezwzględną: cena_docelowa = cena_bieżąca * (1 + zwrot).
+        predicted_return = float(self._model.predict(frame)[0]) * scale
         target_price = current_price * (Decimal("1") + Decimal(str(predicted_return)))
         return Money(target_price)
 
-    def explain(self, current_features: dict[str, float]) -> dict[str, float]:
+    def _return_scale(self, return_scale: float | None) -> float:
+        """ML-11: mnożnik prognozy — σ dla modelu w jednostkach σ, 1 dla zwrotów."""
+        if self._target_unit is TargetUnit.RETURN:
+            return 1.0
+        if return_scale is None or not math.isfinite(return_scale) or return_scale <= 0:
+            raise ReturnScaleUnavailableError(
+                f"Model at '{self._model_path}' predicts return / sigma; no sigma given"
+            )
+        return return_scale
+
+    def explain(
+        self, current_features: dict[str, float], *, return_scale: float | None = None
+    ) -> dict[str, float]:
         """Q3 — znakowane wkłady per-cecha w surową predykcję (SHAP-lite).
 
         Liczone lokalnie z boostera przez `pred_contribs=True` (dokładne wartości
@@ -257,6 +290,7 @@ class XGBoostAdapter(MLPredictionPort):
                 f"Model not trained — no weights at '{self._model_path}'. "
                 "Run TrainModelUseCase first (Slow Loop)."
             )
+        scale = self._return_scale(return_scale)
         frame = self._align_features(current_features)
         booster = self._model.get_booster()
         # pred_contribs zwraca macierz [n_próbek, n_cech + 1]; ostatnia kolumna to
@@ -267,10 +301,10 @@ class XGBoostAdapter(MLPredictionPort):
         row = np.asarray(contributions, dtype=float).reshape(-1)
         feature_names = [str(c) for c in frame.columns]
         result: dict[str, float] = {
-            name: float(row[idx]) for idx, name in enumerate(feature_names)
+            name: float(row[idx]) * scale for idx, name in enumerate(feature_names)
         }
         # Ostatni element to bias — pod dedykowanym kluczem, nie jako cecha.
-        result["_bias"] = float(row[len(feature_names)])
+        result["_bias"] = float(row[len(feature_names)]) * scale
         return result
 
     def _align_features(self, current_features: dict[str, float]) -> pd.DataFrame:
@@ -313,11 +347,13 @@ def _training_report(
     feature_stats: dict[str, dict[str, Any]],
     reason: str | None,
     model_path: str | None,
+    target_unit: TargetUnit,
 ) -> TrainingReport:
     """ARCH-09: werdykt i metryki walk-forward jako domenowy `TrainingReport`.
 
     Metryki to średnie kandydata na foldach (`METRIC_NOTE`); baseline'y ML-10
-    („dryf średniej", „sam LLM") są None, gdy foldy ich nie liczyły."""
+    („dryf średniej", „sam LLM") są None, gdy foldy ich nie liczyły. ML-11: przy
+    targecie w jednostkach σ metryki też są w σ, a raport niesie `target_unit`."""
     return TrainingReport(
         outcome,
         n_samples=n_samples,
@@ -332,6 +368,9 @@ def _training_report(
         feature_stats=feature_stats,
         metric_note=METRIC_NOTE,
         model_path=model_path,
+        extras=(
+            {} if target_unit is TargetUnit.RETURN else {"target_unit": target_unit.value}
+        ),
     )
 
 

@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.application.ports import MLPredictionPort
-from src.domain.model_scorecard import TrainingOutcome, TrainingReport
+from src.application.ports import MLPredictionPort, ReturnScaleUnavailableError
+from src.domain.model_scorecard import TargetUnit, TrainingOutcome, TrainingReport
 from src.domain.value_objects import Money
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 
@@ -290,6 +290,71 @@ class TestPredict:
         current_price = Decimal("100")
         with pytest.raises(RuntimeError, match="not trained"):
             adapter.predict(features, current_price=current_price)
+
+
+class TestSigmaTarget:
+    """ML-11: model wspólny uczony na zwrot / σ. Plik wag niesie jednostkę targetu,
+    a `predict` mnoży prognozę z powrotem przez σ symbolu z chwili cyklu."""
+
+    @staticmethod
+    def _sigma_adapter(model_path: str) -> XGBoostAdapter:
+        features, target = _synthetic_dataset(n=200)
+        XGBoostAdapter(model_path=model_path).train(
+            features, target / 0.02, target_unit=TargetUnit.SIGMA
+        )
+        return XGBoostAdapter(model_path=model_path)
+
+    def test_predict_rescales_return_by_sigma(self, model_path: str):
+        adapter = self._sigma_adapter(model_path)
+        features, _ = _synthetic_dataset(n=1)
+        row = features.iloc[0].to_dict()
+        price = Decimal("100")
+
+        low = adapter.predict(row, current_price=price, return_scale=0.01).amount - price
+        high = adapter.predict(row, current_price=price, return_scale=0.03).amount - price
+
+        assert low != 0
+        assert float(high) == pytest.approx(3 * float(low), rel=1e-6)
+
+    def test_sigma_model_without_sigma_refuses_to_predict(self, model_path: str):
+        # Z-score podany jako zwrot byłby cichą pomyłką skali — serving wraca wtedy
+        # do baseline'u, zamiast serwować liczbę w złych jednostkach.
+        adapter = self._sigma_adapter(model_path)
+        features, _ = _synthetic_dataset(n=1)
+
+        with pytest.raises(ReturnScaleUnavailableError):
+            adapter.predict(features.iloc[0].to_dict(), current_price=Decimal("100"))
+        with pytest.raises(ReturnScaleUnavailableError):
+            adapter.explain(features.iloc[0].to_dict())
+
+    def test_explain_is_rescaled_with_the_prediction(self, model_path: str):
+        adapter = self._sigma_adapter(model_path)
+        features, _ = _synthetic_dataset(n=1)
+        row = features.iloc[0].to_dict()
+
+        low = adapter.explain(row, return_scale=0.01)
+        high = adapter.explain(row, return_scale=0.02)
+
+        assert high["price_delta"] == pytest.approx(2 * low["price_delta"])
+        assert high["_bias"] == pytest.approx(2 * low["_bias"])
+
+    def test_return_model_ignores_the_sigma(self, trained_adapter: XGBoostAdapter):
+        features, _ = _synthetic_dataset(n=1)
+        row = features.iloc[0].to_dict()
+        price = Decimal("100")
+
+        assert trained_adapter.predict(row, current_price=price, return_scale=0.05) == (
+            trained_adapter.predict(row, current_price=price)
+        )
+
+    def test_report_names_the_sigma_unit_only_for_sigma_targets(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=200)
+
+        sigma = adapter.train(features, target / 0.02, target_unit=TargetUnit.SIGMA)
+        plain = adapter.train(features, target)
+
+        assert sigma["target_unit"] == "sigma"
+        assert "target_unit" not in plain
 
 
 class TestPredictFeatureAlignment:

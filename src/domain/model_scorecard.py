@@ -90,6 +90,14 @@ class TrainingOutcome(Enum):
     EVALUATION_FAILED = "evaluation_failed"
 
 
+class TargetUnit(Enum):
+    """ML-11: jednostka targetu modelu — surowy zwrot albo zwrot / σ symbolu
+    (`return_sigma`). Model w jednostkach σ serwuje prognozę × σ z chwili cyklu."""
+
+    RETURN = "return"
+    SIGMA = "sigma"
+
+
 # ARCH-09: status zapisywany w `model_scorecards.status` — kontrakt historii tabeli.
 # Werdykt przekracza port jako `TrainingOutcome`, a string powstaje wyłącznie tutaj,
 # więc nowy wiersz karty ma zawsze jeden z tych pięciu statusów.
