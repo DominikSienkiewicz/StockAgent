@@ -425,3 +425,25 @@ class TestPortErrorTaxonomy:
 
         with pytest.raises(MalformedPayload, match="quote"):
             adapter.get_quote("AAPL")
+
+
+def test_open_circuit_fails_fast_without_network_and_without_token(mocker):
+    # NIEZ-31: po 5 porażkach finnhub.io kolejny symbol dostaje ProviderUnavailable
+    # od razu — bez 4 prób z timeoutem — a komunikat nadal nie niesie tokenu.
+    from requests.adapters import HTTPAdapter
+
+    from src.application.errors import ProviderUnavailable
+
+    transport = mocker.patch.object(
+        HTTPAdapter, "send", side_effect=requests.ConnectionError("down")
+    )
+    adapter = FinnhubAdapter(api_key="test-token-123")
+    for _ in range(5):
+        with pytest.raises(ProviderUnavailable):
+            adapter.get_quote("AAPL")
+
+    with pytest.raises(ProviderUnavailable) as excinfo:
+        adapter.get_quote("MSFT")
+
+    assert transport.call_count == 5
+    assert "test-token-123" not in str(excinfo.value)

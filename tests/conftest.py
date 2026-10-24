@@ -63,3 +63,14 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         if any(item.get_closest_marker(marker) for marker in NETWORK_MARKERS):
             item.add_marker(pytest.mark.enable_socket)
+
+
+@pytest.fixture(autouse=True)
+def _closed_http_circuits():
+    """NIEZ-31: obwody HTTP żyją przez cały proces — test, który otworzył obwód
+    hosta, nie może odciąć tego hosta kolejnym testom."""
+    from src.infrastructure.adapters._http import process_circuits
+
+    process_circuits().reset()
+    yield
+    process_circuits().reset()

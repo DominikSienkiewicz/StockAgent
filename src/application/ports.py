@@ -1127,3 +1127,29 @@ class EvidenceArchivePort(ABC):
     @abstractmethod
     def store(self, name: str, files: Mapping[str, bytes]) -> ArchiveReceipt:
         """Pakuje `files` (nazwa pliku → treść) w jeden zaszyfrowany artefakt `name`."""
+
+
+@dataclass(frozen=True)
+class CircuitState:
+    """NIEZ-31: stan circuit breakera jednego hosta HTTP w tym procesie.
+
+    `source` — nazwa dostawcy dla człowieka („Finnhub”), dla nieznanego hosta sam
+    host. `skipped_symbols` — symbole, których żądania otwarty obwód pominął bez
+    ruchu sieciowego; `skipped_calls` liczy też żądania spoza kontekstu symbolu."""
+
+    source: str
+    host: str
+    is_open: bool
+    consecutive_failures: int
+    skipped_calls: int
+    skipped_symbols: frozenset[str]
+
+
+class CircuitStatePort(ABC):
+    """NIEZ-31: odczyt stanu obwodów HTTP — banner kwot na koniec cyklu i linijka
+    stanu każdego źródła w mailu (MAIL-21)."""
+
+    @abstractmethod
+    def circuit_states(self) -> tuple[CircuitState, ...]:
+        """Obwody hostów, z którymi proces rozmawiał (otwarte i zamknięte)."""
+

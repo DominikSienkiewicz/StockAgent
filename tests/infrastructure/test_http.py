@@ -1,7 +1,9 @@
 """Testy wspólnego HTTP clienta z retry/backoff."""
 
+from contextlib import suppress
 from types import SimpleNamespace
 
+import pytest
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import RequestHistory, Retry
@@ -215,3 +217,123 @@ class TestHttpCallMeter:
         session.mount("https://", _ScriptedAdapter([200]))
 
         assert session.get("https://finnhub.io/x").status_code == 200
+
+
+class TestCircuitBreaker:
+    """NIEZ-31: po 5 kolejnych porażkach (5xx, timeout, zerwane połączenie) obwód
+    hosta otwiera się do końca procesu — kolejne żądania od razu rzucają
+    `ProviderUnavailable` bez ruchu sieciowego. 4xx nie liczy się jako porażka."""
+
+    URL = "https://finnhub.io/api/v1/quote"
+
+    @staticmethod
+    def _response(status: int) -> requests.Response:
+        response = requests.Response()
+        response.status_code = status
+        response.url = TestCircuitBreaker.URL
+        return response
+
+    def test_breaker_opens_after_consecutive_failures(self, mocker):
+        from src.application.errors import ProviderUnavailable
+
+        transport = mocker.patch.object(
+            HTTPAdapter, "send", side_effect=requests.ConnectionError("down")
+        )
+        session = build_session()
+        for _ in range(5):
+            with pytest.raises(requests.ConnectionError):
+                session.get(self.URL)
+
+        with pytest.raises(ProviderUnavailable):
+            session.get(self.URL)
+
+        assert transport.call_count == 5
+
+    def test_server_errors_and_timeouts_count_as_failures(self, mocker):
+        from src.application.errors import ProviderUnavailable
+
+        failures = [self._response(503)] * 3 + [requests.ReadTimeout("slow")] * 2
+        transport = mocker.patch.object(HTTPAdapter, "send", side_effect=failures)
+        session = build_session()
+        for _ in range(5):
+            with suppress(requests.ReadTimeout):
+                session.get(self.URL)
+
+        with pytest.raises(ProviderUnavailable):
+            session.get(self.URL)
+        assert transport.call_count == 5
+
+    def test_client_errors_do_not_open_the_circuit(self, mocker):
+        transport = mocker.patch.object(HTTPAdapter, "send", return_value=self._response(404))
+        session = build_session()
+
+        for _ in range(8):
+            assert session.get(self.URL).status_code == 404
+
+        assert transport.call_count == 8
+
+    def test_success_resets_the_consecutive_count(self, mocker):
+        failures = [requests.ConnectionError("down")] * 4
+        outcomes = [*failures, self._response(200), *failures, self._response(200)]
+        mocker.patch.object(HTTPAdapter, "send", side_effect=outcomes)
+        session = build_session()
+
+        statuses = []
+        for _ in outcomes:
+            try:
+                statuses.append(session.get(self.URL).status_code)
+            except requests.ConnectionError:
+                statuses.append(None)
+
+        assert statuses[-1] == 200
+
+    def test_circuit_is_per_host(self, mocker):
+        mocker.patch.object(
+            HTTPAdapter,
+            "send",
+            side_effect=[requests.ConnectionError("down")] * 5 + [self._response(200)],
+        )
+        session = build_session()
+        for _ in range(5):
+            with pytest.raises(requests.ConnectionError):
+                session.get(self.URL)
+
+        assert session.get("https://api.coingecko.com/api/v3/ping").status_code == 200
+
+    def test_open_circuit_error_follows_existing_degradation_paths(self, mocker):
+        # Adaptery łapią dziś `requests.RequestException` (EDGAR, Reddit, NBP, AV) —
+        # błąd otwartego obwodu musi trafić na te same ścieżki degradacji.
+        mocker.patch.object(HTTPAdapter, "send", side_effect=requests.ConnectionError("down"))
+        session = build_session()
+        for _ in range(5):
+            with pytest.raises(requests.ConnectionError):
+                session.get(self.URL)
+
+        with pytest.raises(requests.RequestException) as excinfo:
+            session.get(self.URL)
+
+        assert "finnhub.io" in str(excinfo.value)
+
+    def test_circuit_states_report_skipped_symbols(self, mocker):
+        # MAIL-21 i banner kwot czytają stan obwodów przez `CircuitStatePort`.
+        from src.application.ports import CircuitState, CircuitStatePort
+        from src.infrastructure.adapters._http import process_circuits
+        from src.infrastructure.logging_setup import symbol_context
+
+        mocker.patch.object(HTTPAdapter, "send", side_effect=requests.ConnectionError("down"))
+        session = build_session()
+        for symbol in ["AAPL", "MSFT", "NVDA", "AMD", "TSLA", "AAPL", "META", "META"]:
+            with symbol_context(symbol), suppress(requests.ConnectionError):
+                session.get(self.URL)
+
+        circuits: CircuitStatePort = process_circuits()
+        assert circuits.circuit_states() == (
+            CircuitState(
+                source="Finnhub",
+                host="finnhub.io",
+                is_open=True,
+                consecutive_failures=5,
+                skipped_calls=3,
+                skipped_symbols=frozenset({"AAPL", "META"}),
+            ),
+        )
