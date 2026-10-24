@@ -16,34 +16,10 @@ jobs:
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v4
-
-      # README is a router into docs/, so a link that does not resolve is a public defect —
-      # and one no test in this repository can see. PulseDigest shipped exactly this: a router
-      # commit whose four reference documents were silently dropped by .gitignore, leaving 404s
-      # live for three and a half days. Only relative links are checked; external URLs would
-      # need the network and would break on someone else's outage.
-      - name: 🔗 Verify Markdown links
-        run: |
-          status=0
-          while IFS= read -r file; do
-            dir=$(dirname "$file")
-            grep -oE '\]\([^)#][^)]*\)' "$file" | sed 's/](\(.*\))/\1/' | sed 's/#.*//' \
-            | while IFS= read -r target; do
-                case "$target" in http*|mailto:*|'') continue ;; esac
-                # `Sources/Foo.swift:190` points at a line, not at a file called "…swift:190".
-                # Strip a trailing :<digits> before the existence check, or the convention reads
-                # as a dead link and blocks CI on a file that is right there.
-                target=${target%:[0-9]*}
-                [ -e "$dir/$target" ] || echo "DEAD $file -> $target"
-              done
-          done < <(git ls-files '*.md') > dead-links.txt
-          if [ -s dead-links.txt ]; then cat dead-links.txt; status=1; fi
-          rm -f dead-links.txt
-          exit $status
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: 🐍 Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
@@ -53,23 +29,31 @@ jobs:
           enable-cache: true
 
       - name: 📦 Sync dependencies (incl. dev + anthropic extra)
-        run: uv sync --frozen --extra anthropic --no-build --no-install-project
+        # CI-11: `--locked` pada, gdy uv.lock nie zgadza się z pyproject.toml (zmiana
+        # zależności bez `uv lock`); `--frozen` instalowałby po cichu stary lock.
+        run: uv sync --locked --extra anthropic --no-build --no-install-project
 
       - name: 🔍 Ruff (lint)
         run: uv run --frozen --no-build --no-sync ruff check .
 
       - name: 🔎 Mypy (strict type check)
-        # Gołe `mypy` = pliki z `[tool.mypy].files` (src + wszystkie main_*.py).
+        # Gołe `mypy` = pliki z `[tool.mypy].files` (src + wszystkie main_*.py
+        # + katalogi tests/ dodane ratchetem, od tests/domain).
         # Zgodność z CLAUDE.md / AGENTS.md / docs pilnuje tests/test_quality_gate_sync.py.
         run: uv run --frozen --no-build --no-sync mypy
 
       - name: 🧪 Pytest (unit tests)
         # Integration tests (-m integration) wymagają prawdziwych kluczy API —
         # pomijane w CI. Testy kontenerowe uruchamiamy jawnie w następnym kroku.
+        # Linki względne w Markdown sprawdza tests/test_markdown_links.py (CI-32),
+        # więc ta sama bramka łapie martwy link lokalnie.
         run: uv run --frozen --no-build --no-sync pytest -m "not integration and not containers"
 
       - name: 🐳 Pytest (container schema tests)
         # Testy migracji SQL odpalają Postgres + pgvector przez testcontainers.
+        env:
+          # CI-06: brak demona Dockera = porażka kroku, nie zielony skip zera testów.
+          REQUIRE_DOCKER: "1"
         run: uv run --frozen --no-build --no-sync pytest -m containers
 
   sonarcloud:
@@ -90,12 +74,12 @@ jobs:
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0  # full history → accurate new-code & blame attribution
 
       - name: 🐍 Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
@@ -106,15 +90,47 @@ jobs:
 
       - name: 📦 Sync dependencies (incl. dev + anthropic extra)
         if: ${{ env.SONAR_TOKEN != '' }}
-        run: uv sync --frozen --extra anthropic --no-build --no-install-project
+        run: uv sync --locked --extra anthropic --no-build --no-install-project
 
       # Coverage for SonarCloud. Mirrors CI's test selection minus integration (real
       # API keys); container tests use testcontainers (Docker is on the ubuntu runner).
       # Writes coverage.xml at the repo root, where sonar-project.properties expects it.
+      # CI-04: `--cov` obejmuje też każdy entry-point (`main_*.py` w sonar.sources).
       - name: 🧪 Pytest with coverage
         if: ${{ env.SONAR_TOKEN != '' }}
-        run: uv run --frozen --no-build --no-sync pytest -m "not integration" --cov=src --cov-report=xml
+        run: >-
+          uv run --frozen --no-build --no-sync pytest -m "not integration"
+          --cov=src --cov=main_agent --cov=main_backtest --cov=main_deadman --cov=main_scorecard
+          --cov=main_tools --cov=main_trainer --cov=main_watch --cov-report=xml
 
       - name: 🔍 SonarCloud Scan
         if: ${{ env.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+
+  lowest-direct:
+    name: Lowest direct dependencies
+    # CI-12: dolne granice z pyproject.toml muszą się dać zainstalować i przejść testy.
+    # Tylko z ręcznego uruchomienia CI (Actions → CI → Run workflow): resolver bierze
+    # najniższe dozwolone wersje zależności bezpośrednich (także dev) i nadpisuje
+    # uv.lock tylko na runnerze. Czerwony job = podnieś dolną granicę w pyproject.toml.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+
+      - name: 📦 Sync dependencies at their declared lower bounds
+        run: uv sync --resolution lowest-direct --extra anthropic --no-build --no-install-project
+
+      - name: 🧪 Pytest (unit tests on the lowest direct dependencies)
+        run: uv run --no-sync pytest -m "not integration and not containers"

@@ -15,8 +15,10 @@ import math
 import threading
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
+
+from src.application.http_metering import HttpCallMeter
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,7 @@ class CycleMetrics:
     - `node_p50_ms` / `node_p95_ms` / `node_max_ms` — czasy węzłów (nearest-rank).
     - `node_failures` — wywołania węzła zakończone wyjątkiem; `failures` to ich suma.
     - `gated` / `passed` — decyzje bramki volatility; `gate_reasons` — ich powody.
+    - `http_calls` — żądania HTTP per host z `HttpCallMeter` (NIEZ-24); puste bez miernika.
     """
 
     paid_calls: Mapping[str, int]
@@ -37,6 +40,9 @@ class CycleMetrics:
     gated: int
     passed: int
     gate_reasons: Mapping[str, int]
+    http_calls: Mapping[str, Mapping[str, int]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def failures(self) -> int:
@@ -65,6 +71,12 @@ class CycleTelemetry:
         self._gate_reasons: Counter[str] = Counter()
         self._gated = 0
         self._passed = 0
+        self._http_meter: HttpCallMeter | None = None
+
+    def bind_http_meter(self, meter: HttpCallMeter) -> None:
+        """NIEZ-24: miernik żądań HTTP przebiegu; `snapshot()` oddaje jego stan."""
+        with self._lock:
+            self._http_meter = meter
 
     @property
     def paid_calls(self) -> Counter[str]:
@@ -115,6 +127,7 @@ class CycleTelemetry:
 
     def snapshot(self) -> CycleMetrics:
         with self._lock:
+            http_calls = {} if self._http_meter is None else self._http_meter.snapshot()
             timings = {node: sorted(values) for node, values in self._timings.items()}
             return CycleMetrics(
                 paid_calls=MappingProxyType(dict(self._paid_calls)),
@@ -131,4 +144,5 @@ class CycleTelemetry:
                 gated=self._gated,
                 passed=self._passed,
                 gate_reasons=MappingProxyType(dict(self._gate_reasons)),
+                http_calls=MappingProxyType(http_calls),
             )

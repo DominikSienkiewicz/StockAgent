@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.earnings import EarningsEvent
-from src.domain.insider_flow import InsiderFlowSnapshot
+from src.domain.insider_flow import InsiderBuy, InsiderFlowSnapshot, significant_buy_threshold
 from src.domain.options_flow import OptionsFlowSnapshot
 from src.domain.social_velocity import SocialVelocitySnapshot
 
@@ -25,6 +25,15 @@ class AlphaSignals:
     options: OptionsFlowSnapshot | None = None
     social: SocialVelocitySnapshot | None = None
     analyst: AnalystConsensus | None = None
+    # DAT-21: kapitalizacja z cache fundamentów (USD) — skaluje próg znaczącego
+    # zakupu insidera. None = brak w cache, próg stały 100k USD.
+    market_cap: float | None = None
+
+    def significant_insider_buy(self) -> InsiderBuy | None:
+        """DAT-21: znaczący zakup officera z progiem z kapitalizacji spółki."""
+        if self.insider is None:
+            return None
+        return self.insider.significant_buy(significant_buy_threshold(self.market_cap))
 
     def has_any(self) -> bool:
         """Czy jest cokolwiek do pokazania (przynajmniej jedno źródło dało dane)."""

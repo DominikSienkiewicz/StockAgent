@@ -134,7 +134,19 @@ class TestEdgeLabelForSigma:
             (float("nan"), EdgeLabel.NO_SIGNAL),
         ],
     )
-    def test_sigma_maps_to_the_evaluate_edge_label(self, sigma, label) -> None:
+    def test_sigma_maps_to_the_evaluate_edge_label(
+        self, sigma: float | None, label: EdgeLabel
+    ) -> None:
         from src.domain.implied_edge import edge_label_for_sigma
 
         assert edge_label_for_sigma(sigma) is label
+
+
+@pytest.mark.parametrize("iv", [math.inf, math.nan])
+def test_non_finite_iv_gives_no_signal(iv: float) -> None:
+    # PORT-09: nieskończona IV dawała MARKET_AHEAD (edge 0), NaN — ALIGNED.
+    edge = evaluate_edge(0.03, iv, 12.0)
+
+    assert edge.label is EdgeLabel.NO_SIGNAL
+    assert edge.edge_sigma is None
+    assert edge.implied_move is None

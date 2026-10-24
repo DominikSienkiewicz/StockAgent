@@ -60,6 +60,20 @@ class TestEquityCurve:
         assert "2,0%" in html       # max_drawdown
 
 
+class TestEntryPriceNote:
+    """WIA-34: trafność i paper-PnL liczą lukę na otwarciu, której czytelnik maila
+    przed sesją nie kupi — notka pod podsumowaniem krzywej mówi to wprost."""
+
+    def test_equity_summary_says_the_entry_is_the_last_close(self) -> None:
+        html = render_track_record_html(_curve(), None, None)
+
+        assert "ostatnie zamknięcie" in html
+        assert "lukę na otwarciu" in html
+
+    def test_no_curve_no_entry_note(self) -> None:
+        assert "ostatnie zamknięcie" not in render_track_record_html(None, None, None)
+
+
 class TestCalibration:
     def test_renders_buckets_and_ece(self) -> None:
         buckets = [
@@ -98,6 +112,45 @@ class TestLessons:
         assert "AAPL" in html
         assert "rynek wycenił słabszy popyt" in html
         assert "popyt" in html
+
+    def test_renders_the_category_histogram(self) -> None:
+        # WIA-57: „3 z 5 błędów: makro” obok listy lekcji.
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        lessons = LessonsReport(
+            items=(
+                LessonItem(
+                    symbol="AAPL",
+                    predicted_trend="BULLISH",
+                    insight="zignorowałem decyzję Fed",
+                    actual_change_pct=None,
+                ),
+            ),
+            total_mistakes=6,
+            recurring_theme=None,
+            category_counts={MistakeCategory.MACRO: 3, MistakeCategory.EARNINGS: 2},
+        )
+
+        html = render_track_record_html(None, None, lessons)
+
+        assert "3 z 5 błędów: makro" in html
+        assert "2 z 5: wyniki spółki" in html
+
+    def test_without_categories_there_is_no_histogram(self) -> None:
+        lessons = LessonsReport(
+            items=(
+                LessonItem(
+                    symbol="AAPL",
+                    predicted_trend="BULLISH",
+                    insight="rynek wycenił słabszy popyt",
+                    actual_change_pct=None,
+                ),
+            ),
+            total_mistakes=1,
+            recurring_theme=None,
+        )
+
+        assert "błędów:" not in render_track_record_html(None, None, lessons)
 
     def test_lesson_insight_html_escaped(self) -> None:
         lessons = LessonsReport(
@@ -388,3 +441,53 @@ class TestCompactTrackRecord:
 
         assert "Na tle rynku: brak danych benchmarku" in html
         assert "Krzywa kapitału (paper-PnL)" in html
+
+
+class TestSidewaysCalibration:
+    """WIA-39: SIDEWAYS liczone osobno od krzywej kierunkowej — n i Brier."""
+
+    _BUCKETS = [
+        CalibrationBucket(lower=0.6, upper=0.7, count=10, mean_confidence=0.65, hit_rate=0.6)
+    ]
+
+    def test_sideways_line_shows_n_and_brier(self) -> None:
+        sideways = probability_scores([(0.8, True), (0.8, False)])
+        stats = TrackRecordStats(sideways_scores=sideways)
+
+        html = render_track_record_html(None, self._BUCKETS, None, stats)
+
+        # Brier = (0.2² + 0.8²) / 2 = 0.34.
+        assert "SIDEWAYS" in html
+        assert "n=2, Brier 0,340" in html
+
+    def test_no_sideways_scores_no_sideways_line(self) -> None:
+        html = render_track_record_html(None, self._BUCKETS, None, TrackRecordStats())
+
+        assert "SIDEWAYS" not in html
+
+def test_expired_predictions_count_is_rendered() -> None:
+    """WIA-49: cichy brak oceny wygląda jak brak predykcji — sekcja mówi wprost,
+    ile predykcji wygasło bez oceny, nawet gdy reszta Track Record jest pusta.
+    Copy idzie polską odmianą liczebnika (3 predykcje wygasły / 5 predykcji wygasło)."""
+    html = render_track_record_html(None, None, None, expired_count=3)
+
+    assert "Track Record" in html
+    assert "3 predykcje wygasły bez oceny" in html
+    assert "5 predykcji wygasło bez oceny" in render_track_record_html(
+        None, None, None, expired_count=5
+    )
+    assert "1 predykcja wygasła bez oceny" in render_track_record_html(
+        None, None, None, expired_count=1
+    )
+
+
+def test_no_expired_predictions_no_line() -> None:
+    assert render_track_record_html(None, None, None, expired_count=0) == ""
+    assert "wygas" not in render_track_record_html(_curve(), None, None)
+
+
+def test_compact_track_record_keeps_the_expired_count() -> None:
+    html = render_track_record_html(_curve(), None, None, compact=True, expired_count=2)
+
+    assert "2 predykcje wygasły bez oceny" in html
+    assert "wersja zwarta" in html

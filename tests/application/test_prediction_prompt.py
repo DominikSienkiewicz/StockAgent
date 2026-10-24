@@ -58,3 +58,26 @@ def test_prompt_without_memory_keeps_the_market_data_and_schema() -> None:
     assert "Reuters: Fed keeps rates" in prompt
     assert "Przeanalizuj korelację między <current_market_data> a <alpha_vantage_signal>." in prompt
     assert "output_schema" in prompt
+
+
+def test_default_prompt_asks_for_no_probability_distribution() -> None:
+    # ML-29 off: prompt bajt w bajt jak przed flagą.
+    prompt = _prompt()
+
+    assert "probabilities" not in prompt
+    assert prompt == _prompt(include_probabilities=False)
+
+
+def test_probability_prompt_asks_for_the_three_class_distribution() -> None:
+    prompt = _prompt(include_probabilities=True)
+
+    assert '"probabilities": {"BULLISH": float, "BEARISH": float, "SIDEWAYS": float}' in prompt
+    assert "suma 1.0" in prompt
+    # Reszta schematu zostaje — fallback na stare pola działa bez rozkładu.
+    assert '"trend_direction"' in prompt
+    assert '"confidence_score"' in prompt
+    # Jedyna różnica względem promptu bez rozkładu to trzy dopisane linie.
+    base_lines = _prompt().splitlines()
+    added = [line for line in prompt.splitlines() if line not in base_lines]
+    assert len(added) == 3
+    assert len(prompt.splitlines()) == len(base_lines) + 3

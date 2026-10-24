@@ -1,12 +1,16 @@
+from collections.abc import Callable
 from decimal import Decimal
 
 import pytest
 
 from src.domain.prediction import (
+    BRIER_CALIBRATION_SCORE_VERSION,
     CRYPTO_SIDEWAYS_TOLERANCE,
+    LINEAR_CALIBRATION_SCORE_VERSION,
     SIDEWAYS_TOLERANCE,
     Prediction,
     TrendDirection,
+    brier_calibration_score,
     calibration_error,
     calibration_score,
     normalize_trend,
@@ -16,18 +20,18 @@ from src.domain.value_objects import AssetType
 
 
 class TestCalibration:
-    def test_calibration_error_zero_when_confidence_matches_accuracy(self):
+    def test_calibration_error_zero_when_confidence_matches_accuracy(self) -> None:
         samples = [(0.5, True), (0.5, False)]
         assert calibration_error(samples) == pytest.approx(0.0)
 
-    def test_calibration_error_high_when_overconfident(self):
+    def test_calibration_error_high_when_overconfident(self) -> None:
         samples = [(0.9, True), (0.9, False)]
         assert calibration_error(samples) == pytest.approx(0.4)
 
-    def test_calibration_error_empty(self):
+    def test_calibration_error_empty(self) -> None:
         assert calibration_error([]) == pytest.approx(0.0)
 
-    def test_calibration_score_per_prediction(self):
+    def test_calibration_score_per_prediction(self) -> None:
         assert calibration_score(0.9, correct=False) == pytest.approx(0.1)
         assert calibration_score(0.8, correct=True) == pytest.approx(0.8)
         assert calibration_score(1.0, correct=True) == pytest.approx(1.0)
@@ -47,35 +51,35 @@ def _make_prediction(
 
 
 class TestIsTrendCorrect:
-    def test_bullish_trend_is_correct_when_price_rises(self):
+    def test_bullish_trend_is_correct_when_price_rises(self) -> None:
         prediction = _make_prediction(TrendDirection.BULLISH)
         assert prediction.is_trend_correct(Decimal("110.0")) is True
 
-    def test_bullish_trend_is_wrong_when_price_falls(self):
+    def test_bullish_trend_is_wrong_when_price_falls(self) -> None:
         prediction = _make_prediction(TrendDirection.BULLISH)
         assert prediction.is_trend_correct(Decimal("90.0")) is False
 
-    def test_bearish_trend_is_correct_when_price_falls(self):
+    def test_bearish_trend_is_correct_when_price_falls(self) -> None:
         prediction = _make_prediction(TrendDirection.BEARISH)
         assert prediction.is_trend_correct(Decimal("90.0")) is True
 
-    def test_bearish_trend_is_wrong_when_price_rises(self):
+    def test_bearish_trend_is_wrong_when_price_rises(self) -> None:
         prediction = _make_prediction(TrendDirection.BEARISH)
         assert prediction.is_trend_correct(Decimal("110.0")) is False
 
-    def test_sideways_is_correct_within_half_percent(self):
+    def test_sideways_is_correct_within_half_percent(self) -> None:
         prediction = _make_prediction(TrendDirection.SIDEWAYS)
         assert prediction.is_trend_correct(Decimal("100.4")) is True
         assert prediction.is_trend_correct(Decimal("99.6")) is True
 
-    def test_sideways_is_wrong_outside_half_percent(self):
+    def test_sideways_is_wrong_outside_half_percent(self) -> None:
         prediction = _make_prediction(TrendDirection.SIDEWAYS)
         assert prediction.is_trend_correct(Decimal("101.0")) is False
         assert prediction.is_trend_correct(Decimal("99.0")) is False
 
 
 class TestAccuracyScore:
-    def test_perfect_prediction_scores_one(self):
+    def test_perfect_prediction_scores_one(self) -> None:
         prediction = _make_prediction(
             TrendDirection.BULLISH,
             price_at=Decimal("100.0"),
@@ -83,7 +87,7 @@ class TestAccuracyScore:
         )
         assert prediction.accuracy_score(Decimal("105.0")) == Decimal("1.0")
 
-    def test_score_decreases_with_error(self):
+    def test_score_decreases_with_error(self) -> None:
         # error 5/100 = 0.05 → score = 1 - 0.05 = 0.95
         prediction = _make_prediction(
             TrendDirection.BULLISH,
@@ -92,7 +96,7 @@ class TestAccuracyScore:
         )
         assert prediction.accuracy_score(Decimal("110.0")) == Decimal("0.95")
 
-    def test_score_floored_at_zero_for_huge_error(self):
+    def test_score_floored_at_zero_for_huge_error(self) -> None:
         prediction = _make_prediction(
             TrendDirection.BULLISH,
             price_at=Decimal("100.0"),
@@ -111,7 +115,7 @@ class TestZeroPriceAtPredictionGuard:
     ZeroDivisionError i ubija cały symbol w cyklu.
     """
 
-    def test_is_trend_correct_does_not_raise_on_zero_price(self):
+    def test_is_trend_correct_does_not_raise_on_zero_price(self) -> None:
         prediction = _make_prediction(
             TrendDirection.SIDEWAYS, price_at=Decimal("0"), target=Decimal("0")
         )
@@ -119,7 +123,7 @@ class TestZeroPriceAtPredictionGuard:
         # Cena nie zmieniła się względem (nieznanego) 0 → traktujemy jak SIDEWAYS-correct.
         assert prediction.is_trend_correct(Decimal("0")) is True
 
-    def test_accuracy_score_does_not_raise_on_zero_price(self):
+    def test_accuracy_score_does_not_raise_on_zero_price(self) -> None:
         prediction = _make_prediction(
             TrendDirection.BULLISH, price_at=Decimal("0"), target=Decimal("105.0")
         )
@@ -278,3 +282,48 @@ class TestPredictionDiagnosisInputs:
 
         assert pred.news_summary == "Fed holds | Chips rally"
         assert pred.reasoning == "Popyt na GPU rośnie."
+
+
+class TestBrierCalibrationScore:
+    """WIA-37: `1 − |c − o|` jest regułą niewłaściwą — przy prawdziwej trafności
+    0.6 zgłoszenie c = 1.0 daje więcej niż uczciwe c = 0.6. `1 − (c − o)²` jest
+    właściwa: oczekiwany wynik jest największy przy c równym trafności."""
+
+    @staticmethod
+    def _expected(
+        score: Callable[[float, bool], float], confidence: float, true_rate: float
+    ) -> float:
+        return true_rate * score(confidence, True) + (1 - true_rate) * score(confidence, False)
+
+    def test_brier_calibration_score_is_proper(self) -> None:
+        honest = self._expected(brier_calibration_score, 0.6, 0.6)
+        overconfident = self._expected(brier_calibration_score, 1.0, 0.6)
+
+        assert honest > overconfident
+
+    def test_linear_score_rewards_overconfidence(self) -> None:
+        # Dlatego v1 zostaje tylko do odczytu starych wierszy.
+        honest = self._expected(calibration_score, 0.6, 0.6)
+        overconfident = self._expected(calibration_score, 1.0, 0.6)
+
+        assert overconfident > honest
+
+    @pytest.mark.parametrize(
+        ("confidence", "correct", "expected"),
+        [(0.9, False, 0.19), (0.8, True, 0.96), (1.0, True, 1.0), (0.0, True, 0.0)],
+    )
+    def test_brier_calibration_score_values(
+        self, confidence: float, correct: bool, expected: float
+    ) -> None:
+        assert brier_calibration_score(confidence, correct) == pytest.approx(expected)
+
+    def test_score_versions_are_distinct(self) -> None:
+        assert LINEAR_CALIBRATION_SCORE_VERSION == 1
+        assert BRIER_CALIBRATION_SCORE_VERSION == 2
+
+
+def test_stale_quote_note_is_a_placeholder_not_a_lesson() -> None:
+    # DAT-14: rozliczenie na nieaktualnym notowaniu nie ma diagnozy — to nie lekcja.
+    from src.domain.prediction import STALE_QUOTE_INSIGHT, is_substantive_insight
+
+    assert not is_substantive_insight(STALE_QUOTE_INSIGHT)

@@ -32,17 +32,10 @@ jobs:
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v4
-
-      - name: 🙈 Mask each Alpha Vantage key
-        # BEZ-03: GitHub maskuje sekret CSV tylko w całości — pojedynczy klucz z listy
-        # wyszedłby w logu jawnie. Maskujemy każdy osobno, zanim ruszy Python.
-        env:
-          ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
-        run: scripts/mask-csv-secret.sh ALPHA_VANTAGE_API_KEYS
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: 🐍 Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
@@ -66,12 +59,11 @@ jobs:
           DB_WRITES_ENABLED: "true"
           # Darmowe źródło ceny dla akcji (krypto idzie po CoinGecko, bez klucza).
           FINNHUB_API_KEY:   ${{ secrets.FINNHUB_API_KEY }}
-          # Settings wymaga OPENAI_API_KEY jako pola obowiązkowego, choć watch
-          # nie woła żadnego LLM. Bez niego konstrukcja Settings rzuca.
-          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
-          # Analogicznie: walidator Settings wymaga ≥1 klucza Alpha Vantage.
-          # Watch nie woła AV, ale bez tego pola konstrukcja Settings rzuca.
-          ALPHA_VANTAGE_API_KEYS: ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
+          # BEZ-12: Settings wymaga niepustego OPENAI_API_KEY i ≥1 klucza Alpha
+          # Vantage, choć watch nie woła ani LLM, ani AV. Atrapy zamiast sekretów —
+          # darmowy job nie dostaje płatnych kluczy (tests/test_shock_watch_env_wiring.py).
+          OPENAI_API_KEY:    unused-in-shock-watch
+          ALPHA_VANTAGE_API_KEYS: unused-in-shock-watch
           # Kanały push — darmowe. Brak sekretu = kanał po prostu nie powstaje.
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}

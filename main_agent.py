@@ -27,6 +27,8 @@ from typing import Any, NamedTuple
 from src.application.agent_graph import AgentGraphDeps, AgentState
 from src.application.alpha_signals import AlphaSignals
 from src.application.cycle_telemetry import CycleTelemetry
+from src.application.data_coverage import build_data_coverage
+from src.application.http_metering import HttpCallMeter
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.move_interval import (
     CALIBRATION_LOOKBACK_DAYS,
@@ -41,15 +43,18 @@ from src.application.ports import (
     CycleRun,
     EarningsCalendarPort,
     EmbeddingPort,
+    FundamentalsPort,
     FxRatePort,
     HeartbeatPort,
     InsiderFlowPort,
     LLMPort,
     MacroRatesPort,
+    MacroSeriesPort,
     MarketDataPort,
     NewsPort,
     OptionsFlowPort,
     PortfolioPositionsPort,
+    QuotePort,
     ReportNotifierPort,
     RepositoryPort,
     SentimentPort,
@@ -63,6 +68,7 @@ from src.application.report_builder import (
     ReportContext,
     SymbolResult,
     build_cycle_lead,
+    build_cycle_signals,
     build_html_report,
     parse_resolved_predictions,
     to_symbol_result,
@@ -71,6 +77,8 @@ from src.application.report_council_history import InvestorHistory
 from src.application.report_evidence import (
     BENCHMARK_SYMBOL,
     PaperCosts,
+    accuracy_drop_alert,
+    accuracy_drop_evidence,
     benchmark_comparison,
     hit_rate_evidence,
     portfolio_curve,
@@ -86,12 +94,18 @@ from src.application.report_model_scorecard import (
     ModelScorecardView,
     build_scorecard_view,
 )
-from src.application.report_models import ResolvedPrediction
+from src.application.report_models import ResolvedPrediction, TradeSignal
 from src.application.report_onboarding import onboarding_subject
 from src.application.report_ops import render_cycle_summary_markdown
 from src.application.report_public_scorecard import render_public_scorecard_html
+from src.application.report_regime import RegimeBanner
+from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
+from src.application.signal_calibration import (
+    directional_calibration_curve,
+    split_calibration_samples,
+)
 from src.application.tools import build_research_tools
 from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidPhase
@@ -105,37 +119,49 @@ from src.application.use_cases.portfolio_risk import (
     PortfolioRiskUseCase,
     PositionRisk,
 )
-from src.config import Settings
+from src.config import Settings, load_evaluation_protocol
 from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
 from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
+    confidence_reorders_ranking,
+    discrimination_evidence,
     probability_scores,
     reliability_curve,
 )
 from src.domain.conformal import CalibrationPoint
 from src.domain.consensus_shift import ConsensusShift, detect_shift
+from src.domain.coverage import CoverageReport
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
 from src.domain.finops import CycleCost, estimate_cycle_cost, rank_by_magnitude
 from src.domain.hedge import equity_hedge_symbols
+from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
+from src.domain.macro_series import MacroSeriesSnapshot, macro_features, macro_series_votes
 from src.domain.market_calendar import closure_reason, to_nyse_time
+from src.domain.model_scorecard import MODEL_SCORECARD_WINDOW_DAYS
 from src.domain.number_format import format_money_pl, format_number_pl
 from src.domain.peer_group import build_peer_context
-from src.domain.persona_track_record import PersonaTrackRecord, rank_personas
+from src.domain.persona_track_record import (
+    PersonaTrackRecord,
+    assess_against_track_record,
+    rank_personas,
+    sort_personas,
+)
 from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
-from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis
+from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis, risk_off_change
 from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
-from src.infrastructure.adapters._http import redact_secrets
+from src.infrastructure.adapters._finnhub_common import FINNHUB_REQUESTS_PER_MINUTE
+from src.infrastructure.adapters._http import RateLimiter, metered_http, redact_secrets
 from src.infrastructure.adapters.advisory_council import (
     COUNCIL_MAX_PERSONAS,
     LLMAdvisoryCouncil,
@@ -170,7 +196,7 @@ from src.infrastructure.adapters.write_guard import (
 )
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
-from src.infrastructure.logging_redaction import configure_logging
+from src.infrastructure.logging_setup import configure_logging, symbol_context
 from src.infrastructure.persona_loader import load_council_personas, personas_sha256
 from src.infrastructure.recipe_fingerprints import ml_model_version, prompt_templates_sha256
 
@@ -192,6 +218,10 @@ QUOTA_ALERT_LOOKBACK_HOURS = 7 * 24 + 3
 PERSONA_TRACK_RECORD_DAYS = 90
 
 logger = logging.getLogger(__name__)
+
+# DAT-12: limit Finnhub jest per klucz, więc limiter jest JEDEN na proces — każdy
+# adapter Finnhub (/quote, analitycy, opcje) dostaje ten sam obiekt.
+FINNHUB_RATE_LIMITER = RateLimiter(FINNHUB_REQUESTS_PER_MINUTE)
 
 
 def _ignored_result(symbol: str) -> SymbolResult:
@@ -232,7 +262,7 @@ def _build_single_llm(
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
     return OpenAIAdapter(
-        api_key=settings.openai_api_key,
+        api_key=settings.require_openai_api_key(),
         model=model,
         quota_monitor=quota_monitor,
         usage_sink=usage_sink,
@@ -325,7 +355,7 @@ def _build_primary_llm(
         from src.infrastructure.llm.openai_client import OpenAIAdapter
 
         cheap = OpenAIAdapter(
-            api_key=settings.openai_api_key,
+            api_key=settings.require_openai_api_key(),
             model=settings.router_cheap_model,
             quota_monitor=quota_monitor,
             usage_sink=usage_sink,
@@ -338,7 +368,11 @@ def _build_primary_llm(
             usage_sink,
         )
         return CascadingLLMAdapter(
-            cheap=cheap, frontier=frontier, routing_floor=settings.routing_floor
+            cheap=cheap,
+            frontier=frontier,
+            routing_floor=settings.routing_floor,
+            max_escalations=settings.routing_max_escalations,
+            quota_monitor=quota_monitor,
         )
 
     if settings.llm_provider == "anthropic":
@@ -358,7 +392,7 @@ def _build_primary_llm(
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
     return OpenAIAdapter(
-        api_key=settings.openai_api_key,
+        api_key=settings.require_openai_api_key(),
         quota_monitor=quota_monitor,
         usage_sink=usage_sink,
     )
@@ -397,7 +431,7 @@ def build_tool_use_adapter(
     from src.infrastructure.llm.tool_calling_openai import ToolCallingOpenAIAdapter
 
     return ToolCallingOpenAIAdapter(
-        api_key=settings.openai_api_key,
+        api_key=settings.require_openai_api_key(),
         max_rounds=settings.tool_use_max_rounds,
         quota_monitor=quota_monitor,
         secret_values=settings.secret_values(),
@@ -495,6 +529,27 @@ def build_notifier(
     return CompositeNotifier(channels)
 
 
+def build_subscriber_notifier(
+    settings: Settings,
+    email: str,
+    quota_monitor: QuotaMonitor | None = None,
+) -> ReportNotifierPort:
+    """Kanał e-mail jednego subskrybenta fan-outu (MAIL-11).
+
+    Ten sam guard co `build_notifier`: bez `notifications_enabled` albo bez
+    `RESEND_API_KEY` subskrybent dostaje `NullNotifier`, więc flaga z
+    config.toml wyłącza KAŻDĄ wysyłkę maila, nie tylko tę do właściciela.
+    """
+    if settings.notifications_enabled and settings.resend_api_key and email:
+        return ResendNotifier(
+            api_key=settings.resend_api_key,
+            sender=settings.digest_from_email,
+            recipient=email,
+            quota_monitor=quota_monitor,
+        )
+    return NullNotifier()
+
+
 def build_legacy_push_notifier(
     settings: Settings, quota_monitor: QuotaMonitor | None = None
 ) -> ReportNotifierPort | None:
@@ -534,8 +589,13 @@ def _dispatch_push_digest(
     email_delivered: bool = True,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     resolved_unavailable: bool = False,
+    lead_items: Sequence[LeadItem] = (),
+    ranked_signals: Sequence[TradeSignal] = (),
 ) -> None:
     """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
+
+    MAIL-20: `lead_items` i `ranked_signals` to lead i ranking sygnałów maila
+    właściciela — push mówi, co najważniejsze, w tej samej kolejności.
 
     Gałąź U2 (subskrybenci) w ogóle pomijała `notifier.send_report`, więc push
     nie szedł, gdy ktokolwiek był zapisany. Skrót liczymy nad PEŁNYMI wynikami
@@ -550,6 +610,8 @@ def _dispatch_push_digest(
             email_delivered=email_delivered,
             display_timezone=display_timezone,
             resolved_unavailable=resolved_unavailable,
+            lead_items=lead_items,
+            ranked_signals=ranked_signals,
         )
         push_notifier.send_report(
             subject=subject, html_body=digest, plain_text=digest
@@ -695,21 +757,29 @@ def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
     return ReadOnlyAttestationPublisher(publisher)
 
 
-def build_options_port(settings: Settings) -> OptionsFlowPort | None:
+def build_options_port(
+    settings: Settings, quota_monitor: QuotaMonitor | None = None
+) -> OptionsFlowPort | None:
     """#18 — port opcji dla grafu (fetch IV w `_predict_node`, za bramką
     volatility). None gdy `options_flow_enabled=false` → sygnał nie powstaje."""
     if not settings.options_flow_enabled:
         return None
     from src.infrastructure.adapters.finnhub_options import FinnhubOptionsAdapter
 
-    return FinnhubOptionsAdapter(api_key=settings.finnhub_api_key)
+    return FinnhubOptionsAdapter(
+        api_key=settings.require_finnhub_api_key(),
+        quota_monitor=quota_monitor,
+        rate_limiter=FINNHUB_RATE_LIMITER,
+    )
 
 
 def build_market_port(settings: Settings) -> MarketDataPort:
     """Darmowe źródła ceny: krypto → CoinGecko, reszta → Finnhub.
     Wydzielone z `build_use_case`, bo `main_watch` (#11) potrzebuje samej ceny."""
     return RoutingMarketDataPort(
-        equity=FinnhubAdapter(api_key=settings.finnhub_api_key),
+        equity=FinnhubAdapter(
+            api_key=settings.require_finnhub_api_key(), rate_limiter=FINNHUB_RATE_LIMITER
+        ),
         crypto=CoinGeckoAdapter(),
         crypto_symbols=settings.crypto_symbols,
     )
@@ -776,44 +846,59 @@ def _benchmark_comparison(
         return None
 
 
-def _publish_public_scorecard(
-    settings: Settings,
-    repository: RepositoryPort,
-    publisher: WebPublisherPort,
-    costs: PaperCosts | None = None,
-) -> None:
-    """#10 — publikuje stronę z agregatami (N, hit-rate, Brier, ECE, krzywe).
+def render_public_scorecard_page(
+    settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
+) -> str:
+    """#10 — strona z agregatami (N, hit-rate, Brier, ECE, krzywe) z okna
+    `track_record_days`; "" gdy okno nie ma danych.
 
     Metryki liczone z `resolved`/`cal_rows` NIEZALEŻNIE od flag
     `equity_curve_enabled` / `calibration_curve_enabled` — tamte sterują
     sekcjami prywatnego maila, nie publicznym dowodem. Krzywa kapitału to
     portfel o równej wadze per cykl (WIA-17), po kosztach `costs` (WIA-50;
     None = brutto); strona ujawnia okno i datę generacji (WIA-33).
+    Błąd odczytu leci wyżej: Fast Loop go połyka, `main_scorecard` kończy exit 1.
+    """
+    resolved = parse_resolved_predictions(
+        repository.get_resolved_predictions(settings.track_record_days)
+    )
+    # WIA-39/WIA-58: kierunkowe próbki; cykle dają n_eff i bootstrap ECE.
+    calibration = split_calibration_samples(
+        repository.get_resolved_for_calibration(settings.track_record_days)
+    )
+    benchmark = (
+        None
+        if costs is None
+        else _benchmark_comparison(settings, repository, resolved, costs)
+    )
+    return render_public_scorecard_html(
+        resolved,
+        portfolio_curve(resolved, costs),
+        calibration.directional,
+        generated_on=datetime.now(UTC).date(),
+        window_days=settings.track_record_days,
+        costs=costs,
+        benchmark=benchmark,
+        protocol=load_evaluation_protocol(),
+        calibration_by_cycle=calibration.directional_by_cycle,
+        coverage=_data_coverage(settings, repository),
+    )
+
+
+def _publish_public_scorecard(
+    settings: Settings,
+    repository: RepositoryPort,
+    publisher: WebPublisherPort,
+    costs: PaperCosts | None = None,
+) -> None:
+    """#10 — publikuje `render_public_scorecard_page` w cyklu Fast Loopa.
+
     Best-effort: błąd odczytu ani `OSError` przy zapisie nie wywalają cyklu.
     """
     if not settings.public_scorecard_enabled:
         return
     try:
-        resolved = parse_resolved_predictions(
-            repository.get_resolved_predictions(settings.track_record_days)
-        )
-        samples = _calibration_samples(
-            repository.get_resolved_for_calibration(settings.track_record_days)
-        )
-        benchmark = (
-            None
-            if costs is None
-            else _benchmark_comparison(settings, repository, resolved, costs)
-        )
-        page = render_public_scorecard_html(
-            resolved,
-            portfolio_curve(resolved, costs),
-            samples,
-            generated_on=datetime.now(UTC).date(),
-            window_days=settings.track_record_days,
-            costs=costs,
-            benchmark=benchmark,
-        )
+        page = render_public_scorecard_page(settings, repository, costs)
         if page:
             publisher.publish(page)
     except Exception:
@@ -825,7 +910,16 @@ def build_repository(settings: Settings) -> RepositoryPort:
 
     BEZ-08: bez `db_writes_enabled` owinięte w `ReadOnlyRepository` — lokalny run
     czyta wspólną bazę, ale niczego do niej nie zapisuje."""
-    repository = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    repository = SupabaseRepository(
+        url=settings.supabase_url,
+        key=settings.supabase_key,
+        council_votes_upsert_enabled=settings.council_votes_upsert_enabled,
+        persona_vote_outcomes_enabled=settings.persona_vote_outcomes_enabled,
+        crypto_symbols=settings.crypto_symbols,
+        correction_category_enabled=settings.correction_category_enabled,
+        stale_quote_enabled=settings.stale_quote_enabled,
+        session_close_settlement_enabled=settings.session_close_settlement_enabled,
+    )
     if settings.db_writes_enabled:
         return repository
     return ReadOnlyRepository(repository)
@@ -882,7 +976,7 @@ def build_council_llm_adapter(
     from src.infrastructure.llm.openai_client import OpenAIAdapter
 
     return OpenAIAdapter(
-        api_key=settings.openai_api_key,
+        api_key=settings.require_openai_api_key(),
         model=settings.council_llm_model or OPENAI_DEFAULT,
         quota_monitor=quota_monitor,
         usage_sink=usage_sink,
@@ -936,8 +1030,8 @@ def build_embedding_adapter(
     """Embeddingi — OpenAI niezależnie od LLM_PROVIDER.
 
     Anthropic nie udostępnia natywnego embeddings API; OpenAI to nasz jedyny
-    provider w stacku. `openai_api_key` jest wymaganym polem w `Settings`
-    (bez default), więc jest zawsze obecne — embeddingi działają również
+    provider w stacku. Fabryka żąda klucza OpenAI (`require_openai_api_key`,
+    ARCH-05) niezależnie od LLM_PROVIDER — embeddingi działają również
     gdy LLM_PROVIDER=anthropic. Dzięki temu kolumna `embedding` w
     `prediction_logs` (pgvector) jest wypełniona dla wszystkich deploymentów,
     a similarity search nad newsami nie zależy od wyboru LLM.
@@ -945,7 +1039,9 @@ def build_embedding_adapter(
     from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
 
     return OpenAIEmbeddingAdapter(
-        api_key=settings.openai_api_key, quota_monitor=quota_monitor, usage_sink=usage_sink
+        api_key=settings.require_openai_api_key(),
+        quota_monitor=quota_monitor,
+        usage_sink=usage_sink,
     )
 
 
@@ -965,7 +1061,9 @@ def build_macro_risk_use_case(
     # bazowy (akcje + krypto). Flag-gated; book = analizowane symbole.
     book_symbols = list(settings.symbols) + list(settings.crypto_symbols)
     return MonitorMacroRiskUseCase(
-        market_port=FinnhubAdapter(api_key=settings.finnhub_api_key),
+        market_port=FinnhubAdapter(
+            api_key=settings.require_finnhub_api_key(), rate_limiter=FINNHUB_RATE_LIMITER
+        ),
         repository_port=repository,
         macro_port=macro_port,
         book_symbols=book_symbols,
@@ -984,10 +1082,19 @@ def alpha_per_symbol_enabled(settings: Settings) -> bool:
     )
 
 
-def build_alpha_enrichment(settings: Settings) -> AlphaEnrichmentUseCase:
+def build_alpha_enrichment(
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    *,
+    repository: RepositoryPort | None = None,
+) -> AlphaEnrichmentUseCase:
     """DI dla nowych źródeł alpha (Dane). Każdy port to realny adapter (gdy
     flaga on) albo Null-adapter (default → zero I/O). EDGAR/Reddit są darmowe;
-    earnings reużywa klucza AV; opcje/analitycy reużywają klucza Finnhub."""
+    earnings reużywa klucza AV; opcje/analitycy reużywają klucza Finnhub
+    i jego limitera procesu (DAT-12).
+
+    FIN-11: z `earnings_cache_enabled` kalendarz wyników czyta wyłącznie
+    `earnings_cache` z `repository` (delegat Null) — Fast Loop nie woła AV."""
     from src.infrastructure.adapters.alpha_vantage_earnings import (
         AlphaVantageEarningsAdapter,
         NullEarningsCalendarAdapter,
@@ -1014,17 +1121,27 @@ def build_alpha_enrichment(settings: Settings) -> AlphaEnrichmentUseCase:
         if settings.insider_flow_enabled
         else NullInsiderFlowAdapter()
     )
-    # FIN-35: kalendarz wyników to płatne zapytanie AV — lokalnie bez płatnych
-    # wywołań zostaje Null-adapter.
-    earnings: EarningsCalendarPort = (
-        AlphaVantageEarningsAdapter(api_key=settings.alpha_vantage_api_keys[0])
-        if settings.earnings_calendar_enabled
+    earnings: EarningsCalendarPort = NullEarningsCalendarAdapter()
+    if settings.earnings_calendar_enabled and settings.earnings_cache_enabled:
+        # FIN-11: sam odczyt cache (delegat Null); bez repozytorium nie ma czego czytać.
+        if repository is not None:
+            from src.infrastructure.adapters.cached_earnings import CachedEarningsAdapter
+
+            earnings = CachedEarningsAdapter(repo=repository, delegate=earnings)
+    elif (
+        settings.earnings_calendar_enabled
         and settings.alpha_vantage_api_keys
         and settings.paid_calls_enabled
-        else NullEarningsCalendarAdapter()
-    )
+    ):
+        # FIN-35: kalendarz wyników to płatne zapytanie AV — lokalnie bez płatnych
+        # wywołań zostaje Null-adapter.
+        earnings = AlphaVantageEarningsAdapter(api_key=settings.alpha_vantage_api_keys[0])
     options: OptionsFlowPort = (
-        FinnhubOptionsAdapter(api_key=settings.finnhub_api_key)
+        FinnhubOptionsAdapter(
+            api_key=settings.require_finnhub_api_key(),
+            quota_monitor=quota_monitor,
+            rate_limiter=FINNHUB_RATE_LIMITER,
+        )
         if settings.options_flow_enabled
         else NullOptionsFlowAdapter()
     )
@@ -1034,7 +1151,11 @@ def build_alpha_enrichment(settings: Settings) -> AlphaEnrichmentUseCase:
         else NullSocialVelocityAdapter()
     )
     analyst: AnalystConsensusPort = (
-        FinnhubAnalystAdapter(api_key=settings.finnhub_api_key)
+        FinnhubAnalystAdapter(
+            api_key=settings.require_finnhub_api_key(),
+            quota_monitor=quota_monitor,
+            rate_limiter=FINNHUB_RATE_LIMITER,
+        )
         if settings.analyst_consensus_enabled
         else NullAnalystConsensusAdapter()
     )
@@ -1045,6 +1166,13 @@ def build_alpha_enrichment(settings: Settings) -> AlphaEnrichmentUseCase:
         options_port=options,
         social_port=social,
         analyst_port=analyst,
+        # DAT-21: kapitalizacja z cache fundamentów (zero requestów AV) do progu
+        # znaczącego zakupu insidera; bez repozytorium próg stały.
+        market_cap_port=(
+            build_fast_loop_fundamentals_port(repository)
+            if settings.insider_flow_enabled and repository is not None
+            else None
+        ),
         asset_type_of=lambda symbol: _classify_asset(symbol, crypto_set, etf_set),
     )
 
@@ -1058,6 +1186,18 @@ def build_macro_rates_port(settings: Settings) -> MacroRatesPort:
     from src.infrastructure.adapters.fred_client import NullMacroRatesAdapter
 
     return NullMacroRatesAdapter()
+
+
+def build_macro_series_port(settings: Settings) -> MacroSeriesPort:
+    """DAT-22: zmienne stanu z FRED — realny port przy `macro_series_enabled` i kluczu
+    FRED, inaczej Null (zero I/O)."""
+    if settings.macro_series_enabled and settings.fred_api_key:
+        from src.infrastructure.adapters.fred_client import FredClient
+
+        return FredClient(api_key=settings.fred_api_key)
+    from src.infrastructure.adapters.fred_client import NullMacroSeriesAdapter
+
+    return NullMacroSeriesAdapter()
 
 
 def _provider_default_model(provider: str) -> str:
@@ -1109,6 +1249,7 @@ def build_prediction_recipe(settings: Settings, run_context: RunContext) -> Pred
         universe_version=universe_version(settings.symbols, settings.crypto_symbols),
         git_sha=run_context.git_sha,
         run_id=run_context.run_id,
+        protocol_sha256=load_evaluation_protocol().sha256,
     )
 
 
@@ -1195,7 +1336,7 @@ def _alpha_vantage_client(
     settings: Settings, symbols: Sequence[str], quota_monitor: QuotaMonitor | None
 ) -> AlphaVantageClient:
     return AlphaVantageClient(
-        api_keys=settings.alpha_vantage_api_keys,
+        api_keys=settings.require_alpha_vantage_api_keys(),
         symbols=list(symbols),
         crypto_symbols=settings.crypto_symbols,
         quota_monitor=quota_monitor,
@@ -1270,6 +1411,14 @@ def warn_if_paid_calls_disabled(settings: Settings) -> None:
     )
 
 
+def build_fast_loop_fundamentals_port(repository: RepositoryPort) -> FundamentalsPort:
+    """TEST-06 (G70): fundamenty Fast Loopa wyłącznie z cache Supabase.
+
+    Port idzie przez graf PRZED bramką volatility, więc delegat jest Null — cache
+    miss to brak danych, nie płatny request Alpha Vantage (odświeża Slow Loop)."""
+    return CachedFundamentalsAdapter(repo=repository, delegate=NullFundamentalsAdapter())
+
+
 def build_use_case(
     settings: Settings,
     repository: RepositoryPort | None = None,
@@ -1277,7 +1426,23 @@ def build_use_case(
     run_context: RunContext | None = None,
     usage_ledger: UsageLedger | None = None,
 ) -> AnalyzeMarketUseCase:
-    """DI Container — buduje wszystkie adaptery i wstrzykuje do Use Case'a.
+    """DI Container — Use Case Fast Loopa na deps z `build_agent_graph_deps`."""
+    return AnalyzeMarketUseCase(
+        build_agent_graph_deps(settings, repository, quota_monitor, run_context, usage_ledger)
+    )
+
+
+def build_agent_graph_deps(
+    settings: Settings,
+    repository: RepositoryPort | None = None,
+    quota_monitor: QuotaMonitor | None = None,
+    run_context: RunContext | None = None,
+    usage_ledger: UsageLedger | None = None,
+) -> AgentGraphDeps:
+    """Buduje wszystkie adaptery Fast Loopa w jeden obiekt `AgentGraphDeps`.
+
+    TEST-09 (G56): publiczna, żeby testy sprawdzały pola deps (który port pod
+    którym polem, atrapy vs produkcja), a nie tylko to, że DI nie rzuca.
 
     FIN-35: płatne porty (LLM, rada, Alpha Vantage, embeddingi, tool-use) są
     produkcyjne tylko przy `paid_calls_enabled`; inaczej graf dostaje atrapy
@@ -1298,16 +1463,15 @@ def build_use_case(
         if settings.paid_calls_enabled
         else _local_stub_ports()
     )
-    # Fast loop: delegate = Null — nie woła płatnego AV, czyta tylko cache Supabase.
-    fundamentals_port = CachedFundamentalsAdapter(
-        repo=supabase_repo,
-        delegate=NullFundamentalsAdapter(),
-    )
+    fundamentals_port = build_fast_loop_fundamentals_port(supabase_repo)
     # Routing: krypto → CoinGecko, reszta → Finnhub. Use case widzi jeden port.
+    equity_quotes = FinnhubAdapter(
+        api_key=settings.require_finnhub_api_key(),
+        quota_monitor=quota_monitor,
+        rate_limiter=FINNHUB_RATE_LIMITER,
+    )
     market_port = RoutingMarketDataPort(
-        equity=FinnhubAdapter(
-            api_key=settings.finnhub_api_key, quota_monitor=quota_monitor
-        ),
+        equity=equity_quotes,
         crypto=CoinGeckoAdapter(quota_monitor=quota_monitor),
         crypto_symbols=settings.crypto_symbols,
     )
@@ -1338,7 +1502,7 @@ def build_use_case(
         if tool_use_port is not None
         else None
     )
-    return AnalyzeMarketUseCase(AgentGraphDeps(
+    return AgentGraphDeps(
         market_port=market_port,
         sentiment_port=paid.sentiment,
         news_port=paid.news,
@@ -1368,39 +1532,55 @@ def build_use_case(
         regime_tagging_enabled=_regime_tagging_enabled(settings),
         receipts_enabled=settings.receipts_enabled,
         feature_set_version_enabled=settings.feature_set_version_enabled,
-        # WIA-20: przepis liczymy tylko, gdy ktoś go zapisze (kwit v2 albo
-        # kolumna `recipe_version`); obie flagi off → zero nowych odczytów plików.
+        # WIA-20: przepis liczymy tylko, gdy ktoś go zapisze (kwit v2, kolumna
+        # `recipe_version` albo commitment v2 — WIA-41); flagi off → zero odczytów plików.
         recipe=(
             build_prediction_recipe(settings, run_context or RunContext())
-            if settings.receipts_enabled or settings.recipe_version_enabled
+            if settings.receipts_enabled
+            or settings.recipe_version_enabled
+            or settings.attestation_enabled
             else None
         ),
         recipe_version_enabled=settings.recipe_version_enabled,
         # ML-14: off → graf nie dotyka tabeli `feature_snapshots` (migracja 031).
         feature_snapshots_enabled=settings.feature_snapshots_enabled,
+        # ML-31: cechy rynkowe w wektorze i wersja zestawu cech 4 (bez migracji).
+        market_features_enabled=settings.market_features_enabled,
         # ML-34: przedział w mailu zawsze; kolumny `interval_*` (migracja 032) za flagą.
         move_calibration=build_move_calibration(settings, supabase_repo),
         interval_columns_enabled=settings.interval_coverage_enabled,
         # EXP-01: kolumna `gate_delta` (migracja 034) za flagą.
         gate_delta_enabled=settings.gate_delta_enabled,
+        # ALR-10: bramka widzi dryf od ostatniej predykcji (darmowe odczyty); off.
+        drift_gate_enabled=settings.drift_gate_enabled,
         # EXP-05: eksperymenty (ramię per symbol-dzień liczy use case); kolumna
         # `experiment_arms` (migracja 037) za flagą, kwit v2 za `receipts_enabled`.
         experiments=settings.experiment_definitions(),
         experiment_arms_enabled=settings.experiment_arms_enabled,
+        # ML-29: rozkład trendu w prompcie i kolumna (migracja 051) za flagą.
+        trend_probabilities_enabled=settings.trend_probabilities_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
-        options_port=build_options_port(settings),
+        options_port=build_options_port(settings, quota_monitor),
+        # DAT-14: akcje i ETF biorą cenę z /quote razem z czasem notowania (ten sam
+        # request); kolumna `stale_quote` (migracja 055) za flagą. Źródło ceny bez
+        # czasu notowania → cena jak przed DAT-14 (wzorzec `DailyChangePort` watcha).
+        quote_port=equity_quotes if isinstance(equity_quotes, QuotePort) else None,
+        stale_quote_enabled=settings.stale_quote_enabled,
+        # WIA-61: zamknięcie sesji z tego samego notowania obok ceny /quote (migracja 059).
+        session_close_settlement_enabled=settings.session_close_settlement_enabled,
         # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
-        # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji.
+        # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji. WIA-70:
+        # flaga on bez kolumn 024/043 → cykl bez atestacji, predykcje zapisane.
         attestation_publisher=(
             build_attestation_publisher(settings)
-            if settings.attestation_enabled
+            if settings.attestation_enabled and supabase_repo.attestation_columns_available()
             else None
         ),
         telemetry=telemetry,
         # FIN-12: sufit płatnych wywołań LLM cyklu; None = bez limitu.
         paid_call_cap=settings.max_paid_llm_calls_per_cycle,
-    ))
+    )
 
 
 def cycle_cost(
@@ -1523,9 +1703,14 @@ def _resolve_regime(
     *,
     repository: RepositoryPort | None = None,
     cycle_at: datetime | None = None,
+    on_banner: Callable[[RegimeBanner], None] | None = None,
+    macro_series: MacroSeriesSnapshot | None = None,
 ) -> tuple[str, float]:
     """#7: reżim rynku z overall_alert (zacieśnia próg + label do promptu).
     Zwraca (regime_context, regime_multiplier). Off / brak raportu → ("", 1.0).
+
+    ALR-05: `on_banner` dostaje reżim cyklu dla nagłówka maila (reżim, mnożnik,
+    próg akcji, powód); off / brak raportu → nie jest wołany.
 
     ALR-03: z `repository` i flagą `regime_hysteresis_enabled` surowy reżim
     przechodzi przez histerezę (stan z `regime_history`), patrz
@@ -1538,6 +1723,10 @@ def _resolve_regime(
     inwersja daje tylko NEUTRAL. To celowe: inwersje bywają wielomiesięczne,
     a weto trzymałoby agenta w risk-off przez cały ten czas.
     Snapshot jest już pobrany przed tym wywołaniem — zero dodatkowego fetchu.
+
+    DAT-22: z `macro_series_enabled` percentyl VIX z roku i 5-sesyjna zmiana
+    spreadu HY dokładają po głosie (`macro_series_votes`) — tak samo jak krzywa:
+    CRITICAL daje RISK_OFF, pojedynczy ELEVATED tylko NEUTRAL.
     """
     if not (settings.regime_aware_enabled and macro_risk_report is not None):
         return "", 1.0
@@ -1546,15 +1735,17 @@ def _resolve_regime(
     risk_signals: list[MacroAlertLevel] = []
     if settings.yield_curve_enabled and yield_curve is not None:
         risk_signals.append(yield_curve_alert_level(yield_curve.state()))
+    if settings.macro_series_enabled and macro_series is not None:
+        risk_signals.extend(macro_series_votes(macro_series))
 
     detector = RegimeDetector()
     raw_regime = detector.classify(macro_risk_report.overall_alert, risk_signals)
-    regime = (
+    regime, previous_regime = (
         _apply_regime_hysteresis(
             settings, repository, raw_regime, cycle_at or datetime.now(UTC)
         )
         if repository is not None
-        else raw_regime
+        else (raw_regime, None)
     )
     regime_multiplier = detector.threshold_multiplier(
         regime, settings.regime_threshold_max_multiplier
@@ -1566,6 +1757,23 @@ def _resolve_regime(
         raw_regime.value,
         regime_multiplier,
     )
+    if on_banner is not None:
+        # Reżim efektywny różny od surowego = histereza trzyma RISK_OFF (ALR-03).
+        reason = (
+            detector.reason(macro_risk_report.overall_alert, risk_signals)
+            if regime is raw_regime
+            else f"histereza: trzymam {regime.value} (surowy odczyt {raw_regime.value})"
+        )
+        on_banner(
+            RegimeBanner(
+                regime=regime,
+                multiplier=regime_multiplier,
+                base_threshold=settings.volatility_threshold,
+                reason=reason,
+                # ALR-05 krok 2: zmiana względem poprzedniego cyklu tylko z histerezy.
+                change=risk_off_change(previous_regime, regime),
+            )
+        )
     return regime_context, regime_multiplier
 
 
@@ -1574,9 +1782,11 @@ def _apply_regime_hysteresis(
     repository: RepositoryPort,
     raw_regime: MarketRegime,
     cycle_at: datetime,
-) -> MarketRegime:
+) -> tuple[MarketRegime, MarketRegime | None]:
     """ALR-03: reżim efektywny po histerezie — odczyt ostatniego stanu i zapis
-    nowego wiersza `regime_history`, raz na cykl.
+    nowego wiersza `regime_history`, raz na cykl. Drugi element to reżim
+    efektywny poprzedniego cyklu (ALR-05: lead przy zmianie); None, gdy
+    histereza nie zadziałała (flaga off, błąd odczytu, brak historii).
 
     Flaga off albo błąd odczytu (np. brak migracji 033) → surowy reżim, czyli
     dokładnie zachowanie sprzed ALR-03; po błędzie odczytu nie zapisujemy, żeby
@@ -1585,7 +1795,7 @@ def _apply_regime_hysteresis(
     RISK_OFF (wyższy próg — strona bezpieczna dla FinOps).
     """
     if not settings.regime_hysteresis_enabled:
-        return raw_regime
+        return raw_regime, None
     try:
         previous = repository.get_latest_regime_state()
     except Exception:
@@ -1593,7 +1803,7 @@ def _apply_regime_hysteresis(
             "regime_history read failed — surowy reżim %s bez histerezy",
             raw_regime.value,
         )
-        return raw_regime
+        return raw_regime, None
     state = apply_hysteresis(previous, raw_regime, settings.regime_exit_confirmations)
     try:
         repository.save_regime_state(cycle_at, raw_regime, state)
@@ -1609,7 +1819,7 @@ def _apply_regime_hysteresis(
             state.streak,
             settings.regime_exit_confirmations,
         )
-    return state.regime
+    return state.regime, previous.regime if previous is not None else None
 
 
 def _classify_asset(symbol: str, crypto_set: set[str], etf_set: set[str]) -> AssetType:
@@ -1656,34 +1866,40 @@ def _process_one_symbol(
     wołany dokładnie jak dawniej. Włącza je `settings.earnings_calendar_enabled`.
 
     `alpha_fusion_enabled` (#14) też domyślnie WYŁĄCZONE. Fuzja zmienia prompt
-    LLM i dokłada ósmą cechę ML, więc jej wdrożenie ma być świadomą, odwracalną
-    decyzją — arbitrem jest walk-forward gate „pobij baseline", nie intuicja
-    dobierającego wagi. Off → `alpha_fusion=None` → prompt i cechy jak przed #14.
+    LLM i zapisuje kandydata na cechę ML (`alpha_fusion_score`, poza
+    `ML_FEATURE_COLUMNS` — model go nie widzi), więc jej wdrożenie ma być
+    świadomą, odwracalną decyzją; o promocji do cech modelu rozstrzyga
+    porównanie A/B (EXP-19), nie intuicja dobierającego wagi.
+    Off → `alpha_fusion=None` → prompt i zapis jak przed #14.
+
+    NIEZ-21: symbol trafia do każdej linii logu z tego wywołania — także z wątku
+    puli i z wątków rady (`copy_context`).
     """
-    try:
-        inputs = _symbol_inputs(
-            symbol,
-            crypto_set=crypto_set,
-            etf_set=etf_set,
-            collect_alpha=collect_alpha,
-            alpha_use_case=alpha_use_case,
-            earnings_gate_enabled=earnings_gate_enabled,
-            alpha_fusion_enabled=alpha_fusion_enabled,
-        )
-        raw = use_case.run(
-            symbol,
-            asset=inputs.asset,
-            regime_context=regime_context,
-            regime_multiplier=regime_multiplier,
-            earnings_multiplier=inputs.earnings_multiplier,
-            alpha_fusion=inputs.alpha_fusion,
-            peer_context=peer_ctx,
-            # FIN-14: wiek referencji ceny liczy się od startu cyklu.
-            now=cycle_at,
-        )
-        return _finished_symbol(symbol, raw, inputs.alpha_signal, collect_alpha, cycle_at)
-    except Exception as exc:
-        return _failed_symbol(symbol, exc, secret_values)
+    with symbol_context(symbol):
+        try:
+            inputs = _symbol_inputs(
+                symbol,
+                crypto_set=crypto_set,
+                etf_set=etf_set,
+                collect_alpha=collect_alpha,
+                alpha_use_case=alpha_use_case,
+                earnings_gate_enabled=earnings_gate_enabled,
+                alpha_fusion_enabled=alpha_fusion_enabled,
+            )
+            raw = use_case.run(
+                symbol,
+                asset=inputs.asset,
+                regime_context=regime_context,
+                regime_multiplier=regime_multiplier,
+                earnings_multiplier=inputs.earnings_multiplier,
+                alpha_fusion=inputs.alpha_fusion,
+                peer_context=peer_ctx,
+                # FIN-14: wiek referencji ceny liczy się od startu cyklu.
+                now=cycle_at,
+            )
+            return _finished_symbol(symbol, raw, inputs.alpha_signal, collect_alpha, cycle_at)
+        except Exception as exc:
+            return _failed_symbol(symbol, exc, secret_values)
 
 
 class _SymbolInputs(NamedTuple):
@@ -2326,6 +2542,30 @@ def _build_subject(
     return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
 
 
+def _reveal_record(row: Mapping[str, Any]) -> dict[str, Any]:
+    """#16 — rekord revealu: sól, hash i plaintext predykcji z wynikiem.
+
+    WIA-70: wiersz z `commitment_payload` (043) ujawnia zapisany plaintext
+    dosłownie (`payload`) — sceptyk liczy SHA-256(payload + sól) bez rekonstrukcji.
+    Wiersz bez niego (sprzed 043) ujawnia kolumny, z których odtwarza się payload v1.
+    """
+    record: dict[str, Any] = {
+        "symbol": row.get("symbol"),
+        "commitment": row.get("commitment_hash"),
+        # Sól wychodzi na jaw dopiero TERAZ — to jest sens revealu.
+        "salt": row.get("commitment_salt"),
+        "predicted_trend": row.get("predicted_trend"),
+        "predicted_target_price": row.get("predicted_target_price"),
+        "price_at_prediction": row.get("price_at_prediction"),
+        "actual_price_after_12h": row.get("actual_price_after_12h"),
+        "is_trend_correct": row.get("is_trend_correct"),
+    }
+    payload = row.get("commitment_payload")
+    if payload is not None:
+        record["payload"] = payload
+    return record
+
+
 def _sweep_reveals(
     repository: RepositoryPort, publisher: AttestationPublisherPort
 ) -> int:
@@ -2334,7 +2574,8 @@ def _sweep_reveals(
     Sweep, nie „reveal przy rozliczeniu": predykcje symboli usuniętych z
     `config.toml` nigdy nie przeszłyby przez reflect, więc ich commitmenty
     zostałyby na zawsze nieujawnione. Dla sceptyka wygląda to jak ukrywanie
-    nietrafień — a to niszczy cały sens weryfikowalnego track recordu.
+    nietrafień — a to niszczy cały sens weryfikowalnego track recordu. WIA-03:
+    dlatego odczyt nie ma ani filtra watchlisty, ani okna `track_record_days`.
 
     `revealed_at` stemplujemy DOPIERO po udanej publikacji. Odwrotna kolejność
     zgubiłaby nietrafienie na zawsze: oznaczone jako ujawnione, nigdy ujawnione.
@@ -2350,19 +2591,7 @@ def _sweep_reveals(
     revealed = 0
     for row in rows:
         try:
-            location = publisher.publish_reveal(
-                {
-                    "symbol": row.get("symbol"),
-                    "commitment": row.get("commitment_hash"),
-                    # Sól wychodzi na jaw dopiero TERAZ — to jest sens revealu.
-                    "salt": row.get("commitment_salt"),
-                    "predicted_trend": row.get("predicted_trend"),
-                    "predicted_target_price": row.get("predicted_target_price"),
-                    "price_at_prediction": row.get("price_at_prediction"),
-                    "actual_price_after_12h": row.get("actual_price_after_12h"),
-                    "is_trend_correct": row.get("is_trend_correct"),
-                }
-            )
+            location = publisher.publish_reveal(_reveal_record(row))
         except Exception:
             logger.exception("Failed to publish reveal for %s", row.get("id"))
             continue
@@ -2423,15 +2652,37 @@ def _build_model_scorecard(
     settings: Settings, repository: RepositoryPort
 ) -> ModelScorecardView | None:
     """#12 — widok karty kondycji modelu. Flaga OFF / brak migracji 019 / błąd
-    odczytu → None → sekcja sama się chowa, cykl leci dalej."""
+    odczytu → None → sekcja sama się chowa, cykl leci dalej. ML-15: okno odczytu
+    to `MODEL_SCORECARD_WINDOW_DAYS`, nie `track_record_days` — karta starsza niż
+    próg świeżości zostaje widoczna z odznaką STALE."""
     if not settings.model_scorecard_enabled:
         return None
     try:
-        rows = repository.get_recent_model_scorecards(settings.track_record_days)
+        rows = repository.get_recent_model_scorecards(MODEL_SCORECARD_WINDOW_DAYS)
     except Exception:
         logger.exception("Failed to fetch model scorecards")
         return None
-    return build_scorecard_view(rows)
+    view = build_scorecard_view(rows)
+    if view is None:
+        return None
+    # DAT-16: karta mówi też, ile sesji okna ma dane i które symbole nie mają rozliczeń.
+    return dataclasses.replace(view, coverage=_data_coverage(settings, repository))
+
+
+def _data_coverage(settings: Settings, repository: RepositoryPort) -> CoverageReport | None:
+    """DAT-16 — pokrycie danych okna track recordu z darmowych odczytów
+    (snapshoty cen, rozliczenia). Błąd → None: zdanie się chowa, cykl leci dalej."""
+    try:
+        return build_data_coverage(
+            repository,
+            symbols=settings.symbols,
+            crypto_symbols=settings.crypto_symbols,
+            days=settings.track_record_days,
+            now=datetime.now(UTC),
+        )
+    except Exception:
+        logger.exception("Data coverage failed — scorecards without the coverage line")
+        return None
 
 
 def _build_signal_calibration(
@@ -2451,23 +2702,25 @@ def _build_signal_calibration(
     except Exception:
         logger.exception("Failed to fetch calibration samples for signal ranking")
         return None
-    samples = [
-        (float(row["confidence_score"]), bool(row["is_trend_correct"]))
-        for row in rows
-        if row.get("confidence_score") is not None
-        and row.get("is_trend_correct") is not None
-    ]
-    return reliability_curve(samples) if samples else None
+    # WIA-39: ranking kalibrujemy krzywą kierunkową — SIDEWAYS trafia za darmo.
+    split = split_calibration_samples(rows)
+    # WIA-38: pewność, która nie odróżnia trafień od pudeł, nie przestawia rankingu.
+    discrimination = discrimination_evidence(split.directional_by_cycle, n_boot=0)
+    if discrimination is not None and not confidence_reorders_ranking(discrimination):
+        logger.warning(
+            "Confidence AUC %.2f at n_eff≈%.0f carries no ranking information — "
+            "signals ranked on raw confidence",
+            discrimination.auc,
+            discrimination.n_eff,
+        )
+        return None
+    return directional_calibration_curve(rows)
 
 
 def _calibration_samples(rows: list[dict[str, Any]]) -> list[tuple[float, bool]]:
-    """Wiersze kalibracji → próbki `(confidence, was_correct)`; niepełne pomijamy."""
-    return [
-        (float(row["confidence_score"]), bool(row["is_trend_correct"]))
-        for row in rows
-        if row.get("confidence_score") is not None
-        and row.get("is_trend_correct") is not None
-    ]
+    """Wiersze kalibracji → kierunkowe próbki `(confidence, was_correct)` (WIA-39:
+    SIDEWAYS mają osobną kalibrację); niepełne pomijamy."""
+    return split_calibration_samples(rows).directional
 
 
 def _build_track_record(
@@ -2504,6 +2757,48 @@ def _build_track_record(
     return equity_curve, calibration_buckets, lessons
 
 
+def _expire_stale_predictions(
+    settings: Settings, repository: RepositoryPort, symbols: Sequence[str]
+) -> int:
+    """WIA-49: oznacza nierozliczone predykcje starsze niż okno oceny reflect.
+
+    `reflect_node` nie oceni już predykcji starszej niż `reflection_max_age_hours`
+    (WIA-04), więc bez jawnego wygaszenia zostałaby po cichu bez oceny — w mailu
+    wyglądałoby to jak brak predykcji. 0 wyłącza granicę wieku, więc nic nie
+    wygasa. Zapis idzie przez strażnika BEZ-08; błąd symbolu nie psuje cyklu."""
+    max_age = settings.reflection_max_age_hours
+    if max_age <= 0:
+        return 0
+    expired = 0
+    for symbol in symbols:
+        try:
+            expired += repository.expire_unverified_predictions(symbol, max_age)
+        except Exception:
+            logger.exception("Failed to expire stale predictions of %s", symbol)
+    if expired:
+        logger.info("Expired %d unverified prediction(s) older than %dh", expired, max_age)
+    return expired
+
+
+def _build_symbol_track_record(
+    settings: Settings, repository: RepositoryPort
+) -> SymbolTrackRecordView | None:
+    """WIA-35: trafność kierunkowa per symbol do chipu przy predykcji i sygnale.
+
+    Ta sama flaga i to samo okno co krzywa kapitału; darmowy odczyt zamkniętych
+    predykcji, zero płatnych wywołań. Błąd odczytu → mail bez chipów."""
+    if not settings.equity_curve_enabled:
+        return None
+    try:
+        resolved = parse_resolved_predictions(
+            repository.get_resolved_predictions(settings.track_record_days)
+        )
+    except Exception:
+        logger.exception("Failed to fetch resolved predictions for per-symbol track record")
+        return None
+    return symbol_track_record_view(resolved, settings.track_record_days)
+
+
 def _build_track_record_stats(
     settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
 ) -> TrackRecordStats | None:
@@ -2521,6 +2816,7 @@ def _build_track_record_stats(
     evidence = None
     scores = None
     benchmark = None
+    accuracy_drop = None
     if settings.equity_curve_enabled:
         resolved: list[ResolvedPrediction] = []
         try:
@@ -2528,17 +2824,21 @@ def _build_track_record_stats(
                 repository.get_resolved_predictions(settings.track_record_days)
             )
             evidence = hit_rate_evidence(resolved)
+            # NIEZ-20: data istotnego spadku trafności (Page-Hinkley per cykl).
+            accuracy_drop = accuracy_drop_evidence(resolved)
         except Exception:
             logger.exception("Failed to compute hit-rate evidence for track record")
         if resolved and costs is not None:
             benchmark = _benchmark_comparison(settings, repository, resolved, costs)
+    sideways_scores = None
     if settings.calibration_curve_enabled:
         try:
-            scores = probability_scores(
-                _calibration_samples(
-                    repository.get_resolved_for_calibration(settings.track_record_days)
-                )
+            split = split_calibration_samples(
+                repository.get_resolved_for_calibration(settings.track_record_days)
             )
+            scores = probability_scores(split.directional)
+            # WIA-39: SIDEWAYS osobno — przy małym n wystarczą n i Brier.
+            sideways_scores = probability_scores(split.sideways)
         except Exception:
             logger.exception("Failed to compute probability scores for track record")
     coverage = None
@@ -2552,7 +2852,8 @@ def _build_track_record_stats(
         except Exception:
             logger.exception("Failed to measure interval coverage for track record")
     paper_costs = costs if settings.equity_curve_enabled else None
-    if all(part is None for part in (evidence, scores, coverage, paper_costs, benchmark)):
+    parts = (evidence, scores, coverage, paper_costs, benchmark, accuracy_drop)
+    if all(part is None for part in parts):
         return None
     return TrackRecordStats(
         hit_rate=evidence,
@@ -2560,6 +2861,8 @@ def _build_track_record_stats(
         coverage=coverage,
         costs=paper_costs,
         benchmark=benchmark,
+        sideways_scores=sideways_scores,
+        accuracy_drop=accuracy_drop,
     )
 
 
@@ -2634,11 +2937,11 @@ def _fetch_report_context(
 
     # #3: leaderboard person. Surowe (hit_rate, votes) z RPC, ranking i próg
     # min_votes liczy domena. Brak migracji 018 / błąd RPC → pusty ranking
-    # → sekcja sama się chowa, cykl leci dalej.
+    # → sekcja sama się chowa, cykl leci dalej. WIA-30: po dolnej granicy Wilsona.
     persona_track_record: list[PersonaTrackRecord] = []
     try:
         persona_track_record = rank_personas(
-            repository.get_persona_track_record(PERSONA_TRACK_RECORD_DAYS)
+            repository.get_persona_track_record(PERSONA_TRACK_RECORD_DAYS), rank_by="wilson"
         )
     except Exception:
         logger.exception("Failed to fetch persona track record")
@@ -2649,6 +2952,19 @@ def _fetch_report_context(
         council_history,
         persona_track_record,
     )
+
+
+def _assess_personas(
+    records: list[PersonaTrackRecord], stats: TrackRecordStats | None
+) -> list[PersonaTrackRecord]:
+    """WIA-22: werdykt istotności person (BH-FDR) na parametrach z okna scorecardu,
+    bez migracji; WIA-30: ranking po dolnej granicy Wilsona na n_eff — tym samym
+    przedziale, który pokazuje wiersz. Bez dowodu trafności okna
+    (`equity_curve_enabled` off, brak danych) ranking zostaje bez werdyktu."""
+    evidence = None if stats is None else stats.hit_rate
+    if not records or evidence is None:
+        return records
+    return sort_personas(assess_against_track_record(records, evidence), "wilson")
 
 
 def _without_owner_portfolio(context: ReportContext) -> ReportContext:
@@ -2727,6 +3043,14 @@ def _dispatch_reports(
             settings, repository, paper_costs
         )
         track_record_stats = _build_track_record_stats(settings, repository, paper_costs)
+        persona_track_record = _assess_personas(persona_track_record, track_record_stats)
+        # NIEZ-20: alarm detektora trafności do bannera tego maila (bez zapisu —
+        # liczony na nowo w każdym cyklu, więc nie dubluje wierszy `quota_alerts`).
+        if track_record_stats is not None and track_record_stats.accuracy_drop is not None:
+            recent_alerts = [
+                *recent_alerts,
+                accuracy_drop_alert(track_record_stats.accuracy_drop, started_at),
+            ]
         # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
         signal_calibration_buckets = _build_signal_calibration(settings, repository)
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
@@ -2775,6 +3099,7 @@ def _dispatch_reports(
             calibration_buckets=calibration_buckets,
             lessons=lessons,
             track_record_stats=track_record_stats,
+            symbol_track_record=_build_symbol_track_record(settings, repository),
             signal_calibration_buckets=signal_calibration_buckets,
             cycle_maturity=maturity,
             portfolio_sectors=sectors,
@@ -2861,12 +3186,7 @@ def _dispatch_reports(
                     symbols_for(sub, all_syms), include_portfolio=owner
                 )
                 try:
-                    ResendNotifier(
-                        api_key=settings.resend_api_key,
-                        sender=settings.digest_from_email,
-                        recipient=sub.email,
-                        quota_monitor=quota_monitor,
-                    ).send_report(
+                    build_subscriber_notifier(settings, sub.email, quota_monitor).send_report(
                         subject=subject if owner else public_subject,
                         html_body=sub_html,
                         plain_text=sub_text,
@@ -2909,6 +3229,8 @@ def _dispatch_reports(
                 email_delivered=email_delivered,
                 resolved_unavailable=resolved is None,
                 display_timezone=settings.display_timezone,
+                lead_items=build_cycle_lead(results, report_context),
+                ranked_signals=build_cycle_signals(results, report_context),
             )
     except Exception:
         logger.exception("Failed to send report")
@@ -3076,6 +3398,7 @@ def _write_cycle_summary(
             duration_s=duration_s,
             quota_alerts=quota_alerts,
             delivered=delivered,
+            http_calls=telemetry.snapshot().http_calls,
         )
     )
 
@@ -3134,12 +3457,54 @@ def main(
 ) -> int:
     """`clock` to zegar cyklu: dzień NYSE (FIN-34) i `started_at` raportu."""
     resolved = settings or Settings.from_env()
-    configure_logging(resolved.secret_values())
-    return run_with_heartbeat(resolved, lambda: _run_fast_loop(resolved, clock))
+    configure_logging("main_agent", resolved.secret_values())
+    return run_with_heartbeat(resolved, lambda: _run_fast_loop_metered(resolved, clock))
 
 
-def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
-    """Jeden przebieg Fast Loopa; kod wyjścia jak `main()` (0 / 1 / 2)."""
+def prediction_columns_missing(
+    repository: RepositoryPort, use_case: AnalyzeMarketUseCase
+) -> bool:
+    """FIN-05: preflight kolumn `prediction_logs` raz na cykl, przed płatnymi węzłami.
+
+    Brak kolumny, którą ten config zapisuje (niezaaplikowana migracja), to ERROR
+    z instrukcją i koniec cyklu — inaczej każdy symbol za bramką płaciłby za analizę,
+    której zapis padnie. Niekonkluzywny preflight (sieć, timeout) to WARNING i cykl
+    biegnie dalej: blip nie może wyłączyć cyklu."""
+    try:
+        missing = sorted(
+            repository.missing_prediction_columns(use_case.required_prediction_columns())
+        )
+    except Exception as exc:
+        logger.warning(
+            "prediction_logs column preflight inconclusive (%s) — the cycle continues",
+            type(exc).__name__,
+        )
+        return False
+    if not missing:
+        return False
+    logger.error(
+        "prediction_logs lacks columns this config writes: %s — run the 'DB Migrate' "
+        "workflow (or switch their flags off); cycle stopped before any paid call",
+        ", ".join(missing),
+    )
+    return True
+
+
+def _run_fast_loop_metered(settings: Settings, clock: Callable[[], datetime]) -> int:
+    """NIEZ-24: przebieg z jednym miernikiem żądań HTTP — liczy każdą sesję
+    `build_session()` adapterów, bez zmian w ich kodzie."""
+    meter = HttpCallMeter()
+    with metered_http(meter):
+        return _run_fast_loop(settings, clock, http_meter=meter)
+
+
+def _run_fast_loop(
+    settings: Settings,
+    clock: Callable[[], datetime],
+    http_meter: HttpCallMeter | None = None,
+) -> int:
+    """Jeden przebieg Fast Loopa; kod wyjścia jak `main()` (0 / 1 / 2).
+    `http_meter` (NIEZ-24) trafia do telemetrii cyklu, a z niej do step summary."""
     if refuses_stub_writes(settings):
         return STUB_WRITES_REFUSED_EXIT_CODE
     # FIN-34: w dzień zamknięcia NYSE ceny akcji stoją — akcje nie idą do grafu.
@@ -3180,6 +3545,10 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
         run_context=run_context,
         usage_ledger=usage_ledger,
     )
+    if http_meter is not None:
+        use_case.telemetry.bind_http_meter(http_meter)
+    if settings.db_writes_enabled and prediction_columns_missing(repository, use_case):
+        return 1
     # Mail i stary push osobno: tekst pushu nie niesie sekcji portfela.
     notifier = build_notifier(settings, quota_monitor=quota_monitor, include_push=False)
     legacy_push_notifier = build_legacy_push_notifier(settings, quota_monitor=quota_monitor)
@@ -3204,9 +3573,11 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
 
     # Dane: enrichment alpha (per-symbol) + krzywa rentowności (raz na cykl).
     # Wszystko domyślnie Null/None → zero I/O, póki flagi off.
-    alpha_use_case = build_alpha_enrichment(settings)
+    alpha_use_case = build_alpha_enrichment(settings, quota_monitor, repository=repository)
     collect_alpha = alpha_per_symbol_enabled(settings)
     yield_curve = build_macro_rates_port(settings).fetch_yield_curve()
+    # DAT-22: VIX, VXN, HY OAS, T10Y2Y, NFCI — raz na cykl (Null bez flagi: zero I/O).
+    macro_series = build_macro_series_port(settings).fetch_macro_series(started_at.date())
     results: list[SymbolResult] = []
     unsupported = set(settings.symbols_unsupported_price)
     crypto_set = set(settings.crypto_symbols)
@@ -3231,12 +3602,24 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
     macro_risk_report = _run_risk_watch(settings, repository)
 
     # #7: reżim rynku z overall_alert (zacieśnia próg + label do promptu). Off → neutral.
+    # ALR-05: ten sam reżim trafia do nagłówka maila.
+    regime_banners: list[RegimeBanner] = []
     regime_context, regime_multiplier = _resolve_regime(
         settings,
         macro_risk_report,
         yield_curve,
         repository=repository,
         cycle_at=started_at,
+        on_banner=regime_banners.append,
+        macro_series=macro_series,
+    )
+
+    # ML-31/ML-32/DAT-22: cechy rynkowe cyklu — raz, przed grafem (no-op bez flagi).
+    use_case.prepare_market_features(
+        eligible,
+        asset_types={s: _classify_asset(s, crypto_set, etf_set) for s in eligible},
+        macro_features=macro_features(macro_series) if macro_series is not None else None,
+        now=started_at,
     )
 
     loop_results, failures, alpha_signals, alpha_prices = _analyze_symbols(
@@ -3279,6 +3662,8 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
         run_context=run_context,
     )
     cost = cycle_cost(settings, use_case.telemetry, usage_ledger)
+    # WIA-49: po pętli (reflect już ocenił, co mógł) — darmowy zapis flag.
+    expired_unverified = _expire_stale_predictions(settings, repository, all_symbols)
 
     # ---- Wysyłka raportu ----
     delivered = _dispatch_reports(
@@ -3304,12 +3689,20 @@ def _run_fast_loop(settings: Settings, clock: Callable[[], datetime]) -> int:
             cycle_cost=cost,
             ml_model_loaded=use_case.ml_model_loaded,
             run_context=run_context,
+            expired_unverified=expired_unverified,
+            regime=regime_banners[-1] if regime_banners else None,
+            # DAT-21: daty filingów EDGAR są w kalendarzu NYSE, więc dzień cyklu też.
+            insider_lead_window=InsiderLeadWindow(
+                as_of=to_nyse_time(started_at).date(),
+                max_age_days=settings.insider_lead_max_age_days,
+            ),
         ),
     )
     report_delivery = _report_delivery(
         delivered, notifier=notifier, subscribers=subscribers, settings=settings
     )
     run_duration = time.perf_counter() - started_perf
+    logger.info("HTTP requests per host: %s", dict(use_case.telemetry.snapshot().http_calls))
     _write_cycle_summary(
         results=results,
         telemetry=use_case.telemetry,

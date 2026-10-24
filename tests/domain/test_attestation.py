@@ -15,6 +15,7 @@ tautologią „moduł zgadza się sam ze sobą".
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any, cast
 
 import pytest
 
@@ -174,3 +175,174 @@ def test_new_salt_is_hex_and_unique() -> None:
     assert s1 != s2
     assert len(s1) >= 32
     assert all(c in "0123456789abcdef" for c in s1)
+
+
+# --- Schemat v2 (WIA-02): ceny w skali DECIMAL(14,4) ---
+
+
+def test_current_schema_is_v2_and_v1_stays_supported() -> None:
+    # Jedno podbicie kontraktu; v1 zostaje do weryfikacji starych commitmentów.
+    assert (attestation.SCHEMA_VERSION_V1, attestation.SCHEMA_VERSION) == (1, 2)
+
+
+def test_canonicalize_injects_the_requested_schema_version() -> None:
+    canonical = attestation.canonicalize(_PAYLOAD_1, schema_version=attestation.SCHEMA_VERSION)
+    assert '"schema_version":2' in canonical
+
+
+def test_v1_and_v2_commitments_of_the_same_payload_differ() -> None:
+    v1 = attestation.commit(_PAYLOAD_1, _SALT_A)
+    v2 = attestation.commit(_PAYLOAD_1, _SALT_A, schema_version=attestation.SCHEMA_VERSION)
+    assert v1 == _HASH_1
+    assert v2 != v1
+    assert attestation.verify(
+        _PAYLOAD_1, _SALT_A, v2, schema_version=attestation.SCHEMA_VERSION
+    ) is True
+    assert attestation.verify(_PAYLOAD_1, _SALT_A, v2) is False
+
+
+def test_canonicalize_rejects_an_unknown_schema_version() -> None:
+    with pytest.raises(ValueError, match="schema_version"):
+        attestation.canonicalize(_PAYLOAD_1, schema_version=3)
+
+
+def test_prediction_payload_quantizes_prices_like_decimal_14_4() -> None:
+    # Python trzyma 90.11111111101, kolumna DECIMAL(14,4) zapisze 90.1111 —
+    # hash musi powstać z wartości, którą baza przechowa (połówki od zera).
+    payload = attestation.prediction_commitment_payload(
+        symbol="AAPL",
+        predicted_trend="BULLISH",
+        predicted_target_price=Decimal("90.11111111101"),
+        price_at_prediction=Decimal("90.11115"),
+    )
+    assert payload["predicted_target_price"] == "90.1111"
+    assert payload["price_at_prediction"] == "90.1112"
+
+
+def test_prediction_payload_uses_the_column_text_with_four_places() -> None:
+    # Tekst kolumny NUMERIC(14,4) ma zawsze cztery miejsca: „100.0” → „100.0000”.
+    payload = attestation.prediction_commitment_payload(
+        symbol="AAPL",
+        predicted_trend="SIDEWAYS",
+        predicted_target_price=Decimal("100.0"),
+        price_at_prediction=Decimal("100"),
+    )
+    assert payload["predicted_target_price"] == "100.0000"
+    assert payload["price_at_prediction"] == "100.0000"
+
+
+def test_prediction_payload_keeps_a_missing_target_as_null() -> None:
+    payload = attestation.prediction_commitment_payload(
+        symbol="AAPL",
+        predicted_trend=None,
+        predicted_target_price=None,
+        price_at_prediction=Decimal("100"),
+    )
+    assert payload["predicted_target_price"] is None
+    assert payload["predicted_trend"] is None
+
+
+# --- Golden v2 (WIA-41): pewność, horyzont, werdykt rady, przepis, protokół ---
+# Hashe policzone osobnym skryptem mirrorującym kontrakt v2 (json.dumps
+# sort_keys + separatory + schema_version 2), NIE przez moduł.
+
+_SALT_E = "e" * 32
+_CANON_V2 = (
+    '{"confidence_score":"0.8500","council":{"consensus_strength":"0.7143",'
+    '"final_recommendation":"BUY"},"horizon_hours":12,"predicted_target_price":"131.2346",'
+    '"predicted_trend":"BULLISH","price_at_prediction":"128.5000",'
+    '"protocol_sha256":"' + "b" * 64 + '","recipe_version":"' + "a" * 64 + '",'
+    '"schema_version":2,"symbol":"NVDA"}'
+)
+_HASH_V2 = "62f0e3d87b5c91662fc688fc59dd3a07e0acc7e7c2779f35e0d37acbec16004c"
+_CANON_V2_BARE = (
+    '{"confidence_score":null,"council":null,"horizon_hours":12,'
+    '"predicted_target_price":null,"predicted_trend":"BULLISH",'
+    '"price_at_prediction":"128.5000","protocol_sha256":null,"recipe_version":null,'
+    '"schema_version":2,"symbol":"NVDA"}'
+)
+_HASH_V2_BARE = "5f97c292e94b4052cddf48a400f2dfda4c1047555649a3996fa00342c331f06d"
+
+
+def _payload_v2(**overrides: object) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "symbol": "NVDA",
+        "predicted_trend": "BULLISH",
+        "predicted_target_price": Decimal("131.23455"),
+        "price_at_prediction": Decimal("128.5"),
+        "confidence_score": 0.85,
+        "horizon_hours": 12,
+        "council_recommendation": "BUY",
+        "council_consensus_strength": 0.714285,
+        "recipe_version": "a" * 64,
+        "protocol_sha256": "b" * 64,
+    }
+    fields.update(overrides)
+    # Pola jak w sygnaturze funkcji; mypy strict (TEST-13) nie zawęża `**dict[str, object]`.
+    return attestation.prediction_commitment_payload(**cast(dict[str, Any], fields))
+
+
+def test_canonicalize_golden_v2() -> None:
+    canonical = attestation.canonicalize(_payload_v2(), schema_version=attestation.SCHEMA_VERSION)
+    assert canonical == _CANON_V2
+
+
+def test_golden_hash_v2() -> None:
+    commitment = attestation.commit(
+        _payload_v2(), _SALT_E, schema_version=attestation.SCHEMA_VERSION
+    )
+    assert commitment == _HASH_V2
+    assert attestation.commit_canonical(_CANON_V2, _SALT_E) == _HASH_V2
+    assert attestation.verify_canonical(_CANON_V2, _SALT_E, _HASH_V2.upper()) is True
+
+
+def test_golden_hash_v2_without_council_recipe_or_confidence() -> None:
+    payload = _payload_v2(
+        predicted_target_price=None,
+        confidence_score=None,
+        council_recommendation=None,
+        council_consensus_strength=None,
+        recipe_version=None,
+        protocol_sha256=None,
+    )
+    canonical = attestation.canonicalize(payload, schema_version=attestation.SCHEMA_VERSION)
+    assert canonical == _CANON_V2_BARE
+    assert attestation.commit_canonical(canonical, _SALT_E) == _HASH_V2_BARE
+
+
+def test_confidence_is_a_quantized_decimal_string_not_a_float() -> None:
+    # Float w kanonizacji to binarny szum (0.1 + 0.2) i zależność od repr —
+    # zawsze string Decimal po quantize do czterech miejsc, połówki od zera.
+    payload = _payload_v2(confidence_score=0.1 + 0.2, council_consensus_strength=0.00005)
+    assert payload["confidence_score"] == "0.3000"
+    assert payload["council"] == {"final_recommendation": "BUY", "consensus_strength": "0.0001"}
+
+
+def test_verify_canonical_rejects_a_tampered_confidence() -> None:
+    tampered = _CANON_V2.replace('"confidence_score":"0.8500"', '"confidence_score":"0.9500"')
+    assert attestation.verify_canonical(tampered, _SALT_E, _HASH_V2) is False
+
+
+# --- WIA-01: commitment zapisany w wierszu tej samej godziny UTC ---
+
+
+def test_stored_commitment_is_not_superseded_by_its_own_plaintext() -> None:
+    # Retry tej samej predykcji: ta sama sól da ten sam, już opublikowany hash.
+    stored = attestation.StoredCommitment(commitment=_HASH_1, salt=_SALT_A, payload=_CANON_1)
+    assert stored.is_superseded_by(_CANON_1) is False
+
+
+def test_stored_commitment_is_superseded_by_another_plaintext() -> None:
+    stored = attestation.StoredCommitment(commitment=_HASH_1, salt=_SALT_A, payload=_CANON_1)
+    assert stored.is_superseded_by(_CANON_1.replace('"up"', '"down"')) is True
+
+
+def test_superseded_check_compares_hashes_not_the_stored_payload() -> None:
+    # Wiersz bez `commitment_payload` (sprzed 043) też da się porównać: hash + sól.
+    stored = attestation.StoredCommitment(commitment=_HASH_1, salt=_SALT_A, payload=None)
+    assert stored.is_superseded_by(_CANON_1) is False
+
+
+def test_superseded_reveal_status_is_frozen() -> None:
+    # Status trafia do publicznego ledgera revealów — weryfikator filtruje po nim.
+    assert attestation.REVEAL_STATUS_SUPERSEDED == "superseded"

@@ -29,19 +29,28 @@ from typing import Any, ClassVar
 from src.application.ports import (
     AttestationPublisherPort,
     CycleRun,
+    DeferredDiagnosis,
+    LatestPrediction,
     OpenReferenceCall,
     PositionsImportPort,
     PreviousVerdict,
     RepositoryPort,
+    StoredReceipt,
 )
 from src.application.report_council_history import InvestorHistory
+from src.domain.attestation import StoredCommitment
 from src.domain.council import InvestorOpinion
+from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
+from src.domain.mistake_taxonomy import MistakeCategory
+from src.domain.persona_track_record import PersonaVoteOutcome
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
+from src.domain.price_levels import PriceLevel, PriceLevelAlert
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
+from src.domain.session_close import SessionCloseSettlement
 from src.domain.value_objects import AssetType, Fundamentals, Money
 
 logger = logging.getLogger(__name__)
@@ -85,6 +94,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_last_price",
         "get_price_history",
         "get_last_prediction_price",
+        "get_latest_prediction",
         "get_latest_regime_state",
         "get_unverified_prediction",
         "get_feature_store_data",
@@ -92,21 +102,32 @@ class ReadOnlyRepository(RepositoryPort):
         "get_recently_resolved_predictions",
         "get_resolved_predictions",
         "get_cached_fundamentals",
+        "get_fundamentals_fetched_at",
+        "get_cached_earnings",
         "get_recent_quota_alerts",
         "find_similar_predictions",
         "get_council_votes_for_prediction",
+        "get_receipt",
+        "find_receipts",
         "get_resolved_for_calibration",
         "get_persona_accuracy",
         "get_persona_track_record",
+        "get_persona_vote_outcomes",
+        "get_deferred_diagnoses",
         "get_resolved_predictions_detailed",
         "get_settled_moves",
         "get_unrevealed_commitments",
+        "attestation_columns_available",
+        "get_current_hour_commitment_salt",
+        "get_current_hour_commitment",
         "get_latest_snapshot_at",
         "get_last_scorecard_at",
         "probe_database",
+        "missing_prediction_columns",
         "get_last_price_snapshot",
         "get_sent_shock_alerts",
         "get_shock_alert_times",
+        "get_active_price_levels",
         "get_previous_verdict",
         "get_recent_model_scorecards",
         "get_council_vote_history",
@@ -115,16 +136,22 @@ class ReadOnlyRepository(RepositoryPort):
     })
     WRITE_METHODS: ClassVar[frozenset[str]] = frozenset({
         "save_price_snapshot",
+        "expire_unverified_predictions",
         "save_feature_snapshot",
         "save_regime_state",
         "save_prediction",
         "update_prediction_accuracy",
         "refresh_feature_store",
         "save_fundamentals",
+        "save_earnings",
         "save_quota_alert",
         "save_calibration",
+        "save_backfilled_diagnosis",
         "mark_commitment_revealed",
         "save_shock_alert",
+        "add_price_levels",
+        "record_price_level_reading",
+        "mark_price_level_triggered",
         "save_model_scorecard",
         "save_council_votes",
         "save_llm_calls",
@@ -145,8 +172,13 @@ class ReadOnlyRepository(RepositoryPort):
     def get_price_history(self, symbol: str, days: int) -> list[tuple[datetime, Money]]:
         return self._delegate.get_price_history(symbol, days)
 
-    def get_last_prediction_price(self, symbol: str) -> Money | None:
-        return self._delegate.get_last_prediction_price(symbol)
+    def get_last_prediction_price(
+        self, symbol: str, *, before: datetime | None = None
+    ) -> Money | None:
+        return self._delegate.get_last_prediction_price(symbol, before=before)
+
+    def get_latest_prediction(self, symbol: str) -> LatestPrediction | None:
+        return self._delegate.get_latest_prediction(symbol)
 
     def get_latest_regime_state(self) -> RegimeState | None:
         return self._delegate.get_latest_regime_state()
@@ -179,6 +211,12 @@ class ReadOnlyRepository(RepositoryPort):
     def get_cached_fundamentals(self, symbol: str) -> Fundamentals | None:
         return self._delegate.get_cached_fundamentals(symbol)
 
+    def get_fundamentals_fetched_at(self, symbols: Sequence[str]) -> dict[str, datetime]:
+        return self._delegate.get_fundamentals_fetched_at(symbols)
+
+    def get_cached_earnings(self, symbol: str) -> CachedEarningsDate | None:
+        return self._delegate.get_cached_earnings(symbol)
+
     def get_recent_quota_alerts(self, hours: int) -> list[QuotaAlert]:
         return self._delegate.get_recent_quota_alerts(hours)
 
@@ -189,6 +227,12 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_council_votes_for_prediction(self, prediction_id: str) -> list[InvestorOpinion]:
         return self._delegate.get_council_votes_for_prediction(prediction_id)
+
+    def get_receipt(self, prediction_id: str) -> StoredReceipt | None:
+        return self._delegate.get_receipt(prediction_id)
+
+    def find_receipts(self, symbol: str, day: date) -> list[StoredReceipt]:
+        return self._delegate.find_receipts(symbol, day)
 
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
         return self._delegate.get_resolved_for_calibration(days)
@@ -201,6 +245,12 @@ class ReadOnlyRepository(RepositoryPort):
     def get_persona_track_record(self, window_days: int = 90) -> dict[str, tuple[float, int]]:
         return self._delegate.get_persona_track_record(window_days=window_days)
 
+    def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
+        return self._delegate.get_persona_vote_outcomes(window_days=window_days)
+
+    def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
+        return self._delegate.get_deferred_diagnoses(limit)
+
     def get_resolved_predictions_detailed(
         self, days: int, since: datetime | None = None
     ) -> list[dict[str, Any]]:
@@ -211,8 +261,17 @@ class ReadOnlyRepository(RepositoryPort):
     ) -> list[dict[str, Any]]:
         return self._delegate.get_settled_moves(days, with_intervals=with_intervals)
 
-    def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
+    def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:
         return self._delegate.get_unrevealed_commitments(days=days)
+
+    def attestation_columns_available(self) -> bool:
+        return self._delegate.attestation_columns_available()
+
+    def get_current_hour_commitment_salt(self, symbol: str) -> str | None:
+        return self._delegate.get_current_hour_commitment_salt(symbol)
+
+    def get_current_hour_commitment(self, symbol: str) -> StoredCommitment | None:
+        return self._delegate.get_current_hour_commitment(symbol)
 
     def get_latest_snapshot_at(self) -> datetime | None:
         return self._delegate.get_latest_snapshot_at()
@@ -223,6 +282,9 @@ class ReadOnlyRepository(RepositoryPort):
     def probe_database(self) -> None:
         self._delegate.probe_database()
 
+    def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
+        return self._delegate.missing_prediction_columns(columns)
+
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         return self._delegate.get_last_price_snapshot(symbol)
 
@@ -231,6 +293,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
         return self._delegate.get_shock_alert_times(since)
+
+    def get_active_price_levels(self) -> list[PriceLevelAlert]:
+        return self._delegate.get_active_price_levels()
 
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
         return self._delegate.get_previous_verdict(symbol)
@@ -279,6 +344,10 @@ class ReadOnlyRepository(RepositoryPort):
         self._skipped.skip("save_prediction")
         return f"{DRY_RUN_PREDICTION_PREFIX}{uuid.uuid4()}"
 
+    def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:
+        self._skipped.skip("expire_unverified_predictions")
+        return 0
+
     def update_prediction_accuracy(
         self,
         prediction_id: str,
@@ -286,19 +355,43 @@ class ReadOnlyRepository(RepositoryPort):
         accuracy_score: float,
         is_trend_correct: bool,
         insight: str,
+        correction_category: MistakeCategory | None = None,
+        *,
+        stale_quote: bool | None = None,
+        session_close: SessionCloseSettlement | None = None,
     ) -> None:
         self._skipped.skip("update_prediction_accuracy")
 
     def refresh_feature_store(self) -> None:
         self._skipped.skip("refresh_feature_store")
 
+    def save_backfilled_diagnosis(
+        self,
+        prediction_id: str,
+        insight: str,
+        *,
+        replaces: str,
+        correction_category: MistakeCategory | None = None,
+    ) -> None:
+        self._skipped.skip("save_backfilled_diagnosis")
+
     def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
         self._skipped.skip("save_fundamentals")
+
+    def save_earnings(self, entry: CachedEarningsDate) -> None:
+        self._skipped.skip("save_earnings")
 
     def save_quota_alert(self, alert: QuotaAlert) -> None:
         self._skipped.skip("save_quota_alert")
 
-    def save_calibration(self, prediction_id: str, score: float, insight: str) -> None:
+    def save_calibration(
+        self,
+        prediction_id: str,
+        score: float,
+        insight: str,
+        *,
+        score_version: int | None = None,
+    ) -> None:
         self._skipped.skip("save_calibration")
 
     def mark_commitment_revealed(self, prediction_id: str) -> None:
@@ -309,7 +402,20 @@ class ReadOnlyRepository(RepositoryPort):
     ) -> None:
         self._skipped.skip("save_shock_alert")
 
-    def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
+    def add_price_levels(self, levels: Sequence[PriceLevel]) -> None:
+        self._skipped.skip("add_price_levels")
+
+    def record_price_level_reading(self, alert_id: str, price: Decimal) -> None:
+        self._skipped.skip("record_price_level_reading")
+
+    def mark_price_level_triggered(
+        self, alert_id: str, price: Decimal, triggered_at: datetime
+    ) -> None:
+        self._skipped.skip("mark_price_level_triggered")
+
+    def save_model_scorecard(
+        self, symbol: str, result: Mapping[str, Any], *, run_id: str | None = None
+    ) -> None:
         self._skipped.skip("save_model_scorecard")
 
     def save_council_votes(

@@ -52,6 +52,22 @@ def test_all_settings_required_secrets_are_mapped() -> None:
     )
 
 
+# BEZ-12: płatni dostawcy, których watch nigdy nie woła. Settings wymaga dwóch
+# pierwszych kluczy do konstrukcji, więc w env stoją niepuste atrapy, nie sekrety.
+PAID_PROVIDER_KEYS = ("OPENAI_API_KEY", "ALPHA_VANTAGE_API_KEYS", "ANTHROPIC_API_KEY")
+
+
+def test_paid_provider_keys_are_dummies_in_free_watch() -> None:
+    env = _run_watch_env()
+
+    real = [key for key in PAID_PROVIDER_KEYS if "secrets." in str(env.get(key, ""))]
+    assert not real, (
+        f"shock_watch_hourly.yml podaje darmowemu watchowi prawdziwe płatne klucze {real} "
+        f"— wystarczy atrapa, watch ich nie woła."
+    )
+    assert all(str(env.get(key, "")).strip() for key in PAID_PROVIDER_KEYS[:2])
+
+
 def _schedule(workflow: str) -> object:
     spec = yaml.safe_load((ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8"))
     # PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True.
@@ -112,3 +128,30 @@ def test_watch_wires_the_free_price_router_as_its_daily_change_source(mocker) ->
 
     assert isinstance(source, DailyChangePort)
     assert isinstance(source, RoutingMarketDataPort)
+
+
+def test_watch_starts_without_paid_provider_keys(mocker) -> None:
+    # ARCH-05: Settings nie żąda kluczy płatnych dostawców, więc watch startuje bez
+    # OPENAI_API_KEY i ALPHA_VANTAGE_API_KEYS — atrapy w workflow są zbędne.
+    import main_watch
+    from src.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        finnhub_api_key="fh",
+        supabase_url="https://test.supabase.co",
+        supabase_key="anon",
+        symbols=["AAPL"],
+        shock_alerts_enabled=True,
+        telegram_bot_token="tg-token",
+        telegram_chat_id="42",
+    )
+    mocker.patch("main_agent.build_repository")
+    mocker.patch("main_agent.build_push_notifier")
+    scan_watch = mocker.patch(
+        "main_watch.scan_watch", return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1)
+    )
+
+    main_watch.main(settings)
+
+    scan_watch.assert_called_once()

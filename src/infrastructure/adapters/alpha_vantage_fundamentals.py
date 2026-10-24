@@ -7,6 +7,12 @@ Defensywnie zwraca None przy:
   - pustym JSON (np. dla ETF-ów)
   - błędach sieciowych / rate limit po retry
   - całkowicie nieparsowalnych danych
+
+DAT-11: `Error Message` z mową o `apikey` to odrzucony klucz. Gdy jest kolejny
+klucz, adapter przechodzi na niego (alert WARNING, dane dalej płyną); dopiero
+odrzucony ostatni klucz daje jeden CRITICAL i adapter martwy do końca przebiegu
+(kolejne symbole bez requestów). `Error Message` bez `apikey` (zły symbol, zła
+funkcja) to WARNING i None tylko dla tego symbolu.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ from src.infrastructure.adapters._alpha_vantage_common import (
 from src.infrastructure.adapters._http import (
     build_session,
     raise_for_status_redacted,
+    redact_secrets,
     safe_get,
 )
 
@@ -41,6 +48,11 @@ _BASE_URL = "https://www.alphavantage.co/query"
 # odróżnia dane od soft-limitu (DAT-06, `is_soft_limit`).
 _FUNDAMENTALS_DATA_KEYS = ("Symbol", "PERatio", "quarterlyEarnings", "annualEarnings")
 
+# DAT-11: pole błędu AV (HTTP 200) i fraza, po której poznajemy odrzucony klucz.
+_ERROR_MESSAGE_MARKER = "Error Message"
+_REJECTED_KEY_PHRASE = "apikey"
+_ERROR_LOG_CHARS = 160
+
 
 class _AlphaVantageQuotaExhausted(Exception):
     """Wewnętrzny sygnał: AV zwróciło soft-limit 200 (pole `Information`/`Note`),
@@ -52,6 +64,13 @@ class _AlphaVantageQuotaExhausted(Exception):
     def __init__(self, message: str, *, frequency_limit: bool = False) -> None:
         super().__init__(message)
         self.frequency_limit = frequency_limit
+
+
+class _AlphaVantageRequestRejected(Exception):
+    """Wewnętrzny sygnał (DAT-11): AV odpowiedziało `Error Message` o kluczu
+    (`apikey` nieważny albo pusty). Kolejne symbole tym kluczem też padną, więc
+    `_get` przechodzi na następny klucz, a ten wyjątek wychodzi z niego dopiero
+    przy ostatnim — wtedy adapter przestaje pytać."""
 
 
 def _parse_float(value: Any) -> float | None:
@@ -101,6 +120,8 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
         self._key_index = 0
         self._session = build_session()
         self._quota_monitor = quota_monitor
+        # DAT-11: po odrzuceniu klucza adapter nie wysyła już żadnych requestów.
+        self._rejected = False
 
     def _current_key(self) -> str:
         return self._api_keys[self._key_index]
@@ -110,7 +131,9 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
         i ponawia. Gdy WSZYSTKIE klucze wyczerpane — `_AlphaVantageQuotaExhausted`.
 
         `Note` (limit minutowy) dostaje jeden backoff i ponowienie tym samym
-        kluczem, `Information` (limit dzienny) od razu rotuje (DAT-06)."""
+        kluczem, `Information` (limit dzienny) od razu rotuje (DAT-06).
+        Odrzucony klucz (DAT-11) też rotuje; przy ostatnim leci
+        `_AlphaVantageRequestRejected`."""
         backed_off = False
         while self._key_index < len(self._api_keys):
             params = {
@@ -123,6 +146,15 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
             data = response.json()
             if not isinstance(data, dict):
                 return {}
+            try:
+                self._raise_on_error_message(data)
+            except _AlphaVantageRequestRejected as rejected:
+                if self._key_index + 1 >= len(self._api_keys):
+                    raise
+                self._report_rotated_key(symbol, str(rejected))
+                self._key_index += 1
+                backed_off = False
+                continue
             # Soft-limit (200 + `Information`/`Note`, brak danych) musi być
             # rozróżniony od zwykłej pustki — inaczej dane giną po cichu.
             if not is_soft_limit(data, _FUNDAMENTALS_DATA_KEYS):
@@ -153,14 +185,77 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
         # nie spalamy requestu na martwym kluczu.
         raise _AlphaVantageQuotaExhausted("all keys exhausted")
 
-    def _emit_quota_alert(self, message: str, action: str) -> None:
-        """Wystawia CRITICAL alert do QuotaMonitor, jeśli ten jest skonfigurowany."""
+    def _raise_on_error_message(self, data: dict[str, Any]) -> None:
+        """`Error Message` → `_AlphaVantageRequestRejected` (klucz) albo
+        `ValueError` (zły symbol / wywołanie). Treść bez kluczy — AV potrafi
+        wkleić je do komunikatu."""
+        error = data.get(_ERROR_MESSAGE_MARKER)
+        if error is None:
+            return
+        text = redact_secrets(str(error), self._api_keys)[:_ERROR_LOG_CHARS]
+        if _REJECTED_KEY_PHRASE in str(error).lower():
+            raise _AlphaVantageRequestRejected(text)
+        raise ValueError(f"Alpha Vantage returned an error: {text}")
+
+    def _report_rotated_key(self, symbol: str, detail: str) -> None:
+        """Log po angielsku + WARNING po polsku: klucz odrzucony, ale kolejny
+        przejmuje zapytania, więc dane w cyklu są (DAT-11). Numer klucza, nigdy
+        sam klucz."""
+        key_number = self._key_index + 1
+        logger.warning(
+            "Alpha Vantage rejected fundamentals API key #%d at %s: %s — rotating to key #%d",
+            key_number,
+            symbol,
+            detail,
+            key_number + 1,
+        )
+        self._emit_quota_alert(
+            severity=QuotaSeverity.WARNING,
+            message=(
+                f"Alpha Vantage odrzuciło klucz API fundamentów #{key_number} "
+                "(Error Message); fundamenty idą kolejnym kluczem."
+            ),
+            action=(
+                f"Sprawdź klucz #{key_number} w ALPHA_VANTAGE_API_KEYS w sekretach "
+                "repozytorium — jest nieważny albo pusty; nowy darmowy klucz "
+                "wygenerujesz na alphavantage.co."
+            ),
+        )
+
+    def _report_rejected_key(self, symbol: str, detail: str) -> None:
+        """Log po angielsku + jeden CRITICAL po polsku (MAIL-15): odrzucony
+        ostatni klucz, więc dalszych fundamentów w tym przebiegu nie będzie."""
+        logger.error(
+            "Alpha Vantage rejected the last fundamentals API key at %s: %s — "
+            "skipping fundamentals for the remaining symbols",
+            symbol,
+            detail,
+        )
+        self._emit_quota_alert(
+            message=(
+                "Alpha Vantage odrzuciło ostatni klucz API fundamentów (Error Message); "
+                "w tym przebiegu brakuje P/E i wzrostu EPS dla pozostałych spółek."
+            ),
+            action=(
+                "Sprawdź ALPHA_VANTAGE_API_KEYS w sekretach repozytorium — klucz jest "
+                "nieważny albo pusty; nowy darmowy klucz wygenerujesz na alphavantage.co."
+            ),
+        )
+
+    def _emit_quota_alert(
+        self,
+        message: str,
+        action: str,
+        *,
+        severity: QuotaSeverity = QuotaSeverity.CRITICAL,
+    ) -> None:
+        """Wystawia alert (domyślnie CRITICAL) do QuotaMonitor, jeśli ten jest skonfigurowany."""
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(
             QuotaAlert(
                 source="Alpha Vantage fundamentals",
-                severity=QuotaSeverity.CRITICAL,
+                severity=severity,
                 message=message,
                 action=action,
                 occurred_at=datetime.now(UTC),
@@ -200,9 +295,15 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
         )
 
     def get_fundamentals(self, symbol: str) -> Fundamentals | None:
+        if self._rejected:
+            return None
         try:
             overview = self._get("OVERVIEW", symbol)
             earnings = self._get("EARNINGS", symbol)
+        except _AlphaVantageRequestRejected as rejected:
+            self._rejected = True
+            self._report_rejected_key(symbol, str(rejected))
+            return None
         except _AlphaVantageQuotaExhausted as exhausted:
             # Wyczerpany limit: NIE udajemy pustych fundamentów. Emitujemy alert
             # i przerywamy — kolejne klucze i tak są wspólne z resztą integracji
@@ -230,4 +331,6 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
             peg_ratio=peg_ratio,
             eps_growth_yoy=eps_growth,
             fetched_at=datetime.now(UTC),
+            # DAT-21: z tej samej odpowiedzi OVERVIEW — zero nowych requestów.
+            market_cap=_parse_float(overview.get("MarketCapitalization")),
         )

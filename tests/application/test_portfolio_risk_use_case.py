@@ -660,3 +660,31 @@ class TestPositionRiskInPln:
 
         # Zostaje samo NVDA: obsunięcie 96 vs szczyt 120.
         assert risk.drawdown == pytest.approx(0.2)
+
+
+class TestNonFiniteReturns:
+    """PORT-09: symbol z nieskończonym zwrotem (cena poza zakresem floata) wypada
+    per symbol, zamiast zatruć VaR i korelacje całej sekcji."""
+
+    def test_symbol_with_non_finite_returns_drops_out_alone(
+        self, repository_port: Mock
+    ) -> None:
+        import math
+
+        broken = _long_series(100)
+        broken[30] = (broken[30][0], Money(Decimal("1e400")))
+        history = {
+            "NVDA": _long_series(100),
+            "MSFT": _long_series(50),
+            "GLD": _long_series(100, mirror=True),
+            "BRK": broken,
+        }
+        repository_port.get_price_history.side_effect = lambda sym, days: history[sym]
+
+        report = PortfolioRiskUseCase(repository_port=repository_port, var_enabled=True).run(
+            ["NVDA", "MSFT", "GLD", "BRK"]
+        )
+
+        assert report.watchlist_size == 3
+        assert all("BRK" not in pair for pair in report.matrix)
+        assert report.var is not None and math.isfinite(report.var)

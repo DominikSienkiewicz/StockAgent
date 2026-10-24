@@ -11,6 +11,9 @@ Dwa darmowe-/premium-owe endpointy Finnhub:
 Źródło opcjonalne (alpha): adapter NIGDY nie rzuca. Każdy błąd — sieci,
 parsowania, braku pola, non-200 na rekomendacji — kończy się zwróceniem None.
 Cienki I/O; cała logika oceny (rating/upside) siedzi w domenie.
+
+DAT-12: każdy request bierze token ze wspólnego limitera Finnhub procesu, a 429
+(QuotaAlert) i 401/403 (jeden WARNING) przestały być ciche.
 """
 
 from __future__ import annotations
@@ -18,9 +21,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import requests
+
 from src.application.ports import AnalystConsensusPort
+from src.application.quota_monitor import QuotaMonitor
 from src.domain.analyst_consensus import AnalystConsensus
-from src.infrastructure.adapters._http import build_session, safe_get
+from src.infrastructure.adapters._finnhub_common import FinnhubStatusWatcher
+from src.infrastructure.adapters._http import RateLimiter, build_session, safe_get
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10.0
@@ -37,11 +44,18 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
         session: Any | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         base_url: str = DEFAULT_BASE_URL,
+        *,
+        quota_monitor: QuotaMonitor | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self._api_key = api_key
         self._timeout = timeout
         self._base_url = base_url.rstrip("/")
         self._session = session if session is not None else build_session()
+        self._rate_limiter = rate_limiter
+        self._status = FinnhubStatusWatcher(
+            "Finnhub analyst", "konsensus analityków", quota_monitor
+        )
 
     def get_consensus(self, symbol: str) -> AnalystConsensus | None:
         try:
@@ -65,12 +79,7 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
 
     def _latest_recommendation(self, symbol: str) -> dict[str, Any] | None:
         """Najświeższy snapshot rozkładu rekomendacji lub None."""
-        response = safe_get(
-            self._session,
-            f"{self._base_url}/stock/recommendation",
-            params={"symbol": symbol, "token": self._api_key},
-            timeout=self._timeout,
-        )
+        response = self._fetch("stock/recommendation", symbol)
         if response.status_code != 200:
             return None
         payload = response.json()
@@ -84,12 +93,7 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
 
     def _price_target(self, symbol: str) -> float | None:
         """Mediana (fallback: średnia) celu cenowego. Premium/403/pusto → None."""
-        response = safe_get(
-            self._session,
-            f"{self._base_url}/stock/price-target",
-            params={"symbol": symbol, "token": self._api_key},
-            timeout=self._timeout,
-        )
+        response = self._fetch("stock/price-target", symbol)
         if response.status_code != 200:
             # price-target bywa płatny → 403; nie blokuje to konsensusu.
             return None
@@ -100,6 +104,19 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
         if target is None:
             target = payload.get("targetMean")
         return _as_float(target)
+
+
+    def _fetch(self, endpoint: str, symbol: str) -> requests.Response:
+        if self._rate_limiter is not None:
+            self._rate_limiter.acquire()
+        response = safe_get(
+            self._session,
+            f"{self._base_url}/{endpoint}",
+            params={"symbol": symbol, "token": self._api_key},
+            timeout=self._timeout,
+        )
+        self._status.observe(endpoint, symbol, response.status_code)
+        return response
 
 
 class NullAnalystConsensusAdapter(AnalystConsensusPort):

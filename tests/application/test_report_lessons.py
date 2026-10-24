@@ -204,3 +204,48 @@ def test_new_skipped_placeholder_is_not_a_lesson() -> None:
 
     assert [item.symbol for item in report.items] == ["BBB"]
     assert report.total_mistakes == 1
+
+
+def test_lessons_count_categories() -> None:
+    """WIA-57: histogram kategorii błędów zamiast samego „najczęstszego słowa” —
+    `recurring_theme` zostaje dla zgodności."""
+    from src.domain.mistake_taxonomy import MistakeCategory
+
+    def mistake(symbol: str, category: MistakeCategory | None) -> ResolvedPrediction:
+        return ResolvedPrediction(
+            symbol=symbol,
+            predicted_trend="BULLISH",
+            is_correct=False,
+            insight=f"diagnoza {symbol}",
+            correction_category=category,
+        )
+
+    resolved = [
+        mistake("AAA", MistakeCategory.MACRO),
+        mistake("BBB", MistakeCategory.MACRO),
+        mistake("CCC", MistakeCategory.EARNINGS),
+        # Wiersz sprzed migracji 046 — bez kategorii, ale nadal lekcja.
+        mistake("DDD", None),
+    ]
+
+    report = build_lessons(resolved)
+
+    assert report.category_counts == {MistakeCategory.MACRO: 2, MistakeCategory.EARNINGS: 1}
+    assert report.total_mistakes == 4
+
+
+def test_category_of_a_placeholder_is_not_counted() -> None:
+    from src.domain.mistake_taxonomy import MistakeCategory
+    from src.domain.prediction import DIAGNOSIS_SKIPPED_INSIGHT
+
+    resolved = [
+        ResolvedPrediction(
+            symbol="AAA",
+            predicted_trend="BULLISH",
+            is_correct=False,
+            insight=DIAGNOSIS_SKIPPED_INSIGHT,
+            correction_category=MistakeCategory.NOISE,
+        )
+    ]
+
+    assert build_lessons(resolved).category_counts == {}

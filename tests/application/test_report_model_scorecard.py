@@ -238,6 +238,22 @@ class TestBuildScorecardView:
         assert view.summary.total == 2
         assert view.summary.accepted == 1
 
+    def test_rerun_on_the_same_day_is_its_own_run_by_run_id(self) -> None:
+        # ML-24: re-run 10 minut po cronie sklejał się z nim („zaakceptowano 1,
+        # odrzucono 1" z dwóch przebiegów); z `run_id` liczy się tylko ostatni.
+        rows = [
+            {"symbol": "ALL", "status": "trained_successfully", "run_id": "rerun",
+             "timestamp": "2026-10-11T03:50:00+00:00"},
+            {"symbol": "ALL", "status": "skipped_validation_failed", "run_id": "cron",
+             "timestamp": "2026-10-11T03:40:00+00:00"},
+        ]
+
+        view = build_scorecard_view(rows)
+
+        assert view is not None
+        assert view.summary.total == 1
+        assert view.summary.accepted == 1
+
     def test_metrics_come_from_the_newest_accepted_row_with_its_symbol_and_n(self) -> None:
         # Najnowszy wiersz z metrykami to odrzucony kandydat MSFT — dawniej karta
         # pokazywała jego RMSE bez nazwy, jakby to był wdrożony model.
@@ -448,3 +464,85 @@ class TestThreeBaselines:
             )
             assert "dryf średniej" not in out
             assert "sam LLM" not in out
+
+
+class TestDataCoverageLine:
+    """DAT-16: karta kondycji mówi, ile sesji okna ma dane i które symbole nie
+    mają rozliczeń — track record z dziurami nie udaje ciągłości."""
+
+    def test_coverage_line_names_the_unsettled_symbols(self) -> None:
+        from datetime import date
+
+        from src.domain.coverage import CoverageGap, CoverageReport
+
+        coverage = CoverageReport(
+            expected=22,
+            covered=20,
+            longest_gap=CoverageGap(first=date(2026, 7, 1), last=date(2026, 7, 2), sessions=2),
+            unsettled_symbols=("SSNLF",),
+        )
+
+        out = render_model_scorecard_html(
+            _summary(1, 0, 0), trained_at=_FRESH, now=_NOW, coverage=coverage
+        )
+
+        assert "Pokrycie danych: 91% sesji ze snapshotem ceny (20 z 22)" in out
+        assert "bez rozliczeń w oknie: SSNLF" in out
+
+    def test_without_coverage_the_card_is_unchanged(self) -> None:
+        plain = render_model_scorecard_html(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
+
+        assert "Pokrycie danych" not in plain
+
+class TestFeatureDriftWarning:
+    """ML-21: wiersz modelu wspólnego z `feature_stats` (migracja 052) niesie PSI
+    ostatnich 30 dni próbki względem jej starszej części; PSI > 0.25 to ostrzeżenie
+    w karcie. Wiersz bez statystyk (przed migracją, flaga off) renderuje się jak dawniej."""
+
+    @staticmethod
+    def _rows_with_psi(**psi: float | None) -> list[dict[str, object]]:
+        rows = _pooled_run_rows("trained_successfully")
+        rows[-1] = {
+            **rows[-1],
+            "feature_stats": {
+                name: {"mean": 0.0, "std": 1.0, "psi_recent_30d": value}
+                for name, value in psi.items()
+            },
+        }
+        return rows
+
+    def test_view_lists_features_above_the_psi_threshold_largest_first(self) -> None:
+        view = build_scorecard_view(
+            self._rows_with_psi(price_delta=0.31, news_volume_24h=0.52, av_llm_agreement=0.04)
+        )
+
+        assert view is not None
+        assert [(d.feature, d.psi) for d in view.drifted_features] == [
+            ("news_volume_24h", 0.52),
+            ("price_delta", 0.31),
+        ]
+
+    def test_rows_without_feature_stats_have_no_drift(self) -> None:
+        view = build_scorecard_view(_pooled_run_rows("trained_successfully"))
+
+        assert view is not None
+        assert view.drifted_features == ()
+
+    def test_html_and_text_warn_about_the_drifted_features(self) -> None:
+        view = build_scorecard_view(self._rows_with_psi(price_delta=0.31, x=None))
+        assert view is not None
+
+        for render in (render_model_scorecard_html, render_model_scorecard_text):
+            out = render(
+                view.summary,
+                trained_at=_FRESH,
+                now=_NOW,
+                drifted_features=view.drifted_features,
+            )
+            assert "Dryf cech" in out
+            assert "price_delta 0,31" in out
+
+    def test_no_warning_without_drift(self) -> None:
+        for render in (render_model_scorecard_html, render_model_scorecard_text):
+            out = render(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
+            assert "Dryf cech" not in out

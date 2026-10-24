@@ -177,3 +177,78 @@ def test_http_error_log_omits_apikey(caplog) -> None:
 
     assert "401 Client Error" in caplog.text
     assert "earnings-secret-key" not in caplog.text
+
+
+class TestKeyRotation:
+    """FIN-11: odświeżenie cache w Slow Loopie idzie listą kluczy AV, jak fundamenty —
+    soft-limit `Information` przesuwa na kolejny klucz, `Note` dostaje jedno odczekanie
+    na tym samym kluczu, a po ostatnim kluczu adapter przestaje pytać."""
+
+    NOTE = '{"Note": "Thank you for using Alpha Vantage! Please spread out your requests."}'
+
+    def test_daily_limit_rotates_to_the_reserve_key(self) -> None:
+        adapter = AlphaVantageEarningsAdapter(
+            api_key="KEY1", reserve_keys=["KEY2"], today=date(2026, 6, 21)
+        )
+        with patch.object(adapter._session, "get") as mock_get:
+            mock_get.side_effect = [
+                _mock_response(RATE_LIMIT_NOTE),
+                _mock_response(CSV_TWO_FUTURE),
+            ]
+            event = adapter.get_next_earnings("AAPL")
+
+        assert event is not None and event.report_date == "2026-07-15"
+        keys = [c.kwargs["params"]["apikey"] for c in mock_get.call_args_list]
+        assert keys == ["KEY1", "KEY2"]
+
+    def test_rotation_sticks_for_the_next_symbol(self) -> None:
+        adapter = AlphaVantageEarningsAdapter(
+            api_key="KEY1", reserve_keys=["KEY2"], today=date(2026, 6, 21)
+        )
+        with patch.object(adapter._session, "get") as mock_get:
+            mock_get.side_effect = [
+                _mock_response(RATE_LIMIT_NOTE),
+                _mock_response(CSV_TWO_FUTURE),
+                _mock_response(CSV_TWO_FUTURE),
+            ]
+            adapter.get_next_earnings("AAPL")
+            adapter.get_next_earnings("MSFT")
+
+        assert mock_get.call_args_list[-1].kwargs["params"]["apikey"] == "KEY2"
+
+    def test_frequency_limit_waits_once_on_the_same_key(self) -> None:
+        adapter = AlphaVantageEarningsAdapter(
+            api_key="KEY1", reserve_keys=["KEY2"], today=date(2026, 6, 21)
+        )
+        with (
+            patch.object(adapter._session, "get") as mock_get,
+            patch("src.infrastructure.adapters.alpha_vantage_earnings.time.sleep") as sleep,
+        ):
+            mock_get.side_effect = [_mock_response(self.NOTE), _mock_response(CSV_TWO_FUTURE)]
+            event = adapter.get_next_earnings("AAPL")
+
+        assert event is not None
+        sleep.assert_called_once()
+        keys = [c.kwargs["params"]["apikey"] for c in mock_get.call_args_list]
+        assert keys == ["KEY1", "KEY1"]
+
+    def test_exhausted_keys_stop_further_requests(self) -> None:
+        adapter = AlphaVantageEarningsAdapter(
+            api_key="KEY1", reserve_keys=["KEY2"], today=date(2026, 6, 21)
+        )
+        with patch.object(adapter._session, "get") as mock_get:
+            mock_get.return_value = _mock_response(RATE_LIMIT_NOTE)
+            assert adapter.get_next_earnings("AAPL") is None
+            assert adapter.get_next_earnings("MSFT") is None
+
+        assert mock_get.call_count == 2
+
+    def test_error_message_does_not_burn_the_reserve_key(self) -> None:
+        adapter = AlphaVantageEarningsAdapter(
+            api_key="KEY1", reserve_keys=["KEY2"], today=date(2026, 6, 21)
+        )
+        with patch.object(adapter._session, "get") as mock_get:
+            mock_get.return_value = _mock_response('{"Error Message": "Invalid API call."}')
+            assert adapter.get_next_earnings("ZZZZ") is None
+
+        assert mock_get.call_count == 1

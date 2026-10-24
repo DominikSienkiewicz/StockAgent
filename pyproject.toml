@@ -8,19 +8,20 @@ authors = [{ name = "Dominik Sienkiewicz" }]
 license = { text = "MIT" }
 
 dependencies = [
-    # Agentic Framework & RAG
-    "langchain>=0.1.16",
-    "langchain-openai>=0.1.3",
-    "langgraph>=0.0.39",
+    # CI-12: dolna granica = najniższa wersja, którą instaluje i testuje job `lowest-direct`
+    # w ci.yml; tests/test_dependency_bounds.py pilnuje, że ma ten sam major co uv.lock.
+    # Graf agenta (StateGraph Fast Loopa). RAG to własny kod na pgvector, bez langchain.
+    "langgraph>=1.2,<2",
     # Data & DB
-    "supabase>=2.4.5",
-    "pydantic>=2.7.0",
+    "supabase>=2.30",            # supabase-py wydaje pakiety w lockstepie z postgrest
+    "postgrest>=2.30",           # importowany wprost (APIError) w supabase_repo.py
+    "pydantic>=2.11.7",          # niżej lowest-direct nie schodzi (wymogi zależności przechodnich)
     "pydantic-settings>=2.2.0",
     # ML (Slow Loop)
-    "xgboost>=2.0.0",
-    "scikit-learn>=1.4.0",       # wymagane przez xgboost.XGBRegressor (sklearn API)
-    "pandas>=2.2.0",
-    "numpy>=1.26.0",
+    "xgboost>=3.0",
+    "scikit-learn>=1.4.2",       # wymagane przez xgboost.XGBRegressor (sklearn API); 1.4.2 = numpy 2
+    "pandas>=3.0",
+    "numpy>=2.0",
     # Utilities
     "requests>=2.31.0",
     "python-dotenv>=1.0.1",
@@ -29,6 +30,8 @@ dependencies = [
     # więc SDK jest rdzeniem, nie opcją: Slow Loop (weekly recap) też go buduje.
     "anthropic>=0.102.0",
     "urllib3>=2.7",
+    # Rada doradcza (gpt-5-mini), embeddingi i failover LLM — adaptery importują SDK wprost.
+    "openai>=2.36",
 ]
 
 [dependency-groups]
@@ -41,6 +44,12 @@ dev = [
     "testcontainers>=4.14.2",
     "psycopg2-binary>=2.9.12",
     "httpx>=0.28.1",
+    "pyyaml>=6.0.3",
+    "docker>=7.1.0",
+    "pytest-socket>=0.8.1",
+    # Przypięta wersja wydana co najmniej 2 tygodnie przed dodaniem (6.168.5 z 2026-10-05):
+    # świeże wydanie nie trafia do lockfile'a, zanim przeleży swoje. Podbijamy świadomie.
+    "hypothesis==6.168.5",
 ]
 
 # Alias wstecznej zgodności: SDK jest już zależnością rdzeniową, ale
@@ -66,6 +75,10 @@ addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
+    # TEST-11: testy jednostkowe bez sieci; `integration` i `containers` dostają
+    # ją z powrotem w tests/conftest.py. Gniazda unixowe zostają dla Dockera.
+    "--disable-socket",
+    "--allow-unix-socket",
 ]
 markers = [
     "integration: testy integracyjne (sieć / DB) — pomijalne lokalnie",
@@ -108,6 +121,7 @@ known-third-party = ["supabase"]
 python_version = "3.12"
 strict = true
 ignore_missing_imports = true
-# Gołe `uv run mypy` = bramka CI. `tests/` dochodzi ratchetem po katalogach
-# (np. "tests/domain"), dopiero gdy dany katalog jest czysty pod strict.
-files = ["src", "main_agent.py", "main_backtest.py", "main_deadman.py", "main_tools.py", "main_trainer.py", "main_watch.py"]
+# Gołe `uv run mypy` = bramka CI. `tests/` dochodzi ratchetem po katalogach,
+# dopiero gdy dany katalog jest czysty pod strict (TEST-13: od "tests/domain").
+# Dodanego katalogu nie wolno zdjąć — pilnuje tego tests/test_quality_gate_sync.py.
+files = ["src", "main_agent.py", "main_backtest.py", "main_deadman.py", "main_scorecard.py", "main_tools.py", "main_trainer.py", "main_watch.py", "tests/domain"]

@@ -5,8 +5,10 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from src.application.decision_receipt import read_decision_receipt
 from src.application.report_formatting import format_local, number, pct, score_to_pl_label
 from src.application.report_models import (
+    PortfolioMood,
     ResolvedPrediction,
     RiskSignal,
     SymbolResult,
@@ -25,7 +27,8 @@ from src.domain.market_calendar import (
     to_nyse_time,
     upcoming_session,
 )
-from src.domain.sizing import SizeBand, suggest_band
+from src.domain.mistake_taxonomy import parse_mistake_category
+from src.domain.sizing import PositionAction, SizeBand, position_action, suggest_band
 
 DIVERGENCE_PRICE_THRESHOLD = Decimal("0.02")
 DIVERGENCE_SENTIMENT_THRESHOLD = 0.2
@@ -71,7 +74,11 @@ def build_trade_signals(
 
     WIA-13: przy cold-starcie ML (`r.ml_cold_start`) prognozy ruchu nie ma, więc
     `strength` = sama (skalibrowana) pewność. To inna skala niż pewność × ruch,
-    dlatego sygnały z prognozą modelu stoją w rankingu przed sygnałami cold-start."""
+    dlatego sygnały z prognozą modelu stoją w rankingu przed sygnałami cold-start.
+
+    PORT-08: gdy znamy portfel (`portfolio_weights` nie None), sygnał niesie
+    kierunek w kontekście pozycji — spadek na trzymanym symbolu to ZREDUKUJ,
+    poza portfelem UNIKAJ, wzrost na nasyconej pozycji TRZYMAJ. Ranking bez zmian."""
     signals: list[TradeSignal] = []
     for r in results:
         if r.status != "saved":
@@ -107,9 +114,28 @@ def build_trade_signals(
             calibrated_confidence=calibrated,
             ml_cold_start=r.ml_cold_start,
             calibration_bucket_count=bucket_count,
+            position_action=_position_action_for(r, portfolio_weights, cluster_exposures),
+            position_weight=portfolio_weights.get(r.symbol) if portfolio_weights else None,
         ))
     signals.sort(key=lambda s: (not s.ml_cold_start, s.strength), reverse=True)
     return signals[:top_n]
+
+
+def _position_action_for(
+    r: SymbolResult,
+    weights: Mapping[str, Decimal] | None,
+    cluster_exposures: Mapping[str, Decimal] | None,
+) -> PositionAction | None:
+    """PORT-08: kierunek w kontekście portfela; None, gdy portfela nie znamy."""
+    if weights is None:
+        return None
+    weight = weights.get(r.symbol)
+    cluster = cluster_exposures.get(r.symbol) if cluster_exposures else None
+    return position_action(
+        r.trend,
+        float(weight) if weight is not None else None,
+        cluster_exposure=float(cluster) if cluster is not None else None,
+    )
 
 
 def _calibration_bucket_count(
@@ -157,51 +183,70 @@ def _size_band_for(
     )
 
 
+def divergence_direction(delta: Decimal | float | None, sentiment: float | None) -> int:
+    """WIA-47: reguła DIVERGENCE — +1 cena rośnie mimo negatywnego sentymentu,
+    -1 spada mimo pozytywnego, 0 bez rozbieżności. Brak danych też 0 (wołający
+    rozróżnia go sam). Ta sama reguła dla maila i `evaluate --by risk_signal`."""
+    if delta is None or sentiment is None:
+        return 0
+    move = Decimal(str(delta))
+    if move > DIVERGENCE_PRICE_THRESHOLD and sentiment < -DIVERGENCE_SENTIMENT_THRESHOLD:
+        return 1
+    if move < -DIVERGENCE_PRICE_THRESHOLD and sentiment > DIVERGENCE_SENTIMENT_THRESHOLD:
+        return -1
+    return 0
+
+
+def is_av_llm_conflict(agreement: float | None) -> bool:
+    """WIA-47: reguła AV_LLM_CONFLICT — zgoda LLM z Alpha Vantage poniżej progu."""
+    return agreement is not None and agreement < AV_LLM_CONFLICT_THRESHOLD
+
+
+def is_low_signal(news_volume: int | None) -> bool:
+    """WIA-47: reguła LOW_SIGNAL — decyzja na mniej niż progu relevantnych newsów."""
+    return news_volume is not None and news_volume < LOW_SIGNAL_NEWS_THRESHOLD
+
+
+# WIA-47: heurystyka nie jest zweryfikowana na wynikach (evaluate --by risk_signal),
+# więc mail opisuje rozbieżność zamiast diagnozy „korekta lub pump” / „okazja lub odbicie”.
+_DIVERGENCE_COPY = "-> rozbieżność cena–sentyment"
+
+
 def _divergence_signal(r: SymbolResult) -> RiskSignal | None:
-    """Rozbieżność cena↔sentyment — możliwy pump albo niedoszacowane odbicie."""
+    """Rozbieżność cena↔sentyment — opis, nie diagnoza (WIA-47)."""
     if r.delta is None or r.sentiment_score is None:
         return None
-    if (
-        r.delta > DIVERGENCE_PRICE_THRESHOLD
-        and r.sentiment_score < -DIVERGENCE_SENTIMENT_THRESHOLD
-    ):
-        return RiskSignal(
-            symbol=r.symbol, type="DIVERGENCE", severity="high",
-            description=(
-                f"cena rośnie {pct(r.delta)} ale sentyment "
-                f"{number(r.sentiment_score, decimals=2, signed=True)} -> możliwa korekta lub pump"
-            ),
-        )
-    if (
-        r.delta < -DIVERGENCE_PRICE_THRESHOLD
-        and r.sentiment_score > DIVERGENCE_SENTIMENT_THRESHOLD
-    ):
-        return RiskSignal(
-            symbol=r.symbol, type="DIVERGENCE", severity="high",
-            description=(
-                f"cena spada {pct(r.delta)} ale sentyment "
-                f"{number(r.sentiment_score, decimals=2, signed=True)} -> okazja lub odbicie?"
-            ),
-        )
-    return None
+    direction = divergence_direction(r.delta, r.sentiment_score)
+    if direction == 0:
+        return None
+    move = "rośnie" if direction > 0 else "spada"
+    return RiskSignal(
+        symbol=r.symbol,
+        type="DIVERGENCE",
+        severity="high",
+        description=(
+            f"cena {move} {pct(r.delta)} ale sentyment "
+            f"{number(r.sentiment_score, decimals=2, signed=True)} {_DIVERGENCE_COPY}"
+        ),
+    )
 
 
 def _av_llm_conflict_signal(r: SymbolResult) -> RiskSignal | None:
-    """LLM kontra Alpha Vantage — potencjalny fake news / manipulacja."""
-    if r.av_llm_agreement is None or r.av_llm_agreement >= AV_LLM_CONFLICT_THRESHOLD:
+    """LLM kontra Alpha Vantage — rozbieżne odczyty sentymentu."""
+    if r.av_llm_agreement is None or not is_av_llm_conflict(r.av_llm_agreement):
         return None
     return RiskSignal(
         symbol=r.symbol, type="AV_LLM_CONFLICT", severity="high",
         description=(
             f"LLM nie zgadza się z AV (zgoda={number(r.av_llm_agreement, decimals=2)})"
-            " -> potencjalny fake news / manipulacja"
+            " -> rozbieżne odczyty sentymentu"
         ),
     )
 
 
 def _low_signal_signal(r: SymbolResult) -> RiskSignal | None:
     """Decyzja podjęta na zbyt małej liczbie relevantnych newsów."""
-    if r.news_volume is None or r.news_volume >= LOW_SIGNAL_NEWS_THRESHOLD:
+    if not is_low_signal(r.news_volume):
         return None
     return RiskSignal(
         symbol=r.symbol, type="LOW_SIGNAL", severity="medium",
@@ -248,6 +293,8 @@ def parse_resolved_predictions(
             price_at_prediction=_to_decimal(row.get("price_at_prediction")),
             actual_price=_to_decimal(row.get("actual_price_after_12h")),
             predicted_at=_to_datetime(row.get("timestamp")),
+            receipt=read_decision_receipt(row.get("decision_receipts")),
+            correction_category=parse_mistake_category(row.get("correction_category")),
         ))
     return out
 
@@ -278,13 +325,16 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
 
 
-def build_portfolio_mood(results: list[SymbolResult]) -> dict[str, Any]:
-    """Liczy agregaty dla całego portfela: avg sentiment, top mover, etc."""
+def build_portfolio_mood(results: list[SymbolResult]) -> PortfolioMood:
+    """Liczy agregaty dla całego portfela: avg sentiment, top mover, etc.
+
+    MAIL-10: bez ani jednego sentymentu średnia i jej etykieta to None (brak
+    danych), nie 0.0 udające neutralny nastrój."""
     saved = [r for r in results if r.status == "saved"]
     with_sentiment = [r for r in results if r.sentiment_score is not None]
     sentiments = [r.sentiment_score for r in with_sentiment if r.sentiment_score is not None]
 
-    avg = sum(sentiments) / len(sentiments) if sentiments else 0.0
+    avg = sum(sentiments) / len(sentiments) if sentiments else None
     most_bullish = max(with_sentiment, key=lambda r: r.sentiment_score or 0, default=None)
     most_bearish = min(with_sentiment, key=lambda r: r.sentiment_score or 0, default=None)
     high_conf = sum(
@@ -292,15 +342,16 @@ def build_portfolio_mood(results: list[SymbolResult]) -> dict[str, Any]:
     )
     total_news = sum(r.news_volume or 0 for r in results)
 
-    return {
-        "avg_sentiment": avg,
-        "avg_sentiment_label": score_to_pl_label(avg),
-        "most_bullish": most_bullish,
-        "most_bearish": most_bearish,
-        "high_confidence_count": high_conf,
-        "saved_count": len(saved),
-        "total_news": total_news,
-    }
+    return PortfolioMood(
+        avg_sentiment=avg,
+        avg_sentiment_label=score_to_pl_label(avg) if avg is not None else None,
+        sentiment_count=len(sentiments),
+        most_bullish=most_bullish,
+        most_bearish=most_bearish,
+        high_confidence_count=high_conf,
+        saved_count=len(saved),
+        total_news=total_news,
+    )
 
 
 def market_status(now_utc: datetime) -> dict[str, str]:

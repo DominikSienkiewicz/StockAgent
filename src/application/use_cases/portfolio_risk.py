@@ -33,7 +33,7 @@ from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.risk_sample import RiskStat, sample_sufficiency
 from src.domain.scenarios import Scenario, ScenarioImpact, stress_test
 from src.domain.sizing import RISK_VAR_CONFIDENCE
-from src.domain.value_objects import Money
+from src.domain.value_objects import Money, require_finite
 from src.domain.var import conditional_var, historical_var
 
 logger = logging.getLogger(__name__)
@@ -338,6 +338,13 @@ class PortfolioRiskUseCase:
         returns_by_symbol: dict[str, list[float]] = {}
         for symbol, prices in aligned.items():
             rets = returns_from_prices(prices)
+            try:
+                # PORT-09: VaR i korelacje rzucają na NaN/inf — symbol z takim
+                # zwrotem (cena poza zakresem floata) wypada sam, sekcja zostaje.
+                require_finite(rets, f"returns of {symbol}")
+            except ValueError:
+                logger.warning("portfolio_risk: %s has non-finite returns — skipped", symbol)
+                continue
             if len(rets) >= 2:
                 returns_by_symbol[symbol] = rets
         return returns_by_symbol

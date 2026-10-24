@@ -819,3 +819,183 @@ class TestExperimentEvaluation:
         assert code == 1
         repo_cls.return_value.get_resolved_predictions_for_eval.assert_not_called()
         assert "EXP-99" in capsys.readouterr().err
+
+
+def _discrimination_row(
+    trend: str,
+    correct: bool,
+    confidence: float,
+    *,
+    day: int = 0,
+    council: str | None = None,
+    consensus: float | None = None,
+    actual: float = 101.0,
+) -> dict:
+    row = _row(trend, correct, 100, 101, actual)
+    row["timestamp"] = f"2026-09-{day + 1:02d}T05:30:00+00:00"
+    row["confidence_score"] = confidence
+    row["council_recommendation"] = council
+    row["council_consensus"] = consensus
+    return row
+
+
+class TestDiscrimination:
+    """WIA-38: czy pewność LLM i siła konsensusu rady odróżniają trafienia od pudeł."""
+
+    def test_llm_and_council_auc_on_directional_calls(self):
+        from src.tools.evaluate import summarize_discrimination
+
+        rows = [
+            _discrimination_row("BULLISH", True, 0.9, council="BUY", consensus=0.9, actual=103),
+            _discrimination_row("BULLISH", False, 0.6, council="BUY", consensus=0.5, actual=98),
+            _discrimination_row(
+                "BEARISH", True, 0.8, day=1, council="SELL", consensus=0.4, actual=97
+            ),
+            _discrimination_row(
+                "BEARISH", False, 0.7, day=1, council="SELL", consensus=0.8, actual=102
+            ),
+            # SIDEWAYS i HOLD nie stawiają zakładu na kierunek — poza AUC.
+            _discrimination_row("SIDEWAYS", True, 0.95, day=1, council="HOLD", consensus=0.9),
+        ]
+
+        report = summarize_discrimination(rows)
+
+        assert report.llm is not None and report.llm.n == 4
+        assert report.llm.auc == pytest.approx(1.0)
+        assert report.council is not None and report.council.n == 4
+        assert report.council.auc == pytest.approx(0.5)
+
+    def test_rows_without_confidence_or_council_are_left_out(self):
+        from src.tools.evaluate import summarize_discrimination
+
+        rows = [_discrimination_row("BULLISH", True, 0.9)]
+        rows[0]["confidence_score"] = None
+
+        report = summarize_discrimination(rows)
+
+        assert report.llm is None
+        assert report.council is None
+
+    def test_formatted_section_prints_auc_n_eff_and_coverage(self):
+        from src.tools.evaluate import format_discrimination, summarize_discrimination
+
+        rows = [
+            _discrimination_row("BULLISH", i % 2 == 0, 0.9 if i % 2 == 0 else 0.6, day=i)
+            for i in range(10)
+        ]
+
+        text = format_discrimination(summarize_discrimination(rows))
+
+        assert "Czy pewność coś znaczy" in text
+        assert "AUC 1.00" in text
+        assert "n=10" in text
+        assert "trafność top 20%: 100.0%" in text
+        assert "rada" in text and "za mało danych" in text
+
+    def test_discrimination_flag_reads_confidence_and_council_fields(self, mocker, capsys):
+        import main_tools
+
+        mocker.patch("src.config.Settings.from_env")
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        read = repo_cls.return_value.get_resolved_predictions_for_eval
+        read.return_value = [_discrimination_row("BULLISH", True, 0.9)]
+
+        code = main_tools.main(["evaluate", "--discrimination"])
+
+        assert code == 0
+        assert read.call_args.kwargs == {
+            "days": 30,
+            "extra_fields": ("confidence_score", "council_consensus", "council_recommendation"),
+        }
+        assert "Czy pewność coś znaczy" in capsys.readouterr().out
+
+
+class TestRiskSignalSegmentation:
+    """WIA-47: heurystyki RiskSignal z maila (DIVERGENCE, AV_LLM_CONFLICT,
+    LOW_SIGNAL) sprawdzone na wynikach — trafność LLM z sygnałem i bez, z n,
+    Wilsonem na n_eff i BH-FDR w rodzinie segmentów."""
+
+    @staticmethod
+    def _signals(
+        day: int,
+        *,
+        correct: bool,
+        delta: float | None = 0.0,
+        sentiment: float | None = 0.0,
+        agreement: float | None = 0.9,
+        news: int | None = 10,
+    ) -> dict:
+        actual = 101 if correct else 99
+        return {
+            **_row("BULLISH", correct, 100, 100, actual),
+            "timestamp": _day(day),
+            "gate_delta": delta,
+            "sentiment_score": sentiment,
+            "av_llm_agreement": agreement,
+            "news_volume_24h": news,
+        }
+
+    def test_segment_table_splits_by_risk_signal_presence(self):
+        rows = [
+            # AV↔LLM w konflikcie (zgoda < 0.3): oba chybione.
+            self._signals(0, correct=False, agreement=0.1),
+            self._signals(1, correct=False, agreement=0.2),
+            # Rozbieżność cena↑ / sentyment↓ i mało newsów: trafione.
+            self._signals(2, correct=True, delta=0.03, sentiment=-0.5, news=1),
+            # Bez sygnału.
+            self._signals(3, correct=True),
+        ]
+
+        report = summarize_evaluation(rows, segment_by="risk_signal")
+
+        segments = {s.key: (s.n, s.rate) for s in report.segments["risk_signal"]}
+        assert segments["AV_LLM_CONFLICT: z sygnałem"] == (2, pytest.approx(0.0))
+        assert segments["AV_LLM_CONFLICT: bez"] == (2, pytest.approx(1.0))
+        assert segments["DIVERGENCE: z sygnałem"] == (1, pytest.approx(1.0))
+        assert segments["DIVERGENCE: bez"] == (3, pytest.approx(1 / 3))
+        assert segments["LOW_SIGNAL: z sygnałem"] == (1, pytest.approx(1.0))
+        assert segments["LOW_SIGNAL: bez"] == (3, pytest.approx(1 / 3))
+
+    def test_missing_inputs_form_an_unknown_segment_not_a_negative(self):
+        # Bez delty bramki (migracja 034) rozbieżności nie da się stwierdzić.
+        rows = [self._signals(0, correct=True, delta=None, agreement=None, news=None)]
+
+        report = summarize_evaluation(rows, segment_by="risk_signal")
+
+        keys = {s.key: s.n for s in report.segments["risk_signal"]}
+        assert keys["DIVERGENCE: brak danych"] == 1
+        assert keys["AV_LLM_CONFLICT: brak danych"] == 1
+        assert keys["LOW_SIGNAL: brak danych"] == 1
+        assert keys["DIVERGENCE: z sygnałem"] == 0
+
+    def test_council_agreement_splits_llm_hit_rate(self):
+        rows = [
+            {**self._signals(0, correct=True), "council_recommendation": "BUY"},
+            {**self._signals(1, correct=False), "council_recommendation": "SELL"},
+            {**self._signals(2, correct=False), "council_recommendation": "HOLD"},
+            {**self._signals(3, correct=True), "council_recommendation": None},
+        ]
+
+        report = summarize_evaluation(rows, segment_by="council_agreement")
+
+        segments = {s.key: (s.n, s.rate) for s in report.segments["council_agreement"]}
+        assert segments["rada zgodna z LLM"] == (1, pytest.approx(1.0))
+        assert segments["rada niezgodna z LLM"] == (2, pytest.approx(0.0))
+        assert segments["bez rady"] == (1, pytest.approx(1.0))
+
+    def test_cli_reads_the_signal_inputs_on_request(self, mocker, capsys):
+        import main_tools
+
+        mocker.patch("src.config.Settings.from_env")
+        repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+        repo_cls.return_value.get_resolved_predictions_for_eval.return_value = [
+            self._signals(0, correct=True, agreement=0.1),
+        ]
+
+        main_tools.main(["evaluate", "--by", "risk_signal"])
+
+        repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(
+            days=30,
+            extra_fields=("av_llm_agreement", "gate_delta", "news_volume_24h", "sentiment_score"),
+        )
+        assert "AV_LLM_CONFLICT: z sygnałem" in capsys.readouterr().out

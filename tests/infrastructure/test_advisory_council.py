@@ -1,6 +1,7 @@
 # tests/infrastructure/test_advisory_council.py
 from __future__ import annotations
 
+import logging
 import time
 from decimal import Decimal
 from unittest.mock import Mock
@@ -158,6 +159,25 @@ class TestFallbacks:
         # niezależnie od tego, co (nie) zwrócił chairman.
         assert result.final_recommendation == "BUY"
 
+    def test_failed_personas_counted_in_verdict(
+        self, council: LLMAdvisoryCouncil, llm_port: Mock
+    ):
+        # MAIL-12: głos persony, która padła, znika z werdyktu (NIEZ-09), ale mail
+        # musi wiedzieć, ilu zabrakło — „odpowiedziało X/N”.
+        llm_port.analyze.side_effect = _routed(failing=set(ALL_INVESTORS[:3]))
+
+        result = council.analyze("AAPL", _make_input())
+
+        assert result.failed_personas == 3
+        assert len(result.investor_opinions) == COUNCIL_SIZE - 3
+
+    def test_full_council_reports_no_failed_personas(
+        self, council: LLMAdvisoryCouncil, llm_port: Mock
+    ):
+        llm_port.analyze.side_effect = _routed()
+
+        assert council.analyze("AAPL", _make_input()).failed_personas == 0
+
 
 class TestConsensusDerivedFromVotes:
     """Finding #3: consensus_strength + final_recommendation muszą pochodzić
@@ -266,6 +286,22 @@ class TestConfidenceClamp:
         opinion = _parse_opinion("Inv", {"recommendation": "BUY", "confidence": 85})
         assert 0.0 <= opinion.confidence <= 1.0
 
+
+
+class TestRecommendationParsing:
+    """ARCH-03: rekomendacja persony przez domenowe `parse_recommendation`."""
+
+    def test_lowercase_recommendation_is_accepted(self) -> None:
+        assert _parse_opinion("Inv", {"recommendation": " sell "}).recommendation == "SELL"
+
+    def test_unknown_recommendation_is_hold_with_a_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            opinion = _parse_opinion("Inv", {"recommendation": "STRONG_BUY"})
+
+        assert opinion.recommendation == "HOLD"
+        assert "STRONG_BUY" in caplog.text
 
 class TestPersonaCap:
     """Finding #11: liczba wywołań LLM ograniczona górnym capem person."""

@@ -4,6 +4,7 @@ import dataclasses
 import logging
 import threading
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -17,12 +18,15 @@ from src.application.agent_graph import (
     create_agent_graph,
     create_gate_graph,
     create_paid_graph,
+    required_prediction_columns,
 )
 from src.application.cycle_telemetry import CycleTelemetry
-from src.application.ports import NewsPort, SentimentPort
+from src.application.market_features import CycleQuoteCache, collect_market_features
+from src.application.ports import LatestPrediction, NewsPort, SentimentPort
 from src.domain.alpha_fusion import AlphaFusionScore
-from src.domain.asset import Asset, is_reference_stale
+from src.domain.asset import DRIFT_WINDOW_DAYS, Asset, drift_reference, is_reference_stale
 from src.domain.experiment import active_arms
+from src.domain.value_objects import AssetType, Money
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +68,9 @@ class AnalyzeMarketUseCase:
     """
 
     def __init__(self, deps: AgentGraphDeps) -> None:
+        if deps.market_features_enabled:
+            # ML-31: faza cech pobiera kurs przed grafem, a `check_price` go reużywa.
+            deps = dataclasses.replace(deps, market_port=CycleQuoteCache(deps.market_port))
         self._deps = deps
         self._repository = deps.repository_port
         # Telemetria CAŁEGO cyklu (ARCH-11) — jedna na use case, nie na symbol.
@@ -82,6 +89,8 @@ class AnalyzeMarketUseCase:
         # (faza 1 idzie równolegle, stąd lock).
         self._gate_app: CompiledStateGraph[AgentState] | None = None
         self._gate_app_lock = threading.Lock()
+        # ML-31: cechy rynkowe per symbol z `prepare_market_features` (raz na cykl).
+        self._market_features: dict[str, dict[str, Any]] = {}
 
     @property
     def paid_calls(self) -> Counter[str]:
@@ -94,6 +103,47 @@ class AnalyzeMarketUseCase:
         """G03: czy port ML ma wagi. Raport bierze stąd fakt o cold-starcie,
         zamiast zgadywać go z porównania ceny docelowej z bieżącą."""
         return self._ml_port.is_trained
+
+    def required_prediction_columns(self) -> frozenset[str]:
+        """FIN-05: kolumny `prediction_logs`, które zapis predykcji tego cyklu może
+        dotknąć — DI sprawdza je w bazie raz, przed pierwszym symbolem."""
+        return required_prediction_columns(self._deps)
+
+    def prepare_market_features(
+        self,
+        symbols: Sequence[str],
+        *,
+        asset_types: Mapping[str, AssetType] | None = None,
+        macro_features: Mapping[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        """ML-31: cechy rynkowe symboli cyklu — RAZ, przed pierwszym `run`/`run_gate`.
+
+        Bez flag `market_features_enabled` i `feature_snapshots_enabled` nic nie robi
+        (zero odczytów — cechy i tak nie miałyby dokąd trafić). Z nimi czyta kurs
+        (zapamiętany dla `check_price`) i historię snapshotów każdego symbolu; zero
+        płatnych wywołań. Błąd per symbol daje puste cechy. `asset_types` (ML-32,
+        brak = STOCK) to klasy aktywów symboli do mediany klasy i szerokości rynku;
+        `macro_features` (DAT-22) to cechy makro cyklu, te same dla każdego symbolu."""
+        if not (self._deps.market_features_enabled and self._deps.feature_snapshots_enabled):
+            return
+        self._market_features = collect_market_features(
+            symbols,
+            market_port=self._deps.market_port,
+            repository=self._repository,
+            as_of=now if now is not None else datetime.now(UTC),
+            asset_types=asset_types or {},
+            gate_thresholds=self._base_gate_thresholds(),
+            macro_features=macro_features,
+        )
+
+    def _base_gate_thresholds(self) -> dict[AssetType, float]:
+        """ML-32: bazowy próg bramki klasy aktywa (bez mnożników reżimu i earnings)."""
+        base = float(self._deps.threshold.value)
+        crypto = self._deps.crypto_threshold
+        thresholds = dict.fromkeys(AssetType, base)
+        thresholds[AssetType.CRYPTO] = float(crypto.value) if crypto is not None else base
+        return thresholds
 
     def run(
         self,
@@ -194,19 +244,49 @@ class AnalyzeMarketUseCase:
             "regime_multiplier": regime_multiplier,
             # #6 bramka earnings — mnożnik progu z domeny (zawsze >= 1.0).
             "earnings_multiplier": earnings_multiplier,
-            # #14 composite alfa — do promptu LLM i do ósmej cechy ML.
+            # #14 composite alfa — do promptu LLM i jako kandydat na cechę ML
+            # (zapis w prediction_logs, poza `ML_FEATURE_COLUMNS`).
             "alpha_fusion": alpha_fusion,
             "peer_context": peer_context,
         }
         # Przekazujemy asset z klasyfikacją (STOCK/ETF), gdy dostępny z zewnątrz.
         if asset is not None:
             initial_state["asset"] = asset
+        # ALR-10: referencja dryfu tylko za flagą; brak = bramka jak przed ALR-10.
+        if self._deps.drift_gate_enabled:
+            reference = self._drift_reference(symbol, clock)
+            if reference is not None:
+                initial_state["drift_reference"] = reference
+        market_features = self._market_features.get(symbol)
+        if market_features is not None:
+            initial_state["market_features"] = dict(market_features)
         # EXP-05: ramiona aktywnych eksperymentów per symbol-dzień UTC cyklu.
         arms = active_arms(self._experiments, symbol, _utc_day(clock))
         if arms:
             logger.info("experiment arms for %s: %s", symbol, arms)
             initial_state["experiment_arms"] = arms
         return initial_state
+
+    def _drift_reference(self, symbol: str, clock: datetime) -> Decimal | None:
+        """ALR-10: cena odniesienia dryfu z darmowych odczytów Supabase (ostatnia
+        predykcja, snapshoty z okna). Fail-closed: błąd albo odczyt spoza kontraktu
+        portu → None, czyli bramka bez dryfu — nigdy dodatkowa płatna analiza."""
+        try:
+            latest = self._repository.get_latest_prediction(symbol)
+            history = self._repository.get_price_history(symbol, DRIFT_WINDOW_DAYS)
+        except Exception:
+            logger.warning(
+                "ALR-10: nie odczytano referencji dryfu %s — bramka bez dryfu",
+                symbol,
+                exc_info=True,
+            )
+            return None
+        prediction = (
+            (latest.timestamp, latest.price.amount)
+            if isinstance(latest, LatestPrediction)
+            else None
+        )
+        return drift_reference(prediction, _price_points(history), clock)
 
     def _reference_at(self, symbol: str) -> datetime | None:
         """FIN-14: moment zapisu referencji ceny (darmowy odczyt `price_snapshots`).
@@ -225,6 +305,17 @@ class AnalyzeMarketUseCase:
                 exc_info=True,
             )
             return None
+
+
+def _price_points(history: object) -> list[tuple[datetime, Decimal]]:
+    """Punkty historii cen w kształcie kontraktu portu; reszta odpada (fail-closed)."""
+    if not isinstance(history, list):
+        return []
+    return [
+        (stamp, price.amount)
+        for stamp, price in (point for point in history if isinstance(point, tuple))
+        if isinstance(stamp, datetime) and isinstance(price, Money)
+    ]
 
 
 def _utc_day(clock: datetime) -> date:

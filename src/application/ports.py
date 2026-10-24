@@ -9,23 +9,29 @@ from typing import Any
 
 from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
+from src.domain.attestation import StoredCommitment
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
-from src.domain.earnings import EarningsEvent
+from src.domain.earnings import CachedEarningsDate, EarningsEvent
 from src.domain.finops import LLMCallEntry, LLMUsage
 from src.domain.fx import FxRate
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
+from src.domain.macro_series import MacroSeriesSnapshot
+from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.options_flow import OptionsFlowSnapshot
+from src.domain.persona_track_record import PersonaVoteOutcome
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
+from src.domain.price_levels import PriceLevel, PriceLevelAlert
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
+from src.domain.session_close import SessionCloseSettlement
 from src.domain.shock import DailyChange
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
-from src.domain.value_objects import AssetType, Fundamentals, Money
+from src.domain.value_objects import AssetType, Fundamentals, Money, Quote
 
 
 class MarketDataPort(ABC):
@@ -33,6 +39,17 @@ class MarketDataPort(ABC):
 
     @abstractmethod
     def get_current_price(self, symbol: str) -> Money: ...
+
+
+class QuotePort(ABC):
+    """DAT-14: notowanie z chwilą, z której pochodzi (Finnhub /quote).
+
+    Obok `MarketDataPort`, nie w nim: `get_current_price` ma wielu konsumentów
+    i źródła bez czasu notowania, więc migracja na `Quote` idzie stopniowo.
+    Brak ceny albo czasu w odpowiedzi → `ValueError`."""
+
+    @abstractmethod
+    def get_quote(self, symbol: str) -> Quote: ...
 
 
 class DailyChangePort(ABC):
@@ -70,6 +87,16 @@ class PreviousVerdict:
 
 
 @dataclass(frozen=True)
+class LatestPrediction:
+    """ALR-08/ALR-10 — ostatnia zalogowana predykcja symbolu: cena wejścia, chwila
+    zapisu i uzasadnienie LLM (`reasoning_text`, None = brak)."""
+
+    price: Money
+    timestamp: datetime
+    reasoning: str | None
+
+
+@dataclass(frozen=True)
 class CycleRun:
     """NIEZ-29 — jeden przebieg pętli (wiersz `cycle_runs`, migracja 041).
 
@@ -88,6 +115,42 @@ class CycleRun:
     failures: int
     paid_calls: Mapping[str, int]
     report_delivered: bool | None
+
+
+@dataclass(frozen=True)
+class StoredReceipt:
+    """WIA-56 — kwit decyzyjny predykcji z kontekstem jej wiersza `prediction_logs`.
+
+    `payload` to surowy JSONB `decision_receipts` (migracja 020) albo None, gdy
+    predykcja kwitu nie ma (zapis sprzed migracji albo bez `receipts_enabled`).
+    Wersję schematu rozpoznaje czytający (`read_decision_receipt`), więc nieznana
+    wersja dociera do niego jako dane, nie jako wyjątek adaptera.
+    `is_trend_correct` None = predykcja jeszcze nierozliczona."""
+
+    prediction_id: str
+    symbol: str
+    predicted_at: datetime | None
+    predicted_trend: str | None
+    is_trend_correct: bool | None
+    payload: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True)
+class DeferredDiagnosis:
+    """WIA-53 — błędna predykcja bez płatnej diagnozy, z jej persystowanym wejściem.
+
+    `prediction` niesie nagłówki (`news_summary`), uzasadnienie i ceny wejścia
+    i celu; `actual_price` — cenę rozliczenia; `placeholder` — tekst, który dziś
+    stoi w `correction_insights` (zapis go podmienia tylko, gdy wciąż tam jest);
+    `receipt` — surowy JSONB `decision_receipts` (020) albo None.
+    `is_trend_correct` None = wiersz bez oceny kierunku."""
+
+    prediction: Prediction
+    actual_price: Decimal
+    is_trend_correct: bool | None
+    placeholder: str
+    predicted_at: datetime | None = None
+    receipt: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -116,7 +179,9 @@ class RepositoryPort(ABC):
         gdy brak historii."""
 
     @abstractmethod
-    def get_last_prediction_price(self, symbol: str) -> Money | None:
+    def get_last_prediction_price(
+        self, symbol: str, *, before: datetime | None = None
+    ) -> Money | None:
         """Cena OSTATNIEJ zalogowanej predykcji (`prediction_logs.price_at_prediction`).
 
         Referencja dla cechy `price_delta` w inference. Widok `ml_feature_store`
@@ -124,7 +189,20 @@ class RepositoryPort(ABC):
         POPRZEDNIEJ predykcji. Fast Loop musi użyć tej samej referencji (nie
         ostatniego snapshotu ceny), inaczej cecha ma inny rozkład w treningu i
         w predykcji (train/serve skew). Zwraca None gdy brak wcześniejszej
-        predykcji dla symbolu (pierwszy cykl — widok i tak takie wiersze odsiewa)."""
+        predykcji dla symbolu (pierwszy cykl — widok i tak takie wiersze odsiewa).
+
+        `before` (ML-18) to chwila bieżącej predykcji: odczyt pomija wiersze z jej
+        godziny UTC i późniejsze. Zapis predykcji to upsert po
+        `(symbol, timestamp_hour)`, więc re-run w tej samej godzinie nadpisze
+        wiersz z tej godziny — w widoku LAG go nie zobaczy. None = bez filtra."""
+
+    @abstractmethod
+    def get_latest_prediction(self, symbol: str) -> LatestPrediction | None:
+        """ALR-08/ALR-10 — ostatnia predykcja symbolu (`prediction_logs`) z chwilą
+        i uzasadnieniem: kontekst alertu szoku i referencja dryfu bramki.
+
+        Adapter jest SUROWY (bez try/except) — degradację robi caller. None = brak
+        predykcji albo wiersz bez ceny lub chwili."""
 
     @abstractmethod
     def save_price_snapshot(self, symbol: str, price: Money) -> None:
@@ -187,6 +265,17 @@ class RepositoryPort(ABC):
         nie wchodzi do hit-rate ani ml_feature_store. None = bez granicy."""
 
     @abstractmethod
+    def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:
+        """WIA-49: oznacza jako wygasłe nierozliczone predykcje symbolu starsze niż
+        `older_than_hours` — te, których `get_unverified_prediction` z tym samym
+        `max_age_hours` już nigdy nie poda do oceny. Zwraca liczbę oznaczonych.
+
+        Wygaśnięcie to jawny ślad w danych zamiast ciszy, która wygląda jak brak
+        predykcji. NIE wpisuje `actual_price_after_12h` (wiersz trafiłby do
+        ml_feature_store z fałszywą etykietą) ani oceny kierunku. Idempotentne:
+        wiersz już oznaczony nie liczy się drugi raz."""
+
+    @abstractmethod
     def update_prediction_accuracy(
         self,
         prediction_id: str,
@@ -194,10 +283,24 @@ class RepositoryPort(ABC):
         accuracy_score: float,
         is_trend_correct: bool,
         insight: str,
+        correction_category: MistakeCategory | None = None,
+        *,
+        stale_quote: bool | None = None,
+        session_close: SessionCloseSettlement | None = None,
     ) -> None:
         """Zamyka predykcję feedbackiem. `accuracy_score` (bliskość ceny do
         celu) napędza trening; `is_trend_correct` (zgodność kierunku) napędza
-        trafność raportu — to dwie różne miary, nie wolno ich mylić."""
+        trafność raportu — to dwie różne miary, nie wolno ich mylić.
+
+        `correction_category` (WIA-57) — kategoria przyczyny błędu z diagnozy;
+        kolumnę z migracji 046 zapisuje adapter tylko za swoją flagą.
+        `stale_quote` (DAT-14, migracja 055): True = rozliczenie z notowania sprzed
+        sesji po predykcji, wiersz wypada z trafności. None = kolumny nie dotykamy
+        (graf podaje ją wyłącznie za `stale_quote_enabled`).
+        `session_close` (WIA-61, migracja 059): oficjalne zamknięcie sesji z datą,
+        źródłem i trafnością na nim — obok ceny /quote, która zostaje rozliczeniem.
+        None = kolumn nie dotykamy (graf podaje je wyłącznie za
+        `session_close_settlement_enabled`)."""
 
     @abstractmethod
     def get_feature_store_data(
@@ -226,7 +329,12 @@ class RepositoryPort(ABC):
 
         Ten i pozostałe odczyty track-recordu (`get_recently_resolved_predictions`,
         `get_resolved_predictions`, `get_resolved_for_calibration`) pomijają
-        atrapy po awarii głównego LLM (flaga `llm_analysis_failed`, WIA-09)."""
+        atrapy po awarii głównego LLM (flaga `llm_analysis_failed`, WIA-09).
+
+        WIA-61 (za `session_close_settlement_enabled`, migracja 059): wiersze
+        z zapisanym zamknięciem sesji dają `session_close_count`,
+        `session_close_correct_count` (trafne na zamknięciu) i
+        `session_close_quote_correct_count` (te same predykcje trafne na /quote)."""
 
     @abstractmethod
     def get_recently_resolved_predictions(
@@ -264,6 +372,21 @@ class RepositoryPort(ABC):
     @abstractmethod
     def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
         """Upsert jednego wiersza per symbol (nadpisuje poprzedni snapshot)."""
+
+    @abstractmethod
+    def get_fundamentals_fetched_at(self, symbols: Sequence[str]) -> dict[str, datetime]:
+        """DAT-19: `fetched_at` wpisów cache fundamentów dla `symbols`, BEZ filtra
+        TTL — rotacja refreshu wybiera po nim najdawniej odświeżone spółki.
+        Symbol bez wpisu nie trafia do wyniku."""
+
+    @abstractmethod
+    def get_cached_earnings(self, symbol: str) -> CachedEarningsDate | None:
+        """FIN-11 — data najbliższego raportu z `earnings_cache` (migracja 053), gdy
+        wpis jest młodszy niż EARNINGS_CACHE_TTL_HOURS; filtr TTL po stronie repo."""
+
+    @abstractmethod
+    def save_earnings(self, entry: CachedEarningsDate) -> None:
+        """FIN-11 — upsert daty raportu per symbol (Slow Loop odświeża cache)."""
 
     @abstractmethod
     def save_quota_alert(self, alert: QuotaAlert) -> None:
@@ -308,18 +431,37 @@ class RepositoryPort(ABC):
         brak zapisanych głosów (rada padła / pominięta progiem)."""
 
     @abstractmethod
+    def get_receipt(self, prediction_id: str) -> StoredReceipt | None:
+        """WIA-56 — kwit decyzyjny jednej predykcji; None, gdy nie ma takiej
+        predykcji. Odczyt darmowy, tylko do audytu („dlaczego?”)."""
+
+    @abstractmethod
+    def find_receipts(self, symbol: str, day: date) -> list[StoredReceipt]:
+        """WIA-56 — kwity wszystkich predykcji symbolu z jednego dnia UTC,
+        od najstarszej. Pusta lista = brak predykcji tego dnia."""
+
+    @abstractmethod
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
         """#4 — rozliczone predykcje z `id`, `confidence_score`,
-        `is_trend_correct`, `reasoning_text` do oceny kalibracji (Slow Loop).
+        `is_trend_correct`, `predicted_trend`, `timestamp`, `reasoning_text` do
+        oceny kalibracji (Slow Loop) i krzywych kalibracji (WIA-39).
         Pomija wiersze bez `confidence_score`/`is_trend_correct`."""
 
     @abstractmethod
     def save_calibration(
-        self, prediction_id: str, score: float, insight: str
+        self,
+        prediction_id: str,
+        score: float,
+        insight: str,
+        *,
+        score_version: int | None = None,
     ) -> None:
         """#4 — zapisuje ocenę kalibracji pewności (sędzia-LLM, Slow Loop):
         `confidence_calibration` (0-1, czy deklarowana pewność była uzasadniona)
-        + `calibration_insight` na `prediction_logs` (migracja 016)."""
+        + `calibration_insight` na `prediction_logs` (migracja 016).
+
+        `score_version` (WIA-37) trafia do `calibration_score_version`
+        (migracja 044); None = bez tego klucza w zapisie (wiersz v1)."""
 
     @abstractmethod
     def get_persona_accuracy(
@@ -342,6 +484,35 @@ class RepositoryPort(ABC):
         z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
         "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
         → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
+    def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
+        """WIA-53 — do `limit` najświeższych BŁĘDNYCH predykcji (`is_trend_correct`
+        = false), których `correction_insights` to placeholder bez diagnozy
+        (`UNDIAGNOSED_MISTAKE_PLACEHOLDERS`). Atrapy po awarii LLM odpadają."""
+
+    @abstractmethod
+    def save_backfilled_diagnosis(
+        self,
+        prediction_id: str,
+        insight: str,
+        *,
+        replaces: str,
+        correction_category: MistakeCategory | None = None,
+    ) -> None:
+        """WIA-53 — podmienia `correction_insights` na diagnozę, ale tylko gdy
+        kolumna wciąż niesie `replaces` (inaczej nic nie zapisuje). Kategoria
+        (WIA-57, migracja 046) jak w `update_prediction_accuracy`."""
+
+    @abstractmethod
+    def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
+        """WIA-51 — rozliczone głosy person z okna `window_days` (po chwili
+        predykcji), bez oceny: RPC `persona_vote_outcomes` (migracja 045).
+
+        Trafność liczy domena (`persona_vote_correct`), a oś czasu
+        `predicted_at` / `settled_at` zasila wagi prequential (WIA-46). Błąd
+        RPC (np. brak migracji) leci do wołającego — tryb graceful mają
+        `get_persona_accuracy` i `get_persona_track_record`."""
 
     @abstractmethod
     def get_resolved_predictions_detailed(
@@ -367,15 +538,45 @@ class RepositoryPort(ABC):
         `actual_price_after_12h`. Zasila okno kalibracyjne przedziału ruchu.
 
         `with_intervals` dokłada `interval_low` / `interval_high` do pomiaru
-        pokrycia — WYMAGA migracji 032 (inaczej PostgREST zwraca 400)."""
+        pokrycia — WYMAGA migracji 032 (inaczej PostgREST zwraca 400).
+
+        DAT-14: za `stale_quote_enabled` (migracja 055) bez rozliczeń z notowania
+        sprzed sesji po predykcji — cena równa cenie wejścia to nie ruch."""
 
     @abstractmethod
-    def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
+    def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:
         """#16 — ROZLICZONE predykcje z commitmentem, jeszcze nieujawnione.
 
         Napędza sweep: bez niego predykcje symboli usuniętych z `config.toml`
         nigdy nie zostałyby ujawnione, a dla sceptyka wygląda to jak ukrywanie
-        nietrafień. Pusta lista = nic do ujawnienia / brak migracji 024."""
+        nietrafień. Pusta lista = nic do ujawnienia / brak migracji 024.
+        WIA-03: domyślnie bez okna czasowego i bez filtra symboli; `days`
+        zawęża do ostatnich dni (sweep go nie podaje).
+        WIA-70: wiersz niesie `commitment_payload` (dosłowny plaintext, migracja
+        043); przed migracją klucza nie ma, a stare wiersze mają None."""
+
+    @abstractmethod
+    def get_current_hour_commitment_salt(self, symbol: str) -> str | None:
+        """WIA-01 — sól commitmentu wiersza `symbol` z bieżącej godziny UTC (klucz
+        upsertu `save_prediction`). None = brak takiego wiersza albo błąd odczytu.
+
+        Ponowny zapis w tej godzinie (retry LangGraph, re-run GHA) nadpisuje wiersz:
+        z tą samą solą ten sam payload daje ten sam, już opublikowany hash."""
+
+    @abstractmethod
+    def get_current_hour_commitment(self, symbol: str) -> StoredCommitment | None:
+        """WIA-01 — hash, sól i plaintext commitmentu wiersza `symbol` z bieżącej
+        godziny UTC. None = brak wiersza z hashem i solą albo błąd odczytu.
+
+        Inny payload nadpisze ten wiersz, więc graf ujawnia stary commitment jako
+        „superseded", póki jego sól i plaintext są jeszcze w bazie."""
+
+    @abstractmethod
+    def attestation_columns_available(self) -> bool:
+        """WIA-70 — czy baza ma kolumny commitmentu (`commitment_hash`,
+        `commitment_salt` z 024 i `commitment_payload` z 043). False → cykl bez
+        atestacji: zapis tych kluczy przed migracją dałby PGRST204 i zabił zapis
+        całej predykcji."""
 
     @abstractmethod
     def mark_commitment_revealed(self, prediction_id: str) -> None:
@@ -396,6 +597,12 @@ class RepositoryPort(ABC):
         """NIEZ-28 — odczyt jednego wiersza (tylko do odczytu): dowód, że baza
         odpowiada. Projekt Supabase na planie Free jest wstrzymywany po 7 dniach bez
         aktywności, a wtedy każdy job pada na połączeniu. Wyjątek = baza nie odpowiada."""
+
+    @abstractmethod
+    def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
+        """FIN-05 — które z `columns` nie istnieją w `prediction_logs` (select bez
+        wierszy). Brak kolumny to wyłącznie kod 42703; każdy inny błąd (sieć, timeout,
+        wstrzymany projekt) leci wyjątkiem, żeby wołający nie wziął go za brak migracji."""
 
     @abstractmethod
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
@@ -426,6 +633,30 @@ class RepositoryPort(ABC):
         brak alertów / brak migracji 021."""
 
     @abstractmethod
+    def get_active_price_levels(self) -> list[PriceLevelAlert]:
+        """ALR-11 — aktywne alerty poziomów cenowych z ostatnim odczytem watcha
+        (tabela `price_level_alerts`, migracja 057). Adapter SUROWY — watch czyta
+        tylko za flagą `price_level_alerts_enabled` i sam łapie błąd."""
+
+    @abstractmethod
+    def add_price_levels(self, levels: Sequence[PriceLevel]) -> None:
+        """ALR-11 — dopisuje poziomy (lista startowa z config.toml). Poziom już
+        zapisany (`UNIQUE(symbol, level, direction)`) zostaje bez zmian — także
+        wyłączony po trafieniu, więc ponowne dopisanie go nie wskrzesza."""
+
+    @abstractmethod
+    def record_price_level_reading(self, alert_id: str, price: Decimal) -> None:
+        """ALR-11 — zapisuje odczyt ceny jako `last_seen_price`: poprzedni odczyt
+        następnego przebiegu (watch nie zapisuje `price_snapshots`)."""
+
+    @abstractmethod
+    def mark_price_level_triggered(
+        self, alert_id: str, price: Decimal, triggered_at: datetime
+    ) -> None:
+        """ALR-11 — wyłącza alert po trafieniu (`active = false`, `triggered_at`,
+        cena trafienia w `last_seen_price`)."""
+
+    @abstractmethod
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
         """#8 — ostatni ZAPISANY werdykt rady dla symbolu (JSONB `council_verdict`
         z migracji 005) wraz z sentymentem i znacznikiem czasu tamtego cyklu.
@@ -434,13 +665,17 @@ class RepositoryPort(ABC):
         (`_fetch_report_context`), zgodnie ze stylem repo. None = brak historii."""
 
     @abstractmethod
-    def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
+    def save_model_scorecard(
+        self, symbol: str, result: Mapping[str, Any], *, run_id: str | None = None
+    ) -> None:
         """#12 — zapisuje jeden przebieg treningu walk-forward (migracja 019).
 
         Slow Loop zapisuje wiersz per symbol (ewaluacja bez zapisu wag) i jeden
         wiersz modelu wspólnego z `symbol = "ALL"` (ML-13), więc `symbol` jest
         wymagany — bez niego scorecardy są nierozróżnialne.
-        `result` to surowe wyjście `MLPredictionPort.train()` albo wynik `skipped`."""
+        `result` to surowe wyjście `MLPredictionPort.train()` albo wynik `skipped`.
+        `run_id` (ML-24, migracja 049) — identyfikator przebiegu wspólny dla
+        wszystkich jego wierszy; None = bez identyfikatora (grupuje heurystyka)."""
 
     @abstractmethod
     def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:
@@ -569,7 +804,9 @@ class MLPredictionPort(ABC):
         SZCZEGÓŁ każdego foldu zamiast średniej: lista dictów z kluczami
         `train_end`, `valid_end`, `n_train`, `n_valid`, `candidate_rmse`,
         `baseline_rmse` (zwrot=0), `hit_rate` (trafność kierunku) oraz (ML-20)
-        `ic` (korelacja rang Spearmana), `sign_strategy_return` i `turnover`.
+        `ic` (korelacja rang Spearmana), `sign_strategy_return` i `turnover`,
+        a (EXP-04) `sum_loss_diff` / `sum_loss_diff_sq` względem „zwrot 0” i te
+        same sumy z prefiksem `drift_` / `llm_` dla testu sparowanego w domenie.
         `timestamps` działają jak w `train()`: purge horyzontu etykiety w foldach.
         Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
 
@@ -618,10 +855,16 @@ class EmbeddingPort(ABC):
 
 
 class ReportNotifierPort(ABC):
-    """Wysyłka raportów z cyklu (np. email przez Resend)."""
+    """Wysyłka raportów z cyklu (np. email przez Resend).
+
+    `silent` (ALR-09): wiadomość ma dotrzeć bez dźwięku — cisza nocna pushy watcha.
+    Kanał bez takiej opcji (mail) wysyła to samo co zwykle. Alerty CRITICAL
+    operacyjne wołają bez `silent`, więc cisza ich nie dotyczy."""
 
     @abstractmethod
-    def send_report(self, subject: str, html_body: str, plain_text: str) -> None: ...
+    def send_report(
+        self, subject: str, html_body: str, plain_text: str, *, silent: bool = False
+    ) -> None: ...
 
 
 class HeartbeatPort(ABC):
@@ -827,6 +1070,17 @@ class MacroRatesPort(ABC):
     def fetch_yield_curve(self) -> YieldCurveSnapshot | None: ...
 
 
+class MacroSeriesPort(ABC):
+    """DAT-22: zmienne stanu z FRED (VIXCLS, VXNCLS, BAMLH0A0HYM2, T10Y2Y, NFCI) —
+    raz na cykl, nie per symbol.
+
+    Obserwacje z dni <= `as_of` (point-in-time), każda z dniem obserwacji, nie
+    pobrania. None gdy źródło niedostępne / brak klucza."""
+
+    @abstractmethod
+    def fetch_macro_series(self, as_of: date) -> MacroSeriesSnapshot | None: ...
+
+
 class AnalystConsensusPort(ABC):
     """Konsensus analityków i cel cenowy per symbol.
 
@@ -834,3 +1088,42 @@ class AnalystConsensusPort(ABC):
 
     @abstractmethod
     def get_consensus(self, symbol: str) -> AnalystConsensus | None: ...
+
+
+class ModelCatalogPort(ABC):
+    """NIEZ-25: katalog modeli dostawcy LLM (Models API — nie zużywa tokenów).
+
+    `validate_model_id` sprawdza tylko prefiks id, więc wycofany model kończy się
+    cichym total outage dopiero przy pierwszym wywołaniu. Sonda Slow Loopa pyta
+    katalog o każdy skonfigurowany model raz w tygodniu."""
+
+    @abstractmethod
+    def is_available(self, model_id: str) -> bool:
+        """True = dostawca zna model, False = nie zna (404). Błąd sieci albo
+        uprawnień klucza to wyjątek, nie False — to nie jest brak modelu."""
+
+
+class EvidenceSourcePort(ABC):
+    """NIEZ-32: odczyt tabel dowodowych (track record) do kopii zapasowej."""
+
+    @abstractmethod
+    def read_rows(self, table: str, columns: Sequence[str]) -> list[dict[str, Any]]:
+        """Wszystkie wiersze `table` (paginacja), wyłącznie kolumny `columns`.
+        Kolumny, której baza jeszcze nie ma (brak migracji), w wierszach nie ma."""
+
+
+@dataclass(frozen=True)
+class ArchiveReceipt:
+    """NIEZ-32: zapisany (zaszyfrowany) artefakt kopii: ścieżka, sha256, rozmiar."""
+
+    path: str
+    sha256: str
+    size_bytes: int
+
+
+class EvidenceArchivePort(ABC):
+    """NIEZ-32: magazyn kopii — szyfruje PRZED zapisem; jawny tekst nie trafia na dysk."""
+
+    @abstractmethod
+    def store(self, name: str, files: Mapping[str, bytes]) -> ArchiveReceipt:
+        """Pakuje `files` (nazwa pliku → treść) w jeden zaszyfrowany artefakt `name`."""

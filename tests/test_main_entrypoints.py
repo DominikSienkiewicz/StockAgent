@@ -1,6 +1,6 @@
 """Smoke testy entry pointów — DI wiring oraz top-level main() z mockami sieci."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock, call
 
@@ -20,7 +20,9 @@ from src.domain.earnings import EarningsEvent
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel
+from src.domain.macro_series import MacroSeriesSnapshot, SeriesObservation
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.value_objects import Threshold
 
 
 @pytest.fixture
@@ -75,6 +77,30 @@ class TestLLMProviderFactory:
 
         with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
             main_agent.build_llm_adapter(settings)
+
+
+class TestModelRoutingWiring:
+    """NIEZ-17: sufit eskalacji kaskady przychodzi z Settings, a awaria frontiera
+    trafia alertem do monitora kwot cyklu."""
+
+    def test_cascade_takes_the_escalation_cap_and_the_quota_monitor(
+        self, settings, mocker
+    ) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+        from src.infrastructure.llm.cascading import CascadingLLMAdapter
+
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+        mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
+        settings.model_routing_enabled = True
+        settings.anthropic_api_key = "sk-ant-test"
+        settings.routing_max_escalations = 2
+        monitor = QuotaMonitor()
+
+        llm = main_agent.build_llm_adapter(settings, quota_monitor=monitor)
+
+        assert isinstance(llm, CascadingLLMAdapter)
+        assert llm._max_escalations == 2
+        assert llm._quota_monitor is monitor
 
 
 class TestCouncilLLMFactory:
@@ -138,6 +164,13 @@ class TestCouncilLLMFactory:
 
 
 class TestEmbeddingAdapterFactory:
+    def test_raises_naming_the_key_when_openai_key_is_missing(self, settings):
+        # ARCH-05: klucz jest opcjonalny w Settings, więc żąda go fabryka.
+        settings.openai_api_key = None
+
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            main_agent.build_embedding_adapter(settings)
+
     def test_returns_openai_embeddings_for_openai_provider(self, settings, mocker):
         mocker.patch("src.infrastructure.llm.openai_embeddings.OpenAI")
         from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
@@ -165,7 +198,7 @@ class TestEmbeddingAdapterFactory:
 
 
 class TestMainAgent:
-    def test_build_use_case_wires_all_adapters(self, settings, mock_external_clients):
+    def test_build_use_case_builds_without_error(self, settings, mock_external_clients):
         use_case = main_agent.build_use_case(settings)
         assert use_case is not None
 
@@ -316,10 +349,188 @@ class TestMainAgent:
         assert analyze.call_args.kwargs["cycle_at"] == dispatch.call_args.kwargs["started_at"]
 
 
+class TestBuildAgentGraphDeps:
+    """TEST-09 (G56): fabryka deps grafu sprawdzana na polach, nie przez `is not None`.
+
+    `test_build_use_case_builds_without_error` dowodzi tylko, że DI nie rzuca —
+    port podpięty pod złe pole albo atrapa w płatnym przebiegu przeszłyby."""
+
+    def test_tool_use_disabled_wires_no_tool_use_port(self, settings, mock_external_clients):
+        settings.tool_use_enabled = False
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert deps.tool_use_port is None
+        assert list(deps.research_tools) == []
+        assert deps.tool_use_threshold is None
+
+    def test_tool_use_enabled_wires_port_tools_and_their_threshold(
+        self, settings, mock_external_clients, mocker
+    ):
+        mocker.patch("src.infrastructure.llm.tool_calling_openai.OpenAI")
+        from src.infrastructure.llm.tool_calling_openai import ToolCallingOpenAIAdapter
+
+        settings.tool_use_enabled = True
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert isinstance(deps.tool_use_port, ToolCallingOpenAIAdapter)
+        assert deps.research_tools
+        assert deps.tool_use_threshold == Threshold(settings.tool_use_volatility_threshold)
+
+    def test_paid_run_wires_the_alpha_vantage_feeds_council_and_embeddings(
+        self, settings, mock_external_clients
+    ):
+        from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
+        from src.infrastructure.adapters.alpha_vantage_adapters import (
+            AlphaVantageNewsAdapter,
+            AlphaVantageSentimentAdapter,
+        )
+        from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert isinstance(deps.sentiment_port, AlphaVantageSentimentAdapter)
+        assert isinstance(deps.news_port, AlphaVantageNewsAdapter)
+        assert isinstance(deps.council_port, LLMAdvisoryCouncil)
+        assert isinstance(deps.embedding_port, OpenAIEmbeddingAdapter)
+        assert deps.threshold == Threshold(settings.volatility_threshold)
+        assert deps.paid_call_cap == settings.max_paid_llm_calls_per_cycle
+
+    def test_stub_run_wires_no_council_embeddings_or_tool_use(
+        self, settings, mock_external_clients
+    ):
+        from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
+
+        settings.paid_calls_enabled = False
+        settings.db_writes_enabled = False
+        settings.tool_use_enabled = True
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert isinstance(deps.llm_port, LocalStubLLMAdapter)
+        assert deps.council_port is None
+        assert deps.embedding_port is None
+        assert deps.tool_use_port is None
+
+    def test_zero_council_threshold_leaves_no_council_gate(self, settings, mock_external_clients):
+        settings.council_volatility_threshold = Decimal("0")
+
+        assert main_agent.build_agent_graph_deps(settings).council_threshold is None
+
+    def test_fundamentals_port_reads_only_the_cache(self, settings, mocker):
+        get = mocker.patch("requests.Session.get")
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_cached_fundamentals.return_value = None
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+
+        deps = main_agent.build_agent_graph_deps(settings, repository=repository)
+
+        assert deps.repository_port is repository
+        assert deps.fundamentals_port is not None
+        assert deps.fundamentals_port.get_fundamentals("AAPL") is None
+        get.assert_not_called()
+
+    def test_build_use_case_runs_on_the_factory_deps(self, settings, mock_external_clients, mocker):
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        factory = mocker.spy(main_agent, "build_agent_graph_deps")
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0] is factory.spy_return
+
+
+class TestProductionConfigWiring:
+    """TEST-04 (G64): produkcyjna kombinacja flag z `config.toml` przechodzi przez DI.
+
+    Fixture `settings` ma czyste defaulty (conftest wyłącza źródło TOML), więc
+    włączone w produkcji flagi nigdy razem nie trafiały do `build_use_case`. Tu
+    źródło TOML jest aktywne, sekrety idą jako kwargs, a SDK są zmockowane na
+    poziomie modułów adapterów — żadnego `importorskip`, bo brak SDK to błąd P0
+    (G05), a nie powód do pominięcia testu."""
+
+    _SDK_CLIENTS = (
+        "src.infrastructure.adapters.supabase_repo.create_client",
+        "src.infrastructure.llm.openai_client.OpenAI",
+        "src.infrastructure.llm.openai_embeddings.OpenAI",
+        "src.infrastructure.llm.tool_calling_openai.OpenAI",
+        "src.infrastructure.llm.anthropic_client.Anthropic",
+        "src.infrastructure.llm.tool_calling_anthropic.Anthropic",
+    )
+
+    def test_build_use_case_with_production_config_toml(self, monkeypatch, mocker):
+        from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
+
+        monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
+        monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
+        for target in self._SDK_CLIENTS:
+            mocker.patch(target)
+        # Przełączniki płatnego przebiegu jak w workflow Fast Loopa (env GHA).
+        production = Settings(
+            _env_file=None,
+            openai_api_key="sk-test",
+            anthropic_api_key="sk-ant-test",
+            finnhub_api_key="fh",
+            alpha_vantage_api_keys=["av1", "av2"],
+            supabase_url="https://test.supabase.co",
+            supabase_key="service",
+            db_writes_enabled=True,
+            paid_calls_enabled=True,
+        )
+        assert production.llm_provider == "anthropic", "config.toml nie został wczytany"
+
+        use_case = main_agent.build_use_case(production)
+
+        assert isinstance(use_case, AnalyzeMarketUseCase)
+
+
+class TestFastLoopFundamentalsPort:
+    """TEST-06 (G70): Fast Loop czyta fundamenty wyłącznie z cache Supabase.
+
+    Port fundamentów idzie przez graf PRZED bramką volatility, więc delegat
+    z prawdziwym klientem Alpha Vantage kosztowałby request na każdy symbol
+    w każdym cyklu. Cache miss ma skończyć się brakiem danych, nie HTTP."""
+
+    def test_fast_loop_fundamentals_cache_miss_makes_no_http_call(self, mocker):
+        get = mocker.patch("requests.Session.get")
+        post = mocker.patch("requests.Session.post")
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_cached_fundamentals.return_value = None
+
+        port = main_agent.build_fast_loop_fundamentals_port(repository)
+
+        assert port.get_fundamentals("AAPL") is None
+        get.assert_not_called()
+        post.assert_not_called()
+        repository.save_fundamentals.assert_not_called()
+
+
 class TestMainTrainer:
-    def test_build_use_case_wires_supabase_and_xgboost(self, settings, mock_external_clients):
+    def test_build_use_case_builds_without_error(self, settings, mock_external_clients):
         use_case = main_trainer.build_use_case(settings)
         assert use_case is not None
+
+    def test_refresh_fetches_only_selected_batch(self, settings, mocker) -> None:
+        # DAT-19: przy 1 kluczu (budżet 12 spółek) refresh bierze spółki bez wpisu
+        # w cache i najstarsze, a nie zawsze pierwsze 12 z listy.
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.alpha_vantage_api_keys = ["av1"]
+        settings.symbols_etf = []
+        settings.symbols = [f"S{i:02d}" for i in range(1, 16)]
+        now = datetime.now(UTC)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_fundamentals_fetched_at.return_value = {
+            f"S{i:02d}": now - timedelta(days=i) for i in range(3, 16)
+        }
+        mocker.patch("main_trainer.AlphaVantageFundamentalsAdapter")
+        cached = mocker.patch("main_trainer.CachedFundamentalsAdapter")
+
+        main_trainer._refresh_fundamentals_cache(settings, repository, QuotaMonitor())
+
+        fetched = [c.args[0] for c in cached.return_value.get_fundamentals.call_args_list]
+        assert fetched == ["S01", "S02", *[f"S{i:02d}" for i in range(15, 5, -1)]]
+        repository.get_fundamentals_fetched_at.assert_called_once_with(settings.symbols)
 
     def test_main_returns_zero_on_success(self, settings, mock_external_clients, mocker):
         fake_uc = MagicMock()
@@ -361,7 +572,7 @@ class TestMainTrainer:
 class TestMainBacktest:
     """Offline walk-forward backtest harness (T3) — DI + top-level main()."""
 
-    def test_build_use_case_wires_supabase_and_xgboost(
+    def test_build_use_case_builds_without_error(
         self, settings, mock_external_clients
     ):
         use_case = main_backtest.build_use_case(settings)
@@ -394,12 +605,130 @@ class TestMainBacktest:
     def test_main_survives_single_symbol_failure(
         self, settings, mock_external_clients, mocker
     ):
+        from src.domain.backtest import BacktestSummary
+
         fake_uc = MagicMock()
-        fake_uc.run.side_effect = RuntimeError("XGBoost boom")
+        fake_uc.run.side_effect = [
+            RuntimeError("XGBoost boom"),
+            BacktestSummary(
+                n_folds=4,
+                mean_candidate_rmse=0.03,
+                mean_baseline_rmse=0.05,
+                mean_hit_rate=0.6,
+                improvement_pct=40.0,
+                beats_baseline=True,
+                verdict="model bije baseline o 40.0%",
+            ),
+        ]
         mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
 
         # Pojedynczy błąd per-symbol nie wywala harnessa.
         assert main_backtest.main(settings) == 0
+
+    def test_backtest_builds_no_paid_adapter(
+        self, settings, mock_external_clients, mocker
+    ):
+        # DOC-21: „no retroactive LLM replays” — backtest odtwarza zebrane cechy
+        # XGBoostem i nigdy nie pyta LLM o historię, której model mógł się nauczyć.
+        import anthropic
+        import openai
+
+        from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
+
+        paid_clients = [
+            mocker.patch.object(client, "__init__", side_effect=AssertionError(client.__name__))
+            for client in (openai.OpenAI, anthropic.Anthropic, AlphaVantageClient)
+        ]
+        fake_uc = MagicMock()
+        fake_uc.run.side_effect = RuntimeError("bez danych")
+
+        main_backtest.build_use_case(settings)
+        mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
+        # NIEZ-18: wszystkie symbole padły → exit 1; test pilnuje tylko, że żaden
+        # płatny klient nie powstał.
+        assert main_backtest.main(settings) == 1
+
+        for client in paid_clients:
+            client.assert_not_called()
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_backtest_follows_the_feature_set_filter(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        # ML-51: offline werdykt na tej samej próbce co trening (`main_trainer`).
+        from src.application.ml_features import FEATURE_SET_VERSION
+
+        use_case_cls = mocker.patch("main_backtest.BacktestUseCase")
+        use_case_cls.return_value.run.side_effect = RuntimeError("bez foldów")
+        settings.feature_set_filter_enabled = enabled
+
+        main_backtest.build_use_case(settings)
+        main_backtest.main(settings)
+
+        expected = FEATURE_SET_VERSION if enabled else None
+        versions = [c.kwargs["feature_set_version"] for c in use_case_cls.call_args_list]
+        assert versions == [expected, expected]
+
+    def test_main_returns_one_when_all_symbols_fail(
+        self, settings, mock_external_clients, mocker
+    ):
+        # NIEZ-18: jak Fast Loop — exit 1 tylko, gdy padły wszystkie symbole.
+        fake_uc = MagicMock()
+        fake_uc.run.side_effect = RuntimeError("XGBoost boom")
+        mocker.patch("main_backtest.BacktestUseCase", return_value=fake_uc)
+
+        assert main_backtest.main(settings) == 1
+
+
+class TestBacktestCoverage:
+    """NIEZ-18: backtest iterował same `symbols`, więc krypto nigdy nie dostawało
+    oceny offline. Krypto idzie przez ten sam `build_use_case`, z kosztem obrotu
+    krypto (WIA-50)."""
+
+    @staticmethod
+    def _summary():
+        from src.domain.backtest import BacktestSummary
+
+        return BacktestSummary(
+            n_folds=4,
+            mean_candidate_rmse=0.03,
+            mean_baseline_rmse=0.05,
+            mean_hit_rate=0.6,
+            improvement_pct=40.0,
+            beats_baseline=True,
+            verdict="model bije baseline o 40.0%",
+        )
+
+    def test_backtest_covers_crypto_symbols(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.crypto_symbols = ["BTC"]
+        by_cost: dict[float, MagicMock] = {}
+
+        def use_case(*, cost_bps: float, **_: object) -> MagicMock:
+            fake = by_cost.setdefault(cost_bps, MagicMock())
+            fake.run.return_value = self._summary()
+            return fake
+
+        mocker.patch("main_backtest.BacktestUseCase", side_effect=use_case)
+
+        main_backtest.main(settings)
+
+        stock = by_cost[settings.paper_cost_bps]
+        crypto = by_cost[settings.crypto_paper_cost_bps]
+        assert [c.args[0] for c in stock.run.call_args_list] == ["AAPL", "VOO"]
+        assert [c.args[0] for c in crypto.run.call_args_list] == ["BTC"]
+
+    def test_main_builds_the_backtest_through_build_use_case(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        build = mocker.patch("main_backtest.build_use_case")
+        build.return_value.run.return_value = self._summary()
+
+        main_backtest.main(settings)
+
+        build.assert_called_once()
+        assert build.call_args.args == (settings,)
 
 
 class TestBuildMacroRiskUseCase:
@@ -813,6 +1142,113 @@ class TestResolveRegimeYieldCurveVote:
         assert main_agent._resolve_regime(settings, macro, None) == ("", 1.0)
 
 
+class TestResolveRegimeMacroSeriesVotes:
+    """DAT-22 — percentyl VIX z roku i zmiana spreadu HY wchodzą do RegimeDetector
+    jako głosy, tylko z `macro_series_enabled` (Settings jako MagicMock: brak
+    snapshotu nie może głosować nawet przy prawdziwej fladze)."""
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.regime_aware_enabled = True
+        settings.yield_curve_enabled = False
+        settings.macro_series_enabled = True
+        settings.regime_threshold_max_multiplier = 2.0
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    @staticmethod
+    def _stressed_vix() -> MacroSeriesSnapshot:
+        start = date(2025, 10, 1)
+        values = [15.0 + (i % 7) for i in range(250)] + [35.0]
+        return MacroSeriesSnapshot(
+            vix=tuple(
+                SeriesObservation(start + timedelta(days=i), v) for i, v in enumerate(values)
+            )
+        )
+
+    @staticmethod
+    def _macro(level: MacroAlertLevel) -> MagicMock:
+        report = MagicMock()
+        report.overall_alert = level
+        return report
+
+    def test_vix_in_the_top_decile_forces_risk_off(self) -> None:
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(),
+            self._macro(MacroAlertLevel.NORMAL),
+            None,
+            macro_series=self._stressed_vix(),
+        )
+
+        assert multiplier == 2.0
+
+    def test_flag_off_casts_no_macro_vote(self) -> None:
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(macro_series_enabled=False),
+            self._macro(MacroAlertLevel.NORMAL),
+            None,
+            macro_series=self._stressed_vix(),
+        )
+
+        assert multiplier == 1.0
+
+    def test_missing_snapshot_casts_no_vote(self) -> None:
+        _, multiplier = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.NORMAL), None
+        )
+
+        assert multiplier == 1.0
+
+
+class TestMacroSeriesWiring:
+    """DAT-22 — port FRED tylko z flagą i kluczem; snapshot cyklu trafia do reżimu
+    i do fazy cech rynkowych."""
+
+    def test_port_is_null_without_the_flag(self, settings) -> None:
+        from src.infrastructure.adapters.fred_client import NullMacroSeriesAdapter
+
+        settings.fred_api_key = "fred-key"
+
+        assert isinstance(main_agent.build_macro_series_port(settings), NullMacroSeriesAdapter)
+
+    def test_port_is_null_without_a_key(self, settings) -> None:
+        from src.infrastructure.adapters.fred_client import NullMacroSeriesAdapter
+
+        settings.macro_series_enabled = True
+        settings.fred_api_key = None
+
+        assert isinstance(main_agent.build_macro_series_port(settings), NullMacroSeriesAdapter)
+
+    def test_port_is_fred_with_the_flag_and_a_key(self, settings) -> None:
+        from src.infrastructure.adapters.fred_client import FredClient
+
+        settings.macro_series_enabled = True
+        settings.fred_api_key = "fred-key"
+
+        assert isinstance(main_agent.build_macro_series_port(settings), FredClient)
+
+    def test_cycle_snapshot_reaches_the_regime_and_the_feature_phase(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        snapshot = MacroSeriesSnapshot(nfci=SeriesObservation(date(2026, 10, 16), -0.5))
+        port = MagicMock()
+        port.fetch_macro_series.return_value = snapshot
+        mocker.patch("main_agent.build_macro_series_port", return_value=port)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        resolve = mocker.patch("main_agent._resolve_regime", return_value=("", 1.0))
+
+        main_agent.main(settings)
+
+        assert resolve.call_args.kwargs["macro_series"] is snapshot
+        macro = fake_uc.prepare_market_features.call_args.kwargs["macro_features"]
+        assert macro["nfci"] == -0.5
+        assert macro["macro_observed_on"] == {"NFCI": "2026-10-16"}
+
+
 class TestProcessOneSymbolEarningsGate:
     """#6 — mnożnik earnings dociera do grafu, a płatny port AV jest wołany
     dokładnie RAZ na symbol (prefetch + wstrzyknięcie do enrich)."""
@@ -1110,6 +1546,69 @@ class TestMessengerDigestSplit:
         sent = push.send_report.call_args.kwargs["plain_text"]
         assert len(sent) <= MAX_DIGEST_CHARS
 
+    def test_dispatch_sends_the_lead_and_the_ranked_signals_to_the_push(
+        self, settings, mocker
+    ) -> None:
+        # MAIL-20: push mówi, co najważniejsze — lead i ranking sygnałów, nie
+        # pierwsze symbole watchlisty w jej kolejności.
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.council import InvestorOpinion
+
+        settings.messenger_digest_enabled = True
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+        mocker.patch("main_agent._build_signal_calibration", return_value=None)
+        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch("main_agent._build_user_portfolio", return_value=None)
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        push = MagicMock()
+        mocker.patch("main_agent.build_push_notifier", return_value=push)
+        split = CouncilVerdict(
+            final_recommendation="HOLD", consensus_strength=0.5, summary="1 KUP / 1 SPRZEDAJ",
+            dissenting_views=(),
+            investor_opinions=(
+                InvestorOpinion(investor_name="A", recommendation="BUY",
+                                confidence=0.8, reasoning="x", key_factors=()),
+                InvestorOpinion(investor_name="B", recommendation="SELL",
+                                confidence=0.8, reasoning="x", key_factors=()),
+            ),
+        )
+        results = [
+            main_agent.SymbolResult(
+                symbol="AAPL", status="saved", delta=Decimal("0.03"), trend="BULLISH",
+                confidence_score=0.5, current_price=Decimal("100"),
+                target_price=Decimal("101"),
+            ),
+            main_agent.SymbolResult(
+                symbol="NVDA", status="saved", delta=Decimal("-0.042"), trend="BEARISH",
+                confidence_score=0.8, current_price=Decimal("100"),
+                target_price=Decimal("95"), council_verdict=split,
+            ),
+        ]
+
+        main_agent._dispatch_reports(
+            results=results,
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=QuotaMonitor(),
+            notifier=MagicMock(),
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL", "NVDA"],
+            context=main_agent.ReportContext(),
+        )
+
+        digest = push.send_report.call_args.kwargs["plain_text"]
+        assert "⚖️ NVDA -4,2%, rada PODZIELONA" in digest
+        signals = next(line for line in digest.splitlines() if line.startswith("Sygnały:"))
+        assert signals.index("NVDA") < signals.index("AAPL")
+
     def test_push_failure_never_breaks_the_cycle(self) -> None:
         push = MagicMock()
         push.send_report.side_effect = Exception("Telegram 400")
@@ -1245,6 +1744,94 @@ class TestModelScorecardPersistence:
         main_trainer.main(settings)
 
         repo.save_model_scorecard.assert_not_called()
+
+
+class TestModelScorecardRunId:
+    """ML-24 — main_trainer losuje jeden uuid4 na przebieg; niesie go każdy wiersz
+    karty (per symbol i model wspólny), więc re-run tego samego dnia to osobny przebieg."""
+
+    def test_one_run_id_for_every_scorecard_row_of_a_run(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        import uuid
+
+        settings.model_scorecard_enabled = True
+        settings.symbols = ["AAPL", "MSFT"]
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "evaluated_passed_gate"}
+        fake_uc.run_pooled.return_value = {"status": "skipped"}
+        build = mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repo = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repo)
+
+        main_trainer.main(settings)
+        main_trainer.main(settings)
+
+        first, second = (c.kwargs["run_id"] for c in build.call_args_list)
+        saved = [c.kwargs["run_id"] for c in repo.save_model_scorecard.call_args_list]
+        assert saved == [first, first, second, second]
+        assert first != second
+        assert str(uuid.UUID(first)) == first
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_trainer_repository_follows_the_run_id_flag(
+        self, settings, mocker, enabled: bool
+    ) -> None:
+        supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
+        settings = settings.model_copy(update={"model_scorecard_run_id_enabled": enabled})
+
+        main_trainer.build_repository(settings)
+
+        assert supabase_cls.call_args.kwargs["scorecard_run_id_enabled"] is enabled
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_trainer_repository_follows_the_feature_stats_flag(
+        self, settings, mocker, enabled: bool
+    ) -> None:
+        # ML-21: kolumna `feature_stats` (migracja 052) tylko za flagą.
+        supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
+        settings = settings.model_copy(
+            update={"model_scorecard_feature_stats_enabled": enabled}
+        )
+
+        main_trainer.build_repository(settings)
+
+        assert supabase_cls.call_args.kwargs["scorecard_feature_stats_enabled"] is enabled
+
+    def test_build_use_case_hands_the_run_id_to_the_use_case(self, settings, mocker) -> None:
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")
+
+        main_trainer.build_use_case(settings, run_id="run-1")
+
+        assert use_case_cls.call_args.kwargs["run_id"] == "run-1"
+
+
+class TestModelScorecardWindow:
+    """ML-15 — karta czyta 2 × `MODEL_STALE_AFTER_DAYS`, a nie `track_record_days`:
+    przy oknie 30 dni odznaka STALE (po 21 dniach) była widoczna tylko w dniach 22–30."""
+
+    def test_card_older_than_the_track_record_window_shows_as_stale(self, settings) -> None:
+        from src.domain.model_scorecard import MODEL_STALE_AFTER_DAYS, is_stale
+
+        now = datetime.now(UTC)
+        trained_at = now - timedelta(days=35)
+        settings.model_scorecard_enabled = True
+        settings.track_record_days = 30
+        row = {
+            "symbol": "ALL",
+            "status": "trained_successfully",
+            "timestamp": trained_at.isoformat(),
+        }
+        repo = MagicMock(spec=RepositoryPort)
+        # Okno odczytu jak w adapterze: wiersz wraca tylko, gdy mieści się w `days`.
+        repo.get_recent_model_scorecards.side_effect = lambda days: [row] if days >= 35 else []
+
+        view = main_agent._build_model_scorecard(settings, repo)
+
+        assert view is not None
+        assert is_stale(view.trained_at, now)
+        repo.get_recent_model_scorecards.assert_called_once_with(2 * MODEL_STALE_AFTER_DAYS)
 
 
 class TestConsensusShiftWiring:
@@ -1520,6 +2107,64 @@ class TestAttestationRevealSweep:
 
         assert main_agent._sweep_reveals(repo, MagicMock()) == 0
 
+    @staticmethod
+    def _sweep_one(row: dict) -> dict:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [row]
+        pub = MagicMock(spec=AttestationPublisherPort)
+        pub.publish_reveal.return_value = "public/attestation/reveals.jsonl"
+
+        main_agent._sweep_reveals(repo, pub)
+
+        return dict(pub.publish_reveal.call_args.args[0])
+
+    def test_reveals_symbol_removed_from_config(self, settings) -> None:
+        # WIA-03: sweep nie zna watchlisty ani okna track recordu — commitment
+        # symbolu wyrzuconego z config.toml też musi zostać ujawniony.
+        settings.symbols = ["AAPL"]
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [{**self._row("p-1"), "symbol": "VOO"}]
+        pub = MagicMock(spec=AttestationPublisherPort)
+        pub.publish_reveal.return_value = "public/attestation/reveals.jsonl"
+
+        assert main_agent._sweep_reveals(repo, pub) == 1
+
+        repo.get_unrevealed_commitments.assert_called_once_with()
+        assert pub.publish_reveal.call_args.args[0]["symbol"] == "VOO"
+
+    def test_reveal_publishes_stored_payload_verbatim(self) -> None:
+        # WIA-70: weryfikacja bajt w bajt — niezależna od typów kolumn i od floatów,
+        # w których PostgREST oddaje NUMERIC (100.0 zamiast "100.0000").
+        import hashlib
+
+        canonical = (
+            '{"predicted_target_price":"110.0000","predicted_trend":"BULLISH",'
+            '"price_at_prediction":"100.0000","schema_version":2,"symbol":"GONE"}'
+        )
+        salt = "s" * 32
+        commitment = hashlib.sha256((canonical + salt).encode("utf-8")).hexdigest()
+        row = {
+            **self._row("p-1", salt),
+            "commitment_hash": commitment,
+            "commitment_payload": canonical,
+            "predicted_target_price": 110.0,
+            "price_at_prediction": 100.0,
+        }
+
+        published = self._sweep_one(row)
+
+        assert published["payload"] == canonical
+        recomputed = hashlib.sha256((published["payload"] + published["salt"]).encode("utf-8"))
+        assert recomputed.hexdigest() == published["commitment"]
+
+    def test_legacy_row_without_payload_is_revealed_from_columns(self) -> None:
+        # Wiersze sprzed 043 (albo bez kolumny) ujawniamy z kolumn, jak dotąd.
+        published = self._sweep_one({**self._row("p-1"), "commitment_payload": None})
+
+        assert "payload" not in published
+        assert published["predicted_target_price"] == "110.0"
+        assert published["price_at_prediction"] == "100.0"
+
 
 class TestWeeklyRecapWiring:
     """#17 — niedzielny recap. Slow Loop chodzi co tydzień i dotąd nie wysyłał
@@ -1666,6 +2311,48 @@ class TestWeeklyRecapWiring:
         judge_uc.run.assert_called_once()
 
 
+class TestModelScorecardCoverage:
+    """DAT-16: karta kondycji niesie pokrycie danych okna z symbolami bez rozliczeń."""
+
+    def test_scorecard_view_carries_the_data_coverage(self, settings, mocker) -> None:
+        from src.application.report_model_scorecard import ModelScorecardView
+        from src.domain.model_scorecard import summarize_run
+
+        settings.model_scorecard_enabled = True
+        settings.symbols = ["AAPL", "SSNLF"]
+        settings.crypto_symbols = []
+        view = ModelScorecardView(
+            summary=summarize_run(["trained_successfully"]),
+            trained_at=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+        mocker.patch("main_agent.build_scorecard_view", return_value=view)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_price_history.return_value = []
+        repository.get_resolved_predictions.return_value = [{"symbol": "AAPL"}]
+
+        scorecard = main_agent._build_model_scorecard(settings, repository)
+
+        assert scorecard is not None and scorecard.coverage is not None
+        assert scorecard.coverage.unsettled_symbols == ("SSNLF",)
+
+    def test_coverage_failure_keeps_the_scorecard(self, settings, mocker) -> None:
+        from src.application.report_model_scorecard import ModelScorecardView
+        from src.domain.model_scorecard import summarize_run
+
+        settings.model_scorecard_enabled = True
+        view = ModelScorecardView(
+            summary=summarize_run(["trained_successfully"]),
+            trained_at=datetime(2026, 10, 18, tzinfo=UTC),
+        )
+        mocker.patch("main_agent.build_scorecard_view", return_value=view)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_resolved_predictions.side_effect = RuntimeError("supabase down")
+
+        scorecard = main_agent._build_model_scorecard(settings, repository)
+
+        assert scorecard == view
+
+
 class TestPublicScorecard:
     """#10 — publiczny scorecard. DRUGA instancja publishera (nie ta od
     prywatnego digestu!) i metryki liczone niezależnie od flag track-recordu."""
@@ -1729,6 +2416,22 @@ class TestPublicScorecard:
 
         page = publisher.publish.call_args.args[0]
         assert "NVDA" not in page
+
+    def test_page_states_data_coverage_without_naming_symbols(self) -> None:
+        # DAT-16: luka i symbol bez rozliczeń są na stronie tylko jako liczby.
+        settings = self._settings(True)
+        settings.symbols = ["NVDA", "SSNLF"]
+        settings.crypto_symbols = []
+        repo = self._repo()
+        repo.get_price_history.return_value = []
+        publisher = MagicMock()
+
+        main_agent._publish_public_scorecard(settings, repo, publisher)
+
+        page = publisher.publish.call_args.args[0]
+        assert "Pokrycie danych: 0% sesji" in page
+        assert "1 symbol bez rozliczeń w oknie" in page
+        assert "SSNLF" not in page
 
     def test_repository_error_never_breaks_the_cycle(self) -> None:
         repo = MagicMock(spec=RepositoryPort)
@@ -2628,11 +3331,17 @@ class TestDispatchReports:
     FRIEND = "friend@example.com"
 
     def _fan_out(
-        self, settings: Settings, mocker, results: list | None = None
+        self,
+        settings: Settings,
+        mocker,
+        results: list | None = None,
+        *,
+        notifications_enabled: bool = True,
     ) -> dict[str, dict[str, str]]:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.subscriber import Subscriber
 
+        settings.notifications_enabled = notifications_enabled
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
@@ -2679,6 +3388,14 @@ class TestDispatchReports:
             context=main_agent.ReportContext(),
         )
         return sent
+
+    def test_fan_out_respects_notifications_disabled(self, settings, mocker) -> None:
+        # MAIL-11: `notifications_enabled=false` wyłącza też fan-out do subskrybentów,
+        # nie tylko pojedynczą wysyłkę — sam klucz Resend nie wystarcza.
+        sent = self._fan_out(settings, mocker, notifications_enabled=False)
+
+        assert sent == {}
+        main_agent.ResendNotifier.assert_not_called()
 
     def test_subscriber_digest_omits_owner_portfolio(self, settings, mocker) -> None:
         sent = self._fan_out(settings, mocker)
@@ -2777,6 +3494,56 @@ class TestFeatureSetVersionWiring:
         main_trainer.build_use_case(settings)
 
         assert use_case_cls.call_args.kwargs["feature_set_version"] is None
+
+
+class TestMarketFeaturesWiring:
+    """ML-31 — `market_features_enabled` dociera do grafu, a wersja zestawu cech 4
+    do filtra treningu i backtestu (ta sama próbka co stempel Fast Loopa)."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_flag_reaches_graph_deps(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.market_features_enabled = enabled
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].market_features_enabled is enabled
+
+    @pytest.mark.parametrize(("market", "expected"), [(False, 3), (True, 4)])
+    def test_slow_loop_and_backtest_filter_on_the_flagged_version(
+        self, settings, mock_external_clients, mocker, market: bool, expected: int
+    ) -> None:
+        trainer_cls = mocker.patch("main_trainer.TrainModelUseCase")
+        backtest_cls = mocker.patch("main_backtest.BacktestUseCase")
+        settings.feature_set_filter_enabled = True
+        settings.market_features_enabled = market
+
+        main_trainer.build_use_case(settings)
+        main_backtest.build_use_case(settings)
+
+        assert trainer_cls.call_args.kwargs["feature_set_version"] == expected
+        assert backtest_cls.call_args.kwargs["feature_set_version"] == expected
+
+    def test_fast_loop_prepares_the_market_features_before_the_graph(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+
+        main_agent.main(settings)
+
+        fake_uc.prepare_market_features.assert_called_once()
+        call_ = fake_uc.prepare_market_features.call_args
+        assert list(call_.args[0]) == ["AAPL", "VOO"]
+        assert call_.kwargs["now"].tzinfo is not None
+        # ML-32: klasy aktywów do mediany klasy i szerokości rynku.
+        assert set(call_.kwargs["asset_types"]) == {"AAPL", "VOO"}
+        # Faza cech idzie przed pierwszym symbolem grafu.
+        names = [c[0] for c in fake_uc.method_calls]
+        assert names.index("prepare_market_features") < names.index("run")
 
 
 class TestModelScorecardBaselinesWiring:
@@ -3188,6 +3955,23 @@ class TestPredictionRecipeWiring:
         assert deps.recipe.git_sha == "abc"
         assert deps.recipe_version_enabled is False
 
+    def test_attestation_on_builds_the_recipe_for_the_commitment(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # WIA-41/42: commitment v2 wiąże `recipe_version` i hash protokołu, więc
+        # przepis powstaje także wtedy, gdy kwit i kolumna przepisu są wyłączone.
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.attestation_enabled = True
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_settled_moves.return_value = []
+        repo.attestation_columns_available.return_value = True
+
+        main_agent.build_use_case(settings, repository=repo)
+
+        deps = use_case_cls.call_args.args[0]
+        assert deps.recipe is not None
+        assert len(deps.recipe.protocol_sha256) == 64
+
     def test_column_flag_reaches_graph_deps_with_a_recipe(
         self, settings, mock_external_clients, mocker
     ) -> None:
@@ -3547,6 +4331,108 @@ class TestResolveRegimeHysteresis:
         assert kwargs["cycle_at"].tzinfo is not None
 
 
+class TestRegimeBannerWiring:
+    """ALR-05 — `_resolve_regime` oddaje reżim cyklu do nagłówka maila (sink
+    `on_banner`), bez zmiany zwracanej pary (kontekst promptu, mnożnik)."""
+
+    _CYCLE_AT = datetime(2026, 10, 19, 13, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.regime_aware_enabled = True
+        settings.yield_curve_enabled = False
+        settings.regime_threshold_max_multiplier = 1.5
+        settings.regime_hysteresis_enabled = False
+        settings.volatility_threshold = Decimal("0.02")
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    @staticmethod
+    def _macro(level: MacroAlertLevel) -> MagicMock:
+        report = MagicMock()
+        report.overall_alert = level
+        return report
+
+    def test_risk_off_banner_carries_multiplier_threshold_and_reason(self) -> None:
+        from src.domain.regime import MarketRegime
+
+        banners: list[object] = []
+
+        result = main_agent._resolve_regime(
+            self._settings(), self._macro(MacroAlertLevel.CRITICAL), None,
+            on_banner=banners.append,
+        )
+
+        assert result == (main_agent.RegimeDetector().label(MarketRegime.RISK_OFF), 1.5)
+        [banner] = banners
+        assert banner == main_agent.RegimeBanner(
+            regime=MarketRegime.RISK_OFF,
+            multiplier=1.5,
+            base_threshold=Decimal("0.02"),
+            reason="alert CRITICAL",
+        )
+
+    def test_hysteresis_hold_is_the_reason(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_latest_regime_state.return_value = RegimeState(regime=MarketRegime.RISK_OFF)
+        banners: list[object] = []
+
+        main_agent._resolve_regime(
+            self._settings(regime_hysteresis_enabled=True, regime_exit_confirmations=2),
+            self._macro(MacroAlertLevel.NORMAL),
+            None,
+            repository=repo,
+            cycle_at=self._CYCLE_AT,
+            on_banner=banners.append,
+        )
+
+        [banner] = banners
+        assert banner.regime is MarketRegime.RISK_OFF
+        assert banner.reason == "histereza: trzymam RISK_OFF (surowy odczyt RISK_ON)"
+
+    def test_regime_off_sends_no_banner(self) -> None:
+        banners: list[object] = []
+
+        main_agent._resolve_regime(
+            self._settings(regime_aware_enabled=False),
+            self._macro(MacroAlertLevel.CRITICAL),
+            None,
+            on_banner=banners.append,
+        )
+
+        assert banners == []
+
+    def test_main_puts_the_banner_into_the_report_context(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.domain.regime import MarketRegime
+
+        banner = main_agent.RegimeBanner(
+            regime=MarketRegime.RISK_OFF,
+            multiplier=2.0,
+            base_threshold=Decimal("0.02"),
+            reason="alert CRITICAL",
+        )
+
+        def resolve(*_args: object, on_banner=None, **_kwargs: object) -> tuple[str, float]:
+            on_banner(banner)
+            return "Ucieczka od ryzyka", 2.0
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch("main_agent._resolve_regime", side_effect=resolve)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings)
+
+        assert dispatch.call_args.kwargs["context"].regime == banner
+
+
 class TestGateDeltaWiring:
     """EXP-01 — flaga z Settings trafia do `AgentGraphDeps`; off (domyślnie) =
     rekord predykcji nie niesie `gate_delta`, którego przed migracją 034 nie ma."""
@@ -3569,6 +4455,45 @@ class TestGateDeltaWiring:
         main_agent.build_use_case(settings)
 
         assert use_case_cls.call_args.args[0].gate_delta_enabled is True
+
+
+class TestDriftGateWiring:
+    """ALR-10 — flaga bramki dryfu z Settings trafia do `AgentGraphDeps`; off
+    (domyślnie) = use case nie czyta referencji dryfu, bramka jak przed ALR-10."""
+
+    def test_flag_defaults_off_in_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].drift_gate_enabled is False
+
+    def test_flag_reaches_graph_deps(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.drift_gate_enabled = True
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].drift_gate_enabled is True
+
+class TestTrendProbabilitiesWiring:
+    """ML-29 — flaga z Settings trafia do `AgentGraphDeps`; off (domyślnie) = prompt
+    bez rozkładu i rekord bez `trend_probabilities` (kolumna dopiero w migracji 051)."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_flag_reaches_graph_deps(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.trend_probabilities_enabled = enabled
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].trend_probabilities_enabled is enabled
 
 
 class TestStaleReferenceWiring:
@@ -4403,6 +5328,60 @@ def test_build_repository_blocks_writes_when_db_writes_disabled(settings, mocker
     assert prediction_id.startswith("dry-run-")
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_build_repository_passes_the_council_votes_upsert_flag(
+    settings, mocker, enabled: bool
+) -> None:
+    # NIEZ-14: upsert głosów rady potrzebuje UNIQUE z migracji 054 — za flagą.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.council_votes_upsert_enabled = enabled
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["council_votes_upsert_enabled"] is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_build_repository_passes_the_persona_vote_outcomes_flag(
+    settings, mocker, enabled: bool
+) -> None:
+    # WIA-51: RPC 045 i pasmo HOLD krypto — flaga i symbole krypto trafiają do adaptera.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.persona_vote_outcomes_enabled = enabled
+    settings.crypto_symbols = ["BTC", "ETH"]
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["persona_vote_outcomes_enabled"] is enabled
+    assert list(repo_cls.call_args.kwargs["crypto_symbols"]) == ["BTC", "ETH"]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_build_repository_passes_the_correction_category_flag(
+    settings, mocker, enabled: bool
+) -> None:
+    # WIA-57: kolumna z migracji 046 — zapis kategorii diagnozy i odczyt lessons.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.correction_category_enabled = enabled
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["correction_category_enabled"] is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_trainer_repository_passes_the_correction_category_flag(
+    settings, mocker, enabled: bool
+) -> None:
+    # WIA-53/57: backfill diagnoz w Slow Loopie zapisuje kategorię tą samą flagą.
+    repo_cls = mocker.patch("main_trainer.SupabaseRepository")
+    settings.correction_category_enabled = enabled
+
+    main_trainer.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["correction_category_enabled"] is enabled
+
+
 def test_build_repository_writes_when_db_writes_enabled(settings, mocker) -> None:
     from src.domain.value_objects import Money
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository
@@ -4459,6 +5438,24 @@ def test_attestation_publisher_follows_db_writes_flag(settings, enabled: bool) -
 
     expected = FileAttestationPublisher if enabled else ReadOnlyAttestationPublisher
     assert type(publisher) is expected
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_attestation_needs_the_commitment_columns(
+    settings, mock_external_clients, mocker, available: bool
+) -> None:
+    # WIA-70: flaga on przed migracjami 024/043 → cykl bez atestacji, ale z zapisem
+    # predykcji (nowe klucze dałyby PGRST204 i zabiły zapis całego wiersza).
+    use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+    settings.attestation_enabled = True
+    repo = MagicMock(spec=RepositoryPort)
+    repo.get_settled_moves.return_value = []
+    repo.attestation_columns_available.return_value = available
+
+    main_agent.build_use_case(settings, repository=repo)
+
+    publisher = use_case_cls.call_args.args[0].attestation_publisher
+    assert (publisher is not None) is available
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -4605,6 +5602,71 @@ class TestSlowLoopPaidBudget:
         assert any(
             "Slow Loop paid LLM calls: 1/15" in rec.message for rec in caplog.records
         ), [rec.message for rec in caplog.records]
+
+
+class TestDiagnosisBackfillJob:
+    """WIA-53: job spłaty długu diagnoz w Slow Loopie — za flagą, z przydziałem
+    z tygodniowego budżetu FIN-30 (ostatni w kolejce: recap > sędzia > diagnozy)."""
+
+    def _trainer(self, settings, mocker) -> MagicMock:
+        from src.application.ports import LLMPort
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        mocker.patch("main_trainer.build_notifier", return_value=MagicMock())
+        mocker.patch("main_agent.build_llm_adapter", return_value=MagicMock(spec=LLMPort))
+        recap_cls = mocker.patch("main_trainer.WeeklyRecapUseCase")
+        recap_cls.return_value.run.return_value = {"status": "skipped_below_threshold"}
+        judge_cls = mocker.patch(
+            "src.application.use_cases.calibrate_confidence.CalibrateConfidenceUseCase"
+        )
+        judge_cls.return_value.run.return_value = {"status": "calibrated"}
+        backfill_cls = mocker.patch("main_trainer.BackfillDiagnosesUseCase")
+        backfill_cls.return_value.run.return_value = {"status": "backfilled"}
+        settings.symbols = ["AAPL"]
+        settings.paid_calls_enabled = True
+        return backfill_cls
+
+    def test_off_by_default(self, settings, mock_external_clients, mocker) -> None:
+        backfill_cls = self._trainer(settings, mocker)
+
+        main_trainer.main(settings)
+
+        backfill_cls.assert_not_called()
+
+    def test_job_gets_its_cap_through_a_budgeted_port(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.application.metering import BudgetedLLMPort
+
+        backfill_cls = self._trainer(settings, mocker)
+        settings.diagnosis_backfill_enabled = True
+        settings.diagnosis_backfill_max_calls = 5
+        settings.slow_loop_max_paid_llm_calls_per_week = 15
+
+        main_trainer.main(settings)
+
+        kwargs = backfill_cls.call_args.kwargs
+        assert kwargs["max_paid_calls"] == 5
+        assert isinstance(kwargs["llm_port"], BudgetedLLMPort)
+        backfill_cls.return_value.run.assert_called_once()
+
+    def test_weekly_cap_trims_the_backfill_first(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        backfill_cls = self._trainer(settings, mocker)
+        settings.weekly_recap_enabled = True
+        settings.calibration_judge_enabled = True
+        settings.diagnosis_backfill_enabled = True
+        settings.diagnosis_backfill_max_calls = 5
+        settings.slow_loop_max_paid_llm_calls_per_week = 3
+
+        main_trainer.main(settings)
+
+        # Sufit 3: recap 1 + sędzia 1 → na diagnozy zostaje 1.
+        assert backfill_cls.call_args.kwargs["max_paid_calls"] == 1
 
 
 class TestNyseClosedDay:
@@ -5751,3 +6813,424 @@ class TestFastLoopWeeklyBudgetBanner:
 
         assert alerts == []
         assert "weekly budget not checked" in caplog.text
+
+
+class TestFinnhubSharedRateLimiter:
+    """DAT-12: limit Finnhub jest per klucz — każdy adapter Finnhub procesu
+    bierze tokeny z tego samego limitera (limiter na instancji by go nie widział)."""
+
+    def test_every_finnhub_adapter_shares_the_process_limiter(
+        self, settings, mock_external_clients
+    ) -> None:
+        from src.domain.macro_risk import MacroRiskInstrumentType
+
+        settings.options_flow_enabled = True
+        settings.analyst_consensus_enabled = True
+        settings.risk_symbols = ["SH"]
+        settings.risk_symbol_types = {"SH": MacroRiskInstrumentType.INVERSE_EQUITY}
+        shared = main_agent.FINNHUB_RATE_LIMITER
+
+        enrichment = main_agent.build_alpha_enrichment(settings)
+        macro = main_agent.build_macro_risk_use_case(settings, MagicMock(spec=RepositoryPort))
+        options = main_agent.build_options_port(settings)
+        use_case = main_agent.build_use_case(settings)
+
+        assert main_agent.build_market_port(settings)._equity._rate_limiter is shared
+        assert enrichment._analyst._rate_limiter is shared
+        assert enrichment._options._rate_limiter is shared
+        assert macro is not None and macro._market._rate_limiter is shared
+        assert options is not None and options._rate_limiter is shared
+        assert use_case._deps.market_port._equity._rate_limiter is shared
+
+class TestPredictionColumnsPreflight:
+    """FIN-05: przed pierwszym symbolem Fast Loop sprawdza, czy `prediction_logs` ma
+    każdą kolumnę, którą zapisze ten config. Brak = exit 1 i instrukcja DB Migrate,
+    zanim cykl zapłaci za analizy, których zapis i tak padnie."""
+
+    _COLUMNS = frozenset({"symbol", "gate_delta"})
+
+    def _run(self, settings, mocker, **preflight):
+        from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+        check = mocker.patch.object(SupabaseRepository, "missing_prediction_columns", **preflight)
+        fake_uc = MagicMock()
+        fake_uc.required_prediction_columns.return_value = self._COLUMNS
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        fake_uc.telemetry.snapshot.return_value.paid_calls = {}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+        return main_agent.main(settings), check, fake_uc, dispatch
+
+    def test_missing_columns_stop_the_cycle_before_any_symbol(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="main_agent"):
+            exit_code, check, fake_uc, dispatch = self._run(
+                settings, mocker, return_value=frozenset({"gate_delta"})
+            )
+
+        assert exit_code == 1
+        check.assert_called_once_with(self._COLUMNS)
+        fake_uc.run.assert_not_called()
+        dispatch.assert_not_called()
+        assert "gate_delta" in caplog.text
+        assert "DB Migrate" in caplog.text
+
+    def test_inconclusive_preflight_lets_the_cycle_run(
+        self, settings, mock_external_clients, mocker, caplog
+    ) -> None:
+        import logging
+
+        import httpx
+
+        with caplog.at_level(logging.WARNING, logger="main_agent"):
+            exit_code, _, fake_uc, dispatch = self._run(
+                settings, mocker, side_effect=httpx.ConnectError("connection reset")
+            )
+
+        assert exit_code == 0
+        assert fake_uc.run.called
+        dispatch.assert_called_once()
+        assert "preflight inconclusive (ConnectError)" in caplog.text
+
+    def test_read_only_run_skips_the_preflight(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.db_writes_enabled = False
+
+        exit_code, check, fake_uc, _ = self._run(
+            settings, mocker, return_value=frozenset({"gate_delta"})
+        )
+
+        assert exit_code == 0
+        check.assert_not_called()
+        assert fake_uc.run.called
+
+
+class TestAlphaEnrichmentWiring:
+    """FIN-11: bramka earnings czyta datę raportu z `earnings_cache` (migracja 053),
+    który odświeża Slow Loop. Fast Loop nie woła Alpha Vantage przed bramką volatility
+    — z flagą `earnings_cache_enabled` dostaje cache z delegatem Null."""
+
+    @staticmethod
+    def _cache_on(settings) -> None:
+        settings.earnings_calendar_enabled = True
+        settings.earnings_cache_enabled = True
+
+    def test_fast_loop_earnings_never_calls_alpha_vantage(self, settings, mocker) -> None:
+        import requests
+
+        get = mocker.patch.object(requests.Session, "get")
+        self._cache_on(settings)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_cached_earnings.return_value = None
+
+        enrichment = main_agent.build_alpha_enrichment(settings, repository=repository)
+
+        assert enrichment.fetch_earnings("AAPL") is None
+        repository.get_cached_earnings.assert_called_once_with("AAPL")
+        repository.save_earnings.assert_not_called()
+        get.assert_not_called()
+
+    def test_fast_loop_takes_the_report_date_from_the_cache(self, settings, mocker) -> None:
+        import requests
+
+        from src.domain.earnings import CachedEarningsDate
+
+        get = mocker.patch.object(requests.Session, "get")
+        self._cache_on(settings)
+        repository = MagicMock(spec=RepositoryPort)
+        soon = datetime.now(UTC).date() + timedelta(days=1)
+        repository.get_cached_earnings.return_value = CachedEarningsDate(
+            "AAPL", soon, datetime.now(UTC)
+        )
+
+        event = main_agent.build_alpha_enrichment(
+            settings, repository=repository
+        ).fetch_earnings("AAPL")
+
+        assert event == EarningsEvent("AAPL", days_until=1, report_date=soon.isoformat())
+        get.assert_not_called()
+
+    def test_without_the_cache_flag_the_live_calendar_stays(self, settings) -> None:
+        from src.infrastructure.adapters.alpha_vantage_earnings import (
+            AlphaVantageEarningsAdapter,
+        )
+
+        settings.earnings_calendar_enabled = True
+
+        enrichment = main_agent.build_alpha_enrichment(
+            settings, repository=MagicMock(spec=RepositoryPort)
+        )
+
+        assert isinstance(enrichment._earnings, AlphaVantageEarningsAdapter)
+
+    def test_cache_flag_without_a_repository_reads_nothing(self, settings) -> None:
+        from src.infrastructure.adapters.alpha_vantage_earnings import (
+            NullEarningsCalendarAdapter,
+        )
+
+        self._cache_on(settings)
+
+        enrichment = main_agent.build_alpha_enrichment(settings)
+
+        assert isinstance(enrichment._earnings, NullEarningsCalendarAdapter)
+
+    def test_fast_loop_hands_its_repository_to_the_enrichment(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        repository = MagicMock(spec=RepositoryPort)
+        repository.missing_prediction_columns.return_value = frozenset()
+        mocker.patch("main_agent.build_repository", return_value=repository)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        build = mocker.patch(
+            "main_agent.build_alpha_enrichment", side_effect=main_agent.build_alpha_enrichment
+        )
+        mocker.patch("main_agent._run_risk_watch", return_value=None)
+        mocker.patch("main_agent._resolve_regime", return_value=(None, 1.0))
+        mocker.patch("main_agent._analyze_symbols", return_value=([], 0, {}, {}))
+        mocker.patch("main_agent._build_portfolio_radar", return_value=None)
+        mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings)
+
+        assert build.call_args.kwargs["repository"] is repository
+
+
+class TestSlowLoopEarningsCache:
+    """FIN-11: Slow Loop raz w tygodniu odświeża `earnings_cache` z Alpha Vantage
+    całą listą kluczy — tylko dla spółek (ETF i krypto nie mają raportów)."""
+
+    def _refresh(self, settings, mocker) -> tuple[MagicMock, MagicMock]:
+        av = mocker.patch("main_trainer.AlphaVantageEarningsAdapter")
+        cache = mocker.patch("main_trainer.CachedEarningsAdapter")
+        settings.symbols = ["AAPL", "VOO", "MSFT"]
+        settings.symbols_etf = ["VOO"]
+        settings.crypto_symbols = ["BTC"]
+        main_trainer._refresh_earnings_cache(settings, MagicMock(spec=RepositoryPort))
+        return av, cache
+
+    def test_refreshes_stocks_with_every_alpha_vantage_key(self, settings, mocker) -> None:
+        settings.earnings_calendar_enabled = True
+        settings.earnings_cache_enabled = True
+
+        av, cache = self._refresh(settings, mocker)
+
+        av.assert_called_once_with(api_key="av1", reserve_keys=["av2"])
+        assert cache.call_args.kwargs["delegate"] is av.return_value
+        assert [c.args[0] for c in cache.return_value.get_next_earnings.call_args_list] == [
+            "AAPL",
+            "MSFT",
+        ]
+
+    def test_one_failing_symbol_does_not_stop_the_refresh(self, settings, mocker) -> None:
+        settings.earnings_calendar_enabled = True
+        settings.earnings_cache_enabled = True
+        cache = mocker.patch("main_trainer.CachedEarningsAdapter")
+        mocker.patch("main_trainer.AlphaVantageEarningsAdapter")
+        cache.return_value.get_next_earnings.side_effect = [RuntimeError("table missing"), None]
+        settings.symbols = ["AAPL", "MSFT"]
+
+        main_trainer._refresh_earnings_cache(settings, MagicMock(spec=RepositoryPort))
+
+        assert cache.return_value.get_next_earnings.call_count == 2
+
+    @pytest.mark.parametrize(
+        ("calendar", "cache_flag", "paid"),
+        [(True, False, True), (False, True, True), (True, True, False)],
+        ids=["cache-off", "calendar-off", "local-without-paid-calls"],
+    )
+    def test_refresh_is_skipped(self, settings, mocker, calendar, cache_flag, paid) -> None:
+        settings.earnings_calendar_enabled = calendar
+        settings.earnings_cache_enabled = cache_flag
+        settings.paid_calls_enabled = paid
+
+        av, cache = self._refresh(settings, mocker)
+
+        av.assert_not_called()
+        cache.assert_not_called()
+
+    def test_slow_loop_runs_the_refresh(self, settings, mock_external_clients, mocker) -> None:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        mocker.patch("main_trainer.AlphaVantageFundamentalsAdapter")
+        refresh = mocker.patch("main_trainer._refresh_earnings_cache")
+
+        main_trainer.main(settings)
+
+        refresh.assert_called_once()
+
+
+class TestStaleQuoteWiring:
+    """DAT-14: akcje i ETF biorą cenę z /quote razem z jego czasem — port notowań
+    to ten sam adapter Finnhub co gałąź equity routera; kolumna `stale_quote`
+    (migracja 055) za flagą, w grafie i w repozytorium."""
+
+    def test_quote_port_is_the_finnhub_equity_feed(self, settings, mock_external_clients):
+        from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert isinstance(deps.quote_port, FinnhubAdapter)
+        assert deps.stale_quote_enabled is settings.stale_quote_enabled
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_build_repository_passes_the_stale_quote_flag(
+        self, settings, mocker, enabled: bool
+    ) -> None:
+        repo_cls = mocker.patch("main_agent.SupabaseRepository")
+        settings.stale_quote_enabled = enabled
+
+        main_agent.build_repository(settings)
+
+        assert repo_cls.call_args.kwargs["stale_quote_enabled"] is enabled
+
+
+class TestMarketCapWiring:
+    """DAT-21: Slow Loop zapisuje kapitalizację w cache za flagą (migracja 056),
+    a Fast Loop czyta ją wyłącznie z cache — dla progu znaczącego zakupu insidera."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_trainer_repository_follows_the_market_cap_flag(
+        self, settings, mocker, enabled: bool
+    ) -> None:
+        supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
+        settings = settings.model_copy(update={"fundamentals_market_cap_enabled": enabled})
+
+        main_trainer.build_repository(settings)
+
+        assert supabase_cls.call_args.kwargs["fundamentals_market_cap_enabled"] is enabled
+
+    def test_alpha_enrichment_reads_the_market_cap_from_the_cache_only(
+        self, settings, mocker
+    ) -> None:
+        get = mocker.patch("requests.Session.get")
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_cached_fundamentals.return_value = None
+        settings = settings.model_copy(update={"insider_flow_enabled": True})
+
+        enrichment = main_agent.build_alpha_enrichment(settings, repository=repository)
+        port = enrichment._market_caps
+
+        assert port is not None
+        assert port.get_fundamentals("NVDA") is None
+        repository.get_cached_fundamentals.assert_called_with("NVDA")
+        get.assert_not_called()
+
+    def test_without_a_repository_the_threshold_stays_fixed(self, settings) -> None:
+        settings = settings.model_copy(update={"insider_flow_enabled": True})
+
+        assert main_agent.build_alpha_enrichment(settings)._market_caps is None
+
+
+class TestRegimeChangeWiring:
+    """ALR-05 (krok 2): `_resolve_regime` podaje zmianę reżimu do bannera (a stąd
+    do leadu) wyłącznie z histerezy — flaga `regime_hysteresis_enabled` po migracji 033."""
+
+    _CYCLE_AT = datetime(2026, 10, 19, 13, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _settings(**overrides: object) -> MagicMock:
+        settings = MagicMock()
+        settings.regime_aware_enabled = True
+        settings.yield_curve_enabled = False
+        settings.regime_threshold_max_multiplier = 1.5
+        settings.regime_hysteresis_enabled = True
+        settings.regime_exit_confirmations = 1
+        settings.volatility_threshold = Decimal("0.02")
+        for name, value in overrides.items():
+            setattr(settings, name, value)
+        return settings
+
+    def _banner(self, settings: MagicMock, level: MacroAlertLevel, previous: object) -> object:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_latest_regime_state.return_value = previous
+        macro = MagicMock()
+        macro.overall_alert = level
+        banners: list[object] = []
+        main_agent._resolve_regime(
+            settings, macro, None, repository=repo, cycle_at=self._CYCLE_AT,
+            on_banner=banners.append,
+        )
+        [banner] = banners
+        return banner
+
+    def test_entering_risk_off_reaches_the_banner(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeChange, RegimeState
+
+        banner = self._banner(
+            self._settings(), MacroAlertLevel.CRITICAL, RegimeState(regime=MarketRegime.NEUTRAL)
+        )
+
+        assert banner.change == RegimeChange(
+            previous=MarketRegime.NEUTRAL, current=MarketRegime.RISK_OFF
+        )
+
+    def test_leaving_risk_off_reaches_the_banner(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        banner = self._banner(
+            self._settings(), MacroAlertLevel.NORMAL, RegimeState(regime=MarketRegime.RISK_OFF)
+        )
+
+        assert banner.change is not None
+        assert banner.change.previous is MarketRegime.RISK_OFF
+
+    def test_without_hysteresis_there_is_no_change(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeState
+
+        banner = self._banner(
+            self._settings(regime_hysteresis_enabled=False),
+            MacroAlertLevel.CRITICAL,
+            RegimeState(regime=MarketRegime.NEUTRAL),
+        )
+
+        assert banner.change is None
+
+
+class TestInsiderLeadWindowWiring:
+    """DAT-21: okno leadu zakupu insidera liczy się od daty cyklu (kalendarz NYSE,
+    jak daty filingów EDGAR) z `insider_lead_max_age_days`."""
+
+    def test_report_context_carries_the_lead_window(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.domain.insider_flow import InsiderLeadWindow
+        from src.domain.market_calendar import to_nyse_time
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+        settings = settings.model_copy(update={"insider_lead_max_age_days": 5})
+
+        main_agent.main(settings)
+
+        kwargs = dispatch.call_args.kwargs
+        assert kwargs["context"].insider_lead_window == InsiderLeadWindow(
+            as_of=to_nyse_time(kwargs["started_at"]).date(), max_age_days=5
+        )
+
+
+class TestSessionCloseSettlementWiring:
+    """WIA-61: zamknięcie sesji obok ceny /quote — flaga w grafie (zapis rozliczenia)
+    i w repozytorium (odczyt drugiej trafności), obie za migracją 059."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_graph_and_repository_follow_the_flag(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        settings = settings.model_copy(update={"session_close_settlement_enabled": enabled})
+
+        deps = main_agent.build_agent_graph_deps(settings)
+        repo_cls = mocker.patch("main_agent.SupabaseRepository")
+        main_agent.build_repository(settings)
+
+        assert deps.session_close_settlement_enabled is enabled
+        assert repo_cls.call_args.kwargs["session_close_settlement_enabled"] is enabled

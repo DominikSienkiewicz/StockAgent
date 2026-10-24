@@ -21,10 +21,15 @@ class CompositeNotifier(ReportNotifierPort):
     def __init__(self, notifiers: list[ReportNotifierPort]) -> None:
         self._notifiers = notifiers
 
-    def send_report(self, subject: str, html_body: str, plain_text: str) -> None:
+    def send_report(
+        self, subject: str, html_body: str, plain_text: str, *, silent: bool = False
+    ) -> None:
+        # ALR-09: zwykła wysyłka idzie do kanałów z dokładnie tymi argumentami co
+        # przed `silent`; flagę dokładamy tylko, gdy push ma być cichy.
+        options = {"silent": True} if silent else {}
         for notifier in self._notifiers:
             try:
-                notifier.send_report(subject, html_body, plain_text)
+                notifier.send_report(subject, html_body, plain_text, **options)
             except Exception:
                 # Jeden zepsuty kanał nie może zatrzymać pozostałych.
                 logger.exception(

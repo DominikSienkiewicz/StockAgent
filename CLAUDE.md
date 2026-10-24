@@ -12,8 +12,8 @@ Każda zmiana w kodzie musi przejść **wszystkie trzy**:
 
 ```bash
 uv run ruff check .
-uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py)
-uv run pytest
+uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py + ratchet tests/, od tests/domain)
+uv run pytest -m "not integration and not containers"   # jak CI; kontenerowe: uv run pytest -m containers (Docker)
 ```
 
 Nie zgłaszaj pracy jako ukończonej, dopóki te trzy nie są zielone.
@@ -31,10 +31,11 @@ domain  ←  application  ←  infrastructure
 - **`src/application/`** — porty (interfejsy ABC w `ports.py`), use cases, graf
   LangGraph, prompty, report builder. Zna `domain`, **nie zna** konkretnych adapterów.
 - **`src/infrastructure/`** — adaptery implementujące porty. Jedyne miejsce z I/O.
-- **`main_agent.py` / `main_trainer.py` / `main_watch.py` / `main_deadman.py` / `main_tools.py`** — DI Container.
+- **`main_agent.py` / `main_trainer.py` / `main_watch.py` / `main_deadman.py` / `main_tools.py` / `main_scorecard.py`** — DI Container.
   Jedyne miejsce, gdzie konkretne adaptery są łączone z use case'ami. `main_watch.py` (#11)
   i `main_deadman.py` (NIEZ-11) reużywają fabryk z `main_agent` i NIE WOŁAJĄ żadnego
-  płatnego portu ani `save_price_snapshot`.
+  płatnego portu ani `save_price_snapshot`. `main_scorecard.py` (WIA-52) tylko czyta bazę
+  i zapisuje plik strony — bez płatnych portów i bez zapisu do bazy.
   Każde narzędzie jednorazowe to podkomenda `main_tools.py`, które jako jedyne składa dla niego
   `Settings` i adaptery, a `src/tools/` trzyma wyłącznie czyste funkcje — osobny `main_<x>.py`
   dostaje tylko entry-point z własnym workflow (ARCH-39, bez wyjątków).
@@ -77,8 +78,10 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   (`slow_loop_paid_budget`), wywołanie ponad przydział odrzuca `BudgetedLLMPort`
   przed dostawcą, a licznikiem jest ten sam `MeteredLLMPort` + `CycleTelemetry`
   co w Fast Loopie.
-- **Cold-start**: `check_price_node` zapisuje snapshot ceny w KAŻDYM cyklu
-  (`price_snapshots`), żeby następny cykl miał punkt odniesienia.
+- **Cold-start**: snapshot ceny (`price_snapshots`) zapisuje węzeł TERMINALNY każdego
+  ukończonego cyklu — `save_node` albo `ignore_node` (`_persist_price_snapshot`), nie
+  `check_price_node` — żeby następny cykl miał punkt odniesienia. Cykl padły w połowie
+  nie zostawia snapshotu, więc retry liczy Δ od ostatniego ukończonego cyklu (#6).
   Jedyny wyjątek (FIN-12): symbol odcięty sufitem płatnych wywołań cyklu
   (`max_paid_llm_calls_per_cycle`, węzeł `budget_exhausted`) kończy jako 'ignored'
   BEZ snapshotu ceny — inaczej następny cykl liczyłby Δ od nowej ceny i ruch ponad

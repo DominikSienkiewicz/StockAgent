@@ -6,9 +6,11 @@ import pytest
 
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
+    STORAGE_SCALE,
     AssetType,
     Fundamentals,
     Money,
+    Quote,
     Threshold,
     ValuationVerdict,
 )
@@ -47,6 +49,28 @@ class TestMoney:
         infinity = Decimal("Infinity")
         with pytest.raises(ValueError, match="Inf|finite"):
             Money(infinity)
+
+
+class TestMoneyScale:
+    """ARCH-38: `Money` w skali kolumn DECIMAL(14,4) — Python trzyma pełną
+    precyzję, baza cztery miejsca, więc hash i zapis muszą widzieć to samo."""
+
+    def test_storage_scale_mirrors_decimal_14_4(self) -> None:
+        assert Decimal("0.0001") == STORAGE_SCALE
+
+    def test_for_storage_matches_decimal_14_4(self) -> None:
+        # Połówki od zera jak NUMERIC w Postgresie (ROUND_HALF_UP), nie HALF_EVEN.
+        assert Money(Decimal("90.11115")).for_storage().amount == Decimal("90.1112")
+        assert Money(Decimal("-0.00005")).for_storage().amount == Decimal("-0.0001")
+
+    def test_for_storage_has_exactly_four_places(self) -> None:
+        # Tekst kolumny NUMERIC(14,4) ma zawsze cztery miejsca — kanoniczny literał.
+        assert str(Money(Decimal("298.87")).for_storage().amount) == "298.8700"
+        assert str(Money(Decimal("90.11111111101")).for_storage().amount) == "90.1111"
+
+    def test_for_storage_is_idempotent(self) -> None:
+        stored = Money(Decimal("90.11115")).for_storage()
+        assert stored.for_storage() == stored
 
 
 class TestThreshold:
@@ -157,3 +181,118 @@ class TestClampUnit:
 
         with pytest.raises(ValueError):
             clamp_unit(float("nan"))
+
+
+# --- DAT-14: notowanie z chwilą i jego świeżość -------------------------------
+
+# 2026-10-15 (czw.) i 2026-10-16 (pt.) to zwykłe sesje NYSE (9:30–16:00 ET = 13:30–20:00 UTC).
+_THU_CLOSE = datetime(2026, 10, 15, 20, 0, tzinfo=UTC)
+_FRI_MIDDAY = datetime(2026, 10, 16, 17, 0, tzinfo=UTC)
+
+
+def _quote(quoted_at: datetime) -> Quote:
+    return Quote(price=Money(Decimal("182.5")), quoted_at=quoted_at)
+
+
+def test_quote_older_than_last_session_is_stale() -> None:
+    # Piątek w trakcie sesji, a /quote oddaje czwartkowe zamknięcie — dane stoją.
+    from src.domain.value_objects import is_stale
+
+    quote = _quote(_THU_CLOSE)
+
+    assert is_stale(quote.quoted_at, _FRI_MIDDAY)
+
+
+class TestQuoteFreshness:
+    def test_quote_from_the_running_session_is_fresh(self) -> None:
+        from src.domain.value_objects import is_stale
+
+        assert not is_stale(datetime(2026, 10, 16, 16, 55, tzinfo=UTC), _FRI_MIDDAY)
+
+    def test_previous_close_before_the_next_open_is_fresh(self) -> None:
+        # Piątek 8:00 ET: ostatnia rozpoczęta sesja to czwartek — jego zamknięcie
+        # jest najświeższym możliwym notowaniem.
+        from src.domain.value_objects import is_stale
+
+        assert not is_stale(_THU_CLOSE, datetime(2026, 10, 16, 12, 0, tzinfo=UTC))
+
+    def test_weekend_quote_from_friday_close_is_fresh(self) -> None:
+        from src.domain.value_objects import is_stale
+
+        friday_close = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
+
+        assert not is_stale(friday_close, datetime(2026, 10, 17, 15, 0, tzinfo=UTC))
+
+    def test_holiday_quote_is_stale_against_the_session_the_caller_requires(self) -> None:
+        # Święto Dziękczynienia (czw. 2026-11-26): środowe zamknięcie jest najświeższe
+        # na dziś, ale rozliczenie predykcji ze środy wymaga sesji PO niej (piątek).
+        from src.domain.market_calendar import session_on
+        from src.domain.value_objects import is_stale
+
+        wednesday_close = datetime(2026, 11, 25, 21, 0, tzinfo=UTC)
+        holiday_noon = datetime(2026, 11, 26, 17, 0, tzinfo=UTC)
+        friday = session_on(datetime(2026, 11, 27).date())
+        assert friday is not None
+
+        assert not is_stale(wednesday_close, holiday_noon)
+        assert is_stale(wednesday_close, holiday_noon, friday)
+
+    def test_naive_quote_time_is_utc(self) -> None:
+        from src.domain.value_objects import is_stale
+
+        assert is_stale(_THU_CLOSE.replace(tzinfo=None), _FRI_MIDDAY)
+
+    def test_quote_is_immutable_and_keeps_optional_prices(self) -> None:
+        from src.domain.value_objects import Quote
+
+        quote = Quote(
+            price=Money(Decimal("182.5")),
+            quoted_at=_THU_CLOSE,
+            prev_close=Money(Decimal("180")),
+            open_price=Money(Decimal("181")),
+        )
+
+        assert quote.prev_close == Money(Decimal("180"))
+        with pytest.raises(FrozenInstanceError):
+            quote.price = Money(Decimal("1"))  # type: ignore[misc]
+
+
+class TestSettlementQuote:
+    """DAT-14: rozliczenie wymaga notowania z sesji otwartej PO predykcji — inaczej
+    cena rozliczenia równa się cenie wejścia (weekend, święto, drugi przebieg przed
+    otwarciem), a BULLISH i BEARISH wychodzą jako pudło bez ruchu rynku."""
+
+    # Pon. 2026-10-19 05:30 UTC = 01:30 ET, przed otwarciem (13:30 UTC).
+    _MONDAY_PRE_OPEN = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def test_friday_close_cannot_settle_a_monday_pre_open_prediction(self) -> None:
+        from src.domain.value_objects import settles_on_stale_quote
+
+        friday_close = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
+
+        assert settles_on_stale_quote(friday_close, self._MONDAY_PRE_OPEN)
+
+    def test_close_of_the_session_after_the_prediction_settles_it(self) -> None:
+        from src.domain.value_objects import settles_on_stale_quote
+
+        monday_close = datetime(2026, 10, 19, 20, 0, tzinfo=UTC)
+
+        assert not settles_on_stale_quote(monday_close, self._MONDAY_PRE_OPEN)
+
+    def test_a_holiday_keeps_the_quote_stale_until_the_next_session(self) -> None:
+        # Święto Dziękczynienia (czw. 2026-11-26); piątek to skrócona sesja 9:30–13:00 ET.
+        from src.domain.value_objects import settles_on_stale_quote
+
+        predicted = datetime(2026, 11, 26, 5, 30, tzinfo=UTC)
+        wednesday_close = datetime(2026, 11, 25, 21, 0, tzinfo=UTC)
+        friday_early_close = datetime(2026, 11, 27, 18, 0, tzinfo=UTC)
+
+        assert settles_on_stale_quote(wednesday_close, predicted)
+        assert not settles_on_stale_quote(friday_early_close, predicted)
+
+    def test_naive_times_are_utc(self) -> None:
+        from src.domain.value_objects import settles_on_stale_quote
+
+        friday_close = datetime(2026, 10, 16, 20, 0)
+
+        assert settles_on_stale_quote(friday_close, self._MONDAY_PRE_OPEN.replace(tzinfo=None))

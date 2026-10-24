@@ -23,6 +23,7 @@ snapshotów `price_snapshots`), z tymi samymi kosztami. Brak danych IVV to jawne
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -31,7 +32,9 @@ from src.application.report_formatting import POLISH_NUMBERS, NumberStyle
 from src.application.report_models import ResolvedPrediction
 from src.domain.benchmark import BenchmarkComparison, compare_with_benchmarks, window_change
 from src.domain.calibration_curve import ProbabilityScores
+from src.domain.change_detection import AccuracyDrop, detect_accuracy_drop
 from src.domain.equity_curve import EquityCurve, PaperTrade, paper_portfolio_curve
+from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.significance import MIN_BOOTSTRAP_CYCLES
 from src.domain.statistics import wilson_interval
 from src.domain.track_record import (
@@ -54,6 +57,12 @@ PORTFOLIO_ASSUMPTIONS_PL = f"{_PORTFOLIO_RULES_PL}; bez kosztów transakcyjnych 
 PORTFOLIO_METHOD_CHANGE_PL = (
     f"Metodologia zmieniona {PORTFOLIO_METHOD_SINCE}: wcześniej każdą transakcję "
     "składano szeregowo na 100% kapitału, więc starsze wyniki nie są porównywalne."
+)
+# WIA-34: wejście to cena z chwili predykcji. Fast Loop chodzi przed sesją, więc
+# to ostatnie zamknięcie — trafność i paper-PnL liczą lukę na otwarciu.
+ENTRY_PRICE_NOTE_PL = (
+    "Cena wejścia to cena z chwili predykcji (poza sesją: ostatnie zamknięcie), "
+    "więc wynik obejmuje lukę na otwarciu, której przed sesją nie da się kupić."
 )
 _EPOCH = datetime.min.replace(tzinfo=UTC)
 
@@ -107,8 +116,13 @@ def cycle_key(prediction: ResolvedPrediction) -> str:
 
 
 def _realized_change(prediction: ResolvedPrediction) -> float | None:
+    """Zmiana ceny jako float; poza zakresem floata (inf) → None (PORT-09):
+    krzywe domeny odrzucają NaN/inf, więc taka predykcja wypada sama."""
     change = prediction.actual_change_pct
-    return None if change is None else float(change)
+    if change is None:
+        return None
+    value = float(change)
+    return value if math.isfinite(value) else None
 
 
 def scored_calls(resolved: Sequence[ResolvedPrediction]) -> list[ScoredCall]:
@@ -378,4 +392,32 @@ def murphy_label(scores: ProbabilityScores, *, numbers: NumberStyle = POLISH_NUM
     return (
         f"REL {_score(scores.reliability, numbers)} · RES {_score(scores.resolution, numbers)} · "
         f"UNC {_score(scores.uncertainty, numbers)}"
+    )
+
+
+# NIEZ-20: źródło alertu bannera, gdy detektor zmiany zobaczy spadek trafności.
+ACCURACY_DROP_ALERT_SOURCE = "Detektor trafności"
+_ACCURACY_DROP_ACTION_PL = (
+    "Porównaj przepisy i dostawcę modelu z okresu przed i po dacie zmiany "
+    "(`main_tools.py evaluate --by-recipe`); po pauzie crona sprawdź, czy dane wejściowe "
+    "wróciły do normy."
+)
+
+
+def accuracy_drop_evidence(resolved: Sequence[ResolvedPrediction]) -> AccuracyDrop | None:
+    """NIEZ-20: data istotnego spadku trafności kierunkowej (Page-Hinkley per
+    cykl) albo None — brak danych, za krótka historia albo brak zmiany."""
+    if not resolved:
+        return None
+    return detect_accuracy_drop(scored_calls(resolved))
+
+
+def accuracy_drop_alert(drop: AccuracyDrop, now: datetime) -> QuotaAlert:
+    """NIEZ-20: WARNING do bannera maila z tym samym zdaniem co Track Record."""
+    return QuotaAlert(
+        source=ACCURACY_DROP_ALERT_SOURCE,
+        severity=QuotaSeverity.WARNING,
+        message=drop.describe_pl(),
+        action=_ACCURACY_DROP_ACTION_PL,
+        occurred_at=now,
     )

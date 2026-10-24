@@ -214,3 +214,15 @@ def test_public_label_replaces_the_index_ticker() -> None:
     assert "hit-rate względem rynku (S&P 500)" in detail
     assert "IVV" not in benchmark_method(PUBLIC_BENCHMARK_LABEL)
     assert "IVV" in BENCHMARK_METHOD_PL
+
+
+def test_prediction_with_non_finite_change_drops_out_of_the_curve() -> None:
+    # PORT-09: krzywa domeny odrzuca NaN/inf, więc predykcja, której zmiana nie
+    # mieści się we floacie, wypada sama — reszta krzywej liczy się dalej.
+    curve = portfolio_curve(
+        [_call("AAPL", "BULLISH", 1, "101"), _call("MSFT", "BULLISH", 2, "1e400")]
+    )
+
+    assert curve is not None
+    assert curve.n_trades == 1
+    assert curve.total_return == pytest.approx(0.01)

@@ -69,6 +69,16 @@ def test_real_config_toml_parses_and_has_expected_invariants() -> None:
         assert secret not in data, f"sekret {secret} w config.toml!"
 
 
+def test_toml_cross_list_invariants() -> None:
+    """DAT-27: listy klasyfikujące symbole (ETF, brak ceny) opisują watchlistę.
+    Ticker spoza `symbols` to martwa konfiguracja — tak zniknęła historia VOO."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    symbols = set(data["symbols"])
+
+    assert sorted(set(data["symbols_etf"]) - symbols) == []
+    assert sorted(set(data["symbols_unsupported_price"]) - symbols) == []
+
+
 def test_real_config_toml_bounds_reflection_settlement_age() -> None:
     """WIA-04: produkcja rozlicza predykcje w oknie 6 h – 96 h."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
@@ -105,6 +115,37 @@ def test_config_toml_found_regardless_of_cwd(
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert s.symbols == data["symbols"], "config.toml nie został znaleziony spoza roota"
     assert s.notifications_enabled is data["notifications_enabled"]
+
+
+def test_unknown_toml_key_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """TEST-03 (G64): literówka w kluczu `config.toml` przerywa start, zamiast po
+    cichu zostawić default (tu: `weekly_recap_enabled` zostałby wyłączony)."""
+    monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
+    toml = tmp_path / "config.toml"
+    toml.write_text("weekly_recap_enable = true\n", encoding="utf-8")
+    monkeypatch.setenv("STOCKAGENT_TOML_FILE", str(toml))
+
+    with pytest.raises(ValueError, match="weekly_recap_enable"):
+        Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+
+
+def test_unknown_env_variable_is_still_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TEST-03: ścisłe jest tylko źródło TOML — env i `.env` niosą klucze innych
+    narzędzi (SONAR_TOKEN, GH_TOKEN), więc `extra = "ignore"` dla nich zostaje."""
+    monkeypatch.setenv("SONAR_TOKEN", "not-a-setting")
+
+    settings = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+
+    assert not hasattr(settings, "sonar_token")
+
+
+def test_every_real_config_toml_key_is_a_settings_field() -> None:
+    """TEST-03: produkcyjny `config.toml` nie ma klucza spoza `Settings`."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+
+    assert set(data) - set(Settings.model_fields) == set()
 
 
 def test_env_overrides_toml(
@@ -394,6 +435,36 @@ def test_real_config_toml_ships_the_cycle_runs_history_on_after_migration() -> N
     assert data["cycle_runs_enabled"] is True
 
 
+def test_real_config_toml_ships_the_scorecard_run_id_off_until_migration() -> None:
+    """ML-24: kolumna `model_scorecards.run_id` dopiero po migracji 049 (ręczny DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["model_scorecard_run_id_enabled"] is False
+
+
+def test_real_config_toml_ships_the_scorecard_feature_stats_off_until_migration() -> None:
+    """ML-21: kolumna `model_scorecards.feature_stats` dopiero po migracji 052."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["model_scorecard_feature_stats_enabled"] is False
+
+
+def test_real_config_toml_ships_the_trend_probabilities_off_until_migration() -> None:
+    """ML-29: kolumna `prediction_logs.trend_probabilities` dopiero po migracji 051."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["trend_probabilities_enabled"] is False
+
+
+def test_real_config_toml_ships_the_market_features_off() -> None:
+    """ML-31: cechy rynkowe i wersja zestawu cech 4 — świadome włączenie właściciela."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["market_features_enabled"] is False
+
+
+def test_real_config_toml_ships_the_macro_series_off() -> None:
+    """DAT-22: głosy VIX/HY zmieniają reżim (przepis) — świadome włączenie właściciela."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["macro_series_enabled"] is False
+
+
 def test_real_config_toml_ships_the_llm_failover_off() -> None:
     """NIEZ-44: zapasowy dostawca LLM gotowy w kodzie, ale wyłączony — w pliku jest
     tylko zakomentowany przykład, dopóki właściciel nie doda klucza drugiego dostawcy."""
@@ -430,3 +501,53 @@ def test_real_config_toml_weekly_budget_covers_its_worst_case(
         f"tygodniowy worst case {weekly.worst_case_usd:.2f} USD > budżet "
         f"{settings.fast_loop_weekly_budget_usd:.2f} USD w config.toml"
     )
+
+
+def test_real_config_toml_ships_the_earnings_cache_off_until_migration() -> None:
+    """FIN-11: `earnings_cache` powstaje dopiero w migracji 053 (ręczny DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["earnings_cache_enabled"] is False
+
+
+def test_real_config_toml_ships_the_council_votes_upsert_off_until_migration() -> None:
+    """NIEZ-14: upsert głosów wymaga indeksu UNIQUE z migracji 054 (ręczny DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["council_votes_upsert_enabled"] is False
+
+
+def test_real_config_toml_ships_the_persona_vote_outcomes_off_until_migration() -> None:
+    """WIA-51: RPC `persona_vote_outcomes` powstaje dopiero w migracji 045 (DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["persona_vote_outcomes_enabled"] is False
+
+
+def test_real_config_toml_ships_the_correction_category_off_until_migration() -> None:
+    """WIA-57: kolumna `correction_category` powstaje dopiero w migracji 046 (DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["correction_category_enabled"] is False
+
+
+def test_real_config_toml_ships_the_diagnosis_backfill_off_with_its_cap() -> None:
+    """WIA-53: job spłaty diagnoz off; cap 5 mieści się w tygodniu Slow Loopa (15)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["diagnosis_backfill_enabled"] is False
+    assert data["diagnosis_backfill_max_calls"] == 5
+
+def test_real_config_toml_ships_the_stale_quote_flag_off_until_migration() -> None:
+    """DAT-14: kolumna `prediction_logs.stale_quote` powstaje w migracji 055."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["stale_quote_enabled"] is False
+
+
+def test_real_config_toml_ships_the_market_cap_write_off_until_migration() -> None:
+    """DAT-21: kolumna `fundamentals_cache.market_cap` powstaje w migracji 056."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["fundamentals_market_cap_enabled"] is False
+
+
+def test_real_config_toml_ships_the_price_level_alerts_off_until_migration() -> None:
+    """ALR-11: tabela `price_level_alerts` powstaje w migracji 057; lista startowa
+    jest pusta — poziomy dopisuje właściciel."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["price_level_alerts_enabled"] is False
+    assert data["price_alerts"] == []

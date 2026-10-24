@@ -1,5 +1,6 @@
+import logging
 from collections.abc import Callable
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -121,6 +122,18 @@ class TestSavePriceSnapshot:
         upsert.assert_called_once()
         assert upsert.call_args.kwargs["on_conflict"] == "symbol,timestamp_hour"
 
+    def test_price_serialized_with_four_decimal_places(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ARCH-38: kolumna DECIMAL(14,4) — połówka idzie od zera (ROUND_HALF_UP)
+        # jak w Postgresie, a nie do parzystej, jak domyślnie w Pythonie.
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": "snap-1"}])
+
+        repo.save_price_snapshot("AAPL", Money(Decimal("90.11115")))
+
+        inserted = mock_client.table.return_value.upsert.call_args.args[0]
+        assert inserted["price"] == "90.1112"
+
 
 # ---------------------------------------------------------------------------
 # get_last_prediction_price — referencja dla cechy price_delta (P0: train/serve
@@ -168,6 +181,93 @@ class TestGetLastPredictionPrice:
         mock_client.table.return_value.select.return_value.eq.assert_called_with(
             "symbol", "VOO"
         )
+
+    def test_excludes_rows_from_the_current_hour(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ML-18: re-run w tej samej godzinie UTC nadpisze upsertem wiersz z tej
+        # godziny — delta liczona od niego byłaby deltą od samej siebie.
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "lt", "order", "limit"],
+            [{"price_at_prediction": 150.0}],
+        )
+
+        price = repo.get_last_prediction_price(
+            "AAPL", before=datetime(2026, 10, 21, 14, 37, 12, tzinfo=UTC)
+        )
+
+        assert price == Money(Decimal("150.0"))
+        lt = mock_client.table.return_value.select.return_value.eq.return_value.lt
+        lt.assert_called_once_with("timestamp_hour", "2026-10-21T14:00:00+00:00")
+
+    def test_before_in_another_zone_is_cut_to_the_utc_hour(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # `timestamp_hour` to date_trunc('hour', timestamp, 'UTC') (migracja 013).
+        _set_chain_response(
+            mock_client, ["table", "select", "eq", "lt", "order", "limit"], data=[]
+        )
+        warsaw = timezone(timedelta(hours=2))
+
+        repo.get_last_prediction_price(
+            "AAPL", before=datetime(2026, 10, 21, 16, 5, tzinfo=warsaw)
+        )
+
+        lt = mock_client.table.return_value.select.return_value.eq.return_value.lt
+        lt.assert_called_once_with("timestamp_hour", "2026-10-21T14:00:00+00:00")
+
+
+class TestGetLatestPrediction:
+    """ALR-08/ALR-10: ostatnia predykcja symbolu z chwilą i uzasadnieniem — kontekst
+    alertu szoku i referencja dryfu bramki volatility."""
+
+    def test_returns_price_time_and_reasoning(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "order", "limit"],
+            [
+                {
+                    "price_at_prediction": 187.25,
+                    "timestamp": "2026-10-15T13:30:00+00:00",
+                    "reasoning_text": "  Popyt na AI.  ",
+                }
+            ],
+        )
+
+        latest = repo.get_latest_prediction("AAPL")
+
+        assert latest is not None
+        assert latest.price == Money(Decimal("187.25"))
+        assert latest.timestamp == datetime(2026, 10, 15, 13, 30, tzinfo=UTC)
+        assert latest.reasoning == "Popyt na AI."
+        mock_client.table.assert_called_with("prediction_logs")
+        mock_client.table.return_value.select.return_value.eq.assert_called_with(
+            "symbol", "AAPL"
+        )
+        mock_client.table.return_value.select.return_value.eq.return_value.order.assert_called_with(
+            "timestamp", desc=True
+        )
+
+    def test_none_without_predictions(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "select", "eq", "order", "limit"], [])
+
+        assert repo.get_latest_prediction("AAPL") is None
+
+    def test_row_without_price_or_time_is_no_prediction(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "order", "limit"],
+            [{"price_at_prediction": None, "timestamp": "2026-10-15T13:30:00+00:00"}],
+        )
+
+        assert repo.get_latest_prediction("AAPL") is None
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +355,31 @@ class TestSavePrediction:
         # Decimal nie jest JSON-serializowalny natywnie — adapter musi zamieniać na str/float
         assert isinstance(inserted["price_at_prediction"], str | float | int)
         assert str(inserted["price_at_prediction"]) == "100.55"
+
+    def test_price_columns_are_quantized_to_decimal_14_4(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ARCH-38: tylko kolumny DECIMAL(14,4); inne Decimale (np. pole spoza
+        # tej skali) zachowują pełną precyzję.
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": "uuid-1"}])
+
+        repo.save_prediction(
+            {
+                "symbol": "AAPL",
+                "price_at_prediction": Decimal("90.11115"),
+                "predicted_target_price": Decimal("90.11111111101"),
+                "interval_low": Decimal("-0.00005"),
+                "interval_high": Decimal("91.00005"),
+                "gate_delta_raw": Decimal("0.123456789"),
+            }
+        )
+
+        inserted = mock_client.table.return_value.upsert.call_args.args[0]
+        assert inserted["price_at_prediction"] == "90.1112"
+        assert inserted["predicted_target_price"] == "90.1111"
+        assert inserted["interval_low"] == "-0.0001"
+        assert inserted["interval_high"] == "91.0001"
+        assert inserted["gate_delta_raw"] == "0.123456789"
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +644,56 @@ class TestGetUnverifiedPrediction:
 # ---------------------------------------------------------------------------
 
 
+class TestCorrectionCategory:
+    """WIA-57: kolumna `correction_category` istnieje od migracji 046 — zapis
+    i odczyt tylko za flagą, inaczej PGRST204 zgubiłby rozliczenie predykcji."""
+
+    @staticmethod
+    def _update(repo: SupabaseRepository, mock_client: MagicMock) -> dict[str, Any]:
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [{"id": "u"}])
+        repo.update_prediction_accuracy(
+            prediction_id="u",
+            actual_price=Decimal("99.0"),
+            accuracy_score=0.5,
+            is_trend_correct=False,
+            insight="Zignorowałem Fed.",
+            correction_category=MistakeCategory.MACRO,
+        )
+        payload: dict[str, Any] = mock_client.table.return_value.update.call_args.args[0]
+        return payload
+
+    def test_flag_off_keeps_the_column_out_of_the_payload(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        assert "correction_category" not in self._update(repo, mock_client)
+
+    def test_flag_on_writes_the_category(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", correction_category_enabled=True
+        )
+
+        assert self._update(repo, mock_client)["correction_category"] == "MACRO"
+
+    def test_lessons_read_selects_the_column_only_with_the_flag(
+        self, mock_client: MagicMock
+    ) -> None:
+        select = mock_client.table.return_value.select
+        _set_chain_response(
+            mock_client, ["table", "select", "gte", "not_", "is_", "order", "range"], []
+        )
+        plain = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
+        flagged = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", correction_category_enabled=True
+        )
+
+        plain.get_resolved_predictions(30)
+        assert "correction_category" not in select.call_args.args[0]
+        flagged.get_resolved_predictions(30)
+        assert "correction_category" in select.call_args.args[0]
+
+
 class TestUpdatePredictionAccuracy:
     def test_updates_record_with_price_accuracy_and_insight(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -571,6 +746,25 @@ class TestUpdatePredictionAccuracy:
             mock_client.table.return_value.update.return_value.eq.return_value.is_
         )
         is_call.assert_called_with("actual_price_after_12h", "null")
+
+    def test_actual_price_is_quantized_to_the_column_scale(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ARCH-38: `actual_price_after_12h` to DECIMAL(14,4).
+        _set_chain_response(
+            mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}]
+        )
+
+        repo.update_prediction_accuracy(
+            prediction_id="uuid-1",
+            actual_price=Decimal("99.00005"),
+            accuracy_score=0.87,
+            is_trend_correct=True,
+            insight="x",
+        )
+
+        payload = mock_client.table.return_value.update.call_args.args[0]
+        assert payload["actual_price_after_12h"] == "99.0001"
 
 
 # ---------------------------------------------------------------------------
@@ -871,6 +1065,264 @@ class TestGetPersonaTrackRecord:
         assert repo.get_persona_track_record() == {}
 
 
+_VOTE_OUTCOME_CHAIN = ["rpc", "order", "order", "order", "range"]
+
+
+def _vote_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "prediction_id": "p-1",
+        "investor_name": "Buffett",
+        "recommendation": "HOLD",
+        "confidence": 0.8,
+        "symbol": "BTC",
+        "price_at_prediction": "100.0000",
+        "actual_price_after_12h": "102.0000",
+        "predicted_at": "2026-09-01T10:00:00+00:00",
+        "settled_at": "2026-09-02T05:30:00+00:00",
+    }
+    row.update(overrides)
+    return row
+
+
+class TestPersonaVoteOutcomes:
+    """WIA-51 — RPC `persona_vote_outcomes` (migracja 045) zwraca surowe głosy;
+    trafność i wagi liczy domena z pasmem HOLD klasy aktywa."""
+
+    @staticmethod
+    def _flagged_repo() -> SupabaseRepository:
+        return SupabaseRepository(
+            url="https://test.supabase.co",
+            key="anon-key",
+            persona_vote_outcomes_enabled=True,
+            crypto_symbols=["btc"],
+        )
+
+    def test_maps_rpc_rows_to_domain_outcomes(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.persona_track_record import PersonaVoteOutcome
+
+        _set_chain_response(mock_client, _VOTE_OUTCOME_CHAIN, [_vote_row()])
+
+        (outcome,) = repo.get_persona_vote_outcomes(window_days=30)
+
+        assert outcome == PersonaVoteOutcome(
+            prediction_id="p-1",
+            investor_name="Buffett",
+            recommendation="HOLD",
+            confidence=0.8,
+            symbol="BTC",
+            price_at_prediction=Decimal("100.0000"),
+            actual_price=Decimal("102.0000"),
+            predicted_at=datetime(2026, 9, 1, 10, 0, tzinfo=UTC),
+            settled_at=datetime(2026, 9, 2, 5, 30, tzinfo=UTC),
+        )
+        assert mock_client.rpc.call_args.args == ("persona_vote_outcomes", {"window_days": 30})
+
+    def test_skips_rows_without_prices_or_persona(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            _VOTE_OUTCOME_CHAIN,
+            [
+                _vote_row(actual_price_after_12h=None),
+                _vote_row(investor_name=None),
+                _vote_row(settled_at=None),
+            ],
+        )
+
+        (outcome,) = repo.get_persona_vote_outcomes()
+
+        assert outcome.settled_at is None
+
+    def test_flag_scores_hold_on_crypto_with_the_crypto_tolerance(
+        self, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            _VOTE_OUTCOME_CHAIN,
+            [_vote_row(), _vote_row(prediction_id="p-2", symbol="AAPL")],
+        )
+
+        stats = self._flagged_repo().get_persona_track_record(window_days=90)
+
+        # BTC +2% mieści się w paśmie krypto, AAPL +2% nie — RPC 018 dałoby 0/2.
+        assert stats == {"Buffett": (0.5, 2)}
+        assert mock_client.rpc.call_args.args[0] == "persona_vote_outcomes"
+
+    def test_flag_derives_weights_from_the_same_rule(self, mock_client: MagicMock) -> None:
+        from src.domain.value_objects import AssetType
+
+        _set_chain_response(
+            mock_client,
+            _VOTE_OUTCOME_CHAIN,
+            [_vote_row(), _vote_row(prediction_id="p-2", symbol="AAPL")],
+        )
+
+        weights = self._flagged_repo().get_persona_accuracy(AssetType.STOCK)
+
+        assert weights == {"Buffett": pytest.approx(1.0)}
+        assert mock_client.rpc.call_args.args[0] == "persona_vote_outcomes"
+
+    def test_flag_without_migration_degrades_to_empty(
+        self, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.domain.value_objects import AssetType
+
+        mock_client.rpc.side_effect = APIError(
+            {"code": "PGRST202", "message": "function persona_vote_outcomes not found"}
+        )
+        repo = self._flagged_repo()
+
+        with caplog.at_level(logging.WARNING):
+            assert repo.get_persona_track_record() == {}
+            assert repo.get_persona_accuracy(AssetType.STOCK) == {}
+
+        assert "apply migration 045" in caplog.text
+
+    def test_without_flag_the_old_rpcs_stay(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["rpc"], [])
+
+        repo.get_persona_track_record()
+
+        assert mock_client.rpc.call_args.args[0] == "persona_accuracy_stats"
+
+
+_DEFERRED_CHAIN = ["table", "select", "in_", "eq", "order", "range"]
+
+
+def _deferred_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "id": "p-1",
+        "symbol": "AAPL",
+        "timestamp": "2026-08-01T10:00:00+00:00",
+        "predicted_trend": "BULLISH",
+        "price_at_prediction": "100.0000",
+        "predicted_target_price": "104.0000",
+        "actual_price_after_12h": "97.0000",
+        "news_summary": "Nagłówek | Drugi",
+        "reasoning_text": "Popyt rośnie.",
+        "correction_insights": "Niska zmienność — diagnoza LLM pominięta (bez ponowienia).",
+        "is_trend_correct": False,
+        "data_quality_flags": [],
+        "decision_receipts": {"schema_version": 1, "effective_threshold": "0.03"},
+    }
+    row.update(overrides)
+    return row
+
+
+class TestDeferredDiagnoses:
+    """WIA-53 — błędne predykcje z placeholderem zamiast diagnozy i zapis
+    diagnozy, który podmienia tylko przeczytany placeholder."""
+
+    def test_reads_wrong_predictions_with_a_placeholder_newest_first(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.prediction import UNDIAGNOSED_MISTAKE_PLACEHOLDERS
+
+        _set_chain_response(mock_client, _DEFERRED_CHAIN, [_deferred_row()])
+
+        (row,) = repo.get_deferred_diagnoses(limit=5)
+
+        select = mock_client.table.return_value.select
+        select.return_value.in_.assert_called_once_with(
+            "correction_insights", list(UNDIAGNOSED_MISTAKE_PLACEHOLDERS)
+        )
+        select.return_value.in_.return_value.eq.assert_called_once_with(
+            "is_trend_correct", False
+        )
+        select.return_value.in_.return_value.eq.return_value.order.assert_called_once_with(
+            "timestamp", desc=True
+        )
+        assert row.prediction.id == "p-1"
+        assert row.prediction.news_summary == "Nagłówek | Drugi"
+        assert row.prediction.reasoning == "Popyt rośnie."
+        assert row.actual_price == Decimal("97.0000")
+        assert row.is_trend_correct is False
+        assert row.placeholder.startswith("Niska zmienność")
+        assert row.receipt == {"schema_version": 1, "effective_threshold": "0.03"}
+
+    def test_skips_llm_fallback_rows_and_caps_at_the_limit(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        rows = [
+            _deferred_row(id="fallback", data_quality_flags=["llm_analysis_failed"]),
+            _deferred_row(id="p-1"),
+            _deferred_row(id="p-2"),
+            _deferred_row(id="no-price", actual_price_after_12h=None),
+        ]
+        _set_chain_response(mock_client, _DEFERRED_CHAIN, rows)
+
+        out = repo.get_deferred_diagnoses(limit=1)
+
+        assert [row.prediction.id for row in out] == ["p-1"]
+
+    def test_without_migration_020_reads_without_the_receipt(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        ok = MagicMock()
+        row_without_receipt = _deferred_row()
+        del row_without_receipt["decision_receipts"]
+        ok.data = [row_without_receipt]
+        missing = APIError(
+            {"code": "42703", "message": "column prediction_logs.decision_receipts does not exist"}
+        )
+        range_ = mock_client.table.return_value.select.return_value.in_.return_value
+        range_.eq.return_value.order.return_value.range.return_value.execute.side_effect = [
+            missing,
+            ok,
+        ]
+
+        (row,) = repo.get_deferred_diagnoses(limit=5)
+
+        assert row.receipt is None
+        second_select = mock_client.table.return_value.select.call_args.args[0]
+        assert "decision_receipts" not in second_select
+
+    def test_save_replaces_only_the_placeholder_it_read(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        _set_chain_response(mock_client, ["table", "update", "eq", "eq"], [])
+
+        repo.save_backfilled_diagnosis(
+            "p-1", "Zignorowałem Fed.", replaces="placeholder",
+            correction_category=MistakeCategory.MACRO,
+        )
+
+        update = mock_client.table.return_value.update
+        # Flaga 046 off — bez klucza kategorii.
+        assert update.call_args.args[0] == {"correction_insights": "Zignorowałem Fed."}
+        update.return_value.eq.assert_called_once_with("id", "p-1")
+        update.return_value.eq.return_value.eq.assert_called_once_with(
+            "correction_insights", "placeholder"
+        )
+
+    def test_save_writes_the_category_with_the_flag(self, mock_client: MagicMock) -> None:
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        _set_chain_response(mock_client, ["table", "update", "eq", "eq"], [])
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", correction_category_enabled=True
+        )
+
+        repo.save_backfilled_diagnosis(
+            "p-1", "Zignorowałem Fed.", replaces="placeholder",
+            correction_category=MistakeCategory.MACRO,
+        )
+
+        payload = mock_client.table.return_value.update.call_args.args[0]
+        assert payload["correction_category"] == "MACRO"
+
+
 class TestGetCouncilVoteHistory:
     def test_groups_rows_into_investor_histories(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -894,6 +1346,26 @@ class TestGetCouncilVoteHistory:
         assert soros.symbol == "NVDA"
         assert soros.recommendations == ("SELL", "HOLD")  # newest-first
         assert soros.window_days == 30
+
+    def test_lowercase_vote_counts_and_unknown_vote_is_skipped(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ARCH-03: ta sama reguła co przy werdykcie — „sell” to SELL, a głos
+        # spoza BUY/SELL/HOLD nie wchodzi do historii.
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "in_", "gte", "order", "order", "range"],
+            [
+                {"investor_name": "Soros", "symbol": "NVDA",
+                 "recommendation": "sell", "timestamp": "2026-06-10T00:00:00+00:00"},
+                {"investor_name": "Soros", "symbol": "NVDA",
+                 "recommendation": "STRONG_BUY", "timestamp": "2026-06-09T00:00:00+00:00"},
+            ],
+        )
+
+        result = repo.get_council_vote_history(["NVDA"], window_days=30)
+
+        assert [h.recommendations for h in result] == [("SELL",)]
 
     def test_returns_empty_when_no_votes(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -1054,6 +1526,34 @@ class TestSaveCouncilVotes:
             assert row["symbol"] == "AAPL"
             assert row["recommendation"] in {"BUY", "SELL", "HOLD"}
             assert 0.0 <= row["confidence"] <= 1.0
+
+    def test_upserts_on_prediction_and_investor_key(self, mock_client: MagicMock) -> None:
+        # NIEZ-14 (migracja 054): re-run w tej samej godzinie trafia w ten sam wiersz
+        # predykcji, więc głosy nadpisują się zamiast dublować wagę w rankingu person.
+        from src.domain.council import InvestorOpinion
+
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", council_votes_upsert_enabled=True
+        )
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": 1}])
+        vote = InvestorOpinion(
+            investor_name="Warren Buffett",
+            recommendation="BUY",
+            confidence=0.9,
+            reasoning="Silna fosa.",
+            key_factors=["moat"],
+        )
+
+        repo.save_council_votes(prediction_id="uuid-pred-1", symbol="AAPL", votes=[vote])
+
+        mock_client.table.assert_any_call("council_votes")
+        upsert = mock_client.table.return_value.upsert
+        rows = upsert.call_args.args[0]
+        assert [(row["prediction_id"], row["investor_name"]) for row in rows] == [
+            ("uuid-pred-1", "Warren Buffett")
+        ]
+        assert upsert.call_args.kwargs == {"on_conflict": "prediction_id,investor_name"}
+        mock_client.table.return_value.insert.assert_not_called()
 
     def test_noop_for_empty_votes(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -1559,6 +2059,51 @@ class TestGetPreviousVerdict:
 
         assert repo.get_previous_verdict("NVDA") is None
 
+    def test_previous_verdict_sanitizes_unknown_recommendation(
+        self,
+        repo: SupabaseRepository,
+        mock_client: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # ARCH-03: JSONB przechodził przez `cast(Any)` bez walidacji, więc
+        # „STRONG_BUY” wchodził do `CouncilVerdict` jako rekomendacja rady.
+        row = self._row()
+        row["council_verdict"]["final_recommendation"] = "STRONG_BUY"
+        row["council_verdict"]["investor_opinions"][0]["recommendation"] = "sell"
+        self._set_verdict_chain(mock_client, [row])
+
+        with caplog.at_level(logging.WARNING):
+            previous = repo.get_previous_verdict("NVDA")
+
+        assert previous is not None
+        assert previous.verdict.final_recommendation == "HOLD"
+        assert previous.verdict.investor_opinions[0].recommendation == "SELL"
+        assert "STRONG_BUY" in caplog.text
+
+    def test_verdict_without_failed_personas_reads_as_full_council(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # MAIL-12: JSONB sprzed pola nie zgaduje awarii z treści opinii — 0.
+        self._set_verdict_chain(mock_client, [self._row()])
+
+        previous = repo.get_previous_verdict("NVDA")
+
+        assert previous is not None
+        assert previous.verdict.failed_personas == 0
+
+    @pytest.mark.parametrize(("raw", "expected"), [(3, 3), ("2", 2), (-1, 0), ("x", 0)])
+    def test_verdict_reads_failed_personas_from_jsonb(
+        self, repo: SupabaseRepository, mock_client: MagicMock, raw: object, expected: int
+    ) -> None:
+        row = self._row()
+        row["council_verdict"]["failed_personas"] = raw
+        self._set_verdict_chain(mock_client, [row])
+
+        previous = repo.get_previous_verdict("NVDA")
+
+        assert previous is not None
+        assert previous.verdict.failed_personas == expected
+
 
 class TestShockAlerts:
     """#11 — dedup alertów szoku (migracja 021, UNIQUE(symbol, alert_date))."""
@@ -2054,6 +2599,92 @@ class TestModelScorecardBaselines:
         assert payload["drift_baseline_rmse"] == 0.023
         assert payload["llm_baseline_rmse"] == 0.020
         assert payload["baseline_rmse"] == 0.024
+
+
+class TestModelScorecardRunId:
+    """ML-24: `run_id` przebiegu trafia do karty tylko za flagą — kolumna istnieje
+    od migracji 049, a nowy klucz przed nią to PGRST204 i przepadły wiersz karty."""
+
+    _RUN_ID = "5f0c6c1e-8a43-4d3a-9b0c-2f1d3e4a5b6c"
+
+    def test_flag_off_payload_has_no_run_id(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_model_scorecard("ALL", {"status": "skipped"}, run_id=self._RUN_ID)
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "run_id" not in payload
+
+    def test_flag_on_payload_carries_the_run_id(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", scorecard_run_id_enabled=True
+        )
+
+        repo.save_model_scorecard("AAPL", {"status": "skipped"}, run_id=self._RUN_ID)
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload["run_id"] == self._RUN_ID
+        assert payload["symbol"] == "AAPL"
+
+    def test_flag_on_without_a_run_id_sends_no_key(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", scorecard_run_id_enabled=True
+        )
+
+        repo.save_model_scorecard("AAPL", {"status": "skipped"})
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "run_id" not in payload
+
+
+class TestModelScorecardFeatureStats:
+    """ML-21: `feature_stats` z treningu (biny kwantylowe + PSI) trafia do karty
+    tylko za flagą — kolumna JSONB istnieje od migracji 052, a nowy klucz przed nią
+    to PGRST204 i przepadły wiersz karty."""
+
+    _STATS: dict[str, Any] = {
+        "price_delta": {
+            "mean": 0.001,
+            "std": 0.02,
+            "edges": [-0.01, 0.0, 0.01],
+            "fractions": [0.25, 0.25, 0.25, 0.25],
+            "psi_recent_30d": 0.31,
+        }
+    }
+
+    def test_flag_off_payload_has_no_feature_stats(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_model_scorecard("ALL", {"status": "skipped", "feature_stats": self._STATS})
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "feature_stats" not in payload
+
+    def test_save_model_scorecard_persists_feature_stats(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co",
+            key="anon-key",
+            scorecard_feature_stats_enabled=True,
+        )
+
+        repo.save_model_scorecard(
+            "ALL", {"status": "trained_successfully", "feature_stats": self._STATS}
+        )
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload["feature_stats"] == self._STATS
+
+    def test_flag_on_without_stats_sends_no_key(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co",
+            key="anon-key",
+            scorecard_feature_stats_enabled=True,
+        )
+
+        repo.save_model_scorecard("ALL", {"status": "skipped"})
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "feature_stats" not in payload
 
 
 class TestSettledAtWindows:
@@ -2831,3 +3462,1092 @@ class TestReferencePredictions:
 
         payload = mock_client.table.return_value.update.call_args.args[0]
         assert payload["outcome"] == "EXPIRED" and payload["settled_price"] is None
+
+
+# ---------------------------------------------------------------------------
+# WIA-70: dosłowny plaintext commitmentu (migracja 043)
+# ---------------------------------------------------------------------------
+
+
+class TestCommitmentPayloadColumn:
+    """Reveal publikuje zapisany plaintext, a baza bez migracji 043 nie może
+    zatrzymać ani sweepu starych wierszy, ani zapisu predykcji."""
+
+    @staticmethod
+    def _missing_payload_column() -> Exception:
+        from postgrest.exceptions import APIError
+
+        return APIError(
+            {"code": "42703", "message": "column prediction_logs.commitment_payload does not exist"}
+        )
+
+    def test_unrevealed_commitments_read_the_stored_payload(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [[{"id": "p-1", "commitment_payload": "{}"}]])
+
+        rows = repo.get_unrevealed_commitments()
+
+        assert "commitment_payload" in builder.select.call_args.args[0]
+        assert rows[0]["commitment_payload"] == "{}"
+
+    def test_unrevealed_commitments_fall_back_without_the_payload_column(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Przed 043 stare wiersze ujawniamy z kolumn, jak przed WIA-70.
+        builder = _fluent_query(mock_client, [])
+        failing, legacy = MagicMock(), MagicMock()
+        failing.execute.side_effect = self._missing_payload_column()
+        legacy.execute.return_value = MagicMock(data=[{"id": "p-1"}])
+        builder.range.side_effect = [failing, legacy]
+
+        rows = repo.get_unrevealed_commitments()
+
+        assert rows == [{"id": "p-1"}]
+        assert "commitment_payload" not in builder.select.call_args.args[0]
+
+    def test_unrevealed_commitments_have_no_time_window_by_default(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # WIA-03: nieujawniony commitment starszy niż okno track recordu wygląda
+        # jak ukryte pudło — sweep czyta wszystkie, bez okna i bez filtra watchlisty.
+        builder = _fluent_query(mock_client, [[]])
+
+        repo.get_unrevealed_commitments()
+
+        builder.gte.assert_not_called()
+        builder.in_.assert_not_called()
+        assert "symbol" not in [c.args[0] for c in builder.eq.call_args_list]
+
+    def test_unrevealed_commitments_honour_an_explicit_window(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [[]])
+
+        repo.get_unrevealed_commitments(30)
+
+        assert builder.gte.call_args.args[0] == "timestamp"
+
+    def test_attestation_columns_available_when_the_select_succeeds(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "select", "limit"], [])
+
+        assert repo.attestation_columns_available() is True
+        selected = mock_client.table.return_value.select.call_args.args[0]
+        assert {"commitment_hash", "commitment_salt", "commitment_payload"} <= {
+            column.strip() for column in selected.split(",")
+        }
+
+    def test_attestation_columns_unavailable_without_the_migration(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        chain = mock_client.table.return_value.select.return_value.limit.return_value
+        chain.execute.side_effect = self._missing_payload_column()
+
+        assert repo.attestation_columns_available() is False
+
+
+class TestCurrentHourCommitmentSalt:
+    """WIA-01: sól wiersza (symbol, bieżąca godzina UTC) — klucza upsertu
+    `save_prediction`. Ponowny zapis w tej godzinie reużywa ją, więc ten sam
+    payload daje ten sam, już opublikowany hash."""
+
+    def test_reads_the_salt_of_this_hour_row(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [])
+        builder.limit.return_value = builder
+        builder.execute.return_value = MagicMock(data=[{"commitment_salt": "f" * 32}])
+        before = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+
+        assert repo.get_current_hour_commitment_salt("AAPL") == "f" * 32
+
+        after = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        filters = {call.args[0]: call.args[1] for call in builder.eq.call_args_list}
+        assert filters["symbol"] == "AAPL"
+        # Klucz upsertu: date_trunc('hour', timestamp, 'UTC') z migracji 013.
+        assert datetime.fromisoformat(filters["timestamp_hour"]) in {before, after}
+        builder.not_.is_.assert_called_with("commitment_salt", "null")
+
+    def test_no_row_this_hour_means_no_salt(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [])
+        builder.limit.return_value = builder
+        builder.execute.return_value = MagicMock(data=[])
+
+        assert repo.get_current_hour_commitment_salt("AAPL") is None
+
+    def test_read_failure_degrades_to_no_salt(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [])
+        builder.limit.return_value = builder
+        builder.execute.side_effect = Exception("column commitment_salt does not exist")
+
+        assert repo.get_current_hour_commitment_salt("AAPL") is None
+
+
+class TestCurrentHourCommitment:
+    """WIA-01: commitment wiersza (symbol, bieżąca godzina UTC). Graf porównuje go
+    z nowym payloadem — inny payload nadpisze wiersz, więc stary commitment trzeba
+    ujawnić jako „superseded", póki sól i plaintext są jeszcze w bazie."""
+
+    @staticmethod
+    def _builder(mock_client: MagicMock, rows: list[dict[str, Any]]) -> MagicMock:
+        builder = _fluent_query(mock_client, [])
+        builder.limit.return_value = builder
+        builder.execute.return_value = MagicMock(data=rows)
+        return builder
+
+    def test_reads_hash_salt_and_payload_of_this_hour_row(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.attestation import StoredCommitment
+
+        builder = self._builder(
+            mock_client,
+            [
+                {
+                    "commitment_hash": "a" * 64,
+                    "commitment_salt": "f" * 32,
+                    "commitment_payload": '{"schema_version":2}',
+                }
+            ],
+        )
+        before = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+
+        stored = repo.get_current_hour_commitment("AAPL")
+
+        after = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        assert stored == StoredCommitment(
+            commitment="a" * 64, salt="f" * 32, payload='{"schema_version":2}'
+        )
+        columns = builder.select.call_args.args[0]
+        assert {c.strip() for c in columns.split(",")} == {
+            "commitment_hash",
+            "commitment_salt",
+            "commitment_payload",
+        }
+        filters = {call.args[0]: call.args[1] for call in builder.eq.call_args_list}
+        assert filters["symbol"] == "AAPL"
+        assert datetime.fromisoformat(filters["timestamp_hour"]) in {before, after}
+
+    def test_row_without_payload_keeps_the_hash_and_salt(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Wiersz sprzed 043: porównanie idzie po hashu, reveal bez plaintextu.
+        self._builder(
+            mock_client,
+            [
+                {
+                    "commitment_hash": "a" * 64,
+                    "commitment_salt": "f" * 32,
+                    "commitment_payload": None,
+                }
+            ],
+        )
+
+        stored = repo.get_current_hour_commitment("AAPL")
+
+        assert stored is not None
+        assert stored.payload is None
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            [],
+            [{"commitment_hash": None, "commitment_salt": "f" * 32, "commitment_payload": None}],
+            [{"commitment_hash": "a" * 64, "commitment_salt": None, "commitment_payload": None}],
+        ],
+    )
+    def test_no_complete_commitment_this_hour_means_none(
+        self, repo: SupabaseRepository, mock_client: MagicMock, rows: list[dict[str, Any]]
+    ) -> None:
+        self._builder(mock_client, rows)
+
+        assert repo.get_current_hour_commitment("AAPL") is None
+
+    def test_read_failure_degrades_to_none(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = self._builder(mock_client, [])
+        builder.execute.side_effect = Exception("column commitment_payload does not exist")
+
+        assert repo.get_current_hour_commitment("AAPL") is None
+
+
+class TestSaveCalibrationScoreVersion:
+    """WIA-37: kolumna `calibration_score_version` (migracja 044) idzie do zapisu
+    tylko z wersją; bez niej payload nie ma nowego klucza (PGRST204 przed 044)."""
+
+    def test_versioned_calibration_writes_the_version_column(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "update", "eq"], [{"id": "pred-1"}])
+
+        repo.save_calibration("pred-1", 0.19, "Przepewna.", score_version=2)
+
+        payload = mock_client.table.return_value.update.call_args.args[0]
+        assert payload == {
+            "confidence_calibration": 0.19,
+            "calibration_insight": "Przepewna.",
+            "calibration_score_version": 2,
+        }
+
+    def test_unversioned_calibration_payload_has_no_version_key(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "update", "eq"], [{"id": "pred-1"}])
+
+        repo.save_calibration("pred-1", 0.1, "Przepewna.")
+
+        payload = mock_client.table.return_value.update.call_args.args[0]
+        assert "calibration_score_version" not in payload
+
+
+class TestResolvedForCalibrationTrendAndCycle:
+    """WIA-39 / WIA-38: kalibracja kierunkowa potrzebuje `predicted_trend`, a n_eff
+    i bootstrap po cyklach — `timestamp`. Obie kolumny istnieją od 001."""
+
+    def test_select_carries_trend_and_timestamp(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        builder = _fluent_query(mock_client, [[]])
+
+        repo.get_resolved_for_calibration(30)
+
+        selected = builder.select.call_args.args[0]
+        assert "predicted_trend" in selected
+        assert "timestamp" in selected
+
+class TestGetFundamentalsFetchedAt:
+    """DAT-19: wiek wpisów cache (bez filtra TTL) — podstawa rotacji refreshu."""
+
+    def test_maps_symbols_with_an_entry_to_their_fetched_at(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "in_"],
+            [
+                {"symbol": "AAPL", "fetched_at": "2026-10-11T06:00:00+00:00"},
+                {"symbol": "MSFT", "fetched_at": None},
+            ],
+        )
+
+        result = repo.get_fundamentals_fetched_at(["AAPL", "MSFT", "GOOGL"])
+
+        assert result == {"AAPL": datetime(2026, 10, 11, 6, 0, tzinfo=UTC)}
+        mock_client.table.assert_called_with("fundamentals_cache")
+        in_call = mock_client.table.return_value.select.return_value.in_
+        assert in_call.call_args.args == ("symbol", ["AAPL", "MSFT", "GOOGL"])
+
+    def test_no_symbols_means_no_query(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        assert repo.get_fundamentals_fetched_at([]) == {}
+        mock_client.table.assert_not_called()
+
+# NIEZ-16: diagnoza „zaaplikuj migrację” tylko dla brakującego obiektu schematu
+# ---------------------------------------------------------------------------
+
+def _persona_accuracy(repo: SupabaseRepository) -> Any:
+    from src.domain.value_objects import AssetType
+
+    return repo.get_persona_accuracy(AssetType.STOCK)
+
+
+# Odczyty graceful: błąd → pusty wynik. Każdy dawniej logował każdy wyjątek jako
+# brak migracji, także zerwane połączenie.
+_GRACEFUL_READS: dict[str, Callable[[SupabaseRepository], Any]] = {
+    "find_similar_predictions": lambda r: r.find_similar_predictions([0.1, 0.2]),
+    "get_persona_accuracy": _persona_accuracy,
+    "get_persona_track_record": lambda r: r.get_persona_track_record(),
+    "get_unrevealed_commitments": lambda r: r.get_unrevealed_commitments(),
+    "get_sent_shock_alerts": lambda r: r.get_sent_shock_alerts(date(2026, 10, 1)),
+    "get_shock_alert_times": lambda r: r.get_shock_alert_times(
+        datetime(2026, 10, 1, tzinfo=UTC)
+    ),
+    "get_recent_model_scorecards": lambda r: r.get_recent_model_scorecards(),
+}
+
+
+def _fail_every_request(client: MagicMock, error: Exception) -> None:
+    client.rpc.side_effect = error
+    client.table.side_effect = error
+
+
+def _mentions_migration(caplog: pytest.LogCaptureFixture) -> bool:
+    return any(
+        "migrat" in record.getMessage().lower() or "migrac" in record.getMessage().lower()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize("read", sorted(_GRACEFUL_READS))
+def test_network_error_is_not_reported_as_missing_migration(
+    read: str,
+    repo: SupabaseRepository,
+    mock_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    _fail_every_request(mock_client, httpx.ConnectError("connection reset by peer"))
+
+    with caplog.at_level(logging.WARNING):
+        result = _GRACEFUL_READS[read](repo)
+
+    assert not result
+    assert not _mentions_migration(caplog)
+    assert any("ConnectError" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("code", ["PGRST202", "PGRST205", "42P01", "42883"])
+def test_missing_schema_object_still_points_at_the_migration(
+    code: str,
+    repo: SupabaseRepository,
+    mock_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from postgrest.exceptions import APIError
+
+    _fail_every_request(mock_client, APIError({"code": code, "message": "not found"}))
+
+    with caplog.at_level(logging.WARNING):
+        assert repo.get_persona_track_record() == {}
+
+    assert _mentions_migration(caplog)
+
+
+def test_other_postgrest_error_is_logged_with_its_type_not_as_migration(
+    repo: SupabaseRepository,
+    mock_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from postgrest.exceptions import APIError
+
+    _fail_every_request(
+        mock_client, APIError({"code": "57014", "message": "canceling statement due to timeout"})
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert repo.get_recent_model_scorecards() == []
+
+    assert not _mentions_migration(caplog)
+    assert any("APIError" in record.getMessage() for record in caplog.records)
+
+
+class TestMissingPredictionColumns:
+    """FIN-05: preflight kolumn `prediction_logs` — select `limit 0`, brak kolumny
+    rozpoznawany wyłącznie po 42703. Blip sieci nie może wyglądać jak brak migracji,
+    bo wyłączyłby cały cykl."""
+
+    @staticmethod
+    def _execute(client: MagicMock) -> MagicMock:
+        return client.table.return_value.select.return_value.limit.return_value.execute
+
+    def test_no_missing_columns_on_a_migrated_database(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        missing = repo.missing_prediction_columns(frozenset({"symbol", "gate_delta"}))
+
+        assert missing == frozenset()
+        mock_client.table.assert_called_with("prediction_logs")
+        mock_client.table.return_value.select.assert_called_once_with("gate_delta,symbol")
+        mock_client.table.return_value.select.return_value.limit.assert_called_once_with(0)
+
+    def test_reports_every_undefined_column_one_query_each(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        def undefined(column: str) -> APIError:
+            return APIError(
+                {"code": "42703", "message": f"column prediction_logs.{column} does not exist"}
+            )
+
+        self._execute(mock_client).side_effect = [
+            undefined("gate_delta"),
+            undefined("recipe_version"),
+            MagicMock(data=[]),
+        ]
+
+        missing = repo.missing_prediction_columns(
+            frozenset({"symbol", "gate_delta", "recipe_version"})
+        )
+
+        assert missing == frozenset({"gate_delta", "recipe_version"})
+        selects = [c.args[0] for c in mock_client.table.return_value.select.call_args_list]
+        assert selects == ["gate_delta,recipe_version,symbol", "recipe_version,symbol", "symbol"]
+
+    def test_network_error_propagates_instead_of_counting_as_missing(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._execute(mock_client).side_effect = httpx.ConnectError("connection reset")
+
+        with pytest.raises(httpx.ConnectError):
+            repo.missing_prediction_columns(frozenset({"symbol"}))
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            {"code": "57014", "message": "canceling statement due to statement timeout"},
+            {"code": "42703", "message": "column prediction_logs.other does not exist"},
+        ],
+        ids=["other-code", "unrequested-column"],
+    )
+    def test_other_api_errors_propagate(
+        self, repo: SupabaseRepository, mock_client: MagicMock, error: dict[str, str]
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        self._execute(mock_client).side_effect = APIError(error)
+
+        with pytest.raises(APIError):
+            repo.missing_prediction_columns(frozenset({"symbol"}))
+
+
+class TestEarningsCache:
+    """FIN-11 (migracja 053): data najbliższego raportu per symbol — Slow Loop
+    zapisuje, Fast Loop czyta tylko wpis młodszy niż TTL."""
+
+    def test_save_upserts_the_report_date_per_symbol(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.earnings import CachedEarningsDate
+
+        _set_chain_response(mock_client, ["table", "upsert"], [])
+
+        repo.save_earnings(
+            CachedEarningsDate(
+                "AAPL", date(2026, 10, 29), datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
+            )
+        )
+
+        mock_client.table.assert_called_with("earnings_cache")
+        assert mock_client.table.return_value.upsert.call_args.args[0] == {
+            "symbol": "AAPL",
+            "report_date": "2026-10-29",
+            "fetched_at": "2026-10-25T03:00:00+00:00",
+        }
+
+    def test_get_reads_a_fresh_row(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.earnings import CachedEarningsDate
+
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "gte"],
+            [
+                {
+                    "symbol": "AAPL",
+                    "report_date": "2026-10-29",
+                    "fetched_at": "2026-10-25T03:00:00+00:00",
+                }
+            ],
+        )
+
+        assert repo.get_cached_earnings("AAPL") == CachedEarningsDate(
+            "AAPL", date(2026, 10, 29), datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
+        )
+        mock_client.table.assert_called_with("earnings_cache")
+        mock_client.table.return_value.select.return_value.eq.assert_called_once_with(
+            "symbol", "AAPL"
+        )
+
+    def test_get_filters_by_the_cache_ttl(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS
+
+        _set_chain_response(mock_client, ["table", "select", "eq", "gte"], [])
+
+        before = datetime.now(UTC)
+        assert repo.get_cached_earnings("AAPL") is None
+        after = datetime.now(UTC)
+
+        gte = mock_client.table.return_value.select.return_value.eq.return_value.gte
+        column, cutoff = gte.call_args.args
+        ttl = timedelta(hours=EARNINGS_CACHE_TTL_HOURS)
+        assert column == "fetched_at"
+        assert before - ttl - timedelta(minutes=1) <= datetime.fromisoformat(cutoff)
+        assert datetime.fromisoformat(cutoff) <= after - ttl + timedelta(minutes=1)
+
+# WIA-49: expire_unverified_predictions — jawne wygaszanie zamiast ciszy
+# ---------------------------------------------------------------------------
+
+
+def _expiry_select_builder(mock_client: MagicMock) -> MagicMock:
+    """Builder, na którym `_paginate` woła `.range(...)` w odczycie kandydatów."""
+    chain = mock_client.table.return_value
+    return (
+        chain.select.return_value.eq.return_value.is_.return_value.lt.return_value
+        .order.return_value.order.return_value
+    )
+
+
+def test_expire_unverified_predictions_updates_only_older_rows(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    """Predykcja starsza niż okno oceny nigdy nie zostanie rozliczona — dostaje
+    flagę `expired_unverified` w `data_quality_flags`, a NIE `actual_price`
+    (cena trafiłaby do ml_feature_store jako fałszywa etykieta)."""
+    _set_paginated_response(
+        _expiry_select_builder(mock_client),
+        [[
+            {"id": "a", "data_quality_flags": []},
+            {"id": "b", "data_quality_flags": ["av_keys_exhausted"]},
+            {"id": "c", "data_quality_flags": ["expired_unverified"]},
+            {"id": "d", "data_quality_flags": None},
+        ]],
+    )
+    _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [{"id": "x"}])
+    before = datetime.now(UTC)
+
+    expired = repo.expire_unverified_predictions("NVDA", older_than_hours=96)
+
+    assert expired == 3
+    chain = mock_client.table.return_value
+    chain.select.assert_called_once_with("id, data_quality_flags")
+    chain.select.return_value.eq.assert_called_once_with("symbol", "NVDA")
+    chain.select.return_value.eq.return_value.is_.assert_called_once_with(
+        "actual_price_after_12h", "null"
+    )
+    lt = chain.select.return_value.eq.return_value.is_.return_value.lt
+    column, cutoff = lt.call_args.args
+    assert column == "timestamp"
+    assert before - timedelta(hours=96, seconds=5) <= datetime.fromisoformat(cutoff)
+    assert datetime.fromisoformat(cutoff) <= datetime.now(UTC) - timedelta(hours=96)
+    payloads = [update.args[0] for update in chain.update.call_args_list]
+    assert payloads == [
+        {"data_quality_flags": ["expired_unverified"]},
+        {"data_quality_flags": ["av_keys_exhausted", "expired_unverified"]},
+        {"data_quality_flags": ["expired_unverified"]},
+    ]
+    assert [call.args for call in chain.update.return_value.eq.call_args_list] == [
+        ("id", "a"),
+        ("id", "b"),
+        ("id", "d"),
+    ]
+    # Strażnik wyścigu: wiersz rozliczony w międzyczasie nie dostaje flagi.
+    chain.update.return_value.eq.return_value.is_.assert_called_with(
+        "actual_price_after_12h", "null"
+    )
+
+
+def test_expire_counts_only_rows_the_update_actually_changed(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_paginated_response(
+        _expiry_select_builder(mock_client), [[{"id": "a", "data_quality_flags": []}]]
+    )
+    # Wiersz rozliczony między odczytem a zapisem: update nie dotyka żadnego wiersza.
+    _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [])
+
+    assert repo.expire_unverified_predictions("NVDA", older_than_hours=96) == 0
+
+
+def test_expire_without_stale_rows_writes_nothing(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_paginated_response(_expiry_select_builder(mock_client), [[]])
+
+    assert repo.expire_unverified_predictions("NVDA", older_than_hours=96) == 0
+    mock_client.table.return_value.update.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# WIA-56: odczyt kwitów decyzyjnych (migracja 020)
+# ---------------------------------------------------------------------------
+
+_RECEIPT_ROW: dict[str, Any] = {
+    "id": "pred-1",
+    "symbol": "NVDA",
+    "timestamp": "2026-08-14T05:31:00+00:00",
+    "predicted_trend": "BULLISH",
+    "is_trend_correct": False,
+    "decision_receipts": {"schema_version": 1, "effective_threshold": "0.03"},
+}
+
+
+def test_get_receipt_maps_the_row_and_its_raw_receipt(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_chain_response(mock_client, ["table", "select", "eq", "limit"], [_RECEIPT_ROW])
+
+    stored = repo.get_receipt("pred-1")
+
+    assert stored is not None
+    assert (stored.prediction_id, stored.symbol, stored.predicted_trend) == (
+        "pred-1",
+        "NVDA",
+        "BULLISH",
+    )
+    assert stored.predicted_at == datetime(2026, 8, 14, 5, 31, tzinfo=UTC)
+    assert stored.is_trend_correct is False
+    assert stored.payload == {"schema_version": 1, "effective_threshold": "0.03"}
+    select = mock_client.table.return_value.select
+    assert "decision_receipts" in select.call_args.args[0]
+    select.return_value.eq.assert_called_once_with("id", "pred-1")
+
+
+def test_get_receipt_of_an_unknown_prediction_is_none(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_chain_response(mock_client, ["table", "select", "eq", "limit"], [])
+
+    assert repo.get_receipt("pred-404") is None
+
+
+def test_receipt_that_is_not_a_json_object_maps_to_none(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_chain_response(
+        mock_client,
+        ["table", "select", "eq", "limit"],
+        [{**_RECEIPT_ROW, "decision_receipts": None, "is_trend_correct": None}],
+    )
+
+    stored = repo.get_receipt("pred-1")
+
+    assert stored is not None
+    assert stored.payload is None
+    assert stored.is_trend_correct is None
+
+
+def test_find_receipts_reads_one_utc_day_of_the_symbol(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    _set_chain_response(
+        mock_client, ["table", "select", "eq", "gte", "lt", "order"], [_RECEIPT_ROW]
+    )
+
+    found = repo.find_receipts("NVDA", date(2026, 8, 14))
+
+    assert [stored.prediction_id for stored in found] == ["pred-1"]
+    select = mock_client.table.return_value.select
+    select.return_value.eq.assert_called_once_with("symbol", "NVDA")
+    select.return_value.eq.return_value.gte.assert_called_once_with(
+        "timestamp", "2026-08-14T00:00:00+00:00"
+    )
+    select.return_value.eq.return_value.gte.return_value.lt.assert_called_once_with(
+        "timestamp", "2026-08-15T00:00:00+00:00"
+    )
+
+
+def test_recently_resolved_rows_carry_the_receipt_for_the_post_mortem(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    """WIA-56: linia kwitu pod chybieniem w mailu czyta `decision_receipts`
+    z tego samego odczytu zamkniętych predykcji (migracja 020 jest na produkcji)."""
+    chain = mock_client.table.return_value
+    order_builder = (
+        chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+    )
+    _set_paginated_response(order_builder, [[]])
+
+    repo.get_recently_resolved_predictions(24)
+
+    assert "decision_receipts" in chain.select.call_args.args[0]
+
+
+# ---------------------------------------------------------------------------
+# DAT-14: `stale_quote` (migracja 055) — rozliczenie i odczyty trafności
+# ---------------------------------------------------------------------------
+
+
+class TestStaleQuote:
+    """Rozliczenie z nieaktualnego notowania niesie `stale_quote` tylko, gdy graf
+    je poda (flaga), a odczyty trafności wybierają kolumnę i odsiewają takie
+    wiersze wyłącznie za flagą repozytorium — przed migracją SELECT dałby 400."""
+
+    @staticmethod
+    def _repo(mock_client: MagicMock) -> SupabaseRepository:
+        return SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", stale_quote_enabled=True
+        )
+
+    @staticmethod
+    def _settle(repo: SupabaseRepository, **kwargs: Any) -> None:
+        repo.update_prediction_accuracy(
+            prediction_id="uuid-1",
+            actual_price=Decimal("100.0"),
+            accuracy_score=0.96,
+            is_trend_correct=False,
+            insight="x",
+            **kwargs,
+        )
+
+    def test_settlement_carries_the_flag_only_when_given(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}])
+
+        self._settle(repo)
+        plain = mock_client.table.return_value.update.call_args.args[0]
+        self._settle(repo, stale_quote=True)
+        stale = mock_client.table.return_value.update.call_args.args[0]
+
+        assert "stale_quote" not in plain
+        assert stale["stale_quote"] is True
+
+    def test_unverified_prediction_carries_its_creation_time(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "is_", "order", "limit"],
+            [
+                {
+                    "id": "uuid-1",
+                    "symbol": "AAPL",
+                    "predicted_trend": "BULLISH",
+                    "price_at_prediction": 100.0,
+                    "predicted_target_price": 104.0,
+                    "timestamp": "2026-10-19T05:30:00+00:00",
+                }
+            ],
+        )
+
+        prediction = repo.get_unverified_prediction("AAPL")
+
+        assert prediction is not None
+        assert prediction.created_at == datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    def test_accuracy_stats_drop_stale_settlements_with_the_flag(
+        self, mock_client: MagicMock
+    ) -> None:
+        repo = self._repo(mock_client)
+        chain = mock_client.table.return_value
+        rows = [
+            {"is_trend_correct": True, "stale_quote": None},
+            {"is_trend_correct": False, "stale_quote": True},
+            {"is_trend_correct": False, "stale_quote": False},
+        ]
+        _set_paginated_response(
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value,
+            [rows],
+        )
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert stats["sample_count"] == 2
+        assert stats["correct_count"] == 1
+        assert "stale_quote" in chain.select.call_args.args[0]
+
+    def test_without_the_flag_readers_do_not_select_the_column(
+        self, repo: SupabaseRepository, mock_client: MagicMock, mocker: Any
+    ) -> None:
+        mocker.patch("src.infrastructure.adapters.supabase_repo._paginate", return_value=[])
+
+        repo.get_accuracy_stats(days=30)
+        repo.get_resolved_predictions(days=30)
+        repo.get_resolved_for_calibration(days=30)
+
+        selects = mock_client.table.return_value.select.call_args_list
+        assert len(selects) == 3
+        assert all("stale_quote" not in c.args[0] for c in selects)
+
+    def test_every_accuracy_reader_drops_stale_settlements(
+        self, mock_client: MagicMock, mocker: Any
+    ) -> None:
+        repo = self._repo(mock_client)
+        rows = [
+            {"symbol": "AAPL", "is_trend_correct": True, "stale_quote": True},
+            {"symbol": "NVDA", "is_trend_correct": True},
+        ]
+        mocker.patch(
+            "src.infrastructure.adapters.supabase_repo._paginate",
+            side_effect=lambda _query: [dict(row) for row in rows],
+        )
+
+        readers = {
+            "recent": repo.get_recently_resolved_predictions(24),
+            "track_record": repo.get_resolved_predictions(days=30),
+            "detailed": repo.get_resolved_predictions_detailed(days=7),
+            "calibration": repo.get_resolved_for_calibration(days=30),
+            "eval": repo.get_resolved_predictions_for_eval(days=30),
+        }
+
+        assert {name: [r["symbol"] for r in out] for name, out in readers.items()} == {
+            name: ["NVDA"] for name in readers
+        }
+        selects = mock_client.table.return_value.select.call_args_list
+        assert len(selects) == len(readers)
+        assert all("stale_quote" in c.args[0] for c in selects)
+
+    def test_settled_moves_drop_stale_settlements_with_the_flag(
+        self, mock_client: MagicMock, mocker: Any
+    ) -> None:
+        # Rozliczenie ceną równą cenie wejścia nie jest ruchem — nie może zawężać
+        # przedziału ruchu (ML-34) ani reszt ACI.
+        repo = self._repo(mock_client)
+        rows = [
+            {"symbol": "AAPL", "actual_price_after_12h": 100.0, "stale_quote": True},
+            {"symbol": "NVDA", "actual_price_after_12h": 101.0, "stale_quote": None},
+        ]
+        mocker.patch(
+            "src.infrastructure.adapters.supabase_repo._paginate",
+            side_effect=lambda _query: [dict(row) for row in rows],
+        )
+
+        moves = repo.get_settled_moves(90, with_intervals=True)
+
+        assert [row["symbol"] for row in moves] == ["NVDA"]
+        assert "stale_quote" in mock_client.table.return_value.select.call_args.args[0]
+
+
+# ---------------------------------------------------------------------------
+# WIA-61: rozliczenie także na oficjalnym zamknięciu sesji (migracja 059)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionCloseSettlement:
+    """Rozliczenie niesie zamknięcie sesji tylko, gdy graf je poda (flaga), a hit
+    rate na nim liczy się obok trafności /quote wyłącznie za flagą repozytorium —
+    przed migracją 059 SELECT kolumny dałby 400."""
+
+    @staticmethod
+    def _settlement():
+        from src.domain.session_close import (
+            SessionClose,
+            SessionCloseSettlement,
+            SessionCloseSource,
+        )
+
+        close = SessionClose(
+            Money(Decimal("106.12345")), date(2026, 10, 19), SessionCloseSource.QUOTE_CLOSE
+        )
+        return SessionCloseSettlement(close, is_trend_correct=True)
+
+    def test_settlement_carries_the_session_close_only_when_given(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}])
+        settle = {
+            "prediction_id": "uuid-1",
+            "actual_price": Decimal("105.0"),
+            "accuracy_score": 0.96,
+            "is_trend_correct": True,
+            "insight": "x",
+        }
+
+        repo.update_prediction_accuracy(**settle)
+        plain = mock_client.table.return_value.update.call_args.args[0]
+        repo.update_prediction_accuracy(**settle, session_close=self._settlement())
+        both = mock_client.table.return_value.update.call_args.args[0]
+
+        assert not {"settlement_close_price", "settlement_session_date"} & set(plain)
+        assert both["actual_price_after_12h"] == "105.0"
+        # DECIMAL(14,4) jak pozostałe ceny (ARCH-38).
+        assert both["settlement_close_price"] == "106.1235"
+        assert both["settlement_session_date"] == "2026-10-19"
+        assert both["settlement_source"] == "quote_close"
+        assert both["is_trend_correct_session_close"] is True
+
+    def test_accuracy_stats_add_the_session_close_hit_rate_with_the_flag(
+        self, mock_client: MagicMock
+    ) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", session_close_settlement_enabled=True
+        )
+        chain = mock_client.table.return_value
+        rows = [
+            {"is_trend_correct": True, "is_trend_correct_session_close": True},
+            {"is_trend_correct": False, "is_trend_correct_session_close": True},
+            {"is_trend_correct": False, "is_trend_correct_session_close": False},
+            {"is_trend_correct": True, "is_trend_correct_session_close": None},
+        ]
+        _set_paginated_response(
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value,
+            [rows],
+        )
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert "is_trend_correct_session_close" in chain.select.call_args.args[0]
+        assert stats["sample_count"] == 4
+        # Te same trzy predykcje z zamknięciem sesji: 2 trafione na nim, 1 na /quote.
+        assert stats["session_close_count"] == 3
+        assert stats["session_close_correct_count"] == 2
+        assert stats["session_close_quote_correct_count"] == 1
+
+    def test_without_the_flag_accuracy_stats_stay_as_they_were(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        chain = mock_client.table.return_value
+        _set_paginated_response(
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value,
+            [[{"is_trend_correct": True}]],
+        )
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert "is_trend_correct_session_close" not in chain.select.call_args.args[0]
+        assert "session_close_count" not in stats
+
+
+# ---------------------------------------------------------------------------
+# DAT-21: `fundamentals_cache.market_cap` (migracja 056)
+# ---------------------------------------------------------------------------
+
+
+class TestFundamentalsMarketCap:
+    """Upsert niesie kapitalizację tylko za flagą (przed migracją PGRST204 zgubiłby
+    cały wpis cache); odczyt `select("*")` bierze ją, gdy kolumna jest."""
+
+    @staticmethod
+    def _fundamentals() -> Fundamentals:
+        return Fundamentals(
+            trailing_pe=25.4,
+            forward_pe=None,
+            peg_ratio=None,
+            eps_growth_yoy=None,
+            fetched_at=datetime(2026, 10, 18, tzinfo=UTC),
+            market_cap=3.5e12,
+        )
+
+    def test_flag_off_upsert_has_no_market_cap_key(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "upsert"], [])
+
+        repo.save_fundamentals("AAPL", self._fundamentals())
+
+        assert "market_cap" not in mock_client.table.return_value.upsert.call_args.args[0]
+
+    def test_flag_on_upsert_carries_the_market_cap(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", fundamentals_market_cap_enabled=True
+        )
+        _set_chain_response(mock_client, ["table", "upsert"], [])
+
+        repo.save_fundamentals("AAPL", self._fundamentals())
+
+        payload = mock_client.table.return_value.upsert.call_args.args[0]
+        assert payload["market_cap"] == pytest.approx(3.5e12)
+
+    @pytest.mark.parametrize(("stored", "expected"), [("3500000000000", 3.5e12), (None, None)])
+    def test_cached_fundamentals_read_the_market_cap_when_present(
+        self,
+        repo: SupabaseRepository,
+        mock_client: MagicMock,
+        stored: str | None,
+        expected: float | None,
+    ) -> None:
+        row: dict[str, Any] = {
+            "symbol": "AAPL",
+            "trailing_pe": 25.4,
+            "fetched_at": "2026-10-18T00:00:00+00:00",
+        }
+        if stored is not None:
+            row["market_cap"] = stored
+        _set_chain_response(mock_client, ["table", "select", "eq", "gte"], [row])
+
+        result = repo.get_cached_fundamentals("AAPL")
+
+        assert result is not None
+        assert result.market_cap == expected
+
+
+# ---------------------------------------------------------------------------
+# ALR-11: `price_level_alerts` (migracja 057)
+# ---------------------------------------------------------------------------
+
+
+class TestPriceLevelAlerts:
+    def test_active_levels_map_to_domain_alerts(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.price_levels import LevelDirection
+
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "order"],
+            [
+                {
+                    "id": 7,
+                    "symbol": "NVDA",
+                    "level": 150,
+                    "direction": "ABOVE",
+                    "note": "realizacja części zysku",
+                    "last_seen_price": 148.5,
+                },
+                {
+                    "id": 8,
+                    "symbol": "BTC",
+                    "level": "60000.5",
+                    "direction": "BELOW",
+                    "note": None,
+                    "last_seen_price": None,
+                },
+            ],
+        )
+
+        nvda, btc = repo.get_active_price_levels()
+
+        mock_client.table.assert_called_with("price_level_alerts")
+        mock_client.table.return_value.select.return_value.eq.assert_called_with("active", True)
+        assert nvda.id == "7"
+        assert nvda.level.level == Decimal("150")
+        assert nvda.level.direction is LevelDirection.ABOVE
+        assert nvda.level.note == "realizacja części zysku"
+        assert nvda.last_seen_price == Decimal("148.5")
+        assert btc.level.level == Decimal("60000.5")
+        assert btc.last_seen_price is None
+
+    def test_adding_levels_never_overwrites_a_saved_one(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.price_levels import LevelDirection, PriceLevel
+
+        repo.add_price_levels(
+            [PriceLevel("NVDA", Decimal("150"), LevelDirection.ABOVE, "zysk")]
+        )
+
+        upsert = mock_client.table.return_value.upsert
+        assert upsert.call_args.args[0] == [
+            {"symbol": "NVDA", "level": "150", "direction": "ABOVE", "note": "zysk"}
+        ]
+        assert upsert.call_args.kwargs == {
+            "on_conflict": "symbol,level,direction",
+            "ignore_duplicates": True,
+        }
+
+    def test_no_levels_no_request(self, repo: SupabaseRepository, mock_client: MagicMock) -> None:
+        repo.add_price_levels([])
+
+        mock_client.table.assert_not_called()
+
+    def test_reading_updates_only_an_active_alert(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.record_price_level_reading("7", Decimal("151.25"))
+
+        update = mock_client.table.return_value.update
+        assert update.call_args.args[0] == {"last_seen_price": "151.25"}
+        update.return_value.eq.assert_called_with("id", "7")
+        update.return_value.eq.return_value.eq.assert_called_with("active", True)
+
+    def test_trigger_disables_the_alert_with_its_time_and_price(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        moment = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+
+        repo.mark_price_level_triggered("7", Decimal("151.2"), moment)
+
+        update = mock_client.table.return_value.update
+        assert update.call_args.args[0] == {
+            "active": False,
+            "triggered_at": moment.isoformat(),
+            "last_seen_price": "151.2",
+        }
+        update.return_value.eq.assert_called_with("id", "7")

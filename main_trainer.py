@@ -3,7 +3,7 @@
 Ewaluuje każdy symbol osobno (bez zapisu wag), a potem trenuje JEDEN wspólny model
 XGBoost na zebranych logach predykcyjnych wszystkich symboli (ML-13). Plik wag
 (.ubj) powstaje tylko, gdy kandydat przejdzie bramkę walk-forward; workflow GHA
-commituje go wtedy do repo.
+wysyła go wtedy jako asset Release `model-latest` (CI-13), skąd pobiera go Fast Loop.
 
 Użycie:
     uv run python main_trainer.py
@@ -14,15 +14,18 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import uuid
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from main_agent import (
     STUB_WRITES_REFUSED_EXIT_CODE,
     build_notifier,
+    build_push_channels,
     llm_fallback_available,
     persist_llm_calls,
     refuses_stub_writes,
@@ -32,8 +35,8 @@ from main_agent import (
 )
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
-from src.application.ml_features import FEATURE_SET_VERSION
-from src.application.ports import LLMPort, RepositoryPort, UsageSink
+from src.application.ml_features import feature_set_version
+from src.application.ports import LLMPort, ModelCatalogPort, RepositoryPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_ops import render_trainer_summary_markdown
 from src.application.report_weekly_recap import (
@@ -42,9 +45,17 @@ from src.application.report_weekly_recap import (
 )
 from src.application.run_context import RunContext
 from src.application.usage_ledger import UsageLedger
+from src.application.use_cases.backfill_diagnoses import BackfillDiagnosesUseCase
 from src.application.use_cases.calibrate_confidence import (
     PAID_LLM_CALLS_PER_RUN as JUDGE_LLM_CALLS,
 )
+from src.application.use_cases.export_evidence import ExportEvidenceUseCase
+from src.application.use_cases.monitor_output_drift import (
+    MonitorOutputDriftUseCase,
+    RowsReader,
+    drift_alert,
+)
+from src.application.use_cases.probe_models import ModelProbe, ProbeModelsUseCase
 from src.application.use_cases.reference_signal import RunReferenceSignalUseCase
 from src.application.use_cases.train_model import POOLED_MODEL_SYMBOL, TrainModelUseCase
 from src.application.use_cases.weekly_recap import (
@@ -53,16 +64,31 @@ from src.application.use_cases.weekly_recap import (
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
 from src.config import Settings
 from src.domain.finops import slow_loop_paid_budget
+from src.domain.fundamentals_refresh import refresh_budget, select_refresh_batch
+from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.adapters.age_archive import AgeEncryptedArchive, is_age_recipient
+from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
+from src.infrastructure.adapters.alpha_vantage_earnings import AlphaVantageEarningsAdapter
 from src.infrastructure.adapters.alpha_vantage_fundamentals import (
     AlphaVantageFundamentalsAdapter,
 )
+from src.infrastructure.adapters.cached_earnings import CachedEarningsAdapter
 from src.infrastructure.adapters.cached_fundamentals import CachedFundamentalsAdapter
+from src.infrastructure.adapters.composite_notifier import CompositeNotifier
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.write_guard import ReadOnlyRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+from src.infrastructure.llm.anthropic_client import DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL
 from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
+from src.infrastructure.llm.model_catalog import (
+    AnthropicModelCatalog,
+    LocalStubModelCatalog,
+    OpenAIModelCatalog,
+)
+from src.infrastructure.llm.openai_client import DEFAULT_MODEL as OPENAI_DEFAULT_MODEL
+from src.infrastructure.llm.openai_embeddings import DEFAULT_MODEL as EMBEDDING_MODEL
 from src.infrastructure.llm.unavailable import UnavailableLLMAdapter
-from src.infrastructure.logging_redaction import configure_logging
+from src.infrastructure.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +98,12 @@ WEEKLY_RECAP_DAYS = 7
 # pierwszeństwo przy przycinaniu budżetem tygodniowym.
 RECAP_JOB = "recap"
 JUDGE_JOB = "judge"
+# WIA-53: spłata długu diagnoz — ostatnia w kolejce, więc przycinana pierwsza.
+DIAGNOSIS_JOB = "diagnosis"
 # NIEZ-44: rezerwa przydziału joba na request do zapasowego dostawcy LLM.
 FALLBACK_LLM_CALLS_PER_JOB = 1
+# NIEZ-32: katalog zaszyfrowanej kopii; workflow uploaduje z niego wyłącznie *.age.
+EVIDENCE_BACKUP_DIR = Path("data/backup")
 
 
 def build_repository(settings: Settings) -> RepositoryPort:
@@ -82,27 +112,42 @@ def build_repository(settings: Settings) -> RepositoryPort:
     ML-10: `model_scorecard_baselines_enabled` dokłada do karty baseline'y dryfu
     i „sam LLM" (kolumny z migracji 028). BEZ-08: bez `db_writes_enabled`
     owinięte w `ReadOnlyRepository` — lokalny trening niczego nie zapisuje."""
-    repository = SupabaseRepository(
-        url=settings.supabase_url,
-        key=settings.supabase_key,
-        scorecard_baselines_enabled=settings.model_scorecard_baselines_enabled,
-    )
+    repository = _supabase_repository(settings)
     if settings.db_writes_enabled:
         return repository
     return ReadOnlyRepository(repository)
 
 
-def build_use_case(settings: Settings) -> TrainModelUseCase:
+def _supabase_repository(settings: Settings) -> SupabaseRepository:
+    """Jedyne miejsce, gdzie Slow Loop konstruuje klienta Supabase."""
+    return SupabaseRepository(
+        url=settings.supabase_url,
+        key=settings.supabase_key,
+        scorecard_baselines_enabled=settings.model_scorecard_baselines_enabled,
+        scorecard_run_id_enabled=settings.model_scorecard_run_id_enabled,
+        scorecard_feature_stats_enabled=settings.model_scorecard_feature_stats_enabled,
+        correction_category_enabled=settings.correction_category_enabled,
+        # DAT-21: kapitalizacja w cache fundamentów (migracja 056) za flagą.
+        fundamentals_market_cap_enabled=settings.fundamentals_market_cap_enabled,
+    )
+
+
+def build_use_case(settings: Settings, *, run_id: str | None = None) -> TrainModelUseCase:
     """DI Container — Slow Loop potrzebuje tylko bazy + XGBoost.
 
     DAT-09: z `feature_set_filter_enabled` trening bierze wyłącznie wiersze
-    bieżącej wersji zestawu cech (kolumna z migracji 027)."""
+    bieżącej wersji zestawu cech (kolumna z migracji 027). ML-24: `run_id`
+    przebiegu trafia do wiersza karty modelu wspólnego."""
     return TrainModelUseCase(
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
         db_port=build_repository(settings),
+        # ML-31: wersja z tej samej flagi co stempel Fast Loopa (4 z cechami rynkowymi).
         feature_set_version=(
-            FEATURE_SET_VERSION if settings.feature_set_filter_enabled else None
+            feature_set_version(settings.market_features_enabled)
+            if settings.feature_set_filter_enabled
+            else None
         ),
+        run_id=run_id,
     )
 
 
@@ -116,6 +161,8 @@ def _refresh_fundamentals_cache(
 
     Odświeżamy tylko spółki (STOCK) — ETF-y nie mają EPS/P/E. Pojedynczy błąd
     nie wywala całego cyklu. FIN-35: lokalnie bez płatnych wywołań nie pytamy AV.
+    DAT-19: tylko partia mieszcząca się w dziennym limicie kluczy, wybrana przez
+    domenę (najpierw bez wpisu, potem najdawniej odświeżone).
     """
     if not settings.paid_calls_enabled:
         logger.info("Fundamentals refresh skipped — lokalnie bez płatnych wywołań")
@@ -123,16 +170,72 @@ def _refresh_fundamentals_cache(
     fundamentals_port = CachedFundamentalsAdapter(
         repo=repository,
         delegate=AlphaVantageFundamentalsAdapter(
-            api_keys=settings.alpha_vantage_api_keys,
+            api_keys=settings.require_alpha_vantage_api_keys(),
             quota_monitor=quota_monitor,
         ),
     )
     stock_symbols = [s for s in settings.symbols if s not in settings.symbols_etf]
-    for symbol in stock_symbols:
+    batch = select_refresh_batch(
+        _fundamentals_fetched_at(repository, stock_symbols),
+        refresh_budget(len(settings.alpha_vantage_api_keys)),
+    )
+    logger.info(
+        "Fundamentals refresh — %d of %d companies this run (missing and oldest first)",
+        len(batch),
+        len(stock_symbols),
+    )
+    for symbol in batch:
         try:
             fundamentals_port.get_fundamentals(symbol)
         except Exception:
             logger.exception("Fundamentals refresh failed for %s", symbol)
+
+
+def _fundamentals_fetched_at(
+    repository: RepositoryPort, symbols: list[str]
+) -> dict[str, datetime | None]:
+    """DAT-19: wiek wpisu cache per spółka (None = brak wpisu). Błąd odczytu
+    → wszystkie jak bez wpisu: partia idzie wtedy alfabetycznie, jak przed rotacją
+    szła kolejnością listy."""
+    try:
+        known = repository.get_fundamentals_fetched_at(symbols)
+    except Exception:
+        logger.exception("Fundamentals cache ages unavailable — refresh without rotation")
+        known = {}
+    return {
+        symbol: stamp if isinstance(stamp := known.get(symbol), datetime) else None
+        for symbol in symbols
+    }
+
+
+def _refresh_earnings_cache(settings: Settings, repository: RepositoryPort) -> None:
+    """FIN-11: raz w tygodniu odświeża `earnings_cache` (migracja 053) z Alpha
+    Vantage — Fast Loop czyta datę raportu wyłącznie z cache, przed bramką
+    volatility nie płaci za kalendarz.
+
+    Wszystkie klucze AV (rotacja przy soft-limicie), bo fundamenty tego samego
+    przebiegu zużywają już pierwszy klucz. Tylko spółki: ETF i krypto nie mają
+    raportów. Wpis młodszy niż TTL (np. ponowny przebieg w tym samym tygodniu) nie
+    kosztuje requestu. Pojedynczy błąd nie przerywa odświeżania."""
+    if not (settings.earnings_calendar_enabled and settings.earnings_cache_enabled):
+        return
+    if not settings.paid_calls_enabled:
+        logger.info("Earnings cache refresh skipped — lokalnie bez płatnych wywołań")
+        return
+    if not settings.alpha_vantage_api_keys:
+        logger.warning("Earnings cache refresh skipped — ALPHA_VANTAGE_API_KEYS is empty")
+        return
+    first_key, *reserve_keys = settings.alpha_vantage_api_keys
+    calendar = CachedEarningsAdapter(
+        repo=repository,
+        delegate=AlphaVantageEarningsAdapter(api_key=first_key, reserve_keys=reserve_keys),
+    )
+    stock_symbols = [s for s in settings.symbols if s not in settings.symbols_etf]
+    for symbol in stock_symbols:
+        try:
+            calendar.get_next_earnings(symbol)
+        except Exception:
+            logger.exception("Earnings cache refresh failed for %s", symbol)
 
 
 def _persist_quota_alerts(
@@ -153,12 +256,15 @@ def _persist_quota_alerts(
 
 
 def _persist_model_scorecard(
-    repository: RepositoryPort, symbol: str, result: Mapping[str, Any]
+    repository: RepositoryPort,
+    symbol: str,
+    result: Mapping[str, Any],
+    run_id: str | None = None,
 ) -> None:
     """#12: karta kondycji modelu. Zapis best-effort (wzorzec
     `save_quota_alert`) — brak migracji 019 nie może wywalić treningu."""
     try:
-        repository.save_model_scorecard(symbol, result)
+        repository.save_model_scorecard(symbol, result, run_id=run_id)
     except Exception:
         logger.exception("Failed to persist model scorecard for %s", symbol)
 
@@ -199,6 +305,7 @@ def _train_symbols(
     use_case: TrainModelUseCase,
     trainable: list[str],
     tally: _TrainingTally | None = None,
+    run_id: str | None = None,
 ) -> int:
     """Ewaluuje każdy symbol z osobna (bez zapisu wag, ML-13) i zwraca liczbę
     niepowodzeń. Błąd jednego symbolu nie przerywa ewaluacji pozostałych."""
@@ -210,7 +317,7 @@ def _train_symbols(
             if tally is not None:
                 tally.record_symbol(result)
             if settings.model_scorecard_enabled:
-                _persist_model_scorecard(repository, symbol, result)
+                _persist_model_scorecard(repository, symbol, result, run_id)
         except Exception:
             logger.exception("Training failed for symbol %s", symbol)
             failures += 1
@@ -272,12 +379,15 @@ def _build_llm_or_unavailable(
 def _requested_llm_calls(settings: Settings, extra_per_job: int = 0) -> dict[str, int]:
     """FIN-30: płatne wywołania LLM włączonych jobów przebiegu. Recap idzie przed
     sędzią kalibracji: to on trafia do użytkownika, więc przycięcie bierze sędziego.
+    Spłata diagnoz (WIA-53) jest ostatnia — przycięcie bierze ją pierwszą.
     `extra_per_job` (NIEZ-44) — rezerwa na request do zapasowego dostawcy LLM."""
     requested: dict[str, int] = {}
     if settings.weekly_recap_enabled:
         requested[RECAP_JOB] = RECAP_LLM_CALLS + extra_per_job
     if settings.calibration_judge_enabled:
         requested[JUDGE_JOB] = JUDGE_LLM_CALLS + extra_per_job
+    if settings.diagnosis_backfill_enabled:
+        requested[DIAGNOSIS_JOB] = settings.diagnosis_backfill_max_calls + extra_per_job
     return requested
 
 
@@ -311,6 +421,10 @@ class _SlowLoopPaidLLM:
         )
         self.telemetry = CycleTelemetry()
         logger.info("Slow Loop LLM budget — allowed=%s cap=%s", self._allowed, self._cap)
+
+    def allowed(self, job: str) -> int:
+        """Przydział joba z domeny (z rezerwą NIEZ-44 na zapasowego dostawcę)."""
+        return self._allowed.get(job, 0)
 
     def port_for(self, job: str) -> LLMPort:
         # NIEZ-44: jeden przydział na job — dzieli go request do zapasowego dostawcy.
@@ -371,9 +485,171 @@ def _run_reference_signal(
     logger.info("Reference signal — %s", summary)
 
 
-def _run_calibration_judge(repository: RepositoryPort, llm_port: LLMPort) -> None:
+# NIEZ-19: pewność (migracja 016) jest zawsze; przepis (030) tylko przy jego zapisie.
+_DRIFT_EXTRA_FIELDS = ("confidence_score",)
+
+
+def _drift_rows_reader(settings: Settings) -> RowsReader:
+    """Odczyt monitora wyjść LLM: rozliczone predykcje bez atrap po awarii LLM.
+    `recipe_version` tylko z `recipe_version_enabled` — to ona oznacza migrację 030."""
+    reader = _supabase_repository(settings)
+
+    def read_rows(days: int) -> list[dict[str, Any]]:
+        return reader.get_resolved_predictions_for_eval(
+            days,
+            with_recipe=settings.recipe_version_enabled,
+            extra_fields=_DRIFT_EXTRA_FIELDS,
+        )
+
+    return read_rows
+
+
+def _run_output_drift(
+    settings: Settings,
+    quota_monitor: QuotaMonitor,
+    now: datetime | None = None,
+    read_rows: RowsReader | None = None,
+) -> None:
+    """NIEZ-19: tydzień do tygodnia — udział klas, średnia pewność i bias wyjść LLM.
+    Skok to WARNING w `quota_monitor` (banner maila po zapisie alertów). Zero
+    płatnych wywołań; błąd kroku tylko loguje."""
+    moment = now or datetime.now(UTC)
+    try:
+        report = MonitorOutputDriftUseCase(read_rows or _drift_rows_reader(settings)).run(
+            now=moment
+        )
+    except Exception:
+        logger.exception("Output drift monitor failed — pomijam")
+        return
+    alert = drift_alert(report, moment)
+    if alert is None:
+        logger.info("Output drift — %s", report.describe_pl())
+        return
+    logger.warning("Output drift — %s", alert.message)
+    quota_monitor.record(alert)
+
+
+def _default_model(provider: str) -> str:
+    """Model adaptera dostawcy bez jawnego `model=` (jak `main_agent`)."""
+    return ANTHROPIC_DEFAULT_MODEL if provider == "anthropic" else OPENAI_DEFAULT_MODEL
+
+
+def _probed_models(settings: Settings) -> list[ModelProbe]:
+    """NIEZ-25: modele, które agent faktycznie woła — te same reguły wyboru co
+    fabryki `main_agent` (główny albo router, rada, zapasowy) plus embeddingi."""
+    probes: list[ModelProbe] = []
+    if settings.model_routing_enabled:
+        probes.append(ModelProbe("openai", settings.router_cheap_model, "router (tani)"))
+        probes.append(
+            ModelProbe(
+                settings.router_frontier_provider,
+                settings.router_frontier_model,
+                "router (frontier)",
+            )
+        )
+    else:
+        provider = settings.llm_provider
+        probes.append(ModelProbe(provider, _default_model(provider), "główny LLM"))
+    if settings.council_llm_provider is not None or settings.council_llm_model is not None:
+        council = settings.council_llm_provider or settings.llm_provider
+        model = settings.council_llm_model or _default_model(council)
+        probes.append(ModelProbe(council, model, "rada"))
+    if settings.llm_fallback_provider is not None:
+        fallback = settings.llm_fallback_provider
+        model = settings.llm_fallback_model or _default_model(fallback)
+        probes.append(ModelProbe(fallback, model, "zapasowy LLM"))
+    probes.append(ModelProbe("openai", EMBEDDING_MODEL, "embeddingi"))
+    return probes
+
+
+def _model_catalogs(settings: Settings) -> dict[str, ModelCatalogPort]:
+    """Katalog per dostawca z kluczem; FIN-35: lokalnie atrapa bez requestów."""
+    if not settings.paid_calls_enabled:
+        stub = LocalStubModelCatalog()
+        return {"anthropic": stub, "openai": stub}
+    catalogs: dict[str, ModelCatalogPort] = {}
+    if settings.anthropic_api_key:
+        catalogs["anthropic"] = AnthropicModelCatalog(api_key=settings.anthropic_api_key)
+    if settings.openai_api_key:
+        catalogs["openai"] = OpenAIModelCatalog(api_key=settings.openai_api_key)
+    return catalogs
+
+
+def _push_critical_alerts(settings: Settings, alerts: list[QuotaAlert]) -> None:
+    """NIEZ-25: CRITICAL sondy idzie od razu pushem (ta sama reguła co alerty
+    real-time Fast Loopa: `realtime_alerts_enabled` i kanał Telegram/Slack)."""
+    critical = [alert for alert in alerts if alert.severity is QuotaSeverity.CRITICAL]
+    if not critical or not settings.realtime_alerts_enabled:
+        return
+    channels = build_push_channels(settings, quota_monitor=None)
+    if not channels:
+        logger.warning("Model probe: brak kanału push — CRITICAL tylko w quota_alerts")
+        return
+    try:
+        DelegatingAlertNotifier(CompositeNotifier(channels)).send_alert(critical)
+    except Exception:
+        logger.exception("Model probe: push alertu nie wyszedł")
+
+
+def _run_model_probe(
+    settings: Settings,
+    quota_monitor: QuotaMonitor,
+    now: datetime | None = None,
+    catalogs: dict[str, ModelCatalogPort] | None = None,
+) -> None:
+    """NIEZ-25: czy skonfigurowane modele LLM istnieją (Models API, bez tokenów).
+    Brak modelu = CRITICAL (banner maila i push), błąd sondy = WARNING. Błąd
+    kroku tylko loguje — trening i recap idą dalej."""
+    if not settings.model_probe_enabled:
+        return
+    try:
+        use_case = ProbeModelsUseCase(
+            catalogs if catalogs is not None else _model_catalogs(settings)
+        )
+        alerts = use_case.run(_probed_models(settings), now=now or datetime.now(UTC))
+    except Exception:
+        logger.exception("Model probe failed — pomijam")
+        return
+    for alert in alerts:
+        quota_monitor.record(alert)
+    _push_critical_alerts(settings, alerts)
+
+
+def _run_evidence_export(
+    settings: Settings, now: datetime | None = None, out_dir: Path = EVIDENCE_BACKUP_DIR
+) -> None:
+    """NIEZ-32: tygodniowa kopia tabel dowodowych, szyfrowana `age` przed zapisem.
+    Bez poprawnego `BACKUP_AGE_RECIPIENT` krok jest pomijany z WARNING-iem —
+    nieszyfrowana kopia nie powstaje nigdy. sha256 artefaktu idzie do logu.
+    Sam odczyt bazy (bez zapisu), więc działa też bez `db_writes_enabled`."""
+    recipient = (settings.backup_age_recipient or "").strip()
+    if not recipient:
+        logger.warning("Evidence export skipped — BACKUP_AGE_RECIPIENT nie ustawiony")
+        return
+    if not is_age_recipient(recipient):
+        logger.warning("Evidence export skipped — BACKUP_AGE_RECIPIENT to nie klucz publiczny age")
+        return
+    try:
+        receipt = ExportEvidenceUseCase(
+            _supabase_repository(settings), AgeEncryptedArchive(recipient, out_dir)
+        ).run(now=now or datetime.now(UTC))
+    except Exception:
+        logger.exception("Evidence export failed — pomijam")
+        return
+    logger.info(
+        "Evidence export — %s sha256=%s (%d B)",
+        receipt.path,
+        receipt.sha256,
+        receipt.size_bytes,
+    )
+
+
+def _run_calibration_judge(
+    repository: RepositoryPort, llm_port: LLMPort, *, brier_score_enabled: bool = False
+) -> None:
     """#4: LLM-as-Judge kalibracji pewności (Slow Loop). FIN-30: jego wywołanie
-    LLM liczy się do tygodniowego budżetu Slow Loopa, nie do budżetu Fast Loopa."""
+    LLM liczy się do tygodniowego budżetu Slow Loopa, nie do budżetu Fast Loopa.
+    WIA-37: `brier_score_enabled` = reguła Briera v2 z kolumną wersji (migracja 044)."""
     try:
         from src.application.use_cases.calibrate_confidence import (
             CalibrateConfidenceUseCase,
@@ -382,10 +658,27 @@ def _run_calibration_judge(repository: RepositoryPort, llm_port: LLMPort) -> Non
         cal_result = CalibrateConfidenceUseCase(
             repository_port=repository,
             llm_port=llm_port,
+            brier_score_enabled=brier_score_enabled,
         ).run(days=30)
         logger.info("Calibration judge — %s", cal_result.get("status"))
     except Exception:
         logger.exception("Calibration judge failed — pomijam")
+
+
+def _run_diagnosis_backfill(
+    repository: RepositoryPort, llm_port: LLMPort, max_paid_calls: int
+) -> None:
+    """WIA-53: diagnozy błędnych predykcji, którym bramka volatility pominęła
+    płatną diagnozę. Sekwencyjnie, po treningu — poza wyścigiem `symbol_concurrency`
+    Fast Loopa. Best-effort: błąd kroku nie zmienia exit code'u."""
+    try:
+        result = BackfillDiagnosesUseCase(
+            repository_port=repository, llm_port=llm_port, max_paid_calls=max_paid_calls
+        ).run()
+    except Exception:
+        logger.exception("Diagnosis backfill failed — pomijam")
+        return
+    logger.info("Diagnosis backfill — %s", result)
 
 
 def _send_weekly_recap(
@@ -428,7 +721,7 @@ def _send_weekly_recap(
 
 def main(settings: Settings | None = None) -> int:
     resolved = settings or Settings.from_env()
-    configure_logging(resolved.secret_values())
+    configure_logging("main_trainer", resolved.secret_values())
     # NIEZ-13: ping zewnętrznego heartbeatu na koniec (ok = exit 0).
     return run_with_heartbeat(resolved, lambda: _run_with_summary(resolved))
 
@@ -448,7 +741,9 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     warn_if_paid_calls_disabled(settings)
     quota_monitor = QuotaMonitor()
     repository = build_repository(settings)
-    use_case = build_use_case(settings)
+    # ML-24: jeden identyfikator na przebieg — wspólny dla wszystkich wierszy karty.
+    run_id = str(uuid.uuid4())
+    use_case = build_use_case(settings, run_id=run_id)
 
     logger.info("Slow Loop start — symbols=%s", settings.symbols)
     try:
@@ -460,24 +755,39 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
         return 1
 
     _refresh_fundamentals_cache(settings, repository, quota_monitor)
+    _refresh_earnings_cache(settings, repository)
     persisted_alerts = _persist_quota_alerts(repository, quota_monitor)
 
     # BUG: trener widział tylko `settings.symbols`, więc BTC/ETH NIGDY nie
     # przechodziły retrainu — model krypto zostawał na zawsze przy cold-starcie.
     # `dict.fromkeys` zachowuje kolejność i deduplikuje symbol obecny w obu listach.
     trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
-    failures = _train_symbols(settings, repository, use_case, trainable, tally)
+    failures = _train_symbols(settings, repository, use_case, trainable, tally, run_id)
     failures += _train_pooled_model(settings, use_case, trainable, tally)
     tally.failures, tally.total = failures, len(trainable) + 1
     _run_reference_signal(settings, repository)
+    _run_output_drift(settings, quota_monitor)
+    _run_model_probe(settings, quota_monitor)
+    _run_evidence_export(settings)
 
     usage_ledger = UsageLedger()
     paid_llm = _SlowLoopPaidLLM(settings, quota_monitor, usage_ledger)
     if settings.calibration_judge_enabled:
-        _run_calibration_judge(repository, paid_llm.port_for(JUDGE_JOB))
+        _run_calibration_judge(
+            repository,
+            paid_llm.port_for(JUDGE_JOB),
+            brier_score_enabled=settings.calibration_score_version_enabled,
+        )
 
     if settings.weekly_recap_enabled:
         _send_weekly_recap(settings, repository, quota_monitor, paid_llm.port_for(RECAP_JOB))
+    if settings.diagnosis_backfill_enabled:
+        # Rezerwa NIEZ-44 zostaje na zapasowego dostawcę — wierszy nie więcej niż cap.
+        _run_diagnosis_backfill(
+            repository,
+            paid_llm.port_for(DIAGNOSIS_JOB),
+            min(settings.diagnosis_backfill_max_calls, paid_llm.allowed(DIAGNOSIS_JOB)),
+        )
     paid_llm.log_spend()
     persist_llm_calls(
         settings=settings,

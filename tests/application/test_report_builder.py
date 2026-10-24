@@ -1,11 +1,12 @@
 import dataclasses
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
 from src.application import report_builder
 from src.application.report_builder import (
+    PortfolioMood,
     ReportContext,
     ResolvedPrediction,
     RiskSignal,
@@ -426,18 +427,33 @@ class TestPortfolioMood:
         ]
         mood = build_portfolio_mood(results)
         # avg = (0.4 + -0.3 + 0.1) / 3 ≈ 0.0667
-        assert abs(mood["avg_sentiment"] - 0.0667) < 0.001
-        assert mood["most_bullish"].symbol == "A"
-        assert mood["most_bearish"].symbol == "B"
-        assert mood["high_confidence_count"] == 1
-        assert mood["saved_count"] == 2
+        assert mood.avg_sentiment is not None
+        assert abs(mood.avg_sentiment - 0.0667) < 0.001
+        assert mood.most_bullish is not None
+        assert mood.most_bullish.symbol == "A"
+        assert mood.most_bearish is not None
+        assert mood.most_bearish.symbol == "B"
+        assert mood.high_confidence_count == 1
+        assert mood.saved_count == 2
+
+    def test_no_sentiment_gives_no_average(self):
+        # MAIL-10: bez ani jednego sentymentu średniej nie ma (None), a nie 0.0
+        # udające neutralny nastrój; wynik to zamrożony dataclass, nie dict.
+        mood = build_portfolio_mood([SymbolResult(symbol="A", status="ignored")])
+
+        assert isinstance(mood, PortfolioMood)
+        assert mood.avg_sentiment is None
+        assert mood.avg_sentiment_label is None
+        assert mood.sentiment_count == 0
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            mood.__setattr__("saved_count", 1)
 
     def test_handles_empty_results(self):
         mood = build_portfolio_mood([])
-        assert mood["avg_sentiment"] == pytest.approx(0.0)
-        assert mood["most_bullish"] is None
-        assert mood["most_bearish"] is None
-        assert mood["saved_count"] == 0
+        assert mood.avg_sentiment is None
+        assert mood.most_bullish is None
+        assert mood.most_bearish is None
+        assert mood.saved_count == 0
 
 
 class TestMarketStatus:
@@ -752,6 +768,21 @@ class TestResolvedPostMortem:
         assert r.price_at_prediction == Decimal("100.0")
         assert r.actual_price == Decimal("106.0")
         assert r.actual_change_pct == Decimal("0.06")
+
+    def test_parse_reads_the_mistake_category(self):
+        # WIA-57: kolumna `correction_category` (migracja 046); brak albo śmieć → None.
+        from src.domain.mistake_taxonomy import MistakeCategory
+
+        base = {"symbol": "NVDA", "predicted_trend": "BULLISH", "is_trend_correct": False}
+        rows = [
+            {**base, "correction_category": "MACRO"},
+            {**base, "correction_category": "???"},
+            base,
+        ]
+
+        parsed = parse_resolved_predictions(rows)
+
+        assert [r.correction_category for r in parsed] == [MistakeCategory.MACRO, None, None]
 
     def test_miss_shows_reasoning_actual_move_and_diagnosis(self):
         resolved = [
@@ -1751,6 +1782,44 @@ class TestLeadSection:
         assert "NVDA -4,2%, rada PODZIELONA" in html
         assert "NVDA -4,2%, rada PODZIELONA" in text
 
+    def test_council_flip_from_the_context_leads_the_report_and_its_subject(self):
+        # MAIL-19: flip rady był tylko w sekcji #8 w połowie maila, a temat mówił
+        # o czymś innym — teraz to lead, więc i temat (lead_headline).
+        from src.domain.consensus_shift import ConsensusShift, ShiftKind
+        from src.domain.digest_lead import lead_headline
+
+        verdict = CouncilVerdict(
+            final_recommendation="SELL",
+            consensus_strength=0.6,
+            summary="Rada zmieniła zdanie po wynikach.",
+            dissenting_views=(),
+            investor_opinions=(
+                InvestorOpinion(
+                    investor_name="A", recommendation="SELL",
+                    confidence=0.8, reasoning="x", key_factors=(),
+                ),
+            ),
+        )
+        flipped = SymbolResult(
+            symbol="NVDA", status="saved", delta=Decimal("-0.042"),
+            current_price=Decimal("180.00"), trend="BEARISH", council_verdict=verdict,
+        )
+        shift = ConsensusShift(
+            kind=ShiftKind.FLIP, previous_recommendation="BUY",
+            current_recommendation="SELL", votes_changed=1,
+            sentiment_delta=-0.3, consensus_delta=0.0, gap_hours=24.0,
+        )
+        context = ReportContext(consensus_shifts=[("NVDA", shift)])
+
+        html, text = build_html_report(
+            [flipped], datetime(2026, 5, 14, tzinfo=UTC), 1.0, context
+        )
+
+        headline = "NVDA -4,2%: rada odwróciła się KUP→SPRZEDAJ"
+        assert headline in html
+        assert headline in text
+        assert lead_headline(report_builder.build_cycle_lead([flipped], context)) == headline
+
 
 class TestSkipReasonMapping:
     """#4 — `skip_reason` rozdziela przyczyny pominięcia. Bez tego powitalny
@@ -2160,6 +2229,39 @@ class TestAccuracyHistoryBothDefinitions:
         assert "Trafność kierunkowa" not in html
 
 
+class TestAccuracyHistorySessionClose:
+    """WIA-61 (okres przejściowy, opcja „oba”): obok trafności na cenie /quote
+    Historia trafności pokazuje trafność na oficjalnym zamknięciu sesji i, dla
+    porównania, trafność /quote na tych samych predykcjach."""
+
+    _STATS = {
+        **TestAccuracyHistoryBothDefinitions._STATS,
+        "session_close_count": 40,
+        "session_close_correct_count": 30,
+        "session_close_quote_correct_count": 28,
+    }
+
+    @staticmethod
+    def _report(stats: dict[str, object]) -> tuple[str, str]:
+        return build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(accuracy_stats=stats)
+        )
+
+    def test_both_hit_rates_are_shown_in_html_and_text(self):
+        html, text = self._report(self._STATS)
+
+        for body in (html, text):
+            assert "Na oficjalnym zamknięciu sesji: 75,0%" in body
+            assert "na cenie /quote tych samych predykcji: 70,0%" in body
+            assert "n=40" in body
+
+    def test_without_session_close_counts_the_line_is_absent(self):
+        html, text = self._report(TestAccuracyHistoryBothDefinitions._STATS)
+
+        assert "oficjalnym zamknięciu sesji" not in html
+        assert "oficjalnym zamknięciu sesji" not in text
+
+
 class TestResolvedSummaryBothDefinitions:
     """Decyzja 2026-10-19 (a): podsumowanie „Zamknięte predykcje (24h)” mówiło
     „(X% accuracy)” z SIDEWAYS w mianowniku. Teraz ta sama para etykiet co
@@ -2453,6 +2555,79 @@ def test_header_shows_the_cycle_start_in_the_display_timezone():
     assert "Czas rozpoczęcia:  pt 16.10 07:30" in text
     assert "05:30" not in html
     assert "05:30" not in text
+
+
+def test_header_shows_regime_and_multiplier():
+    # ALR-05: reżim zacieśnia bramkę każdego cyklu — czytelnik widzi mniej predykcji,
+    # więc nagłówek mówi, jaki reżim, jaki mnożnik progu i dlaczego. Liczby po
+    # polsku (MAIL-58), stąd „×1,5”, a nie „×1.5” z opisu wpisu.
+    from src.application.report_regime import RegimeBanner
+    from src.domain.regime import MarketRegime
+
+    banner = RegimeBanner(
+        regime=MarketRegime.RISK_OFF,
+        multiplier=1.5,
+        base_threshold=Decimal("0.02"),
+        reason="2 głosy ELEVATED",
+    )
+
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(regime=banner),
+    )
+
+    expected = "Reżim: RISK_OFF · próg ×1,5 (2,0% → 3,0%) · powód: 2 głosy ELEVATED"
+    assert expected in html
+    assert expected in text
+    assert text.index(expected) < text.index("Sygnały ponad próg")
+
+
+def test_header_without_multiplier_shows_one_threshold():
+    from src.application.report_regime import RegimeBanner
+    from src.domain.regime import MarketRegime
+
+    banner = RegimeBanner(
+        regime=MarketRegime.RISK_ON,
+        multiplier=1.0,
+        base_threshold=Decimal("0.02"),
+        reason="wszystkie sygnały NORMAL",
+    )
+
+    _, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(regime=banner),
+    )
+
+    assert "Reżim: RISK_ON · próg ×1,0 (2,0%) · powód: wszystkie sygnały NORMAL" in text
+
+
+def test_header_without_regime_has_no_regime_line():
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0, ReportContext()
+    )
+
+    assert "Reżim:" not in html
+    assert "Reżim:" not in text
+
+
+def test_regime_reason_is_escaped_in_html():
+    from src.application.report_regime import RegimeBanner
+    from src.domain.regime import MarketRegime
+
+    banner = RegimeBanner(
+        regime=MarketRegime.NEUTRAL,
+        multiplier=1.0,
+        base_threshold=Decimal("0.02"),
+        reason="<b>x</b>",
+    )
+
+    html, _ = build_html_report(
+        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(regime=banner),
+    )
+
+    assert "<b>x</b>" not in html
+    assert "&lt;b&gt;x&lt;/b&gt;" in html
 
 
 def _consensus(summary: str) -> CouncilVerdict:
@@ -3476,3 +3651,322 @@ class TestBudgetExhaustedReport:
         assert "poniżej progu" not in html.split("🪙 Krypto")[1]
         assert "budżet cyklu" in html.split("🪙 Krypto")[1]
         assert "budżet cyklu" in text.split("KRYPTO")[1]
+
+
+class TestPositionAwareSignals:
+    """PORT-08: przy znanym portfelu 🎯 sygnały mówią „ZREDUKUJ” o trzymanej
+    spółce i „UNIKAJ” o nietrzymanej zamiast gołego „SPRZEDAJ” (sugestia shorta
+    dla inwestora long-only)."""
+
+    _AS_OF = datetime(2026, 5, 14, tzinfo=UTC)
+
+    @staticmethod
+    def _bearish(symbol: str) -> SymbolResult:
+        return SymbolResult(
+            symbol=symbol, status="saved", trend="BEARISH", delta=Decimal("-0.03"),
+            confidence_score=0.8, current_price=Decimal("100"),
+            target_price=Decimal("95"),
+        )
+
+    @staticmethod
+    def _flat_msft() -> SymbolResult:
+        return SymbolResult(
+            symbol="MSFT", status="ignored", delta=Decimal("0"), current_price=Decimal("100")
+        )
+
+    def _portfolio(self) -> Portfolio:
+        return Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("12"),
+                         purchase_price=Decimal("100"), purchase_date=self._AS_OF.date()),
+                Position(symbol="MSFT", quantity=Decimal("88"),
+                         purchase_price=Decimal("100"), purchase_date=self._AS_OF.date()),
+            ),
+            as_of=self._AS_OF,
+        )
+
+    def _signals_html(self, context: ReportContext) -> str:
+        html, _ = build_html_report(
+            [self._bearish("AAPL"), self._bearish("TSLA"), self._flat_msft()],
+            self._AS_OF, 1.0, context,
+        )
+        start = html.index("🎯 Najsilniejsze sygnały")
+        return html[start:html.index("<h2", start + 1)]
+
+    def test_bearish_signal_says_reduce_on_a_holding_and_avoid_elsewhere(self):
+        section = self._signals_html(ReportContext(user_portfolio=self._portfolio()))
+
+        assert "ZREDUKUJ (12% portfela)" in section
+        assert "UNIKAJ" in section
+        assert "SPRZEDAJ" not in section
+        assert "nie rekomendacja" in section
+
+    def test_plain_text_uses_the_same_position_labels(self):
+        _, text = build_html_report(
+            [self._bearish("AAPL"), self._bearish("TSLA"), self._flat_msft()],
+            self._AS_OF, 1.0, ReportContext(user_portfolio=self._portfolio()),
+        )
+
+        signals = text.split("NAJSILNIEJSZE SYGNAŁY")[1].split("\n\n")[0]
+        assert "ZREDUKUJ (12% portfela)" in signals
+        assert "UNIKAJ" in signals
+        assert "SPRZEDAJ" not in signals
+
+    def test_without_a_known_portfolio_the_signal_is_unchanged(self):
+        section = self._signals_html(ReportContext())
+
+        assert "SPRZEDAJ" in section
+        assert "UNIKAJ" not in section
+        assert "ZREDUKUJ" not in section
+
+    def test_avoid_signal_does_not_suggest_a_position_size(self):
+        verdict = CouncilVerdict(
+            final_recommendation="SELL", consensus_strength=0.9, summary="Rada: SELL.",
+            dissenting_views=(),
+            investor_opinions=(
+                InvestorOpinion(investor_name="A", recommendation="SELL",
+                                confidence=0.9, reasoning="x", key_factors=()),
+            ),
+        )
+        unheld = dataclasses.replace(self._bearish("TSLA"), council_verdict=verdict)
+
+        html, _ = build_html_report(
+            [unheld], self._AS_OF, 1.0, ReportContext(user_portfolio=self._portfolio())
+        )
+
+        start = html.index("🎯 Najsilniejsze sygnały")
+        section = html[start:html.index("<h2", start + 1)]
+        assert "UNIKAJ" in section
+        assert "% portfela" not in section
+
+
+class TestDegradedDayMood:
+    """MAIL-10 (G46): dzień bez danych nie udaje neutralnego nastroju — box
+    „Nastroje portfela” znika, gdy nic nie zapisano, a bez sentymentów średnia
+    to „—”, nie zmyślone „+0,00 (Neutralny)”."""
+
+    _STARTED = datetime(2026, 5, 14, tzinfo=UTC)
+
+    def test_all_ignored_cycle_has_no_fake_neutral_mood(self):
+        html, text = build_html_report(
+            [_ignored_result("MSFT"), _ignored_result("AAPL")], self._STARTED, 1.0
+        )
+
+        assert "Nastroje portfela" not in html
+        assert "NASTROJE PORTFELA" not in text
+        assert "Średni sentyment" not in html
+        assert "Średni sentyment" not in text
+        assert "0 / 0" not in html
+
+    def test_saved_cycle_without_sentiment_shows_no_average(self):
+        degraded = dataclasses.replace(
+            _saved_result(), sentiment_score=None, sentiment_label=None
+        )
+
+        html, text = build_html_report([degraded], self._STARTED, 1.0)
+
+        assert "Nastroje portfela" in html
+        assert "Średni sentyment: <strong>—</strong> (brak danych)" in html
+        assert "  Średni sentyment: — (brak danych)" in text
+        assert "+0,00 (Neutralny)" not in text
+
+    def test_saved_cycle_with_sentiment_keeps_the_average(self):
+        html, text = build_html_report([_saved_result()], self._STARTED, 1.0)
+
+        assert "Średni sentyment: <strong>+0,42</strong>" in html
+        assert "  Średni sentyment: +0,42" in text
+
+
+def test_footer_lists_data_sources():
+    # MAIL-07: mail nie przypisywał danych Alpha Vantage, Finnhub ani CoinGecko.
+    # Lista zależy od flag, więc stopka mówi to wprost („w zależności od konfiguracji”).
+    run = RunContext(run_id="77", git_sha="abc1234def")
+
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0,
+        ReportContext(run_context=run),
+    )
+
+    for body in (html, text):
+        assert "Źródła danych (w zależności od konfiguracji):" in body
+        for source in ("Alpha Vantage", "Finnhub", "CoinGecko", "SEC EDGAR", "FRED", "NBP"):
+            assert source in body
+    # Stopka źródeł stoi pod zastrzeżeniem, a stopka przebiegu zostaje ostatnia.
+    assert html.index("nie stanowi rekomendacji") < html.index("Źródła danych")
+    assert text.index("Źródła danych") < text.index("przebieg #77")
+
+
+class TestPlainTextSlots:
+    """MAIL-09 (G47): wersja tekstowa niesie te same sekcje co HTML tam, gdzie
+    istnieje renderer tekstu — klient bez HTML dostawał raport bez kosztu cyklu,
+    zmian nastawienia rady, karty modelu i historii głosów."""
+
+    _STARTED = datetime(2026, 5, 14, tzinfo=UTC)
+
+    def _text(self, context: ReportContext) -> str:
+        _, text = build_html_report([_saved_result()], self._STARTED, 1.0, context)
+        return text
+
+    def test_plain_text_contains_finops_when_cost_given(self):
+        from src.domain.finops import estimate_cycle_cost
+
+        text = self._text(ReportContext(cycle_cost=estimate_cycle_cost({"llm": 3})))
+
+        assert "KOSZT CYKLU" in text
+        # Zaplecze, jak w HTML: koszt za separatorem, przed pominiętymi i błędami.
+        assert text.index("ZAPLECZE") < text.index("KOSZT CYKLU")
+
+    def test_plain_text_contains_consensus_shifts_in_the_today_zone(self):
+        from src.domain.consensus_shift import ConsensusShift, ShiftKind
+
+        shift = ConsensusShift(
+            kind=ShiftKind.FLIP, previous_recommendation="SELL",
+            current_recommendation="BUY", votes_changed=2,
+            sentiment_delta=0.3, consensus_delta=0.1, gap_hours=24.0,
+        )
+
+        text = self._text(ReportContext(consensus_shifts=[("AAPL", shift)]))
+
+        assert "=== 🔄 Zmiany nastawienia ===" in text
+        assert text.index("Zmiany nastawienia") < text.index("ZAPLECZE")
+
+    def test_plain_text_contains_model_scorecard_and_council_history(self):
+        from src.application.report_council_history import InvestorHistory
+
+        view = ModelScorecardView(
+            summary=summarize_run(["trained_successfully"]),
+            trained_at=datetime(2026, 5, 13, tzinfo=UTC),
+        )
+        history = [
+            InvestorHistory(investor_name="Soros", symbol="AAPL",
+                            recommendations=("HOLD", "SELL", "SELL")),
+        ]
+
+        text = self._text(ReportContext(model_scorecard=view, council_history=history))
+
+        assert "KARTA KONDYCJI MODELU" in text
+        assert "=== 🗳️ Rada — historia głosów ===" in text
+        assert text.index("ZAPLECZE") < text.index("KARTA KONDYCJI MODELU")
+
+    def test_empty_sections_leave_no_slot_markers(self):
+        text = self._text(ReportContext())
+
+        assert "SLOT" not in text
+        assert "KOSZT CYKLU" not in text
+        assert "\n\n\n" not in text
+
+class TestInsiderBuyLead:
+    """DAT-21: znaczący zakup insidera z sekcji alfy trafia do leadu i tematu maila
+    tym samym tekstem, z progiem z kapitalizacji spółki."""
+
+    @staticmethod
+    def _alpha(market_cap: float | None = None) -> dict:
+        from src.application.alpha_signals import AlphaSignals
+        from src.domain.insider_flow import InsiderBuy, InsiderFlowSnapshot
+
+        insider = InsiderFlowSnapshot(
+            "NVDA",
+            10_000.0,
+            1,
+            0,
+            90,
+            largest_buy=InsiderBuy(role="CEO", value_usd=1_200_000.0),
+        )
+        return {"NVDA": AlphaSignals(symbol="NVDA", insider=insider, market_cap=market_cap)}
+
+    def test_lead_signal_carries_the_alpha_section_label(self):
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+
+        (signal,) = to_lead_signals(results, [], None, alpha_signals=self._alpha())
+
+        assert signal.insider_buy_label == "CEO kupił akcje za 1,2 mln USD"
+
+    def test_buy_below_the_cap_scaled_threshold_is_no_lead(self):
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+
+        (signal,) = to_lead_signals(results, [], None, alpha_signals=self._alpha(market_cap=4e12))
+
+        assert signal.insider_buy_label is None
+
+    def test_cycle_lead_opens_with_the_insider_buy(self):
+        from src.application.report_builder import build_cycle_lead
+
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+
+        items = build_cycle_lead(results, ReportContext(alpha_signals=self._alpha()))
+
+        assert items[0].headline == "NVDA +1,2%: CEO kupił akcje za 1,2 mln USD"
+
+    @staticmethod
+    def _filed_alpha(filed_on: date) -> dict:
+        from src.application.alpha_signals import AlphaSignals
+        from src.domain.insider_flow import InsiderBuy, InsiderFlowSnapshot
+
+        buy = InsiderBuy(role="CEO", value_usd=1_200_000.0, filed_on=filed_on)
+        insider = InsiderFlowSnapshot("NVDA", 10_000.0, 1, 0, 90, largest_buy=buy)
+        return {"NVDA": AlphaSignals(symbol="NVDA", insider=insider)}
+
+    def test_buy_filed_before_the_lead_window_is_no_lead(self):
+        # DAT-21: lead tylko przez N dni od filingu; sekcja alfy pokazuje go dalej.
+        from src.application.report_builder import build_cycle_lead
+        from src.domain.insider_flow import InsiderLeadWindow
+
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+        window = InsiderLeadWindow(as_of=date(2026, 10, 26), max_age_days=3)
+        context = ReportContext(
+            alpha_signals=self._filed_alpha(date(2026, 10, 22)), insider_lead_window=window
+        )
+
+        items = build_cycle_lead(results, context)
+
+        assert all("kupił akcje" not in item.headline for item in items)
+
+    def test_buy_filed_inside_the_lead_window_still_leads(self):
+        from src.application.report_builder import build_cycle_lead
+        from src.domain.insider_flow import InsiderLeadWindow
+
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+        window = InsiderLeadWindow(as_of=date(2026, 10, 26), max_age_days=3)
+        context = ReportContext(
+            alpha_signals=self._filed_alpha(date(2026, 10, 23)), insider_lead_window=window
+        )
+
+        items = build_cycle_lead(results, context)
+
+        assert items[0].headline == "NVDA +1,2%: CEO kupił akcje za 1,2 mln USD"
+
+
+class TestRegimeChangeLead:
+    """ALR-05 (krok 2): zmiana reżimu z nagłówka maila otwiera też lead (i temat)."""
+
+    def test_cycle_lead_opens_with_the_regime_change(self):
+        from src.application.report_builder import build_cycle_lead
+        from src.application.report_regime import RegimeBanner
+        from src.domain.regime import MarketRegime, RegimeChange
+
+        banner = RegimeBanner(
+            regime=MarketRegime.RISK_OFF,
+            multiplier=1.5,
+            base_threshold=Decimal("0.02"),
+            reason="2 głosy ELEVATED",
+            change=RegimeChange(previous=MarketRegime.NEUTRAL, current=MarketRegime.RISK_OFF),
+        )
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.01"))]
+
+        items = build_cycle_lead(results, ReportContext(regime=banner))
+
+        assert items[0].headline == "Rynek przeszedł w RISK_OFF, analiza rzadsza"
+
+    def test_banner_without_a_change_adds_no_lead(self):
+        from src.application.report_builder import build_cycle_lead
+        from src.application.report_regime import RegimeBanner
+        from src.domain.regime import MarketRegime
+
+        banner = RegimeBanner(
+            regime=MarketRegime.RISK_OFF,
+            multiplier=1.5,
+            base_threshold=Decimal("0.02"),
+            reason="alert CRITICAL",
+        )
+
+        assert build_cycle_lead([], ReportContext(regime=banner)) == []

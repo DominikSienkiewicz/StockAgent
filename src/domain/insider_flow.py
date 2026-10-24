@@ -6,10 +6,69 @@ infrastrukturze i mapuje surowe filingi na ten model."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 
 from src.domain.value_objects import AssetType
+
+# DAT-21: próg znaczącego zakupu — kod P od officera za co najmniej tyle USD.
+# Dolna granica przy każdej kapitalizacji i cały próg, gdy kapitalizacja nieznana.
+SIGNIFICANT_BUY_MIN_USD = 100_000.0
+# DAT-21: próg jako ułamek kapitalizacji — 4 mln USD przy spółce za 4 bln USD.
+# Ta sama kwota znaczy co innego w małej i dużej spółce.
+SIGNIFICANT_BUY_MIN_CAP_FRACTION = 1e-6
+
+
+def significant_buy_threshold(market_cap: float | None) -> float:
+    """DAT-21: próg znaczącego zakupu w USD — `max(1e-6 × kapitalizacja, 100k USD)`
+    (decyzja właściciela: poniżej 100 mld USD kapitalizacji ułamek spadałby pod
+    100k USD), a bez kapitalizacji (brak w cache, zero, NaN) samo 100k USD."""
+    if market_cap is None or not math.isfinite(market_cap) or market_cap <= 0:
+        return SIGNIFICANT_BUY_MIN_USD
+    return max(market_cap * SIGNIFICANT_BUY_MIN_CAP_FRACTION, SIGNIFICANT_BUY_MIN_USD)
+
+
+@dataclass(frozen=True)
+class InsiderBuy:
+    """Największy rynkowy zakup (kod P, poza planem 10b5-1) insidera w oknie.
+
+    `role` — `officerTitle` z Form 4 (np. „CEO”; pusty, gdy brak tytułu albo
+    kupuje członek rady); `is_officer` odróżnia zarząd od rady; `filing_url` —
+    Form 4 tej transakcji. `value_usd` to suma zakupów P z jednego Form 4.
+    `filed_on` — data filingu z EDGAR (okno leadu, `InsiderLeadWindow`); None =
+    adapter jej nie zna."""
+
+    role: str
+    value_usd: float
+    is_officer: bool = True
+    filing_url: str | None = None
+    filed_on: date | None = None
+
+
+# DAT-21: tyle dni od daty filingu zakup insidera może otwierać maila (lead).
+# 3 dni obejmują piątkowy filing, który pierwszy raz widzi poniedziałkowy cykl.
+INSIDER_LEAD_MAX_AGE_DAYS = 3
+
+
+@dataclass(frozen=True)
+class InsiderLeadWindow:
+    """DAT-21 (decyzja właściciela): zakup insidera prowadzi maila tylko przez
+    `max_age_days` dni od filingu. Bez okna jeden Form 4 wracałby do leadu w każdym
+    cyklu, dopóki jest w oknie insider flow (90 dni). `as_of` — dzień cyklu
+    w kalendarzu NYSE, jak daty filingów EDGAR. Sekcji alfy okno nie dotyczy."""
+
+    as_of: date
+    max_age_days: int = INSIDER_LEAD_MAX_AGE_DAYS
+
+    def admits(self, buy: InsiderBuy) -> bool:
+        """Czy zakup może prowadzić maila w dniu `as_of` — filing najwyżej
+        `max_age_days` dni wcześniej. Bez daty filingu brak dowodu wieku, więc
+        zakup prowadzi jak przed oknem."""
+        if buy.filed_on is None:
+            return True
+        return (self.as_of - buy.filed_on).days <= self.max_age_days
 
 
 def has_insider_filings(asset_type: AssetType) -> bool:
@@ -40,7 +99,13 @@ class InsiderFlowSnapshot:
 
     `filings_seen`/`filings_parsed` (DAT-03): ile Form 4 z okna adapter widział
     i ile z nich sparsował. Bez nich niesparsowane filingi wyglądały jak okno bez
-    transakcji. Domyślne zera = snapshot bez tej wiedzy, traktowany jak dowód."""
+    transakcji. Domyślne zera = snapshot bez tej wiedzy, traktowany jak dowód.
+
+    DAT-21 (pola opcjonalne, None = adapter ich nie policzył): `net_value_usd` —
+    kupna P minus sprzedaże S w USD (akcje × cena), BEZ transakcji z planów
+    10b5-1; `largest_buy` — największy zakup officera (albo członka rady, gdy
+    officer nie kupował); `latest_filing_url` — najnowszy Form 4 okna.
+    `net_shares` zostaje bez zmian: waży w Alpha Fusion, a zmiana wymaga A/B."""
 
     symbol: str
     net_shares: float
@@ -49,6 +114,19 @@ class InsiderFlowSnapshot:
     window_days: int
     filings_seen: int = 0
     filings_parsed: int = 0
+    net_value_usd: float | None = None
+    largest_buy: InsiderBuy | None = None
+    latest_filing_url: str | None = None
+
+    def significant_buy(
+        self, min_value_usd: float = SIGNIFICANT_BUY_MIN_USD
+    ) -> InsiderBuy | None:
+        """DAT-21: znaczący zakup = kod P od officera za ≥ `min_value_usd` USD.
+        Liczba akcji nie mówi o skali (10 000 akcji po 5 USD i po 900 USD)."""
+        buy = self.largest_buy
+        if buy is None or not buy.is_officer or buy.value_usd < min_value_usd:
+            return None
+        return buy
 
     def has_evidence(self) -> bool:
         """Czy snapshot mówi coś o insiderach. Okno bez Form 4 to dowód braku

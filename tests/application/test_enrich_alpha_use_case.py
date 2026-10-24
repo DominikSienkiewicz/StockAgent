@@ -148,3 +148,74 @@ class TestEarningsPrefetchDedup:
         AlphaEnrichmentUseCase(**ports).enrich("AAPL")
 
         ports["earnings_port"].get_next_earnings.assert_called_once_with("AAPL")
+
+
+class TestMarketCapForTheInsiderThreshold:
+    """DAT-21: kapitalizacja z cache fundamentów skaluje próg znaczącego zakupu —
+    czytana tylko, gdy insider coś kupił (inaczej zero odczytów)."""
+
+    @staticmethod
+    def _buying_insider() -> InsiderFlowSnapshot:
+        from src.domain.insider_flow import InsiderBuy
+
+        return InsiderFlowSnapshot(
+            "NVDA",
+            10_000.0,
+            1,
+            0,
+            90,
+            largest_buy=InsiderBuy(role="CEO", value_usd=1_200_000.0),
+        )
+
+    @staticmethod
+    def _cache(market_cap: float | None) -> Mock:
+        from datetime import UTC, datetime
+
+        from src.application.ports import FundamentalsPort
+        from src.domain.value_objects import Fundamentals
+
+        cache = Mock(spec=FundamentalsPort)
+        cache.get_fundamentals.return_value = Fundamentals(
+            trailing_pe=50.0,
+            forward_pe=None,
+            peg_ratio=None,
+            eps_growth_yoy=None,
+            fetched_at=datetime(2026, 10, 18, tzinfo=UTC),
+            market_cap=market_cap,
+        )
+        return cache
+
+    def test_insider_buy_gets_the_cached_market_cap(self) -> None:
+        ports = _ports()
+        _all_none(ports)
+        ports["insider_port"].get_insider_flow.return_value = self._buying_insider()
+        cache = self._cache(4e12)
+
+        signals = AlphaEnrichmentUseCase(**ports, market_cap_port=cache).enrich("NVDA")
+
+        assert signals.market_cap == 4e12
+        # 1,2 mln USD przy 4 bln USD kapitalizacji to poniżej progu (4 mln USD).
+        assert signals.significant_insider_buy() is None
+        cache.get_fundamentals.assert_called_once_with("NVDA")
+
+    def test_without_an_insider_buy_the_cache_is_not_read(self) -> None:
+        ports = _ports()
+        _all_none(ports)
+        cache = self._cache(4e12)
+
+        signals = AlphaEnrichmentUseCase(**ports, market_cap_port=cache).enrich("NVDA")
+
+        assert signals.market_cap is None
+        cache.get_fundamentals.assert_not_called()
+
+    def test_cache_failure_falls_back_to_the_fixed_threshold(self) -> None:
+        ports = _ports()
+        _all_none(ports)
+        ports["insider_port"].get_insider_flow.return_value = self._buying_insider()
+        cache = self._cache(None)
+        cache.get_fundamentals.side_effect = RuntimeError("supabase down")
+
+        signals = AlphaEnrichmentUseCase(**ports, market_cap_port=cache).enrich("NVDA")
+
+        assert signals.market_cap is None
+        assert signals.significant_insider_buy() is not None

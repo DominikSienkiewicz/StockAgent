@@ -14,6 +14,8 @@ import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 
+from src.domain.value_objects import require_finite
+
 # Minimalna liczba par zwrotów potrzebna, by korelacja miała sens.
 _MIN_RETURNS = 2
 
@@ -73,8 +75,11 @@ def pearson(a: list[float], b: list[float]) -> float:
     Wyrównuje długości do wspólnego prefiksu (misaligned history). Gdy
     którakolwiek seria ma zerową wariancję (stała), zwraca 0.0 zamiast
     NaN — brak zmienności = brak mierzalnej współzależności. Za krótkie
-    serie (<2 punktów) też dają 0.0.
+    serie (<2 punktów) też dają 0.0. NaN/inf w którejkolwiek serii →
+    `ValueError` (PORT-09): domknięcie `min`/`max` zamieniało NaN w 1.0.
     """
+    require_finite(a, "pearson series")
+    require_finite(b, "pearson series")
     n = min(len(a), len(b))
     if n < _MIN_RETURNS:
         return 0.0
@@ -85,9 +90,12 @@ def pearson(a: list[float], b: list[float]) -> float:
     cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys, strict=True))
     var_x = sum((x - mean_x) ** 2 for x in xs)
     var_y = sum((y - mean_y) ** 2 for y in ys)
-    if var_x == 0 or var_y == 0:
+    # Pierwiastki osobno: iloczyn bardzo małych wariancji schodzi do 0.0
+    # (np. 1e-90 × 1e-281), choć każda z nich jest dodatnia.
+    denominator = math.sqrt(var_x) * math.sqrt(var_y)
+    if denominator == 0:
         return 0.0
-    corr = cov / math.sqrt(var_x * var_y)
+    corr = cov / denominator
     # Domknięcie do [-1, 1] — błędy zmiennoprzecinkowe potrafią dać 1.0000002.
     return max(-1.0, min(1.0, corr))
 

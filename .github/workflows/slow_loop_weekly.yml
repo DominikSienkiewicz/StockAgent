@@ -7,21 +7,28 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # KRYTYCZNE — job musi pushować zaktualizowany .ubj
+  contents: read    # BEZ-12: zapis dostaje wyłącznie job trenera, nie cały workflow
+
+# CI-13: dwa treningi naraz (cron + ręczne wymuszenie) nadpisywałyby sobie asset
+# wag. Drugi run czeka w kolejce — anulowanie w połowie uploadu zostawiłoby
+# Release bez pliku.
+concurrency:
+  group: slow-loop
+  cancel-in-progress: false
 
 jobs:
   retrain-predictive-model:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write   # CI-13: tworzy Release `model-latest` i podmienia jego asset wag
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          # Upload wag idzie domyślnym GITHUB_TOKEN z `contents: write` tego joba.
           fetch-depth: 1
-          # Token z prawem zapisu (default GITHUB_TOKEN wystarcza
-          # przy ustawionym permissions.contents=write powyżej)
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 🙈 Mask each Alpha Vantage key
         # BEZ-03: GitHub maskuje sekret CSV tylko w całości — pojedynczy klucz z listy
@@ -31,7 +38,7 @@ jobs:
         run: scripts/mask-csv-secret.sh ALPHA_VANTAGE_API_KEYS
 
       - name: 🐍 Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
@@ -42,6 +49,20 @@ jobs:
 
       - name: 📦 Sync dependencies
         run: uv sync --frozen --no-build --no-install-project
+
+      - name: 🔐 Install age (evidence backup)
+        # NIEZ-32: kopia tabel dowodowych jest szyfrowana `age` kluczem odbiorcy przed
+        # zapisem. Bez sekretu krok nic nie instaluje, a trener pomija kopię z WARNING-iem.
+        # Awaria apt nie może zablokować treningu — kopia wtedy po prostu nie powstaje.
+        continue-on-error: true
+        env:
+          BACKUP_AGE_RECIPIENT: ${{ secrets.BACKUP_AGE_RECIPIENT }}
+        run: |
+          if [ -n "$BACKUP_AGE_RECIPIENT" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq age
+          else
+            echo "BACKUP_AGE_RECIPIENT not set — evidence backup skipped"
+          fi
 
       - name: 📈 Train XGBoost on prediction_logs
         env:
@@ -70,30 +91,55 @@ jobs:
           # NIEZ-13: zewnętrzny heartbeat (np. healthchecks.io) — ping na koniec przebiegu,
           # porażka → <URL>/fail. Brak sekretu = pusty string = NullHeartbeat (zero requestów).
           HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
+          # NIEZ-25: CRITICAL sondy modeli idzie pushem (przy realtime_alerts_enabled).
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK_URL:  ${{ secrets.SLACK_WEBHOOK_URL }}
+          # NIEZ-32: klucz publiczny age odbiorcy kopii; brak = kopia pominięta.
+          BACKUP_AGE_RECIPIENT: ${{ secrets.BACKUP_AGE_RECIPIENT }}
         run: uv run --frozen --no-build --no-sync python main_trainer.py
 
-      - name: 💾 Commit and push updated model
+      - name: 📦 Upload encrypted evidence backup
+        # NIEZ-32: wyłącznie szyfrogram *.age — artefakt publicznego repo pobierze każdy
+        # zalogowany. Bez pliku (brak sekretu, błąd kopii) krok nic nie wysyła.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: evidence-backup-${{ github.run_id }}
+          path: data/backup/*.age
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: 💾 Upload model weights (Release model-latest)
+        # CI-13 (G78): wagi idą jako asset Release `model-latest`, nie commit na main —
+        # bot nie omija branch protection, a binaria nie puchną w historii gita.
+        # Fast Loop pobiera ten asset przed runem. Asset jest nadpisywany co tydzień,
+        # więc sha256 trafia do notatek Release i podsumowania joba; predykcje niosą
+        # go w przepisie (`model_version`, WIA-20).
         # ML-04: trener kończy się exit 1, gdy padł choć jeden symbol — wagi wspólnego
         # modelu, jeśli powstały, i tak trzeba zapisać. Anulowanie (timeout) pomija krok.
         if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          MODEL_PATH: data/models/price_predictor.ubj
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          git config --global user.name "AI Model Trainer"
-          git config --global user.email "ml-trainer@users.noreply.github.com"
-
-          MODEL_PATH="data/models/price_predictor.ubj"
-
+          # Plik wag nie jest w repo, więc istnieje tylko, gdy ten run go wytrenował.
           if [ ! -f "$MODEL_PATH" ]; then
-            echo "Trener nie wyprodukował pliku modelu (prawdopodobnie za mało danych) — pomijam commit."
+            echo "Trener nie wyprodukował pliku modelu (bramka albo za mało danych) — pomijam upload."
             exit 0
           fi
 
-          git add "$MODEL_PATH"
-          if git diff --cached --quiet -- "$MODEL_PATH"; then
-            echo "Brak zmian w modelu wag po treningu."
-          else
-            git commit -m "chore(ml): update XGBoost model weights [skip ci]"
-            git push
+          SHA256=$(sha256sum "$MODEL_PATH" | cut -d' ' -f1)
+          NOTES="sha256: ${SHA256} · trening: ${RUN_URL}"
+          if ! gh release view model-latest >/dev/null 2>&1; then
+            gh release create model-latest --title "Model weights (latest)" \
+              --notes "$NOTES" --latest=false
           fi
+          gh release upload model-latest "$MODEL_PATH" --clobber
+          gh release edit model-latest --notes "$NOTES"
+          echo "Wagi modelu w Release model-latest, sha256: ${SHA256}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 📮 Mail o porażce jobu
         # NIEZ-23: GitHub mailuje o porażce crona tylko autora ostatniej zmiany crona,

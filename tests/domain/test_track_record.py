@@ -7,6 +7,8 @@ Hit-rate bez punktu odniesienia nic nie dowodzi: w hossie strategia
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from src.domain.number_format import DecimalMark
@@ -45,7 +47,7 @@ class TestNaiveBaselines:
     def test_best_directional_baseline_is_the_stronger_of_long_and_short(self) -> None:
         best = naive_baselines([0.02, -0.01, 0.03]).best_directional
 
-        assert best == ("BULLISH", pytest.approx(2 / 3))
+        assert best == ("BULLISH", cast(float, pytest.approx(2 / 3)))
 
     def test_empty_changes_have_no_baseline(self) -> None:
         assert naive_baselines([]) == NaiveBaselines(
@@ -141,3 +143,25 @@ class TestAssessDirectionalHitRate:
         assert evidence.interval is None
         assert evidence.p_value is None
         assert evidence.verdict is None
+
+
+class TestBestAnyBaseline:
+    """WIA-22: persona rady głosuje KUP / SPRZEDAJ / TRZYMAJ, więc jej naiwnym
+    odpowiednikiem jest najlepsza z trzech strategii, także „zawsze bez ruchu”."""
+
+    def test_best_any_includes_the_sideways_strategy(self) -> None:
+        best = naive_baselines([0.001, -0.002, -0.003, 0.02]).best_any
+
+        assert best is not None
+        assert best[0] == "SIDEWAYS"
+        assert best[1] == cast(float, pytest.approx(0.75))
+
+    def test_best_any_falls_back_to_the_stronger_direction(self) -> None:
+        best = naive_baselines([0.02, -0.01, 0.03]).best_any
+
+        assert best is not None
+        assert best[0] == "BULLISH"
+        assert best[1] == cast(float, pytest.approx(2 / 3))
+
+    def test_empty_changes_have_no_best_any(self) -> None:
+        assert naive_baselines([]).best_any is None

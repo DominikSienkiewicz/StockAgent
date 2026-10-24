@@ -6,18 +6,18 @@ class TestPeersOf:
     z danym symbolem (unia po grupach), bez samego symbolu, z dedupem i
     stabilną kolejnością."""
 
-    def test_returns_peers_sharing_group(self):
+    def test_returns_peers_sharing_group(self) -> None:
         groups = {"semis": ["NVDA", "AMD", "TSM"]}
         # NVDA dzieli grupę "semis" z AMD i TSM.
         assert peers_of("NVDA", groups) == ("AMD", "TSM")
 
-    def test_excludes_self(self):
+    def test_excludes_self(self) -> None:
         groups = {"semis": ["NVDA", "AMD", "TSM"]}
         peers = peers_of("AMD", groups)
         assert "AMD" not in peers
         assert peers == ("NVDA", "TSM")
 
-    def test_unions_peers_across_multiple_groups(self):
+    def test_unions_peers_across_multiple_groups(self) -> None:
         # AAPL należy do "mega_tech" ORAZ "fruit" — unia peerów z obu grup.
         groups = {
             "mega_tech": ["AAPL", "MSFT", "GOOG"],
@@ -27,7 +27,7 @@ class TestPeersOf:
         # Stabilna kolejność: najpierw peery z "mega_tech", potem z "fruit".
         assert peers == ("MSFT", "GOOG", "BANANA")
 
-    def test_dedups_peer_appearing_in_two_shared_groups(self):
+    def test_dedups_peer_appearing_in_two_shared_groups(self) -> None:
         # MSFT współdzieli z AAPL dwie grupy — w wyniku ma wystąpić raz.
         groups = {
             "mega_tech": ["AAPL", "MSFT"],
@@ -35,18 +35,18 @@ class TestPeersOf:
         }
         assert peers_of("AAPL", groups) == ("MSFT",)
 
-    def test_symbol_in_no_group_returns_empty(self):
+    def test_symbol_in_no_group_returns_empty(self) -> None:
         groups = {"semis": ["NVDA", "AMD"]}
         assert peers_of("AAPL", groups) == ()
 
-    def test_empty_groups_returns_empty(self):
+    def test_empty_groups_returns_empty(self) -> None:
         assert peers_of("NVDA", {}) == ()
 
-    def test_lone_member_group_has_no_peers(self):
+    def test_lone_member_group_has_no_peers(self) -> None:
         groups = {"solo": ["NVDA"]}
         assert peers_of("NVDA", groups) == ()
 
-    def test_returns_tuple(self):
+    def test_returns_tuple(self) -> None:
         peers = peers_of("NVDA", {"semis": ["NVDA", "AMD"]})
         assert isinstance(peers, tuple)
 
@@ -56,14 +56,14 @@ class TestBuildPeerContext:
     peerów danego symbolu, które JUŻ przetworzono w tym cyklu (są w `processed`),
     stabilnie uporządkowane. Pusto, gdy żaden peer nie był jeszcze liczony."""
 
-    def test_includes_only_processed_peers(self):
+    def test_includes_only_processed_peers(self) -> None:
         groups = {"semis": ["NVDA", "AMD", "TSM"]}
         # W tym cyklu policzono już AMD, ale jeszcze nie TSM.
         processed = {"AMD": "BUY"}
         context = build_peer_context("NVDA", groups, processed)
         assert context == (("AMD", "BUY"),)
 
-    def test_excludes_unprocessed_peers(self):
+    def test_excludes_unprocessed_peers(self) -> None:
         groups = {"semis": ["NVDA", "AMD", "TSM"]}
         # Tylko TSM policzony — AMD jeszcze nie, więc nie trafia do kontekstu.
         processed = {"TSM": "HOLD"}
@@ -72,7 +72,7 @@ class TestBuildPeerContext:
         assert "AMD" not in symbols
         assert context == (("TSM", "HOLD"),)
 
-    def test_excludes_self_even_if_in_processed(self):
+    def test_excludes_self_even_if_in_processed(self) -> None:
         groups = {"semis": ["NVDA", "AMD"]}
         # NVDA mógł być wstępnie zaznaczony w processed — nie jest własnym peerem.
         processed = {"NVDA": "SELL", "AMD": "BUY"}
@@ -81,7 +81,7 @@ class TestBuildPeerContext:
         assert "NVDA" not in symbols
         assert context == (("AMD", "BUY"),)
 
-    def test_stable_order_follows_peer_order(self):
+    def test_stable_order_follows_peer_order(self) -> None:
         # Kolejność wyniku idzie za kolejnością peerów (jak w peers_of),
         # niezależnie od kolejności wstawienia do `processed`.
         groups = {"mega_tech": ["AAPL", "MSFT", "GOOG"]}
@@ -89,18 +89,18 @@ class TestBuildPeerContext:
         context = build_peer_context("AAPL", groups, processed)
         assert context == (("MSFT", "HOLD"), ("GOOG", "BUY"))
 
-    def test_empty_when_no_processed_peers(self):
+    def test_empty_when_no_processed_peers(self) -> None:
         groups = {"semis": ["NVDA", "AMD", "TSM"]}
         # Pierwszy symbol w cyklu — nikt z peerów jeszcze nie policzony.
         assert build_peer_context("NVDA", groups, {}) == ()
 
-    def test_empty_when_symbol_has_no_peers(self):
+    def test_empty_when_symbol_has_no_peers(self) -> None:
         groups = {"semis": ["NVDA", "AMD"]}
         processed = {"NVDA": "BUY", "MSFT": "SELL"}
         # AAPL nie ma peerów w tej konfiguracji.
         assert build_peer_context("AAPL", groups, processed) == ()
 
-    def test_unions_processed_peers_across_groups(self):
+    def test_unions_processed_peers_across_groups(self) -> None:
         groups = {
             "mega_tech": ["AAPL", "MSFT"],
             "fruit": ["AAPL", "BANANA"],
@@ -109,7 +109,7 @@ class TestBuildPeerContext:
         context = build_peer_context("AAPL", groups, processed)
         assert context == (("MSFT", "HOLD"), ("BANANA", "BUY"))
 
-    def test_returns_tuple(self):
+    def test_returns_tuple(self) -> None:
         context = build_peer_context(
             "NVDA", {"semis": ["NVDA", "AMD"]}, {"AMD": "BUY"}
         )

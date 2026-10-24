@@ -653,3 +653,79 @@ class TestStrongerBaselines:
 
         assert all("llm_baseline_rmse" not in fold for fold in folds)
         assert all("drift_baseline_rmse" in fold for fold in folds)
+
+
+class TestFeatureStatsBins:
+    """ML-21: `feature_stats` niesie biny kwantylowe rozkładu treningu i PSI
+    ostatnich 30 dni próbki względem jej starszej części (mean/std zostają)."""
+
+    def test_stats_carry_quantile_bins_summing_to_one(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=120)
+
+        stats = adapter.train(features, target)["feature_stats"]
+
+        for name in FEATURE_NAMES:
+            assert {"mean", "std", "edges", "fractions", "psi_recent_30d"} <= set(stats[name])
+            assert len(stats[name]["fractions"]) == len(stats[name]["edges"]) + 1
+            assert sum(stats[name]["fractions"]) == pytest.approx(1.0)
+        # Cecha dyskretna (sygnał LLM −1/0/+1) dostaje granice z wartości próby.
+        assert stats["llm_trend_signal"]["edges"] == [-1.0, 0.0, 1.0]
+
+    def test_psi_flags_a_feature_shifted_in_the_last_30_days(
+        self, adapter: XGBoostAdapter
+    ):
+        features, target = _synthetic_dataset(n=200)
+        stamps = pd.Series(pd.date_range("2026-05-01", periods=200, freq="D", tz="UTC"))
+        # Ostatnie 30 dni: rozkład price_delta przesunięty o +0.2 (dryf).
+        features.loc[170:, "price_delta"] += 0.2
+
+        stats = adapter.train(features, target, timestamps=stamps)["feature_stats"]
+
+        assert stats["price_delta"]["psi_recent_30d"] > 0.25
+        assert stats["av_relevance_avg"]["psi_recent_30d"] < 0.25
+
+    def test_psi_is_none_without_timestamps(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=120)
+
+        stats = adapter.train(features, target)["feature_stats"]
+
+        assert stats["price_delta"]["psi_recent_30d"] is None
+
+class TestPairedLossTest:
+    """EXP-04: foldy niosą Σd i Σd² różnicy strat (baseline − kandydat), a domena
+    wymaga istotnego z — sam margines 2% na średniej 4 foldów przepuszczał szum."""
+
+    def test_folds_carry_paired_loss_sums_for_every_baseline(
+        self, adapter: XGBoostAdapter
+    ) -> None:
+        features, target = _synthetic_dataset(n=200)
+
+        folds = adapter.walk_forward_report(features, target)
+
+        for fold in folds:
+            for prefix in ("", "drift_", "llm_"):
+                assert f"{prefix}sum_loss_diff" in fold
+                assert fold[f"{prefix}sum_loss_diff_sq"] >= 0.0
+            # Średnia d to różnica średnich strat: RMSE_baseline² − RMSE_kandydata².
+            assert fold["sum_loss_diff"] / fold["n_valid"] == pytest.approx(
+                fold["baseline_rmse"] ** 2 - fold["candidate_rmse"] ** 2
+            )
+
+    def test_pure_noise_is_rejected_across_seeds(self, model_path: str) -> None:
+        # 80 wierszy → 4 foldy po 16 = 64 punkty OOS (≥ MIN_OOS_POINTS). Przy samym
+        # marginesie część ziaren szumu (normalnego i grubogonowego) przechodziła.
+        passed = []
+        for seed in range(10):
+            rng = np.random.default_rng(seed)
+            features = pd.DataFrame({name: rng.normal(0, 1, 80) for name in FEATURE_NAMES})
+            for kind, noise in (
+                ("normal", rng.normal(0, 0.05, 80)),
+                ("student-t", rng.standard_t(2, 80) * 0.02),
+            ):
+                result = XGBoostAdapter(model_path=model_path).train(
+                    features, pd.Series(noise), persist=False
+                )
+                if result["status"] == "evaluated_passed_gate":
+                    passed.append((kind, seed))
+
+        assert passed == []

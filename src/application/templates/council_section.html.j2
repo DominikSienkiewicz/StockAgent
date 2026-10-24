@@ -1,7 +1,8 @@
 {# Sekcja "RADA DORADCZA" w mailu fast-loop.
 
     Kontekst:
-      verdict           — CouncilVerdict | None (None ⇒ pusty render)
+      verdict           — CouncilVerdict | None (None ⇒ pusty render);
+                          `failed_personas` > 0 ⇒ „odpowiedziało X/N” (MAIL-12)
       label             — etykieta PL final_recommendation (KUP/SPRZEDAJ/TRZYMAJ)
       fill, row_tone    — klasy tonu (report_styles) dla final_recommendation
       opinion_rows      — list[dict]: {name, label, emoji, tone, row_tone,
@@ -24,6 +25,10 @@
     <span class="cv {{ fill }}">{{ label }}</span>
     &nbsp;&nbsp;
     <span class="cs">Zgodność: {{ strength_pct }}%</span>
+    {% if verdict.failed_personas %}
+    &nbsp;&nbsp;
+    <span class="cs">⚠️ odpowiedziało {{ verdict.investor_opinions | length }}/{{ verdict.council_size() }}</span>
+    {% endif %}
     {% if strong_consensus %}
     &nbsp;&nbsp;
     <span class="cg">SILNY KONSENSUS</span>

@@ -113,6 +113,18 @@ def test_methodology_section_is_honest_polish_copy() -> None:
     assert "pomyłk" in html.lower() or "słab" in html.lower()
 
 
+def test_methodology_says_the_entry_is_the_last_close() -> None:
+    """WIA-34: wejście = cena z chwili predykcji (poza sesją ostatnie zamknięcie),
+    więc wynik obejmuje lukę na otwarciu — metodologia nie może tego przemilczeć."""
+    resolved = [_resolved("AAA", "BULLISH", True)]
+
+    html = render_public_scorecard_html(resolved, None, [(0.8, True)])
+
+    methodology = html[html.index("<h2>Metodologia</h2>"):]
+    assert "ostatnie zamknięcie" in methodology
+    assert "lukę na otwarciu" in methodology
+
+
 def test_hard_anti_pii_no_symbols_emails_or_amounts_leak() -> None:
     """TWARDY test anty-PII — najważniejszy w tym zadaniu.
 
@@ -433,3 +445,167 @@ def test_benchmark_never_leaks_the_index_ticker_or_basket_symbols() -> None:
     assert "S&amp;P 500" in html
     assert "IVV" not in html
     assert "NVDA" not in html
+
+
+class TestEvaluationProtocolSection:
+    """WIA-42: sekcja metodologii pokazuje protokół ewaluacji z jego hashem —
+    ten sam sha256, który niesie każdy commitment v2."""
+
+    @staticmethod
+    def _protocol() -> object:
+        from src.config import load_evaluation_protocol
+
+        return load_evaluation_protocol()
+
+    def test_methodology_renders_the_protocol_and_its_hash(self) -> None:
+        protocol = self._protocol()
+
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, [(0.8, True)], protocol=protocol
+        )
+
+        assert "Protokół ewaluacji" in html
+        assert protocol.sha256 in html
+        assert "12 h" in html
+        # Strona publiczna pisze liczby z kropką (DOT_NUMBERS, MAIL-58).
+        assert "±0.5%" in html and "±2.5%" in html
+        assert "α = 0.05" in html
+
+    def test_without_a_protocol_the_methodology_is_unchanged(self) -> None:
+        resolved = [_resolved("AAA", "BULLISH", True)]
+
+        html = render_public_scorecard_html(resolved, None, [(0.8, True)])
+
+        assert "Protokół ewaluacji" not in html
+
+    def test_protocol_section_names_no_watchlist_symbol(self) -> None:
+        import tomllib
+        from pathlib import Path
+
+        config = tomllib.loads(
+            (Path(__file__).parents[2] / "config.toml").read_text(encoding="utf-8")
+        )
+        protocol = self._protocol()
+
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, [(0.8, True)], protocol=protocol
+        )
+        section = html[html.index("Protokół ewaluacji"):]
+
+        # Jednoliterowy ticker („S”) koliduje z nazwą indeksu „S&P 500”, którą strona
+        # podaje celowo zamiast tickera IVV.
+        watchlist = {
+            symbol
+            for symbol in (*config["symbols"], *config["crypto_symbols"], *config["symbols_etf"])
+            if len(symbol) > 1
+        }
+        leaked = {s for s in watchlist if re.search(rf"\b{re.escape(s)}\b", section)}
+        assert leaked == set()
+        assert "@" not in section
+
+class TestDirectionalCalibrationDisclosure:
+    """WIA-39: krzywa kalibracji strony jest kierunkowa — strona mówi to wprost."""
+
+    def test_calibration_section_says_sideways_are_excluded(self) -> None:
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, [(0.6, True), (0.7, False)]
+        )
+
+        assert "bez prognoz „bez ruchu”" in html
+
+
+class TestCalibrationErrorInterval:
+    """WIA-58: „ECE 7.0% [3.0%; 12.0%], n_eff≈…” — kubełki równoliczne, korekta
+    obciążenia i przedział z bootstrapu po cyklach, gdy znamy cykle próbek."""
+
+    @staticmethod
+    def _cycles(n_cycles: int) -> list[list[tuple[float, bool]]]:
+        return [
+            [(0.6 + 0.02 * (i % 10), (day + i) % 3 != 0) for i in range(8)]
+            for day in range(n_cycles)
+        ]
+
+    def test_ece_line_carries_the_interval_n_eff_and_debiased_value(self) -> None:
+        cycles = self._cycles(25)
+        samples = [sample for cycle in cycles for sample in cycle]
+
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, samples, calibration_by_cycle=cycles
+        )
+
+        assert re.search(r"ECE = \d+\.\d% \[\d+\.\d%; \d+\.\d%\], n=200, n_eff≈\d+", html)
+        assert "kubełki równoliczne" in html
+        assert "po korekcie obciążenia" in html
+
+    def test_too_few_cycles_say_so_instead_of_an_interval(self) -> None:
+        cycles = self._cycles(3)
+        samples = [sample for cycle in cycles for sample in cycle]
+
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, samples, calibration_by_cycle=cycles
+        )
+
+        assert "za mało cykli na bootstrap" in html
+        assert not re.search(r"ECE = \d+\.\d% \[", html)
+
+    def test_methodology_describes_the_equal_mass_buckets(self) -> None:
+        html = render_public_scorecard_html(
+            [_resolved("AAA", "BULLISH", True)], None, [(0.6, True)]
+        )
+
+        assert "równoliczn" in html
+
+def test_coverage_line_counts_unsettled_symbols_without_naming_them() -> None:
+    # DAT-16: pokrycie i luka są na stronie, ale symbole bez rozliczeń tylko jako liczba.
+    from src.domain.coverage import CoverageGap, CoverageReport
+
+    coverage = CoverageReport(
+        expected=22,
+        covered=11,
+        longest_gap=CoverageGap(first=date(2026, 8, 17), last=date(2026, 8, 31), sessions=11),
+        unsettled_symbols=("SSNLF",),
+    )
+
+    html = render_public_scorecard_html(
+        [_resolved("AAA", "BULLISH", True)], None, [(0.8, True)], coverage=coverage
+    )
+
+    assert "Pokrycie danych: 50% sesji ze snapshotem ceny (11 z 22)" in html
+    assert "najdłuższa luka 2026-08-17 – 2026-08-31 (11 sesji)" in html
+    assert "1 symbol bez rozliczeń w oknie" in html
+    assert "SSNLF" not in html
+
+
+class TestRequiredSampleLine:
+    """DOC-16: metodologia mówi, ile predykcji trzeba, i kiedy będą przy tym tempie."""
+
+    @staticmethod
+    def _methodology(html: str) -> str:
+        return html[html.index("<h2>Metodologia</h2>"):]
+
+    def test_methodology_names_the_sample_that_tells_55_from_50(self) -> None:
+        resolved = [_resolved("AAA", "BULLISH", True)]
+
+        html = render_public_scorecard_html(resolved, None, [(0.8, True)])
+
+        methodology = self._methodology(html)
+        assert "α = 0.05 jednostronnie, moc 80%" in methodology
+        assert "~617 rozliczonych predykcji kierunkowych" in methodology
+
+    def test_with_a_window_it_projects_the_date_at_the_current_pace(self) -> None:
+        resolved = [_dated("BULLISH", True, day) for day in range(1, 13)]
+
+        html = render_public_scorecard_html(
+            resolved, None, None, generated_on=date(2026, 10, 22), window_days=30
+        )
+
+        methodology = self._methodology(html)
+        assert "W oknie jest n_eff≈12" in methodology
+        assert "ok. 2030-12-13" in methodology
+
+    def test_without_inflow_it_says_so_instead_of_a_date(self) -> None:
+        html = render_public_scorecard_html(
+            [], None, [(0.8, True)], generated_on=date(2026, 10, 22), window_days=30
+        )
+
+        assert "brak napływu danych" in self._methodology(html)

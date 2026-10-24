@@ -83,6 +83,14 @@ class TestAnalyze:
         with pytest.raises(ValueError, match="JSON"):
             adapter.analyze("Predict.")
 
+    def test_analyze_rejects_top_level_json_array(self, adapter_with_client):
+        # ARCH-01: lista to poprawny JSON, ale nie obiekt — dawniej wracała jako „dict”.
+        adapter, client = adapter_with_client
+        client.chat.completions.create.return_value = _completion('[{"trend": "UP"}]')
+
+        with pytest.raises(ValueError, match="JSON object"):
+            adapter.analyze("Predict.")
+
     def test_raises_value_error_when_content_empty(self, adapter_with_client):
         adapter, client = adapter_with_client
         client.chat.completions.create.return_value = _completion(None)

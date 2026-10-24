@@ -32,6 +32,12 @@ trafność LLM po kontekście. Każdy segment ma n, Wilsona na n_eff, naiwny
 baseline i korektę BH-FDR w rodzinie segmentów; n < 10 → „za mało danych”.
 Kolumny segmentu czytane są tylko na żądanie (każda istnieje od swojej migracji).
 
+Heurystyki maila (WIA-47): `--by risk_signal` dzieli trafność LLM na wiersze
+z sygnałem DIVERGENCE / AV_LLM_CONFLICT / LOW_SIGNAL i bez niego (reguły z
+`report_signals`, brak wejścia = „brak danych”, DIVERGENCE wymaga `gate_delta`
+z migracji 034), a `--by council_agreement` — na radę zgodną i niezgodną z LLM.
+Dopiero sygnał, który przewiduje chybienie, uzasadnia wejście do kalibracji.
+
 Test echa (EXP-01): `--echo` sprawdza, czy trend LLM to tylko znak delty, która
 otworzyła bramkę (`prediction_logs.gate_delta`, WYMAGA migracji 034): odsetek
 echa i odwrócenia, hit-rate baseline'ów „znak ruchu” / „przeciwny znak” na tych
@@ -45,6 +51,13 @@ z migracji 037, a bez niej opcjonalny klucz kwitu v2). Dla każdej metryki czę�
 promptu: średnia per ramię z n i n_eff, różnica zabieg − kontrola i 95% CI
 z bootstrapu blokowego po dniach UTC; metryka główna oznaczona ★.
 
+Rozróżnianie (WIA-38): `--discrimination` sprawdza, czy pewność coś znaczy — AUC
+(Mann–Whitney) pewności LLM względem trafienia kierunku i siły konsensusu rady
+względem trafienia BUY/SELL, z n, n_eff, 95% CI z bootstrapu po dniach UTC
+i trafnością top 20% / 50% / 100% predykcji wg pewności. AUC ≈ 0.5 znaczy, że
+kalibracja tylko przesuwa wszystkich do stopy bazowej, a ranking po pewności
+jest szumem.
+
 Uruchom (ARCH-39: składanie `Settings` i repozytorium żyje w `main_tools.py`,
 tu zostają czyste funkcje):
     uv run python main_tools.py evaluate
@@ -52,8 +65,10 @@ tu zostają czyste funkcje):
     uv run python main_tools.py evaluate --by-recipe
     uv run python main_tools.py evaluate --by-universe
     uv run python main_tools.py evaluate --by component --by regime
+    uv run python main_tools.py evaluate --by risk_signal --by council_agreement
     uv run python main_tools.py evaluate --echo
     uv run python main_tools.py evaluate --experiment EXP-02 --days 90
+    uv run python main_tools.py evaluate --discrimination
 
 Exit code: 0 zawsze (narzędzie raportujące, nie bramka CI).
 """
@@ -66,7 +81,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from src.domain.equity_curve import DirectionalHitRate, directional_hit_rate
+from src.application.report_signals import (
+    divergence_direction,
+    is_av_llm_conflict,
+    is_low_signal,
+)
+from src.domain.calibration_curve import (
+    DiscriminationEvidence,
+    discrimination_evidence,
+    risk_coverage_curve,
+)
+from src.domain.equity_curve import DirectionalHitRate, directional_hit_rate, signal_of
 from src.domain.experiment import (
     ArmComparison,
     Experiment,
@@ -95,7 +120,12 @@ from src.domain.segment_evidence import (
     trend_hit,
 )
 from src.domain.significance import DEFAULT_FDR_Q, MIN_BOOTSTRAP_CYCLES
-from src.domain.track_record import HitRateEvidence, ScoredCall, assess_directional_hit_rate
+from src.domain.track_record import (
+    HitRateEvidence,
+    ScoredCall,
+    assess_directional_hit_rate,
+    group_by_cycle,
+)
 from src.domain.value_objects import AssetType
 
 # Prefiks wersji w raporcie CLI — pełny sha256 nic nie mówi człowiekowi.
@@ -110,8 +140,23 @@ SEGMENT_FIELDS: dict[str, tuple[str, ...]] = {
     "confidence_bucket": ("confidence_score",),
     "alpha_fusion_sign": ("alpha_fusion_score",),
     "edge_label": ("edge_sigma",),
+    # WIA-47: wejścia heurystyk RiskSignal z maila; delta bramki istnieje od 034.
+    "risk_signal": ("sentiment_score", "av_llm_agreement", "news_volume_24h", "gate_delta"),
+    "council_agreement": ("council_recommendation",),
 }
 SEGMENTATIONS: tuple[str, ...] = tuple(SEGMENT_FIELDS)
+
+# WIA-47: segmenty heurystyk RiskSignal — każda osobno: z sygnałem, bez, brak danych.
+RISK_SIGNAL_TYPES: tuple[str, ...] = ("DIVERGENCE", "AV_LLM_CONFLICT", "LOW_SIGNAL")
+_WITH_SIGNAL = "z sygnałem"
+_WITHOUT_SIGNAL = "bez"
+_NO_SIGNAL_DATA = "brak danych"
+RISK_SIGNAL_SEGMENTS: tuple[str, ...] = tuple(
+    f"{kind}: {state}" for kind in RISK_SIGNAL_TYPES for state in (_WITH_SIGNAL, _WITHOUT_SIGNAL)
+)
+COUNCIL_AGREES = "rada zgodna z LLM"
+COUNCIL_DISAGREES = "rada niezgodna z LLM"
+NO_COUNCIL = "bez rady"
 
 _SEGMENT_LABELS = {
     "component": "komponent",
@@ -120,6 +165,8 @@ _SEGMENT_LABELS = {
     "confidence_bucket": "kubełek pewności",
     "alpha_fusion_sign": "znak Alpha Fusion",
     "edge_label": "edge vs opcje",
+    "risk_signal": "sygnał ryzyka z maila (trafność LLM z sygnałem i bez)",
+    "council_agreement": "rada vs trend LLM",
 }
 _SEGMENT_KEY_WIDTH = 16
 
@@ -141,6 +188,15 @@ EXPERIMENT_FIELDS: tuple[str, ...] = (
 EXPERIMENT_ARMS_UNAVAILABLE = (
     "kolumna experiment_arms niedostępna — uruchom migrację 037; ramiona z kwitu decyzyjnego"
 )
+# WIA-38: pewność LLM (016) i werdykt rady (005) — pola czytane na żądanie
+# `--discrimination`.
+DISCRIMINATION_FIELDS: tuple[str, ...] = (
+    "confidence_score",
+    "council_recommendation",
+    "council_consensus",
+)
+# Punkty krzywej ryzyko–pokrycie drukowane w CLI.
+_DISCRIMINATION_COVERAGES: tuple[float, ...] = (0.2, 0.5, 1.0)
 # Kolumny, bez których raport idzie dalej: komunikat i ponowny odczyt bez nich.
 OPTIONAL_COLUMNS: Mapping[str, str] = {
     GATE_DELTA_FIELD: GATE_DELTA_UNAVAILABLE,
@@ -307,7 +363,50 @@ def _assess_segmentation(
         return assess_segments(
             (pair for r in flagged for pair in _component_calls(r)), expected_keys=COMPONENTS
         )
+    if segmentation == "risk_signal":
+        return assess_segments(
+            ((key, _scored_call(r)) for r in flagged for key in _risk_signal_keys(r)),
+            expected_keys=RISK_SIGNAL_SEGMENTS,
+        )
+    if segmentation == "council_agreement":
+        return assess_segments(
+            ((_council_agreement_key(r), _scored_call(r)) for r in flagged),
+            expected_keys=(COUNCIL_AGREES, COUNCIL_DISAGREES, NO_COUNCIL),
+        )
     return assess_segments((_segment_key(r, segmentation), _scored_call(r)) for r in flagged)
+
+
+def _risk_signal_keys(row: dict[str, Any]) -> Iterable[str]:
+    """WIA-47: segment wiersza dla każdej heurystyki — reguły te same co w mailu
+    (`report_signals`). Brak wejścia (np. `gate_delta` sprzed migracji 034) to
+    „brak danych”, a nie „bez sygnału”."""
+    delta = _to_float(row.get("gate_delta"))
+    sentiment = _to_float(row.get("sentiment_score"))
+    agreement = _to_float(row.get("av_llm_agreement"))
+    news = _to_float(row.get("news_volume_24h"))
+    divergence = (
+        None if delta is None or sentiment is None else divergence_direction(delta, sentiment) != 0
+    )
+    yield f"DIVERGENCE: {_signal_state(divergence)}"
+    conflict = None if agreement is None else is_av_llm_conflict(agreement)
+    yield f"AV_LLM_CONFLICT: {_signal_state(conflict)}"
+    low_signal = None if news is None else is_low_signal(int(news))
+    yield f"LOW_SIGNAL: {_signal_state(low_signal)}"
+
+
+def _signal_state(present: bool | None) -> str:
+    if present is None:
+        return _NO_SIGNAL_DATA
+    return _WITH_SIGNAL if present else _WITHOUT_SIGNAL
+
+
+def _council_agreement_key(row: dict[str, Any]) -> str:
+    """WIA-47: czy rekomendacja rady (BUY/SELL/HOLD) mówi to samo co trend LLM."""
+    trend = council_trend(_text(row.get("council_recommendation")))
+    if trend is None:
+        return NO_COUNCIL
+    predicted = str(row.get("predicted_trend") or "").strip().upper()
+    return COUNCIL_AGREES if trend == predicted else COUNCIL_DISAGREES
 
 
 def _component_calls(row: dict[str, Any]) -> Iterable[tuple[str, ScoredCall]]:
@@ -558,6 +657,7 @@ def evaluation_reads(
     segmentations: Sequence[str],
     echo: bool,
     experiment: bool = False,
+    discrimination: bool = False,
 ) -> tuple[dict[str, Any], set[str]]:
     """Co odczytać z repozytorium: flagi segmentów wersji i dodatkowe kolumny.
 
@@ -575,6 +675,8 @@ def evaluation_reads(
         fields.add(GATE_DELTA_FIELD)
     if experiment:
         fields.update(EXPERIMENT_FIELDS)
+    if discrimination:
+        fields.update(DISCRIMINATION_FIELDS)
     return reads, fields
 
 
@@ -592,9 +694,10 @@ def render_evaluation(
     by_universe: bool,
     echo: bool,
     experiment: Experiment | None = None,
+    discrimination: bool = False,
 ) -> str:
-    """Pełny tekst raportu CLI: nagłówek, segmenty wersji, `--by`, test echa
-    i porównanie ramion eksperymentu."""
+    """Pełny tekst raportu CLI: nagłówek, segmenty wersji, `--by`, test echa,
+    porównanie ramion eksperymentu i rozróżnianie pewności (WIA-38)."""
     report = summarize_evaluation(rows, segment_by=segmentations)
     sections = [format_report(report, days)]
     if by_recipe:
@@ -608,7 +711,106 @@ def render_evaluation(
         sections.append(format_echo(summarize_echo(rows)))
     if experiment is not None:
         sections.append(format_experiment(summarize_experiment(rows, experiment)))
+    if discrimination:
+        sections.append(format_discrimination(summarize_discrimination(rows)))
     return "\n".join(sections)
+
+
+@dataclass(frozen=True)
+class DiscriminationReport:
+    """WIA-38: AUC i krzywa ryzyko–pokrycie pewności LLM i konsensusu rady.
+
+    None = brak zakładów kierunkowych z pewnością (pewność LLM sprzed migracji
+    016, rada pominięta progiem albo HOLD)."""
+
+    llm: DiscriminationEvidence | None
+    llm_coverage: tuple[tuple[float, float], ...]
+    council: DiscriminationEvidence | None
+    council_coverage: tuple[tuple[float, float], ...]
+
+
+def _llm_sample(row: Mapping[str, Any]) -> tuple[float, bool] | None:
+    """(pewność LLM, trafienie kierunku) dla predykcji BULLISH/BEARISH albo None."""
+    confidence = _to_float(row.get("confidence_score"))
+    correct = row.get("is_trend_correct")
+    if confidence is None or correct is None or signal_of(str(row.get("predicted_trend"))) == 0:
+        return None
+    return confidence, bool(correct)
+
+
+def _council_sample(row: Mapping[str, Any]) -> tuple[float, bool] | None:
+    """(siła konsensusu rady, trafienie BUY/SELL) albo None — HOLD nie stawia zakładu."""
+    trend = council_trend(_text(row.get("council_recommendation")))
+    consensus = _to_float(row.get("council_consensus"))
+    change = _realized_change(row)
+    if trend is None or signal_of(trend) == 0 or consensus is None or change is None:
+        return None
+    return consensus, trend_hit(trend, change)
+
+
+def _discrimination_of(
+    keyed: list[tuple[str, tuple[float, bool]]],
+) -> tuple[DiscriminationEvidence | None, tuple[tuple[float, float], ...]]:
+    by_cycle = group_by_cycle(keyed)
+    samples = [sample for _, sample in keyed]
+    coverage = tuple(risk_coverage_curve(samples, _DISCRIMINATION_COVERAGES))
+    return discrimination_evidence(by_cycle), coverage
+
+
+def summarize_discrimination(rows: list[dict[str, Any]]) -> DiscriminationReport:
+    """Rozróżnianie pewności LLM i rady na tych samych rozliczonych wierszach."""
+    llm: list[tuple[str, tuple[float, bool]]] = []
+    council: list[tuple[str, tuple[float, bool]]] = []
+    for row in rows:
+        cycle = _cycle_key(row.get("timestamp"))
+        if (sample := _llm_sample(row)) is not None:
+            llm.append((cycle, sample))
+        if (sample := _council_sample(row)) is not None:
+            council.append((cycle, sample))
+    llm_evidence, llm_coverage = _discrimination_of(llm)
+    council_evidence, council_coverage = _discrimination_of(council)
+    return DiscriminationReport(
+        llm=llm_evidence,
+        llm_coverage=llm_coverage,
+        council=council_evidence,
+        council_coverage=council_coverage,
+    )
+
+
+def _discrimination_lines(
+    label: str,
+    evidence: DiscriminationEvidence | None,
+    coverage: tuple[tuple[float, float], ...],
+) -> list[str]:
+    if evidence is None or evidence.auc is None:
+        return [f"  {label}: {INSUFFICIENT_DATA_PL} (brak trafień albo pudeł z pewnością)"]
+    spread = (
+        f" [{evidence.interval[0]:.2f}; {evidence.interval[1]:.2f}]"
+        if evidence.interval is not None
+        else f" (za mało cykli na bootstrap, k < {MIN_BOOTSTRAP_CYCLES})"
+    )
+    points = " · ".join(
+        f"trafność top {share * 100:.0f}%: {rate * 100:.1f}%" for share, rate in coverage
+    )
+    return [
+        f"  {label}: AUC {evidence.auc:.2f}{spread}, n={evidence.n}, "
+        f"n_eff≈{evidence.n_eff:.0f}",
+        f"    {points}",
+    ]
+
+
+def format_discrimination(report: DiscriminationReport) -> str:
+    """Sekcja CLI „Czy pewność coś znaczy” — AUC 0.5 to pewność bez informacji."""
+    lines = ["  Czy pewność coś znaczy (WIA-38; AUC 0.5 = losowo, 1.0 = idealnie):"]
+    lines += _discrimination_lines(
+        "LLM (confidence_score vs trafienie kierunku)", report.llm, report.llm_coverage
+    )
+    lines += _discrimination_lines(
+        "rada (consensus_strength vs trafienie BUY/SELL)",
+        report.council,
+        report.council_coverage,
+    )
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)

@@ -153,6 +153,15 @@ class TestAnalyze:
         with pytest.raises(ValueError, match="JSON"):
             adapter.analyze("Predict.")
 
+    def test_analyze_rejects_top_level_json_array(self, adapter_with_client):
+        # ARCH-01: lista to poprawny JSON, ale nie obiekt — dawniej wracała jako
+        # „dict” i padała dopiero na `.get` w grafie.
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _message_response('["BUY", "HOLD"]')
+
+        with pytest.raises(ValueError, match="JSON object"):
+            adapter.analyze("Predict.")
+
 
 class TestAnalyzeMistake:
     def test_returns_plain_text_content(self, adapter_with_client):
@@ -588,3 +597,38 @@ class TestUsageReporting:
         client.messages.create.return_value = _message_response("{}")
 
         assert adapter.analyze("Predict.") == {}
+
+
+class TestNoPromptCaching:
+    """FIN-10: cache Anthropic dopasowuje prefiks do znacznika, a symbol pada już na
+    początku promptu, więc znacznik na końcu jedynego bloku zapisywał cache (~1,25×
+    ceny wejścia), którego żaden kolejny prompt nie czytał. Prompt idzie jako zwykły
+    string — ten sam tekst, bez bloku `cache_control`."""
+
+    def test_long_prompt_is_sent_without_cache_control(self, adapter_with_client):
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _message_response("{}")
+        prompt = "Predict AAPL. " + "x" * 5000
+
+        adapter.analyze(prompt)
+
+        message = client.messages.create.call_args.kwargs["messages"][0]
+        assert message == {"role": "user", "content": prompt}
+        assert "system" not in client.messages.create.call_args.kwargs
+
+    def test_diagnosis_prompt_is_sent_verbatim_too(self, adapter_with_client):
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _message_response("lekcja")
+        prompt = "Why wrong? " + "y" * 6000
+
+        adapter.analyze_mistake(prompt)
+
+        assert client.messages.create.call_args.kwargs["messages"][0]["content"] == prompt
+
+    def test_transport_change_leaves_the_prompt_fingerprint_alone(self):
+        # `prompt_sha256` przepisu liczy się z modułów szablonów promptów; adapter
+        # transportu do nich nie należy, więc FIN-10 nie tnie track recordu.
+        from src.infrastructure.llm import anthropic_client
+        from src.infrastructure.recipe_fingerprints import PROMPT_TEMPLATE_MODULES
+
+        assert anthropic_client not in PROMPT_TEMPLATE_MODULES

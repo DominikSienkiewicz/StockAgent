@@ -34,12 +34,14 @@ def render_cycle_summary_markdown(
     duration_s: float,
     quota_alerts: Sequence[QuotaAlert],
     delivered: bool | None,
+    http_calls: Mapping[str, Mapping[str, int]] | None = None,
 ) -> str:
     """Summary cyklu Fast Loopa.
 
     `delivered`: True = mail wyszedł, False = wysyłka padła, None = brak kanału
     e-mail (np. `notifications_enabled = false`). `cycle_cost` None = przebieg
-    na atrapach (FIN-35), więc kosztu nie ma czego pokazywać."""
+    na atrapach (FIN-35), więc kosztu nie ma czego pokazywać. `http_calls`
+    (NIEZ-24) — żądania per host; bez miernika sekcji nie ma."""
     statuses = Counter(result.status for result in results)
     skip_reasons = Counter(
         result.skip_reason.value for result in results if result.skip_reason is not None
@@ -78,8 +80,26 @@ def render_cycle_summary_markdown(
             "### Quota alerts by severity",
             "",
             _count_table("Severity", severities),
+            *_http_calls_section(http_calls),
         ]
     )
+
+
+_HTTP_COLUMNS = ("2xx", "4xx", "429", "5xx", "retries")
+
+
+def _http_calls_section(http_calls: Mapping[str, Mapping[str, int]] | None) -> list[str]:
+    """NIEZ-24: tabela żądań per host (sam host — ścieżka i query niosą klucze)."""
+    if not http_calls:
+        return []
+    lines = [
+        "| Host | Requests | 2xx | 4xx | 429 | 5xx | Retries |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for host, counts in sorted(http_calls.items()):
+        cells = [host, *(str(counts.get(key, 0)) for key in ("requests", *_HTTP_COLUMNS))]
+        lines.append("| " + " | ".join(cells) + " |")
+    return ["### HTTP requests by host", "", "\n".join(lines) + "\n"]
 
 
 def render_watch_summary_markdown(

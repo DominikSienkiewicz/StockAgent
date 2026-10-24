@@ -8,10 +8,13 @@ import pandas as pd
 
 from src.application.ml_features import (
     ML_FEATURE_COLUMNS,
+    SETTLED_AT_COLUMN,
     TARGET_COLUMN,
+    TIMESTAMP_COLUMN,
     in_label_time_order,
 )
 from src.application.ports import MLPredictionPort, RepositoryPort
+from src.domain.backtest import LabelOverlap, count_label_overlaps
 
 # Jawny re-eksport: symbol wiersza karty modelu wspólnego żyje w domenie karty.
 from src.domain.model_scorecard import POOLED_MODEL_SYMBOL as POOLED_MODEL_SYMBOL
@@ -43,12 +46,15 @@ class TrainModelUseCase:
         db_port: RepositoryPort,
         *,
         feature_set_version: int | None = None,
+        run_id: str | None = None,
     ) -> None:
         """`feature_set_version` (DAT-09) zawęża próbkę do wierszy tej wersji
-        zestawu cech; None = cała historia (bez migracji 027)."""
+        zestawu cech; None = cała historia (bez migracji 027). `run_id` (ML-24)
+        to identyfikator przebiegu Slow Loopa w wierszu karty modelu wspólnego."""
         self._ml_port = ml_port
         self._db_port = db_port
         self._feature_set_version = feature_set_version
+        self._run_id = run_id
 
     def refresh_feature_store(self) -> None:
         self._db_port.refresh_feature_store()
@@ -105,10 +111,18 @@ class TrainModelUseCase:
             )
         if record_scorecard:
             try:
-                self._db_port.save_model_scorecard(POOLED_MODEL_SYMBOL, result)
+                self._save_pooled_scorecard(result)
             except Exception:
                 logger.exception("Failed to persist the pooled model scorecard")
         return result
+
+    def _save_pooled_scorecard(self, result: dict[str, Any]) -> None:
+        if self._run_id is None:
+            self._db_port.save_model_scorecard(POOLED_MODEL_SYMBOL, result)
+        else:
+            self._db_port.save_model_scorecard(
+                POOLED_MODEL_SYMBOL, result, run_id=self._run_id
+            )
 
     def _train_pooled(self, symbols: Sequence[str]) -> dict[str, Any]:
         rows = [
@@ -127,6 +141,7 @@ class TrainModelUseCase:
                 "Not enough valid samples for the pooled model", len(df)
             )
 
+        _log_label_overlap(df)
         stamps = pd.to_datetime(df["timestamp"], utc=True)
         df = df.assign(_global_time=stamps).sort_values(
             ["_global_time", "symbol"], kind="stable"
@@ -170,6 +185,38 @@ def _valid_rows(rows: list[dict[str, Any]]) -> pd.DataFrame:
     """
     required_columns = [*ML_FEATURE_COLUMNS, TARGET_COLUMN]
     return pd.DataFrame(rows).dropna(subset=required_columns)
+
+
+def _label_overlap(df: pd.DataFrame) -> LabelOverlap | None:
+    """ML-25: nakładanie etykiet z `settled_at` (widok po migracji 050).
+
+    None = widok bez kolumny (przed migracją) — odczyt `*` jest tolerancyjny."""
+    if not {SETTLED_AT_COLUMN, TIMESTAMP_COLUMN, "symbol"} <= set(df.columns):
+        return None
+    stamps = pd.to_datetime(df[TIMESTAMP_COLUMN], utc=True)
+    settled = pd.to_datetime(df[SETTLED_AT_COLUMN], utc=True)
+    return count_label_overlaps(
+        (
+            str(symbol),
+            stamp.to_pydatetime(),
+            None if pd.isna(settled_at) else settled_at.to_pydatetime(),
+        )
+        for symbol, stamp, settled_at in zip(df["symbol"], stamps, settled, strict=True)
+    )
+
+
+def _log_label_overlap(df: pd.DataFrame) -> None:
+    overlap = _label_overlap(df)
+    if overlap is None:
+        return
+    # Purge walk-forward zakłada stały horyzont `LABEL_HORIZON`; ta liczba mówi,
+    # jak często prawdziwa etykieta sięga za następny wiersz symbolu.
+    logger.info(
+        "Pooled model label overlap: %d of %d rows with settled_at settle after "
+        "the next row of their symbol (ML-25)",
+        overlap.overlapping,
+        overlap.measured,
+    )
 
 
 def _skipped(reason: str, n_samples: int) -> dict[str, Any]:

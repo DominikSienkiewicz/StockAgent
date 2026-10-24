@@ -27,8 +27,11 @@ from __future__ import annotations
 import html as _html
 from collections.abc import Sequence
 from datetime import date, timedelta
+from decimal import Decimal
 
+from src.application.data_coverage import coverage_line_pl
 from src.application.report_evidence import (
+    ENTRY_PRICE_NOTE_PL,
     NO_BENCHMARK_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
     PUBLIC_BENCHMARK_LABEL,
@@ -51,17 +54,38 @@ from src.application.report_models import ResolvedPrediction
 from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
+    calibration_error_evidence,
     expected_calibration_error,
     probability_scores,
     reliability_curve,
 )
+from src.domain.coverage import CoverageReport
 from src.domain.equity_curve import EquityCurve
+from src.domain.evaluation_protocol import EvaluationProtocol
+from src.domain.significance import DEFAULT_ALPHA, DEFAULT_POWER, required_n, sample_reached_on
 from src.domain.track_record import HitRateEvidence
 
 # Parametry div-sparkline (technika z report_track_record._render_sparkline_html):
 # słupki jako <div> o wysokości w px, skalowane do zakresu serii.
 _SPARKLINE_MAX_PX = 40
 _EQUITY_BARS = 40
+
+# WIA-42: etykiety identyfikatorów z `evaluation_protocol.toml` na stronie
+# publicznej. Indeks nazywa się „S&P 500”, nie tickerem — żaden symbol
+# watchlisty nie trafia na stronę.
+PROTOCOL_LABELS: dict[str, str] = {
+    "always_bullish": "zawsze wzrost",
+    "always_bearish": "zawsze spadek",
+    "always_sideways": "zawsze bez ruchu",
+    "basket_buy_and_hold": "koszyk kup-i-trzymaj",
+    "sp500_buy_and_hold": f"{PUBLIC_BENCHMARK_LABEL} kup-i-trzymaj",
+    "directional_hit_rate": "hit-rate kierunkowy",
+    "brier_score": "Brier score",
+    "brier_skill_score": "Brier Skill Score",
+    "expected_calibration_error": "ECE",
+    "market_relative_hit_rate": "hit-rate względem rynku",
+    "paper_pnl_net": "paper-PnL po kosztach",
+}
 
 
 def render_public_scorecard_html(
@@ -73,6 +97,9 @@ def render_public_scorecard_html(
     window_days: int | None = None,
     costs: PaperCosts | None = None,
     benchmark: BenchmarkComparison | None = None,
+    protocol: EvaluationProtocol | None = None,
+    calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]] | None = None,
+    coverage: CoverageReport | None = None,
 ) -> str:
     """Renderuje publiczny scorecard kalibracji jako samodzielną stronę HTML.
 
@@ -94,6 +121,14 @@ def render_public_scorecard_html(
         drugą linię (koszyk). Koszyk to agregat, a indeks nazywa się „S&P 500”
         zamiast tickera — żaden symbol nie trafia na stronę. None = „Na tle
         rynku: brak danych benchmarku”.
+      - `protocol` — protokół ewaluacji z hashem (WIA-42), renderowany w sekcji
+        metodologii; ten sam sha256 niesie każdy commitment v2. None = sekcja
+        bez protokołu, jak przed WIA-42.
+      - `calibration_by_cycle` — te same próbki pogrupowane po cyklu (dniu UTC,
+        WIA-58); z nimi ECE dostaje kubełki równoliczne, korektę obciążenia,
+        n_eff i przedział z bootstrapu po cyklach. None = sama liczba ECE.
+      - `coverage` — pokrycie danych okna (DAT-16): odsetek sesji ze snapshotem,
+        najdłuższa luka i LICZBA symboli bez rozliczeń (nigdy ich nazwy).
 
     Samosupresja: brak jakichkolwiek danych → `""` (nie publikujemy pustej
     strony). Wszystko, co idzie do outputu, jest escapowane.
@@ -110,9 +145,17 @@ def render_public_scorecard_html(
 
     sections: list[str] = [
         _render_headline(predictions, generated_on, window_days),
-        _render_calibration_section(buckets, samples),
+        _render_coverage(coverage),
+        _render_calibration_section(buckets, samples, calibration_by_cycle),
         _render_equity_section(equity, costs, benchmark),
-        _render_methodology_section(),
+        _render_methodology_section(
+            protocol,
+            required_sample=_render_required_sample(
+                hit_rate_evidence(predictions) if predictions else None,
+                generated_on,
+                window_days,
+            ),
+        ),
     ]
     body = "".join(section for section in sections if section)
     return _wrap_page(body, str(generated_on))
@@ -150,6 +193,12 @@ def _render_headline(
         f"{_render_evidence(evidence)}"
         "</section>"
     )
+
+
+def _render_coverage(coverage: CoverageReport | None) -> str:
+    """DAT-16: zdanie o pokryciu danych — bez symboli (inwariant strony)."""
+    line = "" if coverage is None else coverage_line_pl(coverage, list_symbols=False)
+    return f"<p class='window'>{_html.escape(line)}</p>" if line else ""
 
 
 def _render_window(generated_on: date | str, window_days: int | None) -> str:
@@ -194,8 +243,32 @@ def _stat_card(label: str, value: str, note: str = "") -> str:
     )
 
 
+def _ece_line(
+    ece: float, calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]] | None
+) -> str:
+    """„ECE = 7.0%” albo z cyklami (WIA-58): przedział, n, n_eff i ECE po korekcie."""
+    evidence = (
+        calibration_error_evidence(calibration_by_cycle) if calibration_by_cycle else None
+    )
+    if evidence is None:
+        return f"<strong>ECE = {ece * 100:.1f}%</strong>"
+    if evidence.interval is None:
+        spread = " (za mało cykli na bootstrap)"
+    else:
+        low, high = evidence.interval
+        spread = f" [{low * 100:.1f}%; {high * 100:.1f}%]"
+    sample = f"n={evidence.n}, n_eff≈{evidence.n_eff:.0f}"
+    debiased = max(0.0, evidence.debiased) * 100
+    return (
+        f"<strong>ECE = {evidence.ece * 100:.1f}%{spread}, {sample}</strong> "
+        f"(kubełki równoliczne; po korekcie obciążenia {debiased:.1f}%)"
+    )
+
+
 def _render_calibration_section(
-    buckets: Sequence[CalibrationBucket], samples: Sequence[tuple[float, bool]]
+    buckets: Sequence[CalibrationBucket],
+    samples: Sequence[tuple[float, bool]],
+    calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]] | None = None,
 ) -> str:
     """Sekcja pewności: Brier / BSS / log loss, rozkład Murphy'ego, sparkline + ECE.
 
@@ -225,10 +298,12 @@ def _render_calibration_section(
         f"{scores_html}"
         "<p class='desc'>Każdy słupek to jeden kubełek deklarowanej pewności; "
         "wysokość odpowiada realnemu hit-rate, pod spodem liczba predykcji. "
-        "Idealna kalibracja rośnie równo od lewej do prawej.</p>"
+        "Idealna kalibracja rośnie równo od lewej do prawej. Same zakłady na "
+        "kierunek, bez prognoz „bez ruchu” — te trafiają za darmo w spokojne "
+        "dni.</p>"
         f"{sparkline}"
         "<p class='ece'>Pomocniczo: błąd kalibracji "
-        f"<strong>ECE = {ece * 100:.1f}%</strong> — im niżej, tym wierniej "
+        f"{_ece_line(ece, calibration_by_cycle)} — im niżej, tym wierniej "
         "deklarowana pewność odpowiada realnej trafności.</p>"
         "</section>"
     )
@@ -345,13 +420,49 @@ def _render_equity_sparkline(
     return f"<table class='sparkline'>{rows}</table>"
 
 
-def _render_methodology_section() -> str:
+# DOC-16: pytanie, na które track record ma kiedyś odpowiedzieć — 55% wobec rzutu monetą.
+_POWER_BASELINE = 0.50
+_POWER_TARGET = 0.55
+
+
+def _render_required_sample(
+    evidence: HitRateEvidence | None, generated_on: date | str, window_days: int | None
+) -> str:
+    """DOC-16: ile predykcji trzeba, żeby odróżnić 55% od 50%, i kiedy będą przy
+    tempie okna. Bez okna sama liczba; zero napływu to „brak napływu danych”."""
+    required = required_n(_POWER_BASELINE, _POWER_TARGET)
+    text = (
+        f"Odróżnienie trafności {_POWER_TARGET:.0%} od {_POWER_BASELINE:.0%} "
+        f"(α = {DEFAULT_ALPHA} jednostronnie, moc {DEFAULT_POWER:.0%}) wymaga "
+        f"~{required} rozliczonych predykcji kierunkowych w n_eff — wynik z "
+        "kilkudziesięciu predykcji to anegdota, nie dowód."
+    )
+    if window_days is not None and isinstance(generated_on, date):
+        have = 0.0 if evidence is None else evidence.n_eff
+        reached = sample_reached_on(have, required, window_days=window_days, today=generated_on)
+        if reached is None:
+            text += " W oknie nie ma predykcji kierunkowych: brak napływu danych, więc nie ma daty."
+        elif reached == generated_on:
+            text += f" W oknie jest n_eff≈{have:.0f}, więc próba już wystarcza."
+        else:
+            text += (
+                f" W oknie jest n_eff≈{have:.0f}; przy obecnym tempie ({have:.0f} w "
+                f"{window_days} dni) próba wystarczy ok. {reached.isoformat()}."
+            )
+    return f"<p>{_html.escape(text)}</p>"
+
+
+def _render_methodology_section(
+    protocol: EvaluationProtocol | None = None, *, required_sample: str = ""
+) -> str:
     """Sekcja „Metodologia" — uczciwe, polskie copy o okresach słabości.
 
     Publicznie żenujący hit-rate w słabym okresie to FEATURE, nie bug:
     weryfikowalna pokora buduje zaufanie mocniej niż obietnice. Copy mówi
-    wprost, że pokazujemy też własne pomyłki.
+    wprost, że pokazujemy też własne pomyłki. WIA-42: z protokołem sekcja
+    kończy się jego regułami i hashem.
     """
+    protocol_block = "" if protocol is None else _render_protocol(protocol)
     return (
         "<section class='block methodology'>"
         "<h2>Metodologia</h2>"
@@ -366,10 +477,18 @@ def _render_methodology_section() -> str:
         "strategie „zawsze wzrost / spadek / bez ruchu” policzone na tych "
         "samych predykcjach oraz test dwumianowy względem lepszej z naiwnych "
         "strategii kierunkowych.</p>"
+        f"{required_sample}"
+        f"<p>{_html.escape(ENTRY_PRICE_NOTE_PL)} Od tej ceny liczymy i trafność, "
+        "i paper-PnL.</p>"
         "<p>Pewność oceniamy Brier score i Brier Skill Score względem prognozy "
         "klimatologicznej (stała stopa bazowa). ECE publikujemy pomocniczo: "
         "przepewny model jest gorszy niż niepewny, ale ECE bywa zerowe także "
-        "przy zerowej umiejętności.</p>"
+        "przy zerowej umiejętności. Liczymy je na 10 kubełkach równolicznych "
+        "(granice kwantylowe, bo pewności skupiają się w wąskim paśmie), więc "
+        "różnią się one od kubełków równej szerokości na wykresie; przy małej "
+        "próbie ECE jest zawyżone, dlatego obok podajemy wartość po odjęciu "
+        "ECE oczekiwanego przy idealnej kalibracji i przedział z bootstrapu "
+        "losującego całe dni.</p>"
         "<p><strong>Okresy słabości są tu celowo widoczne.</strong> Zmiana "
         "reżimu rynku albo pechowa seria potrafią zjechać hit-rate poniżej "
         "rzutu monetą; taki wynik zostaje na stronie. Uczciwie pokazana "
@@ -383,9 +502,56 @@ def _render_methodology_section() -> str:
         "(long-bias) na takim uniwersum nie jest umiejętnością: dlatego obok "
         "trafności stoi naiwna strategia „zawsze wzrost” policzona na tych "
         "samych predykcjach.</p>"
+        f"{protocol_block}"
         "<p class='fineprint'>Wynik paper-PnL jest symulacją bez realnych "
         "transakcji i nie stanowi rekomendacji inwestycyjnej.</p>"
         "</section>"
+    )
+
+
+def _render_protocol(protocol: EvaluationProtocol) -> str:
+    """WIA-42: reguły protokołu ewaluacji i sha256 pliku, z którego pochodzą."""
+
+    def labels(names: Sequence[str]) -> str:
+        return ", ".join(PROTOCOL_LABELS.get(name, name) for name in names)
+
+    def band(fraction: Decimal) -> str:
+        return DOT_NUMBERS.pct(float(fraction), decimals=1)
+
+    sideways = (
+        "wchodzą do mianownika hit-rate"
+        if protocol.sideways_in_hit_rate
+        else "nie wchodzą do mianownika hit-rate"
+    )
+    selection = (
+        "ręcznie" if protocol.universe_selection == "manual" else protocol.universe_selection
+    )
+    items = [
+        f"Horyzont: {protocol.horizon_hours} h.",
+        "Trafność: wzrost, gdy cena po horyzoncie jest wyższa niż przy prognozie, "
+        "spadek, gdy niższa (martwa strefa "
+        f"{band(protocol.directional_dead_zone)}); bez ruchu, gdy zmiana mieści się "
+        f"w ±{band(protocol.sideways_band)} (krypto ±{band(protocol.crypto_sideways_band)}). "
+        f"Prognozy „bez ruchu” {sideways}.",
+        f"Naiwne strategie: {labels(protocol.naive_baselines)}; "
+        f"benchmarki: {labels(protocol.benchmarks)}.",
+        f"Metryki główne: {labels(protocol.primary_metrics)}; "
+        f"pomocnicze: {labels(protocol.secondary_metrics)}.",
+        f"Istotność: α = {DOT_NUMBERS.number(protocol.alpha, decimals=2)}, "
+        f"FDR q = {DOT_NUMBERS.number(protocol.fdr_q, decimals=2)}.",
+        f"Okno: {protocol.window_days} dni.",
+        f"Uniwersum: wybrane {selection} ({protocol.universe_selected}); "
+        "wersja listy jest w przepisie każdej predykcji.",
+    ]
+    rows = "".join(f"<li>{_html.escape(item)}</li>" for item in items)
+    return (
+        "<h3>Protokół ewaluacji</h3>"
+        f"<p>Wersja {protocol.version}, przyjęta "
+        f"{_html.escape(protocol.adopted_on.isoformat())}. Reguły zamrożono przed "
+        "wynikami, które oceniają; hash pliku protokołu niesie każdy commitment "
+        "predykcji, więc metryk nie da się dobrać po fakcie.</p>"
+        f"<ul>{rows}</ul>"
+        f"<p class='fineprint'>sha256 protokołu: <code>{_html.escape(protocol.sha256)}</code></p>"
     )
 
 

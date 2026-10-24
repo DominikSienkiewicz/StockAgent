@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.domain.cross_section import CROSS_SECTION_FEATURE_NAMES
+from src.domain.macro_series import MACRO_FEATURE_NAMES
+from src.domain.price_features import PRICE_FEATURE_NAMES
+
 # Kontrakt cech XGBoost — IDENTYCZNY w treningu (widok ml_feature_store) i w
 # inference (agent_graph.predict_node). Kolejność musi się zgadzać z widokiem.
 ML_FEATURE_COLUMNS = (
@@ -16,10 +20,14 @@ ML_FEATURE_COLUMNS = (
 
 # Kontrakt interwału cechy `price_delta` (krytyczny — train/serve skew):
 #   price_delta = (cena_bieżąca - cena_POPRZEDNIEJ_predykcji) / cena_poprzedniej.
-# Trening: widok liczy to jako LAG(price_at_prediction) po prediction_logs.
+# Trening: widok liczy to jako LAG(price_at_prediction) po CAŁEJ prediction_logs
+#   (ML-17, migracja 047): także po predykcjach otwartych i oflagowanych —
+#   filtry rozliczenia i flag jakości działają dopiero po LAG.
 # Inference: predict_node bierze RepositoryPort.get_last_prediction_price (cenę
 #   ostatniej zalogowanej predykcji), NIE ostatni snapshot ceny (ten napędza
 #   wyłącznie bramkę volatility). Obie ścieżki muszą używać tej samej referencji.
+#   ML-18: odczyt pomija wiersz z bieżącej godziny UTC — upsert po
+#   (symbol, timestamp_hour) go nadpisze, więc widok nigdy go nie zobaczy.
 
 # Wersja zestawu cech (DAT-09) — rośnie, gdy cecha o TEJ SAMEJ nazwie zmienia
 # znaczenie (nowa kolumna to osobna zmiana kontraktu). Historia:
@@ -32,6 +40,19 @@ ML_FEATURE_COLUMNS = (
 # Fast Loop stempluje nią `prediction_logs.feature_set_version` (migracja 027),
 # a Slow Loop może trenować wyłącznie na wierszach bieżącej wersji.
 FEATURE_SET_VERSION = 3
+
+# Brief W2 (decyzja właściciela): `feature_snapshots` za flagą `market_features_enabled`
+# dostaje cechy rynkowe cyklu i wtedy obie ścieżki stemplują wersję 4:
+#   4 — jak 3, plus `MARKET_SNAPSHOT_FEATURES` w `feature_snapshots.features`.
+# Wektor modelu (`ML_FEATURE_COLUMNS`, widok `ml_feature_store`) się NIE zmienia,
+# ale Slow Loop z filtrem wersji trenuje na wierszach wersji z tej samej flagi.
+# Flaga off: zestaw i wersja 3 bez zmian.
+MARKET_FEATURE_SET_VERSION = 4
+
+
+def feature_set_version(market_features_enabled: bool) -> int:
+    """Wersja zestawu cech cyklu: 4 z cechami rynkowymi, inaczej `FEATURE_SET_VERSION`."""
+    return MARKET_FEATURE_SET_VERSION if market_features_enabled else FEATURE_SET_VERSION
 
 # ML-14: klucze cech DARMOWYCH w `feature_snapshots.features` (migracja 031).
 # Fast Loop zapisuje je w KAŻDYM ukończonym cyklu, także ignored, wyłącznie z
@@ -55,7 +76,17 @@ FREE_SNAPSHOT_FEATURES = (
 )
 GATED_SNAPSHOT_EXTRAS = ("confidence_score", "data_quality_flags")
 
-# Target = ZWROT 12h `(cena_po_12h - cena) / cena`, nie cena bezwzględna.
+# ML-31/ML-32/DAT-22: cechy rynkowe cyklu (wersja 4) liczone przed grafem z darmowych
+# źródeł i dokładane do cech darmowych w KAŻDYM cyklu: cenowe symbolu, jego ruch na
+# tle uniwersum i zmienne stanu z FRED. Brak danych = None (maska braków).
+MARKET_SNAPSHOT_FEATURES: tuple[str, ...] = (
+    *PRICE_FEATURE_NAMES,
+    *CROSS_SECTION_FEATURE_NAMES,
+    *MACRO_FEATURE_NAMES,
+)
+
+# Target = zwrot do następnego cyklu (~24 h w dni robocze, ~72 h przez weekend)
+# `(cena_po_12h - cena) / cena`, nie cena bezwzględna; nazwa `_12h` jest historyczna.
 # Baseline persystencji (cena bez zmian) to wtedy „zwrot = 0", więc bramka
 # „pobij baseline" jest sensowna; XGBoost uczy się RUCHU, nie poziomu ceny.
 TARGET_COLUMN = "target_return"
@@ -64,6 +95,10 @@ TARGET_COLUMN = "target_return"
 # Znacznik czasu wiersza widoku — walk-forward purguje nim horyzont etykiety
 # (`src.domain.backtest.purged_train_end`).
 TIMESTAMP_COLUMN = "timestamp"
+
+# ML-25: chwila rozliczenia wiersza widoku (migracja 050, obok `label_horizon_hours`).
+# Dziś tylko do pomiaru nakładania etykiet; purge dalej idzie stałym horyzontem.
+SETTLED_AT_COLUMN = "settled_at"
 
 
 def in_label_time_order(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series | None]:

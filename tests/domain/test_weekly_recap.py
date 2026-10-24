@@ -342,3 +342,41 @@ class TestRecapShape:
         assert recap is not None
         assert isinstance(recap.best, RecapHighlight)
         assert isinstance(recap.worst, RecapHighlight)
+
+
+class TestRecapProbabilityScores:
+    """WIA-36: recap pokazywał samo ECE, które jest 0 przy „zawsze 55%” i 55%
+    trafień — czyli przy zerowej umiejętności. Brier i BSS względem klimatologii
+    mówią, czy pewność cokolwiek wnosi."""
+
+    @staticmethod
+    def _mixed_week() -> list[ClosedPrediction]:
+        # 3 trafienia z pewnością 0.8 i 2 pudła z pewnością 0.6.
+        hits = [_closed(f"H{i}", actual="110", confidence=0.8) for i in range(3)]
+        misses = [_closed(f"M{i}", actual="95", confidence=0.6) for i in range(2)]
+        return hits + misses
+
+    def test_recap_carries_brier_climatology_and_skill(self) -> None:
+        recap = build_weekly_recap(self._mixed_week())
+
+        assert recap is not None
+        assert recap.scores is not None
+        # Brier = (3·0.2² + 2·0.6²) / 5 = 0.168; stopa bazowa 0.6 → klimatologia 0.24.
+        assert abs(recap.scores.brier - 0.168) < 1e-9
+        assert abs(recap.scores.climatology_brier - 0.24) < 1e-9
+        assert recap.scores.skill is not None
+        assert abs(recap.scores.skill - 0.3) < 1e-9
+
+    def test_constant_base_rate_confidence_has_zero_skill_despite_zero_ece(self) -> None:
+        # „Zawsze 60%” przy 60% trafień: ECE = 0, a umiejętności brak (BSS = 0).
+        week = [_closed(f"H{i}", actual="110", confidence=0.6) for i in range(3)] + [
+            _closed(f"M{i}", actual="95", confidence=0.6) for i in range(2)
+        ]
+
+        recap = build_weekly_recap(week)
+
+        assert recap is not None
+        assert recap.current_ece < 1e-9
+        assert recap.scores is not None
+        assert recap.scores.skill is not None
+        assert abs(recap.scores.skill) < 1e-9

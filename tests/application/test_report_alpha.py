@@ -124,3 +124,75 @@ class TestInsiderWithoutEvidence:
         html = render_alpha_html(signals, None)
 
         assert "brak danych EDGAR" not in html
+
+
+class TestSignificantInsiderBuy:
+    """DAT-21: znaczący zakup officera dostaje własną linię z kwotą i linkiem do
+    Form 4 — sama etykieta „kupno insiderów” nie mówi o skali."""
+
+    _URL = "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000001/xslF345X05/form4.xml"
+
+    def _signals(self, value_usd: float, *, url: str | None = None) -> dict[str, AlphaSignals]:
+        from src.domain.insider_flow import InsiderBuy
+
+        insider = InsiderFlowSnapshot(
+            "NVDA",
+            10_000.0,
+            1,
+            0,
+            90,
+            net_value_usd=value_usd,
+            largest_buy=InsiderBuy(
+                role="CEO", value_usd=value_usd, filing_url=self._URL if url is None else url
+            ),
+        )
+        return {"NVDA": AlphaSignals(symbol="NVDA", insider=insider)}
+
+    def test_large_officer_buy_gets_a_line_with_amount_and_form4_link(self) -> None:
+        html = render_alpha_html(self._signals(1_200_000.0), None)
+
+        assert "NVDA — CEO kupił akcje za 1,2 mln USD" in html
+        assert f"href='{self._URL}'" in html
+        assert "Form 4 →" in html
+
+    def test_amount_below_a_million_is_in_thousands(self) -> None:
+        html = render_alpha_html(self._signals(250_000.0), None)
+
+        assert "za 250 tys. USD" in html
+
+    def test_buy_below_the_threshold_has_no_line(self) -> None:
+        html = render_alpha_html(self._signals(50_000.0), None)
+
+        assert "kupił akcje" not in html
+
+    def test_link_outside_sec_gov_is_dropped(self) -> None:
+        html = render_alpha_html(self._signals(1_200_000.0, url="https://evil.example/x"), None)
+
+        assert "kupił akcje" in html
+        assert "evil.example" not in html
+
+
+class TestInsiderThresholdFromMarketCap:
+    """DAT-21: próg linii znaczącego zakupu skaluje się kapitalizacją z cache."""
+
+    @staticmethod
+    def _signals(market_cap: float | None) -> dict[str, AlphaSignals]:
+        from src.domain.insider_flow import InsiderBuy
+
+        insider = InsiderFlowSnapshot(
+            "NVDA",
+            10_000.0,
+            1,
+            0,
+            90,
+            largest_buy=InsiderBuy(role="CEO", value_usd=1_200_000.0),
+        )
+        return {"NVDA": AlphaSignals(symbol="NVDA", insider=insider, market_cap=market_cap)}
+
+    def test_buy_below_the_cap_scaled_threshold_has_no_line(self) -> None:
+        assert "kupił akcje" not in render_alpha_html(self._signals(4e12), None)
+
+    def test_buy_above_the_cap_scaled_threshold_keeps_its_line(self) -> None:
+        html = render_alpha_html(self._signals(100e9), None)
+
+        assert "NVDA — CEO kupił akcje za 1,2 mln USD" in html

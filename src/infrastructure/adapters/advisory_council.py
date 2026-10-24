@@ -5,7 +5,7 @@ import contextvars
 import logging
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError, as_completed
-from typing import Any, Literal
+from typing import Any
 
 from src.application.council_prompts import (
     chairman_prompt,
@@ -19,7 +19,9 @@ from src.domain.council import (
     CouncilVerdict,
     InvestorOpinion,
     InvestorPersona,
+    Recommendation,
     derive_consensus,
+    parse_recommendation,
 )
 from src.domain.value_objects import AssetType
 
@@ -34,7 +36,6 @@ def _log_discarded(name: str) -> Callable[[Future[InvestorOpinion | None]], None
 
     return _log
 
-_VALID_RECS: frozenset[str] = frozenset({"BUY", "SELL", "HOLD"})
 # Górna granica oczekiwania na CAŁY zestaw wywołań LLM równolegle.
 # LLM port ma już własny timeout (30s) — ten jest buforem na sumę narzutu
 # threadpool/scheduler. Po jego przekroczeniu kontynuujemy z opiniami,
@@ -49,10 +50,13 @@ _COUNCIL_TOTAL_TIMEOUT_S = 60.0
 COUNCIL_MAX_PERSONAS = 12
 
 
-def _parse_recommendation(raw: Any) -> Literal["BUY", "SELL", "HOLD"]:
-    if isinstance(raw, str) and raw.upper() in _VALID_RECS:
-        return raw.upper()  # type: ignore[return-value]
-    return "HOLD"
+def _parse_recommendation(name: str, raw: Any) -> Recommendation:
+    """ARCH-03: brak albo wartość spoza BUY/SELL/HOLD → HOLD z ostrzeżeniem."""
+    parsed = parse_recommendation(raw)
+    if parsed is None:
+        logger.warning("Advisory council: %s returned recommendation %r — read as HOLD", name, raw)
+        return "HOLD"
+    return parsed
 
 
 def _clamp_unit(raw: Any, default: float = 0.5) -> float:
@@ -73,7 +77,7 @@ def _clamp_unit(raw: Any, default: float = 0.5) -> float:
 def _parse_opinion(name: str, raw: dict[str, Any]) -> InvestorOpinion:
     return InvestorOpinion(
         investor_name=name,
-        recommendation=_parse_recommendation(raw.get("recommendation")),
+        recommendation=_parse_recommendation(name, raw.get("recommendation")),
         confidence=_clamp_unit(raw.get("confidence")),
         reasoning=str(raw.get("reasoning") or ""),
         key_factors=tuple(str(f) for f in (raw.get("key_factors") or [])),
@@ -270,4 +274,6 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
             summary=str(raw.get("summary") or ""),
             dissenting_views=tuple(str(v) for v in (raw.get("dissenting_views") or [])),
             investor_opinions=tuple(resolved_opinions),
+            # MAIL-12: mail pokazuje „odpowiedziało X/N”, gdy części person zabrakło.
+            failed_personas=len(personas) - len(resolved_opinions),
         )

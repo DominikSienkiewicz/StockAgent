@@ -204,3 +204,15 @@ def test_reference_signal_writes_are_skipped_and_reads_pass(
     delegate.settle_reference_call.assert_not_called()
     delegate.get_reference_reads.assert_called_once_with(sentinel.since)
     delegate.get_open_reference_calls.assert_called_once_with()
+
+
+def test_expiring_predictions_is_a_skipped_write_that_expires_nothing() -> None:
+    # WIA-49: lokalny run nie flaguje predykcji we wspólnej bazie — i nie
+    # raportuje wygasłych, których nie oznaczył.
+    delegate = create_autospec(RepositoryPort, instance=True)
+
+    expired = ReadOnlyRepository(delegate).expire_unverified_predictions("NVDA", 96)
+
+    assert expired == 0
+    assert "expire_unverified_predictions" in ReadOnlyRepository.WRITE_METHODS
+    delegate.expire_unverified_predictions.assert_not_called()

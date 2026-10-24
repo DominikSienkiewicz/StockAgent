@@ -63,6 +63,13 @@ class TestPearson:
         assert pearson([1.0], [2.0]) == pytest.approx(0.0)
         assert pearson([], []) == pytest.approx(0.0)
 
+    def test_tiny_variances_do_not_divide_by_zero(self) -> None:
+        # Przykład znaleziony przez Hypothesis (TEST-12): iloczyn wariancji ~1e-90
+        # i ~1e-281 schodzi do 0.0, choć każda z osobna jest dodatnia.
+        a = [0.0, 1.401298464324817e-45]
+        b = [0.0, 2.7856471076279285e-141]
+        assert pearson(a, b) == pytest.approx(1.0)
+
 
 class TestCorrelationMatrix:
     def test_builds_pairwise_entries(self) -> None:
@@ -181,3 +188,10 @@ class TestAlignByUtcDay:
 
     def test_empty_input_yields_empty_mapping(self) -> None:
         assert align_by_utc_day({}) == {}
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf])
+def test_pearson_non_finite_return_raises(bad: float) -> None:
+    # PORT-09: NaN w zwrotach dawał pearson 1.0 (domknięcie min/max połyka NaN).
+    with pytest.raises(ValueError, match="finite"):
+        pearson([0.01, bad, -0.02], [0.02, 0.01, -0.01])

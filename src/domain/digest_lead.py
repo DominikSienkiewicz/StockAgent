@@ -7,14 +7,21 @@ sygnałów już policzonych w cyklu — zero I/O, zero portów, zero LLM.
 Kolejność priorytetów (malejąco) jest wiążąca i zamrożona testami:
 
     1. CRITICAL QuotaAlert         — coś się realnie zepsuło w cyklu
-    2. sygnał przeciw Twojej pozycji — rada SPRZEDAJ na pozycji ≥ 10% portfela
-    3. ruch Twojej pozycji          — pozycja ≥ 10% portfela ponad bramką volatility
-    4. rada PODZIELONA + duże |Δ|  — fundamentalny brak zgody co do kierunku
-    5. największy |Δ| z silnym konsensusem
-    6. werdykt zamkniętej predykcji
+    2. zmiana reżimu rynku          — wejście w RISK_OFF albo wyjście (ALR-05)
+    3. sygnał przeciw Twojej pozycji — rada SPRZEDAJ na pozycji ≥ 10% portfela
+    4. ruch Twojej pozycji          — pozycja ≥ 10% portfela ponad bramką volatility
+    5. rada PODZIELONA + duże |Δ|  — fundamentalny brak zgody co do kierunku
+    6. znaczący zakup insidera      — kod P officera ponad próg z kapitalizacji (DAT-21)
+    7. rada się ODWRÓCIŁA (FLIP)   — KUP↔SPRZEDAJ względem poprzedniego cyklu
+    8. największy |Δ| z silnym konsensusem
+    9. werdykt zamkniętej predykcji
 
-PORT-10 (decyzja 2026-10-19): tiery 2–3 istnieją tylko, gdy wołający poda wagę
+PORT-10 (decyzja 2026-10-19): tiery 3–4 istnieją tylko, gdy wołający poda wagę
 pozycji (`LeadSignal.position_weight`). Bez portfela lead działa jak wcześniej.
+ALR-05: tier 2 istnieje tylko, gdy wołający poda zmianę reżimu — DI liczy ją
+wyłącznie z histerezy (`regime_history`), bez niej reżim migałby codziennie.
+MAIL-19: tier 7 wymaga `LeadSignal.consensus_shift` rodzaju FLIP; porównanie
+stęchłe (STALE_COMPARISON) nigdy nie trafia do leadu.
 
 NAJWIĘKSZE RYZYKO, które ten moduł świadomie neutralizuje: ranking NIE MOŻE
 promować sensacji (dużego ruchu ceny) kosztem faktycznie krytycznych sygnałów.
@@ -34,20 +41,25 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
+from src.domain.consensus_shift import ConsensusShift, ShiftKind
 from src.domain.council import CouncilVerdict
 from src.domain.number_format import format_pct_pl
 from src.domain.polish_labels import council_recommendation_label
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.regime import RegimeChange
 
 # --- Bazy scoringu (ADDYTYWNE, nie multiplikatywne) -------------------------
 # Każdy kandydat dostaje: baza_priorytetu + magnituda(|Δ|). Suma, nie iloczyn —
 # `council_verdict` bywa None, a mnożenie wyzerowałoby symbole bez rady.
 # Odstępy między bazami (1000) są większe niż `_MAGNITUDE_CAP`, więc priorytet
 # ZAWSZE bije magnitudę — to gwarancja invariantu anti-sensacja.
-_CRITICAL_QUOTA_SCORE = 6000.0
-_AGAINST_POSITION_SCORE = 5000.0
-_POSITION_MOVE_SCORE = 4000.0
-_SPLIT_SCORE = 3000.0
+_CRITICAL_QUOTA_SCORE = 9000.0
+_REGIME_CHANGE_SCORE = 8000.0
+_AGAINST_POSITION_SCORE = 7000.0
+_POSITION_MOVE_SCORE = 6000.0
+_SPLIT_SCORE = 5000.0
+_INSIDER_BUY_SCORE = 4000.0
+_FLIP_SCORE = 3000.0
 _STRONG_CONSENSUS_SCORE = 2000.0
 _CLOSED_VERDICT_SCORE = 1000.0
 
@@ -95,6 +107,10 @@ class LeadSignal:
       (0.24 = 24%), None = symbol spoza portfela albo portfela brak.
     - `crossed_volatility_gate` — ruch przekroczył próg bramki volatility w tym
       cyklu (symbol przeszedł do analizy); pod bramką ruch pozycji nie jest leadem.
+    - `consensus_shift` (MAIL-19) — zmiana nastawienia rady względem poprzedniego
+      cyklu; do leadu wchodzi tylko FLIP. None = brak porównania.
+    - `insider_buy_label` (DAT-21) — gotowy tekst znaczącego zakupu insidera
+      („CEO kupił akcje za 1,2 mln USD”) albo None, gdy zakupu ponad próg nie było.
     """
 
     symbol: str
@@ -103,6 +119,8 @@ class LeadSignal:
     resolved_label: str | None = None
     position_weight: Decimal | None = None
     crossed_volatility_gate: bool = False
+    consensus_shift: ConsensusShift | None = None
+    insider_buy_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +153,24 @@ def _quota_candidate(alert: QuotaAlert) -> _Candidate:
         detail=alert.action,
     )
     return _Candidate(score=_CRITICAL_QUOTA_SCORE, item=item)
+
+
+def _regime_candidate(change: RegimeChange) -> _Candidate:
+    """Priorytet 2 (ALR-05): zmiana reżimu dotyczy całego cyklu — próg bramki
+    rośnie albo wraca, więc predykcji jest mniej albo więcej. Bez magnitudy."""
+    if change.enters_risk_off:
+        item = LeadItem(
+            icon="🌧️",
+            headline="Rynek przeszedł w RISK_OFF, analiza rzadsza",
+            detail="Próg bramki volatility rośnie — mniej symboli dostaje pełną analizę.",
+        )
+    else:
+        item = LeadItem(
+            icon="🌤️",
+            headline=f"Rynek wyszedł z RISK_OFF ({change.current.value}), analiza częstsza",
+            detail="Próg bramki volatility wraca do bazowego.",
+        )
+    return _Candidate(score=_REGIME_CHANGE_SCORE, item=item)
 
 
 def _format_weight(weight: Decimal) -> str:
@@ -199,7 +235,7 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
     magnitude = _magnitude(signal.price_delta_pct)
     verdict = signal.council_verdict
 
-    # Priorytet 4 — rada PODZIELONA (sprzeczne BUY i SELL). Duże |Δ| podbija
+    # Priorytet 5 — rada PODZIELONA (sprzeczne BUY i SELL). Duże |Δ| podbija
     # pozycję w obrębie tieru, ale sam tier bije silny konsensus niezależnie od Δ.
     if verdict is not None and verdict.is_split_decision():
         item = LeadItem(
@@ -210,7 +246,26 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
         )
         return _Candidate(score=_SPLIT_SCORE + magnitude, item=item)
 
-    # Priorytet 5 — silny konsensus rady. W obrębie tieru decyduje |Δ|.
+    # Priorytet 6 — znaczący zakup insidera (DAT-21): kod P officera ponad próg
+    # z kapitalizacji. Rzadki, publiczny sygnał o skali — bije zgodną radę.
+    if signal.insider_buy_label:
+        item = LeadItem(
+            icon="🟢",
+            headline=f"{signal.symbol} {delta_label}: {signal.insider_buy_label}",
+            detail=(
+                verdict.summary
+                if verdict is not None
+                else "Zakup na rynku (kod P, poza planem 10b5-1) z Form 4."
+            ),
+            symbol=signal.symbol,
+        )
+        return _Candidate(score=_INSIDER_BUY_SCORE + magnitude, item=item)
+    # Priorytet 7 — rada odwróciła się względem poprzedniego cyklu (MAIL-19).
+    flip = _flip_candidate(signal, delta_label, magnitude)
+    if flip is not None:
+        return flip
+
+    # Priorytet 8 — silny konsensus rady. W obrębie tieru decyduje |Δ|.
     if verdict is not None and verdict.has_strong_consensus():
         item = LeadItem(
             icon="🔥",
@@ -223,7 +278,7 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
         )
         return _Candidate(score=_STRONG_CONSENSUS_SCORE + magnitude, item=item)
 
-    # Priorytet 6 — werdykt zamkniętej predykcji.
+    # Priorytet 9 — werdykt zamkniętej predykcji.
     if signal.resolved_label:
         item = LeadItem(
             icon="📊",
@@ -236,11 +291,32 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
     return None
 
 
+def _flip_candidate(
+    signal: LeadSignal, delta_label: str, magnitude: float
+) -> _Candidate | None:
+    """MAIL-19: odwrócenie rady (KUP↔SPRZEDAJ). Tylko FLIP — stęchłe porównanie
+    (`STALE_COMPARISON`) i złagodzenie nie są leadem."""
+    shift = signal.consensus_shift
+    if shift is None or shift.kind is not ShiftKind.FLIP:
+        return None
+    previous = council_recommendation_label(shift.previous_recommendation)
+    current = council_recommendation_label(shift.current_recommendation)
+    verdict = signal.council_verdict
+    item = LeadItem(
+        icon="🔄",
+        headline=f"{signal.symbol} {delta_label}: rada odwróciła się {previous}→{current}",
+        detail=verdict.summary if verdict is not None else "",
+        symbol=signal.symbol,
+    )
+    return _Candidate(score=_FLIP_SCORE + magnitude, item=item)
+
+
 def build_lead(
     signals: Sequence[LeadSignal],
     quota_alerts: Sequence[QuotaAlert] = (),
     *,
     max_items: int = _DEFAULT_MAX_ITEMS,
+    regime_change: RegimeChange | None = None,
 ) -> list[LeadItem]:
     """Buduje ranking leadu cyklu — max `max_items` pozycji, najważniejsze pierwsze.
 
@@ -250,12 +326,15 @@ def build_lead(
     (sekcja samosupresująca — orkiestrator po prostu jej nie renderuje).
 
     Tylko CRITICAL QuotaAlert-y wchodzą do leadu; WARNING mają własny banner.
+    `regime_change` (ALR-05) — wejście w RISK_OFF albo wyjście z niego w tym cyklu.
     """
     candidates: list[_Candidate] = [
         _quota_candidate(alert)
         for alert in quota_alerts
         if alert.severity is QuotaSeverity.CRITICAL
     ]
+    if regime_change is not None:
+        candidates.append(_regime_candidate(regime_change))
     candidates.extend(
         candidate
         for candidate in (_signal_candidate(signal) for signal in signals)

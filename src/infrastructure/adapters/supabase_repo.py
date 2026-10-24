@@ -1,26 +1,50 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Literal, NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 from postgrest.exceptions import APIError
 from supabase import create_client
 
 from src.application.ports import (
     CycleRun,
+    DeferredDiagnosis,
+    EvidenceSourcePort,
+    LatestPrediction,
     OpenReferenceCall,
     PreviousVerdict,
     RepositoryPort,
+    StoredReceipt,
 )
 from src.application.report_council_history import InvestorHistory
-from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.attestation import StoredCommitment
+from src.domain.council import (
+    CouncilVerdict,
+    InvestorOpinion,
+    Recommendation,
+    parse_recommendation,
+)
+from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
-from src.domain.prediction import Prediction, TrendDirection, normalize_trend
+from src.domain.mistake_taxonomy import MistakeCategory
+from src.domain.persona_track_record import (
+    PersonaVoteOutcome,
+    persona_accuracy_weights,
+    persona_hit_stats,
+)
+from src.domain.prediction import (
+    UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
+    Prediction,
+    TrendDirection,
+    normalize_trend,
+)
+from src.domain.price_levels import LevelDirection, PriceLevel, PriceLevelAlert
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.reference_signal import (
     REFERENCE_RECIPE_VERSION,
@@ -30,6 +54,7 @@ from src.domain.reference_signal import (
 )
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.regime_key import canonical_regime_key
+from src.domain.session_close import SessionCloseSettlement
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
 from src.domain.value_objects import (
@@ -54,6 +79,11 @@ REFERENCE_PREDICTIONS_TABLE = "reference_predictions"
 LLM_CALLS_TABLE = "llm_calls"
 # NIEZ-29: historia przebiegów pętli (migracja 041).
 CYCLE_RUNS_TABLE = "cycle_runs"
+# FIN-11: data najbliższego raportu per symbol (migracja 053).
+EARNINGS_CACHE_TABLE = "earnings_cache"
+# ALR-11 (migracja 057): alerty poziomów cenowych ustawiane przez użytkownika.
+PRICE_LEVEL_ALERTS_TABLE = "price_level_alerts"
+_PRICE_LEVEL_UNIQUE = "symbol,level,direction"
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -112,6 +142,10 @@ _EVAL_EXTRA_FIELDS: dict[str, _EvalField] = {
     "alpha_fusion_score": _EvalField("alpha_fusion_score", "alpha_fusion_score"),  # 022
     "edge_sigma": _EvalField("edge_sigma", "edge_sigma"),  # 025
     "gate_delta": _EvalField("gate_delta", "gate_delta"),  # 034
+    # WIA-47 — wejścia heurystyk RiskSignal (001, 004).
+    "sentiment_score": _EvalField("sentiment_score", "sentiment_score"),
+    "av_llm_agreement": _EvalField("av_llm_agreement", "av_llm_agreement"),
+    "news_volume_24h": _EvalField("news_volume_24h", "news_volume_24h"),
     # EXP-05 — konsensus rady (005) i ramiona eksperymentów: kolumna (037)
     # oraz opcjonalny klucz kwitu v2 (020), z którego CLI czyta przed migracją.
     "council_consensus": _EvalField(
@@ -126,6 +160,34 @@ _EVAL_EXTRA_FIELDS: dict[str, _EvalField] = {
 # Kody PostgREST/Postgres dla kolumny, której nie ma w bazie (select → 42703).
 _MISSING_COLUMN_CODES = frozenset({"42703", "PGRST204"})
 
+# WIA-70 (migracja 043): dosłowny plaintext commitmentu.
+_COMMITMENT_PAYLOAD_COLUMN = "commitment_payload"
+
+
+def _is_missing_column(exc: APIError, column: str) -> bool:
+    """Czy błąd PostgREST zgłasza brak właśnie tej kolumny (migracja nie zaaplikowana)."""
+    return exc.code in _MISSING_COLUMN_CODES and column in (exc.message or "")
+
+
+# NIEZ-16: kody, które naprawdę znaczą brak obiektu schematu — funkcji RPC
+# (PGRST202, 42883), tabeli (PGRST205, 42P01) albo kolumny (jak wyżej). Tylko
+# wtedy odczyt graceful wskazuje migrację; zerwane połączenie, timeout albo
+# wstrzymany projekt to inna diagnoza, logowana z typem wyjątku.
+_MISSING_SCHEMA_CODES = (
+    frozenset({"PGRST202", "PGRST205", "42P01", "42883"}) | _MISSING_COLUMN_CODES
+)
+
+
+def _log_degraded_read(source: str, skipped: str, migration: str, exc: Exception) -> None:
+    """WARNING odczytu graceful: „apply migration” wyłącznie przy brakującym obiekcie
+    schematu, każdy inny błąd z typem wyjątku i tracebackiem."""
+    if isinstance(exc, APIError) and exc.code in _MISSING_SCHEMA_CODES:
+        logger.warning("%s unavailable — %s (apply migration %s).", source, skipped, migration)
+        return
+    logger.warning(
+        "%s failed (%s) — %s.", source, type(exc).__name__, skipped, exc_info=True
+    )
+
 
 class MissingColumnError(RuntimeError):
     """Odczyt prosił o kolumnę, której baza jeszcze nie ma — migracja nie
@@ -134,6 +196,17 @@ class MissingColumnError(RuntimeError):
     def __init__(self, column: str) -> None:
         super().__init__(f"column prediction_logs.{column} does not exist")
         self.column = column
+
+
+# FIN-05: select po nieistniejącej kolumnie — Postgres `undefined_column`.
+_UNDEFINED_COLUMN_CODE = "42703"
+_UNDEFINED_COLUMN_MESSAGE = re.compile(r'column "?(?:\w+\.)?"?(\w+)"? does not exist')
+
+
+def _undefined_column(exc: APIError) -> str | None:
+    """Nazwa kolumny z komunikatu 42703 („column prediction_logs.x does not exist”)."""
+    match = _UNDEFINED_COLUMN_MESSAGE.search(exc.message or "")
+    return match.group(1) if match else None
 
 
 def _missing_eval_column(exc: APIError, fields: Sequence[str]) -> str | None:
@@ -148,10 +221,26 @@ def _missing_eval_column(exc: APIError, fields: Sequence[str]) -> str | None:
     return None
 
 
+def _missing_column(exc: APIError, columns: Sequence[str]) -> str | None:
+    """NIEZ-32: kolumna z `columns`, której brak zgłasza PostgREST (42703); None
+    przy innym błędzie. Najdłuższe nazwy najpierw — `confidence` vs `confidence_score`."""
+    if exc.code not in _MISSING_COLUMN_CODES:
+        return None
+    message = exc.message or ""
+    for column in sorted(columns, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(column)}\b", message):
+            return column
+    return None
+
+
 # Flaga, którą predict_node zostawia przy neutralnej atrapie po awarii głównego
 # LLM („SIDEWAYS 50%”). Taki wiersz nie jest predykcją i nie może zasilać
 # hit-rate ani kalibracji (WIA-09).
 _LLM_FALLBACK_FLAG = "llm_analysis_failed"
+# WIA-49: ślad wygaśnięcia predykcji, której reflect już nigdy nie oceni. Żyje
+# w `data_quality_flags` (migracja 008), więc nie wymaga nowej kolumny; wiersz
+# nie dostaje ceny, więc i tak nie wchodzi do ml_feature_store ani do trafności.
+EXPIRED_UNVERIFIED_FLAG = "expired_unverified"
 
 
 def _without_llm_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -162,6 +251,58 @@ def _without_llm_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     wyciąłby też takie wiersze. Wymaga `data_quality_flags` w SELECT.
     """
     return [row for row in rows if _LLM_FALLBACK_FLAG not in (row.get("data_quality_flags") or [])]
+
+
+# DAT-14 (migracja 055): rozliczenie z notowania sprzed sesji po predykcji.
+_STALE_QUOTE_COLUMN = "stale_quote"
+
+
+def _without_stale_quote(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bez rozliczeń z nieaktualnego notowania (DAT-14, `stale_quote` = true).
+
+    Bez kolumny w SELECT (flaga off) `stale_quote` jest None, więc filtr nic nie tnie."""
+    return [row for row in rows if row.get(_STALE_QUOTE_COLUMN) is not True]
+
+
+def _countable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Wiersze, które liczą się do trafności: bez atrap LLM (WIA-09) i bez
+    rozliczeń z nieaktualnego notowania (DAT-14)."""
+    return _without_stale_quote(_without_llm_fallback(rows))
+
+
+def _price_level_alert(row: Mapping[str, Any]) -> PriceLevelAlert:
+    """Wiersz `price_level_alerts` → encja domeny (NUMERIC przez tekst do Decimal)."""
+    last_seen = row.get("last_seen_price")
+    return PriceLevelAlert(
+        id=str(row["id"]),
+        level=PriceLevel(
+            symbol=str(row["symbol"]),
+            level=Decimal(str(row["level"])),
+            direction=LevelDirection(str(row["direction"])),
+            note=_optional_text(row.get("note")),
+        ),
+        last_seen_price=Decimal(str(last_seen)) if last_seen is not None else None,
+    )
+
+
+def _optional_float(value: Any) -> float | None:
+    """Liczba z kolumny NUMERIC (PostgREST oddaje float albo tekst) albo None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_timestamp(value: Any) -> datetime | None:
+    """Znacznik czasu z wiersza PostgREST (ISO 8601) albo None, gdy go brak."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _resolved_window(query: Any, cutoff: datetime, since: datetime | None) -> Any:
@@ -196,6 +337,14 @@ def _utc_day_key(stamp: Any) -> str:
     return moment.date().isoformat()
 
 
+def _utc_hour_start(moment: datetime) -> datetime:
+    """Początek godziny UTC chwili — ta sama granica co generowana kolumna
+    `timestamp_hour` (`date_trunc('hour', timestamp, 'UTC')`, migracja 013).
+    Chwila bez strefy to UTC."""
+    utc = moment.astimezone(UTC) if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    return utc.replace(minute=0, second=0, microsecond=0)
+
+
 def _serialize(value: Any) -> Any:
     """Decimal → str (JSON-safe, zachowuje precyzję) — pozostałe typy bez zmian."""
     if isinstance(value, Decimal):
@@ -203,12 +352,146 @@ def _serialize(value: Any) -> Any:
     return value
 
 
-def _serialize_record(record: dict[str, Any]) -> dict[str, Any]:
-    return {k: _serialize(v) for k, v in record.items()}
+# ARCH-38: kolumny cenowe `prediction_logs` w skali DECIMAL(14,4) (001, 032, 059).
+_PREDICTION_PRICE_COLUMNS = frozenset({
+    "price_at_prediction",
+    "predicted_target_price",
+    "actual_price_after_12h",
+    "interval_low",
+    "interval_high",
+    "settlement_close_price",
+})
+
+# WIA-61 (migracja 059): trafność kierunku na oficjalnym zamknięciu sesji.
+_SESSION_CLOSE_CORRECT_COLUMN = "is_trend_correct_session_close"
+
+
+def _session_close_payload(settlement: SessionCloseSettlement) -> dict[str, Any]:
+    """WIA-61: zamknięcie sesji z datą i źródłem obok ceny /quote — z nich
+    weryfikator sprawdzi cenę w publicznym serwisie."""
+    close = settlement.close
+    return {
+        "settlement_close_price": close.price.amount,
+        "settlement_session_date": close.session_day.isoformat(),
+        "settlement_source": close.source.value,
+        _SESSION_CLOSE_CORRECT_COLUMN: settlement.is_trend_correct,
+    }
+
+
+def _session_close_stats(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """WIA-61: trafność na zamknięciu sesji i, dla porównania, trafność /quote na
+    TYCH SAMYCH predykcjach — tylko wiersze z zapisanym zamknięciem."""
+    with_close = [row for row in rows if row.get(_SESSION_CLOSE_CORRECT_COLUMN) is not None]
+    return {
+        "session_close_count": len(with_close),
+        "session_close_correct_count": sum(
+            1 for row in with_close if row[_SESSION_CLOSE_CORRECT_COLUMN]
+        ),
+        "session_close_quote_correct_count": sum(
+            1 for row in with_close if row.get("is_trend_correct")
+        ),
+    }
+
+
+def _storage_price(value: Decimal) -> Decimal:
+    """ARCH-38: cena w skali kolumny DECIMAL(14,4), połówki od zera jak w Postgresie.
+
+    Wartość, której kwantyzacja nie zmienia, zostaje z własnym literałem
+    („99.0”, nie „99.0000”) — baza i tak przechowa ją identycznie."""
+    stored = Money(value).for_storage().amount
+    return value if stored == value else stored
+
+
+def _serialize_record(
+    record: dict[str, Any], price_columns: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    return {
+        k: _serialize(
+            _storage_price(v) if k in price_columns and isinstance(v, Decimal) else v
+        )
+        for k, v in record.items()
+    }
 
 
 def _optional_text(value: Any) -> str | None:
     return None if value is None else str(value)
+
+
+# WIA-56: kolumny kwitu decyzyjnego z kontekstem predykcji (migracja 020).
+_RECEIPT_COLUMNS = "id, symbol, timestamp, predicted_trend, is_trend_correct, decision_receipts"
+
+
+def _stored_receipt(row: Mapping[str, Any]) -> StoredReceipt:
+    """Wiersz `prediction_logs` → `StoredReceipt`; kwit niebędący obiektem JSON → None."""
+    payload = row.get("decision_receipts")
+    stamp = row.get("timestamp")
+    correct = row.get("is_trend_correct")
+    return StoredReceipt(
+        prediction_id=str(row["id"]),
+        symbol=str(row.get("symbol") or "?"),
+        predicted_at=datetime.fromisoformat(stamp) if isinstance(stamp, str) else None,
+        predicted_trend=_optional_text(row.get("predicted_trend")),
+        is_trend_correct=correct if isinstance(correct, bool) else None,
+        payload=payload if isinstance(payload, Mapping) else None,
+    )
+
+
+# WIA-53: wejście diagnozy błędnej predykcji (kwit `decision_receipts` osobno, 020).
+_DEFERRED_COLUMNS = (
+    "id, symbol, timestamp, predicted_trend, price_at_prediction, "
+    "predicted_target_price, actual_price_after_12h, news_summary, reasoning_text, "
+    "correction_insights, is_trend_correct, data_quality_flags"
+)
+
+
+def _deferred_diagnosis(row: Mapping[str, Any]) -> DeferredDiagnosis | None:
+    """Wiersz `prediction_logs` → `DeferredDiagnosis`; bez cen nie ma czego diagnozować."""
+    price = row.get("price_at_prediction")
+    actual = row.get("actual_price_after_12h")
+    if price is None or actual is None or row.get("id") is None:
+        return None
+    trend, _ = normalize_trend(row.get("predicted_trend"))
+    target = row.get("predicted_target_price")
+    receipt = row.get("decision_receipts")
+    correct = row.get("is_trend_correct")
+    return DeferredDiagnosis(
+        prediction=Prediction(
+            id=str(row["id"]),
+            symbol=str(row.get("symbol") or "?"),
+            predicted_trend=trend,
+            price_at_prediction=Decimal(str(price)),
+            predicted_target_price=Decimal(str(target if target is not None else price)),
+            news_summary=_optional_text(row.get("news_summary")),
+            reasoning=_optional_text(row.get("reasoning_text")),
+        ),
+        actual_price=Decimal(str(actual)),
+        is_trend_correct=correct if isinstance(correct, bool) else None,
+        placeholder=str(row.get("correction_insights") or ""),
+        predicted_at=_optional_timestamp(row.get("timestamp")),
+        receipt=receipt if isinstance(receipt, Mapping) else None,
+    )
+
+
+def _persona_vote_outcome(row: Mapping[str, Any]) -> PersonaVoteOutcome | None:
+    """Wiersz RPC `persona_vote_outcomes` (045) → głos domeny; bez persony,
+    rekomendacji albo cen nie ma czego oceniać → None."""
+    name = row.get("investor_name")
+    recommendation = row.get("recommendation")
+    price = row.get("price_at_prediction")
+    actual = row.get("actual_price_after_12h")
+    if name is None or recommendation is None or price is None or actual is None:
+        return None
+    return PersonaVoteOutcome(
+        prediction_id=str(row.get("prediction_id") or ""),
+        investor_name=str(name),
+        recommendation=str(recommendation),
+        confidence=float(row.get("confidence") or 0.0),
+        symbol=str(row.get("symbol") or ""),
+        price_at_prediction=Decimal(str(price)),
+        actual_price=Decimal(str(actual)),
+        predicted_at=_optional_timestamp(row.get("predicted_at")),
+        settled_at=_optional_timestamp(row.get("settled_at")),
+    )
 
 
 def _rows(response: Any) -> list[dict[str, Any]]:
@@ -217,13 +500,25 @@ def _rows(response: Any) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], data)
 
 
+def _recommendation_or_hold(raw: Any, field: str) -> Recommendation:
+    """ARCH-03: rekomendacja z JSONB bez rozróżniania wielkości liter; wartość spoza
+    BUY/SELL/HOLD → HOLD z ostrzeżeniem, zamiast wpuścić ją do werdyktu rady."""
+    parsed = parse_recommendation(raw)
+    if parsed is None:
+        logger.warning("council_verdict: unknown %s %r — read as HOLD", field, raw)
+        return "HOLD"
+    return parsed
+
+
 def _deserialize_verdict(raw: dict[str, Any]) -> CouncilVerdict:
     """Odtwarza `CouncilVerdict` z JSONB (migracja 005). Opinie inwestorów są
     zapisane jako lista dictów — mapujemy je z powrotem na value objecty."""
     opinions = tuple(
         InvestorOpinion(
             investor_name=str(o.get("investor_name", "")),
-            recommendation=cast(Any, o.get("recommendation", "HOLD")),
+            recommendation=_recommendation_or_hold(
+                o.get("recommendation", "HOLD"), "recommendation"
+            ),
             confidence=float(o.get("confidence") or 0.0),
             reasoning=str(o.get("reasoning", "")),
             key_factors=tuple(o.get("key_factors") or ()),
@@ -231,15 +526,27 @@ def _deserialize_verdict(raw: dict[str, Any]) -> CouncilVerdict:
         for o in raw.get("investor_opinions") or []
     )
     return CouncilVerdict(
-        final_recommendation=cast(Any, raw.get("final_recommendation", "HOLD")),
+        final_recommendation=_recommendation_or_hold(
+            raw.get("final_recommendation", "HOLD"), "final_recommendation"
+        ),
         consensus_strength=float(raw.get("consensus_strength") or 0.0),
         summary=str(raw.get("summary", "")),
         dissenting_views=tuple(raw.get("dissenting_views") or ()),
         investor_opinions=opinions,
+        failed_personas=_failed_personas_of(raw.get("failed_personas")),
     )
 
 
-class SupabaseRepository(RepositoryPort):
+def _failed_personas_of(raw: Any) -> int:
+    """MAIL-12: liczba person bez głosu z JSONB. Brak pola (werdykt sprzed MAIL-12)
+    albo wartość nieczytelna → 0; nie zgadujemy awarii z treści opinii."""
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
     """Adapter dla Supabase (PostgreSQL via PostgREST).
 
     Tabela `prediction_logs` + zmaterializowany widok `ml_feature_store`
@@ -257,16 +564,55 @@ class SupabaseRepository(RepositoryPort):
         quota_alerts_table: str = DEFAULT_QUOTA_ALERTS_TABLE,
         *,
         scorecard_baselines_enabled: bool = False,
+        scorecard_run_id_enabled: bool = False,
+        council_votes_upsert_enabled: bool = False,
+        scorecard_feature_stats_enabled: bool = False,
+        persona_vote_outcomes_enabled: bool = False,
+        crypto_symbols: Collection[str] = (),
+        correction_category_enabled: bool = False,
+        stale_quote_enabled: bool = False,
+        fundamentals_market_cap_enabled: bool = False,
+        session_close_settlement_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
+        # DAT-14: kolumna `stale_quote` istnieje od migracji 055 — bez flagi odczyty
+        # trafności jej nie wybierają (400 zabiłby raport), a zapis jej nie niesie.
+        self._stale_quote_enabled = stale_quote_enabled
+        # DAT-21: kolumna `fundamentals_cache.market_cap` istnieje od migracji 056 —
+        # bez flagi upsert jej nie niesie (PGRST204 zgubiłby cały wpis cache).
+        self._fundamentals_market_cap_enabled = fundamentals_market_cap_enabled
+        # WIA-61: kolumny zamknięcia sesji istnieją od migracji 059 — bez flagi
+        # odczyt trafności ich nie wybiera (400 zabiłby raport).
+        self._session_close_settlement_enabled = session_close_settlement_enabled
         # ML-10: kolumny baseline'ów dryfu i „sam LLM" istnieją od migracji 028 —
         # bez flagi payload karty ich nie niesie (PGRST204 zgubiłby cały wiersz).
         self._scorecard_baselines_enabled = scorecard_baselines_enabled
+        # ML-24: kolumna `run_id` istnieje od migracji 049 — ta sama zasada.
+        self._scorecard_run_id_enabled = scorecard_run_id_enabled
+        # NIEZ-14: upsert głosów potrzebuje UNIQUE z migracji 054 — bez niego
+        # PostgREST odrzuca `on_conflict` (42P10), więc do tego czasu goły insert.
+        self._council_votes_upsert_enabled = council_votes_upsert_enabled
+        # ML-21: kolumna JSONB `feature_stats` istnieje od migracji 052 — ta sama zasada.
+        self._scorecard_feature_stats_enabled = scorecard_feature_stats_enabled
+        # WIA-51: wagi i ranking person z surowych głosów RPC 045 regułą domeny
+        # (pasmo HOLD krypto z `crypto_symbols`). Bez migracji RPC nie istnieje.
+        self._persona_vote_outcomes_enabled = persona_vote_outcomes_enabled
+        self._crypto_symbols = frozenset(symbol.upper() for symbol in crypto_symbols)
+        # WIA-57: kolumna `correction_category` istnieje od migracji 046 — zapis
+        # i odczyt panelu lessons tylko z flagą (inaczej PGRST204 / 42703).
+        self._correction_category_enabled = correction_category_enabled
         self._table = table_name
         self._view = feature_view
         self._snapshot_table = snapshot_table
         self._council_votes_table = council_votes_table
         self._quota_alerts_table = quota_alerts_table
+
+    def _countable_columns(self, columns: str) -> str:
+        """DAT-14: SELECT odczytu trafności z kolumną `stale_quote`, gdy ją mamy
+        (flaga po migracji 055) — `_countable` odsiewa po niej rozliczenia."""
+        if not self._stale_quote_enabled:
+            return columns
+        return f"{columns}, {_STALE_QUOTE_COLUMN}"
 
     # -----------------------------------------------------------------------
     # Reads
@@ -312,22 +658,49 @@ class SupabaseRepository(RepositoryPort):
             )
         return out
 
-    def get_last_prediction_price(self, symbol: str) -> Money | None:
+    def get_last_prediction_price(
+        self, symbol: str, *, before: datetime | None = None
+    ) -> Money | None:
         # Cena ostatniej zalogowanej predykcji — referencja dla cechy price_delta
         # w inference (musi pokrywać się z LAG(price_at_prediction) w widoku
         # ml_feature_store, inaczej cecha ma inny rozkład w treningu i predykcji).
-        response = (
+        query = (
             self._client.table(self._table)
             .select("price_at_prediction")
+            .eq("symbol", symbol)
+        )
+        if before is not None:
+            # ML-18: bez wiersza z godziny, którą ten zapis nadpisze upsertem.
+            query = query.lt("timestamp_hour", _utc_hour_start(before).isoformat())
+        response = query.order("timestamp", desc=True).limit(1).execute()
+        rows = _rows(response)
+        if not rows or rows[0].get("price_at_prediction") is None:
+            return None
+        return Money(Decimal(str(rows[0]["price_at_prediction"])))
+
+    def get_latest_prediction(self, symbol: str) -> LatestPrediction | None:
+        # SUROWO, bez try/except — watch i bramka dryfu degradują same.
+        response = (
+            self._client.table(self._table)
+            .select("price_at_prediction, timestamp, reasoning_text")
             .eq("symbol", symbol)
             .order("timestamp", desc=True)
             .limit(1)
             .execute()
         )
         rows = _rows(response)
-        if not rows or rows[0].get("price_at_prediction") is None:
+        if not rows:
             return None
-        return Money(Decimal(str(rows[0]["price_at_prediction"])))
+        row = rows[0]
+        price, stamp = row.get("price_at_prediction"), row.get("timestamp")
+        if price is None or not isinstance(stamp, str):
+            return None
+        reasoning = (_optional_text(row.get("reasoning_text")) or "").strip()
+        return LatestPrediction(
+            price=Money(Decimal(str(price))),
+            timestamp=datetime.fromisoformat(stamp),
+            reasoning=reasoning or None,
+        )
 
     def get_unverified_prediction(
         self, symbol: str, min_age_hours: int = 0, max_age_hours: int | None = None
@@ -370,6 +743,8 @@ class SupabaseRepository(RepositoryPort):
             # WIA-18: wejście predykcji dla diagnozy błędu (select("*") je zwraca).
             news_summary=_optional_text(row.get("news_summary")),
             reasoning=_optional_text(row.get("reasoning_text")),
+            # DAT-14: reflect sprawdza, czy notowanie rozliczenia jest z sesji po niej.
+            created_at=_optional_timestamp(row.get("timestamp")),
         )
 
     def get_feature_store_data(
@@ -430,14 +805,17 @@ class SupabaseRepository(RepositoryPort):
         # predykcji (cichy cap PostgREST).
         query = _resolved_window(
             self._client.table(self._table).select(
-                "symbol, predicted_trend, is_trend_correct, timestamp, "
-                "reasoning_text, correction_insights, price_at_prediction, "
-                "actual_price_after_12h, data_quality_flags"
+                self._countable_columns(
+                    "symbol, predicted_trend, is_trend_correct, timestamp, "
+                    "reasoning_text, correction_insights, price_at_prediction, "
+                    # WIA-56: kwit (migracja 020, na produkcji) do linii pod chybieniem.
+                    "actual_price_after_12h, data_quality_flags, decision_receipts"
+                )
             ),
             cutoff,
             since,
         )
-        return _without_llm_fallback(_paginate(query))
+        return _countable(_paginate(query))
 
     def get_resolved_predictions(self, days: int) -> list[dict[str, Any]]:
         """Zamknięte predykcje (oceniony kierunek) z ostatnich `days` dni.
@@ -447,18 +825,21 @@ class SupabaseRepository(RepositoryPort):
         lessons). `parse_resolved_predictions` parsuje oba kształty. Paginacja
         (#8) — pełen zbiór, nie obcięte ~1000 wierszy PostgREST."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
+        columns = (
+            "symbol, predicted_trend, is_trend_correct, timestamp, "
+            "reasoning_text, correction_insights, price_at_prediction, "
+            "actual_price_after_12h, data_quality_flags"
+        )
+        if self._correction_category_enabled:
+            columns += ", correction_category"
         query = (
             self._client.table(self._table)
-            .select(
-                "symbol, predicted_trend, is_trend_correct, timestamp, "
-                "reasoning_text, correction_insights, price_at_prediction, "
-                "actual_price_after_12h, data_quality_flags"
-            )
+            .select(self._countable_columns(columns))
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
         )
-        return _without_llm_fallback(_paginate(query))
+        return _countable(_paginate(query))
 
     def get_resolved_predictions_detailed(
         self, days: int, since: datetime | None = None
@@ -472,15 +853,18 @@ class SupabaseRepository(RepositoryPort):
         cutoff = datetime.now(UTC) - timedelta(days=days)
         query = _resolved_window(
             self._client.table(self._table).select(
-                "id, symbol, predicted_trend, is_trend_correct, timestamp, "
-                "reasoning_text, correction_insights, price_at_prediction, "
-                "predicted_target_price, actual_price_after_12h, "
-                "confidence_score, council_verdict"
+                self._countable_columns(
+                    "id, symbol, predicted_trend, is_trend_correct, timestamp, "
+                    "reasoning_text, correction_insights, price_at_prediction, "
+                    "predicted_target_price, actual_price_after_12h, "
+                    "confidence_score, council_verdict"
+                )
             ),
             cutoff,
             since,
         )
-        return _paginate(query)
+        # DAT-14: bez `data_quality_flags` w SELECT `_countable` tnie tylko `stale_quote`.
+        return _countable(_paginate(query))
 
     def get_resolved_predictions_for_eval(
         self,
@@ -509,7 +893,7 @@ class SupabaseRepository(RepositoryPort):
         Metoda concrete-only (nie część `RepositoryPort`) — to narzędzie
         offline-analizy, nie część runtime'owego kontraktu use case'ów."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        columns = (
+        columns = self._countable_columns(
             "predicted_trend, is_trend_correct, price_at_prediction, "
             "predicted_target_price, actual_price_after_12h, timestamp, "
             "data_quality_flags"
@@ -531,7 +915,7 @@ class SupabaseRepository(RepositoryPort):
             .order("timestamp", desc=True)
         )
         try:
-            return _without_llm_fallback(_paginate(query))
+            return _countable(_paginate(query))
         except APIError as exc:
             missing = _missing_eval_column(exc, extra_fields)
             if missing is None:
@@ -552,12 +936,13 @@ class SupabaseRepository(RepositoryPort):
             columns += ", interval_low, interval_high"
         query = (
             self._client.table(self._table)
-            .select(columns)
+            # DAT-14: rozliczenie ceną wejścia (notowanie sprzed sesji) to nie ruch.
+            .select(self._countable_columns(columns))
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("actual_price_after_12h", "null")
             .order("timestamp", desc=False)
         )
-        return _paginate(query)
+        return _without_stale_quote(_paginate(query))
 
     def get_accuracy_stats(self, days: int) -> dict[str, Any]:
         """Trafność kierunkowa predykcji z ostatnich `days` dni.
@@ -584,16 +969,19 @@ class SupabaseRepository(RepositoryPort):
         # Paginacja (#8): hit-rate liczony na PEŁNYM zbiorze, nie obciętych 1000
         # wierszy. .order("timestamp") czyni podzbiór deterministycznym —
         # bez niego obcięta próbka była losowa przy każdym wywołaniu.
+        columns = "is_trend_correct, predicted_trend, data_quality_flags, timestamp"
+        if self._session_close_settlement_enabled:
+            columns += f", {_SESSION_CLOSE_CORRECT_COLUMN}"
         query = (
             self._client.table(self._table)
-            .select("is_trend_correct, predicted_trend, data_quality_flags, timestamp")
+            .select(self._countable_columns(columns))
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
         )
         rows = [
             r
-            for r in _without_llm_fallback(_paginate(query))
+            for r in _countable(_paginate(query))
             if r.get("is_trend_correct") is not None
         ]
         calls = [
@@ -608,6 +996,8 @@ class SupabaseRepository(RepositoryPort):
             )
         )
 
+        # WIA-61: za flagą druga trafność — na oficjalnym zamknięciu sesji.
+        session_close = _session_close_stats(rows) if self._session_close_settlement_enabled else {}
         if not calls:
             return {
                 "mean_accuracy": None,
@@ -617,6 +1007,7 @@ class SupabaseRepository(RepositoryPort):
                 "directional_count": 0,
                 "directional_correct_count": 0,
                 "n_eff": 0.0,
+                **session_close,
             }
         correct_count = sum(1 for _, correct in calls if correct)
         return {
@@ -627,6 +1018,7 @@ class SupabaseRepository(RepositoryPort):
             "directional_count": directional.directional,
             "directional_correct_count": directional.hits,
             "n_eff": n_eff,
+            **session_close,
         }
 
     def get_cached_fundamentals(self, symbol: str) -> Fundamentals | None:
@@ -651,7 +1043,26 @@ class SupabaseRepository(RepositoryPort):
             peg_ratio=row.get("peg_ratio"),
             eps_growth_yoy=row.get("eps_growth_yoy"),
             fetched_at=datetime.fromisoformat(row["fetched_at"]),
+            # DAT-21: `select("*")` — przed migracją 056 klucza po prostu nie ma.
+            market_cap=_optional_float(row.get("market_cap")),
         )
+
+    def get_fundamentals_fetched_at(self, symbols: Sequence[str]) -> dict[str, datetime]:
+        """DAT-19: wiek wpisów cache bez filtra TTL (rotacja refreshu)."""
+        if not symbols:
+            return {}
+        response = (
+            self._client.table("fundamentals_cache")
+            .select("symbol, fetched_at")
+            .in_("symbol", list(symbols))
+            .execute()
+        )
+        fetched: dict[str, datetime] = {}
+        for row in _rows(response):
+            stamp = row.get("fetched_at")
+            if isinstance(stamp, str):
+                fetched[str(row.get("symbol"))] = datetime.fromisoformat(stamp)
+        return fetched
 
     def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
         """Upsert jednego wiersza per symbol (nadpisuje poprzedni snapshot)."""
@@ -663,7 +1074,39 @@ class SupabaseRepository(RepositoryPort):
             "eps_growth_yoy": fundamentals.eps_growth_yoy,
             "fetched_at": fundamentals.fetched_at.isoformat(),
         }
+        if self._fundamentals_market_cap_enabled:
+            payload["market_cap"] = fundamentals.market_cap
         self._client.table("fundamentals_cache").upsert(payload).execute()
+
+    def get_cached_earnings(self, symbol: str) -> CachedEarningsDate | None:
+        # FIN-11: TTL po stronie repo, jak fundamenty — adapter nie zna świeżości.
+        cutoff = datetime.now(UTC) - timedelta(hours=EARNINGS_CACHE_TTL_HOURS)
+        response = (
+            self._client.table(EARNINGS_CACHE_TABLE)
+            .select("symbol, report_date, fetched_at")
+            .eq("symbol", symbol)
+            .gte("fetched_at", cutoff.isoformat())
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        return CachedEarningsDate(
+            symbol=str(row["symbol"]),
+            report_date=date.fromisoformat(row["report_date"]),
+            fetched_at=datetime.fromisoformat(row["fetched_at"]),
+        )
+
+    def save_earnings(self, entry: CachedEarningsDate) -> None:
+        # Jeden wiersz per symbol (PK `symbol`) — upsert nadpisuje poprzednią datę.
+        self._client.table(EARNINGS_CACHE_TABLE).upsert(
+            {
+                "symbol": entry.symbol,
+                "report_date": entry.report_date.isoformat(),
+                "fetched_at": entry.fetched_at.isoformat(),
+            }
+        ).execute()
 
     # -----------------------------------------------------------------------
     # Writes
@@ -673,7 +1116,7 @@ class SupabaseRepository(RepositoryPort):
         # Upsert na (symbol, timestamp_hour) (#7) — re-run GHA / nakładający się
         # workflow_dispatch / retry LangGraph aktualizuje istniejący wiersz w tej
         # samej godzinie zamiast duplikować (duplikaty zaburzały trafność).
-        record = _serialize_record({"symbol": symbol, "price": price.amount})
+        record = _serialize_record({"symbol": symbol, "price": _storage_price(price.amount)})
         (
             self._client.table(self._snapshot_table)
             .upsert(record, on_conflict="symbol,timestamp_hour")
@@ -742,7 +1185,7 @@ class SupabaseRepository(RepositoryPort):
         # Upsert na (symbol, timestamp_hour) (#7) — idempotentny zapis predykcji.
         # Domyślny merge upsertu zwraca wiersz, więc nadal mamy z czego odczytać
         # id (graf używa go jako prediction_id).
-        record = _serialize_record(prediction)
+        record = _serialize_record(prediction, _PREDICTION_PRICE_COLUMNS)
         response = (
             self._client.table(self._table)
             .upsert(record, on_conflict="symbol,timestamp_hour")
@@ -815,11 +1258,9 @@ class SupabaseRepository(RepositoryPort):
             params["filter_regime"] = canonical_regime_key(regime)
         try:
             response = self._client.rpc("match_news_embeddings", params).execute()
-        except Exception:
-            logger.warning(
-                "match_news_embeddings RPC unavailable — RAG retrieval skipped "
-                "(apply migration 011 to enable).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "match_news_embeddings RPC", "RAG retrieval skipped", "011", exc
             )
             return []
         return _rows(response)
@@ -827,29 +1268,41 @@ class SupabaseRepository(RepositoryPort):
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
         # NIEZ-15: paginacja + `id` jako drugi klucz — przy równych timestampach
         # granica strony musi być deterministyczna (bez gubienia/dublowania wierszy).
+        # WIA-39/WIA-38: trend oddziela SIDEWAYS od kalibracji kierunkowej, a
+        # `timestamp` daje cykle pod n_eff i bootstrap (obie kolumny od 001).
         cutoff = datetime.now(UTC) - timedelta(days=days)
         query = (
             self._client.table(self._table)
-            .select("id, confidence_score, is_trend_correct, reasoning_text, data_quality_flags")
+            .select(
+                self._countable_columns(
+                    "id, confidence_score, is_trend_correct, predicted_trend, timestamp, "
+                    "reasoning_text, data_quality_flags"
+                )
+            )
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .not_.is_("confidence_score", "null")
             .order("timestamp", desc=True)
             .order("id", desc=True)
         )
-        return _without_llm_fallback(_paginate(query))
+        return _countable(_paginate(query))
 
     def save_calibration(
-        self, prediction_id: str, score: float, insight: str
+        self,
+        prediction_id: str,
+        score: float,
+        insight: str,
+        *,
+        score_version: int | None = None,
     ) -> None:
-        (
-            self._client.table(self._table)
-            .update(
-                {"confidence_calibration": score, "calibration_insight": insight}
-            )
-            .eq("id", prediction_id)
-            .execute()
-        )
+        payload: dict[str, Any] = {
+            "confidence_calibration": score,
+            "calibration_insight": insight,
+        }
+        # WIA-37: kolumna z migracji 044 — klucz tylko z wersją (flaga), inaczej PGRST204.
+        if score_version is not None:
+            payload["calibration_score_version"] = score_version
+        self._client.table(self._table).update(payload).eq("id", prediction_id).execute()
 
     def get_persona_accuracy(
         self, asset_type: AssetType, window_days: int = 90
@@ -860,15 +1313,16 @@ class SupabaseRepository(RepositoryPort):
         # (dziś council_votes nie nosi typu → waga globalna). Graceful: brak RPC
         # / błąd → {} (ważenie wyłączone, każda persona waży 1.0).
         _ = asset_type
+        if self._persona_vote_outcomes_enabled:
+            outcomes = self._graceful_vote_outcomes(window_days, "persona weighting skipped")
+            return persona_accuracy_weights(outcomes, self._crypto_symbols)
         try:
             response = self._client.rpc(
                 "persona_accuracy_weights", {"window_days": window_days}
             ).execute()
-        except Exception:
-            logger.warning(
-                "persona_accuracy_weights RPC unavailable — ważenie person pominięte "
-                "(zaaplikuj migrację 015).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "persona_accuracy_weights RPC", "persona weighting skipped", "015", exc
             )
             return {}
         out: dict[str, float] = {}
@@ -887,15 +1341,16 @@ class SupabaseRepository(RepositoryPort):
         # zwraca surowy hit-rate ORAZ COUNT(*) głosów. RPC z 015 niesie tylko
         # przeskalowaną wagę, z której nie da się odtworzyć wielkości próbki.
         # Graceful: brak RPC / błąd → {} (leaderboard sam się chowa).
+        if self._persona_vote_outcomes_enabled:
+            outcomes = self._graceful_vote_outcomes(window_days, "persona leaderboard skipped")
+            return persona_hit_stats(outcomes, self._crypto_symbols)
         try:
             response = self._client.rpc(
                 "persona_accuracy_stats", {"window_days": window_days}
             ).execute()
-        except Exception:
-            logger.warning(
-                "persona_accuracy_stats RPC unavailable — leaderboard person "
-                "pominięty (zaaplikuj migrację 018).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "persona_accuracy_stats RPC", "persona leaderboard skipped", "018", exc
             )
             return {}
         out: dict[str, tuple[float, int]] = {}
@@ -908,33 +1363,182 @@ class SupabaseRepository(RepositoryPort):
             out[str(name)] = (float(hit_rate), int(votes))
         return out
 
-    def get_unrevealed_commitments(self, days: int = 30) -> list[dict[str, Any]]:
-        # Graceful: brak migracji 024 → [] (sweep nie ma czego ujawnić).
-        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
+        # WIA-53: kandydatów jest kilkaset (dług z wstrzymanego Fast Loopa), więc
+        # czytamy całość stronami i odsiewamy atrapy po awarii LLM w Pythonie
+        # (`_without_llm_fallback`), zanim przytniemy do `limit`. Graceful 020:
+        # bez kolumny kwitu czytamy bez niej, a prompt idzie bez bloku kwitu.
         try:
-            # NIEZ-15: bez paginacji sweep widział max ~1000 commitmentów.
-            query = (
+            rows = self._deferred_rows(with_receipt=True)
+        except APIError as exc:
+            if not _is_missing_column(exc, "decision_receipts"):
+                raise
+            rows = self._deferred_rows(with_receipt=False)
+        deferred = [
+            item for row in _without_llm_fallback(rows) if (item := _deferred_diagnosis(row))
+        ]
+        return deferred[: max(0, limit)]
+
+    def _deferred_rows(self, *, with_receipt: bool) -> list[dict[str, Any]]:
+        columns = _DEFERRED_COLUMNS + (", decision_receipts" if with_receipt else "")
+        query = (
+            self._client.table(self._table)
+            .select(columns)
+            .in_("correction_insights", list(UNDIAGNOSED_MISTAKE_PLACEHOLDERS))
+            .eq("is_trend_correct", False)
+            .order("timestamp", desc=True)
+        )
+        return _paginate(query)
+
+    def save_backfilled_diagnosis(
+        self,
+        prediction_id: str,
+        insight: str,
+        *,
+        replaces: str,
+        correction_category: MistakeCategory | None = None,
+    ) -> None:
+        # WIA-53: warunek na placeholder — wiersz zdiagnozowany w międzyczasie
+        # (ręczny run, drugi przebieg) nie zostaje nadpisany.
+        payload = {"correction_insights": insight, **self._category_payload(correction_category)}
+        (
+            self._client.table(self._table)
+            .update(payload)
+            .eq("id", prediction_id)
+            .eq("correction_insights", replaces)
+            .execute()
+        )
+
+    def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
+        # WIA-51: surowe wiersze, więc czytamy stronami — PostgREST obcina wynik
+        # RPC do `max_rows`, a 90 dni × watchlista × 7 person to dziesiątki tysięcy.
+        query = (
+            self._client.rpc("persona_vote_outcomes", {"window_days": window_days})
+            .order("predicted_at")
+            .order("prediction_id")
+            .order("investor_name")
+        )
+        return [
+            outcome
+            for row in _paginate(query)
+            if (outcome := _persona_vote_outcome(row)) is not None
+        ]
+
+    def _graceful_vote_outcomes(self, window_days: int, skipped: str) -> list[PersonaVoteOutcome]:
+        """Głosy RPC 045 albo pusta lista z WARNING-iem (brak migracji, błąd sieci)."""
+        try:
+            return self.get_persona_vote_outcomes(window_days)
+        except Exception as exc:
+            _log_degraded_read("persona_vote_outcomes RPC", skipped, "045", exc)
+            return []
+
+    def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:
+        # Graceful: brak migracji 024 → [] (sweep nie ma czego ujawnić). WIA-70:
+        # brak samej kolumny z 043 → stare wiersze ujawniamy z kolumn, jak dotąd.
+        try:
+            try:
+                return self._unrevealed_commitments(days, with_payload=True)
+            except APIError as exc:
+                if not _is_missing_column(exc, _COMMITMENT_PAYLOAD_COLUMN):
+                    raise
+            return self._unrevealed_commitments(days, with_payload=False)
+        except Exception as exc:
+            _log_degraded_read("Attestation columns", "reveal sweep skipped", "024", exc)
+            return []
+
+    def _unrevealed_commitments(
+        self, days: int | None, *, with_payload: bool
+    ) -> list[dict[str, Any]]:
+        columns = (
+            "id, symbol, predicted_trend, predicted_target_price, "
+            "price_at_prediction, actual_price_after_12h, "
+            "is_trend_correct, commitment_hash, commitment_salt"
+        )
+        if with_payload:
+            columns += f", {_COMMITMENT_PAYLOAD_COLUMN}"
+        query = self._client.table(self._table).select(columns)
+        # WIA-03: sweep nie podaje okna — commitment starszy niż okno track recordu
+        # też musi zostać ujawniony, inaczej wygląda jak ukryte pudło.
+        if days is not None:
+            query = query.gte("timestamp", (datetime.now(UTC) - timedelta(days=days)).isoformat())
+        # NIEZ-15: bez paginacji sweep widział max ~1000 commitmentów.
+        query = (
+            query.not_.is_("commitment_hash", "null")
+            .not_.is_("actual_price_after_12h", "null")
+            .is_("revealed_at", "null")
+            .order("timestamp", desc=False)
+            .order("id", desc=False)
+        )
+        return _paginate(query)
+
+    def get_current_hour_commitment_salt(self, symbol: str) -> str | None:
+        # Godzina jak w kolumnie generowanej z 013: date_trunc('hour', timestamp, 'UTC').
+        hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        try:
+            response = (
                 self._client.table(self._table)
-                .select(
-                    "id, symbol, predicted_trend, predicted_target_price, "
-                    "price_at_prediction, actual_price_after_12h, "
-                    "is_trend_correct, commitment_hash, commitment_salt"
-                )
-                .gte("timestamp", cutoff)
-                .not_.is_("commitment_hash", "null")
-                .not_.is_("actual_price_after_12h", "null")
-                .is_("revealed_at", "null")
-                .order("timestamp", desc=False)
-                .order("id", desc=False)
+                .select("commitment_salt")
+                .eq("symbol", symbol)
+                .eq("timestamp_hour", hour.isoformat())
+                .not_.is_("commitment_salt", "null")
+                .limit(1)
+                .execute()
             )
-            return _paginate(query)
         except Exception:
             logger.warning(
-                "Attestation columns unavailable — reveal sweep pominięty "
-                "(zaaplikuj migrację 024).",
+                "Commitment salt of %s unavailable — świeża sól", symbol, exc_info=True
+            )
+            return None
+        rows = _rows(response)
+        return str(rows[0]["commitment_salt"]) if rows else None
+
+    def get_current_hour_commitment(self, symbol: str) -> StoredCommitment | None:
+        # Ta sama godzina co w `get_current_hour_commitment_salt` (klucz upsertu z 013).
+        hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        try:
+            response = (
+                self._client.table(self._table)
+                .select(f"commitment_hash, commitment_salt, {_COMMITMENT_PAYLOAD_COLUMN}")
+                .eq("symbol", symbol)
+                .eq("timestamp_hour", hour.isoformat())
+                .not_.is_("commitment_hash", "null")
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "Stored commitment of %s unavailable — bez revealu nadpisania",
+                symbol,
                 exc_info=True,
             )
-            return []
+            return None
+        rows = _rows(response)
+        if not rows:
+            return None
+        row = rows[0]
+        commitment, salt = row.get("commitment_hash"), row.get("commitment_salt")
+        if not commitment or not salt:
+            return None
+        payload = row.get(_COMMITMENT_PAYLOAD_COLUMN)
+        return StoredCommitment(
+            commitment=str(commitment),
+            salt=str(salt),
+            payload=None if payload is None else str(payload),
+        )
+
+    def attestation_columns_available(self) -> bool:
+        try:
+            self._client.table(self._table).select(
+                f"commitment_hash, commitment_salt, {_COMMITMENT_PAYLOAD_COLUMN}"
+            ).limit(1).execute()
+        except Exception:
+            logger.warning(
+                "Kolumny atestacji niedostępne — cykl bez atestacji "
+                "(zaaplikuj migracje 024 i 043).",
+                exc_info=True,
+            )
+            return False
+        return True
 
     def mark_commitment_revealed(self, prediction_id: str) -> None:
         self._client.table(self._table).update(
@@ -967,6 +1571,52 @@ class SupabaseRepository(RepositoryPort):
         response = self._client.table("price_snapshots").select("timestamp").limit(1).execute()
         if not isinstance(response.data, list):
             raise RuntimeError("Supabase: odpowiedź bez listy wierszy price_snapshots")
+
+    def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
+        """FIN-05: select `limit 0` po `columns`. PostgREST zgłasza jedną brakującą
+        kolumnę na raz (42703), więc po każdej usuwamy ją z selecta i pytamy dalej —
+        najwyżej jedno zapytanie na brakującą kolumnę. Inny błąd albo 42703 bez
+        rozpoznanej kolumny z `columns` leci dalej: to nie dowód braku migracji."""
+        remaining = set(columns)
+        missing: set[str] = set()
+        while remaining:
+            try:
+                (
+                    self._client.table(self._table)
+                    .select(",".join(sorted(remaining)))
+                    .limit(0)
+                    .execute()
+                )
+            except APIError as exc:
+                column = _undefined_column(exc)
+                if exc.code != _UNDEFINED_COLUMN_CODE or column not in remaining:
+                    raise
+                remaining.discard(column)
+                missing.add(column)
+                continue
+            break
+        return frozenset(missing)
+
+    def read_rows(self, table: str, columns: Sequence[str]) -> list[dict[str, Any]]:
+        """NIEZ-32 (`EvidenceSourcePort`): wszystkie wiersze `table`, tylko `columns`,
+        stronami po `id` (paginacja #8). Kolumna bez swojej migracji (42703) wypada
+        z selecta z WARNING-iem — kopia reszty kolumn i tak powstaje."""
+        remaining = list(columns)
+        while remaining:
+            query = self._client.table(table).select(", ".join(remaining)).order("id")
+            try:
+                return _paginate(query)
+            except APIError as exc:
+                missing = _missing_column(exc, remaining)
+                if missing is None:
+                    raise
+                logger.warning(
+                    "Evidence export: %s.%s missing (migration not applied) — skipped",
+                    table,
+                    missing,
+                )
+                remaining.remove(missing)
+        return []
 
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         response = (
@@ -1010,11 +1660,9 @@ class SupabaseRepository(RepositoryPort):
                 .gte("alert_date", since.isoformat())
                 .execute()
             )
-        except Exception:
-            logger.warning(
-                "shock_alerts niedostępne — debounce tylko w pamięci "
-                "(zaaplikuj migrację 021).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "shock_alerts", "debounce kept in memory only", "021", exc
             )
             return set()
         sent: set[tuple[str, date]] = set()
@@ -1035,11 +1683,9 @@ class SupabaseRepository(RepositoryPort):
                 .gte("created_at", since.isoformat())
                 .execute()
             )
-        except Exception:
-            logger.warning(
-                "shock_alerts niedostępne — bez okna 24 h dla krypto "
-                "(zaaplikuj migrację 021).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "shock_alerts", "no 24 h crypto window this run", "021", exc
             )
             return {}
         latest: dict[str, datetime] = {}
@@ -1052,6 +1698,60 @@ class SupabaseRepository(RepositoryPort):
             if key not in latest or stamp > latest[key]:
                 latest[key] = stamp
         return latest
+
+    def get_active_price_levels(self) -> list[PriceLevelAlert]:
+        # SUROWO, bez try/except — watch czyta za flagą i sam degraduje (ALR-11).
+        response = (
+            self._client.table(PRICE_LEVEL_ALERTS_TABLE)
+            .select("id, symbol, level, direction, note, last_seen_price")
+            .eq("active", True)
+            .order("id", desc=False)
+            .execute()
+        )
+        return [_price_level_alert(row) for row in _rows(response)]
+
+    def add_price_levels(self, levels: Sequence[PriceLevel]) -> None:
+        if not levels:
+            return
+        rows = [
+            {
+                "symbol": level.symbol,
+                "level": str(level.level),
+                "direction": level.direction.value,
+                "note": level.note,
+            }
+            for level in levels
+        ]
+        # ON CONFLICT DO NOTHING: zapisany poziom (także wyłączony po trafieniu)
+        # zostaje, jaki był — lista z config.toml go nie wskrzesza.
+        self._client.table(PRICE_LEVEL_ALERTS_TABLE).upsert(
+            rows, on_conflict=_PRICE_LEVEL_UNIQUE, ignore_duplicates=True
+        ).execute()
+
+    def record_price_level_reading(self, alert_id: str, price: Decimal) -> None:
+        (
+            self._client.table(PRICE_LEVEL_ALERTS_TABLE)
+            .update({"last_seen_price": str(price)})
+            .eq("id", alert_id)
+            .eq("active", True)
+            .execute()
+        )
+
+    def mark_price_level_triggered(
+        self, alert_id: str, price: Decimal, triggered_at: datetime
+    ) -> None:
+        (
+            self._client.table(PRICE_LEVEL_ALERTS_TABLE)
+            .update(
+                {
+                    "active": False,
+                    "triggered_at": triggered_at.isoformat(),
+                    "last_seen_price": str(price),
+                }
+            )
+            .eq("id", alert_id)
+            .execute()
+        )
 
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
         # SUROWO, bez try/except — graceful degradation robi caller
@@ -1079,7 +1779,9 @@ class SupabaseRepository(RepositoryPort):
             timestamp=datetime.fromisoformat(stamp),
         )
 
-    def save_model_scorecard(self, symbol: str, result: Mapping[str, Any]) -> None:
+    def save_model_scorecard(
+        self, symbol: str, result: Mapping[str, Any], *, run_id: str | None = None
+    ) -> None:
         # Jeden wiersz na przebieg treningu (migracja 019). Kolumna `symbol` jest
         # kluczowa: ewaluacja leci per symbol, a model wspólny ma wiersz "ALL"
         # (ML-13) — bez niej nie wiadomo, czego dotyczy werdykt bramki.
@@ -1097,6 +1799,11 @@ class SupabaseRepository(RepositoryPort):
         if self._scorecard_baselines_enabled:
             payload["drift_baseline_rmse"] = result.get("drift_baseline_rmse")
             payload["llm_baseline_rmse"] = result.get("llm_baseline_rmse")
+        if self._scorecard_run_id_enabled and run_id is not None:
+            payload["run_id"] = run_id
+        feature_stats = result.get("feature_stats")
+        if self._scorecard_feature_stats_enabled and feature_stats is not None:
+            payload["feature_stats"] = feature_stats
         self._client.table("model_scorecards").insert(payload).execute()
 
     def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:
@@ -1110,11 +1817,9 @@ class SupabaseRepository(RepositoryPort):
                 .order("timestamp", desc=True)
                 .execute()
             )
-        except Exception:
-            logger.warning(
-                "model_scorecards niedostępne — karta kondycji modelu pominięta "
-                "(zaaplikuj migrację 019).",
-                exc_info=True,
+        except Exception as exc:
+            _log_degraded_read(
+                "model_scorecards", "model health card skipped", "019", exc
             )
             return []
         return list(_rows(response))
@@ -1141,14 +1846,13 @@ class SupabaseRepository(RepositoryPort):
         rows = _paginate(query.order("timestamp", desc=True).order("id", desc=True))
         # Grupowanie per (inwestor, symbol); kolejność malejąca po czasie
         # zachowana (rekomendacje od najnowszej).
-        grouped: dict[tuple[str, str], list[Literal["BUY", "SELL", "HOLD"]]] = {}
+        grouped: dict[tuple[str, str], list[Recommendation]] = {}
         for row in rows:
             name = str(row.get("investor_name") or "")
             sym = str(row.get("symbol") or "")
-            rec_raw = row.get("recommendation")
-            if not name or not sym or rec_raw not in ("BUY", "SELL", "HOLD"):
+            rec = parse_recommendation(row.get("recommendation"))
+            if not name or not sym or rec is None:
                 continue
-            rec = cast("Literal['BUY', 'SELL', 'HOLD']", rec_raw)
             grouped.setdefault((name, sym), []).append(rec)
         return [
             InvestorHistory(
@@ -1171,8 +1875,8 @@ class SupabaseRepository(RepositoryPort):
         )
         out: list[InvestorOpinion] = []
         for row in _rows(response):
-            rec = row.get("recommendation")
-            if rec not in ("BUY", "SELL", "HOLD"):
+            rec = parse_recommendation(row.get("recommendation"))
+            if rec is None:
                 continue
             out.append(
                 InvestorOpinion(
@@ -1184,6 +1888,30 @@ class SupabaseRepository(RepositoryPort):
                 )
             )
         return out
+
+    def get_receipt(self, prediction_id: str) -> StoredReceipt | None:
+        response = (
+            self._client.table(self._table)
+            .select(_RECEIPT_COLUMNS)
+            .eq("id", prediction_id)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        return _stored_receipt(rows[0]) if rows else None
+
+    def find_receipts(self, symbol: str, day: date) -> list[StoredReceipt]:
+        start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+        response = (
+            self._client.table(self._table)
+            .select(_RECEIPT_COLUMNS)
+            .eq("symbol", symbol)
+            .gte("timestamp", start.isoformat())
+            .lt("timestamp", (start + timedelta(days=1)).isoformat())
+            .order("timestamp", desc=False)
+            .execute()
+        )
+        return [_stored_receipt(row) for row in _rows(response)]
 
     def save_council_votes(
         self,
@@ -1207,7 +1935,12 @@ class SupabaseRepository(RepositoryPort):
             )
             for vote in votes
         ]
-        self._client.table(self._council_votes_table).insert(rows).execute()
+        table = self._client.table(self._council_votes_table)
+        if self._council_votes_upsert_enabled:
+            # Re-run w tej samej godzinie nadpisuje głosy zamiast je dublować.
+            table.upsert(rows, on_conflict="prediction_id,investor_name").execute()
+            return
+        table.insert(rows).execute()
 
     def save_llm_calls(self, calls: Sequence[LLMCallEntry]) -> None:
         # Jeden insert na przebieg (batch po cyklu), nie request na wywołanie LLM.
@@ -1320,6 +2053,35 @@ class SupabaseRepository(RepositoryPort):
             "id", record_id
         ).execute()
 
+    def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:
+        cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours)
+        # Ostra granica (`lt`) dopełnia `gte` z `get_unverified_prediction`: wiersz
+        # albo jeszcze czeka na ocenę, albo wygasa — nigdy jedno i drugie.
+        query = (
+            self._client.table(self._table)
+            .select("id, data_quality_flags")
+            .eq("symbol", symbol)
+            .is_("actual_price_after_12h", "null")
+            .lt("timestamp", cutoff.isoformat())
+        )
+        expired = 0
+        for row in _paginate(query.order("timestamp", desc=False).order("id", desc=False)):
+            flags = list(row.get("data_quality_flags") or [])
+            if EXPIRED_UNVERIFIED_FLAG in flags:
+                continue
+            # Flagi per wiersz: dopisujemy do istniejących (np. av_keys_exhausted),
+            # a strażnik `actual_price IS NULL` pomija wiersz rozliczony w międzyczasie.
+            response = (
+                self._client.table(self._table)
+                .update({"data_quality_flags": [*flags, EXPIRED_UNVERIFIED_FLAG]})
+                .eq("id", row["id"])
+                .is_("actual_price_after_12h", "null")
+                .execute()
+            )
+            if _rows(response):
+                expired += 1
+        return expired
+
     def update_prediction_accuracy(
         self,
         prediction_id: str,
@@ -1327,15 +2089,25 @@ class SupabaseRepository(RepositoryPort):
         accuracy_score: float,
         is_trend_correct: bool,
         insight: str,
+        correction_category: MistakeCategory | None = None,
+        *,
+        stale_quote: bool | None = None,
+        session_close: SessionCloseSettlement | None = None,
     ) -> None:
-        payload = _serialize_record(
-            {
-                "actual_price_after_12h": actual_price,
-                "accuracy_score": accuracy_score,
-                "is_trend_correct": is_trend_correct,
-                "correction_insights": insight,
-            }
-        )
+        settlement: dict[str, Any] = {
+            "actual_price_after_12h": actual_price,
+            "accuracy_score": accuracy_score,
+            "is_trend_correct": is_trend_correct,
+            "correction_insights": insight,
+            **self._category_payload(correction_category),
+        }
+        # DAT-14: klucz tylko, gdy graf go podał (flaga po migracji 055) — PGRST204.
+        if stale_quote is not None:
+            settlement[_STALE_QUOTE_COLUMN] = stale_quote
+        # WIA-61: klucze tylko, gdy graf podał zamknięcie (flaga po migracji 059).
+        if session_close is not None:
+            settlement.update(_session_close_payload(session_close))
+        payload = _serialize_record(settlement, _PREDICTION_PRICE_COLUMNS)
         # Idempotency guard: aktualizujemy tylko gdy actual_price_after_12h jest
         # NULL. Bez tego dwa równoczesne cykle (np. ręczny workflow_dispatch
         # nakładający się na scheduled run) mogłyby nadpisać już ocenioną
@@ -1347,3 +2119,9 @@ class SupabaseRepository(RepositoryPort):
             .is_("actual_price_after_12h", "null")
             .execute()
         )
+
+    def _category_payload(self, category: MistakeCategory | None) -> dict[str, str]:
+        """WIA-57: klucz `correction_category` (migracja 046) tylko za flagą."""
+        if category is None or not self._correction_category_enabled:
+            return {}
+        return {"correction_category": category.value}

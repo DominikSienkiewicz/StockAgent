@@ -14,6 +14,7 @@ import requests
 from src.application.ports import ReportNotifierPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.subscriber import masked_email
 from src.infrastructure.adapters._http import build_session, raise_for_status_redacted
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,10 @@ class ResendNotifier(ReportNotifierPort):
         self._session = build_session()
         self._quota_monitor = quota_monitor
 
-    def send_report(self, subject: str, html_body: str, plain_text: str) -> None:
+    def send_report(
+        self, subject: str, html_body: str, plain_text: str, *, silent: bool = False
+    ) -> None:
+        # ALR-09: mail nie ma dźwięku do wyciszenia — `silent` jest ignorowane.
         # Każdy niedostarczony mail kończy się alertem CRITICAL: trafi do bazy i
         # pojawi się w NASTĘPNYM mailu (ten paradoksalnie nie poszedł).
         try:
@@ -132,8 +136,9 @@ class ResendNotifier(ReportNotifierPort):
             )
         raise_for_status_redacted(response)
         message_id = response.json().get("id", "<no-id>")
+        # BEZ-11: repo i logi GHA są publiczne — adres odbiorcy tylko zamaskowany.
         logger.info(
-            "Resend: sent report to %s (id=%s)", self._recipient, message_id
+            "Resend: sent report to %s (id=%s)", masked_email(self._recipient), message_id
         )
 
     def _emit_quota_alert(
@@ -163,6 +168,8 @@ class NullNotifier(ReportNotifierPort):
     Pozwala main_agent.py mieć zawsze `notifier`, niezależnie od konfiguracji.
     """
 
-    def send_report(self, subject: str, html_body: str, plain_text: str) -> None:
+    def send_report(
+        self, subject: str, html_body: str, plain_text: str, *, silent: bool = False
+    ) -> None:
         logger.info("Notifications disabled — skipping email. Subject: %s", subject)
         logger.debug("Report (plain text):\n%s", plain_text)

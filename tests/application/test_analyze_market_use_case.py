@@ -346,6 +346,18 @@ class TestMlModelLoaded:
         assert use_case.ml_model_loaded is True
 
 
+class TestRequiredPredictionColumns:
+    """FIN-05: use case podaje DI listę kolumn zapisu liczoną z tych samych deps."""
+
+    def test_matches_the_graph_rule_for_its_deps(self, use_case) -> None:
+        from src.application.agent_graph import required_prediction_columns
+
+        assert use_case.required_prediction_columns() == required_prediction_columns(
+            use_case._deps
+        )
+        assert "symbol" in use_case.required_prediction_columns()
+
+
 class TestThresholdInjection:
     def test_respects_custom_threshold(
         self,
@@ -690,3 +702,100 @@ class TestTwoPhaseCycle:
             use_case.run_gate(symbol)
 
         assert len(compiled) == 1
+
+
+class TestMarketFeaturesPhase:
+    """ML-31 — `prepare_market_features` liczy cechy rynkowe raz na cykl przed
+    grafem; kurs z tej fazy reużywa `check_price`, więc requestów o cenę nie
+    przybywa. Bez flagi faza nic nie czyta."""
+
+    def _use_case(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, enabled: bool,
+    ) -> AnalyzeMarketUseCase:
+        return AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            feature_snapshots_enabled=True,
+            market_features_enabled=enabled,
+        ))
+
+    def test_cycle_quote_is_fetched_once_and_features_reach_the_snapshot(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        now = datetime(2026, 10, 21, 20, 0, tzinfo=UTC)
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_price_history.return_value = [
+            (now - timedelta(days=1), Money(Decimal("100.0")))
+        ]
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))  # -0.5%
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )
+
+        use_case.prepare_market_features(["AAPL"], now=now)
+        result = use_case.run("AAPL", now=now)
+
+        assert result["status"] == "ignored"
+        market_port.get_current_price.assert_called_once_with("AAPL")
+        features = repository_port.save_feature_snapshot.call_args.args[1]
+        assert features["ret_1"] == pytest.approx(-0.005)
+        assert features["price"] == pytest.approx(99.5)
+
+    def test_flag_off_phase_reads_nothing(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        use_case = self._use_case(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=False,
+        )
+
+        use_case.prepare_market_features(["AAPL", "MSFT"])
+
+        market_port.get_current_price.assert_not_called()
+        repository_port.get_price_history.assert_not_called()
+
+    def test_breadth_uses_the_base_gate_threshold_of_each_asset_class(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    ):
+        from src.domain.asset import Asset
+        from src.domain.value_objects import AssetType
+
+        now = datetime(2026, 10, 21, 20, 0, tzinfo=UTC)
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        repository_port.get_price_history.return_value = [
+            (now - timedelta(days=1), Money(Decimal("100.0")))
+        ]
+        # AAPL +3% (próg akcji 2% — za), BTC +4% (próg krypto 5% — pod).
+        market_port.get_current_price.side_effect = lambda symbol: Money(
+            Decimal("103") if symbol == "AAPL" else Decimal("104")
+        )
+        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            crypto_threshold=Threshold(Decimal("0.05")),
+            feature_snapshots_enabled=True,
+            market_features_enabled=True,
+        ))
+
+        use_case.prepare_market_features(
+            ["AAPL", "BTC"], asset_types={"BTC": AssetType.CRYPTO}, now=now
+        )
+        btc = Asset(symbol="BTC", asset_type=AssetType.CRYPTO)
+        result = use_case.run("BTC", asset=btc, now=now)
+
+        assert result["status"] == "ignored"
+        features = repository_port.save_feature_snapshot.call_args.args[1]
+        assert features["breadth"] == pytest.approx(0.5)
+        assert features["ret_1_rank"] == 1.0

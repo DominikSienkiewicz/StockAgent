@@ -4,15 +4,21 @@ Skrypt czyta produkcję: GitHub przez `gh` i Supabase kluczem aplikacji. Każdy 
 zmieniałby stan, który skrypt ma tylko zmierzyć, a wypisany klucz trafiłby do
 pliku z wynikiem. Polityka jest więc sprawdzana statycznie na treści skryptu,
 bez sieci i bez kluczy.
+
+Tu też polityka workflowów bez kodu aplikacji: ręczny smoke testów na żywym API
+(CI-05) i grupy Dependabota (CI-07).
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shlex
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).parent.parent
 SCRIPT = ROOT / "scripts" / "prod-state-check.sh"
@@ -65,3 +71,68 @@ def test_prod_state_script_never_prints_the_key() -> None:
     for line in _code_lines():
         if re.search(r"\b(echo|printf)\b", line) and re.search(r"\$\{?SB_KEY\b", line):
             assert "| curl -K -" in line, f"klucz wypisany poza konfiguracją curl: {line}"
+
+
+# CI-05: testy `-m integration` (prawdziwe API, ~5 płatnych wywołań i jeden mail)
+# nie biegły w żadnym workflowie. Smoke jest WYŁĄCZNIE ręczny (decyzja właściciela):
+# bez crona, push i PR-ów, z osobnymi sekretami `SMOKE_*`, żeby nie zjadał limitów
+# kluczy produkcyjnych i nie mailował na adres digestu.
+SMOKE_WORKFLOW = ROOT / ".github" / "workflows" / "integration_smoke.yml"
+
+
+def _smoke_spec() -> dict[str, Any]:
+    spec: dict[str, Any] = yaml.safe_load(SMOKE_WORKFLOW.read_text(encoding="utf-8"))
+    return spec
+
+
+def _pytest_marker_expression(command: str) -> str | None:
+    """Wyrażenie `-m` komendy pytest ('' bez `-m`), None gdy to nie pytest."""
+    tokens = shlex.split(command.split("#", 1)[0])
+    if "pytest" not in tokens:
+        return None
+    args = tokens[tokens.index("pytest") + 1 :]
+    return args[args.index("-m") + 1] if "-m" in args[:-1] else ""
+
+
+def test_integration_smoke_runs_only_integration_marker() -> None:
+    spec = _smoke_spec()
+    # PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True.
+    triggers = spec.get("on", spec.get(True))
+    steps = [step for job in spec["jobs"].values() for step in job.get("steps", [])]
+    markers = [
+        marker
+        for step in steps
+        if (marker := _pytest_marker_expression(str(step.get("run", "")))) is not None
+    ]
+
+    assert isinstance(triggers, dict) and set(triggers) == {"workflow_dispatch"}, triggers
+    assert markers == ["integration"], markers
+
+
+def test_integration_smoke_uses_only_its_own_secrets() -> None:
+    secrets = set(
+        re.findall(r"secrets\.([A-Za-z0-9_]+)", SMOKE_WORKFLOW.read_text(encoding="utf-8"))
+    )
+
+    assert secrets, "smoke bez sekretów pominie każdy test na żywym API"
+    assert all(name.startswith("SMOKE_") for name in secrets), sorted(secrets)
+
+
+# CI-07: SHA akcji (CI-08) nikt nie podbijał, a zależności nie były kuratorowane.
+# Dependabot co tydzień, jedna grupa na ekosystem — bez grup zalałby repo PR-ami.
+DEPENDABOT = ROOT / ".github" / "dependabot.yml"
+
+
+def test_dependabot_groups_weekly_updates_for_actions_and_uv() -> None:
+    spec = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+    updates = {update["package-ecosystem"]: update for update in spec["updates"]}
+
+    assert spec["version"] == 2
+    assert set(updates) == {"github-actions", "uv"}
+    for ecosystem, update in updates.items():
+        assert update["directory"] == "/", ecosystem
+        assert update["schedule"]["interval"] == "weekly", ecosystem
+        groups = update.get("groups") or {}
+        assert any(group.get("patterns") == ["*"] for group in groups.values()), (
+            f"{ecosystem}: bez grupy `*` każda zależność dostaje osobny PR"
+        )

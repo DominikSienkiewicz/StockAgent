@@ -32,8 +32,9 @@ ENV_KEY = "DB_WRITES_ENABLED"
 WRITING_ENTRYPOINTS = frozenset(
     {"main_agent.py", "main_trainer.py", "main_watch.py", "main_tools.py"}
 )
-# Tylko czytają: deadman (probe + ślady życia) i backtest (czysta ewaluacja).
-READ_ONLY_ENTRYPOINTS = frozenset({"main_deadman.py", "main_backtest.py"})
+# Tylko czytają: deadman (probe + ślady życia), backtest (czysta ewaluacja)
+# i publiczny scorecard (WIA-52: zamknięte predykcje, zapis tylko pliku strony).
+READ_ONLY_ENTRYPOINTS = frozenset({"main_deadman.py", "main_backtest.py", "main_scorecard.py"})
 # Joby, które dziś zapisują — chroni przed pustą parametryzacją poniżej.
 EXPECTED_WRITING_JOBS = frozenset({"main_agent.py", "main_trainer.py", "main_watch.py"})
 

@@ -1,8 +1,21 @@
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
+
+from src.domain.market_calendar import (
+    TradingSession,
+    last_started_session,
+    next_open,
+    to_nyse_time,
+)
+
+# ARCH-38: lustro kolumn cenowych DECIMAL(14,4) (001_init.sql:24-34,
+# 002_price_snapshots.sql:15, 032_move_interval.sql). Python trzyma pełną
+# precyzję, baza cztery miejsca — hash commitmentu i zapis muszą widzieć to samo.
+STORAGE_SCALE = Decimal("0.0001")
 
 
 @dataclass(frozen=True)
@@ -18,6 +31,16 @@ class Money:
             raise ValueError(
                 f"Money amount must be a finite number (got {self.amount})"
             )
+
+    def for_storage(self) -> "Money":
+        """Kwota w skali kolumny DECIMAL(14,4), zawsze z czterema miejscami.
+
+        `ROUND_HALF_UP` w Pythonie zaokrągla połówki od zera, tak jak NUMERIC
+        w Postgresie; domyślne HALF_EVEN dałoby z 90.11125 wartość 90.1112, a baza
+        zapisze 90.1113. Tylko dla cen z kolumn DECIMAL(14,4) — nie dla
+        `PriceDelta` ani ułamków cech ML.
+        """
+        return Money(self.amount.quantize(STORAGE_SCALE, rounding=ROUND_HALF_UP))
 
 
 @dataclass(frozen=True)
@@ -56,6 +79,16 @@ def clamp_unit(value: float) -> tuple[float, bool]:
     return clamped, clamped != value
 
 
+def require_finite(values: Iterable[float], what: str) -> None:
+    """PORT-09: dane wejściowe matematyki ryzyka (zwroty, zmiany cen) muszą być
+    skończone. NaN po cichu przechodzi przez `min`/`max`/sortowanie i daje VaR 0.0
+    albo korelację 1.0, więc zamiast tego `ValueError` — use case łapie go per
+    symbol, a reszta sekcji liczy się dalej."""
+    for value in values:
+        if not math.isfinite(value):
+            raise ValueError(f"{what} must be finite numbers (got {value})")
+
+
 class AssetType(Enum):
     STOCK = "STOCK"
     ETF = "ETF"
@@ -72,6 +105,45 @@ class ValuationVerdict(Enum):
     UNKNOWN = "UNKNOWN"
 
 
+@dataclass(frozen=True)
+class Quote:
+    """DAT-14: notowanie z chwilą, z której pochodzi (`t` w Finnhub /quote).
+
+    Sama cena nie mówi, czy jest bieżąca: w święto NYSE /quote oddaje zamknięcie
+    poprzedniej sesji. `prev_close` i `open_price` są opcjonalne — źródło nie
+    zawsze je podaje."""
+
+    price: Money
+    quoted_at: datetime
+    prev_close: Money | None = None
+    open_price: Money | None = None
+
+
+def is_stale(
+    quoted_at: datetime, now: datetime, last_session: TradingSession | None = None
+) -> bool:
+    """Czy notowanie pochodzi sprzed otwarcia `last_session` (DAT-14).
+
+    Domyślnie `last_session` to ostatnia sesja NYSE rozpoczęta do `now`
+    (`last_started_session`): piątek w trakcie sesji z czwartkowym zamknięciem
+    → stęchłe; piątek przed otwarciem albo weekend z ostatnim zamknięciem → świeże.
+    Wołający podaje własną sesję, gdy cena musi odzwierciedlać konkretną sesję —
+    np. rozliczenie predykcji wymaga sesji PO niej, a w święto najświeższe
+    zamknięcie jest sprzed predykcji. Naiwny `datetime` to UTC."""
+    session = last_session if last_session is not None else last_started_session(now)
+    return to_nyse_time(quoted_at) < session.opens_at
+
+
+def settles_on_stale_quote(quoted_at: datetime, predicted_at: datetime) -> bool:
+    """DAT-14: czy notowanie jest za stare, by rozliczyć predykcję z `predicted_at`.
+
+    Rozliczenie wymaga ceny z sesji otwartej PO predykcji. W weekend, w święto NYSE
+    i w drugim przebiegu przed otwarciem /quote oddaje zamknięcie sprzed predykcji,
+    więc cena rozliczenia równa się cenie wejścia: BULLISH i BEARISH to pudło,
+    SIDEWAYS trafienie, choć rynek nic nie powiedział. Naiwny `datetime` to UTC."""
+    return to_nyse_time(quoted_at) < next_open(predicted_at)
+
+
 # TTL danych fundamentalnych w cache. Slow Loop odświeża je raz w tygodniu, więc
 # 6 × 24 h: Fast Loop widzi fundamenty przez sześć dni, a niedzielny przebieg
 # zawsze trafia na nieświeży cache i odświeża (TTL ≥ 7 × 24 h odświeżałby co dwa tygodnie).
@@ -85,3 +157,6 @@ class Fundamentals:
     peg_ratio: float | None
     eps_growth_yoy: float | None
     fetched_at: datetime
+    # DAT-21: kapitalizacja w USD (`MarketCapitalization` z tej samej odpowiedzi
+    # OVERVIEW); skaluje próg znaczącego zakupu insidera. None = źródło jej nie dało.
+    market_cap: float | None = None

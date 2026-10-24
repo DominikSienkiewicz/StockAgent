@@ -11,6 +11,7 @@ import xgboost as xgb
 
 from src.application.ports import MLPredictionPort
 from src.domain.backtest import purged_train_end, summarize_folds
+from src.domain.drift import bin_fractions, quantile_edges, recent_window_psi
 from src.domain.value_objects import Money
 
 # Hiperparametry dobrane pod dane finansowe (zapobieganie overfittingowi).
@@ -110,9 +111,9 @@ class XGBoostAdapter(MLPredictionPort):
             "drift_baseline_rmse": summary.mean_drift_baseline_rmse,
             "llm_baseline_rmse": summary.mean_llm_baseline_rmse,
             "candidate_holdout_directional_hit_rate": summary.mean_hit_rate,
-            # Per-feature drift stats (mean/std) — obserwowalne niezależnie od
-            # werdyktu bramki, żeby porównać rozkład cech z poprzednim runem.
-            "feature_stats": _feature_distribution_stats(feature_frame),
+            # Per-feature drift stats (mean/std, ML-21: biny kwantylowe i PSI
+            # ostatnich 30 dni) — obserwowalne niezależnie od werdyktu bramki.
+            "feature_stats": _feature_distribution_stats(feature_frame, stamps),
             "metric_note": METRIC_NOTE,
         }
 
@@ -197,6 +198,7 @@ class XGBoostAdapter(MLPredictionPort):
             out.append(
                 {
                     **_training_part_baselines(train_y, valid_x, valid_y),
+                    **_paired_loss_sums(train_y, valid_x, valid_y, preds),
                     "train_end": float(train_end),
                     "valid_end": float(valid_end),
                     "n_train": float(fit_end),
@@ -296,22 +298,50 @@ class XGBoostAdapter(MLPredictionPort):
         return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
 
 
-def _training_part_baselines(
-    train_y: pd.Series, valid_x: pd.DataFrame, valid_y: pd.Series
-) -> dict[str, float]:
-    """ML-10: RMSE baseline'ów „dryf średniej" i „sam LLM" na walidacji foldu.
+def _baseline_predictions(
+    train_y: pd.Series, valid_x: pd.DataFrame, size: int
+) -> dict[str, Any]:
+    """ML-10: prognozy baseline'ów „dryf" i „llm" na walidacji foldu.
 
     Dryf przewiduje stały średni target części treningowej. „Sam LLM" przewiduje
     `llm_trend_signal` × średni |target| części treningowej — kierunek z LLM,
-    skala z historii. Bez kolumny sygnału LLM zwracamy tylko dryf.
+    skala z historii. Bez kolumny sygnału LLM zostaje tylko dryf.
     """
-    drift = float(train_y.mean())
-    baselines = {"drift_baseline_rmse": _rmse(valid_y, np.full(len(valid_y), drift))}
+    predictions: dict[str, Any] = {"drift": np.full(size, float(train_y.mean()))}
     if LLM_SIGNAL_FEATURE in valid_x.columns:
         scale = float(train_y.abs().mean())
-        llm_preds = np.asarray(valid_x[LLM_SIGNAL_FEATURE], dtype=float) * scale
-        baselines["llm_baseline_rmse"] = _rmse(valid_y, llm_preds)
-    return baselines
+        predictions["llm"] = np.asarray(valid_x[LLM_SIGNAL_FEATURE], dtype=float) * scale
+    return predictions
+
+
+def _training_part_baselines(
+    train_y: pd.Series, valid_x: pd.DataFrame, valid_y: pd.Series
+) -> dict[str, float]:
+    """ML-10: RMSE baseline'ów „dryf średniej" i „sam LLM" na walidacji foldu."""
+    return {
+        f"{name}_baseline_rmse": _rmse(valid_y, preds)
+        for name, preds in _baseline_predictions(train_y, valid_x, len(valid_y)).items()
+    }
+
+
+def _paired_loss_sums(
+    train_y: pd.Series, valid_x: pd.DataFrame, valid_y: pd.Series, preds: Any
+) -> dict[str, float]:
+    """EXP-04: Σd i Σd² foldu, d = strata² baseline'u − strata² kandydata na punkt.
+
+    Klucze bez prefiksu dotyczą „zwrot 0", z prefiksem `drift_` / `llm_` — tych
+    baseline'ów; test sparowany liczy z nich domena (`paired_loss_z`)."""
+    actual = np.asarray(valid_y, dtype=float)
+    candidate_loss = (actual - np.asarray(preds, dtype=float)) ** 2
+    baselines = {"": np.zeros(len(actual))}
+    for name, baseline in _baseline_predictions(train_y, valid_x, len(actual)).items():
+        baselines[f"{name}_"] = baseline
+    sums: dict[str, float] = {}
+    for prefix, baseline in baselines.items():
+        diff = (actual - baseline) ** 2 - candidate_loss
+        sums[f"{prefix}sum_loss_diff"] = float(diff.sum())
+        sums[f"{prefix}sum_loss_diff_sq"] = float((diff**2).sum())
+    return sums
 
 
 def _global_time_order(timestamps: Any, n_samples: int) -> list[datetime] | None:
@@ -366,18 +396,28 @@ def _single_split_bounds(n_samples: int) -> tuple[int, int]:
 
 
 def _feature_distribution_stats(
-    features: pd.DataFrame,
-) -> dict[str, dict[str, float]]:
-    """Per-feature mean/std — prosty drift-detector rozkładu cech wejściowych.
+    features: pd.DataFrame, stamps: list[datetime] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Per-feature rozkład cech wejściowych — drift-detector (ML-21).
 
-    Porównanie tych statystyk między runami pozwala wykryć dryf danych (zmianę
-    rozkładu cech), który może cicho degradować model mimo „zielonej" bramki."""
-    stats: dict[str, dict[str, float]] = {}
+    `mean`/`std` jak dawniej, plus biny kwantylowe całej próbki (`edges`,
+    `fractions`) — odniesienie, z którym da się porównać późniejszy rozkład —
+    oraz `psi_recent_30d`: PSI ostatnich 30 dni próbki względem jej starszej
+    części (domena `recent_window_psi`). Bez znaczników czasu albo przy zbyt małej
+    próbce PSI jest None. Dryf może cicho degradować model mimo „zielonej" bramki."""
+    stats: dict[str, dict[str, Any]] = {}
     for column in features.columns:
         series = pd.to_numeric(features[column], errors="coerce")
+        values = [float(value) for value in series]
+        edges = quantile_edges(values)
         stats[str(column)] = {
             "mean": float(series.mean()),
             "std": float(series.std(ddof=0)),
+            "edges": list(edges),
+            "fractions": list(bin_fractions(values, edges)),
+            "psi_recent_30d": (
+                recent_window_psi(values, stamps) if stamps is not None else None
+            ),
         }
     return stats
 

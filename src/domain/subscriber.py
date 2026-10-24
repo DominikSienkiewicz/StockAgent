@@ -18,7 +18,7 @@ Wyłącznie stdlib + inne moduły domeny — zero importów zewnętrznych.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,9 @@ class Subscriber:
     VO jest hashowalny i bezpieczny jako element zbioru / klucz słownika.
     """
 
-    email: str
+    # BEZ-11: repo i logi GHA są publiczne — adres nie trafia do `repr` (logi,
+    # tracebacki); do logów idzie `masked_email`.
+    email: str = field(repr=False)
     symbols: frozenset[str]
 
     def watches(self, symbol: str) -> bool:

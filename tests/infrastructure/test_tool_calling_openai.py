@@ -292,6 +292,15 @@ class TestConfiguration:
         with pytest.raises(ValueError, match="JSON"):
             adapter.analyze_with_tools("Predict.", [tool])
 
+    def test_rejects_top_level_json_array(self, adapter_with_client):
+        # ARCH-01: lista to poprawny JSON, ale werdykt musi być obiektem.
+        adapter, client = adapter_with_client
+        client.chat.completions.create.return_value = _final_message('["BULLISH"]')
+        tool = _make_tool(MagicMock(return_value={}))
+
+        with pytest.raises(ValueError, match="JSON object"):
+            adapter.analyze_with_tools("Predict.", [tool])
+
 
 def test_tool_error_returned_to_model_omits_secrets(mock_openai_class) -> None:
     # Runda 2 BEZ-07: błąd narzędzia wraca do modelu jako `{"error": ...}`, więc

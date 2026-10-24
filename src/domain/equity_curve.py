@@ -36,9 +36,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 
 from src.domain.trading_costs import net_return
+from src.domain.value_objects import require_finite
 
 # Trend pozycji long benchmarku buy&hold — `signal_of` mapuje go na +1.
 LONG_TREND = "BULLISH"
+# Najgorszy zwrot okresu: utrata całego kapitału.
+_TOTAL_LOSS = -1.0
 
 
 def signal_of(predicted_trend: str) -> int:
@@ -166,8 +169,10 @@ def equity_curve(
       kierunkowych → 0.0, bez dzielenia przez zero),
     - `max_drawdown` = największy spadek szczyt→dołek serii kapitału jako DODATNI
       ułamek (monotoniczny wzrost → 0.0),
-    - pusta historia → krzywa z samymi zerami.
+    - pusta historia → krzywa z samymi zerami,
+    - zmiana NaN/inf → `ValueError` (PORT-09).
     """
+    require_finite((change for _, change in trades), "equity curve price changes")
     period_returns: list[float] = []
     prev_signal = 0
     for trend, change_pct in trades:
@@ -226,9 +231,13 @@ def paper_portfolio_curve(
     `net_return(sygnał, poprzedni sygnał TEGO symbolu, brutto, trade.cost_bps)`:
     koszt płaci się tylko przy zmianie pozycji symbolu (pierwsza predykcja
     symbolu startuje z gotówki), a waga 1/N skaluje go jak zwrot. `cycles` idą
-    chronologicznie, trade'y w cyklu — w kolejności czasu.
+    chronologicznie, trade'y w cyklu — w kolejności czasu. Zmiana NaN/inf →
+    `ValueError` (PORT-09).
     """
     non_empty = [cycle for cycle in cycles if cycle]
+    require_finite(
+        (trade.change for cycle in non_empty for trade in cycle), "paper trade price changes"
+    )
     positions: dict[str, int] = {}
     period_returns: list[float] = []
     for cycle in non_empty:
@@ -276,7 +285,10 @@ def _compound(
     peak = starting_equity
     max_drawdown = 0.0
 
-    for index, period_return in enumerate(period_returns):
+    for index, raw_return in enumerate(period_returns):
+        # TEST-12: strata okresu nie przekracza kapitału — short przy +150% to
+        # ruina (kapitał 0), a nie ujemny kapitał i obsunięcie ponad 100%.
+        period_return = max(raw_return, _TOTAL_LOSS)
         equity = equity * (1.0 + period_return)
         points.append(
             EquityPoint(index=index, period_return=period_return, equity=equity)

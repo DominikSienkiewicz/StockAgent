@@ -86,7 +86,19 @@ class TestResendNotifier:
         notifier.send_report("S", "H", "T")
 
         assert "abc-123" in caplog.text
-        assert "dom@example.com" in caplog.text
+        assert "d***@example.com" in caplog.text
+
+    def test_success_log_masks_recipient(self, notifier, mocker, caplog):
+        # BEZ-11: repo i logi GHA są publiczne — pełny adres nie trafia do logu.
+        caplog.set_level(logging.DEBUG)
+        mocker.patch(
+            "requests.Session.post",
+            return_value=_ok_response({"id": "abc-123"}),
+        )
+
+        notifier.send_report("S", "H", "T")
+
+        assert "dom@example.com" not in caplog.text
 
     def test_raises_on_http_error(self, notifier, mocker):
         response = MagicMock(spec=requests.Response)
@@ -117,6 +129,25 @@ class TestNullNotifier:
         assert "Mój subject" in caplog.text
         assert "skip" in caplog.text.lower()
 
+
+
+def test_silent_mail_is_the_same_mail(notifier, mocker):
+    # ALR-09: mail nie ma dźwięku do wyciszenia — `silent` niczego w nim nie zmienia.
+    mock_post = mocker.patch("requests.Session.post", return_value=_ok_response())
+
+    notifier.send_report("S", "<p>H</p>", "T", silent=True)
+    silent_payload = mock_post.call_args.kwargs["json"]
+    notifier.send_report("S", "<p>H</p>", "T")
+
+    assert mock_post.call_args.kwargs["json"] == silent_payload
+
+
+def test_null_notifier_accepts_silent(caplog):
+    caplog.set_level(logging.INFO)
+
+    NullNotifier().send_report("Cichy subject", "html", "text", silent=True)
+
+    assert "Cichy subject" in caplog.text
 
 @pytest.mark.integration
 class TestResendLive:

@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
@@ -13,16 +14,43 @@ def calibration_error(samples: Sequence[tuple[float, bool]]) -> float:
     Każdy sample to (confidence∈[0,1], czy_trafiona_kierunkowo). Pusta → 0.0."""
     if not samples:
         return 0.0
-    mean_conf = sum(c for c, _ in samples) / len(samples)
+    mean_conf = sum(_unit_confidence(c) for c, _ in samples) / len(samples)
     accuracy = sum(1 for _, ok in samples if ok) / len(samples)
     return abs(mean_conf - accuracy)
 
 
+# WIA-37: wersja semantyki kolumny `prediction_logs.confidence_calibration`
+# (`calibration_score_version`, migracja 044). NULL w bazie = v1.
+LINEAR_CALIBRATION_SCORE_VERSION = 1
+BRIER_CALIBRATION_SCORE_VERSION = 2
+
+
 def calibration_score(confidence: float, correct: bool) -> float:
     """#4 — kalibracja pojedynczej predykcji: `1 − |confidence − wynik(0/1)|`
-    ∈ [0,1]. 1 = pewność idealnie dopasowana do wyniku."""
+    ∈ [0,1]. 1 = pewność idealnie dopasowana do wyniku.
+
+    Wycofywana (v1, WIA-37): reguła niewłaściwa — przy prawdziwej trafności 0.6
+    zgłoszenie 1.0 daje oczekiwane 0.6, a uczciwe 0.6 tylko 0.52, więc nagradza
+    przepewność. Zostaje dla wierszy v1; nowe wyniki liczy
+    `brier_calibration_score`."""
     outcome = 1.0 if correct else 0.0
-    return 1.0 - abs(confidence - outcome)
+    return 1.0 - abs(_unit_confidence(confidence) - outcome)
+
+
+def _unit_confidence(confidence: float) -> float:
+    """TEST-12: pewność spoza skali (wiersze sprzed `clamp_unit`, np. 85 z LLM-a
+    na skali 0–100) przycięta do [0, 1], żeby kalibracja nie wyszła poza [0, 1]."""
+    return min(max(confidence, 0.0), 1.0)
+
+
+def brier_calibration_score(confidence: float, correct: bool) -> float:
+    """WIA-37 — kalibracja pojedynczej predykcji jako `1 − (confidence − wynik)²`
+    ∈ [0,1] (v2, `BRIER_CALIBRATION_SCORE_VERSION`).
+
+    Reguła właściwa: oczekiwany wynik jest największy, gdy pewność równa się
+    prawdziwej trafności, więc przepewność się nie opłaca."""
+    outcome = 1.0 if correct else 0.0
+    return 1.0 - (confidence - outcome) ** 2
 
 
 # Placeholdery, które reflect_node zapisuje w `correction_insights`, gdy nie ma
@@ -35,6 +63,17 @@ DIAGNOSIS_SKIPPED_INSIGHT = "Niska zmienność — diagnoza LLM pominięta (bez 
 # Tekst sprzed WIA-10 obiecywał „odłożenie”, którego nigdy nie było. Wiersze
 # z nim zostają w bazie, więc predykat musi go nadal rozpoznawać.
 LEGACY_DIAGNOSIS_DEFERRED_INSIGHT = "Niska zmienność — diagnoza LLM odłożona."
+# DAT-14: rozliczenie na notowaniu sprzed sesji po predykcji nie mówi nic o trafności,
+# więc nie ma czego diagnozować (płatny LLM pominięty).
+STALE_QUOTE_INSIGHT = "Nieaktualne notowanie — rozliczenie bez oceny i bez diagnozy LLM."
+
+# WIA-53: błędne predykcje z tymi placeholderami nie mają diagnozy, za którą
+# ktoś zapłacił — job Slow Loopa (`BackfillDiagnosesUseCase`) diagnozuje je
+# w tygodniowym budżecie. „Trafiona predykcja.” nie wymaga diagnozy.
+UNDIAGNOSED_MISTAKE_PLACEHOLDERS: tuple[str, ...] = (
+    DIAGNOSIS_SKIPPED_INSIGHT,
+    LEGACY_DIAGNOSIS_DEFERRED_INSIGHT,
+)
 
 _PLACEHOLDER_INSIGHTS = frozenset(
     text.casefold()
@@ -42,6 +81,7 @@ _PLACEHOLDER_INSIGHTS = frozenset(
         CORRECT_PREDICTION_INSIGHT,
         DIAGNOSIS_SKIPPED_INSIGHT,
         LEGACY_DIAGNOSIS_DEFERRED_INSIGHT,
+        STALE_QUOTE_INSIGHT,
     )
 )
 
@@ -80,6 +120,10 @@ def normalize_trend(value: object) -> tuple[TrendDirection, bool]:
     return TrendDirection.SIDEWAYS, True
 
 
+# Horyzont prognozy: cel ceny na 12 h (`target_price_12h`, `actual_price_after_12h`,
+# etykieta modelu ML). Wchodzi do commitmentu v2 i do protokołu ewaluacji.
+PREDICTION_HORIZON_HOURS = 12
+
 SIDEWAYS_TOLERANCE = Decimal("0.005")  # ±0.5% — pasmo FLAT dla akcji/ETF
 # Krypto natywnie rusza się 3–5% dziennie, więc pasmo ±0.5% uznawałoby niemal
 # każdy dzień za "ruch" i systematycznie zaniżało trafność predykcji SIDEWAYS
@@ -108,6 +152,9 @@ class Prediction:
     # z repozytorium dla diagnozy błędu. None = brak zapisu (stare wiersze).
     news_summary: str | None = None
     reasoning: str | None = None
+    # DAT-14: chwila zapisu predykcji — rozliczenie wymaga notowania z sesji po niej.
+    # None = repozytorium jej nie podało (wtedy stęchłości rozliczenia nie oceniamy).
+    created_at: datetime | None = None
 
     def is_trend_correct(
         self, actual_price: Decimal, tolerance: Decimal | None = None

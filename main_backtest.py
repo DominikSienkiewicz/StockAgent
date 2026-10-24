@@ -15,11 +15,13 @@ from __future__ import annotations
 import logging
 import sys
 
+from src.application.ml_features import feature_set_version
+from src.application.ports import RepositoryPort
 from src.application.use_cases.backtest import BacktestUseCase
 from src.config import Settings
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
-from src.infrastructure.logging_redaction import configure_logging
+from src.infrastructure.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -29,31 +31,57 @@ def _fmt_optional(value: float | None, pattern: str) -> str:
     return "n/a" if value is None else pattern % value
 
 
-def build_use_case(settings: Settings) -> BacktestUseCase:
-    """DI Container — backtest potrzebuje tylko bazy (cechy) + XGBoost (foldy)."""
+def _feature_set_version(settings: Settings) -> int | None:
+    """ML-51: ta sama próbka co trening — z `feature_set_filter_enabled` tylko
+    wiersze bieżącej wersji zestawu cech (kolumna z migracji 027); ML-31: 4 przy
+    `market_features_enabled`, jak stempel Fast Loopa."""
+    if not settings.feature_set_filter_enabled:
+        return None
+    return feature_set_version(settings.market_features_enabled)
+
+
+def build_use_case(
+    settings: Settings,
+    *,
+    repository: RepositoryPort | None = None,
+    cost_bps: float | None = None,
+) -> BacktestUseCase:
+    """DI Container — backtest potrzebuje tylko bazy (cechy) + XGBoost (foldy).
+
+    `cost_bps` (WIA-50) domyślnie koszt akcji/ETF; krypto podaje własny."""
     return BacktestUseCase(
         ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
-        db_port=SupabaseRepository(
-            url=settings.supabase_url, key=settings.supabase_key
-        ),
-        cost_bps=settings.paper_cost_bps,
+        db_port=repository
+        or SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key),
+        cost_bps=settings.paper_cost_bps if cost_bps is None else cost_bps,
+        feature_set_version=_feature_set_version(settings),
     )
+
+
+def backtest_symbols(settings: Settings) -> list[str]:
+    """NIEZ-18: akcje, ETF-y i krypto — kolejność z configu, bez duplikatów."""
+    return list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
 
 
 def main(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
-    configure_logging(settings.secret_values())
+    configure_logging("main_backtest", settings.secret_values())
     repository = SupabaseRepository(
         url=settings.supabase_url, key=settings.supabase_key
     )
-    # WIA-50: backtest iteruje `symbols` (bez krypto), więc koszt akcji/ETF.
-    use_case = BacktestUseCase(
-        ml_port=XGBoostAdapter(model_path=settings.ml_model_path),
-        db_port=repository,
-        cost_bps=settings.paper_cost_bps,
+    symbols = backtest_symbols(settings)
+    crypto = set(settings.crypto_symbols)
+    stock_backtest = build_use_case(settings, repository=repository)
+    # WIA-50: krypto ma własny koszt obrotu; bez krypto drugi use case nie powstaje.
+    crypto_backtest = (
+        build_use_case(
+            settings, repository=repository, cost_bps=settings.crypto_paper_cost_bps
+        )
+        if crypto
+        else stock_backtest
     )
 
-    logger.info("Backtest start — symbols=%s", settings.symbols)
+    logger.info("Backtest start — symbols=%s", symbols)
     # Świeży widok raz na cały przebieg; pojedyncze symbole już go nie odświeżają.
     try:
         repository.refresh_feature_store()
@@ -62,7 +90,11 @@ def main(settings: Settings | None = None) -> int:
             "refresh_feature_store failed — backtest na ostatnim widoku"
         )
 
-    for symbol in settings.symbols:
+    failures = 0
+    for symbol in symbols:
+        is_crypto = symbol in crypto
+        use_case = crypto_backtest if is_crypto else stock_backtest
+        cost_bps = settings.crypto_paper_cost_bps if is_crypto else settings.paper_cost_bps
         try:
             summary = use_case.run(symbol, refresh_view=False)
             # ML-20: IC i jego t-stat obok RMSE — zawsze z liczbą foldów, bo przy
@@ -86,13 +118,15 @@ def main(settings: Settings | None = None) -> int:
                 _fmt_optional(summary.ic_t_stat, "%.2f"),
                 _fmt_optional(summary.mean_net_return, "%.5f"),
                 _fmt_optional(summary.turnover, "%.2f"),
-                settings.paper_cost_bps,
+                cost_bps,
             )
         except Exception:
+            failures += 1
             logger.exception("Backtest failed for %s", symbol)
 
-    logger.info("Backtest done — symbols=%d", len(settings.symbols))
-    return 0
+    logger.info("Backtest done — symbols=%d failures=%d", len(symbols), failures)
+    # NIEZ-18: jak Fast Loop — exit 1 tylko, gdy padły wszystkie symbole.
+    return 1 if symbols and failures == len(symbols) else 0
 
 
 if __name__ == "__main__":

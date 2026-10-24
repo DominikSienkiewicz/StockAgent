@@ -18,9 +18,8 @@ from __future__ import annotations
 
 import html as _html
 from dataclasses import dataclass
-from typing import Literal
 
-Recommendation = Literal["BUY", "SELL", "HOLD"]
+from src.domain.council import Recommendation
 
 _RECOMMENDATIONS: tuple[Recommendation, ...] = ("BUY", "SELL", "HOLD")
 

@@ -6,7 +6,6 @@ Czysta logika prezentacji — bez I/O, łatwo testowalne.
 from __future__ import annotations
 
 import dataclasses
-import functools
 import html
 import re
 import urllib.parse
@@ -16,8 +15,9 @@ from decimal import Decimal
 from typing import Any
 
 from src.application.alpha_signals import AlphaSignals
+from src.application.decision_receipt import receipt_line_pl
 from src.application.portfolio_fx import effective_pln_rates
-from src.application.report_alpha import render_alpha_html
+from src.application.report_alpha import render_alpha_html, significant_buy_label
 from src.application.report_charts import (
     build_correlation_chart_html,
     build_delta_chart_html,
@@ -25,14 +25,17 @@ from src.application.report_charts import (
 )
 from src.application.report_consensus_shift import (
     render_consensus_shift_html,
+    render_consensus_shift_text,
 )
 from src.application.report_council_history import (
     InvestorHistory,
     render_council_history_html,
+    render_council_history_text,
 )
 from src.application.report_evidence import wilson_label
-from src.application.report_finops import render_finops_html
+from src.application.report_finops import render_finops_html, render_finops_text
 from src.application.report_formatting import (
+    DATA_SOURCES_FOOTER_PL,
     DEFAULT_DISPLAY_TIMEZONE,
     INVESTMENT_DISCLAIMER,
     PALETTE,
@@ -78,8 +81,10 @@ from src.application.report_lessons import LessonsReport
 from src.application.report_model_scorecard import (
     ModelScorecardView,
     render_model_scorecard_html,
+    render_model_scorecard_text,
 )
 from src.application.report_models import (
+    PortfolioMood,
     ResolvedPrediction,
     RiskSignal,
     SimilarPrecedent,
@@ -102,6 +107,11 @@ from src.application.report_portfolio import (
 from src.application.report_quota_banner import (
     render_quota_banner_html,
     render_quota_banner_text,
+)
+from src.application.report_regime import (
+    RegimeBanner,
+    render_regime_html,
+    render_regime_text,
 )
 from src.application.report_risk_watch import (
     render_risk_watch_html,
@@ -130,6 +140,7 @@ from src.application.report_suggestions import (
     render_suggestions_html,
     render_suggestions_text,
 )
+from src.application.report_symbol_record import SymbolTrackRecordView, symbol_chip_labels
 from src.application.report_templates import _env, render_template
 from src.application.report_track_record import (
     TrackRecordStats,
@@ -155,6 +166,7 @@ from src.domain.digest_lead import LeadItem, LeadSignal, build_lead, lead_previe
 from src.domain.equity_curve import EquityCurve, directional_hit_rate
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.finops import CycleCost
+from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.polish_labels import (
@@ -173,12 +185,14 @@ from src.domain.portfolio import (
 from src.domain.prediction import is_substantive_insight
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
+from src.domain.sizing import PositionAction, SizeBand
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
     ValuationVerdict,
 )
 
 __all__ = [
+    "PortfolioMood",
     "ResolvedPrediction",
     "RiskSignal",
     "SimilarPrecedent",
@@ -188,6 +202,7 @@ __all__ = [
     "ValuationSection",
     "build_correlation_chart_html",
     "build_cycle_lead",
+    "build_cycle_signals",
     "build_delta_chart_html",
     "build_forecast_chart_html",
     "build_html_report",
@@ -312,6 +327,20 @@ _SIGNALS_COLD_START_NOTE = (
     "Model ML bez wag (cold-start): ranking wg pewności LLM, skalibrowanej historią, "
     "gdy jest próbka — bez prognozy ruchu."
 )
+# PORT-08: język ostrożny (MAR/KNF) — kierunek w kontekście portfela to nadal sygnał modelu.
+_SIGNALS_POSITION_NOTE = (
+    "Kierunek w kontekście Twojego portfela (tylko pozycje długie): spadek na "
+    "trzymanej spółce to „ZREDUKUJ”, poza portfelem „UNIKAJ”, wzrost na już dużej "
+    "pozycji „TRZYMAJ, nie dokładaj”. To sygnał modelu, nie rekomendacja."
+)
+# PORT-08: kolor kierunku po akcji pozycji — spadek czerwony, wzrost zielony.
+_POSITION_ACTION_TONE = {
+    PositionAction.BUY: "KUP",
+    PositionAction.HOLD: "OBSERWUJ",
+    PositionAction.REDUCE: "SPRZEDAJ",
+    PositionAction.AVOID: "SPRZEDAJ",
+    PositionAction.WATCH: "OBSERWUJ",
+}
 
 
 def _signed_move(value: float) -> str:
@@ -485,6 +514,14 @@ def _resolved_why(p: ResolvedPrediction) -> str:
     return "Kierunek się nie potwierdził."
 
 
+def _resolved_receipt_line(p: ResolvedPrediction) -> str | None:
+    """WIA-56: pod chybieniem jedna linia z kwitu — na czym predykcja stała.
+    Trafiona nie potrzebuje audytu, a brak kwitu to brak linii."""
+    if p.is_correct or p.receipt is None:
+        return None
+    return receipt_line_pl(p.receipt)
+
+
 def _render_resolved_item_html(p: ResolvedPrediction, sector_map: Mapping[str, str]) -> str:
     mark = "✅" if p.is_correct else "❌"
     color = PALETTE.positive if p.is_correct else PALETTE.negative
@@ -515,6 +552,12 @@ def _render_resolved_item_html(p: ResolvedPrediction, sector_map: Mapping[str, s
         f"<strong style='color: {color};'>Dlaczego:</strong> "
         f"<span style='color: #4b5563;'>{_html(_resolved_why(p))}</span></div>"
     )
+    receipt = _resolved_receipt_line(p)
+    if receipt:
+        why_line += (
+            "<div style='font-size: 11px; color: #4b5563; margin-top: 2px;'>"
+            f"🧾 <strong>Kwit:</strong> {_html(receipt)}</div>"
+        )
     return f"""
       <div style="margin-bottom: 8px; padding: 8px 10px; background: #fafafa;
                   border-left: 3px solid {color}; border-radius: 4px;
@@ -572,6 +615,7 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
 _COUNCIL_LINE_TEMPLATE = _env.from_string(
     "<span class='b7 {{ tone }}'>{{ label }}</span>"
     " · zgodność {{ strength_pct }}%"
+    "{% if failed %} · ⚠️ odpowiedziało {{ answered }}/{{ size }}{% endif %}"
     "{% if is_split %} · ⚠️ podzielona{% endif %} · "
     "🟢 {{ dist['BUY'] }} KUP · 🔴 {{ dist['SELL'] }} SPRZEDAJ · 🟡 {{ dist['HOLD'] }} TRZYMAJ"
     " — „{{ summary }}”"
@@ -588,6 +632,9 @@ def _render_council_line(verdict: CouncilVerdict) -> str:
         label=council_recommendation_label(final),
         tone=COUNCIL_TONE.get(final, "nt"),
         strength_pct=int(verdict.consensus_strength * 100),
+        failed=verdict.failed_personas,
+        answered=len(verdict.investor_opinions),
+        size=verdict.council_size(),
         is_split=verdict.is_split_decision(),
         dist=verdict.vote_distribution(),
         summary=verdict.summary,
@@ -783,6 +830,9 @@ def to_lead_signals(
     results: list[SymbolResult],
     resolved: list[ResolvedPrediction],
     portfolio_weights: Mapping[str, Decimal] | None = None,
+    consensus_shifts: Sequence[tuple[str, ConsensusShift]] | None = None,
+    alpha_signals: Mapping[str, AlphaSignals] | None = None,
+    insider_lead_window: InsiderLeadWindow | None = None,
 ) -> list[LeadSignal]:
     """Mapuje DTO raportu na domenowe `LeadSignal` (#1).
 
@@ -793,6 +843,12 @@ def to_lead_signals(
     PORT-10: `portfolio_weights` (z `Portfolio.weights`) daje sygnałom wagę
     pozycji. Status "saved" znaczy, że ruch przeszedł bramkę volatility (graf
     poszedł do analizy) — tylko taki ruch pozycji może być leadem.
+
+    MAIL-19: `consensus_shifts` (#8, z `ReportContext`) dają sygnałom zmianę
+    nastawienia rady — odwrócenie (FLIP) ma w leadzie własny tier.
+    DAT-21: `alpha_signals` daje znaczący zakup insidera (próg z kapitalizacji)
+    jako gotowy tekst — ten sam co linia w sekcji alfy. `insider_lead_window`
+    wpuszcza do leadu tylko filing z ostatnich N dni; None = bez okna.
     """
     # MAIL-15: etykieta trafia do leadu i tematu maila — po polsku, ze wspólnego
     # słownika domeny („trafiona prognoza wzrostu”), nie „predykcja BULLISH”.
@@ -803,6 +859,7 @@ def to_lead_signals(
         )
         for r in resolved
     }
+    shifts = dict(consensus_shifts or ())
     signals: list[LeadSignal] = []
     for r in results:
         if r.delta is None:
@@ -818,9 +875,27 @@ def to_lead_signals(
                     portfolio_weights.get(r.symbol) if portfolio_weights else None
                 ),
                 crossed_volatility_gate=r.status == "saved",
+                consensus_shift=shifts.get(r.symbol),
+                insider_buy_label=_insider_buy_label(
+                    alpha_signals, r.symbol, insider_lead_window
+                ),
             )
         )
     return signals
+
+
+def _insider_buy_label(
+    alpha_signals: Mapping[str, AlphaSignals] | None,
+    symbol: str,
+    window: InsiderLeadWindow | None,
+) -> str | None:
+    """DAT-21: tekst znaczącego zakupu insidera symbolu albo None — także gdy
+    filing jest starszy niż okno leadu."""
+    signal = alpha_signals.get(symbol) if alpha_signals else None
+    buy = signal.significant_insider_buy() if signal is not None else None
+    if buy is None or (window is not None and not window.admits(buy)):
+        return None
+    return significant_buy_label(buy)
 
 
 def _weight_prices(
@@ -858,8 +933,62 @@ def build_cycle_lead(
         if context.user_portfolio is not None
         else None
     )
-    signals = to_lead_signals(results, context.resolved_predictions or [], weights)
-    return build_lead(signals, context.quota_alerts or [])
+    signals = to_lead_signals(
+        results,
+        context.resolved_predictions or [],
+        weights,
+        context.consensus_shifts,
+        context.alpha_signals,
+        context.insider_lead_window,
+    )
+    # ALR-05: zmiana reżimu (tylko z histerezy) tuż pod CRITICAL quota.
+    regime_change = context.regime.change if context.regime is not None else None
+    return build_lead(signals, context.quota_alerts or [], regime_change=regime_change)
+
+
+# Tyle sygnałów pokazuje sekcja „🎯 Najsilniejsze sygnały” (domyślne `top_n`).
+_TOP_SIGNALS = 5
+
+
+def build_cycle_signals(
+    results: list[SymbolResult], context: ReportContext, *, top_n: int = _TOP_SIGNALS
+) -> list[TradeSignal]:
+    """Ranking sygnałów cyklu — jedno źródło dla 🎯 sekcji maila i pushu (MAIL-20).
+
+    Q7: hit-rate cyklu (z `accuracy_stats`) napędza pasmo wielkości pozycji.
+    #9: kubełki kalibracji (flaga `calibrated_confidence_enabled`) liczą ranking
+    na pewności skorygowanej historią; None → surowa pewność.
+    #15 faza 2 / PORT-04 / PORT-08: gdy znamy realny portfel, sizing widzi
+    istniejącą ekspozycję (symbolu i klastra) i ryzyko portfela, a sygnał niesie
+    kierunek w kontekście pozycji. Bez portfela — jak przed tymi wpisami.
+    """
+    hit_rate, hit_sample = _sizing_track_record(context.accuracy_stats)
+    portfolio = context.user_portfolio
+    current_prices = _report_prices(results, context)
+    weight_prices = (
+        _weight_prices(portfolio, current_prices, _pln_rates_of(context))
+        if portfolio is not None
+        else current_prices
+    )
+    sizing_risk = (
+        context.position_risk
+        if portfolio is not None and context.position_risk is not None
+        else PositionRisk()
+    )
+    return build_trade_signals(
+        results,
+        top_n=top_n,
+        hit_rate=hit_rate,
+        hit_sample=hit_sample,
+        calibration_buckets=context.signal_calibration_buckets,
+        portfolio_weights=portfolio.weights(weight_prices) if portfolio is not None else None,
+        cluster_exposures=_cluster_exposure_per_symbol(
+            portfolio, context.portfolio_clusters, weight_prices
+        ),
+        portfolio_var=sizing_risk.var,
+        drawdown=sizing_risk.drawdown,
+        hedge_effective=sizing_risk.hedge_effective,
+    )
 
 
 # MAIL-13: wypełniacz za treścią preheadera — bez niego klient poczty dociąga do
@@ -947,10 +1076,14 @@ def _fill_text_slots(
     suggestions_text: str,
     portfolio_text: str = "",
     user_portfolio_text: str = "",
+    sections: Mapping[str, str] | None = None,
 ) -> str:
     """Wstawia treść w sloty plain-text. Pusty slot usuwa cały wiersz znacznika —
     tekst nie ma komentarzy HTML, więc znacznik byłby w nim dosłowną linią.
-    W HTML QUOTA/RISK_WATCH zostają przy pustej treści (`_SKIP_WHEN_EMPTY_SLOTS`)."""
+    W HTML QUOTA/RISK_WATCH zostają przy pustej treści (`_SKIP_WHEN_EMPTY_SLOTS`).
+
+    `sections` (MAIL-09): znacznik slotu → tekst sekcji z jej `render_*_text`, który
+    kończy się już pustą linią odstępu."""
     text = text.replace(
         f"{_QUOTA_BANNER_SLOT}\n",
         f"{quota_text}\n" if quota_text else "",
@@ -981,11 +1114,16 @@ def _fill_text_slots(
         f"{onboarding_text}\n\n" if onboarding_text else "",
         1,
     ).replace(_ONBOARDING_SLOT, onboarding_text, 1)
-    return text.replace(
+    text = text.replace(
         f"{_SUGGESTIONS_SLOT}\n",
         f"{suggestions_text}\n\n" if suggestions_text else "",
         1,
     ).replace(_SUGGESTIONS_SLOT, suggestions_text, 1)
+    for slot, content in (sections or {}).items():
+        text = text.replace(f"{slot}\n", f"{content}\n" if content else "", 1).replace(
+            slot, content, 1
+        )
+    return text
 
 
 def _partition_by_status(
@@ -1172,6 +1310,32 @@ def _usd_pln_of(macro_risk_report: MacroRiskReport | None) -> Decimal | None:
     return macro_risk_report.polish_macro.usd_pln
 
 
+def _build_model_scorecard_text(
+    model_scorecard: ModelScorecardView | None,
+    *,
+    now: datetime,
+    model_loaded: bool,
+) -> str:
+    """MAIL-09: karta kondycji modelu w wersji tekstowej (te same dane co HTML)."""
+    if model_scorecard is None:
+        return ""
+    return render_model_scorecard_text(
+        model_scorecard.summary,
+        trained_at=model_scorecard.trained_at,
+        now=now,
+        model_loaded=model_loaded,
+        candidate_rmse=model_scorecard.candidate_rmse,
+        baseline_rmse=model_scorecard.baseline_rmse,
+        directional_hit_rate=model_scorecard.directional_hit_rate,
+        folds=model_scorecard.folds,
+        metrics_symbol=model_scorecard.metrics_symbol,
+        n_samples=model_scorecard.metrics_n_samples,
+        evaluations=model_scorecard.evaluations,
+        drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
+        llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
+    )
+
+
 def _build_model_scorecard_html(
     model_scorecard: ModelScorecardView | None,
     *,
@@ -1195,6 +1359,8 @@ def _build_model_scorecard_html(
         evaluations=model_scorecard.evaluations,
         drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
         llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
+        coverage=model_scorecard.coverage,
+        drifted_features=model_scorecard.drifted_features,
     )
 
 
@@ -1272,11 +1438,22 @@ class ReportContext:
     cycle_cost: CycleCost | None = None
     # WIA-17/22/23/31/32/36: dowód trafności i Brier pod sekcją Track Record.
     track_record_stats: TrackRecordStats | None = None
+    # WIA-35: trafność kierunkowa per symbol z okna track recordu — chip przy
+    # predykcji i sygnale. None = mail bez chipów.
+    symbol_track_record: SymbolTrackRecordView | None = None
+    # WIA-49: predykcje, które ten cykl oznaczył jako wygasłe bez oceny.
+    expired_unverified: int = 0
     # MAIL-14: strefa (IANA) czasu startu cyklu w nagłówku HTML i tekstu.
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
     # MAIL-42: przebieg, który wygenerował mail — stopka z numerem, krótkim SHA
     # i (tylko w GHA) linkiem do logów. None = stopka jak przed MAIL-42.
     run_context: RunContext | None = None
+    # ALR-05: reżim rynku i mnożnik progu bramki w nagłówku. None = reżim off
+    # albo brak raportu Risk Watch — nagłówek jak przed ALR-05.
+    regime: RegimeBanner | None = None
+    # DAT-21: zakup insidera prowadzi maila tylko przez N dni od filingu. None =
+    # bez okna (wołający bez daty cyklu, testy).
+    insider_lead_window: InsiderLeadWindow | None = None
 
 
 def _resolved_note(context: ReportContext, window: str) -> str | None:
@@ -1342,44 +1519,11 @@ def build_html_report(
     mood = build_portfolio_mood(results)
     session = market_status(started_at)
     forecast_horizon = forecast_horizon_label(started_at)
-    # Q7: hit-rate cyklu (z accuracy_stats) napędza pasmo wielkości pozycji.
-    hit_rate, hit_sample = _sizing_track_record(context.accuracy_stats)
-    # #9: gdy orkiestrator dostarczył kubełki kalibracji (flaga
-    # `calibrated_confidence_enabled`), ranking sygnałów liczy się na pewności
-    # skorygowanej historią. None → surowa pewność, jak przed #9.
     current_prices = _report_prices(results, context)
-    # #15 faza 2: gdy znamy realny portfel, sizing widzi istniejącą ekspozycję
-    # (symbolu i jego klastra) i może zaproponować wyłącznie WĘŻSZĄ bandę.
     pln_rates = _pln_rates_of(context)
-    weight_prices = (
-        _weight_prices(context.user_portfolio, current_prices, pln_rates)
-        if context.user_portfolio is not None
-        else current_prices
-    )
-    portfolio_weights = (
-        context.user_portfolio.weights(weight_prices) if context.user_portfolio is not None else None
-    )
-    cluster_exposures = _cluster_exposure_per_symbol(
-        context.user_portfolio, context.portfolio_clusters, weight_prices
-    )
-    sizing_risk = (
-        context.position_risk
-        if context.user_portfolio is not None and context.position_risk is not None
-        else PositionRisk()
-    )
-    rank_signals = functools.partial(
-        build_trade_signals,
-        results,
-        hit_rate=hit_rate,
-        hit_sample=hit_sample,
-        calibration_buckets=context.signal_calibration_buckets,
-        portfolio_weights=portfolio_weights,
-        cluster_exposures=cluster_exposures,
-        portfolio_var=sizing_risk.var,
-        drawdown=sizing_risk.drawdown,
-        hedge_effective=sizing_risk.hedge_effective,
-    )
-    trade_signals = rank_signals()
+    # MAIL-06: pełny ranking (pełna rada dla top N); 🎯 sekcja bierze jego czołówkę.
+    ranked_signals = build_cycle_signals(results, context, top_n=len(results))
+    trade_signals = ranked_signals[:_TOP_SIGNALS]
     risk_signals = detect_risk_signals(results)
     macro_risk_html = (
         render_risk_watch_html(context.macro_risk_report) if context.macro_risk_report else ""
@@ -1401,9 +1545,7 @@ def build_html_report(
     # typy domenowe — `src/domain/digest_lead.py` ich nie importuje.
     lead_items = build_cycle_lead(results, context)
     # MAIL-06: pełna rada dla top N wg siły sygnału i symboli z leadu.
-    full_detail = _full_detail_symbols(
-        saved, rank_signals(top_n=len(results)), lead_items
-    )
+    full_detail = _full_detail_symbols(saved, ranked_signals, lead_items)
     lead_html = render_lead_html(lead_items)
     lead_text = render_lead_text(lead_items)
     onboarding_html, onboarding_text = _build_onboarding_blocks(
@@ -1491,6 +1633,7 @@ def build_html_report(
         context.equity_curve, context.calibration_buckets, context.lessons,
         context.track_record_stats,
         compact=len(saved) > _FULL_DETAIL_TOP_N,
+        expired_count=context.expired_unverified,
     )
     # Dane: sekcja Alpha Signals (insider/analitycy/opcje/social/earnings per
     # symbol + krzywa rentowności FRED). render zwraca "" gdy brak danych.
@@ -1511,6 +1654,7 @@ def build_html_report(
         _RESOLVED_WINDOW_THIS_CYCLE if context.resolved_this_cycle else _RESOLVED_WINDOW_24H
     )
     resolved_note = _resolved_note(context, resolved_window)
+    symbol_chips = symbol_chip_labels(context.symbol_track_record, (r.symbol for r in saved))
     html = _render_html(
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
@@ -1521,6 +1665,8 @@ def build_html_report(
         full_detail=full_detail,
         sector_map=sector_map,
         forecast_horizon=forecast_horizon,
+        symbol_chips=symbol_chips,
+        regime_html=render_regime_html(context.regime),
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1552,6 +1698,8 @@ def build_html_report(
         settlements_unavailable=context.resolved_unavailable,
         sector_map=sector_map,
         forecast_horizon=forecast_horizon,
+        symbol_chips=symbol_chips,
+        regime_text=render_regime_text(context.regime),
     )
     text = _fill_text_slots(
         text,
@@ -1562,6 +1710,15 @@ def build_html_report(
         lead_text=lead_text,
         onboarding_text=onboarding_text,
         suggestions_text=suggestions_text,
+        # MAIL-09: sekcje z rendererem tekstu, których wersja tekstowa nie miała.
+        sections={
+            _CONSENSUS_SHIFT_SLOT: render_consensus_shift_text(context.consensus_shifts or []),
+            _MODEL_SCORECARD_SLOT: _build_model_scorecard_text(
+                context.model_scorecard, now=started_at, model_loaded=context.ml_model_loaded
+            ),
+            _COUNCIL_HISTORY_SLOT: render_council_history_text(context.council_history or []),
+            _FINOPS_SLOT: render_finops_text(context.cycle_cost),
+        },
     )
     run_footer_text = _render_run_footer_text(context.run_context)
     if run_footer_text:
@@ -1648,27 +1805,62 @@ def _strength_label(rank: int, sig: TradeSignal) -> str:
     return f"#{rank} · ruch {move_pct} × {basis} {confidence_pct}"
 
 
-def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
-    """🎯 Najsilniejsze sygnały transakcyjne. Pusty string, gdy brak sygnałów."""
+def _signal_label(sig: TradeSignal) -> str:
+    """PORT-08: kierunek sygnału — przy znanym portfelu w kontekście pozycji
+    („ZREDUKUJ (12% portfela)”), inaczej KUP / SPRZEDAJ / OBSERWUJ jak dotąd."""
+    action = sig.position_action
+    if action is None:
+        return sig.direction
+    held = action in (PositionAction.REDUCE, PositionAction.HOLD)
+    if held and sig.position_weight is not None:
+        return f"{action.label} ({_pct(sig.position_weight, decimals=0)} portfela)"
+    return action.label
+
+
+def _signal_tone(sig: TradeSignal) -> str:
+    action = sig.position_action
+    return sig.direction if action is None else _POSITION_ACTION_TONE[action]
+
+
+def _signal_size_band(sig: TradeSignal) -> SizeBand | None:
+    """Banda wielkości to sugestia wejścia — przy „UNIKAJ”, „ZREDUKUJ” i „TRZYMAJ,
+    nie dokładaj” sprzeczna z kierunkiem, więc jej nie pokazujemy (PORT-08)."""
+    if sig.position_action in (None, PositionAction.BUY):
+        return sig.size_band
+    return None
+
+
+def _render_trade_signals_html(
+    trade_signals: list[TradeSignal], symbol_chips: Mapping[str, str] | None = None
+) -> str:
+    """🎯 Najsilniejsze sygnały transakcyjne. Pusty string, gdy brak sygnałów.
+
+    `symbol_chips` (WIA-35): trafność kierunkowa na danym symbolu pod wierszem."""
     if not trade_signals:
         return ""
+    chips = symbol_chips or {}
     parts = [_section_h2("🎯 Najsilniejsze sygnały")]
     if any(sig.ml_cold_start for sig in trade_signals):
         parts.append(
             "<div style='font-size: 12px; color: #6b7280; margin-bottom: 8px;'>"
             f"{_html(_SIGNALS_COLD_START_NOTE)}</div>"
         )
+    if any(sig.position_action is not None for sig in trade_signals):
+        parts.append(
+            "<div style='font-size: 12px; color: #6b7280; margin-bottom: 8px;'>"
+            f"{_html(_SIGNALS_POSITION_NOTE)}</div>"
+        )
     for rank, sig in enumerate(trade_signals, start=1):
         dir_color = {
             "KUP": PALETTE.positive,
             "SPRZEDAJ": PALETTE.negative,
             "OBSERWUJ": PALETTE.neutral,
-        }[sig.direction]
+        }[_signal_tone(sig)]
         dir_bg = {
             "KUP": "#f0fdf4",
             "SPRZEDAJ": "#fef2f2",
             "OBSERWUJ": "#f9fafb",
-        }[sig.direction]
+        }[_signal_tone(sig)]
         forecast_html = (
             f'<span style="color: #6b7280;">prognoza <strong>{_COLD_START_FORECAST}</strong></span>'
             if sig.ml_cold_start
@@ -1678,10 +1870,11 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
             )
         )
         # Q7: pasmo wielkości pozycji (Kelly-lite z konsensusu rady + hit-rate).
+        size_band = _signal_size_band(sig)
         size_html = (
             f'<span style="color: #6b7280; font-size: 12px;">'
-            f"{_html(sig.size_band.label)}</span>"
-            if sig.size_band
+            f"{_html(size_band.label)}</span>"
+            if size_band
             else ""
         )
         parts.append(f"""
@@ -1689,7 +1882,7 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
                           border-left: 4px solid {dir_color}; border-radius: 4px;
                           font-size: 13px; display: flex; gap: 12px; align-items: center;">
                 <span style="font-weight: 700; color: {dir_color}; min-width: 90px;">
-                  {sig.direction}
+                  {_html(_signal_label(sig))}
                 </span>
                 <span style="font-weight: 600; min-width: 60px;">{_html(_company_label(sig.symbol))}</span>
                 <span style="color: #4b5563;">
@@ -1702,6 +1895,12 @@ def _render_trade_signals_html(trade_signals: list[TradeSignal]) -> str:
                 </span>
               </div>
             """)
+        chip = chips.get(sig.symbol)
+        if chip:
+            parts.append(
+                "<div style='font-size: 12px; color: #6b7280; margin: -4px 0 8px 18px;'>"
+                f"{_html(chip)}</div>"
+            )
     return "".join(parts)
 
 
@@ -1800,6 +1999,25 @@ _DIRECTIONAL_ACCURACY_LABEL = "Trafność kierunkowa (bez prognoz „bez ruchu�
 _TOTAL_ACCURACY_LABEL = "Trafność łączna (z prognozami „bez ruchu”)"
 
 
+# WIA-61 (okres przejściowy, opcja „oba”): druga cena rozliczenia obok /quote.
+_SESSION_CLOSE_ACCURACY_LABEL = "Na oficjalnym zamknięciu sesji"
+
+
+def _session_close_accuracy(accuracy_stats: dict[str, Any]) -> str | None:
+    """WIA-61: linia trafności na zamknięciu sesji z trafnością /quote tych samych
+    predykcji; None, gdy statystyki jej nie niosą (flaga off) albo próba pusta."""
+    n = accuracy_stats.get("session_close_count")
+    if not n:
+        return None
+    hits = accuracy_stats["session_close_correct_count"]
+    quote_hits = accuracy_stats["session_close_quote_correct_count"]
+    return (
+        f"{_SESSION_CLOSE_ACCURACY_LABEL}: {_pct(hits / n, decimals=1)}"
+        f" ({wilson_label(hits, n)}) · na cenie /quote tych samych predykcji:"
+        f" {_pct(quote_hits / n, decimals=1)}"
+    )
+
+
 def _directional_accuracy(accuracy_stats: dict[str, Any]) -> tuple[str, str] | None:
     """(wartość, dopisek) trafności kierunkowej; None, gdy statystyki jej nie niosą."""
     n = accuracy_stats.get("directional_count")
@@ -1827,6 +2045,10 @@ def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
             if directional is not None
             else ""
         )
+        session_close = _session_close_accuracy(accuracy_stats)
+        session_close_html = (
+            f"<br/>{html.escape(session_close)}" if session_close is not None else ""
+        )
         return f"""
       <div style="padding: 12px 14px; background: #fef3c7; border-left: 3px solid #f59e0b;
                   border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
@@ -1837,7 +2059,7 @@ def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
           {directional_html}
           {_TOTAL_ACCURACY_LABEL}: <strong>{_pct(acc, decimals=1)}</strong> ({interval})
           · Predykcji ocenionych: {n}
-          · Poprawnych: {correct}
+          · Poprawnych: {correct}{session_close_html}
         </div>
       </div>
         """
@@ -2040,9 +2262,12 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
             """
 
 
-def _render_reasoning_block_html(r: SymbolResult, sector_map: Mapping[str, str]) -> str:
+def _render_reasoning_block_html(
+    r: SymbolResult, sector_map: Mapping[str, str], chip: str | None = None
+) -> str:
     """Blok 'Uzasadnienia' dla jednej predykcji. Pusty string, gdy nie ma
-    czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji)."""
+    czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji).
+    `chip` (WIA-35) — trafność kierunkowa na symbolu, pod oczekiwanym ruchem."""
     # Q5/Q6: blok renderujemy też, gdy są analogi (precedent receipts)
     # lub odznaki proweniencji — nawet bez reasoning/rady.
     badges_html = _provenance_badges_html(r.provenance_badges)
@@ -2076,6 +2301,8 @@ def _render_reasoning_block_html(r: SymbolResult, sector_map: Mapping[str, str])
         move_line = f'<div class="rm">Oczekiwany ruch: {move_text}{conf_part}</div>'
     if r.move_interval is not None:
         move_line += f'<div class="rm">{_move_interval_label(r.move_interval)}</div>'
+    if chip:
+        move_line += f'<div class="rm">{_html(chip)}</div>'
     # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
     # (finding #35). Escapowanie title/source jest tu domyślne.
     news_block = _render_news_block_html(r.top_news)
@@ -2113,6 +2340,7 @@ def _render_saved_section_html(
     *,
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
+    symbol_chips: Mapping[str, str] | None = None,
 ) -> str:
     """🔮 Sekcja wygenerowanych predykcji: tabela + wykres prognozy +
     uzasadnienia. Pusty string, gdy w tym cyklu nic nie zapisano.
@@ -2155,8 +2383,11 @@ def _render_saved_section_html(
     def has_full_block(r: SymbolResult) -> bool:
         return full_detail is None or r.symbol in full_detail
 
+    chips = symbol_chips or {}
     parts.extend(
-        _render_reasoning_block_html(r, sector_map) for r in saved if has_full_block(r)
+        _render_reasoning_block_html(r, sector_map, chips.get(r.symbol))
+        for r in saved
+        if has_full_block(r)
     )
     parts.append(
         _render_compact_predictions_html([r for r in saved if not has_full_block(r)])
@@ -2355,17 +2586,32 @@ def _render_credibility_bar_html(accuracy_stats: Mapping[str, Any] | None) -> st
     )
 
 
-def _render_mood_html(mood: dict[str, Any]) -> str:
-    """📊 Nastroje portfela — sentyment cyklu w Zapleczu."""
+# MAIL-10: średnia bez ani jednego sentymentu to brak danych, nie „+0,00 (Neutralny)”.
+_NO_SENTIMENT_LABEL = "brak danych"
+
+
+def _mood_average(mood: PortfolioMood) -> tuple[str, str]:
+    """(średni sentyment, etykieta) — „—” i „brak danych”, gdy cykl nie ma sentymentu."""
+    if mood.avg_sentiment is None or mood.avg_sentiment_label is None:
+        return "—", _NO_SENTIMENT_LABEL
+    return _number(mood.avg_sentiment, decimals=2, signed=True), mood.avg_sentiment_label
+
+
+def _render_mood_html(mood: PortfolioMood) -> str:
+    """📊 Nastroje portfela — sentyment cyklu w Zapleczu. MAIL-10: cykl bez
+    zapisanych predykcji (dzień zdegradowany, same pominięte) nie ma boxu."""
+    if mood.saved_count == 0:
+        return ""
+    average, average_label = _mood_average(mood)
     bullish_part = (
-        f"<strong>{_html(_company_label(mood['most_bullish'].symbol))}</strong> "
-        f"({_number(mood['most_bullish'].sentiment_score, decimals=2, signed=True)})"
-        if mood["most_bullish"] else "—"
+        f"<strong>{_html(_company_label(mood.most_bullish.symbol))}</strong> "
+        f"({_number(mood.most_bullish.sentiment_score, decimals=2, signed=True)})"
+        if mood.most_bullish else "—"
     )
     bearish_part = (
-        f"<strong>{_html(_company_label(mood['most_bearish'].symbol))}</strong> "
-        f"({_number(mood['most_bearish'].sentiment_score, decimals=2, signed=True)})"
-        if mood["most_bearish"] else "—"
+        f"<strong>{_html(_company_label(mood.most_bearish.symbol))}</strong> "
+        f"({_number(mood.most_bearish.sentiment_score, decimals=2, signed=True)})"
+        if mood.most_bearish else "—"
     )
     return f"""
       <div style="padding: 12px 14px; background: #eff6ff; border-left: 3px solid #2563eb;
@@ -2374,11 +2620,11 @@ def _render_mood_html(mood: dict[str, Any]) -> str:
           📊 Nastroje portfela
         </div>
         <div style="color: #1e40af; line-height: 1.7;">
-          Średni sentyment: <strong>{_number(mood['avg_sentiment'], decimals=2, signed=True)}</strong>
-          ({mood['avg_sentiment_label']})<br/>
+          Średni sentyment: <strong>{average}</strong>
+          ({average_label})<br/>
           Najbardziej pozytywny: {bullish_part} · Najbardziej negatywny: {bearish_part}<br/>
-          Predykcje z wysoką pewnością (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}
-          · Łącznie newsów: {mood['total_news']}
+          Predykcje z wysoką pewnością (≥70%): {mood.high_confidence_count} / {mood.saved_count}
+          · Łącznie newsów: {mood.total_news}
         </div>
       </div>
     """
@@ -2391,7 +2637,7 @@ def _render_html(
     errors: list[SymbolResult],
     started_local: str,
     duration_seconds: float,
-    mood: dict[str, Any],
+    mood: PortfolioMood,
     session: dict[str, str],
     accuracy_stats: dict[str, Any] | None,
     trade_signals: list[TradeSignal],
@@ -2406,6 +2652,8 @@ def _render_html(
     full_detail: frozenset[str] | None = None,
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
+    symbol_chips: Mapping[str, str] | None = None,
+    regime_html: str = "",
 ) -> str:
     sections = []
 
@@ -2414,7 +2662,7 @@ def _render_html(
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 720px; margin: 0 auto; color: #1f2937;">
       <h1 style="font-size: 22px; margin: 0 0 4px 0;">📊 StockAgent — raport cyklu</h1>
       <div style="font-size: 13px; color: #6b7280; margin-bottom: 24px;">
-        Czas rozpoczęcia: {started_local}
+        Czas rozpoczęcia: {started_local}{regime_html}
       </div>
     """)
 
@@ -2471,11 +2719,15 @@ def _render_html(
     )
     sections.append(_CONSENSUS_SHIFT_SLOT)
     sections.append(_render_rebaselined_html(ignored, display_timezone))
-    sections.append(_render_trade_signals_html(trade_signals))
+    sections.append(_render_trade_signals_html(trade_signals, symbol_chips))
     sections.append(_render_risk_signals_html(risk_signals))
     sections.append(
         _render_saved_section_html(
-            saved, full_detail, sector_map=sector_map, forecast_horizon=forecast_horizon
+            saved,
+            full_detail,
+            sector_map=sector_map,
+            forecast_horizon=forecast_horizon,
+            symbol_chips=symbol_chips,
         )
     )
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
@@ -2524,6 +2776,7 @@ def _render_html(
       <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 11px; color: {PALETTE.muted};">
         <div style="margin-bottom: 8px; color: #6b7280;">{_html(INVESTMENT_DISCLAIMER)}</div>
         {_render_technical_footer_html(results, saved, ignored, errors, duration_seconds)}
+        <div style="margin-bottom: 8px;">{_html(DATA_SOURCES_FOOTER_PL)}</div>
         StockAgent · Agentic RAG + Continual Learning · raport automatyczny
         {_RUN_FOOTER_SLOT}
       </div>
@@ -2538,24 +2791,33 @@ def _render_html(
 # ---------------------------------------------------------------------------
 
 
-def _render_trade_signals_text(trade_signals: list[TradeSignal]) -> list[str]:
+def _render_trade_signals_text(
+    trade_signals: list[TradeSignal], symbol_chips: Mapping[str, str] | None = None
+) -> list[str]:
     """Sekcja 'Najsilniejsze sygnały' (plain). Pusta lista, gdy brak sygnałów."""
     if not trade_signals:
         return []
+    chips = symbol_chips or {}
     lines = ["NAJSILNIEJSZE SYGNAŁY", "-" * 64]
     if any(sig.ml_cold_start for sig in trade_signals):
         lines.append(f"  {_SIGNALS_COLD_START_NOTE}")
+    if any(sig.position_action is not None for sig in trade_signals):
+        lines.append(f"  {_SIGNALS_POSITION_NOTE}")
     for rank, sig in enumerate(trade_signals, start=1):
-        size_txt = f"  [{sig.size_band.label}]" if sig.size_band else ""
+        size_band = _signal_size_band(sig)
+        size_txt = f"  [{size_band.label}]" if size_band else ""
         forecast = (
             _COLD_START_FORECAST if sig.ml_cold_start else _pct(sig.expected_change, signed=True)
         )
         lines.append(
-            f"  {sig.direction:9s} {_company_label(sig.symbol):40s} "
+            f"  {_signal_label(sig):9s} {_company_label(sig.symbol):40s} "
             f"pewność {_confidence_text(sig)}  "
             f"prognoza {forecast:>8s}  "
             f"{_strength_label(rank, sig)}{size_txt}"
         )
+        chip = chips.get(sig.symbol)
+        if chip:
+            lines.append(f"            {chip}")
     lines.append("")
     return lines
 
@@ -2612,6 +2874,9 @@ def _render_resolved_predictions_text(
                 f"        faktycznie: {prices}({_pct(p.actual_change_pct, signed=True)})"
             )
         lines.append(f"        dlaczego: {_resolved_why(p)}")
+        receipt = _resolved_receipt_line(p)
+        if receipt:
+            lines.append(f"        kwit: {receipt}")
     lines.append(
         f"  Suma: {correct}/{len(resolved_predictions)} · "
         f"{_resolved_accuracy_pair(resolved_predictions)}"
@@ -2636,27 +2901,34 @@ def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list
         f" ({wilson_label(accuracy_stats['correct_count'], accuracy_stats['sample_count'])})"
         f"  ·  Predykcji ocenionych: {accuracy_stats['sample_count']}"
         f"  ·  Poprawnych: {accuracy_stats['correct_count']}",
-        "",
     ])
+    session_close = _session_close_accuracy(accuracy_stats)
+    if session_close is not None:
+        lines.append(f"  {session_close}")
+    lines.append("")
     return lines
 
 
-def _render_mood_text(mood: dict[str, Any]) -> list[str]:
-    """Sekcja 'Nastroje portfela' (plain) — w Zapleczu, jak w HTML."""
+def _render_mood_text(mood: PortfolioMood) -> list[str]:
+    """Sekcja 'Nastroje portfela' (plain) — w Zapleczu, jak w HTML (MAIL-10: bez
+    zapisanych predykcji sekcji nie ma)."""
+    if mood.saved_count == 0:
+        return []
+    average, average_label = _mood_average(mood)
     lines = [
         "NASTROJE PORTFELA",
         "-" * 64,
-        f"  Średni sentyment: {_number(mood['avg_sentiment'], decimals=2, signed=True)} ({mood['avg_sentiment_label']})",
+        f"  Średni sentyment: {average} ({average_label})",
     ]
-    if mood["most_bullish"]:
-        mb = mood["most_bullish"]
+    if mood.most_bullish:
+        mb = mood.most_bullish
         lines.append(f"  Najbardziej pozytywny: {_company_label(mb.symbol)} ({_number(mb.sentiment_score, decimals=2, signed=True)})")
-    if mood["most_bearish"]:
-        mbe = mood["most_bearish"]
+    if mood.most_bearish:
+        mbe = mood.most_bearish
         lines.append(f"  Najbardziej negatywny: {_company_label(mbe.symbol)} ({_number(mbe.sentiment_score, decimals=2, signed=True)})")
     lines.append(
-        f"  Wysoka pewność (≥70%): {mood['high_confidence_count']} / {mood['saved_count']}"
-        f"  ·  Newsów: {mood['total_news']}"
+        f"  Wysoka pewność (≥70%): {mood.high_confidence_count} / {mood.saved_count}"
+        f"  ·  Newsów: {mood.total_news}"
     )
     lines.append("")
     return lines
@@ -2675,9 +2947,11 @@ def _render_reflections_text(saved: list[SymbolResult]) -> list[str]:
     return lines
 
 
-def _render_prediction_text(r: SymbolResult, sector_map: Mapping[str, str]) -> list[str]:
+def _render_prediction_text(
+    r: SymbolResult, sector_map: Mapping[str, str], chip: str | None = None
+) -> list[str]:
     """Linie jednej predykcji (plain): nagłówek + sentyment + sygnał modelu +
-    proweniencja + reasoning + analogi + newsy + wycena."""
+    trafność na symbolu (WIA-35) + proweniencja + reasoning + analogi + newsy + wycena."""
     conf_part = (
         f" · pewność {_pct(r.confidence_score, decimals=0)}"
         if r.confidence_score is not None
@@ -2706,6 +2980,8 @@ def _render_prediction_text(r: SymbolResult, sector_map: Mapping[str, str]) -> l
     ]
     if r.move_interval is not None:
         lines.append(f"         {_move_interval_label(r.move_interval)}")
+    if chip:
+        lines.append(f"         {chip}")
     # Q6: odznaki proweniencji (pomijamy FRESH — brak szumu).
     badge_labels = [
         b.label for b in r.provenance_badges
@@ -2739,7 +3015,10 @@ def _render_prediction_text(r: SymbolResult, sector_map: Mapping[str, str]) -> l
 
 
 def _render_saved_section_text(
-    saved: list[SymbolResult], sector_map: Mapping[str, str], forecast_horizon: str = ""
+    saved: list[SymbolResult],
+    sector_map: Mapping[str, str],
+    forecast_horizon: str = "",
+    symbol_chips: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Sekcja 'Predykcje' (plain). Pusta lista, gdy nic nie zapisano."""
     if not saved:
@@ -2747,8 +3026,9 @@ def _render_saved_section_text(
     lines = ["PREDYKCJE", "-" * 64]
     if forecast_horizon:
         lines.append(f"  {_FORECAST_HORIZON_PREFIX}{forecast_horizon}")
+    chips = symbol_chips or {}
     for r in saved:
-        lines.extend(_render_prediction_text(r, sector_map))
+        lines.extend(_render_prediction_text(r, sector_map, chips.get(r.symbol)))
     lines.append("")
     return lines
 
@@ -2789,7 +3069,7 @@ def _render_plain(
     errors: list[SymbolResult],
     started_local: str,
     duration_seconds: float,
-    mood: dict[str, Any],
+    mood: PortfolioMood,
     session: dict[str, str],
     accuracy_stats: dict[str, Any] | None,
     trade_signals: list[TradeSignal],
@@ -2803,6 +3083,8 @@ def _render_plain(
     settlements_unavailable: bool = False,
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
+    symbol_chips: Mapping[str, str] | None = None,
+    regime_text: str = "",
 ) -> str:
     lines: list[str] = []
     lines.append(_QUOTA_BANNER_SLOT)
@@ -2813,6 +3095,8 @@ def _render_plain(
     lines.append("=" * 64)
     lines.append(f"Czas rozpoczęcia:  {started_local}")
     lines.append(f"Sesja NYSE:        {session['label']} — {session['detail']}")
+    if regime_text:
+        lines.append(regime_text)
     lines.append("")
     # MAIL-16: trzy liczby dla czytelnika (portfel tylko u właściciela, PORT-06);
     # liczniki operacyjne są w stopce technicznej.
@@ -2838,10 +3122,12 @@ def _render_plain(
             resolved_predictions, resolved_window, resolved_note, sector_map=sector_map
         )
     )
+    # MAIL-09: zmiany nastawienia rady — jak w HTML, za rozliczeniami.
+    lines.append(_CONSENSUS_SHIFT_SLOT)
     lines.extend(_render_rebaselined_text(ignored, display_timezone))
-    lines.extend(_render_trade_signals_text(trade_signals))
+    lines.extend(_render_trade_signals_text(trade_signals, symbol_chips))
     lines.extend(_render_risk_signals_text(risk_signals))
-    lines.extend(_render_saved_section_text(saved, sector_map, forecast_horizon))
+    lines.extend(_render_saved_section_text(saved, sector_map, forecast_horizon, symbol_chips))
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
     crypto_text = _render_crypto_section_text(results, display_timezone)
     if crypto_text:
@@ -2855,10 +3141,13 @@ def _render_plain(
     # PORT-22: radar portfela (klastry, VaR, stress, „za mało historii”).
     lines.append(_PORTFOLIO_SLOT)
     lines.extend(_render_accuracy_history_text(accuracy_stats))
+    lines.append(_MODEL_SCORECARD_SLOT)
+    lines.append(_COUNCIL_HISTORY_SLOT)
     lines.extend(_render_mood_text(mood))
     # Wnioski z poprzednich cykli
     lines.extend(_render_reflections_text(saved))
     lines.append(_SUGGESTIONS_SLOT)
+    lines.append(_FINOPS_SLOT)
     lines.extend(_render_budget_exhausted_text(ignored))
     lines.extend(_render_ignored_text(ignored))
     lines.extend(_render_errors_text(errors))
@@ -2869,6 +3158,7 @@ def _render_plain(
         "-" * 64,
         INVESTMENT_DISCLAIMER,
         _technical_footer_text(results, saved, ignored, errors, duration_seconds),
+        DATA_SOURCES_FOOTER_PL,
     ])
 
     return "\n".join(lines)

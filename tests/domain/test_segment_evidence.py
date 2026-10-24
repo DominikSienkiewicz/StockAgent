@@ -7,6 +7,8 @@ segmentacji jest korygowana BH-FDR — „najlepszy segment” to inaczej selekc
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from src.domain.segment_evidence import (
@@ -37,11 +39,15 @@ class TestComponentDirections:
         ("recommendation", "trend"),
         [("BUY", "BULLISH"), ("SELL", "BEARISH"), ("HOLD", "SIDEWAYS"), (" buy ", "BULLISH")],
     )
-    def test_council_recommendation_maps_to_a_trend(self, recommendation, trend) -> None:
+    def test_council_recommendation_maps_to_a_trend(
+        self, recommendation: str, trend: str
+    ) -> None:
         assert council_trend(recommendation) == trend
 
     @pytest.mark.parametrize("recommendation", [None, "", "STRONG_BUY"])
-    def test_missing_or_unknown_recommendation_is_no_call(self, recommendation) -> None:
+    def test_missing_or_unknown_recommendation_is_no_call(
+        self, recommendation: str | None
+    ) -> None:
         assert council_trend(recommendation) is None
 
     def test_model_trend_follows_the_target_price(self) -> None:
@@ -78,11 +84,11 @@ class TestSegmentKeys:
             (1.0, "0.80-1.00"),
         ],
     )
-    def test_confidence_bucket_boundaries(self, score, bucket) -> None:
+    def test_confidence_bucket_boundaries(self, score: float, bucket: str) -> None:
         assert confidence_bucket(score) == bucket
 
     @pytest.mark.parametrize("score", [None, -0.1, 1.1, float("nan")])
-    def test_invalid_confidence_is_unknown(self, score) -> None:
+    def test_invalid_confidence_is_unknown(self, score: float | None) -> None:
         assert confidence_bucket(score) == UNKNOWN_SEGMENT
 
     def test_sign_segment(self) -> None:
@@ -103,8 +109,8 @@ class TestAssessSegments:
         )
 
         by_key = {s.key: s for s in segments}
-        assert (by_key["a"].n, by_key["a"].rate) == (2, pytest.approx(0.5))
-        assert (by_key["b"].n, by_key["b"].rate) == (1, pytest.approx(1.0))
+        assert (by_key["a"].n, by_key["a"].rate) == (2, cast(float, pytest.approx(0.5)))
+        assert (by_key["b"].n, by_key["b"].rate) == (1, cast(float, pytest.approx(1.0)))
         assert by_key["a"].evidence.interval is not None
 
     def test_expected_keys_come_first_even_without_calls(self) -> None:
@@ -163,5 +169,5 @@ class TestDefaultConfidenceBucket:
         assert confidence_bucket(0.5) == DEFAULT_CONFIDENCE_BUCKET
 
     @pytest.mark.parametrize("score", [0.49, 0.51])
-    def test_neighbours_of_the_default_stay_in_the_low_band(self, score) -> None:
+    def test_neighbours_of_the_default_stay_in_the_low_band(self, score: float) -> None:
         assert confidence_bucket(score) == "0.00-0.60"

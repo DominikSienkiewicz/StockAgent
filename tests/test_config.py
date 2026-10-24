@@ -51,15 +51,39 @@ class TestSettings:
         assert settings.supabase_url == "https://test.supabase.co"
 
     def test_raises_when_required_key_missing(self, env):
+        # ARCH-05: brak klucza zatrzymuje fabrykę, która go woła, nie konstrukcję.
         env.delenv("FINNHUB_API_KEY")
-        with pytest.raises(ValueError, match="finnhub_api_key"):
-            Settings(_env_file=None)
+        with pytest.raises(ValueError, match="FINNHUB_API_KEY"):
+            Settings(_env_file=None).require_finnhub_api_key()
 
     def test_alpha_vantage_is_required(self, env):
         env.delenv("ALPHA_VANTAGE_API_KEYS")
         env.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
         with pytest.raises(ValueError, match="alpha_vantage"):
-            Settings(_env_file=None)
+            Settings(_env_file=None).require_alpha_vantage_api_keys()
+
+    def test_settings_constructs_without_paid_keys(self, env):
+        # ARCH-05: darmowe joby (watch, deadman) nie potrzebują atrap płatnych kluczy.
+        for key in ("OPENAI_API_KEY", "FINNHUB_API_KEY", "ALPHA_VANTAGE_API_KEYS"):
+            env.delenv(key)
+
+        settings = Settings(_env_file=None)
+
+        assert settings.openai_api_key is None
+        assert settings.finnhub_api_key is None
+        assert settings.alpha_vantage_api_keys == []
+
+    def test_require_openai_api_key_names_the_variable(self, env):
+        env.delenv("OPENAI_API_KEY")
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            Settings(_env_file=None).require_openai_api_key()
+
+    def test_require_helpers_return_the_configured_keys(self, env):
+        settings = Settings(_env_file=None)
+
+        assert settings.require_openai_api_key() == "sk-test"
+        assert settings.require_finnhub_api_key() == "fh-test"
+        assert settings.require_alpha_vantage_api_keys() == ["av-test"]
 
     def test_parses_alpha_vantage_keys_csv(self, env):
         env.setenv("ALPHA_VANTAGE_API_KEYS", "key1, key2 , key3")
@@ -515,6 +539,25 @@ class TestFeatureSnapshotsFlag:
         assert flipped == baseline
 
 
+class TestMarketFeaturesFlag:
+    """ML-31: cechy rynkowe w `feature_snapshots` i wersja zestawu cech 4 —
+    domyślnie off (zestaw i wersja 3 bez zmian) i poza przepisem: prompt, wektor
+    modelu i progi się nie zmieniają, a wpływ na wagi łapie `model_version`."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).market_features_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "market_features_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, market_features_enabled=True
+        ).config_hash()
+        assert flipped == baseline
+
+
 class TestIntervalCoverageFlag:
     """ML-34: zapis kolumn przedziału (migracja 032) i pokrycie w Track Record.
     Przedział to prezentacja niepewności, nie prognoza — flaga jest poza
@@ -581,6 +624,42 @@ class TestRegimeHysteresisSettings:
         baseline = self._settings().config_hash()
         assert self._settings(regime_hysteresis_enabled=True).config_hash() != baseline
         assert self._settings(regime_exit_confirmations=3).config_hash() != baseline
+
+
+class TestMacroSeriesFlag:
+    """DAT-22: zmienne stanu z FRED — domyślnie off; głosy VIX i spreadu HY mogą
+    zacieśnić próg bramki, więc flaga należy do przepisu."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).macro_series_enabled is False
+
+    def test_belongs_to_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert "macro_series_enabled" in RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, macro_series_enabled=True
+        ).config_hash()
+        assert flipped != baseline
+
+
+class TestTrendProbabilitiesFlag:
+    """ML-29: rozkład trzech klas w prompcie i kolumna z migracji 051 — domyślnie
+    off, a że zmienia prompt i rozkład pewności, należy do przepisu."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).trend_probabilities_enabled is False
+
+    def test_belongs_to_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert "trend_probabilities_enabled" in RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, trend_probabilities_enabled=True
+        ).config_hash()
+        assert flipped != baseline
 
 
 class TestGateDeltaFlag:
@@ -842,6 +921,7 @@ class TestSecretValues:
         "slack_webhook_url": "https://hooks.slack.com/services/0014",
         "edgar_user_agent": "StockAgent/1.0 (contact-0015@example.com)",
         "heartbeat_url": "https://hc-ping.com/check-0016",
+        "backup_age_recipient": "age1recipient-0017",
     }
 
     def test_fixture_covers_every_secret_field(self):
@@ -1023,6 +1103,22 @@ class TestAlphaVantageBudget:
 
         assert settings.av_budget().worst_case == 4
 
+    def test_earnings_from_the_slow_loop_cache_cost_the_fast_loop_nothing(self, env):
+        # FIN-11: kalendarz z `earnings_cache` — Fast Loop pyta AV tylko o newsy.
+        settings = self._settings(
+            symbols=["AAPL", "MSFT"],
+            earnings_calendar_enabled=True,
+            earnings_cache_enabled=True,
+        )
+
+        assert settings.av_budget().worst_case == 2
+
+    def test_earnings_cache_is_off_by_default_and_part_of_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert self._settings().earnings_cache_enabled is False
+        assert "earnings_cache_enabled" in RECIPE_SETTINGS_FIELDS
+
     def test_strict_flag_stops_startup(self, env):
         with pytest.raises(ValueError, match="Alpha Vantage"):
             self._settings(symbols=self._WATCHLIST, av_budget_strict=True)
@@ -1117,6 +1213,40 @@ class TestSlowLoopWeeklyLlmBudget:
         assert "slow_loop_max_paid_llm_calls_per_week" in NON_RECIPE_SETTINGS_FIELDS
         baseline = self._settings().config_hash()
         assert self._settings(slow_loop_max_paid_llm_calls_per_week=3).config_hash() == baseline
+
+
+class TestModelScorecardRunIdFlag:
+    """ML-24: `run_id` w karcie modelu dopiero po migracji 049 — domyślnie off."""
+
+    def test_defaults_off(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.model_scorecard_run_id_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "model_scorecard_run_id_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestModelScorecardFeatureStatsFlag:
+    """ML-21: rozkład cech treningu w karcie dopiero po migracji 052 — domyślnie off,
+    poza przepisem (sam zapis w Slow Loopie)."""
+
+    def test_defaults_off(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.model_scorecard_feature_stats_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "model_scorecard_feature_stats_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, model_scorecard_feature_stats_enabled=True
+        ).config_hash()
+        assert flipped == baseline
 
 
 class TestNyseClosureSkipFlag:
@@ -1374,3 +1504,134 @@ class TestFastLoopWeeklyBudget:
             tool_use.fast_loop_weekly_budget(personas=7).cycle_worst_usd
             > base.fast_loop_weekly_budget(personas=7).cycle_worst_usd
         )
+
+
+class TestPersonaVoteOutcomesFlag:
+    """WIA-51: wagi i ranking person z surowych głosów RPC 045 regułą domeny —
+    flaga odczytu wymagającego migracji, domyślnie off. Zmienia wagi konsensusu
+    (przy `persona_weighting_enabled`), więc należy do przepisu."""
+
+    def test_defaults_off(self, env):
+        assert (
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).persona_vote_outcomes_enabled
+            is False
+        )
+
+    def test_is_part_of_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert "persona_vote_outcomes_enabled" in RECIPE_SETTINGS_FIELDS
+
+
+class TestCorrectionCategoryFlag:
+    """WIA-57: kolumna `correction_category` (migracja 046) — sam zapis kategorii
+    diagnozy i jej odczyt w panelu lessons; prognoza ta sama, poza przepisem."""
+
+    def test_defaults_off(self, env):
+        assert (
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).correction_category_enabled
+            is False
+        )
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "correction_category_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestDiagnosisBackfillSettings:
+    """WIA-53: job Slow Loopa diagnozujący błędne predykcje bez diagnozy — off,
+    z capem płatnych wywołań na przebieg; inny job niż Fast Loop, poza przepisem."""
+
+    def test_defaults_off_with_a_cap_of_five(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.diagnosis_backfill_enabled is False
+        assert settings.diagnosis_backfill_max_calls == 5
+
+    def test_negative_cap_is_rejected(self, env):
+        with pytest.raises(ValueError):
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS, diagnosis_backfill_max_calls=-1)
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert {"diagnosis_backfill_enabled", "diagnosis_backfill_max_calls"} <= (
+            NON_RECIPE_SETTINGS_FIELDS
+        )
+
+class TestPriceAlerts:
+    """ALR-11: lista startowa `price_alerts` z config.toml i flaga watcha (off do
+    migracji 057). Wpis jest walidowany przy starcie — literówka w kierunku albo
+    poziom ≤ 0 zatrzymuje start, zamiast po cichu nie alarmować."""
+
+    def _settings(self, **overrides) -> Settings:
+        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_entries_become_domain_levels(self, env):
+        from src.domain.price_levels import LevelDirection, PriceLevel
+
+        settings = self._settings(
+            price_alerts=[
+                {"symbol": " nvda ", "level": "150", "direction": "ABOVE", "note": "zysk"},
+                {"symbol": "BTC", "level": 60000, "direction": "BELOW"},
+            ]
+        )
+
+        assert settings.price_level_seeds() == (
+            PriceLevel("NVDA", Decimal("150"), LevelDirection.ABOVE, "zysk"),
+            PriceLevel("BTC", Decimal("60000"), LevelDirection.BELOW),
+        )
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"symbol": "NVDA", "level": "150", "direction": "UP"},
+            {"symbol": "NVDA", "level": "0", "direction": "ABOVE"},
+            {"symbol": "NVDA", "level": "150", "direction": "ABOVE", "notes": "literówka"},
+        ],
+    )
+    def test_bad_entry_stops_the_start(self, env, entry):
+        with pytest.raises(ValueError):
+            self._settings(price_alerts=[entry])
+
+    def test_defaults_are_off_and_empty_and_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        settings = self._settings()
+
+        assert settings.price_level_alerts_enabled is False
+        assert settings.price_level_seeds() == ()
+        assert {"price_level_alerts_enabled", "price_alerts"} <= NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestInsiderLeadMaxAgeDays:
+    """DAT-21: zakup insidera prowadzi maila tylko przez N dni od filingu —
+    prezentacja maila, poza przepisem predykcji."""
+
+    def test_defaults_to_three_days(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.insider_lead_max_age_days == 3
+
+    def test_negative_age_is_rejected(self, env):
+        with pytest.raises(ValueError):
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS, insider_lead_max_age_days=-1)
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "insider_lead_max_age_days" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestSessionCloseSettlementFlag:
+    """WIA-61: zapis zamknięcia sesji obok ceny /quote (migracja 059) — off do
+    migracji; pomiar rozliczenia, nie prognoza, więc poza przepisem."""
+
+    def test_defaults_off_and_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.session_close_settlement_enabled is False
+        assert "session_close_settlement_enabled" in NON_RECIPE_SETTINGS_FIELDS

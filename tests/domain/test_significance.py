@@ -220,6 +220,130 @@ class TestClusterBootstrapDifference:
     def test_an_arm_without_observations_gives_no_interval(self) -> None:
         from src.domain.significance import cluster_bootstrap_difference_ci
 
-        cycles = [([1.0, 0.0], []) for _ in range(25)]
+        cycles: list[tuple[list[float], list[float]]] = [([1.0, 0.0], []) for _ in range(25)]
 
         assert cluster_bootstrap_difference_ci(cycles, n_boot=100) is None
+
+
+class TestClusterBootstrapStatistic:
+    """WIA-58 / WIA-38: ten sam bootstrap po cyklach dla dowolnej statystyki
+    próbki (ECE, AUC), nie tylko dla hit-rate."""
+
+    @staticmethod
+    def _mean(values: list[float]) -> float | None:
+        return sum(values) / len(values) if values else None
+
+    def test_matches_the_hit_rate_bootstrap_for_the_mean(self) -> None:
+        from src.domain.significance import cluster_bootstrap_statistic_ci
+
+        cycles = [[True, False, True], [False], [True, True]] * 8
+
+        generic = cluster_bootstrap_statistic_ci(
+            cycles, lambda xs: self._mean([1.0 if x else 0.0 for x in xs]), n_boot=200, seed=4
+        )
+
+        assert generic == cluster_bootstrap_ci(cycles, n_boot=200, seed=4)
+
+    def test_too_few_cycles_give_no_interval(self) -> None:
+        from src.domain.significance import (
+            MIN_BOOTSTRAP_CYCLES,
+            cluster_bootstrap_statistic_ci,
+        )
+
+        cycles = [[1.0, 2.0]] * (MIN_BOOTSTRAP_CYCLES - 1)
+
+        assert cluster_bootstrap_statistic_ci(cycles, self._mean, n_boot=50) is None
+
+    def test_undefined_statistic_on_every_resample_gives_no_interval(self) -> None:
+        from src.domain.significance import (
+            MIN_BOOTSTRAP_CYCLES,
+            cluster_bootstrap_statistic_ci,
+        )
+
+        cycles = [[1.0]] * MIN_BOOTSTRAP_CYCLES
+
+        assert cluster_bootstrap_statistic_ci(cycles, lambda _: None, n_boot=50) is None
+
+
+
+class TestVerdictPlExplicitDecision:
+    """WIA-22: po korekcie BH-FDR decyzję podejmuje procedura, nie surowe p < α."""
+
+    def test_explicit_decision_overrides_the_alpha_cut(self) -> None:
+        verdict = verdict_pl(0.03, 50, 50.0, significant=False)
+
+        assert verdict.startswith("nieodróżnialne od rzutu monetą")
+        assert "p=0.03" in verdict
+
+    def test_explicit_rejection_reads_significant(self) -> None:
+        assert verdict_pl(0.2, 50, 50.0, significant=True).startswith("istotnie lepsze")
+
+    def test_without_decision_the_alpha_cut_stays(self) -> None:
+        assert verdict_pl(0.03, 50, 50.0).startswith("istotnie lepsze")
+
+
+# DOC-16: kalkulator mocy — ile rozliczonych predykcji kierunkowych (w n_eff)
+# trzeba, żeby test jednostronny odróżnił trafność 55% od rzutu monetą.
+
+
+def test_required_n_for_55_vs_50_one_sided_is_617() -> None:
+    from src.domain.significance import required_n
+
+    # z_α = 1,6449, z_β = 0,8416 → ceil(616,2) = 617.
+    assert required_n(0.50, 0.55, alpha=0.05, power=0.80) == 617
+
+
+def test_required_n_grows_as_the_edge_shrinks() -> None:
+    from src.domain.significance import required_n
+
+    assert required_n(0.50, 0.52) > required_n(0.50, 0.55) > required_n(0.50, 0.60)
+
+
+@pytest.mark.parametrize(
+    ("p0", "p1", "alpha", "power"),
+    [
+        (0.50, 0.50, 0.05, 0.80),
+        (0.55, 0.50, 0.05, 0.80),
+        (0.00, 0.55, 0.05, 0.80),
+        (0.50, 1.00, 0.05, 0.80),
+        (0.50, 0.55, 0.00, 0.80),
+        (0.50, 0.55, 0.05, 1.00),
+    ],
+)
+def test_required_n_rejects_a_question_without_an_answer(
+    p0: float, p1: float, alpha: float, power: float
+) -> None:
+    from src.domain.significance import required_n
+
+    with pytest.raises(ValueError):
+        required_n(p0, p1, alpha=alpha, power=power)
+
+
+def test_sample_reached_on_projects_the_current_pace() -> None:
+    from datetime import date, timedelta
+
+    from src.domain.significance import sample_reached_on
+
+    # 12 w 30 dni; brakuje 605 → 605 · 30 / 12 = 1512,5 → 1513 dni.
+    reached = sample_reached_on(12.0, 617, window_days=30, today=date(2026, 10, 22))
+
+    assert reached == date(2026, 10, 22) + timedelta(days=1513)
+
+
+def test_sample_reached_on_without_inflow_has_no_date() -> None:
+    from datetime import date
+
+    from src.domain.significance import sample_reached_on
+
+    # Pauza Fast Loopa: zero napływu to „nigdy”, nie data.
+    assert sample_reached_on(0.0, 617, window_days=30, today=date(2026, 10, 22)) is None
+
+
+def test_sample_reached_on_is_today_once_the_sample_suffices() -> None:
+    from datetime import date
+
+    from src.domain.significance import sample_reached_on
+
+    today = date(2026, 10, 22)
+
+    assert sample_reached_on(700.0, 617, window_days=30, today=today) == today

@@ -168,6 +168,19 @@ def next_open(moment: datetime) -> datetime:
         day += timedelta(days=1)
 
 
+def last_started_session(moment: datetime) -> TradingSession:
+    """DAT-14: ostatnia sesja, której otwarcie nastąpiło najpóźniej w `moment` —
+    trwająca albo ostatnia zakończona. W weekend i święto to poprzedni dzień
+    handlowy."""
+    nyc = to_nyse_time(moment)
+    day = nyc.date()
+    while True:
+        session = session_on(day)
+        if session is not None and session.opens_at <= nyc:
+            return session
+        day -= timedelta(days=1)
+
+
 def to_nyse_time(moment: datetime) -> datetime:
     """`moment` w strefie NYSE; naiwny `datetime` to UTC."""
     aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)

@@ -238,3 +238,64 @@ def test_network_error_log_omits_token(mocker, caplog) -> None:
 
     assert "Finnhub analyst consensus failed for AAPL" in caplog.text
     assert "analyst-secret-token" not in caplog.text
+
+
+# --- DAT-12: wspólny limiter i alerty 401/403/429 -----------------------------
+
+
+def test_429_on_recommendation_emits_quota_alert() -> None:
+    # 429 był połykany jak brak danych — wspólny limit Finnhub znikał bez śladu.
+    from unittest.mock import patch
+
+    from src.application.quota_monitor import QuotaMonitor
+    from src.domain.quota import QuotaSeverity
+
+    monitor = QuotaMonitor()
+    adapter = FinnhubAnalystAdapter(api_key="test-token-123", quota_monitor=monitor)
+    with patch.object(adapter._session, "get", return_value=_status_response(429)):
+        assert adapter.get_consensus("AAPL") is None
+
+    assert len(monitor.alerts) == 1
+    alert = monitor.alerts[0]
+    assert alert.severity is QuotaSeverity.WARNING
+    assert alert.source.startswith("Finnhub")
+    assert "429" in alert.message
+    assert "test-token-123" not in alert.message + alert.action
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_error_on_recommendation_warns_once(status: int, caplog) -> None:
+    import logging
+    from unittest.mock import patch
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = FinnhubAnalystAdapter(api_key="test-token-123", quota_monitor=monitor)
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(adapter._session, "get", return_value=_status_response(status)),
+    ):
+        assert adapter.get_consensus("AAPL") is None
+        assert adapter.get_consensus("MSFT") is None
+
+    warnings = [r for r in caplog.records if str(status) in r.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert monitor.alerts == []
+
+
+def test_every_request_takes_a_token_from_the_shared_limiter(mocker) -> None:
+    limiter = Mock()
+    adapter = FinnhubAnalystAdapter(api_key="test-token-123", rate_limiter=limiter)
+    mocker.patch(
+        "requests.Session.get",
+        side_effect=[
+            _ok_response(_RECOMMENDATION_PAYLOAD),
+            _ok_response({"targetMedian": 220.0}),
+        ],
+    )
+
+    adapter.get_consensus("AAPL")
+
+    assert limiter.acquire.call_count == 2

@@ -11,6 +11,9 @@ i uśredniamy impliedVolatility po wszystkich kontraktach → implied_vol.
 UWAGA: option-chain to PREMIUM endpoint Finnhuba. Na free tier zwraca 403 albo
 pustą listę — adapter robi wtedy graceful no-op (None). To opcjonalne źródło
 alpha (flag-gated + Null default), więc `get_options_flow` NIGDY nie rzuca.
+
+DAT-12: request bierze token ze wspólnego limitera Finnhub procesu; 429 daje
+QuotaAlert, a 401/403 jeden WARNING na adapter (403 = brak planu premium).
 """
 
 from __future__ import annotations
@@ -20,8 +23,10 @@ import logging
 import requests
 
 from src.application.ports import OptionsFlowPort
+from src.application.quota_monitor import QuotaMonitor
 from src.domain.options_flow import OptionsFlowSnapshot
-from src.infrastructure.adapters._http import build_session, safe_get
+from src.infrastructure.adapters._finnhub_common import FinnhubStatusWatcher
+from src.infrastructure.adapters._http import RateLimiter, build_session, safe_get
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10.0
@@ -38,20 +43,28 @@ class FinnhubOptionsAdapter(OptionsFlowPort):
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
         session: requests.Session | None = None,
+        *,
+        quota_monitor: QuotaMonitor | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._session = session if session is not None else build_session()
+        self._rate_limiter = rate_limiter
+        self._status = FinnhubStatusWatcher("Finnhub options", "łańcuch opcji", quota_monitor)
 
     def get_options_flow(self, symbol: str) -> OptionsFlowSnapshot | None:
         try:
+            if self._rate_limiter is not None:
+                self._rate_limiter.acquire()
             response = safe_get(
                 self._session,
                 f"{self._base_url}/stock/option-chain",
                 params={"symbol": symbol, "token": self._api_key},
                 timeout=self._timeout,
             )
+            self._status.observe("stock/option-chain", symbol, response.status_code)
             # Free tier: option-chain jest płatne → 403. Każdy nie-200 = brak
             # danych (no-op), nie podnosimy wyjątku.
             if response.status_code != 200:

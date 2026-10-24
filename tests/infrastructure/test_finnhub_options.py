@@ -200,3 +200,45 @@ def test_network_error_debug_log_omits_token(mocker, caplog) -> None:
 
     assert "Finnhub option-chain failed for AAPL" in caplog.text
     assert "options-secret-token" not in caplog.text
+
+
+# --- DAT-12: wspólny limiter i alerty 401/403/429 -----------------------------
+
+
+def test_429_on_option_chain_emits_quota_alert(mocker) -> None:
+    from src.application.quota_monitor import QuotaMonitor
+    from src.domain.quota import QuotaSeverity
+
+    monitor = QuotaMonitor()
+    adapter = FinnhubOptionsAdapter(api_key="test-token-123", quota_monitor=monitor)
+    mocker.patch("requests.Session.get", return_value=_response({}, status_code=429))
+
+    assert adapter.get_options_flow("AAPL") is None
+
+    assert [a.severity for a in monitor.alerts] == [QuotaSeverity.WARNING]
+    assert "429" in monitor.alerts[0].message
+
+
+def test_premium_403_warns_once_per_adapter(mocker, caplog) -> None:
+    import logging
+
+    adapter = FinnhubOptionsAdapter(api_key="test-token-123")
+    mocker.patch("requests.Session.get", return_value=_response({}, status_code=403))
+
+    with caplog.at_level(logging.WARNING):
+        assert adapter.get_options_flow("AAPL") is None
+        assert adapter.get_options_flow("MSFT") is None
+
+    warnings = [r for r in caplog.records if "403" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "test-token-123" not in caplog.text
+
+
+def test_option_chain_request_takes_a_token_from_the_shared_limiter(mocker) -> None:
+    limiter = Mock()
+    adapter = FinnhubOptionsAdapter(api_key="test-token-123", rate_limiter=limiter)
+    mocker.patch("requests.Session.get", return_value=_response({"data": []}))
+
+    adapter.get_options_flow("AAPL")
+
+    limiter.acquire.assert_called_once()

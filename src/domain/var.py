@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from src.domain.value_objects import require_finite
+
 # Minimalna liczba obserwacji, by kwantyl ogona miał sens (potrzebne ≥2 punkty
 # do interpolacji między statystykami pozycyjnymi).
 _MIN_OBSERVATIONS = 2
@@ -53,8 +55,9 @@ def historical_var(returns: Sequence[float], confidence: float = 0.95) -> float:
     interpolacja między statystykami pozycyjnymi) i zwracamy `max(0, -kwantyl)`.
     Dodatni kwantyl (sam zysk w ogonie) → VaR 0.0. Pusta lub jednoelementowa
     próbka → 0.0 (za mało punktów do interpolacji). `confidence` clampowane do
-    (0,1).
+    (0,1). Zwrot NaN/inf → `ValueError` (PORT-09).
     """
+    require_finite(returns, "VaR returns")
     if len(returns) < _MIN_OBSERVATIONS:
         return 0.0
     quantile = _lower_tail_quantile(returns, _clamp_confidence(confidence))
@@ -68,8 +71,10 @@ def conditional_var(returns: Sequence[float], confidence: float = 0.95) -> float
     wszystkie zwroty NA POZIOMIE progu lub PONIŻEJ niego i zwracamy magnitudę
     ich średniej: `max(0, -mean(tail))`. Gdy żaden zwrot nie wpada do ogona
     (numerycznie pusty ogon), cofamy się do najgorszej obserwacji, by spełnić
-    CVaR >= VaR. Pusta/jednoelementowa próbka → 0.0.
+    CVaR >= VaR. Pusta/jednoelementowa próbka → 0.0. Zwrot NaN/inf →
+    `ValueError` (PORT-09).
     """
+    require_finite(returns, "CVaR returns")
     if len(returns) < _MIN_OBSERVATIONS:
         return 0.0
     threshold = _lower_tail_quantile(returns, _clamp_confidence(confidence))

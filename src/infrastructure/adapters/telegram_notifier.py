@@ -1,12 +1,15 @@
 """TelegramNotifier — push raportu przez Telegram Bot API (`sendMessage`).
 
 Kanał nie renderuje HTML maila, więc konsumujemy `plain_text` (subject + treść).
+MAIL-20: wiadomość idzie w `parse_mode=HTML` — temat pogrubiony, a cała treść
+escapowana (`<`, `>`, `&`), bo nagłówki leadu pochodzą z rady i newsów.
 W odróżnieniu od `ResendNotifier` adapter NIE rzuca z `send_report` — złamany
 kanał push nie może zabić cyklu. Błąd 4xx/5xx/sieci → CRITICAL `QuotaAlert`.
 """
 
 from __future__ import annotations
 
+import html
 import logging
 from datetime import UTC, datetime
 
@@ -45,16 +48,22 @@ class TelegramNotifier(ReportNotifierPort):
         self._session = build_session(retry_post=False)
         self._quota_monitor = quota_monitor
 
-    def send_report(self, subject: str, html_body: str, plain_text: str) -> None:
+    def send_report(
+        self, subject: str, html_body: str, plain_text: str, *, silent: bool = False
+    ) -> None:
         # Kanał push konsumuje plain_text — HTML maila jest tu nieprzydatny.
-        text = f"{subject}\n\n{plain_text}"
+        text = f"<b>{_escape(subject)}</b>\n\n{_escape(plain_text)}"
         url = f"{self._base_url}/bot{self._bot_token}/sendMessage"
+        payload: dict[str, str | bool] = {
+            "chat_id": self._chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+        }
+        if silent:
+            # ALR-09: Bot API dostarcza wiadomość bez dźwięku powiadomienia.
+            payload["disable_notification"] = True
         try:
-            response = self._session.post(
-                url,
-                json={"chat_id": self._chat_id, "text": text},
-                timeout=self._timeout,
-            )
+            response = self._session.post(url, json=payload, timeout=self._timeout)
         except requests.RequestException as exc:
             # Błąd sieci (timeout, DNS, connection reset) — kanał padł.
             self._emit_quota_alert(
@@ -104,3 +113,8 @@ class TelegramNotifier(ReportNotifierPort):
                 occurred_at=datetime.now(UTC),
             )
         )
+
+
+def _escape(text: str) -> str:
+    """Telegram w trybie HTML zna tylko encje `&lt;`, `&gt;`, `&amp;` (i `&quot;`)."""
+    return html.escape(text, quote=False)

@@ -21,10 +21,10 @@ ZAPLECZE
 Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, pominięte symbole i błędy.
 ================================================================
 
-NASTROJE PORTFELA
+KOSZT CYKLU
 ----------------------------------------------------------------
-  Średni sentyment: +0,00 (Neutralny)
-  Wysoka pewność (≥70%): 0 / 0  ·  Newsów: 0
+  0 płatnych wywołań — bramka volatility odcięła wszystkie symbole (cykl darmowy).
+  Uwaga: Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, nie faktura od dostawcy.
 
 POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------
@@ -33,5 +33,6 @@ POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------
 Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.
 Symboli: 3 · predykcji: 0 · pominiętych: 3 · błędów: 0 · czas trwania: 74,2s
+Źródła danych (w zależności od konfiguracji): ceny — Finnhub i CoinGecko; newsy, sentyment, fundamenty i kalendarz wyników — Alpha Vantage; konsensus analityków i opcje — Finnhub; transakcje insiderów — SEC EDGAR; wzmianki — Reddit; stopy procentowe — FRED; kursy walut — NBP; analiza i rada — modele LLM (Anthropic, OpenAI).
 ----------------------------------------------------------------
 przebieg #local · commit local

@@ -349,3 +349,173 @@ def test_soft_limit_log_carries_the_marker_without_the_key(caplog) -> None:
 
     assert "standard API rate limit is 25 requests per day" in caplog.text
     assert "fund-secret-key" not in caplog.text
+
+
+# --- DAT-11: 'Error Message' — odrzucony klucz vs zły symbol ------------------
+
+REJECTED_KEY_JSON: dict[str, Any] = {
+    "Error Message": "the parameter apikey is invalid or missing. Please claim your free "
+    "API key on (https://www.alphavantage.co/support/#api-key)."
+}
+INVALID_CALL_JSON: dict[str, Any] = {
+    "Error Message": "Invalid API call. Please retry or visit the documentation "
+    "(https://www.alphavantage.co/documentation/) for OVERVIEW."
+}
+
+
+def test_error_message_payload_emits_critical_alert() -> None:
+    # Odrzucony klucz dawał cichy None — jak ETF bez fundamentów.
+    from src.application.quota_monitor import QuotaMonitor
+    from src.domain.quota import QuotaSeverity
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"], quota_monitor=monitor)
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = _mock_response(REJECTED_KEY_JSON)
+        assert adapter.get_fundamentals("AAPL") is None
+
+    assert len(monitor.alerts) == 1
+    alert = monitor.alerts[0]
+    assert alert.severity is QuotaSeverity.CRITICAL
+    assert "odrzuci" in alert.message
+    assert "ALPHA_VANTAGE_API_KEYS" in alert.action
+
+
+def test_rejected_key_makes_the_adapter_dead_for_the_next_symbols() -> None:
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"], quota_monitor=monitor)
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = _mock_response(REJECTED_KEY_JSON)
+        adapter.get_fundamentals("AAPL")
+        calls_after_first = mock_get.call_count
+        assert adapter.get_fundamentals("MSFT") is None
+        assert adapter.get_fundamentals("GOOG") is None
+
+    assert calls_after_first == 2
+    assert mock_get.call_count == calls_after_first
+    assert len(monitor.alerts) == 2
+
+
+def test_rejected_key_rotates_to_the_next_key() -> None:
+    # DAT-11 (decyzja właściciela): odrzucony klucz nie zatrzymuje adaptera, gdy
+    # jest kolejny — fundamenty idą rezerwą, a alert to WARNING (dane są).
+    from src.application.quota_monitor import QuotaMonitor
+    from src.domain.quota import QuotaSeverity
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"], quota_monitor=monitor)
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = [
+            _mock_response(REJECTED_KEY_JSON),  # KEY1 / OVERVIEW — klucz odrzucony
+            _mock_response(OVERVIEW_JSON),  # KEY2 / OVERVIEW
+            _mock_response(EARNINGS_JSON),  # KEY2 / EARNINGS
+            _mock_response(OVERVIEW_JSON),  # KEY2 / OVERVIEW — kolejny symbol
+            _mock_response(EARNINGS_JSON),  # KEY2 / EARNINGS
+        ]
+        first = adapter.get_fundamentals("AAPL")
+        second = adapter.get_fundamentals("MSFT")
+
+    assert first is not None
+    assert second is not None
+    keys_used = [c.kwargs["params"]["apikey"] for c in mock_get.call_args_list]
+    assert keys_used == ["KEY1", "KEY2", "KEY2", "KEY2", "KEY2"]
+    assert [a.severity for a in monitor.alerts] == [QuotaSeverity.WARNING]
+    assert "#1" in monitor.alerts[0].message
+    assert "ALPHA_VANTAGE_API_KEYS" in monitor.alerts[0].action
+
+
+def test_rotated_key_log_omits_the_key(caplog) -> None:
+    import logging
+
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["fund-secret-key", "KEY2"])
+    leaky = {"Error Message": "the parameter apikey=fund-secret-key is invalid or missing."}
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = [
+            _mock_response(leaky),
+            _mock_response(OVERVIEW_JSON),
+            _mock_response(EARNINGS_JSON),
+        ]
+        assert adapter.get_fundamentals("AAPL") is not None
+
+    assert "rotating to key #2" in caplog.text
+    assert "fund-secret-key" not in caplog.text
+
+
+def test_only_the_last_rejected_key_is_critical() -> None:
+    from src.application.quota_monitor import QuotaMonitor
+    from src.domain.quota import QuotaSeverity
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"], quota_monitor=monitor)
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = _mock_response(REJECTED_KEY_JSON)
+        assert adapter.get_fundamentals("AAPL") is None
+
+    keys_used = [c.kwargs["params"]["apikey"] for c in mock_get.call_args_list]
+    assert keys_used == ["KEY1", "KEY2"]
+    assert [a.severity for a in monitor.alerts] == [
+        QuotaSeverity.WARNING,
+        QuotaSeverity.CRITICAL,
+    ]
+
+
+def test_error_message_without_apikey_is_a_warning_for_that_symbol(caplog) -> None:
+    import logging
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"], quota_monitor=monitor)
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = [
+            _mock_response(INVALID_CALL_JSON),
+            _mock_response(OVERVIEW_JSON),
+            _mock_response(EARNINGS_JSON),
+        ]
+        assert adapter.get_fundamentals("NOPE") is None
+        assert adapter.get_fundamentals("AAPL") is not None
+
+    assert monitor.alerts == []
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("NOPE" in w and "Invalid API call" in w for w in warnings)
+
+
+def test_rejected_key_log_omits_the_key(caplog) -> None:
+    import logging
+
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["fund-secret-key"])
+    leaky = {"Error Message": "the parameter apikey=fund-secret-key is invalid or missing."}
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.return_value = _mock_response(leaky)
+        assert adapter.get_fundamentals("AAPL") is None
+
+    assert "rejected" in caplog.text
+    assert "fund-secret-key" not in caplog.text
+
+
+# --- DAT-21: kapitalizacja z tej samej odpowiedzi OVERVIEW ----------------------
+
+
+def test_market_cap_comes_from_the_same_overview_response() -> None:
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"])
+    overview = {**OVERVIEW_JSON, "MarketCapitalization": "3512345678901"}
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = [_mock_response(overview), _mock_response(EARNINGS_JSON)]
+        fundamentals = adapter.get_fundamentals("AAPL")
+
+    assert fundamentals is not None
+    assert fundamentals.market_cap == pytest.approx(3_512_345_678_901.0)
+    # Zero nowych requestów: OVERVIEW + EARNINGS jak dotąd.
+    assert mock_get.call_count == 2
+
+
+def test_missing_market_cap_is_none() -> None:
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"])
+    with patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = [_mock_response(OVERVIEW_JSON), _mock_response(EARNINGS_JSON)]
+        fundamentals = adapter.get_fundamentals("AAPL")
+
+    assert fundamentals is not None
+    assert fundamentals.market_cap is None

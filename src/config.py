@@ -5,10 +5,11 @@ import hashlib
 import json
 import logging
 import os
-from datetime import date
+import tomllib
+from datetime import date, time
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
@@ -27,6 +28,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from src.domain.evaluation_protocol import EvaluationProtocol, parse_evaluation_protocol
 from src.domain.experiment import Experiment, ExperimentMetric, validate_experiments
 from src.domain.finops import (
     AV_DAILY_REQUESTS_PER_KEY,
@@ -37,7 +39,9 @@ from src.domain.finops import (
     capped_cycle_call_upper_bound,
     weekly_cost_budget,
 )
+from src.domain.insider_flow import INSIDER_LEAD_MAX_AGE_DAYS
 from src.domain.macro_risk import MacroRiskInstrumentType
+from src.domain.price_levels import LevelDirection, PriceLevel
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
 
 # Ścieżka do config.toml zakotwiczona w ROOCIE repo (src/config.py → ../config.toml),
@@ -70,6 +74,9 @@ SECRET_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "edgar_user_agent",
     # NIEZ-13: URL pingu heartbeatu niesie UUID checku — kto go zna, ten pinguje.
     "heartbeat_url",
+    # NIEZ-32: klucz odbiorcy kopii — wartość per deployment, jak sekret (placeholder
+    # w `.env.example`); w logach redagowany.
+    "backup_age_recipient",
 })
 
 # WIA-20: pola niesekretne, które NIE zmieniają prognozy, więc nie wchodzą do
@@ -84,6 +91,13 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "notifications_enabled",
     "messenger_digest_enabled",
     "realtime_alerts_enabled",
+    # ALR-09: cisza nocna pushy watcha — sposób dostarczenia, nie prognoza.
+    "quiet_hours_enabled",
+    "quiet_hours_start",
+    "quiet_hours_end",
+    # ALR-11: alerty poziomów cenowych watcha — push poza cyklem, nie prognoza.
+    "price_level_alerts_enabled",
+    "price_alerts",
     "subscriptions_enabled",
     "web_digest_enabled",
     "web_digest_path",
@@ -126,6 +140,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "regime_tagging_enabled",
     # ML-14: sam zapis wektora cech; prognoza cyklu jest identyczna z flagą i bez.
     "feature_snapshots_enabled",
+    # ML-31: cechy rynkowe w wektorze i wersja zestawu cech 4 — prompt, wektor modelu
+    # i progi bez zmian; kurs cyklu pobierany tylko wcześniej (`CycleQuoteCache`).
+    # Wpływ na wagi (filtr wersji w treningu) łapie `model_version`.
+    "market_features_enabled",
     # ML-34: zapis kolumn przedziału + pokrycie w Track Record. Przedział opisuje
     # niepewność prognozy, nie zmienia trendu, celu ani rekomendacji.
     "interval_coverage_enabled",
@@ -134,6 +152,23 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # EXP-05: sam zapis ramion w kolumnie; definicje eksperymentów są w przepisie.
     "experiment_arms_enabled",
     "model_scorecard_baselines_enabled",
+    # ML-24: sam identyfikator przebiegu treningu w karcie; prognoza ta sama.
+    "model_scorecard_run_id_enabled",
+
+    # NIEZ-14: upsert zamiast insertu głosów rady — te same głosy, bez duplikatów.
+    "council_votes_upsert_enabled",
+    # ML-21: sam zapis rozkładu cech treningu (biny + PSI) w karcie; prognoza ta sama.
+    "model_scorecard_feature_stats_enabled",
+    # WIA-57: sam zapis kategorii diagnozy (046) i jej odczyt w panelu lessons.
+    "correction_category_enabled",
+    # DAT-14: sam zapis znacznika `stale_quote` i odsiew trafności; prognoza ta sama.
+    "stale_quote_enabled",
+    # DAT-21: sam zapis kapitalizacji w cache fundamentów (próg zakupu insidera w mailu).
+    "fundamentals_market_cap_enabled",
+    # DAT-21: okno, w którym zakup insidera może otwierać maila — sam lead maila.
+    "insider_lead_max_age_days",
+    # WIA-61: druga cena rozliczenia (zamknięcie sesji) obok /quote — pomiar, nie prognoza.
+    "session_close_settlement_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -142,6 +177,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "liveness_fast_loop_max_gap_h",
     "liveness_slow_loop_max_gap_h",
     "calibration_judge_enabled",
+    # WIA-37: wersja reguły zapisywanej przez sędziego (Slow Loop) — prognoza ta sama.
+    "calibration_score_version_enabled",
+    # NIEZ-25: sonda Models API w Slow Loopie — sam odczyt katalogu dostawcy.
+    "model_probe_enabled",
     "feature_set_filter_enabled",
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
@@ -153,6 +192,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "fast_loop_weekly_budget_usd",
     # FIN-30: tygodniowy sufit LLM Slow Loopa (recap, sędzia) — inny job, nie Fast Loop.
     "slow_loop_max_paid_llm_calls_per_week",
+    # WIA-53: job Slow Loopa diagnozujący błędne predykcje bez diagnozy — przepisuje
+    # dane (wnioski w lessons i RAG), nie przepis predykcji, jak sędzia kalibracji.
+    "diagnosis_backfill_enabled",
+    "diagnosis_backfill_max_calls",
     # FIN-34: dzień zamknięcia NYSE decyduje, CZY akcje idą do grafu, nie jak.
     "nyse_closure_skip_enabled",
     # EXP-27: cykl dwufazowy zmienia kolejność analizy (malejące |Δ|) i to, kogo
@@ -182,9 +225,13 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "council_llm_provider",
     "council_llm_model",
     "persona_weighting_enabled",
+    # WIA-51: reguła trafności z domeny zmienia wagi konsensusu (przy ważeniu person).
+    "persona_vote_outcomes_enabled",
     "debate_mode_enabled",
     "model_routing_enabled",
     "routing_floor",
+    # NIEZ-17: sufit eskalacji decyduje, który model odpowiada niepewnym symbolom.
+    "routing_max_escalations",
     "router_cheap_model",
     "router_frontier_provider",
     "router_frontier_model",
@@ -193,6 +240,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # ALR-03: histereza przedłuża RISK_OFF, czyli wyższy efektywny próg bramki.
     "regime_hysteresis_enabled",
     "regime_exit_confirmations",
+    # ALR-10: dryf od ostatniej predykcji otwiera bramkę w cyklach pod progiem.
+    "drift_gate_enabled",
     "contagion_enabled",
     # PORT-05: sektory → `peer_groups` (contagion w prompcie, ekspozycja w sizingu).
     "sectors",
@@ -200,9 +249,14 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "alpha_fusion_enabled",
     "insider_flow_enabled",
     "earnings_calendar_enabled",
+    # FIN-11: cache Slow Loopa (do 6 dni) zamiast AV w cyklu — inna świeżość wejścia
+    # bramki earnings i alpha fusion; pole niejednoznaczne zostaje w przepisie.
+    "earnings_cache_enabled",
     "options_flow_enabled",
     "social_velocity_enabled",
     "yield_curve_enabled",
+    # DAT-22: głosy VIX i spreadu HY w reżimie zacieśniają próg bramki.
+    "macro_series_enabled",
     "analyst_consensus_enabled",
     "vector_memory_enabled",
     "tool_use_enabled",
@@ -231,6 +285,9 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "ml_model_path",
     # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
     "experiments",
+    # ML-29: prompt prosi o rozkład trzech klas, a trend i pewność idą z argmaxu —
+    # inny format odpowiedzi to inny rozkład pewności, więc nowy przepis.
+    "trend_probabilities_enabled",
 })
 
 
@@ -277,6 +334,18 @@ class ExperimentSettings(BaseModel):
     enabled: bool = False
 
 
+class PriceAlertSettings(BaseModel):
+    """ALR-11: jeden wpis listy startowej `price_alerts` z `config.toml` — poziom
+    cenowy, który watch dopisuje do tabeli `price_level_alerts` (migracja 057)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    symbol: str = Field(min_length=1)
+    level: Decimal = Field(gt=0, allow_inf_nan=False)
+    direction: Literal["ABOVE", "BELOW"]
+    note: str | None = None
+
+
 class ModelPriceSettings(BaseModel):
     """FIN-13: stawki jednego modelu z `config.toml`, USD za 1M tokenów (standard
     tier). Brak stawki = dostawca jej nie nalicza; request z takimi tokenami nie
@@ -288,6 +357,29 @@ class ModelPriceSettings(BaseModel):
     output: float | None = Field(default=None, ge=0)
     cache_read: float | None = Field(default=None, ge=0)
     cache_write: float | None = Field(default=None, ge=0)
+
+
+def _required_secret(value: str | None, env_name: str) -> str:
+    """ARCH-05: sekret wymagany przez fabrykę adaptera; pusty albo brak → ValueError."""
+    if not value:
+        raise ValueError(f"{env_name} is required by this entry point but is not set.")
+    return value
+
+
+class _StrictTomlSource(TomlConfigSettingsSource):
+    """TEST-03 (G64): źródło `config.toml`, które odrzuca klucze spoza `Settings`.
+
+    `extra = "ignore"` zostaje dla env i `.env` (niosą klucze innych narzędzi),
+    ale w commitowanym pliku konfiguracji literówka (`weekly_recap_enable`) po
+    cichu zostawiałaby default — także płatnej ścieżki."""
+
+    def __call__(self) -> dict[str, Any]:
+        unknown = sorted(set(self.toml_data) - set(self.settings_cls.model_fields))
+        if unknown:
+            raise ValueError(
+                f"Nieznane klucze w {self.toml_file_path}: {', '.join(unknown)}"
+            )
+        return super().__call__()
 
 
 class Settings(BaseSettings):
@@ -340,14 +432,17 @@ class Settings(BaseSettings):
             # `STOCKAGENT_TOML_FILE` pozwala testom wskazać tymczasowy plik.
             toml_file = os.environ.get("STOCKAGENT_TOML_FILE", _DEFAULT_TOML_FILE)
             sources.append(
-                TomlConfigSettingsSource(settings_cls, toml_file=toml_file)
+                _StrictTomlSource(settings_cls, toml_file=toml_file)
             )
         sources.append(file_secret_settings)
         return tuple(sources)
 
     # ----- LLM -----
     llm_provider: Literal["openai", "anthropic"] = "openai"
-    openai_api_key: str
+    # ARCH-05: klucze płatnych dostawców nie są wymagane do KONSTRUKCJI Settings —
+    # darmowe joby (watch, deadman) startują bez nich. Klucza żąda fabryka adaptera
+    # (`require_*`), więc jego brak zatrzymuje start entry pointu, który go woła.
+    openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     # NIEZ-44: zapasowy dostawca głównej analizy — dostaje request tylko, gdy główny
     # rzuci po swoich retry (4xx poza 429 nie przełącza). Wymaga klucza drugiego
@@ -368,11 +463,17 @@ class Settings(BaseSettings):
 
     # ----- Rada: ważenie person (#3) i tryb debaty (#1) -----
     persona_weighting_enabled: bool = False
+    # WIA-51: wagi person i ich ranking liczy domena z surowych głosów RPC
+    # `persona_vote_outcomes` (migracja 045): HOLD na krypto w paśmie ±2.5%, nie
+    # akcyjnym ±0.5%. Off: RPC 015/018 — przed migracją 045 funkcji nie ma.
+    persona_vote_outcomes_enabled: bool = False
     debate_mode_enabled: bool = False
 
     # ----- Model routing (#2 — tani model + eskalacja do frontier) -----
     model_routing_enabled: bool = False
     routing_floor: float = 0.6
+    # NIEZ-17: najwyżej tyle eskalacji do frontiera na cykl (jedna kaskada na cykl).
+    routing_max_escalations: int = Field(default=5, ge=0)
     router_cheap_model: str = "gpt-5-mini"
     router_frontier_provider: Literal["openai", "anthropic"] = "anthropic"
     router_frontier_model: str = "claude-sonnet-4-6"
@@ -399,6 +500,17 @@ class Settings(BaseSettings):
     sector_peers: dict[str, list[str]] = Field(default_factory=dict)
     # LLM-as-Judge kalibracji pewności (Slow Loop, migracja 016).
     calibration_judge_enabled: bool = False
+    # WIA-37: sędzia zapisuje właściwą regułę Briera (v2) z kolumną
+    # `calibration_score_version` (migracja 044). Off: reguła liniowa v1 bez klucza.
+    calibration_score_version_enabled: bool = False
+    # NIEZ-25: tygodniowa sonda Models API (Slow Loop, bez tokenów, bez migracji).
+    model_probe_enabled: bool = False
+    # WIA-53: job Slow Loopa diagnozuje błędne predykcje, którym bramka volatility
+    # pominęła płatną diagnozę (placeholder w `correction_insights`), najwyżej
+    # `diagnosis_backfill_max_calls` na przebieg — w tygodniowym budżecie FIN-30,
+    # po recapie i sędzi. Bez migracji (kolumny 001/009, kwit 020 opcjonalnie).
+    diagnosis_backfill_enabled: bool = False
+    diagnosis_backfill_max_calls: int = Field(default=5, ge=0)
 
     # ----- Risk: VaR / stress-test / hedge-effectiveness -----
     # Wszystkie liczone z DARMOWEJ historii snapshotów (zero płatnych portów),
@@ -416,6 +528,10 @@ class Settings(BaseSettings):
     equity_curve_enabled: bool = False
     calibration_curve_enabled: bool = False
     lessons_enabled: bool = False
+    # WIA-57: kategoria przyczyny błędu z diagnozy LLM w `correction_category`
+    # (migracja 046) i jej histogram w panelu lessons. Off: nowy klucz przed
+    # migracją → PGRST204 i przepadłe rozliczenie predykcji.
+    correction_category_enabled: bool = False
     # #9: surowa pewność LLM korygowana historycznym hit-rate'em swojego kubełka
     # kalibracji. Steruje rankingiem "🎯 Najsilniejsze sygnały" (strength =
     # pewność × |Δ|). Niezależna od `calibration_curve_enabled` — tamta flaga
@@ -429,6 +545,14 @@ class Settings(BaseSettings):
     # bramka walk-forward musi pobić obok „zwrot = 0" (kolumny z migracji 028).
     # Off: nowy klucz przed migracją → PGRST204 i przepadły wiersz karty.
     model_scorecard_baselines_enabled: bool = False
+    # ML-24: wiersze karty niosą `run_id` przebiegu Slow Loopa (kolumna z migracji
+    # 049), więc re-run tego samego dnia nie skleja się z cronem. Off: nowy klucz
+    # przed migracją → PGRST204 i przepadły wiersz karty.
+    model_scorecard_run_id_enabled: bool = False
+    # ML-21: wiersze karty niosą `feature_stats` treningu — biny kwantylowe cech
+    # i PSI ostatnich 30 dni próbki (kolumna JSONB z migracji 052); karta ostrzega
+    # przy PSI > 0.25. Off: nowy klucz przed migracją → PGRST204 i przepadły wiersz.
+    model_scorecard_feature_stats_enabled: bool = False
     # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
     # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
     cycle_diff_enabled: bool = False
@@ -453,6 +577,11 @@ class Settings(BaseSettings):
     # za bramką. Zero nowych wywołań zewnętrznych. Off: przed migracją tabeli nie
     # ma, więc każdy cykl kończyłby się błędem zapisu w logu.
     feature_snapshots_enabled: bool = False
+    # ML-31: `feature_snapshots` dostaje cechy rynkowe cyklu (zmienność i momentum
+    # z historii `price_snapshots`), a stemple wersji zestawu cech idą jako 4 (trening
+    # i backtest filtrują wtedy po 4). Działa tylko z `feature_snapshots_enabled`
+    # (migracja 031); nowej migracji nie wymaga. Zero płatnych wywołań. Off.
+    market_features_enabled: bool = False
     # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze, liczony
     # w cyklu bez migracji. Ta flaga dokłada zapis `interval_low/high` (migracja
     # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz
@@ -473,6 +602,12 @@ class Settings(BaseSettings):
     # trafia też do kwitu v2 (za `receipts_enabled`, bez migracji). Off: nowy
     # klucz przed migracją → PGRST204 i śmierć zapisu całej predykcji.
     experiment_arms_enabled: bool = False
+    # ML-29: prompt prosi o rozkład P(BULLISH/BEARISH/SIDEWAYS); trend = argmax,
+    # pewność = max p (domena `ProbabilityForecast`, fallback na stare pola), a rozkład
+    # trafia do `prediction_logs.trend_probabilities` (migracja 051). Zmienia prompt,
+    # więc należy do przepisu. Off: nowy klucz przed migracją → PGRST204 i śmierć
+    # zapisu całej predykcji.
+    trend_probabilities_enabled: bool = False
     # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
     # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr
@@ -488,8 +623,9 @@ class Settings(BaseSettings):
     liveness_fast_loop_max_gap_h: float = 0.0
     liveness_slow_loop_max_gap_h: float = 0.0
     # #14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
-    # Wchodzi do promptu LLM ORAZ jako ósma cecha XGBoost. Wdrożenie cechy
-    # rozstrzyga walk-forward gate „pobij baseline", nie intuicja wag. Off.
+    # Wchodzi do promptu LLM i do ml_feature_store jako KANDYDAT na cechę —
+    # XGBoost go nie używa (poza `ML_FEATURE_COLUMNS`). Promocję do cech modelu
+    # rozstrzyga porównanie A/B (EXP-19), nie intuicja wag. Off.
     alpha_fusion_enabled: bool = False
     # #16: commit-reveal (migracja 024). W chwili predykcji publikujemy SHA-256
     # commitment; po rozliczeniu sweep ujawnia sól i plaintext. UWAGA: daty
@@ -536,9 +672,17 @@ class Settings(BaseSettings):
     # domyślnie Null; realny adapter włącza dopiero flaga (+ ewentualny klucz).
     insider_flow_enabled: bool = False
     earnings_calendar_enabled: bool = False
+    # FIN-11 (wymaga migracji 053): Fast Loop czyta datę raportu z `earnings_cache`
+    # (odświeżanego w Slow Loopie) zamiast pytać AV o każdy symbol w każdym cyklu.
+    earnings_cache_enabled: bool = False
     options_flow_enabled: bool = False
     social_velocity_enabled: bool = False
     yield_curve_enabled: bool = False
+    # DAT-22: zmienne stanu rynku z FRED (VIXCLS, VXNCLS, BAMLH0A0HYM2, T10Y2Y, NFCI),
+    # raz na cykl, darmowe (ten sam `fred_api_key`). Z `regime_aware_enabled` percentyl
+    # VIX z roku i 5-sesyjna zmiana spreadu HY to głosy reżimu (mogą tylko zacieśnić
+    # próg); z `market_features_enabled` cechy trafiają do `feature_snapshots`. Off.
+    macro_series_enabled: bool = False
     analyst_consensus_enabled: bool = False
     # Cross-Asset Vector Memory — tagowanie embeddingów reżimem + filtr w RAG
     # (migracja 017). Bez flagi RAG działa jak dotąd (bez filtra reżimu).
@@ -571,7 +715,7 @@ class Settings(BaseSettings):
     council_personas_dir: str = "data/council_personas"
 
     # ----- Market / sentiment / news -----
-    finnhub_api_key: str
+    finnhub_api_key: str | None = None
     # Alpha Vantage akceptuje CSV — wiele kluczy rotujemy, gdy jeden wyczerpie
     # dzienny limit (25 req/dobę free). Wpisz w .env: ALPHA_VANTAGE_API_KEYS=k1,k2,k3
     alpha_vantage_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
@@ -614,6 +758,26 @@ class Settings(BaseSettings):
     # (ten sam co w `llm_calls`), próba runu, liczby cyklu, płatne wywołania i stan
     # maila. Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
     cycle_runs_enabled: bool = False
+    # NIEZ-14: głosy rady upsertem po (prediction_id, investor_name) — re-run w tej
+    # samej godzinie nie dubluje ich wagi. Wymaga UNIQUE z migracji 054; do tego
+    # czasu goły insert (upsert bez indeksu PostgREST odrzuca).
+    council_votes_upsert_enabled: bool = False
+    # DAT-14: kolumna `prediction_logs.stale_quote` (migracja 055) — zapis znacznika
+    # nieaktualnego notowania i odsiew takich wierszy z trafności. Off w kodzie
+    # i w config.toml, dopóki produkcja nie ma migracji.
+    stale_quote_enabled: bool = False
+    # DAT-21: kolumna `fundamentals_cache.market_cap` (migracja 056) — Slow Loop zapisuje
+    # kapitalizację z OVERVIEW. Off w kodzie i w config.toml, dopóki produkcja nie ma
+    # migracji; odczyt (`select("*")`) działa i bez niej.
+    fundamentals_market_cap_enabled: bool = False
+    # DAT-21: znaczący zakup insidera prowadzi maila (lead i temat) tylko przez tyle
+    # dni od daty filingu; sekcja alfy pokazuje go dalej. 3 dni obejmują piątkowy
+    # filing, który pierwszy raz widzi poniedziałkowy cykl.
+    insider_lead_max_age_days: int = Field(default=INSIDER_LEAD_MAX_AGE_DAYS, ge=0)
+    # WIA-61: rozliczenie zapisuje obok ceny /quote oficjalne zamknięcie sesji NYSE
+    # z datą i źródłem, a mail pokazuje obie trafności (okres przejściowy). Kolumny
+    # z migracji 059; off w kodzie i w config.toml, dopóki produkcja jej nie ma.
+    session_close_settlement_enabled: bool = False
     # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
     # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
     # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
@@ -639,6 +803,10 @@ class Settings(BaseSettings):
 
     # ----- Agent config -----
     volatility_threshold: Decimal = Field(default=Decimal("0.02"))
+    # ALR-10: bramka widzi dryf — ruch od ceny ostatniej predykcji z okna 10 dni
+    # (albo od pierwszej ceny okna) z tym samym progiem i mnożnikami co ruch cyklu.
+    # Koszt: najwyżej +1 pełny pipeline na symbol na epizod dryfu. Off.
+    drift_gate_enabled: bool = False
     # Osobny, wyższy próg dla rady doradczej. Rada (N wywołań LLM person + chairman)
     # jest droga — przy małych Δ jej werdykt to prawie zawsze HOLD. Domyślnie
     # 3% — można podnieść do 5% przy ciasnym budżecie albo wyłączyć (0.0) dla
@@ -745,9 +913,26 @@ class Settings(BaseSettings):
     # Fast Loop, Slow Loop i shock watch pingują go na koniec przebiegu (porażka →
     # `<URL>/fail`). Brak / pusty = NullHeartbeat, zero requestów.
     heartbeat_url: str | None = None
+    # NIEZ-32: klucz publiczny age odbiorcy tygodniowej kopii tabel dowodowych (Slow
+    # Loop), z sekretu repo / `.env`. Brak / pusty = kopia pominięta z WARNING-iem,
+    # nigdy bez szyfrowania.
+    backup_age_recipient: str | None = None
     # Real-time alerty CRITICAL (U4): pushuj alert kwoty w chwili zdarzenia,
     # out-of-band od dziennego maila. NIEWRAŻLIWY flag → config.toml.
     realtime_alerts_enabled: bool = False
+    # ALR-09: cisza nocna pushy watcha szoku w strefie `display_timezone` — w oknie
+    # [start, end) push dociera bez dźwięku (Telegram `disable_notification`), nie
+    # znika. Okno może przechodzić przez północ. Alerty CRITICAL ciszy nie znają. Off.
+    quiet_hours_enabled: bool = False
+    quiet_hours_start: time = time(22, 0)
+    quiet_hours_end: time = time(7, 0)
+    # ALR-11: alerty poziomów cenowych w watchu (tabela `price_level_alerts`, migracja
+    # 057): push przy przekroczeniu poziomu, alert wyłącza się po trafieniu. Off w kodzie
+    # i w config.toml, dopóki produkcja nie ma migracji — przy off zero odczytów i zapisów.
+    price_level_alerts_enabled: bool = False
+    # ALR-11: lista startowa poziomów; watch dopisuje brakujące do tabeli (zapisanych,
+    # także wyłączonych po trafieniu, nie rusza).
+    price_alerts: list[PriceAlertSettings] = Field(default_factory=list)
 
     # ----- Dystrybucja (U2/U3 — opcjonalne, niewrażliwe → config.toml) -----
     # U2: personalizowany fan-out — każdy subskrybent (tabela `subscribers`)
@@ -876,6 +1061,18 @@ class Settings(BaseSettings):
         start, zamiast po cichu zbierać dane z testu A/A."""
         validate_experiments(self.experiment_definitions())
         return self
+
+    def price_level_seeds(self) -> tuple[PriceLevel, ...]:
+        """ALR-11: lista startowa `price_alerts` jako poziomy domeny."""
+        return tuple(
+            PriceLevel(
+                symbol=alert.symbol.strip().upper(),
+                level=alert.level,
+                direction=LevelDirection(alert.direction),
+                note=alert.note,
+            )
+            for alert in self.price_alerts
+        )
 
     def llm_price_table(self) -> dict[str, ModelPrice]:
         """FIN-13: domenowy cennik per model z `llm_pricing`."""
@@ -1065,16 +1262,12 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _resolve_alpha_vantage_keys(self) -> Settings:
         """Backward-compat: jeśli ALPHA_VANTAGE_API_KEYS puste, próbujemy
-        starego `ALPHA_VANTAGE_API_KEY` (single). Po resolucji wymagamy ≥1 klucza."""
+        starego `ALPHA_VANTAGE_API_KEY` (single). Brak kluczy nie jest błędem
+        konstrukcji (ARCH-05) — wymaga ich `require_alpha_vantage_api_keys`."""
         if not self.alpha_vantage_api_keys:
             legacy = os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()
             if legacy:
                 object.__setattr__(self, "alpha_vantage_api_keys", [legacy])
-        if not self.alpha_vantage_api_keys:
-            raise ValueError(
-                "alpha_vantage_api_keys is required — set ALPHA_VANTAGE_API_KEYS "
-                "(comma-separated) or legacy ALPHA_VANTAGE_API_KEY in env."
-            )
         return self
 
     @model_validator(mode="after")
@@ -1083,7 +1276,11 @@ class Settings(BaseSettings):
         `av_keys_exhausted` w środku cyklu. Domyślnie WARNING i start dalej —
         liczba kluczy w sekretach produkcji nie jest znana z repo, więc błąd
         mógłby zablokować start już dziś; `av_budget_strict` daje twardy błąd.
-        Walidator działa w każdym entry poincie; banner maila dokłada Fast Loop."""
+        Walidator działa w każdym entry poincie; banner maila dokłada Fast Loop.
+        Bez kluczy (ARCH-05: job bez Alpha Vantage) nie ma czego liczyć — entry
+        point, który woła AV, zatrzyma `require_alpha_vantage_api_keys`."""
+        if not self.alpha_vantage_api_keys:
+            return self
         budget = self.av_budget()
         if budget.ok:
             return self
@@ -1096,10 +1293,12 @@ class Settings(BaseSettings):
     def av_budget(self) -> AvBudget:
         """FIN-32: worst case doby AV dla pełnej watchlisty Fast Loopa (WIA-11:
         `symbols` + `crypto_symbols` − `symbols_unsupported_price`). Na symbol:
-        jedno NEWS_SENTIMENT i jedno EARNINGS_CALENDAR przy włączonym kalendarzu."""
+        jedno NEWS_SENTIMENT i jedno EARNINGS_CALENDAR przy włączonym kalendarzu —
+        chyba że kalendarz idzie z cache Slow Loopa (FIN-11)."""
+        live_calendar = self.earnings_calendar_enabled and not self.earnings_cache_enabled
         return av_daily_budget(
             n_av_symbols=self._eligible_symbol_count(),
-            requests_per_symbol=2 if self.earnings_calendar_enabled else 1,
+            requests_per_symbol=2 if live_calendar else 1,
             cycles_per_day=self.fast_loop_cycles_per_day,
             n_keys=len(self.alpha_vantage_api_keys),
         )
@@ -1145,6 +1344,23 @@ class Settings(BaseSettings):
             "av_budget_strict = true turns this warning into a startup error."
         )
 
+    def require_openai_api_key(self) -> str:
+        """ARCH-05: klucz OpenAI dla fabryki adaptera; brak → ValueError przy starcie."""
+        return _required_secret(self.openai_api_key, "OPENAI_API_KEY")
+
+    def require_finnhub_api_key(self) -> str:
+        """ARCH-05: klucz Finnhub dla fabryki adaptera; brak → ValueError przy starcie."""
+        return _required_secret(self.finnhub_api_key, "FINNHUB_API_KEY")
+
+    def require_alpha_vantage_api_keys(self) -> list[str]:
+        """ARCH-05: ≥1 klucz Alpha Vantage dla fabryki adaptera; brak → ValueError."""
+        if not self.alpha_vantage_api_keys:
+            raise ValueError(
+                "alpha_vantage_api_keys is required — set ALPHA_VANTAGE_API_KEYS "
+                "(comma-separated) or legacy ALPHA_VANTAGE_API_KEY in env."
+            )
+        return self.alpha_vantage_api_keys
+
     def config_hash(self) -> str:
         """WIA-20: sha256 posortowanych pól przepisu (progi, modele, providerzy,
         symbole, flagi ścieżki predykcji) — składnik wersji przepisu predykcji.
@@ -1176,3 +1392,17 @@ class Settings(BaseSettings):
         bo mypy nie zna mechanizmu source loading w BaseSettings.
         """
         return cls()  # type: ignore[call-arg]
+
+
+# WIA-42: protokół ewaluacji w roocie repo. Hash liczony z BAJTÓW pliku (razem
+# z komentarzami) — każda zmiana pliku to nowy protokół, bez dyskusji o tym,
+# czy zmiana „była merytoryczna”.
+EVALUATION_PROTOCOL_PATH = _REPO_ROOT / "evaluation_protocol.toml"
+
+
+def load_evaluation_protocol(path: Path = EVALUATION_PROTOCOL_PATH) -> EvaluationProtocol:
+    """Protokół ewaluacji z pliku razem z sha256 jego bajtów (przepis, commitment v2)."""
+    raw = path.read_bytes()
+    return parse_evaluation_protocol(
+        tomllib.loads(raw.decode("utf-8")), hashlib.sha256(raw).hexdigest()
+    )

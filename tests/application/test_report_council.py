@@ -223,3 +223,55 @@ class TestCouncilSectionUsesDomainBehavior:
         html = self._build(opinions, consensus=0.5)
         assert "SILNY KONSENSUS" not in html
         assert "STRONG CONSENSUS" not in html
+
+
+class TestCouncilPartialFailure:
+    """MAIL-12: rada, której część person padła, mówi „odpowiedziało X/N” —
+    inaczej mail nie odróżnia pełnej rady od rady, w której zabrakło głosów."""
+
+    def _verdict(self, *, answered: int, failed: int) -> CouncilVerdict:
+        return CouncilVerdict(
+            final_recommendation="BUY",
+            consensus_strength=0.8,
+            summary="Rada radzi kupować.",
+            dissenting_views=[],
+            investor_opinions=[
+                InvestorOpinion(
+                    investor_name=f"Persona {i}",
+                    recommendation="BUY",
+                    confidence=0.8,
+                    reasoning="x",
+                    key_factors=[],
+                )
+                for i in range(answered)
+            ],
+            failed_personas=failed,
+        )
+
+    def _html(self, verdict: CouncilVerdict) -> str:
+        result = SymbolResult(
+            symbol="AAPL",
+            status="saved",
+            delta=Decimal("0.035"),
+            current_price=Decimal("180.00"),
+            trend="BULLISH",
+            council_verdict=verdict,
+        )
+        html, _ = build_html_report([result], datetime.now(UTC), 1.0)
+        return html
+
+    def test_council_section_shows_answered_ratio_when_personas_failed(self):
+        html = self._html(self._verdict(answered=4, failed=3))
+
+        assert "odpowiedziało 4/7" in html
+
+    def test_full_council_has_no_answered_ratio(self):
+        assert "odpowiedziało" not in self._html(self._verdict(answered=7, failed=0))
+
+    def test_compact_council_line_shows_answered_ratio(self):
+        # Rada spoza top N sygnałów jest jedną linią (MAIL-06 b) — też z X/N.
+        from src.application.report_builder import _render_council_line
+
+        line = _render_council_line(self._verdict(answered=4, failed=3))
+
+        assert "odpowiedziało 4/7" in line

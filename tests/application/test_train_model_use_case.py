@@ -304,6 +304,19 @@ def test_pooled_scorecard_row_is_recorded_as_all(use_case, repository_port, ml_p
     assert POOLED_MODEL_SYMBOL == "ALL"
 
 
+def test_pooled_scorecard_row_carries_the_run_id(ml_port, repository_port):
+    # ML-24: jeden `run_id` na przebieg Slow Loopa — wiersz ALL i wiersze per symbol
+    # grupuje on, a nie przerwa czasowa (re-run tego samego dnia).
+    repository_port.get_feature_store_data.return_value = []
+    use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, run_id="run-1")
+
+    result = use_case.run_pooled(["AAPL"], record_scorecard=True)
+
+    repository_port.save_model_scorecard.assert_called_once_with(
+        POOLED_MODEL_SYMBOL, result, run_id="run-1"
+    )
+
+
 def test_pooled_skip_is_recorded_too(use_case, repository_port, ml_port):
     # Deadman czyta najnowszy wiersz scorecardu — przebieg bez modelu też jest śladem.
     repository_port.get_feature_store_data.return_value = []
@@ -425,3 +438,37 @@ def test_version_cut_below_the_minimum_skips_the_pooled_model_explicitly(
     ml_port.train.assert_not_called()
     _, saved = repository_port.save_model_scorecard.call_args.args
     assert saved["n_samples"] == 12
+
+
+def test_pooled_training_logs_how_many_labels_settle_after_the_next_row(
+    use_case, repository_port, ml_port, caplog
+):
+    # ML-25: widok z migracji 050 wystawia `settled_at`; model wspólny mierzy, ile
+    # etykiet dojrzewa dopiero po następnym wierszu symbolu (purge 12 h ich nie łapie).
+    rows = _stamped_rows("AAPL", MIN_SAMPLES_FOR_TRAINING, start_hour=0, step_hours=24)
+    for i, row in enumerate(rows):
+        hours = 30 if i % 5 == 0 else 20
+        settled = pd.Timestamp(row["timestamp"]) + pd.Timedelta(hours=hours)
+        row["settled_at"] = settled.isoformat()
+    repository_port.get_feature_store_data.return_value = rows
+    ml_port.train.return_value = {"status": "trained_successfully"}
+
+    with caplog.at_level("INFO", logger="src.application.use_cases.train_model"):
+        use_case.run_pooled(["AAPL"])
+
+    assert "label overlap: 10 of 49 rows" in caplog.text
+
+
+def test_pooled_training_without_settled_at_logs_no_overlap(
+    use_case, repository_port, ml_port, caplog
+):
+    # Przed migracją 050 widok nie ma kolumny — odczyt `*` jest tolerancyjny, pomiaru brak.
+    repository_port.get_feature_store_data.return_value = _stamped_rows(
+        "AAPL", MIN_SAMPLES_FOR_TRAINING, start_hour=0, step_hours=24
+    )
+    ml_port.train.return_value = {"status": "trained_successfully"}
+
+    with caplog.at_level("INFO", logger="src.application.use_cases.train_model"):
+        use_case.run_pooled(["AAPL"])
+
+    assert "label overlap" not in caplog.text

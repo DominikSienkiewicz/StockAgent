@@ -48,15 +48,20 @@ ZAMKNIĘTE PREDYKCJE (ostatnie 24h)
         dlaczego: Teza prognozy się potwierdziła.
   Suma: 2/3 · Trafność kierunkowa (bez prognoz „bez ruchu”): 50% (n=2) · Trafność łączna (z prognozami „bez ruchu”): 67% (n=3)
 
+=== 🔄 Zmiany nastawienia ===
+
+  NVDA: Odwrócenie SELL→BUY — 2 zmienionych głosów.
+
 NAJSILNIEJSZE SYGNAŁY
 ----------------------------------------------------------------
-  KUP       NVDA (NVIDIA Corporation)                pewność 82%  prognoza   +2,50%  #1 · ruch 2,5% × pewność 82%  [Pozycja startowa 1-2% portfela]
-  SPRZEDAJ  AMD (Advanced Micro Devices Inc.)        pewność 71%  prognoza   -1,75%  #2 · ruch 1,8% × pewność 71%  [Pozycja startowa 1-2% portfela]
+  Kierunek w kontekście Twojego portfela (tylko pozycje długie): spadek na trzymanej spółce to „ZREDUKUJ”, poza portfelem „UNIKAJ”, wzrost na już dużej pozycji „TRZYMAJ, nie dokładaj”. To sygnał modelu, nie rekomendacja.
+  TRZYMAJ, nie dokładaj (37% portfela) NVDA (NVIDIA Corporation)                pewność 82%  prognoza   +2,50%  #1 · ruch 2,5% × pewność 82%
+  ZREDUKUJ (63% portfela) AMD (Advanced Micro Devices Inc.)        pewność 71%  prognoza   -1,75%  #2 · ruch 1,8% × pewność 71%
   KUP       BTC (Bitcoin)                            pewność 64%  prognoza   +1,63%  #3 · ruch 1,6% × pewność 64%
 
 SYGNAŁY OSTRZEGAWCZE
 ----------------------------------------------------------------
-  ⚠ AMD (Advanced Micro Devices Inc.): [Niezgodność AV↔LLM] LLM nie zgadza się z AV (zgoda=0,25) -> potencjalny fake news / manipulacja
+  ⚠ AMD (Advanced Micro Devices Inc.): [Niezgodność AV↔LLM] LLM nie zgadza się z AV (zgoda=0,25) -> rozbieżne odczyty sentymentu
   ⚠ BTC (Bitcoin): [Słaby sygnał] tylko 2 relevantnych newsów — decyzja na słabych danych
 
 PREDYKCJE
@@ -120,6 +125,22 @@ HISTORIA TRAFNOŚCI (ostatnie 30 dni)
   Trafność kierunkowa (bez prognoz „bez ruchu”): 57,5% (95% CI 42–71%, n=40)
   Trafność łączna (z prognozami „bez ruchu”): 62,0% (95% CI 48–74%, n=50)  ·  Predykcji ocenionych: 50  ·  Poprawnych: 31
 
+KARTA KONDYCJI MODELU
+----------------------------------------------------------------
+  Ostatni trening: 2026-10-11
+  Przebieg — model wspólny (ALL): zaakceptowano 1, odrzucono 0, pominięto 0
+  Ewaluacje per symbol (bez zapisu wag): bramkę przeszło 2, nie przeszło 1, pominięto 0
+  RMSE kandydata 0,0212 vs baseline 0,0240 (+11,7%) — ALL, n=243
+  trafność kierunkowa 56%  ·  foldy walk-forward 5
+  Uwaga: Metryki dotyczą KANDYDATA na foldach walk-forward; finalny (shipowany) model jest refitowany na całości danych i nie jest ponownie walidowany.
+
+=== 🗳️ Rada — historia głosów ===
+
+  Buffett — ostatnie 30 dni na NVDA: BUY, BUY, HOLD
+    Bilans: BUY 2 · SELL 0 · HOLD 1
+  Soros — ostatnie 30 dni na NVDA: HOLD, SELL, SELL — najbardziej bearish głos
+    Bilans: BUY 0 · SELL 2 · HOLD 1
+
 NASTROJE PORTFELA
 ----------------------------------------------------------------
   Średni sentyment: +0,15 (Lekko pozytywny)
@@ -136,6 +157,16 @@ WARTE UWAGI (sektory w ruchu)
   Półprzewodniki/AI — gorący (NVDA +4,2%, AMD -3,5%)
       rozważ: AVGO, TXN, AMAT
 
+KOSZT CYKLU
+----------------------------------------------------------------
+  Szacunkowy koszt cyklu: ~$0,0381 (17 płatnych wywołań)
+    Model predykcyjny (LLM): 3 × ~$0,0100 = ~$0,0300
+    Rada doradcza (LLM): 2 × ~$0,0025 = ~$0,0050
+    Sentyment (Alpha Vantage): 3 × ~$0,0005 = ~$0,0015
+    Newsy: 3 × ~$0,0005 = ~$0,0015
+    Embeddingi (RAG): 6 × ~$0,0000 = ~$0,0001
+  Uwaga: Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, nie faktura od dostawcy.
+
 POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------
   ETH(1,20%), MSFT(0,60%), XDWD.DE(—)
@@ -147,5 +178,6 @@ BŁĘDY
 ----------------------------------------------------------------
 Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.
 Symboli: 7 · predykcji: 3 · pominiętych: 3 · błędów: 1 · czas trwania: 74,2s
+Źródła danych (w zależności od konfiguracji): ceny — Finnhub i CoinGecko; newsy, sentyment, fundamenty i kalendarz wyników — Alpha Vantage; konsensus analityków i opcje — Finnhub; transakcje insiderów — SEC EDGAR; wzmianki — Reddit; stopy procentowe — FRED; kursy walut — NBP; analiza i rada — modele LLM (Anthropic, OpenAI).
 ----------------------------------------------------------------
 przebieg #18234567890 · commit 6eff942 · logi: https://github.com/example/StockAgent/actions/runs/18234567890

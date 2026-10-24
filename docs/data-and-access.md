@@ -14,19 +14,19 @@ app needs, how long data is kept, and how Row Level Security is rolled out.
 All relations live in the `public` schema, which Supabase exposes through PostgREST. The
 writer and reader columns name entry points: **Fast Loop** = `main_agent.py`, **Slow Loop** =
 `main_trainer.py`, **Shock Watch** = `main_watch.py`, **Deadman** = `main_deadman.py`,
-**tools** = `main_tools.py`, **backtest** = `main_backtest.py`. A local run writes nothing
+**tools** = `main_tools.py`, **backtest** = `main_backtest.py`, **Scorecard** = `main_scorecard.py`. A local run writes nothing
 unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs-are-read-only-by-default)).
 
 | Relation | Migrations | Data class | RLS after `038` | Written by | Read by |
 |---|---|---|---|---|---|
-| `prediction_logs` | `001`, columns added up to `037` | Model output: predictions, council verdicts, receipts, settlements, embeddings | on, no policies | Fast Loop (prediction, settlement, calibration, attestation reveal) | Fast Loop (reflection, RAG, report, track record), tools (`evaluate`) |
-| `price_snapshots` | `002`, `013` | Market data: one price per symbol and hour | on, no policies | Fast Loop (every cycle) | Fast Loop, Shock Watch (fallback reference price when the free quote has no fresh daily change, ALR-02), Deadman (database probe) |
-| `ml_feature_store` | materialized view, `001` rebuilt in `004`, `012`, `022`, `026`, `027`, `039` | Derived training features from `prediction_logs` | not applicable (a materialized view has no RLS; grants only) | Slow Loop and backtest refresh it (`refresh_ml_feature_store`) | Slow Loop, backtest |
-| `fundamentals_cache` | `006` | Market data: Alpha Vantage fundamentals cache | on, no policies | Fast Loop | Fast Loop |
-| `council_votes` | `007` | Model output: one vote per persona and prediction | on, no policies | Fast Loop | Fast Loop (persona weights and track record) |
+| `prediction_logs` | `001`, columns added up to `043`, `055` (`stale_quote`), `059` (session-close settlement) | Model output: predictions, council verdicts, receipts, settlements, embeddings | on, no policies | Fast Loop (prediction, settlement, calibration, attestation reveal) | Fast Loop (reflection, RAG, report, track record), tools (`evaluate`), Scorecard (public scorecard) |
+| `price_snapshots` | `002`, `013` | Market data: one price per symbol and hour | on, no policies | Fast Loop (every cycle) | Fast Loop, Shock Watch (fallback reference price when the free quote has no fresh daily change, ALR-02), Deadman (database probe), Scorecard (IVV benchmark) |
+| `ml_feature_store` | materialized view, `001` rebuilt in `004`, `012`, `022`, `026`, `027`, `039`, `047`, `050`, `058` | Derived training features from `prediction_logs`; from `058` without settlements on a stale quote (`stale_quote IS NOT TRUE`, DAT-14) | not applicable (a materialized view has no RLS; grants only) | Slow Loop and backtest refresh it (`refresh_ml_feature_store`) | Slow Loop, backtest |
+| `fundamentals_cache` | `006`, `056` (`market_cap`) | Market data: Alpha Vantage fundamentals cache | on, no policies | Fast Loop | Fast Loop |
+| `council_votes` | `007`, `054` (unique vote per persona and prediction) | Model output: one vote per persona and prediction | on, no policies | Fast Loop | Fast Loop (persona weights and track record) |
 | `quota_alerts` | `010` | Operational: API quota exhaustion events | on, no policies | Fast Loop, Slow Loop | Fast Loop (report banner) |
 | `subscribers` | `014` | **Personal data**: recipient email addresses and watchlists | on, no policies | nobody in the app (edited by hand in Supabase) | Fast Loop (`subscriptions_enabled`) |
-| `model_scorecards` | `019`, `028` | Model output: walk-forward evaluation of each training run | on, no policies | Slow Loop | Fast Loop (report), Deadman (last training run) |
+| `model_scorecards` | `019`, `028`, `049`, `052` | Model output: walk-forward evaluation of each training run and its feature distribution | on, no policies | Slow Loop | Fast Loop (report), Deadman (last training run) |
 | `shock_alerts` | `021` | Operational: one sent price-shock alert per symbol and day | on, no policies | Shock Watch | Shock Watch (debounce) |
 | `positions` | `023`, `035` | **Owner's financial data**: holdings, quantities, average cost | on, no policies | tools (`import-positions --apply`) | Fast Loop (`portfolio_positions_enabled`), tools |
 | `feature_snapshots` | `031` | Derived features: the vector each prediction was made from | on, no policies | Fast Loop (`feature_snapshots_enabled`) | nobody yet |
@@ -35,6 +35,8 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `llm_calls` | `040` | Operational: one row per LLM or embedding request (tokens, cost, run, node, symbol), no prompt text | on, no policies | Fast Loop, Slow Loop (`cost_ledger_enabled`) | nobody in the app yet |
 | `cycle_runs` | `041` | Operational: one row per loop run (run id and attempt, start, duration, symbol counts, paid calls per source, email delivered), no symbols | on, no policies | Fast Loop (`cycle_runs_enabled`) | nobody in the app yet |
 | `reference_predictions` | `042` | Model output: the free reference signal (WIA-24) — one row per weekly read with its call and settlement, `recipe_version = 'reference-v1'`, kept out of `prediction_logs` | on, no policies | Slow Loop (`reference_signal_enabled`) | Slow Loop (baseline read and open calls) |
+| `earnings_cache` | `053` | Market data: the next earnings report date per stock symbol from Alpha Vantage (FIN-11) | on, no policies | Slow Loop (`earnings_cache_enabled`) | Fast Loop (earnings gate) |
+| `price_level_alerts` | `057` | User settings: price levels to alert on (symbol, level, direction, note) with the watch's last reading and the hit time (ALR-11) | on, no policies | Shock Watch (`price_level_alerts_enabled`: adds the `price_alerts` list, records readings, disables a hit) | Shock Watch |
 
 The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges):
 
@@ -42,8 +44,9 @@ The functions in `public`, all `SECURITY INVOKER` (they run with the caller's pr
 |---|---|---|---|
 | `refresh_ml_feature_store()` | `001`, `004` | Slow Loop, backtest (RPC) | `service_role` only |
 | `match_news_embeddings(vector, int, text)` | `011`, `017` | Fast Loop (RAG, RPC) | `service_role` only |
-| `persona_accuracy_weights(int)` | `015` | Fast Loop (RPC) | `service_role` only |
-| `persona_accuracy_stats(int)` | `018` | Fast Loop (RPC) | `service_role` only |
+| `persona_accuracy_weights(int)` | `015`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
+| `persona_accuracy_stats(int)` | `018`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
+| `persona_vote_outcomes(int)` | `045`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_vote_outcomes_enabled`), tools (`persona-ablation`) | `service_role` only |
 | `stamp_prediction_settled_at()` | `029` | trigger on `prediction_logs` | `service_role` only; the trigger fires for any writer |
 
 `scripts/prod-state-check.sh` reads several of these relations with plain `GET` requests and
@@ -81,7 +84,8 @@ Nothing is deleted automatically: there is no retention job and no TTL in the da
   updated once, when its call is settled). Deleting a prediction also deletes its `council_votes`
   (`ON DELETE CASCADE`).
 - `fundamentals_cache` holds one row per symbol, overwritten on refresh. The 144-hour TTL is
-  applied when the row is read, not by deleting it.
+  applied when the row is read, not by deleting it. `earnings_cache` works the same way: one
+  report date per stock symbol, overwritten by the weekly refresh, read only within 144 hours.
 - `positions` is replaced as a whole by `main_tools.py import-positions --apply`: the new rows
   are inserted and the old ones deleted.
 - `subscribers` is maintained by hand. Deleting a row removes that recipient's email address

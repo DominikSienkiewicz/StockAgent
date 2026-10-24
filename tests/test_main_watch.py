@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import main_watch
-from src.application.ports import RepositoryPort
+from src.application.ports import PreviousVerdict, RepositoryPort
 from src.config import Settings
 from src.domain.value_objects import Money
 
@@ -694,3 +694,411 @@ class TestCryptoRollingWindowCooldown:
 
         assert sent == 1
         assert "AAPL" in push.send_report.call_args.kwargs["subject"]
+
+
+class TestQuietHoursWatch:
+    """ALR-09: szok w nocy (czas odbiorcy) dociera bez dźwięku — informacja zostaje,
+    pobudka o 3:00 nie. Poza oknem ciszy i z flagą off push brzmi jak dotąd."""
+
+    _NIGHT = datetime(2026, 10, 16, 1, 30, tzinfo=UTC)  # 03:30 w Warszawie
+    _DAY = datetime(2026, 10, 16, 8, 30, tzinfo=UTC)  # 10:30 w Warszawie
+
+    def _push(self, settings, now: datetime) -> MagicMock:
+        settings.display_timezone = "Europe/Warsaw"
+        push = MagicMock()
+        main_watch.run_watch(
+            settings,
+            repository=_repo("100", age_hours=1.0, now=now),
+            market=_market("90"),
+            push_notifier=push,
+            now=now,
+        )
+        push.send_report.assert_called_once()
+        return push
+
+    def test_night_alert_is_delivered_silently(self, settings) -> None:
+        settings.quiet_hours_enabled = True
+
+        push = self._push(settings, self._NIGHT)
+
+        assert push.send_report.call_args.kwargs["silent"] is True
+
+    def test_daytime_alert_keeps_the_sound(self, settings) -> None:
+        settings.quiet_hours_enabled = True
+
+        push = self._push(settings, self._DAY)
+
+        assert push.send_report.call_args.kwargs["silent"] is False
+
+    def test_flag_off_never_silences(self, settings) -> None:
+        settings.quiet_hours_enabled = False
+
+        push = self._push(settings, self._NIGHT)
+
+        assert push.send_report.call_args.kwargs["silent"] is False
+
+    def test_window_comes_from_settings(self, settings) -> None:
+        from datetime import time
+
+        settings.quiet_hours_enabled = True
+        settings.quiet_hours_start = time(1, 0)
+        settings.quiet_hours_end = time(2, 0)
+
+        push = self._push(settings, self._NIGHT)
+
+        assert push.send_report.call_args.kwargs["silent"] is False
+
+
+def _previous_verdict(recommendation: str, strength: float, at: datetime) -> PreviousVerdict:
+    from src.domain.council import CouncilVerdict
+
+    verdict = CouncilVerdict(
+        final_recommendation=recommendation,  # type: ignore[arg-type]
+        consensus_strength=strength,
+        summary="Rada widzi popyt na AI.",
+        dissenting_views=(),
+        investor_opinions=(),
+    )
+    return PreviousVerdict(verdict=verdict, sentiment_score=0.3, timestamp=at)
+
+
+class TestAlertContext:
+    """ALR-08: push szoku mówi, czy ruch dotyczy Twojej pozycji i co rada
+    sądziła ostatnio — same darmowe odczyty, a każdy z nich jest best-effort."""
+
+    _NOW = datetime(2026, 10, 16, 15, 7, tzinfo=UTC)  # pt 17:07 w Warszawie
+
+    def _repo(self) -> MagicMock:
+        repo = _repo("100", age_hours=1.0, now=self._NOW)
+        repo.get_previous_verdict.return_value = None
+        repo.get_latest_prediction.return_value = None
+        return repo
+
+    @staticmethod
+    def _market(prices: dict[str, str]) -> MagicMock:
+        market = MagicMock()
+        market.get_current_price.side_effect = lambda symbol: Money(Decimal(prices[symbol]))
+        return market
+
+    def _body(
+        self,
+        settings,
+        repo: MagicMock,
+        *,
+        portfolio: object = None,
+        prices: dict[str, str] | None = None,
+    ) -> str:
+        settings.display_timezone = "Europe/Warsaw"
+        push = MagicMock()
+        sent = main_watch.run_watch(
+            settings,
+            repository=repo,
+            market=self._market(prices or {"AAPL": "90"}),
+            push_notifier=push,
+            now=self._NOW,
+            portfolio_loader=lambda: portfolio,
+        )
+        assert sent == 1
+        body: str = push.send_report.call_args.kwargs["plain_text"]
+        return body
+
+    def _portfolio(self) -> object:
+        from src.domain.portfolio import Portfolio, Position
+
+        return Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("10"), purchase_price=Decimal("80")),
+                Position(symbol="MSFT", quantity=Decimal("1"), purchase_price=Decimal("300")),
+            ),
+            as_of=self._NOW - timedelta(days=1),
+        )
+
+    def test_alert_body_includes_previous_verdict_and_position(self, settings) -> None:
+        repo = self._repo()
+        repo.get_previous_verdict.return_value = _previous_verdict(
+            "BUY", 0.72, self._NOW - timedelta(days=1)
+        )
+
+        body = self._body(
+            settings, repo, portfolio=self._portfolio(), prices={"AAPL": "90", "MSFT": "300"}
+        )
+
+        assert "Rada wczoraj: KUP, zgoda 72%" in body
+        # AAPL 10 × 90 = 900 z 1200 wartości portfela; 90 / 80 − 1 = +12,5%.
+        assert "Twoja pozycja: 75% portfela, +12,5% od zakupu" in body
+        assert body.startswith("📉 AAPL -10,0% od ostatniego snapshotu ceny")
+        assert body.rstrip().endswith("pełna analiza w najbliższym dziennym digeście.")
+
+    def test_week_old_verdict_carries_its_age(self, settings) -> None:
+        repo = self._repo()
+        repo.get_previous_verdict.return_value = _previous_verdict(
+            "SELL", 0.55, self._NOW - timedelta(days=8)
+        )
+
+        body = self._body(settings, repo)
+
+        assert "Rada 8 dni temu: SPRZEDAJ, zgoda 55%" in body
+
+    def test_alert_quotes_the_last_prediction_reasoning(self, settings) -> None:
+        from src.application.ports import LatestPrediction
+
+        repo = self._repo()
+        repo.get_latest_prediction.return_value = LatestPrediction(
+            price=Money(Decimal("101")),
+            timestamp=self._NOW,
+            reasoning="Słabsze prognozy marż. " + "x" * 400,
+        )
+
+        body = self._body(settings, repo)
+
+        line = next(row for row in body.splitlines() if "Ostatnia predykcja" in row)
+        assert line.startswith("🧠 Ostatnia predykcja (dziś): Słabsze prognozy marż.")
+        assert line.endswith("…")
+        assert len(line) < 320
+
+    def test_symbol_outside_the_portfolio_gets_no_position_line(self, settings) -> None:
+        from src.domain.portfolio import Portfolio, Position
+
+        portfolio = Portfolio(
+            positions=(
+                Position(symbol="MSFT", quantity=Decimal("1"), purchase_price=Decimal("1")),
+            ),
+            as_of=self._NOW,
+        )
+
+        body = self._body(settings, self._repo(), portfolio=portfolio)
+
+        assert "Twoja pozycja" not in body
+
+    def test_stale_portfolio_is_marked(self, settings) -> None:
+        from src.domain.portfolio import Portfolio, Position
+
+        portfolio = Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("1"), purchase_price=Decimal("90")),
+            ),
+            as_of=self._NOW - timedelta(days=40),
+        )
+
+        body = self._body(settings, self._repo(), portfolio=portfolio)
+
+        assert "Twoja pozycja: 100% portfela, +0,0% od zakupu" in body
+        assert "stan portfela z 06.09.2026 — może być nieaktualny" in body
+
+    def test_failing_context_reads_keep_the_alert(self, settings) -> None:
+        repo = self._repo()
+        repo.get_previous_verdict.side_effect = RuntimeError("Supabase 503")
+        repo.get_latest_prediction.side_effect = RuntimeError("Supabase 503")
+
+        def broken_portfolio() -> object:
+            raise RuntimeError("positions down")
+
+        settings.display_timezone = "Europe/Warsaw"
+        push = MagicMock()
+        outcome = main_watch.scan_watch(
+            settings,
+            repository=repo,
+            market=self._market({"AAPL": "90"}),
+            push_notifier=push,
+            now=self._NOW,
+            portfolio_loader=broken_portfolio,
+        )
+
+        assert outcome.sent == 1 and outcome.failures == 0
+        body = push.send_report.call_args.kwargs["plain_text"]
+        assert "Rada" not in body and "Twoja pozycja" not in body
+
+    def test_context_never_writes_a_price_snapshot(self, settings) -> None:
+        repo = self._repo()
+
+        self._body(settings, repo, portfolio=self._portfolio(), prices={"AAPL": "90", "MSFT": "1"})
+
+        repo.save_price_snapshot.assert_not_called()
+
+    def test_portfolio_flag_off_reads_no_positions(self, settings, mocker) -> None:
+        # Domyślny loader to fabryka Fast Loopa: bez `portfolio_positions_enabled`
+        # nie dotyka tabeli `positions`.
+        positions_port = mocker.patch("main_agent.build_positions_port")
+        settings.portfolio_positions_enabled = False
+        push = MagicMock()
+
+        main_watch.run_watch(
+            settings,
+            repository=self._repo(),
+            market=self._market({"AAPL": "90"}),
+            push_notifier=push,
+            now=self._NOW,
+        )
+
+        push.send_report.assert_called_once()
+        positions_port.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# ALR-11: alerty poziomów cenowych ustawiane przez użytkownika
+# ---------------------------------------------------------------------------
+
+
+class TestPriceLevelAlerts:
+    """Push przy PRZEKROCZENIU poziomu od `last_seen_price`, wyłączenie po trafieniu,
+    lista startowa z config.toml dopisywana przez watch. Kontrakty watcha bez zmian:
+    zero płatnych portów, zero `save_price_snapshot`."""
+
+    _NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+
+    @staticmethod
+    def _settings(settings: Settings, **overrides: object) -> Settings:
+        return settings.model_copy(
+            update={"price_level_alerts_enabled": True, "quiet_hours_enabled": False, **overrides}
+        )
+
+    @staticmethod
+    def _alert(last_seen: str | None, *, direction: str = "ABOVE", note: str | None = None):
+        from src.domain.price_levels import LevelDirection, PriceLevel, PriceLevelAlert
+
+        return PriceLevelAlert(
+            id="7",
+            level=PriceLevel(
+                symbol="NVDA",
+                level=Decimal("150"),
+                direction=LevelDirection(direction),
+                note=note,
+            ),
+            last_seen_price=Decimal(last_seen) if last_seen is not None else None,
+        )
+
+    def _scan(self, settings: Settings, repo: MagicMock, price: str, push: MagicMock | None):
+        return main_watch.scan_price_levels(
+            settings, repository=repo, market=_market(price), push_notifier=push, now=self._NOW
+        )
+
+    @staticmethod
+    def _repo(*alerts: object) -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_active_price_levels.return_value = list(alerts)
+        return repo
+
+    def test_crossing_sends_the_push_with_the_note_and_disables_the_alert(
+        self, settings
+    ) -> None:
+        repo = self._repo(self._alert("148", note="realizacja części zysku"))
+        push = MagicMock()
+
+        sent = self._scan(self._settings(settings), repo, "151.2", push)
+
+        assert sent == 1
+        kwargs = push.send_report.call_args.kwargs
+        assert kwargs["subject"] == "🎯 NVDA przebiła 150"
+        body = kwargs["plain_text"]
+        assert body.startswith("🎯 NVDA przebiła 150 (Twoja notatka: realizacja części zysku).")
+        assert "151,20" in body
+        repo.mark_price_level_triggered.assert_called_once_with("7", Decimal("151.2"), self._NOW)
+        repo.record_price_level_reading.assert_not_called()
+
+    def test_falling_through_a_level_names_the_drop(self, settings) -> None:
+        repo = self._repo(self._alert("152", direction="BELOW"))
+        push = MagicMock()
+
+        self._scan(self._settings(settings), repo, "149.5", push)
+
+        assert push.send_report.call_args.kwargs["subject"] == "🎯 NVDA spadła do 150"
+
+    def test_price_on_the_same_side_only_records_the_reading(self, settings) -> None:
+        repo = self._repo(self._alert("152"))
+        push = MagicMock()
+
+        assert self._scan(self._settings(settings), repo, "155", push) == 0
+
+        push.send_report.assert_not_called()
+        repo.record_price_level_reading.assert_called_once_with("7", Decimal("155"))
+        repo.mark_price_level_triggered.assert_not_called()
+
+    def test_first_reading_is_the_reference_not_a_hit(self, settings) -> None:
+        repo = self._repo(self._alert(None))
+        push = MagicMock()
+
+        assert self._scan(self._settings(settings), repo, "151", push) == 0
+
+        repo.record_price_level_reading.assert_called_once_with("7", Decimal("151"))
+
+    def test_config_list_is_added_to_the_table(self, settings) -> None:
+        from src.config import PriceAlertSettings
+        from src.domain.price_levels import LevelDirection, PriceLevel
+
+        seeds = [PriceAlertSettings(symbol="nvda", level=Decimal("150"), direction="ABOVE")]
+        repo = self._repo()
+
+        self._scan(self._settings(settings, price_alerts=seeds), repo, "151", MagicMock())
+
+        repo.add_price_levels.assert_called_once_with(
+            (PriceLevel(symbol="NVDA", level=Decimal("150"), direction=LevelDirection.ABOVE),)
+        )
+
+    def test_flag_off_touches_nothing(self, settings) -> None:
+        repo = self._repo(self._alert("148"))
+        market = _market("151")
+
+        sent = main_watch.scan_price_levels(
+            settings.model_copy(update={"price_level_alerts_enabled": False}),
+            repository=repo,
+            market=market,
+            push_notifier=MagicMock(),
+            now=self._NOW,
+        )
+
+        assert sent == 0
+        assert repo.method_calls == []
+        market.get_current_price.assert_not_called()
+
+    def test_without_a_push_channel_the_hit_waits_untouched(self, settings) -> None:
+        repo = self._repo(self._alert("148"))
+
+        assert self._scan(self._settings(settings), repo, "151", None) == 0
+
+        repo.mark_price_level_triggered.assert_not_called()
+        repo.record_price_level_reading.assert_not_called()
+
+    def test_missing_table_skips_the_scan(self, settings, caplog) -> None:
+        repo = self._repo()
+        repo.get_active_price_levels.side_effect = RuntimeError("PGRST205")
+
+        with caplog.at_level(logging.ERROR):
+            assert self._scan(self._settings(settings), repo, "151", MagicMock()) == 0
+
+        assert "057" in caplog.text
+
+    def test_level_scan_never_writes_a_price_snapshot_or_calls_paid_ports(
+        self, settings, mocker
+    ) -> None:
+        paid_builders = [
+            mocker.patch(f"main_agent.{name}")
+            for name in ("build_llm_adapter", "build_council_adapter", "build_embedding_adapter")
+        ]
+        repo = self._repo(self._alert("148"))
+
+        self._scan(self._settings(settings), repo, "151", MagicMock())
+
+        repo.save_price_snapshot.assert_not_called()
+        for builder in paid_builders:
+            builder.assert_not_called()
+
+    def test_main_runs_the_level_scan_on_the_watch_adapters(self, settings, mocker) -> None:
+        repository = mocker.patch("main_agent.build_repository")
+        market = mocker.patch("main_agent.build_market_port")
+        push = mocker.patch("main_agent.build_push_notifier")
+        settings.telegram_bot_token = "tg-token"
+        settings.telegram_chat_id = "42"
+        mocker.patch(
+            "main_watch.scan_watch",
+            return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1),
+        )
+        levels = mocker.patch("main_watch.scan_price_levels", return_value=0)
+
+        assert main_watch.main(settings) == 0
+
+        levels.assert_called_once_with(
+            settings,
+            repository=repository.return_value,
+            market=market.return_value,
+            push_notifier=push.return_value,
+        )

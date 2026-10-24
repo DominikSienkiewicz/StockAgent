@@ -4,12 +4,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
+from src.application.decision_receipt import DecisionReceipt
 from src.domain.conformal import MoveInterval
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import SkipReason
 from src.domain.feature_attribution import FeatureContribution
+from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.provenance import ProvenanceBadge
-from src.domain.sizing import SizeBand
+from src.domain.sizing import PositionAction, SizeBand
 from src.domain.value_objects import ValuationVerdict
 
 
@@ -136,6 +138,28 @@ class TradeSignal:
     # pewność bez korekty). None = brak kalibracji. Mała próba skacze, więc
     # raport pokazuje n obok pewności skalibrowanej.
     calibration_bucket_count: int | None = None
+    # PORT-08: kierunek w kontekście portfela czytelnika (ZREDUKUJ / UNIKAJ / TRZYMAJ
+    # zamiast gołego SPRZEDAJ) i waga pozycji. None = portfel nieznany — raport
+    # pokazuje `direction` jak przed PORT-08.
+    position_action: PositionAction | None = None
+    position_weight: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class PortfolioMood:
+    """📊 Nastroje portfela — agregaty sentymentu jednego cyklu (MAIL-10).
+
+    `avg_sentiment` i `avg_sentiment_label` są None, gdy cykl nie ma ani jednego
+    sentymentu: brak danych to nie neutralny nastrój „+0,00”."""
+
+    avg_sentiment: float | None
+    avg_sentiment_label: str | None
+    sentiment_count: int
+    most_bullish: SymbolResult | None
+    most_bearish: SymbolResult | None
+    high_confidence_count: int
+    saved_count: int
+    total_news: int
 
 
 @dataclass(frozen=True)
@@ -167,6 +191,12 @@ class ResolvedPrediction:
     # Moment predykcji (`prediction_logs.timestamp`). Jego dzień UTC to klucz
     # cyklu: predykcje jednego cyklu są skorelowane (WIA-17, WIA-23).
     predicted_at: datetime | None = None
+    # WIA-56: kwit decyzyjny (migracja 020) do linii pod chybieniem; None = brak
+    # kwitu albo nieznana wersja schematu.
+    receipt: DecisionReceipt | None = None
+    # WIA-57: kategoria przyczyny błędu (`correction_category`, migracja 046);
+    # None = brak kategorii (wiersz sprzed migracji albo odczyt bez flagi).
+    correction_category: MistakeCategory | None = None
 
     @property
     def actual_change_pct(self) -> Decimal | None:

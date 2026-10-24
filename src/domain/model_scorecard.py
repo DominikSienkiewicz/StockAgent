@@ -22,9 +22,15 @@ POOLED_MODEL_SYMBOL = "ALL"
 # jako stała modułu — pojedyncze źródło prawdy dla reguły świeżości.
 MODEL_STALE_AFTER_DAYS = 21
 
+# ML-15: okno odczytu karty. Musi sięgać dalej niż próg STALE — przy oknie 30 dni
+# (`track_record_days`) karta znikała po 30 dniach i odznaka STALE była widoczna
+# tylko w dniach 22–30. Dwa progi świeżości dają trzy tygodnie odznaki.
+MODEL_SCORECARD_WINDOW_DAYS = 2 * MODEL_STALE_AFTER_DAYS
+
 # Wiersze jednego przebiegu Slow Loopa dzielą minuty; kolejne przebiegi — tydzień.
 # Przerwa dłuższa niż ta granica zaczyna poprzedni przebieg (ML-03). Ręczny re-run
-# tego samego dnia skleja się z cronem — rozdzieli je dopiero `run_id` (ML-24).
+# tego samego dnia skleja się z cronem — rozdziela je `run_id` (ML-24), a ta
+# heurystyka zostaje dla historii bez identyfikatora przebiegu.
 RUN_MAX_GAP = timedelta(hours=2)
 
 # Zastrzeżenie do copy sekcji „trust". Spec mówi wprost: sekcja bez tej noty
@@ -130,6 +136,28 @@ def latest_run_indices(
         run.append(idx)
         previous = stamp
     return sorted(run)
+
+
+def latest_run_indices_by_id(
+    stamps: Sequence[datetime | None],
+    run_ids: Sequence[str | None],
+    max_gap: timedelta = RUN_MAX_GAP,
+) -> list[int]:
+    """Indeksy (rosnąco) wierszy najnowszego przebiegu, grupowane po `run_id` (ML-24).
+
+    Najnowszy wiersz ze znacznikiem wyznacza przebieg: ma `run_id` → przebieg to
+    wszystkie wiersze z tym identyfikatorem i znacznikiem; nie ma (historia sprzed
+    migracji 049 albo flaga off) → heurystyka przerwy `latest_run_indices`.
+    `stamps` i `run_ids` są równoległe (ten sam indeks = ten sam wiersz).
+    """
+    dated = [(stamp, idx) for idx, stamp in enumerate(stamps) if stamp is not None]
+    if not dated:
+        return []
+    _, newest = max(dated)
+    run_id = run_ids[newest]
+    if run_id is None:
+        return latest_run_indices(stamps, max_gap)
+    return [idx for _, idx in dated if run_ids[idx] == run_id]
 
 
 def summarize_run(

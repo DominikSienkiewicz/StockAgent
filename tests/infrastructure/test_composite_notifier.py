@@ -39,3 +39,14 @@ class TestCompositeNotifier:
     def test_empty_list_is_noop(self) -> None:
         composite = CompositeNotifier([])
         composite.send_report("S", "H", "T")  # nie rzuca
+
+
+def test_silent_send_reaches_every_child_silently() -> None:
+    # ALR-09: cisza nocna dotyczy każdego kanału push pod kompozytem.
+    a = Mock(spec=ReportNotifierPort)
+    b = Mock(spec=ReportNotifierPort)
+
+    CompositeNotifier([a, b]).send_report("S", "H", "T", silent=True)
+
+    a.send_report.assert_called_once_with("S", "H", "T", silent=True)
+    b.send_report.assert_called_once_with("S", "H", "T", silent=True)

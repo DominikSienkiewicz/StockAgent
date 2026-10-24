@@ -258,3 +258,141 @@ def test_cost_envelope_prints_the_weekly_worst_case_against_the_budget(
     assert "Weekly worst case at the FIN-12 ceiling: 5 cycles" in out
     assert "1.2112 USD = 6.0559 USD" in out
     assert "`fast_loop_weekly_budget_usd` = 7.00 USD, within the budget." in out
+
+
+# --- DX-01: render-sample-report ----------------------------------------------
+
+
+def test_render_sample_report_writes_both_bodies_without_settings(
+    mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from_env = mocker.patch("src.config.Settings.from_env", side_effect=AssertionError)
+
+    code = main_tools.main(["render-sample-report", "--out-dir", str(tmp_path / "out")])
+
+    assert code == 0
+    from_env.assert_not_called()
+    html = (tmp_path / "out" / "report-email.html").read_text(encoding="utf-8")
+    text = (tmp_path / "out" / "report-email.txt").read_text(encoding="utf-8")
+    assert html.startswith("<") and "Krypto" in html
+    assert "przebieg #sample" in text
+    assert "report-email.html" in capsys.readouterr().out
+
+# --- WIA-56: explain ----------------------------------------------------------
+
+
+def test_explain_by_prediction_id_reads_the_receipt(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mocker.patch("src.config.Settings.from_env")
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.get_receipt.return_value = None
+
+    code = main_tools.main(["explain", "pred-404"])
+
+    assert code == 0
+    repo_cls.return_value.get_receipt.assert_called_once_with("pred-404")
+    assert "nie znaleziono predykcji pred-404" in capsys.readouterr().out
+
+
+def test_explain_by_symbol_and_date_reads_that_utc_day(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mocker.patch("src.config.Settings.from_env")
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.find_receipts.return_value = []
+
+    code = main_tools.main(["explain", "--symbol", "nvda", "--date", "2026-08-14"])
+
+    assert code == 0
+    repo_cls.return_value.find_receipts.assert_called_once_with("NVDA", date(2026, 8, 14))
+    assert "brak predykcji NVDA z 2026-08-14 (UTC)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["explain"],
+        ["explain", "--symbol", "NVDA"],
+        ["explain", "pred-1", "--symbol", "NVDA", "--date", "2026-08-14"],
+        ["explain", "pred-1", "--date", "2026-08-14"],
+        ["explain", "--symbol", "NVDA", "--date", "14.08.2026"],
+    ],
+)
+def test_explain_needs_an_id_or_a_symbol_with_a_date(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main_tools.main(argv)
+
+    assert exit_info.value.code == 2
+
+
+# --- WIA-46: persona-ablation -------------------------------------------------
+
+
+def test_persona_ablation_reads_the_history_behind_the_scored_window(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = mocker.patch("src.config.Settings.from_env").return_value
+    settings.crypto_symbols = ["BTC"]
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.get_persona_vote_outcomes.return_value = []
+
+    code = main_tools.main(["persona-ablation", "--days", "30", "--window-days", "60"])
+
+    assert code == 0
+    # Wagi pierwszej ocenianej predykcji potrzebują pełnego okna historii przed nią.
+    repo_cls.return_value.get_persona_vote_outcomes.assert_called_once_with(window_days=90)
+    assert "persona_weighting_enabled" in capsys.readouterr().out
+
+
+def test_persona_ablation_without_migration_045_says_so(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mocker.patch("src.config.Settings.from_env")
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.get_persona_vote_outcomes.side_effect = RuntimeError("PGRST202")
+
+    code = main_tools.main(["persona-ablation"])
+
+    assert code == 1
+    assert "045" in capsys.readouterr().err
+
+# --- DOC-17: render-graph-diagram -----------------------------------------------
+
+
+def test_render_graph_diagram_writes_both_variants_without_settings(
+    mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from_env = mocker.patch("src.config.Settings.from_env", side_effect=AssertionError)
+
+    code = main_tools.main(["render-graph-diagram", "--out-dir", str(tmp_path)])
+
+    assert code == 0
+    from_env.assert_not_called()
+    production = (tmp_path / "graph.mmd").read_text(encoding="utf-8")
+    assert "fetch_fundamentals" in production
+    assert "fetch_fundamentals" not in (tmp_path / "graph-without-fundamentals.mmd").read_text(
+        encoding="utf-8"
+    )
+    assert "graph.mmd" in capsys.readouterr().out
+
+
+# --- DOC-18: repo-stats -----------------------------------------------------------
+
+
+def test_repo_stats_writes_the_counts_without_settings(
+    mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    from_env = mocker.patch("src.config.Settings.from_env", side_effect=AssertionError)
+    out = tmp_path / "stats.json"
+
+    code = main_tools.main(["repo-stats", "--out", str(out)])
+
+    assert code == 0
+    from_env.assert_not_called()
+    stats = json.loads(out.read_text(encoding="utf-8"))
+    assert stats["domain_stdlib_only"] is True
+    assert stats["test_functions"] > 0 and stats["migrations"] > 0
+    assert '"ports"' in capsys.readouterr().out

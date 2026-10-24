@@ -19,6 +19,7 @@ from typing import Literal
 
 import pytest
 
+from src.domain.consensus_shift import ConsensusShift, ShiftKind
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.digest_lead import (
     LeadItem,
@@ -415,3 +416,184 @@ class TestLeadItemSymbol:
 
     def test_quota_item_has_no_symbol(self) -> None:
         assert [item.symbol for item in build_lead([], [_critical_alert()])] == [None]
+
+
+def _shift(
+    kind: ShiftKind = ShiftKind.FLIP,
+    previous: str = "BUY",
+    current: str = "SELL",
+) -> ConsensusShift:
+    return ConsensusShift(
+        kind=kind,
+        previous_recommendation=previous,
+        current_recommendation=current,
+        votes_changed=4,
+        sentiment_delta=-0.4,
+        consensus_delta=0.1,
+        gap_hours=24.0,
+    )
+
+
+class TestConsensusFlip:
+    """MAIL-19: odwrócenie rady (FLIP, BUY↔SELL) to najbardziej actionable zmiana
+    nastawienia — ma własny tier leadu między radą podzieloną a silnym konsensusem."""
+
+    def test_flip_outranks_strong_consensus_but_not_split(self) -> None:
+        flip = LeadSignal(
+            "NVDA", Decimal("1.0"), _consensus_verdict("SELL"), consensus_shift=_shift()
+        )
+        consensus = LeadSignal("AAA", Decimal("8.0"), _consensus_verdict("BUY"))
+        big_flip = LeadSignal(
+            "NVDA", Decimal("9.0"), _consensus_verdict("SELL"), consensus_shift=_shift()
+        )
+        split = LeadSignal("BBB", Decimal("1.0"), _split_verdict())
+
+        assert "NVDA" in build_lead([consensus, flip])[0].headline
+        over_flip = build_lead([big_flip, split])
+        assert "PODZIELONA" in over_flip[0].headline
+        assert "NVDA" in over_flip[1].headline
+
+    def test_flip_headline_names_both_recommendations_in_polish(self) -> None:
+        signal = LeadSignal(
+            "NVDA", Decimal("-4.2"), _consensus_verdict("SELL"), consensus_shift=_shift()
+        )
+
+        item = build_lead([signal])[0]
+
+        assert item.icon == "🔄"
+        assert item.headline == "NVDA -4,2%: rada odwróciła się KUP→SPRZEDAJ"
+        assert item.detail == "Rada zgodna co do kierunku."
+        assert item.symbol == "NVDA"
+
+    def test_stale_comparison_never_leads_as_a_flip(self) -> None:
+        signal = LeadSignal(
+            "NVDA",
+            Decimal("-4.2"),
+            _consensus_verdict("SELL"),
+            consensus_shift=_shift(ShiftKind.STALE_COMPARISON),
+        )
+
+        assert build_lead([signal])[0].headline == "NVDA -4,2%, rada zgodna: SPRZEDAJ"
+
+    def test_softening_is_not_a_flip(self) -> None:
+        signal = LeadSignal(
+            "NVDA",
+            Decimal("-4.2"),
+            _consensus_verdict("HOLD", 0.5),
+            consensus_shift=_shift(ShiftKind.SOFTENING, current="HOLD"),
+        )
+
+        assert build_lead([signal]) == []
+
+    def test_flip_stays_below_a_signal_against_your_position(self) -> None:
+        flip = LeadSignal(
+            "AMD", Decimal("-9.0"), _consensus_verdict("SELL"), consensus_shift=_shift()
+        )
+        split = LeadSignal("BBB", Decimal("0.5"), _split_verdict())
+        against = LeadSignal(
+            "NVDA",
+            Decimal("-1.0"),
+            _consensus_verdict("SELL"),
+            position_weight=Decimal("0.24"),
+            crossed_volatility_gate=True,
+        )
+
+        items = build_lead([flip, split, against])
+
+        assert [item.symbol for item in items] == ["NVDA", "BBB", "AMD"]
+
+class TestSignificantInsiderBuyTier:
+    """DAT-21: znaczący zakup insidera to osobny tier między radą PODZIELONĄ
+    a silnym konsensusem — kolejność pozostałych tierów bez zmian."""
+
+    _LABEL = "CEO kupił akcje za 1,2 mln USD"
+
+    def _insider(self, symbol: str, delta: str = "1.0") -> LeadSignal:
+        return LeadSignal(
+            symbol=symbol, price_delta_pct=Decimal(delta), insider_buy_label=self._LABEL
+        )
+
+    def test_insider_buy_sits_between_a_split_council_and_a_strong_consensus(self) -> None:
+        split = LeadSignal("AAA", Decimal("0.5"), _split_verdict())
+        insider = self._insider("BBB", "0.5")
+        # Większy ruch konsensusu nie przeskakuje tieru (anti-sensacja).
+        consensus = LeadSignal("CCC", Decimal("9.0"), _consensus_verdict())
+
+        items = build_lead([consensus, insider, split])
+
+        assert [item.symbol for item in items] == ["AAA", "BBB", "CCC"]
+        assert items[1].headline == f"BBB +0,5%: {self._LABEL}"
+        assert items[1].icon == "🟢"
+
+    def test_insider_buy_takes_the_place_of_the_symbols_strong_consensus(self) -> None:
+        signal = LeadSignal(
+            "NVDA",
+            Decimal("2.0"),
+            _consensus_verdict(),
+            insider_buy_label=self._LABEL,
+        )
+
+        (item,) = build_lead([signal])
+
+        assert self._LABEL in item.headline
+        assert item.detail == "Rada zgodna co do kierunku."
+
+    def test_without_a_council_the_detail_names_the_form4_purchase(self) -> None:
+        (item,) = build_lead([self._insider("NVDA")])
+
+        assert "Form 4" in item.detail
+
+    def test_critical_quota_and_split_council_stay_above_it(self) -> None:
+        split = LeadSignal("AAA", Decimal("0.1"), _split_verdict())
+        insider = self._insider("BBB", "9.9")
+
+        items = build_lead([insider, split], [_critical_alert()])
+
+        assert items[0].symbol is None
+        assert [item.symbol for item in items[1:]] == ["AAA", "BBB"]
+
+
+class TestRegimeChangeTier:
+    """ALR-05: zmiana reżimu tuż pod CRITICAL quota — dotyczy całego cyklu (próg
+    bramki rośnie albo wraca), więc bije sygnały pojedynczych symboli."""
+
+    @staticmethod
+    def _against_position() -> LeadSignal:
+        return LeadSignal(
+            symbol="NVDA",
+            price_delta_pct=Decimal("-9.9"),
+            council_verdict=_consensus_verdict("SELL"),
+            position_weight=Decimal("0.60"),
+            crossed_volatility_gate=True,
+        )
+
+    def test_entering_risk_off_sits_right_below_a_critical_quota(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeChange
+
+        change = RegimeChange(previous=MarketRegime.NEUTRAL, current=MarketRegime.RISK_OFF)
+
+        items = build_lead(
+            [self._against_position()], [_critical_alert()], regime_change=change
+        )
+
+        assert "Alpha Vantage" in items[0].headline
+        assert items[1].headline == "Rynek przeszedł w RISK_OFF, analiza rzadsza"
+        assert items[1].icon == "🌧️"
+        assert items[1].symbol is None
+        assert "Sygnał przeciw Twojej pozycji" in items[2].headline
+
+    def test_leaving_risk_off_names_the_new_regime(self) -> None:
+        from src.domain.regime import MarketRegime, RegimeChange
+
+        change = RegimeChange(previous=MarketRegime.RISK_OFF, current=MarketRegime.NEUTRAL)
+
+        (item,) = build_lead([], regime_change=change)
+
+        assert item.headline == "Rynek wyszedł z RISK_OFF (NEUTRAL), analiza częstsza"
+
+    def test_without_a_change_the_lead_is_unchanged(self) -> None:
+        signals = [self._against_position()]
+
+        assert build_lead(signals, [_critical_alert()], regime_change=None) == build_lead(
+            signals, [_critical_alert()]
+        )

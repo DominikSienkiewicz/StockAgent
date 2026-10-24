@@ -12,8 +12,13 @@ Użycie:
     uv run python main_tools.py <podkomenda> [opcje]
     uv run python main_tools.py import-positions --csv pozycje.csv [--apply]
     uv run python main_tools.py evaluate [--days N] [--by-recipe] [--by X] [--echo]
-        [--experiment ID]
+        [--experiment ID] [--discrimination]
     uv run python main_tools.py cost-envelope
+    uv run python main_tools.py render-sample-report [--out-dir build/sample-report]
+    uv run python main_tools.py render-graph-diagram [--out-dir docs]
+    uv run python main_tools.py repo-stats [--out docs/repo-stats.json]
+    uv run python main_tools.py explain <prediction_id> | --symbol X --date RRRR-MM-DD
+    uv run python main_tools.py persona-ablation [--days N] [--window-days N]
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -41,12 +46,21 @@ from src.tools.evaluate import (
     render_evaluation,
     with_asset_class,
 )
+from src.tools.explain import explain_prediction, explain_symbol_day
 from src.tools.import_positions import (
     PositionsCsvError,
     format_plan,
     parse_positions_csv,
     plan_import,
 )
+from src.tools.persona_ablation import format_ablation, replay_persona_weighting
+from src.tools.render_graph_diagram import graph_diagrams
+from src.tools.render_sample_report import (
+    SAMPLE_HTML_NAME,
+    SAMPLE_TEXT_NAME,
+    render_sample_report,
+)
+from src.tools.repo_stats import REPO_STATS_NAME, RepoStats, compute_repo_stats
 
 if TYPE_CHECKING:
     from src.application.ports import PositionsImportPort
@@ -55,6 +69,8 @@ if TYPE_CHECKING:
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
 Handler = Callable[[argparse.Namespace], int]
+
+_REPO_ROOT = Path(__file__).resolve().parent
 
 
 def _now() -> datetime:
@@ -66,10 +82,10 @@ def _load_settings() -> Settings:
     """`Settings` z env plus logi z redakcją jego sekretów (BEZ-02). Poziom
     WARNING jak dotąd: narzędzie pisze wynik na stdout, logi tylko przy kłopocie."""
     from src.config import Settings
-    from src.infrastructure.logging_redaction import configure_logging
+    from src.infrastructure.logging_setup import configure_logging
 
     settings = Settings.from_env()
-    configure_logging(settings.secret_values(), level=logging.WARNING)
+    configure_logging("main_tools", settings.secret_values(), level=logging.WARNING)
     return settings
 
 
@@ -83,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_evaluate(subcommands)
     _add_import_positions(subcommands)
     _add_cost_envelope(subcommands)
+    _add_render_sample_report(subcommands)
+    _add_render_graph_diagram(subcommands)
+    _add_repo_stats(subcommands)
+    _add_explain(subcommands)
+    _add_persona_ablation(subcommands)
     return parser
 
 
@@ -131,6 +152,14 @@ def _add_evaluate(subcommands: argparse._SubParsersAction[argparse.ArgumentParse
             "z CI blokowym; ramiona z kolumny (migracja 037) albo z kwitu v2."
         ),
     )
+    parser.add_argument(
+        "--discrimination",
+        action="store_true",
+        help=(
+            "Czy pewność coś znaczy (WIA-38): AUC pewności LLM i konsensusu rady "
+            "z CI blokowym i trafnością top-k% wg pewności."
+        ),
+    )
     parser.set_defaults(handler=_run_evaluate)
 
 
@@ -152,6 +181,7 @@ def _run_evaluate(args: argparse.Namespace) -> int:
         segmentations=segmentations,
         echo=args.echo,
         experiment=experiment is not None,
+        discrimination=args.discrimination,
     )
     rows, read_fields = _read_evaluation_rows(repo, args.days, reads, fields)
     if "asset_class" in segmentations:
@@ -165,6 +195,7 @@ def _run_evaluate(args: argparse.Namespace) -> int:
             by_universe=args.by_universe,
             echo=GATE_DELTA_FIELD in read_fields,
             experiment=experiment,
+            discrimination=args.discrimination,
         )
     )
     return 0
@@ -327,6 +358,204 @@ def _run_cost_envelope(args: argparse.Namespace) -> int:
     # WIA-11: tydzień przy suficie FIN-12 — ta sama reguła co kontrola startu Fast Loopa.
     print()
     print(render_weekly_budget(settings.fast_loop_weekly_budget(personas=inputs.personas)))
+    return 0
+
+
+def _add_render_sample_report(
+    subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subcommands.add_parser(
+        "render-sample-report",
+        help="Render the report email of a fictional cycle (no keys, no database, no network).",
+        description=(
+            "DX-01: the HTML and plain-text email of a fixed, fictional Fast Loop cycle, "
+            "built by the same build_html_report as the real run. Zero paid calls."
+        ),
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("build/sample-report"),
+        help="Directory for report-email.html and report-email.txt (default: build/sample-report).",
+    )
+    parser.set_defaults(handler=_run_render_sample_report)
+
+
+def _run_render_sample_report(args: argparse.Namespace) -> int:
+    """DX-01: zapis przykładowego maila — bez `Settings`, kluczy i sieci; exit 0."""
+    out_dir: Path = args.out_dir
+    report = render_sample_report()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / SAMPLE_HTML_NAME
+    text_path = out_dir / SAMPLE_TEXT_NAME
+    html_path.write_text(report.html, encoding="utf-8")
+    text_path.write_text(report.text, encoding="utf-8")
+    print(f"✅ przykładowy raport: {html_path} i {text_path}")
+    return 0
+
+
+def _add_render_graph_diagram(
+    subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subcommands.add_parser(
+        "render-graph-diagram",
+        help="Write the Fast Loop graph as Mermaid, generated from create_agent_graph.",
+        description=(
+            "DOC-17: docs/graph.mmd (the production graph, with fetch_fundamentals) and "
+            "docs/graph-without-fundamentals.mmd, drawn by LangGraph from the code. "
+            "No keys, no database, no network."
+        ),
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("docs"),
+        help="Directory for the .mmd files (default: docs).",
+    )
+    parser.set_defaults(handler=_run_render_graph_diagram)
+
+
+def _run_render_graph_diagram(args: argparse.Namespace) -> int:
+    """DOC-17: zapis diagramów grafu — bez `Settings`, kluczy i sieci; exit 0."""
+    out_dir: Path = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name, diagram in graph_diagrams().items():
+        path = out_dir / name
+        path.write_text(diagram, encoding="utf-8")
+        print(f"✅ diagram grafu: {path}")
+    return 0
+
+
+def collect_repo_stats(root: Path = _REPO_ROOT) -> RepoStats:
+    """DOC-18: liczby repo z plików `.py` w `src/` i `tests/` oraz z nazw migracji."""
+    sources = {
+        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+        for directory in ("src", "tests")
+        for path in sorted((root / directory).rglob("*.py"))
+        if "__pycache__" not in path.parts
+    }
+    migrations = [path.name for path in (root / "supabase" / "migrations").glob("*.sql")]
+    return compute_repo_stats(sources, migrations)
+
+
+def _add_repo_stats(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subcommands.add_parser(
+        "repo-stats",
+        help="Count tests, migrations, ports, adapters and domain modules into a JSON file.",
+        description=(
+            "DOC-18: the repository numbers the docs quote (test functions by AST, "
+            "migrations, ABC ports, adapter modules, domain modules, a stdlib-only check "
+            "of the domain). No keys, no database, no network."
+        ),
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=Path("docs") / REPO_STATS_NAME,
+        help="Output JSON file (default: docs/repo-stats.json).",
+    )
+    parser.set_defaults(handler=_run_repo_stats)
+
+
+def _run_repo_stats(args: argparse.Namespace) -> int:
+    """DOC-18: zapis liczb repo — bez `Settings`, kluczy i sieci; exit 0."""
+    out: Path = args.out
+    stats_json = collect_repo_stats().to_json()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(stats_json, encoding="utf-8")
+    print(stats_json, end="")
+    return 0
+
+
+def _add_explain(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subcommands.add_parser(
+        "explain",
+        help="Explain a prediction from its decision receipt (read-only).",
+        description=(
+            "WIA-56: RAG analogues with similarity, SHAP-lite attributions, the effective "
+            "threshold and the council votes of one prediction (by id) or of every "
+            "prediction of a symbol on one UTC day. Read-only, zero paid calls."
+        ),
+    )
+    parser.add_argument("prediction_id", nargs="?", help="Id predykcji (prediction_logs.id).")
+    parser.add_argument(
+        "--symbol", type=str.upper, help="Symbol (razem z --date): predykcje z tego dnia."
+    )
+    parser.add_argument(
+        "--date",
+        type=date.fromisoformat,
+        metavar="RRRR-MM-DD",
+        help="Dzień UTC predykcji (razem z --symbol).",
+    )
+    parser.set_defaults(handler=_run_explain, explain_parser=parser)
+
+
+def _run_explain(args: argparse.Namespace) -> int:
+    """WIA-56: „dlaczego?” — kwit po id albo po symbolu i dniu; exit 0 zawsze."""
+    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+    by_id = args.prediction_id is not None
+    by_day = args.symbol is not None and args.date is not None
+    partial_day = (args.symbol is None) != (args.date is None)
+    if by_id == by_day or partial_day:
+        parser: argparse.ArgumentParser = args.explain_parser
+        parser.error("podaj <prediction_id> albo --symbol X razem z --date RRRR-MM-DD")
+    settings = _load_settings()
+    repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    if by_id:
+        print(explain_prediction(repo, args.prediction_id))
+    else:
+        print(explain_symbol_day(repo, args.symbol, args.date))
+    return 0
+
+
+def _add_persona_ablation(
+    subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subcommands.add_parser(
+        "persona-ablation",
+        help="Does persona weighting help out of sample? (read-only, needs migration 045).",
+        description=(
+            "WIA-46: replays the council verdict of every past prediction with the persona "
+            "weights known at that moment (votes settled before it) and without weights."
+        ),
+    )
+    parser.add_argument(
+        "--days", type=int, default=90, help="Okno (dni) ocenianych predykcji (default: 90)."
+    )
+    parser.add_argument(
+        "--window-days",
+        type=int,
+        default=90,
+        help="Okno wag person przed każdą predykcją, jak w Fast Loopie (default: 90).",
+    )
+    parser.set_defaults(handler=_run_persona_ablation)
+
+
+def _run_persona_ablation(args: argparse.Namespace) -> int:
+    """WIA-46: wagi prequential kontra brak wag; exit 1 tylko bez danych RPC 045."""
+    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+    settings = _load_settings()
+    repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    since = _now() - timedelta(days=args.days)
+    try:
+        # Historia sięga okno wag dalej niż najstarsza oceniana predykcja.
+        outcomes = repo.get_persona_vote_outcomes(window_days=args.days + args.window_days)
+    except Exception as exc:
+        print(
+            f"❌ RPC persona_vote_outcomes niedostępne ({type(exc).__name__}) — "
+            "uruchom migrację 045 (DB Migrate).",
+            file=sys.stderr,
+        )
+        return 1
+    report = replay_persona_weighting(
+        outcomes,
+        since=since,
+        window_days=args.window_days,
+        crypto_symbols=settings.crypto_symbols,
+    )
+    print(format_ablation(report, days=args.days, window_days=args.window_days))
     return 0
 
 

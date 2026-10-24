@@ -438,3 +438,12 @@ def test_benchmark_curve_aligned_to_same_days() -> None:
     assert curve is not None
     assert [p.index for p in curve.points] == [0, 1, 2]
     assert curve.total_return == pytest.approx(0.04)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_non_finite_change_raises(bad: float) -> None:
+    # PORT-09: NaN zmiany ceny zatruwał cały kapitał krzywej bez śladu.
+    with pytest.raises(ValueError, match="finite"):
+        equity_curve([("BULLISH", 0.01), ("BEARISH", bad)])
+    with pytest.raises(ValueError, match="finite"):
+        portfolio_equity_curve([[("BULLISH", bad)]])

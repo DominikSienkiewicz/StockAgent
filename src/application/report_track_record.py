@@ -15,15 +15,21 @@ wszystkie trzy są puste (`render_* → ""`).
 podsekcji: pod T1 dowód trafności kierunkowej (Wilson na n_eff, baseline'y,
 werdykt istotności), pod T2 Brier / BSS / log loss i rozkład Murphy'ego. Same
 statystyki nie wskrzeszają schowanej podsekcji. Pokrycie przedziałów 80% (ML-34)
-to osobna podsekcja: pokazuje się, gdy jest choć jeden rozliczony przedział."""
+to osobna podsekcja: pokazuje się, gdy jest choć jeden rozliczony przedział.
+
+WIA-49: linia „N predykcji wygasło bez oceny” stoi pod nagłówkiem, gdy cykl
+oznaczył jakąkolwiek predykcję jako wygasłą — cichy brak oceny wyglądałby jak
+brak predykcji. Sama wystarcza, żeby sekcja się pokazała."""
 
 from __future__ import annotations
 
 import html as _html
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from src.application.report_evidence import (
     BENCHMARK_METHOD_PL,
+    ENTRY_PRICE_NOTE_PL,
     NO_BENCHMARK_PL,
     PORTFOLIO_METHOD_CHANGE_PL,
     PaperCosts,
@@ -38,7 +44,7 @@ from src.application.report_evidence import (
     probability_label,
     uncertainty_note,
 )
-from src.application.report_formatting import pct, pct_range
+from src.application.report_formatting import number, pct, pct_range, plural_pl
 from src.application.report_lessons import LessonsReport
 from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
@@ -46,8 +52,10 @@ from src.domain.calibration_curve import (
     ProbabilityScores,
     expected_calibration_error,
 )
+from src.domain.change_detection import AccuracyDrop
 from src.domain.conformal import IntervalCoverage
 from src.domain.equity_curve import EquityCurve
+from src.domain.mistake_taxonomy import MISTAKE_CATEGORY_LABELS_PL, MistakeCategory
 from src.domain.number_format import DecimalMark
 from src.domain.track_record import HitRateEvidence
 
@@ -62,6 +70,10 @@ _BENCHMARK_BAR_COLOR = "#9ca3af"
 _SECTION_HEADER = (
     "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
     "📈 Track Record — skuteczność i kalibracja</h2>"
+)
+_EXPIRED_NOTE_PL = (
+    "za stare, by rozliczyć je bieżącą ceną, więc nie wchodzą ani do trafności, "
+    "ani do treningu modelu."
 )
 # Budżet MAIL-06: w duży dzień zostają same kluczowe liczby.
 _COMPACT_NOTE_PL = (
@@ -80,7 +92,10 @@ class TrackRecordStats:
     - `costs` — założenia kosztowe, z którymi policzono krzywą kapitału (WIA-50);
       None = krzywa brutto i copy „bez kosztów transakcyjnych”,
     - `benchmark` — krzywa agenta obok koszyka i IVV (WIA-21); None = linia
-      „Na tle rynku: brak danych benchmarku”.
+      „Na tle rynku: brak danych benchmarku”,
+    - `sideways_scores` — Brier prognoz „bez ruchu” liczony osobno (WIA-39);
+      `scores` i krzywa kalibracji są wtedy wyłącznie kierunkowe.
+    - `accuracy_drop` — data istotnego spadku trafności (NIEZ-20); None = brak alarmu.
     """
 
     hit_rate: HitRateEvidence | None = None
@@ -88,6 +103,9 @@ class TrackRecordStats:
     coverage: IntervalCoverage | None = None
     costs: PaperCosts | None = None
     benchmark: BenchmarkComparison | None = None
+    sideways_scores: ProbabilityScores | None = None
+    # NIEZ-20: istotny spadek trafności (Page-Hinkley); None = brak alarmu.
+    accuracy_drop: AccuracyDrop | None = None
 
 
 def render_track_record_html(
@@ -97,21 +115,26 @@ def render_track_record_html(
     stats: TrackRecordStats | None = None,
     *,
     compact: bool = False,
+    expired_count: int = 0,
 ) -> str:
     """Fragment HTML sekcji Track Record. Pusty string, gdy wszystkie trzy
-    podsekcje są puste.
+    podsekcje są puste i nic nie wygasło.
 
     `compact` (budżet MAIL-06, duży dzień) zostawia same kluczowe liczby:
     paper-PnL z kosztem, linię agent · koszyk · IVV i trafność z przedziałem
-    i n — bez sparklinii, kalibracji, pokrycia i lekcji."""
+    i n — bez sparklinii, kalibracji, pokrycia i lekcji. `expired_count`
+    (WIA-49) — predykcje, które ten cykl oznaczył jako wygasłe bez oceny."""
     stats = stats or TrackRecordStats()
+    expired = _render_expired_html(expired_count)
     if compact:
-        return _render_compact_html(equity_curve, stats)
-    subsections: list[str] = []
+        return _render_compact_html(equity_curve, stats, expired)
+    subsections: list[str] = [expired] if expired else []
     if equity_curve is not None and equity_curve.n_trades > 0:
         subsections.append(_render_equity_html(equity_curve, stats))
     if calibration_buckets:
-        subsections.append(_render_calibration_html(calibration_buckets, stats.scores))
+        subsections.append(
+            _render_calibration_html(calibration_buckets, stats.scores, stats.sideways_scores)
+        )
     if lessons is not None and lessons.items:
         subsections.append(_render_lessons_html(lessons))
     if stats.coverage is not None and stats.coverage.rate is not None:
@@ -122,10 +145,24 @@ def render_track_record_html(
     return _SECTION_HEADER + "".join(subsections)
 
 
-def _render_compact_html(equity_curve: EquityCurve | None, stats: TrackRecordStats) -> str:
-    """Duży dzień: nagłówek, podsumowanie krzywej, linia benchmarku i trafność."""
-    if equity_curve is None or equity_curve.n_trades == 0:
+def _render_expired_html(count: int) -> str:
+    """WIA-49 — „3 predykcje wygasły bez oceny — …” albo "" przy zerze."""
+    if count <= 0:
         return ""
+    noun = plural_pl(count, "predykcja wygasła", "predykcje wygasły", "predykcji wygasło")
+    return (
+        f"<p style='font-size: 13px; margin: 0 0 8px 0;'>⏳ <strong>{count} {noun} "
+        f"bez oceny</strong> — {_EXPIRED_NOTE_PL}</p>"
+    )
+
+
+def _render_compact_html(
+    equity_curve: EquityCurve | None, stats: TrackRecordStats, expired: str = ""
+) -> str:
+    """Duży dzień: nagłówek, wygasłe (WIA-49), podsumowanie krzywej, linia
+    benchmarku i trafność."""
+    if equity_curve is None or equity_curve.n_trades == 0:
+        return _SECTION_HEADER + expired if expired else ""
     evidence = stats.hit_rate
     hit_rate = ""
     if evidence is not None and evidence.hit_rate.rate is not None:
@@ -133,9 +170,11 @@ def _render_compact_html(equity_curve: EquityCurve | None, stats: TrackRecordSta
         hit_rate = f"<p style='{_NOTE_STYLE}'>{_html.escape(line)}</p>"
     return (
         _SECTION_HEADER
+        + expired
         + _render_equity_summary_html(equity_curve, stats.costs)
         + _render_benchmark_line_html(stats.benchmark)
         + hit_rate
+        + _render_accuracy_drop_html(stats.accuracy_drop)
         + f"<p style='{_NOTE_STYLE}'>{_COMPACT_NOTE_PL}</p>"
     )
 
@@ -168,6 +207,7 @@ def _render_equity_html(curve: EquityCurve, stats: TrackRecordStats) -> str:
     summary = _render_equity_summary_html(curve, stats.costs)
     assumptions = (
         f"<p style='{_NOTE_STYLE}'>{_html.escape(portfolio_assumptions(stats.costs))} "
+        f"{_html.escape(ENTRY_PRICE_NOTE_PL)} "
         f"{_html.escape(PORTFOLIO_METHOD_CHANGE_PL)}</p>"
     )
     basket = None if stats.benchmark is None else stats.benchmark.basket
@@ -176,6 +216,7 @@ def _render_equity_html(curve: EquityCurve, stats: TrackRecordStats) -> str:
         + assumptions
         + _render_benchmark_html(stats.benchmark)
         + _render_evidence_html(stats.hit_rate)
+        + _render_accuracy_drop_html(stats.accuracy_drop)
         + _render_sparkline_html(curve, basket)
     )
 
@@ -218,6 +259,16 @@ def _render_evidence_html(evidence: HitRateEvidence | None) -> str:
     if note:
         parts.append(note)
     return f"<p style='{_NOTE_STYLE}'>{_html.escape(' · '.join(parts))}</p>"
+
+
+def _render_accuracy_drop_html(drop: AccuracyDrop | None) -> str:
+    """NIEZ-20: „trafność spadła istotnie od <data>” albo "" bez alarmu."""
+    if drop is None:
+        return ""
+    return (
+        "<p style='font-size: 13px; margin: 0 0 6px 0; color: #b45309;'>"
+        f"<strong>⚠️ {_html.escape(drop.describe_pl())}</strong></p>"
+    )
 
 
 def _render_sparkline_html(curve: EquityCurve, basket: EquityCurve | None = None) -> str:
@@ -280,8 +331,22 @@ def _severity_color(value: float) -> str:
     return "#16a34a"
 
 
+def _sideways_html(scores: ProbabilityScores | None) -> str:
+    """WIA-39 — SIDEWAYS poza krzywą kierunkową: przy małym n same n i Brier."""
+    if scores is None:
+        return ""
+    brier = number(scores.brier, decimals=3)
+    return (
+        f"<p style='{_NOTE_STYLE}'>Prognozy „bez ruchu” (SIDEWAYS) liczone osobno, "
+        f"poza krzywą: n={scores.n}, Brier {brier} — trafiają za darmo w spokojne "
+        "dni, więc nie mieszamy ich z zakładami na kierunek.</p>"
+    )
+
+
 def _render_calibration_html(
-    buckets: list[CalibrationBucket], scores: ProbabilityScores | None
+    buckets: list[CalibrationBucket],
+    scores: ProbabilityScores | None,
+    sideways: ProbabilityScores | None = None,
 ) -> str:
     """T2 — Brier / BSS (gdy są próbki) + reliability diagram: pewność → hit-rate."""
     ece = expected_calibration_error(buckets)
@@ -327,6 +392,7 @@ def _render_calibration_html(
         f"Pomocniczo — błąd kalibracji (ECE): <strong style='color: {ece_color};'>"
         f"{pct(ece, decimals=1)}</strong> — im niżej, tym lepiej pewność odpowiada "
         "realnej trafności.</p>"
+        f"{_sideways_html(sideways)}"
     )
 
 
@@ -346,6 +412,24 @@ def _render_coverage_html(coverage: IntervalCoverage) -> str:
     )
 
 
+# WIA-57: tyle kategorii pokazuje histogram w mailu (reszta tylko w sumie).
+_CATEGORY_HISTOGRAM_TOP = 3
+
+
+def _category_histogram(counts: Mapping[MistakeCategory, int]) -> str:
+    """„3 z 5 błędów: makro · 2 z 5: wyniki spółki” — mianownik to błędy
+    z kategorią, bo starsze diagnozy (sprzed migracji 046) jej nie mają."""
+    total = sum(counts.values())
+    if not total:
+        return ""
+    lines = [
+        f"{count} z {total}{' błędów' if index == 0 else ''}: "
+        f"{MISTAKE_CATEGORY_LABELS_PL[category]}"
+        for index, (category, count) in enumerate(list(counts.items())[:_CATEGORY_HISTOGRAM_TOP])
+    ]
+    return " · ".join(lines)
+
+
 def _render_lessons_html(lessons: LessonsReport) -> str:
     """T4 — panel „lessons learned": błędne predykcje z diagnozą + motyw."""
     parts: list[str] = []
@@ -360,6 +444,12 @@ def _render_lessons_html(lessons: LessonsReport) -> str:
         f"📓 Lessons learned ({lessons.total_mistakes} błędów z diagnozą)"
         f"{theme_note}:</p>"
     )
+    categories = _category_histogram(lessons.category_counts)
+    if categories:
+        parts.append(
+            "<p style='font-size: 12px; color: #6b7280; margin: 0 0 6px 0;'>"
+            f"Przyczyny: {_html.escape(categories)}</p>"
+        )
     items: list[str] = []
     for item in lessons.items:
         change = (

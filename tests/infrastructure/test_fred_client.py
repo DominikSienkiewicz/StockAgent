@@ -9,15 +9,18 @@ nigdy nie rzuca, zwraca None gdy wszystkie serie padną.
 
 from __future__ import annotations
 
+from datetime import date
 from unittest.mock import Mock
 
 import pytest
 import requests
 
 from src.domain.macro_rates import YieldCurveSnapshot, YieldCurveState
+from src.domain.macro_series import SeriesObservation
 from src.infrastructure.adapters.fred_client import (
     FredClient,
     NullMacroRatesAdapter,
+    NullMacroSeriesAdapter,
 )
 
 
@@ -318,3 +321,102 @@ def test_network_error_log_omits_api_key(mocker, caplog) -> None:
 
     assert "FRED fetch failed" in caplog.text
     assert "fred-secret-key" not in caplog.text
+
+
+def _window_response(observations: list[dict[str, str]]) -> Mock:
+    response = Mock(spec=requests.Response)
+    response.status_code = 200
+    response.json.return_value = {"observations": observations}
+    response.raise_for_status = Mock()
+    return response
+
+
+class TestMacroSeries:
+    """DAT-22 — pięć zmiennych stanu rynku z FRED, raz na cykl, z dniem obserwacji."""
+
+    _AS_OF = date(2026, 10, 21)
+
+    def _responses(self, **overrides: Mock) -> dict[str, Mock]:
+        responses = {
+            "VIXCLS": _window_response(
+                [{"date": "2026-10-19", "value": "17.9"}, {"date": "2026-10-20", "value": "18.5"}]
+            ),
+            "BAMLH0A0HYM2": _window_response([{"date": "2026-10-20", "value": "3.10"}]),
+            "VXNCLS": _window_response([{"date": "2026-10-20", "value": "22.4"}]),
+            "T10Y2Y": _window_response([{"date": "2026-10-20", "value": "0.55"}]),
+            "NFCI": _window_response([{"date": "2026-10-16", "value": "-0.48"}]),
+        }
+        responses.update(overrides)
+        return responses
+
+    def test_fetches_latest_vixcls_observation(self, mocker) -> None:
+        get = mocker.patch("requests.Session.get", side_effect=_by_series(self._responses()))
+        client = FredClient(api_key="test-key")
+
+        snapshot = client.fetch_macro_series(self._AS_OF)
+
+        assert snapshot is not None
+        # Dzień OBSERWACJI (poprzednia sesja), nie dzień pobrania.
+        assert snapshot.vix[-1] == SeriesObservation(date(2026, 10, 20), 18.5)
+        assert snapshot.nfci == SeriesObservation(date(2026, 10, 16), -0.48)
+        vix_params = next(
+            c.kwargs["params"] for c in get.call_args_list
+            if c.kwargs["params"]["series_id"] == "VIXCLS"
+        )
+        assert vix_params["observation_end"] == "2026-10-21"
+        assert vix_params["observation_start"] == "2025-10-21"
+        assert vix_params["sort_order"] == "asc"
+        assert vix_params["api_key"] == "test-key"
+
+    def test_missing_values_are_skipped(self, mocker) -> None:
+        responses = self._responses(
+            VIXCLS=_window_response(
+                [{"date": "2026-10-19", "value": "17.9"}, {"date": "2026-10-20", "value": "."}]
+            )
+        )
+        mocker.patch("requests.Session.get", side_effect=_by_series(responses))
+
+        snapshot = FredClient(api_key="test-key").fetch_macro_series(self._AS_OF)
+
+        assert snapshot is not None
+        assert snapshot.vix == (SeriesObservation(date(2026, 10, 19), 17.9),)
+
+    def test_one_failing_series_keeps_the_others(self, mocker) -> None:
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=_by_series(self._responses(NFCI=_error_response(500))),
+        )
+
+        snapshot = FredClient(api_key="test-key").fetch_macro_series(self._AS_OF)
+
+        assert snapshot is not None
+        assert snapshot.nfci is None
+        assert snapshot.vxn == SeriesObservation(date(2026, 10, 20), 22.4)
+
+    def test_all_series_failing_returns_none(self, mocker) -> None:
+        mocker.patch("requests.Session.get", return_value=_error_response(503))
+
+        assert FredClient(api_key="test-key").fetch_macro_series(self._AS_OF) is None
+
+    def test_error_log_omits_api_key(self, mocker, caplog) -> None:
+        import logging
+
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=requests.ConnectionError(
+                "Max retries exceeded with url: "
+                "/fred/series/observations?series_id=VIXCLS&api_key=fred-secret-key"
+            ),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert FredClient(api_key="fred-secret-key").fetch_macro_series(self._AS_OF) is None
+
+        assert "FRED fetch failed" in caplog.text
+        assert "fred-secret-key" not in caplog.text
+
+    def test_null_adapter_returns_none_without_io(self, mocker) -> None:
+        get = mocker.patch("requests.Session.get")
+
+        assert NullMacroSeriesAdapter().fetch_macro_series(self._AS_OF) is None
+        get.assert_not_called()
