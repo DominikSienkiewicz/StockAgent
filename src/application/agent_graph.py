@@ -198,6 +198,9 @@ class AgentState(TypedDict, total=False):
     # WIA-61: zamknięcie ostatniej zakończonej sesji z tego samego notowania (za
     # `session_close_settlement_enabled`); None = notowanie go nie wyznacza.
     session_close: SessionClose | None
+    # WIA-54: notowanie cyklu z otwarciem sesji (`o`) — reflect bierze z niego cenę
+    # wykonalną rozliczanej predykcji (za `executable_entry_enabled`).
+    session_quote: Quote
     # ARCH-04: ruch ceny od referencji jako UŁAMEK (`PriceDelta.fraction`), nie
     # procent. Prompt i rada dostają procent przez `to_percent`.
     delta: Ratio
@@ -779,6 +782,10 @@ class AgentGraphDeps:
     # WIA-61: rozliczenie zapisuje obok ceny /quote oficjalne zamknięcie sesji
     # (kolumny z migracji 059). Off = klucze nie idą do repozytorium (PGRST204).
     session_close_settlement_enabled: bool = False
+    # WIA-54: rozliczenie zapisuje obok ceny /quote cenę wykonalną — otwarcie pierwszej
+    # sesji po predykcji z tego samego notowania (kolumna `entry_price`, migracja 072).
+    # Off = klucz nie idzie do repozytorium (PGRST204).
+    executable_entry_enabled: bool = False
     # DAT-23: `pc` notowania vs ostatni snapshot — podejrzenie splitu koryguje
     # referencję bramki, rozliczenie i `price_delta`, a zdarzenie idzie do
     # `corporate_actions` (migracja 062). Off = jak przed DAT-23.
@@ -955,6 +962,8 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         update["stale_quote"] = stale
         if deps.session_close_settlement_enabled:
             update["session_close"] = session_close_of(quote, now)
+        if deps.executable_entry_enabled:
+            update["session_quote"] = quote
     reference = state.get("drift_reference")
     if reference is not None and reference > 0:
         update["drift"] = Ratio(
@@ -1335,9 +1344,10 @@ def _settle_on_stale_quote(
 
 
 class _SettlementExtras(TypedDict, total=False):
-    """WIA-61: opcjonalne pola rozliczenia — klucz tylko, gdy jest wartość."""
+    """WIA-61, WIA-54: opcjonalne pola rozliczenia — klucz tylko, gdy jest wartość."""
 
     session_close: SessionCloseSettlement
+    entry_price: Decimal
 
 
 def _session_close_extras(
@@ -1355,6 +1365,23 @@ def _session_close_extras(
     close = dataclasses.replace(close, price=Money(_settlement_price(state, close.price.amount)))
     correct = last.is_trend_correct(close.price.amount, tolerance=tolerance)
     return {"session_close": SessionCloseSettlement(close, is_trend_correct=correct)}
+
+
+def _executable_entry_extras(
+    deps: AgentGraphDeps, state: AgentState, last: Prediction
+) -> _SettlementExtras:
+    """WIA-54: cena wykonalna rozliczanej predykcji z notowania cyklu — otwarcie
+    pierwszej sesji po niej (domena `Prediction.executable_entry`). Brak (zaległe
+    rozliczenie, przed sesją, bez `o`) = bez klucza, nigdy zero. DAT-23: otwarcie
+    po splicie cofnięte do jednostek predykcji, jak cena rozliczenia."""
+    quote = state.get("session_quote")
+    if not deps.executable_entry_enabled or quote is None:
+        return {}
+    if quote.open_price is not None:
+        open_price = Money(_settlement_price(state, quote.open_price.amount))
+        quote = dataclasses.replace(quote, open_price=open_price)
+    entry = last.executable_entry(quote, now=deps.clock())
+    return {} if entry is None else {"entry_price": entry}
 
 
 def _settlement_price(state: AgentState, price: Decimal) -> Decimal:
@@ -1411,7 +1438,10 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
 
     if _settles_on_stale_quote(state, last):
         return _settle_on_stale_quote(deps, last, current_price, accuracy, trend_correct)
-    extras = _session_close_extras(deps, state, last, tolerance)
+    extras: _SettlementExtras = {
+        **_session_close_extras(deps, state, last, tolerance),
+        **_executable_entry_extras(deps, state, last),
+    }
 
     if trend_correct:
         repository_port.update_prediction_accuracy(
@@ -2318,6 +2348,8 @@ def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
             SESSION_CLOSE_SETTLEMENT_COLUMNS,
             deps.session_close_settlement_enabled and deps.quote_port is not None,
         ),
+        # WIA-54 (migracja 072): cena wykonalna z notowania `quote_port`, za flagą.
+        "entry_price": deps.executable_entry_enabled and deps.quote_port is not None,
         "commitment_hash": deps.attestation_publisher is not None,
         "commitment_salt": deps.attestation_publisher is not None,
         # WIA-70 (migracja 043): dosłowny plaintext commitmentu, ta sama zasada.

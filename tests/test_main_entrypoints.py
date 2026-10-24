@@ -7727,6 +7727,24 @@ class TestSessionCloseSettlementWiring:
         assert repo_cls.call_args.kwargs["session_close_settlement_enabled"] is enabled
 
 
+class TestExecutableEntryWiring:
+    """WIA-54: cena wykonalna obok ceny /quote — flaga w grafie (zapis rozliczenia)
+    i w repozytorium (odczyt `entry_price` do krzywej „od otwarcia”), za migracją 072."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_graph_and_repository_follow_the_flag(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        settings = settings.model_copy(update={"executable_entry_enabled": enabled})
+
+        deps = main_agent.build_agent_graph_deps(settings)
+        repo_cls = mocker.patch("main_agent.SupabaseRepository")
+        main_agent.build_repository(settings)
+
+        assert deps.executable_entry_enabled is enabled
+        assert repo_cls.call_args.kwargs["executable_entry_enabled"] is enabled
+
+
 class TestReportReads:
     """ARCH-16: okno track recordu czytane RAZ na dispatch — rozliczenia i próbki
     kalibracji biorą wszystkie sekcje maila i publiczny scorecard."""

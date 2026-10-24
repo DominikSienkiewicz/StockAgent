@@ -1780,6 +1780,19 @@ class TestSessionCloseSettlementFlag:
         assert "session_close_settlement_enabled" in NON_RECIPE_SETTINGS_FIELDS
 
 
+class TestExecutableEntryFlag:
+    """WIA-54: cena wykonalna od otwarcia sesji (migracja 072) — off do migracji;
+    pomiar rozliczenia i druga krzywa w mailu, nie prognoza, więc poza przepisem."""
+
+    def test_defaults_off_and_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.executable_entry_enabled is False
+        assert "executable_entry_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
 class TestEdgeCalendarHorizonFlag:
     """WIA-28: horyzont edge z kalendarza NYSE zamiast stałych 24 h — zmienia zapisany
     `edge_sigma` (sygnał oceniany w `evaluate`), więc należy do przepisu; off na czas

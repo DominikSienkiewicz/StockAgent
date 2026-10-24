@@ -6142,6 +6142,175 @@ class TestSessionCloseSettlement:
         assert columns <= required_prediction_columns(on)
 
 
+class TestExecutableEntrySettlement:
+    """WIA-54: za `executable_entry_enabled` check_price trzyma notowanie cyklu,
+    a reflect zapisuje obok rozliczenia cenę wykonalną — otwarcie pierwszej sesji
+    po predykcji z tego samego /quote. Rozliczenie, trafność i diagnoza bez zmian."""
+
+    _MONDAY_CLOSE = datetime(2026, 10, 19, 20, 0, tzinfo=UTC)
+    _TUESDAY_PREOPEN = datetime(2026, 10, 20, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _deps(repository_port: Mock, llm_port: Mock, **overrides) -> AgentGraphDeps:
+        from src.application.ports import QuotePort
+
+        fields = {
+            "market_port": Mock(spec=MarketDataPort),
+            "sentiment_port": Mock(spec=SentimentPort),
+            "news_port": Mock(spec=NewsPort),
+            "repository_port": repository_port,
+            "ml_port": Mock(spec=MLPredictionPort),
+            "llm_port": llm_port,
+            "threshold": Threshold(Decimal("0.02")),
+            "quote_port": Mock(spec=QuotePort),
+            "clock": lambda: TestExecutableEntrySettlement._TUESDAY_PREOPEN,
+            **overrides,
+        }
+        return AgentGraphDeps(**fields)
+
+    @classmethod
+    def _quote(cls, open_price: str = "105"):
+        from src.domain.value_objects import Quote
+
+        return Quote(
+            price=Money(Decimal("106")),
+            quoted_at=cls._MONDAY_CLOSE,
+            prev_close=Money(Decimal("100")),
+            open_price=Money(Decimal(open_price)),
+        )
+
+    @staticmethod
+    def _stock_state(**extra) -> dict:
+        from src.domain.asset import Asset
+        from src.domain.value_objects import AssetType
+
+        return {
+            **_initial_state("100"),
+            "asset": Asset(symbol="AAPL", asset_type=AssetType.STOCK),
+            **extra,
+        }
+
+    @staticmethod
+    def _monday_bullish() -> Prediction:
+        return Prediction(
+            id="pred-1",
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100"),
+            predicted_target_price=Decimal("104"),
+            created_at=datetime(2026, 10, 19, 5, 30, tzinfo=UTC),
+        )
+
+    def test_check_price_keeps_the_quote_only_with_the_flag(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _check_price_node
+
+        off = self._deps(repository_port, llm_port)
+        on = self._deps(repository_port, llm_port, executable_entry_enabled=True)
+        off.quote_port.get_quote.return_value = self._quote()
+        on.quote_port.get_quote.return_value = self._quote()
+
+        assert "session_quote" not in _check_price_node(off, self._stock_state())
+        assert _check_price_node(on, self._stock_state())["session_quote"] == self._quote()
+
+    def test_reflect_records_the_session_open_as_the_executable_entry(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._monday_bullish()
+        deps = self._deps(repository_port, llm_port, executable_entry_enabled=True)
+        state = self._stock_state(
+            current_price=Decimal("106"),
+            delta=Decimal("0.06"),
+            quoted_at=self._MONDAY_CLOSE,
+            session_quote=self._quote(),
+        )
+
+        _reflect_node(deps, state)
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["actual_price"] == Decimal("106")
+        assert kwargs["is_trend_correct"] is True
+        assert kwargs["entry_price"] == Decimal("105")
+
+    def test_flag_off_settles_without_the_entry_price(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._monday_bullish()
+        deps = self._deps(repository_port, llm_port)
+        state = self._stock_state(
+            current_price=Decimal("106"),
+            delta=Decimal("0.06"),
+            quoted_at=self._MONDAY_CLOSE,
+            session_quote=self._quote(),
+        )
+
+        _reflect_node(deps, state)
+
+        assert "entry_price" not in repository_port.update_prediction_accuracy.call_args.kwargs
+
+    def test_backlogged_settlement_records_no_entry_price(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        # Rozliczenie dwie sesje po predykcji: `o` to otwarcie wtorku — None, nie zero.
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._monday_bullish()
+        deps = self._deps(
+            repository_port,
+            llm_port,
+            executable_entry_enabled=True,
+            clock=lambda: datetime(2026, 10, 21, 5, 30, tzinfo=UTC),
+        )
+        state = self._stock_state(
+            current_price=Decimal("106"),
+            delta=Decimal("0.06"),
+            quoted_at=datetime(2026, 10, 20, 20, 0, tzinfo=UTC),
+            session_quote=self._quote(),
+        )
+
+        _reflect_node(deps, state)
+
+        assert "entry_price" not in repository_port.update_prediction_accuracy.call_args.kwargs
+
+    def test_entry_after_a_split_is_in_the_units_of_the_prediction(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        # DAT-23: otwarcie po splicie 10:1 (10,5) cofnięte do jednostek predykcji (105).
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._monday_bullish()
+        deps = self._deps(repository_port, llm_port, executable_entry_enabled=True)
+        state = self._stock_state(
+            current_price=Decimal("10.6"),
+            delta=Decimal("0.06"),
+            quoted_at=self._MONDAY_CLOSE,
+            split_ratio=Decimal("0.1"),
+            session_quote=self._quote(open_price="10.5"),
+        )
+
+        _reflect_node(deps, state)
+
+        assert repository_port.update_prediction_accuracy.call_args.kwargs[
+            "entry_price"
+        ] == Decimal("105")
+
+    def test_entry_price_column_is_required_with_the_flag(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import required_prediction_columns
+
+        off = self._deps(repository_port, llm_port)
+        on = self._deps(repository_port, llm_port, executable_entry_enabled=True)
+
+        assert "entry_price" not in required_prediction_columns(off)
+        assert "entry_price" in required_prediction_columns(on)
+
+
 # ---------------------------------------------------------------------------
 # ML-11: model wspólny w jednostkach σ — serving mnoży prognozę przez σ symbolu
 # ---------------------------------------------------------------------------

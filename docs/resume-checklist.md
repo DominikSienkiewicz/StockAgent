@@ -73,6 +73,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `063` | `rag_exact_search_enabled` | RAG analogs come from an exact nearest-neighbour scan instead of the ivfflat index at `probes = 1` (ML-23); it changes the analogs in the prediction prompt and is part of `config_hash`, so turn it on after EXP-03 ends (2027-01-29). |
 | `064` | `model_scorecard_provenance_enabled` | The training provenance on every scorecard row (ML-22): dataset fingerprint, date range, rows per symbol, parameters with the seed, XGBoost version, feature set version and commit. |
 | `065` | `persona_brier_ranking_enabled` | The persona leaderboard of the email sorts by the Brier skill of the personas' confidence and shows `Brier` / `BSS` under the hit rate (WIA-44); presentation only, so it does not start a new `recipe_version` segment. |
+| `072` | `executable_entry_enabled` | Settlements also record the executable entry — the open of the first NYSE session after the prediction from the same `/quote` — and the email adds a second equity curve "from the open" (WIA-54). A measurement, not part of `config_hash`. |
 | `075` | `shadow_predictions_enabled` | The Fast Loop stores the champion's and the challengers' forecasts of the ML leg and the Slow Loop reports the promotion verdict in its step summary (ML-33). |
 
 ### 5. Add the `HEARTBEAT_URL` secret

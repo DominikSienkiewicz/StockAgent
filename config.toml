@@ -376,6 +376,12 @@ insider_lead_max_age_days = 3
 # zostaje /quote. Krypto bez sesji — bez tej ceny. Zero nowych requestów.
 # UWAGA: włącz DOPIERO po migracji 059.
 session_close_settlement_enabled = false
+# WIA-54: obok ceny /quote rozliczenie zapisuje cenę wykonalną — otwarcie pierwszej
+# sesji NYSE po predykcji z tego samego notowania (pole `o`), a mail dostaje drugą
+# krzywą kapitału „od otwarcia” (bez luki na otwarciu, której przed sesją nikt nie
+# kupi). Zaległe rozliczenie, święto i krypto — bez tej ceny. Zero nowych requestów.
+# UWAGA: włącz DOPIERO po migracji 072.
+executable_entry_enabled = false
 # DAT-23: przed otwarciem `pc` z /quote to cena poprzedniego snapshotu, więc stosunek
 # bliski 1/2, 1/3, 1/4, 1/5, 1/10, 2 albo 3 (±2%) to split, nie ruch. Bramka liczy wtedy
 # ruch od skorygowanej referencji, reflect rozlicza w jednostkach predykcji, a zdarzenie

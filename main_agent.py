@@ -962,6 +962,7 @@ def build_repository(settings: Settings) -> RepositoryPort:
         session_close_settlement_enabled=settings.session_close_settlement_enabled,
         rag_exact_search_enabled=settings.rag_exact_search_enabled,
         receipts_enabled=settings.receipts_enabled,
+        executable_entry_enabled=settings.executable_entry_enabled,
     )
     if settings.db_writes_enabled:
         return repository
@@ -1707,6 +1708,8 @@ def build_agent_graph_deps(
         stale_quote_enabled=settings.stale_quote_enabled,
         # WIA-61: zamknięcie sesji z tego samego notowania obok ceny /quote (migracja 059).
         session_close_settlement_enabled=settings.session_close_settlement_enabled,
+        # WIA-54: cena wykonalna (otwarcie sesji) z tego samego notowania (migracja 072).
+        executable_entry_enabled=settings.executable_entry_enabled,
         # DAT-23: podejrzenie splitu z `pc` notowania (zapis w `corporate_actions`, 062).
         split_detection_enabled=settings.split_detection_enabled,
         # DAT-15: strażnik anomalii ceny (darmowy odczyt historii snapshotów); off.

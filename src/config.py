@@ -186,6 +186,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "insider_lead_max_age_days",
     # WIA-61: druga cena rozliczenia (zamknięcie sesji) obok /quote — pomiar, nie prognoza.
     "session_close_settlement_enabled",
+    # WIA-54: cena wykonalna (otwarcie sesji) obok /quote i druga krzywa w mailu —
+    # pomiar rozliczenia, prognoza i jej ocena bez zmian.
+    "executable_entry_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -925,6 +928,10 @@ class Settings(BaseSettings):
     # z datą i źródłem, a mail pokazuje obie trafności (okres przejściowy). Kolumny
     # z migracji 059; off w kodzie i w config.toml, dopóki produkcja jej nie ma.
     session_close_settlement_enabled: bool = False
+    # WIA-54: rozliczenie zapisuje obok ceny /quote cenę wykonalną — otwarcie pierwszej
+    # sesji po predykcji z tego samego notowania — a mail rysuje z niej drugą krzywą
+    # „od otwarcia”. Kolumna z migracji 072; off w kodzie i w config.toml.
+    executable_entry_enabled: bool = False
     # DAT-23: `pc` z /quote vs ostatni snapshot — stosunek bliski stosunkowi splitu
     # koryguje referencję bramki, rozliczenie (w jednostkach predykcji) i `price_delta`,
     # a zdarzenie idzie do `corporate_actions` (migracja 062). Off.
