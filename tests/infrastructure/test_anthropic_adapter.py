@@ -632,3 +632,77 @@ class TestNoPromptCaching:
         from src.infrastructure.recipe_fingerprints import PROMPT_TEMPLATE_MODULES
 
         assert anthropic_client not in PROMPT_TEMPLATE_MODULES
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: błędy Anthropic po wyczerpaniu ponowień wychodzą jako taksonomia
+    portów i nadal jako typy SDK (failover czyta `status_code`, testy łapią SDK)."""
+
+    @staticmethod
+    def _adapter(mock_anthropic_class, mocker, side_effect) -> AnthropicAdapter:
+        mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
+        client = MagicMock()
+        mock_anthropic_class.return_value = client
+        client.messages.create.side_effect = side_effect
+        return AnthropicAdapter(api_key="sk-ant-test", backoff_base=0.01, max_retries=1)
+
+    def test_overloaded_after_retries_is_provider_unavailable(self, mock_anthropic_class, mocker):
+        from anthropic import InternalServerError
+
+        from src.application.errors import ProviderUnavailable
+
+        adapter = self._adapter(mock_anthropic_class, mocker, _status_error(529))
+
+        with pytest.raises(ProviderUnavailable) as excinfo:
+            adapter.analyze("Predict.")
+
+        assert isinstance(excinfo.value, InternalServerError)
+        assert excinfo.value.status_code == 529
+
+    def test_rate_limit_after_retries_is_quota_exhausted(self, mock_anthropic_class, mocker):
+        from src.application.errors import QuotaExhausted
+
+        adapter = self._adapter(mock_anthropic_class, mocker, _status_error(429))
+
+        with pytest.raises(QuotaExhausted):
+            adapter.analyze_mistake("Diagnose.")
+
+    def test_connection_error_after_retries_is_provider_unavailable(
+        self, mock_anthropic_class, mocker
+    ):
+        import httpx
+        from anthropic import APIConnectionError
+
+        from src.application.errors import ProviderUnavailable
+
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        adapter = self._adapter(
+            mock_anthropic_class, mocker, APIConnectionError(request=request)
+        )
+
+        with pytest.raises(ProviderUnavailable) as excinfo:
+            adapter.analyze("Predict.")
+
+        assert isinstance(excinfo.value, APIConnectionError)
+
+    def test_client_error_is_a_port_error_without_retry(self, mock_anthropic_class, mocker):
+        from src.application.errors import PortError, ProviderUnavailable, QuotaExhausted
+
+        adapter = self._adapter(mock_anthropic_class, mocker, _status_error(400))
+
+        with pytest.raises(PortError) as excinfo:
+            adapter.analyze("Predict.")
+
+        assert not isinstance(excinfo.value, ProviderUnavailable | QuotaExhausted)
+
+    @pytest.mark.parametrize("text", [None, "no json here"], ids=["empty", "invalid-json"])
+    def test_unparseable_answer_is_malformed_payload(
+        self, adapter_with_client, text: str | None
+    ):
+        from src.application.errors import MalformedPayload
+
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _message_response(text)
+
+        with pytest.raises(MalformedPayload):
+            adapter.analyze("Predict.")
