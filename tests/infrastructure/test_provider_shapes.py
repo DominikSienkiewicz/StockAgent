@@ -7,13 +7,21 @@ z prefiksem `xsl…/` w `primaryDocument` EDGAR (G42) i z polem `Note` Alpha Van
 wartości liczymy z samego pliku: po odświeżeniu nagraniem testy dalej obowiązują.
 
 HTTP mockujemy przez `requests.Session.get`, jak w pozostałych testach adapterów.
+`TestLiveProviderShapes` (marker `integration`) pobiera świeże odpowiedzi i porównuje
+ich kształt (klucze i typy) z fixture'ami; cron w `integration_smoke.yml` puszcza ją
+raz w tygodniu.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import time
+import tomllib
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from http import HTTPStatus
+from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
@@ -21,7 +29,16 @@ import pytest
 import requests
 
 from src.domain.macro_series import SeriesObservation
+from src.infrastructure.adapters import (
+    alpha_vantage_client,
+    coingecko,
+    edgar_insider,
+    finnhub_api,
+    fred_client,
+    nbp_client,
+)
 from src.infrastructure.adapters._alpha_vantage_common import is_frequency_limit, is_soft_limit
+from src.infrastructure.adapters._http import build_session, raise_for_status_redacted, safe_get
 from src.infrastructure.adapters.alpha_vantage_client import (
     DEFAULT_RELEVANCE_THRESHOLD,
     AlphaVantageClient,
@@ -364,3 +381,162 @@ class TestNbpTableFixture:
         latest, baseline = Decimal(str(rates[-1]["mid"])), Decimal(str(rates[0]["mid"]))
         assert snapshot.usd_pln == latest
         assert snapshot.usd_pln_30d_change_pct == (latest - baseline) / baseline
+
+
+# ---------------------------------------------------------------------------
+# Kształt na żywym API (marker `integration`, cron tygodniowy w integration_smoke)
+# ---------------------------------------------------------------------------
+
+CONFIG_TOML = Path(__file__).resolve().parents[2] / "config.toml"
+_LIVE_TIMEOUT = 30.0
+# 403/429 to odmowa albo limit (SEC blokuje sec.gov od 2026-07, CoinGecko dławi
+# współdzielone IP runnerów), nie zmiana kształtu — skip z powodem w podsumowaniu.
+_REFUSALS = frozenset({HTTPStatus.FORBIDDEN, HTTPStatus.TOO_MANY_REQUESTS})
+_LIVE_FORM4_SAMPLE = 3
+
+
+def _env_key(name: str) -> str:
+    """Pierwszy klucz ze zmiennej (`ALPHA_VANTAGE_API_KEYS` bywa listą CSV)."""
+    keys = [key.strip() for key in os.environ.get(name, "").split(",") if key.strip()]
+    if not keys:
+        pytest.skip(f"{name} not set")
+    return keys[0]
+
+
+def _edgar_user_agent() -> str:
+    """User-Agent z kontaktem jak w produkcji: env `EDGAR_USER_AGENT` > config.toml."""
+    override = os.environ.get("EDGAR_USER_AGENT", "").strip()
+    if override:
+        return override
+    config = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    return str(config["edgar_user_agent"])
+
+
+def _live_get(
+    url: str, *, params: dict[str, str] | None = None, headers: dict[str, str] | None = None
+) -> requests.Response:
+    """GET przez sesję adapterów (retry, circuit breaker); klucz tylko w `params`,
+    więc ani URL w skipie, ani wyjątek `safe_get` go nie niosą."""
+    session = build_session()
+    if headers:
+        session.headers.update(headers)
+    response = safe_get(session, url, params=params, timeout=_LIVE_TIMEOUT)
+    if response.status_code in _REFUSALS:
+        pytest.skip(f"{url}: HTTP {response.status_code} — odmowa albo limit, nie kształt")
+    raise_for_status_redacted(response)
+    return response
+
+
+def _live_json(
+    url: str, *, params: dict[str, str] | None = None, headers: dict[str, str] | None = None
+) -> JsonValue:
+    payload: JsonValue = _live_get(url, params=params, headers=headers).json()
+    return payload
+
+
+@pytest.mark.integration
+class TestLiveProviderShapes:
+    """Świeże odpowiedzi dostawców mają co najmniej kształt fixture'ów.
+
+    Brak pola albo zmiana typu (np. `relevance_score` z tekstu na liczbę) czerwieni
+    test z listą ścieżek; nowe pola u dostawcy nie są dryfem. Treści odpowiedzi nie
+    wypisujemy — same ścieżki i typy. Koszt: jedno zapytanie Alpha Vantage z dziennego
+    limitu klucza smoke, reszta darmowa."""
+
+    def test_finnhub_quote_keeps_its_shape(self) -> None:
+        payload = _live_json(
+            f"{finnhub_api.DEFAULT_BASE_URL}/quote",
+            params={"symbol": "AAPL", "token": _env_key("FINNHUB_API_KEY")},
+        )
+
+        assert shape_drift(load_json("finnhub_quote.json"), payload) == []
+
+    def test_alpha_vantage_news_keeps_its_shape(self) -> None:
+        payload = _live_json(
+            f"{alpha_vantage_client.DEFAULT_BASE_URL}/query",
+            params={
+                "function": "NEWS_SENTIMENT",
+                "tickers": "AAPL",
+                "limit": str(alpha_vantage_client.DEFAULT_LIMIT),
+                "sort": "LATEST",
+                "apikey": _env_key("ALPHA_VANTAGE_API_KEYS"),
+            },
+        )
+        assert isinstance(payload, dict)
+        if is_soft_limit(payload, ("feed",)):
+            pytest.skip("Alpha Vantage soft limit (Information/Note) — feed not compared")
+
+        assert shape_drift(load_json("av_news_sentiment.json"), payload) == []
+
+    def test_coingecko_price_keeps_its_shape(self) -> None:
+        payload = _live_json(
+            f"{coingecko.DEFAULT_BASE_URL}/simple/price",
+            params={
+                "ids": "bitcoin",
+                "vs_currencies": "usd",
+                "include_24hr_change": "true",
+                "include_last_updated_at": "true",
+            },
+        )
+
+        assert shape_drift(load_json("coingecko_price.json"), payload) == []
+
+    def test_edgar_submissions_and_form4_keep_their_shape(self) -> None:
+        headers = {"User-Agent": _edgar_user_agent()}
+        tickers = _live_json(edgar_insider.TICKERS_URL, headers=headers)
+        assert shape_drift(load_json("edgar_company_tickers.json"), tickers) == []
+        assert isinstance(tickers, dict)
+        cik = next(
+            str(entry["cik_str"]).zfill(10)
+            for entry in tickers.values()
+            if isinstance(entry, dict) and entry.get("ticker") == "AAPL"
+        )
+
+        time.sleep(edgar_insider.SEC_MIN_REQUEST_INTERVAL_SECONDS)
+        submissions = _live_json(edgar_insider.SUBMISSIONS_URL.format(cik=cik), headers=headers)
+        assert shape_drift(load_json("edgar_form4_submissions.json"), submissions) == []
+
+        form4_paths: set[str] = set()
+        for accession, document in self._recent_form4(submissions):
+            time.sleep(edgar_insider.SEC_MIN_REQUEST_INTERVAL_SECONDS)
+            url = edgar_insider.ARCHIVE_URL.format(
+                cik=int(cik),
+                accession=accession.replace("-", ""),
+                doc=edgar_insider._raw_form4_doc(document),
+            )
+            paths = xml_element_paths(_live_get(url, headers=headers).text)
+            # Korzeń inny niż ownershipDocument = HTML albo inny dokument (G42).
+            assert "/ownershipDocument" in paths, (document, sorted(paths)[:3])
+            form4_paths |= paths
+
+        assert form4_paths, "EDGAR returned no recent Form 4 for AAPL"
+        assert sorted(FORM4_PARSED_PATHS - form4_paths) == []
+
+    @staticmethod
+    def _recent_form4(submissions: JsonValue) -> list[tuple[str, str]]:
+        assert isinstance(submissions, dict)
+        recent = submissions["filings"]["recent"]
+        rows = zip(
+            recent["form"], recent["accessionNumber"], recent["primaryDocument"], strict=True
+        )
+        form4 = [(accession, doc) for form, accession, doc in rows if form == "4"]
+        return form4[:_LIVE_FORM4_SAMPLE]
+
+    def test_fred_series_keeps_its_shape(self) -> None:
+        payload = _live_json(
+            f"{fred_client.DEFAULT_BASE_URL}/series/observations",
+            params={
+                "series_id": fred_client.SERIES_TEN_YEAR,
+                "api_key": _env_key("FRED_API_KEY"),
+                "file_type": "json",
+                "sort_order": "desc",
+                "limit": "1",
+            },
+        )
+
+        assert shape_drift(load_json("fred_series.json"), payload) == []
+
+    def test_nbp_table_keeps_its_shape(self) -> None:
+        payload = _live_json(f"{nbp_client.DEFAULT_BASE_URL}/USD/last/5/?format=json")
+
+        assert shape_drift(load_json("nbp_table.json"), payload) == []
