@@ -1344,3 +1344,42 @@ class TestAlphaVantageLive:
         assert "feed" in payload or is_soft_limit(payload, _NEWS_DATA_KEYS), (
             f"nierozpoznana odpowiedź Alpha Vantage, pola: {sorted(payload)}"
         )
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: błąd NEWS_SENTIMENT wychodzi z klienta jako taksonomia portów
+    i nadal jako typ `requests` (DAT-08 i dotychczasowi wywołujący bez zmian)."""
+
+    def test_network_error_is_provider_unavailable(self, mocker) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch("requests.Session.get", side_effect=requests.ConnectionError("reset"))
+        client = AlphaVantageClient(api_keys=["KEY"], symbols=["AAPL"])
+
+        with pytest.raises(ProviderUnavailable) as excinfo:
+            client.articles_for("AAPL")
+
+        assert isinstance(excinfo.value, requests.ConnectionError)
+
+    def test_server_error_is_provider_unavailable(self, mocker) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        response = _ok_response({})
+        response.status_code = 503
+        response.raise_for_status.side_effect = requests.HTTPError("503 Server Error")
+        mocker.patch("requests.Session.get", return_value=response)
+        client = AlphaVantageClient(api_keys=["KEY"], symbols=["AAPL"], lazy_per_symbol=True)
+
+        with pytest.raises(ProviderUnavailable):
+            client.articles_for("AAPL")
+
+    def test_unparseable_body_is_malformed_payload(self, mocker) -> None:
+        from src.application.errors import MalformedPayload
+
+        response = _ok_response({})
+        response.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
+        mocker.patch("requests.Session.get", return_value=response)
+        client = AlphaVantageClient(api_keys=["KEY"], symbols=["AAPL"])
+
+        with pytest.raises(MalformedPayload):
+            client.articles_for("AAPL")

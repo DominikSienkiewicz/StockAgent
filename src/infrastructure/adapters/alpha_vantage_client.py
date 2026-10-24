@@ -5,6 +5,10 @@ feed WSZYSTKICH tickerów, kolejne czytają bufor; leniwy per symbol
 (`lazy_per_symbol=True`) — request idzie tylko dla symbolu, o który pyta graf,
 czyli za bramką volatility. Dwa cienkie adaptery (News + Sentiment)
 konsumują ten sam bufor.
+
+ARCH-33: błąd sieci, statusu i nieparsowalna treść wychodzą w taksonomii portów
+(`ProviderUnavailable`, `QuotaExhausted`, `MalformedPayload`), wciąż jako typy
+`requests` — ścieżka częściowego feedu (DAT-08) łapie `PortError`.
 """
 
 from __future__ import annotations
@@ -17,8 +21,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import requests
-
+from src.application.errors import PortError
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.infrastructure.adapters._alpha_vantage_common import (
@@ -29,8 +32,9 @@ from src.infrastructure.adapters._alpha_vantage_common import (
 )
 from src.infrastructure.adapters._http import (
     build_session,
-    raise_for_status_redacted,
-    safe_get,
+    json_payload,
+    raise_for_status_translated,
+    translated_get,
 )
 
 logger = logging.getLogger(__name__)
@@ -229,7 +233,7 @@ class AlphaVantageClient:
         try:
             # Klucze wyczerpane wcześniej w cyklu → None bez HTTP na martwym kluczu.
             payload = self._fetch_batch_with_rotation([wire_symbol])
-        except requests.RequestException as exc:
+        except PortError as exc:
             # DAT-08 per symbol: bez ponownego requestu w tym cyklu.
             logger.error(
                 "Alpha Vantage NEWS_SENTIMENT request failed for %s (%s) — "
@@ -305,7 +309,7 @@ class AlphaVantageClient:
 
             try:
                 payload = self._fetch_batch_with_rotation(batch)
-            except requests.RequestException as exc:
+            except PortError as exc:
                 self._cache_partial_feed_after_error(batch, exc, combined)
                 raise
             if payload is None:
@@ -339,7 +343,7 @@ class AlphaVantageClient:
     def _cache_partial_feed_after_error(
         self,
         tickers: list[str],
-        exc: requests.RequestException,
+        exc: PortError,
         combined: list[dict[str, Any]],
     ) -> None:
         """DAT-08: błąd sieci/HTTP w środku fetchu zostawia w cache to, co już
@@ -498,14 +502,14 @@ class AlphaVantageClient:
             params["time_from"] = self._window_start.strftime(_TIME_FROM_FORMAT)
         if self._lazy_per_symbol:
             self._pace()
-        response = safe_get(
+        response = translated_get(
             self._session,
             f"{self._base_url}/query",
             params=params,
             timeout=self._timeout,
         )
-        raise_for_status_redacted(response)
-        data: dict[str, Any] = response.json()
+        raise_for_status_translated(response)
+        data: dict[str, Any] = json_payload(response)
         return data
 
     # -----------------------------------------------------------------------

@@ -519,3 +519,18 @@ def test_missing_market_cap_is_none() -> None:
 
     assert fundamentals is not None
     assert fundamentals.market_cap is None
+
+
+def test_failure_warning_names_the_port_error_class(caplog) -> None:
+    # ARCH-33: log degradacji niesie klasę taksonomii — awaria dostawcy odróżnialna
+    # od kwoty i od śmieciowej odpowiedzi bez czytania treści wyjątku.
+    import logging
+
+    import requests
+
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY"])
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = requests.ConnectionError("reset")
+        assert adapter.get_fundamentals("AAPL") is None
+
+    assert "ProviderUnavailable[ConnectionError]" in caplog.text

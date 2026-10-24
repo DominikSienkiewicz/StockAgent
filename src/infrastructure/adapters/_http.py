@@ -462,11 +462,14 @@ def translated_get(session: requests.Session, url: str, **kwargs: Any) -> reques
 
 
 def raise_for_status_translated(response: requests.Response) -> None:
-    """`raise_for_status_redacted` z `HTTPError` w taksonomii statusu (ARCH-33)."""
+    """`raise_for_status_redacted` z `HTTPError` w taksonomii statusu (ARCH-33).
+    Odpowiedź bez liczbowego statusu (atrapa) daje ogólny `PortError`."""
     try:
         raise_for_status_redacted(response)
     except requests.HTTPError as exc:
-        raise translate_http_error(exc, response.status_code) from None
+        status = getattr(response, "status_code", None)
+        kind = http_error_kind(status) if isinstance(status, int) else PortError
+        raise as_port_error(exc, kind) from None
 
 
 def json_payload(response: requests.Response) -> Any:
