@@ -14,6 +14,7 @@ from src.application.ports import RepositoryPort, StoredShockAlert, WebPublisher
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import ReportContext, SymbolResult
 from src.application.report_evidence import PaperCosts
+from src.application.report_models import ResolvedPrediction
 from src.application.report_track_record import TrackRecordStats
 from src.application.use_cases.assemble_report import (
     ReportAssembler,
@@ -384,3 +385,48 @@ class TestExpiredCountFromTheWindow:
         repo.count_expired_unverified.return_value = 0
 
         assert self._assemble_with(repo, this_run=3).expired_unverified == 3
+
+
+class TestReceiptLineFollowsTheReceiptsFlag:
+    """WIA-56: linia „stała na analogach” pod chybieniem tylko przy `receipts_enabled`."""
+
+    _MISS = {
+        "symbol": "NVDA",
+        "predicted_trend": "BULLISH",
+        "is_trend_correct": False,
+        "price_at_prediction": "100",
+        "actual_price_after_12h": "97",
+        "decision_receipts": {
+            "schema_version": 1,
+            "effective_threshold": "0.03",
+            "precedents": [{"id": "3f2a1b9c-0d4e-4f5a-9b8c-7d6e5f4a3b2c", "similarity": 0.91}],
+        },
+    }
+
+    def _fetch(self, *, enabled: bool) -> list[ResolvedPrediction]:
+        repo = _repo()
+        repo.get_recently_resolved_predictions.return_value = [self._MISS]
+        _, resolved, *_ = fetch_report_context(
+            repo, QuotaMonitor(), ["NVDA"], receipts_enabled=enabled
+        )
+        assert resolved is not None
+        return resolved
+
+    def test_receipts_off_drops_the_receipt_from_the_mail_rows(self) -> None:
+        [miss] = self._fetch(enabled=False)
+
+        assert miss.receipt is None
+
+    def test_receipts_on_keeps_the_receipt_line(self) -> None:
+        [miss] = self._fetch(enabled=True)
+
+        assert miss.receipt is not None
+
+    def test_the_report_flag_reaches_the_assembler(self) -> None:
+        repo = _repo()
+        repo.get_recently_resolved_predictions.return_value = [self._MISS]
+        flags = ReportFlags(track_record_days=30, reflection_min_age_hours=12, symbols=["NVDA"])
+
+        context = _assemble(repo, flags)
+
+        assert [r.receipt for r in context.resolved_predictions or []] == [None]

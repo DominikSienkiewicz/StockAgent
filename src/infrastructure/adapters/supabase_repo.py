@@ -663,6 +663,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         fundamentals_market_cap_enabled: bool = False,
         session_close_settlement_enabled: bool = False,
         rag_exact_search_enabled: bool = False,
+        receipts_enabled: bool = True,
     ) -> None:
         self._client = create_client(url, key)
         # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) zamiast ivfflat
@@ -672,6 +673,10 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             if rag_exact_search_enabled
             else ("match_news_embeddings", "011")
         )
+        # WIA-56: odczyt rozliczeń niesie kwit (`decision_receipts`, 020) do linii pod
+        # chybieniem tylko przy włączonych kwitach. Domyślnie true — bezpośrednia
+        # konstrukcja (narzędzia, testy) czyta jak dotąd; Fast Loop podaje flagę z configu.
+        self._receipts_enabled = receipts_enabled
         # DAT-14: kolumna `stale_quote` istnieje od migracji 055 — bez flagi odczyty
         # trafności jej nie wybierają (400 zabiłby raport), a zapis jej nie niesie.
         self._stale_quote_enabled = stale_quote_enabled
@@ -943,15 +948,16 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # prognoza się potwierdziła".
         # Paginacja (#8) — bez niej raport pokazałby max ~1000 zamkniętych
         # predykcji (cichy cap PostgREST).
+        columns = (
+            "symbol, predicted_trend, is_trend_correct, timestamp, "
+            "reasoning_text, correction_insights, price_at_prediction, "
+            "actual_price_after_12h, data_quality_flags"
+        )
+        if self._receipts_enabled:
+            # WIA-56: kwit (migracja 020, na produkcji) do linii pod chybieniem.
+            columns += ", decision_receipts"
         query = _resolved_window(
-            self._client.table(self._table).select(
-                self._countable_columns(
-                    "symbol, predicted_trend, is_trend_correct, timestamp, "
-                    "reasoning_text, correction_insights, price_at_prediction, "
-                    # WIA-56: kwit (migracja 020, na produkcji) do linii pod chybieniem.
-                    "actual_price_after_12h, data_quality_flags, decision_receipts"
-                )
-            ),
+            self._client.table(self._table).select(self._countable_columns(columns)),
             cutoff,
             since,
         )

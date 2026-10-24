@@ -116,6 +116,8 @@ class ReportFlags:
     # WIA-45: redundancja rady (kappa, N_eff) z zapisanych głosów; przy jednym efektywnym
     # głosie mail nie nadaje odznaki „SILNY KONSENSUS”.
     council_redundancy_enabled: bool = False
+    # WIA-56: linia kwitu pod chybieniem w zamkniętych predykcjach tylko przy kwitach.
+    receipts_enabled: bool = False
 
 
 def portfolio_sectors(
@@ -465,6 +467,7 @@ def fetch_report_context(
     *,
     resolved_since: datetime | None = None,
     persona_brier_ranking: bool = False,
+    receipts_enabled: bool = False,
 ) -> tuple[
     dict[str, Any] | None,
     list[ResolvedPrediction] | None,
@@ -484,7 +487,10 @@ def fetch_report_context(
     pusta lista znaczy w mailu „brak rozliczeń”, czego po awarii nie wiemy.
 
     `persona_brier_ranking` (WIA-44) — leaderboard person po Brier Skill z RPC 065;
-    brak oceny (migracja, błąd) wraca do rankingu po hit-rate'cie."""
+    brak oceny (migracja, błąd) wraca do rankingu po hit-rate'cie.
+
+    `receipts_enabled` (WIA-56) — bez kwitów zamknięte predykcje nie niosą kwitu, więc
+    mail nie ma linii „stała na analogach” pod chybieniem."""
     accuracy_stats: dict[str, Any] | None = None
     resolved: list[ResolvedPrediction] | None = None
     try:
@@ -500,6 +506,8 @@ def fetch_report_context(
             )
         )
         resolved = parse_resolved_predictions(resolved_rows)
+        if not receipts_enabled:
+            resolved = [dataclasses.replace(item, receipt=None) for item in resolved]
     except Exception:
         logger.exception("Failed to fetch resolved predictions")
         resolved = None
@@ -619,6 +627,7 @@ class ReportAssembler:
             all_symbols,
             resolved_since=resolved_since,
             persona_brier_ranking=flags.persona_brier_ranking_enabled,
+            receipts_enabled=flags.receipts_enabled,
         )
 
         # T1/T2/T4: Track Record (render-only, zero płatnych). Każda podsekcja

@@ -5452,6 +5452,20 @@ def test_report_flags_carry_the_council_redundancy_flag(settings, enabled: bool)
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+def test_receipts_flag_reaches_the_repository_and_the_report(
+    settings, mocker, enabled: bool
+) -> None:
+    # WIA-56: kwit w rozliczeniach (odczyt i linia w mailu) idzie za `receipts_enabled`.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.receipts_enabled = enabled
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["receipts_enabled"] is enabled
+    assert main_agent._report_flags(settings).receipts_enabled is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
 def test_build_repository_passes_the_correction_category_flag(
     settings, mocker, enabled: bool
 ) -> None:

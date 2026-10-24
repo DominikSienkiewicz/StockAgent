@@ -4510,6 +4510,25 @@ def test_recently_resolved_rows_carry_the_receipt_for_the_post_mortem(
     assert "decision_receipts" in chain.select.call_args.args[0]
 
 
+def test_recently_resolved_select_has_no_receipt_when_receipts_are_off(
+    mock_client: MagicMock,
+) -> None:
+    """WIA-56: wyłączenie kwitów (`receipts_enabled = false`) wyłącza też ich odczyt
+    w 24-godzinnym odczycie rozliczeń — select nie niesie `decision_receipts`."""
+    repo = SupabaseRepository(
+        url="https://test.supabase.co", key="anon-key", receipts_enabled=False
+    )
+    chain = mock_client.table.return_value
+    order_builder = (
+        chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+    )
+    _set_paginated_response(order_builder, [[]])
+
+    repo.get_recently_resolved_predictions(24)
+
+    assert "decision_receipts" not in chain.select.call_args.args[0]
+
+
 # ---------------------------------------------------------------------------
 # DAT-14: `stale_quote` (migracja 055) — rozliczenie i odczyty trafności
 # ---------------------------------------------------------------------------

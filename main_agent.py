@@ -947,6 +947,7 @@ def build_repository(settings: Settings) -> RepositoryPort:
         stale_quote_enabled=settings.stale_quote_enabled,
         session_close_settlement_enabled=settings.session_close_settlement_enabled,
         rag_exact_search_enabled=settings.rag_exact_search_enabled,
+        receipts_enabled=settings.receipts_enabled,
     )
     if settings.db_writes_enabled:
         return repository
@@ -2194,6 +2195,7 @@ def _report_flags(settings: Settings) -> ReportFlags:
         shock_alerts_enabled=settings.shock_alerts_enabled,
         persona_brier_ranking_enabled=settings.persona_brier_ranking_enabled,
         council_redundancy_enabled=settings.council_redundancy_enabled,
+        receipts_enabled=settings.receipts_enabled,
     )
 
 
