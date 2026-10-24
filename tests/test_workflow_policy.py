@@ -75,9 +75,10 @@ def test_prod_state_script_never_prints_the_key() -> None:
 
 
 # CI-05: testy `-m integration` (prawdziwe API, ~5 płatnych wywołań i jeden mail)
-# nie biegły w żadnym workflowie. Smoke jest WYŁĄCZNIE ręczny (decyzja właściciela):
+# nie biegły w żadnym workflowie. Pełny smoke jest WYŁĄCZNIE ręczny (decyzja właściciela):
 # bez crona, push i PR-ów, z osobnymi sekretami `SMOKE_*`, żeby nie zjadał limitów
-# kluczy produkcyjnych i nie mailował na adres digestu.
+# kluczy produkcyjnych i nie mailował na adres digestu. TEST-16: cron uruchamia osobny
+# job z samym testem kształtu dostawców (tests/test_integration_smoke_schedule.py).
 SMOKE_WORKFLOW = ROOT / ".github" / "workflows" / "integration_smoke.yml"
 
 
@@ -106,8 +107,9 @@ def test_integration_smoke_runs_only_integration_marker() -> None:
         if (marker := _pytest_marker_expression(str(step.get("run", "")))) is not None
     ]
 
-    assert isinstance(triggers, dict) and set(triggers) == {"workflow_dispatch"}, triggers
-    assert markers == ["integration"], markers
+    assert isinstance(triggers, dict), triggers
+    assert set(triggers) == {"workflow_dispatch", "schedule"}, triggers
+    assert markers == ["integration", "integration"], markers
 
 
 def test_integration_smoke_uses_only_its_own_secrets() -> None:
