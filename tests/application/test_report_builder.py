@@ -3879,6 +3879,27 @@ class TestPositionAwareSignals:
         assert "% portfela" not in section
 
 
+def test_consensus_shift_sell_to_buy_reads_sprzedaj_kup_in_the_mail():
+    # MAIL-61: sekcja „Zmiany nastawienia” nie miesza angielskiego z polskim mailem.
+    from src.domain.consensus_shift import ConsensusShift, ShiftKind
+
+    shift = ConsensusShift(
+        kind=ShiftKind.FLIP, previous_recommendation="SELL", current_recommendation="BUY",
+        votes_changed=3, sentiment_delta=0.0, consensus_delta=0.0, gap_hours=1.0,
+    )
+
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        ReportContext(consensus_shifts=[("AAPL", shift)]),
+    )
+
+    section = html[html.index("🔄 Zmiany nastawienia"):]
+    assert "SPRZEDAJ" in section.split("</table>")[0]
+    assert "SELL" not in section.split("</table>")[0]
+    assert "Odwrócenie SPRZEDAJ → KUP" in text
+    assert "Odwrócenie SELL" not in text
+
+
 def test_watchlist_mood_section_not_called_portfolio():
     # MAIL-31: sentyment liczy się po symbolach watchlisty; „portfel” to od #15
     # sekcja „💼 Twój portfel” z realnymi pozycjami.

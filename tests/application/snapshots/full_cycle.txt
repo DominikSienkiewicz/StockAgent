@@ -50,7 +50,7 @@ ZAMKNIĘTE PREDYKCJE (ostatnie 24h)
 
 === 🔄 Zmiany nastawienia ===
 
-  NVDA: Odwrócenie SELL→BUY — 2 zmienionych głosów.
+  NVDA: Odwrócenie SPRZEDAJ → KUP — 2 zmienionych głosów.
 
 NAJSILNIEJSZE SYGNAŁY
 ----------------------------------------------------------------
@@ -136,10 +136,10 @@ KARTA KONDYCJI MODELU
 
 === 🗳️ Rada — historia głosów ===
 
-  Buffett — ostatnie 30 dni na NVDA: BUY, BUY, HOLD
-    Bilans: BUY 2 · SELL 0 · HOLD 1
-  Soros — ostatnie 30 dni na NVDA: HOLD, SELL, SELL — najbardziej bearish głos
-    Bilans: BUY 0 · SELL 2 · HOLD 1
+  Buffett — ostatnie 30 dni na NVDA: KUP, KUP, TRZYMAJ
+    Bilans: KUP 2 · SPRZEDAJ 0 · TRZYMAJ 1
+  Soros — ostatnie 30 dni na NVDA: TRZYMAJ, SPRZEDAJ, SPRZEDAJ — najbardziej pesymistyczny głos
+    Bilans: KUP 0 · SPRZEDAJ 2 · TRZYMAJ 1
 
 NASTROJE WATCHLISTY
 ----------------------------------------------------------------

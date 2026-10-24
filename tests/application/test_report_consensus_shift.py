@@ -14,6 +14,8 @@ Testy poniżej zamrażają, że:
 
 from __future__ import annotations
 
+import re
+
 from src.application.report_consensus_shift import (
     render_consensus_shift_html,
     render_consensus_shift_text,
@@ -133,8 +135,8 @@ class TestFlip:
             )
         ]
         html = render_consensus_shift_html(shifts)
-        assert "BUY" in html
-        assert "SELL" in html
+        assert "KUP" in html
+        assert "SPRZEDAJ" in html
 
     def test_flip_text_shows_votes_and_direction(self) -> None:
         shifts = [
@@ -145,8 +147,56 @@ class TestFlip:
         ]
         text = render_consensus_shift_text(shifts)
         assert "4" in text
-        assert "SELL" in text
-        assert "BUY" in text
+        assert "SPRZEDAJ" in text
+        assert "KUP" in text
+
+
+class TestPolishRecommendationLabels:
+    """MAIL-61: kierunek zmiany nastawienia w słowniku `polish_labels` (KUP /
+    SPRZEDAJ / TRZYMAJ), jak temat, lead i tabela rady; BUY/SELL zostają w logach."""
+
+    def test_flip_html_reads_sprzedaj_kup_without_english(self) -> None:
+        shifts = [
+            ("NVDA", _shift(ShiftKind.FLIP, previous="SELL", current="BUY", votes_changed=4))
+        ]
+
+        html = render_consensus_shift_html(shifts)
+        visible = re.sub(r"<[^>]+>", "", html)
+
+        assert "SPRZEDAJ → KUP" in visible
+        assert "SELL" not in html
+        assert "BUY" not in html
+
+    def test_flip_text_reads_sprzedaj_kup_without_english(self) -> None:
+        shifts = [
+            ("NVDA", _shift(ShiftKind.FLIP, previous="SELL", current="BUY", votes_changed=4))
+        ]
+
+        text = render_consensus_shift_text(shifts)
+
+        assert "Odwrócenie SPRZEDAJ → KUP" in text
+        assert "SELL" not in text
+        assert "BUY" not in text
+
+    def test_softening_uses_the_hold_word_of_the_dictionary(self) -> None:
+        shifts = [
+            ("TSLA", _shift(ShiftKind.SOFTENING, previous="BUY", current="HOLD", votes_changed=1))
+        ]
+
+        html = render_consensus_shift_html(shifts)
+        text = render_consensus_shift_text(shifts)
+
+        assert "TRZYMAJ" in re.sub(r"<[^>]+>", "", html)
+        assert "KUP → TRZYMAJ" in text
+        assert "HOLD" not in html
+        assert "HOLD" not in text
+
+    def test_unknown_recommendation_stays_visible(self) -> None:
+        shifts = [("NVDA", _shift(ShiftKind.FLIP, previous="BUY", current="STRONG_SELL"))]
+
+        text = render_consensus_shift_text(shifts)
+
+        assert "KUP → STRONG_SELL" in text
 
 
 class TestSoftening:
@@ -165,8 +215,8 @@ class TestSoftening:
         ]
         html = render_consensus_shift_html(shifts)
         assert "TSLA" in html
-        assert "BUY" in html
-        assert "HOLD" in html
+        assert "KUP" in html
+        assert "TRZYMAJ" in html
 
 
 class TestEscaping:

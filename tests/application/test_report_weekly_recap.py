@@ -88,6 +88,32 @@ class TestWeeklyRecapHtml:
         assert "TSLA" in html
 
 
+class TestDissenterLabelsArePolish:
+    """MAIL-61: wybroniony dysydent niesie głos w słowniku `polish_labels`."""
+
+    @staticmethod
+    def _soros() -> InvestorOpinion:
+        return InvestorOpinion(
+            investor_name="Soros",
+            recommendation="SELL",
+            confidence=0.9,
+            reasoning="rynek przegrzany",
+            key_factors=(),
+        )
+
+    def test_html_shows_the_vote_as_sprzedaj(self) -> None:
+        html = render_weekly_recap_html(_recap(vindicated=(self._soros(),)))
+
+        assert "Soros</strong> (SPRZEDAJ)" in html
+        assert "(SELL)" not in html
+
+    def test_text_shows_the_vote_as_sprzedaj(self) -> None:
+        text = render_weekly_recap_text(_recap(vindicated=(self._soros(),)))
+
+        assert "Wybroniony: Soros (SPRZEDAJ) — rynek przegrzany" in text
+        assert "(SELL)" not in text
+
+
 class TestWeeklyRecapText:
     def test_none_recap_is_self_suppressing(self) -> None:
         assert render_weekly_recap_text(None) == ""

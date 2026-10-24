@@ -1622,6 +1622,74 @@ class TestPolishNumbersInSubjectAndPush:
         assert "NVDA -4,2%, rada PODZIELONA" in push.send_report.call_args.kwargs["subject"]
 
 
+class TestCriticalQuotaSubjectPrefix:
+    """MAIL-61: prefiks tematu przy alercie CRITICAL jest po polsku — „[LIMIT]”,
+    nie „[QUOTA]”. Poziom alertu zostaje CRITICAL w logach i w bazie."""
+
+    def _subject(self, settings, mocker, quota_alerts: list[QuotaAlert]) -> str:
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
+        mocker.patch("main_agent._build_user_portfolio", return_value=None)
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        mocker.patch("main_agent._publish_public_scorecard")
+        email = MagicMock()
+        monitor = QuotaMonitor()
+        for alert in quota_alerts:
+            monitor.record(alert)
+
+        main_agent._dispatch_reports(
+            results=[
+                main_agent.SymbolResult(
+                    symbol="NVDA", status="saved", delta=Decimal("-0.042"),
+                    current_price=Decimal("180"),
+                ),
+            ],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=MagicMock(spec=RepositoryPort),
+            quota_monitor=monitor,
+            notifier=email,
+            subscribers=[],
+            all_symbols=["NVDA"],
+            context=main_agent.ReportContext(),
+        )
+
+        subject: str = email.send_report.call_args.kwargs["subject"]
+        return subject
+
+    def test_critical_alert_prefixes_the_subject_in_polish(self, settings, mocker) -> None:
+        critical = QuotaAlert(
+            source="OpenAI", severity=QuotaSeverity.CRITICAL, message="429",
+            action="Doładuj konto.", occurred_at=datetime(2026, 10, 18, 5, 0, tzinfo=UTC),
+        )
+
+        subject = self._subject(settings, mocker, [critical])
+
+        assert subject.startswith("⚠️ [LIMIT] ")
+        assert "[QUOTA]" not in subject
+
+    def test_warning_alert_leaves_the_subject_without_a_prefix(self, settings, mocker) -> None:
+        warning = QuotaAlert(
+            source="OpenAI", severity=QuotaSeverity.WARNING, message="TPM",
+            action="Poczekaj.", occurred_at=datetime(2026, 10, 18, 5, 0, tzinfo=UTC),
+        )
+
+        subject = self._subject(settings, mocker, [warning])
+
+        assert "[" not in subject.split("StockAgent")[0]
+        assert "[QUOTA]" not in subject
+        assert "[LIMIT]" not in subject
+
+
 class TestMessengerDigestSplit:
     """#5 — push (Telegram/Slack) dostaje 5-linijkowy skrót, nie pełny raport.
 

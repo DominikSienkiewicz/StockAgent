@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.council import Recommendation
+from src.domain.polish_labels import council_recommendation_label
 
 _RECOMMENDATIONS: tuple[Recommendation, ...] = ("BUY", "SELL", "HOLD")
 
@@ -144,7 +145,7 @@ def _render_history_row_html(h: InvestorHistory, *, is_most_bearish: bool) -> st
         bearish_badge = (
             " <span style='background:#fee2e2;color:#991b1b;padding:1px 6px;"
             "border-radius:10px;font-size:0.78em;font-weight:600;'>"
-            "najbardziej bearish</span>"
+            "najbardziej pesymistyczny</span>"
         )
     return (
         "<tr>"
@@ -158,12 +159,13 @@ def _render_history_row_html(h: InvestorHistory, *, is_most_bearish: bool) -> st
 
 
 def _render_sequence_html(recommendations: tuple[Recommendation, ...]) -> str:
-    """Kolorowa sekwencja "SELL, SELL, HOLD" od najnowszego głosu."""
+    """Kolorowa sekwencja "SPRZEDAJ, SPRZEDAJ, TRZYMAJ" od najnowszego głosu (MAIL-61)."""
     chips: list[str] = []
     for rec in recommendations:
         color = _REC_COLOR.get(rec, "#374151")
         chips.append(
-            f"<span style='color:{color};font-weight:600;'>{_html.escape(rec)}</span>"
+            f"<span style='color:{color};font-weight:600;'>"
+            f"{_html.escape(council_recommendation_label(rec))}</span>"
         )
     return ", ".join(chips)
 
@@ -180,16 +182,17 @@ def render_council_history_text(histories: list[InvestorHistory]) -> str:
     lines.append("=== 🗳️ Rada — historia głosów ===")
     lines.append("")
     for h in rows:
-        seq = ", ".join(h.recommendations)
+        seq = ", ".join(council_recommendation_label(rec) for rec in h.recommendations)
         tally = h.tally()
-        suffix = " — najbardziej bearish głos" if h.investor_name == most_bearish else ""
+        suffix = " — najbardziej pesymistyczny głos" if h.investor_name == most_bearish else ""
         lines.append(
             f"  {h.investor_name} — ostatnie {h.window_days} dni na "
             f"{h.symbol}: {seq}{suffix}"
         )
         lines.append(
-            f"    Bilans: BUY {tally['BUY']} · "
-            f"SELL {tally['SELL']} · HOLD {tally['HOLD']}"
+            f"    Bilans: {council_recommendation_label('BUY')} {tally['BUY']} · "
+            f"{council_recommendation_label('SELL')} {tally['SELL']} · "
+            f"{council_recommendation_label('HOLD')} {tally['HOLD']}"
         )
     lines.append("")
     return "\n".join(lines)

@@ -19,6 +19,7 @@ from src.application.report_formatting import INVESTMENT_DISCLAIMER, number, pct
 from src.domain.council import InvestorOpinion
 from src.domain.council_redundancy import CouncilRedundancy
 from src.domain.number_format import format_number_pl
+from src.domain.polish_labels import council_recommendation_label
 from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
 
 _COLOR_GOOD = "#16a34a"
@@ -101,7 +102,7 @@ def _dissenters_html(dissenters: tuple[InvestorOpinion, ...]) -> str:
         return ""
     items = "".join(
         f"<li><strong>{_html.escape(op.investor_name)}</strong> "
-        f"({_html.escape(op.recommendation)}) — "
+        f"({_html.escape(council_recommendation_label(op.recommendation))}) — "
         f"{_html.escape(op.reasoning)}</li>"
         for op in dissenters
     )
@@ -218,7 +219,8 @@ def _hero_text(title: str, highlight: RecapHighlight) -> list[str]:
         lines.append(f"    Lekcja: {highlight.correction_insight}")
     for op in highlight.vindicated_dissenters:
         lines.append(
-            f"    Wybroniony: {op.investor_name} ({op.recommendation}) — {op.reasoning}"
+            f"    Wybroniony: {op.investor_name} "
+            f"({council_recommendation_label(op.recommendation)}) — {op.reasoning}"
         )
     return lines
 

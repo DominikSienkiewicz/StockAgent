@@ -182,6 +182,7 @@ from src.domain.macro_risk import MacroAlertLevel
 from src.domain.macro_series import MacroSeriesSnapshot, macro_features, macro_series_votes
 from src.domain.market_calendar import closure_reason, to_nyse_time
 from src.domain.number_format import format_money_pl, format_number_pl
+from src.domain.polish_labels import QUOTA_CRITICAL_SUBJECT_PREFIX
 from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
@@ -2138,7 +2139,7 @@ def _build_subject(
 
     Gdy cykl ma lead, jego pierwsza pozycja idzie do tematu ("NVDA -4,2%, rada
     PODZIELONA"); bez leadu zostaje dotychczasowy temat licznikowy. `prefix`
-    (np. "⚠️ [QUOTA] ") jest sygnałem operacyjnym i przetrwa w obu wariantach.
+    (np. "⚠️ [LIMIT] ", MAIL-61) jest sygnałem operacyjnym i przetrwa w obu wariantach.
 
     Liczone RAZ nad pełnymi danymi cyklu: sekcje raportu są re-slicowane per
     subskrybent, ale temat jest dla wszystkich ten sam. MAIL-14: znacznik czasu
@@ -2493,7 +2494,7 @@ def deliver_report(
         html, text = _render_report(context, results, started_at, duration)
         # Subject prefix gdy są CRITICAL — wymusza zwrócenie uwagi w skrzynce.
         max_sev = quota_monitor.max_severity()
-        prefix = "⚠️ [QUOTA] " if max_sev is QuotaSeverity.CRITICAL else ""
+        prefix = QUOTA_CRITICAL_SUBJECT_PREFIX if max_sev is QuotaSeverity.CRITICAL else ""
 
         # #1: temat z leadu, liczony nad PEŁNYMI wynikami cyklu (nie per
         # subskrybent) — sekcje są re-slicowane, ale temat jest współdzielony.

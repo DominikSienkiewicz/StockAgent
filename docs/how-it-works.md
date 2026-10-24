@@ -194,7 +194,7 @@ All alerts from the current cycle are persisted to the `quota_alerts` table (mig
 
 The alert's `message` and `action` are written in Polish, because they are email content: the banner (`🔴 KRYTYCZNY` / `⚠️ OSTRZEŻENIE`), the lead and the subject show them as they are, and so does the `quota_alerts` row they come back from. Each adapter logs the same event in English (`Resend returned 429 — …`), so the run logs keep the English diagnosis; a network failure of the Telegram or Slack push logs only the exception type, since its text carries the bot token or webhook URL and the run logs are public.
 
-If anything `CRITICAL` is in the current cycle, the e-mail subject is prefixed with `⚠️ [QUOTA] ` so the alert is visible directly in the inbox, before opening.
+If anything `CRITICAL` is in the current cycle, the e-mail subject is prefixed with `⚠️ [LIMIT] ` so the alert is visible directly in the inbox, before opening. The prefix was `⚠️ [QUOTA] ` until MAIL-61 made it Polish like the rest of the subject; an inbox rule that matches `[QUOTA]` has to match `[LIMIT]` now. The separate real-time alert email (`alert_notifier`) keeps its own subject `⚠️ [QUOTA] StockAgent — real-time alert`, so a rule on `[QUOTA]` still catches that one. The word lives in `QUOTA_CRITICAL_SUBJECT_PREFIX` in `src/domain/polish_labels.py`.
 
 This means: **no exhausted limit, blocked email, or rate-limited API call can silently disappear into the logs**. If the agent saw it, you see it.
 
