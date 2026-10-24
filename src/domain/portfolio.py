@@ -295,12 +295,14 @@ class PortfolioChange:
     punktu odniesienia nie może udawać „bez zmian”. Te wypadnięte są wymienione
     w `unmeasured_symbols`. `top_contributors` — co najwyżej
     `TOP_CHANGE_CONTRIBUTORS` symboli o największym |Δ|, bez pozycji stojących.
+    `change_pct` to zmiana względem wartości poprzedniej jako UŁAMEK (`Ratio`,
+    mimo sufiksu `_pct`, ARCH-04).
     """
 
     previous_value: Decimal
     current_value: Decimal
     change: Decimal
-    change_pct: Decimal
+    change_pct: Ratio
     top_contributors: tuple[SymbolChange, ...]
     unmeasured_symbols: tuple[str, ...]
 
@@ -621,7 +623,7 @@ class Portfolio:
             previous_value=previous_value,
             current_value=current_value,
             change=change,
-            change_pct=change / previous_value,
+            change_pct=Ratio(change / previous_value),
             top_contributors=tuple(moves[:TOP_CHANGE_CONTRIBUTORS]),
             unmeasured_symbols=tuple(sorted(set(quantities) - set(measured))),
         )
