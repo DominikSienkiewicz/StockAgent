@@ -3525,6 +3525,7 @@ class TestSaveNodeRecordFitsPredictionLogs:
         assert missing == [], f"rekord save_node ma klucze bez kolumn prediction_logs: {missing}"
 
 
+@pytest.mark.containers
 class TestMigration061Digests:
     """MAIL-24: indeks prywatnego archiwum digestów — wiersz na cykl, upsert po
     `cycle_id`; bucket Storage tylko tam, gdzie jest schemat `storage` (Supabase)."""

@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 
 from src.application.errors import PortError
 from src.application.ports import RepositoryPort, WebPublisherPort
-from src.application.report_status_page import (
+from src.application.public_status_page import (
     BADGE_JSON_NAME,
     STATUS_HISTORY_DAYS,
     build_public_status,

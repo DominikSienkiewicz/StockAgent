@@ -8,7 +8,7 @@ The fastest look at the email skips the loop: `uv run python main_tools.py rende
 
 | Account | What it is for | With the committed `config.toml` |
 |---|---|---|
-| Supabase (free plan) | The database every entry point reads and writes. The [Supabase CLI](https://supabase.com/docs/guides/cli) applies the 50+ migrations in `supabase/migrations/` (step 3 below) | required |
+| Supabase (free plan) | The database every entry point reads and writes. The [Supabase CLI](https://supabase.com/docs/guides/cli) applies the 60+ migrations in `supabase/migrations/` (step 3 below) | required |
 | Finnhub (free) | The quote behind every cycle | required |
 | Alpha Vantage (free, ideally two or more keys) | News and sentiment for each symbol past the volatility gate | required with `PAID_CALLS_ENABLED=true` |
 | OpenAI | The advisory council and the news embeddings | required with `PAID_CALLS_ENABLED=true` |
@@ -35,7 +35,7 @@ That is six accounts with the committed configuration and five at the least (`ll
 - **Resend.com** — HTML email, sandbox sender without domain verification
 - **Pydantic Settings** v2 — typed env vars from `.env` with validators (CSV → list)
 - **requests** + `urllib3.Retry` — shared session with exponential backoff on 429 / 5xx
-- **pytest 9** + **pytest-mock** — 4,500+ test functions (`def test_`, counted by `uv run python main_tools.py repo-stats` into [`docs/repo-stats.json`](repo-stats.json), DOC-18) + skipped live-API / Docker-container tests
+- **pytest 9** + **pytest-mock** — 6,000+ test functions (`def test_`, counted by `uv run python main_tools.py repo-stats` into [`docs/repo-stats.json`](repo-stats.json), DOC-18) + skipped live-API / Docker-container tests
 - **ruff** — lint (E, W, F, I, B, UP, SIM rule sets)
 - **mypy** strict mode — `src/` and every entry point fully typed; `tests/` not yet (it joins the gate directory by directory, `tests/domain` so far)
 - **GitHub Actions CI** — ruff + mypy + pytest + SonarCloud scan on every push / PR

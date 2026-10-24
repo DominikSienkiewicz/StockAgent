@@ -18,8 +18,7 @@ from typing import Any
 
 import httpx
 from postgrest.exceptions import APIError
-from storage3.utils import StorageException
-from supabase import create_client
+from supabase import StorageException, create_client
 
 from src.application.errors import MalformedPayload, ProviderUnavailable
 from src.application.ports import DigestArchivePort, DigestRecord

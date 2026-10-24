@@ -11,7 +11,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from src.application.ports import CycleRun
-from src.application.report_status_page import (
+from src.application.public_status_page import (
     build_public_status,
     render_status_badge,
     render_status_page_html,

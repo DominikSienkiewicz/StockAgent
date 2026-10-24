@@ -7857,7 +7857,6 @@ class TestAttestationRevealReconciliation:
             repository=repository,
             quota_monitor=QuotaMonitor(),
             notifier=MagicMock(),
-            web_publisher=MagicMock(),
             subscribers=[],
             all_symbols=["AAPL"],
         )

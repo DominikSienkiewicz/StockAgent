@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 from postgrest.exceptions import APIError
-from storage3.exceptions import StorageApiError
+from supabase import StorageException
 
 from src.application.errors import MalformedPayload, PortError
 from src.application.ports import DigestRecord
@@ -56,7 +56,7 @@ def test_object_path_is_the_cycle_id_without_personal_data() -> None:
 @pytest.mark.parametrize(
     "error",
     [
-        StorageApiError("Bucket not found", "NoSuchBucket", 404),
+        StorageException("Bucket not found"),
         httpx.ConnectError("connection reset"),
     ],
 )
