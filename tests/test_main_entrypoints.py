@@ -7340,6 +7340,20 @@ class TestAlphaEnrichmentWiring:
 
         assert isinstance(enrichment._earnings, AlphaVantageEarningsAdapter)
 
+    def test_live_calendar_gets_every_key_and_the_quota_monitor(self, settings) -> None:
+        # FIN-09: rotacja kluczy AV i alert kwoty także w Fast Loopie.
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.earnings_calendar_enabled = True
+        monitor = QuotaMonitor()
+
+        enrichment = main_agent.build_alpha_enrichment(
+            settings, monitor, repository=MagicMock(spec=RepositoryPort)
+        )
+
+        assert enrichment._earnings._api_keys == ["av1", "av2"]
+        assert enrichment._earnings._quota_monitor is monitor
+
     def test_cache_flag_without_a_repository_reads_nothing(self, settings) -> None:
         from src.infrastructure.adapters.alpha_vantage_earnings import (
             NullEarningsCalendarAdapter,

@@ -147,3 +147,8 @@ Then turn `public_scorecard_enabled` on. `tests/test_workflow_env_wiring.py::tes
 ### 11. After the first scheduled run
 
 Check that the email arrived with its cycle-cost section, that the run page shows the run summary, that the heartbeat check received its ping, that a `cycle_runs` row exists (with `cycle_runs_enabled`), and that the next deadman run passes.
+
+### 12. After EXP-02 and EXP-03 end: the earnings gate
+
+Owner decision (DAT-40): `earnings_calendar_enabled` stays `false` while EXP-02 and EXP-03 run, because the earnings multiplier changes the volatility gate, which is part of the recipe both experiments compare. After their `end` dates (2027-01-29 at the latest), set `earnings_calendar_enabled = true` in `config.toml` (this commit changes `config_hash`). Since FIN-09 the Fast Loop asks Alpha Vantage for the earnings calendar once per run — one `EARNINGS_CALENDAR` request without a symbol covers the whole watchlist, with key rotation over `ALPHA_VANTAGE_API_KEYS` — so it no longer needs four keys; with `earnings_cache_enabled` (migration `053`) the Fast Loop asks nothing and the Slow Loop refreshes the cache. Check the next email: no `Alpha Vantage earnings` quota warning, and a symbol a few days before its report shows the earnings proximity in the Alpha Signals table.
+

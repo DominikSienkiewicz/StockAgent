@@ -1442,14 +1442,16 @@ class Settings(BaseSettings):
     def av_budget(self) -> AvBudget:
         """FIN-32: worst case doby AV dla pełnej watchlisty Fast Loopa (WIA-11:
         `symbols` + `crypto_symbols` − `symbols_unsupported_price`). Na symbol:
-        jedno NEWS_SENTIMENT i jedno EARNINGS_CALENDAR przy włączonym kalendarzu —
-        chyba że kalendarz idzie z cache Slow Loopa (FIN-11)."""
+        jedno NEWS_SENTIMENT; przy włączonym kalendarzu jedno EARNINGS_CALENDAR na
+        cykl (FIN-09: jedna lista dla wszystkich symboli) — chyba że kalendarz idzie
+        z cache Slow Loopa (FIN-11)."""
         live_calendar = self.earnings_calendar_enabled and not self.earnings_cache_enabled
         return av_daily_budget(
             n_av_symbols=self._eligible_symbol_count(),
-            requests_per_symbol=2 if live_calendar else 1,
+            requests_per_symbol=1,
             cycles_per_day=self.fast_loop_cycles_per_day,
             n_keys=len(self.alpha_vantage_api_keys),
+            requests_per_cycle=1 if live_calendar else 0,
         )
 
     def _eligible_symbol_count(self) -> int:

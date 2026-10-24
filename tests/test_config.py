@@ -1169,10 +1169,11 @@ class TestAlphaVantageBudget:
 
         assert settings.av_budget().worst_case == 3
 
-    def test_earnings_calendar_adds_a_request_per_symbol(self, env):
+    def test_earnings_calendar_adds_one_request_per_cycle(self, env):
+        # FIN-09: jeden EARNINGS_CALENDAR bez symbolu obsługuje całą watchlistę.
         settings = self._settings(symbols=["AAPL", "MSFT"], earnings_calendar_enabled=True)
 
-        assert settings.av_budget().worst_case == 4
+        assert settings.av_budget().worst_case == 3
 
     def test_earnings_from_the_slow_loop_cache_cost_the_fast_loop_nothing(self, env):
         # FIN-11: kalendarz z `earnings_cache` — Fast Loop pyta AV tylko o newsy.

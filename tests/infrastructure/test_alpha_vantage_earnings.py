@@ -68,7 +68,7 @@ def test_calls_earnings_calendar_endpoint() -> None:
     _, kwargs = mock_get.call_args
     params = kwargs["params"]
     assert params["function"] == "EARNINGS_CALENDAR"
-    assert params["symbol"] == "AAPL"
+    assert "symbol" not in params
     assert params["horizon"] == "3month"
     assert params["apikey"] == "KEY"
     assert kwargs["timeout"] == pytest.approx(10.0)
@@ -252,3 +252,67 @@ class TestKeyRotation:
             assert adapter.get_next_earnings("ZZZZ") is None
 
         assert mock_get.call_count == 1
+
+
+
+class TestOneRequestPerProcess:
+    """FIN-09: kalendarz bez parametru `symbol` zwraca całą listę spółek, więc jedno
+    zapytanie na proces (leniwie, pod lockiem) obsługuje każdy symbol z pamięci."""
+
+    CSV_TWO_COMPANIES = (
+        "symbol,name,reportDate,fiscalDateEnding,estimate,currency\n"
+        "NVDA,NVIDIA Corp,2026-08-27,2026-07-31,1.01,USD\n"
+        "AAPL,Apple Inc,2026-07-30,2026-06-30,1.50,USD\n"
+        "AAPL,Apple Inc,2026-10-29,2026-09-30,1.60,USD\n"
+    )
+
+    def test_one_request_serves_every_symbol(self) -> None:
+        adapter = AlphaVantageEarningsAdapter(api_key="KEY", today=date(2026, 6, 21))
+        with patch.object(adapter._session, "get") as mock_get:
+            mock_get.return_value = _mock_response(self.CSV_TWO_COMPANIES)
+            nvda = adapter.get_next_earnings("NVDA")
+            aapl = adapter.get_next_earnings("AAPL")
+            missing = adapter.get_next_earnings("MSFT")
+
+        assert mock_get.call_count == 1
+        assert "symbol" not in mock_get.call_args.kwargs["params"]
+        assert nvda is not None and nvda.report_date == "2026-08-27"
+        assert aapl is not None and aapl.report_date == "2026-07-30"
+        assert missing is None
+
+    def test_parallel_symbols_share_one_request(self) -> None:
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        adapter = AlphaVantageEarningsAdapter(api_key="KEY", today=date(2026, 6, 21))
+        def slow_get(*_args: object, **_kwargs: object) -> MagicMock:
+            time.sleep(0.05)
+            return _mock_response(self.CSV_TWO_COMPANIES)
+
+        with (
+            patch.object(adapter._session, "get", side_effect=slow_get) as mock_get,
+            ThreadPoolExecutor(max_workers=4) as pool,
+        ):
+            events = list(pool.map(adapter.get_next_earnings, ["NVDA", "AAPL"] * 2))
+
+        assert mock_get.call_count == 1
+        assert all(event is not None for event in events)
+
+    def test_rate_limit_json_emits_quota_alert(self) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+
+        monitor = QuotaMonitor()
+        adapter = AlphaVantageEarningsAdapter(
+            api_key="earnings-secret-key", today=date(2026, 6, 21), quota_monitor=monitor
+        )
+        with patch.object(adapter._session, "get") as mock_get:
+            mock_get.return_value = _mock_response(RATE_LIMIT_NOTE)
+            assert adapter.get_next_earnings("AAPL") is None
+            assert adapter.get_next_earnings("NVDA") is None
+
+        assert mock_get.call_count == 1
+        assert [alert.severity for alert in monitor.alerts] == [QuotaSeverity.WARNING]
+        assert monitor.alerts[0].source == "Alpha Vantage earnings"
+        alert = monitor.alerts[0]
+        assert "earnings-secret-key" not in alert.message + alert.action

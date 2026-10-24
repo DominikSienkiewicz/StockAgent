@@ -289,9 +289,10 @@ crypto_paper_cost_bps = 25
 # SEC. Off, dopóki SEC (webmaster@sec.gov, z Reference ID ze strony 403) jej nie
 # zdejmie; potem true i jeden ręczny run. Szczegóły: docs/configuration.md.
 insider_flow_enabled = false
-# earnings_calendar: +1 wywołanie Alpha Vantage na symbol (~39/dzień) NA DODATEK do
-# sentymentu (~39/dzień). Darmowy AV = 25 req/dzień/klucz, więc wymaga >= 4 kluczy.
-# Włącz dopiero, gdy masz tyle w ALPHA_VANTAGE_API_KEYS. Odblokowuje bramkę earnings (#6).
+# earnings_calendar: bramka earnings (#6). FIN-09: jedno wywołanie Alpha Vantage na cykl
+# (kalendarz bez symbolu obsługuje całą watchlistę, rotacja kluczy, alert przy limicie).
+# Off do końca EXP-02/03 (decyzja DAT-40, krok 12 w docs/resume-checklist.md) — mnożnik
+# earnings zmienia bramkę, czyli przepis porównywany w eksperymentach.
 earnings_calendar_enabled = false
 # FIN-11 (wymaga migracji 053): z kalendarzem bramka earnings czyta datę raportu
 # z `earnings_cache`, który Slow Loop odświeża raz w tygodniu wszystkimi kluczami AV —
@@ -302,7 +303,7 @@ earnings_cache_enabled = false
 # limiter Finnhub). Sam mail, bramka earnings bez zmian. UWAGA: włącz DOPIERO po
 # przeglądzie ToS Finnhub (BEZ-28) i sondzie darmowego planu (docs/configuration.md).
 finnhub_earnings_calendar_enabled = false
-# FIN-32: najgorszy przypadek doby AV (cała watchlista za bramką, +1 na symbol przy
+# FIN-32: najgorszy przypadek doby AV (cała watchlista za bramką, +1 na cykl przy
 # kalendarzu wyników) ponad 25 × liczba kluczy → WARNING w logu i w bannerze maila.
 # true = błąd startu zamiast ostrzeżenia. Off, bo liczba kluczy żyje w sekretach.
 av_budget_strict = false

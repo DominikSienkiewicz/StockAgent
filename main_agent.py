@@ -1238,7 +1238,12 @@ def build_alpha_enrichment(
     ):
         # FIN-35: kalendarz wyników to płatne zapytanie AV — lokalnie bez płatnych
         # wywołań zostaje Null-adapter.
-        earnings = AlphaVantageEarningsAdapter(api_key=settings.alpha_vantage_api_keys[0])
+        # FIN-09: jeden kalendarz na cykl, cała lista kluczy (rotacja przy soft-limicie)
+        # i alert kwoty, gdy limit odbiją wszystkie.
+        first_key, *reserve_keys = settings.alpha_vantage_api_keys
+        earnings = AlphaVantageEarningsAdapter(
+            api_key=first_key, reserve_keys=reserve_keys, quota_monitor=quota_monitor
+        )
     options: OptionsFlowPort = (
         FinnhubOptionsAdapter(
             api_key=settings.require_finnhub_api_key(),
