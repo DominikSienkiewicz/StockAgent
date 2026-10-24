@@ -382,10 +382,12 @@ symbols = [
   "TEAM", "FROG", "SNOW", "DDOG", "SAIL", "OKTA", "S", "PANW",
   "VT", "QUAL", "IHI", "VB", "EWY", "IVV", "XDWD.DE", "IUSN.DE",
 ]
-# ETF-y — pomijają fundamentale (brak EPS/P/E).
-symbols_etf = ["VOO", "CSPX.L", "XDWD.DE", "IUSN.DE", "VT", "QUAL", "IHI", "VB", "EWY", "IVV"]
+# ETF-y — pomijają fundamentale (brak EPS/P/E). Tylko tickery z `symbols` (DAT-27,
+# tests/test_config_toml.py) — ETF spoza watchlisty to martwa konfiguracja.
+symbols_etf = ["XDWD.DE", "IUSN.DE", "VT", "QUAL", "IHI", "VB", "EWY", "IVV"]
 # Tickery niewspierane przez Finnhub free (EU dot-notation / OTC) → "ignored", nie "error".
-symbols_unsupported_price = ["CSPX.L", "XDWD.DE", "IUSN.DE", "SSNLF"]
+# Też tylko tickery z `symbols` (DAT-27).
+symbols_unsupported_price = ["XDWD.DE", "IUSN.DE", "SSNLF"]
 
 # --- Krypto (CoinGecko zamiast Finnhub) ---
 crypto_symbols = ["BTC", "ETH"]

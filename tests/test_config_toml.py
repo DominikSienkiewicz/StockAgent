@@ -65,6 +65,16 @@ def test_real_config_toml_parses_and_has_expected_invariants() -> None:
         assert secret not in data, f"sekret {secret} w config.toml!"
 
 
+def test_toml_cross_list_invariants() -> None:
+    """DAT-27: listy klasyfikujące symbole (ETF, brak ceny) opisują watchlistę.
+    Ticker spoza `symbols` to martwa konfiguracja — tak zniknęła historia VOO."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    symbols = set(data["symbols"])
+
+    assert sorted(set(data["symbols_etf"]) - symbols) == []
+    assert sorted(set(data["symbols_unsupported_price"]) - symbols) == []
+
+
 def test_real_config_toml_bounds_reflection_settlement_age() -> None:
     """WIA-04: produkcja rozlicza predykcje w oknie 6 h – 96 h."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
