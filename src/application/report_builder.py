@@ -19,7 +19,7 @@ from typing import Any
 from src.application.alpha_signals import AlphaSignals
 from src.application.portfolio_fx import effective_pln_rates
 from src.application.ports import StoredShockAlert
-from src.application.report_alpha import significant_buy_label
+from src.application.report_alpha import analyst_revision_label, significant_buy_label
 from src.application.report_charts import (
     build_correlation_chart_html,
     build_delta_chart_html,
@@ -213,6 +213,7 @@ def to_lead_signals(
                     alpha_signals, r.symbol, insider_lead_window
                 ),
                 shock_pct=shocks.get(r.symbol),
+                analyst_revision_label=_analyst_revision_label(alpha_signals, r.symbol),
             )
         )
     return signals
@@ -226,6 +227,16 @@ def _largest_shocks(alerts: Sequence[StoredShockAlert]) -> dict[str, Percent]:
         if alert.symbol not in largest or abs(delta) > abs(largest[alert.symbol]):
             largest[alert.symbol] = delta
     return {symbol: to_percent(Ratio(delta)) for symbol, delta in largest.items()}
+
+
+def _analyst_revision_label(
+    alpha_signals: Mapping[str, AlphaSignals] | None, symbol: str
+) -> str | None:
+    """DAT-13: tekst rewizji konsensusu m/m symbolu (ten sam co w sekcji alfy) albo None."""
+    signal = alpha_signals.get(symbol) if alpha_signals else None
+    if signal is None or signal.analyst is None:
+        return None
+    return analyst_revision_label(signal.analyst.revision())
 
 
 def _insider_buy_label(

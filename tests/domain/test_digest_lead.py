@@ -639,3 +639,45 @@ class TestShockBetweenMailsOnPosition:
         )
 
         assert build_lead([signal]) == []
+
+
+class TestAnalystRevisionTier:
+    """DAT-13: rewizja konsensusu analityków m/m to najniższy tier leadu — sygnał
+    kontekstowy (okresy miesięczne), więc nie wypycha żadnego wcześniejszego."""
+
+    _LABEL = "analitycy podnieśli rekomendacje m/m (+3 Strong Buy)"
+
+    def _revision(self, symbol: str, delta: str = "1.0") -> LeadSignal:
+        return LeadSignal(
+            symbol=symbol,
+            price_delta_pct=Percent(Decimal(delta)),
+            analyst_revision_label=self._LABEL,
+        )
+
+    def test_revision_alone_is_a_lead_item(self) -> None:
+        items = build_lead([self._revision("AAPL", "0.4")])
+
+        assert [(item.headline, item.symbol) for item in items] == [
+            (f"AAPL +0,4%: {self._LABEL}", "AAPL")
+        ]
+
+    def test_closed_verdict_stays_above_a_bigger_revision_move(self) -> None:
+        closed = LeadSignal(
+            "BBB", Percent(Decimal("0.1")), resolved_label="trafiona prognoza wzrostu"
+        )
+
+        items = build_lead([self._revision("AAA", "9.0"), closed])
+
+        assert [item.symbol for item in items] == ["BBB", "AAA"]
+
+    def test_insider_buy_of_the_same_symbol_wins(self) -> None:
+        signal = LeadSignal(
+            "NVDA",
+            Percent(Decimal("1.0")),
+            insider_buy_label="CEO kupił akcje za 1,2 mln USD",
+            analyst_revision_label=self._LABEL,
+        )
+
+        (item,) = build_lead([signal])
+
+        assert "CEO kupił" in item.headline

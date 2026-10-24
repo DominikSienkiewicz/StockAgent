@@ -12,7 +12,7 @@ from decimal import Decimal
 from src.application.alpha_signals import AlphaSignals
 from src.application.report_formatting import number, pct
 from src.application.reporting.section import ReportSection, SectionInput, no_text
-from src.domain.analyst_consensus import AnalystRating
+from src.domain.analyst_consensus import AnalystRating, AnalystRevision, RevisionDirection
 from src.domain.earnings import EarningsProximity
 from src.domain.insider_flow import InsiderBuy, InsiderSignal
 from src.domain.macro_rates import YieldCurveSnapshot, YieldCurveState
@@ -48,6 +48,15 @@ _RATING_LABEL = {
     AnalystRating.HOLD: "Hold",
     AnalystRating.SELL: "Sell",
     AnalystRating.STRONG_SELL: "Strong Sell",
+}
+# DAT-13: kierunek rewizji konsensusu m/m (STABLE nie ma linii).
+_REVISION_VERB = {
+    RevisionDirection.UPGRADE: "podnieśli",
+    RevisionDirection.DOWNGRADE: "obniżyli",
+}
+_REVISION_ICON = {
+    RevisionDirection.UPGRADE: "⬆️",
+    RevisionDirection.DOWNGRADE: "⬇️",
 }
 _PROXIMITY_LABEL = {
     EarningsProximity.IMMINENT: "tuż przed",
@@ -91,6 +100,7 @@ def render_alpha_html(
     if rows:
         parts.append(_render_signals_table_html(rows, prices))
         parts.extend(_render_significant_buys_html(rows))
+        parts.extend(_render_revision_lines_html(rows))
     return "".join(parts)
 
 
@@ -112,6 +122,43 @@ def significant_buy_label(buy: InsiderBuy) -> str:
     i w leadzie maila."""
     role = buy.role or _OFFICER_FALLBACK_ROLE
     return f"{role} kupił akcje za {_usd_amount(buy.value_usd)}"
+
+
+def analyst_revision_label(revision: AnalystRevision) -> str | None:
+    """DAT-13: „analitycy podnieśli rekomendacje m/m (+3 Strong Buy, -5 Hold)” — ten
+    sam tekst w sekcji alfy i w leadzie maila. STABLE → None."""
+    verb = _REVISION_VERB.get(revision.direction)
+    if verb is None:
+        return None
+    changes = ", ".join(
+        f"{number(change, decimals=0, signed=True)} {_RATING_LABEL[rating]}"
+        for rating, change in (
+            (AnalystRating.STRONG_BUY, revision.strong_buy_change),
+            (AnalystRating.BUY, revision.buy_change),
+            (AnalystRating.HOLD, revision.hold_change),
+            (AnalystRating.SELL, revision.sell_change),
+            (AnalystRating.STRONG_SELL, revision.strong_sell_change),
+        )
+        if change
+    )
+    return f"analitycy {verb} rekomendacje m/m ({changes})"
+
+
+def _render_revision_lines_html(rows: list[AlphaSignals]) -> list[str]:
+    """DAT-13: linia na rewizję konsensusu m/m (UPGRADE / DOWNGRADE)."""
+    lines: list[str] = []
+    for sig in rows:
+        if sig.analyst is None:
+            continue
+        revision = sig.analyst.revision()
+        label = analyst_revision_label(revision)
+        if label is not None:
+            icon = _REVISION_ICON[revision.direction]
+            lines.append(
+                "<p style='font-size: 13px; margin: 4px 0;'>"
+                f"{icon} {_html.escape(f'{sig.symbol} — {label}')}</p>"
+            )
+    return lines
 
 
 def _significant_buy_line(symbol: str, buy: InsiderBuy) -> str:

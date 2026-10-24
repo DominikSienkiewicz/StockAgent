@@ -16,6 +16,8 @@ Kolejność priorytetów (malejąco) jest wiążąca i zamrożona testami:
     7. rada się ODWRÓCIŁA (FLIP)   — KUP↔SPRZEDAJ względem poprzedniego cyklu
     8. największy |Δ| z silnym konsensusem
     9. werdykt zamkniętej predykcji
+   10. rewizja konsensusu analityków m/m (DAT-13) — sygnał kontekstowy, okresy
+       miesięczne, więc najniższy tier
 
 PORT-10 (decyzja 2026-10-19): tiery 3–4 istnieją tylko, gdy wołający poda wagę
 pozycji (`LeadSignal.position_weight`). Bez portfela lead działa jak wcześniej.
@@ -64,6 +66,7 @@ _INSIDER_BUY_SCORE = 4000.0
 _FLIP_SCORE = 3000.0
 _STRONG_CONSENSUS_SCORE = 2000.0
 _CLOSED_VERDICT_SCORE = 1000.0
+_ANALYST_REVISION_SCORE = 0.0
 
 # Górny limit wkładu magnitudy do wyniku. Realny |Δ| w % bywa duży (memy!),
 # ale nigdy nie może przeskoczyć progu tieru — inaczej wielki ruch bez sygnału
@@ -113,6 +116,8 @@ class LeadSignal:
       cyklu; do leadu wchodzi tylko FLIP. None = brak porównania.
     - `insider_buy_label` (DAT-21) — gotowy tekst znaczącego zakupu insidera
       („CEO kupił akcje za 1,2 mln USD”) albo None, gdy zakupu ponad próg nie było.
+    - `analyst_revision_label` (DAT-13) — gotowy tekst rewizji konsensusu m/m
+      („analitycy podnieśli rekomendacje m/m (+3 Strong Buy)”) albo None (STABLE).
     """
 
     symbol: str
@@ -125,6 +130,7 @@ class LeadSignal:
     insider_buy_label: str | None = None
     # ALR-06: największy szok z watcha od ostatniego maila (PROCENT); None = brak.
     shock_pct: Percent | None = None
+    analyst_revision_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -306,6 +312,16 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
             symbol=signal.symbol,
         )
         return _Candidate(score=_CLOSED_VERDICT_SCORE + magnitude, item=item)
+
+    # Priorytet 10 — rewizja konsensusu analityków m/m (DAT-13).
+    if signal.analyst_revision_label:
+        item = LeadItem(
+            icon="📋",
+            headline=f"{signal.symbol} {delta_label}: {signal.analyst_revision_label}",
+            detail="Zmiana rozkładu rekomendacji sell-side miesiąc do miesiąca (Finnhub).",
+            symbol=signal.symbol,
+        )
+        return _Candidate(score=_ANALYST_REVISION_SCORE + magnitude, item=item)
 
     return None
 

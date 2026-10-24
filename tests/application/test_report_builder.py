@@ -3864,6 +3864,39 @@ class TestPlainTextSlots:
         assert "KOSZT CYKLU" not in text
         assert "\n\n\n" not in text
 
+class TestAnalystRevisionLead:
+    """DAT-13: rewizja konsensusu z sekcji alfy trafia do leadu tym samym tekstem."""
+
+    @staticmethod
+    def _alpha() -> dict:
+        from src.application.alpha_signals import AlphaSignals
+        from src.domain.analyst_consensus import AnalystConsensus
+
+        previous = AnalystConsensus("NVDA", buy=10, hold=10)
+        latest = AnalystConsensus("NVDA", strong_buy=3, buy=12, hold=5, previous=previous)
+        return {"NVDA": AlphaSignals(symbol="NVDA", analyst=latest)}
+
+    def test_lead_signal_carries_the_alpha_section_label(self):
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+
+        (signal,) = to_lead_signals(results, [], None, alpha_signals=self._alpha())
+
+        assert signal.analyst_revision_label == (
+            "analitycy podnieśli rekomendacje m/m (+3 Strong Buy, +2 Buy, -5 Hold)"
+        )
+
+    def test_cycle_lead_shows_the_revision(self):
+        from src.application.report_builder import build_cycle_lead
+
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+
+        items = build_cycle_lead(results, ReportContext(alpha_signals=self._alpha()))
+
+        assert [item.headline for item in items] == [
+            "NVDA +1,2%: analitycy podnieśli rekomendacje m/m (+3 Strong Buy, +2 Buy, -5 Hold)"
+        ]
+
+
 class TestInsiderBuyLead:
     """DAT-21: znaczący zakup insidera z sekcji alfy trafia do leadu i tematu maila
     tym samym tekstem, z progiem z kapitalizacji spółki."""
