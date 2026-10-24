@@ -42,6 +42,7 @@ from src.application.report_models import (
     TradeSignal,
     ValuationSection,
 )
+from src.application.report_open_entry import OpenEntryCurve
 from src.application.report_predictions import full_detail_symbols
 from src.application.report_regime import RegimeBanner
 from src.application.report_resolved import resolved_window
@@ -495,6 +496,9 @@ class ReportContext:
     cycle_cost: CycleCost | None = None
     # WIA-17/22/23/31/32/36: dowód trafności i Brier pod sekcją Track Record.
     track_record_stats: TrackRecordStats | None = None
+    # WIA-54: krzywa „od otwarcia” obok krzywej od ceny predykcji (te same transakcje).
+    # None = flaga off albo brak cen wykonalnych — sekcja znika.
+    open_entry_curve: OpenEntryCurve | None = None
     # WIA-35: trafność kierunkowa per symbol z okna track recordu — chip przy
     # predykcji i sygnale. None = mail bez chipów.
     symbol_track_record: SymbolTrackRecordView | None = None

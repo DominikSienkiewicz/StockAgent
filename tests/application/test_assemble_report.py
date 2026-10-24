@@ -611,3 +611,25 @@ def test_equity_curve_ignores_the_ledger_without_its_flag() -> None:
     _assemble(repo, flags)
 
     repo.get_paper_trades.assert_not_called()
+
+
+def test_open_entry_curve_with_its_flag() -> None:
+    # WIA-54: odczyt okna z `entry_price` (flaga repozytorium) → druga krzywa w kontekście.
+    repo = _repo()
+    repo.get_resolved_predictions.return_value = [{**_SETTLED, "entry_price": "100.5"}]
+    flags = ReportFlags(
+        track_record_days=30, reflection_min_age_hours=6, open_entry_curve_enabled=True
+    )
+
+    context = _assemble(repo, flags)
+
+    assert context.open_entry_curve is not None
+    assert context.open_entry_curve.with_entry == 1
+
+
+def test_open_entry_curve_off_without_its_flag() -> None:
+    repo = _repo()
+    repo.get_resolved_predictions.return_value = [{**_SETTLED, "entry_price": "100.5"}]
+    flags = ReportFlags(track_record_days=30, reflection_min_age_hours=6)
+
+    assert _assemble(repo, flags).open_entry_curve is None

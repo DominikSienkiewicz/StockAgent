@@ -2282,6 +2282,7 @@ def _report_flags(settings: Settings) -> ReportFlags:
         council_redundancy_enabled=settings.council_redundancy_enabled,
         receipts_enabled=settings.receipts_enabled,
         paper_ledger_curve_enabled=settings.paper_ledger_enabled,
+        open_entry_curve_enabled=settings.executable_entry_enabled,
     )
 
 

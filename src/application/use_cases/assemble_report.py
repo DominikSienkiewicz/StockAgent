@@ -44,6 +44,7 @@ from src.application.report_model_scorecard import (
     snapshot_model_cards,
 )
 from src.application.report_models import ResolvedPrediction
+from src.application.report_open_entry import OpenEntryCurve, build_open_entry_curve
 from src.application.report_signals import parse_resolved_predictions
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
 from src.application.report_track_record import TrackRecordStats
@@ -129,6 +130,8 @@ class ReportFlags:
     isotonic_calibration_enabled: bool = False
     # WIA-59: krzywa kapitału z append-only paper ledgera (migracja 073).
     paper_ledger_curve_enabled: bool = False
+    # WIA-54: krzywa „od otwarcia” z ceny wykonalnej (`entry_price`, migracja 072).
+    open_entry_curve_enabled: bool = False
 
 
 def portfolio_sectors(
@@ -383,6 +386,21 @@ def _ledger_equity_curve(flags: ReportFlags, repository: RepositoryPort) -> Equi
         )
         return None
     return ledger_curve(trades)
+
+
+def build_open_entry(
+    flags: ReportFlags, costs: PaperCosts | None, *, reads: TrackRecordReads
+) -> OpenEntryCurve | None:
+    """WIA-54: krzywa od otwarcia i od ceny predykcji z tych samych rozliczeń okna
+    (ten sam odczyt co Track Record). Błąd odczytu → brak sekcji, cykl leci dalej."""
+    if not flags.open_entry_curve_enabled:
+        return None
+    try:
+        resolved = reads.resolved()
+    except PortError:
+        logger.warning("Resolved predictions unavailable — no open-entry curve", exc_info=True)
+        return None
+    return build_open_entry_curve(resolved, costs)
 
 
 def build_symbol_track_record(
@@ -734,6 +752,7 @@ class ReportAssembler:
             calibration_buckets=calibration_buckets,
             lessons=lessons,
             track_record_stats=track_record_stats,
+            open_entry_curve=build_open_entry(flags, self._costs, reads=reads),
             symbol_track_record=build_symbol_track_record(flags, repository, reads=reads),
             signal_calibration_buckets=signal_calibration_buckets,
             signal_isotonic_calibration=signal_isotonic_calibration,

@@ -68,6 +68,7 @@ MAIL_ORDER = (
     "portfolio_radar",
     "alpha",
     "track_record",
+    "open_entry",
     "accuracy_history",
     "model_scorecard",
     "persona_leaderboard",

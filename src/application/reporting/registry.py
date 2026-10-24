@@ -25,6 +25,7 @@ from src.application.report_lead import LEAD_SECTION, PREHEADER_SECTION
 from src.application.report_model_scorecard import MODEL_SCORECARD_SECTION
 from src.application.report_mood import MOOD_SECTION
 from src.application.report_onboarding import ONBOARDING_SECTION
+from src.application.report_open_entry import OPEN_ENTRY_SECTION
 from src.application.report_persona_leaderboard import PERSONA_LEADERBOARD_SECTION
 from src.application.report_portfolio import PORTFOLIO_RADAR_SECTION
 from src.application.report_predictions import PREDICTIONS_SECTION
@@ -71,6 +72,7 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     PORTFOLIO_RADAR_SECTION,
     ALPHA_SECTION,
     TRACK_RECORD_SECTION,
+    OPEN_ENTRY_SECTION,
     ACCURACY_HISTORY_SECTION,
     MODEL_SCORECARD_SECTION,
     PERSONA_LEADERBOARD_SECTION,

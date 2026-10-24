@@ -313,6 +313,7 @@ def parse_resolved_predictions(
             predicted_at=_to_datetime(row.get("timestamp")),
             receipt=read_decision_receipt(row.get("decision_receipts")),
             correction_category=parse_mistake_category(row.get("correction_category")),
+            entry_price=_to_decimal(row.get("entry_price")),
         ))
     return out
 

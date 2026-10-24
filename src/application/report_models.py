@@ -208,6 +208,17 @@ class ResolvedPrediction:
     # WIA-57: kategoria przyczyny błędu (`correction_category`, migracja 046);
     # None = brak kategorii (wiersz sprzed migracji albo odczyt bez flagi).
     correction_category: MistakeCategory | None = None
+    # WIA-54: cena wykonalna — otwarcie pierwszej sesji po predykcji (`entry_price`,
+    # migracja 072). None = brak (krypto, zaległe rozliczenie, odczyt bez flagi).
+    entry_price: Decimal | None = None
+
+    @property
+    def executable_change(self) -> Ratio | None:
+        """WIA-54: zmiana ceny od ceny wykonalnej do rozliczenia (ułamek) — bez luki
+        na otwarciu, której przed sesją nie da się kupić. None bez ceny wykonalnej."""
+        if self.entry_price is None or self.actual_price is None or self.entry_price <= 0:
+            return None
+        return Ratio((self.actual_price - self.entry_price) / self.entry_price)
 
     @property
     def actual_change_pct(self) -> Ratio | None:

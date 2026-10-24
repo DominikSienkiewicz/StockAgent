@@ -24,7 +24,7 @@ snapshotów `price_snapshots`), z tymi samymi kosztami. Brak danych IVV to jawne
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -116,6 +116,16 @@ def cycle_key(prediction: ResolvedPrediction) -> str:
     return stamp.date().isoformat()
 
 
+def executable_change(prediction: ResolvedPrediction) -> float | None:
+    """WIA-54: zmiana od ceny wykonalnej (otwarcie sesji) jako float; brak albo
+    poza zakresem floata → None, jak `_realized_change`."""
+    change = prediction.executable_change
+    if change is None:
+        return None
+    value = float(change)
+    return value if math.isfinite(value) else None
+
+
 def _realized_change(prediction: ResolvedPrediction) -> float | None:
     """Zmiana ceny jako float; poza zakresem floata (inf) → None (PORT-09):
     krzywe domeny odrzucają NaN/inf, więc taka predykcja wypada sama."""
@@ -171,13 +181,15 @@ def paper_cycles(
     *,
     benchmark_history: Sequence[tuple[datetime, float]] = (),
     settle_after: timedelta | None = None,
+    change_of: Callable[[ResolvedPrediction], float | None] | None = None,
 ) -> list[list[PaperTrade]]:
     """Predykcje z ruchem ceny jako cykle trade'ów, chronologicznie.
 
     Repozytorium oddaje predykcje od najnowszej, a obrót per symbol (WIA-50)
     wymaga kolejności czasu także wewnątrz cyklu. Bez `costs` koszt jest 0.
     Z `benchmark_history` i `settle_after` (WIA-21) każdy trade niesie zmianę
-    benchmarku w swoim oknie.
+    benchmarku w swoim oknie. `change_of` (WIA-54) — zmiana trade'u; domyślnie od
+    ceny z chwili predykcji (`actual_change_pct`).
     """
     costs = costs or PaperCosts()
     keyed = [
@@ -192,7 +204,7 @@ def paper_cycles(
             ),
         )
         for p in sorted(resolved, key=_moment)
-        if (change := _realized_change(p)) is not None
+        if (change := (change_of or _realized_change)(p)) is not None
     ]
     return group_by_cycle(keyed)
 

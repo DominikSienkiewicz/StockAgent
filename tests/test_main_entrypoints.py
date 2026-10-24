@@ -7789,6 +7789,7 @@ class TestExecutableEntryWiring:
 
         assert deps.executable_entry_enabled is enabled
         assert repo_cls.call_args.kwargs["executable_entry_enabled"] is enabled
+        assert main_agent._report_flags(settings).open_entry_curve_enabled is enabled
 
 
 class TestPaperLedgerWiring:
