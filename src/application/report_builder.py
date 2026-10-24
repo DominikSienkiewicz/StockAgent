@@ -28,6 +28,7 @@ from src.application.report_council_history import (
     render_council_history_html,
     render_council_history_text,
 )
+from src.application.report_crypto import CRYPTO_SECTION
 from src.application.report_finops import render_finops_html, render_finops_text
 from src.application.report_formatting import (
     DATA_SOURCES_FOOTER_PL,
@@ -36,7 +37,6 @@ from src.application.report_formatting import (
     PALETTE,
     direction_pct,
     format_local,
-    format_local_date,
 )
 from src.application.report_formatting import (
     company_label as _company_label,
@@ -127,6 +127,12 @@ from src.application.report_signals import (
     market_status,
     parse_resolved_predictions,
 )
+from src.application.report_skipped import (
+    BUDGET_EXHAUSTED_SECTION,
+    ERRORS_SECTION,
+    IGNORED_SECTION,
+    REBASELINED_SECTION,
+)
 from src.application.report_styles import (
     COUNCIL_FILL,
     COUNCIL_ROW_TONE,
@@ -156,7 +162,7 @@ from src.application.reporting.section import SectionInput
 from src.application.run_context import RunContext
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport, PositionRisk
-from src.domain.asset import REFERENCE_MAX_AGE_HOURS, PriceDelta
+from src.domain.asset import PriceDelta
 from src.domain.calibration_curve import CalibrationBucket
 from src.domain.conformal import MoveInterval
 from src.domain.consensus_shift import ConsensusShift
@@ -388,94 +394,6 @@ def _model_signal_reason_text(r: SymbolResult) -> str:
     parts = [p for p in [conf_part, change_part] if p]
     detail = ", ".join(parts)
     return f"{MODEL_SIGNAL_TITLE}: {direction}" + (f" ({detail})" if detail else "")
-
-
-def _is_crypto(r: SymbolResult) -> bool:
-    return r.asset_class == "CRYPTO"
-
-
-def _crypto_skip_label(r: SymbolResult, display_timezone: str, *, short: bool) -> str:
-    """Status pominiętego krypto: „poniżej progu…”, (FIN-14) nowy punkt odniesienia
-    albo (FIN-12) odcięcie budżetem płatnych wywołań cyklu."""
-    if _is_rebaselined(r) and r.reference_at is not None:
-        return _rebaseline_label(format_local_date(r.reference_at, display_timezone))
-    if _is_budget_cut(r):
-        return _BUDGET_CUT_SHORT if short else _BUDGET_CUT_LABEL
-    return "poniżej progu" if short else "poniżej progu zmienności"
-
-
-def _render_crypto_section_html(
-    results: list[SymbolResult], display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
-) -> str:
-    """Dedykowana sekcja 🪙 Krypto — widoczna NIEZALEŻNIE od bramki volatility.
-
-    Krypto ma osobny próg (5%) i 24/7 rynek, więc często ląduje jako 'ignored'
-    i ginęło w chipach 'Pominięte'. Tu pokazujemy każdy ticker krypto z ceną,
-    Δ i statusem (prognoza dla 'saved', 'poniżej progu' dla 'ignored')."""
-    cryptos = [r for r in results if _is_crypto(r) and r.status != "error"]
-    if not cryptos:
-        return ""
-    rows = []
-    for r in cryptos:
-        if r.status == "saved":
-            trend_part = (
-                f"<span style='color: {_trend_color(r.trend)}; font-weight: 600;'>"
-                f"{_html(_trend_label(r.trend))}</span>"
-            )
-            forecast_part = (
-                f" · prognoza <span style='color: {_delta_color(r.expected_change)};'>"
-                f"{direction_pct(r.expected_change)}</span>"
-                if r.expected_change is not None and not r.ml_cold_start
-                else ""
-            )
-            conf_part = (
-                f" · pewność {_pct(r.confidence_score, decimals=0)}"
-                if r.confidence_score is not None
-                else ""
-            )
-            status_html = f"{trend_part}{forecast_part}{conf_part}"
-        else:
-            status_html = (
-                "<span style='color: #6b7280;'>"
-                f"{_html(_crypto_skip_label(r, display_timezone, short=False))}</span>"
-            )
-        rows.append(f"""
-          <div style="margin-bottom: 6px; padding: 8px 12px; background: #fdf4ff;
-                      border-left: 3px solid #a855f7; border-radius: 4px; font-size: 13px;">
-            <strong>{_html(_company_label(r.symbol))}</strong>
-            <span style="color: #4b5563;">· {_money(r.current_price)}
-              · Δ <span style="color: {_delta_color(r.delta)};">{direction_pct(r.delta)}</span>
-              · {status_html}</span>
-          </div>
-        """)
-    return (
-        _section_h2("🪙 Krypto")
-        + "".join(rows)
-    )
-
-
-def _render_crypto_section_text(
-    results: list[SymbolResult], display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
-) -> str:
-    cryptos = [r for r in results if _is_crypto(r) and r.status != "error"]
-    if not cryptos:
-        return ""
-    lines = ["KRYPTO", "-" * 64]
-    for r in cryptos:
-        if r.status == "saved":
-            status = (
-                f"{_trend_label(r.trend)} "
-                f"prognoza {_pct(r.expected_change, signed=True)}"
-                if r.expected_change is not None and not r.ml_cold_start
-                else _trend_label(r.trend)
-            )
-        else:
-            status = _crypto_skip_label(r, display_timezone, short=True)
-        lines.append(
-            f"  {_company_label(r.symbol):40s} {_money(r.current_price):>12s}  "
-            f"Δ {_pct(r.delta, signed=True):>8s}  {status}"
-        )
-    return "\n".join(lines)
 
 
 def _render_council_section(verdict: CouncilVerdict) -> str:
@@ -1588,138 +1506,6 @@ def _render_reflections_html(saved: list[SymbolResult]) -> str:
     return "".join(parts)
 
 
-def _is_rebaselined(r: SymbolResult) -> bool:
-    """FIN-14: referencja sprzed pauzy — cykl zapisał nowy punkt odniesienia.
-    Bez daty referencji nie ma czego napisać, więc symbol zostaje w „Pominięte”."""
-    return r.skip_reason is SkipReason.STALE_REFERENCE and r.reference_at is not None
-
-
-_REBASELINE_NOTE = (
-    "Ostatnia zapisana cena była starsza niż {hours} h (pauza), więc ruch od niej "
-    "nie jest ruchem cyklu. Ten cykl zapisał nową cenę bez analizy — prognozy "
-    "wracają od następnego cyklu."
-)
-
-
-def _rebaseline_lines(ignored: list[SymbolResult], display_timezone: str) -> list[str]:
-    """„AAPL, MSFT: referencja sprzed 19.09.2026 — nowy punkt odniesienia”,
-    jedna linia na dzień referencji (rosnąco), symbole w kolejności cyklu."""
-    by_day: dict[str, list[str]] = {}
-    oldest: dict[str, datetime] = {}
-    for r in ignored:
-        if not _is_rebaselined(r) or r.reference_at is None:
-            continue
-        day = format_local_date(r.reference_at, display_timezone)
-        by_day.setdefault(day, []).append(r.symbol)
-        oldest[day] = min(oldest.get(day, r.reference_at), r.reference_at)
-    return [
-        f"{', '.join(by_day[day])}: {_rebaseline_label(day)}"
-        for day in sorted(by_day, key=lambda d: oldest[d])
-    ]
-
-
-def _rebaseline_label(day: str) -> str:
-    return f"referencja sprzed {day} — nowy punkt odniesienia"
-
-
-def _render_rebaselined_html(ignored: list[SymbolResult], display_timezone: str) -> str:
-    """🔄 FIN-14: symbole z referencją sprzed pauzy. Pusty string, gdy brak."""
-    lines = _rebaseline_lines(ignored, display_timezone)
-    if not lines:
-        return ""
-    rows = "".join(
-        f"<div style='font-size: 13px; margin: 2px 0;'>{_html(line)}</div>" for line in lines
-    )
-    return (
-        _section_h2("🔄 Nowy punkt odniesienia")
-        + "<div style='font-size: 12px; color: #6b7280; margin: 0 0 6px 0;'>"
-        + _html(_REBASELINE_NOTE.format(hours=REFERENCE_MAX_AGE_HOURS))
-        + f"</div>{rows}"
-    )
-
-
-def _render_rebaselined_text(ignored: list[SymbolResult], display_timezone: str) -> list[str]:
-    """Sekcja 'Nowy punkt odniesienia' (plain). Pusta lista, gdy brak."""
-    lines = _rebaseline_lines(ignored, display_timezone)
-    if not lines:
-        return []
-    return [
-        "NOWY PUNKT ODNIESIENIA",
-        "-" * 64,
-        *(f"  {line}" for line in lines),
-        f"  {_REBASELINE_NOTE.format(hours=REFERENCE_MAX_AGE_HOURS)}",
-        "",
-    ]
-
-
-def _is_budget_cut(r: SymbolResult) -> bool:
-    """FIN-12: ruch przeszedł bramkę, ale cykl wyczerpał sufit płatnych wywołań LLM."""
-    return r.skip_reason is SkipReason.BUDGET_EXHAUSTED
-
-
-_BUDGET_CUT_TITLE = "Pominięte — wyczerpany budżet cyklu"
-_BUDGET_CUT_LABEL = "pominięte — wyczerpany budżet płatnych wywołań cyklu"
-_BUDGET_CUT_SHORT = "budżet cyklu wyczerpany"
-_BUDGET_CUT_NOTE = (
-    "Ruch przekroczył próg zmienności, ale cykl wyczerpał limit płatnych wywołań "
-    "LLM, więc te symbole nie dostały analizy. Cena odniesienia zostaje bez zmian — "
-    "następny cykl porówna się do niej."
-)
-
-
-def _render_budget_exhausted_html(ignored: list[SymbolResult]) -> str:
-    """💸 FIN-12: symbole odcięte budżetem cyklu, z ruchem. Pusty string, gdy brak."""
-    cut = [r for r in ignored if _is_budget_cut(r)]
-    if not cut:
-        return ""
-    rows = "".join(
-        f"<span style='display: inline-block; padding: 2px 8px; margin: 2px; background: #fef3c7; border-radius: 3px; font-size: 12px;'>"
-        f"<strong>{_html(r.symbol)}</strong> <span style='color: {_delta_color(r.delta)}'>{direction_pct(r.delta)}</span></span>"
-        for r in cut
-    )
-    return (
-        _section_h2(f"💸 {_BUDGET_CUT_TITLE}")
-        + "<div style='font-size: 12px; color: #6b7280; margin: 0 0 6px 0;'>"
-        + _html(_BUDGET_CUT_NOTE)
-        + f"</div><div>{rows}</div>"
-    )
-
-
-def _render_ignored_html(ignored: list[SymbolResult]) -> str:
-    """⏸ Symbole pominięte poniżej progu zmienności. Pusty string, gdy brak.
-    FIN-14: symbole z nowym punktem odniesienia mają własną sekcję; FIN-12: symbole
-    odcięte budżetem cyklu też."""
-    ignored = [r for r in ignored if not _is_rebaselined(r) and not _is_budget_cut(r)]
-    if not ignored:
-        return ""
-    rows = "".join(
-        f"<span style='display: inline-block; padding: 2px 8px; margin: 2px; background: #f3f4f6; border-radius: 3px; font-size: 12px;'>"
-        f"<strong>{_html(r.symbol)}</strong> <span style='color: {_delta_color(r.delta)}'>{direction_pct(r.delta)}</span></span>"
-        for r in ignored
-    )
-    return (
-        _section_h2("⏸ Pominięte (poniżej progu zmienności)")
-        + f"<div>{rows}</div>"
-    )
-
-
-def _render_errors_html(errors: list[SymbolResult]) -> str:
-    """⚠️ Symbole, które padły w cyklu. Pusty string, gdy brak błędów."""
-    if not errors:
-        return ""
-    parts = [
-        "<h2 style='font-size: 16px; margin: 20px 0 8px 0; color: #991b1b;'>"
-        "⚠️ Błędy</h2>"
-    ]
-    for r in errors:
-        parts.append(f"""
-              <div style="margin-bottom: 8px; padding: 10px; background: #fef2f2; border-left: 3px solid #dc2626; border-radius: 4px; font-size: 12px;">
-                <strong>{_html(_company_label(r.symbol))}</strong>: {_html(r.error_message)}
-              </div>
-            """)
-    return "".join(parts)
-
-
 def _render_prediction_row_html(r: SymbolResult) -> str:
     """Pojedynczy wiersz tabeli predykcji (saved)."""
     sentiment_text = (
@@ -2068,7 +1854,7 @@ def _render_html(
     # Zmiany od wczoraj: rozliczenia, zmiany nastawienia, nowy punkt odniesienia.
     sections.append(RESOLVED_PREDICTIONS_SECTION.render_html(data))
     sections.append(CONSENSUS_SHIFT_SECTION.render_html(data))
-    sections.append(_render_rebaselined_html(ignored, display_timezone))
+    sections.append(REBASELINED_SECTION.render_html(data))
     sections.append(_render_trade_signals_html(trade_signals, symbol_chips))
     sections.append(_render_risk_signals_html(risk_signals))
     sections.append(
@@ -2081,7 +1867,7 @@ def _render_html(
         )
     )
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
-    sections.append(_render_crypto_section_html(results, display_timezone))
+    sections.append(CRYPTO_SECTION.render_html(data))
 
     # MAIL-17: „Zaplecze” — kontekst i kontrola za separatorem. Przy przycięciu
     # przez Gmaila znika ta część, nie akcyjna.
@@ -2116,9 +1902,9 @@ def _render_html(
         )
         sections.append(correlation_chart)
     sections.append(_FINOPS_SLOT)
-    sections.append(_render_budget_exhausted_html(ignored))
-    sections.append(_render_ignored_html(ignored))
-    sections.append(_render_errors_html(errors))
+    sections.append(BUDGET_EXHAUSTED_SECTION.render_html(data))
+    sections.append(IGNORED_SECTION.render_html(data))
+    sections.append(ERRORS_SECTION.render_html(data))
 
     # MAIL-08: zastrzeżenie w stałej stopce, nie w sekcji warunkowej — sekcja,
     # która się chowa, zabrałaby je ze sobą.
@@ -2314,35 +2100,6 @@ def _render_saved_section_text(
     return lines
 
 
-def _render_budget_exhausted_text(ignored: list[SymbolResult]) -> list[str]:
-    """Sekcja FIN-12 'Pominięte — wyczerpany budżet cyklu' (plain). Pusta lista, gdy brak."""
-    cut = [r for r in ignored if _is_budget_cut(r)]
-    if not cut:
-        return []
-    cut_str = ", ".join(f"{r.symbol}({_pct(r.delta)})" for r in cut)
-    return [_BUDGET_CUT_TITLE.upper(), "-" * 64, f"  {cut_str}", f"  {_BUDGET_CUT_NOTE}", ""]
-
-
-def _render_ignored_text(ignored: list[SymbolResult]) -> list[str]:
-    """Sekcja 'Pominięte' (plain). Pusta lista, gdy brak. FIN-14: bez symboli
-    z nowym punktem odniesienia (mają własną sekcję); FIN-12: bez odciętych budżetem."""
-    ignored = [r for r in ignored if not _is_rebaselined(r) and not _is_budget_cut(r)]
-    if not ignored:
-        return []
-    ignored_str = ", ".join(f"{r.symbol}({_pct(r.delta)})" for r in ignored)
-    return ["POMINIĘTE (poniżej progu zmienności)", "-" * 64, f"  {ignored_str}", ""]
-
-
-def _render_errors_text(errors: list[SymbolResult]) -> list[str]:
-    """Sekcja 'Błędy' (plain). Pusta lista, gdy brak błędów."""
-    if not errors:
-        return []
-    lines = ["BŁĘDY", "-" * 64]
-    lines.extend(f"  {_company_label(r.symbol)}: {r.error_message}" for r in errors)
-    lines.append("")
-    return lines
-
-
 def _render_plain(
     data: SectionInput,
     results: list[SymbolResult],
@@ -2372,15 +2129,12 @@ def _render_plain(
     lines.extend(RESOLVED_PREDICTIONS_SECTION.render_text(data))
     # MAIL-09: zmiany nastawienia rady — jak w HTML, za rozliczeniami.
     lines.extend(CONSENSUS_SHIFT_SECTION.render_text(data))
-    lines.extend(_render_rebaselined_text(ignored, display_timezone))
+    lines.extend(REBASELINED_SECTION.render_text(data))
     lines.extend(_render_trade_signals_text(trade_signals, symbol_chips))
     lines.extend(_render_risk_signals_text(risk_signals))
     lines.extend(_render_saved_section_text(saved, sector_map, forecast_horizon, symbol_chips))
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
-    crypto_text = _render_crypto_section_text(results, display_timezone)
-    if crypto_text:
-        lines.append(crypto_text)
-        lines.append("")
+    lines.extend(CRYPTO_SECTION.render_text(data))
 
     # MAIL-17: „Zaplecze” — kontekst i kontrola za separatorem.
     lines.extend(["=" * 64, "ZAPLECZE", _BACKOFFICE_NOTE, "=" * 64, ""])
@@ -2396,9 +2150,9 @@ def _render_plain(
     lines.extend(_render_reflections_text(saved))
     lines.append(_SUGGESTIONS_SLOT)
     lines.append(_FINOPS_SLOT)
-    lines.extend(_render_budget_exhausted_text(ignored))
-    lines.extend(_render_ignored_text(ignored))
-    lines.extend(_render_errors_text(errors))
+    lines.extend(BUDGET_EXHAUSTED_SECTION.render_text(data))
+    lines.extend(IGNORED_SECTION.render_text(data))
+    lines.extend(ERRORS_SECTION.render_text(data))
 
     # MAIL-08: zastrzeżenie zamyka treść; stopka techniczna (MAIL-16) i stopka
     # przebiegu (MAIL-42) idą za nim.

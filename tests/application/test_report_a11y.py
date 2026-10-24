@@ -9,7 +9,7 @@ from decimal import Decimal
 
 import pytest
 
-from src.application import report_builder
+from src.application import report_skipped
 from src.application.report_builder import (
     ReportContext,
     ResolvedPrediction,
@@ -91,7 +91,7 @@ def test_direction_not_conveyed_by_color_only() -> None:
     up = SymbolResult(symbol="AAPL", status="ignored", delta=Decimal("0.0042"))
     down = SymbolResult(symbol="MSFT", status="ignored", delta=Decimal("-0.0042"))
 
-    html = report_builder._render_ignored_html([up, down])
+    html = report_skipped._render_ignored_html([up, down])
 
     assert "▲ +0,42%" in html
     assert "▼ -0,42%" in html

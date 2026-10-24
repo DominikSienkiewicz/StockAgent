@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from src.application.report_accuracy_history import ACCURACY_HISTORY_SECTION
 from src.application.report_consensus_shift import CONSENSUS_SHIFT_SECTION
+from src.application.report_crypto import CRYPTO_SECTION
 from src.application.report_header import (
     FIRST_SCREEN_SECTION,
     MASTHEAD_SECTION,
@@ -17,6 +18,12 @@ from src.application.report_lead import LEAD_SECTION, PREHEADER_SECTION
 from src.application.report_onboarding import ONBOARDING_SECTION
 from src.application.report_quota_banner import QUOTA_BANNER_SECTION
 from src.application.report_resolved import RESOLVED_PREDICTIONS_SECTION
+from src.application.report_skipped import (
+    BUDGET_EXHAUSTED_SECTION,
+    ERRORS_SECTION,
+    IGNORED_SECTION,
+    REBASELINED_SECTION,
+)
 from src.application.report_user_portfolio import USER_PORTFOLIO_SECTION
 from src.application.reporting.section import ReportSection
 
@@ -31,5 +38,10 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     USER_PORTFOLIO_SECTION,
     RESOLVED_PREDICTIONS_SECTION,
     CONSENSUS_SHIFT_SECTION,
+    REBASELINED_SECTION,
+    CRYPTO_SECTION,
     ACCURACY_HISTORY_SECTION,
+    BUDGET_EXHAUSTED_SECTION,
+    IGNORED_SECTION,
+    ERRORS_SECTION,
 )

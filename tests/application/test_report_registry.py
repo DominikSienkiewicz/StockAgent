@@ -21,7 +21,12 @@ MAIL_ORDER = (
     "user_portfolio",
     "resolved_predictions",
     "consensus_shift",
+    "rebaselined",
+    "crypto",
     "accuracy_history",
+    "budget_exhausted",
+    "ignored",
+    "errors",
 )
 
 
