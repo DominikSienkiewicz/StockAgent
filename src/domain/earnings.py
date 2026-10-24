@@ -7,6 +7,7 @@ albo podbić niepewność prognozy."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -15,6 +16,8 @@ from enum import Enum
 # o 03:00 UTC, Fast Loop biegnie pon–pt: 6 dni pokrywa cały tydzień cykli, a wpis
 # z poprzedniej niedzieli jest już stary, więc kolejne odświeżenie pyta AV od nowa.
 EARNINGS_CACHE_TTL_HOURS = 144
+# `date.weekday()` niedzieli — koniec tygodnia sekcji „📅 Ten tydzień” (DAT-20).
+_SUNDAY = 6
 
 
 class EarningsProximity(Enum):
@@ -25,16 +28,27 @@ class EarningsProximity(Enum):
     FAR = "FAR"             # daleko albo brak danych
 
 
+class EarningsTiming(Enum):
+    """DAT-20: pora publikacji wyników względem sesji (pole `hour` Finnhuba)."""
+
+    BEFORE_OPEN = "bmo"
+    AFTER_CLOSE = "amc"
+    DURING_MARKET = "dmh"
+
+
 @dataclass(frozen=True)
 class EarningsEvent:
     """Najbliższe znane zdarzenie wyników dla symbolu.
 
     `days_until` to liczba dni do raportu (None = brak danych / brak nadchodzącego
-    raportu). `report_date` to surowa data ISO (do prezentacji)."""
+    raportu). `report_date` to surowa data ISO (do prezentacji). DAT-20: `timing`
+    (przed / po sesji) i `eps_estimate` niesie kalendarz Finnhub; None = nieznane."""
 
     symbol: str
     days_until: int | None
     report_date: str | None = None
+    timing: EarningsTiming | None = None
+    eps_estimate: float | None = None
 
     def proximity(
         self, imminent_days: int = 2, near_days: int = 7
@@ -91,3 +105,19 @@ def earnings_threshold_multiplier(proximity: EarningsProximity) -> float:
     `float` dla spójności z `regime_multiplier` (iloczyn w `_pick_threshold`).
     """
     return _THRESHOLD_MULTIPLIER[proximity]
+
+
+def earnings_this_week(
+    events: Iterable[EarningsEvent | None], today: date
+) -> tuple[EarningsEvent, ...]:
+    """DAT-20: raporty od `today` do niedzieli jego tygodnia, wg dnia i symbolu.
+    Zdarzenie bez daty, raport miniony i brak zdarzenia (None) odpadają."""
+    days_left = _SUNDAY - today.weekday()
+    week = [
+        event
+        for event in events
+        if event is not None
+        and event.days_until is not None
+        and 0 <= event.days_until <= days_left
+    ]
+    return tuple(sorted(week, key=lambda event: (event.days_until or 0, event.symbol)))
