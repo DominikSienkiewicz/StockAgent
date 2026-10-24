@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import logging
 import re
 import time
@@ -234,9 +235,14 @@ _UNAVAILABLE_CODES = frozenset(
 )
 
 
-def _port_error_kind(exc: APIError) -> type[PortError]:
-    """Klasa taksonomii dla błędu PostgREST: brak bazy → niedostępny dostawca,
-    brak obiektu schematu albo kolumny → NotFound, reszta → ogólny błąd portu."""
+def _port_error_kind(exc: APIError | httpx.HTTPError) -> type[PortError]:
+    """Klasa taksonomii dla błędu PostgREST: brak bazy (kod albo zerwany transport
+    httpx — połączenie, timeout) → niedostępny dostawca, brak obiektu schematu albo
+    kolumny → NotFound, reszta → ogólny błąd portu."""
+    if isinstance(exc, httpx.TransportError):
+        return ProviderUnavailable
+    if isinstance(exc, httpx.HTTPError):
+        return PortError
     if exc.code in _UNAVAILABLE_CODES:
         return ProviderUnavailable
     if exc.code in _MISSING_SCHEMA_CODES or exc.code in _MISSING_COLUMN_CODES:
@@ -245,18 +251,27 @@ def _port_error_kind(exc: APIError) -> type[PortError]:
 
 
 def _translates_api_errors[**P, R](method: Callable[P, R]) -> Callable[P, R]:
-    """ARCH-33: `APIError` uciekający z metody wychodzi przetłumaczony na taksonomię
-    portów (wciąż `APIError` z kodem). Przyrostowo — metoda po metodzie, zaczynając
-    od zapisów i odczytów Fast Loopa bez własnej ścieżki degradacji."""
+    """ARCH-33: `APIError` i błąd transportu httpx uciekające z metody wychodzą
+    przetłumaczone na taksonomię portów (wciąż `APIError` z kodem / typ httpx)."""
 
     @functools.wraps(method)
     def translating(*args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return method(*args, **kwargs)
-        except APIError as exc:
+        except (APIError, httpx.HTTPError) as exc:
             raise as_port_error(exc, _port_error_kind(exc)) from None
 
     return translating
+
+
+def _translates_public_methods[C: type](cls: C) -> C:
+    """ARCH-33: każda publiczna metoda klasy tłumaczy błędy dostawcy — także metoda
+    dopisana później, bez pamiętania o dekoratorze. Metody z własną ścieżką
+    degradacji działają jak dotąd (łapią wyjątek, zanim dojdzie do tłumaczenia)."""
+    for name, member in list(vars(cls).items()):
+        if inspect.isfunction(member) and not name.startswith("_"):
+            setattr(cls, name, _translates_api_errors(member))
+    return cls
 
 
 class MissingColumnError(RuntimeError):
@@ -640,6 +655,7 @@ def _failed_personas_of(raw: Any) -> int:
         return 0
 
 
+@_translates_public_methods
 class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
     """Adapter dla Supabase (PostgreSQL via PostgREST).
 
@@ -748,7 +764,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             return None
         return Money(Decimal(str(rows[0]["price"])))
 
-    @_translates_api_errors
     def get_price_history(
         self, symbol: str, days: int
     ) -> list[tuple[datetime, Money]]:
@@ -773,7 +788,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             )
         return out
 
-    @_translates_api_errors
     def get_last_prediction_price(
         self, symbol: str, *, before: datetime | None = None
     ) -> Money | None:
@@ -794,7 +808,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             return None
         return Money(Decimal(str(rows[0]["price_at_prediction"])))
 
-    @_translates_api_errors
     def get_latest_prediction(self, symbol: str) -> LatestPrediction | None:
         # SUROWO, bez try/except — watch i bramka dryfu degradują same.
         response = (
@@ -1275,7 +1288,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
     # Writes
     # -----------------------------------------------------------------------
 
-    @_translates_api_errors
     def save_price_snapshot(self, symbol: str, price: Money) -> None:
         # Upsert na (symbol, timestamp_hour) (#7) — re-run GHA / nakładający się
         # workflow_dispatch / retry LangGraph aktualizuje istniejący wiersz w tej
@@ -1345,7 +1357,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             }
         ).execute()
 
-    @_translates_api_errors
     def save_prediction(self, prediction: dict[str, Any]) -> str:
         # Upsert na (symbol, timestamp_hour) (#7) — idempotentny zapis predykcji.
         # Domyślny merge upsertu zwraca wiersz, więc nadal mamy z czego odczytać
@@ -1431,7 +1442,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             return []
         return _rows(response)
 
-    @_translates_api_errors
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
         # NIEZ-15: paginacja + `id` jako drugi klucz — przy równych timestampach
         # granica strony musi być deterministyczna (bez gubienia/dublowania wierszy).
@@ -1894,7 +1904,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
                 latest[key] = stamp
         return latest
 
-    @_translates_api_errors
     def get_shock_alerts_since(self, since: datetime) -> list[StoredShockAlert]:
         # SUROWO (ARCH-33): błąd bazy leci do ReportAssemblera, który chowa sekcję.
         response = (
@@ -1920,7 +1929,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             )
         return alerts
 
-    @_translates_api_errors
     def get_last_report_at(self, before: datetime) -> datetime | None:
         response = (
             self._client.table("cycle_runs")
@@ -2016,7 +2024,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             timestamp=datetime.fromisoformat(stamp),
         )
 
-    @_translates_api_errors
     def save_model_scorecard(
         self, symbol: str, result: Mapping[str, Any], *, run_id: str | None = None
     ) -> None:
@@ -2137,7 +2144,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             samples.append(CouncilVoteSample(str(prediction_id), name, rec))
         return samples
 
-    @_translates_api_errors
     def get_council_votes_for_prediction(
         self, prediction_id: str
     ) -> list[InvestorOpinion]:
@@ -2256,7 +2262,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         }
         self._client.table(CYCLE_RUNS_TABLE).insert(row).execute()
 
-    @_translates_api_errors
     def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
         # Paginacja (#8) i `id` jako drugi klucz, jak w pozostałych odczytach historii.
         query = (
@@ -2342,7 +2347,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             "id", record_id
         ).execute()
 
-    @_translates_api_errors
     def save_corporate_action(self, action: SplitSuspicion) -> None:
         record = _serialize_record(
             {

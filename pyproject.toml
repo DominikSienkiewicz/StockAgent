@@ -15,6 +15,7 @@ dependencies = [
     # Data & DB
     "supabase>=2.30",            # supabase-py wydaje pakiety w lockstepie z postgrest
     "postgrest>=2.30",           # importowany wprost (APIError) w supabase_repo.py
+    "httpx>=0.26",               # transport PostgREST; importowany wprost (ARCH-33) w supabase_repo.py
     "pydantic>=2.11.7",          # niżej lowest-direct nie schodzi (wymogi zależności przechodnich)
     "pydantic-settings>=2.2.0",
     # ML (Slow Loop)

@@ -5108,6 +5108,44 @@ class TestPortErrorTaxonomy:
         with pytest.raises(ProviderUnavailable):
             repo.get_last_prediction_price("AAPL")
 
+    def test_transport_error_is_provider_unavailable(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        mock_client.table.return_value.insert.return_value.execute.side_effect = (
+            httpx.ConnectError("connection reset")
+        )
+
+        with pytest.raises(ProviderUnavailable) as excinfo:
+            repo.save_quota_alert(_quota_alert())
+
+        assert isinstance(excinfo.value, httpx.ConnectError)
+
+    def test_other_httpx_error_is_a_port_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.application.errors import PortError, ProviderUnavailable
+
+        mock_client.table.return_value.insert.return_value.execute.side_effect = (
+            httpx.DecodingError("bad gzip")
+        )
+
+        with pytest.raises(PortError) as excinfo:
+            repo.save_quota_alert(_quota_alert())
+
+        assert not isinstance(excinfo.value, ProviderUnavailable)
+
+    def test_every_public_method_translates_provider_errors(self) -> None:
+        # Nowa metoda repozytorium dostaje tłumaczenie bez pamiętania o dekoratorze.
+        untranslated = sorted(
+            name
+            for name, member in vars(SupabaseRepository).items()
+            if callable(member) and not name.startswith("_") and not hasattr(member, "__wrapped__")
+        )
+
+        assert untranslated == []
+
 
 class TestTrainingDataReads:
     """ML-52: Slow Loop czyta zapisane wektory cech (`feature_snapshots`, 031) i szereg
@@ -5315,3 +5353,15 @@ def test_calibration_read_failure_crosses_the_port_as_a_port_error(
 
     with pytest.raises(PortError):
         repo.get_resolved_for_calibration(60)
+
+
+def _quota_alert() -> Any:
+    from src.domain.quota import QuotaAlert, QuotaSeverity
+
+    return QuotaAlert(
+        source="Finnhub",
+        severity=QuotaSeverity.WARNING,
+        message="limit",
+        action="czekaj",
+        occurred_at=datetime(2026, 10, 25, tzinfo=UTC),
+    )
