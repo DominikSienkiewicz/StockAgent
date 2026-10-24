@@ -1,26 +1,86 @@
 """Odczyty okna track recordu wspólne dla maila i publicznego scorecardu.
 
 Porównanie z koszykiem i IVV (WIA-21) oraz pokrycie danych (DAT-16) liczą te
-same darmowe odczyty repozytorium dla sekcji Track Record w mailu
-(`use_cases/assemble_report.py`) i dla publicznego scorecardu
-(`use_cases/publish_public_scorecard.py`). Oba odczyty są best-effort: błąd
-zostawia jawny brak danych, nigdy nie wywraca cyklu.
+same darmowe odczyty repozytorium dla sekcji Track Record w mailu i dla
+publicznego scorecardu (`use_cases/publish_public_scorecard.py`). Oba odczyty
+są best-effort: błąd zostawia jawny brak danych, nigdy nie wywraca cyklu.
+
+ARCH-16: `TrackRecordReads` czyta rozliczenia i próbki kalibracji okna RAZ na
+dispatch; każda sekcja dostaje ten sam wynik (albo ten sam błąd odczytu).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from src.application.data_coverage import build_data_coverage
 from src.application.ports import RepositoryPort
 from src.application.report_evidence import BENCHMARK_SYMBOL, PaperCosts, benchmark_comparison
 from src.application.report_models import ResolvedPrediction
+from src.application.report_signals import parse_resolved_predictions
+from src.application.signal_calibration import CalibrationSamples, split_calibration_samples
 from src.domain.benchmark import BenchmarkComparison
 from src.domain.coverage import CoverageReport
 
 logger = logging.getLogger(__name__)
+
+class _Once[T]:
+    """Wynik albo wyjątek jednego wywołania `load`, oddawany przy każdym `get`.
+
+    Zapamiętany wyjątek leci do każdego wołającego, więc każda sekcja łapie go
+    w swoim `try` i loguje jak przy własnym odczycie — zmienia się tylko liczba
+    zapytań do bazy."""
+
+    def __init__(self, load: Callable[[], T]) -> None:
+        self._load = load
+        self._result: tuple[T] | None = None
+        self._error: Exception | None = None
+
+    def get(self) -> T:
+        if self._error is not None:
+            raise self._error
+        if self._result is None:
+            try:
+                self._result = (self._load(),)
+            except Exception as exc:
+                self._error = exc
+                raise
+        return self._result[0]
+
+
+class TrackRecordReads:
+    """ARCH-16: rozliczenia i próbki kalibracji okna `window_days`, czytane
+    leniwie i najwyżej raz na dispatch.
+
+    Odczyt pada przy pierwszym wołającym, który go potrzebuje — sekcja za
+    wyłączoną flagą nie płaci za zapytanie. Wiersze rozliczeń (`resolved_rows`)
+    bierze też pokrycie danych (DAT-16), sparsowane (`resolved`) — Track Record,
+    chipy per symbol i scorecard; próbki (`calibration`) — krzywa, Brier i ranking.
+    """
+
+    def __init__(self, repository: RepositoryPort, window_days: int) -> None:
+        self.window_days = window_days
+        self._rows = _Once(lambda: repository.get_resolved_predictions(window_days))
+        self._resolved = _Once(lambda: parse_resolved_predictions(self._rows.get()))
+        self._calibration = _Once(
+            lambda: split_calibration_samples(repository.get_resolved_for_calibration(window_days))
+        )
+
+    def resolved_rows(self) -> list[dict[str, Any]]:
+        """Surowe wiersze rozliczeń okna; błąd odczytu leci do wołającego.
+        Każdy wołający dostaje własną listę, jak przy osobnym odczycie."""
+        return list(self._rows.get())
+
+    def resolved(self) -> list[ResolvedPrediction]:
+        """Zamknięte predykcje okna (`parse_resolved_predictions`), własna lista."""
+        return list(self._resolved.get())
+
+    def calibration(self) -> CalibrationSamples:
+        """Próbki kalibracji okna — kierunkowe po cyklach i SIDEWAYS (WIA-39)."""
+        return self._calibration.get()
 
 
 def window_benchmark(
@@ -64,9 +124,11 @@ def window_coverage(
     symbols: Sequence[str],
     crypto_symbols: Sequence[str],
     days: int,
+    settled_rows: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
 ) -> CoverageReport | None:
     """DAT-16 — pokrycie danych okna track recordu z darmowych odczytów
-    (snapshoty cen, rozliczenia). Błąd → None: zdanie się chowa, cykl leci dalej."""
+    (snapshoty cen, rozliczenia). Błąd → None: zdanie się chowa, cykl leci dalej.
+    `settled_rows` (ARCH-16) to rozliczenia okna już przeczytane w tym dispatchu."""
     try:
         return build_data_coverage(
             repository,
@@ -74,6 +136,7 @@ def window_coverage(
             crypto_symbols=crypto_symbols,
             days=days,
             now=datetime.now(UTC),
+            settled_rows=settled_rows,
         )
     except Exception:
         logger.exception("Data coverage failed — scorecards without the coverage line")

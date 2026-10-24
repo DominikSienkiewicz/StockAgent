@@ -98,12 +98,12 @@ from src.application.report_regime import RegimeBanner
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
-from src.application.signal_calibration import (
-    directional_calibration_curve,
-    split_calibration_samples,
-)
 from src.application.tools import build_research_tools
-from src.application.track_record_window import window_benchmark, window_coverage
+from src.application.track_record_window import (
+    TrackRecordReads,
+    window_benchmark,
+    window_coverage,
+)
 from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidPhase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
@@ -839,13 +839,16 @@ def _publish_public_scorecard(
     repository: RepositoryPort,
     publisher: WebPublisherPort,
     costs: PaperCosts | None = None,
+    *,
+    reads: TrackRecordReads | None = None,
 ) -> None:
     """#10 — publikacja strony w cyklu Fast Loopa za `public_scorecard_enabled`
-    (`PublishPublicScorecardUseCase`, best-effort)."""
+    (`PublishPublicScorecardUseCase`, best-effort). `reads` (ARCH-16) — odczyty
+    okna z tego dispatchu; None = use case czyta sam."""
     if not settings.public_scorecard_enabled:
         return
     PublishPublicScorecardUseCase(
-        repository, publisher, _public_scorecard_options(settings)
+        repository, publisher, _public_scorecard_options(settings), reads=reads
     ).run(costs)
 
 
@@ -2528,7 +2531,7 @@ def _build_consensus_shifts(
 
 
 def _build_model_scorecard(
-    settings: Settings, repository: RepositoryPort
+    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
 ) -> ModelScorecardView | None:
     """#12 — widok karty kondycji modelu. Flaga OFF / brak migracji 019 / błąd
     odczytu → None → sekcja sama się chowa, cykl leci dalej. ML-15: okno odczytu
@@ -2545,21 +2548,25 @@ def _build_model_scorecard(
     if view is None:
         return None
     # DAT-16: karta mówi też, ile sesji okna ma dane i które symbole nie mają rozliczeń.
-    return dataclasses.replace(view, coverage=_data_coverage(settings, repository))
+    return dataclasses.replace(view, coverage=_data_coverage(settings, repository, reads=reads))
 
 
-def _data_coverage(settings: Settings, repository: RepositoryPort) -> CoverageReport | None:
-    """DAT-16 — pokrycie danych okna track recordu (`window_coverage`)."""
+def _data_coverage(
+    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
+) -> CoverageReport | None:
+    """DAT-16 — pokrycie danych okna track recordu (`window_coverage`); z `reads`
+    (ARCH-16) rozliczenia okna z tego dispatchu zamiast własnego odczytu."""
     return window_coverage(
         repository,
         symbols=settings.symbols,
         crypto_symbols=settings.crypto_symbols,
         days=settings.track_record_days,
+        settled_rows=None if reads is None else reads.resolved_rows,
     )
 
 
 def _build_signal_calibration(
-    settings: Settings, repository: RepositoryPort
+    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
 ) -> list[CalibrationBucket] | None:
     """#9 — kubełki kalibracji pod RANKING sygnałów (nie pod sekcję Track Record).
 
@@ -2570,13 +2577,13 @@ def _build_signal_calibration(
     """
     if not settings.calibrated_confidence_enabled:
         return None
+    window = TrackRecordReads(repository, settings.track_record_days) if reads is None else reads
     try:
-        rows = repository.get_resolved_for_calibration(settings.track_record_days)
+        # WIA-39: ranking kalibrujemy krzywą kierunkową — SIDEWAYS trafia za darmo.
+        split = window.calibration()
     except Exception:
         logger.exception("Failed to fetch calibration samples for signal ranking")
         return None
-    # WIA-39: ranking kalibrujemy krzywą kierunkową — SIDEWAYS trafia za darmo.
-    split = split_calibration_samples(rows)
     # WIA-38: pewność, która nie odróżnia trafień od pudeł, nie przestawia rankingu.
     discrimination = discrimination_evidence(split.directional_by_cycle, n_boot=0)
     if discrimination is not None and not confidence_reorders_ranking(discrimination):
@@ -2587,31 +2594,29 @@ def _build_signal_calibration(
             discrimination.n_eff,
         )
         return None
-    return directional_calibration_curve(rows)
-
-
-def _calibration_samples(rows: list[dict[str, Any]]) -> list[tuple[float, bool]]:
-    """Wiersze kalibracji → kierunkowe próbki `(confidence, was_correct)` (WIA-39:
-    SIDEWAYS mają osobną kalibrację); niepełne pomijamy."""
-    return split_calibration_samples(rows).directional
+    return reliability_curve(split.directional) if split.directional else None
 
 
 def _build_track_record(
-    settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
+    settings: Settings,
+    repository: RepositoryPort,
+    costs: PaperCosts | None = None,
+    *,
+    reads: TrackRecordReads | None = None,
 ) -> tuple[EquityCurve | None, list[CalibrationBucket] | None, LessonsReport | None]:
     """T1/T2/T4 — krzywa kapitału, kalibracja, lessons (render-only, zero
     płatnych). Każda podsekcja flag-gated; wszystkie czytają zamknięte predykcje
     z okna track_record_days. Krzywa kapitału to portfel o równej wadze per
     cykl (WIA-17), nie szeregowe składanie równoległych trade'ów, po kosztach
-    obrotu `costs` (WIA-50; None = brutto)."""
+    obrotu `costs` (WIA-50; None = brutto). `reads` (ARCH-16) — odczyty okna
+    z tego dispatchu; None = własne."""
+    window = TrackRecordReads(repository, settings.track_record_days) if reads is None else reads
     equity_curve: EquityCurve | None = None
     calibration_buckets: list[CalibrationBucket] | None = None
     lessons: LessonsReport | None = None
     if settings.equity_curve_enabled or settings.lessons_enabled:
         try:
-            tr_resolved = parse_resolved_predictions(
-                repository.get_resolved_predictions(settings.track_record_days)
-            )
+            tr_resolved = window.resolved()
         except Exception:
             logger.exception("Failed to fetch resolved predictions for track record")
             tr_resolved = []
@@ -2621,9 +2626,7 @@ def _build_track_record(
             lessons = build_lessons(tr_resolved)
     if settings.calibration_curve_enabled:
         try:
-            samples = _calibration_samples(
-                repository.get_resolved_for_calibration(settings.track_record_days)
-            )
+            samples = window.calibration().directional
             calibration_buckets = reliability_curve(samples) if samples else None
         except Exception:
             logger.exception("Failed to compute calibration curve")
@@ -2654,7 +2657,7 @@ def _expire_stale_predictions(
 
 
 def _build_symbol_track_record(
-    settings: Settings, repository: RepositoryPort
+    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
 ) -> SymbolTrackRecordView | None:
     """WIA-35: trafność kierunkowa per symbol do chipu przy predykcji i sygnale.
 
@@ -2662,10 +2665,9 @@ def _build_symbol_track_record(
     predykcji, zero płatnych wywołań. Błąd odczytu → mail bez chipów."""
     if not settings.equity_curve_enabled:
         return None
+    window = TrackRecordReads(repository, settings.track_record_days) if reads is None else reads
     try:
-        resolved = parse_resolved_predictions(
-            repository.get_resolved_predictions(settings.track_record_days)
-        )
+        resolved = window.resolved()
     except Exception:
         logger.exception("Failed to fetch resolved predictions for per-symbol track record")
         return None
@@ -2673,7 +2675,11 @@ def _build_symbol_track_record(
 
 
 def _build_track_record_stats(
-    settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
+    settings: Settings,
+    repository: RepositoryPort,
+    costs: PaperCosts | None = None,
+    *,
+    reads: TrackRecordReads | None = None,
 ) -> TrackRecordStats | None:
     """Dowód trafności (T1), Brier / BSS (T2) i pokrycie przedziałów 80% (ML-34)
     pod sekcją Track Record.
@@ -2684,8 +2690,10 @@ def _build_track_record_stats(
     odczyt best-effort: błąd → brak danej statystyki, cykl leci dalej.
     `costs` (WIA-50) to te same założenia, z którymi `_build_track_record`
     liczy krzywą — jadą do etykiety „paper-PnL (koszt X bps)” i do porównania
-    z koszykiem i IVV (WIA-21), które bez kosztów nie powstaje.
+    z koszykiem i IVV (WIA-21), które bez kosztów nie powstaje. `reads`
+    (ARCH-16) — odczyty okna z tego dispatchu; None = własne.
     """
+    window = TrackRecordReads(repository, settings.track_record_days) if reads is None else reads
     evidence = None
     scores = None
     benchmark = None
@@ -2693,9 +2701,7 @@ def _build_track_record_stats(
     if settings.equity_curve_enabled:
         resolved: list[ResolvedPrediction] = []
         try:
-            resolved = parse_resolved_predictions(
-                repository.get_resolved_predictions(settings.track_record_days)
-            )
+            resolved = window.resolved()
             evidence = hit_rate_evidence(resolved)
             # NIEZ-20: data istotnego spadku trafności (Page-Hinkley per cykl).
             accuracy_drop = accuracy_drop_evidence(resolved)
@@ -2712,9 +2718,7 @@ def _build_track_record_stats(
     sideways_scores = None
     if settings.calibration_curve_enabled:
         try:
-            split = split_calibration_samples(
-                repository.get_resolved_for_calibration(settings.track_record_days)
-            )
+            split = window.calibration()
             scores = probability_scores(split.directional)
             # WIA-39: SIDEWAYS osobno — przy małym n wystarczą n i Brier.
             sideways_scores = probability_scores(split.sideways)
@@ -2918,10 +2922,14 @@ def _dispatch_reports(
         # flag-gated; wszystkie czytają zamknięte predykcje z okna track_record_days.
         # WIA-50: krzywa, jej etykieta i scorecard z tymi samymi kosztami.
         paper_costs = _paper_costs(settings)
+        # ARCH-16: rozliczenia i próbki kalibracji okna — jeden odczyt na dispatch.
+        reads = TrackRecordReads(repository, settings.track_record_days)
         equity_curve, calibration_buckets, lessons = _build_track_record(
-            settings, repository, paper_costs
+            settings, repository, paper_costs, reads=reads
         )
-        track_record_stats = _build_track_record_stats(settings, repository, paper_costs)
+        track_record_stats = _build_track_record_stats(
+            settings, repository, paper_costs, reads=reads
+        )
         persona_track_record = _assess_personas(persona_track_record, track_record_stats)
         # NIEZ-20: alarm detektora trafności do bannera tego maila (bez zapisu —
         # liczony na nowo w każdym cyklu, więc nie dubluje wierszy `quota_alerts`).
@@ -2931,13 +2939,13 @@ def _dispatch_reports(
                 accuracy_drop_alert(track_record_stats.accuracy_drop, started_at),
             ]
         # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
-        signal_calibration_buckets = _build_signal_calibration(settings, repository)
+        signal_calibration_buckets = _build_signal_calibration(settings, repository, reads=reads)
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
         maturity = _classify_cycle_maturity(results)
         sector_map = _sector_map(settings)
         sectors = _portfolio_sectors(results, sector_map)
         # #12: karta kondycji modelu (flaga + migracja 019).
-        model_scorecard = _build_model_scorecard(settings, repository)
+        model_scorecard = _build_model_scorecard(settings, repository, reads=reads)
         # #15: realny portfel użytkownika (flaga + migracja 023).
         user_portfolio = _build_user_portfolio(settings)
         # PORT-07: pozycje spoza symboli cyklu dostają sam darmowy /quote.
@@ -2978,7 +2986,7 @@ def _dispatch_reports(
             calibration_buckets=calibration_buckets,
             lessons=lessons,
             track_record_stats=track_record_stats,
-            symbol_track_record=_build_symbol_track_record(settings, repository),
+            symbol_track_record=_build_symbol_track_record(settings, repository, reads=reads),
             signal_calibration_buckets=signal_calibration_buckets,
             cycle_maturity=maturity,
             portfolio_sectors=sectors,
@@ -3088,7 +3096,11 @@ def _dispatch_reports(
 
         # #10: publiczny scorecard — osobny publisher, osobna ścieżka.
         _publish_public_scorecard(
-            settings, repository, build_public_scorecard_publisher(settings), paper_costs
+            settings,
+            repository,
+            build_public_scorecard_publisher(settings),
+            paper_costs,
+            reads=reads,
         )
 
         # #16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,

@@ -7086,3 +7086,64 @@ class TestSessionCloseSettlementWiring:
 
         assert deps.session_close_settlement_enabled is enabled
         assert repo_cls.call_args.kwargs["session_close_settlement_enabled"] is enabled
+
+
+class TestReportReads:
+    """ARCH-16: okno track recordu czytane RAZ na dispatch — rozliczenia i próbki
+    kalibracji biorą wszystkie sekcje maila i publiczny scorecard."""
+
+    def test_calibration_and_resolved_rows_are_read_once_per_dispatch(
+        self, settings, mocker
+    ) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        settings.messenger_digest_enabled = False
+        settings.attestation_enabled = False
+        settings.cycle_diff_enabled = False
+        settings.equity_curve_enabled = True
+        settings.lessons_enabled = True
+        settings.calibration_curve_enabled = True
+        settings.calibrated_confidence_enabled = True
+        settings.model_scorecard_enabled = True
+        settings.public_scorecard_enabled = True
+        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch("main_agent._build_user_portfolio", return_value=None)
+        mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+        mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_resolved_predictions.return_value = [
+            {
+                "symbol": "AAPL",
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": True,
+                "price_at_prediction": "100",
+                "actual_price_after_12h": "101",
+                "timestamp": "2026-10-17T05:30:00+00:00",
+            }
+        ]
+        repository.get_resolved_for_calibration.return_value = [
+            {"confidence_score": 0.8, "is_trend_correct": True, "predicted_trend": "BULLISH"}
+        ]
+        repository.get_recent_model_scorecards.return_value = [
+            {"symbol": "AAPL", "status": "trained_successfully", "trained_at": "2026-10-17"}
+        ]
+        repository.get_price_history.return_value = []
+        repository.get_settled_moves.return_value = []
+
+        main_agent._dispatch_reports(
+            results=[],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=repository,
+            quota_monitor=QuotaMonitor(),
+            notifier=MagicMock(),
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL"],
+            context=main_agent.ReportContext(),
+        )
+
+        assert repository.get_resolved_for_calibration.call_count == 1
+        assert repository.get_resolved_predictions.call_count == 1

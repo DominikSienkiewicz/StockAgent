@@ -17,9 +17,11 @@ from datetime import UTC, datetime
 from src.application.ports import RepositoryPort, WebPublisherPort
 from src.application.report_evidence import PaperCosts, portfolio_curve
 from src.application.report_public_scorecard import render_public_scorecard_html
-from src.application.report_signals import parse_resolved_predictions
-from src.application.signal_calibration import split_calibration_samples
-from src.application.track_record_window import window_benchmark, window_coverage
+from src.application.track_record_window import (
+    TrackRecordReads,
+    window_benchmark,
+    window_coverage,
+)
 from src.domain.evaluation_protocol import EvaluationProtocol
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,8 @@ def render_public_scorecard(
     repository: RepositoryPort,
     options: PublicScorecardOptions,
     costs: PaperCosts | None = None,
+    *,
+    reads: TrackRecordReads | None = None,
 ) -> str:
     """#10 — strona z agregatami (N, hit-rate, Brier, ECE, krzywe) z okna
     `window_days`; "" gdy okno nie ma danych.
@@ -55,14 +59,12 @@ def render_public_scorecard(
     portfel o równej wadze per cykl (WIA-17), po kosztach `costs` (WIA-50;
     None = brutto); strona ujawnia okno i datę generacji (WIA-33).
     Błąd odczytu leci wyżej: Fast Loop go połyka, `main_scorecard` kończy exit 1.
+    `reads` (ARCH-16) — odczyty okna z dispatchu Fast Loopa; None = własne.
     """
-    resolved = parse_resolved_predictions(
-        repository.get_resolved_predictions(options.window_days)
-    )
+    window = TrackRecordReads(repository, options.window_days) if reads is None else reads
+    resolved = window.resolved()
     # WIA-39/WIA-58: kierunkowe próbki; cykle dają n_eff i bootstrap ECE.
-    calibration = split_calibration_samples(
-        repository.get_resolved_for_calibration(options.window_days)
-    )
+    calibration = window.calibration()
     benchmark = (
         None
         if costs is None
@@ -89,6 +91,7 @@ def render_public_scorecard(
             symbols=options.symbols,
             crypto_symbols=options.crypto_symbols,
             days=options.window_days,
+            settled_rows=window.resolved_rows,
         ),
     )
 
@@ -105,14 +108,17 @@ class PublishPublicScorecardUseCase:
         repository: RepositoryPort,
         publisher: WebPublisherPort,
         options: PublicScorecardOptions,
+        *,
+        reads: TrackRecordReads | None = None,
     ) -> None:
         self._repository = repository
         self._publisher = publisher
         self._options = options
+        self._reads = reads
 
     def render(self, costs: PaperCosts | None = None) -> str:
         """Strona okna albo "" bez danych; błąd odczytu leci do wołającego."""
-        return render_public_scorecard(self._repository, self._options, costs)
+        return render_public_scorecard(self._repository, self._options, costs, reads=self._reads)
 
     def run(self, costs: PaperCosts | None = None) -> None:
         """Best-effort: błąd odczytu ani `OSError` przy zapisie nie wywalają cyklu."""
