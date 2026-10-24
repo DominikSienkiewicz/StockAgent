@@ -3739,27 +3739,30 @@ class TestMigration064ScorecardProvenance:
             "library_version",
             "feature_set_version",
             "git_sha",
+            "label_overlap_count",
+            "label_overlap_measured",
         } <= _columns(migrated_pg_conn, "model_scorecards")
         with _rolled_back(migrated_pg_conn) as cur:
             cur.execute(
                 "INSERT INTO model_scorecards (symbol, status, dataset_sha256, data_start, "
                 "data_end, n_per_symbol, training_params, library_version, "
-                "feature_set_version, git_sha) VALUES ('ALL', 'trained_successfully', %s, "
+                "feature_set_version, git_sha, label_overlap_count, label_overlap_measured) "
+                "VALUES ('ALL', 'trained_successfully', %s, "
                 "'2026-10-01T07:30:00+00:00', '2026-10-20T07:30:00+00:00', "
                 "'{\"AAPL\": 40}'::jsonb, '{\"random_state\": 0}'::jsonb, "
-                "'xgboost 3.2.0', 4, 'abc1234'), ('AAPL', 'skipped', NULL, NULL, NULL, "
-                "NULL, NULL, NULL, NULL, NULL)",
+                "'xgboost 3.2.0', 4, 'abc1234', 10, 49), ('AAPL', 'skipped', NULL, NULL, "
+                "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
                 ("ab" * 32,),
             )
             cur.execute(
                 "SELECT (n_per_symbol ->> 'AAPL')::int, "
                 "(training_params ->> 'random_state')::int, feature_set_version, "
-                "data_end > data_start FROM model_scorecards WHERE symbol = 'ALL' "
-                "AND dataset_sha256 IS NOT NULL"
+                "data_end > data_start, label_overlap_count, label_overlap_measured "
+                "FROM model_scorecards WHERE symbol = 'ALL' AND dataset_sha256 IS NOT NULL"
             )
             row = cur.fetchone()
 
-        assert row == (40, 0, 4, True)
+        assert row == (40, 0, 4, True, 10, 49)
 
     def test_dataset_hash_rejects_anything_but_a_hex_digest(
         self, migrated_pg_conn: psycopg2.extensions.connection
