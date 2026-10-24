@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime, timedelta
+from http import HTTPStatus
 
 import requests
 
@@ -98,8 +99,13 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         self._session = session if session is not None else build_session()
         # SEC wymaga User-Agent na KAŻDYM żądaniu — ustawiamy raz na sesji.
         self._session.headers.update({"User-Agent": user_agent})
+        # Adapter żyje jeden cykl: po 403 SEC dalsze żądania tylko przedłużają
+        # blokadę (dostęp wraca po 10 min poniżej progu), więc milkniemy do końca.
+        self._blocked = False
 
     def get_insider_flow(self, symbol: str) -> InsiderFlowSnapshot | None:
+        if self._blocked:
+            return None
         try:
             cik = self._resolve_cik(symbol)
             if cik is None:
@@ -123,6 +129,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
                 sell_count += sells
                 filings_parsed += 1
 
+            if self._blocked:
+                # Snapshot z częścią filingów wyglądałby jak awaria parsowania.
+                return None
             return InsiderFlowSnapshot(
                 symbol=symbol,
                 net_shares=net_shares,
@@ -137,10 +146,27 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             logger.exception("EDGAR insider flow failed for %s", symbol)
             return None
 
+    def _get(self, url: str) -> requests.Response | None:
+        """GET do SEC; None, gdy SEC odrzucił nas w tym cyklu (403)."""
+        if self._blocked:
+            return None
+        response = self._session.get(url, timeout=self._timeout)
+        if response.status_code == HTTPStatus.FORBIDDEN:
+            self._blocked = True
+            logger.warning(
+                "SEC EDGAR answered 403 for %s — no more EDGAR requests this cycle "
+                "(see docs/configuration.md, insider flow)",
+                url,
+            )
+            return None
+        return response
+
     def _resolve_cik(self, symbol: str) -> str | None:
         """Mapuje ticker → 10-cyfrowy CIK (z paddingiem)."""
         try:
-            response = self._session.get(TICKERS_URL, timeout=self._timeout)
+            response = self._get(TICKERS_URL)
+            if response is None:
+                return None
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError):
@@ -172,7 +198,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         None gdy submissions niedostępne; pusta lista gdy brak Form 4."""
         url = SUBMISSIONS_URL.format(cik=cik)
         try:
-            response = self._session.get(url, timeout=self._timeout)
+            response = self._get(url)
+            if response is None:
+                return None
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError):
@@ -232,7 +260,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             doc=_raw_form4_doc(primary_doc),
         )
         try:
-            response = self._session.get(url, timeout=self._timeout)
+            response = self._get(url)
+            if response is None:
+                return None
             response.raise_for_status()
             xml_text = response.text
         except requests.RequestException:
