@@ -577,10 +577,12 @@ def _model_catalogs(settings: Settings) -> dict[str, ModelCatalogPort]:
 
 
 def _push_critical_alerts(settings: Settings, alerts: list[QuotaAlert]) -> None:
-    """NIEZ-25: CRITICAL sondy idzie od razu pushem (ta sama reguła co alerty
-    real-time Fast Loopa: `realtime_alerts_enabled` i kanał Telegram/Slack)."""
+    """NIEZ-25: CRITICAL sondy idzie od razu pushem, ZAWSZE gdy jest kanał
+    (Telegram albo Slack), niezależnie od `realtime_alerts_enabled`: wycofany model
+    to cichy total outage Fast Loopa, a bez pushu właściciel dowiedziałby się o nim
+    dopiero z kolejnego maila. Błąd sieci sondy to WARNING i nie jest pushowany."""
     critical = [alert for alert in alerts if alert.severity is QuotaSeverity.CRITICAL]
-    if not critical or not settings.realtime_alerts_enabled:
+    if not critical:
         return
     channels = build_push_channels(settings, quota_monitor=None)
     if not channels:
