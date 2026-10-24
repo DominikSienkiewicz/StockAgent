@@ -15,15 +15,18 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable, Mapping
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from src.application.report_models import ResolvedPrediction, SymbolResult
 from src.domain.digest_lead import LeadItem
+from src.domain.portfolio import PlnRates
 
 if TYPE_CHECKING:
-    # Tylko typ: report_builder importuje moduły sekcji, a te ten plik — import
+    # Tylko typy: report_builder i moduły sekcji importują ten plik — import
     # w czasie wykonania zamknąłby cykl.
     from src.application.report_builder import ReportContext
+    from src.application.report_user_portfolio import PortfolioChangeView
 
 
 @dataclasses.dataclass(frozen=True)
@@ -43,6 +46,8 @@ class SectionInput:
     errors: list[SymbolResult]
     started_at: datetime
     duration_seconds: float
+    # MAIL-14: start cyklu w strefie wyświetlania — nagłówek HTML i tekstu.
+    started_local: str
     # PORT-05: `ReportContext.sector_map` albo pusta mapa.
     sector_map: Mapping[str, str]
     # #1: lead cyklu — jedno źródło treści maila, preheadera i tematu.
@@ -51,6 +56,13 @@ class SectionInput:
     # (WIA-19) — sekcja zamkniętych predykcji i pierwszy ekran.
     resolved: list[ResolvedPrediction]
     resolved_window: str
+    # #15/PORT-07: ceny raportu — z wyników cyklu, uzupełnione `held_prices`.
+    current_prices: Mapping[str, Decimal]
+    # PORT-11: kursy NBP do „P/L zł”, wag i zmiany portfela; USD/PLN z Risk Watch.
+    pln_rates: PlnRates | None
+    usd_pln: Decimal | None
+    # PORT-06: zmiana portfela od ostatniego maila — pierwszy ekran i sekcja 💼.
+    portfolio_change: PortfolioChangeView | None
 
 
 @dataclasses.dataclass(frozen=True)

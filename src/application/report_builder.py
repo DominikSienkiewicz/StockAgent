@@ -77,6 +77,11 @@ from src.application.report_formatting import (
 from src.application.report_formatting import (
     trend_label as _trend_label,
 )
+from src.application.report_header import (
+    FIRST_SCREEN_SECTION,
+    MASTHEAD_SECTION,
+    SESSION_SECTION,
+)
 from src.application.report_lead import LEAD_SECTION, PREHEADER_SECTION
 from src.application.report_lessons import LessonsReport
 from src.application.report_model_scorecard import (
@@ -105,13 +110,9 @@ from src.application.report_portfolio import (
 from src.application.report_quota_banner import QUOTA_BANNER_SECTION
 from src.application.report_regime import (
     RegimeBanner,
-    render_regime_html,
-    render_regime_text,
 )
 from src.application.report_resolved import (
     RESOLVED_PREDICTIONS_SECTION,
-    RESOLVED_WINDOW_24H,
-    RESOLVED_WINDOW_THIS_CYCLE,
     resolved_window,
 )
 from src.application.report_risk_watch import (
@@ -148,11 +149,8 @@ from src.application.report_track_record import (
     render_track_record_html,
 )
 from src.application.report_user_portfolio import (
-    portfolio_change_label,
-    render_portfolio_change_box_html,
-    render_portfolio_change_text_line,
-    render_user_portfolio_html,
-    render_user_portfolio_text,
+    USER_PORTFOLIO_SECTION,
+    portfolio_change_view,
 )
 from src.application.reporting.section import SectionInput
 from src.application.run_context import RunContext
@@ -178,11 +176,8 @@ from src.domain.polish_labels import (
     trend_forecast_label,
 )
 from src.domain.portfolio import (
-    DEFAULT_POSITION_CURRENCY,
-    HOME_CURRENCY,
     PlnRates,
     Portfolio,
-    PortfolioChange,
 )
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
@@ -226,9 +221,6 @@ _SIGNAL_FILL = {"up": "gu", "dn": "gd", "nt": "gn"}
 # w jednym z dwóch miejsc (szablon ↔ replace) nie zostawiła cicho pustego slotu.
 _RISK_WATCH_SLOT = "<!-- RISK_WATCH_SLOT -->"
 _PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
-# #15: sekcja 💼 realnego portfela użytkownika (wagi, P/L, klaster, PLN).
-# Nazwa slotu rozłączna z _PORTFOLIO_SLOT (Portfolio Radar) — to inna sekcja.
-_USER_PORTFOLIO_SLOT = "<!-- USER_PORTFOLIO_SLOT -->"
 _COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
 _PERSONA_LEADERBOARD_SLOT = "<!-- PERSONA_LEADERBOARD_SLOT -->"
 _TRACK_RECORD_SLOT = "<!-- TRACK_RECORD_SLOT -->"
@@ -965,7 +957,6 @@ def _fill_text_slots(
     macro_risk_text: str,
     suggestions_text: str,
     portfolio_text: str = "",
-    user_portfolio_text: str = "",
     sections: Mapping[str, str] | None = None,
 ) -> str:
     """Wstawia treść w sloty plain-text. Pusty slot usuwa cały wiersz znacznika —
@@ -984,11 +975,6 @@ def _fill_text_slots(
         f"{portfolio_text}\n" if portfolio_text else "",
         1,
     ).replace(_PORTFOLIO_SLOT, portfolio_text, 1)
-    text = text.replace(
-        f"{_USER_PORTFOLIO_SLOT}\n",
-        f"{user_portfolio_text}\n\n" if user_portfolio_text else "",
-        1,
-    ).replace(_USER_PORTFOLIO_SLOT, user_portfolio_text, 1)
     text = text.replace(
         f"{_SUGGESTIONS_SLOT}\n",
         f"{suggestions_text}\n\n" if suggestions_text else "",
@@ -1017,134 +1003,6 @@ def _current_prices_of(results: list[SymbolResult]) -> dict[str, Decimal]:
     """#15: ceny bieżące biorą się z wyników TEGO cyklu — renderer nie dostaje
     żadnego portu. Symbol bez ceny (błąd źródła) po prostu nie wchodzi."""
     return {r.symbol: r.current_price for r in results if r.current_price is not None}
-
-
-def _previous_prices_of(results: list[SymbolResult]) -> dict[str, Decimal]:
-    """PORT-06: cena referencji odtworzona z delty cyklu: prev = current / (1 + Δ).
-
-    Działa dla każdego symbolu z ceną i deltą — także pominiętego bramką albo
-    z referencją sprzed pauzy (FIN-14). Cold-start nie ma referencji (Δ = 0 to
-    brak punktu odniesienia, nie „bez zmian”), więc nie wchodzi."""
-    previous: dict[str, Decimal] = {}
-    for r in results:
-        if r.current_price is None or r.delta is None:
-            continue
-        if r.skip_reason is SkipReason.COLD_START or r.delta == -1:
-            continue
-        previous[r.symbol] = r.current_price / (1 + r.delta)
-    return previous
-
-
-@dataclasses.dataclass(frozen=True)
-class _PortfolioChangeView:
-    """PORT-06: zmiana portfela z domeny + podpis okna („od ostatniego maila”)."""
-
-    change: PortfolioChange
-    label: str
-    currency: str = DEFAULT_POSITION_CURRENCY
-
-
-def _portfolio_change_view(
-    results: list[SymbolResult],
-    portfolio: Portfolio | None,
-    current_prices: Mapping[str, Decimal],
-    *,
-    now: datetime,
-    display_timezone: str,
-    rates: PlnRates | None = None,
-) -> _PortfolioChangeView | None:
-    """PORT-06: Δ portfela od referencji cyklu. Okno zaczyna się od NAJSTARSZEJ
-    referencji zmierzonych pozycji — po pauzie podpis mówi „od <data>”.
-    Brak portfela (np. obcy subskrybent, BEZ-01) → None, sekcje się chowają.
-
-    Z kursami NBP zmiana jest w złotych: obie ceny po BIEŻĄCYM kursie waluty
-    pozycji (ruch kursu między mailami nie wchodzi), a pozycja bez kursu wypada
-    z obu stron — sekcja 💼 wymienia ją w nocie „Bez kursu NBP”."""
-    if portfolio is None:
-        return None
-    previous = _previous_prices_of(results)
-    currency = DEFAULT_POSITION_CURRENCY
-    if rates is not None:
-        valuation = portfolio.pln_prices(current_prices, rates)
-        portfolio = portfolio.excluding(valuation.unrated_symbols)
-        previous = dict(portfolio.pln_prices(previous, rates).prices)
-        current_prices = valuation.prices
-        currency = HOME_CURRENCY
-    change = portfolio.change_since(previous, current_prices)
-    if change is None:
-        return None
-    measured = {p.symbol for p in portfolio.positions} - set(change.unmeasured_symbols)
-    references = [
-        r.reference_at for r in results if r.symbol in measured and r.reference_at is not None
-    ]
-    since = min(references) if references else None
-    return _PortfolioChangeView(
-        change=change,
-        label=portfolio_change_label(since, now, display_timezone),
-        currency=currency,
-    )
-
-
-def _build_user_portfolio_html(
-    user_portfolio: Portfolio | None,
-    current_prices: Mapping[str, Decimal],
-    *,
-    clusters: Mapping[str, str] | None,
-    macro_risk_report: MacroRiskReport | None,
-    now: datetime,
-    change: _PortfolioChangeView | None = None,
-    pln_rates: PlnRates | None = None,
-) -> str:
-    """#15: sekcja realnego portfela. Kursy przychodzą jako wartości (PORT-11:
-    `pln_rates`, inaczej USD/PLN z `MacroRiskReport`), nie z portu. Brak
-    portfela → "" (sekcja sama się chowa). PORT-06: linia zmiany od ostatniego
-    maila, gdy da się ją policzyć."""
-    if user_portfolio is None:
-        return ""
-    return render_user_portfolio_html(
-        user_portfolio,
-        current_prices,
-        clusters=clusters,
-        now=now,
-        usd_pln=_usd_pln_of(macro_risk_report),
-        pln_rates=pln_rates,
-        **_change_kwargs(change),
-    )
-
-
-def _change_kwargs(change: _PortfolioChangeView | None) -> dict[str, Any]:
-    """PORT-06: opcjonalne argumenty linii zmiany dla rendererów sekcji 💼."""
-    if change is None:
-        return {}
-    return {
-        "change": change.change,
-        "change_label": change.label,
-        "change_currency": change.currency,
-    }
-
-
-def _build_user_portfolio_text(
-    user_portfolio: Portfolio | None,
-    current_prices: Mapping[str, Decimal],
-    *,
-    clusters: Mapping[str, str] | None,
-    macro_risk_report: MacroRiskReport | None,
-    now: datetime,
-    change: _PortfolioChangeView | None = None,
-    pln_rates: PlnRates | None = None,
-) -> str:
-    """Wariant plain-text sekcji portfela (decyzja 2026-10-19) — te same dane co HTML."""
-    if user_portfolio is None:
-        return ""
-    return render_user_portfolio_text(
-        user_portfolio,
-        current_prices,
-        clusters=clusters,
-        now=now,
-        usd_pln=_usd_pln_of(macro_risk_report),
-        pln_rates=pln_rates,
-        **_change_kwargs(change),
-    )
 
 
 def _pln_rates_of(context: ReportContext) -> PlnRates | None:
@@ -1342,6 +1200,8 @@ def _section_input(
     if context.symbols_filter is not None:
         results = [r for r in results if r.symbol in context.symbols_filter]
     saved, ignored, errors = _partition_by_status(results)
+    current_prices = _report_prices(results, context)
+    pln_rates = _pln_rates_of(context)
     return SectionInput(
         context=context,
         results=results,
@@ -1350,6 +1210,7 @@ def _section_input(
         errors=errors,
         started_at=started_at,
         duration_seconds=duration_seconds,
+        started_local=format_local(started_at, context.display_timezone),
         sector_map=context.sector_map or {},
         # #1: ranking leadu robi domena; TU jest jedyne miejsce, gdzie DTO warstwy
         # application (SymbolResult / ResolvedPrediction) są mapowane na typy
@@ -1357,6 +1218,18 @@ def _section_input(
         lead_items=build_cycle_lead(results, context),
         resolved=context.resolved_predictions or [],
         resolved_window=resolved_window(context.resolved_this_cycle),
+        current_prices=current_prices,
+        pln_rates=pln_rates,
+        usd_pln=_usd_pln_of(context.macro_risk_report),
+        # PORT-06: nie trafia do tematu maila (decyzja 2026-10-19).
+        portfolio_change=portfolio_change_view(
+            results,
+            context.user_portfolio,
+            current_prices,
+            now=started_at,
+            display_timezone=context.display_timezone,
+            rates=pln_rates,
+        ),
     )
 
 
@@ -1374,13 +1247,9 @@ def build_html_report(
     context = context or ReportContext()
     data = _section_input(results, started_at, duration_seconds, context)
     results, saved, ignored, errors = data.results, data.saved, data.ignored, data.errors
-    resolved = data.resolved
     sector_map = data.sector_map
     mood = build_portfolio_mood(results)
-    session = market_status(started_at)
     forecast_horizon = forecast_horizon_label(started_at)
-    current_prices = _report_prices(results, context)
-    pln_rates = _pln_rates_of(context)
     # MAIL-06: pełny ranking (pełna rada dla top N); 🎯 sekcja bierze jego czołówkę.
     ranked_signals = build_cycle_signals(results, context, top_n=len(results))
     trade_signals = ranked_signals[:_TOP_SIGNALS]
@@ -1408,60 +1277,6 @@ def build_html_report(
     # gotowy z domeny; render zwraca "" gdy żadna persona nie ma dość głosów.
     persona_leaderboard_html = render_persona_leaderboard_html(
         context.persona_track_record or []
-    )
-    # PORT-06: zmiana portfela od ostatniego maila — sekcja 💼 i pierwszy ekran.
-    # Nie trafia do tematu maila (decyzja 2026-10-19).
-    portfolio_change = _portfolio_change_view(
-        results,
-        context.user_portfolio,
-        current_prices,
-        now=started_at,
-        display_timezone=context.display_timezone,
-        rates=pln_rates,
-    )
-    usd_pln = _usd_pln_of(context.macro_risk_report)
-    portfolio_change_box = (
-        render_portfolio_change_box_html(
-            portfolio_change.change,
-            label=portfolio_change.label,
-            usd_pln=usd_pln,
-            currency=portfolio_change.currency,
-        )
-        if portfolio_change is not None
-        else ""
-    )
-    # Stary push (Telegram/Slack) dostaje tekst bez kwot portfela.
-    portfolio_change_line = (
-        render_portfolio_change_text_line(
-            portfolio_change.change,
-            label=portfolio_change.label,
-            usd_pln=usd_pln,
-            currency=portfolio_change.currency,
-        )
-        if portfolio_change is not None and context.user_portfolio_in_text
-        else ""
-    )
-    user_portfolio_html = _build_user_portfolio_html(
-        context.user_portfolio,
-        current_prices,
-        clusters=context.portfolio_clusters,
-        macro_risk_report=context.macro_risk_report,
-        now=started_at,
-        change=portfolio_change,
-        pln_rates=pln_rates,
-    )
-    user_portfolio_text = (
-        _build_user_portfolio_text(
-            context.user_portfolio,
-            current_prices,
-            clusters=context.portfolio_clusters,
-            macro_risk_report=context.macro_risk_report,
-            now=started_at,
-            change=portfolio_change,
-            pln_rates=pln_rates,
-        )
-        if context.user_portfolio_in_text
-        else ""
     )
     # FinOps: koszt cyklu. Cykl darmowy (0 wywołań) renderuje się JAWNIE —
     # to najciekawsza informacja w tej sekcji, nie brak danych.
@@ -1492,29 +1307,23 @@ def build_html_report(
     suggestions_html = render_suggestions_html(suggestions)
     suggestions_text = render_suggestions_text(suggestions)
 
-    started_local = format_local(started_at, context.display_timezone)
-    resolved_window = data.resolved_window
+    started_local = data.started_local
     symbol_chips = symbol_chip_labels(context.symbol_track_record, (r.symbol for r in saved))
     html = _render_html(
         data,
         results, saved, ignored, errors, started_local, duration_seconds,
-        mood, session, context.accuracy_stats, trade_signals, risk_signals,
-        resolved, resolved_window=resolved_window,
+        mood, trade_signals, risk_signals,
         display_timezone=context.display_timezone,
-        portfolio_change_box=portfolio_change_box,
-        settlements_unavailable=context.resolved_unavailable,
         full_detail=full_detail,
         sector_map=sector_map,
         forecast_horizon=forecast_horizon,
         symbol_chips=symbol_chips,
-        regime_html=render_regime_html(context.regime),
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
     html = _fill_html_slots(html, {
         _RISK_WATCH_SLOT: macro_risk_html,
         _PORTFOLIO_SLOT: portfolio_html,
-        _USER_PORTFOLIO_SLOT: user_portfolio_html,
         _COUNCIL_HISTORY_SLOT: council_history_html,
         _PERSONA_LEADERBOARD_SLOT: persona_leaderboard_html,
         _TRACK_RECORD_SLOT: track_record_html,
@@ -1528,21 +1337,16 @@ def build_html_report(
     text = _render_plain(
         data,
         results, saved, ignored, errors, started_local, duration_seconds,
-        mood, session, context.accuracy_stats, trade_signals, risk_signals,
-        resolved, resolved_window=resolved_window,
+        mood, trade_signals, risk_signals,
         display_timezone=context.display_timezone,
-        portfolio_change_line=portfolio_change_line,
-        settlements_unavailable=context.resolved_unavailable,
         sector_map=sector_map,
         forecast_horizon=forecast_horizon,
         symbol_chips=symbol_chips,
-        regime_text=render_regime_text(context.regime),
     )
     text = _fill_text_slots(
         text,
         macro_risk_text=macro_risk_text,
         portfolio_text=portfolio_text,
-        user_portfolio_text=user_portfolio_text,
         suggestions_text=suggestions_text,
         # MAIL-09: sekcje z rendererem tekstu, których wersja tekstowa nie miała.
         sections={
@@ -2141,64 +1945,6 @@ def _render_compact_predictions_html(rest: list[SymbolResult]) -> str:
 # MAIL-16: pierwszy ekran — liczby dla czytelnika, liczniki do stopki
 # ---------------------------------------------------------------------------
 
-# Okno rozliczeń w boxie pierwszego ekranu — krócej niż w nagłówku sekcji.
-_SETTLEMENT_WINDOW_SHORT = {
-    RESOLVED_WINDOW_24H: "ostatnie 24h",
-    RESOLVED_WINDOW_THIS_CYCLE: "w tym cyklu",
-}
-
-
-def _signals_above_threshold(saved: list[SymbolResult]) -> int:
-    """MAIL-16: zapisane predykcje z kierunkiem (≠ SIDEWAYS) — sygnały, które
-    przeszły bramkę volatility i coś mówią. „Bez ruchu” nie jest sygnałem."""
-    return sum(1 for r in saved if r.trend is not None and r.trend != "SIDEWAYS")
-
-
-@dataclasses.dataclass(frozen=True)
-class _SettlementTally:
-    """MAIL-16: „X/Y trafionych” z rozliczeń okna — albo jawny brak / awaria
-    odczytu (MAIL-25: awaria nie może udawać „brak rozliczeń”)."""
-
-    value: str
-    note: str
-    text: str
-
-
-def _settlement_tally(
-    resolved: list[ResolvedPrediction], *, unavailable: bool, window: str
-) -> _SettlementTally:
-    short_window = _SETTLEMENT_WINDOW_SHORT.get(window, window)
-    if resolved:
-        hits = f"{sum(1 for p in resolved if p.is_correct)}/{len(resolved)}"
-        return _SettlementTally(
-            value=hits,
-            note=f"trafionych · {short_window}",
-            text=f"{hits} trafionych ({short_window})",
-        )
-    if unavailable:
-        return _SettlementTally(
-            value="—", note="rozliczenia niedostępne", text="niedostępne (błąd odczytu)"
-        )
-    return _SettlementTally(
-        value="—", note=f"brak rozliczeń · {short_window}", text=f"brak ({short_window})"
-    )
-
-
-def _render_reader_box_html(
-    label: str, value: str, note: str, *, accent: str, background: str
-) -> str:
-    return (
-        f'<div style="flex: 1; padding: 12px; background: {background}; '
-        f'border-left: 3px solid {accent}; border-radius: 4px;">'
-        '<div style="font-size: 11px; color: #4b5563; text-transform: uppercase;">'
-        f"{_html(label)}</div>"
-        '<div style="font-size: 24px; font-weight: 600; color: #1f2937;">'
-        f"{_html(value)}</div>"
-        f'<div style="font-size: 12px; color: #6b7280;">{_html(note)}</div>'
-        "</div>"
-    )
-
-
 def _render_technical_footer_html(
     results: list[SymbolResult],
     saved: list[SymbolResult],
@@ -2248,37 +1994,6 @@ _BACKOFFICE_SEPARATOR_HTML = (
     f'<div style="font-size: 12px; color: #6b7280;">{_BACKOFFICE_NOTE}</div>'
     "</div>"
 )
-_CREDIBILITY_TITLE = "Wiarygodność modelu"
-
-
-def _credibility_label(accuracy_stats: Mapping[str, Any] | None) -> str | None:
-    """MAIL-17: jednolinijkowy pasek wiarygodności — trafność kierunkowa i n z tych
-    samych statystyk co „Historia trafności” w Zapleczu. Bez liczników kierunkowych
-    → None (pasek się chowa)."""
-    if not accuracy_stats:
-        return None
-    n = accuracy_stats.get("directional_count")
-    hits = accuracy_stats.get("directional_correct_count")
-    if n is None or hits is None:
-        return None
-    days = accuracy_stats.get("days_window")
-    window = f", ostatnie {days} dni" if days is not None else ""
-    if n == 0:
-        return f"trafność kierunkowa — (brak prognoz kierunkowych{window})"
-    return f"trafność kierunkowa {_pct(hits / n, decimals=1)} (n={n}{window})"
-
-
-def _render_credibility_bar_html(accuracy_stats: Mapping[str, Any] | None) -> str:
-    label = _credibility_label(accuracy_stats)
-    if label is None:
-        return ""
-    return (
-        '<div style="margin: -8px 0 16px 0; font-size: 12px; color: #4b5563;">'
-        f"📏 <strong>{_CREDIBILITY_TITLE}:</strong> {_html(label)}"
-        " · szczegóły w Zapleczu (Track Record)</div>"
-    )
-
-
 # MAIL-10: średnia bez ani jednego sentymentu to brak danych, nie „+0,00 (Neutralny)”.
 _NO_SENTIMENT_LABEL = "brak danych"
 
@@ -2332,75 +2047,24 @@ def _render_html(
     started_local: str,
     duration_seconds: float,
     mood: PortfolioMood,
-    session: dict[str, str],
-    accuracy_stats: dict[str, Any] | None,
     trade_signals: list[TradeSignal],
     risk_signals: list[RiskSignal],
-    resolved_predictions: list[ResolvedPrediction],
     *,
-    resolved_window: str = RESOLVED_WINDOW_24H,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
-    portfolio_change_box: str = "",
-    settlements_unavailable: bool = False,
     full_detail: frozenset[str] | None = None,
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
     symbol_chips: Mapping[str, str] | None = None,
-    regime_html: str = "",
 ) -> str:
     sections = [PREHEADER_SECTION.render_html(data)]
 
-    # Header
-    sections.append(f"""
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 720px; margin: 0 auto; color: #1f2937;">
-      <h1 style="font-size: 22px; margin: 0 0 4px 0;">📊 StockAgent — raport cyklu</h1>
-      <div style="font-size: 13px; color: #6b7280; margin-bottom: 24px;">
-        Czas rozpoczęcia: {started_local}{regime_html}
-      </div>
-    """)
-
+    sections.append(MASTHEAD_SECTION.render_html(data))
     sections.append(QUOTA_BANNER_SECTION.render_html(data))
     sections.append(LEAD_SECTION.render_html(data))
     sections.append(ONBOARDING_SECTION.render_html(data))
-
-    # Status sesji giełdowej
-    sections.append(f"""
-      <div style="padding: 10px 14px; background: #f9fafb; border-radius: 4px;
-                  margin-bottom: 16px; font-size: 13px;">
-        <strong>Sesja NYSE:</strong> {session["label"]}
-        <span style="color: #6b7280;">· {session["detail"]}</span>
-      </div>
-    """)
-
-    # MAIL-16: pierwszy ekran — trzy liczby dla czytelnika: zmiana portfela
-    # (tylko właściciel z pozycjami, PORT-06; inaczej box się chowa), sygnały
-    # ponad próg i trafność rozliczeń. Liczniki operacyjne są w stopce.
-    settlements = _settlement_tally(
-        resolved_predictions, unavailable=settlements_unavailable, window=resolved_window
-    )
-    signals_box = _render_reader_box_html(
-        "Sygnały ponad próg",
-        str(_signals_above_threshold(saved)),
-        "wzrost lub spadek",
-        accent="#16a34a",
-        background="#f0fdf4",
-    )
-    settlements_box = _render_reader_box_html(
-        "Rozliczone",
-        settlements.value,
-        settlements.note,
-        accent="#2563eb",
-        background="#eff6ff",
-    )
-    sections.append(
-        '<div style="display: flex; gap: 8px; margin-bottom: 16px;">'
-        f"{portfolio_change_box}{signals_box}{settlements_box}</div>"
-    )
-
-    # MAIL-17: strefa „Na dziś” — pasek wiarygodności zamiast Track Recordu na
-    # górze, potem portfel, zmiany od wczoraj, sygnały, predykcje i krypto.
-    sections.append(_render_credibility_bar_html(accuracy_stats))
-    sections.append(_USER_PORTFOLIO_SLOT)
+    sections.append(SESSION_SECTION.render_html(data))
+    sections.append(FIRST_SCREEN_SECTION.render_html(data))
+    sections.append(USER_PORTFOLIO_SECTION.render_html(data))
     # Zmiany od wczoraj: rozliczenia, zmiany nastawienia, nowy punkt odniesienia.
     sections.append(RESOLVED_PREDICTIONS_SECTION.render_html(data))
     sections.append(CONSENSUS_SHIFT_SECTION.render_html(data))
@@ -2688,51 +2352,22 @@ def _render_plain(
     started_local: str,
     duration_seconds: float,
     mood: PortfolioMood,
-    session: dict[str, str],
-    accuracy_stats: dict[str, Any] | None,
     trade_signals: list[TradeSignal],
     risk_signals: list[RiskSignal],
-    resolved_predictions: list[ResolvedPrediction],
     *,
-    resolved_window: str = RESOLVED_WINDOW_24H,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
-    portfolio_change_line: str = "",
-    settlements_unavailable: bool = False,
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
     symbol_chips: Mapping[str, str] | None = None,
-    regime_text: str = "",
 ) -> str:
     lines: list[str] = []
     lines.extend(QUOTA_BANNER_SECTION.render_text(data))
     lines.extend(LEAD_SECTION.render_text(data))
     lines.extend(ONBOARDING_SECTION.render_text(data))
-    lines.append("=" * 64)
-    lines.append("STOCKAGENT — RAPORT CYKLU")
-    lines.append("=" * 64)
-    lines.append(f"Czas rozpoczęcia:  {started_local}")
-    lines.append(f"Sesja NYSE:        {session['label']} — {session['detail']}")
-    if regime_text:
-        lines.append(regime_text)
-    lines.append("")
-    # MAIL-16: trzy liczby dla czytelnika (portfel tylko u właściciela, PORT-06);
-    # liczniki operacyjne są w stopce technicznej.
-    if portfolio_change_line:
-        lines.append(portfolio_change_line)
-    lines.append(f"Sygnały ponad próg: {_signals_above_threshold(saved)}")
-    settlements = _settlement_tally(
-        resolved_predictions, unavailable=settlements_unavailable, window=resolved_window
-    )
-    lines.append(f"Rozliczone: {settlements.text}")
-    # MAIL-17: pasek wiarygodności — te same liczby co Historia trafności w Zapleczu.
-    credibility = _credibility_label(accuracy_stats)
-    if credibility is not None:
-        lines.append(f"{_CREDIBILITY_TITLE}: {credibility} — szczegóły w Zapleczu")
-    lines.append("")
-
+    lines.extend(SESSION_SECTION.render_text(data))
+    lines.extend(FIRST_SCREEN_SECTION.render_text(data))
     # MAIL-17: strefa „Na dziś”, kolejność jak w HTML.
-    # 💼 Twój portfel — zaraz za pierwszym ekranem.
-    lines.append(_USER_PORTFOLIO_SLOT)
+    lines.extend(USER_PORTFOLIO_SECTION.render_text(data))
     # Zmiany od wczoraj: rozliczenia i nowy punkt odniesienia.
     lines.extend(RESOLVED_PREDICTIONS_SECTION.render_text(data))
     # MAIL-09: zmiany nastawienia rady — jak w HTML, za rozliczeniami.

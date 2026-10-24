@@ -12,9 +12,13 @@ from src.application.reporting.registry import REPORT_SECTIONS
 
 MAIL_ORDER = (
     "preheader",
+    "masthead",
     "quota_banner",
     "lead",
     "onboarding",
+    "session",
+    "first_screen",
+    "user_portfolio",
     "resolved_predictions",
     "consensus_shift",
     "accuracy_history",
