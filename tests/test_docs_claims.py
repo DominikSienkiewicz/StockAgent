@@ -166,3 +166,94 @@ def test_command_blocks_do_not_repeat_a_command(pattern: str) -> None:
                 seen.setdefault(command, number)
 
     assert repeated == [], f"to samo polecenie dwa razy w jednym bloku: {repeated}"
+
+
+# DOC-34: tabela „Sources” w how-it-works.md nie wymieniała części źródeł, które
+# działają w produkcji (EDGAR, Reddit, FRED, analitycy Finnhub), ani tych za
+# flagami off (option-chain, kalendarz Finnhub, Deribit). Każda flaga źródła
+# danych ma w tabeli wiersz z nazwą dostawcy i nazwą tej flagi, żeby czytelnik
+# widział, czym ją włączyć i co ją kosztuje.
+DATA_SOURCE_FLAGS = {
+    "insider_flow_enabled": ("SEC EDGAR",),
+    "social_velocity_enabled": ("Reddit",),
+    "yield_curve_enabled": ("FRED",),
+    "macro_series_enabled": ("FRED",),
+    "analyst_consensus_enabled": ("Finnhub", "/stock/recommendation"),
+    "options_flow_enabled": ("Finnhub", "option-chain"),
+    "finnhub_earnings_calendar_enabled": ("Finnhub", "/calendar/earnings"),
+    "earnings_calendar_enabled": ("Alpha Vantage", "EARNINGS_CALENDAR"),
+    "deribit_dvol_enabled": ("Deribit",),
+    "nbp_enabled": ("NBP",),
+}
+
+
+def _sources_rows() -> list[str]:
+    text = _how_it_works()
+    start = text.index("\n## Sources")
+    section = text[start : text.index("\n## ", start + 1)]
+    return [line for line in section.splitlines() if line.startswith("| **")]
+
+
+def test_data_source_flags_are_settings_fields() -> None:
+    from src.config import Settings
+
+    missing = [flag for flag in DATA_SOURCE_FLAGS if flag not in Settings.model_fields]
+
+    assert missing == [], f"flaga źródła zniknęła z Settings — zaktualizuj mapę: {missing}"
+
+
+@pytest.mark.parametrize("flag, names", sorted(DATA_SOURCE_FLAGS.items()))
+def test_sources_table_has_a_row_for_every_data_source_flag(
+    flag: str, names: tuple[str, ...]
+) -> None:
+    rows = [row for row in _sources_rows() if f"`{flag}`" in row]
+
+    assert rows, f"tabela Sources nie wymienia flagi `{flag}`"
+    assert any(all(name in row for name in names) for row in rows), (
+        f"wiersz z `{flag}` nie nazywa dostawcy {names}"
+    )
+
+
+def test_sources_table_has_no_duplicate_rows() -> None:
+    keys = [tuple(cell.strip() for cell in row.split("|")[1:3]) for row in _sources_rows()]
+    duplicated = sorted({key for key in keys if keys.count(key) > 1})
+
+    assert duplicated == [], f"ten sam wiersz tabeli Sources dwa razy: {duplicated}"
+
+
+def test_sources_rows_saying_off_by_default_name_flags_that_default_to_false() -> None:
+    from src.config import Settings
+
+    wrong = []
+    for row in _sources_rows():
+        if "Off by default" not in row:
+            continue
+        flags = re.findall(r"`(\w+_enabled)`", row)
+        wrong.extend(
+            flag
+            for flag in flags
+            if flag not in Settings.model_fields or Settings.model_fields[flag].default is not False
+        )
+
+    assert wrong == [], f"„Off by default” przy fladze, która w kodzie jest włączona: {wrong}"
+
+
+def test_sources_rows_stating_a_config_toml_state_match_config_toml() -> None:
+    import tomllib
+
+    shipped = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
+    checked = 0
+    wrong = []
+    for row in _sources_rows():
+        for stated in re.finditer(r"\b(On|Off) in `config\.toml`", row):
+            # Stan dotyczy ostatniej flagi wymienionej przed zdaniem o nim.
+            flag = re.findall(r"`(\w+_enabled)`", row[: stated.start()])[-1]
+            checked += 1
+            says_on = stated.group(1) == "On"
+            if shipped.get(flag) is not says_on:
+                wrong.append(
+                    f"{flag}: tabela mówi {stated.group(1)}, config.toml {shipped.get(flag)!r}"
+                )
+
+    assert checked >= len(DATA_SOURCE_FLAGS) - 2, "wzorzec stanu przestał łapać wiersze"
+    assert wrong == []
