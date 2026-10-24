@@ -331,13 +331,14 @@ A third helper reads the **production state** in one pass, without changing anyt
 ```bash
 # GitHub: secret names vs. what workflows read, workflow states and last runs, branch
 # protection, Pages, last Slow Loop outcome. Supabase (REST, GET only, the app's
-# SUPABASE_URL/SUPABASE_KEY): key role, migrations 017–025 detected from the OpenAPI
-# description (or per-object GET probes when the key cannot read it), latest
-# prediction/snapshot/fundamentals, training samples per symbol.
+# SUPABASE_URL/SUPABASE_KEY): key role, migrations from 017 on detected from the OpenAPI
+# description (or per-object GET probes when the key cannot read it) by the table,
+# column or function each one leaves behind, latest prediction/snapshot/fundamentals,
+# training samples per symbol.
 scripts/prod-state-check.sh > docs/concepts/prod-state-$(date +%F).md
 ```
 
-It accepts `-R`, `-f`, `--skip-github` and `--skip-supabase`. It is read-only by construction: `gh` is only used to list and view, every Supabase request is `curl --get` with the key passed on stdin (never in argv or the output), and no database function is called; [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py) enforces this on the script text. The output names secrets and counts subscribers, so keep it in the git-ignored `docs/concepts/`. Postgres version and the project plan are not exposed over REST and still need the Supabase dashboard.
+It accepts `-R`, `-f`, `--skip-github` and `--skip-supabase`. It is read-only by construction: `gh` is only used to list and view, every Supabase request is `curl --get` with the key passed on stdin (never in argv or the output), and no database function is called; [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py) enforces this on the script text. Every migration file has exactly one probe ([`tests/test_prod_state_probes.py`](../tests/test_prod_state_probes.py) compares the list with `supabase/migrations/`), so before you switch on a flag you can see which of its migrations the production database already has. A migration that only redefines a view or adds an index, a constraint or privileges (026, 038, 039, 047, 048, 054 and 058) leaves nothing in the OpenAPI description; the report lists it as n/a, and the Supabase dashboard or `supabase migration list` answers for it. The output names secrets and counts subscribers, so keep it in the git-ignored `docs/concepts/`. Postgres version and the project plan are not exposed over REST and still need the Supabase dashboard.
 
 ### Secret redaction
 

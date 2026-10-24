@@ -7,8 +7,10 @@
 #
 # Read-only z konstrukcji (pilnuje tests/test_workflow_policy.py):
 # - GitHub: wyłącznie `gh ... list`, `gh run view` i `gh api` bez metody i pól;
-# - Supabase: wyłącznie `curl --get`, bez funkcji RPC — obecność migracji 017–025
+# - Supabase: wyłącznie `curl --get`, bez funkcji RPC — obecność migracji od 017
 #   wynika z opisu OpenAPI (tabele, kolumny, funkcje), a nie z ich wywołania.
+#   Migracje, które zmieniają tylko definicję widoku, indeks, ograniczenie albo
+#   uprawnienia, OpenAPI nie pokazuje — wynik opisuje je jako nie do sprawdzenia.
 # Klucz idzie do curl przez stdin (`curl -K -`), nigdy przez argv ani na wyjście;
 # z JWT wypisywany jest wyłącznie claim `role`.
 #
@@ -45,6 +47,10 @@ WF_DIR="$ROOT/.github/workflows"
 MIN_SAMPLES="$(grep -oE 'MIN_SAMPLES_FOR_TRAINING = [0-9]+' "$ROOT/src/application/use_cases/train_model.py" 2>/dev/null | grep -oE '[0-9]+$' || true)"
 
 # Obiekty, po których rozpoznajemy migrację: numer, rodzaj, tabela/funkcja, kolumna.
+# Rodzaj `opaque` to migracja bez śladu w OpenAPI (nazwa obiektu, powód): sama
+# definicja widoku, indeks, ograniczenie albo uprawnienia. Tests/test_prod_state_probes.py
+# pilnuje, żeby każda migracja od 017 miała dokładnie jedną sondę z obiektem, który
+# ta migracja naprawdę tworzy.
 MIGRATION_PROBES="017 column prediction_logs regime
 018 function persona_accuracy_stats -
 019 table model_scorecards -
@@ -53,7 +59,50 @@ MIGRATION_PROBES="017 column prediction_logs regime
 022 column prediction_logs alpha_fusion_score
 023 table positions -
 024 column prediction_logs revealed_at
-025 column prediction_logs edge_sigma"
+025 column prediction_logs edge_sigma
+026 opaque ml_feature_store view-definition
+027 column prediction_logs feature_set_version
+028 column model_scorecards drift_baseline_rmse
+029 column prediction_logs settled_at
+030 column prediction_logs recipe_version
+031 table feature_snapshots -
+032 column prediction_logs interval_low
+033 table regime_history -
+034 column prediction_logs gate_delta
+035 column positions currency
+036 table fx_rates -
+037 column prediction_logs experiment_arms
+038 opaque row_level_security rls
+039 opaque ml_feature_store view-definition
+040 table llm_calls -
+041 table cycle_runs -
+042 table reference_predictions -
+043 column prediction_logs commitment_payload
+044 column prediction_logs calibration_score_version
+045 function persona_vote_outcomes -
+046 column prediction_logs correction_category
+047 opaque ml_feature_store view-definition
+048 opaque prediction_logs_predicted_trend_known constraint
+049 column model_scorecards run_id
+050 column ml_feature_store label_horizon_hours
+051 column prediction_logs trend_probabilities
+052 column model_scorecards feature_stats
+053 table earnings_cache -
+054 opaque idx_council_votes_prediction_investor_uniq index
+055 column prediction_logs stale_quote
+056 column fundamentals_cache market_cap
+057 table price_level_alerts -
+058 opaque ml_feature_store view-definition
+059 column prediction_logs settlement_close_price
+060 column model_scorecards weights_sha256
+061 table digests -
+062 table corporate_actions -
+063 function match_news_embeddings_exact -
+064 column model_scorecards dataset_sha256
+065 function persona_scoring_stats -"
+
+# Zakres z listy sond, żeby nagłówek nie zestarzał się z kolejną migracją.
+PROBE_RANGE="$(awk 'NR == 1 {first = $1} {last = $1} END {print first "–" last}' <<<"$MIGRATION_PROBES")"
 
 SB_URL=""
 SB_KEY=""
@@ -219,6 +268,25 @@ key_role() {
     || echo "nie da się odczytać (klucz nie jest JWT)"
 }
 
+# Opis migracji, której OpenAPI nie pokaże: etykieta wiersza i werdykt.
+opaque_label() {
+  local name="$1" reason="$2"
+  case "$reason" in
+    view-definition) echo "definicja widoku \`$name\`" ;;
+    index) echo "indeks \`$name\`" ;;
+    constraint) echo "ograniczenie \`$name\`" ;;
+    rls) echo "RLS i uprawnienia ról API (\`$name\`)" ;;
+    *) echo "obiekt \`$name\`" ;;
+  esac
+}
+
+OPAQUE_VERDICT="n/d (poza zasięgiem OpenAPI)"
+
+opaque_note() {
+  echo
+  echo "Wiersze n/d to migracje, które zmieniają tylko definicję widoku, indeks, ograniczenie albo uprawnienia: OpenAPI nie pokazuje takich obiektów, więc ich obecność potwierdzi dashboard Supabase albo \`supabase migration list\`. Migracja 026 zmienia wyłącznie definicję widoku \`ml_feature_store\`, a 038 włącza RLS."
+}
+
 migrations_from_openapi() {
   local spec="$1" num kind name column present label
   echo "| Migracja | Obiekt | Jest w bazie |"
@@ -231,6 +299,9 @@ migrations_from_openapi() {
       column)
         present="$(jq -r --arg t "$name" --arg c "$column" '.definitions[$t].properties[$c] != null' <<<"$spec")"
         label="kolumna \`$name.$column\`" ;;
+      opaque)
+        echo "| $num | $(opaque_label "$name" "$column") | $OPAQUE_VERDICT |"
+        continue ;;
       *)
         present="$(jq -r --arg f "/rpc/$name" '.paths[$f] != null' <<<"$spec")"
         label="funkcja \`$name\`" ;;
@@ -250,6 +321,9 @@ migrations_from_probes() {
     case "$kind" in
       table) label="tabela \`$name\`"; code="$(rest_status "$name?select=*&limit=0" || true)" ;;
       column) label="kolumna \`$name.$column\`"; code="$(rest_status "$name?select=$column&limit=0" || true)" ;;
+      opaque)
+        echo "| $num | $(opaque_label "$name" "$column") | $OPAQUE_VERDICT |"
+        continue ;;
       *) label="funkcja \`$name\`"; code="" ;;
     esac
     case "$code" in
@@ -311,16 +385,18 @@ supabase_section() {
   echo "- Wersja Postgresa i plan projektu: n/d przez REST — odczytaj w dashboardzie Supabase."
   echo
 
-  echo "### Migracje 017–025"
+  echo "### Migracje $PROBE_RANGE"
   echo
   if spec="$(rest_get "" -H 'Accept: application/openapi+json' 2>/dev/null)"; then
     echo "Źródło: opis OpenAPI."
     echo
     migrations_from_openapi "$spec"
+    opaque_note
   else
     echo "Źródło: sondy GET z \`limit=0\` (OpenAPI niedostępne dla tego klucza)."
     echo
     migrations_from_probes
+    opaque_note
   fi
   echo
 
