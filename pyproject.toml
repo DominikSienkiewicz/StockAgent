@@ -52,6 +52,9 @@ dev = [
     # świeże wydanie nie trafia do lockfile'a, zanim przeleży swoje. Podbijamy świadomie.
     "hypothesis==6.168.5",
     "jsonschema>=4.26.0",
+    # Stuby typów `yaml` dla strażników workflowów i konfiguracji (TEST-24): bez nich
+    # ratchet mypy po katalogach tests/ (TEST-13) widziałby `yaml` jako Any.
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 # Alias wstecznej zgodności: SDK jest już zależnością rdzeniową, ale
