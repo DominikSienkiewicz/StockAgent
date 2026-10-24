@@ -321,3 +321,65 @@ class TestPortErrorTaxonomy:
 
         with pytest.raises(TypeError, match="bug in the adapter"):
             adapter.get_consensus("AAPL")
+
+
+class TestRevision:
+    """DAT-13: dwa najświeższe okresy z tej samej odpowiedzi /stock/recommendation
+    (deduplikacja po period) — rewizja m/m bez nowego requestu."""
+
+    @staticmethod
+    def _period(period: str, **counts: int) -> dict[str, object]:
+        return {"period": period, **counts}
+
+    def test_revision_up_when_latest_period_has_more_buy_votes(
+        self, adapter: FinnhubAnalystAdapter, mocker
+    ) -> None:
+        from src.domain.analyst_consensus import RevisionDirection
+
+        payload = [
+            self._period("2026-09-01", buy=10, hold=10),
+            self._period("2026-10-01", strongBuy=3, buy=12, hold=5),
+            self._period("2026-08-01", buy=12, hold=8),
+        ]
+        get = mocker.patch(
+            "requests.Session.get", side_effect=[_ok_response(payload), _ok_response({})]
+        )
+
+        consensus = adapter.get_consensus("AAPL")
+
+        assert consensus is not None
+        assert consensus.revision().direction is RevisionDirection.UPGRADE
+        assert consensus.previous is not None and consensus.previous.buy == 10
+        assert get.call_count == 2
+
+    def test_duplicate_latest_period_is_not_its_own_previous(
+        self, adapter: FinnhubAnalystAdapter, mocker
+    ) -> None:
+        payload = [
+            self._period("2026-10-01", strongBuy=3, buy=12, hold=5),
+            self._period("2026-10-01", strongBuy=3, buy=12, hold=5),
+            self._period("2026-09-01", buy=10, hold=10),
+        ]
+        mocker.patch(
+            "requests.Session.get", side_effect=[_ok_response(payload), _ok_response({})]
+        )
+
+        consensus = adapter.get_consensus("AAPL")
+
+        assert consensus is not None
+        assert consensus.previous is not None and consensus.previous.buy == 10
+
+    def test_single_period_has_no_previous(
+        self, adapter: FinnhubAnalystAdapter, mocker
+    ) -> None:
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=[
+                _ok_response([self._period("2026-10-01", buy=4)]),
+                _ok_response({}),
+            ],
+        )
+
+        consensus = adapter.get_consensus("AAPL")
+
+        assert consensus is not None and consensus.previous is None

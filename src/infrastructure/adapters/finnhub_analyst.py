@@ -3,7 +3,8 @@
 Dwa darmowe-/premium-owe endpointy Finnhub:
     GET /stock/recommendation?symbol={s}&token={k}
         → lista miesięcznych snapshotów rozkładu rekomendacji; bierzemy
-          najświeższy po polu "period".
+          najświeższy po polu "period", a poprzedni (DAT-13) jako `previous`
+          do rewizji m/m — z tej samej odpowiedzi, bez nowego requestu.
     GET /stock/price-target?symbol={s}&token={k}
         → {"targetMedian": .., "targetMean": ..}; bywa płatny (403) — wtedy
           po prostu zostawiamy price_target = None, konsensus i tak zwracamy.
@@ -38,6 +39,8 @@ from src.infrastructure.adapters._http import (
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10.0
+# DAT-13: najświeższy okres + poprzedni do rewizji m/m.
+_REVISION_PERIODS = 2
 
 logger = logging.getLogger(__name__)
 
@@ -66,37 +69,36 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
 
     def get_consensus(self, symbol: str) -> AnalystConsensus | None:
         try:
-            snapshot = self._latest_recommendation(symbol)
-            if snapshot is None:
+            snapshots = self._recent_recommendations(symbol)
+            if not snapshots:
                 return None
-            price_target = self._price_target(symbol)
-            return AnalystConsensus(
-                symbol=symbol,
-                strong_buy=_as_int(snapshot.get("strongBuy")),
-                buy=_as_int(snapshot.get("buy")),
-                hold=_as_int(snapshot.get("hold")),
-                sell=_as_int(snapshot.get("sell")),
-                strong_sell=_as_int(snapshot.get("strongSell")),
-                price_target=price_target,
+            latest, *earlier = snapshots
+            return _consensus(
+                symbol,
+                latest,
+                price_target=self._price_target(symbol),
+                previous=_consensus(symbol, earlier[0]) if earlier else None,
             )
         except PortError:
             # Źródło opcjonalne — awaria dostawcy dla symbolu nie może wywalić cyklu.
             logger.exception("Finnhub analyst consensus failed for %s", symbol)
             return None
 
-    def _latest_recommendation(self, symbol: str) -> dict[str, Any] | None:
-        """Najświeższy snapshot rozkładu rekomendacji lub None."""
+    def _recent_recommendations(self, symbol: str) -> list[dict[str, Any]]:
+        """Dwa najświeższe okresy rozkładu rekomendacji (DAT-13), od najnowszego;
+        powtórzony `period` liczy się raz. Pusta lista = brak danych."""
         response = self._fetch("stock/recommendation", symbol)
         if response.status_code != 200:
-            return None
+            return []
         payload = json_payload(response)
-        if not isinstance(payload, list) or not payload:
-            return None
-        # Bierzemy snapshot o maksymalnym "period" (najświeższy miesiąc).
-        snapshots = [s for s in payload if isinstance(s, dict)]
-        if not snapshots:
-            return None
-        return max(snapshots, key=lambda s: str(s.get("period", "")))
+        if not isinstance(payload, list):
+            return []
+        by_period: dict[str, dict[str, Any]] = {}
+        for snapshot in payload:
+            if isinstance(snapshot, dict):
+                by_period.setdefault(str(snapshot.get("period", "")), snapshot)
+        newest_first = sorted(by_period.items(), key=lambda item: item[0], reverse=True)
+        return [snapshot for _, snapshot in newest_first[:_REVISION_PERIODS]]
 
     def _price_target(self, symbol: str) -> float | None:
         """Mediana (fallback: średnia) celu cenowego. Premium/403/pusto → None."""
@@ -124,6 +126,25 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
         )
         self._status.observe(endpoint, symbol, response.status_code)
         return response
+
+
+def _consensus(
+    symbol: str,
+    snapshot: dict[str, Any],
+    *,
+    price_target: float | None = None,
+    previous: AnalystConsensus | None = None,
+) -> AnalystConsensus:
+    return AnalystConsensus(
+        symbol=symbol,
+        strong_buy=_as_int(snapshot.get("strongBuy")),
+        buy=_as_int(snapshot.get("buy")),
+        hold=_as_int(snapshot.get("hold")),
+        sell=_as_int(snapshot.get("sell")),
+        strong_sell=_as_int(snapshot.get("strongSell")),
+        price_target=price_target,
+        previous=previous,
+    )
 
 
 class NullAnalystConsensusAdapter(AnalystConsensusPort):
