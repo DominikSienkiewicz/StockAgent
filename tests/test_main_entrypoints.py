@@ -7186,3 +7186,21 @@ class TestInsiderLeadWindowWiring:
         assert kwargs["context"].insider_lead_window == InsiderLeadWindow(
             as_of=to_nyse_time(kwargs["started_at"]).date(), max_age_days=5
         )
+
+
+class TestSessionCloseSettlementWiring:
+    """WIA-61: zamknięcie sesji obok ceny /quote — flaga w grafie (zapis rozliczenia)
+    i w repozytorium (odczyt drugiej trafności), obie za migracją 059."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_graph_and_repository_follow_the_flag(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        settings = settings.model_copy(update={"session_close_settlement_enabled": enabled})
+
+        deps = main_agent.build_agent_graph_deps(settings)
+        repo_cls = mocker.patch("main_agent.SupabaseRepository")
+        main_agent.build_repository(settings)
+
+        assert deps.session_close_settlement_enabled is enabled
+        assert repo_cls.call_args.kwargs["session_close_settlement_enabled"] is enabled

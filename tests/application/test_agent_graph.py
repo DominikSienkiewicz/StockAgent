@@ -5528,3 +5528,189 @@ class TestStaleQuote:
 
         assert "stale_quote" not in off
         assert on["stale_quote"] is True
+
+
+# ---------------------------------------------------------------------------
+# WIA-61: rozliczenie także na oficjalnym zamknięciu sesji (okres przejściowy)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionCloseSettlement:
+    """WIA-61 (decyzja właściciela, opcja „oba”): za `session_close_settlement_enabled`
+    rozliczenie zapisuje obok ceny /quote zamknięcie sesji z datą i źródłem oraz
+    trafność na nim. Cena /quote zostaje rozliczeniem — trafność i diagnoza bez zmian."""
+
+    _MONDAY_CLOSE = datetime(2026, 10, 19, 20, 0, tzinfo=UTC)
+    _TUESDAY_PREOPEN = datetime(2026, 10, 20, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _deps(repository_port: Mock, llm_port: Mock, **overrides) -> AgentGraphDeps:
+        from src.application.ports import QuotePort
+
+        fields = {
+            "market_port": Mock(spec=MarketDataPort),
+            "sentiment_port": Mock(spec=SentimentPort),
+            "news_port": Mock(spec=NewsPort),
+            "repository_port": repository_port,
+            "ml_port": Mock(spec=MLPredictionPort),
+            "llm_port": llm_port,
+            "threshold": Threshold(Decimal("0.02")),
+            "quote_port": Mock(spec=QuotePort),
+            "clock": lambda: TestSessionCloseSettlement._TUESDAY_PREOPEN,
+            **overrides,
+        }
+        return AgentGraphDeps(**fields)
+
+    @staticmethod
+    def _stock_state(**extra) -> dict:
+        from src.domain.asset import Asset
+        from src.domain.value_objects import AssetType
+
+        return {
+            **_initial_state("100"),
+            "asset": Asset(symbol="AAPL", asset_type=AssetType.STOCK),
+            **extra,
+        }
+
+    @staticmethod
+    def _close(price: str, day: tuple[int, int, int], source: str = "quote_close"):
+        from datetime import date
+
+        from src.domain.session_close import SessionClose, SessionCloseSource
+
+        return SessionClose(Money(Decimal(price)), date(*day), SessionCloseSource(source))
+
+    @staticmethod
+    def _monday_bullish() -> Prediction:
+        return Prediction(
+            id="pred-1",
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100"),
+            predicted_target_price=Decimal("104"),
+            created_at=datetime(2026, 10, 19, 5, 30, tzinfo=UTC),
+        )
+
+    def test_check_price_records_the_session_close_with_the_flag(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _check_price_node
+        from src.domain.value_objects import Quote
+
+        quote = Quote(
+            price=Money(Decimal("106")),
+            quoted_at=self._MONDAY_CLOSE,
+            prev_close=Money(Decimal("100")),
+        )
+        off = self._deps(repository_port, llm_port)
+        on = self._deps(repository_port, llm_port, session_close_settlement_enabled=True)
+        off.quote_port.get_quote.return_value = quote
+        on.quote_port.get_quote.return_value = quote
+
+        assert "session_close" not in _check_price_node(off, self._stock_state())
+        assert _check_price_node(on, self._stock_state())["session_close"] == self._close(
+            "106", (2026, 10, 19)
+        )
+
+    def test_reflect_settles_on_session_close_and_records_session_date(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+        from src.domain.session_close import SessionCloseSettlement
+
+        repository_port.get_unverified_prediction.return_value = self._monday_bullish()
+        deps = self._deps(repository_port, llm_port, session_close_settlement_enabled=True)
+        close = self._close("106", (2026, 10, 19))
+        state = self._stock_state(
+            current_price=Decimal("106"),
+            delta=Decimal("0.06"),
+            quoted_at=self._MONDAY_CLOSE,
+            session_close=close,
+        )
+
+        _reflect_node(deps, state)
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["actual_price"] == Decimal("106")
+        assert kwargs["session_close"] == SessionCloseSettlement(close, is_trend_correct=True)
+
+    def test_both_hit_rates_are_recorded_when_the_prices_disagree(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        # Wtorek w trakcie sesji: /quote 99 (pudło BULLISH), zamknięcie poniedziałku
+        # 106 (trafienie). Rozliczeniem zostaje /quote; zamknięcie idzie obok.
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._monday_bullish()
+        deps = self._deps(
+            repository_port,
+            llm_port,
+            session_close_settlement_enabled=True,
+            clock=lambda: datetime(2026, 10, 20, 15, 0, tzinfo=UTC),
+        )
+        state = self._stock_state(
+            current_price=Decimal("99"),
+            delta=Decimal("0.001"),
+            quoted_at=datetime(2026, 10, 20, 14, 59, tzinfo=UTC),
+            session_close=self._close("106", (2026, 10, 19), "quote_previous_close"),
+        )
+
+        _reflect_node(deps, state)
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["is_trend_correct"] is False
+        assert kwargs["session_close"].is_trend_correct is True
+
+    def test_close_from_before_the_prediction_horizon_is_not_recorded(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        # Poniedziałek w trakcie sesji: `pc` to zamknięcie piątku, sprzed predykcji.
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._monday_bullish()
+        deps = self._deps(repository_port, llm_port, session_close_settlement_enabled=True)
+        state = self._stock_state(
+            current_price=Decimal("106"),
+            delta=Decimal("0.06"),
+            quoted_at=datetime(2026, 10, 19, 14, 59, tzinfo=UTC),
+            session_close=self._close("100", (2026, 10, 16), "quote_previous_close"),
+        )
+
+        _reflect_node(deps, state)
+
+        assert "session_close" not in repository_port.update_prediction_accuracy.call_args.kwargs
+
+    def test_flag_off_settles_without_the_session_close(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._monday_bullish()
+        deps = self._deps(repository_port, llm_port)
+        state = self._stock_state(
+            current_price=Decimal("106"),
+            delta=Decimal("0.06"),
+            quoted_at=self._MONDAY_CLOSE,
+            session_close=self._close("106", (2026, 10, 19)),
+        )
+
+        _reflect_node(deps, state)
+
+        assert "session_close" not in repository_port.update_prediction_accuracy.call_args.kwargs
+
+    def test_settlement_columns_are_required_with_the_flag(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import required_prediction_columns
+
+        columns = {
+            "settlement_close_price",
+            "settlement_session_date",
+            "settlement_source",
+            "is_trend_correct_session_close",
+        }
+        off = self._deps(repository_port, llm_port)
+        on = self._deps(repository_port, llm_port, session_close_settlement_enabled=True)
+
+        assert not columns & required_prediction_columns(off)
+        assert columns <= required_prediction_columns(on)

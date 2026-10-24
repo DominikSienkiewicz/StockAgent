@@ -287,6 +287,12 @@ fundamentals_market_cap_enabled = false
 # od daty filingu Form 4 — inaczej jeden filing wracałby w każdym cyklu przez całe
 # 90-dniowe okno insider flow. Sekcja alfy pokazuje zakup dalej. Bez migracji.
 insider_lead_max_age_days = 3
+# WIA-61: okres przejściowy rozliczenia — obok ceny /quote z chwili cyklu zapisuje
+# oficjalne zamknięcie sesji NYSE (to samo notowanie: `c` po zamknięciu, `pc` w trakcie
+# następnej sesji) z datą sesji i źródłem; mail pokazuje obie trafności. Rozliczeniem
+# zostaje /quote. Krypto bez sesji — bez tej ceny. Zero nowych requestów.
+# UWAGA: włącz DOPIERO po migracji 059.
+session_close_settlement_enabled = false
 # WIA-24: darmowy sygnał referencyjny `reference-v1` (docs/reference-protocol-v1.md) —
 # raz na przebieg Slow Loopa własny odczyt /quote (Finnhub, CoinGecko), rozliczenie
 # zeszłotygodniowego wywołania i nowe wywołanie ze znaku zmiany tygodniowej. Zapis do

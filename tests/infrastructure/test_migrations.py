@@ -91,6 +91,7 @@ MIGRATION_FILES = [
     "056_fundamentals_market_cap.sql",
     "057_price_level_alerts.sql",
     "058_settled_reads_without_stale_quote.sql",
+    "059_settlement_session_close.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -2925,6 +2926,65 @@ class TestMigration058SettledReadsWithoutStaleQuote:
                 "SELECT obj_description('persona_vote_outcomes(integer)'::regprocedure)"
             )
             assert "DAT-14" in cur.fetchone()[0]
+
+
+@pytest.mark.containers
+class TestMigration059SettlementSessionClose:
+    """WIA-61: druga cena rozliczenia — oficjalne zamknięcie sesji z datą, źródłem
+    i trafnością obok `actual_price_after_12h`; NULL dla krypto i starych wierszy."""
+
+    def test_settlement_carries_the_session_close_next_to_the_quote(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {
+            "settlement_close_price",
+            "settlement_session_date",
+            "settlement_source",
+            "is_trend_correct_session_close",
+        } <= _columns(migrated_pg_conn, "prediction_logs")
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) VALUES "
+                "('SC059', '2026-10-19T05:30:00+00:00', 100.0) RETURNING id"
+            )
+            prediction_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE prediction_logs SET actual_price_after_12h = 105.0, "
+                "settlement_close_price = 106.12345, settlement_session_date = '2026-10-19', "
+                "settlement_source = 'quote_close', is_trend_correct_session_close = true "
+                "WHERE id = %s RETURNING actual_price_after_12h, settlement_close_price, "
+                "settlement_session_date::text, settlement_source, is_trend_correct_session_close",
+                (prediction_id,),
+            )
+            row = cur.fetchone()
+
+        assert row == (
+            Decimal("105.0000"), Decimal("106.1235"), "2026-10-19", "quote_close", True
+        )
+
+    def test_settlement_source_rejects_an_unknown_field(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, settlement_source) "
+                "VALUES ('SC059_BAD', '2026-10-19T05:30:00+00:00', 'vendor_close')"
+            )
+
+    def test_059_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "059_settlement_session_close.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'prediction_logs'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%settlement_source%'"
+            )
+            assert cur.fetchone() == (1,)
 
 
 @pytest.mark.containers

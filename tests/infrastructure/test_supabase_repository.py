@@ -4306,6 +4306,96 @@ class TestStaleQuote:
 
 
 # ---------------------------------------------------------------------------
+# WIA-61: rozliczenie także na oficjalnym zamknięciu sesji (migracja 059)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionCloseSettlement:
+    """Rozliczenie niesie zamknięcie sesji tylko, gdy graf je poda (flaga), a hit
+    rate na nim liczy się obok trafności /quote wyłącznie za flagą repozytorium —
+    przed migracją 059 SELECT kolumny dałby 400."""
+
+    @staticmethod
+    def _settlement():
+        from src.domain.session_close import (
+            SessionClose,
+            SessionCloseSettlement,
+            SessionCloseSource,
+        )
+
+        close = SessionClose(
+            Money(Decimal("106.12345")), date(2026, 10, 19), SessionCloseSource.QUOTE_CLOSE
+        )
+        return SessionCloseSettlement(close, is_trend_correct=True)
+
+    def test_settlement_carries_the_session_close_only_when_given(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}])
+        settle = {
+            "prediction_id": "uuid-1",
+            "actual_price": Decimal("105.0"),
+            "accuracy_score": 0.96,
+            "is_trend_correct": True,
+            "insight": "x",
+        }
+
+        repo.update_prediction_accuracy(**settle)
+        plain = mock_client.table.return_value.update.call_args.args[0]
+        repo.update_prediction_accuracy(**settle, session_close=self._settlement())
+        both = mock_client.table.return_value.update.call_args.args[0]
+
+        assert not {"settlement_close_price", "settlement_session_date"} & set(plain)
+        assert both["actual_price_after_12h"] == "105.0"
+        # DECIMAL(14,4) jak pozostałe ceny (ARCH-38).
+        assert both["settlement_close_price"] == "106.1235"
+        assert both["settlement_session_date"] == "2026-10-19"
+        assert both["settlement_source"] == "quote_close"
+        assert both["is_trend_correct_session_close"] is True
+
+    def test_accuracy_stats_add_the_session_close_hit_rate_with_the_flag(
+        self, mock_client: MagicMock
+    ) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", session_close_settlement_enabled=True
+        )
+        chain = mock_client.table.return_value
+        rows = [
+            {"is_trend_correct": True, "is_trend_correct_session_close": True},
+            {"is_trend_correct": False, "is_trend_correct_session_close": True},
+            {"is_trend_correct": False, "is_trend_correct_session_close": False},
+            {"is_trend_correct": True, "is_trend_correct_session_close": None},
+        ]
+        _set_paginated_response(
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value,
+            [rows],
+        )
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert "is_trend_correct_session_close" in chain.select.call_args.args[0]
+        assert stats["sample_count"] == 4
+        # Te same trzy predykcje z zamknięciem sesji: 2 trafione na nim, 1 na /quote.
+        assert stats["session_close_count"] == 3
+        assert stats["session_close_correct_count"] == 2
+        assert stats["session_close_quote_correct_count"] == 1
+
+    def test_without_the_flag_accuracy_stats_stay_as_they_were(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        chain = mock_client.table.return_value
+        _set_paginated_response(
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value,
+            [[{"is_trend_correct": True}]],
+        )
+
+        stats = repo.get_accuracy_stats(days=30)
+
+        assert "is_trend_correct_session_close" not in chain.select.call_args.args[0]
+        assert "session_close_count" not in stats
+
+
+# ---------------------------------------------------------------------------
 # DAT-21: `fundamentals_cache.market_cap` (migracja 056)
 # ---------------------------------------------------------------------------
 

@@ -167,6 +167,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "fundamentals_market_cap_enabled",
     # DAT-21: okno, w którym zakup insidera może otwierać maila — sam lead maila.
     "insider_lead_max_age_days",
+    # WIA-61: druga cena rozliczenia (zamknięcie sesji) obok /quote — pomiar, nie prognoza.
+    "session_close_settlement_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -772,6 +774,10 @@ class Settings(BaseSettings):
     # dni od daty filingu; sekcja alfy pokazuje go dalej. 3 dni obejmują piątkowy
     # filing, który pierwszy raz widzi poniedziałkowy cykl.
     insider_lead_max_age_days: int = Field(default=INSIDER_LEAD_MAX_AGE_DAYS, ge=0)
+    # WIA-61: rozliczenie zapisuje obok ceny /quote oficjalne zamknięcie sesji NYSE
+    # z datą i źródłem, a mail pokazuje obie trafności (okres przejściowy). Kolumny
+    # z migracji 059; off w kodzie i w config.toml, dopóki produkcja jej nie ma.
+    session_close_settlement_enabled: bool = False
     # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
     # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
     # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.

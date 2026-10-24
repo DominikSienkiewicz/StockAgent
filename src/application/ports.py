@@ -27,6 +27,7 @@ from src.domain.price_levels import PriceLevel, PriceLevelAlert
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
+from src.domain.session_close import SessionCloseSettlement
 from src.domain.shock import DailyChange
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
@@ -285,6 +286,7 @@ class RepositoryPort(ABC):
         correction_category: MistakeCategory | None = None,
         *,
         stale_quote: bool | None = None,
+        session_close: SessionCloseSettlement | None = None,
     ) -> None:
         """Zamyka predykcję feedbackiem. `accuracy_score` (bliskość ceny do
         celu) napędza trening; `is_trend_correct` (zgodność kierunku) napędza
@@ -294,7 +296,11 @@ class RepositoryPort(ABC):
         kolumnę z migracji 046 zapisuje adapter tylko za swoją flagą.
         `stale_quote` (DAT-14, migracja 055): True = rozliczenie z notowania sprzed
         sesji po predykcji, wiersz wypada z trafności. None = kolumny nie dotykamy
-        (graf podaje ją wyłącznie za `stale_quote_enabled`)."""
+        (graf podaje ją wyłącznie za `stale_quote_enabled`).
+        `session_close` (WIA-61, migracja 059): oficjalne zamknięcie sesji z datą,
+        źródłem i trafnością na nim — obok ceny /quote, która zostaje rozliczeniem.
+        None = kolumn nie dotykamy (graf podaje je wyłącznie za
+        `session_close_settlement_enabled`)."""
 
     @abstractmethod
     def get_feature_store_data(
@@ -323,7 +329,12 @@ class RepositoryPort(ABC):
 
         Ten i pozostałe odczyty track-recordu (`get_recently_resolved_predictions`,
         `get_resolved_predictions`, `get_resolved_for_calibration`) pomijają
-        atrapy po awarii głównego LLM (flaga `llm_analysis_failed`, WIA-09)."""
+        atrapy po awarii głównego LLM (flaga `llm_analysis_failed`, WIA-09).
+
+        WIA-61 (za `session_close_settlement_enabled`, migracja 059): wiersze
+        z zapisanym zamknięciem sesji dają `session_close_count`,
+        `session_close_correct_count` (trafne na zamknięciu) i
+        `session_close_quote_correct_count` (te same predykcje trafne na /quote)."""
 
     @abstractmethod
     def get_recently_resolved_predictions(

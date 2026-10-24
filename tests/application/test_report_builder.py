@@ -2229,6 +2229,39 @@ class TestAccuracyHistoryBothDefinitions:
         assert "Trafność kierunkowa" not in html
 
 
+class TestAccuracyHistorySessionClose:
+    """WIA-61 (okres przejściowy, opcja „oba”): obok trafności na cenie /quote
+    Historia trafności pokazuje trafność na oficjalnym zamknięciu sesji i, dla
+    porównania, trafność /quote na tych samych predykcjach."""
+
+    _STATS = {
+        **TestAccuracyHistoryBothDefinitions._STATS,
+        "session_close_count": 40,
+        "session_close_correct_count": 30,
+        "session_close_quote_correct_count": 28,
+    }
+
+    @staticmethod
+    def _report(stats: dict[str, object]) -> tuple[str, str]:
+        return build_html_report(
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(accuracy_stats=stats)
+        )
+
+    def test_both_hit_rates_are_shown_in_html_and_text(self):
+        html, text = self._report(self._STATS)
+
+        for body in (html, text):
+            assert "Na oficjalnym zamknięciu sesji: 75,0%" in body
+            assert "na cenie /quote tych samych predykcji: 70,0%" in body
+            assert "n=40" in body
+
+    def test_without_session_close_counts_the_line_is_absent(self):
+        html, text = self._report(TestAccuracyHistoryBothDefinitions._STATS)
+
+        assert "oficjalnym zamknięciu sesji" not in html
+        assert "oficjalnym zamknięciu sesji" not in text
+
+
 class TestResolvedSummaryBothDefinitions:
     """Decyzja 2026-10-19 (a): podsumowanie „Zamknięte predykcje (24h)” mówiło
     „(X% accuracy)” z SIDEWAYS w mianowniku. Teraz ta sama para etykiet co

@@ -54,6 +54,7 @@ from src.domain.reference_signal import (
 )
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.regime_key import canonical_regime_key
+from src.domain.session_close import SessionCloseSettlement
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
 from src.domain.value_objects import (
@@ -351,14 +352,45 @@ def _serialize(value: Any) -> Any:
     return value
 
 
-# ARCH-38: kolumny cenowe `prediction_logs` w skali DECIMAL(14,4) (001, 032).
+# ARCH-38: kolumny cenowe `prediction_logs` w skali DECIMAL(14,4) (001, 032, 059).
 _PREDICTION_PRICE_COLUMNS = frozenset({
     "price_at_prediction",
     "predicted_target_price",
     "actual_price_after_12h",
     "interval_low",
     "interval_high",
+    "settlement_close_price",
 })
+
+# WIA-61 (migracja 059): trafność kierunku na oficjalnym zamknięciu sesji.
+_SESSION_CLOSE_CORRECT_COLUMN = "is_trend_correct_session_close"
+
+
+def _session_close_payload(settlement: SessionCloseSettlement) -> dict[str, Any]:
+    """WIA-61: zamknięcie sesji z datą i źródłem obok ceny /quote — z nich
+    weryfikator sprawdzi cenę w publicznym serwisie."""
+    close = settlement.close
+    return {
+        "settlement_close_price": close.price.amount,
+        "settlement_session_date": close.session_day.isoformat(),
+        "settlement_source": close.source.value,
+        _SESSION_CLOSE_CORRECT_COLUMN: settlement.is_trend_correct,
+    }
+
+
+def _session_close_stats(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """WIA-61: trafność na zamknięciu sesji i, dla porównania, trafność /quote na
+    TYCH SAMYCH predykcjach — tylko wiersze z zapisanym zamknięciem."""
+    with_close = [row for row in rows if row.get(_SESSION_CLOSE_CORRECT_COLUMN) is not None]
+    return {
+        "session_close_count": len(with_close),
+        "session_close_correct_count": sum(
+            1 for row in with_close if row[_SESSION_CLOSE_CORRECT_COLUMN]
+        ),
+        "session_close_quote_correct_count": sum(
+            1 for row in with_close if row.get("is_trend_correct")
+        ),
+    }
 
 
 def _storage_price(value: Decimal) -> Decimal:
@@ -540,6 +572,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         correction_category_enabled: bool = False,
         stale_quote_enabled: bool = False,
         fundamentals_market_cap_enabled: bool = False,
+        session_close_settlement_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
         # DAT-14: kolumna `stale_quote` istnieje od migracji 055 — bez flagi odczyty
@@ -548,6 +581,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # DAT-21: kolumna `fundamentals_cache.market_cap` istnieje od migracji 056 —
         # bez flagi upsert jej nie niesie (PGRST204 zgubiłby cały wpis cache).
         self._fundamentals_market_cap_enabled = fundamentals_market_cap_enabled
+        # WIA-61: kolumny zamknięcia sesji istnieją od migracji 059 — bez flagi
+        # odczyt trafności ich nie wybiera (400 zabiłby raport).
+        self._session_close_settlement_enabled = session_close_settlement_enabled
         # ML-10: kolumny baseline'ów dryfu i „sam LLM" istnieją od migracji 028 —
         # bez flagi payload karty ich nie niesie (PGRST204 zgubiłby cały wiersz).
         self._scorecard_baselines_enabled = scorecard_baselines_enabled
@@ -933,13 +969,12 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # Paginacja (#8): hit-rate liczony na PEŁNYM zbiorze, nie obciętych 1000
         # wierszy. .order("timestamp") czyni podzbiór deterministycznym —
         # bez niego obcięta próbka była losowa przy każdym wywołaniu.
+        columns = "is_trend_correct, predicted_trend, data_quality_flags, timestamp"
+        if self._session_close_settlement_enabled:
+            columns += f", {_SESSION_CLOSE_CORRECT_COLUMN}"
         query = (
             self._client.table(self._table)
-            .select(
-                self._countable_columns(
-                    "is_trend_correct, predicted_trend, data_quality_flags, timestamp"
-                )
-            )
+            .select(self._countable_columns(columns))
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
@@ -961,6 +996,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             )
         )
 
+        # WIA-61: za flagą druga trafność — na oficjalnym zamknięciu sesji.
+        session_close = _session_close_stats(rows) if self._session_close_settlement_enabled else {}
         if not calls:
             return {
                 "mean_accuracy": None,
@@ -970,6 +1007,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
                 "directional_count": 0,
                 "directional_correct_count": 0,
                 "n_eff": 0.0,
+                **session_close,
             }
         correct_count = sum(1 for _, correct in calls if correct)
         return {
@@ -980,6 +1018,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             "directional_count": directional.directional,
             "directional_correct_count": directional.hits,
             "n_eff": n_eff,
+            **session_close,
         }
 
     def get_cached_fundamentals(self, symbol: str) -> Fundamentals | None:
@@ -2053,6 +2092,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         correction_category: MistakeCategory | None = None,
         *,
         stale_quote: bool | None = None,
+        session_close: SessionCloseSettlement | None = None,
     ) -> None:
         settlement: dict[str, Any] = {
             "actual_price_after_12h": actual_price,
@@ -2064,6 +2104,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # DAT-14: klucz tylko, gdy graf go podał (flaga po migracji 055) — PGRST204.
         if stale_quote is not None:
             settlement[_STALE_QUOTE_COLUMN] = stale_quote
+        # WIA-61: klucze tylko, gdy graf podał zamknięcie (flaga po migracji 059).
+        if session_close is not None:
+            settlement.update(_session_close_payload(session_close))
         payload = _serialize_record(settlement, _PREDICTION_PRICE_COLUMNS)
         # Idempotency guard: aktualizujemy tylko gdy actual_price_after_12h jest
         # NULL. Bez tego dwa równoczesne cykle (np. ręczny workflow_dispatch

@@ -918,6 +918,7 @@ def build_repository(settings: Settings) -> RepositoryPort:
         crypto_symbols=settings.crypto_symbols,
         correction_category_enabled=settings.correction_category_enabled,
         stale_quote_enabled=settings.stale_quote_enabled,
+        session_close_settlement_enabled=settings.session_close_settlement_enabled,
     )
     if settings.db_writes_enabled:
         return repository
@@ -1564,6 +1565,8 @@ def build_agent_graph_deps(
         # czasu notowania → cena jak przed DAT-14 (wzorzec `DailyChangePort` watcha).
         quote_port=equity_quotes if isinstance(equity_quotes, QuotePort) else None,
         stale_quote_enabled=settings.stale_quote_enabled,
+        # WIA-61: zamknięcie sesji z tego samego notowania obok ceny /quote (migracja 059).
+        session_close_settlement_enabled=settings.session_close_settlement_enabled,
         # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
         # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji. WIA-70:
         # flaga on bez kolumn 024/043 → cykl bez atestacji, predykcje zapisane.

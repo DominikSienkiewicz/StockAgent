@@ -1622,3 +1622,16 @@ class TestInsiderLeadMaxAgeDays:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "insider_lead_max_age_days" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestSessionCloseSettlementFlag:
+    """WIA-61: zapis zamknięcia sesji obok ceny /quote (migracja 059) — off do
+    migracji; pomiar rozliczenia, nie prognoza, więc poza przepisem."""
+
+    def test_defaults_off_and_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.session_close_settlement_enabled is False
+        assert "session_close_settlement_enabled" in NON_RECIPE_SETTINGS_FIELDS

@@ -1999,6 +1999,25 @@ _DIRECTIONAL_ACCURACY_LABEL = "Trafność kierunkowa (bez prognoz „bez ruchu�
 _TOTAL_ACCURACY_LABEL = "Trafność łączna (z prognozami „bez ruchu”)"
 
 
+# WIA-61 (okres przejściowy, opcja „oba”): druga cena rozliczenia obok /quote.
+_SESSION_CLOSE_ACCURACY_LABEL = "Na oficjalnym zamknięciu sesji"
+
+
+def _session_close_accuracy(accuracy_stats: dict[str, Any]) -> str | None:
+    """WIA-61: linia trafności na zamknięciu sesji z trafnością /quote tych samych
+    predykcji; None, gdy statystyki jej nie niosą (flaga off) albo próba pusta."""
+    n = accuracy_stats.get("session_close_count")
+    if not n:
+        return None
+    hits = accuracy_stats["session_close_correct_count"]
+    quote_hits = accuracy_stats["session_close_quote_correct_count"]
+    return (
+        f"{_SESSION_CLOSE_ACCURACY_LABEL}: {_pct(hits / n, decimals=1)}"
+        f" ({wilson_label(hits, n)}) · na cenie /quote tych samych predykcji:"
+        f" {_pct(quote_hits / n, decimals=1)}"
+    )
+
+
 def _directional_accuracy(accuracy_stats: dict[str, Any]) -> tuple[str, str] | None:
     """(wartość, dopisek) trafności kierunkowej; None, gdy statystyki jej nie niosą."""
     n = accuracy_stats.get("directional_count")
@@ -2026,6 +2045,10 @@ def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
             if directional is not None
             else ""
         )
+        session_close = _session_close_accuracy(accuracy_stats)
+        session_close_html = (
+            f"<br/>{html.escape(session_close)}" if session_close is not None else ""
+        )
         return f"""
       <div style="padding: 12px 14px; background: #fef3c7; border-left: 3px solid #f59e0b;
                   border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
@@ -2036,7 +2059,7 @@ def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
           {directional_html}
           {_TOTAL_ACCURACY_LABEL}: <strong>{_pct(acc, decimals=1)}</strong> ({interval})
           · Predykcji ocenionych: {n}
-          · Poprawnych: {correct}
+          · Poprawnych: {correct}{session_close_html}
         </div>
       </div>
         """
@@ -2878,8 +2901,11 @@ def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list
         f" ({wilson_label(accuracy_stats['correct_count'], accuracy_stats['sample_count'])})"
         f"  ·  Predykcji ocenionych: {accuracy_stats['sample_count']}"
         f"  ·  Poprawnych: {accuracy_stats['correct_count']}",
-        "",
     ])
+    session_close = _session_close_accuracy(accuracy_stats)
+    if session_close is not None:
+        lines.append(f"  {session_close}")
+    lines.append("")
     return lines
 
 

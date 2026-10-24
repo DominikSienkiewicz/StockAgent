@@ -92,6 +92,7 @@ from src.domain.prediction import (
 )
 from src.domain.recipe import PredictionRecipe
 from src.domain.regime_key import canonical_regime_key
+from src.domain.session_close import SessionClose, SessionCloseSettlement, session_close_of
 from src.domain.value_objects import (
     AssetType,
     Fundamentals,
@@ -164,6 +165,9 @@ class AgentState(TypedDict, total=False):
     # bez `quote_port`) — stęchłości nie oceniamy, jak przed DAT-14.
     quoted_at: datetime
     stale_quote: bool
+    # WIA-61: zamknięcie ostatniej zakończonej sesji z tego samego notowania (za
+    # `session_close_settlement_enabled`); None = notowanie go nie wyznacza.
+    session_close: SessionClose | None
     delta: Decimal
     # ALR-10: cena odniesienia dryfu (ostatnia predykcja z okna albo początek okna,
     # podaje use case za `drift_gate_enabled`) i dryf od niej (ułamek, z check_price).
@@ -694,6 +698,9 @@ class AgentGraphDeps:
     # DAT-14: kolumna `stale_quote` (migracja 055) w predykcji i rozliczeniu. Off =
     # klucza nie ma w rekordzie — przed migracją dałby PGRST204.
     stale_quote_enabled: bool = False
+    # WIA-61: rozliczenie zapisuje obok ceny /quote oficjalne zamknięcie sesji
+    # (kolumny z migracji 059). Off = klucze nie idą do repozytorium (PGRST204).
+    session_close_settlement_enabled: bool = False
     attestation_publisher: AttestationPublisherPort | None = None
     # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
     # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
@@ -747,7 +754,8 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]
         "delta": delta.percentage,
     }
     if quote is not None:
-        stale = is_stale(quote.quoted_at, deps.clock())
+        now = deps.clock()
+        stale = is_stale(quote.quoted_at, now)
         if stale:
             logger.warning(
                 "Quote for %s is from %s, before the last started NYSE session",
@@ -756,6 +764,8 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]
             )
         update["quoted_at"] = quote.quoted_at
         update["stale_quote"] = stale
+        if deps.session_close_settlement_enabled:
+            update["session_close"] = session_close_of(quote, now)
     reference = state.get("drift_reference")
     if reference is not None and reference > 0:
         update["drift"] = PriceDelta.calculate(Money(reference), current).fraction
@@ -1115,6 +1125,27 @@ def _settle_on_stale_quote(
     }
 
 
+class _SettlementExtras(TypedDict, total=False):
+    """WIA-61: opcjonalne pola rozliczenia — klucz tylko, gdy jest wartość."""
+
+    session_close: SessionCloseSettlement
+
+
+def _session_close_extras(
+    deps: AgentGraphDeps, state: AgentState, last: Prediction, tolerance: Decimal
+) -> _SettlementExtras:
+    """WIA-61 (okres przejściowy): zamknięcie sesji z trafnością na nim, gdy
+    pochodzi z pierwszej sesji po predykcji albo późniejszej. Cena /quote zostaje
+    rozliczeniem — trafność raportu, diagnoza i trening bez zmian."""
+    close = state.get("session_close")
+    if not deps.session_close_settlement_enabled or close is None or last.created_at is None:
+        return {}
+    if not close.settles(last.created_at):
+        return {}
+    correct = last.is_trend_correct(close.price.amount, tolerance=tolerance)
+    return {"session_close": SessionCloseSettlement(close, is_trend_correct=correct)}
+
+
 def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     repository_port = deps.repository_port
     reflection_min_age_hours = deps.reflection_min_age_hours
@@ -1156,6 +1187,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
     if _settles_on_stale_quote(state, last):
         return _settle_on_stale_quote(deps, last, current_price, accuracy, trend_correct)
+    extras = _session_close_extras(deps, state, last, tolerance)
 
     if trend_correct:
         repository_port.update_prediction_accuracy(
@@ -1164,6 +1196,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
             accuracy_score=accuracy,
             is_trend_correct=trend_correct,
             insight=CORRECT_PREDICTION_INSIGHT,
+            **extras,
         )
         return {
             "reflection_context": "Ostatnie prognozy były trafne. Kontynuuj strategię."
@@ -1230,6 +1263,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         is_trend_correct=trend_correct,
         insight=insight,
         correction_category=category,
+        **extras,
     )
     return {"reflection_context": f"Ostatni błąd: {insight}"}
 
@@ -1877,9 +1911,20 @@ _ALWAYS_SAVED_PREDICTION_COLUMNS: frozenset[str] = frozenset({
 })
 
 
+# WIA-61 (migracja 059): kolumny zamknięcia sesji, które reflect dopisuje do rozliczenia.
+SESSION_CLOSE_SETTLEMENT_COLUMNS = (
+    "settlement_close_price",
+    "settlement_session_date",
+    "settlement_source",
+    "is_trend_correct_session_close",
+)
+
+
 def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
     """FIN-05: każda kolumna `prediction_logs`, którą `_save_node` może zapisać przy
     tych zależnościach — klucze opcjonalne wyłącznie za ich flagą albo portem.
+    WIA-61: także kolumny zamknięcia sesji, które za flagą dopisuje rozliczenie —
+    bez nich każdy symbol padałby w reflect.
 
     DI sprawdza je raz na cykl, przed płatnymi węzłami: brakująca kolumna
     (niezaaplikowana migracja) kończyłaby zapis błędem po opłaconej analizie,
@@ -1896,6 +1941,11 @@ def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
         "experiment_arms": deps.experiment_arms_enabled,
         # DAT-14 (migracja 055): werdykt notowania z `quote_port`, za flagą.
         "stale_quote": deps.stale_quote_enabled and deps.quote_port is not None,
+        # WIA-61 (migracja 059): zamknięcie sesji z notowania `quote_port`, za flagą.
+        **dict.fromkeys(
+            SESSION_CLOSE_SETTLEMENT_COLUMNS,
+            deps.session_close_settlement_enabled and deps.quote_port is not None,
+        ),
         "commitment_hash": deps.attestation_publisher is not None,
         "commitment_salt": deps.attestation_publisher is not None,
         # WIA-70 (migracja 043): dosłowny plaintext commitmentu, ta sama zasada.

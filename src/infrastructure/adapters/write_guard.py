@@ -50,6 +50,7 @@ from src.domain.price_levels import PriceLevel, PriceLevelAlert
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
+from src.domain.session_close import SessionCloseSettlement
 from src.domain.value_objects import AssetType, Fundamentals, Money
 
 logger = logging.getLogger(__name__)
@@ -357,6 +358,7 @@ class ReadOnlyRepository(RepositoryPort):
         correction_category: MistakeCategory | None = None,
         *,
         stale_quote: bool | None = None,
+        session_close: SessionCloseSettlement | None = None,
     ) -> None:
         self._skipped.skip("update_prediction_accuracy")
 
