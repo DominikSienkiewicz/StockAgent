@@ -100,7 +100,8 @@ def test_direction_not_conveyed_by_color_only() -> None:
 def test_predictions_table_shows_arrow_and_sign_for_the_move_and_the_forecast() -> None:
     html, _ = build_html_report([_saved("AAPL", "0.025", "98")], STARTED, 1.0)
 
-    table = html[html.index("🔮 Wygenerowane predykcje"):html.index("</table>")]
+    start = html.index("🔮 Wygenerowane predykcje")
+    table = html[start:html.index("</table>", start)]
     assert "▲ +2,50%" in table
     assert "▼ -2,00%" in table
 

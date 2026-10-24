@@ -172,28 +172,36 @@ def _render_trade_signals_html(
         size_band = _signal_size_band(sig)
         size_html = (
             f'<span style="color: #6b7280; font-size: 12px;">'
-            f"{_html(size_band.label)}</span>"
+            f"{_html(size_band.label)}</span><br>"
             if size_band
             else ""
         )
         company = _html(_company_label(sig.symbol))
+        # MAIL-23: karta jako tabela trzech komórek `width: 33%` zamiast flexa
+        # (Outlook). Bez klas — karty muszą wyglądać tak samo bez arkusza.
         parts.append(f"""
-              <div style="margin-bottom: 8px; padding: 10px 14px; background: {dir_bg};
-                          border-left: 4px solid {dir_color}; border-radius: 4px;
-                          font-size: 13px; display: flex; gap: 12px; align-items: center;">
-                <span style="font-weight: 700; color: {dir_color}; min-width: 90px;">
-                  {_html(_signal_label(sig))}
-                </span>
-                <span style="font-weight: 600; min-width: 60px;">{company}</span>
-                <span style="color: #4b5563;">
-                  {_confidence_html(sig)}
-                </span>
-                {forecast_html}
-                {size_html}
-                <span style="color: #6b7280; margin-left: auto; font-size: 12px;">
-                  {_html(_strength_label(rank, sig))}
-                </span>
-              </div>
+              <table role="presentation" style="width: 100%; margin-bottom: 8px;
+                          background: {dir_bg}; border-left: 4px solid {dir_color};
+                          border-radius: 4px; border-collapse: collapse; font-size: 13px;">
+                <tr>
+                  <td style="width: 33%; padding: 10px 14px; vertical-align: top;">
+                    <span style="font-weight: 700; color: {dir_color};">
+                      {_html(_signal_label(sig))}
+                    </span><br>
+                    <span style="font-weight: 600;">{company}</span>
+                  </td>
+                  <td style="width: 33%; padding: 10px 14px; vertical-align: top;">
+                    <span style="color: #4b5563;">{_confidence_html(sig)}</span><br>
+                    {forecast_html}
+                  </td>
+                  <td style="width: 33%; padding: 10px 14px; vertical-align: top;">
+                    {size_html}
+                    <span style="color: #6b7280; font-size: 12px;">
+                      {_html(_strength_label(rank, sig))}
+                    </span>
+                  </td>
+                </tr>
+              </table>
             """)
         chip = chips.get(sig.symbol)
         if chip:

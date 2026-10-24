@@ -1,4 +1,5 @@
 import dataclasses
+import re
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -2918,7 +2919,6 @@ def test_predictions_table_says_model_signal_not_recommendation():
     html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
 
     predictions = html.split("Wygenerowane predykcje")[1]
-    assert ">Sygnał modelu<" in predictions
     assert "Sygnał modelu: KUP" in predictions
     assert ">Rekomendacja<" not in html
     assert "Rekomendacja: KUP" not in html
@@ -4061,3 +4061,11 @@ class TestIgnoredEffectiveThreshold:
         assert result.effective_threshold == Decimal("0.03")
         assert result.regime_multiplier == pytest.approx(1.5)
         assert result.earnings_multiplier == pytest.approx(1.0)
+
+
+def test_predictions_table_has_at_most_five_columns():
+    # MAIL-23: 9 kolumn przy ~360 px telefonu łamało tekst po literze.
+    html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+    table = html.split("🔮 Wygenerowane predykcje")[1].split("</table>")[0]
+    assert len(re.findall(r"<th\b", table)) <= 5

@@ -151,15 +151,17 @@ def _settlement_tally(
 def _render_reader_box_html(
     label: str, value: str, note: str, *, accent: str, background: str
 ) -> str:
+    """MAIL-23: box pierwszego ekranu jako komórka tabeli `width: 33%` — same style
+    inline, bo pierwszy ekran musi wyglądać tak samo bez arkusza."""
     return (
-        f'<div style="flex: 1; padding: 12px; background: {background}; '
-        f'border-left: 3px solid {accent}; border-radius: 4px;">'
+        f'<td style="width: 33%; padding: 12px; background: {background}; '
+        f'border-left: 3px solid {accent}; border-radius: 4px; vertical-align: top;">'
         '<div style="font-size: 11px; color: #4b5563; text-transform: uppercase;">'
         f"{_html(label)}</div>"
         '<div style="font-size: 24px; font-weight: 600; color: #1f2937;">'
         f"{_html(value)}</div>"
         f'<div style="font-size: 12px; color: #6b7280;">{_html(note)}</div>'
-        "</div>"
+        "</td>"
     )
 
 
@@ -227,9 +229,12 @@ def _first_screen_html(data: SectionInput) -> str:
         accent="#2563eb",
         background="#eff6ff",
     )
+    # MAIL-23: tabela zamiast `display: flex` — Outlook flexa nie zna, a trzy
+    # komórki po 33% mieszczą się na telefonie bez łamania słów po literze.
     return (
-        '<div style="display: flex; gap: 8px; margin-bottom: 16px;">'
-        f"{portfolio_change_box}{signals_box}{settlements_box}</div>"
+        "<table role='presentation' style='width: 100%; border-collapse: separate; "
+        "border-spacing: 8px 0; margin: 0 -8px 16px -8px;'><tr>"
+        f"{portfolio_change_box}{signals_box}{settlements_box}</tr></table>"
     ) + _render_credibility_bar_html(data.context.accuracy_stats)
 
 

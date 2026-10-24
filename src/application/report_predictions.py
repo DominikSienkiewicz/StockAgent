@@ -37,9 +37,6 @@ from src.application.report_formatting import (
     section_h2 as _section_h2,
 )
 from src.application.report_formatting import (
-    sentiment_label as _sentiment_label,
-)
-from src.application.report_formatting import (
     trend_label as _trend_label,
 )
 from src.application.report_models import SymbolResult, TradeSignal
@@ -81,13 +78,8 @@ def full_detail_symbols(
 
 
 def _render_prediction_row_html(r: SymbolResult) -> str:
-    """Pojedynczy wiersz tabeli predykcji (saved)."""
-    sentiment_text = (
-        f"{_html(_sentiment_label(r.sentiment_label))} "
-        f"({_number(r.sentiment_score, decimals=2, signed=True)})"
-        if r.sentiment_score is not None
-        else "—"
-    )
+    """Pojedynczy wiersz tabeli predykcji (saved). MAIL-23: pięć kolumn — cena
+    bieżąca, sentyment, newsy i sygnał modelu są w bloku uzasadnień."""
     confidence_text = (
         _pct(r.confidence_score, decimals=0)
         if r.confidence_score is not None
@@ -103,19 +95,14 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
         )
     else:
         forecast_text = "—"
-    rec = model_signal(r)
     # MAIL-06 (c): układ komórki i ton kierunku w klasach arkusza.
     return f"""
               <tr>
                 <td class="pc b6">{_html(_company_label(r.symbol))}</td>
-                <td class="pc">{_money(r.current_price)}</td>
                 <td class="pc {delta_tone(r.delta)}">{direction_pct(r.delta)}</td>
                 <td class="pc b6 {trend_tone(r.trend)}">{_html(_trend_label(r.trend))}</td>
                 <td class="pc">{forecast_text}</td>
                 <td class="pc">{confidence_text}</td>
-                <td class="pc">{sentiment_text}</td>
-                <td class="pc">{r.news_volume or 0}</td>
-                <td class="pc b7 {SIGNAL_TONE.get(rec, "nt")}">{rec}</td>
               </tr>
             """
 
@@ -140,17 +127,13 @@ def _render_saved_section_html(
         _section_h2("🔮 Wygenerowane predykcje"),
         _render_forecast_horizon_html(forecast_horizon),
         "<table class='pt'>",
-        f"""
+        """
           <tr class="pr">
-            <th scope="col" class="ph">Symbol</th>
-            <th scope="col" class="ph">Cena</th>
+            <th scope="col" class="ph">Spółka</th>
             <th scope="col" class="ph">Zmiana (cykl)</th>
-            <th scope="col" class="ph">Trend</th>
+            <th scope="col" class="ph">Kierunek</th>
             <th scope="col" class="ph">Prognoza (nast. cykl)</th>
             <th scope="col" class="ph">Pewność</th>
-            <th scope="col" class="ph">Sentyment</th>
-            <th scope="col" class="ph">Newsy</th>
-            <th scope="col" class="ph">{MODEL_SIGNAL_TITLE}</th>
           </tr>
         """,
     ]

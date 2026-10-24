@@ -328,14 +328,14 @@ def render_portfolio_change_box_html(
     color = _pnl_color(change.change)
     amounts = _change_amounts(change, usd_pln, currency)
     return (
-        '<div style="flex: 1; padding: 12px; background: #f9fafb; '
-        f'border-left: 3px solid {color}; border-radius: 4px;">'
+        '<td style="width: 33%; padding: 12px; background: #f9fafb; '
+        f'border-left: 3px solid {color}; border-radius: 4px; vertical-align: top;">'
         '<div style="font-size: 11px; color: #4b5563; text-transform: uppercase;">'
         f"Twój portfel {_html.escape(label)}</div>"
         f'<div style="font-size: 24px; font-weight: 600; color: {color};">'
         f"{_format_pct(change.change_pct, signed=True)}</div>"
         f'<div style="font-size: 12px; color: {color};">{" · ".join(amounts)}</div>'
-        "</div>"
+        "</td>"
     )
 
 

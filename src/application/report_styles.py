@@ -104,6 +104,13 @@ EMAIL_STYLESHEET = (
     ".bn{font-size:12px;color:#374151;margin-left:6px}"
     ".qc{display:inline-block;margin:2px 4px 2px 0;padding:1px 6px;border-radius:3px;"
     "font-size:12px;background:#f3f4f6}"
+    # MAIL-23: telefon (~360 px) — wiersz tabeli predykcji to blok z komórkami
+    # w jednej zawijanej linii, bez wiersza nagłówka.
+    "@media (max-width:480px){"
+    ".pt tr{display:block;border-bottom:1px solid #e5e7eb;padding:4px 0}"
+    ".pt .pr{display:none}"
+    ".pt td{display:inline-block;border:0;padding:2px 6px}"
+    "}"
     "</style>"
 )
 

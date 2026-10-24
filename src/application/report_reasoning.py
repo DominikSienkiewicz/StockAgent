@@ -41,6 +41,9 @@ from src.application.report_formatting import (
     sector_label as _sector_label,
 )
 from src.application.report_formatting import (
+    sentiment_label as _sentiment_label,
+)
+from src.application.report_formatting import (
     trend_color as _trend_color,
 )
 from src.application.report_formatting import (
@@ -390,6 +393,20 @@ def _render_attribution_block_html(
     )
 
 
+def _market_context_html(r: SymbolResult) -> str:
+    """MAIL-23: sentyment i liczba newsów (dawne kolumny tabeli predykcji) jako
+    jedna linia bloku — „Sentyment: Lekko pozytywny (+0,42) · Newsy (24 h): 12”."""
+    bits: list[str] = []
+    if r.sentiment_score is not None:
+        bits.append(
+            f"Sentyment: {_html(_sentiment_label(r.sentiment_label))} "
+            f"({_number(r.sentiment_score, decimals=2, signed=True)})"
+        )
+    if r.news_volume is not None:
+        bits.append(f"Newsy (24 h): {r.news_volume}")
+    return f'<div class="rm">{" · ".join(bits)}</div>' if bits else ""
+
+
 def render_reasoning_block_html(
     r: SymbolResult, sector_map: Mapping[str, str], chip: str | None = None
 ) -> str:
@@ -431,6 +448,7 @@ def render_reasoning_block_html(
         move_line += f'<div class="rm">{move_interval_label(r.move_interval)}</div>'
     if chip:
         move_line += f'<div class="rm">{_html(chip)}</div>'
+    move_line += _market_context_html(r)
     # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
     # (finding #35). Escapowanie title/source jest tu domyślne.
     news_block = _render_news_block_html(r.top_news)
