@@ -589,3 +589,10 @@ def test_real_config_toml_ships_the_price_outlier_guard_off() -> None:
     """DAT-15: strażnik zmienia bramkę i rozliczenie, więc czeka do końca EXP-02/03."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["price_outlier_guard_enabled"] is False
+
+
+def test_real_config_toml_ships_the_exact_rag_search_off_until_migration() -> None:
+    """ML-23: funkcja `match_news_embeddings_exact` powstaje w migracji 063, a analogi
+    w prompcie to wejście EXP-03 — czeka do końca eksperymentu."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["rag_exact_search_enabled"] is False

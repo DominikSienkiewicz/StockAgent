@@ -66,6 +66,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `057` | `price_level_alerts_enabled` | The watch alerts on user-set price levels from `price_alerts` (ALR-11); the list ships empty, add levels first. |
 | `059` | `session_close_settlement_enabled` | Settlements also record the official NYSE session close with its date and source, and the email shows its hit rate next to the `/quote` one (WIA-61, transition period). |
 | `062` | `split_detection_enabled` | A suspected split (the quote's `pc` against the last snapshot) adjusts the gate, the settlement and `price_delta` and is recorded in `corporate_actions` (DAT-23); part of `config_hash` and it changes settlements, so turn it on after EXP-02/03 end (2027-01-29). |
+| `063` | `rag_exact_search_enabled` | RAG analogs come from an exact nearest-neighbour scan instead of the ivfflat index at `probes = 1` (ML-23); it changes the analogs in the prediction prompt and is part of `config_hash`, so turn it on after EXP-03 ends (2027-01-29). |
 
 ### 5. Add the `HEARTBEAT_URL` secret
 

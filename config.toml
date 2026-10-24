@@ -407,6 +407,11 @@ reflection_max_age_hours = 96
 # Outcome-aware RAG rerank (#9): waga realnego wyniku analogu (trafiony przed
 # nietrafionym przy zbliżonym similarity). 0.0 = sama kolejność similarity.
 rag_outcome_weight = 0.3
+# ML-23: analogi RAG z dokładnego KNN (`match_news_embeddings_exact`) zamiast ivfflat
+# (lists = 100) przy probes = 1, który przeszukuje ~1% list i z filtrem reżimu zwraca
+# mniej niż match_count wierszy. Zmienia analogi w prompcie, więc czeka do końca EXP-03.
+# UWAGA: włącz DOPIERO po migracji 063.
+rag_exact_search_enabled = false
 
 # --- Powiadomienia (sam nadawca; ODBIORCA = sekret w .env) ---
 notifications_enabled = true

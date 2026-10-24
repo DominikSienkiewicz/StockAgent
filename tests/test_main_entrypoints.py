@@ -5440,6 +5440,19 @@ def test_build_repository_passes_the_correction_category_flag(
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+def test_build_repository_passes_the_exact_rag_search_flag(
+    settings, mocker, enabled: bool
+) -> None:
+    # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) za flagą.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.rag_exact_search_enabled = enabled
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["rag_exact_search_enabled"] is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
 def test_trainer_repository_passes_the_correction_category_flag(
     settings, mocker, enabled: bool
 ) -> None:

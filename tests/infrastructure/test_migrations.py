@@ -93,6 +93,7 @@ MIGRATION_FILES = [
     "058_settled_reads_without_stale_quote.sql",
     "059_settlement_session_close.sql",
     "062_corporate_actions.sql",
+    "063_rag_exact_search.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -3123,6 +3124,80 @@ class TestMigration062CorporateActions:
                 "WHERE conrelid = 'corporate_actions'::regclass AND contype = 'u'"
             )
             assert cur.fetchone() == (1,)
+
+
+@pytest.mark.containers
+class TestMigration063RagExactSearch:
+    """ML-23: `match_news_embeddings_exact` — kontrakt `match_news_embeddings`, ale
+    dokładne KNN. ivfflat z lists = 100 przy probes = 1 przeszukuje ~1% list, więc
+    najbliższy analog bywa pominięty, a z filtrem reżimu brakuje wierszy."""
+
+    _ROWS = 500
+    _DIMENSIONS = 1536
+
+    @classmethod
+    def _vectors(cls) -> list[str]:
+        import random
+
+        rng = random.Random(23)
+        return [
+            "[" + ",".join(f"{rng.uniform(-1, 1):.4f}" for _ in range(cls._DIMENSIONS)) + "]"
+            for _ in range(cls._ROWS)
+        ]
+
+    def _insert(self, cur: psycopg2.extensions.cursor, vectors: list[str]) -> None:
+        # Izolacja od embeddingów innych testów — transakcja i tak jest wycofywana.
+        cur.execute("DELETE FROM prediction_logs WHERE embedding IS NOT NULL")
+        for index, vector in enumerate(vectors):
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, news_summary, regime, embedding) "
+                "VALUES (%s, 'news', %s, %s::vector)",
+                (f"RAG{index:03d}", "RISK_OFF" if index % 2 else "RISK_ON", vector),
+            )
+
+    def test_match_news_embeddings_returns_exact_nearest_neighbour(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        vectors = self._vectors()
+        with _rolled_back(migrated_pg_conn) as cur:
+            self._insert(cur, vectors)
+            cur.execute(
+                "SELECT symbol FROM match_news_embeddings_exact(%s::vector, 1)", (vectors[137],)
+            )
+            top = cur.fetchall()
+            cur.execute(
+                "SELECT count(*) FROM match_news_embeddings_exact(%s::vector, 5, 'RISK_OFF')",
+                (vectors[0],),
+            )
+            filtered = cur.fetchone()
+
+        assert top == [("RAG137",)]
+        assert filtered == (5,)
+
+    def test_service_role_executes_the_exact_search(self, supabase_like_conn) -> None:
+        vector = "[" + ",".join(["0.1"] * 1536) + "]"
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "service_role")
+            cur.execute(
+                "SELECT count(*) FROM match_news_embeddings_exact(%s::vector, 3)", (vector,)
+            )
+            assert cur.fetchone() == (0,)
+
+    def test_063_is_idempotent_and_keeps_the_approximate_search(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        migration = (MIGRATIONS_DIR / "063_rag_exact_search.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT proname FROM pg_proc "
+                "WHERE proname LIKE 'match_news_embeddings%%' ORDER BY proname"
+            )
+            names = [row[0] for row in cur.fetchall()]
+
+        assert names == ["match_news_embeddings", "match_news_embeddings_exact"]
+        assert "idx_prediction_logs_embedding" in _indexes(migrated_pg_conn, "prediction_logs")
 
 
 @pytest.mark.containers

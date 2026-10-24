@@ -869,6 +869,7 @@ def build_repository(settings: Settings) -> RepositoryPort:
         correction_category_enabled=settings.correction_category_enabled,
         stale_quote_enabled=settings.stale_quote_enabled,
         session_close_settlement_enabled=settings.session_close_settlement_enabled,
+        rag_exact_search_enabled=settings.rag_exact_search_enabled,
     )
     if settings.db_writes_enabled:
         return repository

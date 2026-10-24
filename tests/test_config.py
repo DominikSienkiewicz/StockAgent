@@ -1746,3 +1746,16 @@ class TestPriceOutlierGuardFlag:
 
         assert settings.price_outlier_guard_enabled is False
         assert "price_outlier_guard_enabled" in RECIPE_SETTINGS_FIELDS
+
+
+class TestRagExactSearchFlag:
+    """ML-23: dokładne KNN analogów RAG (migracja 063) zmienia analogi w prompcie,
+    więc należy do przepisu; off na czas EXP-03."""
+
+    def test_defaults_off_and_inside_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.rag_exact_search_enabled is False
+        assert "rag_exact_search_enabled" in RECIPE_SETTINGS_FIELDS

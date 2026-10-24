@@ -4782,3 +4782,44 @@ class TestCorporateActions:
 
         with pytest.raises(NotFound):
             repo.save_corporate_action(self._suspicion())
+
+
+
+class TestExactRagSearch:
+    """ML-23: za flagą RAG woła `match_news_embeddings_exact` (migracja 063, dokładne
+    KNN) z tymi samymi parametrami; bez flagi zostaje przybliżone ivfflat."""
+
+    @pytest.mark.parametrize(
+        ("enabled", "function"),
+        [(False, "match_news_embeddings"), (True, "match_news_embeddings_exact")],
+    )
+    def test_flag_picks_the_rag_function(
+        self, mock_client: MagicMock, enabled: bool, function: str
+    ) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", rag_exact_search_enabled=enabled
+        )
+        mock_client.rpc.return_value.execute.return_value.data = [{"symbol": "AAPL"}]
+
+        rows = repo.find_similar_predictions([0.1, 0.2], limit=4, regime="RISK_OFF")
+
+        assert rows == [{"symbol": "AAPL"}]
+        mock_client.rpc.assert_called_once_with(
+            function,
+            {"query_embedding": [0.1, 0.2], "match_count": 4, "filter_regime": "RISK_OFF"},
+        )
+
+    def test_missing_exact_function_points_at_migration_063(
+        self, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", rag_exact_search_enabled=True
+        )
+        mock_client.rpc.return_value.execute.side_effect = APIError(
+            {"code": "PGRST202", "message": "Could not find the function"}
+        )
+
+        assert repo.find_similar_predictions([0.1], limit=3) == []
+        assert "063" in caplog.text

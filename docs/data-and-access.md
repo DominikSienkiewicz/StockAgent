@@ -45,6 +45,7 @@ The functions in `public`, all `SECURITY INVOKER` (they run with the caller's pr
 |---|---|---|---|
 | `refresh_ml_feature_store()` | `001`, `004` | Slow Loop, backtest (RPC) | `service_role` only |
 | `match_news_embeddings(vector, int, text)` | `011`, `017` | Fast Loop (RAG, RPC) | `service_role` only |
+| `match_news_embeddings_exact(vector, int, text)` | `063` | Fast Loop (RAG, RPC, `rag_exact_search_enabled`) | `service_role` only |
 | `persona_accuracy_weights(int)` | `015`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
 | `persona_accuracy_stats(int)` | `018`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
 | `persona_vote_outcomes(int)` | `045`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_vote_outcomes_enabled`), tools (`persona-ablation`) | `service_role` only |

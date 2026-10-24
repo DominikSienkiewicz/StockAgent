@@ -293,6 +293,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "reflection_min_age_hours",
     "reflection_max_age_hours",
     "rag_outcome_weight",
+    # ML-23: dokładne KNN zmienia analogi RAG w prompcie predykcji.
+    "rag_exact_search_enabled",
     "ml_model_path",
     # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
     "experiments",
@@ -923,6 +925,9 @@ class Settings(BaseSettings):
     # kolejność similarity (zachowanie wsteczne); >0 promuje analogi, których
     # prognoza realnie się sprawdziła. Produkcja: 0.3.
     rag_outcome_weight: float = Field(default=0.0)
+    # ML-23: analogi RAG z dokładnego KNN (`match_news_embeddings_exact`, migracja
+    # 063) zamiast ivfflat z probes = 1. Inne analogi w prompcie (EXP-03). Off.
+    rag_exact_search_enabled: bool = False
 
     # ----- ML -----
     ml_model_path: str = "data/models/price_predictor.ubj"

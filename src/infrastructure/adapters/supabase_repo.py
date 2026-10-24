@@ -635,8 +635,16 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         stale_quote_enabled: bool = False,
         fundamentals_market_cap_enabled: bool = False,
         session_close_settlement_enabled: bool = False,
+        rag_exact_search_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
+        # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) zamiast ivfflat
+        # z probes = 1. Bez flagi RPC sprzed ML-23 — analogi w prompcie jak dziś.
+        self._rag_function, self._rag_migration = (
+            ("match_news_embeddings_exact", "063")
+            if rag_exact_search_enabled
+            else ("match_news_embeddings", "011")
+        )
         # DAT-14: kolumna `stale_quote` istnieje od migracji 055 — bez flagi odczyty
         # trafności jej nie wybierają (400 zabiłby raport), a zapis jej nie niesie.
         self._stale_quote_enabled = stale_quote_enabled
@@ -1349,7 +1357,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         self, embedding: list[float], limit: int = 3, regime: str | None = None
     ) -> list[dict[str, Any]]:
         """Similarity search nad `prediction_logs.embedding` (pgvector) przez
-        RPC `match_news_embeddings` (migracja 011; filtr reżimu z migracji 017).
+        RPC `match_news_embeddings` (migracja 011; filtr reżimu z migracji 017),
+        a z `rag_exact_search_enabled` przez `match_news_embeddings_exact` (063, ML-23).
 
         Graceful: gdy RPC nie istnieje (migracja niezaaplikowana) lub błąd
         sieci/Supabase — zwraca `[]`, żeby RAG był czysto opcjonalnym
@@ -1364,10 +1373,10 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         if regime is not None:
             params["filter_regime"] = canonical_regime_key(regime)
         try:
-            response = self._client.rpc("match_news_embeddings", params).execute()
+            response = self._client.rpc(self._rag_function, params).execute()
         except Exception as exc:
             _log_degraded_read(
-                "match_news_embeddings RPC", "RAG retrieval skipped", "011", exc
+                f"{self._rag_function} RPC", "RAG retrieval skipped", self._rag_migration, exc
             )
             return []
         return _rows(response)
