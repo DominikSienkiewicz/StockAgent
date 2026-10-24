@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime, timedelta
 from http import HTTPStatus
@@ -37,6 +38,11 @@ from src.infrastructure.adapters._http import build_session
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_WINDOW_DAYS = 90
 DEFAULT_MAX_FORM4 = 20
+# SEC: „Current max request rate: 10 requests/second" na użytkownika, niezależnie
+# od liczby maszyn (sec.gov/os/accessing-edgar-data). 8 zostawia zapas na retry
+# urllib3 z `build_session`, które idą poza tym pacerem.
+MAX_REQUESTS_PER_SECOND = 8
+MIN_REQUEST_INTERVAL_SECONDS = 1.0 / MAX_REQUESTS_PER_SECOND
 
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -113,6 +119,8 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         self._blocked = False
         self._ciks: dict[str, str] | None = None
         self._ciks_lock = threading.Lock()
+        self._last_request_at: float | None = None
+        self._pace_lock = threading.Lock()
 
     def get_insider_flow(self, symbol: str) -> InsiderFlowSnapshot | None:
         if self._blocked:
@@ -161,6 +169,7 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         """GET do SEC; None, gdy SEC odrzucił nas w tym cyklu (403)."""
         if self._blocked:
             return None
+        self._pace()
         response = self._session.get(url, timeout=self._timeout)
         if response.status_code == HTTPStatus.FORBIDDEN:
             self._blocked = True
@@ -171,6 +180,17 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             )
             return None
         return response
+
+    def _pace(self) -> None:
+        """Odstęp ≥ `MIN_REQUEST_INTERVAL_SECONDS` między żądaniami WSZYSTKICH
+        wątków. Bez niego równoległe symbole (`symbol_concurrency` > 1), każdy
+        z kilkunastoma Form 4, strzelałyby burstem ponad limit SEC."""
+        with self._pace_lock:
+            if self._last_request_at is not None:
+                wait = MIN_REQUEST_INTERVAL_SECONDS - (time.monotonic() - self._last_request_at)
+                if wait > 0:
+                    time.sleep(wait)
+            self._last_request_at = time.monotonic()
 
     def _resolve_cik(self, symbol: str) -> str | None:
         """Mapuje ticker → 10-cyfrowy CIK (z paddingiem)."""
