@@ -31,6 +31,7 @@ from typing import Any
 import pytest
 
 from src.application.alpha_signals import AlphaSignals
+from src.application.ports import StoredShockAlert
 from src.application.report_builder import (
     ReportContext,
     ResolvedPrediction,
@@ -42,9 +43,10 @@ from src.application.report_council_history import InvestorHistory
 from src.application.report_evidence import PaperCosts
 from src.application.report_formatting import build_sector_map
 from src.application.report_lessons import LessonItem, LessonsReport
-from src.application.report_model_scorecard import ModelScorecardView
+from src.application.report_model_scorecard import ModelScorecardView, snapshot_model_cards
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
+from src.application.source_health import SOURCE_ORDER, SourceHealth, SourceStatus
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.analyst_consensus import AnalystConsensus
@@ -648,10 +650,86 @@ def _first_run_cycle() -> tuple[str, str]:
     return build_html_report(results, STARTED, DURATION_SECONDS, context)
 
 
+def _degraded_sources_cycle() -> tuple[str, str]:
+    """Fala 2: dzień z awarią źródła i szokiem z watcha — stan źródeł (MAIL-21),
+    szoki między mailami i lead z szoku na pozycji (ALR-06), próg efektywny
+    i „blisko progu” w ⏸ Pominięte (MAIL-18), karty modeli z `feature_snapshots`
+    (ML-52) i link do prywatnego archiwum (MAIL-24)."""
+    results = [
+        _mapped(
+            "NVDA",
+            {
+                **_ignored_raw("NVDA", AssetType.STOCK, "140.00", "-0.016"),
+                "effective_threshold": Decimal("0.02"),
+            },
+        ),
+        _mapped(
+            "AMD",
+            {
+                **_ignored_raw("AMD", AssetType.STOCK, "160.00", "0.012"),
+                "effective_threshold": Decimal("0.03"),
+                "regime_multiplier": 1.5,
+            },
+        ),
+        _mapped(
+            "ETH",
+            {
+                **_ignored_raw("ETH", AssetType.CRYPTO, "3200", "0.011"),
+                "effective_threshold": Decimal("0.05"),
+            },
+        ),
+    ]
+    scorecard = dataclasses.replace(
+        _model_scorecard(),
+        snapshot_models=snapshot_model_cards(
+            [
+                {"symbol": "ALL_FREE", "status": "trained_successfully",
+                 "timestamp": "2026-10-11T03:36:00+00:00", "candidate_holdout_rmse": 0.021,
+                 "baseline_rmse": 0.024, "n_samples": 812},
+                {"symbol": "ALL_LLM", "status": "skipped",
+                 "timestamp": "2026-10-11T03:37:00+00:00", "n_samples": 37},
+            ]
+        ),
+    )
+    context = ReportContext(
+        cycle_maturity=CycleMaturity.STEADY_STATE,
+        cycle_cost=estimate_cycle_cost({}),
+        display_timezone=DISPLAY_TIMEZONE,
+        run_context=RUN,
+        sector_map=SECTOR_MAP,
+        sector_peers=SECTOR_PEERS,
+        user_portfolio=_user_portfolio(),
+        model_scorecard=scorecard,
+        source_health=tuple(
+            {
+                "Finnhub": SourceHealth("Finnhub", SourceStatus.UNAVAILABLE, affected=2),
+                "Alpha Vantage": SourceHealth("Alpha Vantage", SourceStatus.DEGRADED, affected=3),
+                "EDGAR": SourceHealth("EDGAR", SourceStatus.DISABLED),
+                "Reddit": SourceHealth("Reddit", SourceStatus.DISABLED),
+            }.get(source, SourceHealth(source, SourceStatus.OK))
+            for source in SOURCE_ORDER
+        ),
+        shock_alerts=[
+            StoredShockAlert(
+                symbol="NVDA",
+                delta=-0.062,
+                direction="DOWN",
+                created_at=STARTED - timedelta(hours=9),
+            ),
+        ],
+        archive_url=(
+            "https://proj.supabase.co/storage/v1/object/sign/digests/"
+            "20261015T1030Z-18234567890.html?token=signed"
+        ),
+    )
+    return build_html_report(results, STARTED, DURATION_SECONDS, context)
+
+
 SCENARIOS: dict[str, Callable[[], tuple[str, str]]] = {
     "full_cycle": _full_cycle,
     "all_ignored": _all_ignored_cycle,
     "first_run": _first_run_cycle,
+    "degraded_sources": _degraded_sources_cycle,
 }
 
 

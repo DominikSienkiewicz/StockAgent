@@ -1,0 +1,76 @@
+STAN ŹRÓDEŁ DANYCH
+----------------------------------------------------------------
+  Finnhub: niedostępne (otwarty obwód, 2 symbole pominięte)
+  CoinGecko: OK
+  Alpha Vantage: zdegradowane (3 symbole)
+  EDGAR: wyłączone flagą
+  Reddit: wyłączone flagą
+  FRED: OK
+  NBP: OK
+  Anthropic: OK
+  OpenAI: OK
+
+=== ⚡ NAJWAŻNIEJSZE W TYM CYKLU ===
+  ⚡ NVDA (36% portfela) -6,2% między mailami
+    → Szok z watcha od ostatniego maila; ruch tego cyklu -1,6%.
+
+
+================================================================
+STOCKAGENT — RAPORT CYKLU
+================================================================
+Czas rozpoczęcia:  czw 15.10 12:30
+Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
+Wersja w przeglądarce (link ważny 7 dni): https://proj.supabase.co/storage/v1/object/sign/digests/20261015T1030Z-18234567890.html?token=signed
+
+Twój portfel od ostatniego maila: +0,2% (+$6,40)
+Sygnały ponad próg: 0
+Rozliczone: brak (ostatnie 24h)
+
+MIĘDZY MAILAMI
+----------------------------------------------------------------
+  NVDA -6,20% (spadek) · czw 15.10 03:30 · teraz $137,76
+
+=== 💼 Twój portfel ===
+
+  NVDA     waga  36,2% wart.      $1 377,60 P/L     +$197,60 (+16,7%)
+  AMD      waga  63,8% wart.      $2 428,80 P/L     -$151,20 (-5,9%)
+  ⚠️ Bez wyceny w tym cyklu: XDWD.DE (≈ 19,0% kosztu)
+
+  Łącznie (bez pozycji niewycenionych): $3 806,40 · P/L +$46,40 (+1,2%)
+  Zmiana od ostatniego maila: +$6,40 (+0,2%) · najwięcej: AMD +$28,80, NVDA -$22,40 · bez punktu odniesienia: XDWD.DE
+
+KRYPTO
+----------------------------------------------------------------
+  ETH (Ethereum)                              $3 235,20  Δ   +1,10%  poniżej progu
+
+================================================================
+ZAPLECZE
+Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu, pominięte symbole i błędy.
+================================================================
+
+KARTA KONDYCJI MODELU
+----------------------------------------------------------------
+  Ostatni trening: 2026-10-11
+  Przebieg — model wspólny (ALL): zaakceptowano 1, odrzucono 0, pominięto 0
+  Ewaluacje per symbol (bez zapisu wag): bramkę przeszło 2, nie przeszło 1, pominięto 0
+  Modele z feature_snapshots (ewaluacja, bez zapisu wag): cechy darmowe — bije baseline, RMSE 0,0210 vs 0,0240 (+12,5%), n=812 · cechy LLM (cykle gated) — pominięty (za mało próbek), n=37
+  RMSE kandydata 0,0212 vs baseline 0,0240 (+11,7%) — ALL, n=243
+  trafność kierunkowa 56%  ·  foldy walk-forward 5
+  Uwaga: Metryki dotyczą KANDYDATA na foldach walk-forward; finalny (shipowany) model jest refitowany na całości danych i nie jest ponownie walidowany.
+
+KOSZT CYKLU
+----------------------------------------------------------------
+  0 płatnych wywołań — bramka volatility odcięła wszystkie symbole (cykl darmowy).
+  Uwaga: Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, nie faktura od dostawcy.
+
+POMINIĘTE (poniżej progu zmienności)
+----------------------------------------------------------------
+  NVDA(-1,60% / próg 2,0%), AMD(1,20% / próg 3,0% (×1,5 reżim)), ETH(1,10% / próg 5,0%)
+  Blisko progu (≥ 75%): NVDA(-1,60% / próg 2,0%)
+
+----------------------------------------------------------------
+Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.
+Symboli: 3 · predykcji: 0 · pominiętych: 3 · błędów: 0 · czas trwania: 74,2s
+Źródła danych (w zależności od konfiguracji): ceny — Finnhub i CoinGecko; newsy, sentyment, fundamenty i kalendarz wyników — Alpha Vantage; konsensus analityków i opcje — Finnhub; transakcje insiderów — SEC EDGAR; wzmianki — Reddit; stopy procentowe — FRED; kursy walut — NBP; analiza i rada — modele LLM (Anthropic, OpenAI).
+----------------------------------------------------------------
+przebieg #18234567890 · commit 6eff942 · logi: https://github.com/example/StockAgent/actions/runs/18234567890
