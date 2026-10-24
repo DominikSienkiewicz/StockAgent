@@ -25,6 +25,7 @@ from typing import Any, NamedTuple
 
 from src.application.agent_graph import AgentState
 from src.application.alpha_signals import AlphaSignals
+from src.application.errors import PortError
 from src.application.ports import NewsPort, SentimentPort
 from src.application.report_builder import SymbolResult, to_symbol_result
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidPhase
@@ -217,6 +218,10 @@ class RunFastLoopCycle:
                     now=options.cycle_at,
                 )
                 return self._finished(symbol, raw, inputs.alpha_signal)
+            except PortError as exc:
+                # ARCH-33: awaria dostawcy przetłumaczona przez adapter to stan znany —
+                # jedna linijka WARNING; traceback zostaje dla błędów kodu.
+                return self._failed(symbol, exc, provider_failure=True)
             except Exception as exc:
                 return self._failed(symbol, exc)
 
@@ -278,11 +283,17 @@ class RunFastLoopCycle:
             alpha_price = sr.current_price
         return ProcessedSymbol(sr, False, alpha_signal, alpha_price)
 
-    def _failed(self, symbol: str, exc: Exception) -> ProcessedSymbol:
-        logger.exception("Failed to process symbol %s", symbol)
+    def _failed(
+        self, symbol: str, exc: Exception, *, provider_failure: bool = False
+    ) -> ProcessedSymbol:
         # BEZ-07: komunikat idzie do maila — ani URL z kluczem, ani dosłowna
         # wartość sekretu z Settings nie może w nim zostać (`redact`).
-        result = to_symbol_result(symbol, None, error=self._redact(str(exc)))
+        error = self._redact(str(exc))
+        if provider_failure:
+            logger.warning("Failed to process symbol %s — %s: %s", symbol, type(exc).__name__, error)
+        else:
+            logger.exception("Failed to process symbol %s", symbol)
+        result = to_symbol_result(symbol, None, error=error)
         # NIEZ-22: typ wyjątku osobno — step summary liczy błędy per klasa, bez komunikatu.
         return ProcessedSymbol(replace(result, error_type=type(exc).__name__), True, None, None)
 

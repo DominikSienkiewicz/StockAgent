@@ -919,6 +919,38 @@ class TestProcessOneSymbol:
         assert "401 Client Error" in proc.result.error_message
         assert "symbol-secret-token" not in proc.result.error_message
 
+    def test_port_error_is_one_warning_without_traceback(self, settings, caplog):
+        # ARCH-33: awaria dostawcy przetłumaczona na taksonomię to stan znany — przy
+        # otwartym obwodzie (NIEZ-31) 43 tracebacki tego samego błędu to szum.
+        import logging
+
+        from src.application.errors import ProviderUnavailable
+
+        uc = MagicMock()
+        uc.run.side_effect = ProviderUnavailable("finnhub.io circuit open")
+        with caplog.at_level(logging.WARNING):
+            proc = main_agent._process_one_symbol(
+                "AAPL", peer_ctx=(), **self._kwargs(settings, uc)
+            )
+
+        assert proc.is_failure is True
+        assert proc.result.error_type == "ProviderUnavailable"
+        failures = [r for r in caplog.records if "AAPL" in r.getMessage()]
+        assert [(r.levelno, r.exc_info) for r in failures] == [(logging.WARNING, None)]
+        assert "finnhub.io circuit open" in failures[0].getMessage()
+
+    def test_unexpected_error_keeps_the_traceback(self, settings, caplog):
+        import logging
+
+        uc = MagicMock()
+        uc.run.side_effect = RuntimeError("bug")
+        with caplog.at_level(logging.WARNING):
+            main_agent._process_one_symbol("AAPL", peer_ctx=(), **self._kwargs(settings, uc))
+
+        failures = [r for r in caplog.records if "AAPL" in r.getMessage()]
+        assert [r.levelno for r in failures] == [logging.ERROR]
+        assert failures[0].exc_info is not None
+
 
 class TestAnalyzeSymbolsParallel:
     def _kwargs(self, settings, use_case):
