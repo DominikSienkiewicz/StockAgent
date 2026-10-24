@@ -6,7 +6,8 @@ pliku z wynikiem. Polityka jest więc sprawdzana statycznie na treści skryptu,
 bez sieci i bez kluczy.
 
 Tu też polityka workflowów bez kodu aplikacji: ręczny smoke testów na żywym API
-(CI-05) i grupy Dependabota (CI-07).
+(CI-05), grupy Dependabota (CI-07), wspólna kolejka zapisów do bazy (NIEZ-27)
+oraz strażnik polityk każdego workflowu (CI-10, CI-25).
 """
 
 from __future__ import annotations
@@ -136,3 +137,112 @@ def test_dependabot_groups_weekly_updates_for_actions_and_uv() -> None:
         assert any(group.get("patterns") == ["*"] for group in groups.values()), (
             f"{ecosystem}: bez grupy `*` każda zależność dostaje osobny PR"
         )
+
+
+# NIEZ-27: ręczne DB Migrate w trakcie cyklu (022 robi DROP i CREATE ml_feature_store)
+# dawało błędy PGRST w połowie cyklu albo kolizję z odświeżeniem feature store w Slow
+# Loopie. Każdy job piszący do bazy bierze tę samą grupę, a kolejka nie anuluje nikogo.
+#
+# Grupa jest na poziomie JOBA, nie workflowu. GitHub trzyma grupę workflowu przez cały
+# run, a grupę joba tylko przez ten job, i oba poziomy działają niezależnie — więc:
+# - joby bez zapisu do bazy (push ledgera, deploy Pages) nie blokują innych piszących;
+# - grupa workflowu zostaje własna (`fast-loop`, `slow-loop`, `db-migrate`): serializuje
+#   kolejne runy tego samego workflowu, także ich joby spoza `supabase-writers`;
+# - ta sama nazwa na obu poziomach jednego runu zakleszczyłaby go (job czekałby na
+#   grupę, którą trzyma jego własny workflow), więc nazwy obu poziomów są rozłączne.
+SUPABASE_WRITERS_GROUP = "supabase-writers"
+# Shock watch pisze `shock_alerts`, ale chodzi co godzinę i jest darmowy. GitHub trzyma
+# w grupie jeden oczekujący job i anuluje starszego oczekującego, więc godzinny watch
+# stojący w tej kolejce wypychałby z niej dzienny Fast Loop albo tygodniowy Slow Loop.
+GROUP_EXEMPT_WRITERS = frozenset({"shock_watch_hourly.yml"})
+EXPECTED_GROUP_WRITERS = frozenset(
+    {
+        ("fast_loop_12h.yml", "run-market-agent"),
+        ("slow_loop_weekly.yml", "retrain-predictive-model"),
+        ("db_migrate.yml", "migrate"),
+    }
+)
+
+WORKFLOWS_DIR = ROOT / ".github" / "workflows"
+
+
+def _workflow_specs() -> dict[str, dict[str, Any]]:
+    return {
+        path.name: yaml.safe_load(path.read_text(encoding="utf-8"))
+        for path in sorted([*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml")])
+    }
+
+
+def _jobs(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    jobs: dict[str, dict[str, Any]] = spec.get("jobs") or {}
+    return jobs
+
+
+def _concurrency(node: dict[str, Any]) -> tuple[str | None, Any]:
+    """(grupa, cancel-in-progress) z `concurrency:` — mapa albo skrót `concurrency: grupa`."""
+    declared = node.get("concurrency")
+    if declared is None:
+        return None, None
+    if isinstance(declared, str):
+        return declared, False
+    return declared.get("group"), declared.get("cancel-in-progress", False)
+
+
+def _step_envs(job: dict[str, Any]) -> list[dict[str, Any]]:
+    return [dict(step.get("env") or {}) for step in job.get("steps", [])]
+
+
+def _writes_to_database(job: dict[str, Any]) -> bool:
+    """Job z `DB_WRITES_ENABLED: "true"` (BEZ-08) albo z connection stringiem migracji."""
+    return any(
+        env.get("DB_WRITES_ENABLED") == "true" or "SUPABASE_DB_URL" in env
+        for env in _step_envs(job)
+    )
+
+
+def _database_writing_jobs() -> set[tuple[str, str]]:
+    return {
+        (workflow, name)
+        for workflow, spec in _workflow_specs().items()
+        for name, job in _jobs(spec).items()
+        if _writes_to_database(job)
+    }
+
+
+def test_db_writing_workflows_share_concurrency_group() -> None:
+    writers = {pair for pair in _database_writing_jobs() if pair[0] not in GROUP_EXEMPT_WRITERS}
+
+    assert writers == EXPECTED_GROUP_WRITERS, (
+        "nowy albo zniknięty job piszący do bazy: dopisz go do EXPECTED_GROUP_WRITERS "
+        "albo do GROUP_EXEMPT_WRITERS z uzasadnieniem"
+    )
+    for workflow, name in sorted(writers):
+        job = _jobs(_workflow_specs()[workflow])[name]
+        assert _concurrency(job) == (SUPABASE_WRITERS_GROUP, False), (
+            f"{workflow}:{name} pisze do bazy, ale nie czeka w grupie "
+            f"{SUPABASE_WRITERS_GROUP} z cancel-in-progress: false"
+        )
+
+
+def test_job_concurrency_groups_never_reuse_a_workflow_group() -> None:
+    specs = _workflow_specs()
+    workflow_groups = {_concurrency(spec)[0] for spec in specs.values()} - {None}
+    job_groups = {
+        _concurrency(job)[0]
+        for spec in specs.values()
+        for job in _jobs(spec).values()
+        if _concurrency(job)[0] is not None
+    }
+
+    assert job_groups, "żaden job nie deklaruje grupy — test nic by nie pilnował"
+    assert workflow_groups & job_groups == set(), (
+        "ta sama grupa na poziomie workflowu i joba zakleszcza run: "
+        f"{sorted(workflow_groups & job_groups)}"
+    )
+
+
+def test_hourly_shock_watch_stays_out_of_the_writers_queue() -> None:
+    spec = _workflow_specs()["shock_watch_hourly.yml"]
+    groups = [_concurrency(spec)[0], *(_concurrency(job)[0] for job in _jobs(spec).values())]
+
+    assert SUPABASE_WRITERS_GROUP not in groups

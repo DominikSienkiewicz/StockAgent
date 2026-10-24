@@ -22,6 +22,13 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write   # CI-13: tworzy Release `model-latest` i podmienia jego asset wag
+    # NIEZ-27: jedna kolejka dla wszystkich jobów piszących do bazy (Fast Loop, Slow Loop,
+    # DB Migrate), bez anulowania. Na poziomie JOBA, bo grupa workflowu zostaje własna
+    # (kolejka runów tego workflowu) i musi mieć inną nazwę, inaczej run czekałby na
+    # samego siebie. Shock watch zostaje poza kolejką — pilnuje tego tests/test_workflow_policy.py.
+    concurrency:
+      group: supabase-writers
+      cancel-in-progress: false
 
     steps:
       - name: 📥 Checkout repository
