@@ -3130,7 +3130,8 @@ class TestMigration062CorporateActions:
 class TestMigration063RagExactSearch:
     """ML-23: `match_news_embeddings_exact` — kontrakt `match_news_embeddings`, ale
     dokładne KNN. ivfflat z lists = 100 przy probes = 1 przeszukuje ~1% list, więc
-    najbliższy analog bywa pominięty, a z filtrem reżimu brakuje wierszy."""
+    najbliższy analog bywa pominięty, a z filtrem reżimu brakuje wierszy (sprawdzone
+    2026-10-25 na tym samym zbiorze: stara funkcja oddała 2 z 5 wierszy reżimu)."""
 
     _ROWS = 500
     _DIMENSIONS = 1536
@@ -3146,7 +3147,9 @@ class TestMigration063RagExactSearch:
         ]
 
     def _insert(self, cur: psycopg2.extensions.cursor, vectors: list[str]) -> None:
-        # Izolacja od embeddingów innych testów — transakcja i tak jest wycofywana.
+        """Wektory testu jako jedyne embeddingi tabeli (transakcja jest wycofywana) i plan
+        jak na produkcji: indeks ivfflat przebudowany na danych (prawdziwe centroidy),
+        a planer bez skanu sekwencyjnego — na 500 wierszach sam wybrałby dokładny skan."""
         cur.execute("DELETE FROM prediction_logs WHERE embedding IS NOT NULL")
         for index, vector in enumerate(vectors):
             cur.execute(
@@ -3154,6 +3157,8 @@ class TestMigration063RagExactSearch:
                 "VALUES (%s, 'news', %s, %s::vector)",
                 (f"RAG{index:03d}", "RISK_OFF" if index % 2 else "RISK_ON", vector),
             )
+        cur.execute("REINDEX INDEX idx_prediction_logs_embedding")
+        cur.execute("SET LOCAL enable_seqscan = off")
 
     def test_match_news_embeddings_returns_exact_nearest_neighbour(
         self, migrated_pg_conn: psycopg2.extensions.connection

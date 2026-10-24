@@ -13,8 +13,9 @@
 -- dodaje osobną funkcję `match_news_embeddings_exact` o tym samym kontrakcie, którą
 -- aplikacja woła dopiero za flagą `rag_exact_search_enabled`.
 --
--- Funkcja wyłącza na czas wywołania skany indeksowe (SET w definicji funkcji), więc
--- planer robi skan sekwencyjny z sortowaniem top-N — dokładne KNN. Przy < 50 tys.
+-- Funkcja wyłącza na czas wywołania skany indeksowe i jawnie włącza skan
+-- sekwencyjny (SET w definicji funkcji, niezależnie od ustawień sesji), więc planer
+-- robi skan sekwencyjny z sortowaniem top-N — dokładne KNN. Przy < 50 tys.
 -- wierszy to milisekundy i nie wymaga budowy HNSW (maintenance_work_mem na planie
 -- Free) ani CREATE INDEX CONCURRENTLY poza transakcją.
 --
@@ -42,6 +43,7 @@ RETURNS TABLE (
 )
 LANGUAGE sql
 STABLE
+SET enable_seqscan = on
 SET enable_indexscan = off
 SET enable_bitmapscan = off
 AS $$
