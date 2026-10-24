@@ -18,7 +18,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from src.application.report_models import ResolvedPrediction, SymbolResult
+from src.application.report_models import ResolvedPrediction, SymbolResult, TradeSignal
 from src.domain.digest_lead import LeadItem
 from src.domain.portfolio import PlnRates
 
@@ -63,6 +63,12 @@ class SectionInput:
     usd_pln: Decimal | None
     # PORT-06: zmiana portfela od ostatniego maila — pierwszy ekran i sekcja 💼.
     portfolio_change: PortfolioChangeView | None
+    # MAIL-20: czołówka rankingu sygnałów (🎯) — ten sam ranking co push.
+    trade_signals: list[TradeSignal]
+    # MAIL-06: symbole z pełnym blokiem uzasadnień (top N i lead); None = każdy.
+    full_detail: frozenset[str] | None
+    # WIA-35: trafność kierunkowa per symbol — chip przy sygnale i predykcji.
+    symbol_chips: Mapping[str, str]
 
 
 @dataclasses.dataclass(frozen=True)

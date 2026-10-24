@@ -18,12 +18,14 @@ from src.application.report_lead import LEAD_SECTION, PREHEADER_SECTION
 from src.application.report_onboarding import ONBOARDING_SECTION
 from src.application.report_quota_banner import QUOTA_BANNER_SECTION
 from src.application.report_resolved import RESOLVED_PREDICTIONS_SECTION
+from src.application.report_risk_signals import RISK_SIGNALS_SECTION
 from src.application.report_skipped import (
     BUDGET_EXHAUSTED_SECTION,
     ERRORS_SECTION,
     IGNORED_SECTION,
     REBASELINED_SECTION,
 )
+from src.application.report_trade_signals import TRADE_SIGNALS_SECTION
 from src.application.report_user_portfolio import USER_PORTFOLIO_SECTION
 from src.application.reporting.section import ReportSection
 
@@ -39,6 +41,8 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     RESOLVED_PREDICTIONS_SECTION,
     CONSENSUS_SHIFT_SECTION,
     REBASELINED_SECTION,
+    TRADE_SIGNALS_SECTION,
+    RISK_SIGNALS_SECTION,
     CRYPTO_SECTION,
     ACCURACY_HISTORY_SECTION,
     BUDGET_EXHAUSTED_SECTION,

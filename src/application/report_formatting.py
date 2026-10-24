@@ -252,6 +252,10 @@ DATA_SOURCES_FOOTER_PL = (
 # MAIL-14: strefa czasu w temacie, nagłówku maila i pushu. Logi zostają w UTC.
 DEFAULT_DISPLAY_TIMEZONE = "Europe/Warsaw"
 
+# G03: przy cold-starcie target == bieżąca cena, więc "+0.00%" udawałoby prognozę.
+# Wspólne dla 🎯 sygnałów i 🔮 predykcji.
+COLD_START_FORECAST = "— (ML: cold-start)"
+
 _WEEKDAYS_PL = ("pon", "wt", "śr", "czw", "pt", "sob", "nd")
 
 

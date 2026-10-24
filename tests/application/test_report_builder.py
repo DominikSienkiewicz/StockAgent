@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from src.application import report_builder
+from src.application import report_builder, report_risk_signals, report_trade_signals
 from src.application.report_builder import (
     PortfolioMood,
     ReportContext,
@@ -998,7 +998,7 @@ class TestHtmlEscaping:
             description="<i>desc</i>",
         )
         monkeypatch.setattr(
-            report_builder, "detect_risk_signals", lambda results: [injected]
+            report_risk_signals, "detect_risk_signals", lambda results: [injected]
         )
         r = SymbolResult(symbol="X", status="saved", delta=Decimal("0.02"))
 
@@ -2100,7 +2100,7 @@ def _signal(**overrides: object) -> TradeSignal:
 def test_trade_signal_shows_calibrated_confidence():
     """WIA-12: ranking liczy się na pewności skalibrowanej, a mail pokazywał
     tylko surową — `TradeSignal` obiecywał format „85% → 58%”."""
-    html = report_builder._render_trade_signals_html([
+    html = report_trade_signals._render_trade_signals_html([
         TradeSignal(
             symbol="AAPL",
             direction="KUP",
@@ -2121,7 +2121,7 @@ class TestTradeSignalCalibrationAndStrength:
     „siły sygnału” pozycja w rankingu i składowe, z których wynika."""
 
     def test_html_shows_raw_to_calibrated_with_bucket_n(self):
-        html = report_builder._render_trade_signals_html(
+        html = report_trade_signals._render_trade_signals_html(
             [_signal(calibration_bucket_count=12)]
         )
 
@@ -2132,7 +2132,7 @@ class TestTradeSignalCalibrationAndStrength:
         assert "n kubełka: 12" in html
 
     def test_html_replaces_bare_strength_with_rank_and_components(self):
-        html = report_builder._render_trade_signals_html([
+        html = report_trade_signals._render_trade_signals_html([
             _signal(symbol="AAPL"),
             _signal(symbol="MSFT", calibrated_confidence=None, strength=0.85 * 3.1),
         ])
@@ -2144,7 +2144,7 @@ class TestTradeSignalCalibrationAndStrength:
         assert "ruch 3,1% × pewność 85%" in html
 
     def test_html_uncalibrated_signal_shows_raw_confidence_only(self):
-        html = report_builder._render_trade_signals_html(
+        html = report_trade_signals._render_trade_signals_html(
             [_signal(calibrated_confidence=None)]
         )
 
@@ -2152,7 +2152,7 @@ class TestTradeSignalCalibrationAndStrength:
         assert "po kalibracji" not in html
 
     def test_html_cold_start_strength_is_the_confidence_alone(self):
-        html = report_builder._render_trade_signals_html([
+        html = report_trade_signals._render_trade_signals_html([
             _signal(
                 expected_change=Decimal("0"),
                 target_price=Decimal("100"),
@@ -2165,7 +2165,7 @@ class TestTradeSignalCalibrationAndStrength:
         assert "ruch 0,0%" not in html
 
     def test_text_shows_calibration_and_rank_components(self):
-        lines = report_builder._render_trade_signals_text(
+        lines = report_trade_signals._render_trade_signals_text(
             [_signal(calibration_bucket_count=12)]
         )
         text = "\n".join(lines)

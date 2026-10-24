@@ -31,6 +31,9 @@ from src.application.report_council_history import (
 from src.application.report_crypto import CRYPTO_SECTION
 from src.application.report_finops import render_finops_html, render_finops_text
 from src.application.report_formatting import (
+    COLD_START_FORECAST as _COLD_START_FORECAST,
+)
+from src.application.report_formatting import (
     DATA_SOURCES_FOOTER_PL,
     DEFAULT_DISPLAY_TIMEZONE,
     INVESTMENT_DISCLAIMER,
@@ -43,9 +46,6 @@ from src.application.report_formatting import (
 )
 from src.application.report_formatting import (
     company_label_with_sector as _company_label_with_sector,
-)
-from src.application.report_formatting import (
-    delta_color as _delta_color,
 )
 from src.application.report_formatting import (
     escape as _html,
@@ -115,6 +115,7 @@ from src.application.report_resolved import (
     RESOLVED_PREDICTIONS_SECTION,
     resolved_window,
 )
+from src.application.report_risk_signals import RISK_SIGNALS_SECTION
 from src.application.report_risk_watch import (
     render_risk_watch_html,
     render_risk_watch_text,
@@ -154,6 +155,7 @@ from src.application.report_track_record import (
     TrackRecordStats,
     render_track_record_html,
 )
+from src.application.report_trade_signals import TRADE_SIGNALS_SECTION
 from src.application.report_user_portfolio import (
     USER_PORTFOLIO_SECTION,
     portfolio_change_view,
@@ -187,7 +189,6 @@ from src.domain.portfolio import (
 )
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
-from src.domain.sizing import PositionAction, SizeBand
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
     ValuationVerdict,
@@ -304,29 +305,6 @@ def _model_signal(r: SymbolResult) -> str:
     """MAIL-27: sygnał modelu (KUP/SPRZEDAJ/TRZYMAJ) — etykieta ze wspólnego
     słownika domeny, nie „rekomendacja”."""
     return model_signal_label(r.trend)
-
-
-# G03: przy cold-starcie target == bieżąca cena, więc "+0.00%" udawałoby prognozę.
-_COLD_START_FORECAST = "— (ML: cold-start)"
-# WIA-13: przy cold-starcie siła sygnału to sama pewność — sekcja mówi to wprost.
-_SIGNALS_COLD_START_NOTE = (
-    "Model ML bez wag (cold-start): ranking wg pewności LLM, skalibrowanej historią, "
-    "gdy jest próbka — bez prognozy ruchu."
-)
-# PORT-08: język ostrożny (MAR/KNF) — kierunek w kontekście portfela to nadal sygnał modelu.
-_SIGNALS_POSITION_NOTE = (
-    "Kierunek w kontekście Twojego portfela (tylko pozycje długie): spadek na "
-    "trzymanej spółce to „ZREDUKUJ”, poza portfelem „UNIKAJ”, wzrost na już dużej "
-    "pozycji „TRZYMAJ, nie dokładaj”. To sygnał modelu, nie rekomendacja."
-)
-# PORT-08: kolor kierunku po akcji pozycji — spadek czerwony, wzrost zielony.
-_POSITION_ACTION_TONE = {
-    PositionAction.BUY: "KUP",
-    PositionAction.HOLD: "OBSERWUJ",
-    PositionAction.REDUCE: "SPRZEDAJ",
-    PositionAction.AVOID: "SPRZEDAJ",
-    PositionAction.WATCH: "OBSERWUJ",
-}
 
 
 def _signed_move(value: float) -> str:
@@ -1120,6 +1098,12 @@ def _section_input(
     saved, ignored, errors = _partition_by_status(results)
     current_prices = _report_prices(results, context)
     pln_rates = _pln_rates_of(context)
+    # #1: ranking leadu robi domena; TU jest jedyne miejsce, gdzie DTO warstwy
+    # application (SymbolResult / ResolvedPrediction) są mapowane na typy
+    # domenowe — `src/domain/digest_lead.py` ich nie importuje.
+    lead_items = build_cycle_lead(results, context)
+    # MAIL-06: pełny ranking (pełna rada dla top N); 🎯 sekcja bierze jego czołówkę.
+    ranked_signals = build_cycle_signals(results, context, top_n=len(results))
     return SectionInput(
         context=context,
         results=results,
@@ -1130,10 +1114,7 @@ def _section_input(
         duration_seconds=duration_seconds,
         started_local=format_local(started_at, context.display_timezone),
         sector_map=context.sector_map or {},
-        # #1: ranking leadu robi domena; TU jest jedyne miejsce, gdzie DTO warstwy
-        # application (SymbolResult / ResolvedPrediction) są mapowane na typy
-        # domenowe — `src/domain/digest_lead.py` ich nie importuje.
-        lead_items=build_cycle_lead(results, context),
+        lead_items=lead_items,
         resolved=context.resolved_predictions or [],
         resolved_window=resolved_window(context.resolved_this_cycle),
         current_prices=current_prices,
@@ -1148,6 +1129,9 @@ def _section_input(
             display_timezone=context.display_timezone,
             rates=pln_rates,
         ),
+        trade_signals=ranked_signals[:_TOP_SIGNALS],
+        full_detail=_full_detail_symbols(saved, ranked_signals, lead_items),
+        symbol_chips=symbol_chip_labels(context.symbol_track_record, (r.symbol for r in saved)),
     )
 
 
@@ -1168,10 +1152,6 @@ def build_html_report(
     sector_map = data.sector_map
     mood = build_portfolio_mood(results)
     forecast_horizon = forecast_horizon_label(started_at)
-    # MAIL-06: pełny ranking (pełna rada dla top N); 🎯 sekcja bierze jego czołówkę.
-    ranked_signals = build_cycle_signals(results, context, top_n=len(results))
-    trade_signals = ranked_signals[:_TOP_SIGNALS]
-    risk_signals = detect_risk_signals(results)
     macro_risk_html = (
         render_risk_watch_html(context.macro_risk_report) if context.macro_risk_report else ""
     )
@@ -1187,8 +1167,6 @@ def build_html_report(
         if context.portfolio_risk_report
         else ""
     )
-    # MAIL-06: pełna rada dla top N wg siły sygnału i symboli z leadu.
-    full_detail = _full_detail_symbols(saved, ranked_signals, data.lead_items)
     # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
     council_history_html = render_council_history_html(context.council_history or [])
     # #3: ranking wiarygodności person — ranking (z progiem min_votes) przychodzi
@@ -1226,16 +1204,13 @@ def build_html_report(
     suggestions_text = render_suggestions_text(suggestions)
 
     started_local = data.started_local
-    symbol_chips = symbol_chip_labels(context.symbol_track_record, (r.symbol for r in saved))
     html = _render_html(
         data,
         results, saved, ignored, errors, started_local, duration_seconds,
-        mood, trade_signals, risk_signals,
+        mood,
         display_timezone=context.display_timezone,
-        full_detail=full_detail,
         sector_map=sector_map,
         forecast_horizon=forecast_horizon,
-        symbol_chips=symbol_chips,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1255,11 +1230,10 @@ def build_html_report(
     text = _render_plain(
         data,
         results, saved, ignored, errors, started_local, duration_seconds,
-        mood, trade_signals, risk_signals,
+        mood,
         display_timezone=context.display_timezone,
         sector_map=sector_map,
         forecast_horizon=forecast_horizon,
-        symbol_chips=symbol_chips,
     )
     text = _fill_text_slots(
         text,
@@ -1316,176 +1290,6 @@ def _render_run_footer_text(run_context: RunContext | None) -> str:
 # ---------------------------------------------------------------------------
 # HTML
 # ---------------------------------------------------------------------------
-
-
-def _calibration_suffix(sig: TradeSignal) -> str:
-    """„ po kalibracji (n kubełka: 12)” — n pomijamy, gdy sygnał go nie niesie."""
-    if sig.calibration_bucket_count is None:
-        return " po kalibracji"
-    return f" po kalibracji (n kubełka: {sig.calibration_bucket_count})"
-
-
-def _confidence_html(sig: TradeSignal) -> str:
-    """WIA-12: „pewność 85% → 58% po kalibracji (n kubełka: 12)” albo sama surowa."""
-    raw = f"pewność <strong>{_pct(sig.confidence, decimals=0)}</strong>"
-    if sig.calibrated_confidence is None:
-        return raw
-    return (
-        f"{raw} → <strong>{_pct(sig.calibrated_confidence, decimals=0)}</strong>"
-        f"{_html(_calibration_suffix(sig))}"
-    )
-
-
-def _confidence_text(sig: TradeSignal) -> str:
-    raw = _pct(sig.confidence, decimals=0)
-    if sig.calibrated_confidence is None:
-        return raw
-    return f"{raw} → {_pct(sig.calibrated_confidence, decimals=0)}{_calibration_suffix(sig)}"
-
-
-def _strength_label(rank: int, sig: TradeSignal) -> str:
-    """WIA-12: pozycja w rankingu i składowe siły zamiast gołej liczby.
-
-    Siła to |ruch| × pewność (skalibrowana, gdy jest historia), a przy
-    cold-starcie ML sama pewność — etykieta mówi, z czego wynika kolejność.
-    """
-    calibrated = sig.calibrated_confidence is not None
-    effective = sig.confidence if sig.calibrated_confidence is None else sig.calibrated_confidence
-    confidence_pct = _pct(effective, decimals=0)
-    if sig.ml_cold_start:
-        basis = "pewności skalibrowanej" if calibrated else "pewności"
-        return f"#{rank} · wg {basis} {confidence_pct}"
-    basis = "pewność skalibrowana" if calibrated else "pewność"
-    move_pct = _pct(abs(sig.expected_change), decimals=1)
-    return f"#{rank} · ruch {move_pct} × {basis} {confidence_pct}"
-
-
-def _signal_label(sig: TradeSignal) -> str:
-    """PORT-08: kierunek sygnału — przy znanym portfelu w kontekście pozycji
-    („ZREDUKUJ (12% portfela)”), inaczej KUP / SPRZEDAJ / OBSERWUJ jak dotąd."""
-    action = sig.position_action
-    if action is None:
-        return sig.direction
-    held = action in (PositionAction.REDUCE, PositionAction.HOLD)
-    if held and sig.position_weight is not None:
-        return f"{action.label} ({_pct(sig.position_weight, decimals=0)} portfela)"
-    return action.label
-
-
-def _signal_tone(sig: TradeSignal) -> str:
-    action = sig.position_action
-    return sig.direction if action is None else _POSITION_ACTION_TONE[action]
-
-
-def _signal_size_band(sig: TradeSignal) -> SizeBand | None:
-    """Banda wielkości to sugestia wejścia — przy „UNIKAJ”, „ZREDUKUJ” i „TRZYMAJ,
-    nie dokładaj” sprzeczna z kierunkiem, więc jej nie pokazujemy (PORT-08)."""
-    if sig.position_action in (None, PositionAction.BUY):
-        return sig.size_band
-    return None
-
-
-def _render_trade_signals_html(
-    trade_signals: list[TradeSignal], symbol_chips: Mapping[str, str] | None = None
-) -> str:
-    """🎯 Najsilniejsze sygnały transakcyjne. Pusty string, gdy brak sygnałów.
-
-    `symbol_chips` (WIA-35): trafność kierunkowa na danym symbolu pod wierszem."""
-    if not trade_signals:
-        return ""
-    chips = symbol_chips or {}
-    parts = [_section_h2("🎯 Najsilniejsze sygnały")]
-    if any(sig.ml_cold_start for sig in trade_signals):
-        parts.append(
-            "<div style='font-size: 12px; color: #6b7280; margin-bottom: 8px;'>"
-            f"{_html(_SIGNALS_COLD_START_NOTE)}</div>"
-        )
-    if any(sig.position_action is not None for sig in trade_signals):
-        parts.append(
-            "<div style='font-size: 12px; color: #6b7280; margin-bottom: 8px;'>"
-            f"{_html(_SIGNALS_POSITION_NOTE)}</div>"
-        )
-    for rank, sig in enumerate(trade_signals, start=1):
-        dir_color = {
-            "KUP": PALETTE.positive,
-            "SPRZEDAJ": PALETTE.negative,
-            "OBSERWUJ": PALETTE.neutral,
-        }[_signal_tone(sig)]
-        dir_bg = {
-            "KUP": "#f0fdf4",
-            "SPRZEDAJ": "#fef2f2",
-            "OBSERWUJ": "#f9fafb",
-        }[_signal_tone(sig)]
-        forecast_html = (
-            f'<span style="color: #6b7280;">prognoza <strong>{_COLD_START_FORECAST}</strong></span>'
-            if sig.ml_cold_start
-            else (
-                f'<span style="color: {_delta_color(sig.expected_change)};">'
-                f"prognoza <strong>{direction_pct(sig.expected_change)}</strong></span>"
-            )
-        )
-        # Q7: pasmo wielkości pozycji (Kelly-lite z konsensusu rady + hit-rate).
-        size_band = _signal_size_band(sig)
-        size_html = (
-            f'<span style="color: #6b7280; font-size: 12px;">'
-            f"{_html(size_band.label)}</span>"
-            if size_band
-            else ""
-        )
-        parts.append(f"""
-              <div style="margin-bottom: 8px; padding: 10px 14px; background: {dir_bg};
-                          border-left: 4px solid {dir_color}; border-radius: 4px;
-                          font-size: 13px; display: flex; gap: 12px; align-items: center;">
-                <span style="font-weight: 700; color: {dir_color}; min-width: 90px;">
-                  {_html(_signal_label(sig))}
-                </span>
-                <span style="font-weight: 600; min-width: 60px;">{_html(_company_label(sig.symbol))}</span>
-                <span style="color: #4b5563;">
-                  {_confidence_html(sig)}
-                </span>
-                {forecast_html}
-                {size_html}
-                <span style="color: #6b7280; margin-left: auto; font-size: 12px;">
-                  {_html(_strength_label(rank, sig))}
-                </span>
-              </div>
-            """)
-        chip = chips.get(sig.symbol)
-        if chip:
-            parts.append(
-                "<div style='font-size: 12px; color: #6b7280; margin: -4px 0 8px 18px;'>"
-                f"{_html(chip)}</div>"
-            )
-    return "".join(parts)
-
-
-def _render_risk_signals_html(risk_signals: list[RiskSignal]) -> str:
-    """🚨 Sygnały ostrzegawcze. Pusty string, gdy brak sygnałów."""
-    if not risk_signals:
-        return ""
-    parts = [
-        "<h2 style='font-size: 16px; margin: 20px 0 8px 0; color: #991b1b;'>"
-        "🚨 Sygnały ostrzegawcze</h2>"
-    ]
-    type_label = {
-        "DIVERGENCE": "Rozbieżność cena ↔ sentyment",
-        "AV_LLM_CONFLICT": "Niezgodność AV ↔ LLM",
-        "LOW_SIGNAL": "Słaby sygnał",
-    }
-    for rs in risk_signals:
-        sev_color = {"high": "#dc2626", "medium": "#f59e0b", "low": "#6b7280"}[rs.severity]
-        parts.append(f"""
-              <div style="margin-bottom: 6px; padding: 8px 12px; background: #fffbeb;
-                          border-left: 3px solid {sev_color}; border-radius: 4px;
-                          font-size: 12px;">
-                <strong>{_html(_company_label(rs.symbol))}</strong>
-                <span style="color: {sev_color}; font-weight: 600;">
-                  · {type_label.get(rs.type, _html(rs.type))}
-                </span><br/>
-                <span style="color: #4b5563;">{_html(rs.description)}</span>
-              </div>
-            """)
-    return "".join(parts)
 
 
 def _render_reflections_html(saved: list[SymbolResult]) -> str:
@@ -1833,14 +1637,10 @@ def _render_html(
     started_local: str,
     duration_seconds: float,
     mood: PortfolioMood,
-    trade_signals: list[TradeSignal],
-    risk_signals: list[RiskSignal],
     *,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
-    full_detail: frozenset[str] | None = None,
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
-    symbol_chips: Mapping[str, str] | None = None,
 ) -> str:
     sections = [PREHEADER_SECTION.render_html(data)]
 
@@ -1855,15 +1655,15 @@ def _render_html(
     sections.append(RESOLVED_PREDICTIONS_SECTION.render_html(data))
     sections.append(CONSENSUS_SHIFT_SECTION.render_html(data))
     sections.append(REBASELINED_SECTION.render_html(data))
-    sections.append(_render_trade_signals_html(trade_signals, symbol_chips))
-    sections.append(_render_risk_signals_html(risk_signals))
+    sections.append(TRADE_SIGNALS_SECTION.render_html(data))
+    sections.append(RISK_SIGNALS_SECTION.render_html(data))
     sections.append(
         _render_saved_section_html(
             saved,
-            full_detail,
+            data.full_detail,
             sector_map=sector_map,
             forecast_horizon=forecast_horizon,
-            symbol_chips=symbol_chips,
+            symbol_chips=data.symbol_chips,
         )
     )
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
@@ -1925,55 +1725,6 @@ def _render_html(
 # ---------------------------------------------------------------------------
 # Plain text fallback
 # ---------------------------------------------------------------------------
-
-
-def _render_trade_signals_text(
-    trade_signals: list[TradeSignal], symbol_chips: Mapping[str, str] | None = None
-) -> list[str]:
-    """Sekcja 'Najsilniejsze sygnały' (plain). Pusta lista, gdy brak sygnałów."""
-    if not trade_signals:
-        return []
-    chips = symbol_chips or {}
-    lines = ["NAJSILNIEJSZE SYGNAŁY", "-" * 64]
-    if any(sig.ml_cold_start for sig in trade_signals):
-        lines.append(f"  {_SIGNALS_COLD_START_NOTE}")
-    if any(sig.position_action is not None for sig in trade_signals):
-        lines.append(f"  {_SIGNALS_POSITION_NOTE}")
-    for rank, sig in enumerate(trade_signals, start=1):
-        size_band = _signal_size_band(sig)
-        size_txt = f"  [{size_band.label}]" if size_band else ""
-        forecast = (
-            _COLD_START_FORECAST if sig.ml_cold_start else _pct(sig.expected_change, signed=True)
-        )
-        lines.append(
-            f"  {_signal_label(sig):9s} {_company_label(sig.symbol):40s} "
-            f"pewność {_confidence_text(sig)}  "
-            f"prognoza {forecast:>8s}  "
-            f"{_strength_label(rank, sig)}{size_txt}"
-        )
-        chip = chips.get(sig.symbol)
-        if chip:
-            lines.append(f"            {chip}")
-    lines.append("")
-    return lines
-
-
-def _render_risk_signals_text(risk_signals: list[RiskSignal]) -> list[str]:
-    """Sekcja 'Sygnały ostrzegawcze' (plain). Pusta lista, gdy brak."""
-    if not risk_signals:
-        return []
-    lines = ["SYGNAŁY OSTRZEGAWCZE", "-" * 64]
-    type_label = {
-        "DIVERGENCE": "Rozbieżność",
-        "AV_LLM_CONFLICT": "Niezgodność AV↔LLM",
-        "LOW_SIGNAL": "Słaby sygnał",
-    }
-    for rs in risk_signals:
-        lines.append(
-            f"  ⚠ {_company_label(rs.symbol)}: [{type_label.get(rs.type, rs.type)}] {rs.description}"
-        )
-    lines.append("")
-    return lines
 
 
 def _render_mood_text(mood: PortfolioMood) -> list[str]:
@@ -2109,13 +1860,10 @@ def _render_plain(
     started_local: str,
     duration_seconds: float,
     mood: PortfolioMood,
-    trade_signals: list[TradeSignal],
-    risk_signals: list[RiskSignal],
     *,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
-    symbol_chips: Mapping[str, str] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.extend(QUOTA_BANNER_SECTION.render_text(data))
@@ -2130,9 +1878,11 @@ def _render_plain(
     # MAIL-09: zmiany nastawienia rady — jak w HTML, za rozliczeniami.
     lines.extend(CONSENSUS_SHIFT_SECTION.render_text(data))
     lines.extend(REBASELINED_SECTION.render_text(data))
-    lines.extend(_render_trade_signals_text(trade_signals, symbol_chips))
-    lines.extend(_render_risk_signals_text(risk_signals))
-    lines.extend(_render_saved_section_text(saved, sector_map, forecast_horizon, symbol_chips))
+    lines.extend(TRADE_SIGNALS_SECTION.render_text(data))
+    lines.extend(RISK_SIGNALS_SECTION.render_text(data))
+    lines.extend(
+        _render_saved_section_text(saved, sector_map, forecast_horizon, data.symbol_chips)
+    )
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
     lines.extend(CRYPTO_SECTION.render_text(data))
 

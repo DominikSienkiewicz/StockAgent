@@ -22,6 +22,8 @@ MAIL_ORDER = (
     "resolved_predictions",
     "consensus_shift",
     "rebaselined",
+    "trade_signals",
+    "risk_signals",
     "crypto",
     "accuracy_history",
     "budget_exhausted",
