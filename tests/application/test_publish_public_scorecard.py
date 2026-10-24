@@ -38,16 +38,14 @@ def _protocol() -> EvaluationProtocol:
     return load_evaluation_protocol()
 
 
-def _options(**overrides: object) -> PublicScorecardOptions:
-    values: dict[str, object] = {
-        "window_days": 30,
-        "settle_after_hours": 12,
-        "symbols": ["NVDA"],
-        "crypto_symbols": [],
-        "load_protocol": _protocol,
-    }
-    values.update(overrides)
-    return PublicScorecardOptions(**values)  # type: ignore[arg-type]
+def _options() -> PublicScorecardOptions:
+    return PublicScorecardOptions(
+        window_days=30,
+        settle_after_hours=12,
+        symbols=["NVDA"],
+        crypto_symbols=[],
+        load_protocol=_protocol,
+    )
 
 
 def _repo(resolved: list[dict[str, object]] | None = None) -> Mock:

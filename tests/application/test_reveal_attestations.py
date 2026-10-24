@@ -8,6 +8,7 @@ odsłoniły, a dla sceptyka wygląda to jak ukrywanie nietrafień.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 from src.application.ports import AttestationPublisherPort, RepositoryPort
@@ -20,7 +21,7 @@ def _sweep(repo: MagicMock, pub: MagicMock) -> int:
 
 class TestAttestationRevealSweep:
     @staticmethod
-    def _row(pid: str, salt: str = "s" * 32) -> dict:
+    def _row(pid: str, salt: str = "s" * 32) -> dict[str, Any]:
         return {
             "id": pid,
             "symbol": "GONE",
@@ -104,7 +105,7 @@ class TestAttestationRevealSweep:
         assert _sweep(repo, MagicMock()) == 0
 
     @staticmethod
-    def _sweep_one(row: dict) -> dict:
+    def _sweep_one(row: dict[str, Any]) -> dict[str, Any]:
         repo = MagicMock(spec=RepositoryPort)
         repo.get_unrevealed_commitments.return_value = [row]
         pub = MagicMock(spec=AttestationPublisherPort)

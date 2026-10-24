@@ -12,6 +12,7 @@ import main_trainer
 from src.application.alpha_signals import AlphaSignals
 from src.application.ports import PreviousVerdict, RepositoryPort
 from src.application.use_cases import run_cycle
+from src.application.use_cases.assemble_report import AssembledReport
 from src.config import Settings
 from src.domain.consensus_shift import ShiftKind
 from src.domain.council import CouncilVerdict
@@ -7155,10 +7156,9 @@ class TestReportReads:
         assert repository.get_resolved_predictions.call_count == 1
 
 
-def _assembled_report() -> object:
+def _assembled_report() -> AssembledReport:
     from src.application.report_evidence import PaperCosts
     from src.application.track_record_window import TrackRecordReads
-    from src.application.use_cases.assemble_report import AssembledReport
 
     return AssembledReport(
         context=main_agent.ReportContext(),
@@ -7184,7 +7184,7 @@ def test_deliver_report_returns_outcome_per_channel(settings, mocker) -> None:
     web_publisher.publish.return_value = "public/digest/index.html"
 
     outcome = main_agent.deliver_report(
-        _assembled_report(),  # type: ignore[arg-type]
+        _assembled_report(),
         results=[],
         started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
         duration=1.0,
@@ -7231,7 +7231,7 @@ def test_deliver_report_lists_each_subscriber_under_a_masked_address(settings, m
     web_publisher.publish.return_value = ""
 
     outcome = main_agent.deliver_report(
-        _assembled_report(),  # type: ignore[arg-type]
+        _assembled_report(),
         results=[],
         started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
         duration=1.0,

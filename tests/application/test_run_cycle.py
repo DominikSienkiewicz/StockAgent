@@ -7,6 +7,7 @@ Wiring z `Settings` (aliasy `main_agent._analyze_symbols` i
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from contextlib import nullcontext
 from decimal import Decimal
 from unittest.mock import Mock, call
@@ -15,7 +16,7 @@ import pytest
 
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
-from src.application.use_cases.run_cycle import CycleOptions, RunFastLoopCycle
+from src.application.use_cases.run_cycle import CycleOptions, RunFastLoopCycle, SymbolScope
 
 
 def _use_case() -> Mock:
@@ -24,18 +25,21 @@ def _use_case() -> Mock:
     return use_case
 
 
-def _cycle(use_case: Mock, options: CycleOptions, **hooks: object) -> RunFastLoopCycle:
-    defaults: dict[str, object] = {
-        "sleep": Mock(),
-        "redact": lambda text: text,
-        "symbol_scope": lambda symbol: nullcontext(),
-    }
-    defaults.update(hooks)
+def _cycle(
+    use_case: Mock,
+    options: CycleOptions,
+    *,
+    sleep: Callable[[float], None] | None = None,
+    redact: Callable[[str], str] = lambda text: text,
+    symbol_scope: SymbolScope = lambda symbol: nullcontext(),
+) -> RunFastLoopCycle:
     return RunFastLoopCycle(
         use_case=use_case,
         alpha_use_case=Mock(spec=AlphaEnrichmentUseCase),
         options=options,
-        **defaults,  # type: ignore[arg-type]
+        sleep=Mock() if sleep is None else sleep,
+        redact=redact,
+        symbol_scope=symbol_scope,
     )
 
 
