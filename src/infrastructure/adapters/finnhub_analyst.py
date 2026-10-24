@@ -15,7 +15,8 @@ przetłumaczone błędy dostawcy (`PortError`), więc błąd programisty nie uda
 konsensusu. Cienki I/O; cała logika oceny (rating/upside) siedzi w domenie.
 
 DAT-12: każdy request bierze token ze wspólnego limitera Finnhub procesu, a 429
-(QuotaAlert) i 401/403 (jeden WARNING) przestały być ciche.
+(jeden CRITICAL QuotaAlert na endpoint na cykl) i 401/403 (jeden WARNING) przestały
+być ciche.
 """
 
 from __future__ import annotations

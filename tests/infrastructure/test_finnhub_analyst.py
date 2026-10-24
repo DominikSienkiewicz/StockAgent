@@ -257,10 +257,30 @@ def test_429_on_recommendation_emits_quota_alert() -> None:
 
     assert len(monitor.alerts) == 1
     alert = monitor.alerts[0]
-    assert alert.severity is QuotaSeverity.WARNING
+    assert alert.severity is QuotaSeverity.CRITICAL
     assert alert.source.startswith("Finnhub")
     assert "429" in alert.message
     assert "test-token-123" not in alert.message + alert.action
+
+
+def test_repeated_429_on_one_endpoint_is_one_critical_alert(caplog) -> None:
+    # DAT-12 (decyzja 2026-10-24): CRITICAL raz na endpoint na cykl, kolejne 429 w logu.
+    import logging
+    from unittest.mock import patch
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = FinnhubAnalystAdapter(api_key="test-token-123", quota_monitor=monitor)
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(adapter._session, "get", return_value=_status_response(429)),
+    ):
+        assert adapter.get_consensus("AAPL") is None
+        assert adapter.get_consensus("MSFT") is None
+
+    assert len(monitor.alerts) == 1
+    assert len([r for r in caplog.records if "429" in r.getMessage()]) == 2
 
 
 @pytest.mark.parametrize("status", [401, 403])

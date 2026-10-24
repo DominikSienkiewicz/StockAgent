@@ -215,7 +215,7 @@ def test_429_on_option_chain_emits_quota_alert(mocker) -> None:
 
     assert adapter.get_options_flow("AAPL") is None
 
-    assert [a.severity for a in monitor.alerts] == [QuotaSeverity.WARNING]
+    assert [a.severity for a in monitor.alerts] == [QuotaSeverity.CRITICAL]
     assert "429" in monitor.alerts[0].message
 
 

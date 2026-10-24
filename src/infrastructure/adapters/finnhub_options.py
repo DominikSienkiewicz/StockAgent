@@ -15,7 +15,8 @@ treść) daje None. ARCH-33: łapiemy wyłącznie przetłumaczone błędy dostaw
 (`PortError`) — błąd programisty nie udaje braku danych.
 
 DAT-12: request bierze token ze wspólnego limitera Finnhub procesu; 429 daje
-QuotaAlert, a 401/403 jeden WARNING na adapter (403 = brak planu premium).
+jeden CRITICAL QuotaAlert na cykl, a 401/403 jeden WARNING na adapter (403 = brak
+planu premium).
 """
 
 from __future__ import annotations
