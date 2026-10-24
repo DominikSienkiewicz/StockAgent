@@ -810,6 +810,52 @@ class TestSecFairAccess:
         archive_calls = [c for c in mock_get.call_args_list if "/Archives/" in c.args[0]]
         assert len(archive_calls) == 1
 
+    @staticmethod
+    def _no_form4_get(url: str, **_: object) -> Mock:
+        if "company_tickers.json" in url:
+            return _ok_json(_company_tickers())
+        return _ok_json(_submissions(forms=[], dates=[], accessions=[], primary_docs=[]))
+
+    @staticmethod
+    def _ticker_downloads(mock_get: Mock) -> int:
+        return sum("company_tickers.json" in c.args[0] for c in mock_get.call_args_list)
+
+    def test_ticker_map_is_downloaded_once_per_cycle(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        mock_get = mocker.patch("requests.Session.get", side_effect=self._no_form4_get)
+
+        snaps = [adapter.get_insider_flow(s) for s in ("AAPL", "MSFT", "ZZZZ")]
+
+        assert [s is not None for s in snaps] == [True, True, False]
+        assert self._ticker_downloads(mock_get) == 1
+
+    def test_parallel_symbols_share_one_ticker_download(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        import threading
+        import time as real_time
+
+        def slow_get(url: str, **kwargs: object) -> Mock:
+            real_time.sleep(0.02)  # poszerza okno race'a
+            return self._no_form4_get(url, **kwargs)
+
+        mock_get = mocker.patch("requests.Session.get", side_effect=slow_get)
+        symbols = ("AAPL", "MSFT", "AAPL", "MSFT")
+        barrier = threading.Barrier(len(symbols))
+
+        def worker(symbol: str) -> None:
+            barrier.wait()
+            adapter.get_insider_flow(symbol)
+
+        threads = [threading.Thread(target=worker, args=(s,)) for s in symbols]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert self._ticker_downloads(mock_get) == 1
+
 
 class TestNullInsiderFlowAdapter:
     def test_returns_none_without_io(self, mocker) -> None:
