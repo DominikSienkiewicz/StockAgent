@@ -75,3 +75,30 @@ class TestDriftGateSettings:
 
     def test_real_config_toml_ships_the_drift_gate_off(self) -> None:
         assert _toml()["drift_gate_enabled"] is False
+
+
+class TestPortfolioShockSettings:
+    """ALR-07: szok portfela w watchu — nowy zapis w `shock_alerts` (klucz „__PORTFOLIO__”),
+    więc flaga jest domyślnie off; próg to ułamek w (0, 1); sam push, poza przepisem."""
+
+    def test_defaults_off_with_a_three_percent_threshold(self) -> None:
+        settings = _settings()
+
+        assert settings.portfolio_shock_enabled is False
+        assert str(settings.portfolio_shock_threshold) == "0.03"
+
+    @pytest.mark.parametrize("value", ["0", "-0.01", "1", "1.5"])
+    def test_threshold_must_be_a_fraction_between_zero_and_one(self, value: str) -> None:
+        with pytest.raises(ValueError, match="portfolio_shock_threshold"):
+            _settings(portfolio_shock_threshold=value)
+
+    @pytest.mark.parametrize("field", ["portfolio_shock_enabled", "portfolio_shock_threshold"])
+    def test_fields_stay_outside_the_recipe(self, field: str) -> None:
+        assert field in NON_RECIPE_SETTINGS_FIELDS
+        assert field not in RECIPE_SETTINGS_FIELDS
+
+    def test_real_config_toml_ships_the_portfolio_shock_off(self) -> None:
+        data = _toml()
+
+        assert data["portfolio_shock_enabled"] is False
+        assert data["portfolio_shock_threshold"] == 0.03

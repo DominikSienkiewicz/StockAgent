@@ -26,6 +26,11 @@ Dwa nienaruszalne kontrakty:
    uczy użytkownika ignorować kanał. Egzekwowany dwustopniowo: predykatem
    domenowym `should_emit` i twardym `UNIQUE(symbol, alert_date)` z migracji 021.
 
+ALR-07: za flagą `portfolio_shock_enabled` ten sam przebieg liczy też szok PORTFELA —
+Σ waga × Δ po pozycjach (tabela `positions`) wobec `portfolio_shock_threshold`. Łapie
+skoordynowany spadek wielu spółek, którego progi per symbol (2× bramki) nie widzą;
+jeden push dziennie, debounce w `shock_alerts` pod symbolem „__PORTFOLIO__”.
+
 ALR-11: ten sam przebieg sprawdza alerty poziomów cenowych użytkownika
 (`scan_price_levels`, flaga `price_level_alerts_enabled`, tabela z migracji 057) —
 darmowe ceny, przekroczenie liczone od `last_seen_price` alertu, nie od snapshotu.
@@ -67,11 +72,14 @@ from src.domain.portfolio import Portfolio
 from src.domain.price_levels import LevelDirection, PriceLevelAlert
 from src.domain.quiet_hours import is_quiet
 from src.domain.shock import (
+    PORTFOLIO_ALERT_SYMBOL,
     ROLLING_CHANGE_WINDOW,
     SNAPSHOT_MAX_AGE_HOURS,
     DailyChange,
+    PortfolioShock,
     ShockAlert,
     classify_shock,
+    detect_portfolio_shock,
     detect_shock,
     is_daily_change_fresh,
     is_move_already_alerted,
@@ -170,12 +178,12 @@ class _AlertContextReader:
         return latest if isinstance(latest, LatestPrediction) else None
 
     def _position(self, symbol: str) -> PositionContext | None:
-        portfolio = self._user_portfolio()
+        portfolio = self.user_portfolio()
         if portfolio is None or symbol not in {lot.symbol for lot in portfolio.positions}:
             return None
-        return position_context(portfolio, symbol, self._held_prices(portfolio))
+        return position_context(portfolio, symbol, self.held_prices(portfolio))
 
-    def _user_portfolio(self) -> Portfolio | None:
+    def user_portfolio(self) -> Portfolio | None:
         if not self._portfolio_read:
             self._portfolio_read = True
             try:
@@ -186,7 +194,7 @@ class _AlertContextReader:
             self._portfolio = loaded if isinstance(loaded, Portfolio) else None
         return self._portfolio
 
-    def _held_prices(self, portfolio: Portfolio) -> dict[str, Decimal]:
+    def held_prices(self, portfolio: Portfolio) -> dict[str, Decimal]:
         prices: dict[str, Decimal] = {}
         for symbol in sorted({lot.symbol for lot in portfolio.positions}):
             try:
@@ -206,29 +214,13 @@ def _classify(symbol: str, crypto_symbols: set[str]) -> Asset:
     return Asset(symbol=symbol, asset_type=asset_type)
 
 
-def _detect_symbol_shock(
-    symbol: str,
-    *,
-    settings: Settings,
-    market: MarketDataPort,
-    crypto: set[str],
-    previous: Money,
-    age_hours: float,
-) -> ShockAlert | None:
-    """Czy symbol kwalifikuje się na alert szoku wobec świeżej referencji.
-    Brak ceny bieżącej albo cena odniesienia 0 → None (nie ma od czego liczyć
-    delty)."""
+def _snapshot_fraction(symbol: str, *, market: MarketDataPort, previous: Money) -> Decimal | None:
+    """Zmiana ceny (ułamek) od referencji ze snapshotu. Brak ceny bieżącej albo cena
+    odniesienia 0 → None (nie ma od czego liczyć delty)."""
     current = market.get_current_price(symbol)
     if current is None or previous.amount == 0:
         return None
-
-    fraction = (current.amount - previous.amount) / previous.amount
-    return detect_shock(
-        _classify(symbol, crypto),
-        PriceDelta(fraction),
-        Threshold(settings.volatility_threshold),
-        age_hours,
-    )
+    return (current.amount - previous.amount) / previous.amount
 
 
 def _fresh_daily_change(
@@ -339,6 +331,78 @@ def _watched_stocks(settings: Settings, moment: datetime) -> list[str]:
     return []
 
 
+def _render_portfolio_alert(
+    shock: PortfolioShock, *, detected_at: datetime, display_timezone: str
+) -> tuple[str, str]:
+    """ALR-07: „💼 Portfel -3,4% (NVDA -6,0%, AMD -5,0%)” — temat i treść pusha.
+    Gdy część portfela nie miała policzonej zmiany, push mówi, z ilu procent liczy."""
+    move = format_pct_pl(shock.delta.percent, signed=True)
+    movers = ", ".join(
+        f"{symbol} {format_pct_pl(PriceDelta(change).percent, signed=True)}"
+        for symbol, change in shock.movers
+    )
+    lines = [
+        f"💼 Portfel {move} ({movers}) od ostatnich referencji cen "
+        f"(stan na {format_local(detected_at, display_timezone)}).",
+    ]
+    if shock.measured_weight < 1:
+        share = format_pct_pl(shock.measured_weight * 100, signed=False, decimals=0)
+        lines.append(f"Liczone z {share} portfela — reszta bez policzonej zmiany ceny.")
+    lines.append("Alert poza cyklem — pełna analiza w najbliższym dziennym digeście.")
+    return f"💼 Szok portfela: {move}", "\n".join(lines)
+
+
+def _pre_move_prices(
+    prices: dict[str, Decimal], deltas: dict[str, Decimal]
+) -> dict[str, Decimal]:
+    """Ceny SPRZED ruchu: cena bieżąca / (1 + Δ) dla symboli z policzoną zmianą,
+    reszta bez zmian (jej wartość uznajemy za nieruszoną). Wagi sprzed ruchu to
+    prawidłowe wagi dla Σ waga × Δ; cena spadająca do zera pomija symbol."""
+    return {
+        symbol: price / (1 + deltas[symbol]) if symbol in deltas and deltas[symbol] > -1 else price
+        for symbol, price in prices.items()
+    }
+
+
+def _portfolio_shock_step(
+    settings: Settings,
+    *,
+    repository: RepositoryPort,
+    push_notifier: ReportNotifierPort | None,
+    reader: _AlertContextReader,
+    portfolio: Portfolio,
+    deltas: dict[str, Decimal],
+    moment: datetime,
+    silent: bool,
+    already_sent: set[tuple[str, date]],
+) -> int:
+    """ALR-07: szok portfela z ruchów policzonych w tym przebiegu. Zwraca 1, gdy
+    push wyszedł. Bez kanału push: log błędu, bez wysyłki i bez zapisu debounce
+    (zapis zablokowałby alert na dobę, choć nikt go nie dostał). Błąd wysyłki leci
+    do pętli watcha, która liczy go jak błąd symbolu."""
+    prices = reader.held_prices(portfolio)
+    weights = portfolio.weights(_pre_move_prices(prices, deltas))
+    shock = detect_portfolio_shock(weights, deltas, settings.portfolio_shock_threshold)
+    if shock is None:
+        return 0
+    if push_notifier is None:
+        logger.error("Shock watch: szok portfela wykryty, ale brak kanału push")
+        return 0
+    subject, body = _render_portfolio_alert(
+        shock, detected_at=moment, display_timezone=settings.display_timezone
+    )
+    push_notifier.send_report(subject=subject, html_body=body, plain_text=body, silent=silent)
+    today = moment.date()
+    _persist_shock_alert(
+        repository,
+        PORTFOLIO_ALERT_SYMBOL,
+        today,
+        ShockAlert(symbol=PORTFOLIO_ALERT_SYMBOL, delta=shock.delta, direction=shock.direction),
+    )
+    already_sent.add((PORTFOLIO_ALERT_SYMBOL, today))
+    return 1
+
+
 def scan_watch(
     settings: Settings,
     *,
@@ -361,6 +425,10 @@ def scan_watch(
     snapshoty, jak przed ALR-02.
     `portfolio_loader` (ALR-08): skąd wziąć portfel do linii „Twoja pozycja”;
     None → fabryka Fast Loopa (za `portfolio_positions_enabled`).
+    `portfolio_shock_enabled` (ALR-07): watch mierzy też symbole trzymane w portfelu,
+    które dziś już zaalarmowały (ich ruch wchodzi do szoku portfela), a po pętli
+    liczy szok portfela jako dodatkowy element przebiegu — jego błąd liczy się jak
+    błąd symbolu i nie przerywa reszty.
     """
     if not settings.shock_alerts_enabled:
         logger.info("Shock watch wyłączony (shock_alerts_enabled=false).")
@@ -386,17 +454,50 @@ def scan_watch(
         repository, market, portfolio_loader or partial(_load_user_portfolio, settings)
     )
 
+    # ALR-07: szok portfela raz dziennie; portfel czytamy tylko, gdy jest co mierzyć.
+    held: frozenset[str] = frozenset()
+    portfolio: Portfolio | None = None
+    if settings.portfolio_shock_enabled and should_emit(
+        PORTFOLIO_ALERT_SYMBOL, today, already_sent
+    ):
+        portfolio = context_reader.user_portfolio()
+        if portfolio is not None:
+            held = frozenset(lot.symbol for lot in portfolio.positions)
+    deltas: dict[str, Decimal] = {}
+    work = [*symbols, *([PORTFOLIO_ALERT_SYMBOL] if portfolio is not None else [])]
+
     sent = 0
     failures = 0
     checked = 0
     stale = 0
-    for symbol in symbols:
+    for symbol in work:
         try:
-            if not should_emit(symbol, today, already_sent):
+            if symbol == PORTFOLIO_ALERT_SYMBOL and portfolio is not None:
+                sent += _portfolio_shock_step(
+                    settings,
+                    repository=repository,
+                    push_notifier=push_notifier,
+                    reader=context_reader,
+                    portfolio=portfolio,
+                    deltas=deltas,
+                    moment=moment,
+                    silent=silent,
+                    already_sent=already_sent,
+                )
                 continue
+            measure_only = False
+            if not should_emit(symbol, today, already_sent):
+                if symbol not in held:
+                    continue
+                # Symbol już zaalarmował, ale jego ruch należy do szoku portfela.
+                measure_only = True
             reading = _fresh_daily_change(daily_change, symbol, moment)
             if reading is not None:
                 checked += 1
+                if symbol in held:
+                    deltas[symbol] = reading.fraction
+                if measure_only:
+                    continue
                 asset = _classify(symbol, crypto)
                 # Decyzja 2: zmiana 24 h krypto wciąż zawiera ruch zaalarmowany < 24 h
                 # temu — po północy UTC byłby to drugi alert za ten sam ruch.
@@ -420,13 +521,18 @@ def scan_watch(
                 if is_reference_stale(age_hours):
                     stale += 1
                     continue
-                alert = _detect_symbol_shock(
-                    symbol,
-                    settings=settings,
-                    market=market,
-                    crypto=crypto,
-                    previous=previous,
-                    age_hours=age_hours,
+                fraction = _snapshot_fraction(symbol, market=market, previous=previous)
+                if fraction is None:
+                    continue
+                if symbol in held:
+                    deltas[symbol] = fraction
+                if measure_only:
+                    continue
+                alert = detect_shock(
+                    _classify(symbol, crypto),
+                    PriceDelta(fraction),
+                    Threshold(settings.volatility_threshold),
+                    age_hours,
                 )
                 basis = SNAPSHOT_BASIS
             if alert is None:
@@ -469,7 +575,7 @@ def scan_watch(
         )
     logger.info("Shock watch done — %d alert(ów) wysłanych", sent)
     return WatchOutcome(
-        sent=sent, failures=failures, total=len(symbols), checked=checked, stale=stale
+        sent=sent, failures=failures, total=len(work), checked=checked, stale=stale
     )
 
 

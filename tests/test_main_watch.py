@@ -1102,3 +1102,213 @@ class TestPriceLevelAlerts:
             market=market.return_value,
             push_notifier=push.return_value,
         )
+
+
+class TestPortfolioShockWatch:
+    """ALR-07: skoordynowany spadek wielu pozycji to szok portfela, choć żaden symbol
+    nie przekracza własnego progu. Same darmowe odczyty; watch nadal nie zapisuje
+    snapshotu ceny i nie woła płatnych portów."""
+
+    _NOW = datetime(2026, 10, 27, 14, 0, tzinfo=UTC)
+    _SYMBOLS = ("NVDA", "AMD", "AVGO", "TSM")
+
+    def _settings(self, settings: Settings, **overrides: object) -> Settings:
+        return settings.model_copy(
+            update={
+                "symbols": list(self._SYMBOLS),
+                "portfolio_shock_enabled": True,
+                "portfolio_shock_threshold": Decimal("0.03"),
+                "quiet_hours_enabled": False,
+                **overrides,
+            }
+        )
+
+    def _portfolio(self, *symbols: str):
+        from src.domain.portfolio import Portfolio, Position
+
+        return Portfolio(
+            positions=tuple(
+                Position(symbol=symbol, quantity=Decimal("10"), purchase_price=Decimal("90"))
+                for symbol in (symbols or self._SYMBOLS)
+            ),
+            as_of=self._NOW - timedelta(days=1),
+        )
+
+    def _repo(self) -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        stamp = self._NOW - timedelta(hours=1)
+        repo.get_last_price_snapshot.return_value = (Money(Decimal("100")), stamp)
+        repo.get_sent_shock_alerts.return_value = set()
+        repo.get_previous_verdict.return_value = None
+        repo.get_latest_prediction.return_value = None
+        return repo
+
+    @staticmethod
+    def _market(price: str = "96.5", **overrides: str) -> MagicMock:
+        prices = overrides
+        market = MagicMock()
+        market.get_current_price.side_effect = lambda symbol: Money(
+            Decimal(prices.get(symbol, price))
+        )
+        return market
+
+    def _run(
+        self,
+        settings: Settings,
+        repo: MagicMock,
+        *,
+        push: MagicMock | None,
+        portfolio: object = "default",
+        market: MagicMock | None = None,
+    ) -> int:
+        loaded = self._portfolio() if portfolio == "default" else portfolio
+        return main_watch.scan_watch(
+            settings,
+            repository=repo,
+            market=market or self._market(),
+            push_notifier=push,
+            now=self._NOW,
+            portfolio_loader=lambda: loaded,  # type: ignore[arg-type, return-value]
+        ).sent
+
+    def test_correlated_small_moves_send_one_portfolio_alert(self, settings) -> None:
+        repo = self._repo()
+        push = MagicMock()
+
+        sent = self._run(self._settings(settings), repo, push=push)
+
+        assert sent == 1
+        push.send_report.assert_called_once()
+        kwargs = push.send_report.call_args.kwargs
+        assert "💼 Portfel -3,5%" in kwargs["plain_text"]
+        assert kwargs["subject"] == "💼 Szok portfela: -3,5%"
+        repo.save_shock_alert.assert_called_once_with(
+            "__PORTFOLIO__", self._NOW.date(), pytest.approx(-0.035), "DOWN"
+        )
+        repo.save_price_snapshot.assert_not_called()
+
+    def test_the_alert_names_the_biggest_movers(self, settings) -> None:
+        repo = self._repo()
+        push = MagicMock()
+        market = self._market("97", NVDA="94")  # NVDA −6%, reszta −3%: Σ = −3,75%
+
+        self._run(self._settings(settings), repo, push=push, market=market)
+
+        body = push.send_report.call_args.kwargs["plain_text"]
+        assert "💼 Portfel -3,8%" in body
+        assert "NVDA -6,0%" in body
+
+    def test_flag_off_leaves_the_watch_as_it_was(self, settings) -> None:
+        repo = self._repo()
+        push = MagicMock()
+        loader = MagicMock(return_value=self._portfolio())
+
+        sent = main_watch.scan_watch(
+            self._settings(settings, portfolio_shock_enabled=False),
+            repository=repo,
+            market=self._market(),
+            push_notifier=push,
+            now=self._NOW,
+            portfolio_loader=loader,
+        ).sent
+
+        assert sent == 0
+        push.send_report.assert_not_called()
+        loader.assert_not_called()
+        repo.save_shock_alert.assert_not_called()
+
+    def test_below_the_portfolio_threshold_stays_silent(self, settings) -> None:
+        push = MagicMock()
+
+        sent = self._run(
+            self._settings(settings), self._repo(), push=push, market=self._market("98.5")
+        )
+
+        assert sent == 0
+        push.send_report.assert_not_called()
+
+    def test_debounce_one_portfolio_alert_a_day(self, settings) -> None:
+        repo = self._repo()
+        repo.get_sent_shock_alerts.return_value = {("__PORTFOLIO__", self._NOW.date())}
+        push = MagicMock()
+
+        assert self._run(self._settings(settings), repo, push=push) == 0
+        push.send_report.assert_not_called()
+
+    def test_a_symbol_alerted_earlier_today_still_counts_toward_the_portfolio(
+        self, settings
+    ) -> None:
+        repo = self._repo()
+        repo.get_sent_shock_alerts.return_value = {("NVDA", self._NOW.date())}
+        push = MagicMock()
+        market = self._market("97", NVDA="94")
+
+        sent = self._run(self._settings(settings), repo, push=push, market=market)
+
+        # Alert NVDA poszedł wcześniej; portfel (Σ = −3,75%) dostaje własny.
+        assert sent == 1
+        assert "NVDA -6,0%" in push.send_report.call_args.kwargs["plain_text"]
+
+    def test_a_symbol_shock_and_the_portfolio_shock_are_independent(self, settings) -> None:
+        repo = self._repo()
+        push = MagicMock()
+        market = self._market("97", NVDA="90")  # NVDA −10% (szok symbolu), Σ ≈ −4,75%
+
+        sent = self._run(self._settings(settings), repo, push=push, market=market)
+
+        assert sent == 2
+        saved = {call.args[0] for call in repo.save_shock_alert.call_args_list}
+        assert saved == {"NVDA", "__PORTFOLIO__"}
+
+    def test_without_a_push_channel_it_logs_and_saves_nothing(self, settings, caplog) -> None:
+        repo = self._repo()
+
+        with caplog.at_level(logging.ERROR):
+            sent = self._run(self._settings(settings), repo, push=None)
+
+        assert sent == 0
+        assert "portfel" in caplog.text.lower()
+        repo.save_shock_alert.assert_not_called()
+
+    def test_no_positions_no_portfolio_alert(self, settings) -> None:
+        push = MagicMock()
+
+        sent = self._run(self._settings(settings), self._repo(), push=push, portfolio=None)
+
+        assert sent == 0
+        push.send_report.assert_not_called()
+
+    def test_positions_without_a_move_are_reported_not_guessed(self, settings) -> None:
+        repo = self._repo()
+        push = MagicMock()
+        portfolio = self._portfolio("NVDA", "AMD", "AVGO", "OFFLIST")
+        market = self._market("94", OFFLIST="100")  # watchlista −6%; OFFLIST poza watchlistą
+
+        sent = self._run(
+            self._settings(settings), repo, push=push, portfolio=portfolio, market=market
+        )
+
+        assert sent >= 1
+        bodies = [call.kwargs["plain_text"] for call in push.send_report.call_args_list]
+        portfolio_body = next(body for body in bodies if "💼 Portfel" in body)
+        assert "75% portfela" in portfolio_body
+
+    def test_daily_change_readings_drive_the_portfolio_too(self, settings) -> None:
+        repo = _no_snapshot_repo()
+        repo.get_previous_verdict.return_value = None
+        repo.get_latest_prediction.return_value = None
+        push = MagicMock()
+        daily = _daily("-0.035", self._NOW - timedelta(minutes=5))
+
+        sent = main_watch.scan_watch(
+            self._settings(settings),
+            repository=repo,
+            market=self._market(),
+            push_notifier=push,
+            now=self._NOW,
+            daily_change=daily,
+            portfolio_loader=lambda: self._portfolio(),
+        ).sent
+
+        assert sent == 1
+        assert "💼 Portfel -3,5%" in push.send_report.call_args.kwargs["plain_text"]

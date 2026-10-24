@@ -98,6 +98,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # WIA-44: sama kolejność i opis leaderboardu person w mailu; wagi konsensusu
     # (`persona_weighting_enabled`) liczy osobna ścieżka.
     "persona_brier_ranking_enabled",
+    # ALR-07: szok portfela w watchu — push poza cyklem, nie prognoza.
+    "portfolio_shock_enabled",
+    "portfolio_shock_threshold",
     # WIA-45: linia redundancji w recapie i brak odznaki „silny konsensus” w mailu —
     # sama treść maili, ocena po predykcji.
     "council_redundancy_enabled",
@@ -667,6 +670,12 @@ class Settings(BaseSettings):
     # #11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
     # migracja 021). Zero płatnych wywołań. Off.
     shock_alerts_enabled: bool = False
+    # ALR-07: szok PORTFELA w watchu — Σ waga × Δ po pozycjach (tabela `positions`,
+    # `portfolio_positions_enabled`) przy |Δ| ≥ `portfolio_shock_threshold`; jeden push
+    # „💼 Portfel -3,4% (NVDA -6,0%, AMD -5,0%)” dziennie, debounce w `shock_alerts`
+    # pod symbolem „__PORTFOLIO__” (nowy zapis, więc osobna flaga). Off: watch bez zmian.
+    portfolio_shock_enabled: bool = False
+    portfolio_shock_threshold: Decimal = Field(default=Decimal("0.03"))
     # NIEZ-11: deadman (main_deadman.py, cron raz dziennie) — maksymalna przerwa
     # między śladami życia jobu w godzinach; 0 = job świadomie wstrzymany. Off.
     # Fast Loop: zapas od północy ET każdego dnia handlowego NYSE (weekend i święto
@@ -1286,6 +1295,15 @@ class Settings(BaseSettings):
                 f"{info.field_name} must be positive (got {value}) — "
                 "a threshold of 0 or less lets every move through the volatility gate"
             )
+        return value
+
+    @field_validator("portfolio_shock_threshold")
+    @classmethod
+    def _validate_portfolio_shock_threshold(cls, value: Decimal) -> Decimal:
+        """Próg szoku portfela jest ułamkiem w (0, 1): zero albo ujemny alarmowałby
+        przy każdym przebiegu, 1 i więcej nigdy."""
+        if not Decimal(0) < value < Decimal(1):
+            raise ValueError(f"portfolio_shock_threshold must be in (0, 1) (got {value})")
         return value
 
     @field_validator("risk_symbol_types", mode="before")

@@ -184,6 +184,13 @@ settled_at_windows_enabled = true
 # (shock_watch_hourly.yml) wznowiony 2026-10-23; bez kanału push (TELEGRAM_* albo
 # SLACK_WEBHOOK_URL) watch loguje błąd i niczego nie wysyła.
 shock_alerts_enabled = true
+# ALR-07: szok portfela — watch liczy Σ waga × Δ po pozycjach z tabeli `positions` i przy
+# |Δ| ≥ progu wysyła jeden push dziennie („💼 Portfel -3,4% (NVDA -6,0%, AMD -5,0%)”).
+# Łapie skoordynowany spadek wielu spółek, którego progi per symbol (2× bramki) nie
+# widzą. Debounce w `shock_alerts` pod symbolem „__PORTFOLIO__” (nowy zapis, bez
+# migracji). Wymaga `portfolio_positions_enabled` i kanału push. Domyślnie wyłączone.
+portfolio_shock_enabled = false
+portfolio_shock_threshold = 0.03
 # ALR-09: cisza nocna pushy watcha (czas `display_timezone`) — w oknie 22:00–07:00
 # szok dociera bez dźwięku zamiast budzić. Alerty CRITICAL ciszy nie znają. Włączone.
 quiet_hours_enabled = true
