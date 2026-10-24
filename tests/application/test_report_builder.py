@@ -2554,6 +2554,26 @@ def test_plain_text_with_quota_alert_still_starts_with_the_banner():
     assert "OpenAI 429" in text.split("STOCKAGENT — RAPORT CYKLU")[0]
 
 
+def test_quota_banner_shows_the_alert_in_the_display_timezone():
+    # MAIL-59: baner kwot mówi czasem lokalnym, jak nagłówek, a nie „05:30 UTC”.
+    # Londyn zamiast domyślnej Warszawy, żeby test łapał brak przekazania strefy.
+    alert = QuotaAlert(
+        source="OpenAI", severity=QuotaSeverity.CRITICAL,
+        message="OpenAI 429: insufficient_quota", action="Doładuj konto OpenAI.",
+        occurred_at=datetime(2026, 10, 16, 5, 30, tzinfo=UTC),
+    )
+
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 16, 8, 0, tzinfo=UTC), 1.0,
+        ReportContext(quota_alerts=[alert], display_timezone="Europe/London"),
+    )
+
+    assert "pt 16.10 06:30" in html
+    assert "(pt 16.10 06:30)" in text
+    assert "05:30 UTC" not in html
+    assert "05:30 UTC" not in text
+
+
 def test_header_shows_the_cycle_start_in_the_display_timezone():
     # MAIL-14: nagłówek HTML i tekstu w czasie lokalnym, nie „… UTC”.
     html, text = build_html_report(

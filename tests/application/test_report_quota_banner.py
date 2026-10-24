@@ -71,6 +71,46 @@ class TestHtmlBanner:
         assert html.index("c1") < html.index("w1")
 
 
+class TestLocalTime:
+    """MAIL-59: czas alertu w strefie wyświetlania maila, jak nagłówek i temat —
+    nie „… UTC” obok godzin lokalnych."""
+
+    WHEN = datetime(2026, 10, 16, 5, 30, tzinfo=UTC)
+
+    def test_html_shows_the_alert_in_the_display_timezone(self) -> None:
+        html = render_quota_banner_html([_a("OpenAI", when=self.WHEN)], "Europe/Warsaw")
+
+        assert "pt 16.10 07:30" in html
+        assert "05:30" not in html
+        assert "UTC" not in html
+
+    def test_text_shows_the_alert_in_the_display_timezone(self) -> None:
+        text = render_quota_banner_text([_a("OpenAI", when=self.WHEN)], "Europe/Warsaw")
+
+        assert "(pt 16.10 07:30)" in text
+        assert "05:30" not in text
+        assert "UTC" not in text
+
+    def test_winter_offset_differs_from_summer(self) -> None:
+        winter = datetime(2026, 12, 4, 5, 30, tzinfo=UTC)
+
+        html = render_quota_banner_html([_a("OpenAI", when=winter)], "Europe/Warsaw")
+
+        assert "pt 04.12 06:30" in html
+
+    def test_default_timezone_is_the_mail_display_timezone(self) -> None:
+        html = render_quota_banner_html([_a("OpenAI", when=self.WHEN)])
+
+        assert "pt 16.10 07:30" in html
+
+    def test_naive_timestamp_is_read_as_utc(self) -> None:
+        naive = datetime(2026, 10, 16, 5, 30)
+
+        html = render_quota_banner_html([_a("OpenAI", when=naive)], "Europe/Warsaw")
+
+        assert "pt 16.10 07:30" in html
+
+
 class TestPlainText:
     def test_text_includes_action(self) -> None:
         text = render_quota_banner_text([_a("OpenAI", msg="TPM")])
