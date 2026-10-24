@@ -119,6 +119,7 @@ from src.application.use_cases.portfolio_risk import (
     PortfolioRiskUseCase,
     PositionRisk,
 )
+from src.application.use_cases.reveal_attestations import RevealAttestationsUseCase
 from src.config import Settings, load_evaluation_protocol
 from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
@@ -2542,71 +2543,6 @@ def _build_subject(
     return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
 
 
-def _reveal_record(row: Mapping[str, Any]) -> dict[str, Any]:
-    """#16 — rekord revealu: sól, hash i plaintext predykcji z wynikiem.
-
-    WIA-70: wiersz z `commitment_payload` (043) ujawnia zapisany plaintext
-    dosłownie (`payload`) — sceptyk liczy SHA-256(payload + sól) bez rekonstrukcji.
-    Wiersz bez niego (sprzed 043) ujawnia kolumny, z których odtwarza się payload v1.
-    """
-    record: dict[str, Any] = {
-        "symbol": row.get("symbol"),
-        "commitment": row.get("commitment_hash"),
-        # Sól wychodzi na jaw dopiero TERAZ — to jest sens revealu.
-        "salt": row.get("commitment_salt"),
-        "predicted_trend": row.get("predicted_trend"),
-        "predicted_target_price": row.get("predicted_target_price"),
-        "price_at_prediction": row.get("price_at_prediction"),
-        "actual_price_after_12h": row.get("actual_price_after_12h"),
-        "is_trend_correct": row.get("is_trend_correct"),
-    }
-    payload = row.get("commitment_payload")
-    if payload is not None:
-        record["payload"] = payload
-    return record
-
-
-def _sweep_reveals(
-    repository: RepositoryPort, publisher: AttestationPublisherPort
-) -> int:
-    """#16 — ujawnia WSZYSTKIE zapadłe commitmenty. Zwraca liczbę revealów.
-
-    Sweep, nie „reveal przy rozliczeniu": predykcje symboli usuniętych z
-    `config.toml` nigdy nie przeszłyby przez reflect, więc ich commitmenty
-    zostałyby na zawsze nieujawnione. Dla sceptyka wygląda to jak ukrywanie
-    nietrafień — a to niszczy cały sens weryfikowalnego track recordu. WIA-03:
-    dlatego odczyt nie ma ani filtra watchlisty, ani okna `track_record_days`.
-
-    `revealed_at` stemplujemy DOPIERO po udanej publikacji. Odwrotna kolejność
-    zgubiłaby nietrafienie na zawsze: oznaczone jako ujawnione, nigdy ujawnione.
-    Pusty wynik `publish_reveal` to według kontraktu portu porażka, nie sukces.
-    Best-effort per wiersz: jeden błąd nie przerywa sweepu.
-    """
-    try:
-        rows = repository.get_unrevealed_commitments()
-    except Exception:
-        logger.exception("Failed to read unrevealed commitments — sweep skipped")
-        return 0
-
-    revealed = 0
-    for row in rows:
-        try:
-            location = publisher.publish_reveal(_reveal_record(row))
-        except Exception:
-            logger.exception("Failed to publish reveal for %s", row.get("id"))
-            continue
-        if not location:
-            logger.warning("Reveal for %s was not published — left unrevealed", row.get("id"))
-            continue
-        try:
-            repository.mark_commitment_revealed(str(row["id"]))
-        except Exception:
-            logger.exception("Failed to mark reveal for %s", row.get("id"))
-            continue
-        revealed += 1
-    return revealed
-
-
 def _build_consensus_shifts(
     repository: RepositoryPort,
     results: list[SymbolResult],
@@ -3215,7 +3151,7 @@ def _dispatch_reports(
         # #16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,
         # nie może opóźnić ani zablokować raportu.
         if settings.attestation_enabled:
-            _sweep_reveals(repository, build_attestation_publisher(settings))
+            RevealAttestationsUseCase(repository, build_attestation_publisher(settings)).run()
 
         # #5: push idzie RAZ, skrótem, poza gałęzią fan-outu — inaczej albo
         # ginie (subskrybenci), albo przekracza limit Telegrama (pełny raport).
