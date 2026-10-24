@@ -826,6 +826,23 @@ def test_slow_loop_runs_queue_instead_of_cancelling() -> None:
     assert concurrency.get("cancel-in-progress") is False
 
 
+# FIN-18 (G81): anulowanie zabijało run, który już zapłacił za LLM — i przerywało push
+# ledgera atestacji (WIA-14). Następny run czeka w kolejce, zamiast ubijać poprzedni.
+def test_fast_loop_does_not_cancel_a_paid_run_in_progress() -> None:
+    spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    concurrency = spec.get("concurrency") or {}
+
+    assert concurrency.get("group") == "fast-loop"
+    assert concurrency.get("cancel-in-progress") is False
+
+
+def test_fast_loop_workflow_is_named_daily_not_12h() -> None:
+    spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+    assert str(spec["name"]).startswith("🟢 Fast Loop (daily"), spec["name"]
+    assert WORKFLOW.name == "fast_loop_12h.yml"
+
+
 def test_fast_loop_downloads_the_weights_before_the_agent_runs() -> None:
     steps = _steps()
     download = _release_step(steps, "gh release download")

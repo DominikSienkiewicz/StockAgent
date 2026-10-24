@@ -1,4 +1,4 @@
-name: 🟢 Fast Loop (12h Agentic RAG)
+name: 🟢 Fast Loop (daily Agentic RAG)
 
 on:
   # Codzienny cykl wznowiony 2026-10-23 (docs/resume-checklist.md, krok 10);
@@ -22,12 +22,13 @@ permissions:
   # gałąź `attestation-log`, nigdy na main) i ani jednego klucza API.
 
 # Zapobiega overlapowi: jeśli opóźniony pierwszy run trwa nadal gdy ruszy
-# drugi (GHA cron bywa best-effort, opóźnienia 5-60 min są normalne), nowy
-# run anuluje stary. Nie chcemy dwóch agentów piszących równocześnie do
-# tych samych prediction_logs.
+# drugi (GHA cron bywa best-effort, opóźnienia 5-60 min są normalne), drugi czeka
+# w kolejce. FIN-18: NIE anulujemy — run w toku mógł już zapłacić za LLM, a
+# anulowanie przerywałoby też push ledgera atestacji (WIA-14). Kolejka może
+# opóźnić następny run o czas poprzedniego (limit 15 min), ale nie marnuje wydatku.
 concurrency:
   group: fast-loop
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run-market-agent:
