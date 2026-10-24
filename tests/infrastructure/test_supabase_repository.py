@@ -5828,3 +5828,65 @@ class TestPaperLedger:
         self._head(mock_client.table.return_value, [])
 
         assert repo.get_paper_ledger_head() is None
+
+
+# ---------------------------------------------------------------------------
+# ML-27: poziom unieważnienia tezy — odczyt i stempel alarmu watcha (migracja 074)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenInvalidations:
+    def test_reads_open_predictions_with_a_level_and_no_alert(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.application.ports import OpenInvalidation
+
+        chain = mock_client.table.return_value.select.return_value
+        filtered = chain.not_.is_.return_value.is_.return_value.is_.return_value
+        response = MagicMock()
+        response.data = [
+            {
+                "id": "pred-1",
+                "symbol": "NVDA",
+                "predicted_trend": "BULLISH",
+                "price_at_prediction": 120.0,
+                "invalidation_price": 118.0,
+                "timestamp": "2026-10-22T05:30:00+00:00",
+            }
+        ]
+        filtered.gte.return_value.order.return_value.execute.return_value = response
+        since = datetime(2026, 10, 18, 15, 0, tzinfo=UTC)
+
+        rows = repo.get_open_invalidations(since)
+
+        assert rows == [
+            OpenInvalidation(
+                prediction_id="pred-1",
+                symbol="NVDA",
+                predicted_trend="BULLISH",
+                price_at_prediction=Decimal("120.0"),
+                invalidation_price=Decimal("118.0"),
+                predicted_at=datetime(2026, 10, 22, 5, 30, tzinfo=UTC),
+            )
+        ]
+        chain.not_.is_.assert_called_once_with("invalidation_price", "null")
+        chain.not_.is_.return_value.is_.assert_called_once_with("actual_price_after_12h", "null")
+        chain.not_.is_.return_value.is_.return_value.is_.assert_called_once_with(
+            "invalidation_alerted_at", "null"
+        )
+        filtered.gte.assert_called_once_with("timestamp", since.isoformat())
+
+    def test_alert_stamp_is_written_once(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [])
+        at = datetime(2026, 10, 22, 15, 0, tzinfo=UTC)
+
+        repo.mark_invalidation_alerted("pred-1", at)
+
+        update = mock_client.table.return_value.update
+        assert update.call_args.args[0] == {"invalidation_alerted_at": at.isoformat()}
+        update.return_value.eq.assert_called_once_with("id", "pred-1")
+        update.return_value.eq.return_value.is_.assert_called_once_with(
+            "invalidation_alerted_at", "null"
+        )

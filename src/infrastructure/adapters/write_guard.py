@@ -31,6 +31,7 @@ from src.application.ports import (
     CycleRun,
     DeferredDiagnosis,
     LatestPrediction,
+    OpenInvalidation,
     OpenReferenceCall,
     PositionsImportPort,
     PreviousVerdict,
@@ -105,6 +106,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_last_price",
         "get_price_history",
         "get_paper_trades",
+        "get_open_invalidations",
         "get_paper_ledger_head",
         "get_last_prediction_price",
         "get_latest_prediction",
@@ -183,6 +185,7 @@ class ReadOnlyRepository(RepositoryPort):
         "save_shadow_predictions",
         "append_paper_trade",
         "close_paper_trade",
+        "mark_invalidation_alerted",
     })
 
     def __init__(self, delegate: RepositoryPort) -> None:
@@ -503,6 +506,12 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_paper_ledger_head(self) -> LedgerHead | None:
         return self._delegate.get_paper_ledger_head()
+
+    def get_open_invalidations(self, since: datetime) -> list[OpenInvalidation]:
+        return self._delegate.get_open_invalidations(since)
+
+    def mark_invalidation_alerted(self, prediction_id: str, at: datetime) -> None:
+        self._skipped.skip("mark_invalidation_alerted")
 
     def settle_reference_call(
         self,

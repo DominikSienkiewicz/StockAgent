@@ -41,6 +41,10 @@ ALR-11: ten sam przebieg sprawdza alerty poziomów cenowych użytkownika
 (`scan_price_levels`, flaga `price_level_alerts_enabled`, tabela z migracji 057) —
 darmowe ceny, przekroczenie liczone od `last_seen_price` alertu, nie od snapshotu.
 
+ML-27: ten sam przebieg pilnuje poziomów unieważnienia tezy otwartych predykcji
+(`scan_invalidations`, flaga `invalidation_level_enabled`, kolumny z migracji 074) —
+push „Teza X unieważniona” raz na predykcję, darmowe ceny, zero płatnych portów.
+
 Użycie:
     uv run python main_watch.py
 """
@@ -51,7 +55,7 @@ import logging
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import partial
 
@@ -62,12 +66,14 @@ from src.application.alert_context import (
     position_context,
     render_alert_context,
 )
+from src.application.errors import PortError
 from src.application.portfolio_fx import collect_current_pln_rates, nbp_today
 from src.application.ports import (
     DailyChangePort,
     FxRatePort,
     LatestPrediction,
     MarketDataPort,
+    OpenInvalidation,
     PreviousVerdict,
     ReportNotifierPort,
     RepositoryPort,
@@ -76,7 +82,9 @@ from src.application.report_formatting import format_local
 from src.application.report_ops import render_watch_summary_markdown
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
-from src.domain.number_format import format_number_pl, format_pct_pl
+from src.domain.invalidation import is_thesis_invalidated
+from src.domain.number_format import format_money_pl, format_number_pl, format_pct_pl
+from src.domain.polish_labels import trend_forecast_label
 from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.price_levels import LevelDirection, PriceLevelAlert
 from src.domain.quiet_hours import is_quiet
@@ -728,6 +736,84 @@ def scan_price_levels(
     return sent
 
 
+# ML-27: jak długo nierozliczona predykcja może jeszcze obalić swoją tezę — okno
+# rozliczenia reflect (`reflection_max_age_hours` w config.toml: 96 h, weekend z zapasem).
+INVALIDATION_LOOKBACK_HOURS = 96
+
+
+def _render_invalidation_alert(
+    thesis: OpenInvalidation, price: Decimal, *, detected_at: datetime, display_timezone: str
+) -> tuple[str, str]:
+    """ML-27: „🛑 Teza NVDA unieważniona” — cena, poziom i predykcja, której dotyczy."""
+    subject = f"🛑 Teza {thesis.symbol} unieważniona"
+    body = "\n".join(
+        [
+            f"{subject}: cena {format_money_pl(price, 'USD')} przekroczyła poziom "
+            f"{format_money_pl(thesis.invalidation_price, 'USD')}, który obalał tezę "
+            f"predykcji ({trend_forecast_label(thesis.predicted_trend)}, "
+            f"{format_local(thesis.predicted_at, display_timezone)}).",
+            f"Stan na {format_local(detected_at, display_timezone)}. Predykcja zostaje "
+            "w track recordzie i rozliczy się w najbliższym cyklu.",
+        ]
+    )
+    return subject, body
+
+
+def scan_invalidations(
+    settings: Settings,
+    *,
+    repository: RepositoryPort,
+    market: MarketDataPort,
+    push_notifier: ReportNotifierPort | None,
+    now: datetime | None = None,
+) -> int:
+    """ML-27: push „Teza X unieważniona”, gdy darmowa cena przekroczy poziom
+    unieważnienia otwartej predykcji. Zwraca liczbę wysłanych.
+
+    Flaga `invalidation_level_enabled` off → zero odczytów i zapisów (przed migracją
+    074 kolumn nie ma). Przekroczenie liczy domena (`is_thesis_invalidated`) od strony
+    ceny wejścia. Push przed stemplem (lepiej dwa razy niż wcale, jak ALR-11); bez
+    kanału push alarm czeka nietknięty. Zero płatnych portów, zero `price_snapshots`."""
+    if not settings.invalidation_level_enabled:
+        return 0
+    moment = now or datetime.now(UTC)
+    try:
+        theses = repository.get_open_invalidations(
+            moment - timedelta(hours=INVALIDATION_LOOKBACK_HOURS)
+        )
+    except PortError:
+        logger.exception("Invalidation levels unavailable (apply migration 074) — skipped")
+        return 0
+    prices = _level_prices(
+        market, {thesis.symbol for thesis in theses}, set(settings.symbols_unsupported_price)
+    )
+    silent = _silent_delivery(settings, moment)
+    sent = 0
+    for thesis in theses:
+        price = prices.get(thesis.symbol)
+        if price is None or not is_thesis_invalidated(
+            thesis.price_at_prediction, thesis.invalidation_price, price
+        ):
+            continue
+        if push_notifier is None:
+            logger.error("Thesis %s invalidated, but no push channel", thesis.prediction_id)
+            continue
+        subject, body = _render_invalidation_alert(
+            thesis, price, detected_at=moment, display_timezone=settings.display_timezone
+        )
+        try:
+            push_notifier.send_report(
+                subject=subject, html_body=body, plain_text=body, silent=silent
+            )
+            repository.mark_invalidation_alerted(thesis.prediction_id, moment)
+        except PortError:
+            logger.exception("Thesis invalidation alert %s failed", thesis.prediction_id)
+            continue
+        sent += 1
+    logger.info("Thesis invalidations done — %d alert(ów) wysłanych", sent)
+    return sent
+
+
 def run_watch(
     settings: Settings,
     *,
@@ -800,6 +886,10 @@ def _run_watch(settings: Settings) -> int:
     outcome = scan(daily_change=market) if isinstance(market, DailyChangePort) else scan()
     # ALR-11: alerty poziomów cenowych — te same darmowe ceny i kanały push.
     scan_price_levels(
+        settings, repository=repository, market=market, push_notifier=push_notifier
+    )
+    # ML-27: unieważnione tezy otwartych predykcji — te same darmowe ceny i kanały push.
+    scan_invalidations(
         settings, repository=repository, market=market, push_notifier=push_notifier
     )
     write_step_summary(

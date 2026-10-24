@@ -20,6 +20,7 @@ from src.application.ports import (
     DeferredDiagnosis,
     EvidenceSourcePort,
     LatestPrediction,
+    OpenInvalidation,
     OpenReferenceCall,
     PreviousVerdict,
     RepositoryPort,
@@ -2502,6 +2503,44 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         self._client.table(CORPORATE_ACTIONS_TABLE).upsert(
             record, on_conflict=_CORPORATE_ACTION_UNIQUE, ignore_duplicates=True
         ).execute()
+
+    @_translates_api_errors
+    def get_open_invalidations(self, since: datetime) -> list[OpenInvalidation]:
+        # ML-27 (migracja 074): indeks częściowy obsługuje dokładnie ten filtr.
+        response = (
+            self._client.table(self._table)
+            .select(
+                "id, symbol, predicted_trend, price_at_prediction, invalidation_price, timestamp"
+            )
+            .not_.is_("invalidation_price", "null")
+            .is_("actual_price_after_12h", "null")
+            .is_("invalidation_alerted_at", "null")
+            .gte("timestamp", since.isoformat())
+            .order("timestamp", desc=True)
+            .execute()
+        )
+        return [
+            OpenInvalidation(
+                prediction_id=str(row["id"]),
+                symbol=str(row["symbol"]),
+                predicted_trend=str(row["predicted_trend"]),
+                price_at_prediction=Decimal(str(row["price_at_prediction"])),
+                invalidation_price=Decimal(str(row["invalidation_price"])),
+                predicted_at=datetime.fromisoformat(str(row["timestamp"])),
+            )
+            for row in _rows(response)
+        ]
+
+    @_translates_api_errors
+    def mark_invalidation_alerted(self, prediction_id: str, at: datetime) -> None:
+        # Filtr NULL: drugi przebieg watcha nie przesuwa stempla pierwszego alarmu.
+        (
+            self._client.table(self._table)
+            .update({"invalidation_alerted_at": at.isoformat()})
+            .eq("id", prediction_id)
+            .is_("invalidation_alerted_at", "null")
+            .execute()
+        )
 
     @_translates_api_errors
     def append_paper_trade(self, entry: PaperTradeEntry) -> LedgerRow | None:

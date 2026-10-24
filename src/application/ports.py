@@ -112,6 +112,19 @@ class LatestPrediction:
 
 
 @dataclass(frozen=True)
+class OpenInvalidation:
+    """ML-27 — nierozliczona predykcja z poziomem unieważnienia tezy i bez alarmu:
+    to, czego watch potrzebuje do pusha „Teza X unieważniona” (migracja 074)."""
+
+    prediction_id: str
+    symbol: str
+    predicted_trend: str
+    price_at_prediction: Decimal
+    invalidation_price: Decimal
+    predicted_at: datetime
+
+
+@dataclass(frozen=True)
 class CycleRun:
     """NIEZ-29 — jeden przebieg pętli (wiersz `cycle_runs`, migracja 041).
 
@@ -856,6 +869,18 @@ class RepositoryPort(ABC):
         """DAT-23 — podejrzenie splitu w `corporate_actions` (migracja 062), raz na
         symbol, rodzaj i dzień UTC wykrycia (powtórka cyklu nie dubluje wiersza).
         Wołane z `check_price` tylko za flagą `split_detection_enabled`."""
+
+    # ML-27 — poziom unieważnienia tezy (migracja 074). Wołający (Shock Watch) pilnuje
+    # flagi `invalidation_level_enabled`.
+
+    @abstractmethod
+    def get_open_invalidations(self, since: datetime) -> list[OpenInvalidation]:
+        """Predykcje od `since` z poziomem unieważnienia, jeszcze nierozliczone
+        i bez alarmu — od najnowszej."""
+
+    @abstractmethod
+    def mark_invalidation_alerted(self, prediction_id: str, at: datetime) -> None:
+        """Stempel alarmu „teza unieważniona” — raz na predykcję (drugi nic nie zmienia)."""
 
     # WIA-59 — append-only paper ledger `paper_trades` (migracja 073). Wołający
     # pilnuje flagi `paper_ledger_enabled` (bez migracji tabeli nie ma).

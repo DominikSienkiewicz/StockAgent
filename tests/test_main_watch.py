@@ -1516,3 +1516,146 @@ class TestPortfolioShockInZlotys:
 
         push.send_report.assert_not_called()
         assert "kurs" in caplog.text.lower()
+
+
+class TestThesisInvalidationAlerts:
+    """ML-27: push „Teza X unieważniona”, gdy darmowa cena przekroczy poziom
+    unieważnienia otwartej predykcji — raz na predykcję (stempel w bazie po wysyłce).
+    Kontrakty watcha bez zmian: zero płatnych portów, zero `save_price_snapshot`."""
+
+    _NOW = datetime(2026, 10, 22, 15, 0, tzinfo=UTC)
+
+    @staticmethod
+    def _settings(settings: Settings, **overrides: object) -> Settings:
+        return settings.model_copy(
+            update={"invalidation_level_enabled": True, "quiet_hours_enabled": False, **overrides}
+        )
+
+    @classmethod
+    def _open(cls, trend: str = "BULLISH", level: str = "118"):
+        from src.application.ports import OpenInvalidation
+
+        return OpenInvalidation(
+            prediction_id="pred-1",
+            symbol="NVDA",
+            predicted_trend=trend,
+            price_at_prediction=Decimal("120"),
+            invalidation_price=Decimal(level),
+            predicted_at=datetime(2026, 10, 22, 5, 30, tzinfo=UTC),
+        )
+
+    @staticmethod
+    def _repo(*open_predictions: object) -> MagicMock:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_open_invalidations.return_value = list(open_predictions)
+        return repo
+
+    def _scan(self, settings: Settings, repo: MagicMock, price: str, push: MagicMock | None):
+        return main_watch.scan_invalidations(
+            settings, repository=repo, market=_market(price), push_notifier=push, now=self._NOW
+        )
+
+    def test_crossed_level_sends_the_push_and_stamps_the_prediction(self, settings) -> None:
+        repo = self._repo(self._open())
+        push = MagicMock()
+
+        sent = self._scan(self._settings(settings), repo, "117.5", push)
+
+        assert sent == 1
+        kwargs = push.send_report.call_args.kwargs
+        assert kwargs["subject"] == "🛑 Teza NVDA unieważniona"
+        assert "117,50" in kwargs["plain_text"]
+        assert "118,00" in kwargs["plain_text"]
+        assert "(prognoza wzrostu," in kwargs["plain_text"]
+        repo.mark_invalidation_alerted.assert_called_once_with("pred-1", self._NOW)
+        repo.get_open_invalidations.assert_called_once_with(
+            self._NOW - timedelta(hours=main_watch.INVALIDATION_LOOKBACK_HOURS)
+        )
+
+    def test_level_above_breaks_a_bearish_thesis_on_a_rise(self, settings) -> None:
+        repo = self._repo(self._open(trend="BEARISH", level="125"))
+        push = MagicMock()
+
+        assert self._scan(self._settings(settings), repo, "126", push) == 1
+
+    def test_level_not_crossed_sends_nothing(self, settings) -> None:
+        repo = self._repo(self._open())
+        push = MagicMock()
+
+        assert self._scan(self._settings(settings), repo, "119", push) == 0
+
+        push.send_report.assert_not_called()
+        repo.mark_invalidation_alerted.assert_not_called()
+
+    def test_flag_off_touches_nothing(self, settings) -> None:
+        repo = self._repo(self._open())
+        market = _market("100")
+
+        sent = main_watch.scan_invalidations(
+            settings.model_copy(update={"invalidation_level_enabled": False}),
+            repository=repo,
+            market=market,
+            push_notifier=MagicMock(),
+            now=self._NOW,
+        )
+
+        assert sent == 0
+        assert repo.method_calls == []
+        market.get_current_price.assert_not_called()
+
+    def test_without_a_push_channel_the_alert_waits(self, settings) -> None:
+        repo = self._repo(self._open())
+
+        assert self._scan(self._settings(settings), repo, "100", None) == 0
+
+        repo.mark_invalidation_alerted.assert_not_called()
+
+    def test_unreadable_predictions_skip_the_scan(self, settings, caplog) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        repo = self._repo()
+        repo.get_open_invalidations.side_effect = ProviderUnavailable("PGRST")
+
+        with caplog.at_level(logging.ERROR):
+            assert self._scan(self._settings(settings), repo, "100", MagicMock()) == 0
+
+        assert "074" in caplog.text
+
+    def test_scan_never_writes_a_price_snapshot_or_calls_paid_ports(
+        self, settings, mocker
+    ) -> None:
+        paid_builders = [
+            mocker.patch(f"main_agent.{name}")
+            for name in ("build_llm_adapter", "build_council_adapter", "build_embedding_adapter")
+        ]
+        repo = self._repo(self._open())
+
+        self._scan(self._settings(settings), repo, "100", MagicMock())
+
+        repo.save_price_snapshot.assert_not_called()
+        for builder in paid_builders:
+            builder.assert_not_called()
+
+    def test_main_runs_the_invalidation_scan_on_the_watch_adapters(
+        self, settings, mocker
+    ) -> None:
+        repository = mocker.patch("main_agent.build_repository")
+        market = mocker.patch("main_agent.build_market_port")
+        push = mocker.patch("main_agent.build_push_notifier")
+        settings.telegram_bot_token = "tg-token"
+        settings.telegram_chat_id = "42"
+        mocker.patch(
+            "main_watch.scan_watch",
+            return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1),
+        )
+        mocker.patch("main_watch.scan_price_levels", return_value=0)
+        theses = mocker.patch("main_watch.scan_invalidations", return_value=0)
+
+        assert main_watch.main(settings) == 0
+
+        theses.assert_called_once_with(
+            settings,
+            repository=repository.return_value,
+            market=market.return_value,
+            push_notifier=push.return_value,
+        )
