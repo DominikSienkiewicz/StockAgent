@@ -4935,24 +4935,6 @@ class TestSectorMapFromConfig:
         assert context.portfolio_sectors == {"Big Tech": 1}
 
 
-class TestPositionsPortCurrencyColumns:
-    """PORT-18: `positions_currency_enabled` przełącza adapter pozycji na kolumny
-    migracji 035 (waluta + prawdziwa data zakupu); bez flagi zostaje stary odczyt."""
-
-    @pytest.mark.parametrize("enabled", [True, False])
-    def test_flag_reaches_the_positions_adapter(self, settings, mocker, enabled):
-        adapter_cls = mocker.patch(
-            "src.infrastructure.adapters.positions_repo.SupabasePositionsAdapter"
-        )
-        settings = settings.model_copy(
-            update={"portfolio_positions_enabled": True, "positions_currency_enabled": enabled}
-        )
-
-        main_agent.build_positions_port(settings)
-
-        assert adapter_cls.call_args.kwargs["currency_columns"] is enabled
-
-
 class TestPortfolioFxWiring:
     """PORT-11: kursy NBP (bieżące i z dni zakupu) do „P/L zł” — darmowe, za
     `nbp_enabled`, tylko z portfelem właściciela; cache `fx_rates` za flagą."""
@@ -5048,10 +5030,10 @@ class TestPortfolioFxWiring:
 
 
 class TestUserPortfolioPurchaseDates:
-    """PORT-11: bez migracji 035 adapter podaje `as_of` jako datę — to data
-    aktualizacji tabeli, nie zakupu, więc portfel raportu jej nie dostaje."""
+    """PORT-23: data zakupu pozycji idzie z kolumny `purchase_date` adaptera (migracja
+    035) do portfela raportu bez zmian — `as_of` nie udaje już daty zakupu."""
 
-    def _build(self, settings, mocker, *, currency_columns: bool):
+    def test_purchase_dates_from_the_adapter_are_kept(self, settings, mocker) -> None:
         from datetime import date
 
         from src.domain.portfolio import Position
@@ -5063,32 +5045,17 @@ class TestUserPortfolioPurchaseDates:
                 quantity=Decimal("1"),
                 purchase_price=Decimal("10"),
                 purchase_date=date(2026, 7, 10),
-            )
+            ),
+            Position(symbol="MSFT", quantity=Decimal("1"), purchase_price=Decimal("10")),
         ]
         port.get_as_of.return_value = datetime(2026, 7, 10, tzinfo=UTC)
         mocker.patch("main_agent.build_positions_port", return_value=port)
-        settings = settings.model_copy(
-            update={
-                "portfolio_positions_enabled": True,
-                "positions_currency_enabled": currency_columns,
-            }
-        )
-        return main_agent._build_user_portfolio(settings)
+        settings = settings.model_copy(update={"portfolio_positions_enabled": True})
 
-    def test_without_the_migration_purchase_dates_are_unknown(self, settings, mocker) -> None:
-        portfolio = self._build(settings, mocker, currency_columns=False)
+        portfolio = main_agent._build_user_portfolio(settings)
 
         assert portfolio is not None
-        assert portfolio.positions[0].purchase_date is None
-
-    def test_with_the_migration_purchase_dates_are_kept(self, settings, mocker) -> None:
-        from datetime import date
-
-        portfolio = self._build(settings, mocker, currency_columns=True)
-
-        assert portfolio is not None
-        assert portfolio.positions[0].purchase_date == date(2026, 7, 10)
-
+        assert [p.purchase_date for p in portfolio.positions] == [date(2026, 7, 10), None]
 
 
 class TestPositionRiskInPln:

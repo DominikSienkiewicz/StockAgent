@@ -661,12 +661,7 @@ def build_positions_port(settings: Settings) -> PortfolioPositionsPort:
 
     if not settings.portfolio_positions_enabled:
         return NullPositionsAdapter()
-    # PORT-18: waluta i prawdziwa data zakupu dopiero po migracji 035 (flaga).
-    return SupabasePositionsAdapter(
-        url=settings.supabase_url,
-        key=settings.supabase_key,
-        currency_columns=settings.positions_currency_enabled,
-    )
+    return SupabasePositionsAdapter(url=settings.supabase_url, key=settings.supabase_key)
 
 
 def _build_user_portfolio(settings: Settings) -> Portfolio | None:
@@ -683,10 +678,6 @@ def _build_user_portfolio(settings: Settings) -> Portfolio | None:
         return None
     if not positions or as_of is None:
         return None
-    if not settings.positions_currency_enabled:
-        # PORT-11: bez migracji 035 adapter podaje `as_of` jako datę — to data
-        # aktualizacji tabeli, nie zakupu. Nie udajemy kursu z dnia zakupu.
-        positions = [dataclasses.replace(p, purchase_date=None) for p in positions]
     return Portfolio(positions=tuple(positions), as_of=as_of)
 
 

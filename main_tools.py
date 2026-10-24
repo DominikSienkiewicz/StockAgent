@@ -327,9 +327,8 @@ def _run_import_positions(args: argparse.Namespace) -> int:
         return 1
 
     settings = _load_settings()
-    currency_columns = settings.positions_currency_enabled
     adapter = _positions_import_port(settings)
-    plan = plan_import(adapter.current_positions(), incoming, currency_columns=currency_columns)
+    plan = plan_import(adapter.current_positions(), incoming)
     print(format_plan(plan, file_lots=len(incoming)))
     if not args.apply:
         print(
@@ -337,10 +336,6 @@ def _run_import_positions(args: argparse.Namespace) -> int:
             "--apply zastąpi tabelę positions (as_of = teraz)."
         )
         return 0
-    if plan.blockers:
-        for blocker in plan.blockers:
-            print(f"❌ --apply odrzucony: {blocker}", file=sys.stderr)
-        return 1
     if not settings.db_writes_enabled:
         print(
             "❌ --apply odrzucony: DB_WRITES_ENABLED=false (run tylko do odczytu) — "
@@ -359,11 +354,7 @@ def _positions_import_port(settings: Settings) -> PositionsImportPort:
     from src.infrastructure.adapters.positions_repo import SupabasePositionsAdapter
     from src.infrastructure.adapters.write_guard import ReadOnlyPositionsImport
 
-    adapter = SupabasePositionsAdapter(
-        url=settings.supabase_url,
-        key=settings.supabase_key,
-        currency_columns=settings.positions_currency_enabled,
-    )
+    adapter = SupabasePositionsAdapter(url=settings.supabase_url, key=settings.supabase_key)
     if settings.db_writes_enabled:
         return adapter
     return ReadOnlyPositionsImport(adapter)

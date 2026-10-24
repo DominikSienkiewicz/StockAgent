@@ -47,8 +47,7 @@ _NOW = datetime(2026, 10, 19, 8, 0, tzinfo=UTC)
 @pytest.fixture
 def positions_adapter(mocker: Any) -> MagicMock:
     mocker.patch("main_tools._now", return_value=_NOW)
-    settings = mocker.patch("src.config.Settings.from_env").return_value
-    settings.positions_currency_enabled = True
+    mocker.patch("src.config.Settings.from_env")
     adapter_cls = mocker.patch(
         "src.infrastructure.adapters.positions_repo.SupabasePositionsAdapter"
     )
@@ -83,7 +82,7 @@ def test_import_positions_composes_the_adapter_from_settings(
     main_tools.main(["import-positions", "--csv", _csv_file(tmp_path)])
 
     positions_adapter.assert_called_once()
-    assert positions_adapter.call_args.kwargs["currency_columns"] is True
+    assert set(positions_adapter.call_args.kwargs) == {"url", "key"}
 
 
 def test_import_positions_apply_replaces_the_table_with_as_of_now(
@@ -101,19 +100,6 @@ def test_import_positions_apply_replaces_the_table_with_as_of_now(
     ]
     assert as_of == _NOW
     assert "zapisano 2 lot(ów)" in capsys.readouterr().out
-
-
-def test_import_positions_apply_refuses_what_the_schema_cannot_store(
-    positions_adapter: MagicMock, mocker: Any, tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    mocker.patch("src.config.Settings.from_env").return_value.positions_currency_enabled = False
-
-    code = main_tools.main(["import-positions", "--csv", _csv_file(tmp_path), "--apply"])
-
-    assert code == 1
-    positions_adapter.return_value.replace_positions.assert_not_called()
-    assert "migracji 035" in capsys.readouterr().err
 
 
 def test_import_positions_rejects_an_invalid_file_before_touching_the_database(
@@ -146,7 +132,6 @@ def test_import_positions_apply_says_nothing_was_written_without_db_writes(
     # BEZ-08: lokalny run jest domyślnie tylko do odczytu — `--apply` nie może
     # wtedy drukować „✅ zapisano”, skoro tabela positions została nietknięta.
     settings = mocker.patch("src.config.Settings.from_env").return_value
-    settings.positions_currency_enabled = True
     settings.db_writes_enabled = False
 
     code = main_tools.main(["import-positions", "--csv", _csv_file(tmp_path), "--apply"])
@@ -166,7 +151,6 @@ def test_import_positions_dry_run_is_unchanged_without_db_writes(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     settings = mocker.patch("src.config.Settings.from_env").return_value
-    settings.positions_currency_enabled = True
     settings.db_writes_enabled = False
 
     code = main_tools.main(["import-positions", "--csv", _csv_file(tmp_path)])

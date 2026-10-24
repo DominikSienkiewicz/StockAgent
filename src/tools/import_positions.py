@@ -30,20 +30,15 @@ import csv
 import io
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from src.domain.portfolio import DEFAULT_POSITION_CURRENCY, Position, is_iso_currency
+from src.domain.portfolio import Position, is_iso_currency
 
 CSV_COLUMNS = ("symbol", "quantity", "avg_cost", "currency", "purchase_date")
 REQUIRED_COLUMNS = CSV_COLUMNS[:4]
-
-LEGACY_SCHEMA_BLOCKER = (
-    "waluta inna niż USD albo data zakupu wymagają migracji 035 "
-    "i positions_currency_enabled = true"
-)
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -60,16 +55,12 @@ class PositionsCsvError(ValueError):
 
 @dataclass(frozen=True)
 class ImportPlan:
-    """Diff importu: loty dodane, usunięte i bez zmian oraz blokady `--apply`.
-
-    `blockers` niepuste = zapis by zgubił dane (np. walutę bez migracji 035),
-    więc `--apply` ma odmówić. Brak zmian nie blokuje: zapis odświeża `as_of`.
-    """
+    """Diff importu: loty dodane, usunięte i bez zmian. Brak zmian nie blokuje
+    `--apply`: zapis odświeża `as_of`."""
 
     added: tuple[Position, ...]
     removed: tuple[Position, ...]
     unchanged: tuple[Position, ...]
-    blockers: tuple[str, ...]
 
     @property
     def has_changes(self) -> bool:
@@ -175,28 +166,14 @@ def _purchase_date(raw: str, today: date, errors: list[str]) -> date | None:
     return value
 
 
-def plan_import(
-    current: Sequence[Position], incoming: Sequence[Position], *, currency_columns: bool
-) -> ImportPlan:
-    """Diff lotów (multizbiór po symbolu, ilości, koszcie, walucie i dacie zakupu).
-
-    Bez `currency_columns` tabela nie ma kolumn 035: daty bieżących lotów to
-    `as_of` (data aktualizacji), więc je odrzucamy, a lot z pliku z walutą inną
-    niż USD albo z datą zakupu blokuje `--apply` — zapis zgubiłby te dane."""
-    if not currency_columns:
-        current = [replace(position, purchase_date=None) for position in current]
+def plan_import(current: Sequence[Position], incoming: Sequence[Position]) -> ImportPlan:
+    """Diff lotów (multizbiór po symbolu, ilości, koszcie, walucie i dacie zakupu)."""
     before = Counter(_key(position) for position in current)
     after = Counter(_key(position) for position in incoming)
-    blockers: tuple[str, ...] = ()
-    if not currency_columns:
-        blocked = _legacy_incompatible(incoming)
-        if blocked:
-            blockers = (f"{', '.join(blocked)}: {LEGACY_SCHEMA_BLOCKER}",)
     return ImportPlan(
         added=_lots(after - before),
         removed=_lots(before - after),
         unchanged=_lots(before & after),
-        blockers=blockers,
     )
 
 
@@ -231,16 +208,6 @@ def _sort_key(key: LotKey) -> tuple[str, str, Decimal, Decimal, str]:
     return (symbol, bought, quantity, price, currency)
 
 
-def _legacy_incompatible(positions: Iterable[Position]) -> list[str]:
-    return sorted(
-        {
-            position.symbol
-            for position in positions
-            if position.currency != DEFAULT_POSITION_CURRENCY or position.purchase_date is not None
-        }
-    )
-
-
 def format_plan(plan: ImportPlan, *, file_lots: int) -> str:
     """Dry-run do CLI: `+` dodane, `-` usunięte, `=` bez zmian, potem podsumowanie."""
     lines = [f"Import pozycji z CSV — {file_lots} lot(ów) w pliku"]
@@ -249,7 +216,6 @@ def format_plan(plan: ImportPlan, *, file_lots: int) -> str:
     lines.append(
         f"Zmiany: +{len(plan.added)} / -{len(plan.removed)} / bez zmian {len(plan.unchanged)}"
     )
-    lines.extend(f"⚠️ {blocker}" for blocker in plan.blockers)
     return "\n".join(lines)
 
 

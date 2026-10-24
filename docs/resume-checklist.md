@@ -49,7 +49,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `032` | `interval_coverage_enabled` | |
 | `033` | `regime_hysteresis_enabled` | Part of the prediction recipe: `config_hash` changes and a new recipe segment starts. |
 | `034` | `gate_delta_enabled` | |
-| `035` | `positions_currency_enabled` | |
+| `035` | — | No flag since PORT-23: the positions adapter and the CSV import always use `currency` and `purchase_date`. |
 | `036` | `fx_rates_cache_enabled` | |
 | `037` | `experiment_arms_enabled` | |
 | `040` | `cost_ledger_enabled` | |

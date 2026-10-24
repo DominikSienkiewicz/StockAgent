@@ -13,7 +13,6 @@ import pytest
 
 from src.domain.portfolio import Position
 from src.tools.import_positions import (
-    LEGACY_SCHEMA_BLOCKER,
     PositionsCsvError,
     format_plan,
     parse_positions_csv,
@@ -124,57 +123,33 @@ class TestPlan:
         ]
         incoming = [_lot("NVDA", "10", "118.50"), _lot("AAPL", "3", "195.250")]
 
-        plan = plan_import(current, incoming, currency_columns=True)
+        plan = plan_import(current, incoming)
 
         assert plan.added == (_lot("NVDA", "10", "118.50"),)
         assert plan.removed == (_lot("AAPL", "3", "195.25"), _lot("NVDA", "8", "118"))
         assert plan.unchanged == (_lot("AAPL", "3", "195.25"),)
-        assert plan.blockers == ()
         assert plan.has_changes
 
     def test_a_new_purchase_date_or_currency_is_a_change(self) -> None:
         current = [_lot("SAP.DE", "4", "182.1", "USD")]
         incoming = [_lot("SAP.DE", "4", "182.1", "EUR", date(2025, 3, 1))]
 
-        plan = plan_import(current, incoming, currency_columns=True)
+        plan = plan_import(current, incoming)
 
         assert (plan.added, plan.removed) == (tuple(incoming), tuple(current))
 
     def test_identical_file_has_no_changes_but_can_still_refresh_as_of(self) -> None:
         lots = [_lot("NVDA", "10", "118.50", "USD", date(2025, 3, 1))]
 
-        plan = plan_import(lots, lots, currency_columns=True)
+        plan = plan_import(lots, lots)
 
         assert not plan.has_changes
-        assert plan.blockers == ()
-
-    def test_without_migration_the_as_of_dates_of_current_lots_are_ignored(self) -> None:
-        # Adapter bez flagi podaje `as_of` jako datę — to nie jest data zakupu.
-        current = [_lot("NVDA", "10", "118.50", "USD", date(2026, 7, 10))]
-        incoming = [_lot("NVDA", "10", "118.50")]
-
-        plan = plan_import(current, incoming, currency_columns=False)
-
-        assert not plan.has_changes
-        assert plan.blockers == ()
-
-    def test_without_migration_currency_or_purchase_date_blocks_apply(self) -> None:
-        incoming = [
-            _lot("SAP.DE", "4", "182.1", "EUR"),
-            _lot("NVDA", "10", "118.50", "USD", date(2025, 3, 1)),
-            _lot("AAPL", "3", "195.25"),
-        ]
-
-        plan = plan_import([], incoming, currency_columns=False)
-
-        assert plan.blockers == (f"NVDA, SAP.DE: {LEGACY_SCHEMA_BLOCKER}",)
 
 
 def test_format_plan_lists_every_lot_and_the_summary() -> None:
     plan = plan_import(
         [_lot("NVDA", "8", "118"), _lot("AAPL", "3", "195.25")],
         [_lot("NVDA", "10", "118.50", "USD", date(2025, 3, 1)), _lot("AAPL", "3", "195.25")],
-        currency_columns=True,
     )
 
     text = format_plan(plan, file_lots=2)
@@ -186,11 +161,3 @@ def test_format_plan_lists_every_lot_and_the_summary() -> None:
         "  = AAPL       3 × 195.25 USD, zakup nieznany",
         "Zmiany: +1 / -1 / bez zmian 1",
     ]
-
-
-def test_format_plan_shows_the_blockers() -> None:
-    plan = plan_import([], [_lot("SAP.DE", "4", "182.1", "EUR")], currency_columns=False)
-
-    assert format_plan(plan, file_lots=1).splitlines()[-1] == (
-        f"⚠️ SAP.DE: {LEGACY_SCHEMA_BLOCKER}"
-    )

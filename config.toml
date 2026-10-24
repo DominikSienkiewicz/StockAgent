@@ -248,11 +248,6 @@ attestation_enabled = false
 # #15: realny portfel użytkownika (tabela `positions`, migracja 023) — wagi,
 # P/L i VaR w PLN zamiast fikcji równych wag. Flaga off → Null adapter. Włączone.
 portfolio_positions_enabled = true
-# PORT-18: waluta i prawdziwa data zakupu pozycji (`positions.currency`,
-# `purchase_date`, migracja 035) — odczyt w raporcie i zapis importu CSV
-# (`main_tools.py import-positions`). UWAGA: włącz DOPIERO po migracji 035
-# (inaczej PGRST204 przy imporcie).
-positions_currency_enabled = true
 # PORT-11: P/L w zł po kursie NBP z dnia zakupu — kursy z NBP (darmowe) idą za
 # `nbp_enabled`; ta flaga dokłada tylko cache kursów z minionych dni w tabeli
 # `fx_rates`. UWAGA: włącz DOPIERO po migracji 036 (inaczej błędy w logu).

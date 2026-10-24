@@ -137,8 +137,6 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "paper_cost_bps",
     "crypto_paper_cost_bps",
     "portfolio_positions_enabled",
-    # PORT-18: waluta i data zakupu pozycji (odczyt + zapis importu) — tylko raport.
-    "positions_currency_enabled",
     # PORT-11: cache kursów NBP z dnia (P/L w zł) — tylko raport.
     "fx_rates_cache_enabled",
     # Flagi samego zapisu i publikacji.
@@ -741,12 +739,6 @@ class Settings(BaseSettings):
     # Nazwa CELOWO nie `portfolio_enabled` — kolidowałaby z `portfolio_var_enabled`
     # i z sekcją watchlisty. Off → Null adapter → dotychczasowe równe wagi.
     portfolio_positions_enabled: bool = False
-    # PORT-18: kolumny `positions.currency` i `purchase_date` (migracja 035) —
-    # adapter czyta z nich walutę i PRAWDZIWĄ datę zakupu (zamiast `as_of`),
-    # a import CSV (`main_tools.py import-positions --apply`) je zapisuje. Off:
-    # nowy klucz w zapisie przed migracją → PGRST204; odczyt zostaje przy USD
-    # i dotychczasowym mapowaniu.
-    positions_currency_enabled: bool = False
     # PORT-11: cache kursów NBP z minionych dni w tabeli `fx_rates` (migracja 036)
     # pod P/L w zł po kursie z dnia zakupu. Same kursy idą z NBP za `nbp_enabled`
     # (darmowe) także bez cache'u. Off: przed migracją tabeli nie ma, więc każdy
