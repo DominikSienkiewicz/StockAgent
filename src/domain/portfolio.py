@@ -248,15 +248,16 @@ class PortfolioPnL:
     """Zagregowany P/L portfela — pozycje policzalne + sumy łączne.
 
     `positions` zawiera tylko pozycje, dla których była bieżąca cena;
-    reszta wypada (bez ceny nie ma P/L). `total_return_pct` jest `None`
-    dla pustego/zerokosztowego portfela.
+    reszta wypada (bez ceny nie ma P/L). `total_return_pct` to zwrot łączny
+    jako UŁAMEK (`Ratio`, mimo sufiksu `_pct`, ARCH-04) albo `None` dla
+    pustego/zerokosztowego portfela.
     """
 
     positions: tuple[PositionPnL, ...]
     total_cost_basis: Decimal
     total_market_value: Decimal
     total_unrealized_pnl: Decimal
-    total_return_pct: Decimal | None
+    total_return_pct: Ratio | None
 
 
 @dataclass(frozen=True)
@@ -529,7 +530,7 @@ class Portfolio:
             total_cost_basis=total_cost,
             total_market_value=total_value,
             total_unrealized_pnl=total_pnl,
-            total_return_pct=(total_pnl / total_cost) if total_cost != 0 else None,
+            total_return_pct=Ratio(total_pnl / total_cost) if total_cost != 0 else None,
         )
 
     def market_value_pln(
