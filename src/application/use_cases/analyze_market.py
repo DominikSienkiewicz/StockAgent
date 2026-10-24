@@ -22,7 +22,12 @@ from src.application.agent_graph import (
 )
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.market_features import CycleQuoteCache, collect_market_features
-from src.application.ports import LatestPrediction, NewsPort, SentimentPort
+from src.application.ports import (
+    AttestationPublisherPort,
+    LatestPrediction,
+    NewsPort,
+    SentimentPort,
+)
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import DRIFT_WINDOW_DAYS, Asset, drift_reference, is_reference_stale
 from src.domain.experiment import active_arms
@@ -103,6 +108,12 @@ class AnalyzeMarketUseCase:
         """G03: czy port ML ma wagi. Raport bierze stąd fakt o cold-starcie,
         zamiast zgadywać go z porównania ceny docelowej z bieżącą."""
         return self._ml_port.is_trained
+
+    @property
+    def attestation_publisher(self) -> AttestationPublisherPort | None:
+        """WIA-60: publisher commitmentów grafu (None = atestacja off) — DI domyka nim
+        cykl jedną linią rootu Merkle'a po przebiegu symboli."""
+        return self._deps.attestation_publisher
 
     def required_prediction_columns(self) -> frozenset[str]:
         """FIN-05: kolumny `prediction_logs`, które zapis predykcji tego cyklu może

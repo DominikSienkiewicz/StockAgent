@@ -12,6 +12,13 @@ Reveal sprzed migracji 043 nie ma `payload`; wtedy payload v1 odtwarza się z ko
 Linie commitmentów sprzed WIA-25 (tylko symbol i hash) czyta się tak samo — pole
 łączące je z revealem to `commitment`.
 
+WIA-60: od rootów Merkle'a linia commitmentów to jedna linia na cykl (`cycle_id`, `root`,
+`n_leaves`, `leaves`). Weryfikator odtwarza root z liści (root albo `n_leaves` niezgodne
+z liśćmi = porażka ledgera), liczy liście jako opublikowane commitmenty, a reveal ze ścieżką
+dowodu (`inclusion`) sprawdza względem rootu, który ledger faktycznie opublikował dla tego
+cyklu. Reveal ze statusem `incomplete_cycle` przyznaje, że root jego cyklu nigdy nie wyszedł:
+jest jawny, ale niczego nie dowodzi, więc werdykt pozostaje FAIL z osobną kategorią.
+
 Commitment bez revealu jest „jeszcze nieujawniony", nie porażką: predykcja może się nie
 rozliczyć. Liczba takich wpisów trafia do raportu, żeby długo nieujawniane commitmenty
 były widoczne. Czytanie plików i kod wyjścia należą do `main_tools.py verify-attestation`
@@ -26,7 +33,14 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
-from src.domain.attestation import SCHEMA_VERSION_V1, verify, verify_canonical
+from src.domain.attestation import (
+    REVEAL_STATUS_INCOMPLETE_CYCLE,
+    SCHEMA_VERSION_V1,
+    CycleRoot,
+    verify,
+    verify_canonical,
+    verify_inclusion,
+)
 
 # Te same ścieżki co `attestation_commitments_path` / `attestation_reveals_path` w config.toml
 # (pilnuje tego test); narzędzie nie ładuje `Settings`, bo weryfikator nie ma mieć kluczy.
@@ -37,6 +51,7 @@ STATUS_VALID = "valid"
 STATUS_TAMPERED = "tampered"
 STATUS_UNPUBLISHED = "no published commitment"
 STATUS_UNVERIFIABLE = "unverifiable"
+STATUS_INCOMPLETE_CYCLE = "incomplete cycle"
 
 # Kolumny revealu, które payload v2 zawiera dosłownie (tekst) albo jako cenę (4 miejsca).
 _TEXT_FIELDS = ("symbol", "predicted_trend")
@@ -72,6 +87,7 @@ class LedgerReport:
     commitments: int
     pending: int
     problems: tuple[str, ...] = ()
+    cycles: int = 0
 
     @property
     def ok(self) -> bool:
@@ -111,7 +127,13 @@ def verify_ledger(
     bo ledger, którego nie da się w pełni przeczytać, niczego nie dowodzi."""
     problems = [f"unreadable line {place}" for place in malformed]
     published: set[str] = set()
+    roots: dict[str, str] = {}
     for record in commitments:
+        cycle = CycleRoot.from_record(record)
+        if cycle is not None:
+            problems.extend(_cycle_problems(cycle, roots))
+            published.update(cycle.leaves)
+            continue
         commitment = _hash_of(record)
         if commitment is None:
             problems.append(f"commitment line without a hash (symbol {record.get('symbol')!r})")
@@ -126,7 +148,7 @@ def verify_ledger(
         if fingerprint in seen:
             continue
         seen.add(fingerprint)
-        checks.append(_check_reveal(reveal, published))
+        checks.append(_check_reveal(reveal, published, roots))
 
     revealed = {check.commitment for check in checks}
     return LedgerReport(
@@ -134,7 +156,19 @@ def verify_ledger(
         commitments=len(published),
         pending=len(published - revealed),
         problems=tuple(problems),
+        cycles=len(roots),
     )
+
+
+def _cycle_problems(cycle: CycleRoot, roots: dict[str, str]) -> list[str]:
+    """Root niezgodny z liśćmi albo drugi, inny root tego samego cyklu (zapamiętuje root)."""
+    problems: list[str] = []
+    if not cycle.consistent:
+        problems.append(f"cycle {cycle.cycle_id}: root or n_leaves does not match its leaves")
+    known = roots.setdefault(cycle.cycle_id, cycle.root)
+    if known != cycle.root:
+        problems.append(f"cycle {cycle.cycle_id}: published twice with different roots")
+    return problems
 
 
 def _hash_of(record: Mapping[str, Any]) -> str | None:
@@ -142,7 +176,9 @@ def _hash_of(record: Mapping[str, Any]) -> str | None:
     return value.lower() if isinstance(value, str) and value else None
 
 
-def _check_reveal(reveal: Mapping[str, Any], published: set[str]) -> RevealCheck:
+def _check_reveal(
+    reveal: Mapping[str, Any], published: set[str], roots: Mapping[str, str]
+) -> RevealCheck:
     commitment = _hash_of(reveal) or ""
     symbol = str(reveal.get("symbol") or "?")
 
@@ -150,7 +186,17 @@ def _check_reveal(reveal: Mapping[str, Any], published: set[str]) -> RevealCheck
         return RevealCheck(commitment=commitment, symbol=symbol, status=status, detail=detail)
 
     if commitment not in published:
+        if reveal.get("status") == REVEAL_STATUS_INCOMPLETE_CYCLE:
+            return result(
+                STATUS_INCOMPLETE_CYCLE,
+                "the root of its cycle was never published, so the reveal proves nothing",
+            )
         return result(STATUS_UNPUBLISHED, "the reveal's hash is not in the commitment ledger")
+    inclusion = reveal.get("inclusion")
+    if inclusion is not None and not _proof_reaches_published_root(commitment, inclusion, roots):
+        return result(
+            STATUS_TAMPERED, "the inclusion proof does not reach the published cycle root"
+        )
     salt = reveal.get("salt")
     if not isinstance(salt, str) or not salt:
         return result(STATUS_TAMPERED, "the reveal has no salt")
@@ -158,6 +204,27 @@ def _check_reveal(reveal: Mapping[str, Any], published: set[str]) -> RevealCheck
     if isinstance(payload, str):
         return _check_with_payload(reveal, payload, salt, commitment, result)
     return _check_legacy(reveal, salt, commitment, result)
+
+
+def _proof_reaches_published_root(
+    commitment: str, inclusion: Any, roots: Mapping[str, str]
+) -> bool:
+    """Ścieżka dowodu revealu prowadzi do rootu, który ledger opublikował dla jego cyklu."""
+    if not isinstance(inclusion, Mapping):
+        return False
+    root = roots.get(str(inclusion.get("cycle_id")))
+    index, size, proof = (
+        inclusion.get("leaf_index"),
+        inclusion.get("tree_size"),
+        inclusion.get("proof"),
+    )
+    if root is None or not isinstance(index, int) or not isinstance(size, int):
+        return False
+    if not isinstance(proof, list) or not all(isinstance(node, str) for node in proof):
+        return False
+    return inclusion.get("root") in (None, root) and verify_inclusion(
+        commitment, index, size, proof, root
+    )
 
 
 def _check_with_payload(
@@ -223,6 +290,8 @@ def format_report(report: LedgerReport) -> str:
         f"Commitments in the ledger: {report.commitments} ({report.pending} not revealed yet)",
         f"Reveals checked: {len(report.checks)}",
     ]
+    if report.cycles:
+        lines.insert(1, f"Cycle roots: {report.cycles}")
     lines.extend(f"  ! {problem}" for problem in report.problems)
     for check in report.checks:
         if not check.valid:

@@ -7630,3 +7630,75 @@ class TestAttestationRevealReconciliation:
         assert repo_arg is repository
         assert isinstance(ledger, FileAttestationLedger)
         sweep.return_value.run.assert_called_once_with()
+
+
+class TestAttestationCycleRoot:
+    """WIA-60 — graf dostaje kolektor cyklu, a Fast Loop po przebiegu symboli publikuje
+    jedną linię rootu Merkle'a (także gdy przebieg rzucił)."""
+
+    def test_graph_gets_a_cycle_collector(self, settings, mock_external_clients, mocker) -> None:
+        from src.application.attestation_cycle import CycleCommitmentCollector
+
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.attestation_enabled = True
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_settled_moves.return_value = []
+        repo.attestation_columns_available.return_value = True
+
+        main_agent.build_use_case(settings, repository=repo)
+
+        publisher = use_case_cls.call_args.args[0].attestation_publisher
+        assert isinstance(publisher, CycleCommitmentCollector)
+
+    @staticmethod
+    def _wire(settings, mocker, *, analyze: object) -> MagicMock:
+        from src.application.attestation_cycle import CycleCommitmentCollector
+
+        mocker.patch("main_agent.build_repository", return_value=MagicMock(spec=RepositoryPort))
+        inner = MagicMock()
+        inner.publish_commitment.return_value = "public/attestation/commitments.jsonl"
+        fake_uc = MagicMock()
+        fake_uc.attestation_publisher = CycleCommitmentCollector(inner)
+        fake_uc.telemetry.snapshot.return_value.paid_calls = {}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch("main_agent.build_notifier", return_value=MagicMock())
+        mocker.patch("main_agent._dispatch_reports", return_value=True)
+        mocker.patch("main_agent.attestation_reveals", return_value=MagicMock())
+        mocker.patch("main_agent._analyze_symbols", side_effect=analyze)
+        mocker.patch.dict(
+            "os.environ",
+            {"GITHUB_ACTIONS": "true", "GITHUB_RUN_ID": "987", "GITHUB_RUN_ATTEMPT": "2"},
+        )
+        return inner
+
+    @staticmethod
+    def _main(settings) -> int:
+        return main_agent.main(settings, clock=lambda: datetime(2026, 10, 26, 5, 30, tzinfo=UTC))
+
+    def test_fast_loop_publishes_one_root_line_after_the_symbols(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.attestation_enabled = True
+
+        inner = self._wire(settings, mocker, analyze=lambda *_a, **_k: ([], 0, {}, {}))
+
+        self._main(settings)
+
+        line = inner.publish_commitment.call_args.args[0]
+        assert line["cycle_id"] == "987.2.20261026T053000Z"
+        assert line["n_leaves"] == 0
+
+    def test_root_is_published_even_when_the_symbol_pass_raises(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.attestation_enabled = True
+
+        def crash(*_a: object, **_k: object) -> None:
+            raise RuntimeError("unexpected")
+
+        inner = self._wire(settings, mocker, analyze=crash)
+
+        with pytest.raises(RuntimeError, match="unexpected"):
+            self._main(settings)
+
+        inner.publish_commitment.assert_called_once()

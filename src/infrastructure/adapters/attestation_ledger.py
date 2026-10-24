@@ -20,6 +20,7 @@ from typing import Any
 
 from src.application.errors import ProviderUnavailable
 from src.application.ports import AttestationLedgerPort
+from src.domain.attestation import CommitmentLedger
 from src.infrastructure.error_translation import as_port_error
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,9 @@ class FileAttestationLedger(AttestationLedgerPort):
             for record in _records(self._reveal_path)
             if isinstance(commitment := record.get("commitment"), str) and commitment
         )
+
+    def commitment_ledger(self) -> CommitmentLedger:
+        return CommitmentLedger.from_records(_records(self._commitment_path))
 
 
 def _records(path: Path) -> Iterator[dict[str, Any]]:

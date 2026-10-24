@@ -24,6 +24,11 @@ from pathlib import Path
 from typing import NamedTuple
 
 from src.application.agent_graph import AgentGraphDeps
+from src.application.attestation_cycle import (
+    CycleCommitmentCollector,
+    attestation_cycle_id,
+    seal_attestation_cycle,
+)
 from src.application.circuit_alerts import record_open_circuit_alerts
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.errors import PortError
@@ -1627,8 +1632,10 @@ def build_agent_graph_deps(
         # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
         # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji. WIA-70:
         # flaga on bez kolumn 024/043 → cykl bez atestacji, predykcje zapisane.
+        # WIA-60: commitmenty cyklu idą do kolektora — ledger dostaje jedną linię rootu
+        # Merkle'a na cykl (`seal_attestation_cycle` po przebiegu symboli).
         attestation_publisher=(
-            build_attestation_publisher(settings)
+            CycleCommitmentCollector(build_attestation_publisher(settings))
             if settings.attestation_enabled and supabase_repo.attestation_columns_available()
             else None
         ),
@@ -3003,26 +3010,37 @@ def _run_fast_loop(
         now=started_at,
     )
 
-    loop_results, failures, alpha_signals, alpha_prices = _analyze_symbols(
-        eligible,
-        use_case=use_case,
-        settings=settings,
-        crypto_set=crypto_set,
-        etf_set=etf_set,
-        regime_context=regime_context,
-        regime_multiplier=regime_multiplier,
-        collect_alpha=collect_alpha,
-        alpha_use_case=alpha_use_case,
-        # ARCH-26: odznaki proweniencji liczą wiek danych od startu cyklu —
-        # tego samego zegara, który mail drukuje w nagłówku.
-        cycle_at=started_at,
-        # EXP-27: cykl dwufazowy tylko za flagą; None = cykl jednofazowy jak dotąd.
-        phase_two_feeds=(
-            build_phase_two_feeds(settings, quota_monitor)
-            if settings.two_phase_cycle_enabled
-            else None
-        ),
-    )
+    try:
+        loop_results, failures, alpha_signals, alpha_prices = _analyze_symbols(
+            eligible,
+            use_case=use_case,
+            settings=settings,
+            crypto_set=crypto_set,
+            etf_set=etf_set,
+            regime_context=regime_context,
+            regime_multiplier=regime_multiplier,
+            collect_alpha=collect_alpha,
+            alpha_use_case=alpha_use_case,
+            # ARCH-26: odznaki proweniencji liczą wiek danych od startu cyklu —
+            # tego samego zegara, który mail drukuje w nagłówku.
+            cycle_at=started_at,
+            # EXP-27: cykl dwufazowy tylko za flagą; None = cykl jednofazowy jak dotąd.
+            phase_two_feeds=(
+                build_phase_two_feeds(settings, quota_monitor)
+                if settings.two_phase_cycle_enabled
+                else None
+            ),
+        )
+    finally:
+        # WIA-60: jedna linia rootu Merkle'a na cykl, także po wyjątku — predykcje
+        # zapisane do tej chwili mają sól w bazie, więc ich root wolno opublikować.
+        seal_attestation_cycle(
+            use_case.attestation_publisher,
+            cycle_id=attestation_cycle_id(
+                run_context.run_id, run_attempt_from_environ(os.environ), started_at
+            ),
+            committed_at=clock(),
+        )
     results.extend(loop_results)
 
     duration = time.perf_counter() - started_perf

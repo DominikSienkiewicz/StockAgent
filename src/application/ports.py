@@ -9,7 +9,7 @@ from typing import Any
 
 from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
-from src.domain.attestation import StoredCommitment
+from src.domain.attestation import CommitmentLedger, StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.earnings import CachedEarningsDate, EarningsEvent
@@ -1072,6 +1072,11 @@ class AttestationLedgerPort(ABC):
     @abstractmethod
     def revealed_commitments(self) -> frozenset[str]:
         """Hashe (hex, małe litery) wszystkich revealów w ledgerze; brak pliku = pusty zbiór."""
+
+    @abstractmethod
+    def commitment_ledger(self) -> CommitmentLedger:
+        """WIA-60 — opublikowane commitmenty: linie pojedyncze i rooty cykli (z liśćmi),
+        z których reveal bierze ścieżkę dowodu. Brak pliku = pusty ledger."""
 
 
 class WebPublisherPort(ABC):

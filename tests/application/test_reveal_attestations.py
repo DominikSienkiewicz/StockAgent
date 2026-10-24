@@ -8,6 +8,7 @@ odsłoniły, a dla sceptyka wygląda to jak ukrywanie nietrafień.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -18,6 +19,11 @@ from src.application.ports import (
     RepositoryPort,
 )
 from src.application.use_cases.reveal_attestations import RevealAttestationsUseCase
+from src.domain.attestation import (
+    REVEAL_STATUS_INCOMPLETE_CYCLE,
+    CommitmentLedger,
+    cycle_root_record,
+)
 
 
 def _sweep(repo: MagicMock, pub: MagicMock) -> int:
@@ -179,9 +185,10 @@ class TestRevealReconciliationWithTheDurableLedger:
         return {**TestAttestationRevealSweep._row(pid), "commitment_hash": commitment}
 
     @staticmethod
-    def _ledger(*revealed: str) -> MagicMock:
+    def _ledger(*revealed: str, commitments: list[dict[str, Any]] | None = None) -> MagicMock:
         ledger = MagicMock(spec=AttestationLedgerPort)
         ledger.revealed_commitments.return_value = frozenset(revealed)
+        ledger.commitment_ledger.return_value = CommitmentLedger.from_records(commitments or [])
         return ledger
 
     def test_marks_only_hashes_present_in_ledger(self) -> None:
@@ -271,6 +278,65 @@ class TestRevealReconciliationWithTheDurableLedger:
         pub = MagicMock(spec=AttestationPublisherPort)
         ledger = self._ledger()
         ledger.revealed_commitments.side_effect = ProviderUnavailable("ledger unreadable")
+
+        assert RevealAttestationsUseCase(repo, pub, ledger).run() == 0
+        pub.publish_reveal.assert_not_called()
+
+
+class TestRevealCarriesTheCycleInclusionProof:
+    """WIA-60 — reveal predykcji z cyklu z rootem niesie ścieżkę dowodu, więc sceptyk
+    sprawdza go względem samego rootu; bez opublikowanego rootu mówi to wprost."""
+
+    _ROOT_LINE = cycle_root_record(
+        cycle_id="c1",
+        committed_at=datetime(2026, 10, 26, 5, 31, tzinfo=UTC),
+        commitments=["aa" * 32, "bb" * 32, "cc" * 32],
+    )
+
+    @staticmethod
+    def _sweep_one(commitment: str, commitments: list[dict[str, Any]]) -> dict[str, Any]:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [
+            {**TestAttestationRevealSweep._row("p-1"), "commitment_hash": commitment}
+        ]
+        pub = MagicMock(spec=AttestationPublisherPort)
+        pub.publish_reveal.return_value = "public/attestation/reveals.jsonl"
+        ledger = TestRevealReconciliationWithTheDurableLedger._ledger(commitments=commitments)
+
+        RevealAttestationsUseCase(repo, pub, ledger).run()
+
+        return dict(pub.publish_reveal.call_args.args[0])
+
+    def test_reveal_of_a_cycle_leaf_carries_a_verifiable_proof(self) -> None:
+        reveal = self._sweep_one("bb" * 32, [self._ROOT_LINE])
+
+        inclusion = reveal["inclusion"]
+        assert (inclusion["cycle_id"], inclusion["leaf_index"], inclusion["tree_size"]) == (
+            "c1",
+            1,
+            3,
+        )
+        assert inclusion["root"] == self._ROOT_LINE["root"]
+        assert "status" not in reveal
+
+    def test_reveal_without_a_published_root_is_marked_incomplete(self) -> None:
+        reveal = self._sweep_one("dd" * 32, [self._ROOT_LINE])
+
+        assert reveal["status"] == REVEAL_STATUS_INCOMPLETE_CYCLE
+        assert "inclusion" not in reveal
+
+    def test_reveal_of_a_single_line_commitment_needs_no_proof(self) -> None:
+        reveal = self._sweep_one("dd" * 32, [{"symbol": "OLD", "commitment": "dd" * 32}])
+
+        assert "inclusion" not in reveal
+        assert "status" not in reveal
+
+    def test_unreadable_commitment_ledger_skips_the_sweep(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [TestAttestationRevealSweep._row("p-1")]
+        pub = MagicMock(spec=AttestationPublisherPort)
+        ledger = TestRevealReconciliationWithTheDurableLedger._ledger()
+        ledger.commitment_ledger.side_effect = ProviderUnavailable("ledger unreadable")
 
         assert RevealAttestationsUseCase(repo, pub, ledger).run() == 0
         pub.publish_reveal.assert_not_called()

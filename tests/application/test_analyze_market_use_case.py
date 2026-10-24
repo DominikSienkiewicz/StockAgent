@@ -7,6 +7,7 @@ import pytest
 
 from src.application.agent_graph import AgentGraphDeps
 from src.application.ports import (
+    AttestationPublisherPort,
     EmbeddingPort,
     LLMPort,
     MarketDataPort,
@@ -344,6 +345,30 @@ class TestMlModelLoaded:
     def test_reports_loaded_model_when_trained(self, use_case, ml_port):
         ml_port.is_trained = True
         assert use_case.ml_model_loaded is True
+
+
+class TestAttestationPublisher:
+    """WIA-60: DI domyka cykl atestacji publisherem, który dostał graf."""
+
+    def test_exposes_the_publisher_the_graph_got(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        publisher = Mock(spec=AttestationPublisherPort)
+        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=sentiment_port,
+            news_port=news_port,
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            attestation_publisher=publisher,
+        ))
+
+        assert use_case.attestation_publisher is publisher
+
+    def test_none_without_attestation(self, use_case):
+        assert use_case.attestation_publisher is None
 
 
 class TestRequiredPredictionColumns:

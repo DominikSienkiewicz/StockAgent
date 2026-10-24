@@ -285,3 +285,110 @@ def test_non_text_hash_or_salt_never_crashes_the_verifier(value: Any) -> None:
     report = tool.verify_ledger([commitment], [reveal])
 
     assert not report.ok
+
+
+# --- WIA-60: linie rootów cyklu i ścieżki dowodu w revealach -------------------------
+
+
+def _cycle(*reveals: dict[str, Any], cycle_id: str = "987.1.20261026T053000Z") -> dict[str, Any]:
+    return attestation.cycle_root_record(
+        cycle_id=cycle_id,
+        committed_at=_NOW,
+        commitments=[str(reveal["commitment"]) for reveal in reveals],
+    )
+
+
+def _anchored(reveal: dict[str, Any], root_line: dict[str, Any]) -> dict[str, Any]:
+    ledger = attestation.CommitmentLedger.from_records([root_line])
+    inclusion = ledger.inclusion_of(str(reveal["commitment"]))
+    assert inclusion is not None
+    return {**reveal, "inclusion": inclusion.as_record()}
+
+
+def _three_reveals() -> list[dict[str, Any]]:
+    return [
+        _commitment_and_reveal(symbol, salt=salt)[1]
+        for symbol, salt in (("AAPL", _SALT), ("MSFT", "1" * 32), ("NVDA", "2" * 32))
+    ]
+
+
+def test_a_cycle_root_with_inclusion_proofs_verifies() -> None:
+    reveals = _three_reveals()
+    root_line = _cycle(*reveals)
+
+    report = tool.verify_ledger([root_line], [_anchored(reveal, root_line) for reveal in reveals])
+
+    assert report.ok, tool.format_report(report)
+    assert (report.commitments, report.pending, report.cycles) == (3, 0, 1)
+
+
+def test_old_single_lines_and_new_cycle_roots_verify_together() -> None:
+    old_line, old_reveal = _legacy_pair()
+    reveals = _three_reveals()
+    root_line = _cycle(*reveals)
+
+    report = tool.verify_ledger(
+        [old_line, root_line],
+        [old_reveal, *(_anchored(reveal, root_line) for reveal in reveals)],
+    )
+
+    assert report.ok, tool.format_report(report)
+    assert report.commitments == 4
+
+
+def test_a_reveal_whose_proof_does_not_reach_the_root_is_tampered() -> None:
+    reveals = _three_reveals()
+    root_line = _cycle(*reveals)
+    forged = _anchored(reveals[0], root_line)
+    forged["inclusion"]["leaf_index"] = 1
+
+    report = tool.verify_ledger([root_line], [forged])
+
+    assert [check.status for check in report.checks] == [tool.STATUS_TAMPERED]
+
+
+def test_a_proof_against_a_root_the_ledger_never_published_is_tampered() -> None:
+    reveals = _three_reveals()
+    root_line = _cycle(*reveals)
+    other = _cycle(*reveals[:2], cycle_id="other")
+    anchored = _anchored(reveals[0], other)
+
+    report = tool.verify_ledger([root_line], [anchored])
+
+    assert [check.status for check in report.checks] == [tool.STATUS_TAMPERED]
+
+
+def test_a_root_line_that_does_not_match_its_leaves_fails_the_verdict() -> None:
+    reveals = _three_reveals()
+    root_line = {**_cycle(*reveals), "n_leaves": 4}
+
+    report = tool.verify_ledger([root_line], [])
+
+    assert not report.ok
+    assert any("987.1.20261026T053000Z" in problem for problem in report.problems)
+
+
+def test_two_roots_for_one_cycle_fail_the_verdict() -> None:
+    reveals = _three_reveals()
+
+    report = tool.verify_ledger([_cycle(*reveals), _cycle(*reveals[:2])], [])
+
+    assert not report.ok
+
+
+def test_an_empty_cycle_root_verifies() -> None:
+    report = tool.verify_ledger([_cycle()], [])
+
+    assert report.ok
+    assert (report.commitments, report.cycles) == (0, 1)
+
+
+def test_a_reveal_from_an_incomplete_cycle_is_reported_as_unproven() -> None:
+    _, reveal = _commitment_and_reveal()
+    reveal["status"] = attestation.REVEAL_STATUS_INCOMPLETE_CYCLE
+
+    report = tool.verify_ledger([], [reveal])
+
+    assert [check.status for check in report.checks] == [tool.STATUS_INCOMPLETE_CYCLE]
+    assert not report.ok
+    assert "incomplete cycle" in tool.format_report(report)

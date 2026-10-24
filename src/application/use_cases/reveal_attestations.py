@@ -19,6 +19,7 @@ from src.application.ports import (
     AttestationPublisherPort,
     RepositoryPort,
 )
+from src.domain.attestation import REVEAL_STATUS_INCOMPLETE_CYCLE, CommitmentLedger
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,23 @@ def reveal_record(row: Mapping[str, Any]) -> dict[str, Any]:
     payload = row.get("commitment_payload")
     if payload is not None:
         record["payload"] = payload
+    return record
+
+
+def anchored_reveal_record(row: Mapping[str, Any], ledger: CommitmentLedger) -> dict[str, Any]:
+    """WIA-60 — `reveal_record` z miejscem commitmentu w opublikowanym ledgerze.
+
+    Liść cyklu dostaje `inclusion` (cykl, root, indeks, rozmiar drzewa i ścieżkę
+    dowodu); commitment z pojedynczej linii (sprzed WIA-60) — nic więcej; commitment,
+    którego ledger nie zna (root cyklu nigdy nie wyszedł), — status
+    `incomplete_cycle`: reveal jest jawny, ale niczego nie dowodzi."""
+    record = reveal_record(row)
+    commitment = _commitment_of(row)
+    inclusion = ledger.inclusion_of(commitment)
+    if inclusion is not None:
+        record["inclusion"] = inclusion.as_record()
+    elif not ledger.is_published(commitment):
+        record["status"] = REVEAL_STATUS_INCOMPLETE_CYCLE
     return record
 
 
@@ -100,14 +118,20 @@ class RevealAttestationsUseCase:
         Best-effort per wiersz: jeden błąd nie przerywa sweepu.
         """
         if self._ledger is None:
-            return sum(1 for row in self._unrevealed() if self._publish(row) and self._mark(row))
+            published_rows = (
+                row for row in self._unrevealed() if self._publish(reveal_record(row), row)
+            )
+            return sum(1 for row in published_rows if self._mark(row))
         try:
             durable = frozenset(value.lower() for value in self._ledger.revealed_commitments())
+            published = self._ledger.commitment_ledger()
         except PortError as exc:
             logger.warning("Attestation ledger unreadable (%s) — reveal sweep skipped", exc)
             return 0
         pending = [row for row in self._unrevealed() if _commitment_of(row) not in durable]
-        return sum(1 for row in pending if self._publish(row))
+        return sum(
+            1 for row in pending if self._publish(anchored_reveal_record(row, published), row)
+        )
 
     def _durable_reveals(self) -> frozenset[str]:
         if self._ledger is None:
@@ -125,9 +149,9 @@ class RevealAttestationsUseCase:
             logger.exception("Failed to read unrevealed commitments — sweep skipped")
             return []
 
-    def _publish(self, row: Mapping[str, Any]) -> bool:
+    def _publish(self, record: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
         try:
-            location = self._publisher.publish_reveal(reveal_record(row))
+            location = self._publisher.publish_reveal(record)
         except (OSError, PortError, TypeError, ValueError):
             logger.exception("Failed to publish reveal for %s", row.get("id"))
             return False
