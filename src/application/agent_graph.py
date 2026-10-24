@@ -97,11 +97,13 @@ from src.domain.value_objects import (
     AssetType,
     Fundamentals,
     Money,
+    Ratio,
     Threshold,
     ValuationVerdict,
     clamp_unit,
     is_stale,
     settles_on_stale_quote,
+    to_percent,
 )
 
 logger = logging.getLogger(__name__)
@@ -186,12 +188,14 @@ class AgentState(TypedDict, total=False):
     # WIA-61: zamknięcie ostatniej zakończonej sesji z tego samego notowania (za
     # `session_close_settlement_enabled`); None = notowanie go nie wyznacza.
     session_close: SessionClose | None
-    delta: Decimal
+    # ARCH-04: ruch ceny od referencji jako UŁAMEK (`PriceDelta.fraction`), nie
+    # procent. Prompt i rada dostają procent przez `to_percent`.
+    delta: Ratio
     # ALR-10: cena odniesienia dryfu (ostatnia predykcja z okna albo początek okna,
     # podaje use case za `drift_gate_enabled`) i dryf od niej (ułamek, z check_price).
     # Brak klucza = bramka jak przed ALR-10.
     drift_reference: Decimal
-    drift: Decimal
+    drift: Ratio
     status: str
     # FIN-12: ruch przeszedł bramkę volatility, ale cykl wyczerpał sufit płatnych
     # wywołań LLM — symbol kończy jako 'ignored' bez analizy i bez snapshotu ceny.
@@ -769,7 +773,7 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     # świeżego snapshotu padłej próby → delta≈0 → cichy "ignore").
     update: AgentState = {
         "current_price": current.amount,
-        "delta": delta.percentage,
+        "delta": Ratio(delta.fraction),
     }
     if quote is not None:
         now = deps.clock()
@@ -786,7 +790,7 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
             update["session_close"] = session_close_of(quote, now)
     reference = state.get("drift_reference")
     if reference is not None and reference > 0:
-        update["drift"] = PriceDelta.calculate(Money(reference), current).fraction
+        update["drift"] = Ratio(PriceDelta.calculate(Money(reference), current).fraction)
     return update
 
 
@@ -1666,7 +1670,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         symbol=state["symbol"],
         current_data={
             "price": str(state["current_price"]),
-            "delta_percentage": str(state["delta"] * Decimal("100")),
+            "delta_percentage": str(to_percent(state["delta"])),
             "av_sentiment_score": sentiment.get("av_sentiment_score"),
             "av_sentiment_label": sentiment.get("av_sentiment_label"),
             "news_volume_24h": sentiment.get("news_volume_24h"),
