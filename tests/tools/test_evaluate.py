@@ -4,7 +4,12 @@ import math
 
 import pytest
 
-from src.tools.evaluate import EvalReport, format_report, summarize_evaluation
+from src.tools.evaluate import (
+    BaselineVerdict,
+    EvalReport,
+    format_report,
+    summarize_evaluation,
+)
 
 
 def _row(
@@ -159,6 +164,134 @@ class TestOneHitRateDefinition:
         report = summarize_evaluation(rows)
 
         assert report.sideways_count == 2
+
+
+class TestReturnSpaceRmse:
+    """WIA-40: RMSE na zwrotach ((cel − p0)/p0 vs (rzeczywista − p0)/p0), bo BTC
+    ~100k dominuje sumę kwadratów w cenach, a cold-start daje identyczne RMSE."""
+
+    def test_rmse_is_scale_free_btc_does_not_dominate(self):
+        rows = [
+            _row("BULLISH", True, 100_000, 101_000, 100_000),   # błąd zwrotu 1%
+            _row("BULLISH", False, 200, 200, 210),              # błąd zwrotu 5%
+        ]
+
+        report = summarize_evaluation(rows)
+
+        assert report.model_rmse_return == pytest.approx(math.sqrt((0.01**2 + 0.05**2) / 2))
+        # Baseline „brak zmiany” myli się o rzeczywisty zwrot: 0% i 5%.
+        assert report.baseline_rmse_return == pytest.approx(math.sqrt((0.0**2 + 0.05**2) / 2))
+
+    def test_verdict_undetermined_when_targets_equal_entry_prices(self):
+        # Cold-start: model bez wag zwraca cenę wejścia jako cel, więc jego błąd
+        # jest błędem baseline'u — „NIE bije” byłoby artefaktem, nie pomiarem.
+        rows = [
+            _row("SIDEWAYS", True, 100, 100, 100.2),
+            _row("SIDEWAYS", False, 50, 50, 53),
+        ]
+
+        report = summarize_evaluation(rows)
+
+        assert report.verdict is BaselineVerdict.UNDETERMINED
+        assert report.beats_baseline is False
+        assert "nieokreślony" in format_report(report, 30)
+        assert "NIE bije" not in format_report(report, 30)
+
+    def test_verdict_without_complete_prices_is_undetermined(self):
+        report = summarize_evaluation([])
+
+        assert report.model_rmse_return is None
+        assert report.verdict is BaselineVerdict.UNDETERMINED
+
+    def test_model_closer_to_the_outcome_beats_the_baseline(self):
+        rows = [_row("BULLISH", True, 100, 104, 105), _row("BULLISH", True, 100, 106, 105)]
+
+        report = summarize_evaluation(rows)
+
+        assert report.verdict is BaselineVerdict.BEATS
+        assert report.beats_baseline is True
+        assert "✅ bije baseline" in format_report(report, 30)
+
+    def test_model_further_than_no_change_does_not_beat(self):
+        rows = [_row("BULLISH", True, 100, 120, 101), _row("BULLISH", True, 100, 80, 99)]
+
+        report = summarize_evaluation(rows)
+
+        assert report.verdict is BaselineVerdict.DOES_NOT_BEAT
+        assert "⚠️ NIE bije baseline" in format_report(report, 30)
+
+    def test_model_and_baseline_are_scored_on_the_same_rows(self):
+        # Wiersz bez celu nie może zaniżyć błędu modelu, a zostać w baseline'ie.
+        rows = [
+            _row("BULLISH", True, 100, 110, 110),
+            {**_row("BULLISH", True, 100, 0, 150), "predicted_target_price": None},
+        ]
+
+        report = summarize_evaluation(rows)
+
+        assert report.model_rmse_return == pytest.approx(0.0)
+        assert report.baseline_rmse_return == pytest.approx(0.10)
+
+
+class TestRmsePerAssetClass:
+    def _rows(self) -> list[dict]:
+        return [
+            {**_row("BULLISH", True, 100_000, 101_000, 100_000), "asset_class": "CRYPTO"},
+            {**_row("BULLISH", False, 200, 200, 210), "asset_class": "STOCK"},
+            {**_row("BEARISH", True, 100, 98, 98), "asset_class": "STOCK"},
+        ]
+
+    def test_each_class_gets_its_own_scale_free_rmse(self):
+        report = summarize_evaluation(self._rows())
+
+        crypto = report.by_asset_class["CRYPTO"]
+        stock = report.by_asset_class["STOCK"]
+        assert (crypto.n, stock.n) == (1, 2)
+        assert crypto.model_rmse == pytest.approx(0.01)
+        assert stock.model_rmse == pytest.approx(math.sqrt((0.05**2 + 0.0**2) / 2))
+
+    def test_rows_without_a_class_produce_no_breakdown(self):
+        report = summarize_evaluation([_row("BULLISH", True, 100, 104, 105)])
+
+        assert report.by_asset_class == {}
+
+    def test_formatted_report_lists_the_classes(self):
+        text = format_report(summarize_evaluation(self._rows()), 30)
+
+        assert "per klasa aktywa" in text
+        assert "CRYPTO" in text
+        assert "STOCK" in text
+
+
+class TestConfidenceScores:
+    """WIA-40: Brier i log loss deklarowanej pewności LLM na zakładach kierunkowych."""
+
+    def test_brier_and_log_loss_of_the_declared_confidence(self):
+        rows = [
+            {**_row("BULLISH", True, 100, 105, 106), "confidence_score": 0.9},
+            {**_row("BEARISH", False, 100, 95, 101), "confidence_score": 0.8},
+            {**_row("SIDEWAYS", True, 100, 100, 100.1), "confidence_score": 0.99},
+        ]
+
+        scores = summarize_evaluation(rows).confidence_scores
+
+        assert scores is not None
+        assert scores.n == 2          # SIDEWAYS nie stawia zakładu kierunkowego
+        assert scores.brier == pytest.approx(((0.9 - 1) ** 2 + (0.8 - 0) ** 2) / 2)
+        assert scores.log_loss == pytest.approx(-(math.log(0.9) + math.log(0.2)) / 2)
+
+    def test_no_confidence_column_means_no_scores(self):
+        report = summarize_evaluation([_row("BULLISH", True, 100, 105, 106)])
+
+        assert report.confidence_scores is None
+
+    def test_formatted_report_prints_brier_and_log_loss(self):
+        rows = [{**_row("BULLISH", True, 100, 105, 106), "confidence_score": 0.9}]
+
+        text = format_report(summarize_evaluation(rows), 30)
+
+        assert "Brier pewności" in text
+        assert "Log loss pewności" in text
 
 
 class TestSignificanceVerdict:
