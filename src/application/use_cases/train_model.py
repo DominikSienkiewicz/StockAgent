@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime
+from typing import Any, TypedDict
 
 import pandas as pd
 
@@ -23,12 +24,14 @@ from src.domain.backtest import LabelOverlap, count_label_overlaps
 from src.domain.model_scorecard import (
     FREE_SNAPSHOT_MODEL_SYMBOL,
     LLM_SNAPSHOT_MODEL_SYMBOL,
+    TargetUnit,
     TrainingOutcome,
     TrainingReport,
 )
 
 # Jawny re-eksport: symbol wiersza karty modelu wspólnego żyje w domenie karty.
 from src.domain.model_scorecard import POOLED_MODEL_SYMBOL as POOLED_MODEL_SYMBOL
+from src.domain.price_features import SIGMA_LOOKBACK, return_sigma
 from src.domain.training_labels import (
     LabeledSnapshot,
     SelectionReport,
@@ -37,6 +40,15 @@ from src.domain.training_labels import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Snapshoty cen per symbol `(chwila, cena)` — etykieta i σ liczą się z tego szeregu.
+PriceSeries = Mapping[str, Sequence[tuple[datetime, float]]]
+
+
+class _TargetUnitKwargs(TypedDict, total=False):
+    """ML-11: opcjonalny argument `target_unit` wywołania `MLPredictionPort.train`."""
+
+    target_unit: TargetUnit
 
 
 @dataclass(frozen=True)
@@ -82,6 +94,7 @@ class TrainModelUseCase:
         run_id: str | None = None,
         training_data: TrainingDataPort | None = None,
         snapshot_source: bool = False,
+        sigma_target: bool = False,
     ) -> None:
         """`feature_set_version` (DAT-09) zawęża próbkę do wierszy tej wersji
         zestawu cech; None = cała historia (bez migracji 027). `run_id` (ML-24)
@@ -92,6 +105,7 @@ class TrainModelUseCase:
         self._run_id = run_id
         self._training_data = training_data
         self._snapshot_source = snapshot_source
+        self._sigma_target = sigma_target
 
     def refresh_feature_store(self) -> None:
         self._db_port.refresh_feature_store()
@@ -154,15 +168,17 @@ class TrainModelUseCase:
         kartę i swoje baseline'y walk-forward na własnej próbce. Raport selekcji
         porównuje zwroty cykli gated i non-gated. Za mało wierszy → `SKIPPED`
         z liczbą próbek (pusta baza mówi to wprost)."""
-        n_snapshots, labeled = self._labeled_snapshots(symbols)
+        n_snapshots, labeled, series = self._labeled_snapshots(symbols)
         free_rows = [
             (free_model_vector(item.snapshot.features), item) for item in labeled
         ]
         llm_rows = _llm_rows(labeled)
         result = SnapshotModelsResult(
-            free_model=self._evaluate_snapshot_rows(free_rows, "the free-feature model"),
+            free_model=self._evaluate_snapshot_rows(
+                free_rows, series, "the free-feature model"
+            ),
             llm_model=self._evaluate_snapshot_rows(
-                llm_rows, "the LLM-feature model (gated cycles)"
+                llm_rows, series, "the LLM-feature model (gated cycles)"
             ),
             selection=selection_report(labeled),
             n_snapshots=n_snapshots,
@@ -181,41 +197,66 @@ class TrainModelUseCase:
 
     def _labeled_snapshots(
         self, symbols: Sequence[str]
-    ) -> tuple[int, list[LabeledSnapshot]]:
-        """Wektory symboli treningu w wersji 4 z etykietą point-in-time."""
-        if self._training_data is None:
-            raise RuntimeError("Snapshot training needs a TrainingDataPort (DI)")
+    ) -> tuple[int, list[LabeledSnapshot], PriceSeries]:
+        """Wektory symboli treningu w wersji 4 z etykietą point-in-time i szereg cen
+        (z zapasem `SIGMA_LOOKBACK` przed najstarszym wektorem na σ, ML-11)."""
+        training_data = self._require_training_data()
         wanted = list(dict.fromkeys(symbols))
         snapshots = [
             snapshot
-            for snapshot in self._training_data.get_feature_snapshots(
+            for snapshot in training_data.get_feature_snapshots(
                 SNAPSHOT_TRAINING_FEATURE_SET_VERSION
             )
             if snapshot.symbol in wanted
         ]
         if not snapshots:
-            return 0, []
-        series = self._training_data.get_price_series(
-            wanted, since=min(snapshot.as_of for snapshot in snapshots)
+            return 0, [], {}
+        series = training_data.get_price_series(
+            wanted, since=min(snapshot.as_of for snapshot in snapshots) - SIGMA_LOOKBACK
         )
-        return len(snapshots), label_snapshots(snapshots, series)
+        return len(snapshots), label_snapshots(snapshots, series), series
+
+    def _in_target_units(
+        self,
+        rows: Sequence[tuple[Mapping[str, float | None], LabeledSnapshot]],
+        series: PriceSeries,
+    ) -> list[tuple[Mapping[str, float | None], float, datetime]]:
+        """Wiersze (wektor, target, chwila); ML-11: target = zwrot / σ z chwili
+        wektora, a wiersz bez σ (za krótka historia) wypada."""
+        out: list[tuple[Mapping[str, float | None], float, datetime]] = []
+        for vector, item in rows:
+            target = item.target_return
+            if self._sigma_target:
+                sigma = return_sigma(series.get(item.snapshot.symbol, []), item.snapshot.as_of)
+                if sigma is None:
+                    continue
+                target /= sigma
+            out.append((vector, target, item.snapshot.as_of))
+        return out
+
+    def _snapshot_reason(self, model: str) -> str:
+        history = " with a sigma history" if self._sigma_target else ""
+        return f"Not enough labeled feature snapshots{history} for {model}"
 
     def _evaluate_snapshot_rows(
         self,
         rows: Sequence[tuple[Mapping[str, float | None], LabeledSnapshot]],
+        series: PriceSeries,
         model: str,
     ) -> TrainingReport:
-        if len(rows) < MIN_SAMPLES_FOR_TRAINING:
+        training_set = self._in_target_units(rows, series)
+        if len(training_set) < MIN_SAMPLES_FOR_TRAINING:
             return _skipped(
-                f"Not enough labeled feature snapshots for {model}",
-                len(rows),
+                self._snapshot_reason(model),
+                len(training_set),
                 feature_set_version=SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
             )
         return self._ml_port.train(
-            [dict(vector) for vector, _ in rows],
-            [item.target_return for _, item in rows],
+            [dict(vector) for vector, _, _ in training_set],
+            [target for _, target, _ in training_set],
             persist=False,
-            timestamps=[item.snapshot.as_of for _, item in rows],
+            timestamps=[as_of for _, _, as_of in training_set],
+            **self._target_unit(),
         )
 
     def _save_pooled_scorecard(self, result: TrainingReport) -> None:
@@ -251,30 +292,65 @@ class TrainModelUseCase:
         df = df.assign(_global_time=stamps).sort_values(
             ["_global_time", "symbol"], kind="stable"
         )
+        target = df[TARGET_COLUMN]
+        if self._sigma_target:
+            sigmas = self._row_sigmas(df["symbol"], df["_global_time"])
+            df, target = df[sigmas.notna()], (target / sigmas)[sigmas.notna()]
+            if len(df) < MIN_SAMPLES_FOR_TRAINING:
+                return self._pooled_skipped(
+                    "Not enough samples with a sigma history for the pooled model", len(df)
+                )
 
         return self._ml_port.train(
             df[list(ML_FEATURE_COLUMNS)],
-            df[TARGET_COLUMN],
+            target,
             timestamps=df["_global_time"],
+            **self._target_unit(),
         )
+
+    def _row_sigmas(self, symbols: pd.Series, stamps: pd.Series) -> pd.Series:
+        """ML-11: σ symbolu wiersza w chwili wiersza (`return_sigma`); brak = NaN."""
+        series = self._require_training_data().get_price_series(
+            list(dict.fromkeys(str(symbol) for symbol in symbols)),
+            since=stamps.min().to_pydatetime() - SIGMA_LOOKBACK,
+        )
+        return pd.Series(
+            [
+                return_sigma(series.get(str(symbol), []), stamp.to_pydatetime())
+                for symbol, stamp in zip(symbols, stamps, strict=True)
+            ],
+            index=symbols.index,
+            dtype=float,
+        )
+
+    def _target_unit(self) -> _TargetUnitKwargs:
+        """ML-11: jednostka targetu w wywołaniu `train` — tylko przy σ (flaga off =
+        wywołanie jak przed ML-11)."""
+        return {"target_unit": TargetUnit.SIGMA} if self._sigma_target else {}
+
+    def _require_training_data(self) -> TrainingDataPort:
+        if self._training_data is None:
+            raise RuntimeError("Training from price snapshots needs a TrainingDataPort (DI)")
+        return self._training_data
 
 
     def _train_pooled_from_snapshots(self, symbols: Sequence[str]) -> TrainingReport:
         """ML-52 (4): model wspólny z cykli gated w `feature_snapshots` (wektor
         z servingu, etykieta z `price_snapshots`) zamiast z widoku SQL. Jedyny zapis
         wag, jak w ścieżce widoku; poniżej minimum — `SKIPPED` z liczbą próbek."""
-        _, labeled = self._labeled_snapshots(symbols)
-        rows = _llm_rows(labeled)
-        if len(rows) < MIN_SAMPLES_FOR_TRAINING:
+        _, labeled, series = self._labeled_snapshots(symbols)
+        training_set = self._in_target_units(_llm_rows(labeled), series)
+        if len(training_set) < MIN_SAMPLES_FOR_TRAINING:
             return _skipped(
-                "Not enough labeled gated feature snapshots for the pooled model",
-                len(rows),
+                self._snapshot_reason("the pooled model (gated cycles)"),
+                len(training_set),
                 feature_set_version=SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
             )
         return self._ml_port.train(
-            [dict(vector) for vector, _ in rows],
-            [item.target_return for _, item in rows],
-            timestamps=[item.snapshot.as_of for _, item in rows],
+            [dict(vector) for vector, _, _ in training_set],
+            [target for _, target, _ in training_set],
+            timestamps=[as_of for _, _, as_of in training_set],
+            **self._target_unit(),
         )
 
     def _feature_rows(self, symbol: str) -> list[dict[str, Any]]:

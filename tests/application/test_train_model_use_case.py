@@ -15,9 +15,11 @@ from src.application.use_cases.train_model import (
 from src.domain.model_scorecard import (
     FREE_SNAPSHOT_MODEL_SYMBOL,
     LLM_SNAPSHOT_MODEL_SYMBOL,
+    TargetUnit,
     TrainingOutcome,
     TrainingReport,
 )
+from src.domain.price_features import return_sigma
 from src.domain.training_labels import FeatureSnapshot
 
 EXPECTED_ML_FEATURES = [
@@ -712,3 +714,90 @@ def test_snapshot_source_with_too_few_gated_vectors_skips_the_shipped_model(
     assert result.n_samples == 10
     assert result["feature_set_version"] == MARKET_FEATURE_SET_VERSION
     repository_port.save_model_scorecard.assert_called_once_with(POOLED_MODEL_SYMBOL, result)
+
+
+# -- ML-11: target = zwrot / σ (σ z 20 poprzednich cykli, as-of) — flaga ---------
+
+
+def _zigzag_prices(start: datetime, n: int) -> list[tuple[datetime, float]]:
+    """Dzienne snapshoty ceny z niezerową zmiennością cykl do cyklu."""
+    return [
+        (start + timedelta(days=i), 100.0 * (1.0 + (0.012 if i % 2 else -0.009)) ** i)
+        for i in range(n)
+    ]
+
+
+def test_sigma_target_divides_the_pooled_target_by_the_as_of_sigma(
+    ml_port, repository_port, training_data
+):
+    rows = _stamped_rows("AAPL", MIN_SAMPLES_FOR_TRAINING + 10, start_hour=0, step_hours=24)
+    for i, row in enumerate(rows):
+        row["target_return"] = 0.001 * (i + 1)
+    repository_port.get_feature_store_data.return_value = rows
+    series = _zigzag_prices(datetime(2026, 7, 1, tzinfo=UTC), 150)
+    training_data.get_price_series.return_value = {"AAPL": series}
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=60)
+    use_case = TrainModelUseCase(
+        ml_port=ml_port, db_port=repository_port, training_data=training_data, sigma_target=True
+    )
+
+    use_case.run_pooled(["AAPL"])
+
+    _, target = ml_port.train.call_args.args
+    first_stamp = pd.Timestamp(rows[0]["timestamp"]).to_pydatetime()
+    sigma = return_sigma(series, first_stamp)
+    assert sigma is not None
+    assert list(target)[0] == pytest.approx(0.001 / sigma)
+    assert ml_port.train.call_args.kwargs["target_unit"] is TargetUnit.SIGMA
+
+
+def test_sigma_target_drops_rows_without_enough_history(
+    ml_port, repository_port, training_data
+):
+    # Krótka historia daje niestabilną σ — wiersz wypada, a model wspólny uczciwie
+    # mówi, ile próbek zostało.
+    repository_port.get_feature_store_data.return_value = _stamped_rows(
+        "AAPL", MIN_SAMPLES_FOR_TRAINING + 10, start_hour=0, step_hours=24
+    )
+    training_data.get_price_series.return_value = {}
+    use_case = TrainModelUseCase(
+        ml_port=ml_port, db_port=repository_port, training_data=training_data, sigma_target=True
+    )
+
+    result = use_case.run_pooled(["AAPL"])
+
+    ml_port.train.assert_not_called()
+    assert result.outcome is TrainingOutcome.SKIPPED
+    assert result.n_samples == 0
+    assert "sigma" in (result.reason or "")
+
+
+def test_sigma_target_puts_the_snapshot_cards_in_sigma_units(
+    ml_port, repository_port, training_data
+):
+    snapshots, _ = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
+    training_data.get_feature_snapshots.return_value = snapshots
+    training_data.get_price_series.return_value = {
+        "BTC": _zigzag_prices(T0 - timedelta(days=40), 120)
+    }
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.EVALUATION_PASSED, n_samples=51)
+    use_case = TrainModelUseCase(
+        ml_port=ml_port, db_port=repository_port, training_data=training_data, sigma_target=True
+    )
+
+    use_case.run_snapshot_models(["BTC"])
+
+    for call in ml_port.train.call_args_list:
+        assert call.kwargs["target_unit"] is TargetUnit.SIGMA
+
+
+def test_without_the_flag_training_passes_no_target_unit(
+    snapshot_use_case, ml_port, training_data
+):
+    snapshots, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
+    training_data.get_feature_snapshots.return_value = snapshots
+    training_data.get_price_series.return_value = {"BTC": prices}
+
+    snapshot_use_case.run_snapshot_models(["BTC"])
+
+    assert all("target_unit" not in c.kwargs for c in ml_port.train.call_args_list)

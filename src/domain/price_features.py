@@ -165,6 +165,9 @@ SIGMA_FLOOR = 0.0025
 # wektora, a w servingu (predict) jeszcze go nie ma. Cykle tego samego symbolu dzieli
 # co najmniej godzina (upsert per godzina), a jeden cykl trwa minuty.
 SAME_CYCLE_TOLERANCE = timedelta(minutes=30)
+# Okno historii snapshotów, z którego trening i serving liczą σ: 20 poprzednich cykli
+# plus zapas na weekendy, święta i dni bez cyklu (jak okno cech rynkowych ML-31).
+SIGMA_LOOKBACK = timedelta(days=45)
 
 
 def return_sigma(history: Iterable[tuple[datetime, float]], as_of: datetime) -> float | None:

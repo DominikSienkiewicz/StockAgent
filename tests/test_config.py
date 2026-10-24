@@ -572,6 +572,24 @@ class TestSnapshotTrainingFlag:
         assert "snapshot_training_enabled" in NON_RECIPE_SETTINGS_FIELDS
 
 
+class TestSigmaTargetFlag:
+    """ML-11: target modelu wspólnego w jednostkach σ, a serving mnoży prognozę
+    przez σ — zmiana tego, co Fast Loop serwuje, więc off i w przepisie."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).ml_sigma_target_enabled is False
+
+    def test_is_part_of_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert "ml_sigma_target_enabled" in RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, ml_sigma_target_enabled=True
+        ).config_hash()
+        assert flipped != baseline
+
+
 class TestIntervalCoverageFlag:
     """ML-34: zapis kolumn przedziału (migracja 032) i pokrycie w Track Record.
     Przedział to prezentacja niepewności, nie prognoza — flaga jest poza

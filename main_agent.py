@@ -1495,6 +1495,8 @@ def build_agent_graph_deps(
         feature_snapshots_enabled=settings.feature_snapshots_enabled,
         # ML-31: cechy rynkowe w wektorze i wersja zestawu cech 4 (bez migracji).
         market_features_enabled=settings.market_features_enabled,
+        # ML-11: σ symbolu do prognozy modelu w jednostkach σ (darmowy odczyt); off.
+        ml_sigma_target_enabled=settings.ml_sigma_target_enabled,
         # ML-34: przedział w mailu zawsze; kolumny `interval_*` (migracja 032) za flagą.
         move_calibration=build_move_calibration(settings, supabase_repo),
         interval_columns_enabled=settings.interval_coverage_enabled,

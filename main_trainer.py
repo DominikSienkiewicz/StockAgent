@@ -159,6 +159,8 @@ def build_use_case(settings: Settings, *, run_id: str | None = None) -> TrainMod
         training_data=_supabase_repository(settings),
         # ML-52 (4): model wspólny z wektorów zamiast z widoku (zmienia wagi; off).
         snapshot_source=settings.snapshot_training_enabled,
+        # ML-11: target = zwrot / σ, karty w jednostkach σ (zmienia wagi i serving; off).
+        sigma_target=settings.ml_sigma_target_enabled,
     )
 
 

@@ -37,6 +37,7 @@ from src.application.ports import (
     OptionsFlowPort,
     QuotePort,
     RepositoryPort,
+    ReturnScaleUnavailableError,
     SentimentPort,
     Tool,
     ToolUseLLMPort,
@@ -92,6 +93,7 @@ from src.domain.prediction import (
     normalize_trend,
     sideways_tolerance_for,
 )
+from src.domain.price_features import SIGMA_LOOKBACK, return_sigma
 from src.domain.recipe import PredictionRecipe
 from src.domain.regime_key import canonical_regime_key
 from src.domain.session_close import SessionClose, SessionCloseSettlement, session_close_of
@@ -460,6 +462,9 @@ _LLM_UNIT_FIELDS: tuple[tuple[str, str], ...] = (
 
 # NIEZ-44: flaga jakości predykcji od zapasowego dostawcy LLM (track record ją odsiewa).
 LLM_FAILOVER_FLAG = "llm_failover"
+# ML-11: model w jednostkach σ bez σ symbolu (za krótka historia snapshotów albo błąd
+# odczytu) — cykl idzie na baseline'ie „cena bez zmian”, jak przy cold-starcie.
+ML_SIGMA_UNAVAILABLE_FLAG = "ml_sigma_unavailable"
 # MAIL-12: rada miała zagłosować, ale nie dała werdyktu (żadna persona nie
 # odpowiedziała albo adapter rzucił). Predykcja zostaje w track recordzie.
 COUNCIL_UNAVAILABLE_FLAG = "council_unavailable"
@@ -696,6 +701,10 @@ class AgentGraphDeps:
     # i wersja zestawu cech 4 w obu stemplach. Use case owija wtedy port rynku
     # w `CycleQuoteCache`. Off = zestaw i wersja 3 bez zmian.
     market_features_enabled: bool = False
+    # ML-11: predict liczy σ symbolu (`return_sigma`, historia snapshotów ceny) i podaje
+    # ją modelowi; model w jednostkach σ mnoży przez nią prognozę. Off = bez odczytu
+    # historii i bez σ w wywołaniu predict, jak przed ML-11.
+    ml_sigma_target_enabled: bool = False
     # ML-34: okna kalibracyjne przedziału ruchu per klasa aktywa (rozliczone
     # predykcje, rosnąco po czasie), czytane RAZ na cykl w DI. None = bez przedziału.
     move_calibration: Mapping[AssetType, Sequence[CalibrationPoint]] | None = None
@@ -1423,25 +1432,48 @@ def _run_ml_prediction(
     features: dict[str, float],
     symbol: str,
     current_price: Decimal,
-) -> tuple[Decimal, tuple[FeatureContribution, ...]]:
+    *,
+    return_scale: float | None = None,
+) -> tuple[Decimal, tuple[FeatureContribution, ...]] | None:
     """Twarda predykcja liczbowa ML + atrybucja cech (SHAP-lite, lokalny CPU).
     Cold-start (model nietrenowany) → baseline 'cena bez zmian', brak atrybucji.
     Atrybucja jest graceful (błąd explain → sama predykcja). Zwraca
-    ``(ml_target, feature_attribution)``."""
+    ``(ml_target, feature_attribution)``.
+
+    ML-11: `return_scale` (σ symbolu) idzie do modelu tylko, gdy jest; model
+    w jednostkach σ bez niej → None (wołający idzie na baseline z flagą)."""
     if not ml_port.is_trained:
         return current_price, ()
+    scale: dict[str, float] = {} if return_scale is None else {"return_scale": return_scale}
     # Model przewiduje zwrot do następnego cyklu; predict() rekonstruuje cenę bezwzględną
     # z bieżącej ceny (cena*(1+zwrot)).
-    ml_target = ml_port.predict(features, current_price=current_price).amount
+    try:
+        ml_target = ml_port.predict(features, current_price=current_price, **scale).amount
+    except ReturnScaleUnavailableError:
+        logger.warning("ML-11: brak σ dla %s — model w jednostkach σ pominięty", symbol)
+        return None
     feature_attribution: tuple[FeatureContribution, ...] = ()
     try:
         contribs = {
-            k: v for k, v in ml_port.explain(features).items() if k != "_bias"
+            k: v for k, v in ml_port.explain(features, **scale).items() if k != "_bias"
         }
         feature_attribution = top_contributions(contribs)
     except Exception:
         logger.exception("explain() failed for %s — bez atrybucji", symbol)
     return ml_target, feature_attribution
+
+
+def _ml_return_scale(deps: AgentGraphDeps, symbol: str) -> float | None:
+    """ML-11: σ zwrotów symbolu z poprzednich cykli w chwili cyklu — ta sama funkcja
+    domenowa co w treningu (`return_sigma`). Darmowy odczyt `price_snapshots`; błąd
+    odczytu albo za krótka historia → None."""
+    try:
+        history = deps.repository_port.get_price_history(symbol, SIGMA_LOOKBACK.days)
+    except Exception:
+        logger.warning("ML-11: brak historii snapshotów %s — bez σ", symbol, exc_info=True)
+        return None
+    points = [(moment, float(price.amount)) for moment, price in history]
+    return return_sigma(points, deps.clock())
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1796,9 +1828,20 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     # Cold-start guard: dopóki XGBoost nie ma wytrenowanych wag, baseline
     # "cena bez zmian" (helper); gdy model się wytrenuje, przejmuje predykcję.
     ml_cold_start = not ml_port.is_trained
-    ml_target, feature_attribution = _run_ml_prediction(
-        ml_port, features, symbol, current_price
+    return_scale = (
+        _ml_return_scale(deps, symbol)
+        if deps.ml_sigma_target_enabled and ml_port.is_trained
+        else None
     )
+    prediction = _run_ml_prediction(
+        ml_port, features, symbol, current_price, return_scale=return_scale
+    )
+    if prediction is None:
+        # ML-11: model w jednostkach σ bez σ — baseline, nie liczba w złych jednostkach.
+        flags.append(ML_SIGMA_UNAVAILABLE_FLAG)
+        ml_cold_start = True
+        prediction = (current_price, ())
+    ml_target, feature_attribution = prediction
 
     # #14: pojedyncze wyjście węzła — logujemy całkowity czas predict.
     elapsed_ms = (time.perf_counter() - predict_start) * 1000.0

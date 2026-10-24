@@ -5926,3 +5926,96 @@ class TestSessionCloseSettlement:
 
         assert not columns & required_prediction_columns(off)
         assert columns <= required_prediction_columns(on)
+
+
+# ---------------------------------------------------------------------------
+# ML-11: model wspólny w jednostkach σ — serving mnoży prognozę przez σ symbolu
+# ---------------------------------------------------------------------------
+
+
+class TestSigmaServing:
+    """Za flagą `ml_sigma_target_enabled` predict liczy σ symbolu tą samą funkcją
+    domenową co trening (`return_sigma`) z historii snapshotów ceny i podaje ją
+    modelowi. Bez flagi węzeł nie czyta historii i woła predict jak dotąd."""
+
+    CLOCK = datetime(2026, 10, 24, 7, 30, tzinfo=UTC)
+
+    @classmethod
+    def _history(cls) -> list[tuple[datetime, Money]]:
+        from datetime import timedelta
+
+        prices = [100.0 * (1.0 + (0.01 if i % 2 else -0.008)) ** i for i in range(25)]
+        return [
+            (cls.CLOCK - timedelta(days=25 - i), Money(Decimal(str(round(p, 4)))))
+            for i, p in enumerate(prices)
+        ]
+
+    def _workflow(self, ports: dict[str, Mock], *, enabled: bool):
+        return create_agent_graph(AgentGraphDeps(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            clock=lambda: self.CLOCK,
+            ml_sigma_target_enabled=enabled,
+        ))
+
+    @staticmethod
+    def _ports(market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(sentiment_port, news_port, repository_port, ml_port, llm_port)
+        return {
+            "market_port": market_port,
+            "sentiment_port": sentiment_port,
+            "news_port": news_port,
+            "repository_port": repository_port,
+            "ml_port": ml_port,
+            "llm_port": llm_port,
+        }
+
+    def test_predict_gets_the_symbol_sigma_from_the_domain_function(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        from src.domain.price_features import return_sigma
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        repository_port.get_price_history.return_value = self._history()
+
+        self._workflow(ports, enabled=True).compile().invoke(_initial_state("100.0"))
+
+        expected = return_sigma(
+            [(moment, float(price.amount)) for moment, price in self._history()], self.CLOCK
+        )
+        assert expected is not None
+        assert ml_port.predict.call_args.kwargs["return_scale"] == pytest.approx(expected)
+        assert ml_port.explain.call_args.kwargs["return_scale"] == pytest.approx(expected)
+
+    def test_flag_off_reads_no_history_and_passes_no_sigma(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        self._workflow(ports, enabled=False).compile().invoke(_initial_state("100.0"))
+
+        repository_port.get_price_history.assert_not_called()
+        assert "return_scale" not in ml_port.predict.call_args.kwargs
+
+    def test_sigma_model_without_sigma_falls_back_to_the_cold_start_baseline(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        from src.application.ports import ReturnScaleUnavailableError
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        repository_port.get_price_history.return_value = []
+        ml_port.predict.side_effect = ReturnScaleUnavailableError("no sigma")
+
+        final = self._workflow(ports, enabled=True).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        assert final["ml_target_price"] == Decimal("90.0")
+        assert final["ml_cold_start"] is True
+        assert "ml_sigma_unavailable" in final["data_quality_flags"]

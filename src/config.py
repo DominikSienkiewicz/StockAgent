@@ -291,6 +291,9 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # ML-29: prompt prosi o rozkład trzech klas, a trend i pewność idą z argmaxu —
     # inny format odpowiedzi to inny rozkład pewności, więc nowy przepis.
     "trend_probabilities_enabled",
+    # ML-11: prognoza ML = wyjście modelu × σ symbolu (model w jednostkach σ) — inny
+    # przepis serwowania liczby, nawet przy tych samych wagach.
+    "ml_sigma_target_enabled",
 })
 
 
@@ -591,6 +594,11 @@ class Settings(BaseSettings):
     # `ml_feature_store`. Zmienia serwowane wagi, więc off; potrzebuje wektorów
     # wersji 4 (`market_features_enabled`) — bez nich model wspólny jest pomijany.
     snapshot_training_enabled: bool = False
+    # ML-11: target modelu wspólnego = zwrot / σ (σ zwrotów symbolu z 20 poprzednich
+    # cykli, `return_sigma`, z podłogą); karty i baseline'y w jednostkach σ, a Fast
+    # Loop mnoży prognozę modelu w jednostkach σ przez σ z tej samej funkcji. Model
+    # niesie jednostkę w pliku wag. Zmienia serwowaną prognozę, więc off.
+    ml_sigma_target_enabled: bool = False
     # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze, liczony
     # w cyklu bez migracji. Ta flaga dokłada zapis `interval_low/high` (migracja
     # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz

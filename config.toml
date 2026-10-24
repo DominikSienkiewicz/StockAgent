@@ -135,6 +135,11 @@ market_features_enabled = false
 # wektorów wersji 4: włącz DOPIERO po market_features_enabled i zebraniu >= 75
 # oznaczonych cykli gated (karta ALL_LLM w summary Slow Loopa pokazuje ich liczbę).
 snapshot_training_enabled = false
+# ML-11: target modelu wspólnego = zwrot / σ (σ zwrotów symbolu z 20 poprzednich
+# cykli, z podłogą 0,25%), karty i baseline'y w jednostkach σ; Fast Loop mnoży
+# prognozę takiego modelu przez σ (jedna funkcja domenowa w obu pętlach). Bez
+# migracji. Zmienia przepis serwowania prognozy — włącz świadomie (po EXP-02/03).
+ml_sigma_target_enabled = false
 # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze — liczony w cyklu
 # z rozliczonych predykcji, bez migracji. Flaga dokłada zapis `interval_low/high`
 # i pokrycie zrealizowane vs nominalne w Track Record. UWAGA: włącz DOPIERO po

@@ -362,6 +362,17 @@ class TestBuildAgentGraphDeps:
     `test_build_use_case_builds_without_error` dowodzi tylko, że DI nie rzuca —
     port podpięty pod złe pole albo atrapa w płatnym przebiegu przeszłyby."""
 
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_sigma_target_flag_reaches_the_predict_node(
+        self, settings, mock_external_clients, enabled
+    ):
+        # ML-11: serving mnoży prognozę modelu w jednostkach σ przez σ symbolu.
+        settings.ml_sigma_target_enabled = enabled
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert deps.ml_sigma_target_enabled is enabled
+
     def test_tool_use_disabled_wires_no_tool_use_port(self, settings, mock_external_clients):
         settings.tool_use_enabled = False
 
@@ -2626,6 +2637,16 @@ class TestSnapshotModelsLoop:
         use_case = main_trainer.build_use_case(settings)
 
         assert use_case._snapshot_source is enabled
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_sigma_target_flag_reaches_the_trainer(
+        self, settings, mock_external_clients, enabled
+    ) -> None:
+        settings.ml_sigma_target_enabled = enabled
+
+        use_case = main_trainer.build_use_case(settings)
+
+        assert use_case._sigma_target is enabled
 
     def test_use_case_reads_training_data_from_supabase(
         self, settings, mock_external_clients
