@@ -2562,6 +2562,38 @@ def _report_delivery(
     return delivered
 
 
+# NIEZ-12: adnotacja GitHub Actions widoczna w UI przebiegu (exit code zostaje 0).
+UNDELIVERED_REPORT_ANNOTATION = "::error title=StockAgent::Raport nie został dostarczony"
+
+
+def flag_undelivered_report(
+    quota_monitor: QuotaMonitor,
+    *,
+    now: datetime,
+    repository: RepositoryPort | None = None,
+) -> None:
+    """NIEZ-12: raport z tego przebiegu nie dotarł — adnotacja `::error` na stdout
+    i alert CRITICAL (banner następnego maila, push real-time, gdy włączony).
+
+    Exit code zostaje 0 (CLAUDE.md, Resilience): niedostarczenie nie jest awarią
+    cyklu, tylko wymaga uwagi właściciela. Z `repository` alert jest zapisany od
+    razu (po fazie wysyłki nikt go już nie zapisze); Slow Loop zapisuje alerty sam."""
+    print(UNDELIVERED_REPORT_ANNOTATION, flush=True)
+    alert = QuotaAlert(
+        source="Raport",
+        severity=QuotaSeverity.CRITICAL,
+        message="Raport z tego przebiegu nie dotarł do właściciela.",
+        action=(
+            "Sprawdź log przebiegu w GitHub Actions: klucz Resend, domenę nadawcy "
+            "i kanały push."
+        ),
+        occurred_at=now,
+    )
+    quota_monitor.record(alert)
+    if repository is not None:
+        _persist_quota_alerts(repository, [alert])
+
+
 def _write_cycle_summary(
     *,
     results: Sequence[SymbolResult],
@@ -2885,6 +2917,8 @@ def _run_fast_loop(
     report_delivery = _report_delivery(
         delivered, notifier=notifier, subscribers=subscribers, settings=settings
     )
+    if report_delivery is False:
+        flag_undelivered_report(quota_monitor, now=clock(), repository=repository)
     run_duration = time.perf_counter() - started_perf
     logger.info("HTTP requests per host: %s", dict(use_case.telemetry.snapshot().http_calls))
     _write_cycle_summary(

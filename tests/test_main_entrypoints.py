@@ -2104,6 +2104,48 @@ class TestWeeklyRecapWiring:
 
         assert main_trainer.main(settings) == 0
 
+    def test_recap_that_could_not_be_sent_is_annotated_and_persisted(
+        self, settings, mock_external_clients, mocker, capsys
+    ) -> None:
+        # NIEZ-12: niedostarczony raport widać w UI Actions, a exit code zostaje 0.
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        _, notifier = self._trainer(settings, mocker, "recap_ready")
+        notifier.send_report.side_effect = RuntimeError("Resend 403")
+        repository = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repository)
+
+        exit_code = main_trainer.main(settings)
+
+        assert exit_code == 0
+        assert UNDELIVERED_ANNOTATION in capsys.readouterr().out.splitlines()
+        alerts = [c.args[0] for c in repository.save_quota_alert.call_args_list]
+        assert [a.severity for a in alerts if "nie dotarł" in a.message] == [
+            QuotaSeverity.CRITICAL
+        ]
+
+    def test_recap_without_a_failure_leaves_no_annotation(
+        self, settings, mock_external_clients, mocker, capsys
+    ) -> None:
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        self._trainer(settings, mocker, "recap_ready")
+
+        main_trainer.main(settings)
+
+        assert "::error" not in capsys.readouterr().out
+
+    def test_a_skipped_recap_is_not_an_undelivered_report(
+        self, settings, mock_external_clients, mocker, capsys
+    ) -> None:
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        self._trainer(settings, mocker, "skipped_below_threshold")
+
+        main_trainer.main(settings)
+
+        assert "::error" not in capsys.readouterr().out
+
     def test_deterministic_recap_sent_when_llm_adapter_cannot_be_built(
         self, settings, mock_external_clients, mocker
     ) -> None:
@@ -6484,6 +6526,85 @@ class TestTwoPhaseCycle:
         flag_off, flag_on = analyze.call_args_list
         assert flag_off.kwargs.get("phase_two_feeds") is None
         assert callable(flag_on.kwargs["phase_two_feeds"])
+
+
+UNDELIVERED_ANNOTATION = "::error title=StockAgent::Raport nie został dostarczony"
+
+
+class TestUndeliveredReportSignal:
+    """NIEZ-12 (decyzja 2026-10-23, opcja a): exit 0 zgodnie z CLAUDE.md, ale
+    niedostarczony raport jest widoczny w UI Actions (adnotacja `::error`) i utrwalony
+    jako alert CRITICAL w `quota_alerts`."""
+
+    def _run_main(
+        self, settings, mocker, *, delivered: bool, notifier: object | None = None
+    ) -> tuple[int, MagicMock]:
+        repository = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_agent.build_repository", return_value=repository)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "saved", "delta": Decimal("0.05")}
+        fake_uc.telemetry.snapshot.return_value.paid_calls = {}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch(
+            "main_agent.build_notifier",
+            return_value=MagicMock() if notifier is None else notifier,
+        )
+        mocker.patch("main_agent._dispatch_reports", return_value=delivered)
+        return main_agent.main(settings), repository
+
+    def test_undelivered_report_is_annotated_but_keeps_exit_zero(
+        self, settings, mock_external_clients, mocker, capsys
+    ) -> None:
+        exit_code, _ = self._run_main(settings, mocker, delivered=False)
+
+        assert exit_code == 0
+        assert UNDELIVERED_ANNOTATION in capsys.readouterr().out.splitlines()
+
+    def test_undelivered_report_is_persisted_as_a_critical_alert(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        _, repository = self._run_main(settings, mocker, delivered=False)
+
+        (alert,) = [c.args[0] for c in repository.save_quota_alert.call_args_list]
+        assert alert.severity is QuotaSeverity.CRITICAL
+        assert "nie dotarł" in alert.message
+        assert alert.action
+
+    def test_delivered_report_leaves_no_annotation_and_no_alert(
+        self, settings, mock_external_clients, mocker, capsys
+    ) -> None:
+        _, repository = self._run_main(settings, mocker, delivered=True)
+
+        assert "::error" not in capsys.readouterr().out
+        repository.save_quota_alert.assert_not_called()
+
+    def test_a_run_without_an_email_channel_has_nothing_to_deliver(
+        self, settings, mock_external_clients, mocker, capsys
+    ) -> None:
+        from src.infrastructure.adapters.resend_notifier import NullNotifier
+
+        _, repository = self._run_main(
+            settings, mocker, delivered=False, notifier=NullNotifier()
+        )
+
+        assert "::error" not in capsys.readouterr().out
+        repository.save_quota_alert.assert_not_called()
+
+    def test_alert_persistence_failure_never_changes_the_exit_code(
+        self, settings, mock_external_clients, mocker, capsys
+    ) -> None:
+        repository = MagicMock(spec=RepositoryPort)
+        repository.save_quota_alert.side_effect = RuntimeError("db down")
+        mocker.patch("main_agent.build_repository", return_value=repository)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "saved", "delta": Decimal("0.05")}
+        fake_uc.telemetry.snapshot.return_value.paid_calls = {}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch("main_agent.build_notifier", return_value=MagicMock())
+        mocker.patch("main_agent._dispatch_reports", return_value=False)
+
+        assert main_agent.main(settings) == 0
+        assert UNDELIVERED_ANNOTATION in capsys.readouterr().out.splitlines()
 
 
 class TestCycleRunRecord:

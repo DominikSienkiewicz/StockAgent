@@ -26,6 +26,7 @@ from main_agent import (
     STUB_WRITES_REFUSED_EXIT_CODE,
     build_notifier,
     build_push_channels,
+    flag_undelivered_report,
     llm_fallback_available,
     persist_llm_calls,
     refuses_stub_writes,
@@ -717,6 +718,8 @@ def _send_weekly_recap(
         logger.info("Weekly recap — %s", recap_result.get("status"))
     except Exception:
         logger.exception("Weekly recap failed — pomijam")
+        # NIEZ-12: recap miał wyjść, a nie dotarł — widać to w UI Actions (exit 0 zostaje).
+        flag_undelivered_report(quota_monitor, now=datetime.now(UTC))
 
 
 def main(settings: Settings | None = None) -> int:
