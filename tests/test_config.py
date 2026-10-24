@@ -1603,3 +1603,22 @@ class TestPriceAlerts:
         assert settings.price_level_alerts_enabled is False
         assert settings.price_level_seeds() == ()
         assert {"price_level_alerts_enabled", "price_alerts"} <= NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestInsiderLeadMaxAgeDays:
+    """DAT-21: zakup insidera prowadzi maila tylko przez N dni od filingu —
+    prezentacja maila, poza przepisem predykcji."""
+
+    def test_defaults_to_three_days(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.insider_lead_max_age_days == 3
+
+    def test_negative_age_is_rejected(self, env):
+        with pytest.raises(ValueError):
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS, insider_lead_max_age_days=-1)
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "insider_lead_max_age_days" in NON_RECIPE_SETTINGS_FIELDS

@@ -139,6 +139,7 @@ from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
 from src.domain.finops import CycleCost, estimate_cycle_cost, rank_by_magnitude
 from src.domain.hedge import equity_hedge_symbols
+from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.macro_series import MacroSeriesSnapshot, macro_features, macro_series_votes
@@ -3685,6 +3686,11 @@ def _run_fast_loop(
             run_context=run_context,
             expired_unverified=expired_unverified,
             regime=regime_banners[-1] if regime_banners else None,
+            # DAT-21: daty filingów EDGAR są w kalendarzu NYSE, więc dzień cyklu też.
+            insider_lead_window=InsiderLeadWindow(
+                as_of=to_nyse_time(started_at).date(),
+                max_age_days=settings.insider_lead_max_age_days,
+            ),
         ),
     )
     report_delivery = _report_delivery(

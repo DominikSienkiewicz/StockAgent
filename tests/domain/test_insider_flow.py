@@ -7,9 +7,11 @@ transakcji (zero buy_count + sell_count → NEUTRAL niezależnie od net_shares).
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
-from src.domain.insider_flow import InsiderFlowSnapshot, InsiderSignal
+from src.domain.insider_flow import InsiderBuy, InsiderFlowSnapshot, InsiderSignal
 
 
 def _snap(
@@ -176,3 +178,43 @@ class TestSignificantBuyThreshold:
 
         assert snapshot.significant_buy(significant_buy_threshold(100e9)) is not None
         assert snapshot.significant_buy(significant_buy_threshold(4e12)) is None
+
+
+class TestInsiderLeadWindow:
+    """DAT-21 (decyzja właściciela): zakup insidera prowadzi maila tylko przez
+    N dni od daty filingu — inaczej jeden Form 4 wracałby do leadu w każdym cyklu,
+    dopóki jest w 90-dniowym oknie insider flow."""
+
+    @staticmethod
+    def _buy(filed_on: date | None) -> InsiderBuy:
+        return InsiderBuy(role="CEO", value_usd=1_200_000.0, filed_on=filed_on)
+
+    def test_buy_leads_up_to_n_days_after_the_filing(self) -> None:
+        from src.domain.insider_flow import InsiderLeadWindow
+
+        window = InsiderLeadWindow(as_of=date(2026, 10, 26), max_age_days=3)
+
+        # Piątkowy filing widzi dopiero poniedziałkowy cykl (3 dni) — wchodzi.
+        assert window.admits(self._buy(date(2026, 10, 23)))
+        assert window.admits(self._buy(date(2026, 10, 26)))
+
+    def test_older_filing_does_not_lead(self) -> None:
+        from src.domain.insider_flow import InsiderLeadWindow
+
+        window = InsiderLeadWindow(as_of=date(2026, 10, 26), max_age_days=3)
+
+        assert not window.admits(self._buy(date(2026, 10, 22)))
+
+    def test_buy_without_a_filing_date_keeps_leading(self) -> None:
+        # Adapter bez dat (np. starszy) — bez dowodu wieku zachowanie sprzed okna.
+        from src.domain.insider_flow import InsiderLeadWindow
+
+        window = InsiderLeadWindow(as_of=date(2026, 10, 26), max_age_days=3)
+
+        assert window.admits(self._buy(None))
+
+    def test_default_window_is_three_days(self) -> None:
+        from src.domain.insider_flow import INSIDER_LEAD_MAX_AGE_DAYS, InsiderLeadWindow
+
+        assert INSIDER_LEAD_MAX_AGE_DAYS == 3
+        assert InsiderLeadWindow(as_of=date(2026, 10, 26)).max_age_days == 3

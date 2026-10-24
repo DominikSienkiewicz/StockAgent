@@ -39,6 +39,7 @@ from src.domain.finops import (
     capped_cycle_call_upper_bound,
     weekly_cost_budget,
 )
+from src.domain.insider_flow import INSIDER_LEAD_MAX_AGE_DAYS
 from src.domain.macro_risk import MacroRiskInstrumentType
 from src.domain.price_levels import LevelDirection, PriceLevel
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
@@ -164,6 +165,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "stale_quote_enabled",
     # DAT-21: sam zapis kapitalizacji w cache fundamentów (próg zakupu insidera w mailu).
     "fundamentals_market_cap_enabled",
+    # DAT-21: okno, w którym zakup insidera może otwierać maila — sam lead maila.
+    "insider_lead_max_age_days",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -765,6 +768,10 @@ class Settings(BaseSettings):
     # kapitalizację z OVERVIEW. Off w kodzie i w config.toml, dopóki produkcja nie ma
     # migracji; odczyt (`select("*")`) działa i bez niej.
     fundamentals_market_cap_enabled: bool = False
+    # DAT-21: znaczący zakup insidera prowadzi maila (lead i temat) tylko przez tyle
+    # dni od daty filingu; sekcja alfy pokazuje go dalej. 3 dni obejmują piątkowy
+    # filing, który pierwszy raz widzi poniedziałkowy cykl.
+    insider_lead_max_age_days: int = Field(default=INSIDER_LEAD_MAX_AGE_DAYS, ge=0)
     # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
     # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
     # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.

@@ -7162,3 +7162,27 @@ class TestRegimeChangeWiring:
         )
 
         assert banner.change is None
+
+
+class TestInsiderLeadWindowWiring:
+    """DAT-21: okno leadu zakupu insidera liczy się od daty cyklu (kalendarz NYSE,
+    jak daty filingów EDGAR) z `insider_lead_max_age_days`."""
+
+    def test_report_context_carries_the_lead_window(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        from src.domain.insider_flow import InsiderLeadWindow
+        from src.domain.market_calendar import to_nyse_time
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+        settings = settings.model_copy(update={"insider_lead_max_age_days": 5})
+
+        main_agent.main(settings)
+
+        kwargs = dispatch.call_args.kwargs
+        assert kwargs["context"].insider_lead_window == InsiderLeadWindow(
+            as_of=to_nyse_time(kwargs["started_at"]).date(), max_age_days=5
+        )

@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import tomllib
 import xml.etree.ElementTree as ET
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -745,6 +745,20 @@ class TestDollarValueAndRole:
         assert snap.net_value_usd == pytest.approx(0.0)
         assert snap.largest_buy is None
         assert snap.buy_count == 1
+
+    def test_largest_buy_carries_its_filing_date(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        # DAT-21: lead zakupu insidera ma okno N dni od filingu — data z submissions.
+        buy = _form4_owner_xml(
+            transactions=[("P", 10_000.0, 120.0)], officer_title="CEO", is_officer=True
+        )
+        self._patch(mocker, buy, _form4_owner_xml(transactions=[]))
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        assert snap is not None and snap.largest_buy is not None
+        assert snap.largest_buy.filed_on == date.fromisoformat(_recent_date(5))
 
     def test_latest_filing_url_points_to_the_newest_form4(
         self, adapter: EdgarInsiderAdapter, mocker

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 
 # DAT-21: próg znaczącego zakupu — kod P od officera za co najmniej tyle USD.
@@ -33,12 +34,39 @@ class InsiderBuy:
 
     `role` — `officerTitle` z Form 4 (np. „CEO”; pusty, gdy brak tytułu albo
     kupuje członek rady); `is_officer` odróżnia zarząd od rady; `filing_url` —
-    Form 4 tej transakcji. `value_usd` to suma zakupów P z jednego Form 4."""
+    Form 4 tej transakcji. `value_usd` to suma zakupów P z jednego Form 4.
+    `filed_on` — data filingu z EDGAR (okno leadu, `InsiderLeadWindow`); None =
+    adapter jej nie zna."""
 
     role: str
     value_usd: float
     is_officer: bool = True
     filing_url: str | None = None
+    filed_on: date | None = None
+
+
+# DAT-21: tyle dni od daty filingu zakup insidera może otwierać maila (lead).
+# 3 dni obejmują piątkowy filing, który pierwszy raz widzi poniedziałkowy cykl.
+INSIDER_LEAD_MAX_AGE_DAYS = 3
+
+
+@dataclass(frozen=True)
+class InsiderLeadWindow:
+    """DAT-21 (decyzja właściciela): zakup insidera prowadzi maila tylko przez
+    `max_age_days` dni od filingu. Bez okna jeden Form 4 wracałby do leadu w każdym
+    cyklu, dopóki jest w oknie insider flow (90 dni). `as_of` — dzień cyklu
+    w kalendarzu NYSE, jak daty filingów EDGAR. Sekcji alfy okno nie dotyczy."""
+
+    as_of: date
+    max_age_days: int = INSIDER_LEAD_MAX_AGE_DAYS
+
+    def admits(self, buy: InsiderBuy) -> bool:
+        """Czy zakup może prowadzić maila w dniu `as_of` — filing najwyżej
+        `max_age_days` dni wcześniej. Bez daty filingu brak dowodu wieku, więc
+        zakup prowadzi jak przed oknem."""
+        if buy.filed_on is None:
+            return True
+        return (self.as_of - buy.filed_on).days <= self.max_age_days
 
 
 class InsiderSignal(Enum):

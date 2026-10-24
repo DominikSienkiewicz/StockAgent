@@ -32,7 +32,8 @@ fundusz, nie insider) i znacznik planu 10b5-1 (`aff10b5One`, Form 4 od 2023 —
 pole dotyczy całego filingu). Transakcje planowe nie zasilają `net_value_usd`
 ani `largest_buy`; brak znacznika (starsze Form 4) to transakcja uznaniowa.
 `net_shares` i liczniki liczą się jak dotąd. Kody inne niż P/S (przydziały A,
-opcje M, podatek F) są pomijane.
+opcje M, podatek F) są pomijane. Zakup niesie datę filingu z submissions
+(`filingDate`) — od niej liczy się okno, w którym może prowadzić maila.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 
 import requests
@@ -89,6 +90,15 @@ def _findall_local(element: ET.Element, name: str) -> list[ET.Element]:
 
 
 @dataclass(frozen=True)
+class _Form4Filing:
+    """Form 4 z okna: accession, `primaryDocument` i data filingu (DAT-21)."""
+
+    accession: str
+    primary_doc: str
+    filed_on: date
+
+
+@dataclass(frozen=True)
 class _Form4Summary:
     """Wynik jednego Form 4: przepływ akcji (jak przed DAT-21) i wartości."""
 
@@ -106,6 +116,11 @@ def _stronger_buy(current: InsiderBuy | None, candidate: InsiderBuy | None) -> I
     if current is None:
         return candidate
     return max(current, candidate, key=lambda buy: (buy.is_officer, buy.value_usd))
+
+
+def _filed_on(buy: InsiderBuy | None, filed_on: date) -> InsiderBuy | None:
+    """DAT-21: zakup z datą filingu z submissions — okno leadu liczy się od niej."""
+    return replace(buy, filed_on=filed_on) if buy is not None else None
 
 
 def _is_flag_set(element: ET.Element | None) -> bool:
@@ -210,7 +225,7 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             cik = self._resolve_cik(symbol)
             if cik is None:
                 return None
-            filings = self._recent_form4_filings(cik)
+            filings = self._recent_form4(cik)
             if filings is None:
                 return None
 
@@ -220,8 +235,8 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             filings_parsed = 0
             net_value_usd = 0.0
             largest_buy: InsiderBuy | None = None
-            for accession, primary_doc in filings:
-                parsed = self._parse_form4(cik, accession, primary_doc)
+            for filing in filings:
+                parsed = self._parse_form4(cik, filing.accession, filing.primary_doc)
                 if parsed is None:
                     # Pojedynczy zepsuty filing nie wywala agregacji.
                     continue
@@ -229,7 +244,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
                 buy_count += parsed.buy_count
                 sell_count += parsed.sell_count
                 net_value_usd += parsed.net_value_usd
-                largest_buy = _stronger_buy(largest_buy, parsed.largest_buy)
+                largest_buy = _stronger_buy(
+                    largest_buy, _filed_on(parsed.largest_buy, filing.filed_on)
+                )
                 filings_parsed += 1
 
             return InsiderFlowSnapshot(
@@ -243,7 +260,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
                 net_value_usd=net_value_usd,
                 largest_buy=largest_buy,
                 latest_filing_url=(
-                    _filing_url(cik, *filings[0]) if filings else None
+                    _filing_url(cik, filings[0].accession, filings[0].primary_doc)
+                    if filings
+                    else None
                 ),
             )
         except Exception:
@@ -291,7 +310,15 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         return cik_by_ticker
 
     def _recent_form4_filings(self, cik: str) -> list[tuple[str, str]] | None:
-        """Zwraca [(accessionNumber, primaryDocument)] dla Form 4 w oknie.
+        """Zwraca [(accessionNumber, primaryDocument)] dla Form 4 w oknie — kształt
+        sprzed DAT-21, który czyta test integracyjny z prawdziwym EDGAR."""
+        filings = self._recent_form4(cik)
+        if filings is None:
+            return None
+        return [(filing.accession, filing.primary_doc) for filing in filings]
+
+    def _recent_form4(self, cik: str) -> list[_Form4Filing] | None:
+        """Form 4 w oknie z datą filingu, od najnowszego (kolejność submissions).
 
         None gdy submissions niedostępne; pusta lista gdy brak Form 4."""
         url = SUBMISSIONS_URL.format(cik=cik)
@@ -321,7 +348,7 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             return None
 
         cutoff = datetime.now(UTC).date() - timedelta(days=self._window_days)
-        result: list[tuple[str, str]] = []
+        result: list[_Form4Filing] = []
         for form, date_str, accession, doc in zip(
             forms, dates, accessions, primary_docs, strict=False
         ):
@@ -330,7 +357,7 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             filing_date = self._parse_date(date_str)
             if filing_date is None or filing_date < cutoff:
                 continue
-            result.append((str(accession), str(doc)))
+            result.append(_Form4Filing(str(accession), str(doc), filing_date))
             if len(result) >= self._max_form4:
                 break
         return result

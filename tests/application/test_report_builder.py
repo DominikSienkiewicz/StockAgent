@@ -1,5 +1,5 @@
 import dataclasses
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -3861,6 +3861,44 @@ class TestInsiderBuyLead:
         results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
 
         items = build_cycle_lead(results, ReportContext(alpha_signals=self._alpha()))
+
+        assert items[0].headline == "NVDA +1,2%: CEO kupił akcje za 1,2 mln USD"
+
+    @staticmethod
+    def _filed_alpha(filed_on: date) -> dict:
+        from src.application.alpha_signals import AlphaSignals
+        from src.domain.insider_flow import InsiderBuy, InsiderFlowSnapshot
+
+        buy = InsiderBuy(role="CEO", value_usd=1_200_000.0, filed_on=filed_on)
+        insider = InsiderFlowSnapshot("NVDA", 10_000.0, 1, 0, 90, largest_buy=buy)
+        return {"NVDA": AlphaSignals(symbol="NVDA", insider=insider)}
+
+    def test_buy_filed_before_the_lead_window_is_no_lead(self):
+        # DAT-21: lead tylko przez N dni od filingu; sekcja alfy pokazuje go dalej.
+        from src.application.report_builder import build_cycle_lead
+        from src.domain.insider_flow import InsiderLeadWindow
+
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+        window = InsiderLeadWindow(as_of=date(2026, 10, 26), max_age_days=3)
+        context = ReportContext(
+            alpha_signals=self._filed_alpha(date(2026, 10, 22)), insider_lead_window=window
+        )
+
+        items = build_cycle_lead(results, context)
+
+        assert all("kupił akcje" not in item.headline for item in items)
+
+    def test_buy_filed_inside_the_lead_window_still_leads(self):
+        from src.application.report_builder import build_cycle_lead
+        from src.domain.insider_flow import InsiderLeadWindow
+
+        results = [SymbolResult(symbol="NVDA", status="ignored", delta=Decimal("0.012"))]
+        window = InsiderLeadWindow(as_of=date(2026, 10, 26), max_age_days=3)
+        context = ReportContext(
+            alpha_signals=self._filed_alpha(date(2026, 10, 23)), insider_lead_window=window
+        )
+
+        items = build_cycle_lead(results, context)
 
         assert items[0].headline == "NVDA +1,2%: CEO kupił akcje za 1,2 mln USD"
 

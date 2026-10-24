@@ -166,6 +166,7 @@ from src.domain.digest_lead import LeadItem, LeadSignal, build_lead, lead_previe
 from src.domain.equity_curve import EquityCurve, directional_hit_rate
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.finops import CycleCost
+from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.polish_labels import (
@@ -831,6 +832,7 @@ def to_lead_signals(
     portfolio_weights: Mapping[str, Decimal] | None = None,
     consensus_shifts: Sequence[tuple[str, ConsensusShift]] | None = None,
     alpha_signals: Mapping[str, AlphaSignals] | None = None,
+    insider_lead_window: InsiderLeadWindow | None = None,
 ) -> list[LeadSignal]:
     """Mapuje DTO raportu na domenowe `LeadSignal` (#1).
 
@@ -845,7 +847,8 @@ def to_lead_signals(
     MAIL-19: `consensus_shifts` (#8, z `ReportContext`) dają sygnałom zmianę
     nastawienia rady — odwrócenie (FLIP) ma w leadzie własny tier.
     DAT-21: `alpha_signals` daje znaczący zakup insidera (próg z kapitalizacji)
-    jako gotowy tekst — ten sam co linia w sekcji alfy.
+    jako gotowy tekst — ten sam co linia w sekcji alfy. `insider_lead_window`
+    wpuszcza do leadu tylko filing z ostatnich N dni; None = bez okna.
     """
     # MAIL-15: etykieta trafia do leadu i tematu maila — po polsku, ze wspólnego
     # słownika domeny („trafiona prognoza wzrostu”), nie „predykcja BULLISH”.
@@ -873,19 +876,26 @@ def to_lead_signals(
                 ),
                 crossed_volatility_gate=r.status == "saved",
                 consensus_shift=shifts.get(r.symbol),
-                insider_buy_label=_insider_buy_label(alpha_signals, r.symbol),
+                insider_buy_label=_insider_buy_label(
+                    alpha_signals, r.symbol, insider_lead_window
+                ),
             )
         )
     return signals
 
 
 def _insider_buy_label(
-    alpha_signals: Mapping[str, AlphaSignals] | None, symbol: str
+    alpha_signals: Mapping[str, AlphaSignals] | None,
+    symbol: str,
+    window: InsiderLeadWindow | None,
 ) -> str | None:
-    """DAT-21: tekst znaczącego zakupu insidera symbolu albo None."""
+    """DAT-21: tekst znaczącego zakupu insidera symbolu albo None — także gdy
+    filing jest starszy niż okno leadu."""
     signal = alpha_signals.get(symbol) if alpha_signals else None
     buy = signal.significant_insider_buy() if signal is not None else None
-    return significant_buy_label(buy) if buy is not None else None
+    if buy is None or (window is not None and not window.admits(buy)):
+        return None
+    return significant_buy_label(buy)
 
 
 def _weight_prices(
@@ -924,7 +934,12 @@ def build_cycle_lead(
         else None
     )
     signals = to_lead_signals(
-        results, context.resolved_predictions or [], weights, context.consensus_shifts, context.alpha_signals
+        results,
+        context.resolved_predictions or [],
+        weights,
+        context.consensus_shifts,
+        context.alpha_signals,
+        context.insider_lead_window,
     )
     # ALR-05: zmiana reżimu (tylko z histerezy) tuż pod CRITICAL quota.
     regime_change = context.regime.change if context.regime is not None else None
@@ -1436,6 +1451,9 @@ class ReportContext:
     # ALR-05: reżim rynku i mnożnik progu bramki w nagłówku. None = reżim off
     # albo brak raportu Risk Watch — nagłówek jak przed ALR-05.
     regime: RegimeBanner | None = None
+    # DAT-21: zakup insidera prowadzi maila tylko przez N dni od filingu. None =
+    # bez okna (wołający bez daty cyklu, testy).
+    insider_lead_window: InsiderLeadWindow | None = None
 
 
 def _resolved_note(context: ReportContext, window: str) -> str | None:
