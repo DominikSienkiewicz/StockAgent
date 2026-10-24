@@ -257,3 +257,19 @@ class TestNullAdapter:
     def test_satisfies_port(self) -> None:
         assert isinstance(NullSocialVelocityAdapter(), SocialVelocityPort)
         assert isinstance(RedditSocialAdapter(), SocialVelocityPort)
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: awaria Reddita jest logowana jako klasa taksonomii portów."""
+
+    def test_server_error_is_logged_as_provider_unavailable(
+        self, adapter: RedditSocialAdapter, mocker, caplog
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch("requests.Session.get", return_value=_error_response(503))
+
+        assert adapter.get_social_velocity("GME") is None
+        exc_info = caplog.records[-1].exc_info
+        assert exc_info is not None and exc_info[0] is not None
+        assert issubclass(exc_info[0], ProviderUnavailable)

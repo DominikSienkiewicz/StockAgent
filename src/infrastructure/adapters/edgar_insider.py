@@ -36,6 +36,9 @@ ani `largest_buy`; brak znacznika (starsze Form 4) to transakcja uznaniowa.
 `net_shares` i liczniki liczą się jak dotąd. Kody inne niż P/S (przydziały A,
 opcje M, podatek F) są pomijane. Zakup niesie datę filingu z submissions
 (`filingDate`) — od niej liczy się okno, w którym może prowadzić maila.
+
+ARCH-33: sieć, status i nieparsowalna treść każdego kroku wychodzą z `_get`
+i pomocników `_http` w taksonomii portów; kroki łapią `PortError`.
 """
 
 from __future__ import annotations
@@ -51,9 +54,15 @@ from http import HTTPStatus
 
 import requests
 
+from src.application.errors import PortError
 from src.application.ports import InsiderFlowPort
 from src.domain.insider_flow import InsiderBuy, InsiderFlowSnapshot
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import (
+    build_session,
+    json_payload,
+    raise_for_status_translated,
+    translated_get,
+)
 
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_WINDOW_DAYS = 90
@@ -240,7 +249,7 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         if self._blocked:
             return None
         self._pacer.wait()
-        response = self._session.get(url, timeout=self._timeout)
+        response = translated_get(self._session, url, timeout=self._timeout)
         if response.status_code == HTTPStatus.FORBIDDEN:
             self._blocked = True
             logger.warning(
@@ -328,9 +337,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             response = self._get(TICKERS_URL)
             if response is None:
                 return None
-            response.raise_for_status()
-            payload = response.json()
-        except (requests.RequestException, ValueError):
+            raise_for_status_translated(response)
+            payload = json_payload(response)
+        except PortError:
             logger.exception("EDGAR ticker lookup failed")
             return None
 
@@ -364,9 +373,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             response = self._get(url)
             if response is None:
                 return None
-            response.raise_for_status()
-            payload = response.json()
-        except (requests.RequestException, ValueError):
+            raise_for_status_translated(response)
+            payload = json_payload(response)
+        except PortError:
             logger.exception("EDGAR submissions fetch failed for CIK %s", cik)
             return None
 
@@ -426,9 +435,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             response = self._get(url)
             if response is None:
                 return None
-            response.raise_for_status()
+            raise_for_status_translated(response)
             xml_text = response.text
-        except requests.RequestException:
+        except PortError:
             logger.exception("EDGAR Form 4 fetch failed (%s)", accession)
             return None
 

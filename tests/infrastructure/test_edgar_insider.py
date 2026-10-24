@@ -958,3 +958,59 @@ def _xml_root_name(body: str) -> str | None:
         return ET.fromstring(body).tag.rsplit("}", 1)[-1]
     except ET.ParseError:
         return None
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: awaria EDGAR na każdym kroku jest logowana jako klasa taksonomii
+    portów (telemetria liczy błędy per klasa), a adapter nadal degraduje do None."""
+
+    @staticmethod
+    def _logged_error_class(caplog: pytest.LogCaptureFixture) -> type[BaseException]:
+        records = [record for record in caplog.records if record.exc_info is not None]
+        assert records, "brak zalogowanego wyjątku"
+        exc_info = records[-1].exc_info
+        assert exc_info is not None and exc_info[0] is not None
+        return exc_info[0]
+
+    def test_ticker_map_network_error_is_logged_as_provider_unavailable(
+        self, adapter: EdgarInsiderAdapter, mocker, caplog
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch("requests.Session.get", side_effect=requests.ConnectionError("reset"))
+
+        assert adapter.get_insider_flow("AAPL") is None
+        assert issubclass(self._logged_error_class(caplog), ProviderUnavailable)
+
+    def test_submissions_garbage_is_logged_as_malformed_payload(
+        self, adapter: EdgarInsiderAdapter, mocker, caplog
+    ) -> None:
+        from src.application.errors import MalformedPayload
+
+        broken = _ok_json({})
+        broken.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
+        mocker.patch(
+            "requests.Session.get", side_effect=[_ok_json(_company_tickers()), broken]
+        )
+
+        assert adapter.get_insider_flow("AAPL") is None
+        assert issubclass(self._logged_error_class(caplog), MalformedPayload)
+
+    def test_form4_server_error_is_logged_as_provider_unavailable(
+        self, adapter: EdgarInsiderAdapter, mocker, caplog
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=[
+                _ok_json(_company_tickers()),
+                _ok_json(_two_form4_submissions()),
+                _error_response(503),
+                _error_response(503),
+            ],
+        )
+
+        adapter.get_insider_flow("AAPL")
+
+        assert issubclass(self._logged_error_class(caplog), ProviderUnavailable)

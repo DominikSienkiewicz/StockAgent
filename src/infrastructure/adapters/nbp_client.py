@@ -17,6 +17,10 @@ limit czasu joba.
 
 Cienki I/O — cała logika oceny stresu i P/L w złotych siedzi w domenie
 (`PolishMacroSnapshot.evaluate_stress_level`, `Portfolio.pln_pnl`).
+
+ARCH-33: sieć i status wychodzą w taksonomii portów (log degradacji niesie jej
+klasę), a nieparsowalna albo niepełna tabela kursów `NbpClient` jako
+`MalformedPayload` (wciąż `ValueError`).
 """
 
 from __future__ import annotations
@@ -27,13 +31,17 @@ from decimal import Decimal, InvalidOperation
 from http import HTTPStatus
 from typing import Any
 
-import requests
-
+from src.application.errors import MalformedPayload, PortError
 from src.application.ports import FxRatePort, MacroIndicatorsPort
 from src.domain.fx import FxRate
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import HOME_CURRENCY
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import (
+    build_session,
+    json_payload,
+    raise_for_status_translated,
+    translated_get,
+)
 
 DEFAULT_BASE_URL = "https://api.nbp.pl/api/exchangerates/rates/A"
 DEFAULT_FX_BASE_URL = "https://api.nbp.pl/api/exchangerates/rates/a"
@@ -67,10 +75,8 @@ class NbpClient(MacroIndicatorsPort):
             # Brak punktu referencyjnego do delty 30d.
             return None
 
-        eur_latest = Decimal(str(eur_rates[-1]["mid"]))
-        eur_baseline = Decimal(str(eur_rates[0]["mid"]))
-        usd_latest = Decimal(str(usd_rates[-1]["mid"]))
-        usd_baseline = Decimal(str(usd_rates[0]["mid"]))
+        eur_latest, eur_baseline = _mid(eur_rates[-1]), _mid(eur_rates[0])
+        usd_latest, usd_baseline = _mid(usd_rates[-1]), _mid(usd_rates[0])
 
         return PolishMacroSnapshot(
             eur_pln=eur_latest,
@@ -83,12 +89,12 @@ class NbpClient(MacroIndicatorsPort):
     def _fetch_rates(self, currency: str) -> list[dict[str, object]]:
         url = f"{self._base_url}/{currency}/last/{self._window_days}/?format=json"
         try:
-            response = self._session.get(url, timeout=self._timeout)
-            response.raise_for_status()
-        except requests.RequestException:
+            response = translated_get(self._session, url, timeout=self._timeout)
+            raise_for_status_translated(response)
+        except PortError:
             logger.exception("NBP fetch failed for %s", currency)
             return []
-        payload = response.json()
+        payload = json_payload(response)
         rates = payload.get("rates")
         if not isinstance(rates, list):
             return []
@@ -120,12 +126,12 @@ class NbpFxRateClient(FxRatePort):
             day = on_date - timedelta(days=days_back)
             url = f"{self._base_url}/{code.lower()}/{day.isoformat()}/?format=json"
             try:
-                response = self._session.get(url, timeout=self._timeout)
+                response = translated_get(self._session, url, timeout=self._timeout)
                 if response.status_code == HTTPStatus.NOT_FOUND:
                     continue
-                response.raise_for_status()
-                payload = response.json()
-            except (requests.RequestException, ValueError):
+                raise_for_status_translated(response)
+                payload = json_payload(response)
+            except PortError:
                 logger.exception(
                     "NBP rate fetch failed for %s on %s — no more NBP rates this cycle",
                     code,
@@ -141,6 +147,15 @@ class NbpFxRateClient(FxRatePort):
             on_date,
         )
         return None
+
+
+def _mid(entry: object) -> Decimal:
+    """Kurs średni wpisu tabeli A; brak albo śmieć → `MalformedPayload` (ARCH-33)."""
+    try:
+        mid = entry["mid"] if isinstance(entry, dict) else None
+        return Decimal(str(mid))
+    except (KeyError, InvalidOperation) as exc:
+        raise MalformedPayload(f"NBP rate entry without a numeric mid: {exc!r}") from None
 
 
 def _parse_day_rate(code: str, on_date: date, payload: Any) -> FxRate | None:

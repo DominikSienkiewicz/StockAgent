@@ -275,3 +275,53 @@ class TestFxRateForDay:
         assert client.get_rate("USD", date(2025, 3, 3)) is None
         assert client.get_rate("EUR", date(2024, 6, 3)) is None
         assert mock_get.call_count == 1
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: błędy NBP w taksonomii portów — awaria logowana jako klasa
+    taksonomii, śmieciowa treść tabeli kursów wychodzi jako `MalformedPayload`."""
+
+    def test_server_error_is_logged_as_provider_unavailable(
+        self, client: NbpClient, mocker, caplog
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch("requests.Session.get", return_value=_error_response(503))
+
+        assert client.fetch_polish_macro() is None
+        exc_info = caplog.records[-1].exc_info
+        assert exc_info is not None and exc_info[0] is not None
+        assert issubclass(exc_info[0], ProviderUnavailable)
+
+    def test_unparseable_rates_body_is_malformed_payload(
+        self, client: NbpClient, mocker
+    ) -> None:
+        from src.application.errors import MalformedPayload
+
+        broken = _ok_response({})
+        broken.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
+        mocker.patch("requests.Session.get", return_value=broken)
+
+        with pytest.raises(MalformedPayload):
+            client.fetch_polish_macro()
+
+    def test_rate_without_mid_is_malformed_payload(self, client: NbpClient, mocker) -> None:
+        from src.application.errors import MalformedPayload
+
+        payload = {"rates": [{"effectiveDate": "2026-05-01"}, {"effectiveDate": "2026-05-02"}]}
+        mocker.patch("requests.Session.get", return_value=_ok_response(payload))
+
+        with pytest.raises(MalformedPayload):
+            client.fetch_polish_macro()
+
+    def test_fx_rate_network_error_is_logged_as_provider_unavailable(
+        self, mocker, caplog
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch("requests.Session.get", side_effect=requests.ConnectionError("down"))
+
+        assert NbpFxRateClient().get_rate("USD", date(2026, 5, 4)) is None
+        exc_info = caplog.records[-1].exc_info
+        assert exc_info is not None and exc_info[0] is not None
+        assert issubclass(exc_info[0], ProviderUnavailable)

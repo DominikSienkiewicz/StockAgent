@@ -420,3 +420,32 @@ class TestMacroSeries:
 
         assert NullMacroSeriesAdapter().fetch_macro_series(self._AS_OF) is None
         get.assert_not_called()
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: awaria serii FRED jest logowana jako klasa taksonomii portów
+    (telemetria liczy błędy per klasa), a adapter nadal degraduje do None / ()."""
+
+    def test_server_error_is_logged_as_provider_unavailable(self, mocker, caplog) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch("requests.Session.get", return_value=_error_response(503))
+
+        assert FredClient(api_key="fred-key").fetch_yield_curve() is None
+        exc_info = caplog.records[-1].exc_info
+        assert exc_info is not None and exc_info[0] is not None
+        assert issubclass(exc_info[0], ProviderUnavailable)
+
+    def test_unparseable_window_is_logged_as_malformed_payload(self, mocker, caplog) -> None:
+        from datetime import date
+
+        from src.application.errors import MalformedPayload
+
+        broken = _ok_response("1.0")
+        broken.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
+        mocker.patch("requests.Session.get", return_value=broken)
+
+        assert FredClient(api_key="fred-key").fetch_macro_series(date(2026, 6, 20)) is None
+        exc_info = caplog.records[-1].exc_info
+        assert exc_info is not None and exc_info[0] is not None
+        assert issubclass(exc_info[0], MalformedPayload)

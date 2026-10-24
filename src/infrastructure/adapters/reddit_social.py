@@ -29,9 +29,15 @@ from http import HTTPStatus
 
 import requests
 
+from src.application.errors import PortError
 from src.application.ports import SocialVelocityPort
 from src.domain.social_velocity import SocialVelocitySnapshot
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import (
+    build_session,
+    json_payload,
+    raise_for_status_translated,
+    translated_get,
+)
 
 DEFAULT_SUBREDDITS = "wallstreetbets+stocks+investing"
 DEFAULT_USER_AGENT = "StockAgent/1.0"
@@ -96,7 +102,8 @@ class RedditSocialAdapter(SocialVelocityPort):
             "limit": DEFAULT_LIMIT,
         }
         try:
-            response = self._session.get(
+            response = translated_get(
+                self._session,
                 url,
                 params=params,
                 headers={"User-Agent": self._user_agent},
@@ -110,14 +117,14 @@ class RedditSocialAdapter(SocialVelocityPort):
                     symbol,
                 )
                 return None
-            response.raise_for_status()
-            payload = response.json()
+            raise_for_status_translated(response)
+            payload = json_payload(response)
             data = payload["data"]
             children = data["children"]
             if not isinstance(children, list):
                 return None
             return len(children)
-        except (requests.RequestException, ValueError, KeyError, TypeError):
+        except (PortError, KeyError, TypeError):
             logger.exception("Reddit social fetch failed for %s (t=%s)", symbol, period)
             return None
 
