@@ -596,3 +596,9 @@ def test_real_config_toml_ships_the_exact_rag_search_off_until_migration() -> No
     w prompcie to wejście EXP-03 — czeka do końca eksperymentu."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["rag_exact_search_enabled"] is False
+
+
+def test_real_config_toml_ships_the_prompt_taint_fence_off() -> None:
+    """BEZ-14: fence zmienia tekst promptów predykcji i przewodniczącego (EXP-02/03)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["prompt_taint_fence_enabled"] is False

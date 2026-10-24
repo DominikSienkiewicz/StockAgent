@@ -1759,3 +1759,16 @@ class TestRagExactSearchFlag:
 
         assert settings.rag_exact_search_enabled is False
         assert "rag_exact_search_enabled" in RECIPE_SETTINGS_FIELDS
+
+
+class TestPromptTaintFenceFlag:
+    """BEZ-14: fence lekcji z reflect i uzasadnień person zmienia tekst promptów,
+    więc należy do przepisu; off na czas EXP-02/03."""
+
+    def test_defaults_off_and_inside_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.prompt_taint_fence_enabled is False
+        assert "prompt_taint_fence_enabled" in RECIPE_SETTINGS_FIELDS

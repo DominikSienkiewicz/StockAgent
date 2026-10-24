@@ -778,3 +778,32 @@ def test_persona_threads_inherit_the_usage_scope_of_the_caller() -> None:
     attributions = {(r.source, r.node, r.symbol) for r in ledger.records()}
     assert len(ledger.records()) == 4  # 3 persony + chairman
     assert attributions == {("council_llm", "council", "AAPL")}
+
+
+
+class TestChairmanReasoningFence:
+    """BEZ-14: uzasadnienia person (LLM z newsów stron trzecich) w prompcie
+    przewodniczącego idą za flagą w fence'u DATA-ONLY; bez flagi prompt jak dziś."""
+
+    @staticmethod
+    def _chairman_prompt(llm_port: Mock, *, fence: bool) -> str:
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port,
+            personas=_TEST_PERSONAS,
+            max_personas=COUNCIL_SIZE,
+            fence_opinion_reasoning=fence,
+        )
+        council.analyze("AAPL", _make_input())
+        return str(llm_port.analyze.call_args_list[-1].args[0])
+
+    def test_flag_fences_the_reasoning(self, llm_port: Mock) -> None:
+        prompt = self._chairman_prompt(llm_port, fence=True)
+
+        assert "<<<UNTRUSTED_REASONING_DATA>>>" in prompt
+
+    def test_without_flag_the_chairman_prompt_has_no_reasoning_fence(
+        self, llm_port: Mock
+    ) -> None:
+        prompt = self._chairman_prompt(llm_port, fence=False)
+
+        assert "UNTRUSTED_REASONING_DATA" not in prompt

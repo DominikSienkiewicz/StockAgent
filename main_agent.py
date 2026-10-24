@@ -970,6 +970,8 @@ def build_council_adapter(
         personas=personas,
         weights_provider=weights_provider,
         debate_mode=settings.debate_mode_enabled,
+        # BEZ-14: uzasadnienia person w prompcie przewodniczącego w fence'u; off.
+        fence_opinion_reasoning=settings.prompt_taint_fence_enabled,
     )
 
 
@@ -1519,6 +1521,8 @@ def build_agent_graph_deps(
         experiment_arms_enabled=settings.experiment_arms_enabled,
         # ML-29: rozkład trendu w prompcie i kolumna (migracja 051) za flagą.
         trend_probabilities_enabled=settings.trend_probabilities_enabled,
+        # BEZ-14: lekcja z reflect w prompcie predykcji w fence'u; off.
+        prompt_taint_fence_enabled=settings.prompt_taint_fence_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings, quota_monitor),

@@ -406,6 +406,18 @@ class TestBuildAgentGraphDeps:
 
         assert deps.price_outlier_guard_enabled is enabled
 
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_prompt_taint_fence_flag_reaches_the_graph_and_the_council(
+        self, settings, mock_external_clients, enabled
+    ):
+        # BEZ-14: fence lekcji (prompt predykcji) i uzasadnień person (przewodniczący).
+        settings.prompt_taint_fence_enabled = enabled
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert deps.prompt_taint_fence_enabled is enabled
+        assert deps.council_port._fence_opinion_reasoning is enabled
+
     def test_tool_use_disabled_wires_no_tool_use_port(self, settings, mock_external_clients):
         settings.tool_use_enabled = False
 

@@ -13,6 +13,8 @@ from src.application.decision_receipt import (
 # BEZ-06: analog to kilka nagłówków z wynikiem i wnioskiem, więc dostaje własny
 # limit — domyślne 300 znaków fence'a po cichu ucinało wnioski.
 _ANALOG_MAX_LEN = 900
+# BEZ-14: lekcja z reflect to do trzech zdań diagnozy — ten sam limit co analog.
+_LESSON_MAX_LEN = 900
 
 
 def _fence_analogs(similar_context: str) -> str:
@@ -61,6 +63,7 @@ def get_prediction_prompt(
     *,
     include_memory: bool = True,
     include_probabilities: bool = False,
+    fence_lessons: bool = False,
 ) -> str:
     """Główny system prompt dla LLM-a w węźle predict.
 
@@ -79,6 +82,10 @@ def get_prediction_prompt(
     `include_probabilities=True` (ML-29) dopisuje do output_schema rozkład
     P(BULLISH/BEARISH/SIDEWAYS) i jedną linię instrukcji; False = prompt bajt
     w bajt jak przed ML-29.
+
+    `fence_lessons=True` (BEZ-14, flaga `prompt_taint_fence_enabled`) ogradza
+    `reflection_context` fence'em DATA-ONLY — lekcję pisze nasz LLM z danych stron
+    trzecich, więc może nieść przechowany prompt-injection. False = bez zmian.
     """
     similar_block = (
         f"""
@@ -92,12 +99,17 @@ sytuację, w której prognoza się sprawdziła lub zawiodła?
         if similar_context and include_memory
         else ""
     )
+    lessons = (
+        fence_untrusted("LESSONS", reflection_context, max_len=_LESSON_MAX_LEN)
+        if fence_lessons
+        else reflection_context
+    )
     reflection_block = (
         f"""<reflection_context>
 Poniżej znajdują się wnioski z Twoich własnych, historycznych błędów decyzyjnych
 dla tego aktywa. Musisz zaktualizować swój aparat poznawczy o te dane.
 Jeśli popełniłeś błąd w przeszłości, nie powielaj go.
-{reflection_context}
+{lessons}
 </reflection_context>"""
         if include_memory
         else ""

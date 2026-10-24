@@ -301,6 +301,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # ML-29: prompt prosi o rozkład trzech klas, a trend i pewność idą z argmaxu —
     # inny format odpowiedzi to inny rozkład pewności, więc nowy przepis.
     "trend_probabilities_enabled",
+    # BEZ-14: fence lekcji z reflect i uzasadnień person zmienia tekst promptów.
+    "prompt_taint_fence_enabled",
     # ML-11: prognoza ML = wyjście modelu × σ symbolu (model w jednostkach σ) — inny
     # przepis serwowania liczby, nawet przy tych samych wagach.
     "ml_sigma_target_enabled",
@@ -635,6 +637,10 @@ class Settings(BaseSettings):
     # więc należy do przepisu. Off: nowy klucz przed migracją → PGRST204 i śmierć
     # zapisu całej predykcji.
     trend_probabilities_enabled: bool = False
+    # BEZ-14: pola półzaufane (lekcja z reflect w prompcie predykcji, uzasadnienia
+    # person w prompcie przewodniczącego) w fence'u DATA-ONLY. Zmienia tekst promptów,
+    # więc należy do przepisu. Bez migracji. Off.
+    prompt_taint_fence_enabled: bool = False
     # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
     # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr

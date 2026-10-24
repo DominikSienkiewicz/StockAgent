@@ -6537,3 +6537,37 @@ class TestPriceOutlierGuard:
         assert final["status"] == "ignored"
         repository_port.save_price_snapshot.assert_not_called()
         assert deps.telemetry.snapshot().gate_reasons == {"price_outlier": 1}
+
+
+
+class TestPromptTaintFence:
+    """BEZ-14: lekcja z reflect w prompcie predykcji idzie za flagą
+    `prompt_taint_fence_enabled` w fence'u DATA-ONLY; bez flagi prompt jak dziś."""
+
+    def _prompt(self, ports: dict, *, enabled: bool) -> str:
+        _setup_full_analysis_mocks(
+            ports["sentiment_port"], ports["news_port"], ports["repository_port"],
+            ports["ml_port"], ports["llm_port"], has_prior_prediction=True,
+        )
+        ports["market_port"].get_current_price.return_value = Money(Decimal("90.0"))
+        create_agent_graph(AgentGraphDeps(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            prompt_taint_fence_enabled=enabled,
+        )).compile().invoke(_initial_state("100.0"))
+        return str(ports["llm_port"].analyze.call_args.args[0])
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_flag_fences_the_reflection_lesson(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        enabled,
+    ):
+        ports = dict(
+            market_port=market_port, sentiment_port=sentiment_port, news_port=news_port,
+            repository_port=repository_port, ml_port=ml_port, llm_port=llm_port,
+        )
+
+        prompt = self._prompt(ports, enabled=enabled)
+
+        assert "Zignorowałem szerszy kontekst makro." in prompt
+        assert ("<<<UNTRUSTED_LESSONS_DATA>>>" in prompt) is enabled

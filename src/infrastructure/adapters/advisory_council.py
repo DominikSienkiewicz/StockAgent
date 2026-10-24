@@ -99,6 +99,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         max_personas: int = COUNCIL_MAX_PERSONAS,
         weights_provider: Callable[[AssetType], Mapping[str, float]] | None = None,
         debate_mode: bool = False,
+        fence_opinion_reasoning: bool = False,
     ) -> None:
         if not personas:
             raise ValueError("LLMAdvisoryCouncil requires at least one persona.")
@@ -108,6 +109,8 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         self._weights_provider = weights_provider
         # Feature #1: jedna runda rewizji, gdy round-1 jest podzielone. Off → jak dziś.
         self._debate_mode = debate_mode
+        # BEZ-14: uzasadnienia person w prompcie przewodniczącego w fence'u DATA-ONLY.
+        self._fence_opinion_reasoning = fence_opinion_reasoning
         # Cap fan-outu: powyżej `max_personas` ucinamy radę i logujemy WARNING
         # z nazwami odrzuconych person. Kolejność person jest deterministyczna
         # (loader sortuje po name), więc ucinanie też jest stabilne.
@@ -251,7 +254,9 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
             resolved_opinions = revised or round1
 
         try:
-            prompt = chairman_prompt(resolved_opinions, data)
+            prompt = chairman_prompt(
+                resolved_opinions, data, fence_reasoning=self._fence_opinion_reasoning
+            )
             raw = self._llm.analyze(prompt)
         except Exception:
             logger.exception("Advisory council: chairman call failed")

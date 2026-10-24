@@ -741,6 +741,9 @@ class AgentGraphDeps:
     # a rozkład idzie do kolumny `trend_probabilities` (migracja 051). Off = prompt,
     # analiza i rekord jak przed ML-29 — przed migracją klucz dałby PGRST204.
     trend_probabilities_enabled: bool = False
+    # BEZ-14: lekcja z reflect w prompcie predykcji w fence'u DATA-ONLY. Off = prompt
+    # bajt w bajt jak przed BEZ-14.
+    prompt_taint_fence_enabled: bool = False
     options_port: OptionsFlowPort | None = None
     # WIA-28: horyzont edge z kalendarza NYSE (godziny do następnego dnia handlowego)
     # dla akcji i ETF zamiast stałych 24 h. Off = stałe 24 h, jak przed WIA-28.
@@ -1910,6 +1913,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
         include_memory=memory,
         include_probabilities=deps.trend_probabilities_enabled,
+        fence_lessons=deps.prompt_taint_fence_enabled,
     )
     raw_analysis, llm_flags = _run_llm_analysis(deps, state, prompt, symbol)
     failover, raw_analysis = _split_failover_marker(raw_analysis)
