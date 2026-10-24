@@ -25,6 +25,12 @@ Dwa nienaruszalne kontrakty:
 2. **Debounce: jeden alert per symbol per dzień.** Spam przy chaotycznym rynku
    uczy użytkownika ignorować kanał. Egzekwowany dwustopniowo: predykatem
    domenowym `should_emit` i twardym `UNIQUE(symbol, alert_date)` z migracji 021.
+   Kontrakt dostarczenia to at-least-once (ALR-14): push idzie PIERWSZY, wiersz
+   `shock_alerts` powstaje po udanej wysyłce. Pad bazy nie połyka alertu; kosztem
+   dwa nakładające się przebiegi (albo nieudany zapis) mogą wysłać ten sam alert
+   dwa razy — UNIQUE odrzuca drugi wiersz, nie drugi push. Komentarz migracji 021
+   („watch przed wysłaniem próbuje wstawić wiersz”) opisuje odwrotną kolejność;
+   migracja jest zaaplikowana i się jej nie edytuje, więc obowiązuje ten opis.
 
 ALR-07: za flagą `portfolio_shock_enabled` ten sam przebieg liczy też szok PORTFELA —
 Σ waga × Δ po pozycjach (tabela `positions`) wobec `portfolio_shock_threshold`. Łapie
@@ -307,8 +313,9 @@ def _daily_change_basis(asset: Asset) -> str:
 def _persist_shock_alert(
     repository: RepositoryPort, symbol: str, today: date, alert: ShockAlert
 ) -> None:
-    """Persystencja PO wysyłce — lepiej wysłać dwa razy niż zgubić alert
-    przy padzie bazy. UNIQUE(symbol, alert_date) i tak blokuje duplikat."""
+    """Persystencja PO wysyłce (at-least-once, ALR-14) — lepiej wysłać dwa razy niż
+    zgubić alert przy padzie bazy. UNIQUE(symbol, alert_date) blokuje duplikat
+    WIERSZA, nie drugiego pusha: kolizja albo błąd zapisu kończą się logiem."""
     try:
         repository.save_shock_alert(
             symbol, today, float(alert.delta.fraction), alert.direction.value
