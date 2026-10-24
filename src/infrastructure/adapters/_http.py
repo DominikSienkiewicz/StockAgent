@@ -115,6 +115,7 @@ _HOST_SOURCES = {
     "www.reddit.com": "Reddit",
     "api.stlouisfed.org": "FRED",
     "api.nbp.pl": "NBP",
+    "www.deribit.com": "Deribit",
     "api.resend.com": "Resend",
     "api.telegram.org": "Telegram",
     "hooks.slack.com": "Slack",
