@@ -419,6 +419,45 @@ class TestBuildAgentGraphDeps:
         assert deps.prompt_taint_fence_enabled is enabled
         assert deps.council_port._fence_opinion_reasoning is enabled
 
+
+    def test_shadow_flag_off_wires_no_shadow_setup(self, settings, mock_external_clients, mocker):
+        # ML-33: bez flagi DI nie ładuje challengerów i graf nie dotyka shadow_predictions.
+        from src.config import MLChallengerSettings
+
+        load = mocker.patch("main_agent.load_challenger")
+        settings.shadow_predictions_enabled = False
+        settings.ml_challengers = [
+            MLChallengerSettings(name="direction", path="data/models/d.ubj", kind="direction")
+        ]
+
+        assert main_agent.build_agent_graph_deps(settings).shadow is None
+        load.assert_not_called()
+
+    def test_shadow_flag_wires_the_champion_version_and_the_loadable_challengers(
+        self, settings, mock_external_clients, mocker
+    ):
+        from src.config import MLChallengerSettings
+        from src.domain.promotion import ForecastKind
+        from src.infrastructure.recipe_fingerprints import ml_model_version
+
+        direction = MagicMock(name="direction")
+        load = mocker.patch("main_agent.load_challenger", side_effect=[direction, None])
+        settings.shadow_predictions_enabled = True
+        settings.ml_challengers = [
+            MLChallengerSettings(name="direction", path="data/models/d.ubj", kind="direction"),
+            MLChallengerSettings(name="alt", path="data/models/alt.ubj", kind="return"),
+        ]
+
+        shadow = main_agent.build_agent_graph_deps(settings).shadow
+
+        assert shadow is not None
+        assert shadow.champion_version == ml_model_version(settings.ml_model_path)
+        assert shadow.challengers == (direction,)
+        assert [c.args for c in load.call_args_list] == [
+            ("direction", "data/models/d.ubj", ForecastKind.DIRECTION),
+            ("alt", "data/models/alt.ubj", ForecastKind.RETURN),
+        ]
+
     def test_tool_use_disabled_wires_no_tool_use_port(self, settings, mock_external_clients):
         settings.tool_use_enabled = False
 

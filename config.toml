@@ -173,6 +173,18 @@ ml_settled_purge_enabled = false
 # ewaluacji), Brier i log loss vs stopa bazowa w summary; wagi wariantu w osobnym pliku
 # (*_direction.ubj). Champion i Fast Loop bez zmian; zero płatnych wywołań.
 ml_direction_classifier_enabled = false
+# ML-33: champion/challenger nogi ML — Fast Loop liczy prognozy cienia challengerów
+# z ml_challengers (ten sam wektor cech co champion) i zapisuje je z prognozą championa
+# do shadow_predictions; wynik cyklu, prompt i mail bez zmian, zero płatnych wywołań.
+# Slow Loop raportuje werdykt promocji w summary; podmianę wag robi właściciel.
+# UWAGA: włącz DOPIERO po migracji 075 (inaczej zapis cieni pada z WARNING-iem).
+shadow_predictions_enabled = false
+# ML-33: challengerzy (najwyżej 2): name, path do wag z Release model-latest i kind =
+# "return" (regresor zwrotu) albo "direction" (klasyfikator ML-30 — jego wagi powstają
+# przy ml_direction_classifier_enabled). Brak pliku wag = challenger pominięty.
+ml_challengers = [
+    { name = "direction", path = "data/models/price_predictor_direction.ubj", kind = "direction" },
+]
 # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze — liczony w cyklu
 # z rozliczonych predykcji, bez migracji. Flaga dokłada zapis `interval_low/high`
 # i pokrycie zrealizowane vs nominalne w Track Record. UWAGA: włącz DOPIERO po

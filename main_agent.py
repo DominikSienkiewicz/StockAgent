@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
-from src.application.agent_graph import AgentGraphDeps
+from src.application.agent_graph import AgentGraphDeps, ShadowSetup
 from src.application.attestation_cycle import (
     CycleCommitmentCollector,
     attestation_cycle_id,
@@ -184,6 +184,7 @@ from src.domain.market_calendar import closure_reason, to_nyse_time
 from src.domain.number_format import format_money_pl, format_number_pl
 from src.domain.polish_labels import QUOTA_CRITICAL_SUBJECT_PREFIX
 from src.domain.portfolio import PlnRates, Portfolio
+from src.domain.promotion import ForecastKind
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
 from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis, risk_off_change
@@ -230,7 +231,7 @@ from src.infrastructure.adapters.write_guard import (
     ReadOnlyAttestationPublisher,
     ReadOnlyRepository,
 )
-from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+from src.infrastructure.adapters.xgboost_local import XGBoostAdapter, load_challenger
 from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
 from src.infrastructure.logging_setup import configure_logging, symbol_context
 from src.infrastructure.persona_loader import load_council_personas, personas_sha256
@@ -1355,6 +1356,24 @@ def build_prediction_recipe(settings: Settings, run_context: RunContext) -> Pred
     )
 
 
+def build_shadow_setup(settings: Settings) -> ShadowSetup | None:
+    """ML-33: champion/challenger nogi ML, RAZ na cykl. Flaga off → None (graf nie
+    dotyka `shadow_predictions`). Wersja championa to ten sam sha256 pliku wag co
+    `model_version` przepisu; challenger bez pliku albo z niepasującymi wagami
+    wypada w `load_challenger` z wpisem w logu. Zero płatnych wywołań."""
+    if not settings.shadow_predictions_enabled:
+        return None
+    challengers = tuple(
+        challenger
+        for spec in settings.ml_challengers
+        if (challenger := load_challenger(spec.name, spec.path, ForecastKind(spec.kind)))
+        is not None
+    )
+    return ShadowSetup(
+        champion_version=ml_model_version(settings.ml_model_path), challengers=challengers
+    )
+
+
 def build_move_calibration(
     settings: Settings, repository: RepositoryPort
 ) -> dict[AssetType, tuple[CalibrationPoint, ...]] | None:
@@ -1702,6 +1721,8 @@ def build_agent_graph_deps(
             if settings.attestation_enabled and supabase_repo.attestation_columns_available()
             else None
         ),
+        # ML-33: prognozy cienia championa i challengerów (migracja 075) za flagą.
+        shadow=build_shadow_setup(settings),
         telemetry=telemetry,
         # FIN-12: sufit płatnych wywołań LLM cyklu; None = bez limitu.
         paid_call_cap=settings.max_paid_llm_calls_per_cycle,

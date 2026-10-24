@@ -42,6 +42,7 @@ from src.domain.finops import (
 from src.domain.insider_flow import INSIDER_LEAD_MAX_AGE_DAYS
 from src.domain.macro_risk import MacroRiskInstrumentType
 from src.domain.price_levels import LevelDirection, PriceLevel
+from src.domain.promotion import CHAMPION_MODEL_NAME
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
 
 # Ścieżka do config.toml zakotwiczona w ROOCIE repo (src/config.py → ../config.toml),
@@ -207,6 +208,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # ML-30: wariant binarny to sama ewaluacja w Slow Loopie z osobnym plikiem wag —
     # nie zmienia championa ani prognozy.
     "ml_direction_classifier_enabled",
+    # ML-33: prognozy cienia challengerów idą wyłącznie do `shadow_predictions` —
+    # wynik cyklu, prompt i mail są te same z flagą i bez.
+    "shadow_predictions_enabled",
+    "ml_challengers",
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
     "fast_loop_cycles_per_day",
@@ -336,6 +341,10 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
 })
 
 
+# ML-33: Fast Loop ładuje championa i najwyżej tylu challengerów nogi ML.
+MAX_ML_CHALLENGERS = 2
+
+
 # FIN-07: jedyny próg volatility, dla którego 0 ma znaczenie ("rada zawsze leci,
 # gdy główna bramka przepuści"); pozostałe progi bramek muszą być > 0.
 _ALWAYS_RUN_THRESHOLD_FIELD = "council_volatility_threshold"
@@ -389,6 +398,19 @@ class PriceAlertSettings(BaseModel):
     level: Decimal = Field(gt=0, allow_inf_nan=False)
     direction: Literal["ABOVE", "BELOW"]
     note: str | None = None
+
+
+class MLChallengerSettings(BaseModel):
+    """ML-33: jeden wpis listy `ml_challengers` z `config.toml` — challenger nogi ML:
+    nazwa (`model_name` w `shadow_predictions`), plik wag (z Release `model-latest`)
+    i rodzaj prognozy: `return` (regresor zwrotu) albo `direction` (klasyfikator
+    P(wzrost) z ML-30). Wejście to zawsze wektor cech championa."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    path: str = Field(min_length=1)
+    kind: Literal["return", "direction"]
 
 
 class ModelPriceSettings(BaseModel):
@@ -675,6 +697,15 @@ class Settings(BaseSettings):
     # Wagi wariantu (po przejściu bramki) idą do osobnego pliku `*_direction.ubj`,
     # którego Fast Loop nie czyta — champion bez zmian. Off.
     ml_direction_classifier_enabled: bool = False
+    # ML-33: champion/challenger nogi ML. Fast Loop liczy prognozy cienia challengerów
+    # (`ml_challengers`) z tego samego wektora cech co champion i zapisuje je razem
+    # z prognozą championa do `shadow_predictions` (migracja 075) — wynik cyklu, prompt,
+    # mail i rekord predykcji bez zmian. Slow Loop raportuje w summary werdykt promocji
+    # (domena `should_promote`); podmianę serwowanych wag robi właściciel. Off: przed
+    # migracją tabeli nie ma.
+    shadow_predictions_enabled: bool = False
+    # ML-33: najwyżej `MAX_ML_CHALLENGERS` challengerów; brak pliku wag = pominięty.
+    ml_challengers: list[MLChallengerSettings] = Field(default_factory=list)
     # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze, liczony
     # w cyklu bez migracji. Ta flaga dokłada zapis `interval_low/high` (migracja
     # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz
@@ -1189,6 +1220,24 @@ class Settings(BaseSettings):
         """EXP-05: definicja, która nie zadziała zgodnie z zamiarem, zatrzymuje
         start, zamiast po cichu zbierać dane z testu A/A."""
         validate_experiments(self.experiment_definitions())
+        return self
+
+    @model_validator(mode="after")
+    def _validate_ml_challengers(self) -> Settings:
+        """ML-33: wiersz cienia rozpoznaje model po nazwie — dwie takie same nazwy
+        albo nazwa championa skleiłyby różne modele w jedną serię, a plik championa
+        jako challenger porównywałby model z samym sobą."""
+        names = [challenger.name for challenger in self.ml_challengers]
+        if len(names) > MAX_ML_CHALLENGERS:
+            raise ValueError(
+                f"ml_challengers holds at most {MAX_ML_CHALLENGERS} entries, got {len(names)}"
+            )
+        if len(set(names)) != len(names) or CHAMPION_MODEL_NAME in names:
+            raise ValueError(
+                f"ml_challengers names must be unique and not '{CHAMPION_MODEL_NAME}': {names}"
+            )
+        if any(challenger.path == self.ml_model_path for challenger in self.ml_challengers):
+            raise ValueError("ml_challengers must not point at the champion's ml_model_path")
         return self
 
     def price_level_seeds(self) -> tuple[PriceLevel, ...]:

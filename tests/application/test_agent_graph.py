@@ -6650,3 +6650,173 @@ class TestIgnoredResultCarriesEffectiveThreshold:
 
         assert final["status"] == "ignored"
         assert final.get("effective_threshold") == Decimal("0.04")
+
+
+# ---------------------------------------------------------------------------
+# ML-33: champion/challenger — prognozy cienia bez wpływu na wynik cyklu
+# ---------------------------------------------------------------------------
+
+
+class TestShadowPredictions:
+    """Za flagą `shadow_predictions_enabled` (DI składa `ShadowSetup`) predict liczy
+    prognozy cienia challengerów z tego samego wektora cech co champion, a save
+    zapisuje je razem z prognozą championa pod id zapisanej predykcji. Bez setupu
+    graf nie dotyka `shadow_predictions`."""
+
+    CHAMPION = "a" * 64
+
+    @staticmethod
+    def _challenger(name: str, **forecast: float) -> Mock:
+        from src.application.ports import ShadowModelPort
+        from src.domain.promotion import ShadowForecast
+
+        challenger = Mock(spec=ShadowModelPort)
+        challenger.name = name
+        challenger.forecast.return_value = ShadowForecast(name, "c" * 64, **forecast)
+        return challenger
+
+    def _run(self, ports: dict[str, Mock], shadow: object | None) -> dict:
+        deps = AgentGraphDeps(**ports, threshold=Threshold(Decimal("0.02")), shadow=shadow)
+        return create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+    @staticmethod
+    def _ports(market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(sentiment_port, news_port, repository_port, ml_port, llm_port)
+        ml_port.explain.return_value = {}
+        return {
+            "market_port": market_port,
+            "sentiment_port": sentiment_port,
+            "news_port": news_port,
+            "repository_port": repository_port,
+            "ml_port": ml_port,
+            "llm_port": llm_port,
+        }
+
+    def _setup(self, *challengers: Mock):
+        from src.application.agent_graph import ShadowSetup
+
+        return ShadowSetup(champion_version=self.CHAMPION, challengers=tuple(challengers))
+
+    def test_shadow_prediction_does_not_change_ml_target_price(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        without = self._run(ports, None)
+        prompt_without = llm_port.analyze.call_args
+        record_without = repository_port.save_prediction.call_args
+
+        with_shadow = self._run(
+            ports, self._setup(self._challenger("direction", proba=0.9))
+        )
+
+        assert with_shadow["ml_target_price"] == without["ml_target_price"] == Decimal("89.5")
+        assert with_shadow["ml_cold_start"] is without["ml_cold_start"] is False
+        assert llm_port.analyze.call_args == prompt_without
+        assert repository_port.save_prediction.call_args == record_without
+
+    def test_saves_the_champion_and_challenger_forecasts_of_the_saved_prediction(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        from src.domain.promotion import ShadowForecast
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        direction = self._challenger("direction", proba=0.35)
+
+        final = self._run(ports, self._setup(direction))
+
+        repository_port.save_shadow_predictions.assert_called_once()
+        prediction_id, symbol, forecasts = repository_port.save_shadow_predictions.call_args.args
+        assert (prediction_id, symbol) == ("pred-uuid-123", "AAPL")
+        champion, shadow = forecasts
+        assert champion.model_name == "champion"
+        assert champion.model_version == self.CHAMPION
+        assert champion.predicted_return == pytest.approx((89.5 - 90.0) / 90.0)
+        assert shadow == ShadowForecast("direction", "c" * 64, proba=0.35)
+        assert direction.forecast.call_args.args == (final["ml_features"],)
+        assert direction.forecast.call_args.kwargs == {"return_scale": None}
+
+    def test_a_failing_challenger_is_left_out_and_the_rest_is_saved(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        from src.application.errors import MalformedPayload
+        from src.application.ports import ReturnScaleUnavailableError
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        broken = self._challenger("alt", predicted_return=0.01)
+        broken.forecast.side_effect = MalformedPayload("missing feature")
+        sigma = self._challenger("sigma", predicted_return=0.01)
+        sigma.forecast.side_effect = ReturnScaleUnavailableError("no sigma")
+        direction = self._challenger("direction", proba=0.6)
+
+        final = self._run(ports, self._setup(broken, sigma, direction))
+
+        assert final["status"] == "saved"
+        repository_port.save_shadow_predictions.assert_called_once()
+        forecasts = repository_port.save_shadow_predictions.call_args.args[2]
+        assert [forecast.model_name for forecast in forecasts] == ["champion", "direction"]
+
+    def test_cold_start_champion_has_no_shadow_row(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        ml_port.is_trained = False
+
+        self._run(ports, self._setup(self._challenger("direction", proba=0.6)))
+
+        repository_port.save_shadow_predictions.assert_called_once()
+        forecasts = repository_port.save_shadow_predictions.call_args.args[2]
+        assert [forecast.model_name for forecast in forecasts] == ["direction"]
+
+    def test_without_the_setup_the_graph_never_touches_the_shadow_table(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        final = self._run(ports, None)
+
+        assert final["status"] == "saved"
+        assert "shadow_forecasts" not in final
+        repository_port.save_shadow_predictions.assert_not_called()
+
+    def test_a_failed_shadow_write_keeps_the_saved_prediction(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        from src.application.errors import NotFound
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        repository_port.save_shadow_predictions.side_effect = NotFound("no table before 075")
+
+        final = self._run(ports, self._setup(self._challenger("direction", proba=0.6)))
+
+        assert final["status"] == "saved"
+        assert final["prediction_id"] == "pred-uuid-123"
+        repository_port.save_shadow_predictions.assert_called_once()
+        repository_port.save_price_snapshot.assert_called_once()
+
+    def test_an_ignored_cycle_makes_no_shadow_forecast(
+        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    ):
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+        direction = self._challenger("direction", proba=0.6)
+
+        final = self._run(ports, self._setup(direction))
+
+        assert final["status"] == "ignored"
+        direction.forecast.assert_not_called()
+        repository_port.save_shadow_predictions.assert_not_called()

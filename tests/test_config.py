@@ -1861,6 +1861,59 @@ class TestDirectionClassifierFlag:
         assert "ml_direction_classifier_enabled" in NON_RECIPE_SETTINGS_FIELDS
 
 
+class TestShadowPredictionsFlag:
+    """ML-33: prognozy cienia championa i challengerów — nowy zapis do bazy (migracja
+    075), domyślnie off i poza przepisem (wynik cyklu ten sam); do dwóch challengerów
+    o unikalnych nazwach innych niż champion."""
+
+    def test_defaults_off_without_challengers(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.shadow_predictions_enabled is False
+        assert settings.ml_challengers == []
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert {"shadow_predictions_enabled", "ml_challengers"} <= NON_RECIPE_SETTINGS_FIELDS
+
+    def test_reads_challengers_with_their_kind(self, env):
+        settings = Settings(
+            _env_file=None,
+            **REQUIRED_ENV_KWARGS,
+            ml_challengers=[
+                {"name": "direction", "path": "data/models/d.ubj", "kind": "direction"},
+                {"name": "alt_features", "path": "data/models/alt.ubj", "kind": "return"},
+            ],
+        )
+
+        assert [(c.name, c.kind) for c in settings.ml_challengers] == [
+            ("direction", "direction"),
+            ("alt_features", "return"),
+        ]
+
+    @pytest.mark.parametrize(
+        "challengers",
+        [
+            [
+                {"name": f"c{i}", "path": f"data/models/c{i}.ubj", "kind": "return"}
+                for i in range(3)
+            ],
+            [
+                {"name": "alt", "path": "data/models/a.ubj", "kind": "return"},
+                {"name": "alt", "path": "data/models/b.ubj", "kind": "return"},
+            ],
+            [{"name": "champion", "path": "data/models/c.ubj", "kind": "return"}],
+            [{"name": "alt", "path": "data/models/price_predictor.ubj", "kind": "return"}],
+            [{"name": "Alt", "path": "data/models/a.ubj", "kind": "return"}],
+            [{"name": "alt", "path": "data/models/a.ubj", "kind": "price"}],
+        ],
+    )
+    def test_rejects_challengers_the_shadow_table_cannot_tell_apart(self, env, challengers):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS, ml_challengers=challengers)
+
+
 class TestIsotonicCalibrationFlag:
     """ML-28: mapa izotoniczna w rankingu sygnałów — domyślnie off, poza przepisem
     (ranking liczy się po predykcji, jak `calibrated_confidence_enabled`)."""

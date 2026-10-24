@@ -482,6 +482,21 @@ def test_real_config_toml_ships_the_direction_classifier_off() -> None:
     assert data["ml_direction_classifier_enabled"] is False
 
 
+def test_real_config_toml_ships_the_shadow_predictions_off_until_migration() -> None:
+    # ML-33: nowa tabela `shadow_predictions` (migracja 075) — zapis off do DB Migrate;
+    # pierwszym challengerem jest klasyfikator kierunku ML-30 z jego pliku wag.
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+
+    assert data["shadow_predictions_enabled"] is False
+    assert data["ml_challengers"] == [
+        {
+            "name": "direction",
+            "path": "data/models/price_predictor_direction.ubj",
+            "kind": "direction",
+        }
+    ]
+
+
 def test_real_config_toml_ships_the_isotonic_calibration_off() -> None:
     """ML-28: mapa izotoniczna w rankingu sygnałów — świadome włączenie właściciela."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))

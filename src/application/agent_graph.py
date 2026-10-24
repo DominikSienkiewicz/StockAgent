@@ -39,6 +39,7 @@ from src.application.ports import (
     RepositoryPort,
     ReturnScaleUnavailableError,
     SentimentPort,
+    ShadowModelPort,
     Tool,
     ToolUseLLMPort,
 )
@@ -97,6 +98,7 @@ from src.domain.prediction import (
 )
 from src.domain.price_features import SIGMA_LOOKBACK, return_sigma
 from src.domain.price_validation import OUTLIER_HISTORY_DAYS, is_unconfirmed_outlier
+from src.domain.promotion import CHAMPION_MODEL_NAME, ShadowForecast
 from src.domain.recipe import PredictionRecipe
 from src.domain.regime_key import canonical_regime_key
 from src.domain.session_close import SessionClose, SessionCloseSettlement, session_close_of
@@ -241,6 +243,9 @@ class AgentState(TypedDict, total=False):
     # G03: True = XGBoost nie ma wag, a `ml_target_price` to baseline "cena bez
     # zmian", nie prognoza modelu. Rada i raport nie mogą go podawać jako sygnału.
     ml_cold_start: bool
+    # ML-33: prognozy cienia nogi ML (champion i challengerzy) do `shadow_predictions`.
+    # Brak klucza = bez `ShadowSetup` w deps; wynik cyklu ich nie czyta.
+    shadow_forecasts: tuple[ShadowForecast, ...]
     # ML-34: przedział 80% zwrotu do rozliczenia (conformal + ACI) z okna klasy
     # aktywa. Mail pokazuje go od razu; kolumny `interval_*` idą za flagą.
     move_interval: MoveInterval | None
@@ -660,6 +665,20 @@ def _build_fetch_fundamentals_node(
 
 
 @dataclasses.dataclass(frozen=True)
+class ShadowSetup:
+    """ML-33: champion/challenger nogi ML w Fast Loopie, składany przez DI za flagą
+    `shadow_predictions_enabled`.
+
+    `champion_version` — sha256 pliku wag championa (jak `model_version` przepisu);
+    `challengers` — do dwóch modeli z własnymi wagami. Ich prognozy cienia idą
+    wyłącznie do `shadow_predictions` (migracja 075): wynik cyklu, prompt, mail
+    i rekord predykcji są te same co bez nich."""
+
+    champion_version: str
+    challengers: tuple[ShadowModelPort, ...] = ()
+
+
+@dataclasses.dataclass(frozen=True)
 class AgentGraphDeps:
     """Zależności wstrzykiwane do węzłów grafu — zebrane w jeden obiekt, żeby
     węzły były funkcjami modułowymi (testowalnymi osobno), a fabryka
@@ -769,6 +788,9 @@ class AgentGraphDeps:
     # odczytu historii, jak przed DAT-15.
     price_outlier_guard_enabled: bool = False
     attestation_publisher: AttestationPublisherPort | None = None
+    # ML-33: prognozy cienia championa i challengerów do `shadow_predictions`
+    # (migracja 075). None = flaga off: graf nie liczy cieni i nie dotyka tabeli.
+    shadow: ShadowSetup | None = None
     # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
     # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
     # nie poda go z DI — `use_case.paid_calls` działa i wtedy.
@@ -1644,6 +1666,60 @@ def _ml_return_scale(deps: AgentGraphDeps, symbol: str) -> float | None:
     return return_sigma(points, deps.clock())
 
 
+def _shadow_forecasts(
+    setup: ShadowSetup,
+    features: dict[str, float],
+    symbol: str,
+    current_price: Decimal,
+    ml_target: Decimal,
+    *,
+    ml_cold_start: bool,
+    return_scale: float | None,
+) -> tuple[ShadowForecast, ...]:
+    """ML-33: prognoza championa (zwrot, który poszedł do maila; bez niej przy cold
+    starcie) i prognozy cienia challengerów z TEGO SAMEGO wektora cech i σ.
+    Challenger, który nie umie prognozować (cechy spoza wektora, model w σ bez σ),
+    wypada z WARNING-iem — reszta cyklu go nie widzi."""
+    forecasts: list[ShadowForecast] = []
+    if not ml_cold_start and current_price > 0:
+        forecasts.append(
+            ShadowForecast(
+                CHAMPION_MODEL_NAME,
+                setup.champion_version,
+                predicted_return=float((ml_target - current_price) / current_price),
+            )
+        )
+    for challenger in setup.challengers:
+        try:
+            forecasts.append(challenger.forecast(features, return_scale=return_scale))
+        except (PortError, ReturnScaleUnavailableError):
+            logger.warning(
+                "ML-33: challenger %s bez prognozy cienia dla %s",
+                challenger.name,
+                symbol,
+                exc_info=True,
+            )
+    return tuple(forecasts)
+
+
+def _persist_shadow_predictions(
+    deps: AgentGraphDeps, state: AgentState, prediction_id: str
+) -> None:
+    """ML-33: prognozy cienia pod id zapisanej predykcji. Błąd zapisu (np. brak
+    tabeli przed migracją 075) zostawia predykcję zapisaną, bez cieni."""
+    forecasts = state.get("shadow_forecasts") or ()
+    if deps.shadow is None or not forecasts:
+        return
+    try:
+        deps.repository_port.save_shadow_predictions(prediction_id, state["symbol"], forecasts)
+    except PortError:
+        logger.warning(
+            "save_shadow_predictions failed for %s — predykcja zapisana bez prognoz cienia",
+            state["symbol"],
+            exc_info=True,
+        )
+
+
 @dataclasses.dataclass(frozen=True)
 class _SealedCommitment:
     """Hash do publikacji po zapisie i — przy nadpisaniu innej predykcji w tej
@@ -2025,6 +2101,21 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         ml_cold_start = True
         prediction = (current_price, ())
     ml_target, feature_attribution = prediction
+    shadow: AgentState = (
+        {}
+        if deps.shadow is None
+        else {
+            "shadow_forecasts": _shadow_forecasts(
+                deps.shadow,
+                features,
+                symbol,
+                current_price,
+                ml_target,
+                ml_cold_start=ml_cold_start,
+                return_scale=return_scale,
+            )
+        }
+    )
 
     # #14: pojedyncze wyjście węzła — logujemy całkowity czas predict.
     elapsed_ms = (time.perf_counter() - predict_start) * 1000.0
@@ -2046,6 +2137,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     failover_state: AgentState = {} if failover is None else {"llm_failover": failover}
     return {
         **failover_state,
+        **shadow,
         "llm_analysis": llm_analysis,
         "trend_probabilities": trend_probabilities,
         "ml_target_price": ml_target,
@@ -2371,6 +2463,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     # WIA-01: hash trafia do publicznego logu dopiero, gdy sól jest w bazie.
     if sealed is not None:
         _publish_commitment(deps, state["symbol"], sealed, prediction_id)
+    _persist_shadow_predictions(deps, state, prediction_id)
 
     # Strukturalny audit trail rady — JSONB blob w prediction_logs zostaje
     # (wstecz-kompat), ale głosy lecą też do osobnej tabeli, żeby dało się
