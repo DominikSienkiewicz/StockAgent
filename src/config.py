@@ -258,6 +258,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "options_flow_enabled",
     # WIA-28: horyzont edge z kalendarza NYSE — inny zapisany `edge_sigma`.
     "edge_calendar_horizon_enabled",
+    # DAT-23: korekta splitu zmienia deltę bramki, rozliczenie i `price_delta`.
+    "split_detection_enabled",
     "social_velocity_enabled",
     "yield_curve_enabled",
     # DAT-22: głosy VIX i spreadu HY w reżimie zacieśniają próg bramki.
@@ -805,6 +807,10 @@ class Settings(BaseSettings):
     # z datą i źródłem, a mail pokazuje obie trafności (okres przejściowy). Kolumny
     # z migracji 059; off w kodzie i w config.toml, dopóki produkcja jej nie ma.
     session_close_settlement_enabled: bool = False
+    # DAT-23: `pc` z /quote vs ostatni snapshot — stosunek bliski stosunkowi splitu
+    # koryguje referencję bramki, rozliczenie (w jednostkach predykcji) i `price_delta`,
+    # a zdarzenie idzie do `corporate_actions` (migracja 062). Off.
+    split_detection_enabled: bool = False
     # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
     # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
     # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.

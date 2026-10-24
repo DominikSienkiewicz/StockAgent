@@ -1720,3 +1720,16 @@ class TestEdgeCalendarHorizonFlag:
 
         assert settings.edge_calendar_horizon_enabled is False
         assert "edge_calendar_horizon_enabled" in RECIPE_SETTINGS_FIELDS
+
+
+class TestSplitDetectionFlag:
+    """DAT-23: podejrzenie splitu z `pc` koryguje bramkę, rozliczenie i `price_delta`
+    (przepis) i zapisuje zdarzenie w `corporate_actions` (migracja 062). Off."""
+
+    def test_defaults_off_and_inside_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.split_detection_enabled is False
+        assert "split_detection_enabled" in RECIPE_SETTINGS_FIELDS

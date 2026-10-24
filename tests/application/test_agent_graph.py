@@ -6177,3 +6177,192 @@ class TestSigmaServing:
         assert final["ml_target_price"] == Decimal("90.0")
         assert final["ml_cold_start"] is True
         assert "ml_sigma_unavailable" in final["data_quality_flags"]
+
+
+class TestSplitDetection:
+    """DAT-23: przed otwarciem `pc` z /quote to cena poprzedniego snapshotu, więc
+    stosunek `pc / snapshot` bliski stosunkowi splitu to korekta historii, nie ruch.
+    Za flagą `split_detection_enabled` bramka liczy ruch od skorygowanej referencji,
+    reflect rozlicza predykcję w jej jednostkach, a zdarzenie trafia do
+    `corporate_actions` (migracja 062)."""
+
+    # Pon. 2026-10-19 12:00 UTC (8:00 ET), przed otwarciem; notowanie z piątku.
+    _NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+    _FRIDAY_CLOSE = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
+
+    def _deps(self, repository_port: Mock, llm_port: Mock, *, enabled: bool) -> AgentGraphDeps:
+        from src.application.ports import QuotePort
+        from src.domain.value_objects import Quote
+
+        quote_port = Mock(spec=QuotePort)
+        # NVDA 10:1 — snapshot 1000 sprzed splitu, `pc` 100 po korekcie, cena 100,5.
+        quote_port.get_quote.return_value = Quote(
+            price=Money(Decimal("100.5")),
+            quoted_at=self._FRIDAY_CLOSE,
+            prev_close=Money(Decimal("100")),
+        )
+        return AgentGraphDeps(
+            market_port=Mock(spec=MarketDataPort),
+            sentiment_port=Mock(spec=SentimentPort),
+            news_port=Mock(spec=NewsPort),
+            repository_port=repository_port,
+            ml_port=Mock(spec=MLPredictionPort),
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            quote_port=quote_port,
+            split_detection_enabled=enabled,
+            clock=lambda: self._NOW,
+        )
+
+    @staticmethod
+    def _state(**extra) -> dict:
+        from src.domain.asset import Asset
+        from src.domain.value_objects import AssetType
+
+        return {
+            "symbol": "NVDA",
+            "previous_price": Decimal("1000"),
+            "asset": Asset(symbol="NVDA", asset_type=AssetType.STOCK),
+            **extra,
+        }
+
+    @staticmethod
+    def _bullish_before_split() -> Prediction:
+        return Prediction(
+            id="pre-split",
+            symbol="NVDA",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("1000"),
+            predicted_target_price=Decimal("1050"),
+        )
+
+    def test_split_does_not_open_the_gate(self, repository_port: Mock, llm_port: Mock) -> None:
+        # Ruch od skorygowanej referencji (1000 × 0,1 = 100) to +0,5% — pod progiem.
+        deps = self._deps(repository_port, llm_port, enabled=True)
+
+        final = create_agent_graph(deps).compile().invoke(self._state())
+
+        assert final["status"] == "ignored"
+        assert final["delta"] == pytest.approx(Decimal("0.005"))
+        assert final["split_ratio"] == Decimal("0.1")
+        llm_port.analyze.assert_not_called()
+
+    def test_split_suspicion_is_recorded(self, repository_port: Mock, llm_port: Mock) -> None:
+        from src.domain.corporate_actions import SplitSuspicion
+
+        deps = self._deps(repository_port, llm_port, enabled=True)
+
+        create_agent_graph(deps).compile().invoke(self._state())
+
+        repository_port.save_corporate_action.assert_called_once_with(
+            SplitSuspicion(
+                symbol="NVDA",
+                ratio=Decimal("0.1"),
+                prev_close=Decimal("100"),
+                reference_price=Decimal("1000"),
+                detected_at=self._NOW,
+            )
+        )
+
+    def test_reflect_adjusts_entry_price_by_detected_split(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        # BULLISH z 1000 po splicie 10:1 i cenie 100,5 to 1005 w jednostkach predykcji —
+        # trafny, a nie −90%. Zapisana cena rozliczenia zostaje w tych jednostkach.
+        repository_port.get_unverified_prediction.return_value = self._bullish_before_split()
+        deps = self._deps(repository_port, llm_port, enabled=True)
+
+        create_agent_graph(deps).compile().invoke(self._state())
+
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["actual_price"] == Decimal("1005")
+        assert kwargs["is_trend_correct"] is True
+        assert kwargs["accuracy_score"] == pytest.approx(0.955)
+
+    def test_flag_off_keeps_the_raw_move(self, repository_port: Mock, llm_port: Mock) -> None:
+        from src.application.agent_graph import _check_price_node, _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._bullish_before_split()
+        llm_port.analyze_mistake.return_value = "Split potraktowany jak krach."
+        deps = self._deps(repository_port, llm_port, enabled=False)
+        state = self._state()
+
+        update = _check_price_node(deps, state)
+        _reflect_node(deps, {**state, **update})
+
+        assert update["delta"] == pytest.approx(Decimal("-0.8995"))
+        assert "split_ratio" not in update
+        repository_port.save_corporate_action.assert_not_called()
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["actual_price"] == Decimal("100.5")
+        assert kwargs["is_trend_correct"] is False
+
+    def test_stale_reference_is_not_compared(self, repository_port: Mock, llm_port: Mock) -> None:
+        # FIN-14: stęchły snapshot nie jest ceną sprzed jednej sesji — `pc` go nie sprawdzi.
+        from src.application.agent_graph import _check_price_node
+
+        deps = self._deps(repository_port, llm_port, enabled=True)
+
+        update = _check_price_node(deps, self._state(stale_reference=True))
+
+        assert "split_ratio" not in update
+        repository_port.save_corporate_action.assert_not_called()
+
+    def test_record_failure_keeps_the_adjustment(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _check_price_node
+        from src.application.errors import NotFound
+
+        repository_port.save_corporate_action.side_effect = NotFound("no table")
+        deps = self._deps(repository_port, llm_port, enabled=True)
+
+        update = _check_price_node(deps, self._state())
+
+        assert update["split_ratio"] == Decimal("0.1")
+        assert update["previous_price"] == Decimal("100.0")
+
+    def test_ml_price_delta_uses_the_split_adjusted_last_prediction(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        # Cecha `price_delta` od ostatniej predykcji (1000) też w cenach po splicie.
+        from src.application.agent_graph import _predict_node
+
+        deps = self._deps(repository_port, llm_port, enabled=True)
+        _setup_full_analysis_mocks(
+            deps.sentiment_port, deps.news_port, repository_port, deps.ml_port, llm_port,
+        )
+        repository_port.get_last_prediction_price.return_value = Money(Decimal("1000"))
+        state = self._state(
+            current_price=Decimal("100.5"),
+            delta=Decimal("0.005"),
+            split_ratio=Decimal("0.1"),
+            sentiment={},
+            news=[],
+        )
+
+        update = _predict_node(deps, state)
+
+        assert update["ml_features"]["price_delta"] == pytest.approx(0.005)
+
+    def test_session_close_after_a_split_is_in_the_units_of_the_prediction(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        # WIA-61 + DAT-23: drugie rozliczenie (zamknięcie sesji) też cofnięte o split.
+        import dataclasses as dc
+
+        prediction = dc.replace(
+            self._bullish_before_split(),
+            created_at=datetime(2026, 10, 15, 12, 0, tzinfo=UTC),
+        )
+        repository_port.get_unverified_prediction.return_value = prediction
+        deps = dc.replace(
+            self._deps(repository_port, llm_port, enabled=True),
+            session_close_settlement_enabled=True,
+        )
+
+        create_agent_graph(deps).compile().invoke(self._state())
+
+        settlement = repository_port.update_prediction_accuracy.call_args.kwargs["session_close"]
+        assert settlement.close.price == Money(Decimal("1005"))
+        assert settlement.is_trend_correct is True

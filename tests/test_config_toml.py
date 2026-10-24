@@ -576,3 +576,10 @@ def test_real_config_toml_ships_the_calendar_edge_horizon_off() -> None:
     """WIA-28: horyzont edge z kalendarza NYSE czeka do końca EXP-02/03."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["edge_calendar_horizon_enabled"] is False
+
+
+def test_real_config_toml_ships_the_split_detection_off_until_migration() -> None:
+    """DAT-23: tabela `corporate_actions` powstaje w migracji 062, a korekta zmienia
+    rozliczenie, więc czeka też do końca EXP-02/03."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["split_detection_enabled"] is False

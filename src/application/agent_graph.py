@@ -62,6 +62,7 @@ from src.domain.attestation import (
 )
 from src.domain.attestation import SCHEMA_VERSION as ATTESTATION_SCHEMA_VERSION
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
+from src.domain.corporate_actions import SplitSuspicion, detect_split, to_pre_split_price
 from src.domain.council import (
     CouncilInput,
     CouncilVerdict,
@@ -102,6 +103,7 @@ from src.domain.value_objects import (
     AssetType,
     Fundamentals,
     Money,
+    Quote,
     Ratio,
     Threshold,
     ValuationVerdict,
@@ -255,6 +257,10 @@ class AgentState(TypedDict, total=False):
     # domenowych, renormalizowana po dostępnych źródłach). None = wszystkie flagi
     # alfa off → prompt i cechy identyczne jak przed #14.
     alpha_fusion: AlphaFusionScore | None
+
+    # DAT-23: mnożnik ceny po podejrzanym splicie względem ceny przed nim (10:1 → 0,1),
+    # z `check_price` za `split_detection_enabled`. Brak klucza = bez splitu.
+    split_ratio: Decimal
 
     # #18: dywergencja predykcji modelu od implied move rynku opcji.
     # None = brak IV / options_flow_enabled=false → sygnał nie powstaje.
@@ -744,6 +750,10 @@ class AgentGraphDeps:
     # WIA-61: rozliczenie zapisuje obok ceny /quote oficjalne zamknięcie sesji
     # (kolumny z migracji 059). Off = klucze nie idą do repozytorium (PGRST204).
     session_close_settlement_enabled: bool = False
+    # DAT-23: `pc` notowania vs ostatni snapshot — podejrzenie splitu koryguje
+    # referencję bramki, rozliczenie i `price_delta`, a zdarzenie idzie do
+    # `corporate_actions` (migracja 062). Off = jak przed DAT-23.
+    split_detection_enabled: bool = False
     attestation_publisher: AttestationPublisherPort | None = None
     # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
     # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
@@ -780,12 +790,50 @@ def _session_quote_port(deps: AgentGraphDeps, state: AgentState) -> QuotePort | 
     return deps.quote_port if asset.asset_type in _SESSION_QUOTED_ASSETS else None
 
 
+def _detect_split(
+    deps: AgentGraphDeps, state: AgentState, quote: Quote | None
+) -> SplitSuspicion | None:
+    """DAT-23: podejrzenie splitu z `pc` notowania vs ostatni snapshot. Tylko za flagą,
+    z notowaniem niosącym `pc` i ze świeżą referencją — stęchły snapshot (FIN-14)
+    nie jest ceną sprzed jednej sesji, więc stosunek nic by nie mówił. Zdarzenie
+    idzie do `corporate_actions`; błąd zapisu nie zatrzymuje korekty cyklu."""
+    if not deps.split_detection_enabled or quote is None or quote.prev_close is None:
+        return None
+    if _reference_is_stale(state):
+        return None
+    suspicion = detect_split(
+        state["symbol"], quote.prev_close.amount, state["previous_price"], at=deps.clock()
+    )
+    if suspicion is None:
+        return None
+    logger.warning(
+        "Suspected split for %s: previous close %s vs last snapshot %s → ratio %s; "
+        "the gate, the settlement and price_delta use split-adjusted prices",
+        suspicion.symbol,
+        suspicion.prev_close,
+        suspicion.reference_price,
+        suspicion.ratio,
+    )
+    try:
+        deps.repository_port.save_corporate_action(suspicion)
+    except PortError:
+        logger.warning(
+            "save_corporate_action failed for %s — split adjusted without a record",
+            suspicion.symbol,
+            exc_info=True,
+        )
+    return suspicion
+
+
 def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     symbol = state["symbol"]
     quote_port = _session_quote_port(deps, state)
     quote = quote_port.get_quote(symbol) if quote_port is not None else None
     current = quote.price if quote is not None else deps.market_port.get_current_price(symbol)
-    previous = Money(state["previous_price"])
+    split = _detect_split(deps, state, quote)
+    # DAT-23: po splicie referencja (snapshot sprzed niego) w cenach po splicie.
+    ratio = split.ratio if split is not None else Decimal(1)
+    previous = Money(state["previous_price"] * ratio)
     delta = PriceDelta.calculate(previous, current)
     # #6: snapshot ceny NIE jest już zapisywany tutaj. Zapis przeniesiony do
     # węzłów TERMINALNYCH (save_node / ignore_node), żeby cykl był idempotentny:
@@ -796,6 +844,9 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         "current_price": current.amount,
         "delta": Ratio(delta.fraction),
     }
+    if split is not None:
+        update["previous_price"] = previous.amount
+        update["split_ratio"] = split.ratio
     if quote is not None:
         now = deps.clock()
         stale = is_stale(quote.quoted_at, now)
@@ -811,7 +862,9 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
             update["session_close"] = session_close_of(quote, now)
     reference = state.get("drift_reference")
     if reference is not None and reference > 0:
-        update["drift"] = Ratio(PriceDelta.calculate(Money(reference), current).fraction)
+        update["drift"] = Ratio(
+            PriceDelta.calculate(Money(reference * ratio), current).fraction
+        )
     return update
 
 
@@ -1179,14 +1232,25 @@ def _session_close_extras(
 ) -> _SettlementExtras:
     """WIA-61 (okres przejściowy): zamknięcie sesji z trafnością na nim, gdy
     pochodzi z pierwszej sesji po predykcji albo późniejszej. Cena /quote zostaje
-    rozliczeniem — trafność raportu, diagnoza i trening bez zmian."""
+    rozliczeniem — trafność raportu, diagnoza i trening bez zmian. DAT-23: po
+    splicie zamknięcie też w jednostkach predykcji."""
     close = state.get("session_close")
     if not deps.session_close_settlement_enabled or close is None or last.created_at is None:
         return {}
     if not close.settles(last.created_at):
         return {}
+    close = dataclasses.replace(close, price=Money(_settlement_price(state, close.price.amount)))
     correct = last.is_trend_correct(close.price.amount, tolerance=tolerance)
     return {"session_close": SessionCloseSettlement(close, is_trend_correct=correct)}
+
+
+def _settlement_price(state: AgentState, price: Decimal) -> Decimal:
+    """DAT-23: cena rozliczenia w jednostkach predykcji. Po podejrzanym splicie
+    predykcja sprzed niego rozlicza się ceną cofniętą o stosunek splitu — to samo,
+    co przeskalowanie `price_at_prediction` i celu, a zapisana cena zostaje
+    w jednostkach `price_at_prediction`. Bez splitu cena bez zmian."""
+    ratio = state.get("split_ratio")
+    return price if ratio is None else to_pre_split_price(price, ratio)
 
 
 def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
@@ -1196,7 +1260,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     crypto_threshold = deps.crypto_threshold
     llm_port = deps.llm_port
     symbol = state["symbol"]
-    current_price = state["current_price"]
+    current_price = _settlement_price(state, state["current_price"])
     # min_age_hours odsiewa predykcje zbyt świeże, by je rzetelnie ocenić
     # (nakładające się cykle: manualny dispatch + scheduled). 0 = bez filtra.
     # max_age_hours (WIA-04) odsiewa predykcje zbyt stare — idzie tylko, gdy ustawione.
@@ -1818,9 +1882,9 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         state["symbol"], before=deps.clock()
     )
     if last_pred_price is not None and last_pred_price.amount != 0:
-        ml_price_delta = float(
-            (current_price - last_pred_price.amount) / last_pred_price.amount
-        )
+        # DAT-23: po podejrzanym splicie ostatnia predykcja (sprzed niego) w cenach po nim.
+        reference = last_pred_price.amount * state.get("split_ratio", Decimal(1))
+        ml_price_delta = float((current_price - reference) / reference)
     else:
         # Pierwsza predykcja dla symbolu — widok i tak odsiewa takie wiersze
         # (price_prev_12h NULL → price_delta NULL), więc neutralne 0.0 + flaga.

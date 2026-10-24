@@ -312,6 +312,12 @@ insider_lead_max_age_days = 3
 # zostaje /quote. Krypto bez sesji — bez tej ceny. Zero nowych requestów.
 # UWAGA: włącz DOPIERO po migracji 059.
 session_close_settlement_enabled = false
+# DAT-23: przed otwarciem `pc` z /quote to cena poprzedniego snapshotu, więc stosunek
+# bliski 1/2, 1/3, 1/4, 1/5, 1/10, 2 albo 3 (±2%) to split, nie ruch. Bramka liczy wtedy
+# ruch od skorygowanej referencji, reflect rozlicza w jednostkach predykcji, a zdarzenie
+# idzie do `corporate_actions`. Zmienia rozliczenie, więc czeka do końca EXP-02/03.
+# UWAGA: włącz DOPIERO po migracji 062.
+split_detection_enabled = false
 # WIA-24: darmowy sygnał referencyjny `reference-v1` (docs/reference-protocol-v1.md) —
 # raz na przebieg Slow Loopa własny odczyt /quote (Finnhub, CoinGecko), rozliczenie
 # zeszłotygodniowego wywołania i nowe wywołanie ze znaku zmiany tygodniowej. Zapis do

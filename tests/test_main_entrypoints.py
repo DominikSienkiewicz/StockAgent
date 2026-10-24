@@ -384,6 +384,17 @@ class TestBuildAgentGraphDeps:
 
         assert deps.edge_calendar_horizon_enabled is enabled
 
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_split_detection_flag_reaches_the_graph(
+        self, settings, mock_external_clients, enabled
+    ):
+        # DAT-23: detekcja splitu z `pc` za flagą (zapis w `corporate_actions`, 062).
+        settings.split_detection_enabled = enabled
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert deps.split_detection_enabled is enabled
+
     def test_tool_use_disabled_wires_no_tool_use_port(self, settings, mock_external_clients):
         settings.tool_use_enabled = False
 
