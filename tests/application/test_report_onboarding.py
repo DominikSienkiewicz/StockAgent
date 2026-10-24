@@ -147,3 +147,29 @@ def test_sectors_follow_the_config_order() -> None:
     )
 
     assert text.index("Big Tech") < text.index("Krypto") < text.index("Inne")
+
+
+def test_first_run_explains_how_to_read_signals() -> None:
+    # MAIL-22: pierwszy mail tłumaczy, jak czytać sygnały — nie tylko cold-start.
+    html = render_onboarding_html(
+        CycleMaturity.FIRST_RUN, instrument_count=3, sectors=_SECTORS_SAMPLE
+    )
+    text = render_onboarding_text(
+        CycleMaturity.FIRST_RUN, instrument_count=3, sectors=_SECTORS_SAMPLE
+    )
+
+    for out in (html, text):
+        assert "Jak czytać ten mail" in out
+        assert "nie prawdopodobieństwo" in out
+        assert "nie rekomendacja inwestycyjna" in out
+        assert "paper-PnL" in out
+        assert "Track Record" in out
+    assert html.count("<li") >= 4 + len(_SECTORS_SAMPLE)
+
+
+def test_steady_state_has_no_reading_guide() -> None:
+    html = render_onboarding_html(
+        CycleMaturity.STEADY_STATE, instrument_count=3, sectors=_SECTORS_SAMPLE
+    )
+
+    assert "Jak czytać ten mail" not in html

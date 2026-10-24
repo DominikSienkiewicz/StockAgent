@@ -56,6 +56,32 @@ def _ordered_sectors(
     return [(name, sectors[name]) for name in ordered_names if sectors[name] > 0]
 
 
+# MAIL-22: przewodnik „jak czytać ten mail” — tylko w pierwszym mailu deploymentu.
+READING_GUIDE_TITLE = "📖 Jak czytać ten mail"
+READING_GUIDE = (
+    "Pewność przy prognozie to deklarowana siła sygnału modelu, nie prawdopodobieństwo "
+    "trafienia — ile jest warta, pokazuje kalibracja w Track Recordzie.",
+    "KUP / SPRZEDAJ / TRZYMAJ to sygnał modelu i rady person, nie rekomendacja "
+    "inwestycyjna.",
+    "Wyniki portfela to paper-PnL: symulacja na papierze, bez realnych zleceń, "
+    "poślizgu i podatków.",
+    "Ile model naprawdę trafia, mówi sekcja 📈 Track Record w Zapleczu (trafność "
+    "kierunkowa, Brier, krzywa kapitału) — pierwsze liczby po kilku rozliczonych cyklach.",
+)
+
+
+def _reading_guide_html() -> str:
+    items = "".join(
+        f"<li style='margin: 2px 0;'>{_html.escape(sentence)}</li>" for sentence in READING_GUIDE
+    )
+    return (
+        "<h3 style='font-size: 14px; margin: 12px 0 4px 0; color: #1e3a8a;'>"
+        "📖 Jak czytać ten mail</h3>"
+        "<ul style='margin: 0; padding-left: 18px; font-size: 13px; "
+        f"color: #374151;'>{items}</ul>"
+    )
+
+
 def render_onboarding_html(
     maturity: CycleMaturity,
     *,
@@ -98,6 +124,7 @@ def render_onboarding_html(
         "to nie awaria, tylko brak historii."
         "</div>"
         f"{composition}"
+        f"{_reading_guide_html()}"
         "</div>"
     )
 
@@ -125,6 +152,7 @@ def render_onboarding_text(
     lines += [
         f"  • {name} — {count}" for name, count in _ordered_sectors(sectors, sector_order)
     ]
+    lines += ["", READING_GUIDE_TITLE, *(f"  • {sentence}" for sentence in READING_GUIDE)]
     return "\n".join(lines)
 
 

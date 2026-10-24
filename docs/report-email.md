@@ -11,7 +11,7 @@ Every section of the cycle email, in the order `build_html_report` renders it (t
 | 1 | Quota banner (`🔴 KRYTYCZNY` / `⚠️ OSTRZEŻENIE`) | top | a quota alert in the last 7 × 24 + 3 h | no flag | yes |
 | 2 | `📡 Stan źródeł danych` — one line per provider (Finnhub, CoinGecko, Alpha Vantage, EDGAR, Reddit, FRED, NBP, Anthropic, OpenAI): OK, degraded (N symbols / failed responses), unavailable (open HTTP circuit), disabled by flag | top | a provider is degraded or unavailable this cycle (MAIL-21); a quiet day hides it | no flag | yes |
 | 3 | Lead, reused as the subject | top | a lead item (the cycle's strongest signal); without one the preheader says `Brak sygnałów ponad próg` | no flag | yes |
-| 4 | `👋 Dzień 1 — buduję punkt odniesienia` | top | the first cycle of a deployment (`cycle_maturity`), with its own welcome subject | no flag | yes |
+| 4 | `👋 Dzień 1 — buduję punkt odniesienia` with `📖 Jak czytać ten mail` (four sentences: confidence is not a probability, KUP/SPRZEDAJ is a model signal, paper-PnL, where the track record is) | top | the first cycle of a deployment (`cycle_maturity`), with its own welcome subject | no flag | yes |
 | 5 | NYSE session line (`Sesja NYSE:`) and the market regime | Na dziś | always; the regime with `regime_aware_enabled` | `regime_aware_enabled = true` | yes |
 | 6 | First screen: `Twój portfel od ostatniego maila`, `Sygnały ponad próg`, `Rozliczone` | Na dziś | always; the portfolio box only for the owner with positions | `portfolio_positions_enabled = true` | yes |
 | 7 | Credibility bar (`Wiarygodność modelu`) | Na dziś | the accuracy statistics carry directional counts | no flag | yes |

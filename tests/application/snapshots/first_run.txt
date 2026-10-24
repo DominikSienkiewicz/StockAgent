@@ -3,6 +3,12 @@ Startuję dla 3 instrumenty. Ten cykl zapisuje pierwsze ceny jako punkt odniesie
   • Krypto — 1
   • Półprzewodniki — 2
 
+📖 Jak czytać ten mail
+  • Pewność przy prognozie to deklarowana siła sygnału modelu, nie prawdopodobieństwo trafienia — ile jest warta, pokazuje kalibracja w Track Recordzie.
+  • KUP / SPRZEDAJ / TRZYMAJ to sygnał modelu i rady person, nie rekomendacja inwestycyjna.
+  • Wyniki portfela to paper-PnL: symulacja na papierze, bez realnych zleceń, poślizgu i podatków.
+  • Ile model naprawdę trafia, mówi sekcja 📈 Track Record w Zapleczu (trafność kierunkowa, Brier, krzywa kapitału) — pierwsze liczby po kilku rozliczonych cyklach.
+
 ================================================================
 STOCKAGENT — RAPORT CYKLU
 ================================================================
