@@ -205,6 +205,7 @@ jobs:
           path: |
             public/attestation/commitments.jsonl
             public/attestation/reveals.jsonl
+            public/attestation/paper_ledger_heads.jsonl
           if-no-files-found: ignore
           retention-days: 7   # jedyna kopia nowych linii, gdyby push padł
 
@@ -284,6 +285,11 @@ jobs:
           cp ledger-artifact/*.jsonl public/attestation/
           touch public/attestation/commitments.jsonl public/attestation/reveals.jsonl
           git -C public/attestation add commitments.jsonl reveals.jsonl
+          # WIA-59: głowa paper ledgera (raz dziennie) — tylko gdy agent ją dopisał;
+          # pusty plik dałby commit bez nowych linii.
+          if [ -f public/attestation/paper_ledger_heads.jsonl ]; then
+            git -C public/attestation add paper_ledger_heads.jsonl
+          fi
           if git -C public/attestation diff --cached --quiet; then
             echo "Ledger bez zmian — nic do wypchnięcia."
             exit 0

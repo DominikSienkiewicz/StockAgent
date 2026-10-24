@@ -113,6 +113,8 @@ def test_dependency_sync_installs_anthropic_extra() -> None:
 PUBLIC_ARTIFACT_FLAGS = ("attestation_enabled", "public_scorecard_enabled")
 # Pliki ledgera atestacji (#16), które musi zabrać trwały `git push`.
 ATTESTATION_LEDGER_KEYS = ("attestation_commitments_path", "attestation_reveals_path")
+# WIA-59: głowa paper ledgera — ten sam katalog i ten sam push co ledger atestacji.
+PAPER_LEDGER_HEADS_KEY = "paper_ledger_heads_path"
 
 
 def _job_needs(job: Mapping[str, Any]) -> list[str]:
@@ -1475,7 +1477,37 @@ def test_ledger_artifact_carries_both_ledger_files_from_config() -> None:
         if line.strip()
     }
 
-    assert uploaded == {_normalized(str(config[key])) for key in ATTESTATION_LEDGER_KEYS}
+    assert uploaded == {
+        _normalized(str(config[key]))
+        for key in (*ATTESTATION_LEDGER_KEYS, PAPER_LEDGER_HEADS_KEY)
+    }
+
+
+def test_publish_step_commits_the_paper_ledger_heads_next_to_the_ledger() -> None:
+    """WIA-59: głowa paper ledgera leży obok ledgera atestacji i idzie tym samym pushem."""
+    config = _repo_config()
+    heads = _normalized(str(config[PAPER_LEDGER_HEADS_KEY]))
+    publish = _jobs_pushing(_fast_loop_spec())
+    scripts = [str(step.get("run", "")) for job in publish.values() for step in job["steps"]]
+
+    assert posixpath.dirname(heads) == _ledger_dir()
+    assert any(
+        _contains(path, heads) for script in scripts for path in _git_added_paths(script)
+    )
+
+
+def test_publish_step_commits_the_paper_ledger_heads_it_got(
+    ledger_remote: _LedgerRemote,
+) -> None:
+    heads = '{"head": "' + "a" * 64 + '", "kind": "paper_ledger_head"}\n'
+    ledger_remote.stage_artifact('{"n": 1}\n')
+    artifact = ledger_remote.workspace / "ledger-artifact"
+    (artifact / "paper_ledger_heads.jsonl").write_text(heads, encoding="utf-8")
+
+    result = ledger_remote.run_publish_step()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ledger_remote.published("paper_ledger_heads.jsonl") == [heads.strip()]
 
 
 def test_real_fast_loop_publishes_the_attestation_ledger_once_its_flag_is_on() -> None:
