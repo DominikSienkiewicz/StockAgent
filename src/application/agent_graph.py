@@ -427,12 +427,10 @@ def _build_similar_context(
 
 
 def _float_or_default(value: Any, default: float) -> float:
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+    """Liczba albo `default` — także dla NaN/Inf (ML-35), tą samą polityką co
+    `_validate_float`, tylko bez flagi; zapis predykcji flaguje przez `_saved_float`."""
+    parsed, _flag = _validate_float(value, "", default)
+    return parsed
 
 
 def _validate_float(value: Any, field_name: str, default: float) -> tuple[float, str | None]:
@@ -452,6 +450,13 @@ def _validate_float(value: Any, field_name: str, default: float) -> tuple[float,
     if math.isnan(parsed) or math.isinf(parsed):
         return default, f"{field_name}_invalid"
     return parsed, None
+
+
+def _saved_float(value: Any, field_name: str, default: float) -> tuple[float, str | None]:
+    """ML-35: pole liczbowe zapisu predykcji — wartość jak `_validate_float`, ale flaga
+    tylko dla wartości obecnej i skażonej (`_invalid`); brak pola to cichy default."""
+    parsed, flag = _validate_float(value, field_name, default)
+    return parsed, None if value is None else flag
 
 
 # Dozwolone kierunki trendu z LLM → sygnał liczbowy dla cechy ML. Mapowanie
@@ -2506,6 +2511,14 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     # #17: zawężenie do zmiennej lokalnej WEWNĄTRZ gałęzi `is not None`, żeby
     # mypy widział `CouncilVerdict` (nie `CouncilVerdict | None`) w asdict().
     # Wcześniej maskował to szeroki override `disable_error_code=["arg-type"]`.
+    # ML-35: pewność z LLM po polityce `_validate_float` — NaN/Inf/nie-liczba to
+    # default z flagą `_invalid` (brak pola zostaje cichym defaultem, jak dotąd).
+    confidence, confidence_flag = _saved_float(
+        llm_analysis.get("confidence_score"), "confidence_score", 0.5
+    )
+    if confidence_flag is not None:
+        data_quality_flags = [*data_quality_flags, confidence_flag]
+
     council_verdict = state.get("council_verdict")
     council_verdict_dict = (
         dataclasses.asdict(council_verdict) if council_verdict is not None else None
@@ -2530,9 +2543,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         "predicted_target_price": _storage_price(state.get("ml_target_price")),
         # #4: persystujemy deklarowaną pewność — bez niej Slow-Loopowy sędzia
         # nie oceni kalibracji (migracja 016).
-        "confidence_score": _float_or_default(
-            llm_analysis.get("confidence_score"), 0.5
-        ),
+        "confidence_score": confidence,
         "reasoning_text": llm_analysis.get("reasoning"),
         "council_verdict": council_verdict_dict,
         "data_quality_flags": data_quality_flags,

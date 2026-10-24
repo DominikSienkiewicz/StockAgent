@@ -6607,6 +6607,72 @@ class TestInvalidationLevel:
         )
 
 
+class TestNonFiniteLlmNumbers:
+    """ML-35: oba parsery liczb mają jedną politykę NaN/Inf — wartość domyślna,
+    a w zapisie także flaga jakości (`_invalid`), żeby clamp nie ukrył skażonego
+    wejścia. Brak pola zostaje cichym defaultem, jak dotąd."""
+
+    @staticmethod
+    def _save(llm_analysis: dict) -> dict:
+        from src.application.agent_graph import _save_node
+
+        repo = Mock(spec=RepositoryPort)
+        repo.save_prediction.return_value = "pred-1"
+        deps = AgentGraphDeps(
+            market_port=Mock(spec=MarketDataPort),
+            sentiment_port=Mock(spec=SentimentPort),
+            news_port=Mock(spec=NewsPort),
+            repository_port=repo,
+            ml_port=Mock(spec=MLPredictionPort),
+            llm_port=Mock(spec=LLMPort),
+            threshold=Threshold(Decimal("0.02")),
+        )
+        _save_node(
+            deps,
+            {
+                "symbol": "AAPL",
+                "previous_price": Decimal("100"),
+                "current_price": Decimal("106"),
+                "delta": Decimal("0.06"),
+                "llm_analysis": {"trend_direction": "BULLISH", **llm_analysis},
+                "ml_target_price": Decimal("108"),
+                "data_quality_flags": ["av_keys_exhausted"],
+            },
+        )
+        record: dict = repo.save_prediction.call_args.args[0]
+        return record
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), "-inf"])
+    def test_float_or_default_rejects_non_finite_numbers(self, value: object) -> None:
+        from src.application.agent_graph import _float_or_default
+
+        assert _float_or_default(value, 0.5) == 0.5
+
+    def test_save_node_replaces_nan_confidence_with_default(self) -> None:
+        record = self._save({"confidence_score": float("nan"), "av_agreement": 0.7})
+
+        assert record["confidence_score"] == 0.5
+        assert record["data_quality_flags"] == ["av_keys_exhausted", "confidence_score_invalid"]
+
+    def test_save_node_flags_a_non_numeric_confidence(self) -> None:
+        record = self._save({"confidence_score": "wysoka"})
+
+        assert record["confidence_score"] == 0.5
+        assert "confidence_score_invalid" in record["data_quality_flags"]
+
+    def test_missing_confidence_stays_a_quiet_default(self) -> None:
+        record = self._save({})
+
+        assert record["confidence_score"] == 0.5
+        assert record["data_quality_flags"] == ["av_keys_exhausted"]
+
+    def test_infinite_agreement_is_saved_as_the_neutral_default(self) -> None:
+        # Flagę `av_llm_agreement_invalid` stawia już predict (`_validate_float`).
+        record = self._save({"confidence_score": 0.8, "av_agreement": float("inf")})
+
+        assert record["av_llm_agreement"] == 0.5
+
+
 # ---------------------------------------------------------------------------
 # ML-11: model wspólny w jednostkach σ — serving mnoży prognozę przez σ symbolu
 # ---------------------------------------------------------------------------
