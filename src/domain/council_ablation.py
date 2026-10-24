@@ -175,18 +175,21 @@ def leave_one_out(
     potem alfabetycznie."""
     crypto = frozenset(symbol.upper() for symbol in crypto_symbols)
     by_prediction: dict[str, list[PersonaVoteOutcome]] = defaultdict(list)
+    cycles: dict[str, str] = {}
     for outcome in outcomes:
-        if outcome.predicted_at is not None and (since is None or outcome.predicted_at >= since):
-            by_prediction[outcome.prediction_id].append(outcome)
+        if outcome.predicted_at is None or (since is not None and outcome.predicted_at < since):
+            continue
+        by_prediction[outcome.prediction_id].append(outcome)
+        cycles.setdefault(outcome.prediction_id, _cycle_key(outcome.predicted_at))
 
     effects: dict[str, list[_Effect]] = defaultdict(list)
     hits: list[float] = []
     briers: list[float] = []
-    for votes in by_prediction.values():
+    for prediction_id, votes in by_prediction.items():
         opinions = _opinions(votes)
-        sample = votes[0]
-        if len(opinions) < MIN_COUNCIL_VOTES or sample.predicted_at is None:
+        if len(opinions) < MIN_COUNCIL_VOTES:
             continue
+        sample = votes[0]
         asset_type = AssetType.CRYPTO if sample.symbol.upper() in crypto else None
         full_recommendation, hit_with, brier_with = _score(opinions, sample, asset_type)
         hits.append(float(hit_with))
@@ -196,7 +199,7 @@ def leave_one_out(
             recommendation, hit_without, brier_without = _score(rest, sample, asset_type)
             effects[opinion.investor_name].append(
                 _Effect(
-                    cycle=_cycle_key(sample.predicted_at),
+                    cycle=cycles[prediction_id],
                     flipped=recommendation != full_recommendation,
                     hit_with=hit_with,
                     hit_without=hit_without,

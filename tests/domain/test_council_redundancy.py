@@ -159,3 +159,22 @@ def test_persona_agreement_with_the_llm_trend() -> None:
 
 def test_single_voter_threshold_is_between_one_and_two() -> None:
     assert 1.0 < EFFECTIVELY_SINGLE_VOTER_N_EFF < 2.0
+
+
+def test_personas_without_shared_predictions_make_no_pair() -> None:
+    votes = _votes("Alfa", _varied(12)) + _votes("Beta", _varied(12), offset=100)
+
+    assert assess_council_redundancy(votes, min_overlap=0) is None
+
+
+def test_persona_without_shared_predictions_with_the_llm_is_left_out() -> None:
+    recommendations = _varied(12)
+    votes = _votes("Alfa", recommendations) + _votes("Beta", recommendations)
+    trends = {
+        f"p-{index + 500}": "BULLISH" for index in range(len(recommendations))
+    }
+
+    report = assess_council_redundancy(votes, trends, min_overlap=0)
+
+    assert report is not None
+    assert report.llm_pairs == ()
