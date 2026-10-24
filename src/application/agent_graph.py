@@ -86,6 +86,13 @@ from src.domain.implied_edge import (
 )
 from src.domain.market_calendar import hours_to_next_trading_day
 from src.domain.mistake_taxonomy import parse_mistake_diagnosis
+from src.domain.paper_ledger import (
+    ExitReason,
+    LedgerCosts,
+    PaperTradeEntry,
+    close_trade,
+    side_of,
+)
 from src.domain.prediction import (
     CORRECT_PREDICTION_INSIGHT,
     DIAGNOSIS_SKIPPED_INSIGHT,
@@ -786,6 +793,10 @@ class AgentGraphDeps:
     # sesji po predykcji z tego samego notowania (kolumna `entry_price`, migracja 072).
     # Off = klucz nie idzie do repozytorium (PGRST204).
     executable_entry_enabled: bool = False
+    # WIA-59: append-only paper ledger (`paper_trades`, migracja 073) — save otwiera
+    # pozycję, reflect ją zamyka; koszty obrotu jak w paper-PnL (WIA-50). None = graf
+    # nie dotyka tabeli, której przed migracją nie ma.
+    paper_ledger_costs: LedgerCosts | None = None
     # DAT-23: `pc` notowania vs ostatni snapshot — podejrzenie splitu koryguje
     # referencję bramki, rozliczenie i `price_delta`, a zdarzenie idzie do
     # `corporate_actions` (migracja 062). Off = jak przed DAT-23.
@@ -1393,6 +1404,29 @@ def _settlement_price(state: AgentState, price: Decimal) -> Decimal:
     return price if ratio is None else to_pre_split_price(price, ratio)
 
 
+def _close_paper_trade(
+    deps: AgentGraphDeps, last: Prediction, exit_price: Decimal, reason: ExitReason
+) -> None:
+    """WIA-59: zamyka pozycję papierową rozliczonej predykcji (za `paper_ledger_costs`).
+
+    Po rozliczeniu, więc ledger nigdy nie wyprzedza `prediction_logs`. Błąd zapisu
+    tylko loguje — rozliczenie już jest, a pozycja zostaje otwarta w ledgerze."""
+    if deps.paper_ledger_costs is None:
+        return
+    assert last.id is not None, "Prediction from repository must have id"
+    side = side_of(str(last.predicted_trend))
+    close = close_trade(side, last.price_at_prediction, exit_price, deps.clock(), reason)
+    try:
+        deps.repository_port.close_paper_trade(last.id, close)
+    except PortError:
+        logger.warning(
+            "close_paper_trade failed for %s %s — settlement kept, the paper trade stays open",
+            last.symbol,
+            last.id,
+            exc_info=True,
+        )
+
+
 def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     repository_port = deps.repository_port
     reflection_min_age_hours = deps.reflection_min_age_hours
@@ -1437,7 +1471,9 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     trend_correct = last.is_trend_correct(current_price, tolerance=tolerance)
 
     if _settles_on_stale_quote(state, last):
-        return _settle_on_stale_quote(deps, last, current_price, accuracy, trend_correct)
+        settled = _settle_on_stale_quote(deps, last, current_price, accuracy, trend_correct)
+        _close_paper_trade(deps, last, current_price, ExitReason.STALE_QUOTE)
+        return settled
     extras: _SettlementExtras = {
         **_session_close_extras(deps, state, last, tolerance),
         **_executable_entry_extras(deps, state, last),
@@ -1452,6 +1488,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
             insight=CORRECT_PREDICTION_INSIGHT,
             **extras,
         )
+        _close_paper_trade(deps, last, current_price, ExitReason.SETTLED)
         return {
             "reflection_context": "Ostatnie prognozy były trafne. Kontynuuj strategię."
         }
@@ -1519,6 +1556,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         correction_category=category,
         **extras,
     )
+    _close_paper_trade(deps, last, current_price, ExitReason.SETTLED)
     return {"reflection_context": f"Ostatni błąd: {insight}"}
 
 
@@ -2363,6 +2401,42 @@ def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
     }
 
 
+# WIA-09: atrapa po awarii głównego LLM nie jest predykcją (poza track recordem).
+_LLM_FALLBACK_FLAG = "llm_analysis_failed"
+
+
+def _open_paper_trade(
+    deps: AgentGraphDeps, state: AgentState, prediction_id: str, record: Mapping[str, Any]
+) -> None:
+    """WIA-59: pozycja papierowa zapisanej predykcji (za `paper_ledger_costs`).
+
+    Wejście po cenie z rekordu (skala DECIMAL(14,4)), strona z kierunku. Atrapa LLM
+    i predykcja na nieaktualnym notowaniu (DAT-14) nie liczą się do trafności, więc
+    nie otwierają pozycji. Błąd zapisu tylko loguje — predykcja już jest w bazie."""
+    costs = deps.paper_ledger_costs
+    if costs is None:
+        return
+    if _LLM_FALLBACK_FLAG in (state.get("data_quality_flags") or []) or state.get("stale_quote"):
+        return
+    asset = state.get("asset")
+    entry = PaperTradeEntry(
+        prediction_id=prediction_id,
+        symbol=state["symbol"],
+        side=side_of(str(record["predicted_trend"])),
+        entry_price=record["price_at_prediction"],
+        entry_ts=deps.clock(),
+        cost_bps=costs.for_asset(asset.asset_type if asset is not None else None),
+    )
+    try:
+        deps.repository_port.append_paper_trade(entry)
+    except PortError:
+        logger.warning(
+            "append_paper_trade failed for %s — prediction saved without a paper trade",
+            state["symbol"],
+            exc_info=True,
+        )
+
+
 def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     vector_memory_enabled = deps.vector_memory_enabled
     repository_port = deps.repository_port
@@ -2493,6 +2567,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         record["embedding"] = vector
 
     prediction_id = repository_port.save_prediction(record)
+    _open_paper_trade(deps, state, prediction_id, record)
     # WIA-01: hash trafia do publicznego logu dopiero, gdy sól jest w bazie.
     if sealed is not None:
         _publish_commitment(deps, state["symbol"], sealed, prediction_id)

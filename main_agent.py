@@ -182,6 +182,7 @@ from src.domain.macro_risk import MacroAlertLevel
 from src.domain.macro_series import MacroSeriesSnapshot, macro_features, macro_series_votes
 from src.domain.market_calendar import closure_reason, to_nyse_time
 from src.domain.number_format import format_money_pl, format_number_pl
+from src.domain.paper_ledger import LedgerCosts
 from src.domain.polish_labels import QUOTA_CRITICAL_SUBJECT_PREFIX
 from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.promotion import ForecastKind
@@ -905,6 +906,14 @@ def _paper_costs(settings: Settings) -> PaperCosts:
         cost_bps=settings.paper_cost_bps,
         crypto_cost_bps=settings.crypto_paper_cost_bps,
         crypto_symbols=frozenset(settings.crypto_symbols),
+    )
+
+
+def _ledger_costs(settings: Settings) -> LedgerCosts:
+    """WIA-59: koszty pozycji ledgera — te same założenia co paper-PnL (WIA-50)."""
+    return LedgerCosts(
+        cost_bps=Decimal(str(settings.paper_cost_bps)),
+        crypto_cost_bps=Decimal(str(settings.crypto_paper_cost_bps)),
     )
 
 
@@ -1710,6 +1719,8 @@ def build_agent_graph_deps(
         session_close_settlement_enabled=settings.session_close_settlement_enabled,
         # WIA-54: cena wykonalna (otwarcie sesji) z tego samego notowania (migracja 072).
         executable_entry_enabled=settings.executable_entry_enabled,
+        # WIA-59: append-only paper ledger (`paper_trades`, migracja 073); off → None.
+        paper_ledger_costs=_ledger_costs(settings) if settings.paper_ledger_enabled else None,
         # DAT-23: podejrzenie splitu z `pc` notowania (zapis w `corporate_actions`, 062).
         split_detection_enabled=settings.split_detection_enabled,
         # DAT-15: strażnik anomalii ceny (darmowy odczyt historii snapshotów); off.

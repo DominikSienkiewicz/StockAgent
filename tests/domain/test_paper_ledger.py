@@ -163,4 +163,16 @@ class TestCloseTrade:
         assert close.pnl == Decimal("0")
 
 
+class TestLedgerCosts:
+    def test_crypto_pays_its_own_cost(self) -> None:
+        from src.domain.paper_ledger import LedgerCosts
+        from src.domain.value_objects import AssetType
+
+        costs = LedgerCosts(cost_bps=Decimal("10"), crypto_cost_bps=Decimal("25"))
+
+        assert costs.for_asset(AssetType.CRYPTO) == Decimal("25")
+        assert costs.for_asset(AssetType.STOCK) == Decimal("10")
+        assert costs.for_asset(None) == Decimal("10")
+
+
 GOLDEN_FIRST_ROW_HASH = "85111c38202501c1669a18530888dea152b2890f8e11a638f07bc5e5852f90f3"

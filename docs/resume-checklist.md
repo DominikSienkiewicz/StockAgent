@@ -74,6 +74,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `064` | `model_scorecard_provenance_enabled` | The training provenance on every scorecard row (ML-22): dataset fingerprint, date range, rows per symbol, parameters with the seed, XGBoost version, feature set version and commit. |
 | `065` | `persona_brier_ranking_enabled` | The persona leaderboard of the email sorts by the Brier skill of the personas' confidence and shows `Brier` / `BSS` under the hit rate (WIA-44); presentation only, so it does not start a new `recipe_version` segment. |
 | `072` | `executable_entry_enabled` | Settlements also record the executable entry — the open of the first NYSE session after the prediction from the same `/quote` — and the email adds a second equity curve "from the open" (WIA-54). A measurement, not part of `config_hash`. |
+| `073` | `paper_ledger_enabled` | Every real prediction opens a paper position in the append-only, hash-chained `paper_trades` and its settlement closes it (WIA-59); the email's equity curve reads the ledger, and with `attestation_enabled` the chain head is published once a day. A record and a measurement, not part of `config_hash`. |
 | `075` | `shadow_predictions_enabled` | The Fast Loop stores the champion's and the challengers' forecasts of the ML leg and the Slow Loop reports the promotion verdict in its step summary (ML-33). |
 
 ### 5. Add the `HEARTBEAT_URL` secret

@@ -1793,6 +1793,19 @@ class TestExecutableEntryFlag:
         assert "executable_entry_enabled" in NON_RECIPE_SETTINGS_FIELDS
 
 
+class TestPaperLedgerFlag:
+    """WIA-59: append-only paper ledger (migracja 073) — off do migracji; zapis
+    i pomiar tych samych predykcji, więc poza przepisem."""
+
+    def test_defaults_off_and_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.paper_ledger_enabled is False
+        assert "paper_ledger_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
 class TestEdgeCalendarHorizonFlag:
     """WIA-28: horyzont edge z kalendarza NYSE zamiast stałych 24 h — zmienia zapisany
     `edge_sigma` (sygnał oceniany w `evaluate`), więc należy do przepisu; off na czas

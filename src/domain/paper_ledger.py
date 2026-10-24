@@ -32,7 +32,7 @@ from typing import Any
 
 from src.domain.attestation import canonicalize
 from src.domain.equity_curve import signal_of
-from src.domain.value_objects import Money
+from src.domain.value_objects import AssetType, Money
 
 # Hash „przed pierwszym wierszem” — `prev_hash` pierwszego wpisu łańcucha.
 GENESIS_HASH = "0" * 64
@@ -79,6 +79,18 @@ class ExitReason(StrEnum):
 
     SETTLED = "settled"
     STALE_QUOTE = "stale_quote"
+
+
+@dataclass(frozen=True)
+class LedgerCosts:
+    """Koszt jednostronny pozycji w bps (WIA-50): krypto ma własny, reszta — akcyjny."""
+
+    cost_bps: Decimal
+    crypto_cost_bps: Decimal
+
+    def for_asset(self, asset_type: AssetType | None) -> Decimal:
+        """Koszt klasy aktywa; symbol bez klasy płaci koszt akcyjny."""
+        return self.crypto_cost_bps if asset_type is AssetType.CRYPTO else self.cost_bps
 
 
 @dataclass(frozen=True)

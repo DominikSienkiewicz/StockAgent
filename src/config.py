@@ -189,6 +189,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # WIA-54: cena wykonalna (otwarcie sesji) obok /quote i druga krzywa w mailu —
     # pomiar rozliczenia, prognoza i jej ocena bez zmian.
     "executable_entry_enabled",
+    # WIA-59: append-only paper ledger i krzywa kapitału z niego — zapis i pomiar
+    # tych samych predykcji, prognoza bez zmian.
+    "paper_ledger_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
@@ -932,6 +935,10 @@ class Settings(BaseSettings):
     # sesji po predykcji z tego samego notowania — a mail rysuje z niej drugą krzywą
     # „od otwarcia”. Kolumna z migracji 072; off w kodzie i w config.toml.
     executable_entry_enabled: bool = False
+    # WIA-59: append-only paper ledger z łańcuchem hashy (`paper_trades`, migracja 073):
+    # save otwiera pozycję, reflect ją zamyka, krzywa kapitału w mailu czyta ledger,
+    # a głowa łańcucha idzie raz dziennie obok atestacji. Off w kodzie i w config.toml.
+    paper_ledger_enabled: bool = False
     # DAT-23: `pc` z /quote vs ostatni snapshot — stosunek bliski stosunkowi splitu
     # koryguje referencję bramki, rozliczenie (w jednostkach predykcji) i `price_delta`,
     # a zdarzenie idzie do `corporate_actions` (migracja 062). Off.

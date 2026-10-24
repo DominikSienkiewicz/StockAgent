@@ -7745,6 +7745,32 @@ class TestExecutableEntryWiring:
         assert repo_cls.call_args.kwargs["executable_entry_enabled"] is enabled
 
 
+class TestPaperLedgerWiring:
+    """WIA-59: ledger w grafie tylko za flagą, z kosztami paper-PnL z config.toml."""
+
+    def test_flag_off_gives_the_graph_no_ledger(self, settings, mock_external_clients) -> None:
+        deps = main_agent.build_agent_graph_deps(
+            settings.model_copy(update={"paper_ledger_enabled": False})
+        )
+
+        assert deps.paper_ledger_costs is None
+
+    def test_flag_on_passes_the_paper_costs(self, settings, mock_external_clients) -> None:
+        from src.domain.paper_ledger import LedgerCosts
+
+        deps = main_agent.build_agent_graph_deps(
+            settings.model_copy(
+                update={
+                    "paper_ledger_enabled": True,
+                    "paper_cost_bps": 10.0,
+                    "crypto_paper_cost_bps": 25.0,
+                }
+            )
+        )
+
+        assert deps.paper_ledger_costs == LedgerCosts(Decimal("10.0"), Decimal("25.0"))
+
+
 class TestReportReads:
     """ARCH-16: okno track recordu czytane RAZ na dispatch — rozliczenia i próbki
     kalibracji biorą wszystkie sekcje maila i publiczny scorecard."""

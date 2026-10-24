@@ -382,6 +382,13 @@ session_close_settlement_enabled = false
 # kupi). Zaległe rozliczenie, święto i krypto — bez tej ceny. Zero nowych requestów.
 # UWAGA: włącz DOPIERO po migracji 072.
 executable_entry_enabled = false
+# WIA-59: append-only paper ledger — pozycja papierowa otwierana przy zapisie predykcji
+# i zamykana raz przy rozliczeniu, wiersze spięte łańcuchem sha256 (prev_hash → row_hash).
+# Krzywa kapitału w mailu czyta ledger zamiast przeliczać prediction_logs, a głowa
+# łańcucha trafia raz dziennie do `paper_ledger_heads_path` obok atestacji (gdy
+# `attestation_enabled`). Zero płatnych wywołań.
+# UWAGA: włącz DOPIERO po migracji 073.
+paper_ledger_enabled = false
 # DAT-23: przed otwarciem `pc` z /quote to cena poprzedniego snapshotu, więc stosunek
 # bliski 1/2, 1/3, 1/4, 1/5, 1/10, 2 albo 3 (±2%) to split, nie ruch. Bramka liczy wtedy
 # ruch od skorygowanej referencji, reflect rozlicza w jednostkach predykcji, a zdarzenie

@@ -6311,6 +6311,207 @@ class TestExecutableEntrySettlement:
         assert "entry_price" in required_prediction_columns(on)
 
 
+class TestPaperLedgerInGraph:
+    """WIA-59: za `paper_ledger_costs` save otwiera pozycję papierową w ledgerze
+    (append-only, hash łańcucha liczy repozytorium z domeną), a reflect ją zamyka.
+    Ledger jest best-effort: błąd zapisu nie zatrzymuje ani predykcji, ani rozliczenia."""
+
+    _NOW = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    @classmethod
+    def _deps(cls, repository_port: Mock, llm_port: Mock, **overrides) -> AgentGraphDeps:
+        from src.domain.paper_ledger import LedgerCosts
+
+        fields = {
+            "market_port": Mock(spec=MarketDataPort),
+            "sentiment_port": Mock(spec=SentimentPort),
+            "news_port": Mock(spec=NewsPort),
+            "repository_port": repository_port,
+            "ml_port": Mock(spec=MLPredictionPort),
+            "llm_port": llm_port,
+            "threshold": Threshold(Decimal("0.02")),
+            "paper_ledger_costs": LedgerCosts(Decimal("10"), Decimal("25")),
+            "clock": lambda: cls._NOW,
+            **overrides,
+        }
+        return AgentGraphDeps(**fields)
+
+    @staticmethod
+    def _saved_state(**extra) -> dict:
+        return {
+            "symbol": "AAPL",
+            "previous_price": Decimal("100"),
+            "current_price": Decimal("106"),
+            "delta": Decimal("0.06"),
+            "llm_analysis": {"trend_direction": "BEARISH", "confidence_score": 0.8},
+            "ml_target_price": Decimal("104"),
+            **extra,
+        }
+
+    def test_save_opens_a_paper_trade(self, repository_port: Mock, llm_port: Mock) -> None:
+        from src.application.agent_graph import _save_node
+        from src.domain.paper_ledger import PaperTradeEntry, TradeSide
+
+        repository_port.save_prediction.return_value = "pred-1"
+
+        _save_node(self._deps(repository_port, llm_port), self._saved_state())
+
+        repository_port.append_paper_trade.assert_called_once_with(
+            PaperTradeEntry(
+                prediction_id="pred-1",
+                symbol="AAPL",
+                side=TradeSide.SHORT,
+                entry_price=Decimal("106.0000"),
+                entry_ts=self._NOW,
+                cost_bps=Decimal("10"),
+            )
+        )
+
+    def test_flag_off_leaves_the_ledger_alone(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _save_node
+
+        repository_port.save_prediction.return_value = "pred-1"
+
+        _save_node(
+            self._deps(repository_port, llm_port, paper_ledger_costs=None), self._saved_state()
+        )
+
+        repository_port.append_paper_trade.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "extra",
+        [{"data_quality_flags": ["llm_analysis_failed"]}, {"stale_quote": True}],
+    )
+    def test_no_trade_for_a_prediction_outside_the_track_record(
+        self, repository_port: Mock, llm_port: Mock, extra: dict
+    ) -> None:
+        # Atrapa po awarii LLM (WIA-09) i predykcja na nieaktualnym notowaniu (DAT-14)
+        # nie liczą się do trafności, więc nie otwierają pozycji.
+        from src.application.agent_graph import _save_node
+
+        repository_port.save_prediction.return_value = "pred-1"
+
+        _save_node(self._deps(repository_port, llm_port), self._saved_state(**extra))
+
+        repository_port.append_paper_trade.assert_not_called()
+
+    def test_ledger_failure_keeps_the_saved_prediction(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _save_node
+        from src.application.errors import ProviderUnavailable
+
+        repository_port.save_prediction.return_value = "pred-1"
+        repository_port.append_paper_trade.side_effect = ProviderUnavailable("down")
+
+        result = _save_node(self._deps(repository_port, llm_port), self._saved_state())
+
+        assert result == {"prediction_id": "pred-1", "status": "saved"}
+
+    @staticmethod
+    def _last(trend: TrendDirection = TrendDirection.BULLISH) -> Prediction:
+        return Prediction(
+            id="pred-0",
+            symbol="AAPL",
+            predicted_trend=trend,
+            price_at_prediction=Decimal("100"),
+            predicted_target_price=Decimal("104"),
+            created_at=datetime(2026, 10, 16, 5, 30, tzinfo=UTC),
+        )
+
+    def test_reflect_closes_the_trade_at_the_settlement_price(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+        from src.domain.paper_ledger import ExitReason, PaperTradeClose
+
+        repository_port.get_unverified_prediction.return_value = self._last()
+
+        _reflect_node(
+            self._deps(repository_port, llm_port),
+            {**_initial_state("100"), "current_price": Decimal("106"), "delta": Decimal("0.06")},
+        )
+
+        repository_port.close_paper_trade.assert_called_once_with(
+            "pred-0",
+            PaperTradeClose(
+                exit_price=Decimal("106.0000"),
+                exit_ts=self._NOW,
+                pnl=Decimal("0.06"),
+                exit_reason=ExitReason.SETTLED,
+            ),
+        )
+
+    def test_stale_settlement_closes_outside_the_curve(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+        from src.domain.paper_ledger import ExitReason
+
+        repository_port.get_unverified_prediction.return_value = self._last()
+
+        _reflect_node(
+            self._deps(repository_port, llm_port),
+            {
+                **_initial_state("100"),
+                "current_price": Decimal("100"),
+                "delta": Decimal("0"),
+                # Notowanie z czwartku — sprzed sesji po piątkowej predykcji.
+                "quoted_at": datetime(2026, 10, 15, 20, 0, tzinfo=UTC),
+            },
+        )
+
+        close = repository_port.close_paper_trade.call_args.args[1]
+        assert close.exit_reason is ExitReason.STALE_QUOTE
+
+    def test_wrong_prediction_closes_with_a_loss(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._last(TrendDirection.BEARISH)
+
+        _reflect_node(
+            self._deps(repository_port, llm_port),
+            {**_initial_state("106"), "current_price": Decimal("106"), "delta": Decimal("0")},
+        )
+
+        assert repository_port.close_paper_trade.call_args.args[1].pnl == Decimal("-0.06")
+
+    def test_reflect_without_the_flag_leaves_the_ledger_alone(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+
+        repository_port.get_unverified_prediction.return_value = self._last()
+
+        _reflect_node(
+            self._deps(repository_port, llm_port, paper_ledger_costs=None),
+            {**_initial_state("100"), "current_price": Decimal("106"), "delta": Decimal("0.06")},
+        )
+
+        repository_port.close_paper_trade.assert_not_called()
+
+    def test_close_failure_keeps_the_settlement(
+        self, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _reflect_node
+        from src.application.errors import ProviderUnavailable
+
+        repository_port.get_unverified_prediction.return_value = self._last()
+        repository_port.close_paper_trade.side_effect = ProviderUnavailable("down")
+
+        result = _reflect_node(
+            self._deps(repository_port, llm_port),
+            {**_initial_state("100"), "current_price": Decimal("106"), "delta": Decimal("0.06")},
+        )
+
+        repository_port.update_prediction_accuracy.assert_called_once()
+        assert "trafne" in result["reflection_context"]
+
+
 # ---------------------------------------------------------------------------
 # ML-11: model wspólny w jednostkach σ — serving mnoży prognozę przez σ symbolu
 # ---------------------------------------------------------------------------
