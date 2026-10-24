@@ -40,7 +40,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `digests` | `061` | Model output: index of the private digest archive (MAIL-24) — one row per cycle with the subject, the lead and the top signals (tickers and labels, no amounts); the full HTML sits in the private Storage bucket `digests` | on, no policies | Fast Loop (`digest_archive_enabled`) | nobody in the app yet |
 | `corporate_actions` | `062` | Market data: suspected stock splits — the quote's previous close against the last price snapshot gave a split ratio (DAT-23), one row per symbol, kind and UTC day | on, no policies | Fast Loop (`split_detection_enabled`) | nobody in the app yet |
 
-The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges):
+The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges) except `schema_version()`. Migration `070` (BEZ-18) pins `search_path = public, extensions, pg_catalog` on `match_news_embeddings`, `persona_accuracy_weights` and `persona_accuracy_stats`, so a call from a session with another path cannot swap in a same-named object; `refresh_ml_feature_store`, `persona_vote_outcomes` and the trigger function still run with the caller's path:
 
 | Function | Migration | Called by | `EXECUTE` after `038` |
 |---|---|---|---|
@@ -52,6 +52,7 @@ The functions in `public`, all `SECURITY INVOKER` (they run with the caller's pr
 | `persona_vote_outcomes(int)` | `045`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_vote_outcomes_enabled`), tools (`persona-ablation`) | `service_role` only |
 | `persona_scoring_stats(int, text[])` | `065` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_brier_ranking_enabled`) | `service_role` only |
 | `stamp_prediction_settled_at()` | `029` | trigger on `prediction_logs` | `service_role` only; the trigger fires for any writer |
+| `schema_version()` | `071` | Fast Loop and Slow Loop at start (RPC, NIEZ-30) | `service_role` only. `SECURITY DEFINER` with `search_path = ''`: it reads `supabase_migrations.schema_migrations`, which `service_role` cannot, and returns only the highest numeric version (`NULL` when the registry is missing or empty) |
 
 `scripts/prod-state-check.sh` reads several of these relations with plain `GET` requests and
 the same `SUPABASE_KEY`; it writes nothing and calls no function.
