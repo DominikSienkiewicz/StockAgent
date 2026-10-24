@@ -10,6 +10,7 @@ Uruchomienie:
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections.abc import Iterator
@@ -23,11 +24,14 @@ import pytest
 from psycopg2 import sql
 from testcontainers.postgres import PostgresContainer
 
+from src.domain.calibration_curve import brier_score, log_loss
 from src.domain.persona_track_record import (
     PersonaVoteOutcome,
     persona_accuracy_weights_as_of,
     persona_hit_stats,
+    persona_vote_correct,
 )
+from src.domain.value_objects import AssetType
 
 # `supabase db push` czyta WYŁĄCZNIE `supabase/migrations/` — trzymamy je tam,
 # żeby CLI i testy kontenerowe widziały dokładnie ten sam zbiór plików.
@@ -95,6 +99,7 @@ MIGRATION_FILES = [
     "061_digests.sql",
     "062_corporate_actions.sql",
     "063_rag_exact_search.sql",
+    "065_persona_scoring.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -2237,6 +2242,13 @@ class TestSupabaseRoleEmulation:
             cur.execute("SELECT count(*) FROM persona_vote_outcomes(90)")
             assert cur.fetchone() == (0,)
 
+    def test_service_role_executes_persona_scoring_stats(self, supabase_like_conn) -> None:
+        """WIA-44: RPC 065 woła aplikacja — EXECUTE tylko dla service_role."""
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "service_role")
+            cur.execute("SELECT count(*) FROM persona_scoring_stats(90, ARRAY['BTC'])")
+            assert cur.fetchone() == (0,)
+
 
 @pytest.fixture
 def fresh_pg():
@@ -2678,6 +2690,148 @@ class TestMigration045PersonaVoteOutcomes:
                 "SELECT obj_description('persona_vote_outcomes(integer)'::regprocedure)"
             )
             assert "WIA-51" in cur.fetchone()[0]
+
+
+@pytest.mark.containers
+class TestMigration065PersonaScoring:
+    """WIA-44: RPC `persona_scoring_stats` — hit-rate, liczba głosów, średni Brier
+    (confidence − trafienie)² i log loss deklarowanej pewności głosu, tą samą regułą
+    trafności co domena (pasmo HOLD krypto z parametru, bez rozliczeń `stale_quote`)."""
+
+    @staticmethod
+    def _settled_vote(
+        cur: psycopg2.extensions.cursor,
+        symbol: str,
+        investor: str,
+        recommendation: str,
+        confidence: float,
+        actual: float,
+        *,
+        stale: bool | None = None,
+    ) -> None:
+        cur.execute(
+            "INSERT INTO prediction_logs "
+            "(symbol, timestamp, price_at_prediction, actual_price_after_12h, stale_quote) "
+            "VALUES (%s, NOW() - interval '3 days', 100.0, %s, %s) RETURNING id",
+            (symbol, actual, stale),
+        )
+        prediction_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO council_votes "
+            "(prediction_id, symbol, investor_name, recommendation, confidence) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (prediction_id, symbol, investor, recommendation, confidence),
+        )
+
+    @staticmethod
+    def _scoring(
+        cur: psycopg2.extensions.cursor, crypto: list[str]
+    ) -> dict[str, tuple[float, int, float, float]]:
+        cur.execute(
+            "SELECT investor_name, hit_rate, vote_count, brier, log_loss "
+            "FROM persona_scoring_stats(90, %s)",
+            (crypto,),
+        )
+        return {name: (hit, count, brier, loss) for name, hit, count, brier, loss in cur.fetchall()}
+
+    def test_persona_scoring_rpc_returns_expected_brier(self, pg_conn) -> None:
+        _apply_migrations(pg_conn)
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM council_votes")
+            # Przepewna: BUY 0.9 trafia, BUY 0.9 pudłuje → hit-rate 0.5, Brier (0.01 + 0.81) / 2.
+            self._settled_vote(cur, "PS65_A", "Over", "BUY", 0.9, 110.0)
+            self._settled_vote(cur, "PS65_B", "Over", "BUY", 0.9, 90.0)
+            # Skalibrowana: BUY 0.5 trafia, BUY 0.5 pudłuje → Brier 0.25.
+            self._settled_vote(cur, "PS65_C", "Calibrated", "BUY", 0.5, 110.0)
+            self._settled_vote(cur, "PS65_D", "Calibrated", "BUY", 0.5, 90.0)
+            scoring = self._scoring(cur, [])
+
+        assert scoring["Over"][:2] == (0.5, 2)
+        assert scoring["Over"][2] == pytest.approx((0.01 + 0.81) / 2)
+        assert scoring["Over"][3] == pytest.approx(-(math.log(0.9) + math.log(0.1)) / 2)
+        assert scoring["Calibrated"][2] == pytest.approx(0.25)
+        assert scoring["Calibrated"][3] == pytest.approx(math.log(2))
+
+    def test_scoring_matches_the_domain_rule_including_the_crypto_hold_band(
+        self, pg_conn
+    ) -> None:
+        _apply_migrations(pg_conn)
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM council_votes")
+            # HOLD +2% mieści się w paśmie krypto ±2.5%, a nie w paśmie akcji ±0.5%.
+            self._settled_vote(cur, "PS65_BTC", "Hold", "HOLD", 0.8, 102.0)
+            self._settled_vote(cur, "PS65_AAPL", "Hold", "HOLD", 0.8, 102.0)
+            self._settled_vote(cur, "PS65_SELL", "Hold", "SELL", 0.7, 95.0)
+            cur.execute(
+                "SELECT prediction_id, investor_name, recommendation, confidence, symbol, "
+                "price_at_prediction, actual_price_after_12h, predicted_at, settled_at "
+                "FROM persona_vote_outcomes(90)"
+            )
+            outcomes = [
+                PersonaVoteOutcome(
+                    prediction_id=str(pid), investor_name=name, recommendation=rec,
+                    confidence=conf, symbol=symbol,
+                    price_at_prediction=Decimal(str(price)), actual_price=Decimal(str(actual)),
+                    predicted_at=predicted_at, settled_at=settled_at,
+                )
+                for pid, name, rec, conf, symbol, price, actual, predicted_at, settled_at
+                in cur.fetchall()
+            ]
+            scoring = self._scoring(cur, ["PS65_BTC"])
+
+        crypto = {"PS65_BTC"}
+        samples = [
+            (o.confidence, persona_vote_correct(
+                o.recommendation, o.price_at_prediction, o.actual_price,
+                AssetType.CRYPTO if o.symbol in crypto else None,
+            ))
+            for o in outcomes
+        ]
+        hit_rate, votes = persona_hit_stats(outcomes, crypto_symbols=crypto)["Hold"]
+        assert scoring["Hold"][0] == pytest.approx(hit_rate)
+        assert scoring["Hold"][1] == votes == 3
+        assert scoring["Hold"][2] == pytest.approx(brier_score(samples))
+        assert scoring["Hold"][3] == pytest.approx(log_loss(samples))
+
+    def test_settlements_on_a_stale_quote_are_not_scored(self, pg_conn) -> None:
+        _apply_migrations(pg_conn)
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM council_votes")
+            self._settled_vote(cur, "PS65_FRESH", "Wood", "BUY", 0.6, 110.0, stale=False)
+            self._settled_vote(cur, "PS65_UNKNOWN", "Wood", "BUY", 0.6, 110.0, stale=None)
+            self._settled_vote(cur, "PS65_STALE", "Wood", "BUY", 0.6, 100.0, stale=True)
+            scoring = self._scoring(cur, [])
+
+        assert scoring["Wood"][1] == 2
+
+    def test_open_predictions_are_not_scored(self, pg_conn) -> None:
+        _apply_migrations(pg_conn)
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM council_votes")
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction) "
+                "VALUES ('PS65_OPEN', 100.0) RETURNING id"
+            )
+            open_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO council_votes "
+                "(prediction_id, symbol, investor_name, recommendation, confidence) "
+                "VALUES (%s, 'PS65_OPEN', 'Wood', 'BUY', 0.6)",
+                (open_id,),
+            )
+            assert self._scoring(cur, []) == {}
+
+    def test_065_is_idempotent_and_keeps_the_old_rpcs(self, pg_conn) -> None:
+        migration = (MIGRATIONS_DIR / "065_persona_scoring.sql").read_text()
+        with pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute("SELECT count(*) FROM persona_accuracy_stats(90)")
+            cur.execute("SELECT count(*) FROM persona_vote_outcomes(90)")
+            cur.execute(
+                "SELECT obj_description('persona_scoring_stats(integer, text[])'::regprocedure)"
+            )
+            assert "WIA-44" in cur.fetchone()[0]
 
 
 @pytest.mark.containers

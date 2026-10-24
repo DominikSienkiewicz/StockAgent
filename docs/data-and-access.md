@@ -50,6 +50,7 @@ The functions in `public`, all `SECURITY INVOKER` (they run with the caller's pr
 | `persona_accuracy_weights(int)` | `015`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
 | `persona_accuracy_stats(int)` | `018`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
 | `persona_vote_outcomes(int)` | `045`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_vote_outcomes_enabled`), tools (`persona-ablation`) | `service_role` only |
+| `persona_scoring_stats(int, text[])` | `065` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_brier_ranking_enabled`) | `service_role` only |
 | `stamp_prediction_settled_at()` | `029` | trigger on `prediction_logs` | `service_role` only; the trigger fires for any writer |
 
 `scripts/prod-state-check.sh` reads several of these relations with plain `GET` requests and

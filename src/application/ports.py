@@ -21,7 +21,7 @@ from src.domain.macro_series import MacroSeriesSnapshot
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.model_scorecard import TargetUnit, TrainingReport
 from src.domain.options_flow import OptionsFlowSnapshot
-from src.domain.persona_track_record import PersonaVoteOutcome
+from src.domain.persona_track_record import PersonaScoring, PersonaVoteOutcome
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
@@ -500,6 +500,14 @@ class RepositoryPort(ABC):
         z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
         "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
         → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
+    def get_persona_scoring(self, window_days: int = 90) -> dict[str, PersonaScoring]:
+        """WIA-44 — ocena person regułą Briera: `{investor_name: PersonaScoring}`
+        (hit-rate, liczba głosów, średni Brier i log loss deklarowanej pewności) z RPC
+        `persona_scoring_stats` (migracja 065). Pasmo HOLD krypto z konfiguracji
+        adaptera, jak w domenie. Pusta mapa = brak danych albo migracji (WARNING
+        z numerem) → leaderboard wraca do hit-rate'u."""
 
     @abstractmethod
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:

@@ -45,7 +45,7 @@ from src.domain.council import InvestorOpinion
 from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
-from src.domain.persona_track_record import PersonaVoteOutcome
+from src.domain.persona_track_record import PersonaScoring, PersonaVoteOutcome
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.price_levels import PriceLevel, PriceLevelAlert
@@ -115,6 +115,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_persona_accuracy",
         "get_persona_track_record",
         "get_persona_vote_outcomes",
+        "get_persona_scoring",
         "get_deferred_diagnoses",
         "get_resolved_predictions_detailed",
         "get_settled_moves",
@@ -253,6 +254,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
         return self._delegate.get_persona_vote_outcomes(window_days=window_days)
+
+    def get_persona_scoring(self, window_days: int = 90) -> dict[str, PersonaScoring]:
+        return self._delegate.get_persona_scoring(window_days=window_days)
 
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
         return self._delegate.get_deferred_diagnoses(limit)

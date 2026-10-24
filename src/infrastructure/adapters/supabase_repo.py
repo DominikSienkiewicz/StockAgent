@@ -39,6 +39,7 @@ from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.persona_track_record import (
+    PersonaScoring,
     PersonaVoteOutcome,
     persona_accuracy_weights,
     persona_hit_stats,
@@ -1501,6 +1502,34 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             if name is None or hit_rate is None or votes is None:
                 continue
             out[str(name)] = (float(hit_rate), int(votes))
+        return out
+
+    def get_persona_scoring(self, window_days: int = 90) -> dict[str, PersonaScoring]:
+        # WIA-44: RPC `persona_scoring_stats` (migracja 065) liczy hit-rate, Brier
+        # i log loss pewności tą samą regułą co domena; pasmo HOLD krypto idzie
+        # parametrem (jak `crypto_symbols` adaptera). Graceful: brak RPC → {}.
+        try:
+            response = self._client.rpc(
+                "persona_scoring_stats",
+                {"window_days": window_days, "crypto_symbols": sorted(self._crypto_symbols)},
+            ).execute()
+        except APIError as exc:
+            _log_degraded_read(
+                "persona_scoring_stats RPC", "persona Brier ranking skipped", "065", exc
+            )
+            return {}
+        out: dict[str, PersonaScoring] = {}
+        for row in _rows(response):
+            name = row.get("investor_name")
+            hit_rate = row.get("hit_rate")
+            votes = row.get("vote_count")
+            brier = row.get("brier")
+            loss = row.get("log_loss")
+            if name is None or hit_rate is None or votes is None or brier is None or loss is None:
+                continue
+            out[str(name)] = PersonaScoring(
+                hit_rate=float(hit_rate), votes=int(votes), brier=float(brier), log_loss=float(loss)
+            )
         return out
 
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:

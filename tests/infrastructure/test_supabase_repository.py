@@ -1065,6 +1065,80 @@ class TestGetPersonaTrackRecord:
         assert repo.get_persona_track_record() == {}
 
 
+class TestGetPersonaScoring:
+    """WIA-44 — RPC `persona_scoring_stats` (migracja 065): hit-rate, liczba głosów,
+    średni Brier i log loss pewności; pasmo HOLD krypto idzie parametrem RPC."""
+
+    @staticmethod
+    def _repo(crypto: list[str] | None = None) -> SupabaseRepository:
+        return SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", crypto_symbols=crypto or []
+        )
+
+    def test_maps_rpc_rows_to_scoring(self, mock_client: MagicMock) -> None:
+        from src.domain.persona_track_record import PersonaScoring
+
+        _set_chain_response(
+            mock_client,
+            ["rpc"],
+            [
+                {"investor_name": "Buffett", "hit_rate": 0.68, "vote_count": 22,
+                 "brier": 0.21, "log_loss": 0.61},
+                {"investor_name": "Wood", "hit_rate": 0.41, "vote_count": 18,
+                 "brier": 0.33, "log_loss": 0.9},
+            ],
+        )
+
+        result = self._repo().get_persona_scoring(window_days=30)
+
+        assert result == {
+            "Buffett": PersonaScoring(hit_rate=0.68, votes=22, brier=0.21, log_loss=0.61),
+            "Wood": PersonaScoring(hit_rate=0.41, votes=18, brier=0.33, log_loss=0.9),
+        }
+
+    def test_passes_the_window_and_the_crypto_symbols_to_the_rpc(
+        self, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["rpc"], [])
+
+        self._repo(["btc", "eth"]).get_persona_scoring(window_days=45)
+
+        assert mock_client.rpc.call_args.args == (
+            "persona_scoring_stats",
+            {"window_days": 45, "crypto_symbols": ["BTC", "ETH"]},
+        )
+
+    def test_skips_rows_with_missing_fields(self, mock_client: MagicMock) -> None:
+        _set_chain_response(
+            mock_client,
+            ["rpc"],
+            [
+                {"investor_name": "Buffett", "hit_rate": 0.68, "vote_count": 22,
+                 "brier": 0.21, "log_loss": 0.61},
+                {"investor_name": "Wood", "hit_rate": 0.4, "vote_count": 18,
+                 "brier": None, "log_loss": 0.9},
+                {"investor_name": "Lynch", "hit_rate": 0.5, "vote_count": 9, "brier": 0.2},
+                {"hit_rate": 0.9, "vote_count": 30, "brier": 0.1, "log_loss": 0.3},
+            ],
+        )
+
+        assert list(self._repo().get_persona_scoring()) == ["Buffett"]
+
+    def test_without_the_migration_it_degrades_to_empty_and_names_065(
+        self, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        mock_client.rpc.side_effect = APIError(
+            {"code": "PGRST202", "message": "function persona_scoring_stats not found"}
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert self._repo().get_persona_scoring() == {}
+
+        assert "apply migration 065" in caplog.text
+
+
 _VOTE_OUTCOME_CHAIN = ["rpc", "order", "order", "order", "range"]
 
 
