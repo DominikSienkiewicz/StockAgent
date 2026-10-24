@@ -7,7 +7,9 @@ danych chowa się sama.
 
 Nowa sekcja = moduł `src/application/report_<nazwa>.py` z rendererem i obiektem
 `ReportSection`, wpis w `REPORT_SECTIONS` i pole `ReportContext`, które sekcja
-wymienia w `context_fields`.
+wymienia w `context_fields`. Strażnik `tests/application/test_report_registry.py`
+pilnuje, że każde pole `ReportContext` ma dokładnie jednego konsumenta: jedną
+sekcję albo wspólne wejście (`SHARED_CONTEXT_FIELDS`).
 """
 
 from __future__ import annotations
@@ -27,6 +29,44 @@ if TYPE_CHECKING:
     # w czasie wykonania zamknąłby cykl.
     from src.application.report_builder import ReportContext
     from src.application.report_user_portfolio import PortfolioChangeView
+
+
+# Pola `ReportContext`, których konsumentem jest wspólne wejście, a nie jedna
+# sekcja: `build_html_report` liczy z nich `SectionInput` (filtr subskrybenta,
+# ceny i kursy, lead, ranking sygnałów, okno rozliczeń, chipy trafności) albo
+# czyta je kilka sekcji. Każda sekcja może je czytać; pole spoza tej listy ma
+# dokładnie jedną sekcję w jej `context_fields`.
+SHARED_CONTEXT_FIELDS: frozenset[str] = frozenset(
+    {
+        # U2: watchlista subskrybenta tnie wyniki przed wszystkimi sekcjami.
+        "symbols_filter",
+        # Ceny raportu, kursy NBP i zmiana portfela (PORT-06/07/11).
+        "user_portfolio",
+        "held_prices",
+        "portfolio_fx",
+        "macro_risk_report",
+        "user_portfolio_in_text",
+        # Lead (#1): też temat maila i push.
+        "quota_alerts",
+        "consensus_shifts",
+        "alpha_signals",
+        "insider_lead_window",
+        "regime",
+        # Ranking sygnałów (MAIL-20) i sizing (Q7, PORT-04/08, #9).
+        "accuracy_stats",
+        "signal_calibration_buckets",
+        "position_risk",
+        "portfolio_clusters",
+        "symbol_track_record",
+        # Rozliczenia: pierwszy ekran, sekcja zamkniętych predykcji i preheader.
+        "resolved_predictions",
+        "resolved_this_cycle",
+        "resolved_unavailable",
+        # Etykiety sektorów i strefa czasu — wiele sekcji.
+        "sector_map",
+        "display_timezone",
+    }
+)
 
 
 @dataclasses.dataclass(frozen=True)
