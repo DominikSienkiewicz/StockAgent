@@ -23,6 +23,8 @@ from statistics import median
 MAD_K = Decimal(8)
 # Krótsza historia nie daje wiarygodnej skali — wtedy nic nie flagujemy.
 MIN_HISTORY_RETURNS = 10
+# Okno historii snapshotów, z którego graf liczy skalę (~20 sesji akcji, 30 dni krypto).
+OUTLIER_HISTORY_DAYS = 30
 
 
 def is_price_outlier(

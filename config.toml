@@ -318,6 +318,11 @@ session_close_settlement_enabled = false
 # idzie do `corporate_actions`. Zmienia rozliczenie, więc czeka do końca EXP-02/03.
 # UWAGA: włącz DOPIERO po migracji 062.
 split_detection_enabled = false
+# DAT-15: odczyt ceny dalej niż 8 MAD od mediany zwrotów 30 dni snapshotów, którego nie
+# potwierdza `pc` notowania, nie otwiera bramki, nie rozlicza predykcji i nie nadpisuje
+# snapshotu-referencji. Darmowy odczyt historii, bez migracji. Zmienia bramkę
+# i rozliczenie, więc czeka do końca EXP-02/03. Off.
+price_outlier_guard_enabled = false
 # WIA-24: darmowy sygnał referencyjny `reference-v1` (docs/reference-protocol-v1.md) —
 # raz na przebieg Slow Loopa własny odczyt /quote (Finnhub, CoinGecko), rozliczenie
 # zeszłotygodniowego wywołania i nowe wywołanie ze znaku zmiany tygodniowej. Zapis do

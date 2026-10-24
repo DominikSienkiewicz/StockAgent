@@ -260,6 +260,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "edge_calendar_horizon_enabled",
     # DAT-23: korekta splitu zmienia deltę bramki, rozliczenie i `price_delta`.
     "split_detection_enabled",
+    # DAT-15: anomalny odczyt zamyka bramkę i odkłada rozliczenie.
+    "price_outlier_guard_enabled",
     "social_velocity_enabled",
     "yield_curve_enabled",
     # DAT-22: głosy VIX i spreadu HY w reżimie zacieśniają próg bramki.
@@ -811,6 +813,10 @@ class Settings(BaseSettings):
     # koryguje referencję bramki, rozliczenie (w jednostkach predykcji) i `price_delta`,
     # a zdarzenie idzie do `corporate_actions` (migracja 062). Off.
     split_detection_enabled: bool = False
+    # DAT-15: odczyt ceny dalej niż 8 MAD od mediany zwrotów historii snapshotów (bez
+    # potwierdzenia w `pc`) nie otwiera bramki, nie rozlicza predykcji i nie nadpisuje
+    # snapshotu-referencji. Bez migracji. Off.
+    price_outlier_guard_enabled: bool = False
     # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
     # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
     # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.

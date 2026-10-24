@@ -1733,3 +1733,16 @@ class TestSplitDetectionFlag:
 
         assert settings.split_detection_enabled is False
         assert "split_detection_enabled" in RECIPE_SETTINGS_FIELDS
+
+
+class TestPriceOutlierGuardFlag:
+    """DAT-15: anomalny odczyt ceny zamyka bramkę i odkłada rozliczenie — zmiana
+    przepisu, bez migracji. Off na czas EXP-02/03."""
+
+    def test_defaults_off_and_inside_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.price_outlier_guard_enabled is False
+        assert "price_outlier_guard_enabled" in RECIPE_SETTINGS_FIELDS

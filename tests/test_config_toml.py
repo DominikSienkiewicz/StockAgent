@@ -583,3 +583,9 @@ def test_real_config_toml_ships_the_split_detection_off_until_migration() -> Non
     rozliczenie, więc czeka też do końca EXP-02/03."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["split_detection_enabled"] is False
+
+
+def test_real_config_toml_ships_the_price_outlier_guard_off() -> None:
+    """DAT-15: strażnik zmienia bramkę i rozliczenie, więc czeka do końca EXP-02/03."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["price_outlier_guard_enabled"] is False

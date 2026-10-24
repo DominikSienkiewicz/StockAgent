@@ -96,6 +96,7 @@ from src.domain.prediction import (
     sideways_tolerance_for,
 )
 from src.domain.price_features import SIGMA_LOOKBACK, return_sigma
+from src.domain.price_validation import OUTLIER_HISTORY_DAYS, is_unconfirmed_outlier
 from src.domain.recipe import PredictionRecipe
 from src.domain.regime_key import canonical_regime_key
 from src.domain.session_close import SessionClose, SessionCloseSettlement, session_close_of
@@ -261,6 +262,9 @@ class AgentState(TypedDict, total=False):
     # DAT-23: mnożnik ceny po podejrzanym splicie względem ceny przed nim (10:1 → 0,1),
     # z `check_price` za `split_detection_enabled`. Brak klucza = bez splitu.
     split_ratio: Decimal
+    # DAT-15: odczyt ceny anomalny bez potwierdzenia — bramka zamknięta, bez
+    # rozliczenia i bez snapshotu. Brak klucza = odczyt wiarygodny.
+    price_outlier: bool
 
     # #18: dywergencja predykcji modelu od implied move rynku opcji.
     # None = brak IV / options_flow_enabled=false → sygnał nie powstaje.
@@ -754,6 +758,10 @@ class AgentGraphDeps:
     # referencję bramki, rozliczenie i `price_delta`, a zdarzenie idzie do
     # `corporate_actions` (migracja 062). Off = jak przed DAT-23.
     split_detection_enabled: bool = False
+    # DAT-15: odczyt anomalny (MAD względem historii snapshotów, bez potwierdzenia
+    # w `pc`) nie otwiera bramki, nie rozlicza i nie nadpisuje referencji. Off = bez
+    # odczytu historii, jak przed DAT-15.
+    price_outlier_guard_enabled: bool = False
     attestation_publisher: AttestationPublisherPort | None = None
     # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
     # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
@@ -825,6 +833,50 @@ def _detect_split(
     return suspicion
 
 
+def _is_outlier_reading(
+    deps: AgentGraphDeps,
+    state: AgentState,
+    quote: Quote | None,
+    current: Money,
+    split: SplitSuspicion | None,
+) -> bool:
+    """DAT-15: odczyt anomalny bez potwierdzenia w `pc` (domena `price_validation`).
+
+    Tylko za flagą i ze świeżą referencją: po pauzie (FIN-14) cykl i tak tylko
+    zapisuje nowy punkt odniesienia, a strażnik nie może go blokować — inaczej trwały
+    ruch nie dostałby nigdy referencji. Historia snapshotów jest w cenach sprzed
+    splitu (DAT-23), więc odczyt i `pc` cofamy o jego stosunek. Błąd odczytu
+    historii przepuszcza odczyt (fail-open, jak przed DAT-15)."""
+    if not deps.price_outlier_guard_enabled or _reference_is_stale(state):
+        return False
+    symbol = state["symbol"]
+    try:
+        history = deps.repository_port.get_price_history(symbol, OUTLIER_HISTORY_DAYS)
+    except PortError:
+        logger.warning(
+            "DAT-15: price history of %s unavailable — reading not validated",
+            symbol,
+            exc_info=True,
+        )
+        return False
+    ratio = split.ratio if split is not None else Decimal(1)
+    prev_close = quote.prev_close if quote is not None else None
+    outlier = is_unconfirmed_outlier(
+        to_pre_split_price(current.amount, ratio),
+        [price.amount for _, price in history],
+        prev_close=None if prev_close is None else to_pre_split_price(prev_close.amount, ratio),
+    )
+    if outlier:
+        logger.warning(
+            "Price reading %s for %s is an unconfirmed outlier against %d snapshots — "
+            "gate closed, no settlement, reference kept for the next reading",
+            current.amount,
+            symbol,
+            len(history),
+        )
+    return outlier
+
+
 def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     symbol = state["symbol"]
     quote_port = _session_quote_port(deps, state)
@@ -847,6 +899,8 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     if split is not None:
         update["previous_price"] = previous.amount
         update["split_ratio"] = split.ratio
+    if _is_outlier_reading(deps, state, quote, current, split):
+        update["price_outlier"] = True
     if quote is not None:
         now = deps.clock()
         stale = is_stale(quote.quoted_at, now)
@@ -1129,7 +1183,23 @@ def _log_gate_decision(state: AgentState, verdict: _GateVerdict, decision: str) 
     )
 
 
+# DAT-15: powód bramki dla odczytu anomalnego (telemetria cyklu).
+PRICE_OUTLIER_REASON = "price_outlier"
+
+
+def _closed_by_outlier(deps: AgentGraphDeps, state: AgentState) -> bool:
+    """DAT-15: odczyt anomalny zamyka bramkę niezależnie od ruchu — delta od złego
+    ticka nie może płacić za analizę."""
+    if not state.get("price_outlier"):
+        return False
+    deps.telemetry.record_gate(state["symbol"], False, PRICE_OUTLIER_REASON)
+    logger.info("volatility gate for %s: price outlier → ignore", state["symbol"])
+    return True
+
+
 def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
+    if _closed_by_outlier(deps, state):
+        return "ignore"
     verdict = _volatility_verdict(deps, state)
     passes = verdict.passes
     over_budget = passes and _budget_exhausted(deps, state["symbol"])
@@ -1158,6 +1228,8 @@ def _gate_phase_route(deps: AgentGraphDeps, state: AgentState) -> str:
     kończy w `ignore` jak dziś; symbol za bramką kończy fazę 1 bez terminala
     (bez snapshotu) — o analizie albo cięciu budżetem decyduje faza 2, więc
     dopiero ona zapisuje decyzję w telemetrii (jedna decyzja na symbol)."""
+    if _closed_by_outlier(deps, state):
+        return "ignore"
     verdict = _volatility_verdict(deps, state)
     if not verdict.passes:
         deps.telemetry.record_gate(state["symbol"], False, _gate_reason(False, verdict.stale))
@@ -1260,6 +1332,9 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     crypto_threshold = deps.crypto_threshold
     llm_port = deps.llm_port
     symbol = state["symbol"]
+    if state.get("price_outlier"):
+        # DAT-15: anomalny odczyt nie rozlicza — predykcja czeka na następny odczyt.
+        return {"reflection_context": "Odczyt ceny anomalny — rozliczenie odłożone."}
     current_price = _settlement_price(state, state["current_price"])
     # min_age_hours odsiewa predykcje zbyt świeże, by je rzetelnie ocenić
     # (nakładające się cykle: manualny dispatch + scheduled). 0 = bez filtra.
@@ -2305,6 +2380,10 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
 
 
 def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
+    # DAT-15: anomalny odczyt nie nadpisuje referencji ani nie trafia do wektora cech —
+    # następny cykl liczy ruch od ostatniego wiarygodnego snapshotu.
+    if state.get("price_outlier"):
+        return {"status": "ignored"}
     # #6: węzeł terminalny — zapisujemy snapshot ceny dla następnego cyklu.
     _persist_price_snapshot(deps, state)
     # FIN-14 (decyzja 2026-10-19): cykl re-baseline nie jest obserwacją cyklu —

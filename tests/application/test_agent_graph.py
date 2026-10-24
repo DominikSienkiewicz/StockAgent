@@ -6366,3 +6366,174 @@ class TestSplitDetection:
         settlement = repository_port.update_prediction_accuracy.call_args.kwargs["session_close"]
         assert settlement.close.price == Money(Decimal("1005"))
         assert settlement.is_trend_correct is True
+
+
+class TestPriceOutlierGuard:
+    """DAT-15: odczyt anomalny (MAD względem historii snapshotów, bez potwierdzenia
+    w `pc`) za flagą `price_outlier_guard_enabled` nie otwiera bramki, nie rozlicza
+    predykcji i nie nadpisuje snapshotu-referencji — rozliczenie czeka na następny odczyt."""
+
+    _NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+
+    @staticmethod
+    def _history() -> list:
+        # Ceny z dziennymi ruchami ±1% / ±0,5% wokół 100.
+        prices = [Decimal("100")]
+        steps = (Decimal("1.01"), Decimal("0.99"), Decimal("1.005"), Decimal("0.995"))
+        for index in range(20):
+            prices.append(prices[-1] * steps[index % len(steps)])
+        start = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
+        from datetime import timedelta
+
+        return [(start + timedelta(days=i), Money(p)) for i, p in enumerate(prices)]
+
+    def _deps(
+        self, market_port: Mock, repository_port: Mock, llm_port: Mock, *, enabled: bool, **extra
+    ) -> AgentGraphDeps:
+        repository_port.get_price_history.return_value = self._history()
+        return AgentGraphDeps(
+            market_port=market_port,
+            sentiment_port=Mock(spec=SentimentPort),
+            news_port=Mock(spec=NewsPort),
+            repository_port=repository_port,
+            ml_port=Mock(spec=MLPredictionPort),
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            price_outlier_guard_enabled=enabled,
+            clock=lambda: self._NOW,
+            **extra,
+        )
+
+    def _previous(self) -> Decimal:
+        return self._history()[-1][1].amount
+
+    def test_bad_tick_keeps_the_gate_closed_and_the_reference(
+        self, market_port: Mock, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        market_port.get_current_price.return_value = Money(Decimal("0.01"))
+        deps = self._deps(market_port, repository_port, llm_port, enabled=True)
+
+        final = create_agent_graph(deps).compile().invoke(_initial_state(str(self._previous())))
+
+        assert final["status"] == "ignored"
+        assert final["price_outlier"] is True
+        llm_port.analyze.assert_not_called()
+        repository_port.save_price_snapshot.assert_not_called()
+        assert deps.telemetry.snapshot().gate_reasons == {"price_outlier": 1}
+
+    def test_bad_tick_does_not_settle_the_previous_prediction(
+        self, market_port: Mock, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        repository_port.get_unverified_prediction.return_value = Prediction(
+            id="before-tick",
+            symbol="AAPL",
+            predicted_trend=TrendDirection.BEARISH,
+            price_at_prediction=Decimal("100"),
+            predicted_target_price=Decimal("95"),
+        )
+        market_port.get_current_price.return_value = Money(Decimal("0.01"))
+        deps = self._deps(market_port, repository_port, llm_port, enabled=True)
+
+        create_agent_graph(deps).compile().invoke(_initial_state(str(self._previous())))
+
+        repository_port.update_prediction_accuracy.assert_not_called()
+        llm_port.analyze_mistake.assert_not_called()
+
+    def test_ordinary_move_passes_the_guard(
+        self, market_port: Mock, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        previous = self._previous()
+        market_port.get_current_price.return_value = Money(previous * Decimal("1.005"))
+        deps = self._deps(market_port, repository_port, llm_port, enabled=True)
+
+        final = create_agent_graph(deps).compile().invoke(_initial_state(str(previous)))
+
+        assert final["status"] == "ignored"
+        assert "price_outlier" not in final
+        repository_port.save_price_snapshot.assert_called_once()
+
+    def test_flag_off_reads_no_history_and_lets_the_tick_through(
+        self, market_port: Mock, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _check_price_node
+
+        market_port.get_current_price.return_value = Money(Decimal("0.01"))
+        deps = self._deps(market_port, repository_port, llm_port, enabled=False)
+
+        update = _check_price_node(deps, _initial_state(str(self._previous())))
+
+        assert "price_outlier" not in update
+        repository_port.get_price_history.assert_not_called()
+
+    def test_stale_reference_re_baselines_without_the_guard(
+        self, market_port: Mock, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        # FIN-14: po pauzie stęchła referencja i tak zamyka bramkę i zapisuje nowy punkt
+        # odniesienia — strażnik nie może tego zablokować (inaczej trwały ruch nie
+        # miałby nigdy referencji).
+        market_port.get_current_price.return_value = Money(Decimal("0.01"))
+        deps = self._deps(market_port, repository_port, llm_port, enabled=True)
+        state = {**_initial_state(str(self._previous())), "stale_reference": True}
+
+        final = create_agent_graph(deps).compile().invoke(state)
+
+        assert "price_outlier" not in final
+        repository_port.save_price_snapshot.assert_called_once()
+
+    def test_history_read_failure_fails_open(
+        self, market_port: Mock, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        from src.application.agent_graph import _check_price_node
+        from src.application.errors import ProviderUnavailable
+
+        market_port.get_current_price.return_value = Money(Decimal("0.01"))
+        deps = self._deps(market_port, repository_port, llm_port, enabled=True)
+        repository_port.get_price_history.side_effect = ProviderUnavailable("down")
+
+        update = _check_price_node(deps, _initial_state(str(self._previous())))
+
+        assert "price_outlier" not in update
+
+    def test_previous_close_confirming_the_jump_lets_it_through(
+        self, market_port: Mock, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        # Spadek −30% po wynikach: `pc` (zamknięcie poprzedniej sesji) już go niesie.
+        from src.application.agent_graph import _check_price_node
+        from src.application.ports import QuotePort
+        from src.domain.asset import Asset
+        from src.domain.value_objects import AssetType, Quote
+
+        previous = self._previous()
+        shocked = previous * Decimal("0.7")
+        quote_port = Mock(spec=QuotePort)
+        quote_port.get_quote.return_value = Quote(
+            price=Money(shocked * Decimal("1.004")),
+            quoted_at=datetime(2026, 10, 16, 20, 0, tzinfo=UTC),
+            prev_close=Money(shocked),
+        )
+        deps = self._deps(
+            market_port, repository_port, llm_port, enabled=True, quote_port=quote_port
+        )
+        state = {
+            **_initial_state(str(previous)),
+            "asset": Asset(symbol="AAPL", asset_type=AssetType.STOCK),
+        }
+
+        update = _check_price_node(deps, state)
+
+        assert "price_outlier" not in update
+
+    def test_two_phase_gate_ignores_the_bad_tick(
+        self, market_port: Mock, repository_port: Mock, llm_port: Mock
+    ) -> None:
+        # EXP-27: faza 1 kończy anomalny odczyt w `ignore`, bez snapshotu.
+        from src.application.agent_graph import create_gate_graph
+
+        market_port.get_current_price.return_value = Money(Decimal("0.01"))
+        deps = self._deps(market_port, repository_port, llm_port, enabled=True)
+
+        final = create_gate_graph(deps).compile().invoke(_initial_state(str(self._previous())))
+
+        assert final["status"] == "ignored"
+        repository_port.save_price_snapshot.assert_not_called()
+        assert deps.telemetry.snapshot().gate_reasons == {"price_outlier": 1}

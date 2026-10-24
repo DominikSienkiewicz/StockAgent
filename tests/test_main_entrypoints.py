@@ -395,6 +395,17 @@ class TestBuildAgentGraphDeps:
 
         assert deps.split_detection_enabled is enabled
 
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_price_outlier_guard_flag_reaches_the_graph(
+        self, settings, mock_external_clients, enabled
+    ):
+        # DAT-15: odporny detektor anomalii ceny za flagą.
+        settings.price_outlier_guard_enabled = enabled
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert deps.price_outlier_guard_enabled is enabled
+
     def test_tool_use_disabled_wires_no_tool_use_port(self, settings, mock_external_clients):
         settings.tool_use_enabled = False
 

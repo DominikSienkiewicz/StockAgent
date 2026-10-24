@@ -1532,6 +1532,8 @@ def build_agent_graph_deps(
         session_close_settlement_enabled=settings.session_close_settlement_enabled,
         # DAT-23: podejrzenie splitu z `pc` notowania (zapis w `corporate_actions`, 062).
         split_detection_enabled=settings.split_detection_enabled,
+        # DAT-15: strażnik anomalii ceny (darmowy odczyt historii snapshotów); off.
+        price_outlier_guard_enabled=settings.price_outlier_guard_enabled,
         # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
         # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji. WIA-70:
         # flaga on bez kolumn 024/043 → cykl bez atestacji, predykcje zapisane.
