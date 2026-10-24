@@ -9,19 +9,29 @@ a `main_scorecard` renderuje ją sam i przy błędzie odczytu kończy exit 1.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from typing import Any
 
 from src.application.ports import RepositoryPort, WebPublisherPort
 from src.application.report_evidence import PaperCosts, portfolio_curve
-from src.application.report_public_scorecard import render_public_scorecard_html
+from src.application.report_models import ResolvedPrediction
+from src.application.report_public_scorecard import (
+    SCORECARD_JSON_NAME,
+    render_public_scorecard_html,
+    render_public_scorecard_json,
+)
 from src.application.track_record_window import (
     TrackRecordReads,
     window_benchmark,
     window_coverage,
 )
+from src.domain.benchmark import BenchmarkComparison
+from src.domain.coverage import CoverageReport
+from src.domain.equity_curve import EquityCurve
 from src.domain.evaluation_protocol import EvaluationProtocol
 
 logger = logging.getLogger(__name__)
@@ -43,15 +53,52 @@ class PublicScorecardOptions:
     load_protocol: Callable[[], EvaluationProtocol]
 
 
-def render_public_scorecard(
+@dataclass(frozen=True)
+class ScorecardInputs:
+    """Wejście strony i jej maszynowego bliźniaka (WIA-81) — liczone RAZ z okna,
+    więc HTML i `scorecard.json` nie mogą się rozjechać."""
+
+    resolved: Sequence[ResolvedPrediction]
+    equity: EquityCurve | None
+    calibration_samples: Sequence[tuple[float, bool]]
+    generated_on: date
+    window_days: int
+    costs: PaperCosts | None
+    benchmark: BenchmarkComparison | None
+    protocol: EvaluationProtocol
+    calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]]
+    coverage: CoverageReport | None
+
+    def _kwargs(self) -> dict[str, Any]:
+        return {
+            "generated_on": self.generated_on,
+            "window_days": self.window_days,
+            "costs": self.costs,
+            "benchmark": self.benchmark,
+            "protocol": self.protocol,
+            "calibration_by_cycle": self.calibration_by_cycle,
+            "coverage": self.coverage,
+        }
+
+    def html(self) -> str:
+        return render_public_scorecard_html(
+            self.resolved, self.equity, self.calibration_samples, **self._kwargs()
+        )
+
+    def document(self) -> dict[str, Any] | None:
+        return render_public_scorecard_json(
+            self.resolved, self.equity, self.calibration_samples, **self._kwargs()
+        )
+
+
+def scorecard_inputs(
     repository: RepositoryPort,
     options: PublicScorecardOptions,
     costs: PaperCosts | None = None,
     *,
     reads: TrackRecordReads | None = None,
-) -> str:
-    """#10 — strona z agregatami (N, hit-rate, Brier, ECE, krzywe) z okna
-    `window_days`; "" gdy okno nie ma danych.
+) -> ScorecardInputs:
+    """#10 — agregaty z okna `window_days` (N, hit-rate, Brier, ECE, krzywe).
 
     Metryki liczone z `resolved`/`cal_rows` NIEZALEŻNIE od flag
     `equity_curve_enabled` / `calibration_curve_enabled` — tamte sterują
@@ -76,10 +123,10 @@ def render_public_scorecard(
             settle_after_hours=options.settle_after_hours,
         )
     )
-    return render_public_scorecard_html(
-        resolved,
-        portfolio_curve(resolved, costs),
-        calibration.directional,
+    return ScorecardInputs(
+        resolved=resolved,
+        equity=portfolio_curve(resolved, costs),
+        calibration_samples=calibration.directional,
         generated_on=datetime.now(UTC).date(),
         window_days=options.window_days,
         costs=costs,
@@ -96,8 +143,19 @@ def render_public_scorecard(
     )
 
 
+def render_public_scorecard(
+    repository: RepositoryPort,
+    options: PublicScorecardOptions,
+    costs: PaperCosts | None = None,
+    *,
+    reads: TrackRecordReads | None = None,
+) -> str:
+    """#10 — strona z agregatami okna (`scorecard_inputs`); "" gdy okno nie ma danych."""
+    return scorecard_inputs(repository, options, costs, reads=reads).html()
+
+
 class PublishPublicScorecardUseCase:
-    """#10 — publikuje `render_public_scorecard` przez osobny publisher strony.
+    """#10 — publikuje stronę i `scorecard.json` (WIA-81) przez osobny publisher strony.
 
     Osobna instancja publishera (nie ta od prywatnego digestu) wybiera
     composition root — obie piszą do pliku, więc jedna nadpisałaby drugą.
@@ -120,11 +178,30 @@ class PublishPublicScorecardUseCase:
         """Strona okna albo "" bez danych; błąd odczytu leci do wołającego."""
         return render_public_scorecard(self._repository, self._options, costs, reads=self._reads)
 
+    def publish(self, costs: PaperCosts | None = None) -> bool | None:
+        """Strona i obok niej `scorecard.json` z tego samego wejścia.
+
+        None — okno bez danych, nic nie zapisano (Pages zostaje przy poprzedniej
+        wersji); True — oba pliki zapisane; False — któryś zapis padł. Błąd odczytu
+        leci do wołającego (`main_scorecard` kończy exit 1)."""
+        inputs = scorecard_inputs(self._repository, self._options, costs, reads=self._reads)
+        page = inputs.html()
+        document = inputs.document()
+        if not page or document is None:
+            return None
+        page_written = bool(self._publisher.publish(page))
+        document_written = bool(
+            self._publisher.publish_asset(
+                SCORECARD_JSON_NAME,
+                json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                "application/json",
+            )
+        )
+        return page_written and document_written
+
     def run(self, costs: PaperCosts | None = None) -> None:
         """Best-effort: błąd odczytu ani `OSError` przy zapisie nie wywalają cyklu."""
         try:
-            page = self.render(costs)
-            if page:
-                self._publisher.publish(page)
+            self.publish(costs)
         except Exception:
             logger.exception("Public scorecard publish failed — pomijam")

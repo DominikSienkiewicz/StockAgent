@@ -263,3 +263,23 @@ def test_every_job_ends_with_a_failure_alert() -> None:
         env = last.get("env", {})
         assert env.get("RESEND_API_KEY") == "${{ secrets.RESEND_API_KEY }}", job_name
         assert env.get("DIGEST_TO_EMAIL") == "${{ secrets.DIGEST_TO_EMAIL }}", job_name
+
+
+def test_publishes_the_json_twin_next_to_the_page(settings: Settings, mocker: Any) -> None:
+    # WIA-81: `scorecard.json` w katalogu strony — ten sam artefakt Pages.
+    import json
+
+    publisher = _wire(mocker, _repo())
+
+    assert main_scorecard.main([], settings=settings) == 0
+
+    name, content, content_type = publisher.publish_asset.call_args.args
+    assert (name, content_type) == ("scorecard.json", "application/json")
+    assert json.loads(content)["window_days"] == 30
+
+
+def test_failed_json_write_exits_1(settings: Settings, mocker: Any) -> None:
+    publisher = _wire(mocker, _repo())
+    publisher.publish_asset.return_value = ""
+
+    assert main_scorecard.main([], settings=settings) == 1

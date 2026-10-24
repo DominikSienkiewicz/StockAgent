@@ -1087,6 +1087,11 @@ class WebPublisherPort(ABC):
     @abstractmethod
     def publish(self, html: str) -> str: ...
 
+    @abstractmethod
+    def publish_asset(self, name: str, content: str, content_type: str) -> str:
+        """WIA-81 — plik obok strony (np. `scorecard.json`); `name` to sama nazwa pliku.
+        Zwraca URL/ścieżkę albo "" (wyłączone / błąd), jak `publish`."""
+
 
 @dataclass(frozen=True)
 class DigestRecord:

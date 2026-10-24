@@ -95,3 +95,34 @@ class TestNullWebPublisher:
             NullWebPublisher().publish("<html>x</html>")
 
         assert "web digest" in caplog.text.lower() or "disabled" in caplog.text.lower()
+
+
+class TestPublishAsset:
+    """WIA-81 — plik obok strony (np. `scorecard.json`) w tym samym katalogu, który
+    workflow wysyła na Pages."""
+
+    def test_writes_the_asset_next_to_the_page(self, tmp_path: Path) -> None:
+        publisher = FileWebPublisher(output_path=str(tmp_path / "scorecard" / "index.html"))
+
+        result = publisher.publish_asset("scorecard.json", '{"a": 1}', "application/json")
+
+        target = tmp_path / "scorecard" / "scorecard.json"
+        assert target.read_text(encoding="utf-8") == '{"a": 1}'
+        assert result == str(target.resolve())
+
+    @pytest.mark.parametrize("name", ["../escape.json", "sub/x.json", "", ".."])
+    def test_asset_name_must_be_a_plain_file_name(self, tmp_path: Path, name: str) -> None:
+        publisher = FileWebPublisher(output_path=str(tmp_path / "index.html"))
+
+        with pytest.raises(ValueError, match="file name"):
+            publisher.publish_asset(name, "{}", "application/json")
+
+    def test_write_error_returns_empty_string(self, tmp_path: Path) -> None:
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x", encoding="utf-8")
+        publisher = FileWebPublisher(output_path=str(blocker / "index.html"))
+
+        assert publisher.publish_asset("scorecard.json", "{}", "application/json") == ""
+
+    def test_null_publisher_writes_no_asset(self) -> None:
+        assert NullWebPublisher().publish_asset("scorecard.json", "{}", "application/json") == ""

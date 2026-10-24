@@ -7,13 +7,23 @@ ujawnić. Publikujemy wyłącznie agregaty: N, hit-rate, ECE, krzywą kalibracji
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
+from typing import Any
 
+import jsonschema
+
+from src.application.report_evidence import PaperCosts
 from src.application.report_models import ResolvedPrediction
-from src.application.report_public_scorecard import render_public_scorecard_html
+from src.application.report_public_scorecard import (
+    render_public_scorecard_html,
+    render_public_scorecard_json,
+)
 from src.domain.equity_curve import equity_curve
+from src.domain.evaluation_protocol import EvaluationProtocol
 
 
 def _resolved(
@@ -609,3 +619,126 @@ class TestRequiredSampleLine:
         )
 
         assert "brak napływu danych" in self._methodology(html)
+
+
+# --- WIA-81: scorecard.json obok strony ----------------------------------------------
+
+_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "docs" / "schemas" / "scorecard.schema.json"
+
+
+def _schema() -> dict[str, Any]:
+    return dict(json.loads(_SCHEMA_PATH.read_text(encoding="utf-8")))
+
+
+def _protocol() -> EvaluationProtocol:
+    from src.config import load_evaluation_protocol
+
+    return load_evaluation_protocol()
+
+
+def _scorecard_inputs() -> dict[str, Any]:
+    resolved = [
+        _dated("BULLISH", True, 1, actual="102"),
+        _dated("BULLISH", False, 2, actual="99"),
+        _dated("BEARISH", True, 3, actual="98"),
+        _dated("SIDEWAYS", True, 4, actual="100"),
+    ]
+    samples = [(0.8, True), (0.6, False), (0.7, True)]
+    return {
+        "resolved": resolved,
+        "equity": equity_curve([("BULLISH", 0.02), ("BULLISH", -0.01), ("BEARISH", 0.02)]),
+        "calibration_samples": samples,
+        "generated_on": date(2026, 10, 25),
+        "window_days": 30,
+        "costs": PaperCosts(cost_bps=10.0, crypto_cost_bps=25.0),
+        "protocol": _protocol(),
+        "calibration_by_cycle": [[sample] for sample in samples],
+    }
+
+
+def test_json_scorecard_validates_against_schema() -> None:
+    inputs = _scorecard_inputs()
+
+    document = render_public_scorecard_json(**inputs)
+
+    assert document is not None
+    jsonschema.Draft202012Validator(_schema()).validate(document)
+    assert document["n_resolved"] == len(inputs["resolved"])
+
+
+def test_schema_file_is_a_valid_2020_12_schema() -> None:
+    jsonschema.Draft202012Validator.check_schema(_schema())
+
+
+def test_json_and_html_report_the_same_hit_rate() -> None:
+    inputs = _scorecard_inputs()
+
+    document = render_public_scorecard_json(**inputs)
+    html = render_public_scorecard_html(**inputs)
+
+    assert document is not None
+    rate = document["directional_hit_rate"]["rate"]
+    assert _card(f"{rate * 100:.1f}%", "Hit-rate kierunkowy") in html
+    assert document["directional_hit_rate"]["sideways"] == 1
+    low, high = document["directional_hit_rate"]["wilson_low"], document[
+        "directional_hit_rate"
+    ]["wilson_high"]
+    assert f"95% CI {low * 100:.0f}–{high * 100:.0f}%" in html
+
+
+def test_json_names_the_methodology_and_the_protocol_hash() -> None:
+    inputs = _scorecard_inputs()
+
+    document = render_public_scorecard_json(**inputs)
+
+    assert document is not None
+    assert document["methodology_version"] == inputs["protocol"].version
+    assert document["protocol_hash"] == inputs["protocol"].sha256
+    assert (document["generated_on"], document["window_days"]) == ("2026-10-25", 30)
+    assert document["equity_curve"]["cost_bps"] == 10.0
+
+
+def test_json_without_protocol_or_equity_says_null() -> None:
+    inputs = {**_scorecard_inputs(), "protocol": None, "equity": None, "costs": None}
+
+    document = render_public_scorecard_json(**inputs)
+
+    assert document is not None
+    jsonschema.Draft202012Validator(_schema()).validate(document)
+    assert (document["methodology_version"], document["protocol_hash"]) == (None, None)
+    assert document["equity_curve"] is None
+
+
+def test_json_self_suppresses_like_the_page() -> None:
+    assert render_public_scorecard_json(None, None, None) is None
+    assert render_public_scorecard_json([], None, []) is None
+
+
+def test_json_scorecard_leaks_no_symbols_emails_or_amounts() -> None:
+    # WIA-81: test anty-PII obejmuje też wersję maszynową.
+    resolved = [
+        _resolved(
+            "NVDA",
+            "BULLISH",
+            True,
+            reasoning="Kup wg cynku od insider@example.com — cena 1234 USD",
+            price_at=Decimal("1234.56"),
+            actual=Decimal("1300.00"),
+        ),
+        _resolved("TSLA", "BEARISH", False, price_at=Decimal("250.00"), actual=Decimal("260")),
+    ]
+    curve = equity_curve([("BULLISH", 0.05), ("BEARISH", 0.04)])
+
+    text = json.dumps(render_public_scorecard_json(resolved, curve, [(0.8, True), (0.6, False)]))
+
+    for leak in ("NVDA", "TSLA", "@", "$", "zł", "PLN", "1234", "1300", "250"):
+        assert leak not in text, leak
+
+
+def test_json_with_calibration_only_has_an_empty_hit_rate() -> None:
+    document = render_public_scorecard_json([], None, [(0.8, True)])
+
+    assert document is not None
+    jsonschema.Draft202012Validator(_schema()).validate(document)
+    assert document["directional_hit_rate"]["rate"] is None
+    assert document["calibration"]["n"] == 1

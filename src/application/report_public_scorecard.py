@@ -28,6 +28,7 @@ import html as _html
 from collections.abc import Sequence
 from datetime import date, timedelta
 from decimal import Decimal
+from typing import Any
 
 from src.application.data_coverage import coverage_line_pl
 from src.application.report_evidence import (
@@ -620,3 +621,141 @@ def _page_css() -> str:
         ".fineprint{color:#94a3b8;font-size:11px}"
         ".foot{color:#94a3b8;font-size:11px;text-align:center;margin:20px 0 0}"
     )
+
+
+# WIA-81: wersja kształtu `scorecard.json` (docs/schemas/scorecard.schema.json). Opublikowany
+# schemat to kontrakt: zmiana znaczenia albo kształtu pola = podbicie tej wersji i schematu.
+SCORECARD_JSON_SCHEMA_VERSION = 1
+SCORECARD_JSON_NAME = "scorecard.json"
+# Liczby z dokładnością, której strona i tak nie pokazuje; stały zapis między publikacjami.
+_JSON_DIGITS = 6
+
+
+def render_public_scorecard_json(
+    resolved: Sequence[ResolvedPrediction] | None,
+    equity: EquityCurve | None,
+    calibration_samples: Sequence[tuple[float, bool]] | None,
+    *,
+    generated_on: date | str = "",
+    window_days: int | None = None,
+    costs: PaperCosts | None = None,
+    benchmark: BenchmarkComparison | None = None,
+    protocol: EvaluationProtocol | None = None,
+    calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]] | None = None,
+    coverage: CoverageReport | None = None,
+) -> dict[str, Any] | None:
+    """WIA-81 — maszynowa wersja strony z TYM SAMYM wejściem co `render_public_scorecard_html`.
+
+    Te same agregaty z tych samych funkcji domeny (hit-rate z przedziałem Wilsona na
+    n_eff, naiwne baseline'y, Brier/BSS, ECE, kubełki kalibracji z n, punkty krzywej
+    kapitału), plus wersja metodologii (protokołu ewaluacji) i jego sha256 — weryfikator
+    porówna liczby z revealami skryptem, bez parsowania HTML. Bez symboli, cen i kwot.
+    `benchmark` i `coverage` zostają na stronie (zdania), poza schematem v1.
+    Samosupresja jak strona: brak danych → None."""
+    del benchmark, coverage
+    predictions = list(resolved) if resolved else []
+    samples = list(calibration_samples) if calibration_samples else []
+    has_equity = equity is not None and equity.n_trades > 0
+    if not predictions and not samples and not has_equity:
+        return None
+    return {
+        "schema_version": SCORECARD_JSON_SCHEMA_VERSION,
+        "methodology_version": None if protocol is None else protocol.version,
+        "protocol_hash": None if protocol is None else protocol.sha256,
+        "generated_on": (
+            generated_on.isoformat() if isinstance(generated_on, date) else str(generated_on)
+        ),
+        "window_days": window_days,
+        "n_resolved": len(predictions),
+        **_hit_rate_document(hit_rate_evidence(predictions)),
+        "calibration": _calibration_document(samples, calibration_by_cycle),
+        "equity_curve": (
+            _equity_document(equity, costs)
+            if equity is not None and equity.n_trades > 0
+            else None
+        ),
+    }
+
+
+def _number(value: float | None) -> float | None:
+    return None if value is None else round(value, _JSON_DIGITS)
+
+
+def _hit_rate_document(evidence: HitRateEvidence | None) -> dict[str, Any]:
+    """`directional_hit_rate` i `baselines` z jednego `HitRateEvidence` (jak karty strony)."""
+    if evidence is None:
+        no_rate = dict.fromkeys(("rate", "n_eff", "wilson_low", "wilson_high", "p_value"))
+        no_baseline = dict.fromkeys(("always_bullish", "always_bearish", "always_sideways"))
+        return {
+            "directional_hit_rate": {**no_rate, "hits": 0, "directional": 0, "sideways": 0},
+            "baselines": {**no_baseline, "n": 0},
+        }
+    hit_rate, baselines = evidence.hit_rate, evidence.baselines
+    low, high = (None, None) if evidence.interval is None else evidence.interval
+    return {
+        "directional_hit_rate": {
+            "rate": _number(hit_rate.rate),
+            "hits": hit_rate.hits,
+            "directional": hit_rate.directional,
+            "sideways": hit_rate.sideways,
+            "n_eff": _number(evidence.n_eff),
+            "wilson_low": _number(low),
+            "wilson_high": _number(high),
+            "p_value": _number(evidence.p_value),
+        },
+        "baselines": {
+            "always_bullish": _number(baselines.always_bullish),
+            "always_bearish": _number(baselines.always_bearish),
+            "always_sideways": _number(baselines.always_sideways),
+            "n": baselines.n,
+        },
+    }
+
+
+def _calibration_document(
+    samples: Sequence[tuple[float, bool]],
+    calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]] | None,
+) -> dict[str, Any]:
+    """Brier, BSS i ECE, które strona podaje w sekcji kalibracji, plus kubełki z n."""
+    buckets = reliability_curve(samples) if samples else []
+    scores = probability_scores(samples)
+    evidence = calibration_error_evidence(calibration_by_cycle) if calibration_by_cycle else None
+    if evidence is not None:
+        ece: float | None = evidence.ece
+    else:
+        ece = expected_calibration_error(buckets) if buckets else None
+    return {
+        "n": len(samples),
+        "brier": None if scores is None else _number(scores.brier),
+        "brier_skill_score": None if scores is None else _number(scores.skill),
+        "ece": _number(ece),
+        "buckets": [
+            {
+                "lower": _number(bucket.lower),
+                "upper": _number(bucket.upper),
+                "n": bucket.count,
+                "mean_confidence": _number(bucket.mean_confidence),
+                "hit_rate": _number(bucket.hit_rate),
+            }
+            for bucket in buckets
+        ],
+    }
+
+
+def _equity_document(equity: EquityCurve, costs: PaperCosts | None) -> dict[str, Any]:
+    """Krzywa kapitału z pól `EquityCurve` i założenia kosztowe (None = brutto)."""
+    return {
+        "cost_bps": None if costs is None else costs.cost_bps,
+        "crypto_cost_bps": None if costs is None else costs.crypto_cost_bps,
+        "total_return": _number(equity.total_return),
+        "max_drawdown": _number(equity.max_drawdown),
+        "n_trades": equity.n_trades,
+        "points": [
+            {
+                "index": point.index,
+                "period_return": _number(point.period_return),
+                "equity": _number(point.equity),
+            }
+            for point in equity.points
+        ],
+    }

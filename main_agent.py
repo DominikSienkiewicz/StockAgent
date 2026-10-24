@@ -147,7 +147,6 @@ from src.application.use_cases.portfolio_risk import (
 from src.application.use_cases.publish_public_scorecard import (
     PublicScorecardOptions,
     PublishPublicScorecardUseCase,
-    render_public_scorecard,
 )
 from src.application.use_cases.reveal_attestations import RevealAttestationsUseCase
 from src.application.use_cases.run_cycle import (
@@ -865,13 +864,12 @@ def _public_scorecard_options(settings: Settings) -> PublicScorecardOptions:
     )
 
 
-def render_public_scorecard_page(
-    settings: Settings, repository: RepositoryPort, costs: PaperCosts | None = None
-) -> str:
-    """#10 — strona publicznego scorecardu z okna `track_record_days` ("" bez
-    danych); renderuje `render_public_scorecard`. Błąd odczytu leci wyżej:
-    Fast Loop go połyka, `main_scorecard` kończy exit 1."""
-    return render_public_scorecard(repository, _public_scorecard_options(settings), costs)
+def public_scorecard_use_case(
+    settings: Settings, repository: RepositoryPort, publisher: WebPublisherPort
+) -> PublishPublicScorecardUseCase:
+    """#10/WIA-81 — publikacja strony i `scorecard.json` z okna `track_record_days`.
+    `main_scorecard` woła `publish` (błąd odczytu = exit 1), Fast Loop — `run`."""
+    return PublishPublicScorecardUseCase(repository, publisher, _public_scorecard_options(settings))
 
 
 def _publish_public_scorecard(

@@ -3,9 +3,11 @@
 Scorecard to jedyny artefakt, który może zbudować zaufanie obcych, a Fast Loop stoi
 (decyzja 1). Ten entry-point renderuje go z danych, które już są w bazie: zamknięte
 predykcje, próbki kalibracji i darmowe snapshoty IVV pod benchmark. Strona jest ta
-sama co w cyklu Fast Loopa (`main_agent.render_public_scorecard_page`, po kosztach
-paper-PnL z config.toml). Składa wyłącznie repozytorium (bez `DB_WRITES_ENABLED`,
-więc tylko odczyt) i publisher scorecardu z DI Containera Fast Loopa.
+sama co w cyklu Fast Loopa (`main_agent.public_scorecard_use_case`, po kosztach
+paper-PnL z config.toml), a obok niej leży jej maszynowy bliźniak `scorecard.json`
+(WIA-81, schemat `docs/schemas/scorecard.schema.json`). Składa wyłącznie
+repozytorium (bez `DB_WRITES_ENABLED`, więc tylko odczyt) i publisher scorecardu
+z DI Containera Fast Loopa.
 
 Workflow `scorecard_pages.yml` wysyła potem na Pages WYŁĄCZNIE katalog
 `dirname(public_scorecard_path)`, nigdy `public/` z prywatnym digestem. Atestacji
@@ -16,9 +18,10 @@ wstrzymanym Fast Loopie domyślne 30 dni daje puste okno, a puste okno nie daje
 artefaktu — Pages zostaje przy ostatnio opublikowanej stronie.
 
 Kody wyjścia: 0 — strona zapisana albo świadomie bez artefaktu (flaga off, puste
-okno); 1 — błąd odczytu bazy albo zapisu pliku (krok alertu workflowu mailuje).
+okno); 1 — błąd odczytu bazy albo zapisu strony lub `scorecard.json` (krok alertu
+workflowu mailuje).
 
-FinOps: **zero płatnych wywołań** — odczyt Supabase i zapis jednego pliku.
+FinOps: **zero płatnych wywołań** — odczyt Supabase i zapis dwóch plików.
 
 Użycie:
     uv run python main_scorecard.py [--days N]
@@ -78,24 +81,28 @@ def _publish(settings: Settings) -> int:
         _paper_costs,
         build_public_scorecard_publisher,
         build_repository,
-        render_public_scorecard_page,
+        public_scorecard_use_case,
     )
 
+    use_case = public_scorecard_use_case(
+        settings, build_repository(settings), build_public_scorecard_publisher(settings)
+    )
     try:
-        page = render_public_scorecard_page(
-            settings, build_repository(settings), _paper_costs(settings)
-        )
+        published = use_case.publish(_paper_costs(settings))
     except Exception:
         logger.exception("Public scorecard: odczyt bazy padł — exit 1")
         return 1
-    if not page:
+    if published is None:
         logger.warning(
             "Public scorecard: brak zamkniętych predykcji w oknie %d dni — brak artefaktu",
             settings.track_record_days,
         )
         return 0
-    if not build_public_scorecard_publisher(settings).publish(page):
-        logger.error("Public scorecard: zapis %s padł — exit 1", settings.public_scorecard_path)
+    if not published:
+        logger.error(
+            "Public scorecard: zapis strony albo scorecard.json obok %s padł — exit 1",
+            settings.public_scorecard_path,
+        )
         return 1
     logger.info("Public scorecard: okno %d dni zapisane", settings.track_record_days)
     return 0
