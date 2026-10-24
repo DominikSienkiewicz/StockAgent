@@ -42,6 +42,7 @@ from src.application.ml_features import feature_set_version
 from src.application.ports import LLMPort, ModelCatalogPort, RepositoryPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_ops import (
+    render_challenger_verdicts_markdown,
     render_direction_variant_markdown,
     render_trainer_summary_markdown,
 )
@@ -64,6 +65,7 @@ from src.application.use_cases.monitor_output_drift import (
 )
 from src.application.use_cases.probe_models import ModelProbe, ProbeModelsUseCase
 from src.application.use_cases.reference_signal import RunReferenceSignalUseCase
+from src.application.use_cases.review_challengers import ReviewChallengersUseCase
 from src.application.use_cases.train_model import (
     POOLED_MODEL_SYMBOL,
     SnapshotModelsResult,
@@ -77,6 +79,7 @@ from src.config import Settings, load_evaluation_protocol
 from src.domain.direction_variant import DirectionReport
 from src.domain.finops import slow_loop_paid_budget
 from src.domain.fundamentals_refresh import refresh_budget, select_refresh_batch
+from src.domain.promotion import ChallengerVerdict
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.infrastructure.adapters.age_archive import AgeEncryptedArchive, is_age_recipient
 from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
@@ -309,6 +312,8 @@ class _TrainingTally:
     snapshot_models: SnapshotModelsResult | None = None
     # ML-30: wariant binarny modelu (None = flaga off albo krok padł).
     direction: DirectionReport | None = None
+    # ML-33: werdykt promocji challengerów (None = flaga off albo odczyt padł).
+    challengers: tuple[ChallengerVerdict, ...] | None = None
     feature_store_refreshed: bool = True
     failures: int = 0
     total: int = 0
@@ -333,6 +338,8 @@ class _TrainingTally:
             summary += "\n" + render_snapshot_models_markdown(self.snapshot_models)
         if self.direction is not None:
             summary += "\n" + render_direction_variant_markdown(self.direction)
+        if self.challengers is not None:
+            summary += "\n" + render_challenger_verdicts_markdown(self.challengers)
         return summary
 
 
@@ -455,6 +462,36 @@ def _evaluate_direction_variant(
     )
     if tally is not None:
         tally.direction = report
+
+
+def _review_challengers(
+    settings: Settings, repository: RepositoryPort, tally: _TrainingTally | None = None
+) -> None:
+    """ML-33: werdykt promocji challengerów nogi ML z prognoz cienia rozliczonych
+    predykcji (martwa strefa kierunku z protokołu, EXP-06) — sam raport w summary,
+    bez zapisu i bez podmiany wag. Błąd odczytu (np. brak tabeli przed migracją 075)
+    tylko loguje, exit code ten sam."""
+    if not settings.shadow_predictions_enabled:
+        return
+    dead_band = float(load_evaluation_protocol().directional_dead_zone)
+    try:
+        verdicts = ReviewChallengersUseCase(
+            repository, clock=lambda: datetime.now(UTC)
+        ).run(dead_band=dead_band)
+    except PortError:
+        logger.warning("Champion/challenger review failed — pomijam", exc_info=True)
+        return
+    for entry in verdicts:
+        logger.info(
+            "Challenger (ML-33) %s [%s] — %s, pairs=%d, z=%s",
+            entry.model_name,
+            entry.kind.value,
+            entry.verdict.status.value,
+            entry.verdict.n_pairs,
+            entry.verdict.paired_z,
+        )
+    if tally is not None:
+        tally.challengers = verdicts
 
 
 def _build_llm_or_unavailable(
@@ -888,6 +925,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     failures += _train_pooled_model(settings, use_case, trainable, tally)
     _evaluate_snapshot_models(settings, use_case, trainable, tally)
     _evaluate_direction_variant(settings, use_case, trainable, tally)
+    _review_challengers(settings, repository, tally)
     tally.failures, tally.total = failures, len(trainable) + 1
     _run_reference_signal(settings, repository)
     _run_output_drift(settings, quota_monitor)

@@ -377,6 +377,53 @@ class TestTrainerSummary:
         assert main_trainer.main(settings) == 0
         assert "Direction classifier" not in summary_file.read_text(encoding="utf-8")
 
+    def test_challenger_review_runs_only_with_the_shadow_flag(
+        self, settings, mock_external_clients, mocker, summary_file
+    ) -> None:
+        # ML-33: werdykt promocji challengerów nogi ML w summary, za flagą off.
+        from src.domain.promotion import SettledShadowForecast, ShadowForecast
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "skipped", "n_samples": 12}
+        fake_uc.run_pooled.return_value = {"status": "skipped", "n_samples": 24}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_settled_shadow_predictions.return_value = [
+            SettledShadowForecast(
+                "p1", ShadowForecast("champion", "a" * 64, predicted_return=0.01), 0.02
+            ),
+            SettledShadowForecast("p1", ShadowForecast("direction", "c" * 64, proba=0.7), 0.02),
+        ]
+        mocker.patch("main_trainer.build_repository", return_value=repository)
+
+        assert main_trainer.main(settings) == 0
+        repository.get_settled_shadow_predictions.assert_not_called()
+        assert "Champion/challenger" not in summary_file.read_text(encoding="utf-8")
+
+        settings.shadow_predictions_enabled = True
+        assert main_trainer.main(settings) == 0
+
+        markdown = summary_file.read_text(encoding="utf-8")
+        assert "### Champion/challenger (ML-33)" in markdown
+        assert "| direction | direction Brier | 1 | 1 |" in markdown
+
+    def test_failed_challenger_review_does_not_fail_the_run(
+        self, settings, mock_external_clients, mocker, summary_file
+    ) -> None:
+        from src.application.errors import NotFound
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "skipped", "n_samples": 12}
+        fake_uc.run_pooled.return_value = {"status": "skipped", "n_samples": 24}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_settled_shadow_predictions.side_effect = NotFound("no table before 075")
+        mocker.patch("main_trainer.build_repository", return_value=repository)
+        settings.shadow_predictions_enabled = True
+
+        assert main_trainer.main(settings) == 0
+        assert "Champion/challenger" not in summary_file.read_text(encoding="utf-8")
+
     def test_failed_feature_store_refresh_still_writes_a_summary(
         self, settings, mock_external_clients, mocker, summary_file
     ) -> None:

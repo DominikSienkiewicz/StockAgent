@@ -298,3 +298,48 @@ def test_cycle_summary_lists_http_requests_per_host() -> None:
 
 def test_cycle_summary_without_http_meter_has_no_http_section() -> None:
     assert "HTTP requests by host" not in _render()
+
+
+def test_challenger_summary_shows_the_paired_verdict_of_each_challenger() -> None:
+    # ML-33: werdykt promocji w summary Slow Loopa — liczby par, straty, z i werdykt;
+    # sam raport, podmiana wag zostaje decyzją właściciela.
+    from src.application.report_ops import render_challenger_verdicts_markdown
+    from src.domain.promotion import (
+        ChallengerVerdict,
+        ForecastKind,
+        PromotionStatus,
+        PromotionVerdict,
+    )
+
+    markdown = render_challenger_verdicts_markdown(
+        (
+            ChallengerVerdict(
+                "alt",
+                ForecastKind.RETURN,
+                2,
+                PromotionVerdict(PromotionStatus.INSUFFICIENT_DATA, 12, 0.0004, 0.0003, 1.2),
+            ),
+            ChallengerVerdict(
+                "direction",
+                ForecastKind.DIRECTION,
+                1,
+                PromotionVerdict(PromotionStatus.PROMOTE, 80, 0.5, 0.2, 6.25),
+            ),
+        )
+    )
+
+    assert "### Champion/challenger (ML-33)" in markdown
+    assert "| alt | squared return error | 2 | 12 | 0.0004 / 0.0003 | 25.0% | 1.20 |" in markdown
+    assert "insufficient_data |" in markdown
+    assert "| direction | direction Brier | 1 | 80 | 0.5000 / 0.2000 | 60.0% | 6.25 |" in markdown
+    assert "promote |" in markdown
+    assert "owner" in markdown
+
+
+def test_challenger_summary_without_pairs_says_so() -> None:
+    from src.application.report_ops import render_challenger_verdicts_markdown
+
+    markdown = render_challenger_verdicts_markdown(())
+
+    assert "### Champion/challenger (ML-33)" in markdown
+    assert "No challenger forecast" in markdown

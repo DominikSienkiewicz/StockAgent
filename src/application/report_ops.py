@@ -19,6 +19,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from src.application.report_models import SymbolResult
 from src.domain.direction_variant import DirectionReport
 from src.domain.finops import CycleCost
+from src.domain.promotion import (
+    LIVE_WINDOW_DAYS,
+    MIN_LIVE_N,
+    PROMOTION_MARGIN,
+    PROMOTION_Z_CRIT,
+    ChallengerVerdict,
+    ForecastKind,
+)
 from src.domain.quota import QuotaAlert
 
 UNKNOWN_ERROR_TYPE = "unknown"
@@ -234,3 +242,49 @@ def _table(header: tuple[str, str], rows: Iterable[tuple[str, str]]) -> str:
     lines = [f"| {header[0]} | {header[1]} |", "|---|---|"]
     lines.extend(f"| {key} | {value} |" for key, value in rows)
     return "\n".join(lines) + "\n"
+
+
+# ML-33: nazwa straty pary w summary według rodzaju prognozy challengera.
+_CHALLENGER_LOSS_LABELS = {
+    ForecastKind.RETURN: "squared return error",
+    ForecastKind.DIRECTION: "direction Brier",
+}
+
+
+def render_challenger_verdicts_markdown(verdicts: Sequence[ChallengerVerdict]) -> str:
+    """ML-33: werdykt promocji każdego challengera nogi ML w summary Slow Loopa —
+    pary z championem na tych samych predykcjach live, średnie straty, względna
+    poprawa, z testu sparowanego i werdykt reguły. Sam raport: podmiana wag zostaje
+    decyzją właściciela."""
+    lines = ["### Champion/challenger (ML-33)", ""]
+    if not verdicts:
+        lines.append(
+            f"No challenger forecast paired with the champion on settled predictions "
+            f"of the last {LIVE_WINDOW_DAYS} days."
+        )
+        return "\n".join(lines)
+    lines += [
+        "| Challenger | Loss | Weights | Pairs | Loss (champion / challenger) "
+        "| Improvement | Paired z | Verdict |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for entry in verdicts:
+        verdict = entry.verdict
+        improvement = (
+            _NOT_AVAILABLE if verdict.improvement is None else f"{verdict.improvement:.1%}"
+        )
+        z = _NOT_AVAILABLE if verdict.paired_z is None else f"{verdict.paired_z:.2f}"
+        lines.append(
+            f"| {entry.model_name} | {_CHALLENGER_LOSS_LABELS[entry.kind]} | "
+            f"{entry.n_versions} | {verdict.n_pairs} | "
+            f"{_pair(verdict.champion_loss, verdict.challenger_loss)} | {improvement} | "
+            f"{z} | {verdict.status.value} |"
+        )
+    lines += [
+        "",
+        f"Settled live predictions of the last {LIVE_WINDOW_DAYS} days. Pre-registered "
+        f"rule: at least {MIN_LIVE_N} pairs, a mean loss at least {PROMOTION_MARGIN:.0%} "
+        f"lower and a paired z above {PROMOTION_Z_CRIT:g}. The verdict only reports; "
+        "serving a challenger's weights stays the owner's decision.",
+    ]
+    return "\n".join(lines)
