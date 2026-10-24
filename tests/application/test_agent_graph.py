@@ -3051,6 +3051,87 @@ class TestImpliedEdge:
         model_move = abs(model_move_from_prices(90.0, 89.5))
         assert record["edge_sigma"] == pytest.approx(model_move / implied_move_12h(0.45, 24.0))
 
+    # Piątek 23.10.2026, 05:30 UTC (cron) — następny dzień handlowy to poniedziałek.
+    _FRIDAY = datetime(2026, 10, 23, 5, 30, tzinfo=UTC)
+    # Środa 25.11.2026 przed Świętem Dziękczynienia — następny dzień handlowy to piątek.
+    _BEFORE_THANKSGIVING = datetime(2026, 11, 25, 5, 30, tzinfo=UTC)
+
+    def _edge_sigma_at(
+        self, ports: dict, clock: datetime, *, calendar: bool, state: dict | None = None
+    ) -> float:
+        ports["market_port"].get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            ports["sentiment_port"], ports["news_port"], ports["repository_port"],
+            ports["ml_port"], ports["llm_port"],
+        )
+        graph = create_agent_graph(AgentGraphDeps(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            options_port=self._options(0.45),
+            edge_calendar_horizon_enabled=calendar,
+            clock=lambda: clock,
+        ))
+        graph.compile().invoke(state or _initial_state("100.0"))
+        record = ports["repository_port"].save_prediction.call_args.args[0]
+        return float(record["edge_sigma"])
+
+    @pytest.mark.parametrize(
+        ("clock", "hours"), [(_FRIDAY, 72.0), (_BEFORE_THANKSGIVING, 48.0)]
+    )
+    def test_calendar_horizon_spans_the_weekend_and_the_holiday(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, clock, hours,
+    ):
+        # WIA-28: z flagą horyzont edge to godziny do następnego dnia handlowego NYSE.
+        from src.domain.implied_edge import implied_move_12h, model_move_from_prices
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        sigma = self._edge_sigma_at(ports, clock, calendar=True)
+
+        model_move = abs(model_move_from_prices(90.0, 89.5))
+        assert sigma == pytest.approx(model_move / implied_move_12h(0.45, hours))
+
+    def test_flag_off_keeps_the_fixed_day_on_friday(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-28: bez flagi horyzont zostaje stałymi 24 h (EXP-02/03 bez zmian).
+        from src.domain.implied_edge import implied_move_12h, model_move_from_prices
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+
+        sigma = self._edge_sigma_at(ports, self._FRIDAY, calendar=False)
+
+        model_move = abs(model_move_from_prices(90.0, 89.5))
+        assert sigma == pytest.approx(model_move / implied_move_12h(0.45, 24.0))
+
+    def test_crypto_keeps_the_fixed_day_with_the_calendar_horizon(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-28: krypto handluje 24/7 i ma cykl codziennie — kalendarz NYSE go nie dotyczy.
+        from src.domain.asset import Asset
+        from src.domain.implied_edge import implied_move_12h, model_move_from_prices
+        from src.domain.value_objects import AssetType
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        state = {
+            **_initial_state("100.0"),
+            "asset": Asset(symbol="AAPL", asset_type=AssetType.CRYPTO),
+        }
+
+        sigma = self._edge_sigma_at(ports, self._FRIDAY, calendar=True, state=state)
+
+        model_move = abs(model_move_from_prices(90.0, 89.5))
+        assert sigma == pytest.approx(model_move / implied_move_12h(0.45, 24.0))
+
     def test_no_options_port_leaves_the_cycle_identical(
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,

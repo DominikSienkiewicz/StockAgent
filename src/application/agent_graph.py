@@ -82,6 +82,7 @@ from src.domain.implied_edge import (
     evaluate_edge,
     model_move_from_prices,
 )
+from src.domain.market_calendar import hours_to_next_trading_day
 from src.domain.mistake_taxonomy import parse_mistake_diagnosis
 from src.domain.prediction import (
     CORRECT_PREDICTION_INSIGHT,
@@ -731,6 +732,9 @@ class AgentGraphDeps:
     # analiza i rekord jak przed ML-29 — przed migracją klucz dałby PGRST204.
     trend_probabilities_enabled: bool = False
     options_port: OptionsFlowPort | None = None
+    # WIA-28: horyzont edge z kalendarza NYSE (godziny do następnego dnia handlowego)
+    # dla akcji i ETF zamiast stałych 24 h. Off = stałe 24 h, jak przed WIA-28.
+    edge_calendar_horizon_enabled: bool = False
     # DAT-14: notowanie z czasem (Finnhub /quote) dla akcji i ETF zamiast gołej ceny
     # z `market_port` — ten sam jeden request. None = cena bez czasu, jak przed DAT-14.
     quote_port: QuotePort | None = None
@@ -1645,8 +1649,21 @@ def _alpha_fusion_value(fusion: AlphaFusionScore | None) -> float:
 # #18, WIA-28: horyzont predykcji to zwrot do następnego cyklu — pętla chodzi
 # raz na dobę handlową, więc ~24 h w dni robocze i ~72 h przez weekend. Nazwy
 # `*_12h` (`target_price_12h`, `actual_price_after_12h`) są historyczne i zostają
-# jako kontrakt parsera i kolumn. Stałe 24 h ZANIŻA horyzont predykcji z piątku.
+# jako kontrakt parsera i kolumn. Stałe 24 h ZANIŻA horyzont predykcji z piątku,
+# więc za `edge_calendar_horizon_enabled` akcje i ETF biorą go z kalendarza NYSE.
 _EDGE_HORIZON_HOURS = 24.0
+
+
+def _edge_horizon_hours(deps: AgentGraphDeps, state: AgentState) -> float:
+    """WIA-28: godziny do cyklu, który rozliczy predykcję. Z flagą akcje i ETF liczą
+    je z kalendarza NYSE (do następnego dnia handlowego); krypto handluje 24/7
+    i ma cykl codziennie, więc zostaje przy stałych 24 h, jak wszystko bez flagi."""
+    if not deps.edge_calendar_horizon_enabled:
+        return _EDGE_HORIZON_HOURS
+    asset = state.get("asset") or Asset(symbol=state["symbol"])
+    if asset.asset_type not in _SESSION_QUOTED_ASSETS:
+        return _EDGE_HORIZON_HOURS
+    return hours_to_next_trading_day(deps.clock())
 
 
 def _resolve_implied_edge(
@@ -1656,6 +1673,7 @@ def _resolve_implied_edge(
     ml_target: Decimal,
     *,
     ml_cold_start: bool,
+    horizon_hours: float,
 ) -> ImpliedEdge | None:
     """#18 — dywergencja ruchu modelu od implied move rynku opcji.
 
@@ -1674,7 +1692,7 @@ def _resolve_implied_edge(
         return None
     iv = snapshot.implied_vol if snapshot is not None else None
     move = model_move_from_prices(float(current_price), float(ml_target))
-    return evaluate_edge(move, iv, _EDGE_HORIZON_HOURS)
+    return evaluate_edge(move, iv, horizon_hours)
 
 
 def _resolve_move_interval(
@@ -1855,7 +1873,12 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     deps.telemetry.record_node_timing("predict", symbol, elapsed_ms)
 
     implied_edge = _resolve_implied_edge(
-        deps, symbol, current_price, ml_target, ml_cold_start=ml_cold_start
+        deps,
+        symbol,
+        current_price,
+        ml_target,
+        ml_cold_start=ml_cold_start,
+        horizon_hours=_edge_horizon_hours(deps, state),
     )
     interval = _resolve_move_interval(
         deps, state, current_price, ml_target, ml_cold_start=ml_cold_start

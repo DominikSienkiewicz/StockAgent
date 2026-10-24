@@ -373,6 +373,17 @@ class TestBuildAgentGraphDeps:
 
         assert deps.ml_sigma_target_enabled is enabled
 
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_calendar_edge_horizon_flag_reaches_the_predict_node(
+        self, settings, mock_external_clients, enabled
+    ):
+        # WIA-28: horyzont edge z kalendarza NYSE za flagą.
+        settings.edge_calendar_horizon_enabled = enabled
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert deps.edge_calendar_horizon_enabled is enabled
+
     def test_tool_use_disabled_wires_no_tool_use_port(self, settings, mock_external_clients):
         settings.tool_use_enabled = False
 

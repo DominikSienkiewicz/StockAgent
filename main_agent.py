@@ -1521,6 +1521,8 @@ def build_agent_graph_deps(
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings, quota_monitor),
+        # WIA-28: horyzont edge z kalendarza NYSE zamiast stałych 24 h; off.
+        edge_calendar_horizon_enabled=settings.edge_calendar_horizon_enabled,
         # DAT-14: akcje i ETF biorą cenę z /quote razem z czasem notowania (ten sam
         # request); kolumna `stale_quote` (migracja 055) za flagą. Źródło ceny bez
         # czasu notowania → cena jak przed DAT-14 (wzorzec `DailyChangePort` watcha).

@@ -256,6 +256,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # bramki earnings i alpha fusion; pole niejednoznaczne zostaje w przepisie.
     "earnings_cache_enabled",
     "options_flow_enabled",
+    # WIA-28: horyzont edge z kalendarza NYSE — inny zapisany `edge_sigma`.
+    "edge_calendar_horizon_enabled",
     "social_velocity_enabled",
     "yield_curve_enabled",
     # DAT-22: głosy VIX i spreadu HY w reżimie zacieśniają próg bramki.
@@ -695,6 +697,9 @@ class Settings(BaseSettings):
     # (odświeżanego w Slow Loopie) zamiast pytać AV o każdy symbol w każdym cyklu.
     earnings_cache_enabled: bool = False
     options_flow_enabled: bool = False
+    # WIA-28: horyzont edge (#18) akcji i ETF z kalendarza NYSE — godziny do
+    # następnego dnia handlowego (~72 h w piątek) zamiast stałych 24 h. Off.
+    edge_calendar_horizon_enabled: bool = False
     social_velocity_enabled: bool = False
     yield_curve_enabled: bool = False
     # DAT-22: zmienne stanu rynku z FRED (VIXCLS, VXNCLS, BAMLH0A0HYM2, T10Y2Y, NFCI),

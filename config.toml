@@ -335,6 +335,10 @@ llm_pricing."text-embedding-3-small" = { input = 0.02 }
 # więc sygnał nie powstaje, a każdy cykl marnuje ~39 requestów. Off do czasu planu premium.
 # Odblokowuje #18 (edge vs implied move).
 options_flow_enabled = false
+# WIA-28: horyzont edge akcji i ETF z kalendarza NYSE (godziny do następnego dnia
+# handlowego: ~72 h w piątek, dłużej przed świętem) zamiast stałych 24 h. Zmienia
+# zapisany `edge_sigma`, więc czeka do końca EXP-02/03 (2027-01-29). Off.
+edge_calendar_horizon_enabled = false
 # social_velocity: Reddit odpowiada `403 Blocked` na każde anonimowe search.json
 # z runnera GitHub Actions (od co najmniej 2026-07-27); jedyna zgodna droga to OAuth
 # z rejestracją aplikacji, czyli nowa integracja z poświadczeniami. Sygnał i tak nie

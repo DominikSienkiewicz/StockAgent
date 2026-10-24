@@ -570,3 +570,9 @@ def test_real_config_toml_keeps_crypto_on_the_shared_tool_use_threshold() -> Non
     """FIN-08: bez własnego progu krypto bierze `tool_use_volatility_threshold`."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert "crypto_tool_use_volatility_threshold" not in data
+
+
+def test_real_config_toml_ships_the_calendar_edge_horizon_off() -> None:
+    """WIA-28: horyzont edge z kalendarza NYSE czeka do końca EXP-02/03."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["edge_calendar_horizon_enabled"] is False

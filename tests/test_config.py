@@ -1706,3 +1706,17 @@ class TestSessionCloseSettlementFlag:
 
         assert settings.session_close_settlement_enabled is False
         assert "session_close_settlement_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestEdgeCalendarHorizonFlag:
+    """WIA-28: horyzont edge z kalendarza NYSE zamiast stałych 24 h — zmienia zapisany
+    `edge_sigma` (sygnał oceniany w `evaluate`), więc należy do przepisu; off na czas
+    EXP-02/03."""
+
+    def test_defaults_off_and_inside_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.edge_calendar_horizon_enabled is False
+        assert "edge_calendar_horizon_enabled" in RECIPE_SETTINGS_FIELDS
