@@ -10,6 +10,7 @@ from typing import Any
 from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.attestation import StoredCommitment
+from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.earnings import CachedEarningsDate, EarningsEvent
 from src.domain.finops import LLMCallEntry, LLMUsage
@@ -750,6 +751,12 @@ class RepositoryPort(ABC):
         settled_at: datetime,
     ) -> None:
         """Rozliczenie wywołania: HIT / MISS z ceną odczytu albo EXPIRED bez ceny."""
+
+    @abstractmethod
+    def save_corporate_action(self, action: SplitSuspicion) -> None:
+        """DAT-23 — podejrzenie splitu w `corporate_actions` (migracja 062), raz na
+        symbol, rodzaj i dzień UTC wykrycia (powtórka cyklu nie dubluje wiersza).
+        Wołane z `check_price` tylko za flagą `split_detection_enabled`."""
 
 
 class ReturnScaleUnavailableError(RuntimeError):

@@ -4730,3 +4730,55 @@ class TestTrainingDataReads:
     ) -> None:
         assert repo.get_price_series([], since=datetime(2026, 9, 1, tzinfo=UTC)) == {}
         mock_client.table.assert_not_called()
+
+
+class TestCorporateActions:
+    """DAT-23: podejrzenie splitu w `corporate_actions` (migracja 062) — raz na symbol,
+    rodzaj i dzień UTC, więc powtórka cyklu nie dubluje zdarzenia."""
+
+    @staticmethod
+    def _suspicion() -> Any:
+        from src.domain.corporate_actions import SplitSuspicion
+
+        return SplitSuspicion(
+            symbol="NVDA",
+            ratio=Decimal("0.1"),
+            prev_close=Decimal("120.6"),
+            reference_price=Decimal("1200"),
+            detected_at=datetime(2026, 10, 27, 5, 30, tzinfo=UTC),
+        )
+
+    def test_split_suspicion_is_upserted_once_per_symbol_kind_and_day(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_corporate_action(self._suspicion())
+
+        mock_client.table.assert_called_with("corporate_actions")
+        upsert = mock_client.table.return_value.upsert
+        assert upsert.call_args.args[0] == {
+            "symbol": "NVDA",
+            "kind": "split_suspected",
+            "ratio": "0.1",
+            "prev_close": "120.6",
+            "reference_price": "1200",
+            "detected_at": "2026-10-27T05:30:00+00:00",
+            "detected_on": "2026-10-27",
+        }
+        assert upsert.call_args.kwargs == {
+            "on_conflict": "symbol,kind,detected_on",
+            "ignore_duplicates": True,
+        }
+
+    def test_write_error_is_translated(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.application.errors import NotFound
+
+        mock_client.table.return_value.upsert.return_value.execute.side_effect = APIError(
+            {"code": "42P01", "message": 'relation "corporate_actions" does not exist'}
+        )
+
+        with pytest.raises(NotFound):
+            repo.save_corporate_action(self._suspicion())

@@ -26,6 +26,7 @@ from src.application.ports import (
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
+from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import (
     CouncilVerdict,
     InvestorOpinion,
@@ -89,6 +90,10 @@ EARNINGS_CACHE_TABLE = "earnings_cache"
 # ALR-11 (migracja 057): alerty poziomów cenowych ustawiane przez użytkownika.
 PRICE_LEVEL_ALERTS_TABLE = "price_level_alerts"
 _PRICE_LEVEL_UNIQUE = "symbol,level,direction"
+# DAT-23 (migracja 062): podejrzenia splitów, jeden wiersz na symbol, rodzaj i dzień.
+CORPORATE_ACTIONS_TABLE = "corporate_actions"
+_CORPORATE_ACTION_UNIQUE = "symbol,kind,detected_on"
+_CORPORATE_ACTION_PRICE_COLUMNS = frozenset({"prev_close", "reference_price"})
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -2155,6 +2160,25 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         )
         self._client.table(REFERENCE_PREDICTIONS_TABLE).update(record).eq(
             "id", record_id
+        ).execute()
+
+    @_translates_api_errors
+    def save_corporate_action(self, action: SplitSuspicion) -> None:
+        record = _serialize_record(
+            {
+                "symbol": action.symbol,
+                "kind": action.kind.value,
+                "ratio": action.ratio,
+                "prev_close": action.prev_close,
+                "reference_price": action.reference_price,
+                "detected_at": action.detected_at.isoformat(),
+                "detected_on": action.detected_on.isoformat(),
+            },
+            _CORPORATE_ACTION_PRICE_COLUMNS,
+        )
+        # ON CONFLICT DO NOTHING: powtórka cyklu tego dnia nie dubluje zdarzenia.
+        self._client.table(CORPORATE_ACTIONS_TABLE).upsert(
+            record, on_conflict=_CORPORATE_ACTION_UNIQUE, ignore_duplicates=True
         ).execute()
 
     def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:

@@ -39,6 +39,7 @@ from src.application.ports import (
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
+from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import InvestorOpinion
 from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
@@ -158,6 +159,7 @@ class ReadOnlyRepository(RepositoryPort):
         "save_cycle_run",
         "save_reference_read",
         "settle_reference_call",
+        "save_corporate_action",
     })
 
     def __init__(self, delegate: RepositoryPort) -> None:
@@ -431,6 +433,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
         self._skipped.skip("save_reference_read")
+
+    def save_corporate_action(self, action: SplitSuspicion) -> None:
+        self._skipped.skip("save_corporate_action")
 
     def settle_reference_call(
         self,

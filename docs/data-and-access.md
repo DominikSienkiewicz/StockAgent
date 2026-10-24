@@ -37,6 +37,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `reference_predictions` | `042` | Model output: the free reference signal (WIA-24) — one row per weekly read with its call and settlement, `recipe_version = 'reference-v1'`, kept out of `prediction_logs` | on, no policies | Slow Loop (`reference_signal_enabled`) | Slow Loop (baseline read and open calls) |
 | `earnings_cache` | `053` | Market data: the next earnings report date per stock symbol from Alpha Vantage (FIN-11) | on, no policies | Slow Loop (`earnings_cache_enabled`) | Fast Loop (earnings gate) |
 | `price_level_alerts` | `057` | User settings: price levels to alert on (symbol, level, direction, note) with the watch's last reading and the hit time (ALR-11) | on, no policies | Shock Watch (`price_level_alerts_enabled`: adds the `price_alerts` list, records readings, disables a hit) | Shock Watch |
+| `corporate_actions` | `062` | Market data: suspected stock splits — the quote's previous close against the last price snapshot gave a split ratio (DAT-23), one row per symbol, kind and UTC day | on, no policies | Fast Loop (`split_detection_enabled`) | nobody in the app yet |
 
 The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges):
 

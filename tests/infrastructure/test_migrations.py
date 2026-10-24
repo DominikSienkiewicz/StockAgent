@@ -92,6 +92,7 @@ MIGRATION_FILES = [
     "057_price_level_alerts.sql",
     "058_settled_reads_without_stale_quote.sql",
     "059_settlement_session_close.sql",
+    "062_corporate_actions.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -3044,6 +3045,82 @@ class TestMigration059SettlementSessionClose:
                 "SELECT count(*) FROM pg_constraint "
                 "WHERE conrelid = 'prediction_logs'::regclass AND contype = 'c' "
                 "AND pg_get_constraintdef(oid) LIKE '%settlement_source%'"
+            )
+            assert cur.fetchone() == (1,)
+
+
+@pytest.mark.containers
+class TestMigration062CorporateActions:
+    """DAT-23: podejrzenia splitów — jeden wiersz na symbol, rodzaj i dzień UTC,
+    zamknięte dla ról publicznych jak każda tabela po 038."""
+
+    _INSERT = (
+        "INSERT INTO corporate_actions "
+        "(symbol, kind, ratio, prev_close, reference_price, detected_at, detected_on) "
+        "VALUES (%s, 'split_suspected', %s, 120.6, 1200, '2026-10-27T05:30:00+00:00', "
+        "'2026-10-27') ON CONFLICT (symbol, kind, detected_on) DO NOTHING"
+    )
+
+    def test_split_suspicion_is_stored_once_per_symbol_kind_and_day(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert _columns(migrated_pg_conn, "corporate_actions") == {
+            "id", "symbol", "kind", "ratio", "prev_close", "reference_price",
+            "detected_at", "detected_on",
+        }
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(self._INSERT, ("CA_NVDA", Decimal("0.1")))
+            cur.execute(self._INSERT, ("CA_NVDA", Decimal("0.1")))
+            cur.execute(
+                "SELECT count(*), max(ratio) FROM corporate_actions WHERE symbol = 'CA_NVDA'"
+            )
+            assert cur.fetchone() == (1, Decimal("0.1"))
+
+    @pytest.mark.parametrize(
+        ("kind", "ratio"), [("dividend", Decimal("0.1")), ("split_suspected", Decimal("0"))]
+    )
+    def test_unknown_kind_and_non_positive_ratio_are_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection, kind: str, ratio: Decimal
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO corporate_actions "
+                "(symbol, kind, ratio, prev_close, reference_price, detected_at, detected_on) "
+                "VALUES ('CA_BAD', %s, %s, 1, 1, now(), current_date)",
+                (kind, ratio),
+            )
+
+    def test_corporate_actions_are_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'corporate_actions'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [
+                _has_table_privilege(cur, role, "corporate_actions") for role in PUBLIC_API_ROLES
+            ]
+
+            _set_role(cur, "service_role")
+            cur.execute(self._INSERT, ("CA_SR", Decimal("2")))
+            cur.execute("SELECT ratio FROM corporate_actions WHERE symbol = 'CA_SR'")
+            assert cur.fetchone() == (Decimal("2"),)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM corporate_actions LIMIT 1")
+
+    def test_062_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "062_corporate_actions.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'corporate_actions'::regclass AND contype = 'u'"
             )
             assert cur.fetchone() == (1,)
 
