@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -16,7 +17,7 @@ from src.domain.prediction import (
     normalize_trend,
     sideways_tolerance_for,
 )
-from src.domain.value_objects import AssetType
+from src.domain.value_objects import AssetType, Money, Quote
 
 
 class TestCalibration:
@@ -390,3 +391,92 @@ def test_stale_quote_note_is_a_placeholder_not_a_lesson() -> None:
     from src.domain.prediction import STALE_QUOTE_INSIGHT, is_substantive_insight
 
     assert not is_substantive_insight(STALE_QUOTE_INSIGHT)
+
+
+class TestExecutableEntry:
+    """WIA-54: cena, po której predykcję dało się wykonać — otwarcie pierwszej sesji
+    NYSE po niej, z tego samego notowania /quote, którym reflect ją rozlicza.
+
+    Październik 2026 to czas letni (ET = UTC−4): sesja 13:30–20:00 UTC."""
+
+    MONDAY_PRE_OPEN = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    MONDAY_CLOSE = datetime(2026, 10, 19, 20, 0, tzinfo=UTC)
+    TUESDAY_PRE_OPEN = datetime(2026, 10, 20, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _prediction(created_at: datetime | None) -> Prediction:
+        return Prediction(
+            symbol="NVDA",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100"),
+            predicted_target_price=Decimal("103"),
+            created_at=created_at,
+        )
+
+    @staticmethod
+    def _quote(quoted_at: datetime, open_price: str | None = "105") -> Quote:
+        return Quote(
+            price=Money(Decimal("106")),
+            quoted_at=quoted_at,
+            open_price=Money(Decimal(open_price)) if open_price is not None else None,
+        )
+
+    def test_pre_open_prediction_enters_at_the_next_session_open(self) -> None:
+        # Predykcja przed sesją: cena wejścia to piątkowe zamknięcie, a wykonać da się
+        # dopiero otwarcie poniedziałku — `o` notowania z wtorkowego rozliczenia.
+        entry = self._prediction(self.MONDAY_PRE_OPEN).executable_entry(
+            self._quote(self.MONDAY_CLOSE), now=self.TUESDAY_PRE_OPEN
+        )
+
+        assert entry == Decimal("105")
+
+    def test_backlogged_settlement_has_no_executable_entry(self) -> None:
+        # Rozliczenie dwie sesje później: `o` to otwarcie wtorku, nie poniedziałku.
+        quote = self._quote(datetime(2026, 10, 20, 20, 0, tzinfo=UTC))
+
+        entry = self._prediction(self.MONDAY_PRE_OPEN).executable_entry(
+            quote, now=datetime(2026, 10, 21, 5, 30, tzinfo=UTC)
+        )
+
+        assert entry is None
+
+    def test_settlement_before_the_next_session_has_no_executable_entry(self) -> None:
+        # Drugi przebieg przed otwarciem (albo święto): sesji po predykcji jeszcze nie było.
+        quote = self._quote(datetime(2026, 10, 16, 20, 0, tzinfo=UTC))
+
+        entry = self._prediction(self.MONDAY_PRE_OPEN).executable_entry(
+            quote, now=datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+        )
+
+        assert entry is None
+
+    def test_quote_from_before_the_session_open_has_no_executable_entry(self) -> None:
+        quote = self._quote(datetime(2026, 10, 16, 20, 0, tzinfo=UTC))
+
+        entry = self._prediction(self.MONDAY_PRE_OPEN).executable_entry(
+            quote, now=self.TUESDAY_PRE_OPEN
+        )
+
+        assert entry is None
+
+    def test_quote_without_an_open_has_no_executable_entry(self) -> None:
+        entry = self._prediction(self.MONDAY_PRE_OPEN).executable_entry(
+            self._quote(self.MONDAY_CLOSE, open_price=None), now=self.TUESDAY_PRE_OPEN
+        )
+
+        assert entry is None
+
+    def test_prediction_during_the_session_enters_at_its_own_price(self) -> None:
+        # W trakcie sesji cena z chwili predykcji była do kupienia od razu.
+        entry = self._prediction(datetime(2026, 10, 19, 15, 0, tzinfo=UTC)).executable_entry(
+            self._quote(self.MONDAY_CLOSE), now=self.TUESDAY_PRE_OPEN
+        )
+
+        assert entry == Decimal("100")
+
+    def test_prediction_without_a_timestamp_has_no_executable_entry(self) -> None:
+        entry = self._prediction(None).executable_entry(
+            self._quote(self.MONDAY_CLOSE), now=self.TUESDAY_PRE_OPEN
+        )
+
+        assert entry is None

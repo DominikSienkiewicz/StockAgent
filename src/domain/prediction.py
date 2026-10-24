@@ -4,7 +4,8 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from src.domain.value_objects import AssetType
+from src.domain.market_calendar import last_started_session, next_open, to_nyse_time
+from src.domain.value_objects import AssetType, Quote
 
 
 def calibration_error(samples: Sequence[tuple[float, bool]]) -> float:
@@ -199,6 +200,29 @@ class Prediction:
         if self.predicted_trend == TrendDirection.BULLISH:
             return move > band
         return move < -band
+
+    def executable_entry(self, quote: Quote, now: datetime) -> Decimal | None:
+        """WIA-54: cena, po której predykcję dało się wykonać, z notowania /quote
+        wziętego w `now` przy jej rozliczeniu.
+
+        Fast Loop chodzi przed sesją, więc `price_at_prediction` to ostatnie
+        zamknięcie, a luki na otwarciu nikt nie kupi. Wykonalne jest otwarcie
+        pierwszej sesji po predykcji (`o` notowania) — tylko gdy notowanie pochodzi
+        z tej właśnie sesji. Rozliczenie z zaległości (późniejsza sesja), przed
+        sesją (weekend, święto, drugi przebieg) albo bez `o` → None, nie zero.
+        Predykcja w trakcie sesji była wykonalna od razu, po własnej cenie.
+        Naiwny `datetime` to UTC."""
+        if self.created_at is None:
+            return None
+        running = last_started_session(self.created_at)
+        if to_nyse_time(self.created_at) < running.closes_at:
+            return self.price_at_prediction
+        session = last_started_session(now)
+        if session.opens_at != next_open(self.created_at):
+            return None
+        if quote.open_price is None or to_nyse_time(quote.quoted_at) < session.opens_at:
+            return None
+        return quote.open_price.amount
 
     def accuracy_score(self, actual_price: Decimal) -> Decimal:
         # Guard: bez ceny bazowej (0) nie da się policzyć błędu względnego —
