@@ -7702,3 +7702,85 @@ class TestAttestationCycleRoot:
             self._main(settings)
 
         inner.publish_commitment.assert_called_once()
+
+
+class TestPublicStatusPage:
+    """NIEZ-33 — Fast Loop odświeża stronę statusu po zapisie wiersza `cycle_runs`,
+    tylko gdy obie flagi (scorecard i status) są włączone."""
+
+    @staticmethod
+    def _run_main(settings, mocker) -> tuple[list[str], MagicMock]:
+        calls: list[str] = []
+        repository = MagicMock(spec=RepositoryPort)
+        repository.save_cycle_run.side_effect = lambda _run: calls.append("cycle_run")
+        mocker.patch("main_agent.build_repository", return_value=repository)
+        fake_uc = MagicMock()
+        fake_uc.telemetry.snapshot.return_value.paid_calls = {}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch("main_agent.build_notifier", return_value=MagicMock())
+        mocker.patch("main_agent._dispatch_reports", return_value=True)
+        mocker.patch("main_agent._analyze_symbols", return_value=([], 0, {}, {}))
+        status = MagicMock()
+        status.run.side_effect = lambda: calls.append("status")
+        factory = mocker.patch("main_agent.status_page_use_case", return_value=status)
+        settings.cycle_runs_enabled = True
+        main_agent.main(settings)
+        return calls, factory
+
+    def test_status_page_follows_the_cycle_run_row(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.public_scorecard_enabled = True
+        settings.public_status_page_enabled = True
+
+        calls, _ = self._run_main(settings, mocker)
+
+        assert calls == ["cycle_run", "status"]
+
+    @pytest.mark.parametrize(("scorecard", "status"), [(True, False), (False, True)])
+    def test_status_page_needs_both_public_flags(
+        self, settings, mock_external_clients, mocker, scorecard: bool, status: bool
+    ) -> None:
+        settings.public_scorecard_enabled = scorecard
+        settings.public_status_page_enabled = status
+
+        _, factory = self._run_main(settings, mocker)
+
+        factory.assert_not_called()
+
+    def test_status_publisher_writes_inside_the_scorecard_directory(self, settings) -> None:
+        from src.infrastructure.adapters.web_publisher import FileWebPublisher, NullWebPublisher
+
+        settings.public_scorecard_enabled = True
+        assert isinstance(main_agent.build_public_status_publisher(settings), NullWebPublisher)
+
+        settings.public_status_page_enabled = True
+        publisher = main_agent.build_public_status_publisher(settings)
+
+        assert isinstance(publisher, FileWebPublisher)
+        assert settings.public_status_path.startswith("public/scorecard/")
+
+    @pytest.mark.parametrize(
+        ("max_gap_h", "expected"), [(0.0, "wstrzymany"), (26.0, "brak przebiegu w terminie")]
+    )
+    def test_status_page_uses_the_deadman_rule_of_the_fast_loop(
+        self, settings, mocker, max_gap_h: float, expected: str
+    ) -> None:
+        from src.application.ports import CycleRun
+
+        now = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_cycle_runs_since.return_value = [
+            CycleRun(
+                loop="fast", run_id="1", run_attempt=1, started_at=now - timedelta(days=9),
+                duration_s=1.0, eligible=1, saved=1, failures=0, paid_calls={},
+                report_delivered=True,
+            )
+        ]
+        publisher = MagicMock()
+        mocker.patch("main_agent.build_public_status_publisher", return_value=publisher)
+        settings.liveness_fast_loop_max_gap_h = max_gap_h
+
+        main_agent.status_page_use_case(settings, repository, clock=lambda: now).publish()
+
+        assert expected in publisher.publish.call_args.args[0]

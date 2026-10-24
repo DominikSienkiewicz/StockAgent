@@ -227,6 +227,13 @@ weekly_recap_enabled = true
 # i job deploy-scorecard Fast Loopa (WIA-16), kolejność: docs/resume-checklist.md.
 public_scorecard_enabled = false
 public_scorecard_path = "public/scorecard/index.html"
+# NIEZ-33: publiczna strona statusu z `cycle_runs` (czy Fast Loop działa, kiedy ostatnio
+# wyszedł digest, płatne wywołania 7/30 dni) i JSON odznaki „last digest” obok niej. Leży
+# w katalogu scorecardu, więc wychodzi tym samym deployem Pages — potrzebuje też
+# `public_scorecard_enabled`. Same agregaty, zero płatnych wywołań. UWAGA: włącz DOPIERO
+# po migracji 041 (z `cycle_runs_enabled`) i po kroku 9 z docs/resume-checklist.md.
+public_status_page_enabled = false
+public_status_path = "public/scorecard/status/index.html"
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"
 track_record_days = 30

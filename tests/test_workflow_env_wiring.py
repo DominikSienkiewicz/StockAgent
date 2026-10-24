@@ -553,6 +553,15 @@ def _unexpected_publications(
     ]
 
 
+def test_status_page_lives_inside_the_pages_artifact() -> None:
+    # NIEZ-33: strona statusu wychodzi deployem scorecardu — poza jego katalogiem nie
+    # trafiłaby na Pages, a osobny artefakt podmieniłby całą witrynę.
+    config = _repo_config()
+    scorecard_dir = posixpath.dirname(_normalized(str(config["public_scorecard_path"])))
+
+    assert _contains(scorecard_dir, _normalized(str(config["public_status_path"])))
+
+
 def test_workflows_publish_only_the_public_artifact_dirs() -> None:
     assert _unexpected_publications(_repo_config(), _all_workflow_specs()) == []
 

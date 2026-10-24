@@ -107,6 +107,29 @@ _REFRESH_BACKOFF_S = 2.0
 _PAGE_SIZE = 1000
 
 
+def _cycle_run(row: Mapping[str, Any]) -> CycleRun:
+    """Wiersz `cycle_runs` (041) jako `CycleRun`; `paid_calls` to JSONB z liczbami."""
+    attempt = row.get("run_attempt")
+    delivered = row.get("report_delivered")
+    paid = row.get("paid_calls")
+    return CycleRun(
+        loop=str(row["loop"]),
+        run_id=str(row["run_id"]),
+        run_attempt=None if attempt is None else int(attempt),
+        started_at=datetime.fromisoformat(str(row["started_at"])),
+        duration_s=float(row["duration_s"]),
+        eligible=int(row["eligible"]),
+        saved=int(row["saved"]),
+        failures=int(row["failures"]),
+        paid_calls=(
+            {str(key): int(value) for key, value in paid.items()}
+            if isinstance(paid, Mapping)
+            else {}
+        ),
+        report_delivered=None if delivered is None else bool(delivered),
+    )
+
+
 def _paginate(query_builder: Any) -> list[dict[str, Any]]:
     """Iteruje .range(offset, offset+_PAGE_SIZE-1) po `query_builder` aż do
     zwrócenia krótkiej strony (<_PAGE_SIZE), kumulując wszystkie wiersze.
@@ -2142,6 +2165,21 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             "report_delivered": run.report_delivered,
         }
         self._client.table(CYCLE_RUNS_TABLE).insert(row).execute()
+
+    @_translates_api_errors
+    def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
+        # Paginacja (#8) i `id` jako drugi klucz, jak w pozostałych odczytach historii.
+        query = (
+            self._client.table(CYCLE_RUNS_TABLE)
+            .select(
+                "loop, run_id, run_attempt, started_at, duration_s, eligible, saved, "
+                "failures, paid_calls, report_delivered"
+            )
+            .gte("started_at", since.isoformat())
+            .order("started_at", desc=False)
+            .order("id", desc=False)
+        )
+        return [_cycle_run(row) for row in _paginate(query)]
 
     def get_reference_reads(self, since: datetime) -> list[ReferenceRead]:
         # Paginacja (#8) i `id` jako drugi klucz, jak w pozostałych odczytach historii.

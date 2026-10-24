@@ -17,11 +17,15 @@ Workflow `scorecard_pages.yml` wysyła potem na Pages WYŁĄCZNIE katalog
 wstrzymanym Fast Loopie domyślne 30 dni daje puste okno, a puste okno nie daje
 artefaktu — Pages zostaje przy ostatnio opublikowanej stronie.
 
-Kody wyjścia: 0 — strona zapisana albo świadomie bez artefaktu (flaga off, puste
-okno); 1 — błąd odczytu bazy albo zapisu strony lub `scorecard.json` (krok alertu
-workflowu mailuje).
+NIEZ-33: przy `public_status_page_enabled` ten sam przebieg zapisuje stronę statusu
+(`public_status_path`, podkatalog scorecardu) i `badge.json` z historii `cycle_runs` —
+wychodzi tym samym artefaktem Pages, więc tylko razem ze stroną scorecardu.
 
-FinOps: **zero płatnych wywołań** — odczyt Supabase i zapis dwóch plików.
+Kody wyjścia: 0 — strona zapisana albo świadomie bez artefaktu (flaga off, puste
+okno); 1 — błąd odczytu bazy albo zapisu strony, `scorecard.json` lub strony statusu
+(krok alertu workflowu mailuje).
+
+FinOps: **zero płatnych wywołań** — odczyt Supabase i zapis plików strony.
 
 Użycie:
     uv run python main_scorecard.py [--days N]
@@ -34,6 +38,8 @@ import logging
 import sys
 from collections.abc import Sequence
 
+from src.application.errors import PortError
+from src.application.ports import RepositoryPort
 from src.config import Settings
 from src.infrastructure.logging_setup import configure_logging
 
@@ -84,8 +90,9 @@ def _publish(settings: Settings) -> int:
         public_scorecard_use_case,
     )
 
+    repository = build_repository(settings)
     use_case = public_scorecard_use_case(
-        settings, build_repository(settings), build_public_scorecard_publisher(settings)
+        settings, repository, build_public_scorecard_publisher(settings)
     )
     try:
         published = use_case.publish(_paper_costs(settings))
@@ -105,6 +112,26 @@ def _publish(settings: Settings) -> int:
         )
         return 1
     logger.info("Public scorecard: okno %d dni zapisane", settings.track_record_days)
+    return _publish_status(settings, repository)
+
+
+def _publish_status(settings: Settings, repository: RepositoryPort) -> int:
+    """NIEZ-33: strona statusu w katalogu scorecardu — ten sam artefakt Pages."""
+    from main_agent import _utc_now, public_status_enabled, status_page_use_case
+
+    if not public_status_enabled(settings):
+        return 0
+    try:
+        written = status_page_use_case(settings, repository, _utc_now).publish()
+    except PortError:
+        logger.exception("Status page: odczyt cycle_runs padł — exit 1")
+        return 1
+    if not written:
+        logger.error(
+            "Status page: zapis %s albo badge.json padł — exit 1", settings.public_status_path
+        )
+        return 1
+    logger.info("Status page: zapisana obok scorecardu")
     return 0
 
 

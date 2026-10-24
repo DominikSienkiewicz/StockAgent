@@ -751,6 +751,12 @@ class RepositoryPort(ABC):
         jednym insertem na końcu przebiegu. Wołający pilnuje flagi
         `cycle_runs_enabled` (bez migracji 041 zapis kończyłby się błędem PostgREST)."""
 
+    @abstractmethod
+    def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
+        """NIEZ-33 — przebiegi wszystkich pętli od `since`, rosnąco po starcie. Napędza
+        publiczną stronę statusu; bez migracji 041 → `PortError` (wołający pilnuje
+        flagi `public_status_page_enabled`)."""
+
     # WIA-24 — sygnał referencyjny w osobnej tabeli `reference_predictions` (migracja
     # 042), nigdy w `prediction_logs`. Wołający pilnuje flagi `reference_signal_enabled`.
 

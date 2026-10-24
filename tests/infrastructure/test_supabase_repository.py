@@ -3299,6 +3299,72 @@ class TestSaveCycleRun:
         )
 
 
+class TestGetCycleRunsSince:
+    """NIEZ-33: odczyt historii przebiegów pod publiczną stronę statusu."""
+
+    @staticmethod
+    def _order_builder(mock_client: MagicMock) -> MagicMock:
+        chain = mock_client.table.return_value.select.return_value.gte.return_value
+        return chain.order.return_value.order.return_value
+
+    def test_reads_the_runs_since_a_moment_into_cycle_runs(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.application.ports import CycleRun
+
+        _set_paginated_response(
+            self._order_builder(mock_client),
+            [[
+                {
+                    "loop": "fast",
+                    "run_id": "18324",
+                    "run_attempt": 2,
+                    "started_at": "2026-10-20T05:30:00+00:00",
+                    "duration_s": 312.5,
+                    "eligible": 40,
+                    "saved": 6,
+                    "failures": 1,
+                    "paid_calls": {"llm": 7},
+                    "report_delivered": None,
+                }
+            ]],
+        )
+
+        runs = repo.get_cycle_runs_since(datetime(2026, 7, 27, tzinfo=UTC))
+
+        mock_client.table.assert_called_once_with("cycle_runs")
+        gte = mock_client.table.return_value.select.return_value.gte
+        assert gte.call_args.args == ("started_at", "2026-07-27T00:00:00+00:00")
+        assert runs == [
+            CycleRun(
+                loop="fast",
+                run_id="18324",
+                run_attempt=2,
+                started_at=datetime(2026, 10, 20, 5, 30, tzinfo=UTC),
+                duration_s=312.5,
+                eligible=40,
+                saved=6,
+                failures=1,
+                paid_calls={"llm": 7},
+                report_delivered=None,
+            )
+        ]
+
+    def test_postgrest_error_is_a_port_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.application.errors import PortError
+
+        self._order_builder(mock_client).range.side_effect = APIError(
+            {"code": "PGRST205", "message": "relation cycle_runs does not exist"}
+        )
+
+        with pytest.raises(PortError):
+            repo.get_cycle_runs_since(datetime(2026, 7, 27, tzinfo=UTC))
+
+
 class TestShockAlertTimes:
     """ALR-02, decyzja 2: chwila ostatniego alertu per symbol (`created_at` z 021)."""
 

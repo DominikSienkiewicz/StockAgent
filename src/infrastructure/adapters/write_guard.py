@@ -137,6 +137,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_council_vote_history",
         "get_reference_reads",
         "get_open_reference_calls",
+        "get_cycle_runs_since",
     })
     WRITE_METHODS: ClassVar[frozenset[str]] = frozenset({
         "save_price_snapshot",
@@ -330,6 +331,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_open_reference_calls(self) -> list[OpenReferenceCall]:
         return self._delegate.get_open_reference_calls()
+
+    def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
+        return self._delegate.get_cycle_runs_since(since)
 
     # ----- zapisy (pomijane) -----
 

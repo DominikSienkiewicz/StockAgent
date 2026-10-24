@@ -103,6 +103,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "digest_archive_enabled",
     "public_scorecard_enabled",
     "public_scorecard_path",
+    # NIEZ-33: publiczna strona statusu — prezentacja historii przebiegów, nie prognoza.
+    "public_status_page_enabled",
+    "public_status_path",
     "weekly_recap_enabled",
     # Sekcje maila liczone po predykcji (render-only, bez wpływu na prognozę).
     "portfolio_var_enabled",
@@ -690,6 +693,11 @@ class Settings(BaseSettings):
     # ścieżka, zero danych z prywatnego maila. Render-only, zero płatnych. Off.
     public_scorecard_enabled: bool = False
     public_scorecard_path: str = "public/scorecard/index.html"
+    # NIEZ-33: publiczna strona statusu (`cycle_runs`, migracja 041) i JSON odznaki shields
+    # „last digest” obok niej. Ścieżka w katalogu scorecardu — ten sam artefakt Pages,
+    # więc strona wychodzi razem ze scorecardem. Same agregaty. Off.
+    public_status_page_enabled: bool = False
+    public_status_path: str = "public/scorecard/status/index.html"
     attestation_commitments_path: str = "public/attestation/commitments.jsonl"
     attestation_reveals_path: str = "public/attestation/reveals.jsonl"
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.

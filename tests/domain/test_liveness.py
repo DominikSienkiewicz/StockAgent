@@ -6,9 +6,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, time, timedelta
 
 from src.domain.liveness import (
+    JobState,
     LivenessExpectation,
     is_overdue,
     is_overdue_on_trading_days,
+    job_state,
     overdue_jobs,
 )
 
@@ -119,3 +121,25 @@ def test_paused_trading_day_job_is_never_overdue() -> None:
     )
 
     assert overdue_jobs((paused,), {"Fast Loop": None}, MONDAY_DEADMAN) == ()
+
+
+# --- NIEZ-33: stan jobu dla publicznej strony statusu (ta sama reguła co deadman) ---
+
+
+def test_job_with_a_zero_gap_is_paused_on_purpose() -> None:
+    paused = LivenessExpectation("Fast Loop", 0.0)
+
+    assert job_state(paused, NOW - timedelta(days=60), NOW) is JobState.PAUSED
+
+
+def test_job_the_deadman_would_alert_on_is_overdue() -> None:
+    fast = LivenessExpectation("Fast Loop", 26.0, trading_day_slot=time(0, 0))
+
+    assert job_state(fast, NOW - timedelta(days=9), NOW) is JobState.OVERDUE
+    assert job_state(fast, None, NOW) is JobState.OVERDUE
+
+
+def test_job_inside_its_gap_is_running() -> None:
+    slow = LivenessExpectation("Slow Loop", 192.0)
+
+    assert job_state(slow, NOW - timedelta(days=2), NOW) is JobState.RUNNING

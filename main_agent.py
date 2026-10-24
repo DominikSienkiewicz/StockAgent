@@ -148,6 +148,10 @@ from src.application.use_cases.publish_public_scorecard import (
     PublicScorecardOptions,
     PublishPublicScorecardUseCase,
 )
+from src.application.use_cases.publish_status_page import (
+    PublishStatusPageUseCase,
+    StatusPageOptions,
+)
 from src.application.use_cases.reveal_attestations import RevealAttestationsUseCase
 from src.application.use_cases.run_cycle import (
     CycleOptions,
@@ -168,6 +172,7 @@ from src.domain.equity_curve import EquityCurve
 from src.domain.finops import CycleCost, estimate_cycle_cost
 from src.domain.hedge import equity_hedge_symbols
 from src.domain.insider_flow import InsiderLeadWindow
+from src.domain.liveness import FAST_LOOP_TRADING_DAY_SLOT, LivenessExpectation
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.macro_series import MacroSeriesSnapshot, macro_features, macro_series_votes
@@ -841,6 +846,43 @@ def build_public_scorecard_publisher(settings: Settings) -> WebPublisherPort:
     if not settings.public_scorecard_enabled:
         return NullWebPublisher()
     return FileWebPublisher(output_path=settings.public_scorecard_path)
+
+
+def public_status_enabled(settings: Settings) -> bool:
+    """NIEZ-33: strona statusu leży w katalogu scorecardu i wychodzi jego deployem Pages,
+    więc ma sens tylko przy obu flagach."""
+    return settings.public_status_page_enabled and settings.public_scorecard_enabled
+
+
+def build_public_status_publisher(settings: Settings) -> WebPublisherPort:
+    """NIEZ-33 — TRZECIA instancja `FileWebPublisher` z własną ścieżką (strona statusu
+    w podkatalogu scorecardu; `badge.json` ląduje obok niej)."""
+    from src.infrastructure.adapters.web_publisher import (
+        FileWebPublisher,
+        NullWebPublisher,
+    )
+
+    if not public_status_enabled(settings):
+        return NullWebPublisher()
+    return FileWebPublisher(output_path=settings.public_status_path)
+
+
+def status_page_use_case(
+    settings: Settings, repository: RepositoryPort, clock: Callable[[], datetime]
+) -> PublishStatusPageUseCase:
+    """NIEZ-33 — strona statusu z `cycle_runs`; „wstrzymany / spóźniony” z tej samej
+    reguły co deadman (`liveness_fast_loop_max_gap_h`, dni handlowe NYSE)."""
+    fast_loop = LivenessExpectation(
+        "Fast Loop",
+        settings.liveness_fast_loop_max_gap_h,
+        trading_day_slot=FAST_LOOP_TRADING_DAY_SLOT,
+    )
+    return PublishStatusPageUseCase(
+        repository,
+        build_public_status_publisher(settings),
+        StatusPageOptions(fast_loop=fast_loop),
+        clock=clock,
+    )
 
 
 def _paper_costs(settings: Settings) -> PaperCosts:
@@ -3138,6 +3180,10 @@ def _run_fast_loop(
             report_delivered=report_delivery,
         ),
     )
+
+    # NIEZ-33: strona statusu po zapisie wiersza `cycle_runs` — widzi ten przebieg.
+    if public_status_enabled(settings):
+        status_page_use_case(settings, repository, clock).run()
 
     # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).
     # Pojedyncze błędy per-symbol (np. ticker niewspierany przez Finnhub free)
