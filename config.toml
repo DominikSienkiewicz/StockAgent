@@ -453,7 +453,10 @@ tool_use_volatility_threshold = "0.05"
 # crypto_tool_use_volatility_threshold = "0.10"
 
 # --- Pętla / resilience ---
-symbol_throttle_seconds = 2.0
+# ARCH-24: sen między symbolami działa tylko w ścieżce sekwencyjnej (symbol_concurrency = 1
+# albo contagion_enabled). Przy symbol_concurrency = 4 niżej nic nie robi, więc 0.0;
+# przed rate-limitem dostawcy chroni wtedy sama liczba równoległych symboli.
+symbol_throttle_seconds = 0.0
 # Symbole przetwarzane równolegle w Fast Loop. Każdy symbol i tak rozwija radę
 # do ~7 callsów OpenAI naraz, więc realny fan-out ~N×7. Przy 429 (rate-limit)
 # obniż tę wartość. 1 = sekwencyjnie. Throttle/contagion działają tylko przy 1.

@@ -69,6 +69,17 @@ def test_real_config_toml_parses_and_has_expected_invariants() -> None:
         assert secret not in data, f"sekret {secret} w config.toml!"
 
 
+def test_throttle_is_set_only_where_the_loop_is_sequential() -> None:
+    """ARCH-24: `symbol_throttle_seconds` śpi między symbolami wyłącznie w ścieżce
+    sekwencyjnej (`RunFastLoopCycle._run_sequential`). Przy `symbol_concurrency` > 1
+    bez contagion idzie pula wątków i throttle nie robi nic — wartość > 0 byłaby
+    konfiguracją deklarującą zachowanie, którego nie ma."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    sequential = data["symbol_concurrency"] == 1 or data.get("contagion_enabled", False)
+
+    assert float(data["symbol_throttle_seconds"]) == 0.0 or sequential
+
+
 def test_toml_cross_list_invariants() -> None:
     """DAT-27: listy klasyfikujące symbole (ETF, brak ceny) opisują watchlistę.
     Ticker spoza `symbols` to martwa konfiguracja — tak zniknęła historia VOO."""
