@@ -41,6 +41,7 @@ import math
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -225,6 +226,38 @@ def prediction_commitment_payload(
         "council": council,
         "recipe_version": recipe_version,
         "protocol_sha256": protocol_sha256,
+    }
+
+
+def commitment_ledger_record(
+    *,
+    symbol: str,
+    commitment: str,
+    prediction_id: str,
+    committed_at: datetime,
+    schema_version: int = SCHEMA_VERSION,
+) -> dict[str, Any]:
+    """Linia JSONL ledgera commitmentów (WIA-25), publikowana PO zapisie predykcji.
+
+    `prediction_id` paruje linię z wierszem `prediction_logs`, `committed_at` (UTC,
+    ISO 8601) mówi, kiedy hash trafił do ledgera, a `schema_version` — którą regułą
+    kanonizacji go policzono, żeby weryfikator nie zgadywał. Hash zostaje tym, co
+    paruje linię z revealem (`commitment`), więc linie sprzed WIA-25 (tylko symbol
+    i hash) weryfikuje się dalej tak samo.
+
+    Pola linii NIE wchodzą do hasha: dopisanie ich nie zmienia kanonizacji i nie
+    podbija `SCHEMA_VERSION`. Czas bez strefy to błąd wywołującego (`ValueError`) —
+    „lokalny" czas runnera w publicznym ledgerze byłby dwuznaczny."""
+    if committed_at.tzinfo is None:
+        raise ValueError("committed_at wymaga strefy czasowej (UTC)")
+    if schema_version not in _SUPPORTED_SCHEMA_VERSIONS:
+        raise ValueError(f"Nieznany {_SCHEMA_KEY}: {schema_version}")
+    return {
+        "symbol": symbol,
+        "commitment": commitment,
+        "prediction_id": prediction_id,
+        "committed_at": committed_at.astimezone(UTC).isoformat(timespec="seconds"),
+        _SCHEMA_KEY: schema_version,
     }
 
 

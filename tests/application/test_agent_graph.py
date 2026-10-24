@@ -3155,6 +3155,39 @@ class TestAttestationCommitment:
         assert "salt" not in published
         assert "commitment" in published
 
+    def test_published_commitment_line_binds_prediction_id_time_and_schema(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        # WIA-25: sama para symbol + hash nie pozwala sparować linii z wierszem bazy
+        # ani z revealem, a bez wersji schematu weryfikator zgaduje regułę kanonizacji.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        repository_port.save_prediction.return_value = "pred-42"
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        publisher = self._publisher()
+        moment = datetime(2026, 10, 26, 5, 31, 7, tzinfo=UTC)
+
+        create_agent_graph(AgentGraphDeps(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            attestation_publisher=publisher,
+            clock=lambda: moment,
+        )).compile().invoke(_initial_state("100.0"))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert publisher.publish_commitment.call_args.args[0] == {
+            "symbol": "AAPL",
+            "commitment": record["commitment_hash"],
+            "prediction_id": "pred-42",
+            "committed_at": "2026-10-26T05:31:07+00:00",
+            "schema_version": 2,
+        }
+
     def test_publisher_failure_never_breaks_the_cycle(
         self, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,
@@ -3369,7 +3402,9 @@ class TestAttestationCommitment:
         assert saved_before_publish == [True]
         published = publisher.publish_commitment.call_args.args[0]
         record = repository_port.save_prediction.call_args.args[0]
-        assert published == {"symbol": "AAPL", "commitment": record["commitment_hash"]}
+        # WIA-25: linia niesie też prediction_id, committed_at i schema_version.
+        expected = {"symbol": "AAPL", "commitment": record["commitment_hash"]}
+        assert published.items() >= expected.items()
 
     def test_rerun_in_the_same_hour_reuses_the_stored_salt(
         self, market_port, sentiment_port, news_port,
@@ -3484,9 +3519,11 @@ class TestAttestationCommitment:
             (record["commitment_payload"] + record["commitment_salt"]).encode("utf-8")
         )
         assert record["commitment_hash"] == digest.hexdigest()
-        publisher.publish_commitment.assert_called_once_with(
-            {"symbol": "AAPL", "commitment": record["commitment_hash"]}
-        )
+        # WIA-25: linia niesie też prediction_id, committed_at i schema_version.
+        publisher.publish_commitment.assert_called_once()
+        published = publisher.publish_commitment.call_args.args[0]
+        expected = {"symbol": "AAPL", "commitment": record["commitment_hash"]}
+        assert published.items() >= expected.items()
 
     def test_retry_with_the_same_payload_reuses_the_salt_without_a_reveal(
         self, market_port, sentiment_port, news_port,

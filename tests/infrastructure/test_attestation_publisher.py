@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from src.domain.attestation import commitment_ledger_record
 from src.infrastructure.adapters.attestation_publisher import (
     FileAttestationPublisher,
     NullAttestationPublisher,
@@ -127,3 +129,31 @@ class TestNullAttestationPublisher:
 
         assert result == ""
         opener.assert_not_called()
+
+
+class TestCommitmentLedgerLine:
+    """WIA-25: linia commitmentu niesie to, czym weryfikator paruje ją z revealem."""
+
+    def test_commitment_line_has_prediction_id(self, tmp_path: Path) -> None:
+        target = tmp_path / "commitments.jsonl"
+        publisher = FileAttestationPublisher(
+            commitment_path=str(target), reveal_path=str(tmp_path / "reveals.jsonl")
+        )
+
+        publisher.publish_commitment(
+            commitment_ledger_record(
+                symbol="NVDA",
+                commitment="ab" * 32,
+                prediction_id="pred-7",
+                committed_at=datetime(2026, 10, 26, 5, 31, 7, tzinfo=UTC),
+            )
+        )
+
+        (line,) = target.read_text(encoding="utf-8").splitlines()
+        assert json.loads(line) == {
+            "commitment": "ab" * 32,
+            "committed_at": "2026-10-26T05:31:07+00:00",
+            "prediction_id": "pred-7",
+            "schema_version": 2,
+            "symbol": "NVDA",
+        }

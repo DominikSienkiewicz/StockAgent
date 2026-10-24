@@ -54,6 +54,7 @@ from src.domain.attestation import (
     StoredCommitment,
     canonicalize,
     commit_canonical,
+    commitment_ledger_record,
     new_salt,
     prediction_commitment_payload,
 )
@@ -1524,11 +1525,13 @@ def _superseded_reveal_record(symbol: str, stored: StoredCommitment) -> dict[str
     return record
 
 
-def _publish_commitment(deps: AgentGraphDeps, symbol: str, sealed: _SealedCommitment) -> None:
-    """#16 — publikuje sam hash (bez soli). WIA-01: wołane DOPIERO po udanym
-    `save_prediction` — hash bez zapisanej soli nigdy nie zostałby ujawniony,
-    a nieudany zapis zostawia nadpisywany wiersz nietknięty (ujawni go sweep).
-    Awaria publikacji nigdy nie wywala cyklu."""
+def _publish_commitment(
+    deps: AgentGraphDeps, symbol: str, sealed: _SealedCommitment, prediction_id: str
+) -> None:
+    """#16 — publikuje sam hash (bez soli), z id predykcji, czasem i wersją schematu
+    (WIA-25). WIA-01: wołane DOPIERO po udanym `save_prediction` — hash bez zapisanej
+    soli nigdy nie zostałby ujawniony, a nieudany zapis zostawia nadpisywany wiersz
+    nietknięty (ujawni go sweep). Awaria publikacji nigdy nie wywala cyklu."""
     if deps.attestation_publisher is None:
         return
     if sealed.superseded is not None:
@@ -1541,7 +1544,13 @@ def _publish_commitment(deps: AgentGraphDeps, symbol: str, sealed: _SealedCommit
     try:
         # Publikujemy WYŁĄCZNIE hash — sól zostaje w bazie do czasu revealu.
         deps.attestation_publisher.publish_commitment(
-            {"symbol": symbol, "commitment": sealed.commitment}
+            commitment_ledger_record(
+                symbol=symbol,
+                commitment=sealed.commitment,
+                prediction_id=str(prediction_id),
+                committed_at=deps.clock(),
+                schema_version=ATTESTATION_SCHEMA_VERSION,
+            )
         )
     except Exception:
         logger.exception("Attestation commitment publish failed for %s", symbol)
@@ -2115,7 +2124,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     prediction_id = repository_port.save_prediction(record)
     # WIA-01: hash trafia do publicznego logu dopiero, gdy sól jest w bazie.
     if sealed is not None:
-        _publish_commitment(deps, state["symbol"], sealed)
+        _publish_commitment(deps, state["symbol"], sealed, prediction_id)
 
     # Strukturalny audit trail rady — JSONB blob w prediction_logs zostaje
     # (wstecz-kompat), ale głosy lecą też do osobnej tabeli, żeby dało się

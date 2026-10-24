@@ -14,6 +14,7 @@ tautologią „moduł zgadza się sam ze sobą".
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, cast
 
@@ -346,3 +347,65 @@ def test_superseded_check_compares_hashes_not_the_stored_payload() -> None:
 def test_superseded_reveal_status_is_frozen() -> None:
     # Status trafia do publicznego ledgera revealów — weryfikator filtruje po nim.
     assert attestation.REVEAL_STATUS_SUPERSEDED == "superseded"
+
+
+# --- WIA-25: linia ledgera commitmentów --------------------------------------
+
+_LINE_HASH = "ab" * 32
+
+
+def test_ledger_record_binds_symbol_hash_prediction_time_and_schema() -> None:
+    record = attestation.commitment_ledger_record(
+        symbol="AAPL",
+        commitment=_LINE_HASH,
+        prediction_id="pred-1",
+        committed_at=datetime(2026, 10, 26, 5, 31, 7, tzinfo=UTC),
+    )
+
+    assert record == {
+        "symbol": "AAPL",
+        "commitment": _LINE_HASH,
+        "prediction_id": "pred-1",
+        "committed_at": "2026-10-26T05:31:07+00:00",
+        "schema_version": attestation.SCHEMA_VERSION,
+    }
+
+
+def test_ledger_record_states_the_time_in_utc() -> None:
+    warsaw = timezone(timedelta(hours=2))
+
+    record = attestation.commitment_ledger_record(
+        symbol="AAPL",
+        commitment=_LINE_HASH,
+        prediction_id="pred-1",
+        committed_at=datetime(2026, 10, 26, 7, 31, 7, tzinfo=warsaw),
+    )
+
+    assert record["committed_at"] == "2026-10-26T05:31:07+00:00"
+
+
+def test_ledger_record_rejects_a_time_without_a_timezone() -> None:
+    with pytest.raises(ValueError, match="strefy czasowej"):
+        attestation.commitment_ledger_record(
+            symbol="AAPL",
+            commitment=_LINE_HASH,
+            prediction_id="pred-1",
+            committed_at=datetime(2026, 10, 26, 5, 31, 7),
+        )
+
+
+def test_ledger_record_rejects_an_unknown_schema_version() -> None:
+    with pytest.raises(ValueError, match="schema_version"):
+        attestation.commitment_ledger_record(
+            symbol="AAPL",
+            commitment=_LINE_HASH,
+            prediction_id="pred-1",
+            committed_at=datetime(2026, 10, 26, tzinfo=UTC),
+            schema_version=99,
+        )
+
+
+def test_ledger_line_fields_do_not_change_the_canonicalisation() -> None:
+    # Linia ledgera nie wchodzi do hasha, więc dopisanie pól nie podbija
+    # SCHEMA_VERSION: golden v2 zostaje bajt w bajt (test_golden_hash_v2).
+    assert attestation.SCHEMA_VERSION == 2
