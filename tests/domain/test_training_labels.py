@@ -5,7 +5,10 @@ import pytest
 from src.domain.training_labels import (
     MAX_LABEL_HORIZON,
     FeatureSnapshot,
+    LabeledSnapshot,
+    ReturnDistribution,
     label_snapshots,
+    selection_report,
 )
 
 T0 = datetime(2026, 10, 1, 7, 30, tzinfo=UTC)
@@ -96,3 +99,49 @@ class TestLabelSnapshots:
             ("BTC", T0),
             ("AAPL", _hours(24)),
         ]
+
+
+def _labeled(target_return: float, *, gated: bool) -> LabeledSnapshot:
+    return LabeledSnapshot(
+        snapshot=_snapshot(gated=gated), target_return=target_return, settled_at=_hours(24)
+    )
+
+
+class TestSelectionReport:
+    """ML-52 (3): bramka wybiera dni z ruchem — raport porównuje rozkład zwrotów
+    cykli za bramką (gated) i pod nią, żeby widać było skalę selekcji próbki."""
+
+    def test_splits_returns_into_gated_and_non_gated(self) -> None:
+        labeled = [
+            _labeled(0.04, gated=True),
+            _labeled(-0.02, gated=True),
+            _labeled(0.01, gated=False),
+            _labeled(-0.01, gated=False),
+            _labeled(0.0, gated=False),
+        ]
+
+        report = selection_report(labeled)
+
+        assert report.gated.n == 2
+        assert report.gated.mean == pytest.approx(0.01)
+        assert report.gated.mean_abs == pytest.approx(0.03)
+        assert report.non_gated.n == 3
+        assert report.non_gated.mean_abs == pytest.approx(0.02 / 3)
+        assert report.non_gated.median == pytest.approx(0.0)
+        assert report.abs_return_ratio == pytest.approx(0.03 / (0.02 / 3))
+
+    def test_dispersion_and_tails_of_one_group(self) -> None:
+        returns = [i / 100 for i in range(-5, 6)]
+
+        report = selection_report([_labeled(r, gated=True) for r in returns])
+
+        assert report.gated.std == pytest.approx(0.033166, abs=1e-6)
+        assert report.gated.p10 == pytest.approx(-0.04)
+        assert report.gated.p90 == pytest.approx(0.04)
+
+    def test_empty_group_has_no_statistics_and_no_ratio(self) -> None:
+        report = selection_report([_labeled(0.02, gated=True)])
+
+        assert report.non_gated == ReturnDistribution(n=0)
+        assert report.gated.std is None
+        assert report.abs_return_ratio is None

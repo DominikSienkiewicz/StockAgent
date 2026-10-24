@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
@@ -9,18 +10,46 @@ import pandas as pd
 from src.application.ml_features import (
     ML_FEATURE_COLUMNS,
     SETTLED_AT_COLUMN,
+    SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
     TARGET_COLUMN,
     TIMESTAMP_COLUMN,
+    free_model_vector,
     in_label_time_order,
+    llm_model_vector,
+    usable_for_llm_model,
 )
-from src.application.ports import MLPredictionPort, RepositoryPort
+from src.application.ports import MLPredictionPort, RepositoryPort, TrainingDataPort
 from src.domain.backtest import LabelOverlap, count_label_overlaps
+from src.domain.model_scorecard import (
+    FREE_SNAPSHOT_MODEL_SYMBOL,
+    LLM_SNAPSHOT_MODEL_SYMBOL,
+    TrainingOutcome,
+    TrainingReport,
+)
 
 # Jawny re-eksport: symbol wiersza karty modelu wspólnego żyje w domenie karty.
 from src.domain.model_scorecard import POOLED_MODEL_SYMBOL as POOLED_MODEL_SYMBOL
-from src.domain.model_scorecard import TrainingOutcome, TrainingReport
+from src.domain.training_labels import (
+    LabeledSnapshot,
+    SelectionReport,
+    label_snapshots,
+    selection_report,
+)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SnapshotModelsResult:
+    """ML-52: wynik ewaluacji modeli z `feature_snapshots` — dwie karty i raport
+    selekcji bramki. `n_snapshots` to wektory symboli treningu w wersji 4,
+    `n_labeled` — te z dojrzałą etykietą."""
+
+    free_model: TrainingReport
+    llm_model: TrainingReport
+    selection: SelectionReport
+    n_snapshots: int
+    n_labeled: int
 
 # Minimalna liczba próbek, by trening miał sens (zapobiega overfittingowi na 2 rekordach).
 # Dla modelu wspólnego (ML-13) dotyczy ŁĄCZNEJ próbki wszystkich symboli.
@@ -39,6 +68,9 @@ class TrainModelUseCase:
     2. Drop NaN (widok już liczy `price_delta` i `target_return`, z guardem
        anty-inf po stronie SQL — train_model NIE dubluje tej logiki).
     3. Separacja X / Y i wywołanie ml_port.train().
+
+    ML-52: `run_snapshot_models` ewaluuje (bez zapisu wag) dwa modele na wektorach
+    `feature_snapshots` z etykietą z `price_snapshots` — odczyt przez `TrainingDataPort`.
     """
 
     def __init__(
@@ -48,6 +80,7 @@ class TrainModelUseCase:
         *,
         feature_set_version: int | None = None,
         run_id: str | None = None,
+        training_data: TrainingDataPort | None = None,
     ) -> None:
         """`feature_set_version` (DAT-09) zawęża próbkę do wierszy tej wersji
         zestawu cech; None = cała historia (bez migracji 027). `run_id` (ML-24)
@@ -56,6 +89,7 @@ class TrainModelUseCase:
         self._db_port = db_port
         self._feature_set_version = feature_set_version
         self._run_id = run_id
+        self._training_data = training_data
 
     def refresh_feature_store(self) -> None:
         self._db_port.refresh_feature_store()
@@ -107,13 +141,94 @@ class TrainModelUseCase:
                 logger.exception("Failed to persist the pooled model scorecard")
         return result
 
-    def _save_pooled_scorecard(self, result: TrainingReport) -> None:
-        if self._run_id is None:
-            self._db_port.save_model_scorecard(POOLED_MODEL_SYMBOL, result)
-        else:
-            self._db_port.save_model_scorecard(
-                POOLED_MODEL_SYMBOL, result, run_id=self._run_id
+    def run_snapshot_models(
+        self, symbols: Sequence[str], *, record_scorecard: bool = False
+    ) -> SnapshotModelsResult:
+        """ML-52 — dwa modele ewaluowane na wektorach `feature_snapshots` (wersja 4)
+        z etykietą 12 h z `price_snapshots`, bez zapisu wag (serwowany model bez zmian).
+
+        Model cech darmowych uczy się na WSZYSTKICH cyklach z etykietą, model
+        z cechami LLM — na cyklach gated bez flag wykluczających. Każdy ma swoją
+        kartę i swoje baseline'y walk-forward na własnej próbce. Raport selekcji
+        porównuje zwroty cykli gated i non-gated. Za mało wierszy → `SKIPPED`
+        z liczbą próbek (pusta baza mówi to wprost)."""
+        n_snapshots, labeled = self._labeled_snapshots(symbols)
+        free_rows = [
+            (free_model_vector(item.snapshot.features), item) for item in labeled
+        ]
+        llm_rows = [
+            (vector, item)
+            for item in labeled
+            if usable_for_llm_model(item.snapshot.gated, item.snapshot.features)
+            and (vector := llm_model_vector(item.snapshot.features)) is not None
+        ]
+        result = SnapshotModelsResult(
+            free_model=self._evaluate_snapshot_rows(free_rows, "the free-feature model"),
+            llm_model=self._evaluate_snapshot_rows(
+                llm_rows, "the LLM-feature model (gated cycles)"
+            ),
+            selection=selection_report(labeled),
+            n_snapshots=n_snapshots,
+            n_labeled=len(labeled),
+        )
+        if record_scorecard:
+            for symbol, report in (
+                (FREE_SNAPSHOT_MODEL_SYMBOL, result.free_model),
+                (LLM_SNAPSHOT_MODEL_SYMBOL, result.llm_model),
+            ):
+                try:
+                    self._save_scorecard(symbol, report)
+                except Exception:
+                    logger.exception("Failed to persist the %s scorecard", symbol)
+        return result
+
+    def _labeled_snapshots(
+        self, symbols: Sequence[str]
+    ) -> tuple[int, list[LabeledSnapshot]]:
+        """Wektory symboli treningu w wersji 4 z etykietą point-in-time."""
+        if self._training_data is None:
+            raise RuntimeError("Snapshot training needs a TrainingDataPort (DI)")
+        wanted = list(dict.fromkeys(symbols))
+        snapshots = [
+            snapshot
+            for snapshot in self._training_data.get_feature_snapshots(
+                SNAPSHOT_TRAINING_FEATURE_SET_VERSION
             )
+            if snapshot.symbol in wanted
+        ]
+        if not snapshots:
+            return 0, []
+        series = self._training_data.get_price_series(
+            wanted, since=min(snapshot.as_of for snapshot in snapshots)
+        )
+        return len(snapshots), label_snapshots(snapshots, series)
+
+    def _evaluate_snapshot_rows(
+        self,
+        rows: Sequence[tuple[Mapping[str, float | None], LabeledSnapshot]],
+        model: str,
+    ) -> TrainingReport:
+        if len(rows) < MIN_SAMPLES_FOR_TRAINING:
+            return _skipped(
+                f"Not enough labeled feature snapshots for {model}",
+                len(rows),
+                feature_set_version=SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
+            )
+        return self._ml_port.train(
+            [dict(vector) for vector, _ in rows],
+            [item.target_return for _, item in rows],
+            persist=False,
+            timestamps=[item.snapshot.as_of for _, item in rows],
+        )
+
+    def _save_pooled_scorecard(self, result: TrainingReport) -> None:
+        self._save_scorecard(POOLED_MODEL_SYMBOL, result)
+
+    def _save_scorecard(self, symbol: str, result: TrainingReport) -> None:
+        if self._run_id is None:
+            self._db_port.save_model_scorecard(symbol, result)
+        else:
+            self._db_port.save_model_scorecard(symbol, result, run_id=self._run_id)
 
     def _train_pooled(self, symbols: Sequence[str]) -> TrainingReport:
         rows = [

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+
 import pandas as pd
 
 from src.domain.cross_section import CROSS_SECTION_FEATURE_NAMES
@@ -84,6 +87,80 @@ MARKET_SNAPSHOT_FEATURES: tuple[str, ...] = (
     *CROSS_SECTION_FEATURE_NAMES,
     *MACRO_FEATURE_NAMES,
 )
+
+# ML-52 (decyzja 2026-10-21): Slow Loop trenuje z wektorów `feature_snapshots`
+# w wersji zestawu cech 4 (cechy rynkowe ML-31/ML-32/DAT-22).
+SNAPSHOT_TRAINING_FEATURE_SET_VERSION = MARKET_FEATURE_SET_VERSION
+
+# ML-52: wejście modelu cech darmowych — wyłącznie BEZWYMIAROWE cechy z wektora cyklu
+# (decyzja 4: jeden wspólny model na wielu symbolach). Ceny bezwzględne (`price`,
+# `previous_price`) zostają poza modelem; typ aktywa idzie jako dwie cechy 0/1,
+# a dzień obserwacji makro (`macro_observed_on`) to metadana, nie cecha.
+FREE_MODEL_FEATURE_COLUMNS: tuple[str, ...] = (
+    "snapshot_delta",
+    "abs_snapshot_delta",
+    "effective_threshold",
+    "regime_multiplier",
+    "earnings_multiplier",
+    "alpha_fusion_score",
+    "is_crypto",
+    "is_etf",
+    *PRICE_FEATURE_NAMES,
+    *CROSS_SECTION_FEATURE_NAMES,
+    *(name for name in MACRO_FEATURE_NAMES if name != "macro_observed_on"),
+)
+
+# ML-52: flagi jakości, z którymi cykl nie jest daną treningową — te same co filtr
+# widoku `ml_feature_store` (migracja 050: ML-12, EXP-07, DAT-07, DAT-08).
+TRAINING_EXCLUDED_QUALITY_FLAGS = frozenset(
+    {"llm_analysis_failed", "av_keys_exhausted", "av_unexpected_payload", "av_fetch_error"}
+)
+
+
+def _finite_float(raw: object) -> float | None:
+    """Liczba z JSON-a wektora albo None (brak, bool, tekst, NaN/inf)."""
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        return None
+    value = float(raw)
+    return value if math.isfinite(value) else None
+
+
+def free_model_vector(features: Mapping[str, object]) -> dict[str, float | None]:
+    """ML-52: wejście modelu cech darmowych z zapisanego wektora cyklu.
+
+    Brak źródła zostaje brakiem (None → NaN w XGBoost), nie zerem — cisza nie może
+    udawać neutralnego rynku. Typ aktywa → `is_crypto` / `is_etf` (akcja = 0/0)."""
+    asset_type = features.get("asset_type")
+    known_type = isinstance(asset_type, str)
+    derived: dict[str, float | None] = {
+        "is_crypto": float(asset_type == "CRYPTO") if known_type else None,
+        "is_etf": float(asset_type == "ETF") if known_type else None,
+    }
+    return {
+        name: derived[name] if name in derived else _finite_float(features.get(name))
+        for name in FREE_MODEL_FEATURE_COLUMNS
+    }
+
+
+def llm_model_vector(features: Mapping[str, object]) -> dict[str, float] | None:
+    """ML-52: wektor `ML_FEATURE_COLUMNS` dokładnie w postaci podanej modelowi
+    w cyklu za bramką; None, gdy któregoś pola brak (cykl bez wektora modelu)."""
+    vector: dict[str, float] = {}
+    for name in ML_FEATURE_COLUMNS:
+        value = _finite_float(features.get(name))
+        if value is None:
+            return None
+        vector[name] = value
+    return vector
+
+
+def usable_for_llm_model(gated: bool, features: Mapping[str, object]) -> bool:
+    """Czy cykl wchodzi do modelu z cechami LLM: za bramką i bez flag jakości,
+    które wykluczają go z treningu (`TRAINING_EXCLUDED_QUALITY_FLAGS`)."""
+    flags = features.get("data_quality_flags")
+    raised = {str(flag) for flag in flags} if isinstance(flags, list) else set()
+    return gated and not raised & TRAINING_EXCLUDED_QUALITY_FLAGS
+
 
 # Target = zwrot do następnego cyklu (~24 h w dni robocze, ~72 h przez weekend)
 # `(cena_po_12h - cena) / cena`, nie cena bezwzględna; nazwa `_12h` jest historyczna.

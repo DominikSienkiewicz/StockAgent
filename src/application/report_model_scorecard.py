@@ -42,6 +42,7 @@ from src.domain.drift import PSI_DRIFT_THRESHOLD, FeatureDrift, drifted_features
 from src.domain.model_scorecard import (
     METRIC_NOTE,
     POOLED_MODEL_SYMBOL,
+    SNAPSHOT_MODEL_SYMBOLS,
     EvaluationSummary,
     RunSummary,
     improvement_pct,
@@ -439,7 +440,10 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
     symbolem oraz liczbą próbek; przy wierszu `ALL` wyłącznie z niego — RMSE
     ewaluacji per symbol nie może udawać metryki modelu wspólnego.
     Brak wierszy albo brak dającej się sparsować daty → None (sekcja się chowa).
+    Karty modeli z `feature_snapshots` (ML-52, `SNAPSHOT_MODEL_SYMBOLS`) to osobne
+    modele ewaluacyjne, więc ta karta ich nie liczy.
     """
+    rows = [r for r in rows if r.get("symbol") not in SNAPSHOT_MODEL_SYMBOLS]
     stamps = [_parse_timestamp(r.get("timestamp")) for r in rows]
     run_ids = [str(r["run_id"]) if r.get("run_id") else None for r in rows]
     run: list[tuple[datetime, dict[str, Any]]] = []

@@ -2580,6 +2580,53 @@ class TestPooledTrainingLoop:
         assert main_trainer.main(settings) == 1
 
 
+class TestSnapshotModelsLoop:
+    """ML-52: po modelu wspólnym Slow Loop ewaluuje dwa modele z `feature_snapshots`
+    (bez zapisu wag). Pomocniczy krok: jego błąd nie zmienia exit code'u."""
+
+    def _trainer(self, settings, mocker) -> MagicMock:
+        settings.symbols = ["AAPL", "BTC"]
+        settings.crypto_symbols = ["BTC", "ETH"]
+        settings.weekly_recap_enabled = False
+        settings.calibration_judge_enabled = False
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "skipped", "n_samples": 17}
+        fake_uc.run_pooled.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        return fake_uc
+
+    @pytest.mark.parametrize("cards", [True, False])
+    def test_snapshot_models_run_over_every_trainable_symbol(
+        self, settings, mock_external_clients, mocker, cards
+    ) -> None:
+        settings.model_scorecard_enabled = cards
+        fake_uc = self._trainer(settings, mocker)
+
+        assert main_trainer.main(settings) == 0
+
+        fake_uc.run_snapshot_models.assert_called_once_with(
+            ["AAPL", "BTC", "ETH"], record_scorecard=cards
+        )
+
+    def test_snapshot_model_failure_does_not_fail_the_run(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        fake_uc = self._trainer(settings, mocker)
+        fake_uc.run_snapshot_models.side_effect = RuntimeError("feature_snapshots missing")
+
+        assert main_trainer.main(settings) == 0
+
+    def test_use_case_reads_training_data_from_supabase(
+        self, settings, mock_external_clients
+    ) -> None:
+        from src.application.ports import TrainingDataPort
+
+        use_case = main_trainer.build_use_case(settings)
+
+        assert isinstance(use_case._training_data, TrainingDataPort)
+
+
 def test_backtest_log_reports_ic_next_to_rmse(settings, mock_external_clients, mocker, caplog):
     # ML-20: IC i jego t-stat obok RMSE, zawsze z liczbą foldów (4 foldy = mało).
     from src.domain.backtest import BacktestSummary

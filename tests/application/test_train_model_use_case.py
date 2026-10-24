@@ -1,15 +1,24 @@
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.application.ports import MLPredictionPort, RepositoryPort
+from src.application.ml_features import FREE_MODEL_FEATURE_COLUMNS, MARKET_FEATURE_SET_VERSION
+from src.application.ports import MLPredictionPort, RepositoryPort, TrainingDataPort
 from src.application.use_cases.train_model import (
     MIN_SAMPLES_FOR_TRAINING,
     POOLED_MODEL_SYMBOL,
     TrainModelUseCase,
 )
+from src.domain.model_scorecard import (
+    FREE_SNAPSHOT_MODEL_SYMBOL,
+    LLM_SNAPSHOT_MODEL_SYMBOL,
+    TrainingOutcome,
+    TrainingReport,
+)
+from src.domain.training_labels import FeatureSnapshot
 
 EXPECTED_ML_FEATURES = [
     "price_delta",
@@ -472,3 +481,183 @@ def test_pooled_training_without_settled_at_logs_no_overlap(
         use_case.run_pooled(["AAPL"])
 
     assert "label overlap" not in caplog.text
+
+
+# -- ML-52: trening z wektorów `feature_snapshots` z etykietą z `price_snapshots` --
+
+T0 = datetime(2026, 10, 1, 7, 30, tzinfo=UTC)
+SERVED_VECTOR = {name: (i + 1) / 10 for i, name in enumerate(EXPECTED_ML_FEATURES)}
+
+
+def _cycle_vector(i: int, *, gated: bool, flags: list[str] | None = None) -> dict:
+    """Wektor cyklu jak z `_persist_feature_snapshot`: cechy darmowe zawsze, wektor
+    modelu i dodatki tylko za bramką."""
+    free = {
+        "price": 100.0 + i,
+        "previous_price": 99.0 + i,
+        "snapshot_delta": 0.01 * (i % 3),
+        "abs_snapshot_delta": 0.01 * (i % 3),
+        "effective_threshold": 0.02,
+        "regime": "NEUTRAL",
+        "regime_multiplier": 1.0,
+        "earnings_multiplier": 1.0,
+        "alpha_fusion_score": None,
+        "asset_type": "CRYPTO",
+        "valuation_verdict": None,
+        "ret_1": 0.001 * i,
+    }
+    if not gated:
+        return free
+    return {
+        **free,
+        **SERVED_VECTOR,
+        "confidence_score": 0.6,
+        "data_quality_flags": flags or [],
+    }
+
+
+def _cycles(
+    symbol: str, n: int, *, gated: bool = True, flags: list[str] | None = None
+) -> tuple[list[FeatureSnapshot], list[tuple[datetime, float]]]:
+    """`n` dziennych cykli i ich snapshoty cen (zapisane tuż przed wektorem)."""
+    snapshots = [
+        FeatureSnapshot(
+            symbol=symbol,
+            as_of=T0 + timedelta(days=i),
+            gated=gated,
+            features=_cycle_vector(i, gated=gated, flags=flags),
+            feature_set_version=MARKET_FEATURE_SET_VERSION,
+        )
+        for i in range(n)
+    ]
+    prices = [(T0 + timedelta(days=i, seconds=-1), 100.0 + i) for i in range(n + 1)]
+    return snapshots, prices
+
+
+@pytest.fixture
+def training_data() -> Mock:
+    return Mock(spec=TrainingDataPort)
+
+
+@pytest.fixture
+def snapshot_use_case(ml_port, repository_port, training_data) -> TrainModelUseCase:
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.EVALUATION_PASSED, n_samples=60)
+    return TrainModelUseCase(ml_port=ml_port, db_port=repository_port, training_data=training_data)
+
+
+def _train_call(ml_port: Mock, *, llm: bool):
+    calls = [
+        c for c in ml_port.train.call_args_list
+        if ("llm_trend_signal" in c.args[0][0]) is llm
+    ]
+    assert len(calls) == 1
+    return calls[0]
+
+
+def test_snapshot_llm_model_trains_on_the_served_vector_with_price_snapshot_label(
+    snapshot_use_case, ml_port, training_data
+):
+    # ML-52: trening czyta wektor zapisany przez cykl (ten, który dostał serving),
+    # a etykieta to zwrot do pierwszego snapshotu ceny po 12 h — bez widoku SQL.
+    snapshots, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
+    training_data.get_feature_snapshots.return_value = snapshots
+    training_data.get_price_series.return_value = {"BTC": prices}
+
+    snapshot_use_case.run_snapshot_models(["BTC"])
+
+    call = _train_call(ml_port, llm=True)
+    rows, target = call.args
+    assert rows[0] == SERVED_VECTOR
+    assert list(rows[0]) == EXPECTED_ML_FEATURES
+    assert len(rows) == len(target) == MIN_SAMPLES_FOR_TRAINING + 1
+    assert target[0] == pytest.approx(101.0 / 100.0 - 1)
+    assert call.kwargs["persist"] is False
+    assert list(call.kwargs["timestamps"]) == [s.as_of for s in snapshots]
+
+
+def test_free_feature_model_trains_on_every_labeled_cycle(
+    snapshot_use_case, ml_port, training_data
+):
+    gated, gated_prices = _cycles("BTC", 30)
+    quiet, quiet_prices = _cycles("ETH", 30, gated=False)
+    training_data.get_feature_snapshots.return_value = gated + quiet
+    training_data.get_price_series.return_value = {"BTC": gated_prices, "ETH": quiet_prices}
+
+    result = snapshot_use_case.run_snapshot_models(["BTC", "ETH"])
+
+    rows, target = _train_call(ml_port, llm=False).args
+    assert len(rows) == len(target) == 60
+    assert list(rows[0]) == list(FREE_MODEL_FEATURE_COLUMNS)
+    # Bezwymiarowe cechy cyklu; brak źródła zostaje brakiem (None), nie zerem.
+    assert rows[0]["is_crypto"] == 1.0
+    assert rows[0]["alpha_fusion_score"] is None
+    assert "price" not in rows[0]
+    # Model LLM: 30 wierszy gated < minimum — uczciwe „za mało danych”.
+    assert result.llm_model.outcome is TrainingOutcome.SKIPPED
+    assert result.llm_model.n_samples == 30
+    assert result.selection.gated.n == 30
+    assert result.selection.non_gated.n == 30
+
+
+def test_llm_model_drops_gated_cycles_with_failed_llm_or_feed(
+    snapshot_use_case, ml_port, training_data
+):
+    clean, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING)
+    broken, broken_prices = _cycles("ETH", 10, flags=["llm_analysis_failed"])
+    training_data.get_feature_snapshots.return_value = clean + broken
+    training_data.get_price_series.return_value = {"BTC": prices, "ETH": broken_prices}
+
+    snapshot_use_case.run_snapshot_models(["BTC", "ETH"])
+
+    rows, _ = _train_call(ml_port, llm=True).args
+    assert len(rows) == MIN_SAMPLES_FOR_TRAINING
+
+
+def test_empty_feature_snapshots_report_not_enough_data(
+    snapshot_use_case, ml_port, training_data
+):
+    # Baza produkcyjna jest pusta: obie karty mówią wprost, że danych za mało.
+    training_data.get_feature_snapshots.return_value = []
+    training_data.get_price_series.return_value = {}
+
+    result = snapshot_use_case.run_snapshot_models(["BTC"])
+
+    ml_port.train.assert_not_called()
+    for report in (result.free_model, result.llm_model):
+        assert report.outcome is TrainingOutcome.SKIPPED
+        assert report.n_samples == 0
+        assert "not enough" in (report.reason or "").lower()
+    assert result.n_snapshots == result.n_labeled == 0
+
+
+def test_snapshot_training_reads_feature_set_version_4_of_listed_symbols_only(
+    snapshot_use_case, ml_port, training_data
+):
+    # Decyzja 2026-10-21: trening z wektorów w wersji zestawu cech 4.
+    btc, prices = _cycles("BTC", 5)
+    other, _ = _cycles("DOGE", 5)
+    training_data.get_feature_snapshots.return_value = btc + other
+    training_data.get_price_series.return_value = {"BTC": prices}
+
+    result = snapshot_use_case.run_snapshot_models(["BTC"])
+
+    training_data.get_feature_snapshots.assert_called_once_with(MARKET_FEATURE_SET_VERSION)
+    assert training_data.get_price_series.call_args.args[0] == ["BTC"]
+    assert result.n_snapshots == 5
+
+
+def test_snapshot_models_are_recorded_as_two_cards(
+    ml_port, repository_port, training_data
+):
+    use_case = TrainModelUseCase(
+        ml_port=ml_port, db_port=repository_port, training_data=training_data, run_id="run-1"
+    )
+    training_data.get_feature_snapshots.return_value = []
+    training_data.get_price_series.return_value = {}
+
+    result = use_case.run_snapshot_models(["BTC"], record_scorecard=True)
+
+    calls = repository_port.save_model_scorecard.call_args_list
+    assert [c.args[0] for c in calls] == [FREE_SNAPSHOT_MODEL_SYMBOL, LLM_SNAPSHOT_MODEL_SYMBOL]
+    assert [c.args[1] for c in calls] == [result.free_model, result.llm_model]
+    assert all(c.kwargs == {"run_id": "run-1"} for c in calls)

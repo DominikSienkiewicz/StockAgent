@@ -507,6 +507,24 @@ class TestTypedTrainingReport:
         assert passed.model_path is None
 
 
+class TestFeatureRowsWithGaps:
+    """ML-52: wiersze modelu cech darmowych mają braki (None) — także całe kolumny,
+    np. cechy makro przy wyłączonym FRED. Brak ma być brakiem XGBoost, nie błędem."""
+
+    def test_rows_with_missing_values_train_as_xgboost_missing(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=200)
+        rows = [
+            {**row, "macro_off": None, "sometimes": None if i % 2 else float(i)}
+            for i, row in enumerate(features.to_dict("records"))
+        ]
+
+        report = adapter.train(rows, list(target), persist=False)
+
+        assert report.outcome is TrainingOutcome.EVALUATION_PASSED
+        assert report.feature_stats is not None
+        assert set(report.feature_stats) == {*FEATURE_NAMES, "macro_off", "sometimes"}
+
+
 class TestPooledTrainingSupport:
     """ML-13: per-symbol pętla tylko ewaluuje (bez zapisu), a model wspólny trenuje
     na foldach po czasie GLOBALNYM z purgem horyzontu etykiety."""

@@ -19,6 +19,13 @@ from types import MappingProxyType
 # Werdykt główny karty bierze się z tego wiersza (decyzja 3 z 2026-10-18).
 POOLED_MODEL_SYMBOL = "ALL"
 
+# ML-52: karty modeli ewaluowanych na wektorach `feature_snapshots` (bez zapisu
+# wag): cechy darmowe na wszystkich cyklach i wektor modelu tylko na cyklach gated.
+# Nie są ewaluacjami per symbol ani werdyktem modelu wspólnego.
+FREE_SNAPSHOT_MODEL_SYMBOL = "ALL_FREE"
+LLM_SNAPSHOT_MODEL_SYMBOL = "ALL_LLM"
+SNAPSHOT_MODEL_SYMBOLS = frozenset({FREE_SNAPSHOT_MODEL_SYMBOL, LLM_SNAPSHOT_MODEL_SYMBOL})
+
 # Model starszy niż tyle dni traktujemy jako nieświeży (STALE). Próg zamrożony
 # jako stała modułu — pojedyncze źródło prawdy dla reguły świeżości.
 MODEL_STALE_AFTER_DAYS = 21

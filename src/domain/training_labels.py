@@ -22,6 +22,7 @@ Stdlib only.
 from __future__ import annotations
 
 import math
+import statistics
 from bisect import bisect_left
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -113,3 +114,73 @@ def label_snapshots(
             )
         )
     return sorted(labeled, key=lambda item: (item.snapshot.as_of, item.snapshot.symbol))
+
+
+
+@dataclass(frozen=True)
+class ReturnDistribution:
+    """Rozkład zwrotów etykiety jednej grupy cykli; statystyki None przy n = 0
+    (odchylenie także przy n = 1). `p10`/`p90` — kwantyle z interpolacją liniową."""
+
+    n: int
+    mean: float | None = None
+    median: float | None = None
+    std: float | None = None
+    mean_abs: float | None = None
+    p10: float | None = None
+    p90: float | None = None
+
+
+@dataclass(frozen=True)
+class SelectionReport:
+    """ML-52 (3): raport selekcji bramki — zwroty cykli za bramką i pod nią.
+
+    `ml_feature_store` powstaje tylko z cykli za bramką, więc model uczył się na
+    dniach z ruchem. `abs_return_ratio` = średni |zwrot| gated / non-gated: ile
+    razy większe ruchy widzi model uczony tylko na gated (None bez obu grup)."""
+
+    gated: ReturnDistribution
+    non_gated: ReturnDistribution
+
+    @property
+    def abs_return_ratio(self) -> float | None:
+        gated, non_gated = self.gated.mean_abs, self.non_gated.mean_abs
+        if gated is None or non_gated is None or non_gated == 0:
+            return None
+        return gated / non_gated
+
+
+def _quantile(ordered: Sequence[float], q: float) -> float:
+    """Kwantyl posortowanej, niepustej próbki z interpolacją liniową."""
+    position = q * (len(ordered) - 1)
+    lower = math.floor(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * weight
+
+
+def return_distribution(returns: Sequence[float]) -> ReturnDistribution:
+    """Statystyki rozkładu zwrotów (patrz `ReturnDistribution`)."""
+    if not returns:
+        return ReturnDistribution(n=0)
+    ordered = sorted(returns)
+    return ReturnDistribution(
+        n=len(ordered),
+        mean=statistics.fmean(ordered),
+        median=statistics.median(ordered),
+        std=statistics.stdev(ordered) if len(ordered) > 1 else None,
+        mean_abs=statistics.fmean(abs(value) for value in ordered),
+        p10=_quantile(ordered, 0.1),
+        p90=_quantile(ordered, 0.9),
+    )
+
+
+def selection_report(labeled: Iterable[LabeledSnapshot]) -> SelectionReport:
+    """Rozkład zwrotów etykiety osobno dla cykli gated i non-gated."""
+    gated: list[float] = []
+    non_gated: list[float] = []
+    for item in labeled:
+        (gated if item.snapshot.gated else non_gated).append(item.target_return)
+    return SelectionReport(
+        gated=return_distribution(gated), non_gated=return_distribution(non_gated)
+    )

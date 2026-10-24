@@ -40,6 +40,7 @@ from src.application.ml_features import feature_set_version
 from src.application.ports import LLMPort, ModelCatalogPort, RepositoryPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_ops import render_trainer_summary_markdown
+from src.application.report_snapshot_training import render_snapshot_models_markdown
 from src.application.report_weekly_recap import (
     render_weekly_recap_html,
     render_weekly_recap_text,
@@ -58,7 +59,11 @@ from src.application.use_cases.monitor_output_drift import (
 )
 from src.application.use_cases.probe_models import ModelProbe, ProbeModelsUseCase
 from src.application.use_cases.reference_signal import RunReferenceSignalUseCase
-from src.application.use_cases.train_model import POOLED_MODEL_SYMBOL, TrainModelUseCase
+from src.application.use_cases.train_model import (
+    POOLED_MODEL_SYMBOL,
+    SnapshotModelsResult,
+    TrainModelUseCase,
+)
 from src.application.use_cases.weekly_recap import (
     PAID_LLM_CALLS_PER_RUN as RECAP_LLM_CALLS,
 )
@@ -149,6 +154,9 @@ def build_use_case(settings: Settings, *, run_id: str | None = None) -> TrainMod
             else None
         ),
         run_id=run_id,
+        # ML-52: wektory `feature_snapshots` i ceny do etykiety — sam odczyt,
+        # więc bez strażnika zapisu (działa także lokalnie bez `db_writes_enabled`).
+        training_data=_supabase_repository(settings),
     )
 
 
@@ -279,6 +287,8 @@ class _TrainingTally:
 
     statuses: Counter[str] = field(default_factory=Counter)
     pooled: Mapping[str, Any] | None = None
+    # ML-52: modele z `feature_snapshots` i raport selekcji (None = krok nie ruszył).
+    snapshot_models: SnapshotModelsResult | None = None
     feature_store_refreshed: bool = True
     failures: int = 0
     total: int = 0
@@ -290,7 +300,7 @@ class _TrainingTally:
     def render(self) -> str:
         pooled = self.pooled or {}
         samples = pooled.get("n_samples")
-        return render_trainer_summary_markdown(
+        summary = render_trainer_summary_markdown(
             symbol_statuses=self.statuses,
             pooled_status=str(pooled["status"]) if "status" in pooled else None,
             pooled_samples=samples if isinstance(samples, int) else None,
@@ -298,6 +308,9 @@ class _TrainingTally:
             total=self.total,
             feature_store_refreshed=self.feature_store_refreshed,
         )
+        if self.snapshot_models is None:
+            return summary
+        return summary + "\n" + render_snapshot_models_markdown(self.snapshot_models)
 
 
 def _train_symbols(
@@ -345,6 +358,40 @@ def _train_pooled_model(
     if tally is not None and isinstance(result, Mapping):
         tally.pooled = result
     return 0
+
+
+def _evaluate_snapshot_models(
+    settings: Settings,
+    use_case: TrainModelUseCase,
+    trainable: list[str],
+    tally: _TrainingTally | None = None,
+) -> None:
+    """ML-52: modele z `feature_snapshots` (cechy darmowe na wszystkich cyklach,
+    cechy LLM na cyklach gated) i raport selekcji bramki — sama ewaluacja, bez
+    zapisu wag. Krok pomocniczy: błąd (np. brak tabeli) tylko loguje, exit code
+    przebiegu się nie zmienia. Karty idą do `model_scorecards` jak karta `ALL`."""
+    try:
+        result = use_case.run_snapshot_models(
+            trainable, record_scorecard=settings.model_scorecard_enabled
+        )
+    except Exception:
+        logger.exception("Feature snapshot models failed — pomijam")
+        return
+    if not isinstance(result, SnapshotModelsResult):
+        return
+    logger.info(
+        "Feature snapshot models — vectors=%d labeled=%d free=%s (n=%d) llm=%s (n=%d) "
+        "gated/non-gated mean |return| ratio=%s",
+        result.n_snapshots,
+        result.n_labeled,
+        result.free_model.status,
+        result.free_model.n_samples,
+        result.llm_model.status,
+        result.llm_model.n_samples,
+        result.selection.abs_return_ratio,
+    )
+    if tally is not None:
+        tally.snapshot_models = result
 
 
 def _build_llm_or_unavailable(
@@ -769,6 +816,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
     failures = _train_symbols(settings, repository, use_case, trainable, tally, run_id)
     failures += _train_pooled_model(settings, use_case, trainable, tally)
+    _evaluate_snapshot_models(settings, use_case, trainable, tally)
     tally.failures, tally.total = failures, len(trainable) + 1
     _run_reference_signal(settings, repository)
     _run_output_drift(settings, quota_monitor)

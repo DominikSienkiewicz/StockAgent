@@ -375,6 +375,22 @@ class TestPooledVerdict:
         assert view.evaluations is not None
         assert (view.evaluations.passed, view.evaluations.failed) == (2, 1)
 
+    def test_snapshot_model_cards_are_not_per_symbol_evaluations(self) -> None:
+        # ML-52: karty modeli z `feature_snapshots` (ALL_FREE, ALL_LLM) to osobne
+        # modele ewaluacyjne — nie mogą zmieniać werdyktu ani liczby ewaluacji.
+        rows = [
+            *_pooled_run_rows("trained_successfully"),
+            {"symbol": "ALL_FREE", "status": "evaluated_failed_gate",
+             "timestamp": "2026-10-11T03:36:00+00:00", "candidate_holdout_rmse": 0.5},
+            {"symbol": "ALL_LLM", "status": "skipped",
+             "timestamp": "2026-10-11T03:36:00+00:00"},
+        ]
+
+        view = build_scorecard_view(rows)
+        baseline = build_scorecard_view(_pooled_run_rows("trained_successfully"))
+
+        assert view == baseline
+
     def test_metrics_come_only_from_the_pooled_row_when_it_exists(self) -> None:
         # A1c (2026-10-18): przy wierszu ALL bez metryk (trening wspólny pominięty)
         # nagłówek nie może pokazywać RMSE ewaluacji per symbol jak modelu wspólnego.

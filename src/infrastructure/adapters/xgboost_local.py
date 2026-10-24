@@ -91,7 +91,7 @@ class XGBoostAdapter(MLPredictionPort):
         persist: bool = True,
         timestamps: Any = None,
     ) -> TrainingReport:
-        feature_frame = pd.DataFrame(features).reset_index(drop=True)
+        feature_frame = _feature_frame(features)
         target_series = pd.Series(target).reset_index(drop=True)
         stamps = _global_time_order(timestamps, len(target_series))
 
@@ -219,7 +219,7 @@ class XGBoostAdapter(MLPredictionPort):
         Reużywa logikę foldów `train()` (finding #23), łącznie z purgem horyzontu
         etykiety przy podanych `timestamps`. Czysto ewaluacyjna — nie zapisuje
         modelu i nie zmienia stanu adaptera (`self._model`)."""
-        feature_frame = pd.DataFrame(features).reset_index(drop=True)
+        feature_frame = _feature_frame(features)
         target_series = pd.Series(target).reset_index(drop=True)
         stamps = _global_time_order(timestamps, len(target_series))
         return self._walk_forward_folds_detail(feature_frame, target_series, stamps)
@@ -292,6 +292,17 @@ class XGBoostAdapter(MLPredictionPort):
                 f"Missing required ML features for prediction: {missing}"
             )
         return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
+
+
+def _feature_frame(features: Any) -> pd.DataFrame:
+    """Ramka cech z DataFrame albo z sekwencji wierszy `{cecha: wartość}`.
+
+    ML-52: brak (None) — także w całej kolumnie, np. cechy makro bez FRED — staje się
+    NaN, czyli brakiem XGBoost. Kolumny już liczbowe zostają bez zmian."""
+    frame = pd.DataFrame(features).reset_index(drop=True)
+    for column in frame.select_dtypes(include="object").columns:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce").astype(float)
+    return frame
 
 
 def _training_report(

@@ -295,6 +295,32 @@ class TestTrainerSummary:
         for symbol in settings.symbols:
             assert symbol not in markdown
 
+    def test_summary_shows_the_feature_snapshot_models(
+        self, settings, mock_external_clients, mocker, summary_file
+    ) -> None:
+        from src.application.use_cases.train_model import SnapshotModelsResult
+        from src.domain.model_scorecard import TrainingOutcome, TrainingReport
+        from src.domain.training_labels import ReturnDistribution, SelectionReport
+
+        empty = TrainingReport(TrainingOutcome.SKIPPED, n_samples=0)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "skipped", "n_samples": 12}
+        fake_uc.run_pooled.return_value = {"status": "skipped", "n_samples": 24}
+        fake_uc.run_snapshot_models.return_value = SnapshotModelsResult(
+            free_model=empty,
+            llm_model=empty,
+            selection=SelectionReport(ReturnDistribution(n=0), ReturnDistribution(n=0)),
+            n_snapshots=0,
+            n_labeled=0,
+        )
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+
+        assert main_trainer.main(settings) == 0
+
+        markdown = summary_file.read_text(encoding="utf-8")
+        assert "### Feature snapshot models (ML-52)" in markdown
+        assert "| Free features (all cycles) | skipped | 0 | n/a | n/a |" in markdown
+
     def test_failed_feature_store_refresh_still_writes_a_summary(
         self, settings, mock_external_clients, mocker, summary_file
     ) -> None:
