@@ -89,6 +89,8 @@ def suggest_band(
 
     - Wejścia są clampowane do sensownych zakresów (consensus/dissent ∈ [0,1],
       hit_rate ∈ [0,1] gdy podany) — żadne ekstremum nie wysadza klasyfikacji.
+      Wartość niefinitna (NaN, ±inf) w consensus/dissent daje `starter`, a w
+      hit_rate znaczy „nieznany” (PORT-12).
     - `full` (4-5%) wymaga JEDNOCZEŚNIE: mocnego konsensusu, niskiego dissentu
       ORAZ znanego, przyzwoitego hit-rate. Brak track recordu (cold-start) lub
       słaby hit-rate nigdy nie sięgają po pełną bandę.
@@ -114,6 +116,10 @@ def suggest_band(
     zdejmuje stopień. Ryzyko nigdy nie poszerza bandy; wszystkie trzy `None` →
     wynik identyczny jak przed PORT-04.
     """
+    if not (math.isfinite(consensus_strength) and math.isfinite(dissent_ratio)):
+        # PORT-12: NaN albo nieskończoność w konsensusie lub dissencie to brak odczytu
+        # rady. `_clamp` czytał je jako 1.0 (mocny konsensus) i 0.0 (brak rozłamu).
+        return _band("starter", _STARTER)
     consensus = _clamp(consensus_strength, 0.0, 1.0)
     dissent = _clamp(dissent_ratio, 0.0, 1.0)
     if hit_sample is not None and hit_sample < MIN_HIT_SAMPLE:
