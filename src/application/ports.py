@@ -1061,6 +1061,19 @@ class AttestationPublisherPort(ABC):
     def publish_reveal(self, record: Mapping[str, Any]) -> str: ...
 
 
+class AttestationLedgerPort(ABC):
+    """WIA-15 — odczyt trwałego ledgera atestacji: checkoutu gałęzi `attestation-log`,
+    który przeżył poprzedni run (push joba `publish-attestation-ledger`).
+
+    Reveal dopisany do pliku w tym runie nie jest jeszcze trwały — push może paść albo
+    job zostać anulowany. Dopiero linia obecna w ledgerze na starcie runu pozwala
+    ostemplować `revealed_at`. Błąd odczytu → `PortError`."""
+
+    @abstractmethod
+    def revealed_commitments(self) -> frozenset[str]:
+        """Hashe (hex, małe litery) wszystkich revealów w ledgerze; brak pliku = pusty zbiór."""
+
+
 class WebPublisherPort(ABC):
     """Publikacja strony HTML jako statyczny artefakt web (publiczny scorecard #10).
     Zwraca URL/ścieżkę albo "" gdy wyłączone / błąd (publikacja nigdy nie

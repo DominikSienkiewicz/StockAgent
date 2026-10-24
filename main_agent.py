@@ -37,6 +37,7 @@ from src.application.portfolio_fx import collect_pln_rates, effective_pln_rates,
 from src.application.ports import (
     AdvisoryCouncilPort,
     AnalystConsensusPort,
+    AttestationLedgerPort,
     AttestationPublisherPort,
     CircuitState,
     CycleRun,
@@ -772,6 +773,28 @@ def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
     # BEZ-08: predykcja z runu tylko do odczytu ma id `dry-run-…` i nie istnieje
     # w bazie — jej commitment byłby fałszywym wpisem w publicznym logu.
     return ReadOnlyAttestationPublisher(publisher)
+
+
+def build_attestation_ledger(settings: Settings) -> AttestationLedgerPort:
+    """WIA-15 — trwały ledger: checkout gałęzi `attestation-log` w katalogu z tymi samymi
+    ścieżkami, do których dopisuje publisher (krok workflowu przed agentem, WIA-14)."""
+    from src.infrastructure.adapters.attestation_ledger import FileAttestationLedger
+
+    return FileAttestationLedger(
+        commitment_path=settings.attestation_commitments_path,
+        reveal_path=settings.attestation_reveals_path,
+    )
+
+
+def attestation_reveals(
+    settings: Settings, repository: RepositoryPort
+) -> RevealAttestationsUseCase:
+    """#16/WIA-15 — sweep revealów ze stemplem z trwałego ledgera: `reconcile` na starcie
+    runu stempluje revealy, które przeżyły push poprzedniego runu, `run` po raporcie
+    tylko publikuje."""
+    return RevealAttestationsUseCase(
+        repository, build_attestation_publisher(settings), build_attestation_ledger(settings)
+    )
 
 
 def build_options_port(
@@ -2458,9 +2481,10 @@ def deliver_report(
         )
 
         # #16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,
-        # nie może opóźnić ani zablokować raportu.
+        # nie może opóźnić ani zablokować raportu. WIA-15: bez stempla `revealed_at` —
+        # ten przychodzi w następnym runie, gdy reveal przeżyje push na `attestation-log`.
         if settings.attestation_enabled:
-            RevealAttestationsUseCase(repository, build_attestation_publisher(settings)).run()
+            attestation_reveals(settings, repository).run()
 
         # #5: push idzie RAZ, skrótem, poza gałęzią fan-outu — inaczej albo
         # ginie (subskrybenci), albo przekracza limit Telegrama (pełny raport).
@@ -2903,6 +2927,10 @@ def _run_fast_loop(
         use_case.telemetry.bind_http_meter(http_meter)
     if settings.db_writes_enabled and prediction_columns_missing(repository, use_case):
         return 1
+    # WIA-15: stempel `revealed_at` tylko dla revealów, które przeżyły push poprzedniego
+    # runu — są w checkoucie `attestation-log` zrobionym przed krokiem agenta.
+    if settings.attestation_enabled:
+        attestation_reveals(settings, repository).reconcile()
     # Mail i stary push osobno: tekst pushu nie niesie sekcji portfela.
     notifier = build_notifier(settings, quota_monitor=quota_monitor, include_push=False)
     legacy_push_notifier = build_legacy_push_notifier(settings, quota_monitor=quota_monitor)

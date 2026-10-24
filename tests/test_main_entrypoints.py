@@ -1,5 +1,6 @@
 """Smoke testy entry pointów — DI wiring oraz top-level main() z mockami sieci."""
 
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock, call
@@ -7541,3 +7542,91 @@ def test_deliver_report_lists_each_subscriber_under_a_masked_address(settings, m
     )
     assert outcome.delivered is False
     assert "early@example.com" not in repr(outcome)
+
+
+class TestAttestationRevealReconciliation:
+    """WIA-15 — `revealed_at` stemplowany na starcie runu, z trwałego ledgera
+    (checkout `attestation-log`), a nie zaraz po dopisaniu revealu do pliku."""
+
+    @staticmethod
+    def _run_main(
+        settings, mocker, on_reconcile: Callable[[], object] | None = None
+    ) -> tuple[MagicMock, MagicMock]:
+        repository = MagicMock(spec=RepositoryPort)
+        mocker.patch("main_agent.build_repository", return_value=repository)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "saved", "delta": Decimal("0.05")}
+        fake_uc.telemetry.snapshot.return_value.paid_calls = {}
+        mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        mocker.patch("main_agent.build_notifier", return_value=MagicMock())
+        mocker.patch("main_agent._dispatch_reports", return_value=True)
+        reveals = MagicMock()
+        reveals.reconcile.side_effect = on_reconcile
+        mocker.patch("main_agent.attestation_reveals", return_value=reveals)
+        main_agent.main(settings)
+        return reveals, fake_uc
+
+    def test_fast_loop_stamps_durable_reveals_before_the_cycle(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        settings.attestation_enabled = True
+        calls: list[str] = []
+        mocker.patch(
+            "main_agent._analyze_symbols",
+            side_effect=lambda *_a, **_k: calls.append("cycle") or ([], 0, {}, {}),
+        )
+
+        reveals, _ = self._run_main(
+            settings, mocker, on_reconcile=lambda: calls.append("reconcile")
+        )
+
+        reveals.reconcile.assert_called_once_with()
+        assert calls == ["reconcile", "cycle"]
+
+    def test_flag_off_stamps_nothing(self, settings, mock_external_clients, mocker) -> None:
+        settings.attestation_enabled = False
+
+        reveals, _ = self._run_main(settings, mocker)
+
+        reveals.reconcile.assert_not_called()
+
+    def test_ledger_reads_the_configured_reveals_file(self, settings, tmp_path) -> None:
+        reveals = tmp_path / "reveals.jsonl"
+        reveals.write_text('{"commitment": "' + "ab" * 32 + '"}\n', encoding="utf-8")
+        settings.attestation_reveals_path = str(reveals)
+        settings.attestation_commitments_path = str(tmp_path / "commitments.jsonl")
+
+        ledger = main_agent.build_attestation_ledger(settings)
+
+        assert ledger.revealed_commitments() == frozenset({"ab" * 32})
+
+    def test_sweep_after_the_report_defers_stamps_to_the_ledger(self, settings, mocker) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+        from src.infrastructure.adapters.attestation_ledger import FileAttestationLedger
+
+        settings.attestation_enabled = True
+        settings.public_scorecard_enabled = False
+        settings.messenger_digest_enabled = False
+        mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
+        sweep = mocker.patch("main_agent.RevealAttestationsUseCase")
+        repository = MagicMock(spec=RepositoryPort)
+
+        main_agent.deliver_report(
+            _assembled_report,
+            results=[],
+            started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
+            duration=1.0,
+            failures=0,
+            settings=settings,
+            repository=repository,
+            quota_monitor=QuotaMonitor(),
+            notifier=MagicMock(),
+            web_publisher=MagicMock(),
+            subscribers=[],
+            all_symbols=["AAPL"],
+        )
+
+        repo_arg, _, ledger = sweep.call_args.args
+        assert repo_arg is repository
+        assert isinstance(ledger, FileAttestationLedger)
+        sweep.return_value.run.assert_called_once_with()

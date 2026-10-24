@@ -21,7 +21,8 @@ ROOT = Path(__file__).parent.parent
 # (`main_trainer._evaluate_snapshot_models`) jest best-effort jak sąsiednie kroki.
 # Kontynuacja ARCH-33 w fali 2 ma sprowadzić liczbę z powrotem do <= 157.
 # -1 (BEZ-27, 2026-10-25): z web digestem U3 zniknął `_publish_web_digest`.
-BROAD_HANDLER_BASELINE = 157
+# -1 (WIA-15): publikacja revealu łapie błędy zapisu i serializacji, nie `Exception`.
+BROAD_HANDLER_BASELINE = 156
 _BROAD_NAMES = frozenset({"Exception", "BaseException"})
 
 

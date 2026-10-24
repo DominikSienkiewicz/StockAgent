@@ -11,7 +11,12 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-from src.application.ports import AttestationPublisherPort, RepositoryPort
+from src.application.errors import ProviderUnavailable
+from src.application.ports import (
+    AttestationLedgerPort,
+    AttestationPublisherPort,
+    RepositoryPort,
+)
 from src.application.use_cases.reveal_attestations import RevealAttestationsUseCase
 
 
@@ -161,3 +166,111 @@ class TestAttestationRevealSweep:
         assert "payload" not in published
         assert published["predicted_target_price"] == "110.0"
         assert published["price_at_prediction"] == "100.0"
+
+
+class TestRevealReconciliationWithTheDurableLedger:
+    """WIA-15 — `revealed_at` dopiero wtedy, gdy reveal przeżył push na `attestation-log`.
+
+    Stempel zaraz po dopisaniu do pliku przegrywał wyścig z anulowanym jobem: wiersz
+    oznaczony jako ujawniony, a linia nigdy nie trafiła do trwałego ledgera."""
+
+    @staticmethod
+    def _row(pid: str, commitment: str) -> dict[str, Any]:
+        return {**TestAttestationRevealSweep._row(pid), "commitment_hash": commitment}
+
+    @staticmethod
+    def _ledger(*revealed: str) -> MagicMock:
+        ledger = MagicMock(spec=AttestationLedgerPort)
+        ledger.revealed_commitments.return_value = frozenset(revealed)
+        return ledger
+
+    def test_marks_only_hashes_present_in_ledger(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [
+            self._row("a", "aa" * 32),
+            self._row("b", "bb" * 32),
+        ]
+        use_case = RevealAttestationsUseCase(
+            repo, MagicMock(spec=AttestationPublisherPort), self._ledger("aa" * 32)
+        )
+
+        assert use_case.reconcile() == 1
+
+        repo.mark_commitment_revealed.assert_called_once_with("a")
+
+    def test_reconcile_compares_hashes_case_insensitively(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("a", "AA" * 32)]
+        use_case = RevealAttestationsUseCase(
+            repo, MagicMock(spec=AttestationPublisherPort), self._ledger("aa" * 32)
+        )
+
+        assert use_case.reconcile() == 1
+
+    def test_reconcile_without_a_ledger_marks_nothing(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("a", "aa" * 32)]
+
+        assert RevealAttestationsUseCase(repo, MagicMock()).reconcile() == 0
+        repo.mark_commitment_revealed.assert_not_called()
+
+    def test_unreadable_ledger_marks_nothing(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("a", "aa" * 32)]
+        ledger = self._ledger()
+        ledger.revealed_commitments.side_effect = ProviderUnavailable("ledger unreadable")
+
+        assert RevealAttestationsUseCase(repo, MagicMock(), ledger).reconcile() == 0
+        repo.mark_commitment_revealed.assert_not_called()
+
+    def test_failed_mark_does_not_stop_the_reconciliation(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [
+            self._row("a", "aa" * 32),
+            self._row("b", "bb" * 32),
+        ]
+        repo.mark_commitment_revealed.side_effect = [RuntimeError("db down"), None]
+        use_case = RevealAttestationsUseCase(
+            repo, MagicMock(), self._ledger("aa" * 32, "bb" * 32)
+        )
+
+        assert use_case.reconcile() == 1
+
+    def test_sweep_with_a_ledger_publishes_but_never_marks(self) -> None:
+        # Stempel czeka na następny run: dopiero wtedy wiadomo, czy push się udał.
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("a", "aa" * 32)]
+        pub = MagicMock(spec=AttestationPublisherPort)
+        pub.publish_reveal.return_value = "public/attestation/reveals.jsonl"
+
+        published = RevealAttestationsUseCase(repo, pub, self._ledger()).run()
+
+        assert published == 1
+        pub.publish_reveal.assert_called_once()
+        repo.mark_commitment_revealed.assert_not_called()
+
+    def test_sweep_skips_reveals_already_in_the_ledger(self) -> None:
+        # Idempotencja przy re-runach: wiersz z revealem w ledgerze, ale bez stempla
+        # (np. padł zapis do bazy), nie dostaje drugiej linii — ostempluje go reconcile.
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [
+            self._row("a", "aa" * 32),
+            self._row("b", "bb" * 32),
+        ]
+        pub = MagicMock(spec=AttestationPublisherPort)
+        pub.publish_reveal.return_value = "public/attestation/reveals.jsonl"
+
+        published = RevealAttestationsUseCase(repo, pub, self._ledger("aa" * 32)).run()
+
+        assert published == 1
+        assert pub.publish_reveal.call_args.args[0]["commitment"] == "bb" * 32
+
+    def test_sweep_is_skipped_when_the_ledger_cannot_be_read(self) -> None:
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_unrevealed_commitments.return_value = [self._row("a", "aa" * 32)]
+        pub = MagicMock(spec=AttestationPublisherPort)
+        ledger = self._ledger()
+        ledger.revealed_commitments.side_effect = ProviderUnavailable("ledger unreadable")
+
+        assert RevealAttestationsUseCase(repo, pub, ledger).run() == 0
+        pub.publish_reveal.assert_not_called()
