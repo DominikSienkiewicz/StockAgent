@@ -32,7 +32,6 @@ from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAl
 from src.application.move_interval import (
     CALIBRATION_LOOKBACK_DAYS,
     calibration_windows,
-    interval_coverage,
 )
 from src.application.portfolio_fx import collect_pln_rates, effective_pln_rates, nbp_today
 from src.application.ports import (
@@ -69,43 +68,52 @@ from src.application.report_builder import (
     build_cycle_lead,
     build_cycle_signals,
     build_html_report,
-    parse_resolved_predictions,
     to_symbol_result,
 )
-from src.application.report_council_history import InvestorHistory
 from src.application.report_evidence import (
     PaperCosts,
-    accuracy_drop_alert,
-    accuracy_drop_evidence,
-    hit_rate_evidence,
-    portfolio_curve,
 )
 from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
     build_sector_map,
     format_local,
 )
-from src.application.report_lessons import LessonsReport, build_lessons
+from src.application.report_lessons import LessonsReport
 from src.application.report_messenger import build_messenger_digest
 from src.application.report_model_scorecard import (
     ModelScorecardView,
-    build_scorecard_view,
 )
 from src.application.report_models import ResolvedPrediction, TradeSignal
 from src.application.report_onboarding import onboarding_subject
 from src.application.report_ops import render_cycle_summary_markdown
 from src.application.report_regime import RegimeBanner
-from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
+from src.application.report_symbol_record import SymbolTrackRecordView
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
 from src.application.tools import build_research_tools
 from src.application.track_record_window import (
     TrackRecordReads,
-    window_benchmark,
-    window_coverage,
 )
 from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidPhase
+from src.application.use_cases.assemble_report import (
+    RESOLVED_PREDICTIONS_HOURS as RESOLVED_PREDICTIONS_HOURS,
+)
+from src.application.use_cases.assemble_report import (
+    ReportAssembler,
+    ReportFlags,
+    assess_personas,
+    build_consensus_shifts,
+    build_model_scorecard,
+    build_signal_calibration,
+    build_symbol_track_record,
+    build_track_record,
+    build_track_record_stats,
+    classify_cycle_maturity,
+    fetch_report_context,
+    persist_quota_alerts,
+    portfolio_sectors,
+)
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
 from src.application.use_cases.monitor_macro_risk import (
     MacroRiskReport,
@@ -127,15 +135,9 @@ from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
 from src.domain.calibration_curve import (
     CalibrationBucket,
-    confidence_reorders_ranking,
-    discrimination_evidence,
-    probability_scores,
-    reliability_curve,
 )
 from src.domain.conformal import CalibrationPoint
-from src.domain.consensus_shift import ConsensusShift, detect_shift
-from src.domain.coverage import CoverageReport
-from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
+from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
@@ -146,15 +148,8 @@ from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
 from src.domain.macro_risk import MacroAlertLevel
 from src.domain.macro_series import MacroSeriesSnapshot, macro_features, macro_series_votes
 from src.domain.market_calendar import closure_reason, to_nyse_time
-from src.domain.model_scorecard import MODEL_SCORECARD_WINDOW_DAYS
 from src.domain.number_format import format_money_pl, format_number_pl
 from src.domain.peer_group import build_peer_context
-from src.domain.persona_track_record import (
-    PersonaTrackRecord,
-    assess_against_track_record,
-    rank_personas,
-    sort_personas,
-)
 from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
@@ -209,15 +204,6 @@ DEFAULT_STRESS_SCENARIOS: tuple[Scenario, ...] = (
     Scenario(name="Krach -20%", market_shock=-0.20),
     Scenario(name="Rajd +10%", market_shock=0.10),
 )
-
-ACCURACY_STATS_DAYS = 30
-RESOLVED_PREDICTIONS_HOURS = 24
-# NIEZ-01: banner alertów kwot sięga tydzień + 3 h wstecz, żeby niedzielny CRITICAL
-# ze Slow Loopa (cron raz w tygodniu) był w najbliższym mailu, a nie znikał po 24 h.
-QUOTA_ALERT_LOOKBACK_HOURS = 7 * 24 + 3
-# Okno track recordu person (#3) — 90 dni, tak jak domyślne okno RPC z migracji
-# 018. Dłuższe niż okno accuracy: hit-rate per persona potrzebuje próbki.
-PERSONA_TRACK_RECORD_DAYS = 90
 
 logger = logging.getLogger(__name__)
 
@@ -2418,44 +2404,6 @@ def _sector_map(settings: Settings) -> dict[str, str]:
     )
 
 
-def _portfolio_sectors(
-    results: list[SymbolResult], sector_map: Mapping[str, str]
-) -> dict[str, int]:
-    """#4 — skład portfela wg sektorów (sektor → liczba instrumentów).
-
-    Etykiety z mapy sektorów configu (PORT-05); symbole spoza mapy trafiają do
-    "Inne", żeby licznik zawsze sumował się do liczby instrumentów.
-    """
-    counts: dict[str, int] = {}
-    for r in results:
-        sector = sector_map.get(r.symbol, "Inne")
-        counts[sector] = counts.get(sector, 0) + 1
-    return counts
-
-
-def _classify_cycle_maturity(results: list[SymbolResult]) -> CycleMaturity:
-    """#4 — dojrzałość cyklu z policzonych przyczyn pominięcia.
-
-    Symbole nieobsługiwane cenowo są jawnie POZA mianownikiem (nigdy nie dostaną
-    punktu odniesienia), a błędy liczone osobno — cykl zdominowany przez awarie
-    źródeł nie może zostać powitaniem "Dzień 1". Reguła siedzi w domenie.
-    """
-    saved = sum(1 for r in results if r.status == "saved")
-    errors = sum(1 for r in results if r.status == "error")
-    cold_start = sum(1 for r in results if r.skip_reason is SkipReason.COLD_START)
-    below = sum(1 for r in results if r.skip_reason is SkipReason.BELOW_THRESHOLD)
-    stale = sum(1 for r in results if r.skip_reason is SkipReason.STALE_REFERENCE)
-    # SkipReason.UNSUPPORTED_PRICE celowo nie ma tu swojej liczności — te symbole
-    # wypadają z mianownika przez to, że nie trafiają do ŻADNEJ z powyższych sum.
-    return classify_cycle(
-        saved_count=saved,
-        cold_start_count=cold_start,
-        below_threshold_count=below,
-        error_count=errors,
-        stale_reference_count=stale,
-    )
-
-
 def _build_subject(
     *,
     lead_items: list[LeadItem],
@@ -2489,112 +2437,32 @@ def _build_subject(
     return f"{prefix}StockAgent — {analyzed} predykcji, {failures} błędów ({stamp})"
 
 
-def _build_consensus_shifts(
-    repository: RepositoryPort,
-    results: list[SymbolResult],
-    *,
-    now: datetime,
-) -> list[tuple[str, ConsensusShift]]:
-    """#8 — wykrywa zmiany nastawienia rady względem poprzedniego cyklu.
-
-    Tłumienie stęchłych flipów: symbol bez ŚWIEŻEGO werdyktu (odcięty bramką
-    volatility) jest pomijany — inaczej stary flip pokazywałby się w kółko.
-    `gap_hours` liczone z timestampu poprzedniego cyklu; domena degraduje
-    porównanie starsze niż 48h do STALE_COMPARISON, zamiast robić dramaturgię.
-    Graceful w CALLERZE (styl repo): błąd odczytu → brak sekcji, cykl żyje.
-    """
-    shifts: list[tuple[str, ConsensusShift]] = []
-    for r in results:
-        if r.council_verdict is None:
-            continue
-        try:
-            previous = repository.get_previous_verdict(r.symbol)
-        except Exception:
-            logger.exception("Failed to fetch previous verdict for %s", r.symbol)
-            continue
-        if previous is None:
-            continue
-        gap_hours = (now - previous.timestamp).total_seconds() / 3600.0
-        shifts.append(
-            (
-                r.symbol,
-                detect_shift(
-                    previous.verdict,
-                    r.council_verdict,
-                    previous_sentiment=previous.sentiment_score,
-                    current_sentiment=r.sentiment_score or 0.0,
-                    gap_hours=gap_hours,
-                ),
-            )
-        )
-    return shifts
-
-
-def _build_model_scorecard(
-    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
-) -> ModelScorecardView | None:
-    """#12 — widok karty kondycji modelu. Flaga OFF / brak migracji 019 / błąd
-    odczytu → None → sekcja sama się chowa, cykl leci dalej. ML-15: okno odczytu
-    to `MODEL_SCORECARD_WINDOW_DAYS`, nie `track_record_days` — karta starsza niż
-    próg świeżości zostaje widoczna z odznaką STALE."""
-    if not settings.model_scorecard_enabled:
-        return None
-    try:
-        rows = repository.get_recent_model_scorecards(MODEL_SCORECARD_WINDOW_DAYS)
-    except Exception:
-        logger.exception("Failed to fetch model scorecards")
-        return None
-    view = build_scorecard_view(rows)
-    if view is None:
-        return None
-    # DAT-16: karta mówi też, ile sesji okna ma dane i które symbole nie mają rozliczeń.
-    return dataclasses.replace(view, coverage=_data_coverage(settings, repository, reads=reads))
-
-
-def _data_coverage(
-    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
-) -> CoverageReport | None:
-    """DAT-16 — pokrycie danych okna track recordu (`window_coverage`); z `reads`
-    (ARCH-16) rozliczenia okna z tego dispatchu zamiast własnego odczytu."""
-    return window_coverage(
-        repository,
+def _report_flags(settings: Settings) -> ReportFlags:
+    """ARCH-06: `Settings` → flagi i okna sekcji raportu (bez konwersji wartości)."""
+    return ReportFlags(
+        track_record_days=settings.track_record_days,
+        reflection_min_age_hours=settings.reflection_min_age_hours,
         symbols=settings.symbols,
         crypto_symbols=settings.crypto_symbols,
-        days=settings.track_record_days,
-        settled_rows=None if reads is None else reads.resolved_rows,
+        equity_curve_enabled=settings.equity_curve_enabled,
+        lessons_enabled=settings.lessons_enabled,
+        calibration_curve_enabled=settings.calibration_curve_enabled,
+        calibrated_confidence_enabled=settings.calibrated_confidence_enabled,
+        interval_coverage_enabled=settings.interval_coverage_enabled,
+        model_scorecard_enabled=settings.model_scorecard_enabled,
+        cycle_diff_enabled=settings.cycle_diff_enabled,
+        settled_at_windows_enabled=settings.settled_at_windows_enabled,
     )
 
 
-def _build_signal_calibration(
-    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
-) -> list[CalibrationBucket] | None:
-    """#9 — kubełki kalibracji pod RANKING sygnałów (nie pod sekcję Track Record).
-
-    Świadomie osobne od `_build_track_record`: `calibration_curve_enabled` rysuje
-    sekcję, a `calibrated_confidence_enabled` zmienia ranking. Sprzęgnięcie ich
-    znaczyłoby, że włączenie rankingu po cichu dorysowuje sekcję w mailu.
-    Best-effort: błąd odczytu → None → surowa pewność, cykl leci dalej.
-    """
-    if not settings.calibrated_confidence_enabled:
-        return None
-    window = TrackRecordReads(repository, settings.track_record_days) if reads is None else reads
-    try:
-        # WIA-39: ranking kalibrujemy krzywą kierunkową — SIDEWAYS trafia za darmo.
-        split = window.calibration()
-    except Exception:
-        logger.exception("Failed to fetch calibration samples for signal ranking")
-        return None
-    # WIA-38: pewność, która nie odróżnia trafień od pudeł, nie przestawia rankingu.
-    discrimination = discrimination_evidence(split.directional_by_cycle, n_boot=0)
-    if discrimination is not None and not confidence_reorders_ranking(discrimination):
-        logger.warning(
-            "Confidence AUC %.2f at n_eff≈%.0f carries no ranking information — "
-            "signals ranked on raw confidence",
-            discrimination.auc,
-            discrimination.n_eff,
-        )
-        return None
-    return reliability_curve(split.directional) if split.directional else None
+# ARCH-06: sekcje raportu żyją w `use_cases/assemble_report.py`; poniższe aliasy
+# przyjmują `Settings` (wołają je testy wiringu i `main_watch`).
+_fetch_report_context = fetch_report_context
+_persist_quota_alerts = persist_quota_alerts
+_assess_personas = assess_personas
+_build_consensus_shifts = build_consensus_shifts
+_classify_cycle_maturity = classify_cycle_maturity
+_portfolio_sectors = portfolio_sectors
 
 
 def _build_track_record(
@@ -2604,33 +2472,40 @@ def _build_track_record(
     *,
     reads: TrackRecordReads | None = None,
 ) -> tuple[EquityCurve | None, list[CalibrationBucket] | None, LessonsReport | None]:
-    """T1/T2/T4 — krzywa kapitału, kalibracja, lessons (render-only, zero
-    płatnych). Każda podsekcja flag-gated; wszystkie czytają zamknięte predykcje
-    z okna track_record_days. Krzywa kapitału to portfel o równej wadze per
-    cykl (WIA-17), nie szeregowe składanie równoległych trade'ów, po kosztach
-    obrotu `costs` (WIA-50; None = brutto). `reads` (ARCH-16) — odczyty okna
-    z tego dispatchu; None = własne."""
-    window = TrackRecordReads(repository, settings.track_record_days) if reads is None else reads
-    equity_curve: EquityCurve | None = None
-    calibration_buckets: list[CalibrationBucket] | None = None
-    lessons: LessonsReport | None = None
-    if settings.equity_curve_enabled or settings.lessons_enabled:
-        try:
-            tr_resolved = window.resolved()
-        except Exception:
-            logger.exception("Failed to fetch resolved predictions for track record")
-            tr_resolved = []
-        if settings.equity_curve_enabled:
-            equity_curve = portfolio_curve(tr_resolved, costs)
-        if settings.lessons_enabled:
-            lessons = build_lessons(tr_resolved)
-    if settings.calibration_curve_enabled:
-        try:
-            samples = window.calibration().directional
-            calibration_buckets = reliability_curve(samples) if samples else None
-        except Exception:
-            logger.exception("Failed to compute calibration curve")
-    return equity_curve, calibration_buckets, lessons
+    """T1/T2/T4 z `Settings` — `assemble_report.build_track_record`."""
+    return build_track_record(_report_flags(settings), repository, costs, reads=reads)
+
+
+def _build_track_record_stats(
+    settings: Settings,
+    repository: RepositoryPort,
+    costs: PaperCosts | None = None,
+    *,
+    reads: TrackRecordReads | None = None,
+) -> TrackRecordStats | None:
+    """Statystyki Track Recordu z `Settings` — `assemble_report.build_track_record_stats`."""
+    return build_track_record_stats(_report_flags(settings), repository, costs, reads=reads)
+
+
+def _build_symbol_track_record(
+    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
+) -> SymbolTrackRecordView | None:
+    """WIA-35 z `Settings` — `assemble_report.build_symbol_track_record`."""
+    return build_symbol_track_record(_report_flags(settings), repository, reads=reads)
+
+
+def _build_signal_calibration(
+    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
+) -> list[CalibrationBucket] | None:
+    """#9 z `Settings` — `assemble_report.build_signal_calibration`."""
+    return build_signal_calibration(_report_flags(settings), repository, reads=reads)
+
+
+def _build_model_scorecard(
+    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
+) -> ModelScorecardView | None:
+    """#12 z `Settings` — `assemble_report.build_model_scorecard`."""
+    return build_model_scorecard(_report_flags(settings), repository, reads=reads)
 
 
 def _expire_stale_predictions(
@@ -2656,200 +2531,6 @@ def _expire_stale_predictions(
     return expired
 
 
-def _build_symbol_track_record(
-    settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
-) -> SymbolTrackRecordView | None:
-    """WIA-35: trafność kierunkowa per symbol do chipu przy predykcji i sygnale.
-
-    Ta sama flaga i to samo okno co krzywa kapitału; darmowy odczyt zamkniętych
-    predykcji, zero płatnych wywołań. Błąd odczytu → mail bez chipów."""
-    if not settings.equity_curve_enabled:
-        return None
-    window = TrackRecordReads(repository, settings.track_record_days) if reads is None else reads
-    try:
-        resolved = window.resolved()
-    except Exception:
-        logger.exception("Failed to fetch resolved predictions for per-symbol track record")
-        return None
-    return symbol_track_record_view(resolved, settings.track_record_days)
-
-
-def _build_track_record_stats(
-    settings: Settings,
-    repository: RepositoryPort,
-    costs: PaperCosts | None = None,
-    *,
-    reads: TrackRecordReads | None = None,
-) -> TrackRecordStats | None:
-    """Dowód trafności (T1), Brier / BSS (T2) i pokrycie przedziałów 80% (ML-34)
-    pod sekcją Track Record.
-
-    Te same flagi co podsekcje, które statystyki uzupełniają; pokrycie za
-    `interval_coverage_enabled` (kolumny z migracji 032). Osobna funkcja,
-    bo `_build_track_record` zwraca stały kontrakt trzech podsekcji. Każdy
-    odczyt best-effort: błąd → brak danej statystyki, cykl leci dalej.
-    `costs` (WIA-50) to te same założenia, z którymi `_build_track_record`
-    liczy krzywą — jadą do etykiety „paper-PnL (koszt X bps)” i do porównania
-    z koszykiem i IVV (WIA-21), które bez kosztów nie powstaje. `reads`
-    (ARCH-16) — odczyty okna z tego dispatchu; None = własne.
-    """
-    window = TrackRecordReads(repository, settings.track_record_days) if reads is None else reads
-    evidence = None
-    scores = None
-    benchmark = None
-    accuracy_drop = None
-    if settings.equity_curve_enabled:
-        resolved: list[ResolvedPrediction] = []
-        try:
-            resolved = window.resolved()
-            evidence = hit_rate_evidence(resolved)
-            # NIEZ-20: data istotnego spadku trafności (Page-Hinkley per cykl).
-            accuracy_drop = accuracy_drop_evidence(resolved)
-        except Exception:
-            logger.exception("Failed to compute hit-rate evidence for track record")
-        if resolved and costs is not None:
-            benchmark = window_benchmark(
-                repository,
-                resolved,
-                costs,
-                window_days=settings.track_record_days,
-                settle_after_hours=settings.reflection_min_age_hours,
-            )
-    sideways_scores = None
-    if settings.calibration_curve_enabled:
-        try:
-            split = window.calibration()
-            scores = probability_scores(split.directional)
-            # WIA-39: SIDEWAYS osobno — przy małym n wystarczą n i Brier.
-            sideways_scores = probability_scores(split.sideways)
-        except Exception:
-            logger.exception("Failed to compute probability scores for track record")
-    coverage = None
-    if settings.interval_coverage_enabled:
-        try:
-            measured = interval_coverage(
-                repository.get_settled_moves(settings.track_record_days, with_intervals=True)
-            )
-            # Bez rozliczonego przedziału nie ma czego mierzyć — podsekcja się chowa.
-            coverage = measured if measured.n else None
-        except Exception:
-            logger.exception("Failed to measure interval coverage for track record")
-    paper_costs = costs if settings.equity_curve_enabled else None
-    parts = (evidence, scores, coverage, paper_costs, benchmark, accuracy_drop)
-    if all(part is None for part in parts):
-        return None
-    return TrackRecordStats(
-        hit_rate=evidence,
-        scores=scores,
-        coverage=coverage,
-        costs=paper_costs,
-        benchmark=benchmark,
-        sideways_scores=sideways_scores,
-        accuracy_drop=accuracy_drop,
-    )
-
-
-def _persist_quota_alerts(repository: RepositoryPort, alerts: list[QuotaAlert]) -> None:
-    """Zapis alertów kwot, każdy osobno — błąd jednego nie gubi pozostałych."""
-    for alert in alerts:
-        try:
-            repository.save_quota_alert(alert)
-        except Exception:
-            logger.exception("Failed to persist quota alert from %s", alert.source)
-
-
-def _fetch_report_context(
-    repository: RepositoryPort,
-    quota_monitor: QuotaMonitor,
-    all_symbols: list[str],
-    *,
-    resolved_since: datetime | None = None,
-) -> tuple[
-    dict[str, Any] | None,
-    list[ResolvedPrediction] | None,
-    list[QuotaAlert],
-    list[InvestorHistory],
-    list[PersonaTrackRecord],
-]:
-    """Best-effort dociągnięcie danych do raportu: accuracy, zamknięte predykcje,
-    alerty kwot (persystencja bieżących + odczyt z ostatniego tygodnia), historia głosów rady
-    i ranking wiarygodności person.
-    Każdy odczyt osobno owinięty — błąd jednego nie blokuje pozostałych.
-
-    `resolved_since` (WIA-19) — zamknięte predykcje to te ROZLICZONE od tej
-    chwili (start cyklu), a nie utworzone w ostatnich 24 h. None = okno 24 h.
-
-    MAIL-25: nieudany odczyt zamkniętych predykcji zwraca None, nie pustą listę —
-    pusta lista znaczy w mailu „brak rozliczeń”, czego po awarii nie wiemy."""
-    accuracy_stats: dict[str, Any] | None = None
-    resolved: list[ResolvedPrediction] | None = None
-    try:
-        accuracy_stats = repository.get_accuracy_stats(ACCURACY_STATS_DAYS)
-    except Exception:
-        logger.exception("Failed to fetch accuracy stats — report without them")
-    try:
-        resolved_rows = (
-            repository.get_recently_resolved_predictions(RESOLVED_PREDICTIONS_HOURS)
-            if resolved_since is None
-            else repository.get_recently_resolved_predictions(
-                RESOLVED_PREDICTIONS_HOURS, since=resolved_since
-            )
-        )
-        resolved = parse_resolved_predictions(resolved_rows)
-    except Exception:
-        logger.exception("Failed to fetch resolved predictions")
-        resolved = None
-
-    # Persystencja alertów z BIEŻĄCEGO cyklu (przed odczytem history, żeby też
-    # tu trafiły) + odczyt z okna bannera.
-    _persist_quota_alerts(repository, quota_monitor.alerts)
-    try:
-        recent_alerts = repository.get_recent_quota_alerts(hours=QUOTA_ALERT_LOOKBACK_HOURS)
-    except Exception:
-        logger.exception("Failed to fetch recent quota alerts — using cycle-only")
-        recent_alerts = list(quota_monitor.alerts)
-
-    # U5: historia głosów rady per inwestor (panel drill-down w raporcie).
-    council_history: list[InvestorHistory] = []
-    try:
-        council_history = repository.get_council_vote_history(
-            all_symbols, window_days=30
-        )
-    except Exception:
-        logger.exception("Failed to fetch council vote history")
-
-    # #3: leaderboard person. Surowe (hit_rate, votes) z RPC, ranking i próg
-    # min_votes liczy domena. Brak migracji 018 / błąd RPC → pusty ranking
-    # → sekcja sama się chowa, cykl leci dalej. WIA-30: po dolnej granicy Wilsona.
-    persona_track_record: list[PersonaTrackRecord] = []
-    try:
-        persona_track_record = rank_personas(
-            repository.get_persona_track_record(PERSONA_TRACK_RECORD_DAYS), rank_by="wilson"
-        )
-    except Exception:
-        logger.exception("Failed to fetch persona track record")
-    return (
-        accuracy_stats,
-        resolved,
-        recent_alerts,
-        council_history,
-        persona_track_record,
-    )
-
-
-def _assess_personas(
-    records: list[PersonaTrackRecord], stats: TrackRecordStats | None
-) -> list[PersonaTrackRecord]:
-    """WIA-22: werdykt istotności person (BH-FDR) na parametrach z okna scorecardu,
-    bez migracji; WIA-30: ranking po dolnej granicy Wilsona na n_eff — tym samym
-    przedziale, który pokazuje wiersz. Bez dowodu trafności okna
-    (`equity_curve_enabled` off, brak danych) ranking zostaje bez werdyktu."""
-    evidence = None if stats is None else stats.hit_rate
-    if not records or evidence is None:
-        return records
-    return sort_personas(assess_against_track_record(records, evidence), "wilson")
-
-
 def _without_owner_portfolio(context: ReportContext) -> ReportContext:
     """BEZ-01: kontekst maila dla subskrybenta, który nie jest właścicielem —
     bez pozycji, klastrów i cen pozycji spoza watchlisty. Bez portfela lead
@@ -2861,6 +2542,48 @@ def _without_owner_portfolio(context: ReportContext) -> ReportContext:
         held_prices=None,
         position_risk=None,
         portfolio_fx=None,
+    )
+
+
+def _report_inputs(
+    settings: Settings,
+    repository: RepositoryPort,
+    context: ReportContext,
+    *,
+    watchlist: list[str],
+    started_at: datetime,
+) -> ReportContext:
+    """ARCH-06: część kontekstu raportu, którą składa composition root — portfel
+    właściciela z adapterów (pozycje, `/quote`, kursy NBP) i konfiguracja
+    prezentacji. Resztę sekcji dokłada `ReportAssembler` z repozytorium.
+
+    `watchlist` (FIN-34) to symbole wycenione w tym cyklu: pozycje spoza niej
+    dostają sam darmowy `/quote` (PORT-07)."""
+    # #15: realny portfel użytkownika (flaga + migracja 023).
+    user_portfolio = _build_user_portfolio(settings)
+    held_prices = _quote_held_positions(settings, user_portfolio, watchlist)
+    # PORT-11: kursy NBP do „P/L zł” (darmowe, poza bramką volatility).
+    portfolio_fx = _collect_portfolio_fx(settings, user_portfolio, started_at)
+    # PORT-04: ryzyko realnego portfela do sizingu (flaga + pozycje), wagi
+    # w złotych tymi samymi kursami co raport.
+    macro = context.macro_risk_report
+    return dataclasses.replace(
+        context,
+        user_portfolio=user_portfolio,
+        held_prices=held_prices,
+        portfolio_fx=portfolio_fx,
+        portfolio_clusters=_portfolio_clusters(settings),
+        position_risk=_build_position_risk(
+            settings,
+            repository,
+            user_portfolio,
+            rates=effective_pln_rates(
+                portfolio_fx, macro.polish_macro if macro is not None else None
+            ),
+        ),
+        sector_map=_sector_map(settings),
+        sector_peers=settings.sector_peers,
+        display_timezone=settings.display_timezone,
     )
 
 
@@ -2893,114 +2616,36 @@ def _dispatch_reports(
     z watchlisty dostają darmowy `/quote` jak pozycje spoza niej (PORT-07).
 
     `context` przynosi sekcje policzone JESZCZE PRZED wysyłką (ryzyko makro,
-    radar portfela, alfa, koszt cyklu); resztę pól dokłada ta funkcja z odczytów
-    repozytorium. Wcześniej te same wartości szły tędy jako osobne argumenty
-    tylko po to, by wylądować w wywołaniu `build_html_report`."""
-    # NIEZ-03: alerty do tego miejsca zapisuje `_fetch_report_context`; te, które
+    radar portfela, alfa, koszt cyklu); portfel właściciela i konfigurację
+    prezentacji dokłada `_report_inputs`, a sekcje z odczytów repozytorium
+    `ReportAssembler` (ARCH-06)."""
+    # NIEZ-03: alerty do tego miejsca zapisuje `fetch_report_context`; te, które
     # powstaną później (np. Resend przy samej wysyłce), dopisuje `finally`.
     persisted_alerts = len(quota_monitor.alerts)
     email_delivered = True
     # Wyjątek PRZED wysyłką = raportu nie ma; po wysyłce wynik maila już jest znany.
     report_sent = False
     try:
-        # WIA-19: za flagą sekcja zamkniętych predykcji = rozliczone w TYM cyklu
-        # (`settled_at` ≥ start cyklu, migracja 029). Trigger stempluje zegarem
-        # bazy, a start liczy zegar runnera: oba chodzą po NTP, a od startu do
-        # pierwszego rozliczenia mijają sekundy, więc rozjazd zegarów nie gubi wierszy.
-        resolved_since = started_at if settings.settled_at_windows_enabled else None
-        (
-            accuracy_stats,
-            resolved,
-            recent_alerts,
-            council_history,
-            persona_track_record,
-        ) = _fetch_report_context(
-            repository, quota_monitor, all_symbols, resolved_since=resolved_since
-        )
-
-        # T1/T2/T4: Track Record (render-only, zero płatnych). Każda podsekcja
-        # flag-gated; wszystkie czytają zamknięte predykcje z okna track_record_days.
         # WIA-50: krzywa, jej etykieta i scorecard z tymi samymi kosztami.
         paper_costs = _paper_costs(settings)
-        # ARCH-16: rozliczenia i próbki kalibracji okna — jeden odczyt na dispatch.
-        reads = TrackRecordReads(repository, settings.track_record_days)
-        equity_curve, calibration_buckets, lessons = _build_track_record(
-            settings, repository, paper_costs, reads=reads
-        )
-        track_record_stats = _build_track_record_stats(
-            settings, repository, paper_costs, reads=reads
-        )
-        persona_track_record = _assess_personas(persona_track_record, track_record_stats)
-        # NIEZ-20: alarm detektora trafności do bannera tego maila (bez zapisu —
-        # liczony na nowo w każdym cyklu, więc nie dubluje wierszy `quota_alerts`).
-        if track_record_stats is not None and track_record_stats.accuracy_drop is not None:
-            recent_alerts = [
-                *recent_alerts,
-                accuracy_drop_alert(track_record_stats.accuracy_drop, started_at),
-            ]
-        # #9: kubełki pod ranking sygnałów (osobna flaga, osobny odczyt).
-        signal_calibration_buckets = _build_signal_calibration(settings, repository, reads=reads)
-        # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
-        maturity = _classify_cycle_maturity(results)
-        sector_map = _sector_map(settings)
-        sectors = _portfolio_sectors(results, sector_map)
-        # #12: karta kondycji modelu (flaga + migracja 019).
-        model_scorecard = _build_model_scorecard(settings, repository, reads=reads)
-        # #15: realny portfel użytkownika (flaga + migracja 023).
-        user_portfolio = _build_user_portfolio(settings)
-        # PORT-07: pozycje spoza symboli cyklu dostają sam darmowy /quote.
-        held_prices = _quote_held_positions(
-            settings, user_portfolio, all_symbols if cycle_symbols is None else cycle_symbols
-        )
-        # PORT-11: kursy NBP do „P/L zł” (darmowe, poza bramką volatility).
-        portfolio_fx = _collect_portfolio_fx(settings, user_portfolio, started_at)
-        # PORT-04: ryzyko realnego portfela do sizingu (flaga + pozycje), wagi
-        # w złotych tymi samymi kursami co raport.
-        macro = context.macro_risk_report
-        position_risk = _build_position_risk(
-            settings,
-            repository,
-            user_portfolio,
-            rates=effective_pln_rates(
-                portfolio_fx, macro.polish_macro if macro is not None else None
+        assembled = ReportAssembler(repository, _report_flags(settings), paper_costs).assemble(
+            results=results,
+            started_at=started_at,
+            quota_monitor=quota_monitor,
+            all_symbols=all_symbols,
+            context=_report_inputs(
+                settings,
+                repository,
+                context,
+                watchlist=all_symbols if cycle_symbols is None else cycle_symbols,
+                started_at=started_at,
             ),
         )
-        # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
-        consensus_shifts = (
-            _build_consensus_shifts(repository, results, now=started_at)
-            if settings.cycle_diff_enabled
-            else []
-        )
-
-        # Kontekst od wołającego (ryzyko, alfa, koszt) + to, co dociągnęliśmy tutaj.
-        report_context = dataclasses.replace(
-            context,
-            accuracy_stats=accuracy_stats,
-            resolved_predictions=resolved,
-            resolved_this_cycle=resolved_since is not None,
-            resolved_unavailable=resolved is None,
-            council_history=council_history,
-            persona_track_record=persona_track_record,
-            quota_alerts=recent_alerts,
-            equity_curve=equity_curve,
-            calibration_buckets=calibration_buckets,
-            lessons=lessons,
-            track_record_stats=track_record_stats,
-            symbol_track_record=_build_symbol_track_record(settings, repository, reads=reads),
-            signal_calibration_buckets=signal_calibration_buckets,
-            cycle_maturity=maturity,
-            portfolio_sectors=sectors,
-            model_scorecard=model_scorecard,
-            consensus_shifts=consensus_shifts,
-            user_portfolio=user_portfolio,
-            held_prices=held_prices,
-            portfolio_fx=portfolio_fx,
-            portfolio_clusters=_portfolio_clusters(settings),
-            position_risk=position_risk,
-            sector_map=sector_map,
-            sector_peers=settings.sector_peers,
-            display_timezone=settings.display_timezone,
-        )
+        report_context = assembled.context
+        reads = assembled.reads
+        resolved = report_context.resolved_predictions
+        maturity = report_context.cycle_maturity or CycleMaturity.STEADY_STATE
+        user_portfolio = report_context.user_portfolio
 
         def _build(
             symbols_filter: frozenset[str] | None = None,

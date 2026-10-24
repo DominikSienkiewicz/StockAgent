@@ -17,6 +17,9 @@ from src.application.report_track_record import TrackRecordStats
 from src.config import Settings
 from src.domain.change_detection import AccuracyDrop
 
+# ARCH-06: sekcje raportu składa `ReportAssembler` — tam patchujemy odczyty.
+ASSEMBLY = "src.application.use_cases.assemble_report"
+
 STARTED_AT = datetime(2026, 7, 21, 5, 35, tzinfo=UTC)
 
 
@@ -75,14 +78,14 @@ def test_drop_alert_reaches_the_banner_of_this_report(settings: Settings, mocker
     drop = AccuracyDrop(
         since="2026-07-01", alarm_cycle="2026-07-20", before_rate=0.6, after_rate=0.4, cycles=70
     )
-    mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-    mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
+    mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+    mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
     mocker.patch(
-        "main_agent._build_track_record_stats",
+        f"{ASSEMBLY}.build_track_record_stats",
         return_value=TrackRecordStats(accuracy_drop=drop),
     )
-    mocker.patch("main_agent._build_signal_calibration", return_value=None)
-    mocker.patch("main_agent._build_model_scorecard", return_value=None)
+    mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+    mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
     mocker.patch("main_agent._build_user_portfolio", return_value=None)
     mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
     mocker.patch("main_agent._publish_public_scorecard")

@@ -24,6 +24,9 @@ from src.domain.macro_series import MacroSeriesSnapshot, SeriesObservation
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Threshold
 
+# ARCH-06: sekcje raportu składa `ReportAssembler` — tam patchujemy odczyty.
+ASSEMBLY = "src.application.use_cases.assemble_report"
+
 
 @pytest.fixture
 def settings() -> Settings:
@@ -1439,10 +1442,10 @@ class TestPolishNumbersInSubjectAndPush:
         settings.messenger_digest_enabled = True
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch("main_agent._build_user_portfolio", return_value=None)
         mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
         mocker.patch("main_agent._publish_public_scorecard")
@@ -1557,10 +1560,10 @@ class TestMessengerDigestSplit:
         settings.messenger_digest_enabled = True
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch("main_agent._build_user_portfolio", return_value=None)
         mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
         mocker.patch("main_agent._publish_public_scorecard")
@@ -2177,7 +2180,7 @@ class TestModelScorecardCoverage:
             summary=summarize_run(["trained_successfully"]),
             trained_at=datetime(2026, 10, 18, tzinfo=UTC),
         )
-        mocker.patch("main_agent.build_scorecard_view", return_value=view)
+        mocker.patch(f"{ASSEMBLY}.build_scorecard_view", return_value=view)
         repository = MagicMock(spec=RepositoryPort)
         repository.get_price_history.return_value = []
         repository.get_resolved_predictions.return_value = [{"symbol": "AAPL"}]
@@ -2196,7 +2199,7 @@ class TestModelScorecardCoverage:
             summary=summarize_run(["trained_successfully"]),
             trained_at=datetime(2026, 10, 18, tzinfo=UTC),
         )
-        mocker.patch("main_agent.build_scorecard_view", return_value=view)
+        mocker.patch(f"{ASSEMBLY}.build_scorecard_view", return_value=view)
         repository = MagicMock(spec=RepositoryPort)
         repository.get_resolved_predictions.side_effect = RuntimeError("supabase down")
 
@@ -2362,10 +2365,10 @@ class TestDispatchReportsDelivery:
         settings.messenger_digest_enabled = True
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch("main_agent._build_user_portfolio", return_value=None)
         mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
         mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
@@ -2848,10 +2851,10 @@ class TestHeldPositionsOutsideWatchlist:
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
         settings.symbols_unsupported_price = list(unsupported)
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch("main_agent._build_user_portfolio", return_value=portfolio)
         mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
         mocker.patch("main_agent._publish_public_scorecard")
@@ -2964,10 +2967,10 @@ class TestPortfolioAwareSubject:
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch(
             "main_agent._build_user_portfolio",
             return_value=TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
@@ -3024,10 +3027,10 @@ class TestLegacyPushWithoutPortfolio:
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch(
             "main_agent._build_user_portfolio",
             return_value=TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
@@ -3142,10 +3145,10 @@ class TestDisplayTimezone:
         settings.messenger_digest_enabled = True
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch("main_agent._build_user_portfolio", return_value=None)
         report = mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
         mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
@@ -3199,10 +3202,10 @@ class TestDispatchReports:
         settings.cycle_diff_enabled = False
         settings.resend_api_key = "re_test"
         settings.digest_to_email = self.OWNER
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch(
             "main_agent._build_user_portfolio",
             return_value=TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
@@ -3519,11 +3522,11 @@ class TestSettledAtWindowsWiring:
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
         fetch = mocker.patch(
-            "main_agent._fetch_report_context", return_value=(None, [], [], [], [])
+            f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], [])
         )
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch("main_agent._build_user_portfolio", return_value=None)
         mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
         mocker.patch("main_agent._publish_public_scorecard")
@@ -3575,7 +3578,7 @@ class TestSettledAtWindowsWiring:
     def test_dispatch_marks_the_section_unavailable_after_a_failed_read(
         self, settings, mocker
     ) -> None:
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, None, [], [], []))
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, None, [], [], []))
 
         _, report = self._dispatch_with_fetch_patched(settings, mocker)
 
@@ -3583,7 +3586,7 @@ class TestSettledAtWindowsWiring:
         assert context.resolved_unavailable is True
 
     def test_dispatch_keeps_an_empty_read_as_nothing_settled(self, settings, mocker) -> None:
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
 
         _, report = self._dispatch_with_fetch_patched(settings, mocker)
 
@@ -3599,9 +3602,9 @@ class TestSettledAtWindowsWiring:
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch("main_agent._build_user_portfolio", return_value=None)
         mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
         mocker.patch("main_agent._publish_public_scorecard")
@@ -4428,10 +4431,10 @@ class TestPortfolioChangeDispatch:
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch(
             "main_agent._build_user_portfolio",
             return_value=TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
@@ -4896,13 +4899,13 @@ class TestPaperCostWiring:
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
         track_record = mocker.patch(
-            "main_agent._build_track_record", return_value=(None, None, None)
+            f"{ASSEMBLY}.build_track_record", return_value=(None, None, None)
         )
-        stats = mocker.patch("main_agent._build_track_record_stats", return_value=None)
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        stats = mocker.patch(f"{ASSEMBLY}.build_track_record_stats", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch("main_agent._build_user_portfolio", return_value=None)
         mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
         mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())
@@ -5871,10 +5874,10 @@ class TestClosedDayHeldStockQuotes:
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch(
             "main_agent._build_user_portfolio", return_value=self._portfolio("AAPL", "BTC")
         )
@@ -7106,7 +7109,7 @@ class TestReportReads:
         settings.calibrated_confidence_enabled = True
         settings.model_scorecard_enabled = True
         settings.public_scorecard_enabled = True
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
         mocker.patch("main_agent._build_user_portfolio", return_value=None)
         mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
         mocker.patch("main_agent.build_public_scorecard_publisher", return_value=MagicMock())

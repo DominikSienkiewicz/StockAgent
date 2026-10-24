@@ -21,6 +21,9 @@ from src.application.ports import RepositoryPort
 from src.application.quota_monitor import QuotaMonitor
 from src.config import Settings
 
+# ARCH-06: sekcje raportu składa `ReportAssembler` — tam patchujemy odczyty.
+ASSEMBLY = "src.application.use_cases.assemble_report"
+
 
 @pytest.fixture
 def settings() -> Settings:
@@ -152,10 +155,10 @@ class TestDispatchReportsDeliveryResult:
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
-        mocker.patch("main_agent._build_track_record", return_value=(None, None, None))
-        mocker.patch("main_agent._build_signal_calibration", return_value=None)
-        mocker.patch("main_agent._build_model_scorecard", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", return_value=(None, None, None))
+        mocker.patch(f"{ASSEMBLY}.build_signal_calibration", return_value=None)
+        mocker.patch(f"{ASSEMBLY}.build_model_scorecard", return_value=None)
         mocker.patch("main_agent._build_user_portfolio", return_value=None)
         mocker.patch("main_agent.build_html_report", return_value=("<html>", "text"))
         mocker.patch("main_agent._publish_public_scorecard")
@@ -184,11 +187,11 @@ class TestDispatchReportsDeliveryResult:
         assert self._dispatch(settings, mocker, notifier) is False
 
     def test_report_that_never_got_built_is_not_delivered(self, settings, mocker) -> None:
-        mocker.patch("main_agent._build_track_record", side_effect=RuntimeError("boom"))
+        mocker.patch(f"{ASSEMBLY}.build_track_record", side_effect=RuntimeError("boom"))
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
-        mocker.patch("main_agent._fetch_report_context", return_value=(None, [], [], [], []))
+        mocker.patch(f"{ASSEMBLY}.fetch_report_context", return_value=(None, [], [], [], []))
 
         delivered = main_agent._dispatch_reports(
             results=[],
