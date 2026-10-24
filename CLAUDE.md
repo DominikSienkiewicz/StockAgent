@@ -191,5 +191,3 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   `fetch_fundamentals` (`workflow.add_node`) — typing stubs LangGraph 1.x typują
   węzły jako `_Node[Never]` i nie inferują `StateGraph[AgentState]`. W `[tool.mypy]`
   nie ma per-file override'u. Runtime jest poprawny; nie usuwaj ignore'a bez weryfikacji.
-- `report_builder.py` ma `E501` wyłączone (per-file w ruff) — inline HTML
-  templating ma naturalnie długie linie.
