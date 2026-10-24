@@ -81,3 +81,30 @@ def test_probability_prompt_asks_for_the_three_class_distribution() -> None:
     added = [line for line in prompt.splitlines() if line not in base_lines]
     assert len(added) == 3
     assert len(prompt.splitlines()) == len(base_lines) + 3
+
+
+def test_default_prompt_asks_for_no_invalidation_level() -> None:
+    # ML-27 off: prompt bajt w bajt jak przed flagą.
+    prompt = _prompt()
+
+    assert "invalidation" not in prompt
+    assert prompt == _prompt(include_invalidation=False)
+
+
+def test_invalidation_prompt_asks_for_the_level_that_breaks_the_thesis() -> None:
+    prompt = _prompt(include_invalidation=True)
+
+    assert '"invalidation": {"price": float, "reason": ' in prompt
+    assert "5. Podaj `invalidation`" in prompt
+    assert "15%" in prompt
+    base_lines = _prompt().splitlines()
+    added = [line for line in prompt.splitlines() if line not in base_lines]
+    assert len(prompt.splitlines()) == len(base_lines) + len(added)
+    assert len(added) == 4
+
+
+def test_invalidation_step_follows_the_probability_step() -> None:
+    prompt = _prompt(include_invalidation=True, include_probabilities=True)
+
+    assert "5. Podaj rozkład `probabilities`" in prompt
+    assert "6. Podaj `invalidation`" in prompt
