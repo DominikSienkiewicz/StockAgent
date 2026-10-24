@@ -50,6 +50,7 @@ from src.domain.persona_track_record import PersonaScoring, PersonaVoteOutcome
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.price_levels import PriceLevel, PriceLevelAlert
+from src.domain.promotion import SettledShadowForecast, ShadowForecast
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
@@ -143,6 +144,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_reference_reads",
         "get_open_reference_calls",
         "get_cycle_runs_since",
+        "get_settled_shadow_predictions",
     })
     WRITE_METHODS: ClassVar[frozenset[str]] = frozenset({
         "save_price_snapshot",
@@ -169,6 +171,7 @@ class ReadOnlyRepository(RepositoryPort):
         "save_reference_read",
         "settle_reference_call",
         "save_corporate_action",
+        "save_shadow_predictions",
     })
 
     def __init__(self, delegate: RepositoryPort) -> None:
@@ -352,6 +355,10 @@ class ReadOnlyRepository(RepositoryPort):
     def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
         return self._delegate.get_cycle_runs_since(since)
 
+
+    def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
+        return self._delegate.get_settled_shadow_predictions(since)
+
     # ----- zapisy (pomijane) -----
 
     def save_price_snapshot(self, symbol: str, price: Money) -> None:
@@ -371,6 +378,11 @@ class ReadOnlyRepository(RepositoryPort):
         self, cycle_at: datetime, raw: MarketRegime, state: RegimeState
     ) -> None:
         self._skipped.skip("save_regime_state")
+
+    def save_shadow_predictions(
+        self, prediction_id: str, symbol: str, forecasts: Sequence[ShadowForecast]
+    ) -> None:
+        self._skipped.skip("save_shadow_predictions")
 
     def save_prediction(self, prediction: dict[str, Any]) -> str:
         self._skipped.skip("save_prediction")

@@ -5415,3 +5415,168 @@ def _quota_alert() -> Any:
         action="czekaj",
         occurred_at=datetime(2026, 10, 25, tzinfo=UTC),
     )
+
+
+class TestShadowPredictions:
+    """ML-33 (migracja 075): prognozy cienia championa i challengerów jednej predykcji
+    oraz ich odczyt z rozliczonych predykcji do werdyktu promocji w Slow Loopie."""
+
+    CHAMPION = "a" * 64
+    DIRECTION = "c" * 64
+
+    def _forecasts(self) -> list[Any]:
+        from src.domain.promotion import ShadowForecast
+
+        return [
+            ShadowForecast("champion", self.CHAMPION, predicted_return=0.012),
+            ShadowForecast("direction", self.DIRECTION, proba=0.64),
+        ]
+
+    def test_saves_one_row_per_model_upserted_by_prediction_and_model(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "upsert"], [{"id": 1}])
+
+        repo.save_shadow_predictions("pred-1", "AAPL", self._forecasts())
+
+        mock_client.table.assert_called_with("shadow_predictions")
+        upsert = mock_client.table.return_value.upsert
+        upsert.assert_called_once()
+        assert upsert.call_args.args[0] == [
+            {
+                "prediction_id": "pred-1",
+                "symbol": "AAPL",
+                "model_name": "champion",
+                "model_version": self.CHAMPION,
+                "predicted_return": 0.012,
+                "proba": None,
+            },
+            {
+                "prediction_id": "pred-1",
+                "symbol": "AAPL",
+                "model_name": "direction",
+                "model_version": self.DIRECTION,
+                "predicted_return": None,
+                "proba": 0.64,
+            },
+        ]
+        assert upsert.call_args.kwargs["on_conflict"] == "prediction_id,model_name"
+
+    def test_no_forecasts_send_no_request(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_shadow_predictions("pred-1", "AAPL", [])
+
+        mock_client.table.assert_not_called()
+
+    def test_missing_table_is_a_not_found_port_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.application.errors import NotFound
+
+        mock_client.table.return_value.upsert.return_value.execute.side_effect = APIError(
+            {"code": "PGRST205", "message": "Could not find the table"}
+        )
+
+        with pytest.raises(NotFound):
+            repo.save_shadow_predictions("pred-1", "AAPL", self._forecasts())
+
+    def _read(
+        self, repo: SupabaseRepository, mock_client: MagicMock, pages: list[list[dict[str, Any]]]
+    ) -> tuple[list[Any], MagicMock]:
+        chain = mock_client.table.return_value
+        order_builder = (
+            chain.select.return_value.gte.return_value.not_.is_.return_value
+            .order.return_value.order.return_value
+        )
+        _set_paginated_response(order_builder, pages)
+        rows = repo.get_settled_shadow_predictions(datetime(2026, 7, 27, tzinfo=UTC))
+        return rows, chain
+
+    def test_reads_settled_rows_with_the_realized_return(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.promotion import SettledShadowForecast, ShadowForecast
+
+        settled = {"price_at_prediction": "200.0", "actual_price_after_12h": 202.0}
+        rows, chain = self._read(
+            repo,
+            mock_client,
+            [
+                [
+                    {
+                        "prediction_id": "pred-1",
+                        "model_name": "champion",
+                        "model_version": self.CHAMPION,
+                        "predicted_return": 0.012,
+                        "proba": None,
+                        "prediction_logs": settled,
+                    },
+                    {
+                        "prediction_id": "pred-1",
+                        "model_name": "direction",
+                        "model_version": self.DIRECTION,
+                        "predicted_return": None,
+                        "proba": "0.64",
+                        "prediction_logs": settled,
+                    },
+                ]
+            ],
+        )
+
+        assert rows == [
+            SettledShadowForecast(
+                "pred-1",
+                ShadowForecast("champion", self.CHAMPION, predicted_return=0.012),
+                pytest.approx(0.01),
+            ),
+            SettledShadowForecast(
+                "pred-1",
+                ShadowForecast("direction", self.DIRECTION, proba=0.64),
+                pytest.approx(0.01),
+            ),
+        ]
+        mock_client.table.assert_called_with("shadow_predictions")
+        select = chain.select.call_args.args[0]
+        assert "prediction_logs!inner(price_at_prediction, actual_price_after_12h)" in select
+        assert chain.select.return_value.gte.call_args.args == (
+            "created_at",
+            "2026-07-27T00:00:00+00:00",
+        )
+        assert chain.select.return_value.gte.return_value.not_.is_.call_args.args == (
+            "prediction_logs.actual_price_after_12h",
+            "null",
+        )
+
+    def test_rows_that_cannot_be_scored_are_skipped(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        def row(prediction: object, **overrides: object) -> dict[str, Any]:
+            return {
+                "prediction_id": "pred-x",
+                "model_name": "direction",
+                "model_version": self.DIRECTION,
+                "predicted_return": None,
+                "proba": 0.6,
+                "prediction_logs": prediction,
+            } | overrides
+
+        settled = {"price_at_prediction": 100.0, "actual_price_after_12h": 101.0}
+        rows, _ = self._read(
+            repo,
+            mock_client,
+            [
+                [
+                    row({"price_at_prediction": 0, "actual_price_after_12h": 1.0}),
+                    row({"price_at_prediction": 100.0, "actual_price_after_12h": None}),
+                    row(None),
+                    row(settled, proba=None),
+                    row(settled, proba=2.0),
+                    row(settled, model_name=None),
+                ]
+            ],
+        )
+
+        assert rows == []

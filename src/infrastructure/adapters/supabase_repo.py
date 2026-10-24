@@ -54,6 +54,7 @@ from src.domain.prediction import (
     normalize_trend,
 )
 from src.domain.price_levels import LevelDirection, PriceLevel, PriceLevelAlert
+from src.domain.promotion import SettledShadowForecast, ShadowForecast
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.reference_signal import (
     REFERENCE_RECIPE_VERSION,
@@ -85,6 +86,7 @@ DEFAULT_COUNCIL_VOTES_TABLE = "council_votes"
 DEFAULT_QUOTA_ALERTS_TABLE = "quota_alerts"
 DEFAULT_FEATURE_SNAPSHOT_TABLE = "feature_snapshots"
 DEFAULT_REGIME_HISTORY_TABLE = "regime_history"
+DEFAULT_SHADOW_PREDICTION_TABLE = "shadow_predictions"
 # WIA-24 (migracja 042): sygnał referencyjny poza `prediction_logs`.
 REFERENCE_PREDICTIONS_TABLE = "reference_predictions"
 # FIN-13: ledger kosztów per request LLM / embeddingów (migracja 040).
@@ -382,6 +384,29 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _settled_shadow(row: Mapping[str, Any]) -> SettledShadowForecast | None:
+    """ML-33: wiersz cienia z osadzoną predykcją → prognoza ze zwrotem zrealizowanym.
+    None, gdy predykcja nie ma dodatniej ceny albo rozliczenia, albo prognoza łamie
+    kontrakt domeny (np. p spoza [0, 1] wpisane do bazy ręcznie)."""
+    prediction = row.get("prediction_logs")
+    if not isinstance(prediction, Mapping):
+        return None
+    price = _optional_float(prediction.get("price_at_prediction"))
+    actual = _optional_float(prediction.get("actual_price_after_12h"))
+    if price is None or actual is None or price <= 0:
+        return None
+    try:
+        forecast = ShadowForecast(
+            model_name=str(row.get("model_name") or ""),
+            model_version=str(row.get("model_version") or ""),
+            predicted_return=_optional_float(row.get("predicted_return")),
+            proba=_optional_float(row.get("proba")),
+        )
+    except ValueError:
+        return None
+    return SettledShadowForecast(str(row.get("prediction_id")), forecast, actual / price - 1.0)
 
 
 def _optional_timestamp(value: Any) -> datetime | None:
@@ -1321,6 +1346,47 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             .upsert(record, on_conflict="symbol,as_of_hour")
             .execute()
         )
+
+    @_translates_api_errors
+    def save_shadow_predictions(
+        self, prediction_id: str, symbol: str, forecasts: Sequence[ShadowForecast]
+    ) -> None:
+        # ML-33 (migracja 075): jeden wiersz na model; upsert po (prediction_id,
+        # model_name), bo re-run w tej samej godzinie nadpisuje predykcję upsertem.
+        if not forecasts:
+            return
+        records = [
+            {
+                "prediction_id": prediction_id,
+                "symbol": symbol,
+                "model_name": forecast.model_name,
+                "model_version": forecast.model_version,
+                "predicted_return": forecast.predicted_return,
+                "proba": forecast.proba,
+            }
+            for forecast in forecasts
+        ]
+        (
+            self._client.table(DEFAULT_SHADOW_PREDICTION_TABLE)
+            .upsert(records, on_conflict="prediction_id,model_name")
+            .execute()
+        )
+
+    @_translates_api_errors
+    def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
+        # ML-33: `!inner` + filtr na osadzonej predykcji — tylko rozliczone. `id`
+        # jako drugi klucz: granica strony deterministyczna przy równych `created_at`.
+        query = (
+            self._client.table(DEFAULT_SHADOW_PREDICTION_TABLE)
+            .select(
+                "prediction_id, model_name, model_version, predicted_return, proba, "
+                "prediction_logs!inner(price_at_prediction, actual_price_after_12h)"
+            )
+            .gte("created_at", since.isoformat())
+            .not_.is_("prediction_logs.actual_price_after_12h", "null")
+        )
+        rows = _paginate(query.order("created_at", desc=False).order("id", desc=False))
+        return [settled for row in rows if (settled := _settled_shadow(row)) is not None]
 
     def get_latest_regime_state(self) -> RegimeState | None:
         # ALR-03 (migracja 033): `id` rozstrzyga remis dwóch przebiegów o tym

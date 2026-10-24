@@ -29,7 +29,7 @@ from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.price_levels import PriceLevel, PriceLevelAlert
-from src.domain.promotion import ShadowForecast
+from src.domain.promotion import SettledShadowForecast, ShadowForecast
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
@@ -246,6 +246,23 @@ class RepositoryPort(ABC):
         bramkę volatility (wtedy wektor niesie też cechy LLM). Etykiety tu nie ma —
         zwrot dołącza się później z `price_snapshots`. Wołane z węzłów terminalnych
         tylko za flagą `feature_snapshots_enabled`."""
+
+    @abstractmethod
+    def save_shadow_predictions(
+        self, prediction_id: str, symbol: str, forecasts: Sequence[ShadowForecast]
+    ) -> None:
+        """ML-33 — prognozy championa i challengerów jednej predykcji (tabela
+        `shadow_predictions`, migracja 075), upsertem po (prediction_id, model_name):
+        re-run w tej samej godzinie nadpisuje predykcję, więc i jej cienie. Pusta
+        lista = brak zapytania. Wołane z save_node tylko za flagą
+        `shadow_predictions_enabled`."""
+
+    @abstractmethod
+    def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
+        """ML-33 — prognozy cienia zapisane od `since` dla ROZLICZONYCH predykcji
+        (paginacja), ze zwrotem zrealizowanym 12 h (cena rozliczenia / cena przy
+        predykcji − 1). Wiersz, którego nie da się ocenić (brak ceny, prognoza poza
+        kontraktem), jest pomijany. Slow Loop liczy z nich werdykt promocji."""
 
     @abstractmethod
     def get_latest_regime_state(self) -> RegimeState | None:
