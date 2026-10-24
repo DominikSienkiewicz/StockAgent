@@ -752,6 +752,19 @@ class TestInvalidationLevelFlag:
         assert flipped != baseline
 
 
+class TestPromptDeltaRoundingFlag:
+    """ML-36: ruch ceny w prompcie z dwoma miejscami — zmienia tekst promptu, więc
+    domyślnie off i w przepisie."""
+
+    def test_defaults_off_and_in_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.prompt_delta_rounding_enabled is False
+        assert "prompt_delta_rounding_enabled" in RECIPE_SETTINGS_FIELDS
+
+
 class TestGateDeltaFlag:
     """EXP-01: zapis delty bramki (migracja 034) — flaga samego zapisu, więc
     domyślnie off i poza przepisem (`config_hash` się nie rusza)."""

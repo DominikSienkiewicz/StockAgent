@@ -45,6 +45,7 @@ from src.application.ports import (
 )
 from src.application.prompts import (
     format_analog_line,
+    format_prompt_delta,
     get_mistake_diagnosis_prompt,
     get_prediction_prompt,
 )
@@ -841,6 +842,9 @@ class AgentGraphDeps:
     # (strona ceny, ±15%), a zapis niesie `invalidation_price` (migracja 074). Off =
     # prompt, analiza i rekord jak przed ML-27 — przed migracją klucz dałby PGRST204.
     invalidation_level_enabled: bool = False
+    # ML-36: ruch ceny w prompcie predykcji z dwoma miejscami i znakiem („+3.46”) zamiast
+    # pełnej precyzji `Decimal`. Off = tekst promptu jak przed ML-36.
+    prompt_delta_rounding_enabled: bool = False
     # DAT-23: `pc` notowania vs ostatni snapshot — podejrzenie splitu koryguje
     # referencję bramki, rozliczenie i `price_delta`, a zdarzenie idzie do
     # `corporate_actions` (migracja 062). Off = jak przed DAT-23.
@@ -2099,7 +2103,9 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         symbol=state["symbol"],
         current_data={
             "price": str(state["current_price"]),
-            "delta_percentage": str(to_percent(state["delta"])),
+            "delta_percentage": format_prompt_delta(
+                to_percent(state["delta"]), rounded=deps.prompt_delta_rounding_enabled
+            ),
             "av_sentiment_score": sentiment.get("av_sentiment_score"),
             "av_sentiment_label": sentiment.get("av_sentiment_label"),
             "news_volume_24h": sentiment.get("news_volume_24h"),

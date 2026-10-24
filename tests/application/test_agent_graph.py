@@ -6673,6 +6673,59 @@ class TestNonFiniteLlmNumbers:
         assert record["av_llm_agreement"] == 0.5
 
 
+class TestPromptDeltaRounding:
+    """ML-36: za `prompt_delta_rounding_enabled` prompt predykcji dostaje ruch ceny
+    z dwoma miejscami po przecinku i znakiem („+3.46%”), a nie 28 cyfr znaczących.
+    Off = tekst promptu bajt w bajt jak dziś."""
+
+    @staticmethod
+    def _prompt(llm_port: Mock, repository_port: Mock, *, enabled: bool) -> str:
+        from src.application.agent_graph import _predict_node
+
+        llm_port.analyze.return_value = {"trend_direction": "BULLISH", "confidence_score": 0.7}
+        ml_port = Mock(spec=MLPredictionPort)
+        ml_port.is_trained = False
+        repository_port.get_last_prediction_price.return_value = None
+        deps = AgentGraphDeps(
+            market_port=Mock(spec=MarketDataPort),
+            sentiment_port=Mock(spec=SentimentPort),
+            news_port=Mock(spec=NewsPort),
+            repository_port=repository_port,
+            ml_port=ml_port,
+            llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            prompt_delta_rounding_enabled=enabled,
+        )
+        _predict_node(
+            deps,
+            {
+                "symbol": "AAPL",
+                "previous_price": Decimal("100"),
+                "current_price": Decimal("103.46"),
+                "delta": Decimal("0.03456789123"),
+                "sentiment": {},
+                "news": [],
+            },
+        )
+        prompt: str = llm_port.analyze.call_args.args[0]
+        return prompt
+
+    def test_prediction_prompt_formats_delta_with_two_decimals(
+        self, llm_port: Mock, repository_port: Mock
+    ) -> None:
+        prompt = self._prompt(llm_port, repository_port, enabled=True)
+
+        assert "Zmiana od ostatniego cyklu: +3.46%" in prompt
+        assert "%%" not in prompt
+
+    def test_flag_off_keeps_the_full_precision_delta(
+        self, llm_port: Mock, repository_port: Mock
+    ) -> None:
+        prompt = self._prompt(llm_port, repository_port, enabled=False)
+
+        assert "Zmiana od ostatniego cyklu: 3.45678912300%" in prompt
+
+
 # ---------------------------------------------------------------------------
 # ML-11: model wspólny w jednostkach σ — serving mnoży prognozę przez σ symbolu
 # ---------------------------------------------------------------------------

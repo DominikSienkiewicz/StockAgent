@@ -1726,6 +1726,8 @@ def build_agent_graph_deps(
         trend_probabilities_enabled=settings.trend_probabilities_enabled,
         # ML-27: poziom unieważnienia tezy w prompcie i kolumna (migracja 074) za flagą.
         invalidation_level_enabled=settings.invalidation_level_enabled,
+        # ML-36: ruch ceny w prompcie z dwoma miejscami; off.
+        prompt_delta_rounding_enabled=settings.prompt_delta_rounding_enabled,
         # BEZ-14: lekcja z reflect w prompcie predykcji w fence'u; off.
         prompt_taint_fence_enabled=settings.prompt_taint_fence_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko

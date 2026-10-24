@@ -346,6 +346,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # ML-27: poziom unieważnienia tezy w output_schema promptu predykcji — inny prompt
     # i nowe pole odpowiedzi, więc nowy przepis.
     "invalidation_level_enabled",
+    # ML-36: ruch ceny w prompcie predykcji z dwoma miejscami — inny tekst promptu.
+    "prompt_delta_rounding_enabled",
     # ML-11: prognoza ML = wyjście modelu × σ symbolu (model w jednostkach σ) — inny
     # przepis serwowania liczby, nawet przy tych samych wagach.
     "ml_sigma_target_enabled",
@@ -748,6 +750,10 @@ class Settings(BaseSettings):
     # 074), mail pokazuje go w bloku uzasadnienia, a watch alarmuje po przekroczeniu.
     # Zmienia prompt, więc należy do przepisu. Off.
     invalidation_level_enabled: bool = False
+    # ML-36: ruch ceny w `<current_market_data>` promptu predykcji jako „+3.46” zamiast
+    # pełnej precyzji `Decimal` (kilkanaście tokenów mniej). Zmienia tekst promptu, więc
+    # należy do przepisu. Bez migracji. Off.
+    prompt_delta_rounding_enabled: bool = False
     # BEZ-14: pola półzaufane (lekcja z reflect w prompcie predykcji, uzasadnienia
     # person w prompcie przewodniczącego) w fence'u DATA-ONLY. Zmienia tekst promptów,
     # więc należy do przepisu. Bez migracji. Off.

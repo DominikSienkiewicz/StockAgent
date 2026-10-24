@@ -209,6 +209,10 @@ trend_probabilities_enabled = false
 # alarmuje „Teza X unieważniona” po przekroczeniu. Zmienia prompt → nowy przepis, więc
 # czeka do końca EXP-02/03. UWAGA: włącz DOPIERO po migracji 074 (PGRST204).
 invalidation_level_enabled = false
+# ML-36: ruch ceny w prompcie predykcji z dwoma miejscami i znakiem („+3.46%”) zamiast
+# pełnej precyzji Decimal — rada widzi tę samą liczbę z dwoma miejscami. Zmienia tekst
+# promptu (nowy przepis), więc czeka do końca EXP-02/03. Bez migracji. Off.
+prompt_delta_rounding_enabled = false
 # BEZ-14: lekcja z reflect (prompt predykcji) i uzasadnienia person (prompt
 # przewodniczącego) w fence'u DATA-ONLY — piszemy je LLM-em z newsów stron trzecich, więc
 # mogą nieść przechowany prompt-injection. Zmienia tekst promptów (nowy przepis), więc

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal
 from typing import Any
 
 from src.application._prompt_safety import fence_untrusted
@@ -50,6 +51,15 @@ def format_analog_line(
     # Jeden analog = jedna linia = jeden punkt fence'a, więc nowe linie z bazy
     # (wieloliniowa diagnoza LLM-a) zwijamy do spacji.
     return " ".join(" ".join(parts).split())
+
+
+def format_prompt_delta(delta_percent: Decimal, *, rounded: bool) -> str:
+    """Ruch ceny do `<current_market_data>` jako procent BEZ znaku „%” (dokłada go
+    szablon). ML-36: `rounded` = dwa miejsca i znak („+3.46”) — rada i tak widzi
+    dwa; bez niego pełna precyzja `Decimal`, jak przed ML-36 (prompt bajt w bajt)."""
+    if rounded:
+        return f"{delta_percent:+.2f}"
+    return str(delta_percent)
 
 
 def get_prediction_prompt(
