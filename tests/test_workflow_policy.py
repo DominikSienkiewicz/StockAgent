@@ -246,3 +246,70 @@ def test_hourly_shock_watch_stays_out_of_the_writers_queue() -> None:
     groups = [_concurrency(spec)[0], *(_concurrency(job)[0] for job in _jobs(spec).values())]
 
     assert SUPABASE_WRITERS_GROUP not in groups
+
+
+# CI-10: polityki workflowów były dotrzymane ręcznie i nierówno. Test parsuje każdy plik
+# z `.github/workflows/`, więc nowy workflow podlega im od pierwszego commitu.
+def _triggers(spec: dict[str, Any]) -> dict[str, Any]:
+    """Wyzwalacze workflowu; PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True."""
+    triggers = spec.get("on", spec.get(True)) or {}
+    return triggers if isinstance(triggers, dict) else {}
+
+
+def _job_ids() -> list[tuple[str, str]]:
+    return [
+        (workflow, name)
+        for workflow, spec in _workflow_specs().items()
+        for name in _jobs(spec)
+    ]
+
+
+def _is_scheduled(spec: dict[str, Any]) -> bool:
+    return bool(_triggers(spec).get("schedule"))
+
+
+@pytest.mark.parametrize("workflow", sorted(_workflow_specs()))
+def test_every_workflow_declares_top_level_permissions(workflow: str) -> None:
+    permissions = _workflow_specs()[workflow].get("permissions")
+
+    assert isinstance(permissions, dict) and permissions, (
+        f"{workflow}: bez `permissions:` na poziomie workflowu GITHUB_TOKEN dostaje "
+        "domyślne uprawnienia repozytorium"
+    )
+
+
+@pytest.mark.parametrize(("workflow", "name"), _job_ids())
+def test_every_job_has_a_timeout(workflow: str, name: str) -> None:
+    job = _jobs(_workflow_specs()[workflow])[name]
+
+    assert isinstance(job.get("timeout-minutes"), int | float), (
+        f"{workflow}:{name} bez `timeout-minutes` — zawieszony job zjada minuty do limitu 6 h"
+    )
+
+
+def _needs_concurrency() -> list[str]:
+    return [
+        workflow
+        for workflow, spec in _workflow_specs().items()
+        if _is_scheduled(spec) or any(_writes_to_database(job) for job in _jobs(spec).values())
+    ]
+
+
+def test_the_concurrency_rule_covers_the_loops_and_the_migration() -> None:
+    assert set(_needs_concurrency()) >= {
+        "fast_loop_12h.yml",
+        "slow_loop_weekly.yml",
+        "shock_watch_hourly.yml",
+        "deadman_daily.yml",
+        "db_migrate.yml",
+    }
+
+
+@pytest.mark.parametrize("workflow", _needs_concurrency())
+def test_scheduled_and_database_writing_workflows_have_concurrency(workflow: str) -> None:
+    group, _ = _concurrency(_workflow_specs()[workflow])
+
+    assert group, (
+        f"{workflow} ma cron albo pisze do bazy, a nie deklaruje `concurrency:` na poziomie "
+        "workflowu — dwa przebiegi nałożyłyby się"
+    )
