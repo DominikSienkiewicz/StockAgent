@@ -4,7 +4,9 @@
   nową cenę bez analizy, prognozy wracają od następnego cyklu.
 - `budget_exhausted` (FIN-12, Zaplecze) — ruch przeszedł bramkę, ale cykl
   wyczerpał sufit płatnych wywołań LLM.
-- `ignored` (Zaplecze) — poniżej progu zmienności, bez dwóch grup powyżej.
+- `ignored` (Zaplecze) — poniżej progu zmienności, bez dwóch grup powyżej; osobną
+  grupą (MAIL-60) są symbole w pierwszym cyklu: brak punktu odniesienia to nie
+  ruch poniżej progu.
 - `errors` (Zaplecze) — symbole, które padły w cyklu.
 
 Etykiety statusu (`rebaseline_label`, `BUDGET_CUT_*`) bierze też sekcja 🪙 Krypto.
@@ -161,6 +163,46 @@ def _render_budget_exhausted_text(ignored: list[SymbolResult]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# MAIL-60: pierwszy cykl symbolu
+# ---------------------------------------------------------------------------
+
+
+def is_cold_start(r: SymbolResult) -> bool:
+    """MAIL-60: symbol bez poprzedniego snapshotu ceny (pierwszy cykl deploymentu albo
+    nowy symbol). Jego Δ = 0 to brak punktu odniesienia, nie ruch zerowy — ruch zerowy
+    przy istniejącej referencji ma `BELOW_THRESHOLD`."""
+    return r.skip_reason is SkipReason.COLD_START
+
+
+COLD_START_GROUP = "brak punktu odniesienia — pierwszy cykl"
+COLD_START_LABEL = "brak punktu odniesienia (pierwszy cykl)"
+COLD_START_SHORT = "brak punktu odniesienia"
+
+
+def _render_cold_start_html(ignored: list[SymbolResult]) -> str:
+    """⏸ MAIL-60: symbole w pierwszym cyklu, bez Δ (zero byłoby udawanym ruchem).
+    Pusty string, gdy brak."""
+    cold = [r for r in ignored if is_cold_start(r)]
+    if not cold:
+        return ""
+    chips = "".join(_chip_html(f"<strong>{_html(r.symbol)}</strong>") for r in cold)
+    return _section_h2(f"⏸ Pominięte ({COLD_START_GROUP})") + f"<div>{chips}</div>"
+
+
+def _render_cold_start_text(ignored: list[SymbolResult]) -> list[str]:
+    """Grupa MAIL-60 w tekście. Pusta lista, gdy brak."""
+    cold = [r for r in ignored if is_cold_start(r)]
+    if not cold:
+        return []
+    return [
+        f"POMINIĘTE ({COLD_START_GROUP})",
+        "-" * 64,
+        f"  {', '.join(r.symbol for r in cold)}",
+        "",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Pominięte poniżej progu i błędy
 # ---------------------------------------------------------------------------
 
@@ -193,17 +235,22 @@ def _is_near(r: SymbolResult) -> bool:
     return is_near_threshold(Ratio(r.delta), Ratio(r.effective_threshold))
 
 
+def _chip_html(inner_html: str) -> str:
+    return (
+        "<span style='display: inline-block; padding: 2px 8px; margin: 2px; "
+        f"background: #f3f4f6; border-radius: 3px; font-size: 12px;'>{inner_html}</span>"
+    )
+
+
 def _ignored_chip_html(r: SymbolResult) -> str:
     threshold = _threshold_label(r)
     threshold_html = (
         f" <span style='{_MUTED_STYLE}'>/ {_html(threshold)}</span>" if threshold else ""
     )
-    return (
-        "<span style='display: inline-block; padding: 2px 8px; margin: 2px; "
-        "background: #f3f4f6; border-radius: 3px; font-size: 12px;'>"
+    return _chip_html(
         f"<strong>{_html(r.symbol)}</strong> "
         f"<span style='color: {_delta_color(r.delta)}'>{direction_pct(r.delta)}</span>"
-        f"{threshold_html}</span>"
+        f"{threshold_html}"
     )
 
 
@@ -214,18 +261,23 @@ def _ignored_chip_text(r: SymbolResult) -> str:
 
 
 def _below_threshold(ignored: list[SymbolResult]) -> list[SymbolResult]:
-    """Symbole pominięte poniżej progu: FIN-14 (nowy punkt odniesienia) i FIN-12
-    (odcięte budżetem cyklu) mają własne sekcje."""
-    return [r for r in ignored if not is_rebaselined(r) and not is_budget_cut(r)]
+    """Symbole pominięte poniżej progu: FIN-14 (nowy punkt odniesienia), FIN-12
+    (odcięte budżetem cyklu) i MAIL-60 (pierwszy cykl symbolu) mają własne grupy."""
+    return [
+        r
+        for r in ignored
+        if not is_rebaselined(r) and not is_budget_cut(r) and not is_cold_start(r)
+    ]
 
 
 def _render_ignored_html(ignored: list[SymbolResult]) -> str:
     """⏸ Symbole pominięte poniżej progu zmienności. Pusty string, gdy brak.
     MAIL-18: chip niesie próg efektywny, a ruchy od 75% progu idą też do
     wiersza „Blisko progu”."""
+    cold_start_html = _render_cold_start_html(ignored)
     ignored = _below_threshold(ignored)
     if not ignored:
-        return ""
+        return cold_start_html
     rows = "".join(_ignored_chip_html(r) for r in ignored)
     near = [r for r in ignored if _is_near(r)]
     near_html = (
@@ -239,14 +291,16 @@ def _render_ignored_html(ignored: list[SymbolResult]) -> str:
     return (
         _section_h2("⏸ Pominięte (poniżej progu zmienności)")
         + f"<div>{rows}</div>{near_html}"
+        + cold_start_html
     )
 
 
 def _render_ignored_text(ignored: list[SymbolResult]) -> list[str]:
     """Sekcja 'Pominięte' (plain). Pusta lista, gdy brak — te same grupy co HTML."""
+    cold_start_lines = _render_cold_start_text(ignored)
     ignored = _below_threshold(ignored)
     if not ignored:
-        return []
+        return cold_start_lines
     ignored_str = ", ".join(_ignored_chip_text(r) for r in ignored)
     near = [r for r in ignored if _is_near(r)]
     near_lines = (
@@ -260,6 +314,7 @@ def _render_ignored_text(ignored: list[SymbolResult]) -> list[str]:
         f"  {ignored_str}",
         *near_lines,
         "",
+        *cold_start_lines,
     ]
 
 

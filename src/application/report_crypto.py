@@ -7,6 +7,8 @@ punkt odniesienia (FIN-14), czy budżet cyklu (FIN-12).
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
     direction_pct,
@@ -40,7 +42,10 @@ from src.application.report_models import SymbolResult
 from src.application.report_skipped import (
     BUDGET_CUT_LABEL,
     BUDGET_CUT_SHORT,
+    COLD_START_LABEL,
+    COLD_START_SHORT,
     is_budget_cut,
+    is_cold_start,
     is_rebaselined,
     rebaseline_label,
 )
@@ -52,13 +57,21 @@ def _is_crypto(r: SymbolResult) -> bool:
 
 
 def _crypto_skip_label(r: SymbolResult, display_timezone: str, *, short: bool) -> str:
-    """Status pominiętego krypto: „poniżej progu…”, (FIN-14) nowy punkt odniesienia
-    albo (FIN-12) odcięcie budżetem płatnych wywołań cyklu."""
+    """Status pominiętego krypto: „poniżej progu…”, (FIN-14) nowy punkt odniesienia,
+    (FIN-12) odcięcie budżetem płatnych wywołań cyklu albo (MAIL-60) brak punktu
+    odniesienia w pierwszym cyklu."""
     if is_rebaselined(r) and r.reference_at is not None:
         return rebaseline_label(format_local_date(r.reference_at, display_timezone))
     if is_budget_cut(r):
         return BUDGET_CUT_SHORT if short else BUDGET_CUT_LABEL
+    if is_cold_start(r):
+        return COLD_START_SHORT if short else COLD_START_LABEL
     return "poniżej progu" if short else "poniżej progu zmienności"
+
+
+def _shown_delta(r: SymbolResult) -> Decimal | None:
+    """Δ do wyświetlenia: w pierwszym cyklu zero to brak referencji, więc „—”."""
+    return None if is_cold_start(r) else r.delta
 
 
 def _render_crypto_section_html(
@@ -96,12 +109,13 @@ def _render_crypto_section_html(
                 "<span style='color: #6b7280;'>"
                 f"{_html(_crypto_skip_label(r, display_timezone, short=False))}</span>"
             )
+        delta = _shown_delta(r)
         rows.append(f"""
           <div style="margin-bottom: 6px; padding: 8px 12px; background: #fdf4ff;
                       border-left: 3px solid #a855f7; border-radius: 4px; font-size: 13px;">
             <strong>{_html(_company_label(r.symbol))}</strong>
             <span style="color: #4b5563;">· {_money(r.current_price)}
-              · Δ <span style="color: {_delta_color(r.delta)};">{direction_pct(r.delta)}</span>
+              · Δ <span style="color: {_delta_color(delta)};">{direction_pct(delta)}</span>
               · {status_html}</span>
           </div>
         """)
@@ -130,7 +144,7 @@ def _render_crypto_section_text(
             status = _crypto_skip_label(r, display_timezone, short=True)
         lines.append(
             f"  {_company_label(r.symbol):40s} {_money(r.current_price):>12s}  "
-            f"Δ {_pct(r.delta, signed=True):>8s}  {status}"
+            f"Δ {_pct(_shown_delta(r), signed=True):>8s}  {status}"
         )
     return "\n".join(lines)
 

@@ -30,6 +30,7 @@ from src.application.report_formatting import company_label
 from src.application.report_model_scorecard import ModelScorecardView
 from src.application.run_context import RunContext
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
+from src.domain.asset import Asset
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.cycle_maturity import SkipReason
 from src.domain.equity_curve import EquityCurve, EquityPoint
@@ -37,6 +38,7 @@ from src.domain.model_scorecard import summarize_evaluations, summarize_run
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.portfolio import PlnRates, Portfolio, Position
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.value_objects import AssetType
 
 
 def _saved_result() -> SymbolResult:
@@ -3692,6 +3694,102 @@ class TestBudgetExhaustedReport:
         assert "poniżej progu" not in html.split("🪙 Krypto")[1]
         assert "budżet cyklu" in html.split("🪙 Krypto")[1]
         assert "budżet cyklu" in text.split("KRYPTO")[1]
+
+
+class TestColdStartReport:
+    """MAIL-60 — pierwszy cykl symbolu to „brak punktu odniesienia”, nie „poniżej
+    progu”: blok powitalny mówi o braku historii, więc lista pominiętych nie może
+    twierdzić, że ruch był za mały. Δ = 0 przy istniejącej referencji to co innego."""
+
+    _STARTED = datetime(2026, 10, 15, 10, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _cold(symbol: str, *, crypto: bool = False) -> SymbolResult:
+        return to_symbol_result(
+            symbol,
+            {
+                "status": "ignored",
+                "delta": Decimal("0"),
+                "previous_price": Decimal("0"),
+                "current_price": Decimal("65000" if crypto else "140"),
+                "asset": Asset(
+                    symbol=symbol, asset_type=AssetType.CRYPTO if crypto else AssetType.STOCK
+                ),
+            },
+            now=TestColdStartReport._STARTED,
+        )
+
+    @staticmethod
+    def _flat(symbol: str) -> SymbolResult:
+        return SymbolResult(
+            symbol=symbol, status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD,
+            delta=Decimal("0"), current_price=Decimal("100"),
+        )
+
+    def test_cold_start_symbol_has_no_reference_point_not_a_small_move(self):
+        html, text = build_html_report([self._cold("NVDA")], self._STARTED, 1.0)
+
+        assert "brak punktu odniesienia" in html
+        assert "brak punktu odniesienia" in text
+        assert "poniżej progu zmienności" not in html
+        assert "poniżej progu zmienności" not in text
+
+    def test_cold_start_chip_does_not_pretend_the_move_was_zero(self):
+        html, text = build_html_report([self._cold("NVDA")], self._STARTED, 1.0)
+
+        assert "⏸ Pominięte (brak punktu odniesienia" in html
+        assert "POMINIĘTE (brak punktu odniesienia" in text
+        group_html = html.split("⏸ Pominięte (brak punktu odniesienia")[1]
+        group_text = text.split("POMINIĘTE (brak punktu odniesienia")[1]
+        assert "NVDA" in group_html
+        assert "0,00%" not in group_html.split("</div>")[0]
+        assert "NVDA" in group_text
+        assert "0,00%" not in group_text.split("\n\n")[0]
+
+    def test_crypto_section_says_there_is_no_reference_point(self):
+        html, text = build_html_report([self._cold("BTC", crypto=True)], self._STARTED, 1.0)
+
+        crypto_html = html.split("🪙 Krypto")[1].split("Zaplecze")[0]
+        crypto_text = text.split("KRYPTO")[1].split("ZAPLECZE")[0]
+        assert "brak punktu odniesienia (pierwszy cykl)" in crypto_html
+        assert "brak punktu odniesienia" in crypto_text
+        assert "poniżej progu" not in crypto_html
+        assert "poniżej progu" not in crypto_text
+        assert "0,00%" not in crypto_html
+        assert "0,00%" not in crypto_text
+
+    def test_flat_move_with_a_reference_is_still_below_the_threshold(self):
+        html, text = build_html_report([self._flat("MSFT")], self._STARTED, 1.0)
+
+        assert "poniżej progu zmienności" in html
+        assert "poniżej progu zmienności" in text
+        assert "brak punktu odniesienia" not in html
+        assert "brak punktu odniesienia" not in text
+
+    def test_mixed_cycle_keeps_the_two_reasons_in_separate_groups(self):
+        results = [self._cold("NVDA"), self._flat("MSFT")]
+
+        html, text = build_html_report(results, self._STARTED, 1.0)
+
+        assert "⏸ Pominięte (brak punktu odniesienia" in html
+        below_html, cold_html = html.split("⏸ Pominięte (brak punktu odniesienia")
+        assert "MSFT" in below_html.split("⏸ Pominięte (poniżej progu zmienności)")[1]
+        assert "NVDA" not in below_html.split("⏸ Pominięte (poniżej progu zmienności)")[1]
+        assert "NVDA" in cold_html
+        assert "MSFT" not in cold_html.split("</div>")[0]
+        assert "POMINIĘTE (brak punktu odniesienia" in text
+        below_text, cold_text = text.split("POMINIĘTE (brak punktu odniesienia")
+        assert "MSFT" in below_text.split("POMINIĘTE (poniżej progu zmienności)")[1]
+        assert "NVDA" not in below_text.split("POMINIĘTE (poniżej progu zmienności)")[1]
+        assert "NVDA" in cold_text.split("\n\n")[0]
+
+    def test_cold_start_symbol_is_not_a_near_threshold_move(self):
+        cold = dataclasses.replace(self._cold("NVDA"), effective_threshold=Decimal("0.02"))
+
+        html, text = build_html_report([cold], self._STARTED, 1.0)
+
+        assert "Blisko progu" not in html
+        assert "Blisko progu" not in text
 
 
 class TestPositionAwareSignals:

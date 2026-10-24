@@ -20,7 +20,7 @@ Rozliczone: brak (ostatnie 24h)
 
 KRYPTO
 ----------------------------------------------------------------
-  BTC (Bitcoin)                              $65 040,00  Δ   +0,00%  poniżej progu
+  BTC (Bitcoin)                              $65 040,00  Δ        —  brak punktu odniesienia
 
 ================================================================
 ZAPLECZE
@@ -32,9 +32,9 @@ KOSZT CYKLU
   0 płatnych wywołań — bramka volatility odcięła wszystkie symbole (cykl darmowy).
   Uwaga: Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, nie faktura od dostawcy.
 
-POMINIĘTE (poniżej progu zmienności)
+POMINIĘTE (brak punktu odniesienia — pierwszy cykl)
 ----------------------------------------------------------------
-  NVDA(0,00%), AMD(0,00%), BTC(0,00%)
+  NVDA, AMD, BTC
 
 ----------------------------------------------------------------
 Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.
