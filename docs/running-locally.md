@@ -37,7 +37,7 @@ That is six accounts with the committed configuration and four at the least (`ll
 - **requests** + `urllib3.Retry` — shared session with exponential backoff on 429 / 5xx
 - **pytest 9** + **pytest-mock** — 4,500+ test functions (`def test_`, counted by `uv run python main_tools.py repo-stats` into [`docs/repo-stats.json`](repo-stats.json), DOC-18) + skipped live-API / Docker-container tests
 - **ruff** — lint (E, W, F, I, B, UP, SIM rule sets)
-- **mypy** strict mode — every file fully typed
+- **mypy** strict mode — `src/` and every entry point fully typed; `tests/` not yet (it joins the gate directory by directory, `tests/domain` so far)
 - **GitHub Actions CI** — ruff + mypy + pytest + SonarCloud scan on every push / PR
 
 Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero deps) → Application (ports + use cases + LangGraph) → Infrastructure (adapters for API / DB / LLM / ML / email). Dependency arrow flows one way (`domain ← application ← infrastructure`).
@@ -50,6 +50,8 @@ Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero 
 - **Alpha Vantage** API key(s), ideally several (free 25 req/day × N) — https://www.alphavantage.co/support/#api-key
 - **OpenAI** API key — https://platform.openai.com/api-keys
 - **Supabase** project (free tier) — https://supabase.com/dashboard
+- **Supabase CLI** (`supabase`) — applies the migrations with `supabase db push` (step 3 below); CI pins version `2.121.0` in `db_migrate.yml` — https://supabase.com/docs/guides/cli
+- **`SUPABASE_DB_URL`** — the Postgres connection string of the project (the session pooler, `postgres.<ref>` role), used only by `supabase db push --db-url` and the DB Migrate workflow; the agent itself reads `SUPABASE_URL` and `SUPABASE_KEY` and never needs it
 - **Resend** account + API key — https://resend.com (optional, for emails)
 - **Anthropic API key — required** (default `LLM_PROVIDER=anthropic`; main analysis runs on Claude)
 
@@ -78,25 +80,8 @@ cp .env.example .env
 #    deliberately workflow_dispatch-only — a broken migration must not fire on the
 #    Fast Loop cron, and 022 rebuilds the ml_feature_store materialized view.
 #
-#    The migrations, in order:
-#   supabase/migrations/001_init.sql        (prediction_logs + ml_feature_store)
-#   supabase/migrations/002_price_snapshots.sql  (price_snapshots — breaks cold-start)
-#   supabase/migrations/003_add_embedding.sql    (embedding VECTOR(1536) + pgvector index)
-#   supabase/migrations/004_align_ml_feature_store.sql  (7-feature XGBoost contract)
-#   supabase/migrations/005_council_verdict.sql          (council verdicts schema)
-#   supabase/migrations/006_fundamentals_cache.sql       (fundamentals_cache table with TTL)
-#   supabase/migrations/007_council_votes.sql            (per-investor structured audit trail)
-#   supabase/migrations/008_data_quality_flags.sql       (data_quality_flags on prediction_logs)
-#   supabase/migrations/009_trend_correctness.sql        (is_trend_correct on prediction_logs + backfill)
-#   supabase/migrations/010_quota_alerts.sql             (quota_alerts audit trail for the report banner)
-#   supabase/migrations/011_match_news_embeddings.sql    (pgvector RPC for RAG retrieval over news embeddings)
-#   supabase/migrations/012_ml_feature_store_return_target.sql  (target = 12h RETURN, not absolute price)
-#   supabase/migrations/013_idempotency_and_pagination.sql      (timestamp_hour + UNIQUE(symbol,hour) → upsert idempotency)
-#   supabase/migrations/014_subscribers.sql              (subscribers table — per-watchlist report fan-out)
-#   supabase/migrations/015_persona_accuracy.sql         (persona_accuracy_weights RPC — adaptive council weighting)
-#   supabase/migrations/016_confidence_calibration.sql   (confidence_calibration + calibration_insight columns)
-#   supabase/migrations/017_vector_memory_regime.sql     (market regime on the pgvector memory)
-#   supabase/migrations/018_persona_track_record.sql     (persona_accuracy_stats RPC — hit-rate + vote count for the leaderboard)
+#    The migrations are the numbered files of supabase/migrations/ (link under this
+#    block); the list is not repeated here because it kept going stale.
 
 # ⚠️ Migration 012 is BREAKING for the ML model: it changes the training target
 #    from absolute price to a 12h return, and the code now reconstructs price from
@@ -120,6 +105,8 @@ uv run pytest -m "not integration and not containers"
 #    (see "Local runs are read-only by default" and "Local runs make no paid calls" below)
 uv run python main_agent.py
 ```
+
+**The migrations.** The schema is the set of numbered files in [`supabase/migrations/`](../supabase/migrations/) (`NNN_name.sql`, zero-padded, applied in filename order by `supabase db push`); the directory is the list, and [data-and-access.md](data-and-access.md) says which table, view and function each one added and who may touch it. Read the `⚠️` notes above before applying `012` and `038`, which change what the running code expects.
 
 Config is split in two: **secrets** live in `.env` (gitignored) / GitHub Secrets; **everything non-secret** (symbols, thresholds, models, providers, throttle, Risk Watch…) lives in committed [`config.toml`](../config.toml) — the single source of truth, read directly by `Settings`. No duplication across `.env` / workflow / repo variables.
 
