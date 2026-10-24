@@ -1,0 +1,27 @@
+{
+  "name": "Apple Inc.",
+  "tickers": ["AAPL"],
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0000320193-26-000101",
+        "0000320193-26-000099",
+        "0001140361-26-038812"
+      ],
+      "filingDate": ["2026-10-17", "2026-10-03", "2026-09-30"],
+      "reportDate": ["2026-10-15", "2026-10-01", "2026-09-27"],
+      "acceptanceDateTime": [
+        "2026-10-17T18:30:12.000Z",
+        "2026-10-03T18:31:45.000Z",
+        "2026-09-30T16:05:01.000Z"
+      ],
+      "form": ["4", "8-K", "4"],
+      "primaryDocument": [
+        "xslF345X05/wk-form4_1792243812.xml",
+        "aapl-20261001.htm",
+        "xslF345X05/form4.xml"
+      ],
+      "primaryDocDescription": ["FORM 4", "8-K", "FORM 4"]
+    }
+  }
+}
