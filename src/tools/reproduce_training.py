@@ -86,11 +86,13 @@ def rows_in_range(training_set: TrainingSet, sidecar: Sidecar) -> TrainingSet:
         if (sidecar.data_start is None or moment >= sidecar.data_start)
         and (sidecar.data_end is None or moment <= sidecar.data_end)
     ]
+    ends = training_set.label_ends
     return dataclasses.replace(
         training_set,
         features=[training_set.features[index] for index in keep],
         target=[training_set.target[index] for index in keep],
         timestamps=[training_set.timestamps[index] for index in keep],
+        label_ends=None if ends is None else [ends[index] for index in keep],
     )
 
 

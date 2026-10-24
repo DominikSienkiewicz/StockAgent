@@ -14,7 +14,12 @@ import pandas as pd
 import xgboost as xgb
 
 from src.application.ports import MLPredictionPort, ReturnScaleUnavailableError
-from src.domain.backtest import BacktestSummary, purged_train_end, summarize_folds
+from src.domain.backtest import (
+    LABEL_HORIZON,
+    BacktestSummary,
+    purge_training_indices,
+    summarize_folds,
+)
 from src.domain.drift import bin_fractions, quantile_edges, recent_window_psi
 from src.domain.model_scorecard import TargetUnit, TrainingOutcome, TrainingReport
 from src.domain.training_provenance import (
@@ -116,10 +121,12 @@ class XGBoostAdapter(MLPredictionPort):
         timestamps: Sequence[datetime] | None = None,
         target_unit: TargetUnit = TargetUnit.RETURN,
         dataset: DatasetDescription | None = None,
+        label_ends: Sequence[datetime] | None = None,
     ) -> TrainingReport:
         feature_frame = _feature_frame(features)
         target_series = pd.Series(target).reset_index(drop=True)
         stamps = _global_time_order(timestamps, len(target_series))
+        ends = _label_end_order(label_ends, stamps)
         provenance = self._provenance(feature_frame, target_series, stamps, dataset)
 
         # Walk-forward (expanding window) zamiast jednego splitu 20%: bramka
@@ -127,7 +134,7 @@ class XGBoostAdapter(MLPredictionPort):
         # hałaśliwym estymatorze z jednego reżimu rynku (finding #23). Sama reguła
         # (margines 2%, min. punktów OOS) żyje w domenie — `summarize_folds`.
         summary = summarize_folds(
-            self._walk_forward_folds_detail(feature_frame, target_series, stamps)
+            self._walk_forward_folds_detail(feature_frame, target_series, stamps, ends)
         )
         # Per-feature drift stats (mean/std, ML-21: biny kwantylowe i PSI ostatnich
         # 30 dni) — obserwowalne niezależnie od werdyktu bramki.
@@ -250,32 +257,40 @@ class XGBoostAdapter(MLPredictionPort):
         features: pd.DataFrame,
         target: pd.Series,
         timestamps: list[datetime] | None = None,
+        label_ends: list[datetime] | None = None,
     ) -> list[dict[str, float]]:
         """Per-fold metryki walk-forward (expanding window) na danych
         time-ordered. Jedno źródło prawdy dla bramki `train()` (przez domenowe
         `summarize_folds`) i `walk_forward_report` (szczegół). Poniżej
         `MIN_FOLD_SAMPLES` spada do pojedynczego splitu (sane fallback) → jeden fold.
 
-        Z `timestamps` (czas globalny, rosnąco) trening foldu kończy się na
-        `purged_train_end` — bez wierszy, których etykieta 12h dojrzewa po starcie
-        walidacji. Fold bez żadnego wiersza treningowego po purgu jest pomijany.
+        Z `timestamps` (czas globalny, rosnąco) trening foldu to
+        `purge_training_indices` — bez wierszy, których etykieta kończy się po
+        starcie walidacji (ML-26): koniec z `label_ends` (rozliczenie), a bez nich
+        stały horyzont 12 h, czyli prefiks jak dotąd. Purge obejmuje też fallback
+        single-split. Fold bez żadnego wiersza treningowego po purgu jest pomijany.
 
         ML-10: baseline'y „dryf średniej" i „sam LLM" biorą skalę WYŁĄCZNIE z
         części treningowej foldu (tej samej, którą widzi kandydat) — żadnego
         podglądu walidacji.
         """
         folds = _expanding_window_folds(len(target))
+        ends = (
+            None
+            if timestamps is None
+            else label_ends or [stamp + LABEL_HORIZON for stamp in timestamps]
+        )
         out: list[dict[str, float]] = []
         for train_end, valid_end in folds:
-            fit_end = (
-                train_end
-                if timestamps is None
-                else purged_train_end(timestamps, train_end)
+            rows = (
+                list(range(train_end))
+                if timestamps is None or ends is None
+                else list(purge_training_indices(timestamps, ends, train_end))
             )
-            if fit_end < 1:
+            if not rows:
                 continue
-            train_x = features.iloc[:fit_end]
-            train_y = target.iloc[:fit_end]
+            train_x = features.iloc[rows]
+            train_y = target.iloc[rows]
             valid_x = features.iloc[train_end:valid_end]
             valid_y = target.iloc[train_end:valid_end]
 
@@ -289,7 +304,7 @@ class XGBoostAdapter(MLPredictionPort):
                     **_paired_loss_sums(train_y, valid_x, valid_y, preds),
                     "train_end": float(train_end),
                     "valid_end": float(valid_end),
-                    "n_train": float(fit_end),
+                    "n_train": float(len(rows)),
                     "n_valid": float(valid_end - train_end),
                     "candidate_rmse": _rmse(valid_y, preds),
                     # Baseline persystencji: „zwrot = 0" (cena 12h = cena bieżąca).
@@ -304,17 +319,24 @@ class XGBoostAdapter(MLPredictionPort):
         return out
 
     def walk_forward_report(
-        self, features: Any, target: Any, *, timestamps: Any = None
+        self,
+        features: Any,
+        target: Any,
+        *,
+        timestamps: Any = None,
+        label_ends: Sequence[datetime] | None = None,
     ) -> list[dict[str, float]]:
         """Per-fold metryki OOS bez persystencji (offline backtest harness).
 
-        Reużywa logikę foldów `train()` (finding #23), łącznie z purgem horyzontu
-        etykiety przy podanych `timestamps`. Czysto ewaluacyjna — nie zapisuje
-        modelu i nie zmienia stanu adaptera (`self._model`)."""
+        Reużywa logikę foldów `train()` (finding #23), łącznie z purgem etykiet
+        przy podanych `timestamps` (i `label_ends`, ML-26). Czysto ewaluacyjna —
+        nie zapisuje modelu i nie zmienia stanu adaptera (`self._model`)."""
         feature_frame = _feature_frame(features)
         target_series = pd.Series(target).reset_index(drop=True)
         stamps = _global_time_order(timestamps, len(target_series))
-        return self._walk_forward_folds_detail(feature_frame, target_series, stamps)
+        return self._walk_forward_folds_detail(
+            feature_frame, target_series, stamps, _label_end_order(label_ends, stamps)
+        )
 
     def predict(
         self,
@@ -536,6 +558,21 @@ def _global_time_order(timestamps: Any, n_samples: int) -> list[datetime] | None
         raise ValueError("timestamps must align with the training rows")
     if not parsed.is_monotonic_increasing:
         raise ValueError("timestamps must be sorted ascending in global time")
+    return [stamp.to_pydatetime() for stamp in parsed]
+
+
+def _label_end_order(
+    label_ends: Sequence[datetime] | None, stamps: list[datetime] | None
+) -> list[datetime] | None:
+    """ML-26: chwile końca etykiet (UTC) wyrównane z wierszami albo None (stały
+    horyzont). Koniec etykiety bez chwili wiersza nie ma odniesienia — błąd."""
+    if label_ends is None:
+        return None
+    if stamps is None:
+        raise ValueError("label_ends need row timestamps")
+    parsed = pd.to_datetime(pd.Series(list(label_ends)), utc=True)
+    if len(parsed) != len(stamps):
+        raise ValueError("label_ends must align with the training rows")
     return [stamp.to_pydatetime() for stamp in parsed]
 
 

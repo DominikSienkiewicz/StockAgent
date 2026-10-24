@@ -7,6 +7,7 @@ należą do `main_tools.py reproduce-training` (ARCH-39).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -90,6 +91,15 @@ class TestRowsInRange:
         assert kept.timestamps == [T0, T0 + timedelta(hours=12), T0 + timedelta(hours=24)]
         assert kept.target == [0.0, 0.01, 0.02]
         assert len(kept.features) == 3
+
+    def test_label_ends_follow_their_rows(self) -> None:
+        training_set = dataclasses.replace(
+            _training_set(), label_ends=[T0 + timedelta(hours=12 * i + 12) for i in range(5)]
+        )
+
+        kept = tool.rows_in_range(training_set, tool.parse_sidecar(_sidecar()))
+
+        assert kept.label_ends == [T0 + timedelta(hours=h) for h in (12, 24, 36)]
 
     def test_open_range_keeps_every_row(self) -> None:
         sidecar = tool.parse_sidecar(_sidecar(data_start=None, data_end=None))

@@ -167,6 +167,8 @@ def build_use_case(settings: Settings, *, run_id: str | None = None) -> TrainMod
         sigma_target=settings.ml_sigma_target_enabled,
         # ML-22: commit kodu przebiegu w proweniencji treningu (karta i sidecar wag).
         git_sha=RunContext.from_environ(os.environ).git_sha,
+        # ML-26: purge foldów po `settled_at` (zmienia werdykt bramki i wagi; off).
+        settled_purge=settings.ml_settled_purge_enabled,
     )
 
 

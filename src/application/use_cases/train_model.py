@@ -22,7 +22,7 @@ from src.application.ml_features import (
     usable_for_llm_model,
 )
 from src.application.ports import MLPredictionPort, RepositoryPort, TrainingDataPort
-from src.domain.backtest import LabelOverlap, count_label_overlaps
+from src.domain.backtest import LabelOverlap, count_label_overlaps, label_end_times
 from src.domain.model_scorecard import (
     FREE_SNAPSHOT_MODEL_SYMBOL,
     LLM_SNAPSHOT_MODEL_SYMBOL,
@@ -54,6 +54,12 @@ class _TargetUnitKwargs(TypedDict, total=False):
     target_unit: TargetUnit
 
 
+class _LabelEndsKwargs(TypedDict, total=False):
+    """ML-26: opcjonalny argument `label_ends` wywołania `MLPredictionPort.train`."""
+
+    label_ends: list[datetime]
+
+
 @dataclass(frozen=True)
 class SnapshotModelsResult:
     """ML-52: wynik ewaluacji modeli z `feature_snapshots` — dwie karty i raport
@@ -78,6 +84,8 @@ class TrainingSet:
     target: list[float]
     timestamps: list[datetime]
     dataset: DatasetDescription
+    # ML-26: chwile końca etykiet do purgu foldów; None = stały horyzont 12 h.
+    label_ends: list[datetime] | None = None
 
 
 # Minimalna liczba próbek, by trening miał sens (zapobiega overfittingowi na 2 rekordach).
@@ -113,11 +121,14 @@ class TrainModelUseCase:
         snapshot_source: bool = False,
         sigma_target: bool = False,
         git_sha: str | None = None,
+        settled_purge: bool = False,
     ) -> None:
         """`feature_set_version` (DAT-09) zawęża próbkę do wierszy tej wersji
         zestawu cech; None = cała historia (bez migracji 027). `run_id` (ML-24)
         to identyfikator przebiegu Slow Loopa w wierszu karty modelu wspólnego.
-        `git_sha` (ML-22) — commit kodu przebiegu w proweniencji treningu."""
+        `git_sha` (ML-22) — commit kodu przebiegu w proweniencji treningu.
+        `settled_purge` (ML-26) — foldy purgują po chwili rozliczenia etykiety
+        (`settled_at`), nie tylko po stałym horyzoncie 12 h."""
         self._ml_port = ml_port
         self._db_port = db_port
         self._feature_set_version = feature_set_version
@@ -126,6 +137,7 @@ class TrainModelUseCase:
         self._snapshot_source = snapshot_source
         self._sigma_target = sigma_target
         self._git_sha = git_sha
+        self._settled_purge = settled_purge
 
     def refresh_feature_store(self) -> None:
         self._db_port.refresh_feature_store()
@@ -151,13 +163,15 @@ class TrainModelUseCase:
             return self._skipped(f"Not enough valid samples for '{symbol}'", len(df))
 
         df, stamps = in_label_time_order(df)
+        moments = None if stamps is None else _moments(stamps)
 
         return self._ml_port.train(
             _feature_rows_of(df),
             df[TARGET_COLUMN].tolist(),
             persist=False,
-            timestamps=None if stamps is None else _moments(stamps),
+            timestamps=moments,
             dataset=self._describe({symbol: len(df)}, self._feature_set_version),
+            **self._label_ends(self._view_label_ends(df, moments)),
         )
 
     def run_pooled(
@@ -259,10 +273,16 @@ class TrainModelUseCase:
         self, rows: Sequence[tuple[Mapping[str, float | None], float, LabeledSnapshot]]
     ) -> TrainingSet:
         """Próbka z wektorów `feature_snapshots` (kolejność `as_of`) z jej opisem."""
+        timestamps = [item.snapshot.as_of for _, _, item in rows]
         return TrainingSet(
             features=[dict(vector) for vector, _, _ in rows],
             target=[target for _, target, _ in rows],
-            timestamps=[item.snapshot.as_of for _, _, item in rows],
+            timestamps=timestamps,
+            label_ends=(
+                label_end_times(timestamps, [item.settled_at for _, _, item in rows])
+                if self._settled_purge
+                else None
+            ),
             dataset=self._describe(
                 Counter(item.snapshot.symbol for _, _, item in rows),
                 SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
@@ -314,6 +334,7 @@ class TrainModelUseCase:
             timestamps=training_set.timestamps,
             dataset=training_set.dataset,
             **self._target_unit(),
+            **self._label_ends(training_set.label_ends),
         )
 
     def _save_pooled_scorecard(self, result: TrainingReport) -> None:
@@ -335,6 +356,7 @@ class TrainModelUseCase:
             timestamps=prepared.timestamps,
             dataset=prepared.dataset,
             **self._target_unit(),
+            **self._label_ends(prepared.label_ends),
         )
 
     def pooled_training_set(self, symbols: Sequence[str]) -> TrainingSet | TrainingReport:
@@ -374,10 +396,12 @@ class TrainModelUseCase:
                     "Not enough samples with a sigma history for the pooled model", len(df)
                 )
 
+        moments = _moments(df["_global_time"])
         return TrainingSet(
             features=_feature_rows_of(df),
             target=target.tolist(),
-            timestamps=_moments(df["_global_time"]),
+            timestamps=moments,
+            label_ends=self._view_label_ends(df, moments),
             dataset=self._describe(
                 Counter(str(symbol) for symbol in df["symbol"]),
                 self._feature_set_version,
@@ -399,6 +423,25 @@ class TrainModelUseCase:
             index=symbols.index,
             dtype=float,
         )
+
+    def _view_label_ends(
+        self, df: pd.DataFrame, moments: list[datetime] | None
+    ) -> list[datetime] | None:
+        """ML-26: końce etykiet wierszy widoku z `settled_at` (migracja 050) — tylko
+        z flagą; bez kolumny albo znaczników czasu zostaje stały horyzont (None)."""
+        if not self._settled_purge or moments is None or SETTLED_AT_COLUMN not in df.columns:
+            return None
+        settled = pd.to_datetime(df[SETTLED_AT_COLUMN], utc=True)
+        return label_end_times(
+            moments,
+            [None if pd.isna(value) else value.to_pydatetime() for value in settled],
+        )
+
+    @staticmethod
+    def _label_ends(label_ends: list[datetime] | None) -> _LabelEndsKwargs:
+        """ML-26: `label_ends` w wywołaniu `train` tylko przy purgu po rozliczeniu
+        (flaga off = wywołanie jak przed ML-26)."""
+        return {} if label_ends is None else {"label_ends": label_ends}
 
     def _target_unit(self) -> _TargetUnitKwargs:
         """ML-11: jednostka targetu w wywołaniu `train` — tylko przy σ (flaga off =

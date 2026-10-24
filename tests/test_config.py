@@ -1360,6 +1360,20 @@ class TestModelScorecardProvenanceFlag:
         assert flipped == baseline
 
 
+class TestSettledPurgeFlag:
+    """ML-26: purge foldów po chwili rozliczenia etykiety zmienia werdykt bramki,
+    więc i wagi — domyślnie off; wpływ na prognozę idzie wyłącznie przez wagi
+    (`model_version`), więc poza `config_hash` jak `snapshot_training_enabled`."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).ml_settled_purge_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "ml_settled_purge_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
 class TestNyseClosureSkipFlag:
     """FIN-34: w dzień zamknięcia NYSE Fast Loop pomija akcje. Flaga w kodzie
     domyślnie off (testy entry pointów nie zależą od daty), `config.toml` ją włącza."""

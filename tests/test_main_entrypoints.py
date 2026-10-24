@@ -1957,6 +1957,19 @@ class TestModelScorecardRunId:
 
         assert use_case_cls.call_args.kwargs["git_sha"] == "0123456789abcdef"
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_build_use_case_follows_the_settled_purge_flag(
+        self, settings, mocker, enabled: bool
+    ) -> None:
+        # ML-26: purge foldów po `settled_at` tylko za flagą.
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")
+        settings = settings.model_copy(update={"ml_settled_purge_enabled": enabled})
+
+        main_trainer.build_use_case(settings)
+
+        assert use_case_cls.call_args.kwargs["settled_purge"] is enabled
+
     def test_build_use_case_hands_the_run_id_to_the_use_case(self, settings, mocker) -> None:
         mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
         use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")

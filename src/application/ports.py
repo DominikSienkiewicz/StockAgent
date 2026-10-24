@@ -870,6 +870,7 @@ class MLPredictionPort(ABC):
         timestamps: Sequence[datetime] | None = None,
         target_unit: TargetUnit = TargetUnit.RETURN,
         dataset: DatasetDescription | None = None,
+        label_ends: Sequence[datetime] | None = None,
     ) -> TrainingReport:
         """ARCH-09: `features` to wiersze `{cecha: wartość}` (None = brak), `target`
         wyrównany z nimi — zwykłe sekwencje, bez DataFrame w porcie; ramkę buduje
@@ -889,11 +890,20 @@ class MLPredictionPort(ABC):
         ML-22: raport niesie `provenance` — odcisk wierszy treningu (niezależny od
         ich kolejności), zakres dat, parametry z jawnym ziarnem i wersję biblioteki,
         uzupełnione opisem próbki od wołającego (`dataset`: liczności per symbol,
-        wersja zestawu cech, SHA kodu). Zapis wag dostaje sidecar `.json` obok pliku."""
+        wersja zestawu cech, SHA kodu). Zapis wag dostaje sidecar `.json` obok pliku.
+
+        ML-26: `label_ends` (wyrównane z wierszami, wymagają `timestamps`) to chwile
+        końca etykiet — fold trenuje wtedy na `purge_training_indices` z domeny
+        (także fallback single-split); bez nich purge stałego horyzontu 12 h."""
 
     @abstractmethod
     def walk_forward_report(
-        self, features: Any, target: Any, *, timestamps: Any = None
+        self,
+        features: Any,
+        target: Any,
+        *,
+        timestamps: Any = None,
+        label_ends: Sequence[datetime] | None = None,
     ) -> list[dict[str, float]]:
         """Per-fold metryki out-of-sample (walk-forward, expanding window) BEZ
         persystencji — zasila offline backtest harness (`main_backtest.py`).
@@ -905,7 +915,7 @@ class MLPredictionPort(ABC):
         `ic` (korelacja rang Spearmana), `sign_strategy_return` i `turnover`,
         a (EXP-04) `sum_loss_diff` / `sum_loss_diff_sq` względem „zwrot 0” i te
         same sumy z prefiksem `drift_` / `llm_` dla testu sparowanego w domenie.
-        `timestamps` działają jak w `train()`: purge horyzontu etykiety w foldach.
+        `timestamps` (i `label_ends`) działają jak w `train()`: purge etykiet w foldach.
         Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
 
 

@@ -201,6 +201,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # ML-52: źródło próbki modelu wspólnego (wektory zamiast widoku) — wpływ na
     # prognozę wyłącznie przez wagi, które łapie `model_version`.
     "snapshot_training_enabled",
+    # ML-26: purge foldów po `settled_at` zmienia werdykt bramki — wpływ na prognozę
+    # wyłącznie przez wagi, które łapie `model_version`.
+    "ml_settled_purge_enabled",
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
     "fast_loop_cycles_per_day",
@@ -645,6 +648,12 @@ class Settings(BaseSettings):
     # Loop mnoży prognozę modelu w jednostkach σ przez σ z tej samej funkcji. Model
     # niesie jednostkę w pliku wag. Zmienia serwowaną prognozę, więc off.
     ml_sigma_target_enabled: bool = False
+    # ML-26: foldy walk-forward purgują wiersze treningu po chwili rozliczenia
+    # etykiety (`settled_at` z widoku po migracji 050, chwila etykiety wektora
+    # `feature_snapshots`), nie tylko po stałym horyzoncie 12 h — etykieta piątku
+    # rozliczona w poniedziałek nie trenuje foldu walidowanego w weekend. Zmienia
+    # werdykt bramki, a więc i serwowane wagi; bez kolumny purge zostaje 12 h. Off.
+    ml_settled_purge_enabled: bool = False
     # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze, liczony
     # w cyklu bez migracji. Ta flaga dokłada zapis `interval_low/high` (migracja
     # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz

@@ -977,3 +977,83 @@ class TestReproducibleTraining:
     def test_booster_dump_needs_a_trained_model(self, adapter: XGBoostAdapter) -> None:
         with pytest.raises(RuntimeError, match="not trained"):
             adapter.booster_dump()
+
+
+class TestSettledPurge:
+    """ML-26: z chwilami końca etykiet (`label_ends`) fold trenuje na wierszach
+    z `purge_training_indices` — także w fallbacku single-split; bez nich foldy są
+    jak dotąd (purge stałego horyzontu 12 h)."""
+
+    @staticmethod
+    def _stamps(n: int) -> list[datetime]:
+        return [T0 + pd.Timedelta(hours=i).to_pytimedelta() for i in range(n)]
+
+    def test_fixed_horizon_label_ends_change_nothing(self, adapter: XGBoostAdapter) -> None:
+        from src.domain.backtest import LABEL_HORIZON
+
+        features, target = _synthetic_dataset(n=200)
+        stamps = self._stamps(200)
+
+        plain = adapter.walk_forward_report(features, target, timestamps=stamps)
+        explicit = adapter.walk_forward_report(
+            features,
+            target,
+            timestamps=stamps,
+            label_ends=[stamp + LABEL_HORIZON for stamp in stamps],
+        )
+
+        assert explicit == plain
+
+    def test_late_settlements_leave_the_training_part(self, adapter: XGBoostAdapter) -> None:
+        from src.domain.backtest import LABEL_HORIZON, purge_training_indices
+
+        features, target = _synthetic_dataset(n=200)
+        stamps = self._stamps(200)
+        # Co dziesiąty wiersz rozlicza się dopiero po 72 h (weekend).
+        ends = [
+            stamp + (pd.Timedelta(hours=72).to_pytimedelta() if i % 10 == 0 else LABEL_HORIZON)
+            for i, stamp in enumerate(stamps)
+        ]
+
+        folds = adapter.walk_forward_report(features, target, timestamps=stamps, label_ends=ends)
+
+        expected = [
+            float(len(purge_training_indices(stamps, ends, int(fold["train_end"]))))
+            for fold in folds
+        ]
+        assert [fold["n_train"] for fold in folds] == expected
+        assert all(fold["n_train"] < fold["train_end"] - 11 for fold in folds)
+
+    def test_single_split_fallback_is_purged_too(self, adapter: XGBoostAdapter) -> None:
+        from src.domain.backtest import LABEL_HORIZON
+
+        features, target = _synthetic_dataset(n=30)
+        stamps = self._stamps(30)
+        ends = [stamp + LABEL_HORIZON for stamp in stamps]
+        ends[0] = stamps[-1]
+
+        folds = adapter.walk_forward_report(features, target, timestamps=stamps, label_ends=ends)
+
+        assert len(folds) == 1
+        # Walidacja od wiersza 20: purge 12 h zostawia 0..8, a wiersz 0 rozlicza się
+        # dopiero na końcu próbki — też wypada.
+        assert folds[0]["n_train"] == 8.0
+
+    def test_training_forwards_label_ends_to_the_gate(self, adapter: XGBoostAdapter) -> None:
+        features, target = _synthetic_dataset(n=200)
+        stamps = self._stamps(200)
+        everything_late = [stamps[-1]] * 200
+
+        report = adapter.train(
+            features, target, persist=False, timestamps=stamps, label_ends=everything_late
+        )
+
+        # Żaden fold nie ma wiersza treningu — nie ma czego oceniać.
+        assert report.n_folds == 0
+        assert report.outcome is TrainingOutcome.EVALUATION_FAILED
+
+    def test_label_ends_need_timestamps(self, adapter: XGBoostAdapter) -> None:
+        features, target = _synthetic_dataset(n=60)
+
+        with pytest.raises(ValueError, match="timestamps"):
+            adapter.walk_forward_report(features, target, label_ends=self._stamps(60))

@@ -459,6 +459,12 @@ def test_real_config_toml_ships_the_scorecard_provenance_off_until_migration() -
     assert data["model_scorecard_provenance_enabled"] is False
 
 
+def test_real_config_toml_ships_the_settled_purge_off() -> None:
+    """ML-26: purge po `settled_at` zmienia werdykt bramki i serwowane wagi."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["ml_settled_purge_enabled"] is False
+
+
 def test_real_config_toml_ships_the_trend_probabilities_off_until_migration() -> None:
     """ML-29: kolumna `prediction_logs.trend_probabilities` dopiero po migracji 051."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))

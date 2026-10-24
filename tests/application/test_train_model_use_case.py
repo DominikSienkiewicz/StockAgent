@@ -963,3 +963,97 @@ def test_snapshot_source_measures_the_label_overlap_of_the_gated_sample(
     assert ml_port.train.call_args.kwargs["dataset"].label_overlap == LabelOverlap(
         measured=MIN_SAMPLES_FOR_TRAINING, overlapping=0
     )
+
+
+# -- ML-26: purge po chwili rozliczenia etykiety (flaga) ---------------------------
+
+
+def _settled_rows() -> list[dict]:
+    """Dzienne wiersze AAPL: co piąty rozliczony po 72 h, jeden z dolną granicą
+    029 (`settled_at = timestamp`), jeden bez rozliczenia."""
+    rows = _stamped_rows("AAPL", MIN_SAMPLES_FOR_TRAINING + 5, start_hour=0, step_hours=24)
+    for i, row in enumerate(rows):
+        stamp = pd.Timestamp(row["timestamp"])
+        hours = 72 if i % 5 == 0 else 24
+        row["settled_at"] = (stamp + pd.Timedelta(hours=hours)).isoformat()
+    rows[1]["settled_at"] = rows[1]["timestamp"]
+    rows[2]["settled_at"] = None
+    return rows
+
+
+def test_settled_purge_hands_the_label_ends_to_the_model(repository_port, ml_port):
+    from src.domain.backtest import label_end_times
+
+    use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, settled_purge=True)
+    rows = _settled_rows()
+    repository_port.get_feature_store_data.return_value = rows
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=55)
+
+    use_case.run_pooled(["AAPL"])
+
+    stamps = list(ml_port.train.call_args.kwargs["timestamps"])
+    settled = [
+        None if row["settled_at"] is None else pd.Timestamp(row["settled_at"]).to_pydatetime()
+        for row in rows
+    ]
+    assert ml_port.train.call_args.kwargs["label_ends"] == label_end_times(stamps, settled)
+
+
+def test_without_the_settled_purge_flag_training_passes_no_label_ends(
+    use_case, repository_port, ml_port
+):
+    repository_port.get_feature_store_data.return_value = _settled_rows()
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=55)
+
+    use_case.run_pooled(["AAPL"])
+    use_case.run("AAPL", refresh_view=False)
+
+    assert all("label_ends" not in c.kwargs for c in ml_port.train.call_args_list)
+
+
+def test_settled_purge_without_settled_at_keeps_the_fixed_horizon(repository_port, ml_port):
+    # Widok sprzed migracji 050 nie ma `settled_at` — purge zostaje 12-godzinny.
+    use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, settled_purge=True)
+    repository_port.get_feature_store_data.return_value = _stamped_rows(
+        "AAPL", MIN_SAMPLES_FOR_TRAINING, start_hour=0, step_hours=24
+    )
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=50)
+
+    use_case.run_pooled(["AAPL"])
+
+    assert "label_ends" not in ml_port.train.call_args.kwargs
+
+
+def test_settled_purge_covers_the_per_symbol_evaluation(repository_port, ml_port):
+    use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, settled_purge=True)
+    repository_port.get_feature_store_data.return_value = _settled_rows()[::-1]
+    ml_port.train.return_value = {"status": "evaluated_passed_gate"}
+
+    use_case.run("AAPL", refresh_view=False)
+
+    kwargs = ml_port.train.call_args.kwargs
+    assert len(kwargs["label_ends"]) == len(kwargs["timestamps"])
+    pairs = zip(kwargs["label_ends"], kwargs["timestamps"], strict=True)
+    assert all(end >= stamp for end, stamp in pairs)
+
+
+def test_settled_purge_on_snapshot_labels_uses_their_settlement(
+    ml_port, repository_port, training_data
+):
+    gated, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
+    training_data.get_feature_snapshots.return_value = gated
+    training_data.get_price_series.return_value = {"BTC": prices}
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=51)
+    use_case = TrainModelUseCase(
+        ml_port=ml_port,
+        db_port=repository_port,
+        training_data=training_data,
+        snapshot_source=True,
+        settled_purge=True,
+    )
+
+    use_case.run_pooled(["BTC"])
+
+    # Etykieta cyklu rozlicza się na snapshocie ceny tuż przed następnym cyklem.
+    expected = [snapshot.as_of + timedelta(days=1, seconds=-1) for snapshot in gated]
+    assert ml_port.train.call_args.kwargs["label_ends"] == expected
