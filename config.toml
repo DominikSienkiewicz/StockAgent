@@ -164,6 +164,10 @@ ml_sigma_target_enabled = false
 # nie tylko po stałym horyzoncie 12 h. Embargo: PURGE_EMBARGO w domenie (0).
 # Zmienia werdykt bramki i serwowane wagi — włącz świadomie (po EXP-02/03 i migracji 050).
 ml_settled_purge_enabled = false
+# ML-30: wariant binarny modelu w Slow Loopie — P(zwrot 12 h > +martwa strefa z protokołu
+# ewaluacji), Brier i log loss vs stopa bazowa w summary; wagi wariantu w osobnym pliku
+# (*_direction.ubj). Champion i Fast Loop bez zmian; zero płatnych wywołań.
+ml_direction_classifier_enabled = false
 # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze — liczony w cyklu
 # z rozliczonych predykcji, bez migracji. Flaga dokłada zapis `interval_low/high`
 # i pokrycie zrealizowane vs nominalne w Track Record. UWAGA: włącz DOPIERO po

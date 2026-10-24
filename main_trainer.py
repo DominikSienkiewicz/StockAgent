@@ -35,11 +35,15 @@ from main_agent import (
     write_step_summary,
 )
 from src.application.cycle_telemetry import CycleTelemetry
+from src.application.errors import PortError
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.ml_features import feature_set_version
 from src.application.ports import LLMPort, ModelCatalogPort, RepositoryPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
-from src.application.report_ops import render_trainer_summary_markdown
+from src.application.report_ops import (
+    render_direction_variant_markdown,
+    render_trainer_summary_markdown,
+)
 from src.application.report_snapshot_training import render_snapshot_models_markdown
 from src.application.report_weekly_recap import (
     render_weekly_recap_html,
@@ -68,7 +72,8 @@ from src.application.use_cases.weekly_recap import (
     PAID_LLM_CALLS_PER_RUN as RECAP_LLM_CALLS,
 )
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
-from src.config import Settings
+from src.config import Settings, load_evaluation_protocol
+from src.domain.direction_variant import DirectionReport
 from src.domain.finops import slow_loop_paid_budget
 from src.domain.fundamentals_refresh import refresh_budget, select_refresh_batch
 from src.domain.quota import QuotaAlert, QuotaSeverity
@@ -301,6 +306,8 @@ class _TrainingTally:
     pooled: Mapping[str, Any] | None = None
     # ML-52: modele z `feature_snapshots` i raport selekcji (None = krok nie ruszył).
     snapshot_models: SnapshotModelsResult | None = None
+    # ML-30: wariant binarny modelu (None = flaga off albo krok padł).
+    direction: DirectionReport | None = None
     feature_store_refreshed: bool = True
     failures: int = 0
     total: int = 0
@@ -321,9 +328,11 @@ class _TrainingTally:
             feature_store_refreshed=self.feature_store_refreshed,
             pooled_label_overlap=_label_overlap_of(pooled),
         )
-        if self.snapshot_models is None:
-            return summary
-        return summary + "\n" + render_snapshot_models_markdown(self.snapshot_models)
+        if self.snapshot_models is not None:
+            summary += "\n" + render_snapshot_models_markdown(self.snapshot_models)
+        if self.direction is not None:
+            summary += "\n" + render_direction_variant_markdown(self.direction)
+        return summary
 
 
 def _label_overlap_of(result: Mapping[str, Any]) -> tuple[int, int] | None:
@@ -414,6 +423,37 @@ def _evaluate_snapshot_models(
     )
     if tally is not None:
         tally.snapshot_models = result
+
+
+def _evaluate_direction_variant(
+    settings: Settings,
+    use_case: TrainModelUseCase,
+    trainable: list[str],
+    tally: _TrainingTally | None = None,
+) -> None:
+    """ML-30: wariant binarny P(wzrost poza martwą strefą z protokołu ewaluacji,
+    EXP-06) na próbce modelu wspólnego — sama ewaluacja, champion bez zmian.
+    Krok pomocniczy: błąd odczytu albo treningu tylko loguje, exit code ten sam."""
+    if not settings.ml_direction_classifier_enabled:
+        return
+    dead_band = float(load_evaluation_protocol().directional_dead_zone)
+    try:
+        report = use_case.run_direction_variant(trainable, dead_band=dead_band)
+    except (PortError, LookupError, ValueError, RuntimeError):
+        logger.exception("Direction variant failed — pomijam")
+        return
+    if not isinstance(report, DirectionReport):
+        return
+    logger.info(
+        "Direction variant (ML-30) — %s, n=%d, dead band ±%g (%d rows inside): %s",
+        report.outcome.value,
+        report.n_samples,
+        report.dead_band,
+        report.n_in_dead_band,
+        report.reason,
+    )
+    if tally is not None:
+        tally.direction = report
 
 
 def _build_llm_or_unavailable(
@@ -840,6 +880,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     failures = _train_symbols(settings, repository, use_case, trainable, tally, run_id)
     failures += _train_pooled_model(settings, use_case, trainable, tally)
     _evaluate_snapshot_models(settings, use_case, trainable, tally)
+    _evaluate_direction_variant(settings, use_case, trainable, tally)
     tally.failures, tally.total = failures, len(trainable) + 1
     _run_reference_signal(settings, repository)
     _run_output_drift(settings, quota_monitor)

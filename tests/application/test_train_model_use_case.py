@@ -1057,3 +1057,76 @@ def test_settled_purge_on_snapshot_labels_uses_their_settlement(
     # Etykieta cyklu rozlicza się na snapshocie ceny tuż przed następnym cyklem.
     expected = [snapshot.as_of + timedelta(days=1, seconds=-1) for snapshot in gated]
     assert ml_port.train.call_args.kwargs["label_ends"] == expected
+
+
+# -- ML-30: wariant binarny P(wzrost poza martwą strefą) --------------------------
+
+
+def _signed_rows(n: int) -> list[dict]:
+    """Dzienne wiersze AAPL ze zwrotami ±1% (co trzeci w martwej strefie ±0,05%)."""
+    rows = _stamped_rows("AAPL", n, start_hour=0, step_hours=24)
+    for i, row in enumerate(rows):
+        row["target_return"] = 0.0005 if i % 3 == 0 else (0.01 if i % 2 else -0.01)
+    return rows
+
+
+def test_direction_variant_trains_the_classifier_on_the_pooled_sample(
+    use_case, repository_port, ml_port
+):
+    repository_port.get_feature_store_data.return_value = _signed_rows(90)
+    ml_port.train_direction_classifier.return_value = "report"
+
+    result = use_case.run_direction_variant(["AAPL"], dead_band=0.001)
+
+    assert result == "report"
+    call = ml_port.train_direction_classifier.call_args
+    features, target = call.args
+    assert len(features) == len(target) == 90
+    assert call.kwargs["dead_band"] == 0.001
+    assert call.kwargs["timestamps"] == sorted(call.kwargs["timestamps"])
+    ml_port.train.assert_not_called()
+
+
+def test_direction_variant_learns_raw_returns_even_with_the_sigma_target(
+    ml_port, repository_port, training_data
+):
+    # Martwa strefa to ułamek ceny — etykieta kierunku z surowego zwrotu, nie z σ.
+    use_case = TrainModelUseCase(
+        ml_port=ml_port, db_port=repository_port, training_data=training_data, sigma_target=True
+    )
+    rows = _signed_rows(90)
+    repository_port.get_feature_store_data.return_value = rows
+
+    use_case.run_direction_variant(["AAPL"], dead_band=0.001)
+
+    _, target = ml_port.train_direction_classifier.call_args.args
+    assert target == [row["target_return"] for row in rows]
+    training_data.get_price_series.assert_not_called()
+
+
+def test_direction_variant_with_too_few_rows_outside_the_band_skips(
+    use_case, repository_port, ml_port
+):
+    rows = _signed_rows(60)
+    for row in rows[:20]:
+        row["target_return"] = 0.0
+    repository_port.get_feature_store_data.return_value = rows
+
+    result = use_case.run_direction_variant(["AAPL"], dead_band=0.001)
+
+    ml_port.train_direction_classifier.assert_not_called()
+    assert result.outcome is TrainingOutcome.SKIPPED
+    outside = sum(1 for row in rows if abs(row["target_return"]) > 0.001)
+    assert result.n_samples == outside < MIN_SAMPLES_FOR_TRAINING
+    assert result.n_in_dead_band == 60 - outside
+    assert "dead band" in (result.reason or "")
+
+
+def test_direction_variant_below_the_pooled_minimum_skips(use_case, repository_port, ml_port):
+    repository_port.get_feature_store_data.return_value = _signed_rows(10)
+
+    result = use_case.run_direction_variant(["AAPL"], dead_band=0.001)
+
+    ml_port.train_direction_classifier.assert_not_called()
+    assert result.outcome is TrainingOutcome.SKIPPED
+    assert result.n_samples == 10

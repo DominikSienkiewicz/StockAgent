@@ -1057,3 +1057,100 @@ class TestSettledPurge:
 
         with pytest.raises(ValueError, match="timestamps"):
             adapter.walk_forward_report(features, target, label_ends=self._stamps(60))
+
+
+class TestDirectionVariant:
+    """ML-30: wariant binarny P(wzrost poza martwą strefą) — klasyfikator z bramką
+    Briera względem stopy bazowej; nie dotyka wag championa (regresji)."""
+
+    @staticmethod
+    def _direction_dataset(n: int = 300) -> tuple[pd.DataFrame, list[float]]:
+        """Zwrot = 0.01 × znak sygnału + szum; co piąty wiersz w martwej strefie."""
+        rng = np.random.default_rng(11)
+        features = pd.DataFrame({name: rng.normal(0, 1, n) for name in FEATURE_NAMES})
+        features["llm_trend_signal"] = rng.choice([-1.0, 1.0], size=n)
+        target = list(0.01 * features["llm_trend_signal"] + rng.normal(0, 0.004, n))
+        for i in range(0, n, 5):
+            target[i] = 0.0002 if i % 2 else -0.0002
+        return features, target
+
+    def test_rows_inside_dead_band_are_excluded_from_training(
+        self, adapter: XGBoostAdapter
+    ) -> None:
+        features, target = self._direction_dataset()
+        inside = sum(1 for value in target if abs(value) <= 0.001)
+
+        report = adapter.train_direction_classifier(
+            features, target, dead_band=0.001, persist=False
+        )
+
+        assert inside >= 60
+        assert report.n_in_dead_band == inside
+        assert report.n_samples == len(target) - inside
+        assert report.dead_band == 0.001
+
+    def test_classifier_variant_outputs_probability_in_unit_interval(
+        self, adapter: XGBoostAdapter
+    ) -> None:
+        features, target = self._direction_dataset()
+
+        report = adapter.train_direction_classifier(features, target, dead_band=0.001)
+
+        assert report.outcome is TrainingOutcome.ACCEPTED
+        assert report.summary is not None and report.summary.beats_base_rate
+        up = dict(features.iloc[1]) | {"llm_trend_signal": 1.0}
+        down = dict(features.iloc[1]) | {"llm_trend_signal": -1.0}
+        p_up, p_down = adapter.predict_proba(up), adapter.predict_proba(down)
+        assert 0.0 < p_down < 0.5 < p_up < 1.0
+
+    def test_direction_variant_never_touches_the_champion_weights(
+        self, adapter: XGBoostAdapter, model_path: str
+    ) -> None:
+        features, target = self._direction_dataset()
+
+        report = adapter.train_direction_classifier(features, target, dead_band=0.001)
+
+        assert not Path(model_path).exists()
+        assert adapter.is_trained is False
+        assert report.model_path == str(Path(model_path).with_name("price_predictor_direction.ubj"))
+        assert Path(report.model_path).exists()
+
+    def test_noise_classifier_is_rejected_and_not_written(
+        self, adapter: XGBoostAdapter, model_path: str
+    ) -> None:
+        rng = np.random.default_rng(5)
+        features = pd.DataFrame({name: rng.normal(0, 1, 300) for name in FEATURE_NAMES})
+        target = list(rng.normal(0, 0.01, 300))
+
+        report = adapter.train_direction_classifier(features, target, dead_band=0.001)
+
+        assert report.outcome is TrainingOutcome.REJECTED
+        assert not Path(model_path).with_name("price_predictor_direction.ubj").exists()
+        with pytest.raises(RuntimeError, match="direction"):
+            adapter.predict_proba(dict(features.iloc[0]))
+
+    def test_evaluation_mode_reports_without_writing(
+        self, adapter: XGBoostAdapter, model_path: str
+    ) -> None:
+        features, target = self._direction_dataset()
+
+        report = adapter.train_direction_classifier(
+            features, target, dead_band=0.001, persist=False
+        )
+
+        assert report.outcome is TrainingOutcome.EVALUATION_PASSED
+        assert report.model_path is None
+        assert list(Path(model_path).parent.iterdir()) == []
+
+    def test_folds_purge_like_the_regression(self, adapter: XGBoostAdapter) -> None:
+        features, target = self._direction_dataset()
+        stamps = [T0 + pd.Timedelta(hours=i).to_pytimedelta() for i in range(300)]
+
+        report = adapter.train_direction_classifier(
+            features, target, dead_band=0.001, persist=False, timestamps=stamps
+        )
+
+        assert report.summary is not None
+        assert report.summary.n_folds == 4
+        # Foldy liczą się na wierszach z etykietą: pierwszy blok to trening.
+        assert report.summary.n_oos_points == report.n_samples - report.n_samples // 5

@@ -204,6 +204,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # ML-26: purge foldów po `settled_at` zmienia werdykt bramki — wpływ na prognozę
     # wyłącznie przez wagi, które łapie `model_version`.
     "ml_settled_purge_enabled",
+    # ML-30: wariant binarny to sama ewaluacja w Slow Loopie z osobnym plikiem wag —
+    # nie zmienia championa ani prognozy.
+    "ml_direction_classifier_enabled",
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
     "fast_loop_cycles_per_day",
@@ -654,6 +657,12 @@ class Settings(BaseSettings):
     # rozliczona w poniedziałek nie trenuje foldu walidowanego w weekend. Zmienia
     # werdykt bramki, a więc i serwowane wagi; bez kolumny purge zostaje 12 h. Off.
     ml_settled_purge_enabled: bool = False
+    # ML-30: Slow Loop ewaluuje wariant binarny modelu — klasyfikator P(zwrot 12 h
+    # > +martwa strefa) z protokołu ewaluacji (`directional_dead_zone`, EXP-06),
+    # wiersze w martwej strefie wypadają; Brier i log loss vs stopa bazowa w summary.
+    # Wagi wariantu (po przejściu bramki) idą do osobnego pliku `*_direction.ubj`,
+    # którego Fast Loop nie czyta — champion bez zmian. Off.
+    ml_direction_classifier_enabled: bool = False
     # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze, liczony
     # w cyklu bez migracji. Ta flaga dokłada zapis `interval_low/high` (migracja
     # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz

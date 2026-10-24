@@ -13,6 +13,7 @@ from decimal import Decimal
 from src.application.report_models import SymbolResult
 from src.application.report_ops import (
     render_cycle_summary_markdown,
+    render_direction_variant_markdown,
     render_trainer_summary_markdown,
     render_watch_summary_markdown,
 )
@@ -230,6 +231,54 @@ def test_trainer_summary_without_a_label_overlap_has_no_row() -> None:
     )
 
     assert "Label overlaps" not in markdown
+
+
+def test_direction_variant_summary_compares_the_classifier_with_the_base_rate() -> None:
+    from src.domain.direction_variant import DirectionReport, DirectionSummary
+    from src.domain.model_scorecard import TrainingOutcome
+
+    report = DirectionReport(
+        TrainingOutcome.REJECTED,
+        n_samples=236,
+        n_in_dead_band=64,
+        dead_band=0.001,
+        summary=DirectionSummary(
+            n_folds=4,
+            n_oos_points=189,
+            brier=0.2461,
+            base_rate_brier=0.2499,
+            log_loss=0.6851,
+            base_rate_log_loss=0.6930,
+            beats_base_rate=False,
+            verdict="klasyfikator nie bije stopy bazowej o 2%",
+        ),
+        reason="klasyfikator nie bije stopy bazowej o 2%",
+    )
+
+    markdown = render_direction_variant_markdown(report)
+
+    assert "### Direction classifier (ML-30)" in markdown
+    assert "| Status | rejected |" in markdown
+    assert "| Rows outside the dead band (±0.001) | 236 |" in markdown
+    assert "| Rows inside the dead band | 64 |" in markdown
+    assert "| Brier (classifier / base rate) | 0.2461 / 0.2499 |" in markdown
+    assert "| Log loss (classifier / base rate) | 0.6851 / 0.6930 |" in markdown
+    assert "served regression model" in markdown
+
+
+def test_skipped_direction_variant_summary_has_no_scores() -> None:
+    from src.domain.direction_variant import DirectionReport
+    from src.domain.model_scorecard import TrainingOutcome
+
+    markdown = render_direction_variant_markdown(
+        DirectionReport(
+            TrainingOutcome.SKIPPED, n_samples=12, n_in_dead_band=3, dead_band=0.0, reason="few"
+        )
+    )
+
+    assert "| Status | skipped |" in markdown
+    assert "| Brier (classifier / base rate) | n/a / n/a |" in markdown
+    assert "| Verdict | few |" in markdown
 
 
 def test_cycle_summary_lists_http_requests_per_host() -> None:

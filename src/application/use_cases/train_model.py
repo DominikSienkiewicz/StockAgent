@@ -23,6 +23,7 @@ from src.application.ml_features import (
 )
 from src.application.ports import MLPredictionPort, RepositoryPort, TrainingDataPort
 from src.domain.backtest import LabelOverlap, count_label_overlaps, label_end_times
+from src.domain.direction_variant import DirectionReport, direction_label
 from src.domain.model_scorecard import (
     FREE_SNAPSHOT_MODEL_SYMBOL,
     LLM_SNAPSHOT_MODEL_SYMBOL,
@@ -230,6 +231,46 @@ class TrainModelUseCase:
                     logger.exception("Failed to persist the %s scorecard", symbol)
         return result
 
+    def run_direction_variant(
+        self, symbols: Sequence[str], *, dead_band: float
+    ) -> DirectionReport:
+        """ML-30 — wariant binarny P(zwrot > +`dead_band`) na próbce modelu wspólnego
+        (surowe zwroty, także przy flagze ML-11), z tym samym purgem foldów. Wagi
+        championa się nie zmieniają; poniżej minimum wierszy poza martwą strefą —
+        `SKIPPED` z liczbami."""
+        prepared = self.pooled_training_set(symbols, sigma_units=False)
+        if isinstance(prepared, TrainingReport):
+            return DirectionReport(
+                TrainingOutcome.SKIPPED,
+                n_samples=prepared.n_samples,
+                n_in_dead_band=0,
+                dead_band=dead_band,
+                reason=prepared.reason,
+            )
+        outside = sum(
+            1
+            for value in prepared.target
+            if direction_label(value, dead_band=dead_band) is not None
+        )
+        if outside < MIN_SAMPLES_FOR_TRAINING:
+            return DirectionReport(
+                TrainingOutcome.SKIPPED,
+                n_samples=outside,
+                n_in_dead_band=len(prepared.target) - outside,
+                dead_band=dead_band,
+                reason=(
+                    f"Not enough rows outside the dead band ±{dead_band:g} for the "
+                    f"direction variant ({outside} < {MIN_SAMPLES_FOR_TRAINING})."
+                ),
+            )
+        return self._ml_port.train_direction_classifier(
+            prepared.features,
+            prepared.target,
+            dead_band=dead_band,
+            timestamps=prepared.timestamps,
+            **self._label_ends(prepared.label_ends),
+        )
+
     def _labeled_snapshots(
         self, symbols: Sequence[str]
     ) -> tuple[int, list[LabeledSnapshot], PriceSeries]:
@@ -255,13 +296,17 @@ class TrainModelUseCase:
         self,
         rows: Sequence[tuple[Mapping[str, float | None], LabeledSnapshot]],
         series: PriceSeries,
+        *,
+        sigma_units: bool | None = None,
     ) -> list[tuple[Mapping[str, float | None], float, LabeledSnapshot]]:
         """Wiersze (wektor, target, wektor z etykietą); ML-11: target = zwrot / σ
-        z chwili wektora, a wiersz bez σ (za krótka historia) wypada."""
+        z chwili wektora, a wiersz bez σ (za krótka historia) wypada.
+        `sigma_units` None = jak flaga ML-11; False = surowy zwrot (ML-30)."""
+        in_sigma = self._sigma_target if sigma_units is None else sigma_units
         out: list[tuple[Mapping[str, float | None], float, LabeledSnapshot]] = []
         for vector, item in rows:
             target = item.target_return
-            if self._sigma_target:
+            if in_sigma:
                 sigma = return_sigma(series.get(item.snapshot.symbol, []), item.snapshot.as_of)
                 if sigma is None:
                     continue
@@ -309,8 +354,9 @@ class TrainModelUseCase:
             label_overlap=label_overlap,
         )
 
-    def _snapshot_reason(self, model: str) -> str:
-        history = " with a sigma history" if self._sigma_target else ""
+    def _snapshot_reason(self, model: str, *, sigma_units: bool | None = None) -> str:
+        in_sigma = self._sigma_target if sigma_units is None else sigma_units
+        history = " with a sigma history" if in_sigma else ""
         return f"Not enough labeled feature snapshots{history} for {model}"
 
     def _evaluate_snapshot_rows(
@@ -359,12 +405,16 @@ class TrainModelUseCase:
             **self._label_ends(prepared.label_ends),
         )
 
-    def pooled_training_set(self, symbols: Sequence[str]) -> TrainingSet | TrainingReport:
+    def pooled_training_set(
+        self, symbols: Sequence[str], *, sigma_units: bool | None = None
+    ) -> TrainingSet | TrainingReport:
         """ML-22: próbka modelu wspólnego (widok albo, z `snapshot_source`, wektory
         cykli gated) w postaci, w jakiej idzie do `train`, albo raport pominięcia,
-        gdy próbka jest poniżej minimum. Sam odczyt — bez treningu i zapisu."""
+        gdy próbka jest poniżej minimum. Sam odczyt — bez treningu i zapisu.
+        `sigma_units` None = target jak flaga ML-11; False = surowe zwroty (ML-30)."""
+        in_sigma = self._sigma_target if sigma_units is None else sigma_units
         if self._snapshot_source:
-            return self._pooled_snapshot_set(symbols)
+            return self._pooled_snapshot_set(symbols, sigma_units=in_sigma)
         rows = [
             row
             for symbol in dict.fromkeys(symbols)
@@ -388,7 +438,7 @@ class TrainModelUseCase:
             ["_global_time", "symbol"], kind="stable"
         )
         target = df[TARGET_COLUMN]
-        if self._sigma_target:
+        if in_sigma:
             sigmas = self._row_sigmas(df["symbol"], df["_global_time"])
             df, target = df[sigmas.notna()], (target / sigmas)[sigmas.notna()]
             if len(df) < MIN_SAMPLES_FOR_TRAINING:
@@ -454,15 +504,19 @@ class TrainModelUseCase:
         return self._training_data
 
 
-    def _pooled_snapshot_set(self, symbols: Sequence[str]) -> TrainingSet | TrainingReport:
+    def _pooled_snapshot_set(
+        self, symbols: Sequence[str], *, sigma_units: bool
+    ) -> TrainingSet | TrainingReport:
         """ML-52 (4): model wspólny z cykli gated w `feature_snapshots` (wektor
         z servingu, etykieta z `price_snapshots`) zamiast z widoku SQL. Jedyny zapis
         wag, jak w ścieżce widoku; poniżej minimum — `SKIPPED` z liczbą próbek."""
         _, labeled, series = self._labeled_snapshots(symbols)
-        in_units = self._in_target_units(_llm_rows(labeled), series)
+        in_units = self._in_target_units(_llm_rows(labeled), series, sigma_units=sigma_units)
         if len(in_units) < MIN_SAMPLES_FOR_TRAINING:
             return _skipped(
-                self._snapshot_reason("the pooled model (gated cycles)"),
+                self._snapshot_reason(
+                    "the pooled model (gated cycles)", sigma_units=sigma_units
+                ),
                 len(in_units),
                 feature_set_version=SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
             )

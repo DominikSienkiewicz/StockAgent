@@ -1860,3 +1860,18 @@ class TestPromptTaintFenceFlag:
 
         assert settings.prompt_taint_fence_enabled is False
         assert "prompt_taint_fence_enabled" in RECIPE_SETTINGS_FIELDS
+
+
+class TestDirectionClassifierFlag:
+    """ML-30: wariant binarny to sama ewaluacja w Slow Loopie — domyślnie off,
+    poza przepisem (champion i prognoza bez zmian)."""
+
+    def test_defaults_off(self, env):
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.ml_direction_classifier_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "ml_direction_classifier_enabled" in NON_RECIPE_SETTINGS_FIELDS

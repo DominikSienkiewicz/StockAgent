@@ -20,6 +20,11 @@ from src.domain.backtest import (
     purge_training_indices,
     summarize_folds,
 )
+from src.domain.direction_variant import (
+    DirectionReport,
+    direction_label,
+    summarize_direction_folds,
+)
 from src.domain.drift import bin_fractions, quantile_edges, recent_window_psi
 from src.domain.model_scorecard import TargetUnit, TrainingOutcome, TrainingReport
 from src.domain.training_provenance import (
@@ -45,6 +50,11 @@ DEFAULT_PARAMS: dict[str, Any] = {
 
 # ML-22: wersja biblioteki w karcie i sidecarze — inna wersja może dać inny booster.
 LIBRARY_VERSION = f"xgboost {xgb.__version__}"
+
+# ML-30: wariant binarny — te same drzewa i ziarno, cel logistyczny P(wzrost).
+DIRECTION_PARAMS: dict[str, Any] = {**DEFAULT_PARAMS, "objective": "binary:logistic"}
+# Przycięcie prawdopodobieństwa w log loss (pewność 0/1 przy pudle = nieskończoność).
+_LOG_LOSS_EPS = 1e-6
 
 VALIDATION_FRACTION = 0.2
 MIN_VALIDATION_SAMPLES = 10
@@ -95,6 +105,7 @@ class XGBoostAdapter(MLPredictionPort):
         self._model_path = model_path
         self._params = params or DEFAULT_PARAMS
         self._model: xgb.XGBRegressor | None = None
+        self._direction_model: xgb.XGBClassifier | None = None
         self._target_unit = TargetUnit.RETURN
         self._load_if_exists()
 
@@ -274,21 +285,8 @@ class XGBoostAdapter(MLPredictionPort):
         części treningowej foldu (tej samej, którą widzi kandydat) — żadnego
         podglądu walidacji.
         """
-        folds = _expanding_window_folds(len(target))
-        ends = (
-            None
-            if timestamps is None
-            else label_ends or [stamp + LABEL_HORIZON for stamp in timestamps]
-        )
         out: list[dict[str, float]] = []
-        for train_end, valid_end in folds:
-            rows = (
-                list(range(train_end))
-                if timestamps is None or ends is None
-                else list(purge_training_indices(timestamps, ends, train_end))
-            )
-            if not rows:
-                continue
+        for rows, train_end, valid_end in _purged_folds(len(target), timestamps, label_ends):
             train_x = features.iloc[rows]
             train_y = target.iloc[rows]
             valid_x = features.iloc[train_end:valid_end]
@@ -337,6 +335,118 @@ class XGBoostAdapter(MLPredictionPort):
         return self._walk_forward_folds_detail(
             feature_frame, target_series, stamps, _label_end_order(label_ends, stamps)
         )
+
+    def train_direction_classifier(
+        self,
+        features: Sequence[Mapping[str, float | None]],
+        target: Sequence[float],
+        *,
+        dead_band: float,
+        persist: bool = True,
+        timestamps: Sequence[datetime] | None = None,
+        label_ends: Sequence[datetime] | None = None,
+    ) -> DirectionReport:
+        """ML-30: klasyfikator P(zwrot > +pasmo) na wierszach poza martwą strefą,
+        walk-forward z tym samym purgem co regresja i bramką Briera względem stopy
+        bazowej (domena). Zapis tylko po przejściu bramki i tylko do pliku wariantu
+        (`*_direction.ubj`) — wagi championa i `self._model` zostają nietknięte."""
+        labels = [direction_label(float(value), dead_band=dead_band) for value in target]
+        keep = [index for index, label in enumerate(labels) if label is not None]
+        frame = _feature_frame(features).iloc[keep].reset_index(drop=True)
+        outcome_y = pd.Series([labels[index] for index in keep], dtype=int)
+        stamps = _global_time_order(timestamps, len(labels))
+        ends = _label_end_order(label_ends, stamps)
+        summary = summarize_direction_folds(
+            self._direction_folds(
+                frame,
+                outcome_y,
+                None if stamps is None else [stamps[index] for index in keep],
+                None if ends is None else [ends[index] for index in keep],
+            )
+        )
+
+        def report(
+            outcome: TrainingOutcome, model_path: str | None = None
+        ) -> DirectionReport:
+            return DirectionReport(
+                outcome,
+                n_samples=len(keep),
+                n_in_dead_band=len(labels) - len(keep),
+                dead_band=dead_band,
+                summary=summary,
+                reason=summary.verdict,
+                model_path=model_path,
+            )
+
+        if not persist:
+            return report(
+                TrainingOutcome.EVALUATION_PASSED
+                if summary.beats_base_rate
+                else TrainingOutcome.EVALUATION_FAILED
+            )
+        if not summary.beats_base_rate:
+            return report(TrainingOutcome.REJECTED)
+        model = xgb.XGBClassifier(**DIRECTION_PARAMS)
+        model.fit(frame, outcome_y)
+        path = _direction_model_path(self._model_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        model.save_model(str(path))
+        self._direction_model = model
+        return report(TrainingOutcome.ACCEPTED, model_path=str(path))
+
+    def _direction_folds(
+        self,
+        features: pd.DataFrame,
+        outcome_y: pd.Series,
+        timestamps: list[datetime] | None,
+        label_ends: list[datetime] | None,
+    ) -> list[dict[str, float]]:
+        """Sumy foldu klasyfikatora: kwadraty błędu i log loss kandydata oraz
+        prognozy stopy bazowej części treningowej. Fold z jedną klasą w treningu
+        nie ma czego uczyć — pomijany."""
+        out: list[dict[str, float]] = []
+        for rows, train_end, valid_end in _purged_folds(len(outcome_y), timestamps, label_ends):
+            train_y = outcome_y.iloc[rows]
+            if train_y.nunique() < 2:
+                continue
+            candidate = xgb.XGBClassifier(**DIRECTION_PARAMS)
+            candidate.fit(features.iloc[rows], train_y)
+            actual = np.asarray(outcome_y.iloc[train_end:valid_end], dtype=float)
+            proba = candidate.predict_proba(features.iloc[train_end:valid_end])[:, 1]
+            base = np.full(len(actual), float(train_y.mean()))
+            out.append(
+                {
+                    "n_valid": float(len(actual)),
+                    "sum_sq_error": float(((proba - actual) ** 2).sum()),
+                    "base_sum_sq_error": float(((base - actual) ** 2).sum()),
+                    "sum_log_loss": _sum_log_loss(proba, actual),
+                    "base_sum_log_loss": _sum_log_loss(base, actual),
+                }
+            )
+        return out
+
+    def predict_proba(self, current_features: dict[str, float]) -> float:
+        """ML-30: P(zwrot 12 h > +martwa strefa) z wag wariantu binarnego."""
+        model = self._direction_model or self._load_direction_model()
+        expected = [str(name) for name in getattr(model, "feature_names_in_", [])]
+        frame = (
+            pd.DataFrame([{name: current_features[name] for name in expected}])
+            if expected
+            else pd.DataFrame([current_features])
+        )
+        return float(model.predict_proba(frame)[0][1])
+
+    def _load_direction_model(self) -> xgb.XGBClassifier:
+        path = _direction_model_path(self._model_path)
+        if not path.exists():
+            raise RuntimeError(
+                f"No direction classifier weights at '{path}' — the ML-30 variant "
+                "has not passed its gate yet."
+            )
+        model = xgb.XGBClassifier()
+        model.load_model(str(path))
+        self._direction_model = model
+        return model
 
     def predict(
         self,
@@ -559,6 +669,46 @@ def _global_time_order(timestamps: Any, n_samples: int) -> list[datetime] | None
     if not parsed.is_monotonic_increasing:
         raise ValueError("timestamps must be sorted ascending in global time")
     return [stamp.to_pydatetime() for stamp in parsed]
+
+
+def _direction_model_path(model_path: str) -> Path:
+    """ML-30: plik wag wariantu binarnego obok pliku championa (`*_direction.ubj`)."""
+    path = Path(model_path)
+    return path.with_name(f"{path.stem}_direction{path.suffix}")
+
+
+def _sum_log_loss(probability: Any, actual: Any) -> float:
+    """Suma ujemnej log-wiarygodności z prawdopodobieństwem przyciętym do [eps, 1−eps]."""
+    clipped = np.clip(np.asarray(probability, dtype=float), _LOG_LOSS_EPS, 1 - _LOG_LOSS_EPS)
+    hits = np.asarray(actual, dtype=float)
+    return float(-(hits * np.log(clipped) + (1 - hits) * np.log(1 - clipped)).sum())
+
+
+def _purged_folds(
+    n_samples: int,
+    timestamps: list[datetime] | None,
+    label_ends: list[datetime] | None,
+) -> list[tuple[list[int], int, int]]:
+    """Foldy expanding-window jako (wiersze treningu, train_end, valid_end).
+
+    Z `timestamps` trening foldu to `purge_training_indices` (ML-26): koniec etykiety
+    z `label_ends`, a bez nich stały horyzont 12 h — wtedy to prefiks jak dotąd.
+    Fold bez wiersza treningu po purgu jest pomijany."""
+    ends = (
+        None
+        if timestamps is None
+        else label_ends or [stamp + LABEL_HORIZON for stamp in timestamps]
+    )
+    out: list[tuple[list[int], int, int]] = []
+    for train_end, valid_end in _expanding_window_folds(n_samples):
+        rows = (
+            list(range(train_end))
+            if timestamps is None or ends is None
+            else list(purge_training_indices(timestamps, ends, train_end))
+        )
+        if rows:
+            out.append((rows, train_end, valid_end))
+    return out
 
 
 def _label_end_order(

@@ -465,6 +465,12 @@ def test_real_config_toml_ships_the_settled_purge_off() -> None:
     assert data["ml_settled_purge_enabled"] is False
 
 
+def test_real_config_toml_ships_the_direction_classifier_off() -> None:
+    """ML-30: wariant binarny modelu — świadome włączenie właściciela."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["ml_direction_classifier_enabled"] is False
+
+
 def test_real_config_toml_ships_the_trend_probabilities_off_until_migration() -> None:
     """ML-29: kolumna `prediction_logs.trend_probabilities` dopiero po migracji 051."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))

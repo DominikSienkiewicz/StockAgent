@@ -338,6 +338,45 @@ class TestTrainerSummary:
         markdown = summary_file.read_text(encoding="utf-8")
         assert "| Label overlaps (settle after the next row) | 7 / 230 |" in markdown
 
+    def test_direction_variant_runs_only_with_its_flag(
+        self, settings, mock_external_clients, mocker, summary_file
+    ) -> None:
+        # ML-30: wariant binarny to sama ewaluacja w Slow Loopie, za flagą off.
+        from src.domain.direction_variant import DirectionReport
+        from src.domain.model_scorecard import TrainingOutcome
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "skipped", "n_samples": 12}
+        fake_uc.run_pooled.return_value = {"status": "skipped", "n_samples": 24}
+        fake_uc.run_direction_variant.return_value = DirectionReport(
+            TrainingOutcome.SKIPPED, n_samples=20, n_in_dead_band=4, dead_band=0.0
+        )
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+
+        assert main_trainer.main(settings) == 0
+        fake_uc.run_direction_variant.assert_not_called()
+        assert "Direction classifier" not in summary_file.read_text(encoding="utf-8")
+
+        settings.ml_direction_classifier_enabled = True
+        assert main_trainer.main(settings) == 0
+
+        # Martwa strefa z protokołu ewaluacji (EXP-06), dziś 0.
+        assert fake_uc.run_direction_variant.call_args.kwargs == {"dead_band": 0.0}
+        assert "### Direction classifier (ML-30)" in summary_file.read_text(encoding="utf-8")
+
+    def test_failed_direction_variant_does_not_fail_the_run(
+        self, settings, mock_external_clients, mocker, summary_file
+    ) -> None:
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "skipped", "n_samples": 12}
+        fake_uc.run_pooled.return_value = {"status": "skipped", "n_samples": 24}
+        fake_uc.run_direction_variant.side_effect = ValueError("Invalid classes")
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        settings.ml_direction_classifier_enabled = True
+
+        assert main_trainer.main(settings) == 0
+        assert "Direction classifier" not in summary_file.read_text(encoding="utf-8")
+
     def test_failed_feature_store_refresh_still_writes_a_summary(
         self, settings, mock_external_clients, mocker, summary_file
     ) -> None:

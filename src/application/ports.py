@@ -13,6 +13,7 @@ from src.domain.attestation import CommitmentLedger, StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.council_redundancy import CouncilVoteSample
+from src.domain.direction_variant import DirectionReport
 from src.domain.earnings import CachedEarningsDate, EarningsEvent
 from src.domain.finops import LLMCallEntry, LLMUsage
 from src.domain.fx import FxRate
@@ -895,6 +896,28 @@ class MLPredictionPort(ABC):
         ML-26: `label_ends` (wyrównane z wierszami, wymagają `timestamps`) to chwile
         końca etykiet — fold trenuje wtedy na `purge_training_indices` z domeny
         (także fallback single-split); bez nich purge stałego horyzontu 12 h."""
+
+    @abstractmethod
+    def train_direction_classifier(
+        self,
+        features: Sequence[Mapping[str, float | None]],
+        target: Sequence[float],
+        *,
+        dead_band: float,
+        persist: bool = True,
+        timestamps: Sequence[datetime] | None = None,
+        label_ends: Sequence[datetime] | None = None,
+    ) -> DirectionReport:
+        """ML-30: wariant binarny — klasyfikator P(zwrot 12 h > +`dead_band`) na
+        wierszach poza martwą strefą (`target` to surowe zwroty, nie jednostki σ).
+        Walk-forward z tym samym purgem co `train`, bramka Briera względem stopy
+        bazowej z domeny. Zapis wyłącznie do osobnego pliku wariantu po przejściu
+        bramki — nigdy nie zmienia wag championa (regresji) ani jego predykcji."""
+
+    @abstractmethod
+    def predict_proba(self, current_features: dict[str, float]) -> float:
+        """ML-30: P(zwrot 12 h > +martwa strefa) z wag wariantu binarnego.
+        Rzuca RuntimeError, gdy wariant nie ma zapisanych wag."""
 
     @abstractmethod
     def walk_forward_report(

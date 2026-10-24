@@ -17,6 +17,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 
 from src.application.report_models import SymbolResult
+from src.domain.direction_variant import DirectionReport
 from src.domain.finops import CycleCost
 from src.domain.quota import QuotaAlert
 
@@ -157,6 +158,50 @@ def render_trainer_summary_markdown(
             "### Per-symbol evaluation by status",
             "",
             _count_table("Status", Counter(dict(symbol_statuses))),
+        ]
+    )
+
+
+def _pair(first: float | None, second: float | None) -> str:
+    def number(value: float | None) -> str:
+        return _NOT_AVAILABLE if value is None else f"{value:.4f}"
+
+    return f"{number(first)} / {number(second)}"
+
+
+def render_direction_variant_markdown(report: DirectionReport) -> str:
+    """ML-30: wariant binarny P(wzrost poza martwą strefą) w summary Slow Loopa —
+    Brier i log loss klasyfikatora obok stopy bazowej, liczności i werdykt. Sama
+    ewaluacja: serwowany model regresji się nie zmienia."""
+    summary = report.summary
+    rows = [
+        ("Status", report.outcome.value),
+        (f"Rows outside the dead band (±{report.dead_band:g})", str(report.n_samples)),
+        ("Rows inside the dead band", str(report.n_in_dead_band)),
+        (
+            "Out-of-sample points",
+            _NOT_AVAILABLE if summary is None else str(summary.n_oos_points),
+        ),
+        (
+            "Brier (classifier / base rate)",
+            _pair(None, None) if summary is None else _pair(summary.brier, summary.base_rate_brier),
+        ),
+        (
+            "Log loss (classifier / base rate)",
+            _pair(None, None)
+            if summary is None
+            else _pair(summary.log_loss, summary.base_rate_log_loss),
+        ),
+        ("Verdict", report.reason or _NOT_AVAILABLE),
+    ]
+    return "\n".join(
+        [
+            "### Direction classifier (ML-30)",
+            "",
+            _table(("Metric", "Value"), rows),
+            "",
+            "P(12h return above the dead band); the variant never replaces the served "
+            "regression model.",
         ]
     )
 
