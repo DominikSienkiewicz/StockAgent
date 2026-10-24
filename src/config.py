@@ -221,7 +221,7 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # DAT-20: sekcja maila „📅 Ten tydzień” — prezentacja; bramka earnings bez zmian.
     "finnhub_earnings_calendar_enabled",
     # DAT-18: DVOL zasila wyłącznie implied edge, sygnał informacyjny bez roli
-    # decyzyjnej (#18) — sam zapis `edge_sigma` dla krypto; prompt i fuzja bez zmian.
+    # decyzyjnej (R-18) — sam zapis `edge_sigma` dla krypto; prompt i fuzja bez zmian.
     "deribit_dvol_enabled",
     # FIN-12: sufit kosztu cyklu decyduje, KTÓRE symbole dostają analizę, nie jaką —
     # prognoza przeanalizowanego symbolu jest identyczna z sufitem i bez.
@@ -312,7 +312,7 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "symbols_etf",
     "crypto_symbols",
     "crypto_volatility_threshold",
-    # Risk Watch zasila reżim rynku (#7), który zacieśnia próg.
+    # Risk Watch zasila reżim rynku (R-25), który zacieśnia próg.
     "risk_symbols",
     "risk_symbol_types",
     "nbp_enabled",
@@ -529,7 +529,7 @@ class Settings(BaseSettings):
     council_llm_provider: Literal["openai", "anthropic"] | None = None
     council_llm_model: str | None = None
 
-    # ----- Rada: ważenie person (#3) i tryb debaty (#1) -----
+    # ----- Rada: ważenie person (R-21) i tryb debaty (R-19) -----
     persona_weighting_enabled: bool = False
     # WIA-51: wagi person i ich ranking liczy domena z surowych głosów RPC
     # `persona_vote_outcomes` (migracja 045): HOLD na krypto w paśmie ±2.5%, nie
@@ -546,7 +546,7 @@ class Settings(BaseSettings):
     council_redundancy_enabled: bool = False
     debate_mode_enabled: bool = False
 
-    # ----- Model routing (#2 — tani model + eskalacja do frontier) -----
+    # ----- Model routing (R-20 — tani model + eskalacja do frontier) -----
     model_routing_enabled: bool = False
     routing_floor: float = 0.6
     # NIEZ-17: najwyżej tyle eskalacji do frontiera na cykl (jedna kaskada na cykl).
@@ -555,7 +555,7 @@ class Settings(BaseSettings):
     router_frontier_provider: Literal["openai", "anthropic"] = "anthropic"
     router_frontier_model: str = "claude-sonnet-4-6"
 
-    # ----- Reżim rynku (#7), contagion (#5), kalibracja (#4) -----
+    # ----- Reżim rynku (R-25), contagion (R-23), kalibracja (R-22) -----
     # Regime może tylko ZACIEŚNIĆ próg volatility (mnożnik ≥ 1.0).
     regime_aware_enabled: bool = False
     regime_threshold_max_multiplier: float = 2.0
@@ -609,7 +609,7 @@ class Settings(BaseSettings):
     # (migracja 046) i jej histogram w panelu lessons. Off: nowy klucz przed
     # migracją → PGRST204 i przepadłe rozliczenie predykcji.
     correction_category_enabled: bool = False
-    # #9: surowa pewność LLM korygowana historycznym hit-rate'em swojego kubełka
+    # R-9: surowa pewność LLM korygowana historycznym hit-rate'em swojego kubełka
     # kalibracji. Steruje rankingiem "🎯 Najsilniejsze sygnały" (strength =
     # pewność × |Δ|). Niezależna od `calibration_curve_enabled` — tamta flaga
     # rysuje sekcję Track Record, ta zmienia ranking. Render-only, bez zapisu.
@@ -620,7 +620,7 @@ class Settings(BaseSettings):
     # z `calibrated_confidence_enabled`; jeden darmowy odczyt 60 dni rozliczeń.
     # Render-only, bez migracji. Off.
     isotonic_calibration_enabled: bool = False
-    # #12: karta kondycji modelu — jawny scorecard walk-forward (migracja 019).
+    # R-12: karta kondycji modelu — jawny scorecard walk-forward (migracja 019).
     # Pokazuje bramkę "nie shipuj modelu gorszego od baseline'u", łącznie
     # z odrzutami. Render-only + insert w Slow Loopie. Off.
     model_scorecard_enabled: bool = False
@@ -645,10 +645,10 @@ class Settings(BaseSettings):
     # wersję XGBoost, wersję zestawu cech i SHA kodu (kolumny z migracji 064).
     # Sidecar `.json` obok pliku wag powstaje bez flagi. Off: PGRST204 przed 064.
     model_scorecard_provenance_enabled: bool = False
-    # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
+    # R-8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
     # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
     cycle_diff_enabled: bool = False
-    # #13: kwity decyzyjne — JSONB `decision_receipts` na `prediction_logs`
+    # R-13: kwity decyzyjne — JSONB `decision_receipts` na `prediction_logs`
     # (migracja 020). Flaga to WARUNEK graceful degradation, nie opcja: nowy
     # klucz przed migracją → PGRST204 i śmierć zapisu całej predykcji. Off.
     receipts_enabled: bool = False
@@ -741,7 +741,7 @@ class Settings(BaseSettings):
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr
     # po kolumnie przed migracją 029 → 400 i mail bez sekcji, tydzień bez recapu.
     settled_at_windows_enabled: bool = False
-    # #11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
+    # R-11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
     # migracja 021). Zero płatnych wywołań. Off.
     shock_alerts_enabled: bool = False
     # ALR-07: szok PORTFELA w watchu — Σ waga × Δ po pozycjach (tabela `positions`,
@@ -756,17 +756,17 @@ class Settings(BaseSettings):
     # nie alarmują).
     liveness_fast_loop_max_gap_h: float = 0.0
     liveness_slow_loop_max_gap_h: float = 0.0
-    # #14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
+    # R-14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
     # Wchodzi do promptu LLM i do ml_feature_store jako KANDYDAT na cechę —
     # XGBoost go nie używa (poza `ML_FEATURE_COLUMNS`). Promocję do cech modelu
     # rozstrzyga porównanie A/B (EXP-19), nie intuicja wag. Off.
     alpha_fusion_enabled: bool = False
-    # #16: commit-reveal (migracja 024). W chwili predykcji publikujemy SHA-256
+    # R-16: commit-reveal (migracja 024). W chwili predykcji publikujemy SHA-256
     # commitment; po rozliczeniu sweep ujawnia sól i plaintext. UWAGA: daty
     # commitów Gita są fałszowalne — to tamper-evidence, nie niepodrabialny
     # timestamp. Off (nowe kolumny przed migracją 024 → PGRST204).
     attestation_enabled: bool = False
-    # #15: realne pozycje użytkownika (tabela `positions`, migracja 023).
+    # R-15: realne pozycje użytkownika (tabela `positions`, migracja 023).
     # Nazwa CELOWO nie `portfolio_enabled` — kolidowałaby z `portfolio_var_enabled`
     # i z sekcją watchlisty. Off → Null adapter → dotychczasowe równe wagi.
     portfolio_positions_enabled: bool = False
@@ -775,12 +775,12 @@ class Settings(BaseSettings):
     # (darmowe) także bez cache'u. Off: przed migracją tabeli nie ma, więc każdy
     # odczyt i zapis kończyłby się błędem w logu.
     fx_rates_cache_enabled: bool = False
-    # #17: niedzielna retrospektywa narracyjna (Slow Loop). JEDYNA pozycja
+    # R-17: niedzielna retrospektywa narracyjna (Slow Loop). JEDYNA pozycja
     # z niezerowym kosztem FinOps: DOKŁADNIE 1 wywołanie LLM tygodniowo
     # (nie per symbol, nie per cykl). Poniżej 5 zamkniętych predykcji mail
     # nie wychodzi — reguła domenowa, nie opcja. Off.
     weekly_recap_enabled: bool = False
-    # #10: publiczny scorecard kalibracji (landing page). WYŁĄCZNIE agregaty —
+    # R-10: publiczny scorecard kalibracji (landing page). WYŁĄCZNIE agregaty —
     # zero PII, zero symboli watchlisty, zero kwot. Osobny publisher i osobna
     # ścieżka, zero danych z prywatnego maila. Render-only, zero płatnych. Off.
     public_scorecard_enabled: bool = False
@@ -813,11 +813,11 @@ class Settings(BaseSettings):
     # ToS Finnhub (BEZ-28) i sondy darmowego planu (docs/configuration.md).
     finnhub_earnings_calendar_enabled: bool = False
     options_flow_enabled: bool = False
-    # WIA-28: horyzont edge (#18) akcji i ETF z kalendarza NYSE — godziny do
+    # WIA-28: horyzont edge (R-18) akcji i ETF z kalendarza NYSE — godziny do
     # następnego dnia handlowego (~72 h w piątek) zamiast stałych 24 h. Off.
     edge_calendar_horizon_enabled: bool = False
     # DAT-18: port opcji grafu kieruje BTC/ETH do Deribit DVOL (publiczne API, bez
-    # klucza) — implied edge (#18) i kolumna `edge_sigma` dla krypto. Off; włączenie
+    # klucza) — implied edge (R-18) i kolumna `edge_sigma` dla krypto. Off; włączenie
     # dopiero po falsyfikacji hipotezy edge_sigma (WIA-75), docs/configuration.md.
     deribit_dvol_enabled: bool = False
     social_velocity_enabled: bool = False
@@ -841,7 +841,7 @@ class Settings(BaseSettings):
     # FRED API key (darmowy, ale wymagany do pobrań krzywej rentowności) — SEKRET.
     fred_api_key: str | None = None
 
-    # ----- Tool-use research agent (#6) -----
+    # ----- Tool-use research agent (R-24) -----
     # Na NAJWIĘKSZYCH ruchach (osobny, wyższy próg) główna analiza idzie pętlą
     # tool-use: model może dociągnąć read-only toole (fundamenty/makro) przed
     # werdyktem. Domyślnie OFF — to płatna, wielorundowa ścieżka.
@@ -1015,7 +1015,7 @@ class Settings(BaseSettings):
     # 1 = sekwencyjnie (wstecznie zgodne). > 1 = ThreadPoolExecutor; uwaga: każdy
     # symbol wewnętrznie rozwija radę do ~7 równoległych callsów OpenAI, więc
     # realny fan-out to ~N×7 — trzymaj zachowawczo (config.toml: 4). Throttle i
-    # contagion (#5) działają tylko w trybie sekwencyjnym (patrz _analyze_symbols).
+    # contagion (R-23) działają tylko w trybie sekwencyjnym (patrz _analyze_symbols).
     symbol_concurrency: int = Field(default=1)
 
     # Minimalny wiek (godziny) predykcji, zanim reflect_node ją oceni. Chroni
@@ -1035,7 +1035,7 @@ class Settings(BaseSettings):
     # zapasem. 0 = bez granicy. Musi być większe niż reflection_min_age_hours.
     reflection_max_age_hours: int = Field(default=96)
 
-    # Waga wyniku w outcome-aware reranku analogów RAG (#9). 0.0 = sama
+    # Waga wyniku w outcome-aware reranku analogów RAG (R-27). 0.0 = sama
     # kolejność similarity (zachowanie wsteczne); >0 promuje analogi, których
     # prognoza realnie się sprawdziła. Produkcja: 0.3.
     rag_outcome_weight: float = Field(default=0.0)
@@ -1060,9 +1060,9 @@ class Settings(BaseSettings):
     # SEKRETY (placeholdery w .env.example): kanał jest budowany, gdy jego
     # sekrety są obecne (analogicznie do Resend). chat_id/webhook to adresy
     # docelowe → traktujemy jak sekret (jak digest_to_email).
-    # #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego
+    # R-5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego
     # plain-textu raportu. Pełny raport przekracza limit 4096 znaków Telegrama →
-    # API zwraca 400 i push ginie po cichu. Off = zachowanie sprzed #5.
+    # API zwraca 400 i push ginie po cichu. Off = zachowanie sprzed R-5.
     messenger_digest_enabled: bool = False
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None

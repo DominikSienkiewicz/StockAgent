@@ -18,7 +18,7 @@
 llm_provider = "anthropic"
 council_llm_provider = "openai"
 council_llm_model = "gpt-5-mini"
-# Rada: ważenie person trafnością (#3, RPC z migracji 015) i tryb debaty (#1,
+# Rada: ważenie person trafnością (R-21, RPC z migracji 015) i tryb debaty (R-19,
 # jedna runda rewizji przy podzielonym round-1). Domyślnie off.
 persona_weighting_enabled = false
 # WIA-51: wagi i ranking person z surowych głosów (RPC z migracji 045), oceniane
@@ -37,7 +37,7 @@ persona_brier_ranking_enabled = false
 # maili, bez migracji.
 council_redundancy_enabled = false
 debate_mode_enabled = false
-# Model routing (#2): tani model domyślnie, eskalacja do frontier gdy
+# Model routing (R-20): tani model domyślnie, eskalacja do frontier gdy
 # confidence < routing_floor. Domyślnie off (główna analiza wg llm_provider).
 model_routing_enabled = false
 routing_floor = 0.6
@@ -52,7 +52,7 @@ router_frontier_model = "claude-sonnet-4-6"
 # przepisu). Wymaga klucza drugiego dostawcy w sekretach. Wyłączony — odkomentuj:
 # llm_fallback_provider = "openai"
 # llm_fallback_model = "gpt-4o"
-# Reżim rynku (#7): RISK-OFF zacieśnia próg volatility (mnożnik ≤ max). Włączone.
+# Reżim rynku (R-25): RISK-OFF zacieśnia próg volatility (mnożnik ≤ max). Włączone.
 regime_aware_enabled = true
 regime_threshold_max_multiplier = 2.0
 # ML-38: `regime_tagging_enabled` (tag reżimu w prediction_logs.regime przy każdej
@@ -63,10 +63,10 @@ regime_threshold_max_multiplier = 2.0
 # Stan w tabeli `regime_history`. UWAGA: włącz DOPIERO po migracji 033.
 regime_hysteresis_enabled = true
 regime_exit_confirmations = 2
-# Contagion (#5): werdykty spółek z tego samego sektora z tego cyklu do promptu.
+# Contagion (R-23): werdykty spółek z tego samego sektora z tego cyklu do promptu.
 # Grupy (`peer_groups`) idą z `sectors` niżej. Off.
 contagion_enabled = false
-# Kalibracja pewności sędzią-LLM (#4, Slow Loop, migracja 016). Off.
+# Kalibracja pewności sędzią-LLM (R-22, Slow Loop, migracja 016). Off.
 calibration_judge_enabled = false
 # Sędzia zapisuje regułę Briera 1 − (c − o)² z wersją v2 (WIA-37). Włącz DOPIERO
 # po migracji 044 (PGRST204). Off: reguła liniowa v1, bez kolumny wersji.
@@ -80,7 +80,7 @@ model_probe_enabled = true
 # Przepisany wniosek trafia do lessons i analogów RAG. Off.
 diagnosis_backfill_enabled = false
 diagnosis_backfill_max_calls = 5
-# Tool-use research agent (#6): na największych ruchach model dociąga read-only
+# Tool-use research agent (R-24): na największych ruchach model dociąga read-only
 # toole (fundamenty/makro) przed werdyktem. Płatna, wielorundowa ścieżka — off.
 tool_use_enabled = false
 tool_use_max_rounds = 3
@@ -95,7 +95,7 @@ hedge_effectiveness_enabled = false
 equity_curve_enabled = true
 calibration_curve_enabled = true
 lessons_enabled = true
-# #9: pewność LLM korygowana historycznym hit-rate'em swojego kubełka kalibracji
+# R-9: pewność LLM korygowana historycznym hit-rate'em swojego kubełka kalibracji
 # — przestawia ranking „🎯 Najsilniejsze sygnały". Render-only, zero zapisu. Włączone.
 calibrated_confidence_enabled = true
 # ML-28: ranking sygnałów kalibruje pewność mapą izotoniczną (PAV) zamiast kubełków,
@@ -103,10 +103,10 @@ calibrated_confidence_enabled = true
 # pewnością i kubełkami. Działa tylko z calibrated_confidence_enabled; jeden darmowy
 # odczyt 60 dni rozliczeń, bez migracji. Zmienia ranking w mailu — włącz świadomie.
 isotonic_calibration_enabled = false
-# #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego raportu —
+# R-5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego raportu —
 # pełny plain-text przekracza limit 4096 znaków Telegrama (400, cichy zgon). Włączone.
 messenger_digest_enabled = true
-# #12: karta kondycji modelu (migracja 019) — jawny scorecard walk-forward wraz
+# R-12: karta kondycji modelu (migracja 019) — jawny scorecard walk-forward wraz
 # z odrzutami kandydatów. Zapis w Slow Loopie, render w mailu. Włączone.
 model_scorecard_enabled = true
 # ML-10: karta zapisuje też baseline'y „dryf średniej" i „sam LLM" (bramka bije
@@ -125,10 +125,10 @@ model_scorecard_weights_sha256_enabled = false
 # symbol, parametry z ziarnem, wersja XGBoost, wersja zestawu cech, SHA kodu).
 # UWAGA: włącz DOPIERO po migracji 064 (inaczej PGRST204).
 model_scorecard_provenance_enabled = false
-# #8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
+# R-8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
 # spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Włączone.
 cycle_diff_enabled = true
-# #13: kwity decyzyjne (migracja 020) — persystowany audit trail predykcji.
+# R-13: kwity decyzyjne (migracja 020) — persystowany audit trail predykcji.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 020, inaczej PGRST204. Włączone.
 receipts_enabled = true
 # DAT-09: wersja zestawu cech (migracja 027) — `news_volume_24h` zmieniło znaczenie
@@ -212,7 +212,7 @@ prompt_taint_fence_enabled = false
 # 029): sekcja maila = rozliczone w tym cyklu, recap = rozliczone w ostatnich 7 dniach.
 # UWAGA: włącz DOPIERO po zaaplikowaniu migracji 029 (inaczej 400 i sekcja znika).
 settled_at_windows_enabled = true
-# #11: darmowy watch szoku rynkowego poza cyklem (main_watch.py, migracja 021).
+# R-11: darmowy watch szoku rynkowego poza cyklem (main_watch.py, migracja 021).
 # Zero płatnych API — tylko Finnhub/CoinGecko + Supabase. Cron co godzinę
 # (shock_watch_hourly.yml) wznowiony 2026-10-23; bez kanału push (TELEGRAM_* albo
 # SLACK_WEBHOOK_URL) watch loguje błąd i niczego nie wysyła.
@@ -246,28 +246,28 @@ price_alerts = []
 # 26 = alarm po dwóch dniach handlowych bez cyklu (cron wznowiony 2026-10-23).
 liveness_fast_loop_max_gap_h = 26
 liveness_slow_loop_max_gap_h = 192
-# #14: Alpha Fusion Score (migracja 022) — ważona fuzja insider/opcje/analitycy/
+# R-14: Alpha Fusion Score (migracja 022) — ważona fuzja insider/opcje/analitycy/
 # social/earnings. Trafia do promptu LLM i do ml_feature_store jako KANDYDAT na cechę ML —
 # model go nie używa (nie ma go w ML_FEATURE_COLUMNS); promocja po porównaniu A/B (EXP-19). Włączone.
 alpha_fusion_enabled = true
-# #16: commit-reveal (migracja 024) — kryptograficznie weryfikowalny track record.
+# R-16: commit-reveal (migracja 024) — kryptograficznie weryfikowalny track record.
 # Claim: tamper-evidence przy branch protection, NIE niepodrabialny timestamp.
 # Wyłączone do czasu utworzenia i ochrony gałęzi `attestation-log`: Fast Loop
 # checkoutuje ją do `public/attestation/`, a job `publish-attestation-ledger` pushuje
 # tam nowe linie (WIA-14). UWAGA: włącz DOPIERO po migracjach 024 i 043 (inaczej
 # PGRST204) i po kroku 9 z docs/resume-checklist.md (flaga on bez gałęzi wywala cykl).
 attestation_enabled = false
-# #15: realny portfel użytkownika (tabela `positions`, migracja 023) — wagi,
+# R-15: realny portfel użytkownika (tabela `positions`, migracja 023) — wagi,
 # P/L i VaR w PLN zamiast fikcji równych wag. Flaga off → Null adapter. Włączone.
 portfolio_positions_enabled = true
 # PORT-11: P/L w zł po kursie NBP z dnia zakupu — kursy z NBP (darmowe) idą za
 # `nbp_enabled`; ta flaga dokłada tylko cache kursów z minionych dni w tabeli
 # `fx_rates`. UWAGA: włącz DOPIERO po migracji 036 (inaczej błędy w logu).
 fx_rates_cache_enabled = true
-# #17: niedzielna retrospektywa („Tydzień StockAgenta"). Koszt: 1 wywołanie LLM
+# R-17: niedzielna retrospektywa („Tydzień StockAgenta"). Koszt: 1 wywołanie LLM
 # TYGODNIOWO. Poniżej 5 zamkniętych predykcji mail nie wychodzi. Włączone.
 weekly_recap_enabled = true
-# #10: publiczny scorecard kalibracji — wyłącznie agregaty (N, hit-rate, ECE),
+# R-10: publiczny scorecard kalibracji — wyłącznie agregaty (N, hit-rate, ECE),
 # zero PII i zero symboli; prywatny mail tam nie trafia (MAIL-24). Wyłączone do
 # ustawienia Pages (Source: GitHub Actions); deploy: scorecard_pages.yml (WIA-52)
 # i job deploy-scorecard Fast Loopa (WIA-16), kolejność: docs/resume-checklist.md.
@@ -296,7 +296,7 @@ crypto_paper_cost_bps = 25
 # SEC. Off, dopóki SEC (webmaster@sec.gov, z Reference ID ze strony 403) jej nie
 # zdejmie; potem true i jeden ręczny run. Szczegóły: docs/configuration.md.
 insider_flow_enabled = false
-# earnings_calendar: bramka earnings (#6). FIN-09: jedno wywołanie Alpha Vantage na cykl
+# earnings_calendar: bramka earnings (R-6). FIN-09: jedno wywołanie Alpha Vantage na cykl
 # (kalendarz bez symbolu obsługuje całą watchlistę, rotacja kluczy, alert przy limicie).
 # Off do końca EXP-02/03 (decyzja DAT-40, krok 12 w docs/resume-checklist.md) — mnożnik
 # earnings zmienia bramkę, czyli przepis porównywany w eksperymentach.
@@ -408,13 +408,13 @@ llm_pricing."gpt-4o" = { input = 2.50, cache_read = 1.25, output = 10.00 }
 llm_pricing."text-embedding-3-small" = { input = 0.02 }
 # options_flow: option-chain to endpoint PREMIUM Finnhuba — na free tier zwraca 403,
 # więc sygnał nie powstaje, a każdy cykl marnuje ~39 requestów. Off do czasu planu premium.
-# Odblokowuje #18 (edge vs implied move).
+# Odblokowuje R-18 (edge vs implied move).
 options_flow_enabled = false
 # WIA-28: horyzont edge akcji i ETF z kalendarza NYSE (godziny do następnego dnia
 # handlowego: ~72 h w piątek, dłużej przed świętem) zamiast stałych 24 h. Zmienia
 # zapisany `edge_sigma`, więc czeka do końca EXP-02/03 (2027-01-29). Off.
 edge_calendar_horizon_enabled = false
-# DAT-18: implied edge (#18) dla BTC/ETH z Deribit DVOL (publiczne API, bez klucza,
+# DAT-18: implied edge (R-18) dla BTC/ETH z Deribit DVOL (publiczne API, bez klucza,
 # 1 request na symbol krypto za bramką). Sam zapis `edge_sigma` — prompt i fuzja bez
 # zmian. UWAGA: włącz DOPIERO po falsyfikacji hipotezy edge_sigma > 1.5σ (WIA-75)
 # i przeglądzie ToS Deribitu; kolumna `edge_sigma` z migracji 025 jest na produkcji.
@@ -452,7 +452,7 @@ crypto_volatility_threshold = "0.05"
 # ceny okna) — 10 × -1,9% to -17,5% bez analizy. Najwyżej +1 pełny pipeline na symbol
 # na epizod dryfu, więc decyzja o włączeniu należy do właściciela. Off.
 drift_gate_enabled = false
-# Osobny, wyższy próg dla pętli tool-use (#6) — tylko duże ruchy ją uruchamiają.
+# Osobny, wyższy próg dla pętli tool-use (R-24) — tylko duże ruchy ją uruchamiają.
 tool_use_volatility_threshold = "0.05"
 # FIN-08: osobny próg pętli tool-use dla krypto (natywna zmienność BTC/ETH to 3-5%
 # dziennie). Brak klucza = krypto bierze `tool_use_volatility_threshold`, jak dotąd;
@@ -476,7 +476,7 @@ reflection_min_age_hours = 6
 # (np. po przerwie w cronie) zostają nierozliczone, zamiast oceny bieżącą ceną.
 # 96h obejmuje weekend z zapasem. 0 = bez granicy.
 reflection_max_age_hours = 96
-# Outcome-aware RAG rerank (#9): waga realnego wyniku analogu (trafiony przed
+# Outcome-aware RAG rerank (R-27): waga realnego wyniku analogu (trafiony przed
 # nietrafionym przy zbliżonym similarity). 0.0 = sama kolejność similarity.
 rag_outcome_weight = 0.3
 # ML-23: analogi RAG z dokładnego KNN (`match_news_embeddings_exact`) zamiast ivfflat
