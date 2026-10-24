@@ -24,7 +24,9 @@ instancję i trzymana w pamięci — nieudane pobranie nie jest cache'owane, wi�
 kolejny symbol spróbuje ponownie. Każdy request do sec.gov przechodzi przez
 `_RequestPacer` z minimalnym odstępem `SEC_MIN_REQUEST_INTERVAL_SECONDS` (polityka
 SEC: najwyżej 10 requestów na sekundę). 403 z SEC nie trafia do globalnego
-`RETRY_STATUS_FORCELIST` — to odmowa, nie chwilowa awaria.
+`RETRY_STATUS_FORCELIST` — to odmowa, nie chwilowa awaria. Instancja żyje jeden
+cykl, więc pierwsza 403 kończy EDGAR do końca cyklu: kolejne żądania tylko
+przedłużałyby blokadę.
 
 DAT-21: z tego samego XML-a czytamy też cenę (`transactionPricePerShare`),
 relację właściciela (`isOfficer`/`officerTitle`/`isDirector`; sam 10% owner to
@@ -45,6 +47,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
+from http import HTTPStatus
 
 import requests
 
@@ -214,13 +217,30 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         # życia instancji; None w polu = jeszcze nie pobrana albo ostatnia próba padła.
         self._cik_by_ticker: dict[str, str | None] | None = None
         self._cik_lock = threading.Lock()
+        # Adapter żyje jeden cykl: po 403 SEC dalsze żądania tylko przedłużają
+        # blokadę (dostęp wraca po 10 min poniżej progu), więc milkniemy do końca.
+        self._blocked = False
 
-    def _get(self, url: str) -> requests.Response:
-        """Każdy request do sec.gov przez pacer (polityka SEC ≤ 10/s)."""
+    def _get(self, url: str) -> requests.Response | None:
+        """Każdy request do sec.gov przez pacer (polityka SEC ≤ 10/s); None, gdy
+        SEC odrzucił nas w tym cyklu (403) — wtedy nie wysyłamy już nic."""
+        if self._blocked:
+            return None
         self._pacer.wait()
-        return self._session.get(url, timeout=self._timeout)
+        response = self._session.get(url, timeout=self._timeout)
+        if response.status_code == HTTPStatus.FORBIDDEN:
+            self._blocked = True
+            logger.warning(
+                "SEC EDGAR answered 403 for %s — no more EDGAR requests this cycle "
+                "(see docs/configuration.md, insider flow)",
+                url,
+            )
+            return None
+        return response
 
     def get_insider_flow(self, symbol: str) -> InsiderFlowSnapshot | None:
+        if self._blocked:
+            return None
         try:
             cik = self._resolve_cik(symbol)
             if cik is None:
@@ -249,6 +269,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
                 )
                 filings_parsed += 1
 
+            if self._blocked:
+                # Snapshot z częścią filingów wyglądałby jak awaria parsowania.
+                return None
             return InsiderFlowSnapshot(
                 symbol=symbol,
                 net_shares=net_shares,
@@ -290,6 +313,8 @@ class EdgarInsiderAdapter(InsiderFlowPort):
     def _fetch_ticker_map(self) -> dict[str, str | None] | None:
         try:
             response = self._get(TICKERS_URL)
+            if response is None:
+                return None
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError):
@@ -324,6 +349,8 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         url = SUBMISSIONS_URL.format(cik=cik)
         try:
             response = self._get(url)
+            if response is None:
+                return None
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError):
@@ -384,6 +411,8 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         )
         try:
             response = self._get(url)
+            if response is None:
+                return None
             response.raise_for_status()
             xml_text = response.text
         except requests.RequestException:

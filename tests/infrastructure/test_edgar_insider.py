@@ -773,6 +773,44 @@ class TestDollarValueAndRole:
         )
 
 
+class TestSecFairAccess:
+    """Polityka SEC (sec.gov/os/accessing-edgar-data): najwyżej 10 req/s na
+    użytkownika, a dostęp wraca dopiero po 10 minutach poniżej progu. Adapter
+    żyje jeden cykl, więc 403 kończy EDGAR do końca cyklu — każde kolejne
+    żądanie tylko przedłuża blokadę (od 2026-07 każdy symbol dostawał 403)."""
+
+    def test_403_on_ticker_lookup_stops_requests_for_later_symbols(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        mock_get = mocker.patch(
+            "requests.Session.get", return_value=_error_response(403)
+        )
+
+        snaps = [adapter.get_insider_flow(s) for s in ("AAPL", "MSFT", "NVDA")]
+
+        assert snaps == [None, None, None]
+        assert mock_get.call_count == 1
+
+    def test_403_on_form4_returns_none_without_fetching_the_rest(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        def get(url: str, **_: object) -> Mock:
+            if "company_tickers.json" in url:
+                return _ok_json(_company_tickers())
+            if "submissions" in url:
+                return _ok_json(_two_form4_submissions())
+            return _error_response(403)
+
+        mock_get = mocker.patch("requests.Session.get", side_effect=get)
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        # Snapshot z połową filingów udawałby awarię parsowania (DAT-03).
+        assert snap is None
+        archive_calls = [c for c in mock_get.call_args_list if "/Archives/" in c.args[0]]
+        assert len(archive_calls) == 1
+
+
 class TestNullInsiderFlowAdapter:
     def test_returns_none_without_io(self, mocker) -> None:
         mock_get = mocker.patch("requests.Session.get")
