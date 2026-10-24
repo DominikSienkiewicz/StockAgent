@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -103,6 +103,7 @@ MIGRATION_FILES = [
     "064_model_scorecards_provenance.sql",
     "065_persona_scoring.sql",
     "070_rpc_search_path.sql",
+    "071_schema_version.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -2305,6 +2306,99 @@ class TestRpcFunctionHardening:
 
         assert public_can_execute is False
         assert can_execute == {"anon": False, "authenticated": False, "service_role": True}
+
+
+def _schema_version_function_count(cur: psycopg2.extensions.cursor) -> int:
+    cur.execute(
+        """
+        SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = 'schema_version'
+        """
+    )
+    return int(cur.fetchone()[0])
+
+
+def _create_migration_registry(cur: psycopg2.extensions.cursor, versions: Sequence[str]) -> None:
+    """Rejestr, który tworzy Supabase CLI (`supabase db push`); w emulacji go nie ma."""
+    cur.execute("CREATE SCHEMA supabase_migrations")
+    cur.execute("CREATE TABLE supabase_migrations.schema_migrations (version text PRIMARY KEY)")
+    for version in versions:
+        cur.execute(
+            "INSERT INTO supabase_migrations.schema_migrations (version) VALUES (%s)", (version,)
+        )
+
+
+@pytest.mark.containers
+class TestSchemaVersionFunction:
+    """NIEZ-30: `public.schema_version()` mówi aplikacji, do której migracji sięga baza,
+    żeby flaga bez swojej migracji wyłączyła się sama zamiast kończyć się PGRST204."""
+
+    def test_is_a_security_definer_with_a_fixed_search_path(self, supabase_like_conn) -> None:
+        with supabase_like_conn.cursor() as cur:
+            assert _schema_version_function_count(cur) == 1
+            cur.execute(
+                """
+                SELECT p.prosecdef, p.proconfig, p.prorettype::regtype::text
+                FROM pg_proc p WHERE p.oid = 'public.schema_version()'::regprocedure
+                """
+            )
+            security_definer, config, return_type = cur.fetchone()
+
+        assert security_definer is True
+        assert any(item.startswith("search_path=") for item in config or []), config
+        assert return_type == "integer"
+
+    def test_is_null_without_the_registry_or_with_an_empty_one(self, supabase_like_conn) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            assert _schema_version_function_count(cur) == 1
+            cur.execute("SELECT public.schema_version()")
+            without_registry = cur.fetchone()
+            _create_migration_registry(cur, [])
+            cur.execute("SELECT public.schema_version()")
+            empty_registry = cur.fetchone()
+
+        assert without_registry == (None,)
+        assert empty_registry == (None,)
+
+    def test_reads_the_highest_numeric_version_and_ignores_timestamp_versions(
+        self, supabase_like_conn
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            assert _schema_version_function_count(cur) == 1
+            _create_migration_registry(cur, ["001", "059", "070", "20240101000000"])
+            cur.execute("SELECT public.schema_version()")
+            version = cur.fetchone()
+
+        assert version == (70,)
+
+    def test_service_role_reads_it_without_access_to_the_registry(self, supabase_like_conn) -> None:
+        """SECURITY DEFINER: klucz secret nie ma USAGE na schemacie supabase_migrations."""
+        with _rolled_back(supabase_like_conn) as cur:
+            assert _schema_version_function_count(cur) == 1
+            _create_migration_registry(cur, ["001", "059"])
+            _set_role(cur, "service_role")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT version FROM supabase_migrations.schema_migrations")
+        with _rolled_back(supabase_like_conn) as cur:
+            _create_migration_registry(cur, ["001", "059"])
+            _set_role(cur, "service_role")
+            cur.execute("SELECT public.schema_version()")
+            version = cur.fetchone()
+
+        assert version == (59,)
+
+    @pytest.mark.parametrize("role", PUBLIC_API_ROLES)
+    def test_public_api_roles_cannot_execute_it(self, supabase_like_conn, role: str) -> None:
+        with supabase_like_conn.cursor() as cur:
+            assert _schema_version_function_count(cur) == 1
+            cur.execute(
+                "SELECT has_function_privilege(%s::name, 'public.schema_version()'::regprocedure, "
+                "'EXECUTE')",
+                (role,),
+            )
+            executable = cur.fetchone()[0]
+
+        assert executable is False
 
 
 @pytest.fixture
