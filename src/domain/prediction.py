@@ -157,7 +157,10 @@ class Prediction:
     created_at: datetime | None = None
 
     def is_trend_correct(
-        self, actual_price: Decimal, tolerance: Decimal | None = None
+        self,
+        actual_price: Decimal,
+        tolerance: Decimal | None = None,
+        dead_band: Decimal | None = None,
     ) -> bool:
         """Czy KIERUNEK predykcji się potwierdził.
 
@@ -165,12 +168,18 @@ class Prediction:
         None → `SIDEWAYS_TOLERANCE` (±0.5%, akcje/ETF). Dla krypto wołający
         podaje `CRYPTO_SIDEWAYS_TOLERANCE`: przy dziennej zmienności BTC 3–5%
         pasmo akcyjne uznawałoby niemal każdy dzień za ruch i zaniżało trafność.
+
+        EXP-06: `dead_band` (ułamek ceny przy predykcji) to martwa strefa kierunku —
+        BULLISH trafia dopiero przy zmianie > +pasmo, BEARISH przy < −pasmo, więc
+        +0,01% nie jest już trafieniem. None (domyślnie) i 0 to reguła sprzed
+        EXP-06; szerokość pasma żyje w protokole ewaluacji
+        (`directional_dead_zone`). SIDEWAYS ma własne pasmo (`tolerance`).
         """
+        if dead_band is not None and dead_band < 0:
+            raise ValueError(f"dead_band must be >= 0, got {dead_band}")
         actual_delta = actual_price - self.price_at_prediction
-        if self.predicted_trend == TrendDirection.BULLISH:
-            return actual_delta > 0
-        if self.predicted_trend == TrendDirection.BEARISH:
-            return actual_delta < 0
+        if self.predicted_trend in (TrendDirection.BULLISH, TrendDirection.BEARISH):
+            return self._directional_hit(actual_delta, dead_band)
         # SIDEWAYS — w granicach ±SIDEWAYS_TOLERANCE. Guard: cena bazowa 0
         # (skażony rekord) → brak punktu odniesienia. Traktujemy brak ruchu
         # jako SIDEWAYS-correct zamiast dzielić przez zero.
@@ -178,6 +187,18 @@ class Prediction:
             return actual_delta == 0
         band = SIDEWAYS_TOLERANCE if tolerance is None else tolerance
         return abs(actual_delta / self.price_at_prediction) <= band
+
+    def _directional_hit(self, actual_delta: Decimal, dead_band: Decimal | None) -> bool:
+        """BULLISH/BEARISH: znak zmiany poza martwą strefą. Bez ceny bazowej (0,
+        skażony rekord) pasma nie da się wyrazić ułamkiem — liczy się sam znak."""
+        move = actual_delta
+        band = Decimal("0")
+        if dead_band is not None and self.price_at_prediction != 0:
+            move = actual_delta / self.price_at_prediction
+            band = dead_band
+        if self.predicted_trend == TrendDirection.BULLISH:
+            return move > band
+        return move < -band
 
     def accuracy_score(self, actual_price: Decimal) -> Decimal:
         # Guard: bez ceny bazowej (0) nie da się policzyć błędu względnego —

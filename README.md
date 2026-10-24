@@ -206,8 +206,11 @@ SIDEWAYS bands and directional dead zone, the baselines, the primary metrics, α
 the adoption date and how the universe was selected. Its sha256 is part of every prediction's
 recipe and of every attestation commitment, and the public scorecard prints it, so a metric
 cannot be chosen after the results are in; a test fails when the file and the domain constants
-disagree. A new protocol is a new version with its own hash, and results scored under the old
-one stay in their own segment.
+disagree. The directional dead zone is the optional `dead_band` of `Prediction.is_trend_correct`
+(EXP-06): a BULLISH call counts only above +band and a BEARISH one only below −band, and the
+protocol's `0` is exactly the current rule, so widening it means a new protocol version. A new
+protocol is a new version with its own hash, and results scored under the old one stay in their
+own segment.
 
 **No retroactive LLM replays.** The LLM is never backtested on history: it has read the news
 and prices of the days it would be "predicting", so a replay measures memory, not forecasting,

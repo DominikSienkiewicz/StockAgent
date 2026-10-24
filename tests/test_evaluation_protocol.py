@@ -101,6 +101,20 @@ def test_directional_dead_zone_matches_the_hit_rule(protocol: EvaluationProtocol
     assert bullish.is_trend_correct(flat + Decimal("0.0001")) is True
 
 
+def test_protocol_dead_zone_is_the_dead_band_of_the_hit_rule(
+    protocol: EvaluationProtocol,
+) -> None:
+    # EXP-06: szerokość martwej strefy żyje w protokole; jego wartość podana jako
+    # `dead_band` daje dokładnie regułę, którą liczy dziś reflect (bez pasma).
+    flat = Decimal("100")
+    for trend in (TrendDirection.BULLISH, TrendDirection.BEARISH):
+        call = Prediction("X", trend, price_at_prediction=flat, predicted_target_price=flat)
+        for actual in (Decimal("99.99"), flat, Decimal("100.01")):
+            assert call.is_trend_correct(
+                actual, dead_band=protocol.directional_dead_zone
+            ) is call.is_trend_correct(actual)
+
+
 def test_sideways_stays_out_of_the_directional_hit_rate(protocol: EvaluationProtocol) -> None:
     assert protocol.sideways_in_hit_rate is False
     assert directional_hit_rate([("SIDEWAYS", True)]).directional == 0

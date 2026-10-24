@@ -78,6 +78,69 @@ class TestIsTrendCorrect:
         assert prediction.is_trend_correct(Decimal("99.0")) is False
 
 
+class TestDeadBand:
+    """EXP-06: martwa strefa kierunku — trafienie BULLISH przy +0,01% to szum.
+    Domyślnie (`dead_band=None`) reguła bez zmian; szerokość pasma żyje w protokole
+    ewaluacji (`directional_dead_zone` w evaluation_protocol.toml)."""
+
+    def test_bullish_inside_dead_band_is_not_a_hit(self) -> None:
+        prediction = _make_prediction(TrendDirection.BULLISH)
+
+        assert prediction.is_trend_correct(Decimal("100.01")) is True
+        assert prediction.is_trend_correct(Decimal("100.01"), dead_band=Decimal("0.001")) is False
+
+    def test_bearish_inside_dead_band_is_not_a_hit(self) -> None:
+        prediction = _make_prediction(TrendDirection.BEARISH)
+
+        assert prediction.is_trend_correct(Decimal("99.99"), dead_band=Decimal("0.001")) is False
+
+    def test_moves_beyond_the_dead_band_are_hits(self) -> None:
+        band = Decimal("0.001")
+
+        assert _make_prediction(TrendDirection.BULLISH).is_trend_correct(
+            Decimal("100.2"), dead_band=band
+        )
+        assert _make_prediction(TrendDirection.BEARISH).is_trend_correct(
+            Decimal("99.8"), dead_band=band
+        )
+
+    def test_a_move_exactly_on_the_edge_stays_inside(self) -> None:
+        band = Decimal("0.001")
+
+        assert not _make_prediction(TrendDirection.BULLISH).is_trend_correct(
+            Decimal("100.1"), dead_band=band
+        )
+        assert not _make_prediction(TrendDirection.BEARISH).is_trend_correct(
+            Decimal("99.9"), dead_band=band
+        )
+
+    def test_zero_band_is_todays_rule(self) -> None:
+        for trend in (TrendDirection.BULLISH, TrendDirection.BEARISH):
+            prediction = _make_prediction(trend)
+            for actual in ("99.99", "100.0", "100.01"):
+                price = Decimal(actual)
+                assert prediction.is_trend_correct(
+                    price, dead_band=Decimal("0")
+                ) is prediction.is_trend_correct(price)
+
+    def test_sideways_keeps_its_own_band(self) -> None:
+        prediction = _make_prediction(TrendDirection.SIDEWAYS)
+
+        assert prediction.is_trend_correct(Decimal("100.4"), dead_band=Decimal("0.01")) is True
+        assert prediction.is_trend_correct(Decimal("101.0"), dead_band=Decimal("0.01")) is False
+
+    def test_zero_base_price_falls_back_to_the_raw_move(self) -> None:
+        prediction = _make_prediction(TrendDirection.BULLISH, price_at=Decimal("0"))
+
+        assert prediction.is_trend_correct(Decimal("0.01"), dead_band=Decimal("0.001")) is True
+
+    def test_negative_band_is_rejected(self) -> None:
+        prediction = _make_prediction(TrendDirection.BULLISH)
+
+        with pytest.raises(ValueError, match="dead_band"):
+            prediction.is_trend_correct(Decimal("101"), dead_band=Decimal("-0.001"))
+
+
 class TestAccuracyScore:
     def test_perfect_prediction_scores_one(self) -> None:
         prediction = _make_prediction(
