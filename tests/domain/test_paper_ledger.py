@@ -175,4 +175,32 @@ class TestLedgerCosts:
         assert costs.for_asset(None) == Decimal("10")
 
 
+class TestHeadPublication:
+    def test_head_record_names_the_day_the_position_and_the_hash(self) -> None:
+        from datetime import date
+
+        from src.domain.paper_ledger import LedgerHead, head_record
+
+        record = head_record(LedgerHead(seq=42, row_hash="a" * 64), date(2026, 10, 19))
+
+        assert record == {
+            "kind": "paper_ledger_head",
+            "ledger_version": 1,
+            "published_on": "2026-10-19",
+            "seq": 42,
+            "head": "a" * 64,
+        }
+
+    def test_head_is_published_once_a_day(self) -> None:
+        from datetime import date
+
+        from src.domain.paper_ledger import should_publish_head
+
+        today = date(2026, 10, 19)
+
+        assert should_publish_head(None, today) is True
+        assert should_publish_head(date(2026, 10, 16), today) is True
+        assert should_publish_head(today, today) is False
+
+
 GOLDEN_FIRST_ROW_HASH = "85111c38202501c1669a18530888dea152b2890f8e11a638f07bc5e5852f90f3"

@@ -1243,6 +1243,21 @@ class AttestationLedgerPort(ABC):
         z których reveal bierze ścieżkę dowodu. Brak pliku = pusty ledger."""
 
 
+class LedgerHeadPublisherPort(ABC):
+    """WIA-59 — publikacja głowy paper ledgera (append-only JSONL obok atestacji).
+
+    Lustro `AttestationPublisherPort`: publikacja zwraca ścieżkę albo "" (błąd);
+    awaria publikacji NIGDY nie wywala cyklu."""
+
+    @abstractmethod
+    def last_published_on(self) -> date | None:
+        """Dzień ostatniej opublikowanej głowy; brak pliku, wpisu albo nieczytelny
+        wpis → None."""
+
+    @abstractmethod
+    def publish_head(self, record: Mapping[str, Any]) -> str: ...
+
+
 class WebPublisherPort(ABC):
     """Publikacja strony HTML jako statyczny artefakt web (publiczny scorecard #10).
     Zwraca URL/ścieżkę albo "" gdy wyłączone / błąd (publikacja nigdy nie

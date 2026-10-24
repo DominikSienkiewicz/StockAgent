@@ -18,7 +18,7 @@ import os
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import NamedTuple
@@ -146,6 +146,7 @@ from src.application.use_cases.portfolio_risk import (
     PortfolioRiskUseCase,
     PositionRisk,
 )
+from src.application.use_cases.publish_paper_ledger_head import PublishPaperLedgerHeadUseCase
 from src.application.use_cases.publish_public_scorecard import (
     PublicScorecardOptions,
     PublishPublicScorecardUseCase,
@@ -802,6 +803,26 @@ def attestation_reveals(
     return RevealAttestationsUseCase(
         repository, build_attestation_publisher(settings), build_attestation_ledger(settings)
     )
+
+
+def publish_paper_ledger_head(
+    settings: Settings, repository: RepositoryPort, *, today: date
+) -> str:
+    """WIA-59: głowa paper ledgera do `paper_ledger_heads_path`, raz dziennie.
+
+    Tylko z ledgerem i atestacją (plik leży w checkoucie `attestation-log`, który
+    wypycha workflow) oraz z zapisem do bazy — lokalny run tylko do odczytu (BEZ-08)
+    nie publikuje głowy produkcyjnego łańcucha."""
+    from src.infrastructure.adapters.ledger_head_publisher import FileLedgerHeadPublisher
+
+    if not (
+        settings.paper_ledger_enabled
+        and settings.attestation_enabled
+        and settings.db_writes_enabled
+    ):
+        return ""
+    publisher = FileLedgerHeadPublisher(settings.paper_ledger_heads_path)
+    return PublishPaperLedgerHeadUseCase(repository, publisher).run(today)
 
 
 def build_options_port(
@@ -3250,6 +3271,8 @@ def _run_fast_loop(
     cost = cycle_cost(settings, use_case.telemetry, usage_ledger)
     # WIA-49: po pętli (reflect już ocenił, co mógł) — darmowy zapis flag.
     expired_unverified = _expire_stale_predictions(settings, repository, all_symbols)
+    # WIA-59: głowa paper ledgera raz dziennie obok atestacji — po zapisach cyklu.
+    publish_paper_ledger_head(settings, repository, today=started_at.date())
 
     # ---- Wysyłka raportu ----
     delivered = _dispatch_reports(

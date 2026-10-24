@@ -282,6 +282,8 @@ public_status_page_enabled = false
 public_status_path = "public/scorecard/status/index.html"
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"
+# WIA-59: głowa paper ledgera (`paper_ledger_enabled`) raz dziennie, obok ledgera atestacji.
+paper_ledger_heads_path = "public/attestation/paper_ledger_heads.jsonl"
 track_record_days = 30
 # WIA-50: jednostronny koszt transakcyjny paper-PnL i backtestu (bps od obrotu),
 # naliczany tylko przy zmianie pozycji symbolu (wejście/wyjście 1×, odwrócenie 2×).

@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from typing import Any
@@ -209,3 +209,24 @@ class LedgerHead:
 
     seq: int
     row_hash: str
+
+
+# Rodzaj linii w `paper_ledger_heads.jsonl` — odróżnia ją od linii atestacji.
+LEDGER_HEAD_KIND = "paper_ledger_head"
+
+
+def head_record(head: LedgerHead, published_on: date) -> dict[str, Any]:
+    """Linia publikacji głowy: dzień, pozycja w łańcuchu i hash. Opublikowana głowa
+    kotwiczy każdy wiersz przed nią — podmiana któregokolwiek zmieniłaby ten hash."""
+    return {
+        "kind": LEDGER_HEAD_KIND,
+        "ledger_version": LEDGER_VERSION,
+        "published_on": published_on.isoformat(),
+        "seq": head.seq,
+        "head": head.row_hash,
+    }
+
+
+def should_publish_head(last_published_on: date | None, today: date) -> bool:
+    """Głowa idzie raz dziennie: pierwszy przebieg dnia publikuje, kolejne nie."""
+    return last_published_on is None or last_published_on < today

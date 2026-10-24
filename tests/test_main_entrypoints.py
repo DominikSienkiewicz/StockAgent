@@ -7779,6 +7779,50 @@ class TestPaperLedgerWiring:
         assert flags.paper_ledger_curve_enabled is enabled
 
 
+class TestPaperLedgerHeadPublication:
+    """WIA-59: głowa ledgera raz dziennie obok atestacji — tylko z ledgerem, atestacją
+    i zapisem do bazy (lokalny run tylko do odczytu jej nie publikuje)."""
+
+    _ON = {"paper_ledger_enabled": True, "attestation_enabled": True, "db_writes_enabled": True}
+
+    @staticmethod
+    def _repo() -> MagicMock:
+        from src.domain.paper_ledger import LedgerHead
+
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_paper_ledger_head.return_value = LedgerHead(seq=3, row_hash="c" * 64)
+        return repo
+
+    def test_publishes_the_head_next_to_the_attestation_ledger(self, settings, tmp_path) -> None:
+        import json
+        from datetime import date
+
+        path = tmp_path / "paper_ledger_heads.jsonl"
+        settings = settings.model_copy(
+            update={**self._ON, "paper_ledger_heads_path": str(path)}
+        )
+
+        main_agent.publish_paper_ledger_head(settings, self._repo(), today=date(2026, 10, 19))
+        main_agent.publish_paper_ledger_head(settings, self._repo(), today=date(2026, 10, 19))
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        assert [json.loads(line)["head"] for line in lines] == ["c" * 64]
+
+    @pytest.mark.parametrize("off", list(_ON))
+    def test_any_flag_off_publishes_nothing(self, settings, tmp_path, off: str) -> None:
+        from datetime import date
+
+        path = tmp_path / "paper_ledger_heads.jsonl"
+        settings = settings.model_copy(
+            update={**self._ON, off: False, "paper_ledger_heads_path": str(path)}
+        )
+        repo = self._repo()
+
+        assert main_agent.publish_paper_ledger_head(settings, repo, today=date(2026, 10, 19)) == ""
+        assert not path.exists()
+        repo.get_paper_ledger_head.assert_not_called()
+
+
 class TestReportReads:
     """ARCH-16: okno track recordu czytane RAZ na dispatch — rozliczenia i próbki
     kalibracji biorą wszystkie sekcje maila i publiczny scorecard."""

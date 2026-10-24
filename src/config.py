@@ -195,6 +195,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
+    # WIA-59: plik głów paper ledgera obok ledgera atestacji — publikacja, nie prognoza.
+    "paper_ledger_heads_path",
     # Inne joby i trening (wagi → `model_version`).
     "shock_alerts_enabled",
     "liveness_fast_loop_max_gap_h",
@@ -798,6 +800,9 @@ class Settings(BaseSettings):
     public_status_path: str = "public/scorecard/status/index.html"
     attestation_commitments_path: str = "public/attestation/commitments.jsonl"
     attestation_reveals_path: str = "public/attestation/reveals.jsonl"
+    # WIA-59: append-only JSONL z głową paper ledgera, raz dziennie (`paper_ledger_enabled`
+    # i `attestation_enabled`) — w katalogu checkoutu gałęzi `attestation-log`.
+    paper_ledger_heads_path: str = "public/attestation/paper_ledger_heads.jsonl"
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
     # WIA-50: jednostronny koszt transakcyjny (bps od obrotu) w paper-PnL,
