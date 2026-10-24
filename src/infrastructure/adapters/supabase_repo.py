@@ -14,7 +14,7 @@ import httpx
 from postgrest.exceptions import APIError
 from supabase import create_client
 
-from src.application.errors import NotFound, PortError, ProviderUnavailable
+from src.application.errors import MalformedPayload, NotFound, PortError, ProviderUnavailable
 from src.application.ports import (
     CycleRun,
     DeferredDiagnosis,
@@ -1776,6 +1776,18 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         response = self._client.table("price_snapshots").select("timestamp").limit(1).execute()
         if not isinstance(response.data, list):
             raise RuntimeError("Supabase: odpowiedź bez listy wierszy price_snapshots")
+
+    @_translates_api_errors
+    def schema_version(self) -> int | None:
+        """NIEZ-30: RPC `schema_version` (migracja 071) — najwyższa zaaplikowana migracja.
+        NULL z bazy (rejestr Supabase CLI nieobecny albo pusty) to None, nie 0. Brak
+        funkcji (PGRST202) wychodzi jako `NotFound`, awaria bazy jako `ProviderUnavailable`."""
+        data = self._client.rpc("schema_version").execute().data
+        if data is None:
+            return None
+        if isinstance(data, bool) or not isinstance(data, int):
+            raise MalformedPayload(f"schema_version zwróciło {type(data).__name__}, nie liczbę")
+        return data
 
     def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
         """FIN-05: select `limit 0` po `columns`. PostgREST zgłasza jedną brakującą

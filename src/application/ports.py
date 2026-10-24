@@ -645,6 +645,13 @@ class RepositoryPort(ABC):
         aktywności, a wtedy każdy job pada na połączeniu. Wyjątek = baza nie odpowiada."""
 
     @abstractmethod
+    def schema_version(self) -> int | None:
+        """NIEZ-30 — numer najnowszej zaaplikowanej migracji (RPC `schema_version`,
+        migracja 071). None = baza nie umie tego powiedzieć (rejestru migracji nie ma
+        albo jest pusty); wołający traktuje to jak „nie wiem”, nigdy jak 0.
+        Brak funkcji (071 niezaaplikowana) albo baza nie odpowiada leci `PortError`."""
+
+    @abstractmethod
     def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
         """FIN-05 — które z `columns` nie istnieją w `prediction_logs` (select bez
         wierszy). Brak kolumny to wyłącznie kod 42703; każdy inny błąd (sieć, timeout,

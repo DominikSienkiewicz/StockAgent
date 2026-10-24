@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
+from src.application.errors import NotFound, ProviderUnavailable
 from src.application.ports import RepositoryPort, StoredShockAlert
 from src.domain.prediction import TrendDirection
 from src.domain.value_objects import FUNDAMENTALS_CACHE_TTL_HOURS, Fundamentals, Money
@@ -4339,6 +4340,55 @@ class TestMissingPredictionColumns:
 
         with pytest.raises(APIError):
             repo.missing_prediction_columns(frozenset({"symbol"}))
+
+
+class TestSchemaVersion:
+    """NIEZ-30: RPC `schema_version` (migracja 071) mówi, do której migracji sięga baza.
+    NULL to „nie wiem”, nie zero; brak funkcji i awaria bazy lecą taksonomią portów."""
+
+    @staticmethod
+    def _execute(client: MagicMock) -> MagicMock:
+        return client.rpc.return_value.execute
+
+    def test_returns_the_applied_migration_number(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._execute(mock_client).return_value = MagicMock(data=70)
+
+        assert repo.schema_version() == 70
+        mock_client.rpc.assert_called_once_with("schema_version")
+
+    def test_null_is_unknown_not_zero(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._execute(mock_client).return_value = MagicMock(data=None)
+
+        assert repo.schema_version() is None
+
+    @pytest.mark.parametrize("payload", ["70", [], {"version": 70}, True, 70.5])
+    def test_a_payload_that_is_not_an_integer_is_malformed(
+        self, repo: SupabaseRepository, mock_client: MagicMock, payload: object
+    ) -> None:
+        from src.application.errors import MalformedPayload
+
+        self._execute(mock_client).return_value = MagicMock(data=payload)
+
+        with pytest.raises(MalformedPayload):
+            repo.schema_version()
+
+    @pytest.mark.parametrize(
+        ("code", "kind"),
+        [("PGRST202", NotFound), ("42883", NotFound), ("PGRST002", ProviderUnavailable)],
+    )
+    def test_api_errors_leave_as_the_port_taxonomy(
+        self, repo: SupabaseRepository, mock_client: MagicMock, code: str, kind: type[Exception]
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        self._execute(mock_client).side_effect = APIError({"code": code, "message": "boom"})
+
+        with pytest.raises(kind):
+            repo.schema_version()
 
 
 class TestEarningsCache:
