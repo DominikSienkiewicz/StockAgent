@@ -28,6 +28,9 @@ from src.application.report_formatting import (
     escape as _html,
 )
 from src.application.report_formatting import (
+    number as _number,
+)
+from src.application.report_formatting import (
     pct as _pct,
 )
 from src.application.report_formatting import (
@@ -35,8 +38,9 @@ from src.application.report_formatting import (
 )
 from src.application.report_models import SymbolResult
 from src.application.reporting.section import ReportSection, SectionInput
-from src.domain.asset import REFERENCE_MAX_AGE_HOURS
+from src.domain.asset import REFERENCE_MAX_AGE_HOURS, is_near_threshold
 from src.domain.cycle_maturity import SkipReason
+from src.domain.value_objects import Ratio
 
 # ---------------------------------------------------------------------------
 # FIN-14: nowy punkt odniesienia
@@ -161,34 +165,102 @@ def _render_budget_exhausted_text(ignored: list[SymbolResult]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _render_ignored_html(ignored: list[SymbolResult]) -> str:
-    """⏸ Symbole pominięte poniżej progu zmienności. Pusty string, gdy brak.
-    FIN-14: symbole z nowym punktem odniesienia mają własną sekcję; FIN-12: symbole
-    odcięte budżetem cyklu też."""
-    ignored = [r for r in ignored if not is_rebaselined(r) and not is_budget_cut(r)]
-    if not ignored:
+# MAIL-18: etykieta wiersza ruchów blisko progu (`NEAR_THRESHOLD_SHARE` z domeny).
+NEAR_THRESHOLD_TITLE = "Blisko progu (≥ 75%)"
+_MUTED_STYLE = "color: #6b7280;"
+
+
+def _threshold_label(r: SymbolResult) -> str:
+    """MAIL-18: „próg 2,0%”, a gdy reżim albo earnings podniosły próg —
+    „próg 3,0% (×1,5 reżim)”. Pusty string, gdy wynik nie niesie progu."""
+    if r.effective_threshold is None:
         return ""
-    rows = "".join(
+    label = f"próg {_pct(r.effective_threshold, decimals=1)}"
+    multiplier = r.regime_multiplier * r.earnings_multiplier
+    if multiplier <= 1.0:
+        return label
+    causes = " · ".join(
+        cause
+        for cause, factor in (("reżim", r.regime_multiplier), ("earnings", r.earnings_multiplier))
+        if factor > 1.0
+    )
+    return f"{label} (×{_number(multiplier, decimals=1)} {causes})"
+
+
+def _is_near(r: SymbolResult) -> bool:
+    if r.delta is None or r.effective_threshold is None:
+        return False
+    return is_near_threshold(Ratio(r.delta), Ratio(r.effective_threshold))
+
+
+def _ignored_chip_html(r: SymbolResult) -> str:
+    threshold = _threshold_label(r)
+    threshold_html = (
+        f" <span style='{_MUTED_STYLE}'>/ {_html(threshold)}</span>" if threshold else ""
+    )
+    return (
         "<span style='display: inline-block; padding: 2px 8px; margin: 2px; "
         "background: #f3f4f6; border-radius: 3px; font-size: 12px;'>"
         f"<strong>{_html(r.symbol)}</strong> "
-        f"<span style='color: {_delta_color(r.delta)}'>{direction_pct(r.delta)}</span></span>"
-        for r in ignored
+        f"<span style='color: {_delta_color(r.delta)}'>{direction_pct(r.delta)}</span>"
+        f"{threshold_html}</span>"
+    )
+
+
+def _ignored_chip_text(r: SymbolResult) -> str:
+    threshold = _threshold_label(r)
+    suffix = f" / {threshold}" if threshold else ""
+    return f"{r.symbol}({_pct(r.delta)}{suffix})"
+
+
+def _below_threshold(ignored: list[SymbolResult]) -> list[SymbolResult]:
+    """Symbole pominięte poniżej progu: FIN-14 (nowy punkt odniesienia) i FIN-12
+    (odcięte budżetem cyklu) mają własne sekcje."""
+    return [r for r in ignored if not is_rebaselined(r) and not is_budget_cut(r)]
+
+
+def _render_ignored_html(ignored: list[SymbolResult]) -> str:
+    """⏸ Symbole pominięte poniżej progu zmienności. Pusty string, gdy brak.
+    MAIL-18: chip niesie próg efektywny, a ruchy od 75% progu idą też do
+    wiersza „Blisko progu”."""
+    ignored = _below_threshold(ignored)
+    if not ignored:
+        return ""
+    rows = "".join(_ignored_chip_html(r) for r in ignored)
+    near = [r for r in ignored if _is_near(r)]
+    near_html = (
+        "<div style='font-size: 12px; margin: 6px 0 0 0;'>"
+        f"<strong>{NEAR_THRESHOLD_TITLE}:</strong> "
+        + _html(", ".join(_ignored_chip_text(r) for r in near))
+        + "</div>"
+        if near
+        else ""
     )
     return (
         _section_h2("⏸ Pominięte (poniżej progu zmienności)")
-        + f"<div>{rows}</div>"
+        + f"<div>{rows}</div>{near_html}"
     )
 
 
 def _render_ignored_text(ignored: list[SymbolResult]) -> list[str]:
-    """Sekcja 'Pominięte' (plain). Pusta lista, gdy brak. FIN-14: bez symboli
-    z nowym punktem odniesienia (mają własną sekcję); FIN-12: bez odciętych budżetem."""
-    ignored = [r for r in ignored if not is_rebaselined(r) and not is_budget_cut(r)]
+    """Sekcja 'Pominięte' (plain). Pusta lista, gdy brak — te same grupy co HTML."""
+    ignored = _below_threshold(ignored)
     if not ignored:
         return []
-    ignored_str = ", ".join(f"{r.symbol}({_pct(r.delta)})" for r in ignored)
-    return ["POMINIĘTE (poniżej progu zmienności)", "-" * 64, f"  {ignored_str}", ""]
+    ignored_str = ", ".join(_ignored_chip_text(r) for r in ignored)
+    near = [r for r in ignored if _is_near(r)]
+    near_lines = (
+        [f"  {NEAR_THRESHOLD_TITLE}: {', '.join(_ignored_chip_text(r) for r in near)}"]
+        if near
+        else []
+    )
+    return [
+        "POMINIĘTE (poniżej progu zmienności)",
+        "-" * 64,
+        f"  {ignored_str}",
+        *near_lines,
+        "",
+    ]
 
 
 _ERROR_ROW_STYLE = (

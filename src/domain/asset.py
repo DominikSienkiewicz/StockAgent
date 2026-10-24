@@ -115,6 +115,20 @@ def effective_threshold(
     return Threshold(chosen.value * Decimal(str(multiplier)))
 
 
+# MAIL-18: ruch od tej części progu efektywnego (włącznie), ale wciąż pod progiem,
+# mail pokazuje jako „blisko progu” — kandydat na analizę w następnym cyklu.
+NEAR_THRESHOLD_SHARE = Decimal("0.75")
+
+
+def is_near_threshold(delta: Ratio, threshold: Ratio) -> bool:
+    """MAIL-18: |Δ| w przedziale [75% progu, próg) — ruch pod bramką, ale blisko
+    niej. Zerowy próg nie ma „blisko” (każdy ruch przechodzi bramkę)."""
+    if threshold <= 0:
+        return False
+    move = abs(delta)
+    return NEAR_THRESHOLD_SHARE * threshold <= move < threshold
+
+
 def drift_reference(
     last_prediction: tuple[datetime, Decimal] | None,
     history: Sequence[tuple[datetime, Decimal]],

@@ -684,7 +684,17 @@ def to_symbol_result(
         feature_attribution=tuple(raw.get("feature_attribution") or ()),
         ml_cold_start=bool(raw.get("ml_cold_start", False)),
         move_interval=_move_interval_of(raw),
+        # MAIL-18: próg efektywny wyniku 'ignored' i mnożniki, które go podniosły.
+        effective_threshold=_as_decimal(raw.get("effective_threshold")),
+        regime_multiplier=_multiplier_of(raw, "regime_multiplier"),
+        earnings_multiplier=_multiplier_of(raw, "earnings_multiplier"),
     )
+
+
+def _multiplier_of(raw: dict[str, Any], key: str) -> float:
+    """MAIL-18: mnożnik progu ze stanu grafu; brak albo zniekształcony = 1.0."""
+    value = raw.get(key)
+    return float(value) if isinstance(value, int | float) and value > 0 else 1.0
 
 
 def _move_interval_of(raw: dict[str, Any]) -> MoveInterval | None:

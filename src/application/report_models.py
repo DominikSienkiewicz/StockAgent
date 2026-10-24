@@ -102,6 +102,11 @@ class SymbolResult:
     # ML-34: przedział 80% zwrotu do rozliczenia (conformal + ACI). None = cykl
     # bez przedziału (brak okna kalibracyjnego) → renderer pomija linię.
     move_interval: MoveInterval | None = None
+    # MAIL-18: próg EFEKTYWNY bramki (ułamek) dla wyniku 'ignored' i mnożniki,
+    # które go podniosły (reżim #7, earnings #6). None = wynik spoza bramki.
+    effective_threshold: Decimal | None = None
+    regime_multiplier: float = 1.0
+    earnings_multiplier: float = 1.0
 
     @property
     def expected_change(self) -> Decimal | None:

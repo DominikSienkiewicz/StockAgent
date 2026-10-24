@@ -3979,3 +3979,85 @@ class TestRegimeChangeLead:
         )
 
         assert build_cycle_lead([], ReportContext(regime=banner)) == []
+
+
+class TestIgnoredEffectiveThreshold:
+    """MAIL-18: ⏸ Pominięte mówi, z jakim progiem porównano ruch, które ruchy były
+    blisko progu i o ile reżim albo earnings podniosły próg."""
+
+    _AT = datetime(2026, 10, 15, 10, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _ignored(symbol: str, delta: str, threshold: str | None, **kwargs) -> SymbolResult:
+        return SymbolResult(
+            symbol=symbol,
+            status="ignored",
+            delta=Decimal(delta),
+            effective_threshold=None if threshold is None else Decimal(threshold),
+            **kwargs,
+        )
+
+    def test_ignored_chip_shows_effective_threshold(self):
+        html, text = build_html_report(
+            [self._ignored("AAPL", "0.012", "0.02")], self._AT, 1.0
+        )
+
+        ignored_html = html.split("⏸ Pominięte")[1]
+        assert "AAPL" in ignored_html
+        assert "próg 2,0%" in ignored_html
+        assert "AAPL(1,20% / próg 2,0%)" in text
+
+    def test_near_threshold_row_lists_moves_from_three_quarters_of_the_threshold(self):
+        html, text = build_html_report(
+            [
+                self._ignored("AAPL", "0.016", "0.02"),
+                self._ignored("MSFT", "0.004", "0.02"),
+            ],
+            self._AT,
+            1.0,
+        )
+
+        assert "Blisko progu (≥ 75%)" in html
+        near_html = html.split("Blisko progu (≥ 75%)")[1]
+        assert "AAPL" in near_html
+        assert "MSFT" not in near_html
+        near_text = text.split("Blisko progu (≥ 75%)")[1].splitlines()[0]
+        assert "AAPL" in near_text
+        assert "MSFT" not in near_text
+
+    def test_raised_threshold_shows_multiplier_and_its_cause(self):
+        html, text = build_html_report(
+            [
+                self._ignored("AAPL", "0.012", "0.03", regime_multiplier=1.5),
+                self._ignored("NVDA", "0.012", "0.026", earnings_multiplier=1.3),
+            ],
+            self._AT,
+            1.0,
+        )
+
+        assert "próg 3,0% (×1,5 reżim)" in html
+        assert "próg 2,6% (×1,3 earnings)" in html
+        assert "próg 3,0% (×1,5 reżim)" in text
+
+    def test_ignored_without_threshold_renders_as_before(self):
+        html, text = build_html_report([self._ignored("MSFT", "0.005", None)], self._AT, 1.0)
+
+        assert "próg" not in html.split("⏸ Pominięte")[1]
+        assert "Blisko progu" not in html
+        assert "MSFT(0,50%)" in text
+
+    def test_mapper_carries_threshold_and_multipliers_of_ignored_state(self):
+        raw = {
+            "status": "ignored",
+            "delta": Decimal("0.012"),
+            "previous_price": Decimal("100"),
+            "effective_threshold": Decimal("0.03"),
+            "regime_multiplier": 1.5,
+            "earnings_multiplier": 1.0,
+        }
+
+        result = to_symbol_result("AAPL", raw, now=self._AT)
+
+        assert result.effective_threshold == Decimal("0.03")
+        assert result.regime_multiplier == pytest.approx(1.5)
+        assert result.earnings_multiplier == pytest.approx(1.0)
