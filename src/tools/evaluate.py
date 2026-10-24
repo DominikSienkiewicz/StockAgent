@@ -305,12 +305,6 @@ def summarize_evaluation(
     directional = directional_hit_rate(
         (str(r.get("predicted_trend")), bool(r["is_trend_correct"])) for r in flagged
     )
-    sideways_count = sum(
-        1
-        for r in rows
-        if r.get("is_trend_correct") is not None
-        and str(r.get("predicted_trend")).upper() == "SIDEWAYS"
-    )
 
     model_errors: list[float] = []
     baseline_errors: list[float] = []
@@ -340,7 +334,7 @@ def summarize_evaluation(
         beats_baseline=beats_baseline,
         directional_hit_rate=directional.rate,
         directional_count=directional.directional,
-        sideways_count=sideways_count,
+        sideways_count=directional.sideways,
         evidence=(
             assess_directional_hit_rate([_scored_call(r) for r in flagged]) if flagged else None
         ),

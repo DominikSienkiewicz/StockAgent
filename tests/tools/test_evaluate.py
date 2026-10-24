@@ -128,6 +128,39 @@ class TestDirectionalHitRateSplit:
         assert report.sideways_count == 0
 
 
+class TestOneHitRateDefinition:
+    """WIA-63: evaluate.py liczy kierunkowość jedną funkcją domenową
+    (`directional_hit_rate`) — SIDEWAYS i etykieta bez zakładu nie wchodzą do
+    hit-rate'u kierunkowego, a ich liczba pochodzi z tej samej definicji."""
+
+    def test_sideways_and_unknown_labels_stay_out_of_the_directional_rate(self):
+        rows = [
+            _row("BULLISH", True, 100, 105, 106),
+            _row("BEARISH", False, 100, 95, 101),
+            _row("SIDEWAYS", True, 100, 100, 100.1),
+            _row(" sideways ", True, 100, 100, 99.9),
+            _row("NEUTRAL", True, 100, 100, 100.0),
+        ]
+
+        report = summarize_evaluation(rows)
+
+        assert report.directional_hit_rate == 1 / 2
+        assert report.directional_count == 2
+
+    def test_sideways_count_follows_the_domain_definition(self):
+        # Etykieta spoza BULLISH/BEARISH nie stawia zakładu kierunkowego — domena
+        # liczy ją jako brak zakładu, więc raport nie może jej gubić ani liczyć inaczej.
+        rows = [
+            _row("BULLISH", True, 100, 105, 106),
+            _row(" sideways ", True, 100, 100, 99.9),
+            _row("NEUTRAL", True, 100, 100, 100.0),
+        ]
+
+        report = summarize_evaluation(rows)
+
+        assert report.sideways_count == 2
+
+
 class TestSignificanceVerdict:
     """WIA-22: ewaluacja offline mówi, czy trafność kierunkowa bije najlepszy
     naiwny baseline na tym samym zbiorze — nie tylko goły procent."""
