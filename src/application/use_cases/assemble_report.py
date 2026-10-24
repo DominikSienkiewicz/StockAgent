@@ -237,6 +237,17 @@ def data_coverage(
     )
 
 
+def expired_in_window(flags: ReportFlags, repository: RepositoryPort, this_run: int) -> int:
+    """WIA-49 — wygasłe bez oceny z całego okna track recordu, nie tylko z bieżącego
+    przebiegu (`this_run`). Odczyt graceful w adapterze (0 przy błędzie); wynik spoza
+    kontraktu portu (nie liczba) to brak danych, jak w `watch`, więc zostaje `this_run`,
+    a to, co przebieg właśnie oznaczył, nigdy nie spada poniżej własnej liczby."""
+    window = repository.count_expired_unverified(flags.track_record_days)
+    if not isinstance(window, int):
+        return this_run
+    return max(this_run, window)
+
+
 # WIA-45: okno zapisanych głosów, z którego liczymy redundancję rady.
 COUNCIL_REDUNDANCY_DAYS = 30
 
@@ -643,6 +654,7 @@ class ReportAssembler:
         )
         report_context = dataclasses.replace(
             context,
+            expired_unverified=expired_in_window(flags, repository, context.expired_unverified),
             accuracy_stats=accuracy_stats,
             resolved_predictions=resolved,
             resolved_this_cycle=resolved_since is not None,

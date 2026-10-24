@@ -118,6 +118,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_persona_vote_outcomes",
         "get_persona_scoring",
         "get_council_vote_samples",
+        "count_expired_unverified",
         "get_deferred_diagnoses",
         "get_resolved_predictions_detailed",
         "get_settled_moves",
@@ -262,6 +263,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_council_vote_samples(self, window_days: int = 30) -> list[CouncilVoteSample]:
         return self._delegate.get_council_vote_samples(window_days=window_days)
+
+    def count_expired_unverified(self, days: int) -> int:
+        return self._delegate.count_expired_unverified(days)
 
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
         return self._delegate.get_deferred_diagnoses(limit)

@@ -4358,6 +4358,63 @@ def test_expire_without_stale_rows_writes_nothing(
     mock_client.table.return_value.update.assert_not_called()
 
 
+def _expired_count_builder(mock_client: MagicMock) -> MagicMock:
+    chain = mock_client.table.return_value
+    return (
+        chain.select.return_value.gte.return_value.is_.return_value.contains.return_value
+        .order.return_value
+    )
+
+
+class TestCountExpiredUnverified:
+    """WIA-49: liczba wygasłych z całego okna track recordu — wiersze oznaczone we
+    wcześniejszych przebiegach, nie tylko w bieżącym."""
+
+    def test_counts_rows_flagged_in_earlier_runs_within_the_window(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_paginated_response(
+            _expired_count_builder(mock_client), [[{"id": "a"}, {"id": "b"}, {"id": "c"}]]
+        )
+        before = datetime.now(UTC)
+
+        count = repo.count_expired_unverified(days=30)
+
+        assert count == 3
+        chain = mock_client.table.return_value
+        chain.select.assert_called_once_with("id")
+        column, cutoff = chain.select.return_value.gte.call_args.args
+        assert column == "timestamp"
+        assert datetime.fromisoformat(cutoff) <= before - timedelta(days=30) + timedelta(seconds=5)
+        chain.select.return_value.gte.return_value.is_.assert_called_once_with(
+            "actual_price_after_12h", "null"
+        )
+        contains = chain.select.return_value.gte.return_value.is_.return_value.contains
+        contains.assert_called_once_with("data_quality_flags", '["expired_unverified"]')
+
+    def test_no_flagged_rows_count_zero(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_paginated_response(_expired_count_builder(mock_client), [[]])
+
+        assert repo.count_expired_unverified(days=30) == 0
+
+    def test_database_error_degrades_to_zero_with_a_warning(
+        self, repo: SupabaseRepository, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        builder = _expired_count_builder(mock_client)
+        builder.range.return_value.execute.side_effect = APIError(
+            {"code": "PGRST000", "message": "down"}
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert repo.count_expired_unverified(days=30) == 0
+
+        assert "expired" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # WIA-56: odczyt kwitów decyzyjnych (migracja 020)
 # ---------------------------------------------------------------------------

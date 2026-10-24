@@ -480,7 +480,8 @@ class ReportContext:
     # WIA-35: trafność kierunkowa per symbol z okna track recordu — chip przy
     # predykcji i sygnale. None = mail bez chipów.
     symbol_track_record: SymbolTrackRecordView | None = None
-    # WIA-49: predykcje, które ten cykl oznaczył jako wygasłe bez oceny.
+    # WIA-49: predykcje wygasłe bez oceny — `main_agent` podaje liczbę z tego przebiegu,
+    # a `ReportAssembler` podnosi ją do liczby z okna track recordu.
     expired_unverified: int = 0
     # MAIL-14: strefa (IANA) czasu startu cyklu w nagłówku HTML i tekstu.
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE

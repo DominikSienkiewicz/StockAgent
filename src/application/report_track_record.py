@@ -17,9 +17,10 @@ werdykt istotności), pod T2 Brier / BSS / log loss i rozkład Murphy'ego. Same
 statystyki nie wskrzeszają schowanej podsekcji. Pokrycie przedziałów 80% (ML-34)
 to osobna podsekcja: pokazuje się, gdy jest choć jeden rozliczony przedział.
 
-WIA-49: linia „N predykcji wygasło bez oceny” stoi pod nagłówkiem, gdy cykl
-oznaczył jakąkolwiek predykcję jako wygasłą — cichy brak oceny wyglądałby jak
-brak predykcji. Sama wystarcza, żeby sekcja się pokazała."""
+WIA-49: linia „N predykcji wygasło bez oceny” stoi pod nagłówkiem, gdy w oknie
+track recordu jest jakakolwiek predykcja oznaczona jako wygasła (także w
+wcześniejszych przebiegach) — cichy brak oceny wyglądałby jak brak predykcji.
+Sama wystarcza, żeby sekcja się pokazała."""
 
 from __future__ import annotations
 
@@ -124,7 +125,7 @@ def render_track_record_html(
     `compact` (budżet MAIL-06, duży dzień) zostawia same kluczowe liczby:
     paper-PnL z kosztem, linię agent · koszyk · IVV i trafność z przedziałem
     i n — bez sparklinii, kalibracji, pokrycia i lekcji. `expired_count`
-    (WIA-49) — predykcje, które ten cykl oznaczył jako wygasłe bez oceny."""
+    (WIA-49) — predykcje wygasłe bez oceny w oknie track recordu."""
     stats = stats or TrackRecordStats()
     expired = _render_expired_html(expired_count)
     if compact:

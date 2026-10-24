@@ -2359,6 +2359,29 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
                 expired += 1
         return expired
 
+    def count_expired_unverified(self, days: int) -> int:
+        # WIA-49: flaga żyje w `data_quality_flags` (JSONB, 008), więc zliczamy wiersze
+        # okna z `cs ["expired_unverified"]`; `actual_price IS NULL` odsiewa wiersz
+        # rozliczony po oznaczeniu. Paginacja po `id` — okno 30 dni może mieć >1000 wierszy.
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        query = (
+            self._client.table(self._table)
+            .select("id")
+            .gte("timestamp", cutoff.isoformat())
+            .is_("actual_price_after_12h", "null")
+            .contains("data_quality_flags", f'["{EXPIRED_UNVERIFIED_FLAG}"]')
+        )
+        try:
+            return len(_paginate(query.order("id", desc=False)))
+        except (APIError, httpx.HTTPError) as exc:
+            _log_degraded_read(
+                "expired predictions count",
+                "count of expired predictions taken from this run only",
+                "008",
+                exc,
+            )
+            return 0
+
     def update_prediction_accuracy(
         self,
         prediction_id: str,

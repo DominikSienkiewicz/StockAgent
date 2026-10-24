@@ -349,3 +349,38 @@ class TestCouncilRedundancyContext:
         repo.get_council_vote_samples.return_value = []
 
         assert _assemble(repo, self._flags(enabled=True)).council_redundancy is None
+
+
+class TestExpiredCountFromTheWindow:
+    """WIA-49: „N predykcji wygasło bez oceny” liczy okno track recordu, nie tylko
+    wiersze oznaczone w bieżącym przebiegu."""
+
+    @staticmethod
+    def _assemble_with(repo: Mock, this_run: int) -> ReportContext:
+        flags = ReportFlags(track_record_days=30, reflection_min_age_hours=12, symbols=["AAPL"])
+        return (
+            ReportAssembler(repo, flags, PaperCosts(cost_bps=10.0))
+            .assemble(
+                results=[SymbolResult(symbol="AAPL", status="saved")],
+                started_at=STARTED_AT,
+                quota_monitor=QuotaMonitor(),
+                all_symbols=["AAPL"],
+                context=ReportContext(expired_unverified=this_run),
+            )
+            .context
+        )
+
+    def test_window_count_replaces_the_count_of_this_run(self) -> None:
+        repo = _repo()
+        repo.count_expired_unverified.return_value = 7
+
+        context = self._assemble_with(repo, this_run=2)
+
+        assert context.expired_unverified == 7
+        repo.count_expired_unverified.assert_called_once_with(30)
+
+    def test_this_run_is_never_reported_below_what_it_just_flagged(self) -> None:
+        repo = _repo()
+        repo.count_expired_unverified.return_value = 0
+
+        assert self._assemble_with(repo, this_run=3).expired_unverified == 3

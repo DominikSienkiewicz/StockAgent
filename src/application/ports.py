@@ -293,6 +293,14 @@ class RepositoryPort(ABC):
         wiersz już oznaczony nie liczy się drugi raz."""
 
     @abstractmethod
+    def count_expired_unverified(self, days: int) -> int:
+        """WIA-49: ile predykcji z ostatnich `days` dni (po chwili predykcji) ma flagę
+        `expired_unverified` i wciąż nie ma ceny rozliczenia — także te oznaczone we
+        wcześniejszych przebiegach, nie tylko w bieżącym. Linia „N predykcji wygasło
+        bez oceny” w Track Record liczy z okna `track_record_days`. Błąd odczytu → 0
+        z WARNING-iem (wołający trzyma wtedy liczbę z bieżącego przebiegu)."""
+
+    @abstractmethod
     def update_prediction_accuracy(
         self,
         prediction_id: str,
