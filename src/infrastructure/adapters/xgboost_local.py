@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -13,7 +14,12 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
-from src.application.ports import MLPredictionPort, ReturnScaleUnavailableError
+from src.application.errors import MalformedPayload
+from src.application.ports import (
+    MLPredictionPort,
+    ReturnScaleUnavailableError,
+    ShadowModelPort,
+)
 from src.domain.backtest import (
     LABEL_HORIZON,
     BacktestSummary,
@@ -27,12 +33,16 @@ from src.domain.direction_variant import (
 )
 from src.domain.drift import bin_fractions, quantile_edges, recent_window_psi
 from src.domain.model_scorecard import TargetUnit, TrainingOutcome, TrainingReport
+from src.domain.promotion import ForecastKind, ShadowForecast
 from src.domain.training_provenance import (
     DatasetDescription,
     TrainingProvenance,
     dataset_fingerprint,
 )
 from src.domain.value_objects import Money
+from src.infrastructure.error_translation import as_port_error
+
+logger = logging.getLogger(__name__)
 
 # Hiperparametry dobrane pod dane finansowe (zapobieganie overfittingowi).
 # ML-22: ziarno jawne — `subsample`/`colsample_bytree` losują, a te same dane z tym
@@ -115,9 +125,7 @@ class XGBoostAdapter(MLPredictionPort):
         model = xgb.XGBRegressor()
         model.load_model(self._model_path)
         self._model = model
-        self._target_unit = TargetUnit(
-            model.get_booster().attr(TARGET_UNIT_ATTR) or TargetUnit.RETURN.value
-        )
+        self._target_unit = _model_target_unit(model)
 
     @property
     def is_trained(self) -> bool:
@@ -470,13 +478,7 @@ class XGBoostAdapter(MLPredictionPort):
 
     def _return_scale(self, return_scale: float | None) -> float:
         """ML-11: mnożnik prognozy — σ dla modelu w jednostkach σ, 1 dla zwrotów."""
-        if self._target_unit is TargetUnit.RETURN:
-            return 1.0
-        if return_scale is None or not math.isfinite(return_scale) or return_scale <= 0:
-            raise ReturnScaleUnavailableError(
-                f"Model at '{self._model_path}' predicts return / sigma; no sigma given"
-            )
-        return return_scale
+        return _scale_for(self._target_unit, return_scale, self._model_path)
 
     def explain(
         self, current_features: dict[str, float], *, return_scale: float | None = None
@@ -524,16 +526,38 @@ class XGBoostAdapter(MLPredictionPort):
         zamiast wpychać NaN albo wywalać się na mismatchu nazw kolumn.
         Dzięki temu kontrakt cech może ewoluować bez psucia predykcji.
         """
-        expected = getattr(self._model, "feature_names_in_", None)
-        if expected is None:
-            return pd.DataFrame([current_features])
-        expected_cols = [str(c) for c in expected]
-        missing = [c for c in expected_cols if c not in current_features]
-        if missing:
-            raise KeyError(
-                f"Missing required ML features for prediction: {missing}"
-            )
-        return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
+        return _aligned_frame(self._model, current_features)
+
+
+def _scale_for(target_unit: TargetUnit, return_scale: float | None, model_path: str) -> float:
+    """ML-11: mnożnik prognozy — σ dla modelu w jednostkach σ, 1 dla zwrotów."""
+    if target_unit is TargetUnit.RETURN:
+        return 1.0
+    if return_scale is None or not math.isfinite(return_scale) or return_scale <= 0:
+        raise ReturnScaleUnavailableError(
+            f"Model at '{model_path}' predicts return / sigma; no sigma given"
+        )
+    return return_scale
+
+
+def _aligned_frame(model: Any, current_features: Mapping[str, float]) -> pd.DataFrame:
+    """Jednowierszowa ramka w kolumnach `feature_names_in_` modelu (nadmiarowe cechy
+    pominięte, brakujące → KeyError) — kontrakt `XGBoostAdapter._align_features`."""
+    expected = getattr(model, "feature_names_in_", None)
+    if expected is None:
+        return pd.DataFrame([dict(current_features)])
+    expected_cols = [str(c) for c in expected]
+    missing = [c for c in expected_cols if c not in current_features]
+    if missing:
+        raise KeyError(
+            f"Missing required ML features for prediction: {missing}"
+        )
+    return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
+
+
+def _model_target_unit(model: Any) -> TargetUnit:
+    """ML-11: jednostka targetu zapisana w pliku wag; brak atrybutu = surowe zwroty."""
+    return TargetUnit(model.get_booster().attr(TARGET_UNIT_ATTR) or TargetUnit.RETURN.value)
 
 
 def _feature_frame(features: Any) -> pd.DataFrame:
@@ -839,3 +863,92 @@ def _sign_turnover(predicted: Any) -> float:
     if signs.size < 2:
         return 0.0
     return float(np.mean(np.abs(np.diff(signs)) / 2))
+
+
+
+# ML-33: cel boostera, który pasuje do rodzaju challengera — plik innego rodzaju
+# (np. klasyfikator podany jako regresor) dałby liczbę w złych jednostkach.
+_CHALLENGER_OBJECTIVES: dict[ForecastKind, tuple[str, ...]] = {
+    ForecastKind.RETURN: ("reg:",),
+    ForecastKind.DIRECTION: ("binary:logistic",),
+}
+
+
+class XGBoostChallenger(ShadowModelPort):
+    """ML-33: challenger z własnego pliku wag — regresor zwrotu (`kind = return`)
+    albo klasyfikator kierunku ML-30 (`kind = direction`).
+
+    Osobny obiekt i osobny booster: champion (`XGBoostAdapter`) i jego wagi w
+    pamięci nie są dotykane. Wersja to sha256 bajtów pliku z chwili wczytania.
+    Buduje go `load_challenger`, który odrzuca brakujący, uszkodzony albo
+    niepasujący rodzajem plik."""
+
+    def __init__(
+        self, name: str, model_path: str, kind: ForecastKind, model: Any, version: str
+    ) -> None:
+        self._name = name
+        self._model_path = model_path
+        self._kind = kind
+        self._model = model
+        self._model_version = version
+        self._target_unit = _model_target_unit(model)
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def model_version(self) -> str:
+        return self._model_version
+
+    def forecast(
+        self, features: Mapping[str, float], *, return_scale: float | None = None
+    ) -> ShadowForecast:
+        try:
+            frame = _aligned_frame(self._model, features)
+            if self._kind is ForecastKind.DIRECTION:
+                return ShadowForecast(
+                    self._name,
+                    self._model_version,
+                    proba=float(self._model.predict_proba(frame)[0][1]),
+                )
+            scale = _scale_for(self._target_unit, return_scale, self._model_path)
+            return ShadowForecast(
+                self._name,
+                self._model_version,
+                predicted_return=float(self._model.predict(frame)[0]) * scale,
+            )
+        except (KeyError, ValueError) as exc:
+            # Brak cechy modelu, ramka odrzucona przez XGBoost (XGBoostError to
+            # ValueError) albo prognoza poza kontraktem (NaN, p spoza [0, 1]).
+            raise as_port_error(exc, MalformedPayload) from None
+
+
+def load_challenger(name: str, model_path: str, kind: ForecastKind) -> XGBoostChallenger | None:
+    """ML-33: challenger z pliku wag albo None — brak pliku (Release jeszcze go nie
+    ma), plik uszkodzony albo booster innego rodzaju niż `kind`. Każdy powód idzie
+    do logu; Fast Loop leci wtedy bez tego challengera."""
+    path = Path(model_path)
+    if not path.is_file():
+        logger.info("ML-33: brak wag challengera %s (%s) — pomijam", name, model_path)
+        return None
+    model: Any = xgb.XGBRegressor() if kind is ForecastKind.RETURN else xgb.XGBClassifier()
+    try:
+        version = hashlib.sha256(path.read_bytes()).hexdigest()
+        model.load_model(model_path)
+        objective = json.loads(model.get_booster().save_config())["learner"]["objective"]["name"]
+    except (OSError, ValueError, KeyError, TypeError):
+        # TypeError: wrapper sklearn XGBoost odmawia pliku estymatora innego typu
+        # (klasyfikator wczytywany jako regresor i odwrotnie).
+        logger.warning("ML-33: wag challengera %s (%s) nie da się wczytać", name, model_path)
+        return None
+    if not str(objective).startswith(_CHALLENGER_OBJECTIVES[kind]):
+        logger.warning(
+            "ML-33: challenger %s (%s) ma cel %s, a config mówi %s — pomijam",
+            name,
+            model_path,
+            objective,
+            kind.value,
+        )
+        return None
+    return XGBoostChallenger(name, model_path, kind, model, version)

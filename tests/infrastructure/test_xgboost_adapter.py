@@ -1154,3 +1154,163 @@ class TestDirectionVariant:
         assert report.summary.n_folds == 4
         # Foldy liczą się na wierszach z etykietą: pierwszy blok to trening.
         assert report.summary.n_oos_points == report.n_samples - report.n_samples // 5
+
+
+class TestChallenger:
+    """ML-33: challenger nogi ML z własnego pliku wag — regresor zwrotu albo
+    klasyfikator kierunku ML-30. Prognoza cienia nie dotyka championa."""
+
+    @staticmethod
+    def _row() -> dict[str, float]:
+        features, _ = _synthetic_dataset(n=1)
+        return {name: float(value) for name, value in features.iloc[0].to_dict().items()}
+
+    @staticmethod
+    def _regressor(path: Path, *, scale: float = 2.0, sigma: bool = False) -> str:
+        features, target = _synthetic_dataset(n=200)
+        unit = TargetUnit.SIGMA if sigma else TargetUnit.RETURN
+        XGBoostAdapter(model_path=str(path)).train(features, target * scale, target_unit=unit)
+        return str(path)
+
+    @staticmethod
+    def _classifier(champion_path: str) -> tuple[XGBoostAdapter, str]:
+        features, target = TestDirectionVariant._direction_dataset()
+        adapter = XGBoostAdapter(model_path=champion_path)
+        report = adapter.train_direction_classifier(features, target, dead_band=0.001)
+        assert report.model_path is not None
+        return adapter, report.model_path
+
+    def test_regression_challenger_forecasts_the_return_of_its_own_weights(
+        self, tmp_path: Path
+    ) -> None:
+        import hashlib
+
+        from src.domain.promotion import ForecastKind
+        from src.infrastructure.adapters.xgboost_local import load_challenger
+
+        path = self._regressor(tmp_path / "price_predictor_alt.ubj")
+        challenger = load_challenger("alt", path, ForecastKind.RETURN)
+
+        assert challenger is not None
+        forecast = challenger.forecast(self._row())
+        served = XGBoostAdapter(model_path=path).predict(self._row(), current_price=Decimal("1"))
+        assert forecast.model_name == "alt"
+        assert forecast.model_version == hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        assert forecast.proba is None
+        assert forecast.predicted_return == pytest.approx(float(served.amount) - 1.0)
+
+    def test_direction_challenger_forecasts_the_ml30_probability(
+        self, model_path: str
+    ) -> None:
+        from src.domain.promotion import ForecastKind
+        from src.infrastructure.adapters.xgboost_local import load_challenger
+
+        adapter, path = self._classifier(model_path)
+        challenger = load_challenger("direction", path, ForecastKind.DIRECTION)
+
+        assert challenger is not None
+        forecast = challenger.forecast(self._row())
+        assert forecast.predicted_return is None
+        assert forecast.proba == pytest.approx(adapter.predict_proba(self._row()))
+
+    def test_challengers_leave_the_champion_prediction_unchanged(
+        self, trained_adapter: XGBoostAdapter, model_path: str, tmp_path: Path
+    ) -> None:
+        from src.domain.promotion import ForecastKind
+        from src.infrastructure.adapters.xgboost_local import load_challenger
+
+        row, price = self._row(), Decimal("100")
+        before = trained_adapter.predict(row, current_price=price)
+        alt = load_challenger(
+            "alt", self._regressor(tmp_path / "alt.ubj", scale=-3.0), ForecastKind.RETURN
+        )
+        _, direction_path = self._classifier(model_path)
+        direction = load_challenger("direction", direction_path, ForecastKind.DIRECTION)
+        assert alt is not None and direction is not None
+        alt.forecast(row)
+        direction.forecast(row)
+
+        assert trained_adapter.predict(row, current_price=price) == before
+        assert XGBoostAdapter(model_path=model_path).predict(row, current_price=price) == before
+
+    def test_missing_weights_mean_no_challenger(self, tmp_path: Path) -> None:
+        from src.domain.promotion import ForecastKind
+        from src.infrastructure.adapters.xgboost_local import load_challenger
+
+        assert load_challenger("alt", str(tmp_path / "absent.ubj"), ForecastKind.RETURN) is None
+
+    def test_weights_of_another_kind_or_a_broken_file_are_refused(
+        self, model_path: str, tmp_path: Path
+    ) -> None:
+        from src.domain.promotion import ForecastKind
+        from src.infrastructure.adapters.xgboost_local import load_challenger
+
+        regressor = self._regressor(tmp_path / "alt.ubj")
+        _, classifier = self._classifier(model_path)
+        broken = tmp_path / "broken.ubj"
+        broken.write_bytes(b"not a model")
+
+        assert load_challenger("alt", regressor, ForecastKind.DIRECTION) is None
+        assert load_challenger("direction", classifier, ForecastKind.RETURN) is None
+        assert load_challenger("alt", str(broken), ForecastKind.RETURN) is None
+
+    def test_a_bare_booster_of_another_objective_is_refused(self, tmp_path: Path) -> None:
+        # Plik bez metadanych sklearn (goły booster) przechodzi wczytanie — rodzaj
+        # rozpoznaje dopiero cel boostera.
+        import xgboost as xgb
+
+        from src.domain.promotion import ForecastKind
+        from src.infrastructure.adapters.xgboost_local import load_challenger
+
+        features, target = _synthetic_dataset(n=60)
+        path = tmp_path / "bare.ubj"
+        xgb.train(
+            {"objective": "reg:squarederror"},
+            xgb.DMatrix(features, label=target),
+            num_boost_round=2,
+        ).save_model(str(path))
+
+        assert load_challenger("bare", str(path), ForecastKind.DIRECTION) is None
+        assert load_challenger("bare", str(path), ForecastKind.RETURN) is not None
+
+    def test_a_vector_without_the_model_features_is_a_malformed_payload(
+        self, tmp_path: Path
+    ) -> None:
+        from src.application.errors import MalformedPayload
+        from src.domain.promotion import ForecastKind
+        from src.infrastructure.adapters.xgboost_local import load_challenger
+
+        challenger = load_challenger(
+            "alt", self._regressor(tmp_path / "alt.ubj"), ForecastKind.RETURN
+        )
+        assert challenger is not None
+
+        with pytest.raises(MalformedPayload):
+            challenger.forecast({"price_delta": 0.01})
+
+    def test_sigma_challenger_is_rescaled_and_needs_the_sigma(self, tmp_path: Path) -> None:
+        from src.domain.promotion import ForecastKind
+        from src.infrastructure.adapters.xgboost_local import load_challenger
+
+        path = self._regressor(tmp_path / "sigma.ubj", scale=50.0, sigma=True)
+        challenger = load_challenger("sigma", path, ForecastKind.RETURN)
+        assert challenger is not None
+
+        with pytest.raises(ReturnScaleUnavailableError):
+            challenger.forecast(self._row())
+        low = challenger.forecast(self._row(), return_scale=0.01).predicted_return
+        high = challenger.forecast(self._row(), return_scale=0.03).predicted_return
+        assert low is not None and high is not None and low != 0
+        assert high == pytest.approx(3 * low)
+
+    def test_challenger_implements_the_shadow_port(self, tmp_path: Path) -> None:
+        from src.application.ports import ShadowModelPort
+        from src.domain.promotion import ForecastKind
+        from src.infrastructure.adapters.xgboost_local import load_challenger
+
+        challenger = load_challenger(
+            "alt", self._regressor(tmp_path / "alt.ubj"), ForecastKind.RETURN
+        )
+
+        assert isinstance(challenger, ShadowModelPort)
+        assert challenger.name == "alt"

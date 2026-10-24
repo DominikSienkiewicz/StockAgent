@@ -29,6 +29,7 @@ from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.price_levels import PriceLevel, PriceLevelAlert
+from src.domain.promotion import ShadowForecast
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
@@ -948,6 +949,36 @@ class MLPredictionPort(ABC):
         same sumy z prefiksem `drift_` / `llm_` dla testu sparowanego w domenie.
         `timestamps` (i `label_ends`) działają jak w `train()`: purge etykiet w foldach.
         Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
+
+
+class ShadowModelPort(ABC):
+    """ML-33: challenger nogi ML — model z własnym plikiem wag, którego prognoza
+    cienia trafia wyłącznie do `shadow_predictions`.
+
+    Osobny port, a nie drugi `MLPredictionPort`: challenger nie serwuje ceny do
+    maila ani rady, tylko liczbę do porównania z championem. Ma własne wagi i stan,
+    więc jego załadowanie i prognoza nie zmieniają predykcji championa."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Nazwa challengera z config.toml (`model_name` wiersza cienia)."""
+
+    @property
+    @abstractmethod
+    def model_version(self) -> str:
+        """sha256 wczytanego pliku wag (jak `model_version` przepisu, CI-13)."""
+
+    @abstractmethod
+    def forecast(
+        self, features: Mapping[str, float], *, return_scale: float | None = None
+    ) -> ShadowForecast:
+        """Prognoza cienia z tego samego wektora cech, który dostał champion:
+        zwrot 12 h (regresor; model w jednostkach σ × `return_scale`) albo
+        P(wzrost poza martwą strefą) (klasyfikator ML-30).
+
+        Rzuca `MalformedPayload`, gdy wektor nie pasuje do cech modelu, i
+        `ReturnScaleUnavailableError`, gdy model w jednostkach σ nie dostał σ."""
 
 
 class TrainingDataPort(ABC):
