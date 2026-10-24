@@ -9,6 +9,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from src.domain.value_objects import AssetType
+
+
+def has_insider_filings(asset_type: AssetType) -> bool:
+    """Czy aktywo ma insiderów składających Form 4 — tylko spółki (STOCK).
+
+    Krypto nie ma insiderów SEC, a ticker `BTC`/`ETH` w mapie SEC może należeć do
+    trustu ETF, więc wiersz krypto dostałby cudze dane. ETF-y to fundusze otwarte
+    bez Form 4: puste okno głosowałoby w Alpha Fusion neutralnie. Ta sama granica
+    co przy fundamentach (`Asset.evaluate_valuation`)."""
+    return asset_type is AssetType.STOCK
+
 
 class InsiderSignal(Enum):
     """Kierunek przepływu insiderów wyprowadzony ze snapshotu transakcji."""

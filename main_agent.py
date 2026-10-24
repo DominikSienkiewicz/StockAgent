@@ -1038,12 +1038,14 @@ def build_alpha_enrichment(settings: Settings) -> AlphaEnrichmentUseCase:
         if settings.analyst_consensus_enabled
         else NullAnalystConsensusAdapter()
     )
+    crypto_set, etf_set = set(settings.crypto_symbols), set(settings.symbols_etf)
     return AlphaEnrichmentUseCase(
         insider_port=insider,
         earnings_port=earnings,
         options_port=options,
         social_port=social,
         analyst_port=analyst,
+        asset_type_of=lambda symbol: _classify_asset(symbol, crypto_set, etf_set),
     )
 
 
