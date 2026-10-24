@@ -581,7 +581,7 @@ def _utc_now() -> datetime:
 
 def _build_fetch_fundamentals_node(
     port: FundamentalsPort,
-) -> Callable[[AgentState], dict[str, Any]]:
+) -> Callable[[AgentState], AgentState]:
     """Buduje węzeł grafu z domknięciem nad portem (DI-friendly i testowalny).
 
     Pozycja w grafie: po reflect_node, PRZED bramką volatility.
@@ -589,7 +589,7 @@ def _build_fetch_fundamentals_node(
     w slow loop (fast loop dostaje NullFundamentalsAdapter jako delegate).
     """
 
-    def fetch_fundamentals_node(state: AgentState) -> dict[str, Any]:
+    def fetch_fundamentals_node(state: AgentState) -> AgentState:
         # Asset zawsze obecny w state gdy fundamentals_port != None
         # (main_agent.py klasyfikuje i przekazuje asset przed wywołaniem grafu).
         asset: Asset = state["asset"]
@@ -737,7 +737,7 @@ def _session_quote_port(deps: AgentGraphDeps, state: AgentState) -> QuotePort | 
     return deps.quote_port if asset.asset_type in _SESSION_QUOTED_ASSETS else None
 
 
-def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     symbol = state["symbol"]
     quote_port = _session_quote_port(deps, state)
     quote = quote_port.get_quote(symbol) if quote_port is not None else None
@@ -749,7 +749,7 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]
     # cykl, który padł w połowie, nie zostawia snapshotu, więc retry reużyje
     # referencji z poprzedniego UKOŃCZONEGO cyklu (zamiast porównywać się do
     # świeżego snapshotu padłej próby → delta≈0 → cichy "ignore").
-    update: dict[str, Any] = {
+    update: AgentState = {
         "current_price": current.amount,
         "delta": delta.percentage,
     }
@@ -1100,7 +1100,7 @@ def _settle_on_stale_quote(
     current_price: Decimal,
     accuracy: float,
     trend_correct: bool,
-) -> dict[str, Any]:
+) -> AgentState:
     """DAT-14: rozliczenie ceną równą cenie wejścia nie mówi nic o trafności —
     za flagą wiersz dostaje `stale_quote` i wypada z trafności, a płatna diagnoza
     LLM nie leci (nie ma prawdziwego błędu do wyjaśnienia)."""
@@ -1146,7 +1146,7 @@ def _session_close_extras(
     return {"session_close": SessionCloseSettlement(close, is_trend_correct=correct)}
 
 
-def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     repository_port = deps.repository_port
     reflection_min_age_hours = deps.reflection_min_age_hours
     threshold = deps.threshold
@@ -1269,7 +1269,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
-def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     sentiment_port = deps.sentiment_port
     symbol = state["symbol"]
     # #14: węzeł płatny (Alpha Vantage NEWS_SENTIMENT) — instrumentujemy czas
@@ -1282,7 +1282,7 @@ def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> dict[str
 
 
 
-def _fetch_news_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _fetch_news_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     news_port = deps.news_port
     symbol = state["symbol"]
     # #14: węzeł płatny (Alpha Vantage NEWS feed) — instrumentacja jak wyżej.
@@ -1619,7 +1619,7 @@ def _interval_price(price: Decimal, move_return: float) -> Decimal:
     return Money(price * (Decimal(1) + Decimal(str(move_return)))).for_storage().amount
 
 
-def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     repository_port = deps.repository_port
     ml_port = deps.ml_port
     symbol = state["symbol"]
@@ -1764,7 +1764,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         deps, state, current_price, ml_target, ml_cold_start=ml_cold_start
     )
 
-    failover_state: dict[str, Any] = {} if failover is None else {"llm_failover": failover}
+    failover_state: AgentState = {} if failover is None else {"llm_failover": failover}
     return {
         **failover_state,
         "llm_analysis": llm_analysis,
@@ -1787,7 +1787,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
-def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _council_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     council_port = deps.council_port
     council_threshold = deps.council_threshold
     crypto_council_threshold = deps.crypto_council_threshold
@@ -1959,7 +1959,7 @@ def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
     }
 
 
-def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     vector_memory_enabled = deps.vector_memory_enabled
     repository_port = deps.repository_port
     llm_analysis = state.get("llm_analysis", {})
@@ -2120,7 +2120,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
-def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     # #6: węzeł terminalny — zapisujemy snapshot ceny dla następnego cyklu.
     _persist_price_snapshot(deps, state)
     # FIN-14 (decyzja 2026-10-19): cykl re-baseline nie jest obserwacją cyklu —
@@ -2131,7 +2131,7 @@ def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     return {"status": "ignored"}
 
 
-def _budget_exhausted_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _budget_exhausted_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     """FIN-12: węzeł terminalny symbolu odciętego budżetem cyklu — jedyny wyjątek
     od zapisu snapshotu w każdym cyklu. Snapshot z bieżącą ceną zjadłby ruch ponad
     progiem: następny cykl liczyłby Δ od nowej ceny i ruch zniknąłby bez analizy.
