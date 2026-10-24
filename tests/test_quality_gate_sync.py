@@ -232,3 +232,64 @@ def test_ci_container_step_requires_docker() -> None:
 
     assert len(container_steps) == 1
     assert dict(container_steps[0].get("env") or {}).get("REQUIRE_DOCKER") == "1"
+
+
+# CI-03 (G68): próg coverage z gałęziami na src/domain z zapadką. Zmierzone 2026-10-24
+# na `main` + paczka F: 98,49% (4392 instrukcji, 1118 gałęzi), czyli próg 98. Bramka 80%
+# istniała tylko w SonarCloud i tylko z SONAR_TOKEN. Zapadka: próg tylko rośnie — podnieś
+# `fail_under`, `--cov-fail-under` w ci.yml i tę stałą razem.
+COVERAGE_RATCHET = 98
+COVERAGE_TARGET = "src/domain"
+
+
+def _coverage_section(name: str) -> dict[str, object]:
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    section: dict[str, object] = config.get("tool", {}).get("coverage", {}).get(name, {})
+    return section
+
+
+def _fail_under() -> int:
+    value = _coverage_section("report").get("fail_under", 0)
+    assert isinstance(value, int), f"fail_under musi być liczbą całkowitą, jest {value!r}"
+    return value
+
+
+def _pytest_tokens(job: str) -> list[str]:
+    commands = [run for run in _job_runs(job) if _pytest_marker(run) is not None]
+    assert commands, f"job `{job}` nie uruchamia pytest"
+    return shlex.split(commands[0].split("#", 1)[0])
+
+
+def test_domain_coverage_floor_never_drops_below_the_ratchet() -> None:
+    assert _fail_under() >= COVERAGE_RATCHET, (
+        f"fail_under = {_fail_under()} < {COVERAGE_RATCHET}: próg coverage tylko rośnie "
+        "(CI-03) — dopisz testy zamiast obniżać próg."
+    )
+
+
+def test_coverage_measures_branches() -> None:
+    assert _coverage_section("run").get("branch") is True
+
+
+def test_ci_quality_job_enforces_the_domain_coverage_floor() -> None:
+    tokens = _pytest_tokens("quality")
+
+    assert f"--cov={COVERAGE_TARGET}" in tokens
+    assert "--cov-branch" in tokens
+    assert f"--cov-fail-under={_fail_under()}" in tokens, (
+        "ci.yml i [tool.coverage.report].fail_under mają ten sam próg"
+    )
+
+
+def test_sonarcloud_coverage_run_does_not_inherit_the_domain_floor() -> None:
+    # pytest-cov czyta `fail_under` z pyproject także tam, gdzie mierzy cały `src`
+    # i entry-pointy (niższe pokrycie niż domena) — job dla Sonara raportuje, nie bramkuje.
+    assert "--cov-fail-under=0" in _pytest_tokens("sonarcloud")
+
+
+def test_coverage_plugin_is_a_declared_dev_dependency() -> None:
+    dev = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "dependency-groups"
+    ]["dev"]
+
+    assert any(str(requirement).startswith("pytest-cov") for requirement in dev)

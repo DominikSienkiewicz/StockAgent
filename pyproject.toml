@@ -86,6 +86,18 @@ markers = [
 ]
 
 # ---------------------------------------------------------------------------
+# coverage (CI-03): próg z gałęziami na src/domain, z zapadką
+# ---------------------------------------------------------------------------
+# Zmierzone 2026-10-24: 98,49% gałęzi i instrukcji src/domain. Próg tylko rośnie;
+# `--cov-fail-under` w jobie quality (ci.yml) i `COVERAGE_RATCHET` w
+# tests/test_quality_gate_sync.py muszą się z nim zgadzać.
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+fail_under = 98
+
+# ---------------------------------------------------------------------------
 # ruff (linter + formatter)
 # ---------------------------------------------------------------------------
 [tool.ruff]

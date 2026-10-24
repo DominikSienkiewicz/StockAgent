@@ -47,7 +47,12 @@ jobs:
         # pomijane w CI. Testy kontenerowe uruchamiamy jawnie w następnym kroku.
         # Linki względne w Markdown sprawdza tests/test_markdown_links.py (CI-32),
         # więc ta sama bramka łapie martwy link lokalnie.
-        run: uv run --frozen --no-build --no-sync pytest -m "not integration and not containers"
+        # CI-03: pokrycie z gałęziami na src/domain z progiem 98% (zmierzone 2026-10-24:
+        # 98,49%). Próg tylko rośnie: ten sam numer w [tool.coverage.report].fail_under
+        # w pyproject.toml, a stałą COVERAGE_RATCHET pilnuje tests/test_quality_gate_sync.py.
+        run: >-
+          uv run --frozen --no-build --no-sync pytest -m "not integration and not containers"
+          --cov=src/domain --cov-branch --cov-fail-under=98
 
       - name: 🐳 Pytest (container schema tests)
         # Testy migracji SQL odpalają Postgres + pgvector przez testcontainers.
@@ -98,10 +103,13 @@ jobs:
       # CI-04: `--cov` obejmuje też każdy entry-point (`main_*.py` w sonar.sources).
       - name: 🧪 Pytest with coverage
         if: ${{ env.SONAR_TOKEN != '' }}
+        # CI-03: `--cov-fail-under=0` — próg domeny z pyproject.toml nie dotyczy pokrycia
+        # całego `src` i entry-pointów; ten job raportuje do Sonara, bramkuje quality.
         run: >-
           uv run --frozen --no-build --no-sync pytest -m "not integration"
           --cov=src --cov=main_agent --cov=main_backtest --cov=main_deadman --cov=main_scorecard
           --cov=main_tools --cov=main_trainer --cov=main_watch --cov-report=xml
+          --cov-fail-under=0
 
       - name: 🔍 SonarCloud Scan
         if: ${{ env.SONAR_TOKEN != '' }}
