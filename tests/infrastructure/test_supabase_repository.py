@@ -393,7 +393,7 @@ class TestGetUnverifiedPrediction:
     ) -> None:
         _set_chain_response(
             mock_client,
-            ["table", "select", "eq", "is_", "order", "limit"],
+            ["table", "select", "eq", "is_", "or_", "order", "limit"],
             [
                 {
                     "id": "uuid-1",
@@ -421,7 +421,7 @@ class TestGetUnverifiedPrediction:
         oparto prognozę — `select("*")` je zwraca, mapowanie je gubiło."""
         _set_chain_response(
             mock_client,
-            ["table", "select", "eq", "is_", "order", "limit"],
+            ["table", "select", "eq", "is_", "or_", "order", "limit"],
             [
                 {
                     "id": "uuid-1",
@@ -446,7 +446,7 @@ class TestGetUnverifiedPrediction:
     ) -> None:
         _set_chain_response(
             mock_client,
-            ["table", "select", "eq", "is_", "order", "limit"],
+            ["table", "select", "eq", "is_", "or_", "order", "limit"],
             [
                 {
                     "id": "uuid-1",
@@ -486,7 +486,7 @@ class TestGetUnverifiedPrediction:
         sam wiersz w każdym cyklu — reflect symbolu stał na zawsze."""
         _set_chain_response(
             mock_client,
-            ["table", "select", "eq", "is_", "order", "limit"],
+            ["table", "select", "eq", "is_", "or_", "order", "limit"],
             [
                 {
                     "id": "uuid-1",
@@ -507,7 +507,7 @@ class TestGetUnverifiedPrediction:
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
         _set_chain_response(
-            mock_client, ["table", "select", "eq", "is_", "order", "limit"], []
+            mock_client, ["table", "select", "eq", "is_", "or_", "order", "limit"], []
         )
         assert repo.get_unverified_prediction("AAPL") is None
 
@@ -515,7 +515,7 @@ class TestGetUnverifiedPrediction:
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
         _set_chain_response(
-            mock_client, ["table", "select", "eq", "is_", "order", "limit"], []
+            mock_client, ["table", "select", "eq", "is_", "or_", "order", "limit"], []
         )
 
         repo.get_unverified_prediction("AAPL")
@@ -523,6 +523,45 @@ class TestGetUnverifiedPrediction:
         # is_("actual_price_after_12h", "null") — postgresT składnia dla IS NULL
         is_call = mock_client.table.return_value.select.return_value.eq.return_value.is_
         is_call.assert_called_with("actual_price_after_12h", "null")
+
+    _FLAG_FILTER = (
+        'data_quality_flags.is.null,data_quality_flags.not.cs.["expired_unverified"]'
+    )
+
+    def test_rows_flagged_as_expired_are_not_served_for_reflection(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        """WIA-49: wiersz oznaczony `expired_unverified` jest już poza oceną — odczyt
+        nierozliczonych go pomija (rzędy bez flag, `NULL` sprzed migracji 008, zostają)."""
+        _set_chain_response(
+            mock_client, ["table", "select", "eq", "is_", "or_", "order", "limit"], []
+        )
+
+        repo.get_unverified_prediction("AAPL")
+
+        or_call = (
+            mock_client.table.return_value.select.return_value.eq.return_value
+            .is_.return_value.or_
+        )
+        or_call.assert_called_once_with(self._FLAG_FILTER)
+
+    def test_the_flag_filter_comes_with_the_age_bounds(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq", "is_", "lte", "gte", "or_", "order", "limit"],
+            [],
+        )
+
+        repo.get_unverified_prediction("AAPL", min_age_hours=6, max_age_hours=96)
+
+        or_call = (
+            mock_client.table.return_value.select.return_value.eq.return_value
+            .is_.return_value.lte.return_value.gte.return_value.or_
+        )
+        or_call.assert_called_once_with(self._FLAG_FILTER)
+
 
     def test_orders_oldest_first_to_drain_backlog(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -533,14 +572,14 @@ class TestGetUnverifiedPrediction:
         i utknęłyby na zawsze (brak actual_price_after_12h → nie wchodzą do
         ml_feature_store, nie liczą się do hit-rate)."""
         _set_chain_response(
-            mock_client, ["table", "select", "eq", "is_", "order", "limit"], []
+            mock_client, ["table", "select", "eq", "is_", "or_", "order", "limit"], []
         )
 
         repo.get_unverified_prediction("AAPL")
 
         order_call = (
             mock_client.table.return_value.select.return_value.eq.return_value
-            .is_.return_value.order
+            .is_.return_value.or_.return_value.order
         )
         order_call.assert_called_with("timestamp", desc=False)
 
@@ -552,7 +591,7 @@ class TestGetUnverifiedPrediction:
         nakładających się cyklach (manualny dispatch + scheduled)."""
         _set_chain_response(
             mock_client,
-            ["table", "select", "eq", "is_", "lte", "order", "limit"],
+            ["table", "select", "eq", "is_", "lte", "or_", "order", "limit"],
             [],
         )
 
@@ -570,7 +609,7 @@ class TestGetUnverifiedPrediction:
         """Domyślnie (min_age_hours=0) zachowanie bez zmian — brak filtra .lte,
         żeby nie złamać wstecznej kompatybilności."""
         _set_chain_response(
-            mock_client, ["table", "select", "eq", "is_", "order", "limit"], []
+            mock_client, ["table", "select", "eq", "is_", "or_", "order", "limit"], []
         )
 
         repo.get_unverified_prediction("AAPL")
@@ -589,7 +628,7 @@ class TestGetUnverifiedPrediction:
         granicę znacznika czasu — starsze predykcje zostają nierozliczone."""
         _set_chain_response(
             mock_client,
-            ["table", "select", "eq", "is_", "gte", "order", "limit"],
+            ["table", "select", "eq", "is_", "gte", "or_", "order", "limit"],
             [],
         )
         before = datetime.now(UTC)
@@ -610,7 +649,7 @@ class TestGetUnverifiedPrediction:
     ) -> None:
         _set_chain_response(
             mock_client,
-            ["table", "select", "eq", "is_", "lte", "gte", "order", "limit"],
+            ["table", "select", "eq", "is_", "lte", "gte", "or_", "order", "limit"],
             [],
         )
 
@@ -627,7 +666,7 @@ class TestGetUnverifiedPrediction:
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
         _set_chain_response(
-            mock_client, ["table", "select", "eq", "is_", "order", "limit"], []
+            mock_client, ["table", "select", "eq", "is_", "or_", "order", "limit"], []
         )
 
         repo.get_unverified_prediction("AAPL")
@@ -4574,7 +4613,7 @@ class TestStaleQuote:
     ) -> None:
         _set_chain_response(
             mock_client,
-            ["table", "select", "eq", "is_", "order", "limit"],
+            ["table", "select", "eq", "is_", "or_", "order", "limit"],
             [
                 {
                     "id": "uuid-1",

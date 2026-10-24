@@ -279,7 +279,10 @@ class RepositoryPort(ABC):
         `max_age_hours` > 0 → pomija predykcje starsze niż próg (timestamp ≥
         now − max_age_hours; WIA-04). Po przerwie predykcja sprzed tygodni nie
         jest oceniana bieżącą ceną jak „12h”; zostaje nierozliczona (NULL) i
-        nie wchodzi do hit-rate ani ml_feature_store. None = bez granicy."""
+        nie wchodzi do hit-rate ani ml_feature_store. None = bez granicy.
+
+        WIA-49: wiersz z flagą `expired_unverified` w `data_quality_flags` jest już
+        poza oceną (`expire_unverified_predictions`) i nie wraca z tego odczytu."""
 
     @abstractmethod
     def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:

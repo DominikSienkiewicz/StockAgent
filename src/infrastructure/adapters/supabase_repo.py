@@ -310,6 +310,10 @@ _LLM_FALLBACK_FLAG = "llm_analysis_failed"
 # w `data_quality_flags` (migracja 008), więc nie wymaga nowej kolumny; wiersz
 # nie dostaje ceny, więc i tak nie wchodzi do ml_feature_store ani do trafności.
 EXPIRED_UNVERIFIED_FLAG = "expired_unverified"
+# Filtr PostgREST: brak flag (NULL, wiersze sprzed 008) albo lista bez flagi wygaśnięcia.
+_NOT_EXPIRED_FILTER = (
+    f'data_quality_flags.is.null,data_quality_flags.not.cs.["{EXPIRED_UNVERIFIED_FLAG}"]'
+)
 
 
 def _without_llm_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -827,6 +831,11 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         if max_age_hours is not None and max_age_hours > 0:
             oldest = datetime.now(UTC) - timedelta(hours=max_age_hours)
             query = query.gte("timestamp", oldest.isoformat())
+        # WIA-49: wiersz oznaczony `expired_unverified` jest już poza oceną — bez tego
+        # filtra wracałby, gdy `max_age_hours` jest puste albo szersze niż przy
+        # oznaczeniu. `OR ... IS NULL`: wiersze sprzed migracji 008 nie mają flag
+        # (samo `NOT cs` wycięłoby NULL), a one zostają w kolejce.
+        query = query.or_(_NOT_EXPIRED_FILTER)
         # ASC (oldest-first) — #19: opróżniamy backlog, rozliczając NAJSTARSZĄ
         # nierozliczoną predykcję, która przekroczyła próg min_age_hours. Przy
         # DESC starsze nierozliczone predykcje nigdy nie stałyby się znów
