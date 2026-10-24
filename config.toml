@@ -297,6 +297,11 @@ earnings_calendar_enabled = false
 # z `earnings_cache`, który Slow Loop odświeża raz w tygodniu wszystkimi kluczami AV —
 # Fast Loop nie płaci wtedy za kalendarz. Off, dopóki DB Migrate nie założy tabeli.
 earnings_cache_enabled = false
+# DAT-20: poniedziałkowa sekcja „📅 Ten tydzień” — wyniki spółek z watchlisty do
+# niedzieli z Finnhub /calendar/earnings (jedno darmowe zapytanie na watchlistę, wspólny
+# limiter Finnhub). Sam mail, bramka earnings bez zmian. UWAGA: włącz DOPIERO po
+# przeglądzie ToS Finnhub (BEZ-28) i sondzie darmowego planu (docs/configuration.md).
+finnhub_earnings_calendar_enabled = false
 # FIN-32: najgorszy przypadek doby AV (cała watchlista za bramką, +1 na symbol przy
 # kalendarzu wyników) ponad 25 × liczba kluczy → WARNING w logu i w bannerze maila.
 # true = błąd startu zamiast ostrzeżenia. Off, bo liczba kluczy żyje w sekretach.

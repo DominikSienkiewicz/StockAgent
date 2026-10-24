@@ -4,7 +4,7 @@ import html
 import urllib.parse
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -258,6 +258,11 @@ DEFAULT_DISPLAY_TIMEZONE = "Europe/Warsaw"
 COLD_START_FORECAST = "— (ML: cold-start)"
 
 _WEEKDAYS_PL = ("pon", "wt", "śr", "czw", "pt", "sob", "nd")
+
+
+def weekday_day_label(day: date) -> str:
+    """Dzień jako „śr 28.10” — ten sam skrót dnia tygodnia co `format_local`."""
+    return f"{_WEEKDAYS_PL[day.weekday()]} {day:%d.%m}"
 
 
 def format_local(moment: datetime, tz: str) -> str:

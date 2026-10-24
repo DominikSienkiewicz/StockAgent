@@ -7085,6 +7085,70 @@ class TestFastLoopWeeklyBudgetBanner:
         assert "weekly budget not checked" in caplog.text
 
 
+class TestEarningsThisWeek:
+    """DAT-20: w poniedziałek (strefa wyświetlania) z `finnhub_earnings_calendar_enabled`
+    raport dostaje wyniki spółek z watchlisty do niedzieli — jedno zapytanie Finnhub."""
+
+    MONDAY_MORNING = datetime(2026, 10, 26, 6, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _calendar(*rows: tuple[str, str]) -> MagicMock:
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "earningsCalendar": [{"symbol": s, "date": d, "hour": "amc"} for s, d in rows]
+        }
+        return response
+
+    def test_flag_off_asks_nothing(self, settings, mocker) -> None:
+        get = mocker.patch("requests.Session.get")
+
+        assert main_agent._earnings_this_week(settings, self.MONDAY_MORNING) is None
+        get.assert_not_called()
+
+    def test_monday_lists_the_watchlist_stocks_reporting_this_week(
+        self, settings, mocker
+    ) -> None:
+        settings.finnhub_earnings_calendar_enabled = True
+        settings.symbols = ["AAPL", "MSFT", "VOO"]
+        settings.symbols_etf = ["VOO"]
+        get = mocker.patch(
+            "requests.Session.get",
+            return_value=self._calendar(
+                ("MSFT", "2026-10-28"), ("AAPL", "2026-11-04"), ("VOO", "2026-10-27")
+            ),
+        )
+
+        week = main_agent._earnings_this_week(settings, self.MONDAY_MORNING)
+
+        assert week is not None and [event.symbol for event in week] == ["MSFT"]
+        assert get.call_count == 1
+
+    def test_other_weekdays_have_no_section(self, settings, mocker) -> None:
+        settings.finnhub_earnings_calendar_enabled = True
+        get = mocker.patch("requests.Session.get")
+
+        tuesday = datetime(2026, 10, 27, 6, 30, tzinfo=UTC)
+
+        assert main_agent._earnings_this_week(settings, tuesday) is None
+        get.assert_not_called()
+
+    def test_monday_is_the_display_timezone_day(self, settings, mocker) -> None:
+        # Niedziela 23:30 UTC to już poniedziałek w Warszawie.
+        settings.finnhub_earnings_calendar_enabled = True
+        mocker.patch("requests.Session.get", return_value=self._calendar())
+
+        sunday_utc = datetime(2026, 10, 25, 23, 30, tzinfo=UTC)
+
+        assert main_agent._earnings_this_week(settings, sunday_utc) == ()
+
+    def test_flag_is_off_by_default_and_outside_the_recipe(self, settings) -> None:
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert settings.finnhub_earnings_calendar_enabled is False
+        assert "finnhub_earnings_calendar_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
 class TestDeribitOptionsPort:
     """DAT-18: z `deribit_dvol_enabled` port opcji grafu kieruje krypto do Deribit
     DVOL (implied edge BTC/ETH); bez flagi DI jak dotąd."""

@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import NamedTuple
+from zoneinfo import ZoneInfo
 
 from src.application.agent_graph import AgentGraphDeps
 from src.application.attestation_cycle import (
@@ -168,6 +169,7 @@ from src.domain.calibration_curve import (
 from src.domain.conformal import CalibrationPoint
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, lead_headline
+from src.domain.earnings import EarningsEvent, earnings_this_week
 from src.domain.equity_curve import EquityCurve
 from src.domain.finops import CycleCost, estimate_cycle_cost
 from src.domain.hedge import equity_hedge_symbols
@@ -2309,6 +2311,37 @@ def _without_owner_portfolio(context: ReportContext) -> ReportContext:
     )
 
 
+# `date.weekday()` poniedziałku — dzień sekcji „📅 Ten tydzień” (DAT-20).
+_MONDAY = 0
+
+
+def _earnings_this_week(
+    settings: Settings, started_at: datetime
+) -> tuple[EarningsEvent, ...] | None:
+    """DAT-20: w poniedziałek (strefa wyświetlania) wyniki spółek z watchlisty do
+    niedzieli z kalendarza Finnhub — jedno zapytanie na watchlistę, darmowe, przez
+    wspólny limiter. Bez flagi albo w inny dzień None (sekcji nie ma, zero ruchu)."""
+    if not settings.finnhub_earnings_calendar_enabled:
+        return None
+    today = started_at.astimezone(ZoneInfo(settings.display_timezone)).date()
+    if today.weekday() != _MONDAY:
+        return None
+    from src.infrastructure.adapters.finnhub_earnings import FinnhubEarningsCalendarAdapter
+
+    stocks = [
+        symbol
+        for symbol in settings.symbols
+        if symbol not in settings.symbols_etf and symbol not in settings.crypto_symbols
+    ]
+    calendar = FinnhubEarningsCalendarAdapter(
+        settings.require_finnhub_api_key(),
+        stocks,
+        rate_limiter=FINNHUB_RATE_LIMITER,
+        today=lambda: today,
+    )
+    return earnings_this_week((calendar.get_next_earnings(s) for s in stocks), today)
+
+
 def _report_inputs(
     settings: Settings,
     repository: RepositoryPort,
@@ -2348,6 +2381,7 @@ def _report_inputs(
         sector_map=_sector_map(settings),
         sector_peers=settings.sector_peers,
         display_timezone=settings.display_timezone,
+        earnings_this_week=_earnings_this_week(settings, started_at),
     )
 
 

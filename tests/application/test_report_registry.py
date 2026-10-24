@@ -62,6 +62,7 @@ MAIL_ORDER = (
     "risk_signals",
     "predictions",
     "crypto",
+    "this_week",
     "backoffice",
     "risk_watch",
     "portfolio_radar",

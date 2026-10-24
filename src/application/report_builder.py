@@ -70,6 +70,7 @@ from src.domain.council import CouncilVerdict
 from src.domain.council_redundancy import CouncilRedundancy
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
+from src.domain.earnings import EarningsEvent
 from src.domain.equity_curve import EquityCurve
 from src.domain.finops import CycleCost
 from src.domain.insider_flow import InsiderLeadWindow
@@ -519,6 +520,9 @@ class ReportContext:
     # MAIL-24: podpisany URL pełnego digestu w prywatnym archiwum (TTL 7 dni) —
     # link w nagłówku HTML i w bloku tytułowym tekstu. None = mail bez linku.
     archive_url: str | None = None
+    # DAT-20: raporty wyników watchlisty do niedzieli — tylko w poniedziałek, z flagą
+    # `finnhub_earnings_calendar_enabled`. None = sekcji „📅 Ten tydzień” nie ma.
+    earnings_this_week: tuple[EarningsEvent, ...] | None = None
 
 
 def _section_input(

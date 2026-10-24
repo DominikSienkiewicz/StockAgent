@@ -212,6 +212,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
     "fast_loop_cycles_per_day",
+    # DAT-20: sekcja maila „📅 Ten tydzień” — prezentacja; bramka earnings bez zmian.
+    "finnhub_earnings_calendar_enabled",
     # DAT-18: DVOL zasila wyłącznie implied edge, sygnał informacyjny bez roli
     # decyzyjnej (#18) — sam zapis `edge_sigma` dla krypto; prompt i fuzja bez zmian.
     "deribit_dvol_enabled",
@@ -782,6 +784,10 @@ class Settings(BaseSettings):
     # FIN-11 (wymaga migracji 053): Fast Loop czyta datę raportu z `earnings_cache`
     # (odświeżanego w Slow Loopie) zamiast pytać AV o każdy symbol w każdym cyklu.
     earnings_cache_enabled: bool = False
+    # DAT-20: poniedziałkowa sekcja „📅 Ten tydzień” z kalendarza Finnhub (jedno
+    # zapytanie na watchlistę, darmowe). Bramka earnings bez zmian. Off do przeglądu
+    # ToS Finnhub (BEZ-28) i sondy darmowego planu (docs/configuration.md).
+    finnhub_earnings_calendar_enabled: bool = False
     options_flow_enabled: bool = False
     # WIA-28: horyzont edge (#18) akcji i ETF z kalendarza NYSE — godziny do
     # następnego dnia handlowego (~72 h w piątek) zamiast stałych 24 h. Off.

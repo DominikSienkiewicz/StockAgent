@@ -41,6 +41,7 @@ from src.application.report_skipped import (
 )
 from src.application.report_source_health import SOURCE_HEALTH_SECTION
 from src.application.report_suggestions import SUGGESTIONS_SECTION
+from src.application.report_this_week import THIS_WEEK_SECTION
 from src.application.report_track_record import TRACK_RECORD_SECTION
 from src.application.report_trade_signals import TRADE_SIGNALS_SECTION
 from src.application.report_user_portfolio import USER_PORTFOLIO_SECTION
@@ -64,6 +65,7 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     RISK_SIGNALS_SECTION,
     PREDICTIONS_SECTION,
     CRYPTO_SECTION,
+    THIS_WEEK_SECTION,
     BACKOFFICE_SECTION,
     RISK_WATCH_SECTION,
     PORTFOLIO_RADAR_SECTION,
