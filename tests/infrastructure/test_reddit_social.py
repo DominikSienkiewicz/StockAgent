@@ -226,6 +226,25 @@ class TestGetSocialVelocity:
         assert snap.baseline_mentions == pytest.approx(99 / 7.0)
 
 
+class TestBlockedByReddit:
+    """Od 2026-07 każde żądanie z runnera GitHub Actions dostaje
+    `403 Client Error: Blocked` — Reddit odcina anonimowe search.json. Blokada
+    nie mija w trakcie cyklu, więc pierwszy 403 kończy Reddit do końca cyklu
+    (adapter żyje jeden cykl) zamiast 2 żądań i 2 tracebacków na symbol."""
+
+    def test_403_stops_requests_for_later_symbols(
+        self, adapter: RedditSocialAdapter, mocker
+    ) -> None:
+        mock_get = mocker.patch(
+            "requests.Session.get", return_value=_error_response(403)
+        )
+
+        snaps = [adapter.get_social_velocity(s) for s in ("AAPL", "MSFT", "NVDA")]
+
+        assert snaps == [None, None, None]
+        assert mock_get.call_count == 1
+
+
 class TestNullAdapter:
     def test_returns_none_without_io(self, mocker) -> None:
         # Null nie robi żadnego I/O — patch jako strażnik: nie może być wołany.
