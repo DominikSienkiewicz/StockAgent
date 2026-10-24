@@ -59,7 +59,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `049` | `model_scorecard_run_id_enabled` | One `run_id` per Slow Loop run on every scorecard row (ML-24); a same-day re-run no longer merges with the cron run. |
 | `051` | `trend_probabilities_enabled` | Also a product decision, not only the migration: it changes the prediction prompt (the three-trend distribution, ML-29) and is part of the recipe, so `config_hash` changes and a new recipe segment starts. |
 | `052` | `model_scorecard_feature_stats_enabled` | The training feature distribution and the 30-day PSI on every scorecard row (ML-21); the model card warns above `0.25`. |
-| `053` | `earnings_cache_enabled` | The Fast Loop reads the earnings date only from `earnings_cache`, which the Slow Loop refreshes (FIN-11); it is part of `config_hash`, so turning it on starts a new `recipe_version` segment. |
+| `053` | `earnings_cache_enabled` | The Fast Loop reads the earnings date only from `earnings_cache`, which the Slow Loop refreshes (FIN-11); it is outside `config_hash` (the same date from a cache, not a new recipe), so turning it on does not start a new `recipe_version` segment. |
 | `054` | `council_votes_upsert_enabled` | Council votes are upserted on the unique `(prediction_id, investor_name)` key (NIEZ-14), so a retried save no longer duplicates them. |
 | `055` | `stale_quote_enabled` | Predictions and settlements made on a stale quote get `prediction_logs.stale_quote = true` and drop out of the hit rate (DAT-14). |
 | `056` | `fundamentals_market_cap_enabled` | The Slow Loop stores the market capitalisation from the same `OVERVIEW` response; the significant insider purchase threshold scales with it (DAT-21). |

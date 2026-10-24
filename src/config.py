@@ -212,6 +212,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
     "fast_loop_cycles_per_day",
+    # FIN-11 (decyzja 2026-10-21…23): cache Slow Loopa zmienia źródło tej samej daty
+    # wyników, nie przepis — włączenie nie tnie track recordu na segmenty.
+    "earnings_cache_enabled",
     # DAT-20: sekcja maila „📅 Ten tydzień” — prezentacja; bramka earnings bez zmian.
     "finnhub_earnings_calendar_enabled",
     # DAT-18: DVOL zasila wyłącznie implied edge, sygnał informacyjny bez roli
@@ -281,9 +284,6 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "alpha_fusion_enabled",
     "insider_flow_enabled",
     "earnings_calendar_enabled",
-    # FIN-11: cache Slow Loopa (do 6 dni) zamiast AV w cyklu — inna świeżość wejścia
-    # bramki earnings i alpha fusion; pole niejednoznaczne zostaje w przepisie.
-    "earnings_cache_enabled",
     "options_flow_enabled",
     # WIA-28: horyzont edge z kalendarza NYSE — inny zapisany `edge_sigma`.
     "edge_calendar_horizon_enabled",

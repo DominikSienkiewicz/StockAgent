@@ -1184,11 +1184,14 @@ class TestAlphaVantageBudget:
 
         assert settings.av_budget().worst_case == 2
 
-    def test_earnings_cache_is_off_by_default_and_part_of_the_recipe(self, env):
-        from src.config import RECIPE_SETTINGS_FIELDS
+    def test_earnings_cache_is_off_by_default_and_outside_the_recipe(self, env):
+        # FIN-11 (decyzja 2026-10-21…23): cache zmienia źródło tej samej daty wyników,
+        # nie przepis — przełączenie flagi nie może ciąć track recordu na segmenty.
+        from src.config import NON_RECIPE_SETTINGS_FIELDS, RECIPE_SETTINGS_FIELDS
 
         assert self._settings().earnings_cache_enabled is False
-        assert "earnings_cache_enabled" in RECIPE_SETTINGS_FIELDS
+        assert "earnings_cache_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        assert "earnings_cache_enabled" not in RECIPE_SETTINGS_FIELDS
 
     def test_strict_flag_stops_startup(self, env):
         with pytest.raises(ValueError, match="Alpha Vantage"):
