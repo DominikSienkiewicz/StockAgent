@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, NamedTuple, cast
 
+import httpx
 from postgrest.exceptions import APIError
 from supabase import create_client
 
@@ -34,6 +35,7 @@ from src.domain.council import (
     Recommendation,
     parse_recommendation,
 )
+from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
@@ -2075,6 +2077,34 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             )
             for (name, sym), recs in grouped.items()
         ]
+
+    def get_council_vote_samples(self, window_days: int = 30) -> list[CouncilVoteSample]:
+        # WIA-45: tylko trzy kolumny, paginacja z `id` jako drugim kluczem (jak historia
+        # głosów). Graceful: baza niedostępna → [] z WARNING-iem, mail bez redundancji.
+        cutoff = datetime.now(UTC) - timedelta(days=window_days)
+        query = (
+            self._client.table(self._council_votes_table)
+            .select("prediction_id, investor_name, recommendation")
+            .gte("timestamp", cutoff.isoformat())
+            .order("timestamp", desc=True)
+            .order("id", desc=True)
+        )
+        try:
+            rows = _paginate(query)
+        except (APIError, httpx.HTTPError) as exc:
+            _log_degraded_read(
+                "council_votes", "council redundancy skipped", "007", exc
+            )
+            return []
+        samples: list[CouncilVoteSample] = []
+        for row in rows:
+            prediction_id = row.get("prediction_id")
+            name = str(row.get("investor_name") or "")
+            rec = parse_recommendation(row.get("recommendation"))
+            if prediction_id is None or not name or rec is None:
+                continue
+            samples.append(CouncilVoteSample(str(prediction_id), name, rec))
+        return samples
 
     @_translates_api_errors
     def get_council_votes_for_prediction(

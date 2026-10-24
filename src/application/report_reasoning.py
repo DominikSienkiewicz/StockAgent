@@ -215,11 +215,13 @@ def model_signal_reason_text(r: SymbolResult) -> str:
     return f"{MODEL_SIGNAL_TITLE}: {direction}" + (f" ({detail})" if detail else "")
 
 
-def _render_council_section(verdict: CouncilVerdict) -> str:
+def _render_council_section(verdict: CouncilVerdict, *, one_voice: bool = False) -> str:
     """Renderuje sekcję rady doradczej (Jinja2 template).
 
     Logika decyzyjna (split decision, strong consensus, vote distribution)
     pochodzi z metod domenowych `CouncilVerdict` — template tylko renderuje.
+    `one_voice` (WIA-45): rada mówi w praktyce jednym głosem (N_eff < 1,5), więc
+    zgoda person nie jest dowodem — odznaka „SILNY KONSENSUS” znika.
     """
     final = verdict.final_recommendation
     opinion_rows = [
@@ -246,7 +248,7 @@ def _render_council_section(verdict: CouncilVerdict) -> str:
             "opinion_rows": opinion_rows,
             "vote_dist": verdict.vote_distribution(),
             "is_split": verdict.is_split_decision(),
-            "strong_consensus": verdict.has_strong_consensus(),
+            "strong_consensus": verdict.has_strong_consensus() and not one_voice,
             "dissenting_views": verdict.dissenting_views,
         },
     )
@@ -408,11 +410,16 @@ def _market_context_html(r: SymbolResult) -> str:
 
 
 def render_reasoning_block_html(
-    r: SymbolResult, sector_map: Mapping[str, str], chip: str | None = None
+    r: SymbolResult,
+    sector_map: Mapping[str, str],
+    chip: str | None = None,
+    *,
+    one_voice: bool = False,
 ) -> str:
     """Blok 'Uzasadnienia' dla jednej predykcji. Pusty string, gdy nie ma
     czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji).
-    `chip` (WIA-35) — trafność kierunkowa na symbolu, pod oczekiwanym ruchem."""
+    `chip` (WIA-35) — trafność kierunkowa na symbolu, pod oczekiwanym ruchem.
+    `one_voice` (WIA-45) — rada bez niezależnych głosów: bez odznaki konsensusu."""
     # Q5/Q6: blok renderujemy też, gdy są analogi (precedent receipts)
     # lub odznaki proweniencji — nawet bez reasoning/rady.
     badges_html = _provenance_badges_html(r.provenance_badges)
@@ -454,7 +461,7 @@ def render_reasoning_block_html(
     news_block = _render_news_block_html(r.top_news)
     rec_block = _model_signal_reason_html(r)
     council_block = (
-        _render_council_section(r.council_verdict)
+        _render_council_section(r.council_verdict, one_voice=one_voice)
         if r.council_verdict is not None
         else ""
     )

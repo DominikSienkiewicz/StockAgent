@@ -67,6 +67,7 @@ from src.domain.calibration_curve import CalibrationBucket
 from src.domain.conformal import MoveInterval
 from src.domain.consensus_shift import ConsensusShift
 from src.domain.council import CouncilVerdict
+from src.domain.council_redundancy import CouncilRedundancy
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
 from src.domain.equity_curve import EquityCurve
@@ -435,6 +436,7 @@ class ReportContext:
     macro_risk_report: MacroRiskReport | None = None
     portfolio_risk_report: PortfolioRiskReport | None = None
     council_history: list[InvestorHistory] | None = None
+    council_redundancy: CouncilRedundancy | None = None
     persona_track_record: list[PersonaTrackRecord] | None = None
     quota_alerts: list[QuotaAlert] | None = None
     symbols_filter: frozenset[str] | None = None

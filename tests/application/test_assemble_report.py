@@ -25,6 +25,7 @@ from src.application.use_cases.publish_public_scorecard import (
     PublicScorecardOptions,
     PublishPublicScorecardUseCase,
 )
+from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.cycle_maturity import CycleMaturity
 from src.domain.evaluation_protocol import EvaluationProtocol
 from src.domain.persona_track_record import PersonaScoring, PersonaTrackRecord
@@ -302,3 +303,49 @@ class TestPersonaBrierRanking:
         context = _assemble(repo, flags)
 
         assert [r.investor_name for r in context.persona_track_record or []] == ["Zeta", "Alfa"]
+
+
+class TestCouncilRedundancyContext:
+    """WIA-45: redundancja rady z zapisanych głosów 30 dni — tylko za flagą."""
+
+    _CYCLE = ("BUY", "SELL", "HOLD", "BUY", "SELL", "HOLD", "BUY")
+
+    def _samples(self) -> list[CouncilVoteSample]:
+        return [
+            CouncilVoteSample(f"p-{index}", name, self._CYCLE[index % len(self._CYCLE)])  # type: ignore[arg-type]
+            for index in range(30)
+            for name in ("Graham", "Buffett", "Marks")
+        ]
+
+    @staticmethod
+    def _flags(*, enabled: bool) -> ReportFlags:
+        return ReportFlags(
+            track_record_days=30,
+            reflection_min_age_hours=12,
+            symbols=["AAPL"],
+            council_redundancy_enabled=enabled,
+        )
+
+    def test_flag_puts_the_measured_redundancy_into_the_context(self) -> None:
+        repo = _repo()
+        repo.get_council_vote_samples.return_value = self._samples()
+
+        context = _assemble(repo, self._flags(enabled=True))
+
+        assert context.council_redundancy is not None
+        assert context.council_redundancy.is_effectively_single_voter is True
+        repo.get_council_vote_samples.assert_called_once_with(30)
+
+    def test_flag_off_never_reads_the_votes(self) -> None:
+        repo = _repo()
+
+        context = _assemble(repo, self._flags(enabled=False))
+
+        assert context.council_redundancy is None
+        repo.get_council_vote_samples.assert_not_called()
+
+    def test_no_votes_leave_the_context_without_redundancy(self) -> None:
+        repo = _repo()
+        repo.get_council_vote_samples.return_value = []
+
+        assert _assemble(repo, self._flags(enabled=True)).council_redundancy is None

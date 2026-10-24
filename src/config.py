@@ -499,8 +499,9 @@ class Settings(BaseSettings):
     # kolejność i opis w mailu — prognoza ta sama. Off: ranking jak dotąd.
     persona_brier_ranking_enabled: bool = False
     # WIA-45: redundancja rady z zapisanych głosów (kappa Cohena między personami,
-    # N_eff). Recap tygodniowy dopisuje linię „7 person ≈ 2,1 niezależnego głosu”.
-    # Tylko treść maila — prognoza ta sama. Off: recap bez zmian.
+    # N_eff). Recap tygodniowy dopisuje linię „7 person ≈ 2,1 niezależnego głosu”,
+    # a mail Fast Loopa nie nadaje „SILNY KONSENSUS”, gdy rada mówi jednym głosem
+    # (N_eff < 1,5). Tylko treść maili — prognoza ta sama. Off: maile bez zmian.
     council_redundancy_enabled: bool = False
     debate_mode_enabled: bool = False
 

@@ -114,6 +114,7 @@ def _render_saved_section_html(
     sector_map: Mapping[str, str],
     forecast_horizon: str = "",
     symbol_chips: Mapping[str, str] | None = None,
+    one_voice: bool = False,
 ) -> str:
     """🔮 Sekcja wygenerowanych predykcji: tabela + wykres prognozy +
     uzasadnienia. Pusty string, gdy w tym cyklu nic nie zapisano.
@@ -154,7 +155,7 @@ def _render_saved_section_html(
 
     chips = symbol_chips or {}
     parts.extend(
-        render_reasoning_block_html(r, sector_map, chips.get(r.symbol))
+        render_reasoning_block_html(r, sector_map, chips.get(r.symbol), one_voice=one_voice)
         for r in saved
         if has_full_block(r)
     )
@@ -307,6 +308,7 @@ def _section_html(data: SectionInput) -> str:
         sector_map=data.sector_map,
         forecast_horizon=forecast_horizon_label(data.started_at),
         symbol_chips=data.symbol_chips,
+        one_voice=_council_is_one_voice(data),
     )
 
 
@@ -316,6 +318,15 @@ def _section_text(data: SectionInput) -> list[str]:
     )
 
 
+def _council_is_one_voice(data: SectionInput) -> bool:
+    """WIA-45: zmierzona redundancja rady (flaga) mówi, że to jeden efektywny głos."""
+    redundancy = data.context.council_redundancy
+    return redundancy is not None and redundancy.is_effectively_single_voter
+
+
 PREDICTIONS_SECTION = ReportSection(
-    key="predictions", render_html=_section_html, render_text=_section_text
+    key="predictions",
+    render_html=_section_html,
+    render_text=_section_text,
+    context_fields=frozenset({"council_redundancy"}),
 )

@@ -59,6 +59,7 @@ from src.domain.calibration_curve import (
     reliability_curve,
 )
 from src.domain.consensus_shift import ConsensusShift, detect_shift
+from src.domain.council_redundancy import CouncilRedundancy, assess_council_redundancy
 from src.domain.coverage import CoverageReport
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.equity_curve import EquityCurve
@@ -112,6 +113,9 @@ class ReportFlags:
     shock_alerts_enabled: bool = False
     # WIA-44: leaderboard person po Brier Skill pewności (RPC 065) zamiast hit-rate'u.
     persona_brier_ranking_enabled: bool = False
+    # WIA-45: redundancja rady (kappa, N_eff) z zapisanych głosów; przy jednym efektywnym
+    # głosie mail nie nadaje odznaki „SILNY KONSENSUS”.
+    council_redundancy_enabled: bool = False
 
 
 def portfolio_sectors(
@@ -231,6 +235,21 @@ def data_coverage(
         days=flags.track_record_days,
         settled_rows=None if reads is None else reads.resolved_rows,
     )
+
+
+# WIA-45: okno zapisanych głosów, z którego liczymy redundancję rady.
+COUNCIL_REDUNDANCY_DAYS = 30
+
+
+def build_council_redundancy(
+    flags: ReportFlags, repository: RepositoryPort
+) -> CouncilRedundancy | None:
+    """WIA-45 — redundancja rady z głosów ostatnich `COUNCIL_REDUNDANCY_DAYS` dni.
+    Flaga OFF → None bez odczytu; brak głosów albo zbyt mała wspólna próbka → None
+    (odznaka konsensusu zostaje). Odczyt graceful w adapterze."""
+    if not flags.council_redundancy_enabled:
+        return None
+    return assess_council_redundancy(repository.get_council_vote_samples(COUNCIL_REDUNDANCY_DAYS))
 
 
 def build_signal_calibration(
@@ -629,6 +648,7 @@ class ReportAssembler:
             resolved_this_cycle=resolved_since is not None,
             resolved_unavailable=resolved is None,
             council_history=council_history,
+            council_redundancy=build_council_redundancy(flags, repository),
             persona_track_record=persona_track_record,
             quota_alerts=recent_alerts,
             equity_curve=equity_curve,

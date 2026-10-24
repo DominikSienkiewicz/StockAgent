@@ -42,6 +42,7 @@ from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import InvestorOpinion
+from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
@@ -116,6 +117,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_persona_track_record",
         "get_persona_vote_outcomes",
         "get_persona_scoring",
+        "get_council_vote_samples",
         "get_deferred_diagnoses",
         "get_resolved_predictions_detailed",
         "get_settled_moves",
@@ -257,6 +259,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_persona_scoring(self, window_days: int = 90) -> dict[str, PersonaScoring]:
         return self._delegate.get_persona_scoring(window_days=window_days)
+
+    def get_council_vote_samples(self, window_days: int = 30) -> list[CouncilVoteSample]:
+        return self._delegate.get_council_vote_samples(window_days=window_days)
 
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
         return self._delegate.get_deferred_diagnoses(limit)

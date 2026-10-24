@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from src.application.report_builder import build_html_report, to_symbol_result
+from src.application.report_builder import ReportContext, build_html_report, to_symbol_result
 from src.application.report_models import SymbolResult
 from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.council_redundancy import CouncilRedundancy
 
 
 def _make_verdict(rec: str = "BUY") -> CouncilVerdict:
@@ -275,3 +276,49 @@ class TestCouncilPartialFailure:
         line = render_council_line(self._verdict(answered=4, failed=3))
 
         assert "odpowiedziało 4/7" in line
+
+
+class TestStrongConsensusBadgeAndRedundancy:
+    """WIA-45: „SILNY KONSENSUS” nie ma pokrycia, gdy siedem person mówi w praktyce
+    jednym głosem (N_eff < 1,5) — odznaka znika tylko przy zmierzonej redundancji."""
+
+    @staticmethod
+    def _redundancy(n_eff: float) -> CouncilRedundancy:
+        return CouncilRedundancy(
+            personas=7, predictions=40, pairs=(), llm_pairs=(),
+            mean_kappa=0.9, mean_agreement=0.95, n_eff=n_eff,
+        )
+
+    @staticmethod
+    def _html(context: ReportContext | None) -> str:
+        verdict = CouncilVerdict(
+            final_recommendation="BUY",
+            consensus_strength=0.85,
+            summary="Test.",
+            dissenting_views=[],
+            investor_opinions=[
+                InvestorOpinion("Warren Buffett", "BUY", 0.9, "x", ()),
+            ],
+        )
+        results = [
+            SymbolResult(
+                symbol="AAPL", status="saved", delta=Decimal("0.035"),
+                current_price=Decimal("180.00"), trend="BULLISH", council_verdict=verdict,
+            )
+        ]
+        return build_html_report(results, datetime.now(UTC), 1.0, context)[0]
+
+    def test_badge_is_dropped_when_the_council_is_effectively_one_voter(self):
+        html = self._html(ReportContext(council_redundancy=self._redundancy(1.1)))
+
+        assert "SILNY KONSENSUS" not in html
+        assert "Zgodność: 85%" in html
+
+    def test_badge_stays_when_the_voters_are_independent_enough(self):
+        html = self._html(ReportContext(council_redundancy=self._redundancy(3.2)))
+
+        assert "SILNY KONSENSUS" in html
+
+    def test_badge_stays_without_a_redundancy_measurement(self):
+        assert "SILNY KONSENSUS" in self._html(ReportContext())
+        assert "SILNY KONSENSUS" in self._html(ReportContext(council_redundancy=None))

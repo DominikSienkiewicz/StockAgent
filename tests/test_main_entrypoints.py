@@ -5442,6 +5442,16 @@ def test_report_flags_carry_the_persona_brier_ranking_flag(settings, enabled: bo
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+def test_report_flags_carry_the_council_redundancy_flag(settings, enabled: bool) -> None:
+    # WIA-45: odznaka „silny konsensus” zależy od redundancji mierzonej przez asemblera.
+    settings.council_redundancy_enabled = enabled
+
+    flags = main_agent._report_flags(settings)
+
+    assert flags.council_redundancy_enabled is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
 def test_build_repository_passes_the_correction_category_flag(
     settings, mocker, enabled: bool
 ) -> None:

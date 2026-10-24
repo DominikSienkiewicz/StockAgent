@@ -1139,6 +1139,68 @@ class TestGetPersonaScoring:
         assert "apply migration 065" in caplog.text
 
 
+class TestGetCouncilVoteSamples:
+    """WIA-45 — głosy person z `council_votes` (prediction_id, persona, rekomendacja)
+    z ostatnich N dni; bez RPC i bez migracji, paginowane po `id`."""
+
+    _CHAIN = ["table", "select", "gte", "order", "order", "range"]
+
+    def test_maps_rows_to_vote_samples(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.council_redundancy import CouncilVoteSample
+
+        _set_chain_response(
+            mock_client,
+            self._CHAIN,
+            [
+                {"prediction_id": "p-1", "investor_name": "Buffett", "recommendation": "buy"},
+                {"prediction_id": "p-1", "investor_name": "Wood", "recommendation": "SELL"},
+            ],
+        )
+
+        samples = repo.get_council_vote_samples(window_days=30)
+
+        assert samples == [
+            CouncilVoteSample("p-1", "Buffett", "BUY"),
+            CouncilVoteSample("p-1", "Wood", "SELL"),
+        ]
+        assert mock_client.table.call_args.args[0] == "council_votes"
+
+    def test_skips_rows_without_an_id_a_persona_or_a_valid_recommendation(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            self._CHAIN,
+            [
+                {"prediction_id": None, "investor_name": "Buffett", "recommendation": "BUY"},
+                {"prediction_id": "p-1", "investor_name": "", "recommendation": "BUY"},
+                {"prediction_id": "p-1", "investor_name": "Wood", "recommendation": "STRONG_BUY"},
+                {"prediction_id": "p-1", "investor_name": "Lynch", "recommendation": "HOLD"},
+            ],
+        )
+
+        assert [s.investor_name for s in repo.get_council_vote_samples()] == ["Lynch"]
+
+    def test_database_error_degrades_to_no_samples(
+        self, repo: SupabaseRepository, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        chain = mock_client
+        for step in self._CHAIN[:-1]:
+            chain = getattr(chain, step).return_value
+        chain.range.return_value.execute.side_effect = APIError(
+            {"code": "PGRST000", "message": "down"}
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert repo.get_council_vote_samples() == []
+
+        assert "council_votes" in caplog.text
+
+
 _VOTE_OUTCOME_CHAIN = ["rpc", "order", "order", "order", "range"]
 
 

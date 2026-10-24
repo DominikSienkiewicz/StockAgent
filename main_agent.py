@@ -2193,6 +2193,7 @@ def _report_flags(settings: Settings) -> ReportFlags:
         settled_at_windows_enabled=settings.settled_at_windows_enabled,
         shock_alerts_enabled=settings.shock_alerts_enabled,
         persona_brier_ranking_enabled=settings.persona_brier_ranking_enabled,
+        council_redundancy_enabled=settings.council_redundancy_enabled,
     )
 
 

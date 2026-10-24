@@ -32,7 +32,9 @@ persona_vote_outcomes_enabled = false
 persona_brier_ranking_enabled = false
 # WIA-45: redundancja rady z zapisanych głosów (kappa Cohena między personami,
 # efektywna liczba niezależnych głosów). Recap tygodniowy dopisuje linię „7 person
-# ≈ 2,1 niezależnego głosu”. Sama treść maila, bez migracji.
+# ≈ 2,1 niezależnego głosu”, a mail dzienny nie nadaje „SILNY KONSENSUS”, gdy rada
+# mówi w praktyce jednym głosem (N_eff < 1,5 z głosów ostatnich 30 dni). Sama treść
+# maili, bez migracji.
 council_redundancy_enabled = false
 debate_mode_enabled = false
 # Model routing (#2): tani model domyślnie, eskalacja do frontier gdy

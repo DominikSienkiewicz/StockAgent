@@ -12,6 +12,7 @@ from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.attestation import CommitmentLedger, StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
+from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.earnings import CachedEarningsDate, EarningsEvent
 from src.domain.finops import LLMCallEntry, LLMUsage
 from src.domain.fx import FxRate
@@ -500,6 +501,13 @@ class RepositoryPort(ABC):
         z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
         "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
         → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
+    def get_council_vote_samples(self, window_days: int = 30) -> list[CouncilVoteSample]:
+        """WIA-45 — zapisane głosy person (`council_votes`) z ostatnich `window_days`:
+        predykcja, persona i rekomendacja, bez uzasadnień. Wejście redundancji rady
+        (kappa Cohena, N_eff). Pusta lista = brak głosów albo błąd odczytu (WARNING)
+        → mail bez pomiaru redundancji."""
 
     @abstractmethod
     def get_persona_scoring(self, window_days: int = 90) -> dict[str, PersonaScoring]:
