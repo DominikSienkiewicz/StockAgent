@@ -3200,6 +3200,169 @@ class TestMigration063RagExactSearch:
         assert "idx_prediction_logs_embedding" in _indexes(migrated_pg_conn, "prediction_logs")
 
 
+def _full_analysis_record() -> dict[str, object]:
+    """TEST-14: rekord `prediction_logs` z PEŁNEJ analizy grafu przy każdej fladze
+    i porcie, który dokłada klucz (kwit v2, przepis, atestacja, opcje, przedział,
+    rozkład trendu, notowanie, embedding), PO serializacji adaptera — dokładnie ten
+    słownik idzie do PostgREST."""
+    from datetime import timedelta
+    from unittest.mock import MagicMock, Mock, patch
+
+    from src.application.agent_graph import AgentGraphDeps, create_agent_graph
+    from src.application.ports import (
+        AttestationPublisherPort,
+        EmbeddingPort,
+        LLMPort,
+        MarketDataPort,
+        MLPredictionPort,
+        NewsPort,
+        OptionsFlowPort,
+        QuotePort,
+        RepositoryPort,
+        SentimentPort,
+    )
+    from src.domain.asset import Asset
+    from src.domain.conformal import CalibrationPoint
+    from src.domain.options_flow import OptionsFlowSnapshot
+    from src.domain.recipe import PredictionRecipe
+    from src.domain.value_objects import AssetType, Money, Quote, Threshold
+    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+    now = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+    repository = Mock(spec=RepositoryPort)
+    repository.get_unverified_prediction.return_value = None
+    repository.get_last_prediction_price.return_value = Money(Decimal("100"))
+    repository.find_similar_predictions.return_value = []
+    repository.get_current_hour_commitment.return_value = None
+    repository.save_prediction.return_value = "pred-1"
+    sentiment = Mock(spec=SentimentPort)
+    sentiment.get_social_score.return_value = {
+        "av_sentiment_score": 0.3,
+        "av_relevance_avg": 0.7,
+        "news_volume_24h": 4,
+        "high_relevance_count": 2,
+        "av_sentiment_label": "Bullish",
+    }
+    news = Mock(spec=NewsPort)
+    news.get_news_context.return_value = [{"title": "Reuters: Apple beats", "source": "Reuters"}]
+    llm = Mock(spec=LLMPort)
+    llm.analyze.return_value = {
+        "trend_direction": "BULLISH",
+        "confidence_score": 0.8,
+        "av_agreement": 0.7,
+        "target_price_12h": 110.0,
+        "reasoning": "Momentum.",
+        "probabilities": {"BULLISH": 0.6, "BEARISH": 0.1, "SIDEWAYS": 0.3},
+    }
+    ml = Mock(spec=MLPredictionPort)
+    ml.is_trained = True
+    ml.predict.return_value = Money(Decimal("108"))
+    ml.explain.return_value = {"price_delta": 0.01}
+    embedding = Mock(spec=EmbeddingPort)
+    embedding.embed.return_value = [0.01] * 1536
+    options = Mock(spec=OptionsFlowPort)
+    options.get_options_flow.return_value = OptionsFlowSnapshot("AAPL", 0.6, implied_vol=0.4)
+    quotes = Mock(spec=QuotePort)
+    quotes.get_quote.return_value = Quote(
+        price=Money(Decimal("106")),
+        quoted_at=now - timedelta(hours=64),
+        prev_close=Money(Decimal("104")),
+    )
+    window = [CalibrationPoint(0.001 * i, 0.002 * i - 0.01) for i in range(30)]
+    deps = AgentGraphDeps(
+        market_port=Mock(spec=MarketDataPort),
+        sentiment_port=sentiment,
+        news_port=news,
+        repository_port=repository,
+        ml_port=ml,
+        llm_port=llm,
+        threshold=Threshold(Decimal("0.02")),
+        embedding_port=embedding,
+        options_port=options,
+        quote_port=quotes,
+        attestation_publisher=Mock(spec=AttestationPublisherPort),
+        vector_memory_enabled=True,
+        regime_tagging_enabled=True,
+        receipts_enabled=True,
+        feature_set_version_enabled=True,
+        recipe=PredictionRecipe(
+            llm_provider="anthropic",
+            llm_model="claude-sonnet-4-6",
+            council_provider="openai",
+            council_model="gpt-5-mini",
+            prompt_sha256="a" * 64,
+            personas_sha256="b" * 64,
+            config_hash="c" * 64,
+            model_version="cold_start",
+            universe_version="d" * 64,
+            git_sha="local",
+            run_id="local",
+        ),
+        recipe_version_enabled=True,
+        move_calibration={AssetType.STOCK: window},
+        interval_columns_enabled=True,
+        gate_delta_enabled=True,
+        experiment_arms_enabled=True,
+        trend_probabilities_enabled=True,
+        stale_quote_enabled=True,
+        clock=lambda: now,
+    )
+    create_agent_graph(deps).compile().invoke(
+        {
+            "symbol": "AAPL",
+            "previous_price": Decimal("100"),
+            "asset": Asset(symbol="AAPL", asset_type=AssetType.STOCK),
+            "regime_context": "NEUTRAL",
+            "experiment_arms": {"EXP-02": "blind"},
+        }
+    )
+    record = repository.save_prediction.call_args.args[0]
+
+    client = MagicMock()
+    client.table.return_value.upsert.return_value.execute.return_value.data = [{"id": "x"}]
+    with patch("src.infrastructure.adapters.supabase_repo.create_client", return_value=client):
+        SupabaseRepository(url="https://test.supabase.co", key="key").save_prediction(record)
+    serialized: dict[str, object] = client.table.return_value.upsert.call_args.args[0]
+    return serialized
+
+
+@pytest.mark.containers
+class TestSaveNodeRecordFitsPredictionLogs:
+    """TEST-14 (G69): PGRST204 to powracająca awaria produkcyjna — klucz rekordu
+    bez kolumny zabija zapis całej, już opłaconej predykcji. Rekord pełnej analizy
+    po serializacji musi mieścić się w kolumnach `prediction_logs` po migracjach."""
+
+    # Klucze, które dokładają flagi i porty — pilnuje, że test je naprawdę wywołał.
+    _OPTIONAL_KEYS = frozenset({
+        "regime",
+        "decision_receipts",
+        "feature_set_version",
+        "recipe_version",
+        "edge_sigma",
+        "interval_low",
+        "interval_high",
+        "gate_delta",
+        "experiment_arms",
+        "trend_probabilities",
+        "stale_quote",
+        "commitment_hash",
+        "commitment_salt",
+        "commitment_payload",
+        "embedding",
+    })
+
+    def test_saved_record_keys_are_prediction_logs_columns(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        record = _full_analysis_record()
+
+        assert set(record) >= self._OPTIONAL_KEYS, (
+            f"graf nie zapisał kluczy: {sorted(self._OPTIONAL_KEYS - set(record))}"
+        )
+        missing = sorted(set(record) - _columns(migrated_pg_conn, "prediction_logs"))
+        assert missing == [], f"rekord save_node ma klucze bez kolumn prediction_logs: {missing}"
+
+
 @pytest.mark.containers
 class TestMigratedPgConn:
     """TEST-08: `migrated_pg_conn` ma komplet schematu niezależnie od kolejności
