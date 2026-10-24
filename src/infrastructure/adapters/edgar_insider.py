@@ -23,6 +23,7 @@ niesie liczbę widzianych i sparsowanych Form 4 (DAT-03), więc domena
 from __future__ import annotations
 
 import logging
+import threading
 import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime, timedelta
 from http import HTTPStatus
@@ -66,6 +67,14 @@ def _findall_local(element: ET.Element, name: str) -> list[ET.Element]:
     return [d for d in element.iter() if _local_name(d.tag) == name]
 
 
+def _padded_cik(raw: object) -> str | None:
+    """CIK bywa intem lub stringiem → 10 cyfr; brak albo nie-numeryczny → None."""
+    try:
+        return str(int(str(raw))).zfill(10)
+    except ValueError:
+        return None
+
+
 def _raw_form4_doc(primary_doc: str) -> str:
     """Ścieżka surowego XML Form 4 zamiast widoku renderowanego przez XSL.
 
@@ -102,6 +111,8 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         # Adapter żyje jeden cykl: po 403 SEC dalsze żądania tylko przedłużają
         # blokadę (dostęp wraca po 10 min poniżej progu), więc milkniemy do końca.
         self._blocked = False
+        self._ciks: dict[str, str] | None = None
+        self._ciks_lock = threading.Lock()
 
     def get_insider_flow(self, symbol: str) -> InsiderFlowSnapshot | None:
         if self._blocked:
@@ -163,6 +174,19 @@ class EdgarInsiderAdapter(InsiderFlowPort):
 
     def _resolve_cik(self, symbol: str) -> str | None:
         """Mapuje ticker → 10-cyfrowy CIK (z paddingiem)."""
+        ciks = self._ticker_ciks()
+        return None if ciks is None else ciks.get(symbol.upper())
+
+    def _ticker_ciks(self) -> dict[str, str] | None:
+        """Mapa ticker → CIK pobierana raz na cykl: plik ma ~1 MB i jest wspólny
+        dla wszystkich symboli. Lock, bo symbole idą równolegle
+        (`symbol_concurrency`); nieudane pobranie nie trafia do cache'u."""
+        with self._ciks_lock:
+            if self._ciks is None:
+                self._ciks = self._fetch_ticker_ciks()
+            return self._ciks
+
+    def _fetch_ticker_ciks(self) -> dict[str, str] | None:
         try:
             response = self._get(TICKERS_URL)
             if response is None:
@@ -176,21 +200,15 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         if not isinstance(payload, dict):
             return None
 
-        target = symbol.upper()
+        ciks: dict[str, str] = {}
         for entry in payload.values():
             if not isinstance(entry, dict):
                 continue
-            if str(entry.get("ticker", "")).upper() == target:
-                cik_raw = entry.get("cik_str")
-                if cik_raw is None:
-                    return None
-                try:
-                    # CIK bywa intem lub stringiem; nie-numeryczny → graceful None
-                    # (zamiast ValueError wyciekającego z _resolve_cik).
-                    return str(int(cik_raw)).zfill(10)
-                except (TypeError, ValueError):
-                    return None
-        return None
+            ticker = str(entry.get("ticker", "")).upper()
+            cik = _padded_cik(entry.get("cik_str"))
+            if ticker and cik is not None:
+                ciks.setdefault(ticker, cik)
+        return ciks
 
     def _recent_form4_filings(self, cik: str) -> list[tuple[str, str]] | None:
         """Zwraca [(accessionNumber, primaryDocument)] dla Form 4 w oknie.
