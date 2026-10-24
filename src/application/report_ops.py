@@ -131,25 +131,29 @@ def render_trainer_summary_markdown(
     failures: int,
     total: int,
     feature_store_refreshed: bool = True,
+    pooled_label_overlap: tuple[int, int] | None = None,
 ) -> str:
     """Summary Slow Loopa: statusy ewaluacji per symbol jako liczby i wynik modelu
-    wspólnego. `pooled_status` None = trening wspólny rzucił albo nie ruszył."""
+    wspólnego. `pooled_status` None = trening wspólny rzucił albo nie ruszył.
+    `pooled_label_overlap` (ML-25) — (nakładające się, zmierzone) etykiety próbki
+    modelu wspólnego; None = próbka bez chwili rozliczenia, wiersza nie ma."""
+    rows = [
+        ("Feature store refresh", "ok" if feature_store_refreshed else "failed"),
+        ("Pooled model", pooled_status or "failed"),
+        (
+            "Pooled samples",
+            _NOT_AVAILABLE if pooled_samples is None else str(pooled_samples),
+        ),
+    ]
+    if pooled_label_overlap is not None:
+        overlapping, measured = pooled_label_overlap
+        rows.append(("Label overlaps (settle after the next row)", f"{overlapping} / {measured}"))
+    rows.append(("Failures", f"{failures} / {total}"))
     return "\n".join(
         [
             "## Slow Loop training summary",
             "",
-            _table(
-                ("Metric", "Value"),
-                [
-                    ("Feature store refresh", "ok" if feature_store_refreshed else "failed"),
-                    ("Pooled model", pooled_status or "failed"),
-                    (
-                        "Pooled samples",
-                        _NOT_AVAILABLE if pooled_samples is None else str(pooled_samples),
-                    ),
-                    ("Failures", f"{failures} / {total}"),
-                ],
-            ),
+            _table(("Metric", "Value"), rows),
             "### Per-symbol evaluation by status",
             "",
             _count_table("Status", Counter(dict(symbol_statuses))),

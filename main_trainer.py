@@ -317,10 +317,20 @@ class _TrainingTally:
             failures=self.failures,
             total=self.total,
             feature_store_refreshed=self.feature_store_refreshed,
+            pooled_label_overlap=_label_overlap_of(pooled),
         )
         if self.snapshot_models is None:
             return summary
         return summary + "\n" + render_snapshot_models_markdown(self.snapshot_models)
+
+
+def _label_overlap_of(result: Mapping[str, Any]) -> tuple[int, int] | None:
+    """ML-25: (nakładające się, zmierzone) etykiety z wyniku treningu wspólnego."""
+    overlapping = result.get("label_overlap_count")
+    measured = result.get("label_overlap_measured")
+    if isinstance(overlapping, int) and isinstance(measured, int):
+        return overlapping, measured
+    return None
 
 
 def _train_symbols(

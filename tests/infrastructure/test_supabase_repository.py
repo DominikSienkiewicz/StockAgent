@@ -2946,6 +2946,8 @@ class TestModelScorecardProvenance:
         "library_version": "xgboost 3.2.0",
         "feature_set_version": 4,
         "git_sha": "abc1234",
+        "label_overlap_count": 10,
+        "label_overlap_measured": 49,
     }
 
     def test_flag_off_payload_has_no_provenance(

@@ -13,6 +13,7 @@ from src.application.use_cases.train_model import (
     TrainingSet,
     TrainModelUseCase,
 )
+from src.domain.backtest import LabelOverlap
 from src.domain.model_scorecard import (
     FREE_SNAPSHOT_MODEL_SYMBOL,
     LLM_SNAPSHOT_MODEL_SYMBOL,
@@ -878,11 +879,10 @@ def test_snapshot_source_describes_the_gated_sample(ml_port, repository_port, tr
 
     use_case.run_pooled(["BTC"])
 
-    assert ml_port.train.call_args.kwargs["dataset"] == DatasetDescription(
-        n_per_symbol={"BTC": MIN_SAMPLES_FOR_TRAINING + 1},
-        feature_set_version=MARKET_FEATURE_SET_VERSION,
-        git_sha="abc1234",
-    )
+    dataset = ml_port.train.call_args.kwargs["dataset"]
+    assert dataset.n_per_symbol == {"BTC": MIN_SAMPLES_FOR_TRAINING + 1}
+    assert dataset.feature_set_version == MARKET_FEATURE_SET_VERSION
+    assert dataset.git_sha == "abc1234"
 
 
 def test_snapshot_model_cards_describe_their_own_samples(
@@ -910,4 +910,56 @@ def test_per_symbol_evaluation_describes_its_symbol(use_case, repository_port, m
 
     assert ml_port.train.call_args.kwargs["dataset"] == DatasetDescription(
         n_per_symbol={"AAPL": MIN_SAMPLES_FOR_TRAINING + 10}
+    )
+
+
+# -- ML-25: nakładanie etykiet w opisie próbki (karta i summary) ------------------
+
+
+def test_pooled_training_hands_the_label_overlap_to_the_model(
+    use_case, repository_port, ml_port
+):
+    rows = _stamped_rows("AAPL", MIN_SAMPLES_FOR_TRAINING, start_hour=0, step_hours=24)
+    for i, row in enumerate(rows):
+        hours = 30 if i % 5 == 0 else 20
+        row["settled_at"] = (pd.Timestamp(row["timestamp"]) + pd.Timedelta(hours=hours)).isoformat()
+    repository_port.get_feature_store_data.return_value = rows
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=50)
+
+    use_case.run_pooled(["AAPL"])
+
+    dataset = ml_port.train.call_args.kwargs["dataset"]
+    assert dataset.label_overlap == LabelOverlap(measured=49, overlapping=10)
+
+
+def test_pooled_training_without_settled_at_has_no_label_overlap(
+    use_case, repository_port, ml_port
+):
+    repository_port.get_feature_store_data.return_value = _stamped_rows(
+        "AAPL", MIN_SAMPLES_FOR_TRAINING, start_hour=0, step_hours=24
+    )
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=50)
+
+    use_case.run_pooled(["AAPL"])
+
+    assert ml_port.train.call_args.kwargs["dataset"].label_overlap is None
+
+
+def test_snapshot_source_measures_the_label_overlap_of_the_gated_sample(
+    ml_port, repository_port, training_data
+):
+    # Etykieta wektora dojrzewa na pierwszym snapshocie po 12 h, a cykle są co dobę —
+    # żadna nie sięga za następny cykl symbolu.
+    gated, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
+    training_data.get_feature_snapshots.return_value = gated
+    training_data.get_price_series.return_value = {"BTC": prices}
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=51)
+    use_case = TrainModelUseCase(
+        ml_port=ml_port, db_port=repository_port, training_data=training_data, snapshot_source=True
+    )
+
+    use_case.run_pooled(["BTC"])
+
+    assert ml_port.train.call_args.kwargs["dataset"].label_overlap == LabelOverlap(
+        measured=MIN_SAMPLES_FOR_TRAINING, overlapping=0
     )

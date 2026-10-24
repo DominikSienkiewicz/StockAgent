@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime, timedelta, timezone
 
+from src.domain.backtest import LabelOverlap
 from src.domain.training_provenance import (
     PROVENANCE_RECORD_KEYS,
     DatasetDescription,
@@ -106,8 +107,19 @@ class TestTrainingProvenance:
             "library_version": "xgboost 3.2.0",
             "feature_set_version": 4,
             "git_sha": "abc1234",
+            "label_overlap_count": None,
+            "label_overlap_measured": None,
         }
         assert tuple(record) == PROVENANCE_RECORD_KEYS
+
+    def test_record_carries_the_label_overlap_of_the_sample(self) -> None:
+        # ML-25: nakładanie etykiet zostaje w karcie, nie tylko w logu GHA.
+        record = self._provenance(
+            DatasetDescription(label_overlap=LabelOverlap(measured=49, overlapping=10))
+        ).as_record()
+
+        assert record["label_overlap_count"] == 10
+        assert record["label_overlap_measured"] == 49
 
     def test_record_sorts_symbols_so_the_sidecar_is_stable(self) -> None:
         record = self._provenance(DatasetDescription(n_per_symbol={"MSFT": 2, "AAPL": 3}))

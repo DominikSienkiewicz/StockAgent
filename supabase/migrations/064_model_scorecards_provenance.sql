@@ -14,7 +14,13 @@
 --   training_params     — parametry XGBoost z jawnym `random_state` (JSONB);
 --   library_version     — np. „xgboost 3.2.0” (inna wersja = inny booster);
 --   feature_set_version — wersja zestawu cech próbki (NULL = cała historia);
---   git_sha             — commit kodu przebiegu (`GITHUB_SHA`, lokalnie „local”).
+--   git_sha             — commit kodu przebiegu (`GITHUB_SHA`, lokalnie „local”);
+--   label_overlap_count / label_overlap_measured — ML-25: ile etykiet z chwilą
+--                         rozliczenia dojrzało dopiero po następnym wierszu swojego
+--                         symbolu (z ilu zmierzonych). Pomiar był tylko w logu GHA,
+--                         który znika po retencji, a na nim opiera się decyzja
+--                         o purge po `settled_at` (ML-26). NULL = próbka bez
+--                         chwili rozliczenia (widok sprzed 050).
 -- Ten sam odcisk i parametry odtwarzają booster: `main_tools.py reproduce-training`.
 -- Plik wag dostaje te pola także w sidecarze `.json` (bez migracji i bez flagi).
 --
@@ -37,7 +43,11 @@ ALTER TABLE model_scorecards
     ADD COLUMN IF NOT EXISTS training_params JSONB,
     ADD COLUMN IF NOT EXISTS library_version TEXT,
     ADD COLUMN IF NOT EXISTS feature_set_version INTEGER,
-    ADD COLUMN IF NOT EXISTS git_sha TEXT;
+    ADD COLUMN IF NOT EXISTS git_sha TEXT,
+    ADD COLUMN IF NOT EXISTS label_overlap_count INTEGER
+        CHECK (label_overlap_count >= 0),
+    ADD COLUMN IF NOT EXISTS label_overlap_measured INTEGER
+        CHECK (label_overlap_measured >= 0);
 
 COMMENT ON COLUMN model_scorecards.dataset_sha256 IS
     'ML-22: sha256 (hex) wierszy treningu (chwila UTC, target, cechy), niezależny od kolejności wierszy. NULL = trening się nie odbył, wiersz sprzed 064 albo flaga off.';
@@ -62,3 +72,9 @@ COMMENT ON COLUMN model_scorecards.feature_set_version IS
 
 COMMENT ON COLUMN model_scorecards.git_sha IS
     'ML-22: commit kodu przebiegu Slow Loopa (GITHUB_SHA; "local" poza GitHub Actions).';
+
+COMMENT ON COLUMN model_scorecards.label_overlap_count IS
+    'ML-25: etykiety próbki rozliczone dopiero po następnym wierszu swojego symbolu (settled_at > jego timestamp). NULL = próbka bez settled_at.';
+
+COMMENT ON COLUMN model_scorecards.label_overlap_measured IS
+    'ML-25: wiersze próbki z settled_at i z następnym wierszem symbolu — mianownik label_overlap_count.';

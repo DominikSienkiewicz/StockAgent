@@ -210,6 +210,28 @@ def test_trainer_summary_names_a_failed_feature_store_refresh() -> None:
     assert "| Feature store refresh | failed |" in markdown
 
 
+def test_trainer_summary_shows_the_label_overlap_of_the_pooled_sample() -> None:
+    # ML-25: pomiar nakładania etykiet w summary przebiegu, nie tylko w logu.
+    markdown = render_trainer_summary_markdown(
+        symbol_statuses={},
+        pooled_status="trained_successfully",
+        pooled_samples=812,
+        failures=0,
+        total=1,
+        pooled_label_overlap=(10, 49),
+    )
+
+    assert "| Label overlaps (settle after the next row) | 10 / 49 |" in markdown
+
+
+def test_trainer_summary_without_a_label_overlap_has_no_row() -> None:
+    markdown = render_trainer_summary_markdown(
+        symbol_statuses={}, pooled_status=None, pooled_samples=None, failures=1, total=1
+    )
+
+    assert "Label overlaps" not in markdown
+
+
 def test_cycle_summary_lists_http_requests_per_host() -> None:
     # NIEZ-24: żądania per host i klasy statusów — sam host, bez ścieżki i query.
     markdown = _render(

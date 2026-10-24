@@ -266,17 +266,27 @@ class TrainModelUseCase:
             dataset=self._describe(
                 Counter(item.snapshot.symbol for _, _, item in rows),
                 SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
+                label_overlap=count_label_overlaps(
+                    (item.snapshot.symbol, item.snapshot.as_of, item.settled_at)
+                    for _, _, item in rows
+                ),
             ),
         )
 
     def _describe(
-        self, n_per_symbol: Mapping[str, int], feature_set_version: int | None
+        self,
+        n_per_symbol: Mapping[str, int],
+        feature_set_version: int | None,
+        *,
+        label_overlap: LabelOverlap | None = None,
     ) -> DatasetDescription:
-        """ML-22: opis próbki do proweniencji treningu (karta i sidecar)."""
+        """ML-22: opis próbki do proweniencji treningu (karta i sidecar); ML-25:
+        z pomiarem nakładania etykiet, gdy próbka zna chwile rozliczeń."""
         return DatasetDescription(
             n_per_symbol=dict(n_per_symbol),
             feature_set_version=feature_set_version,
             git_sha=self._git_sha,
+            label_overlap=label_overlap,
         )
 
     def _snapshot_reason(self, model: str) -> str:
@@ -349,7 +359,8 @@ class TrainModelUseCase:
                 "Not enough valid samples for the pooled model", len(df)
             )
 
-        _log_label_overlap(df)
+        overlap = _label_overlap(df)
+        _log_label_overlap(overlap)
         stamps = pd.to_datetime(df["timestamp"], utc=True)
         df = df.assign(_global_time=stamps).sort_values(
             ["_global_time", "symbol"], kind="stable"
@@ -368,7 +379,9 @@ class TrainModelUseCase:
             target=target.tolist(),
             timestamps=_moments(df["_global_time"]),
             dataset=self._describe(
-                Counter(str(symbol) for symbol in df["symbol"]), self._feature_set_version
+                Counter(str(symbol) for symbol in df["symbol"]),
+                self._feature_set_version,
+                label_overlap=overlap,
             ),
         )
 
@@ -500,8 +513,7 @@ def _label_overlap(df: pd.DataFrame) -> LabelOverlap | None:
     )
 
 
-def _log_label_overlap(df: pd.DataFrame) -> None:
-    overlap = _label_overlap(df)
+def _log_label_overlap(overlap: LabelOverlap | None) -> None:
     if overlap is None:
         return
     # Purge walk-forward zakłada stały horyzont `LABEL_HORIZON`; ta liczba mówi,

@@ -319,6 +319,25 @@ class TestTrainerSummary:
         assert "### Feature snapshot models (ML-52)" in markdown
         assert "| Free features (all cycles) | skipped | 0 | n/a | n/a |" in markdown
 
+    def test_summary_shows_the_label_overlap_of_the_pooled_model(
+        self, settings, mock_external_clients, mocker, summary_file
+    ) -> None:
+        # ML-25: liczba nakładających się etykiet z wyniku treningu wspólnego.
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "skipped", "n_samples": 12}
+        fake_uc.run_pooled.return_value = {
+            "status": "trained_successfully",
+            "n_samples": 240,
+            "label_overlap_count": 7,
+            "label_overlap_measured": 230,
+        }
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+
+        assert main_trainer.main(settings) == 0
+
+        markdown = summary_file.read_text(encoding="utf-8")
+        assert "| Label overlaps (settle after the next row) | 7 / 230 |" in markdown
+
     def test_failed_feature_store_refresh_still_writes_a_summary(
         self, settings, mock_external_clients, mocker, summary_file
     ) -> None:

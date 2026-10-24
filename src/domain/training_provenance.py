@@ -21,6 +21,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from src.domain.backtest import LabelOverlap
+
 # Kolejność kluczy rekordu = kolejność kolumn karty (`model_scorecards`, migracja 064)
 # i pól sidecara. Jedno źródło dla adaptera bazy i pliku.
 PROVENANCE_RECORD_KEYS: tuple[str, ...] = (
@@ -32,6 +34,8 @@ PROVENANCE_RECORD_KEYS: tuple[str, ...] = (
     "library_version",
     "feature_set_version",
     "git_sha",
+    "label_overlap_count",
+    "label_overlap_measured",
 )
 
 TrainingRow = tuple[datetime | None, float, Mapping[str, float | None]]
@@ -87,12 +91,15 @@ class DatasetDescription:
 
     `n_per_symbol` — liczba wierszy treningu per symbol (None = nieznana),
     `feature_set_version` — wersja zestawu cech próbki (None = cała historia),
-    `git_sha` — SHA kodu przebiegu (`RunContext.git_sha`, lokalnie „local”).
+    `git_sha` — SHA kodu przebiegu (`RunContext.git_sha`, lokalnie „local”),
+    `label_overlap` — ML-25: ile etykiet dojrzało po następnym wierszu symbolu
+    (None = próbka bez chwili rozliczenia).
     """
 
     n_per_symbol: Mapping[str, int] | None = None
     feature_set_version: int | None = None
     git_sha: str | None = None
+    label_overlap: LabelOverlap | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +119,7 @@ class TrainingProvenance:
         """Rekord karty i sidecara (klucze `PROVENANCE_RECORD_KEYS`, wartości
         serializowalne do JSON); symbole posortowane, żeby plik był stabilny."""
         n_per_symbol = self.dataset.n_per_symbol
+        overlap = self.dataset.label_overlap
         return {
             "dataset_sha256": self.dataset_sha256,
             "data_start": _canonical_moment(self.data_start),
@@ -123,4 +131,6 @@ class TrainingProvenance:
             "library_version": self.library_version,
             "feature_set_version": self.dataset.feature_set_version,
             "git_sha": self.dataset.git_sha,
+            "label_overlap_count": None if overlap is None else overlap.overlapping,
+            "label_overlap_measured": None if overlap is None else overlap.measured,
         }
