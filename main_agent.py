@@ -1411,8 +1411,12 @@ def _production_paid_ports(
     if settings.two_phase_cycle_enabled:
         sentiment = news = PhaseTwoOnlyFeed()
     else:
+        # FIN-15: bez `symbols_unsupported_price` — te symbole nie dochodzą do grafu.
+        unsupported = set(settings.symbols_unsupported_price)
         av_client = _alpha_vantage_client(
-            settings, [*settings.symbols, *settings.crypto_symbols], quota_monitor
+            settings,
+            [s for s in (*settings.symbols, *settings.crypto_symbols) if s not in unsupported],
+            quota_monitor,
         )
         sentiment = AlphaVantageSentimentAdapter(av_client)
         news = AlphaVantageNewsAdapter(av_client)

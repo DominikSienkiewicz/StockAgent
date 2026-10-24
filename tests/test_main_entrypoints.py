@@ -3038,6 +3038,24 @@ class TestAlphaVantageNewsWindowWiring:
 
         assert client_cls.call_args.kwargs["lazy_per_symbol"] is True
 
+    def test_build_use_case_leaves_unsupported_price_symbols_out_of_the_feed(
+        self, settings, mock_external_clients, mocker
+    ) -> None:
+        # FIN-15: symbol bez darmowej ceny (SSNLF) kończy jako 'ignored' przed grafem,
+        # więc nie ma czego pytać AV o jego newsy — lista klienta zgadza się z budżetem
+        # AV (`av_budget` liczy `symbols` + krypto − `symbols_unsupported_price`).
+        from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
+
+        settings.symbols = ["AAPL", "SSNLF"]
+        settings.symbols_unsupported_price = ["SSNLF"]
+        client_cls = mocker.patch(
+            "main_agent.AlphaVantageClient", wraps=AlphaVantageClient
+        )
+
+        main_agent.build_use_case(settings)
+
+        assert client_cls.call_args.kwargs["symbols"] == ["AAPL"]
+
 
 class TestAlphaVantageBudgetBanner:
     """FIN-32: najgorszy przypadek doby AV ponad pojemność kluczy to WARNING w bannerze
