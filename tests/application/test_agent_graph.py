@@ -303,6 +303,102 @@ class TestFullAnalysisColdStart:
 
 
 # ---------------------------------------------------------------------------
+# ARCH-10: węzły piszą wyłącznie klucze zadeklarowane w AgentState
+# ---------------------------------------------------------------------------
+
+
+def test_node_outputs_use_only_declared_state_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    market_port: Mock,
+    sentiment_port: Mock,
+    news_port: Mock,
+    repository_port: Mock,
+    ml_port: Mock,
+    llm_port: Mock,
+) -> None:
+    # LangGraph po cichu gubi klucz spoza schematu stanu: literówka w węźle nie
+    # daje błędu, tylko brak danych w dalszych węzłach i w raporcie. Strażnik
+    # czyta surowe wyjście każdego węzła, zanim graf scali je ze stanem.
+    import dataclasses
+    from collections.abc import Callable, Mapping
+
+    from src.application import agent_graph
+    from src.application.agent_graph import AgentState
+    from src.application.ports import AdvisoryCouncilPort, FundamentalsPort
+    from src.domain.asset import Asset
+    from src.domain.council import CouncilVerdict
+    from src.domain.value_objects import AssetType, Fundamentals
+
+    Node = Callable[..., Mapping[str, object]]
+    outputs: dict[str, set[str]] = {}
+
+    def recorded(name: str, node: Node) -> Node:
+        def node_spy(*args: object) -> Mapping[str, object]:
+            update = node(*args)
+            outputs.setdefault(name, set()).update(update)
+            return update
+
+        return node_spy
+
+    build_fundamentals_node = agent_graph._build_fetch_fundamentals_node
+    monkeypatch.setattr(
+        agent_graph,
+        "_build_fetch_fundamentals_node",
+        lambda port: recorded("fetch_fundamentals", build_fundamentals_node(port)),
+    )
+    council_port = Mock(spec=AdvisoryCouncilPort)
+    council_port.analyze.return_value = CouncilVerdict(
+        final_recommendation="SELL",
+        consensus_strength=0.7,
+        summary="Rada radzi sprzedać.",
+        dissenting_views=(),
+        investor_opinions=(),
+    )
+    fundamentals_port = Mock(spec=FundamentalsPort)
+    fundamentals_port.get_fundamentals.return_value = Fundamentals(
+        trailing_pe=25.0,
+        forward_pe=22.0,
+        peg_ratio=1.5,
+        eps_growth_yoy=0.15,
+        fetched_at=datetime(2026, 10, 20, tzinfo=UTC),
+    )
+    deps = AgentGraphDeps(
+        market_port=market_port,
+        sentiment_port=sentiment_port,
+        news_port=news_port,
+        repository_port=repository_port,
+        ml_port=ml_port,
+        llm_port=llm_port,
+        threshold=Threshold(Decimal("0.02")),
+        council_port=council_port,
+        fundamentals_port=fundamentals_port,
+    )
+    graph = create_agent_graph(deps)
+    for name in set(graph.nodes) - {"fetch_fundamentals"}:
+        attribute = f"_{name}_node"
+        monkeypatch.setattr(agent_graph, attribute, recorded(name, getattr(agent_graph, attribute)))
+    _setup_full_analysis_mocks(
+        sentiment_port, news_port, repository_port, ml_port, llm_port,
+        has_prior_prediction=True,
+    )
+    ml_port.explain.return_value = {}
+    state = {**_initial_state("100.0"), "asset": Asset("AAPL", AssetType.STOCK)}
+    app = graph.compile()
+
+    market_port.get_current_price.return_value = Money(Decimal("90.0"))
+    app.invoke(state)
+    market_port.get_current_price.return_value = Money(Decimal("99.5"))
+    app.invoke(state)
+    market_port.get_current_price.return_value = Money(Decimal("90.0"))
+    create_agent_graph(dataclasses.replace(deps, paid_call_cap=0)).compile().invoke(state)
+
+    declared = set(AgentState.__annotations__)
+    undeclared = {name: keys - declared for name, keys in outputs.items() if keys - declared}
+    assert set(outputs) == set(graph.nodes)
+    assert undeclared == {}
+
+
+# ---------------------------------------------------------------------------
 # P0: kontrakt cechy price_delta i rekonstrukcja ceny z ZWROTU
 # ---------------------------------------------------------------------------
 
