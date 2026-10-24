@@ -734,6 +734,24 @@ class TestTrendProbabilitiesFlag:
         assert flipped != baseline
 
 
+class TestInvalidationLevelFlag:
+    """ML-27: poziom unieważnienia tezy w prompcie i kolumna z migracji 074 — domyślnie
+    off, a że zmienia prompt, należy do przepisu (`config_hash` się zmienia)."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).invalidation_level_enabled is False
+
+    def test_belongs_to_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert "invalidation_level_enabled" in RECIPE_SETTINGS_FIELDS
+        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        flipped = Settings(
+            _env_file=None, **REQUIRED_ENV_KWARGS, invalidation_level_enabled=True
+        ).config_hash()
+        assert flipped != baseline
+
+
 class TestGateDeltaFlag:
     """EXP-01: zapis delty bramki (migracja 034) — flaga samego zapisu, więc
     domyślnie off i poza przepisem (`config_hash` się nie rusza)."""

@@ -6512,6 +6512,101 @@ class TestPaperLedgerInGraph:
         assert "trafne" in result["reflection_context"]
 
 
+class TestInvalidationLevel:
+    """ML-27: za `invalidation_level_enabled` prompt prosi o poziom unieważnienia
+    tezy, normalizacja odrzuca poziom po złej stronie ceny albo dalej niż 15%
+    (None + flaga jakości), a zapis niesie `invalidation_price` (migracja 074).
+    Cena 100 → 90 (−10%), LLM: BEARISH — teza upada POWYŻEJ 90."""
+
+    @staticmethod
+    def _run(ports: dict, invalidation: object, *, enabled: bool = True) -> dict:
+        ports["market_port"].get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            ports["sentiment_port"],
+            ports["news_port"],
+            ports["repository_port"],
+            ports["ml_port"],
+            ports["llm_port"],
+        )
+        analysis = dict(ports["llm_port"].analyze.return_value)
+        if invalidation is not None:
+            analysis["invalidation"] = invalidation
+        ports["llm_port"].analyze.return_value = analysis
+        deps = AgentGraphDeps(
+            **ports,
+            threshold=Threshold(Decimal("0.02")),
+            invalidation_level_enabled=enabled,
+        )
+        result: dict = create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+        return result
+
+    @pytest.fixture
+    def ports(self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port):
+        return {
+            "market_port": market_port,
+            "sentiment_port": sentiment_port,
+            "news_port": news_port,
+            "repository_port": repository_port,
+            "ml_port": ml_port,
+            "llm_port": llm_port,
+        }
+
+    def test_valid_level_is_kept_and_saved(self, ports: dict) -> None:
+        from src.domain.invalidation import Invalidation
+
+        final = self._run(ports, {"price": 95.0, "reason": "Powrót nad 95 obala spadek."})
+
+        assert final["invalidation"] == Invalidation(
+            price=Decimal("95.0"), reason="Powrót nad 95 obala spadek."
+        )
+        record = ports["repository_port"].save_prediction.call_args.args[0]
+        assert record["invalidation_price"] == Decimal("95.0000")
+        assert "invalidation_out_of_band" not in record["data_quality_flags"]
+        assert "invalidation" in ports["llm_port"].analyze.call_args.args[0]
+
+    def test_invalidation_outside_band_is_dropped_with_flag(self, ports: dict) -> None:
+        # BEARISH z poziomem POD ceną to nie teza spadkowa, tylko zmyślone „wsparcie”.
+        final = self._run(ports, {"price": 85.0, "reason": "Wsparcie."})
+
+        assert final["invalidation"] is None
+        record = ports["repository_port"].save_prediction.call_args.args[0]
+        assert "invalidation_price" not in record
+        assert "invalidation_out_of_band" in record["data_quality_flags"]
+
+    @pytest.mark.parametrize("raw", [{"price": "wysoko", "reason": "x"}, "95", {"reason": "x"}])
+    def test_unreadable_level_is_dropped_with_flag(self, ports: dict, raw: object) -> None:
+        final = self._run(ports, raw)
+
+        assert final["invalidation"] is None
+        record = ports["repository_port"].save_prediction.call_args.args[0]
+        assert "invalidation_invalid" in record["data_quality_flags"]
+
+    def test_missing_level_is_no_quality_problem(self, ports: dict) -> None:
+        final = self._run(ports, None)
+
+        assert final["invalidation"] is None
+        record = ports["repository_port"].save_prediction.call_args.args[0]
+        assert not [flag for flag in record["data_quality_flags"] if "invalidation" in flag]
+
+    def test_flag_off_ignores_the_level(self, ports: dict) -> None:
+        final = self._run(ports, {"price": 95.0, "reason": "x"}, enabled=False)
+
+        assert "invalidation" not in final
+        assert "invalidation" not in ports["llm_port"].analyze.call_args.args[0]
+        record = ports["repository_port"].save_prediction.call_args.args[0]
+        assert "invalidation_price" not in record
+
+    def test_invalidation_column_is_required_with_the_flag(self, ports: dict) -> None:
+        from src.application.agent_graph import required_prediction_columns
+
+        common = {**ports, "threshold": Threshold(Decimal("0.02"))}
+
+        assert "invalidation_price" not in required_prediction_columns(AgentGraphDeps(**common))
+        assert "invalidation_price" in required_prediction_columns(
+            AgentGraphDeps(**common, invalidation_level_enabled=True)
+        )
+
+
 # ---------------------------------------------------------------------------
 # ML-11: model wspólny w jednostkach σ — serving mnoży prognozę przez σ symbolu
 # ---------------------------------------------------------------------------

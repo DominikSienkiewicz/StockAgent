@@ -16,9 +16,19 @@ Zero I/O, tylko stdlib i domena.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 
 from src.domain.prediction import TrendDirection
+
+
+@dataclass(frozen=True)
+class Invalidation:
+    """Poziom ceny obalający tezę predykcji i jednozdaniowy powód od modelu."""
+
+    price: Decimal
+    reason: str
+
 
 # Najdalsza dopuszczalna odległość poziomu od ceny predykcji (ułamek).
 INVALIDATION_BAND = Decimal("0.15")

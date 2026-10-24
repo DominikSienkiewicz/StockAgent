@@ -84,6 +84,7 @@ from src.domain.implied_edge import (
     evaluate_edge,
     model_move_from_prices,
 )
+from src.domain.invalidation import Invalidation, is_valid_invalidation
 from src.domain.market_calendar import hours_to_next_trading_day
 from src.domain.mistake_taxonomy import parse_mistake_diagnosis
 from src.domain.paper_ledger import (
@@ -246,6 +247,9 @@ class AgentState(TypedDict, total=False):
     # ML-29: rozkład P(BULLISH/BEARISH/SIDEWAYS) z odpowiedzi LLM po normalizacji.
     # None = flaga off albo LLM nie podał poprawnego rozkładu (trend ze starych pól).
     trend_probabilities: dict[str, float] | None
+    # ML-27: poziom unieważnienia tezy po walidacji domeny. None = flaga on, ale LLM
+    # nie podał poprawnego poziomu; brak klucza = flaga off.
+    invalidation: Invalidation | None
     ml_target_price: Decimal
     # ML-14: wektor cech dokładnie w postaci podanej modelowi (`ML_FEATURE_COLUMNS`)
     # — trafia do `feature_snapshots`, żeby trening nie odtwarzał go widokiem SQL.
@@ -596,6 +600,37 @@ def _apply_probability_forecast(
     return derived, distribution
 
 
+# ML-27: flagi jakości poziomu unieważnienia — poziom obecny, ale nieczytelny (nie
+# liczba, brak ceny) albo po złej stronie ceny / dalej niż `INVALIDATION_BAND`.
+INVALIDATION_INVALID_FLAG = "invalidation_invalid"
+INVALIDATION_OUT_OF_BAND_FLAG = "invalidation_out_of_band"
+# Powód trafia do maila — jedno zdanie, nie esej.
+_INVALIDATION_REASON_MAX_LEN = 200
+
+
+def _parse_invalidation(
+    analysis: dict[str, Any], current_price: Decimal
+) -> tuple[Invalidation | None, str | None]:
+    """ML-27: poziom unieważnienia tezy z odpowiedzi LLM, po walidacji domeny.
+
+    Zwraca `(poziom_albo_None, flaga_albo_None)`. Brak pola to nie skażone wejście
+    (bez flagi); pole nieczytelne → `invalidation_invalid`, poziom po złej stronie
+    ceny albo dalej niż 15% → `invalidation_out_of_band` (`is_valid_invalidation`).
+    Trend z analizy jest już kanoniczny (ML-07, ML-29)."""
+    raw = analysis.get("invalidation")
+    if raw is None:
+        return None, None
+    price = _parse_number(raw.get("price")) if isinstance(raw, dict) else None
+    if price is None or math.isinf(price):
+        return None, INVALIDATION_INVALID_FLAG
+    level = Decimal(str(price))
+    trend = TrendDirection(analysis["trend_direction"])
+    if not is_valid_invalidation(trend, current_price, level):
+        return None, INVALIDATION_OUT_OF_BAND_FLAG
+    reason = " ".join(str(raw.get("reason") or "").split())[:_INVALIDATION_REASON_MAX_LEN]
+    return Invalidation(price=level, reason=reason), None
+
+
 _TREND_TO_REC: dict[str, Recommendation] = {
     "BULLISH": "BUY",
     "BEARISH": "SELL",
@@ -797,6 +832,10 @@ class AgentGraphDeps:
     # pozycję, reflect ją zamyka; koszty obrotu jak w paper-PnL (WIA-50). None = graf
     # nie dotyka tabeli, której przed migracją nie ma.
     paper_ledger_costs: LedgerCosts | None = None
+    # ML-27: prompt prosi o poziom unieważnienia tezy, normalizacja go waliduje
+    # (strona ceny, ±15%), a zapis niesie `invalidation_price` (migracja 074). Off =
+    # prompt, analiza i rekord jak przed ML-27 — przed migracją klucz dałby PGRST204.
+    invalidation_level_enabled: bool = False
     # DAT-23: `pc` notowania vs ostatni snapshot — podejrzenie splitu koryguje
     # referencję bramki, rozliczenie i `price_delta`, a zdarzenie idzie do
     # `corporate_actions` (migracja 062). Off = jak przed DAT-23.
@@ -2075,6 +2114,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         include_memory=memory,
         include_probabilities=deps.trend_probabilities_enabled,
         fence_lessons=deps.prompt_taint_fence_enabled,
+        include_invalidation=deps.invalidation_level_enabled,
     )
     raw_analysis, llm_flags = _run_llm_analysis(deps, state, prompt, symbol)
     failover, raw_analysis = _split_failover_marker(raw_analysis)
@@ -2084,6 +2124,14 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     trend_probabilities: dict[str, float] | None = None
     if deps.trend_probabilities_enabled:
         llm_analysis, trend_probabilities = _apply_probability_forecast(llm_analysis, symbol)
+    invalidation_state: AgentState = {}
+    if deps.invalidation_level_enabled:
+        invalidation, invalidation_flag = _parse_invalidation(
+            llm_analysis, state["current_price"]
+        )
+        invalidation_state["invalidation"] = invalidation
+        if invalidation_flag is not None:
+            analysis_flags.append(invalidation_flag)
 
     # 2. ML — twarda predykcja liczbowa (multi-feature)
     # #21: trend_direction walidowany jak pola liczbowe — present-but-invalid
@@ -2207,6 +2255,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     return {
         **failover_state,
         **shadow,
+        **invalidation_state,
         "llm_analysis": llm_analysis,
         "trend_probabilities": trend_probabilities,
         "ml_target_price": ml_target,
@@ -2392,6 +2441,8 @@ def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
         "commitment_salt": deps.attestation_publisher is not None,
         # WIA-70 (migracja 043): dosłowny plaintext commitmentu, ta sama zasada.
         "commitment_payload": deps.attestation_publisher is not None,
+        # ML-27 (migracja 074): poziom unieważnienia tezy, tylko z flagą.
+        "invalidation_price": deps.invalidation_level_enabled,
         # ML-29 (migracja 051): rozkład trzech klas, tylko z flagą.
         "trend_probabilities": deps.trend_probabilities_enabled,
         "embedding": deps.embedding_port is not None,
@@ -2550,6 +2601,12 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     trend_probabilities = state.get("trend_probabilities")
     if deps.trend_probabilities_enabled and trend_probabilities is not None:
         record["trend_probabilities"] = dict(trend_probabilities)
+
+    # ML-27: poziom unieważnienia tezy (migracja 074) — watch alarmuje po jego
+    # przekroczeniu. Bez poprawnego poziomu od LLM klucza nie ma, kolumna zostaje NULL.
+    invalidation = state.get("invalidation")
+    if deps.invalidation_level_enabled and invalidation is not None:
+        record["invalidation_price"] = _storage_price(invalidation.price)
 
     # DAT-14: predykcja na notowaniu sprzed ostatniej sesji wypada z trafności po
     # rozliczeniu. Bez notowania z czasem (krypto) kolumna zostaje NULL.

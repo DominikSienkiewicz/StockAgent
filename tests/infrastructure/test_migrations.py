@@ -106,6 +106,7 @@ MIGRATION_FILES = [
     "071_schema_version.sql",
     "072_prediction_entry_price.sql",
     "073_paper_trades.sql",
+    "074_invalidation_price.sql",
     "075_shadow_predictions.sql",
 ]
 
@@ -3731,6 +3732,59 @@ class TestMigration073PaperTrades:
             assert cur.fetchone() == (4,)
 
 
+@pytest.mark.containers
+class TestMigration074InvalidationPrice:
+    """ML-27: poziom unieważnienia tezy i stempel alarmu watcha w `prediction_logs`."""
+
+    def test_prediction_carries_the_invalidation_level_and_its_alert(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {"invalidation_price", "invalidation_alerted_at"} <= _columns(
+            migrated_pg_conn, "prediction_logs"
+        )
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction, "
+                "invalidation_price) VALUES ('IV074', '2026-10-19T05:30:00+00:00', 120.0, "
+                "118.12345) RETURNING id"
+            )
+            prediction_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE prediction_logs SET invalidation_alerted_at = "
+                "'2026-10-19T15:00:00+00:00' WHERE id = %s "
+                "RETURNING invalidation_price, invalidation_alerted_at IS NOT NULL",
+                (prediction_id,),
+            )
+            assert cur.fetchone() == (Decimal("118.1235"), True)
+
+    def test_invalidation_price_rejects_zero(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, invalidation_price) "
+                "VALUES ('IV074_BAD', '2026-10-19T05:30:00+00:00', 0)"
+            )
+
+    def test_074_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "074_invalidation_price.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'prediction_logs'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%invalidation_price%'"
+            )
+            assert cur.fetchone() == (1,)
+        assert "idx_prediction_logs_open_invalidation" in _indexes(
+            migrated_pg_conn, "prediction_logs"
+        )
+
+
 def _full_analysis_record() -> dict[str, object]:
     """TEST-14: rekord `prediction_logs` z PEŁNEJ analizy grafu przy każdej fladze
     i porcie, który dokłada klucz (kwit v2, przepis, atestacja, opcje, przedział,
@@ -3784,6 +3838,7 @@ def _full_analysis_record() -> dict[str, object]:
         "target_price_12h": 110.0,
         "reasoning": "Momentum.",
         "probabilities": {"BULLISH": 0.6, "BEARISH": 0.1, "SIDEWAYS": 0.3},
+        "invalidation": {"price": 104.0, "reason": "Spadek pod 104 obala tezę."},
     }
     ml = Mock(spec=MLPredictionPort)
     ml.is_trained = True
@@ -3836,6 +3891,7 @@ def _full_analysis_record() -> dict[str, object]:
         experiment_arms_enabled=True,
         trend_probabilities_enabled=True,
         stale_quote_enabled=True,
+        invalidation_level_enabled=True,
         clock=lambda: now,
     )
     create_agent_graph(deps).compile().invoke(
@@ -3880,6 +3936,7 @@ class TestSaveNodeRecordFitsPredictionLogs:
         "commitment_salt",
         "commitment_payload",
         "embedding",
+        "invalidation_price",
     })
 
     def test_saved_record_keys_are_prediction_logs_columns(

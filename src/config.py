@@ -343,6 +343,9 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "trend_probabilities_enabled",
     # BEZ-14: fence lekcji z reflect i uzasadnień person zmienia tekst promptów.
     "prompt_taint_fence_enabled",
+    # ML-27: poziom unieważnienia tezy w output_schema promptu predykcji — inny prompt
+    # i nowe pole odpowiedzi, więc nowy przepis.
+    "invalidation_level_enabled",
     # ML-11: prognoza ML = wyjście modelu × σ symbolu (model w jednostkach σ) — inny
     # przepis serwowania liczby, nawet przy tych samych wagach.
     "ml_sigma_target_enabled",
@@ -740,6 +743,11 @@ class Settings(BaseSettings):
     # więc należy do przepisu. Off: nowy klucz przed migracją → PGRST204 i śmierć
     # zapisu całej predykcji.
     trend_probabilities_enabled: bool = False
+    # ML-27: prompt prosi o poziom unieważnienia tezy {price, reason}; domena go waliduje
+    # (strona ceny, ±15%), zapis idzie do `prediction_logs.invalidation_price` (migracja
+    # 074), mail pokazuje go w bloku uzasadnienia, a watch alarmuje po przekroczeniu.
+    # Zmienia prompt, więc należy do przepisu. Off.
+    invalidation_level_enabled: bool = False
     # BEZ-14: pola półzaufane (lekcja z reflect w prompcie predykcji, uzasadnienia
     # person w prompcie przewodniczącego) w fence'u DATA-ONLY. Zmienia tekst promptów,
     # więc należy do przepisu. Bez migracji. Off.

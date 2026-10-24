@@ -203,6 +203,12 @@ experiment_arms_enabled = true
 # nowych wywołań); trend = argmax, pewność = max p, rozkład w `trend_probabilities`.
 # Zmienia prompt → nowy przepis. UWAGA: włącz DOPIERO po migracji 051 (PGRST204).
 trend_probabilities_enabled = false
+# ML-27: „co by zmieniło zdanie” — prompt prosi o poziom unieważnienia tezy {price, reason}
+# (+~30 tokenów wyjścia, zero nowych wywołań); poziom po złej stronie ceny albo dalej niż
+# 15% → odrzucony z flagą jakości. Mail pokazuje go pod uzasadnieniem, a Shock Watch
+# alarmuje „Teza X unieważniona” po przekroczeniu. Zmienia prompt → nowy przepis, więc
+# czeka do końca EXP-02/03. UWAGA: włącz DOPIERO po migracji 074 (PGRST204).
+invalidation_level_enabled = false
 # BEZ-14: lekcja z reflect (prompt predykcji) i uzasadnienia person (prompt
 # przewodniczącego) w fence'u DATA-ONLY — piszemy je LLM-em z newsów stron trzecich, więc
 # mogą nieść przechowany prompt-injection. Zmienia tekst promptów (nowy przepis), więc
