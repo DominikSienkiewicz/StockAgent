@@ -53,6 +53,9 @@ from src.application.report_formatting import (
     delta_color as _delta_color,
 )
 from src.application.report_formatting import (
+    escape as _html,
+)
+from src.application.report_formatting import (
     money as _money,
 )
 from src.application.report_formatting import (
@@ -63,6 +66,9 @@ from src.application.report_formatting import (
 )
 from src.application.report_formatting import (
     provenance_badges_html as _provenance_badges_html,
+)
+from src.application.report_formatting import (
+    section_h2 as _section_h2,
 )
 from src.application.report_formatting import (
     sector_label as _sector_label,
@@ -76,7 +82,7 @@ from src.application.report_formatting import (
 from src.application.report_formatting import (
     trend_label as _trend_label,
 )
-from src.application.report_lead import render_lead_html, render_lead_text
+from src.application.report_lead import LEAD_SECTION, PREHEADER_SECTION
 from src.application.report_lessons import LessonsReport
 from src.application.report_model_scorecard import (
     ModelScorecardView,
@@ -93,10 +99,7 @@ from src.application.report_models import (
     TradeSignal,
     ValuationSection,
 )
-from src.application.report_onboarding import (
-    render_onboarding_html,
-    render_onboarding_text,
-)
+from src.application.report_onboarding import ONBOARDING_SECTION
 from src.application.report_persona_leaderboard import (
     render_persona_leaderboard_html,
 )
@@ -104,10 +107,7 @@ from src.application.report_portfolio import (
     render_correlation_html,
     render_correlation_text,
 )
-from src.application.report_quota_banner import (
-    render_quota_banner_html,
-    render_quota_banner_text,
-)
+from src.application.report_quota_banner import QUOTA_BANNER_SECTION
 from src.application.report_regime import (
     RegimeBanner,
     render_regime_html,
@@ -153,6 +153,7 @@ from src.application.report_user_portfolio import (
     render_user_portfolio_html,
     render_user_portfolio_text,
 )
+from src.application.reporting.section import SectionInput
 from src.application.run_context import RunContext
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport, PositionRisk
@@ -162,7 +163,7 @@ from src.domain.conformal import MoveInterval
 from src.domain.consensus_shift import ConsensusShift
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
-from src.domain.digest_lead import LeadItem, LeadSignal, build_lead, lead_preview
+from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
 from src.domain.equity_curve import EquityCurve, directional_hit_rate
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.finops import CycleCost
@@ -223,12 +224,6 @@ _SIGNAL_FILL = {"up": "gu", "dn": "gd", "nt": "gn"}
 # Markery slotów — placeholdery wstawiane przy renderze i podmieniane treścią
 # w build_html_report. Trzymane jako stałe (jedno źródło prawdy), żeby literówka
 # w jednym z dwóch miejsc (szablon ↔ replace) nie zostawiła cicho pustego slotu.
-_QUOTA_BANNER_SLOT = "<!-- QUOTA_BANNER_SLOT -->"
-# #1: lead cyklu — PO quota bannerze (ten jest celowo pierwszy: gdy płatny
-# klucz padł, to ważniejsze niż jakikolwiek ruch ceny).
-_LEAD_SLOT = "<!-- LEAD_SLOT -->"
-# #4: sekcja powitalna pierwszego cyklu ("Dzień 1") — zamiast ściany "Pominięte".
-_ONBOARDING_SLOT = "<!-- ONBOARDING_SLOT -->"
 _RISK_WATCH_SLOT = "<!-- RISK_WATCH_SLOT -->"
 _PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
 # #15: sekcja 💼 realnego portfela użytkownika (wagi, P/L, klaster, PLN).
@@ -256,11 +251,6 @@ _VERDICT_COLOR = {
     "OVERVALUED": "#c62828",   # czerwony
     "UNKNOWN": "#9e9e9e",      # jasnoszary
 }
-
-
-def _section_h2(title: str) -> str:
-    """Nagłówek sekcji raportu (H2) — jedno źródło prawdy dla stylu."""
-    return f"<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>{title}</h2>"
 
 
 def _render_valuation(section: ValuationSection | None) -> str:
@@ -408,10 +398,6 @@ def _model_signal_reason_text(r: SymbolResult) -> str:
     parts = [p for p in [conf_part, change_part] if p]
     detail = ", ".join(parts)
     return f"{MODEL_SIGNAL_TITLE}: {direction}" + (f" ({detail})" if detail else "")
-
-
-def _html(value: object) -> str:
-    return html.escape(str(value), quote=True)
 
 
 def _is_crypto(r: SymbolResult) -> bool:
@@ -991,32 +977,10 @@ def build_cycle_signals(
     )
 
 
-# MAIL-13: wypełniacz za treścią preheadera — bez niego klient poczty dociąga do
-# podglądu dalszy tekst maila („📊 StockAgent — raport cyklu Czas rozpoczęcia…”).
-_PREHEADER_FILLER = "&zwnj;&nbsp;" * 100
-
-
-def _render_preheader_html(lead_items: list[LeadItem], closed_count: int | None) -> str:
-    """MAIL-13: ukryty div na samym początku HTML — klient poczty pokazuje go jako
-    podgląd pod tematem. Treść leadu pochodzi z rady i newsów, więc jest escapowana.
-
-    `closed_count` None (MAIL-25) = odczyt rozliczeń padł: podgląd nie mówi „0”."""
-    closed = (
-        "rozliczenia niedostępne"
-        if closed_count is None
-        else f"{closed_count} zamkniętych predykcji"
-    )
-    preview = lead_preview(lead_items) or f"Brak sygnałów ponad próg · {closed}"
-    return (
-        '<div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">'
-        f"{_html(preview)}{_PREHEADER_FILLER}</div>"
-    )
-
-
 # Sloty pomijane przy pustej treści: nagłówek sekcji rysuje się w szablonie, więc
 # podmiana na "" zostawiłaby pustą ramkę. Nieusunięty znacznik jest komentarzem
 # HTML, czyli w mailu niewidoczny — to bezpieczniejszy z dwóch wyników.
-_SKIP_WHEN_EMPTY_SLOTS = frozenset({_QUOTA_BANNER_SLOT, _RISK_WATCH_SLOT})
+_SKIP_WHEN_EMPTY_SLOTS = frozenset({_RISK_WATCH_SLOT})
 
 
 # MAIL-06: ciąg białych znaków ASCII — wcięcia szablonów między tagami, w tekście
@@ -1069,10 +1033,7 @@ def _fill_html_slots(html: str, sections: Mapping[str, str]) -> str:
 def _fill_text_slots(
     text: str,
     *,
-    quota_text: str,
     macro_risk_text: str,
-    lead_text: str,
-    onboarding_text: str,
     suggestions_text: str,
     portfolio_text: str = "",
     user_portfolio_text: str = "",
@@ -1080,15 +1041,10 @@ def _fill_text_slots(
 ) -> str:
     """Wstawia treść w sloty plain-text. Pusty slot usuwa cały wiersz znacznika —
     tekst nie ma komentarzy HTML, więc znacznik byłby w nim dosłowną linią.
-    W HTML QUOTA/RISK_WATCH zostają przy pustej treści (`_SKIP_WHEN_EMPTY_SLOTS`).
+    W HTML RISK_WATCH zostaje przy pustej treści (`_SKIP_WHEN_EMPTY_SLOTS`).
 
     `sections` (MAIL-09): znacznik slotu → tekst sekcji z jej `render_*_text`, który
     kończy się już pustą linią odstępu."""
-    text = text.replace(
-        f"{_QUOTA_BANNER_SLOT}\n",
-        f"{quota_text}\n" if quota_text else "",
-        1,
-    ).replace(_QUOTA_BANNER_SLOT, quota_text, 1)
     text = text.replace(
         f"{_RISK_WATCH_SLOT}\n",
         f"{macro_risk_text}\n" if macro_risk_text else "",
@@ -1104,16 +1060,6 @@ def _fill_text_slots(
         f"{user_portfolio_text}\n\n" if user_portfolio_text else "",
         1,
     ).replace(_USER_PORTFOLIO_SLOT, user_portfolio_text, 1)
-    text = text.replace(
-        f"{_LEAD_SLOT}\n",
-        f"{lead_text}\n\n" if lead_text else "",
-        1,
-    ).replace(_LEAD_SLOT, lead_text, 1)
-    text = text.replace(
-        f"{_ONBOARDING_SLOT}\n",
-        f"{onboarding_text}\n\n" if onboarding_text else "",
-        1,
-    ).replace(_ONBOARDING_SLOT, onboarding_text, 1)
     text = text.replace(
         f"{_SUGGESTIONS_SLOT}\n",
         f"{suggestions_text}\n\n" if suggestions_text else "",
@@ -1207,29 +1153,6 @@ def _portfolio_change_view(
         change=change,
         label=portfolio_change_label(since, now, display_timezone),
         currency=currency,
-    )
-
-
-def _build_onboarding_blocks(
-    cycle_maturity: CycleMaturity | None,
-    *,
-    instrument_count: int,
-    portfolio_sectors: Mapping[str, int] | None,
-    sector_map: Mapping[str, str],
-) -> tuple[str, str]:
-    """#4: powitanie pierwszego cyklu jako `(html, text)`. Renderer nigdy nie
-    decyduje o tonie — dostaje gotową klasyfikację z domeny (STEADY_STATE → "").
-    Kolejność sektorów: kolejność wstawienia mapy sektorów z configu."""
-    maturity = cycle_maturity or CycleMaturity.STEADY_STATE
-    sectors = portfolio_sectors or {}
-    order = tuple(dict.fromkeys(sector_map.values()))
-    return (
-        render_onboarding_html(
-            maturity, instrument_count=instrument_count, sectors=sectors, sector_order=order
-        ),
-        render_onboarding_text(
-            maturity, instrument_count=instrument_count, sectors=sectors, sector_order=order
-        ),
     )
 
 
@@ -1494,6 +1417,35 @@ def _full_detail_symbols(
     return frozenset(ranked[:_FULL_DETAIL_TOP_N]) | lead
 
 
+def _section_input(
+    results: list[SymbolResult],
+    started_at: datetime,
+    duration_seconds: float,
+    context: ReportContext,
+) -> SectionInput:
+    """ARCH-12: wspólne wejście sekcji maila, liczone RAZ na render."""
+    # U2: personalizacja — gdy podany filtr symboli (subskrybent), tniemy wyniki
+    # do jego watchlisty. Analiza i tak poszła RAZ nad unią; tu tylko re-slicing.
+    if context.symbols_filter is not None:
+        results = [r for r in results if r.symbol in context.symbols_filter]
+    saved, ignored, errors = _partition_by_status(results)
+    return SectionInput(
+        context=context,
+        results=results,
+        saved=saved,
+        ignored=ignored,
+        errors=errors,
+        started_at=started_at,
+        duration_seconds=duration_seconds,
+        sector_map=context.sector_map or {},
+        # #1: ranking leadu robi domena; TU jest jedyne miejsce, gdzie DTO warstwy
+        # application (SymbolResult / ResolvedPrediction) są mapowane na typy
+        # domenowe — `src/domain/digest_lead.py` ich nie importuje.
+        lead_items=build_cycle_lead(results, context),
+        resolved=context.resolved_predictions or [],
+    )
+
+
 def build_html_report(
     results: list[SymbolResult],
     started_at: datetime,
@@ -1506,16 +1458,10 @@ def build_html_report(
     kontekstu = raport z samych wyników cyklu: sekcje bez danych się chowają.
     """
     context = context or ReportContext()
-    # U2: personalizacja — gdy podany filtr symboli (subskrybent), tniemy wyniki
-    # do jego watchlisty. Analiza i tak poszła RAZ nad unią; tu tylko re-slicing.
-    if context.symbols_filter is not None:
-        results = [r for r in results if r.symbol in context.symbols_filter]
-    # Domyślne puste kolekcje liczymy RAZ — każde `or []` w ciele buildera to
-    # kolejna gałąź do przeczytania, a te same dane trafiają do kilku sekcji.
-    resolved = context.resolved_predictions or []
-    alerts = context.quota_alerts or []
-    sector_map = context.sector_map or {}
-    saved, ignored, errors = _partition_by_status(results)
+    data = _section_input(results, started_at, duration_seconds, context)
+    results, saved, ignored, errors = data.results, data.saved, data.ignored, data.errors
+    resolved = data.resolved
+    sector_map = data.sector_map
     mood = build_portfolio_mood(results)
     session = market_status(started_at)
     forecast_horizon = forecast_horizon_label(started_at)
@@ -1540,20 +1486,8 @@ def build_html_report(
         if context.portfolio_risk_report
         else ""
     )
-    # #1: lead cyklu. Ranking robi domena; TU jest jedyne miejsce, gdzie DTO
-    # warstwy application (SymbolResult / ResolvedPrediction) są mapowane na
-    # typy domenowe — `src/domain/digest_lead.py` ich nie importuje.
-    lead_items = build_cycle_lead(results, context)
     # MAIL-06: pełna rada dla top N wg siły sygnału i symboli z leadu.
-    full_detail = _full_detail_symbols(saved, ranked_signals, lead_items)
-    lead_html = render_lead_html(lead_items)
-    lead_text = render_lead_text(lead_items)
-    onboarding_html, onboarding_text = _build_onboarding_blocks(
-        context.cycle_maturity,
-        instrument_count=len(results),
-        portfolio_sectors=context.portfolio_sectors,
-        sector_map=sector_map,
-    )
+    full_detail = _full_detail_symbols(saved, ranked_signals, data.lead_items)
     # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
     council_history_html = render_council_history_html(context.council_history or [])
     # #3: ranking wiarygodności person — ranking (z progiem min_votes) przychodzi
@@ -1643,8 +1577,6 @@ def build_html_report(
     macro_risk_text = (
         render_risk_watch_text(context.macro_risk_report) if context.macro_risk_report else ""
     )
-    quota_html = render_quota_banner_html(alerts)
-    quota_text = render_quota_banner_text(alerts)
     suggestions = build_sector_suggestions(results, sector_map, context.sector_peers or {})
     suggestions_html = render_suggestions_html(suggestions)
     suggestions_text = render_suggestions_text(suggestions)
@@ -1656,6 +1588,7 @@ def build_html_report(
     resolved_note = _resolved_note(context, resolved_window)
     symbol_chips = symbol_chip_labels(context.symbol_track_record, (r.symbol for r in saved))
     html = _render_html(
+        data,
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
         resolved, resolved_window=resolved_window, resolved_note=resolved_note,
@@ -1671,9 +1604,6 @@ def build_html_report(
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
     html = _fill_html_slots(html, {
-        _QUOTA_BANNER_SLOT: quota_html,
-        _LEAD_SLOT: lead_html,
-        _ONBOARDING_SLOT: onboarding_html,
         _RISK_WATCH_SLOT: macro_risk_html,
         _PORTFOLIO_SLOT: portfolio_html,
         _USER_PORTFOLIO_SLOT: user_portfolio_html,
@@ -1687,9 +1617,9 @@ def build_html_report(
         _SUGGESTIONS_SLOT: suggestions_html,
         _RUN_FOOTER_SLOT: _render_run_footer_html(context.run_context),
     })
-    closed_count = None if context.resolved_unavailable and not resolved else len(resolved)
-    html = _email_document(_compact_markup(_render_preheader_html(lead_items, closed_count) + html))
+    html = _email_document(_compact_markup(html))
     text = _render_plain(
+        data,
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
         resolved, resolved_window=resolved_window, resolved_note=resolved_note,
@@ -1703,12 +1633,9 @@ def build_html_report(
     )
     text = _fill_text_slots(
         text,
-        quota_text=quota_text,
         macro_risk_text=macro_risk_text,
         portfolio_text=portfolio_text,
         user_portfolio_text=user_portfolio_text,
-        lead_text=lead_text,
-        onboarding_text=onboarding_text,
         suggestions_text=suggestions_text,
         # MAIL-09: sekcje z rendererem tekstu, których wersja tekstowa nie miała.
         sections={
@@ -2631,6 +2558,7 @@ def _render_mood_html(mood: PortfolioMood) -> str:
 
 
 def _render_html(
+    data: SectionInput,
     results: list[SymbolResult],
     saved: list[SymbolResult],
     ignored: list[SymbolResult],
@@ -2655,7 +2583,7 @@ def _render_html(
     symbol_chips: Mapping[str, str] | None = None,
     regime_html: str = "",
 ) -> str:
-    sections = []
+    sections = [PREHEADER_SECTION.render_html(data)]
 
     # Header
     sections.append(f"""
@@ -2666,12 +2594,9 @@ def _render_html(
       </div>
     """)
 
-    # Slot bannera kwot — wypełniany przez build_html_report, gdy są alerty.
-    # Trafia NAJWYŻEJ (przed sesją), bo wyczerpanie limitu to top-priority info.
-    sections.append(_QUOTA_BANNER_SLOT)
-    # #1: lead cyklu — pierwszy ekran, tuż za bannerem kwot.
-    sections.append(_LEAD_SLOT)
-    sections.append(_ONBOARDING_SLOT)
+    sections.append(QUOTA_BANNER_SECTION.render_html(data))
+    sections.append(LEAD_SECTION.render_html(data))
+    sections.append(ONBOARDING_SECTION.render_html(data))
 
     # Status sesji giełdowej
     sections.append(f"""
@@ -3063,6 +2988,7 @@ def _render_errors_text(errors: list[SymbolResult]) -> list[str]:
 
 
 def _render_plain(
+    data: SectionInput,
     results: list[SymbolResult],
     saved: list[SymbolResult],
     ignored: list[SymbolResult],
@@ -3087,9 +3013,9 @@ def _render_plain(
     regime_text: str = "",
 ) -> str:
     lines: list[str] = []
-    lines.append(_QUOTA_BANNER_SLOT)
-    lines.append(_LEAD_SLOT)
-    lines.append(_ONBOARDING_SLOT)
+    lines.extend(QUOTA_BANNER_SECTION.render_text(data))
+    lines.extend(LEAD_SECTION.render_text(data))
+    lines.extend(ONBOARDING_SECTION.render_text(data))
     lines.append("=" * 64)
     lines.append("STOCKAGENT — RAPORT CYKLU")
     lines.append("=" * 64)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html as _html
 
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
 # MAIL-15: banner jest treścią maila, więc po polsku; nazwy poziomów w logach
@@ -110,3 +111,22 @@ def render_quota_banner_text(alerts: list[QuotaAlert]) -> str:
         lines.append(f"    → {a.action}")
     lines.append("")
     return "\n".join(lines)
+
+
+# Bez alertów w HTML zostaje dawny znacznik slotu — niewidoczny komentarz, mail
+# bajt w bajt jak przed ARCH-12 (golden snapshot). Wersja tekstowa go nie ma.
+_EMPTY_HTML = "<!-- QUOTA_BANNER_SLOT -->"
+
+
+def _section_html(data: SectionInput) -> str:
+    return render_quota_banner_html(data.context.quota_alerts or []) or _EMPTY_HTML
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    return text_block(render_quota_banner_text(data.context.quota_alerts or []))
+
+
+# Banner idzie NAJWYŻEJ: wyczerpany płatny klucz waży więcej niż ruch ceny.
+QUOTA_BANNER_SECTION = ReportSection(
+    key="quota_banner", render_html=_section_html, render_text=_section_text
+)

@@ -483,3 +483,17 @@ def provenance_badges_html(badges: Sequence[ProvenanceBadge]) -> str:
             f"color: {color}; background: {bg};\">{label}</span>"
         )
     return "".join(chips)
+
+
+def escape(value: object) -> str:
+    """Wartość do wstawienia w HTML maila składanego f-stringiem — każde pole
+    z danych zewnętrznych (newsy, LLM, komunikaty błędów) przechodzi tędy."""
+    return html.escape(str(value), quote=True)
+
+
+def section_h2(title: str) -> str:
+    """Nagłówek sekcji raportu (H2) — jedno źródło prawdy dla stylu.
+
+    Moduły sekcji importują go jako `_section_h2`: pod tą nazwą strażnik
+    DOC-15 (`tests/test_docs_report_sections.py`) czyta tytuły sekcji."""
+    return f"<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>{title}</h2>"

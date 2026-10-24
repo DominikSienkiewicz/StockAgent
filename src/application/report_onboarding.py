@@ -20,6 +20,7 @@ from __future__ import annotations
 import html as _html
 from collections.abc import Mapping, Sequence
 
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.cycle_maturity import CycleMaturity
 
 
@@ -142,3 +143,38 @@ def onboarding_subject(
         f"👋 Dzień 1: startuję — buduję punkt odniesienia dla "
         f"{_instruments_label(instrument_count)}"
     )
+
+
+# Renderer nigdy nie decyduje o tonie — dostaje gotową klasyfikację z domeny
+# (brak = STEADY_STATE, czyli sekcji nie ma). Kolejność sektorów: kolejność
+# wstawienia mapy sektorów z configu.
+
+
+def _section_html(data: SectionInput) -> str:
+    context = data.context
+    return render_onboarding_html(
+        context.cycle_maturity or CycleMaturity.STEADY_STATE,
+        instrument_count=len(data.results),
+        sectors=context.portfolio_sectors or {},
+        sector_order=tuple(dict.fromkeys(data.sector_map.values())),
+    )
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    context = data.context
+    text = render_onboarding_text(
+        context.cycle_maturity or CycleMaturity.STEADY_STATE,
+        instrument_count=len(data.results),
+        sectors=context.portfolio_sectors or {},
+        sector_order=tuple(dict.fromkeys(data.sector_map.values())),
+    )
+    return text_block(text, spaced=True)
+
+
+# #4: powitanie pierwszego cyklu („Dzień 1”) zamiast ściany „Pominięte”.
+ONBOARDING_SECTION = ReportSection(
+    key="onboarding",
+    render_html=_section_html,
+    render_text=_section_text,
+    context_fields=frozenset({"cycle_maturity", "portfolio_sectors"}),
+)
