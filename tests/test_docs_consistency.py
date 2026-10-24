@@ -132,7 +132,7 @@ DEPLOYED = "deployed"
 NOT_DEPLOYED = "built, not deployed"
 # Produkcja ma migracje do 025; 026+ czekają na ręczny DB Migrate
 # (docs/resume-checklist.md, krok 3). Po migracji podnieś próg i statusy.
-PRODUCTION_MIGRATED_THROUGH = 25
+PRODUCTION_MIGRATED_THROUGH = 42
 
 
 def _config_doc() -> str:

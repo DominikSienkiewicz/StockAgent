@@ -87,7 +87,7 @@ Plus internal constants in `report_builder.py` (`DIVERGENCE_PRICE_THRESHOLD = 0.
 
 ## Flag reference
 
-Every on/off switch of `Settings` in one table (DOC-19); why each one exists and what it changes is in the prose under [Feature flags](#feature-flags). **Code default** is the fallback in `src/config.py`, **`config.toml`** the committed production value. **Migration** names the file in `supabase/migrations/` whose column or table the flag needs; production has the migrations up to `025` and waits for the manual DB Migrate run for the rest ([resume checklist](resume-checklist.md), step 3). **Secret** lists the GitHub Secrets / `.env` keys the flag needs on top of the always-required ones. **Paid calls** counts the paid requests the flag adds to a Fast Loop cycle unless it says otherwise. **Status** is `deployed` when `config.toml` turns the flag on and its migration is in production, `built, not deployed` otherwise; the daily Fast Loop and the hourly Shock Watch are paused, so a deployed flag takes effect on their next run. [`tests/test_docs_consistency.py`](../tests/test_docs_consistency.py) fails when a boolean field of `Settings` has no row, or when a default, a `config.toml` value, a migration file, a secret name or a status disagrees with the code.
+Every on/off switch of `Settings` in one table (DOC-19); why each one exists and what it changes is in the prose under [Feature flags](#feature-flags). **Code default** is the fallback in `src/config.py`, **`config.toml`** the committed production value. **Migration** names the file in `supabase/migrations/` whose column or table the flag needs; production has the migrations up to `042` (since the resume on 2026-10-23) and waits for the manual DB Migrate run for the rest ([resume checklist](resume-checklist.md), step 3). **Secret** lists the GitHub Secrets / `.env` keys the flag needs on top of the always-required ones. **Paid calls** counts the paid requests the flag adds to a Fast Loop cycle unless it says otherwise. **Status** is `deployed` when `config.toml` turns the flag on and its migration is in production, `built, not deployed` otherwise; the daily Fast Loop and the hourly Shock Watch are paused, so a deployed flag takes effect on their next run. [`tests/test_docs_consistency.py`](../tests/test_docs_consistency.py) fails when a boolean field of `Settings` has no row, or when a default, a `config.toml` value, a migration file, a secret name or a status disagrees with the code.
 
 | Flag | Code default | `config.toml` | Migration | Secret | Paid calls | Status |
 |---|---|---|---|---|---|---|
@@ -95,7 +95,7 @@ Every on/off switch of `Settings` in one table (DOC-19); why each one exists and
 | `debate_mode_enabled` | `false` | `false` | — | — | up to +7 council calls per symbol with a split vote (15 instead of 8) | built, not deployed |
 | `model_routing_enabled` | `false` | `false` | — | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | cheap model first, plus up to `routing_max_escalations` frontier calls per cycle | built, not deployed |
 | `regime_aware_enabled` | `false` | `true` | — | — | 0; can only raise the threshold | deployed |
-| `regime_hysteresis_enabled` | `false` | `false` | `033` | — | 0 | built, not deployed |
+| `regime_hysteresis_enabled` | `false` | `true` | `033` | — | 0 | deployed |
 | `contagion_enabled` | `false` | `false` | — | — | 0 (longer prompt, sequential symbols) | built, not deployed |
 | `calibration_judge_enabled` | `false` | `false` | `016` | — | 1 LLM call a week (Slow Loop budget) | built, not deployed |
 | `calibration_score_version_enabled` | `false` | `false` | `044` | — | 0 | built, not deployed |
@@ -107,24 +107,24 @@ Every on/off switch of `Settings` in one table (DOC-19); why each one exists and
 | `lessons_enabled` | `false` | `true` | — | — | 0 | deployed |
 | `calibrated_confidence_enabled` | `false` | `true` | — | — | 0 | deployed |
 | `model_scorecard_enabled` | `false` | `true` | `019` | — | 0 | deployed |
-| `model_scorecard_baselines_enabled` | `false` | `false` | `028` | — | 0 | built, not deployed |
+| `model_scorecard_baselines_enabled` | `false` | `true` | `028` | — | 0 | deployed |
 | `model_scorecard_run_id_enabled` | `false` | `false` | `049` | — | 0 | built, not deployed |
 | `cycle_diff_enabled` | `false` | `true` | — | — | 0 | deployed |
 | `receipts_enabled` | `false` | `true` | `020` | — | 0 | deployed |
-| `feature_set_version_enabled` | `false` | `false` | `027` | — | 0 | built, not deployed |
-| `feature_set_filter_enabled` | `false` | `false` | `027` | — | 0 | built, not deployed |
-| `recipe_version_enabled` | `false` | `false` | `030` | — | 0 | built, not deployed |
-| `feature_snapshots_enabled` | `false` | `false` | `031` | — | 0 | built, not deployed |
-| `interval_coverage_enabled` | `false` | `false` | `032` | — | 0 | built, not deployed |
-| `gate_delta_enabled` | `false` | `false` | `034` | — | 0 | built, not deployed |
-| `experiment_arms_enabled` | `false` | `false` | `037` | — | 0 | built, not deployed |
-| `settled_at_windows_enabled` | `false` | `false` | `029` | — | 0 | built, not deployed |
+| `feature_set_version_enabled` | `false` | `true` | `027` | — | 0 | deployed |
+| `feature_set_filter_enabled` | `false` | `true` | `027` | — | 0 | deployed |
+| `recipe_version_enabled` | `false` | `true` | `030` | — | 0 | deployed |
+| `feature_snapshots_enabled` | `false` | `true` | `031` | — | 0 | deployed |
+| `interval_coverage_enabled` | `false` | `true` | `032` | — | 0 | deployed |
+| `gate_delta_enabled` | `false` | `true` | `034` | — | 0 | deployed |
+| `experiment_arms_enabled` | `false` | `true` | `037` | — | 0 | deployed |
+| `settled_at_windows_enabled` | `false` | `true` | `029` | — | 0 | deployed |
 | `shock_alerts_enabled` | `false` | `true` | `021` | `FINNHUB_API_KEY`; `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` or `SLACK_WEBHOOK_URL` | 0 (separate free job) | deployed |
 | `alpha_fusion_enabled` | `false` | `true` | `022` | — | 0 | deployed |
 | `attestation_enabled` | `false` | `false` | `024`, `043` | — | 0 | built, not deployed |
 | `portfolio_positions_enabled` | `false` | `true` | `023` | — | 0 | deployed |
-| `positions_currency_enabled` | `false` | `false` | `035` | — | 0 | built, not deployed |
-| `fx_rates_cache_enabled` | `false` | `false` | `036` | — | 0 (free NBP) | built, not deployed |
+| `positions_currency_enabled` | `false` | `true` | `035` | — | 0 | deployed |
+| `fx_rates_cache_enabled` | `false` | `true` | `036` | — | 0 (free NBP) | deployed |
 | `weekly_recap_enabled` | `false` | `true` | — | `RESEND_API_KEY`, `DIGEST_TO_EMAIL` | 1 LLM call a week (Slow Loop budget) | deployed |
 | `public_scorecard_enabled` | `false` | `false` | — | — | 0 | built, not deployed |
 | `insider_flow_enabled` | `false` | `true` | — | `EDGAR_USER_AGENT` | 0 (SEC EDGAR, free) | deployed |
@@ -139,10 +139,10 @@ Every on/off switch of `Settings` in one table (DOC-19); why each one exists and
 | `tool_use_enabled` | `false` | `false` | — | — | up to `tool_use_max_rounds` + 1 LLM calls instead of 1 per symbol past `tool_use_volatility_threshold` | built, not deployed |
 | `av_budget_strict` | `false` | `false` | — | — | 0 | built, not deployed |
 | `nyse_closure_skip_enabled` | `false` | `true` | — | — | 0; fewer on a closed NYSE day | deployed |
-| `cost_ledger_enabled` | `false` | `false` | `040` | — | 0 | built, not deployed |
-| `cycle_runs_enabled` | `false` | `false` | `041` | — | 0 | built, not deployed |
+| `cost_ledger_enabled` | `false` | `true` | `040` | — | 0 | deployed |
+| `cycle_runs_enabled` | `false` | `true` | `041` | — | 0 | deployed |
 | `council_votes_upsert_enabled` | `false` | `false` | `054` | — | 0 | built, not deployed |
-| `reference_signal_enabled` | `false` | `false` | `042` | — | 0 (free quote, Slow Loop) | built, not deployed |
+| `reference_signal_enabled` | `false` | `true` | `042` | — | 0 (free quote, Slow Loop) | deployed |
 | `two_phase_cycle_enabled` | `false` | `false` | — | — | 0 extra; the ceiling cuts the smallest moves | built, not deployed |
 | `db_writes_enabled` | `false` | — (environment only; the writing workflows set it) | — | — | 0 | deployed |
 | `paid_calls_enabled` | `false` | — (environment only; the Fast and Slow Loop set it) | — | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ALPHA_VANTAGE_API_KEYS` | every paid call; off builds stubs | deployed |
