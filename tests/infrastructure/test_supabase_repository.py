@@ -1183,6 +1183,33 @@ class TestPersonaVoteOutcomes:
 
         assert "apply migration 045" in caplog.text
 
+    @pytest.mark.parametrize(
+        ("code", "hinted"),
+        [
+            ("PGRST202", True),
+            ("PGRST205", True),
+            ("42P01", True),
+            ("42883", True),
+            ("42703", False),
+            ("PGRST204", False),
+        ],
+    )
+    def test_migration_hint_only_for_a_missing_function_or_table(
+        self, mock_client: MagicMock, caplog: pytest.LogCaptureFixture, code: str, hinted: bool
+    ) -> None:
+        # NIEZ-16 (decyzja 2026-10-23): podpowiedź „apply migration” wyłącznie dla
+        # brakującej funkcji albo tabeli; brak kolumny ma osobną, tolerancyjną ścieżkę.
+        from postgrest.exceptions import APIError
+
+        mock_client.rpc.side_effect = APIError({"code": code, "message": "missing"})
+
+        with caplog.at_level(logging.WARNING):
+            assert self._flagged_repo().get_persona_track_record() == {}
+
+        assert ("apply migration 045" in caplog.text) is hinted
+        if not hinted:
+            assert "APIError" in caplog.text
+
     def test_without_flag_the_old_rpcs_stay(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:

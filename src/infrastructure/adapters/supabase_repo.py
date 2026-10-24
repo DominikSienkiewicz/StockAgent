@@ -172,13 +172,12 @@ def _is_missing_column(exc: APIError, column: str) -> bool:
     return exc.code in _MISSING_COLUMN_CODES and column in (exc.message or "")
 
 
-# NIEZ-16: kody, które naprawdę znaczą brak obiektu schematu — funkcji RPC
-# (PGRST202, 42883), tabeli (PGRST205, 42P01) albo kolumny (jak wyżej). Tylko
-# wtedy odczyt graceful wskazuje migrację; zerwane połączenie, timeout albo
-# wstrzymany projekt to inna diagnoza, logowana z typem wyjątku.
-_MISSING_SCHEMA_CODES = (
-    frozenset({"PGRST202", "PGRST205", "42P01", "42883"}) | _MISSING_COLUMN_CODES
-)
+# NIEZ-16 (decyzja 2026-10-23: ściśle cztery kody): brak funkcji RPC (PGRST202,
+# 42883) albo tabeli (PGRST205, 42P01). Tylko wtedy odczyt graceful wskazuje
+# migrację. Brak kolumny (`_MISSING_COLUMN_CODES`) ma osobną, tolerancyjną ścieżkę
+# odczytu, a zerwane połączenie, timeout albo wstrzymany projekt to inna
+# diagnoza — oba logowane z typem wyjątku i tracebackiem.
+_MISSING_SCHEMA_CODES = frozenset({"PGRST202", "PGRST205", "42P01", "42883"})
 
 
 def _log_degraded_read(source: str, skipped: str, migration: str, exc: Exception) -> None:
