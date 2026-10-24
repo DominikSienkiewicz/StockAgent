@@ -347,6 +347,13 @@ def _summarize_news(news: list[dict[str, Any]]) -> str:
 _PRECEDENT_RECEIPT_LIMIT = 3
 
 
+# Ile analogów RAG trafia do promptu (top-N z RPC po reranku).
+_ANALOG_LIMIT = 3
+# ML-41: po odsianiu nierozliczonych zostaje mniej kandydatów, więc retrieval
+# punktu w czasie bierze ich tyle razy więcej (ta sama jedna darmowa RPC).
+_POINT_IN_TIME_OVERFETCH = 4
+
+
 def _format_analog(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     """Mapuje jeden analog RAG na `(linia_promptu, rekord_precedensu)`.
 
@@ -389,6 +396,8 @@ def _build_similar_context(
     symbol: str,
     outcome_weight: float = 0.0,
     regime: str | None = None,
+    *,
+    point_in_time: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Buduje blok 'podobne historyczne sytuacje' do promptu (RAG) ORAZ zwraca
     rerankowane rekordy do reużycia jako precedent receipts (Q5).
@@ -402,13 +411,24 @@ def _build_similar_context(
     W pełni graceful: brak RPC / pgvector / błąd → `("", [])` (predykcja działa
     bez RAG i bez receipts). Jeden retrieval + jeden rerank — zero dodatkowych
     płatnych wywołań ponad to, co RAG już robił. `outcome_weight` (#9): rerank
-    analogów po realnym wyniku; 0.0 = sama kolejność RPC.
+    analogów po realnym wyniku; 0.0 = sama kolejność RPC. `point_in_time` (ML-41,
+    `rag_point_in_time_enabled`): tylko analogi rozliczone, z większej puli kandydatów.
     """
     try:
+        limit = _ANALOG_LIMIT * _POINT_IN_TIME_OVERFETCH if point_in_time else _ANALOG_LIMIT
         similar = repository_port.find_similar_predictions(
-            embedding, limit=3, regime=regime
+            embedding, limit=limit, regime=regime
         )
-        similar = rerank_analogs(list(similar or []), outcome_weight=outcome_weight)
+        candidates = list(similar or [])
+        if point_in_time:
+            # ML-41: tylko analogi z wynikiem — nierozliczony (także zapisany w TYM
+            # cyklu, echo bieżących newsów) nie zajmuje miejsca w top-N ani w reranku.
+            candidates = [item for item in candidates if item.get("is_trend_correct") is not None]
+        similar = rerank_analogs(
+            candidates,
+            outcome_weight=outcome_weight,
+            top_k=_ANALOG_LIMIT if point_in_time else None,
+        )
         lines: list[str] = []
         precedents: list[dict[str, Any]] = []
         for item in similar or []:
@@ -845,6 +865,9 @@ class AgentGraphDeps:
     # ML-36: ruch ceny w prompcie predykcji z dwoma miejscami i znakiem („+3.46”) zamiast
     # pełnej precyzji `Decimal`. Off = tekst promptu jak przed ML-36.
     prompt_delta_rounding_enabled: bool = False
+    # ML-41: analogi RAG tylko rozliczone (z wynikiem), z większej puli kandydatów.
+    # Off = retrieval i analogi w prompcie jak przed ML-41.
+    rag_point_in_time_enabled: bool = False
     # DAT-23: `pc` notowania vs ostatni snapshot — podejrzenie splitu koryguje
     # referencję bramki, rozliczenie i `price_delta`, a zdarzenie idzie do
     # `corporate_actions` (migracja 062). Off = jak przed DAT-23.
@@ -1670,6 +1693,7 @@ def _compute_rag_context(
                 state["symbol"],
                 deps.rag_outcome_weight,
                 regime=regime_filter,
+                point_in_time=deps.rag_point_in_time_enabled,
             )
     return news_embedding, similar_context, similar_precedents
 

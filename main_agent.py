@@ -1728,6 +1728,8 @@ def build_agent_graph_deps(
         invalidation_level_enabled=settings.invalidation_level_enabled,
         # ML-36: ruch ceny w prompcie z dwoma miejscami; off.
         prompt_delta_rounding_enabled=settings.prompt_delta_rounding_enabled,
+        # ML-41: analogi RAG tylko rozliczone; off.
+        rag_point_in_time_enabled=settings.rag_point_in_time_enabled,
         # BEZ-14: lekcja z reflect w prompcie predykcji w fence'u; off.
         prompt_taint_fence_enabled=settings.prompt_taint_fence_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
