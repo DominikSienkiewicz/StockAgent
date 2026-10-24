@@ -31,7 +31,7 @@ _TONE_RULES = (
     f".fn{{background:{PALETTE.neutral}}}"
     f".fc{{background:{PALETTE.caution}}}"
     ".gu{background:#f0fdf4}"
-    ".gd{background:#fef2f2}"
+    f".gd{{background:{PALETTE.tint_negative}}}"
     ".gc{background:#fefce8}"
     f".gn{{background:{PALETTE.surface}}}"
     f".lu{{border-left:3px solid {PALETTE.positive}}}"
@@ -103,7 +103,7 @@ EMAIL_STYLESHEET = (
     ".br{display:inline-block;height:12px;border-radius:2px;vertical-align:middle}"
     ".bn{font-size:12px;color:#374151;margin-left:6px}"
     ".qc{display:inline-block;margin:2px 4px 2px 0;padding:1px 6px;border-radius:3px;"
-    "font-size:12px;background:#f3f4f6}"
+    f"font-size:12px;background:{PALETTE.surface}}}"
     # MAIL-23: telefon (~360 px) — wiersz tabeli predykcji to blok z komórkami
     # w jednej zawijanej linii, bez wiersza nagłówka.
     "@media (max-width:480px){"

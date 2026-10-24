@@ -15,15 +15,15 @@ import html as _html
 from decimal import Decimal
 
 from src.application.report_evidence import probability_label
-from src.application.report_formatting import INVESTMENT_DISCLAIMER, number, pct
+from src.application.report_formatting import INVESTMENT_DISCLAIMER, PALETTE, number, pct
 from src.domain.council import InvestorOpinion
 from src.domain.council_redundancy import CouncilRedundancy
 from src.domain.number_format import format_number_pl
 from src.domain.polish_labels import council_recommendation_label
 from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
 
-_COLOR_GOOD = "#16a34a"
-_COLOR_POOR = "#dc2626"
+_COLOR_GOOD = PALETTE.positive
+_COLOR_POOR = PALETTE.negative
 _COLOR_MUTED = "#6b7280"
 
 _BEST_TITLE = "Strzał tygodnia"

@@ -26,7 +26,7 @@ from __future__ import annotations
 import html as _html
 from datetime import date
 
-from src.application.report_formatting import number, plural_pl
+from src.application.report_formatting import PALETTE, number, plural_pl
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.finops import CycleCost, SourceCost
 
@@ -68,7 +68,7 @@ _SOURCE_LABELS: dict[str, str] = {
 
 _COLOR_MUTED = "#6b7280"
 _COLOR_TEXT = "#374151"
-_COLOR_FREE = "#16a34a"
+_COLOR_FREE = PALETTE.positive
 
 
 def _source_label(source: str) -> str:

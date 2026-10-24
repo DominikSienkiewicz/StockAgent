@@ -18,6 +18,7 @@ import html as _html
 from decimal import Decimal
 
 from src.application.report_evidence import interval_label
+from src.application.report_formatting import PALETTE
 from src.application.reporting.section import ReportSection, SectionInput, no_text
 from src.domain.number_format import DecimalMark, format_number_pl
 from src.domain.persona_track_record import PersonaTrackRecord
@@ -47,9 +48,9 @@ _BRIER_NOTE_PL = (
     "samym odsetku trafień."
 )
 
-_COLOR_GOOD = "#16a34a"
-_COLOR_NEUTRAL = "#ca8a04"
-_COLOR_POOR = "#dc2626"
+_COLOR_GOOD = PALETTE.positive
+_COLOR_NEUTRAL = PALETTE.caution
+_COLOR_POOR = PALETTE.negative
 
 
 def _hit_rate_color(hit_rate: float) -> str:
@@ -124,10 +125,10 @@ def _render_row_html(record: PersonaTrackRecord, *, position: int) -> str:
     n_eff = "" if record.n_eff is None else f" (n_eff≈{record.n_eff:.0f})"
     return (
         "<tr>"
-        f"<td style='padding: 6px 8px; color: #9ca3af;'>{position}</td>"
+        f"<td style='padding: 6px 8px; color: {PALETTE.subtle};'>{position}</td>"
         f"<td style='padding: 6px 8px;'>{medal}<strong>{name}</strong></td>"
         f"<td style='padding: 6px 8px; color: {color}; font-weight: 600;'>"
-        f"{record.hit_rate_pct}% <span style='color: #9ca3af; font-weight: 400;'>"
+        f"{record.hit_rate_pct}% <span style='color: {PALETTE.subtle}; font-weight: 400;'>"
         f"({interval_label(low, high)})</span>{_brier_html(record)}{verdict_html}</td>"
         f"<td style='padding: 6px 8px; color: #6b7280;'>"
         f"{_votes_label(record.votes)}{n_eff}</td>"

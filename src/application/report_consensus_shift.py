@@ -30,15 +30,16 @@ from __future__ import annotations
 
 import html as _html
 
+from src.application.report_formatting import PALETTE
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.consensus_shift import ConsensusShift, ShiftKind
 from src.domain.polish_labels import council_recommendation_label
 
 # Kolory rekomendacji spójne z sekcją RADA DORADCZA / historią głosów.
 _REC_COLOR: dict[str, str] = {
-    "BUY": "#16a34a",
-    "SELL": "#dc2626",
-    "HOLD": "#ca8a04",
+    "BUY": PALETTE.positive,
+    "SELL": PALETTE.negative,
+    "HOLD": PALETTE.caution,
 }
 
 # Etykieta i kolor akcentu per rodzaj zmiany. FLIP jest najbardziej actionable,
@@ -51,9 +52,9 @@ _KIND_LABEL: dict[ShiftKind, str] = {
 }
 
 _KIND_COLOR: dict[ShiftKind, str] = {
-    ShiftKind.FLIP: "#dc2626",
-    ShiftKind.SOFTENING: "#ca8a04",
-    ShiftKind.STALE_COMPARISON: "#9ca3af",
+    ShiftKind.FLIP: PALETTE.negative,
+    ShiftKind.SOFTENING: PALETTE.caution,
+    ShiftKind.STALE_COMPARISON: PALETTE.subtle,
 }
 
 
@@ -81,7 +82,7 @@ def _direction_html(shift: ConsensusShift) -> str:
     return (
         f"<span style='color:{prev_color};font-weight:600;'>"
         f"{_html.escape(council_recommendation_label(prev))}</span>"
-        "<span style='color:#9ca3af;'> → </span>"
+        f"<span style='color:{PALETTE.subtle};'> → </span>"
         f"<span style='color:{curr_color};font-weight:600;'>"
         f"{_html.escape(council_recommendation_label(curr))}</span>"
     )

@@ -156,7 +156,7 @@ def _render_trade_signals_html(
         }[_signal_tone(sig)]
         dir_bg = {
             "KUP": "#f0fdf4",
-            "SPRZEDAJ": "#fef2f2",
+            "SPRZEDAJ": PALETTE.tint_negative,
             "OBSERWUJ": "#f9fafb",
         }[_signal_tone(sig)]
         forecast_html = (

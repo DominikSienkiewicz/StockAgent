@@ -4,6 +4,9 @@ AV ↔ LLM i słaby sygnał (`detect_risk_signals`)."""
 from __future__ import annotations
 
 from src.application.report_formatting import (
+    PALETTE,
+)
+from src.application.report_formatting import (
     company_label as _company_label,
 )
 from src.application.report_formatting import (
@@ -28,7 +31,11 @@ def _render_risk_signals_html(risk_signals: list[RiskSignal]) -> str:
         "LOW_SIGNAL": "Słaby sygnał",
     }
     for rs in risk_signals:
-        sev_color = {"high": "#dc2626", "medium": "#f59e0b", "low": "#6b7280"}[rs.severity]
+        sev_color = {
+            "high": PALETTE.negative,
+            "medium": PALETTE.caution,
+            "low": PALETTE.muted,
+        }[rs.severity]
         parts.append(f"""
               <div style="margin-bottom: 6px; padding: 8px 12px; background: #fffbeb;
                           border-left: 3px solid {sev_color}; border-radius: 4px;

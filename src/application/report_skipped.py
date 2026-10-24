@@ -17,14 +17,15 @@ from __future__ import annotations
 from datetime import datetime
 
 from src.application.report_formatting import (
+    PALETTE,
+    direction_pct,
+    format_local_date,
+)
+from src.application.report_formatting import (
     company_label as _company_label,
 )
 from src.application.report_formatting import (
     delta_color as _delta_color,
-)
-from src.application.report_formatting import (
-    direction_pct,
-    format_local_date,
 )
 from src.application.report_formatting import (
     escape as _html,
@@ -238,7 +239,7 @@ def _is_near(r: SymbolResult) -> bool:
 def _chip_html(inner_html: str) -> str:
     return (
         "<span style='display: inline-block; padding: 2px 8px; margin: 2px; "
-        f"background: #f3f4f6; border-radius: 3px; font-size: 12px;'>{inner_html}</span>"
+        f"background: {PALETTE.surface}; border-radius: 3px; font-size: 12px;'>{inner_html}</span>"
     )
 
 

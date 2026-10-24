@@ -383,7 +383,13 @@ class ReportPalette:
     MAIL-57: kolory tekstu mają mieć ≥ 4.5:1 na białym i na `surface` (WCAG AA dla
     tekstu 11–13 px, `contrast_ratio`). `positive`, `caution` i `subtle` ściemnione
     z #16a34a (3.3:1), #ca8a04 (2.9:1) i #9ca3af (2.5:1) — jaśniejszy szary tekst
-    niż `muted` nie przechodzi AA, więc `subtle` mu równy."""
+    niż `muted` nie przechodzi AA, więc `subtle` mu równy.
+
+    MAIL-63: sekcje nie mają własnych literałów tekstu poniżej AA — strażnik
+    w `test_report_a11y.py` liczy kontrast każdego tekstu na jego prawdziwym tle.
+    `surface` to najciemniejsze tło, na którym przechodzą wszystkie role tekstu;
+    zabarwione tła pod tekstem z palety (czerwone, niebieskie) są od niego jaśniejsze
+    w sensie kontrastu: `tint_negative`, `tint_info`."""
 
     positive: str = "#15803d"
     negative: str = "#dc2626"
@@ -395,6 +401,8 @@ class ReportPalette:
     subtle: str = "#6b7280"
     border: str = "#e5e7eb"
     surface: str = "#f9fafb"
+    tint_negative: str = "#fef6f6"
+    tint_info: str = "#f3f8ff"
 
 
 PALETTE = ReportPalette()

@@ -45,7 +45,7 @@ from src.application.report_evidence import (
     probability_label,
     uncertainty_note,
 )
-from src.application.report_formatting import number, pct, pct_range, plural_pl
+from src.application.report_formatting import PALETTE, number, pct, pct_range, plural_pl
 from src.application.report_lessons import LessonsReport
 from src.application.reporting.section import ReportSection, SectionInput, no_text
 from src.domain.benchmark import BenchmarkComparison
@@ -190,9 +190,9 @@ def _equity_title(costs: PaperCosts | None) -> str:
 
 def _render_equity_summary_html(curve: EquityCurve, costs: PaperCosts | None) -> str:
     """Ramka z wynikiem łącznym, trafnością, obsunięciem i liczbą transakcji."""
-    total_color = "#059669" if curve.total_return >= 0 else "#dc2626"
+    total_color = PALETTE.positive if curve.total_return >= 0 else PALETTE.negative
     return (
-        "<div style='padding: 10px 14px; background: #eff6ff; "
+        f"<div style='padding: 10px 14px; background: {PALETTE.tint_info}; "
         "border-left: 3px solid #2563eb; border-radius: 4px; "
         "margin-bottom: 10px; font-size: 13px;'>"
         f"<strong>{_html.escape(_equity_title(costs))}:</strong> wynik łączny "
@@ -327,10 +327,10 @@ def _render_sparkline_html(curve: EquityCurve, basket: EquityCurve | None = None
 def _severity_color(value: float) -> str:
     """Próg rozjazdu → kolor: ≥0.15 czerwony, ≥0.07 żółty, inaczej zielony."""
     if value >= 0.15:
-        return "#dc2626"
+        return PALETTE.negative
     if value >= 0.07:
-        return "#ca8a04"
-    return "#16a34a"
+        return PALETTE.caution
+    return PALETTE.positive
 
 
 def _sideways_html(scores: ProbabilityScores | None) -> str:

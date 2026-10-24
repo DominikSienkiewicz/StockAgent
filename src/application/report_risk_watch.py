@@ -12,7 +12,13 @@ from __future__ import annotations
 import html as _html
 from decimal import Decimal
 
-from src.application.report_formatting import company_label, number, number_exact, pct
+from src.application.report_formatting import (
+    PALETTE,
+    company_label,
+    number,
+    number_exact,
+    pct,
+)
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.drawdown import DrawdownSignal
@@ -39,15 +45,15 @@ _ALERT_LABEL = {
 }
 
 _ALERT_COLOR = {
-    MacroAlertLevel.NORMAL: "#16a34a",
-    MacroAlertLevel.ELEVATED: "#ca8a04",
-    MacroAlertLevel.CRITICAL: "#dc2626",
+    MacroAlertLevel.NORMAL: PALETTE.positive,
+    MacroAlertLevel.ELEVATED: PALETTE.caution,
+    MacroAlertLevel.CRITICAL: PALETTE.negative,
 }
 
 _ALERT_BG = {
     MacroAlertLevel.NORMAL: "#f0fdf4",
     MacroAlertLevel.ELEVATED: "#fefce8",
-    MacroAlertLevel.CRITICAL: "#fef2f2",
+    MacroAlertLevel.CRITICAL: PALETTE.tint_negative,
 }
 
 _INSTRUMENT_LABEL = {
@@ -123,9 +129,9 @@ def render_risk_watch_html(report: MacroRiskReport) -> str:
 # Kolor etykiety skuteczności hedge'a: zielony = skuteczny, bursztyn =
 # nieskuteczny, czerwony = odwrócony (porusza się jak book, nie chroni).
 _HEDGE_COLOR = {
-    "skuteczny": "#16a34a",
-    "nieskuteczny": "#ca8a04",
-    "odwrócony": "#dc2626",
+    "skuteczny": PALETTE.positive,
+    "nieskuteczny": PALETTE.caution,
+    "odwrócony": PALETTE.negative,
 }
 
 

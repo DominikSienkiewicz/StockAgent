@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import html as _html
 
-from src.application.report_formatting import DEFAULT_DISPLAY_TIMEZONE, format_local
+from src.application.report_formatting import (
+    DEFAULT_DISPLAY_TIMEZONE,
+    PALETTE,
+    format_local,
+)
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
@@ -22,12 +26,12 @@ _SEVERITY_LABEL = {
     QuotaSeverity.CRITICAL: "🔴 KRYTYCZNY",
 }
 _SEVERITY_COLOR = {
-    QuotaSeverity.WARNING: "#ca8a04",
-    QuotaSeverity.CRITICAL: "#dc2626",
+    QuotaSeverity.WARNING: PALETTE.caution,
+    QuotaSeverity.CRITICAL: PALETTE.negative,
 }
 _SEVERITY_BG = {
     QuotaSeverity.WARNING: "#fefce8",
-    QuotaSeverity.CRITICAL: "#fef2f2",
+    QuotaSeverity.CRITICAL: PALETTE.tint_negative,
 }
 
 

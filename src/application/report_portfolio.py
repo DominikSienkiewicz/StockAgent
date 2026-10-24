@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import html as _html
 
-from src.application.report_formatting import pct
+from src.application.report_formatting import PALETTE, pct
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 from src.domain.risk_sample import RiskStat
@@ -174,7 +174,7 @@ def _render_stress_html(report: PortfolioRiskReport) -> str:
             f"<td style='padding: 6px 8px; text-align: right; color: #6b7280;'>"
             f"{pct(impact.market_shock, signed=True, decimals=0)}</td>"
             f"<td style='padding: 6px 8px; text-align: right; "
-            f"color: {'#dc2626' if impact.portfolio_pnl < 0 else '#059669'};'>"
+            f"color: {PALETTE.negative if impact.portfolio_pnl < 0 else PALETTE.positive};'>"
             f"{pct(impact.portfolio_pnl, signed=True, decimals=1)}</td>"
             f"<td style='padding: 6px 8px;'>{worst} "
             f"({pct(impact.worst_pnl, signed=True, decimals=1)})</td>"

@@ -28,6 +28,7 @@ from datetime import datetime
 from typing import Any
 
 from src.application.data_coverage import coverage_line_pl
+from src.application.report_formatting import PALETTE
 from src.application.report_formatting import number as _number
 from src.application.report_formatting import pct as _pct
 from src.application.reporting.section import ReportSection, SectionInput, text_block
@@ -72,8 +73,8 @@ _SNAPSHOT_OUTCOME_PL = {
 }
 
 # Kolory poprawki względem baseline'u — spójne z resztą raportu.
-_COLOR_GOOD = "#16a34a"
-_COLOR_POOR = "#dc2626"
+_COLOR_GOOD = PALETTE.positive
+_COLOR_POOR = PALETTE.negative
 _COLOR_MUTED = "#6b7280"
 
 # Badge STALE — bursztynowy, jak ostrzeżenia w innych sekcjach.

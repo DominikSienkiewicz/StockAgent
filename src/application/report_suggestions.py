@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
-from src.application.report_formatting import pct, sector_label
+from src.application.report_formatting import PALETTE, pct, sector_label
 from src.application.report_models import SymbolResult
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 
@@ -113,7 +113,7 @@ def render_suggestions_html(suggestions: list[SectorSuggestion]) -> str:
         cands = esc(", ".join(s.candidates))
         rows.append(
             f"""
-              <div style="margin-bottom: 6px; padding: 8px 12px; background: #eff6ff;
+              <div style="margin-bottom: 6px; padding: 8px 12px; background: {PALETTE.tint_info};
                           border-left: 3px solid #2563eb; border-radius: 4px; font-size: 12px;">
                 <strong>{esc(s.sector)}</strong>
                 <span style="color: #6b7280;">· gorący ({why})</span><br/>

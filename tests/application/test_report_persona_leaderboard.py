@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.application.report_formatting import PALETTE
 from src.application.report_persona_leaderboard import (
     render_persona_leaderboard_html,
 )
@@ -73,11 +74,11 @@ class TestRenderPersonaLeaderboardHtml:
     @pytest.mark.parametrize(
         ("hit_rate", "color"),
         [
-            (0.68, "#16a34a"),  # >= 55% — persona realnie dodaje wartość
-            (0.55, "#16a34a"),  # próg włącznie
-            (0.50, "#ca8a04"),  # okolice losowego strzału (~33% na 3 opcjach)
-            (0.45, "#ca8a04"),  # próg włącznie
-            (0.41, "#dc2626"),  # < 45% — persona szkodzi
+            (0.68, PALETTE.positive),  # >= 55% — persona realnie dodaje wartość
+            (0.55, PALETTE.positive),  # próg włącznie
+            (0.50, PALETTE.caution),  # okolice losowego strzału (~33% na 3 opcjach)
+            (0.45, PALETTE.caution),  # próg włącznie
+            (0.41, PALETTE.negative),  # < 45% — persona szkodzi
         ],
     )
     def test_hit_rate_is_color_coded(self, hit_rate: float, color: str) -> None:

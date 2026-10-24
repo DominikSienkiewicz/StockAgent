@@ -58,7 +58,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from src.application.report_formatting import format_local_date, number_exact
+from src.application.report_formatting import PALETTE, format_local_date, number_exact
 from src.application.report_models import SymbolResult
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.asset import is_reference_stale
@@ -87,8 +87,8 @@ from src.domain.portfolio import (
 _CLUSTER_CONCENTRATION_THRESHOLD = Decimal("0.40")
 
 # Kolory zysku/straty — spójne z resztą raportu (report_persona_leaderboard).
-_COLOR_GAIN = "#16a34a"
-_COLOR_LOSS = "#dc2626"
+_COLOR_GAIN = PALETTE.positive
+_COLOR_LOSS = PALETTE.negative
 
 
 def _pnl_color(value: Decimal) -> str:

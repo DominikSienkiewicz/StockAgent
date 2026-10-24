@@ -17,12 +17,15 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.application.report_formatting import (
+    PALETTE,
+    safe_http_url,
+)
+from src.application.report_formatting import (
     escape as _html,
 )
 from src.application.report_formatting import (
     pct as _pct,
 )
-from src.application.report_formatting import safe_http_url
 from src.application.report_models import ResolvedPrediction, SymbolResult
 from src.application.report_regime import render_regime_html, render_regime_text
 from src.application.report_resolved import RESOLVED_WINDOW_24H, RESOLVED_WINDOW_THIS_CYCLE
@@ -219,7 +222,7 @@ def _first_screen_html(data: SectionInput) -> str:
         "Sygnały ponad próg",
         str(_signals_above_threshold(data.saved)),
         "wzrost lub spadek",
-        accent="#16a34a",
+        accent=PALETTE.positive,
         background="#f0fdf4",
     )
     settlements_box = _render_reader_box_html(
@@ -227,7 +230,7 @@ def _first_screen_html(data: SectionInput) -> str:
         settlements.value,
         settlements.note,
         accent="#2563eb",
-        background="#eff6ff",
+        background=PALETTE.tint_info,
     )
     # MAIL-23: tabela zamiast `display: flex` — Outlook flexa nie zna, a trzy
     # komórki po 33% mieszczą się na telefonie bez łamania słów po literze.

@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from decimal import Decimal
+from html.parser import HTMLParser
+from pathlib import Path
 
 import pytest
 
@@ -19,7 +21,7 @@ from src.application.report_builder import (
 )
 from src.application.report_formatting import PALETTE, contrast_ratio, direction_pct
 from src.domain.quota import QuotaAlert, QuotaSeverity
-from tests.application.test_report_builder_snapshot import _full_cycle
+from tests.application.test_report_builder_snapshot import SCENARIOS, _full_cycle
 
 STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
 
@@ -172,3 +174,179 @@ def test_footer_text_meets_wcag_aa() -> None:
     colors = re.findall(r"color: (#[0-9a-f]{6})", footer)
     assert colors
     assert all(contrast_ratio(color, "#ffffff") >= 4.5 for color in colors)
+
+
+# ---------------------------------------------------------------------------
+# (5) MAIL-63: kontrast każdego tekstu na JEGO tle, nie tylko kolorów palety
+# ---------------------------------------------------------------------------
+
+_APPLICATION = Path(__file__).resolve().parents[2] / "src" / "application"
+_HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b")
+_VOID_TAGS = frozenset({"br", "hr", "img", "meta", "input", "link", "col", "wbr"})
+_NON_VISIBLE_TAGS = frozenset({"style", "head", "title", "script"})
+_TEXT_COLOR = re.compile(r"(?<![\w-])color:\s*(#[0-9a-fA-F]{3,6})\b")
+_AA = 4.5
+
+
+def _declarations(style: str) -> dict[str, str]:
+    pairs = (part.split(":", 1) for part in style.split(";") if ":" in part)
+    return {name.strip().lower(): value.strip() for name, value in pairs}
+
+
+def _stylesheet_classes(html: str) -> dict[str, dict[str, str]]:
+    css = " ".join(re.findall(r"<style>(.*?)</style>", html, re.S))
+    rules: dict[str, dict[str, str]] = {}
+    for selector, body in re.findall(r"\.([A-Za-z0-9_-]+)\{([^}]*)\}", css):
+        rules.setdefault(selector, {}).update(_declarations(body))
+    return rules
+
+
+class _ContrastAudit(HTMLParser):
+    """Dla każdego tekstu: kolor z `style` albo klasy arkusza (dziedziczony) na tle
+    najbliższego przodka z kolorem tła (domyślnie biel). Zbiera pary poniżej AA."""
+
+    def __init__(self, classes: dict[str, dict[str, str]]) -> None:
+        super().__init__(convert_charrefs=True)
+        self._classes = classes
+        self._stack: list[tuple[str, str]] = [("#000000", "#ffffff")]
+        self._hidden = 0
+        self.violations: list[tuple[float, str, str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _NON_VISIBLE_TAGS:
+            self._hidden += 1
+            return
+        if tag in _VOID_TAGS:
+            return
+        attributes = dict(attrs)
+        declared: dict[str, str] = {}
+        for name in (attributes.get("class") or "").split():
+            declared.update(self._classes.get(name, {}))
+        declared.update(_declarations(attributes.get("style") or ""))
+        foreground, background = self._stack[-1]
+        if (match := _HEX_COLOR.match(declared.get("color", ""))) is not None:
+            foreground = match.group(0)
+        for key in ("background", "background-color"):
+            if (match := _HEX_COLOR.match(declared.get(key, ""))) is not None:
+                background = match.group(0)
+        self._stack.append((foreground, background))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _NON_VISIBLE_TAGS:
+            self._hidden = max(0, self._hidden - 1)
+        elif tag not in _VOID_TAGS and len(self._stack) > 1:
+            self._stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        if self._hidden or not re.search(r"\w", data):
+            return
+        foreground, background = self._stack[-1]
+        ratio = contrast_ratio(foreground, background)
+        if ratio < _AA:
+            self.violations.append((round(ratio, 2), foreground, background, data.strip()[:40]))
+
+
+def _contrast_violations(html: str) -> list[tuple[float, str, str, str]]:
+    audit = _ContrastAudit(_stylesheet_classes(html))
+    audit.feed(html)
+    return audit.violations
+
+
+@pytest.mark.parametrize("scenario", sorted(SCENARIOS))
+def test_no_text_in_the_mail_is_below_aa_on_its_own_background(scenario: str) -> None:
+    html, _ = SCENARIOS[scenario]()
+
+    assert _contrast_violations(html) == []
+
+
+def test_the_audit_flags_a_light_warning_yellow_on_white() -> None:
+    # Straż nie może być pusta: #f59e0b na bieli to ok. 2,1:1 (przykład z MAIL-63).
+    html = "<div><span style='color: #f59e0b;'>Słaby sygnał</span></div>"
+
+    assert _contrast_violations(html) == [(2.15, "#f59e0b", "#ffffff", "Słaby sygnał")]
+
+
+def test_the_audit_uses_the_background_of_the_nearest_ancestor_and_the_stylesheet() -> None:
+    html = (
+        "<style>.dn{color:#dc2626}.gd{background:#fef2f2}</style>"
+        "<table><tr class='gd'><td><span class='dn'>spadek</span></td></tr></table>"
+    )
+
+    assert _contrast_violations(html) == [(4.41, "#dc2626", "#fef2f2", "spadek")]
+
+
+def test_states_missing_from_the_golden_scenarios_meet_aa_too() -> None:
+    # Czerwone i żółte warianty, których żaden scenariusz golden nie renderuje:
+    # baner kwot (oba poziomy), sygnały ostrzegawcze każdej wagi, ujemny wynik
+    # krzywej kapitału i alert CRITICAL w Risk Watch.
+    from src.application.report_models import RiskSignal
+    from src.application.report_quota_banner import render_quota_banner_html
+    from src.application.report_risk_signals import _render_risk_signals_html
+    from src.application.report_risk_watch import render_risk_watch_html
+    from src.application.report_track_record import _render_equity_summary_html
+    from src.application.use_cases.monitor_macro_risk import MacroRiskReport
+    from src.domain.drawdown import DrawdownSignal
+    from src.domain.equity_curve import EquityCurve
+    from src.domain.macro_risk import MacroAlertLevel
+
+    alerts = [
+        QuotaAlert(
+            source=source, severity=severity, message="m", action="a", occurred_at=STARTED
+        )
+        for source, severity in (("A", QuotaSeverity.CRITICAL), ("B", QuotaSeverity.WARNING))
+    ]
+    signals = [
+        RiskSignal(symbol="AAPL", type="LOW_SIGNAL", severity=severity, description="d")
+        for severity in ("high", "medium", "low")
+    ]
+    losing = EquityCurve(
+        points=(), total_return=-0.12, win_rate=0.4, max_drawdown=0.2, n_trades=10
+    )
+    critical = MacroRiskReport(
+        drawdowns=[
+            DrawdownSignal(symbol="TSLA", current_price=Decimal("75"), peak_price=Decimal("100"))
+        ],
+        overall_alert=MacroAlertLevel.CRITICAL,
+    )
+
+    fragments = [
+        render_quota_banner_html(alerts),
+        _render_risk_signals_html(signals),
+        _render_equity_summary_html(losing, None),
+        render_risk_watch_html(critical),
+    ]
+
+    assert all(fragment for fragment in fragments)
+    assert [_contrast_violations(fragment) for fragment in fragments] == [[]] * len(fragments)
+
+
+def _text_color_literals() -> list[tuple[str, str]]:
+    sources = [
+        path
+        for path in sorted(_APPLICATION.glob("report_*.py"))
+        # Publiczna strona scorecardu to osobny dokument www, nie mail.
+        if path.name != "report_public_scorecard.py"
+    ] + sorted((_APPLICATION / "templates").glob("*.j2"))
+    return [
+        (path.name, color)
+        for path in sources
+        for color in _TEXT_COLOR.findall(path.read_text("utf-8"))
+        # Biały tekst jest na ciemnym wypełnieniu (pigułka werdyktu); jego tło
+        # sprawdza audyt powyżej, bo biel na bieli nie ma sensu.
+        if color.lower() not in {"#fff", "#ffffff"}
+    ]
+
+
+def test_the_scan_of_text_color_literals_sees_the_known_ones() -> None:
+    names = {name for name, _ in _text_color_literals()}
+
+    assert {"report_skipped.py", "report_user_portfolio.py", "valuation_section.html.j2"} <= names
+
+
+@pytest.mark.parametrize(("module", "color"), sorted(set(_text_color_literals())))
+def test_no_text_color_literal_in_a_report_module_is_below_aa_on_white(
+    module: str, color: str
+) -> None:
+    # Siatka na sekcje, których nie ma w żadnym scenariuszu golden (kolory dobierane
+    # z danych też przechodzą przez te literały): biel to najmniej wymagające tło.
+    assert contrast_ratio(color, "#ffffff") >= _AA, f"{module}: color {color}"

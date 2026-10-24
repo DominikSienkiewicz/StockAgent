@@ -10,7 +10,7 @@ import html as _html
 from decimal import Decimal
 
 from src.application.alpha_signals import AlphaSignals
-from src.application.report_formatting import number, pct
+from src.application.report_formatting import PALETTE, number, pct
 from src.application.reporting.section import ReportSection, SectionInput, no_text
 from src.domain.analyst_consensus import AnalystRating, AnalystRevision, RevisionDirection
 from src.domain.earnings import EarningsProximity
@@ -69,9 +69,9 @@ _YIELD_STATE_LABEL = {
     YieldCurveState.NORMAL: "normalna",
 }
 _YIELD_STATE_COLOR = {
-    YieldCurveState.INVERTED: "#dc2626",
-    YieldCurveState.FLAT: "#ca8a04",
-    YieldCurveState.NORMAL: "#16a34a",
+    YieldCurveState.INVERTED: PALETTE.negative,
+    YieldCurveState.FLAT: PALETTE.caution,
+    YieldCurveState.NORMAL: PALETTE.positive,
 }
 
 

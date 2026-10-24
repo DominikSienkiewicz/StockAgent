@@ -111,7 +111,7 @@ def _render_crypto_section_html(
             )
         delta = _shown_delta(r)
         rows.append(f"""
-          <div style="margin-bottom: 6px; padding: 8px 12px; background: #fdf4ff;
+          <div style="margin-bottom: 6px; padding: 8px 12px; background: #fdf6ff;
                       border-left: 3px solid #a855f7; border-radius: 4px; font-size: 13px;">
             <strong>{_html(_company_label(r.symbol))}</strong>
             <span style="color: #4b5563;">· {_money(r.current_price)}

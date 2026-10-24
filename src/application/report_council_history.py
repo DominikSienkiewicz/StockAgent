@@ -19,6 +19,7 @@ from __future__ import annotations
 import html as _html
 from dataclasses import dataclass
 
+from src.application.report_formatting import PALETTE
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.council import Recommendation
 from src.domain.polish_labels import council_recommendation_label
@@ -27,9 +28,9 @@ _RECOMMENDATIONS: tuple[Recommendation, ...] = ("BUY", "SELL", "HOLD")
 
 # Kolory rekomendacji spójne z sekcją RADA DORADCZA (council_section.html.j2).
 _REC_COLOR: dict[str, str] = {
-    "BUY": "#16a34a",
-    "SELL": "#dc2626",
-    "HOLD": "#ca8a04",
+    "BUY": PALETTE.positive,
+    "SELL": PALETTE.negative,
+    "HOLD": PALETTE.caution,
 }
 
 _REC_EMOJI: dict[str, str] = {
@@ -152,7 +153,7 @@ def _render_history_row_html(h: InvestorHistory, *, is_most_bearish: bool) -> st
         f"<td style='padding: 6px 8px;'><strong>{name}</strong>{bearish_badge}</td>"
         f"<td style='padding: 6px 8px; color: #6b7280;'>{symbol}</td>"
         f"<td style='padding: 6px 8px;'>"
-        f"<span style='color:#9ca3af;'>{h.window_days}d:</span> {seq}</td>"
+        f"<span style='color:{PALETTE.subtle};'>{h.window_days}d:</span> {seq}</td>"
         f"<td style='padding: 6px 8px; color: #6b7280;'>{tally_str}</td>"
         "</tr>"
     )
