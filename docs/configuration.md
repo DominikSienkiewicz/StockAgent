@@ -158,6 +158,7 @@ Every on/off switch of `Settings` in one table (DOC-19); why each one exists and
 | `quiet_hours_enabled` | `false` | `true` | — | — | 0 | deployed |
 | `subscriptions_enabled` | `false` | `false` | `014` | `RESEND_API_KEY` | 0 | built, not deployed |
 | `web_digest_enabled` | `false` | `false` | — | — | 0 | built, not deployed |
+| `digest_archive_enabled` | `false` | `false` | `061` | — | 0 (Supabase Storage free tier) | built, not deployed |
 | `persona_vote_outcomes_enabled` | `false` | `false` | `045` | — | 0 (one free RPC read per asset class) | built, not deployed |
 | `correction_category_enabled` | `false` | `false` | `046` | — | 0 (the same paid diagnosis answers in JSON) | built, not deployed |
 | `diagnosis_backfill_enabled` | `false` | `false` | — | — | up to `diagnosis_backfill_max_calls` LLM calls a run (Slow Loop budget) | built, not deployed |

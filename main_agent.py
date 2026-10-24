@@ -26,6 +26,7 @@ from typing import NamedTuple
 from src.application.agent_graph import AgentGraphDeps
 from src.application.circuit_alerts import record_open_circuit_alerts
 from src.application.cycle_telemetry import CycleTelemetry
+from src.application.errors import PortError
 from src.application.http_metering import HttpCallMeter
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.move_interval import (
@@ -39,6 +40,8 @@ from src.application.ports import (
     AttestationPublisherPort,
     CircuitState,
     CycleRun,
+    DigestArchivePort,
+    DigestRecord,
     EarningsCalendarPort,
     EmbeddingPort,
     FundamentalsPort,
@@ -600,6 +603,7 @@ def _dispatch_push_digest(
     resolved_unavailable: bool = False,
     lead_items: Sequence[LeadItem] = (),
     ranked_signals: Sequence[TradeSignal] = (),
+    archive_url: str | None = None,
 ) -> bool:
     """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
 
@@ -622,6 +626,7 @@ def _dispatch_push_digest(
             resolved_unavailable=resolved_unavailable,
             lead_items=lead_items,
             ranked_signals=ranked_signals,
+            archive_url=archive_url,
         )
         push_notifier.send_report(
             subject=subject, html_body=digest, plain_text=digest
@@ -893,6 +898,71 @@ def build_web_publisher(settings: Settings) -> WebPublisherPort:
     if settings.web_digest_enabled:
         return FileWebPublisher(output_path=settings.web_digest_path)
     return NullWebPublisher()
+
+
+def build_digest_archive(settings: Settings) -> DigestArchivePort | None:
+    """MAIL-24: prywatne archiwum digestów (Supabase Storage + indeks `digests`).
+
+    Tylko za `digest_archive_enabled` i z `db_writes_enabled` — lokalny run tylko
+    do odczytu (BEZ-08) nie wrzuca plików do wspólnego bucketu. None = mail bez
+    linku i bez kanału archiwum, bajt w bajt jak przed MAIL-24."""
+    if not (settings.digest_archive_enabled and settings.db_writes_enabled):
+        return None
+    from src.infrastructure.adapters.supabase_storage_archive import (
+        SupabaseStorageDigestArchive,
+    )
+
+    return SupabaseStorageDigestArchive.connect(settings.supabase_url, settings.supabase_key)
+
+
+def digest_cycle_id(started_at: datetime, run_context: RunContext | None) -> str:
+    """MAIL-24: identyfikator cyklu w archiwum — start UTC i numer runu, bez PII
+    (`20261015T0530Z-18234567890`); lokalny run to `…-local`."""
+    run_id = run_context.run_id if run_context is not None else "local"
+    return f"{started_at.astimezone(UTC):%Y%m%dT%H%MZ}-{run_id}"
+
+
+def _archive_digest(
+    archive: DigestArchivePort,
+    *,
+    cycle_id: str,
+    html: str,
+    subject: str,
+    lead_items: Sequence[LeadItem],
+    top_signals: Sequence[TradeSignal],
+) -> tuple[str | None, ChannelDelivery]:
+    """MAIL-24: HTML maila właściciela do prywatnego archiwum i wiersz indeksu.
+
+    Zwraca podpisany URL (albo None) i status kanału. Błąd magazynu = mail bez
+    linku; błąd samego indeksu nie zabiera linku (plik już leży w buckecie)."""
+    try:
+        url = archive.store(cycle_id, html)
+    except PortError:
+        logger.warning("Digest archive upload failed — mail goes without the link", exc_info=True)
+        return None, ChannelDelivery(ReportChannel.ARCHIVE, DeliveryStatus.FAILED)
+    try:
+        archive.record(
+            DigestRecord(
+                cycle_id=cycle_id,
+                subject=subject,
+                lead=tuple(
+                    {"icon": item.icon, "headline": item.headline, "symbol": item.symbol}
+                    for item in lead_items
+                ),
+                top_signals=tuple(
+                    {
+                        "symbol": signal.symbol,
+                        "direction": signal.direction,
+                        "confidence": signal.confidence,
+                    }
+                    for signal in top_signals
+                ),
+                sent_at=_utc_now(),
+            )
+        )
+    except PortError:
+        logger.warning("Digest archive index write failed — link kept", exc_info=True)
+    return url, ChannelDelivery(ReportChannel.ARCHIVE, DeliveryStatus.SENT)
 
 
 def build_council_llm_adapter(
@@ -2157,6 +2227,8 @@ def _without_owner_portfolio(context: ReportContext) -> ReportContext:
         held_prices=None,
         position_risk=None,
         portfolio_fx=None,
+        # MAIL-24: podpisany URL otwiera mail właściciela z portfelem.
+        archive_url=None,
     )
 
 
@@ -2330,6 +2402,22 @@ def deliver_report(
 
         subject = subject_of(context)
         channels.append(_publish_web_digest(web_publisher, html))
+        # MAIL-24: archiwum dostaje mail właściciela BEZ linku do samego siebie,
+        # potem mail i push renderują się z podpisanym URL-em.
+        archive = build_digest_archive(settings)
+        if archive is not None:
+            archive_url, archive_channel = _archive_digest(
+                archive,
+                cycle_id=digest_cycle_id(started_at, context.run_context),
+                html=html,
+                subject=subject,
+                lead_items=build_cycle_lead(results, context),
+                top_signals=build_cycle_signals(results, context),
+            )
+            channels.append(archive_channel)
+            if archive_url is not None:
+                context = dataclasses.replace(context, archive_url=archive_url)
+                html, text = _render_report(context, results, started_at, duration)
 
         # U2: jeśli są subskrybenci, każdy dostaje raport TNIĘTY do swojej
         # watchlisty (analiza poszła RAZ nad unią — to tylko re-slicing). Bez
@@ -2408,6 +2496,7 @@ def deliver_report(
                 display_timezone=settings.display_timezone,
                 lead_items=build_cycle_lead(results, context),
                 ranked_signals=build_cycle_signals(results, context),
+                archive_url=context.archive_url,
             )
             channels.append(
                 ChannelDelivery(ReportChannel.PUSH_DIGEST, _channel_status(push_notifier, pushed))
@@ -2436,6 +2525,9 @@ def _render_report(
         context,
         symbols_filter=symbols_filter,
         user_portfolio_in_text=user_portfolio_in_text,
+        # MAIL-24: stary push bez kwot portfela nie dostaje też linku do archiwum,
+        # które je ma (obcego subskrybenta tnie `_without_owner_portfolio`).
+        archive_url=context.archive_url if user_portfolio_in_text else None,
     )
     return build_html_report(
         results, started_at, duration,

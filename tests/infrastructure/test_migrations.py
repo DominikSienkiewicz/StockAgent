@@ -92,6 +92,7 @@ MIGRATION_FILES = [
     "057_price_level_alerts.sql",
     "058_settled_reads_without_stale_quote.sql",
     "059_settlement_session_close.sql",
+    "061_digests.sql",
     "062_corporate_actions.sql",
     "063_rag_exact_search.sql",
 ]
@@ -3366,6 +3367,59 @@ class TestSaveNodeRecordFitsPredictionLogs:
         )
         missing = sorted(set(record) - _columns(migrated_pg_conn, "prediction_logs"))
         assert missing == [], f"rekord save_node ma klucze bez kolumn prediction_logs: {missing}"
+
+
+class TestMigration061Digests:
+    """MAIL-24: indeks prywatnego archiwum digestów — wiersz na cykl, upsert po
+    `cycle_id`; bucket Storage tylko tam, gdzie jest schemat `storage` (Supabase)."""
+
+    def test_digests_keep_one_row_per_cycle(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {
+            "cycle_id",
+            "subject",
+            "lead_json",
+            "top_signals_json",
+            "sent_at",
+        } <= _columns(migrated_pg_conn, "digests")
+        assert "idx_digests_sent_at" in _indexes(migrated_pg_conn, "digests")
+        with _rolled_back(migrated_pg_conn) as cur:
+            for subject in ("pierwszy", "ponowiony"):
+                cur.execute(
+                    "INSERT INTO digests (cycle_id, subject, lead_json, sent_at) "
+                    "VALUES ('20261015T0530Z-1', %s, '[{\"symbol\": \"NVDA\"}]', NOW()) "
+                    "ON CONFLICT (cycle_id) DO UPDATE SET subject = EXCLUDED.subject",
+                    (subject,),
+                )
+            cur.execute("SELECT subject, top_signals_json FROM digests")
+            assert cur.fetchall() == [("ponowiony", [])]
+
+    def test_digests_are_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = 'digests'::regclass")
+            assert cur.fetchone() == (True,)
+            public = [_has_table_privilege(cur, role, "digests") for role in PUBLIC_API_ROLES]
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO digests (cycle_id, subject, sent_at) "
+                "VALUES ('20261015T0530Z-SR', 's', NOW()) RETURNING id"
+            )
+            assert cur.fetchone() is not None
+
+        assert public == [False, False]
+
+    def test_061_is_idempotent_without_the_storage_schema(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        migration = (MIGRATIONS_DIR / "061_digests.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute("SELECT to_regclass('storage.buckets')")
+            assert cur.fetchone() == (None,)
 
 
 @pytest.mark.containers

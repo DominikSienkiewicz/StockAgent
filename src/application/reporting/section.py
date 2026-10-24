@@ -67,6 +67,8 @@ SHARED_CONTEXT_FIELDS: frozenset[str] = frozenset(
         "display_timezone",
         # ALR-06: szoki od ostatniego maila — sekcja ⚡ i kandydat leadu.
         "shock_alerts",
+        # MAIL-24: link do archiwum — nagłówek HTML i blok tytułowy tekstu.
+        "archive_url",
     }
 )
 

@@ -27,16 +27,17 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `quota_alerts` | `010` | Operational: API quota exhaustion events | on, no policies | Fast Loop, Slow Loop | Fast Loop (report banner) |
 | `subscribers` | `014` | **Personal data**: recipient email addresses and watchlists | on, no policies | nobody in the app (edited by hand in Supabase) | Fast Loop (`subscriptions_enabled`) |
 | `model_scorecards` | `019`, `028`, `049`, `052` | Model output: walk-forward evaluation of each training run and its feature distribution | on, no policies | Slow Loop | Fast Loop (report), Deadman (last training run) |
-| `shock_alerts` | `021` | Operational: one sent price-shock alert per symbol and day | on, no policies | Shock Watch | Shock Watch (debounce) |
+| `shock_alerts` | `021` | Operational: one sent price-shock alert per symbol and day | on, no policies | Shock Watch | Shock Watch (debounce), Fast Loop (the email's `⚡ Między mailami` section, ALR-06, with `shock_alerts_enabled`) |
 | `positions` | `023`, `035` | **Owner's financial data**: holdings, quantities, average cost | on, no policies | tools (`import-positions --apply`) | Fast Loop (`portfolio_positions_enabled`), tools |
 | `feature_snapshots` | `031` | Derived features: the vector each prediction was made from | on, no policies | Fast Loop (`feature_snapshots_enabled`) | nobody yet |
 | `regime_history` | `033` | Model output: market regime per cycle | on, no policies | Fast Loop | Fast Loop (regime hysteresis) |
 | `fx_rates` | `036` | Market data: NBP exchange-rate cache | on, no policies | Fast Loop | Fast Loop |
 | `llm_calls` | `040` | Operational: one row per LLM or embedding request (tokens, cost, run, node, symbol), no prompt text | on, no policies | Fast Loop, Slow Loop (`cost_ledger_enabled`) | nobody in the app yet |
-| `cycle_runs` | `041` | Operational: one row per loop run (run id and attempt, start, duration, symbol counts, paid calls per source, email delivered), no symbols | on, no policies | Fast Loop (`cycle_runs_enabled`) | nobody in the app yet |
+| `cycle_runs` | `041` | Operational: one row per loop run (run id and attempt, start, duration, symbol counts, paid calls per source, email delivered), no symbols | on, no policies | Fast Loop (`cycle_runs_enabled`) | Fast Loop (start of the last run whose email went out, for the `⚡ Między mailami` window, ALR-06) |
 | `reference_predictions` | `042` | Model output: the free reference signal (WIA-24) — one row per weekly read with its call and settlement, `recipe_version = 'reference-v1'`, kept out of `prediction_logs` | on, no policies | Slow Loop (`reference_signal_enabled`) | Slow Loop (baseline read and open calls) |
 | `earnings_cache` | `053` | Market data: the next earnings report date per stock symbol from Alpha Vantage (FIN-11) | on, no policies | Slow Loop (`earnings_cache_enabled`) | Fast Loop (earnings gate) |
 | `price_level_alerts` | `057` | User settings: price levels to alert on (symbol, level, direction, note) with the watch's last reading and the hit time (ALR-11) | on, no policies | Shock Watch (`price_level_alerts_enabled`: adds the `price_alerts` list, records readings, disables a hit) | Shock Watch |
+| `digests` | `061` | Model output: index of the private digest archive (MAIL-24) — one row per cycle with the subject, the lead and the top signals (tickers and labels, no amounts); the full HTML sits in the private Storage bucket `digests` | on, no policies | Fast Loop (`digest_archive_enabled`) | nobody in the app yet |
 | `corporate_actions` | `062` | Market data: suspected stock splits — the quote's previous close against the last price snapshot gave a split ratio (DAT-23), one row per symbol, kind and UTC day | on, no policies | Fast Loop (`split_detection_enabled`) | nobody in the app yet |
 
 The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges):
@@ -53,6 +54,14 @@ The functions in `public`, all `SECURITY INVOKER` (they run with the caller's pr
 
 `scripts/prod-state-check.sh` reads several of these relations with plain `GET` requests and
 the same `SUPABASE_KEY`; it writes nothing and calls no function.
+
+One Storage bucket sits next to them (MAIL-24, `digest_archive_enabled`): `digests`, private
+(`public = false`, created by `061` where the migration role may write `storage.buckets`,
+otherwise by hand), with no policies on `storage.objects`. The Fast Loop uploads the owner's
+full email as `<cycle_id>.html` (the UTC cycle start and the run number, no personal data)
+with the service key and puts a signed URL valid for 7 days into the owner's email and push.
+Anyone holding that URL can open the email, portfolio included, until it expires — a bearer
+token, hence the short TTL and the path without personal data.
 
 ## Keys
 
@@ -92,6 +101,8 @@ Nothing is deleted automatically: there is no retention job and no TTL in the da
   are inserted and the old ones deleted.
 - `subscribers` is maintained by hand. Deleting a row removes that recipient's email address
   from the database; no other relation stores it.
+- `digests` grows by one upserted row per cycle, and the `digests` bucket keeps every archived
+  email; the signed links expire after 7 days, the files do not.
 
 ## Rolling out Row Level Security
 

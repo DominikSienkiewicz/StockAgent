@@ -497,6 +497,9 @@ class ReportContext:
     # ALR-06: alerty szoku z watcha od ostatniego maila — sekcja ⚡ Między mailami
     # i kandydat leadu na pozycji z portfela. None = nie czytano (flaga watcha off).
     shock_alerts: list[StoredShockAlert] | None = None
+    # MAIL-24: podpisany URL pełnego digestu w prywatnym archiwum (TTL 7 dni) —
+    # link w nagłówku HTML i w bloku tytułowym tekstu. None = mail bez linku.
+    archive_url: str | None = None
 
 
 def _section_input(

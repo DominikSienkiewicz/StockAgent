@@ -1071,6 +1071,34 @@ class WebPublisherPort(ABC):
 
 
 @dataclass(frozen=True)
+class DigestRecord:
+    """MAIL-24 — wiersz indeksu prywatnego archiwum (`digests`, migracja 061).
+
+    `lead` i `top_signals` to gotowe do JSON listy słowników (pozycje leadu
+    i czołówka rankingu sygnałów); same tickery i etykiety, bez kwot portfela."""
+
+    cycle_id: str
+    subject: str
+    lead: tuple[Mapping[str, Any], ...]
+    top_signals: tuple[Mapping[str, Any], ...]
+    sent_at: datetime
+
+
+class DigestArchivePort(ABC):
+    """MAIL-24 — prywatne archiwum digestów (zastępuje web digest U3, BEZ-27).
+
+    `store` odkłada HTML cyklu w prywatnym magazynie i zwraca podpisany URL
+    z krótkim TTL (link „Otwórz w przeglądarce”); `record` dopisuje wiersz
+    indeksu. Błąd magazynu leci jako `PortError` — mail wychodzi bez linku."""
+
+    @abstractmethod
+    def store(self, cycle_id: str, html: str) -> str: ...
+
+    @abstractmethod
+    def record(self, entry: DigestRecord) -> None: ...
+
+
+@dataclass(frozen=True)
 class Tool:
     """#6 — read-only narzędzie udostępniane modelowi w pętli tool-use.
 

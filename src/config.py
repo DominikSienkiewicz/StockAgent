@@ -101,6 +101,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "subscriptions_enabled",
     "web_digest_enabled",
     "web_digest_path",
+    # MAIL-24: prywatne archiwum digestu i link w mailu — dostarczanie, nie prognoza.
+    "digest_archive_enabled",
     "public_scorecard_enabled",
     "public_scorecard_path",
     "weekly_recap_enabled",
@@ -991,6 +993,11 @@ class Settings(BaseSettings):
     # U3: publikacja statycznego digestu web (read-only dashboard).
     web_digest_enabled: bool = False
     web_digest_path: str = "public/digest/index.html"
+    # MAIL-24: pełny HTML cyklu w PRYWATNYM buckecie Supabase Storage `digests`
+    # i link „Otwórz w przeglądarce” (podpisany URL, TTL 7 dni) w mailu właściciela
+    # i w pushu; indeks w tabeli `digests` (migracja 061). Zapis do bazy i Storage,
+    # więc działa tylko z `db_writes_enabled`. Off.
+    digest_archive_enabled: bool = False
 
     @field_validator(
         "symbols",

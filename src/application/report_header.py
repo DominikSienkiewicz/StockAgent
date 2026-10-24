@@ -22,6 +22,7 @@ from src.application.report_formatting import (
 from src.application.report_formatting import (
     pct as _pct,
 )
+from src.application.report_formatting import safe_http_url
 from src.application.report_models import ResolvedPrediction, SymbolResult
 from src.application.report_regime import render_regime_html, render_regime_text
 from src.application.report_resolved import RESOLVED_WINDOW_24H, RESOLVED_WINDOW_THIS_CYCLE
@@ -43,13 +44,27 @@ _FRAME_STYLE = (
 )
 
 
+# MAIL-24: link do pełnej wersji w prywatnym archiwum (podpisany URL, TTL 7 dni).
+ARCHIVE_LINK_LABEL = "Otwórz w przeglądarce"
+ARCHIVE_TEXT_LABEL = "Wersja w przeglądarce (link ważny 7 dni)"
+
+
+def _archive_link_html(archive_url: str | None) -> str:
+    """„ · Otwórz w przeglądarce” z podpisanym URL-em albo "" — tylko http(s)."""
+    url = safe_http_url(archive_url)
+    if url is None:
+        return ""
+    return f' · <a href="{_html(url)}" style="color: #2563eb;">{ARCHIVE_LINK_LABEL}</a>'
+
+
 def _masthead_html(data: SectionInput) -> str:
     regime_html = render_regime_html(data.context.regime)
+    archive_html = _archive_link_html(data.context.archive_url)
     return f"""
     <div style="{_FRAME_STYLE}">
       <h1 style="font-size: 22px; margin: 0 0 4px 0;">📊 StockAgent — raport cyklu</h1>
       <div style="font-size: 13px; color: #6b7280; margin-bottom: 24px;">
-        Czas rozpoczęcia: {data.started_local}{regime_html}
+        Czas rozpoczęcia: {data.started_local}{archive_html}{regime_html}
       </div>
     """
 
@@ -76,8 +91,14 @@ def _session_text(data: SectionInput) -> list[str]:
         f"Czas rozpoczęcia:  {data.started_local}",
         f"Sesja NYSE:        {session['label']} — {session['detail']}",
         *([regime_text] if regime_text else []),
+        *_archive_link_text(data.context.archive_url),
         "",
     ]
+
+
+def _archive_link_text(archive_url: str | None) -> list[str]:
+    url = safe_http_url(archive_url)
+    return [] if url is None else [f"{ARCHIVE_TEXT_LABEL}: {url}"]
 
 
 # ---------------------------------------------------------------------------

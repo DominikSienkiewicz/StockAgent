@@ -432,6 +432,11 @@ realtime_alerts_enabled = false
 subscriptions_enabled = false
 web_digest_enabled = false
 web_digest_path = "public/digest/index.html"
+# MAIL-24: prywatne archiwum digestów — pełny HTML cyklu w prywatnym buckecie
+# Supabase Storage `digests` i link „Otwórz w przeglądarce” (podpisany URL, TTL 7 dni)
+# w mailu właściciela i w pushu. UWAGA: włącz DOPIERO po migracji 061 i sprawdzeniu,
+# że bucket `digests` istnieje i jest prywatny (Dashboard → Storage).
+digest_archive_enabled = false
 
 # --- NBP (kursy do raportu) ---
 nbp_enabled = true
