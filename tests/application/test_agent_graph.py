@@ -1548,6 +1548,7 @@ class TestVolatilityGateIsSystemic:
             threshold=gate,
             council_threshold=gate,
             tool_use_threshold=gate,
+            research_tools=[_TOOL_STUB],
             fundamentals_port=fundamentals_port,
             vector_memory_enabled=True,
             **gated_ports,
@@ -2347,6 +2348,14 @@ class TestProvenanceSignals:
 # ---------------------------------------------------------------------------
 
 
+_TOOL_STUB = Tool(
+    name="get_macro",
+    description="Polski makro snapshot.",
+    parameters={"type": "object", "properties": {}, "required": []},
+    func=lambda args: {"available": False},
+)
+
+
 class TestToolUseResearchAgent:
     def _tools(self) -> list[Tool]:
         # Atrapa read-only toola — w teście nie wywołujemy func (adapter to mock).
@@ -2601,6 +2610,52 @@ class TestToolUseResearchAgent:
 
         assert final["status"] == "saved"
         llm_port.analyze.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "tool_use_options",
+    [
+        pytest.param({}, id="port-only"),
+        pytest.param({"tool_use_threshold": Threshold(Decimal("0.05"))}, id="no-tools"),
+        pytest.param({"research_tools": [_TOOL_STUB]}, id="no-threshold"),
+    ],
+)
+def test_deps_reject_partial_tool_use_config(
+    market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+    tool_use_options,
+):
+    # ARCH-18: port tool-use bez narzędzi albo bez progu cicho spadał do zwykłego
+    # `llm_port.analyze` — pętla, za którą ktoś płaci i którą włączył, nigdy nie ruszała.
+    with pytest.raises(ValueError, match="tool-use"):
+        AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            tool_use_port=Mock(spec=ToolUseLLMPort),
+            **tool_use_options,
+        )
+
+
+def test_deps_accept_complete_or_absent_tool_use_config(
+    market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+):
+    base = dict(
+        market_port=market_port, sentiment_port=sentiment_port,
+        news_port=news_port, repository_port=repository_port,
+        ml_port=ml_port, llm_port=llm_port, threshold=Threshold(Decimal("0.02")),
+    )
+
+    without_port = AgentGraphDeps(**base)
+    complete = AgentGraphDeps(
+        **base,
+        tool_use_port=Mock(spec=ToolUseLLMPort),
+        research_tools=[_TOOL_STUB],
+        tool_use_threshold=Threshold(Decimal("0.05")),
+    )
+
+    assert without_port.tool_use_port is None
+    assert complete.tool_use_port is not None
 
 
 # ---------------------------------------------------------------------------
@@ -4177,6 +4232,7 @@ class TestFeatureSnapshots:
         deps = self._deps(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
             enabled=True, embedding_port=embedding_port, tool_use_port=tool_use_port,
+            research_tools=[_TOOL_STUB], tool_use_threshold=Threshold(Decimal("0.05")),
         )
         state = {
             **_initial_state("100.0"),

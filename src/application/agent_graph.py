@@ -785,6 +785,19 @@ class AgentGraphDeps:
     clock: Callable[[], datetime] = _utc_now
 
     def __post_init__(self) -> None:
+        missing_tool_use = [
+            name
+            for name, present in (
+                ("research_tools", bool(self.research_tools)),
+                ("tool_use_threshold", self.tool_use_threshold is not None),
+            )
+            if not present
+        ]
+        if self.tool_use_port is not None and missing_tool_use:
+            # ARCH-18: niepełna trójka cicho spadała do zwykłego `llm_port.analyze`.
+            raise ValueError(
+                f"tool-use: tool_use_port requires {' and '.join(missing_tool_use)}"
+            )
         if self.paid_call_meter is None:
             object.__setattr__(self, "paid_call_meter", self.telemetry.paid_calls)
         else:
