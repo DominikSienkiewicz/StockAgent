@@ -963,6 +963,67 @@ class TestMigrations:
                 "VALUES ('FS_NULL', '{}'::jsonb, false)"
             )
 
+    def test_training_reads_back_the_saved_feature_vector(self, pg_conn) -> None:
+        """ML-52: trening bierze wektor z JSONB bez przeliczania — po zapisie (JSON
+        jak z PostgREST) i odczycie kolumnami adaptera wektor modelu jest IDENTYCZNY
+        z tym, który dostał serving, a etykieta to zwrot do pierwszego snapshotu
+        ceny ≥ 12 h później."""
+        import json
+
+        from src.application.ml_features import llm_model_vector
+        from src.domain.training_labels import FeatureSnapshot, label_snapshots
+
+        served = {
+            "price_delta": 0.1 + 0.2,
+            "av_sentiment_score": -0.123456789012345,
+            "av_relevance_avg": 1e-7,
+            "news_volume_24h": 12.0,
+            "high_relevance_count": 3.0,
+            "llm_trend_signal": -1.0,
+            "av_llm_agreement": 0.5,
+        }
+        vector = {
+            **served,
+            "price": 187.1234,
+            "alpha_fusion_score": None,
+            "regime": "RISK_ON",
+            "data_quality_flags": ["price_delta_no_prior_prediction"],
+        }
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO feature_snapshots "
+                "(symbol, as_of, feature_set_version, features, gated) "
+                "VALUES ('FS_ML52', '2026-10-20T07:30:00+00:00', 4, %s::jsonb, true)",
+                (json.dumps(vector),),
+            )
+            for stamp, price in (
+                ("2026-10-20T07:29:59+00:00", 187.1234),
+                ("2026-10-20T15:00:00+00:00", 150.0),
+                ("2026-10-21T07:30:00+00:00", 190.0),
+            ):
+                cur.execute(
+                    "INSERT INTO price_snapshots (symbol, timestamp, price) "
+                    "VALUES ('FS_ML52', %s, %s)",
+                    (stamp, price),
+                )
+            cur.execute(
+                "SELECT symbol, as_of, gated, features, feature_set_version "
+                "FROM feature_snapshots WHERE symbol = 'FS_ML52' AND feature_set_version = 4 "
+                "ORDER BY as_of, id"
+            )
+            [(symbol, as_of, gated, features, version)] = cur.fetchall()
+            cur.execute(
+                "SELECT timestamp, price FROM price_snapshots "
+                "WHERE symbol = 'FS_ML52' ORDER BY timestamp, id"
+            )
+            series = [(stamp, float(price)) for stamp, price in cur.fetchall()]
+
+        assert features == vector
+        snapshot = FeatureSnapshot(symbol, as_of, gated, features, version)
+        assert llm_model_vector(snapshot.features) == served
+        [labeled] = label_snapshots([snapshot], {"FS_ML52": series})
+        assert labeled.target_return == pytest.approx(190.0 / 187.1234 - 1)
+
     # -- Migracja 032: przedział ruchu z conformal prediction (ML-34) ---------
 
     def test_move_interval_columns_are_nullable_prices(self, pg_conn) -> None:
