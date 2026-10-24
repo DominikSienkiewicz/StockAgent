@@ -34,6 +34,7 @@ from src.application.report_evidence import (
     accuracy_drop_alert,
     accuracy_drop_evidence,
     hit_rate_evidence,
+    ledger_curve,
     portfolio_curve,
 )
 from src.application.report_lessons import LessonsReport, build_lessons
@@ -126,6 +127,8 @@ class ReportFlags:
     receipts_enabled: bool = False
     # ML-28: mapa izotoniczna zamiast kubełków w rankingu, gdy wygra poza próbą.
     isotonic_calibration_enabled: bool = False
+    # WIA-59: krzywa kapitału z append-only paper ledgera (migracja 073).
+    paper_ledger_curve_enabled: bool = False
 
 
 def portfolio_sectors(
@@ -352,7 +355,9 @@ def build_track_record(
             logger.exception("Failed to fetch resolved predictions for track record")
             tr_resolved = []
         if flags.equity_curve_enabled:
-            equity_curve = portfolio_curve(tr_resolved, costs)
+            equity_curve = _ledger_equity_curve(flags, repository) or portfolio_curve(
+                tr_resolved, costs
+            )
         if flags.lessons_enabled:
             lessons = build_lessons(tr_resolved)
     if flags.calibration_curve_enabled:
@@ -362,6 +367,22 @@ def build_track_record(
         except Exception:
             logger.exception("Failed to compute calibration curve")
     return equity_curve, calibration_buckets, lessons
+
+
+def _ledger_equity_curve(flags: ReportFlags, repository: RepositoryPort) -> EquityCurve | None:
+    """WIA-59: krzywa kapitału z append-only paper ledgera, gdy ma on rozliczoną
+    pozycję w oknie. Świeżo włączony (pusty) ledger albo błąd odczytu → None i krzywa
+    z `prediction_logs`, jak przed WIA-59 — sekcja nie znika na czas zapełniania."""
+    if not flags.paper_ledger_curve_enabled:
+        return None
+    try:
+        trades = repository.get_paper_trades(flags.track_record_days)
+    except PortError:
+        logger.warning(
+            "Paper ledger unavailable — equity curve from prediction_logs", exc_info=True
+        )
+        return None
+    return ledger_curve(trades)
 
 
 def build_symbol_track_record(

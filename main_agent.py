@@ -2254,6 +2254,7 @@ def _report_flags(settings: Settings) -> ReportFlags:
         persona_brier_ranking_enabled=settings.persona_brier_ranking_enabled,
         council_redundancy_enabled=settings.council_redundancy_enabled,
         receipts_enabled=settings.receipts_enabled,
+        paper_ledger_curve_enabled=settings.paper_ledger_enabled,
     )
 
 

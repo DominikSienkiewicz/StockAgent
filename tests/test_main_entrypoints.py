@@ -7770,6 +7770,14 @@ class TestPaperLedgerWiring:
 
         assert deps.paper_ledger_costs == LedgerCosts(Decimal("10.0"), Decimal("25.0"))
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_report_reads_the_ledger_curve_with_the_flag(self, settings, enabled: bool) -> None:
+        flags = main_agent._report_flags(
+            settings.model_copy(update={"paper_ledger_enabled": enabled})
+        )
+
+        assert flags.paper_ledger_curve_enabled is enabled
+
 
 class TestReportReads:
     """ARCH-16: okno track recordu czytane RAZ na dispatch — rozliczenia i próbki

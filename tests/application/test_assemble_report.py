@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
+import pytest
+
 from src.application.errors import ProviderUnavailable
 from src.application.ports import RepositoryPort, StoredShockAlert, WebPublisherPort
 from src.application.quota_monitor import QuotaMonitor
@@ -535,3 +537,77 @@ def test_failed_isotonic_history_read_keeps_the_buckets(caplog) -> None:
     assert context.signal_isotonic_calibration is None
     assert context.signal_calibration_buckets is not None
     assert "isotonic" in caplog.text.lower()
+
+
+def _ledger_trades() -> list:
+    from decimal import Decimal
+
+    from src.domain.paper_ledger import (
+        ExitReason,
+        LedgerRow,
+        LedgerTrade,
+        PaperTradeClose,
+        PaperTradeEntry,
+        TradeSide,
+    )
+
+    entry = PaperTradeEntry(
+        prediction_id="p-1",
+        symbol="AAPL",
+        side=TradeSide.SHORT,
+        entry_price=Decimal("100"),
+        entry_ts=datetime(2026, 10, 17, 5, 30, tzinfo=UTC),
+        cost_bps=Decimal("0"),
+    )
+    close = PaperTradeClose(
+        exit_price=Decimal("101"),
+        exit_ts=STARTED_AT,
+        pnl=Decimal("-0.01"),
+        exit_reason=ExitReason.SETTLED,
+    )
+    return [LedgerTrade(seq=1, row=LedgerRow(entry, "0" * 64, "a" * 64), close=close)]
+
+
+def test_equity_curve_reads_the_paper_ledger_with_its_flag() -> None:
+    # WIA-59: ledger mówi SHORT (pierwsza decyzja), prediction_logs po re-runie BULLISH —
+    # krzywa idzie za ledgerem: -1%, nie +1%.
+    repo = _repo()
+    repo.get_paper_trades.return_value = _ledger_trades()
+    flags = ReportFlags(
+        track_record_days=30,
+        reflection_min_age_hours=6,
+        equity_curve_enabled=True,
+        paper_ledger_curve_enabled=True,
+    )
+
+    context = _assemble(repo, flags)
+
+    assert context.equity_curve is not None
+    assert context.equity_curve.total_return == pytest.approx(-0.01)
+    repo.get_paper_trades.assert_called_once_with(30)
+
+
+def test_empty_ledger_keeps_the_prediction_logs_curve() -> None:
+    # Świeżo włączony ledger nie ma jeszcze zamkniętej pozycji — krzywa nie znika.
+    repo = _repo()
+    repo.get_paper_trades.return_value = []
+    flags = ReportFlags(
+        track_record_days=30,
+        reflection_min_age_hours=6,
+        equity_curve_enabled=True,
+        paper_ledger_curve_enabled=True,
+    )
+
+    context = _assemble(repo, flags)
+
+    assert context.equity_curve is not None
+    assert context.equity_curve.total_return > 0
+
+
+def test_equity_curve_ignores_the_ledger_without_its_flag() -> None:
+    repo = _repo()
+    flags = ReportFlags(track_record_days=30, reflection_min_age_hours=6, equity_curve_enabled=True)
+
+    _assemble(repo, flags)
+
+    repo.get_paper_trades.assert_not_called()

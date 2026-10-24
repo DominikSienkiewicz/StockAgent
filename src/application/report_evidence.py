@@ -34,6 +34,7 @@ from src.domain.benchmark import BenchmarkComparison, compare_with_benchmarks, w
 from src.domain.calibration_curve import ProbabilityScores
 from src.domain.change_detection import AccuracyDrop, detect_accuracy_drop
 from src.domain.equity_curve import EquityCurve, PaperTrade, paper_portfolio_curve
+from src.domain.paper_ledger import ExitReason, LedgerTrade, trend_of
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.significance import MIN_BOOTSTRAP_CYCLES
 from src.domain.statistics import wilson_interval
@@ -202,6 +203,39 @@ def portfolio_curve(
     """Krzywa portfela o równej wadze per cykl (WIA-17), po kosztach z `costs`
     (WIA-50, bez nich brutto); None bez ruchów cen."""
     cycles = paper_cycles(resolved, costs)
+    if not cycles:
+        return None
+    return paper_portfolio_curve(cycles)
+
+
+def ledger_cycles(trades: Sequence[LedgerTrade]) -> list[list[PaperTrade]]:
+    """WIA-59: zamknięte pozycje ledgera jako cykle trade'ów (dzień UTC wejścia).
+
+    Na krzywą idą wyłącznie pozycje rozliczone (`ExitReason.SETTLED`): otwarta nie ma
+    wyniku, a zamknięta na nieaktualnym notowaniu (DAT-14) wypada, jak predykcja
+    z trafności. Zmiana z cen ledgera, koszt z wiersza (zapisany przy wejściu),
+    kolejność cyklu — kolejność łańcucha."""
+    keyed: list[tuple[str, PaperTrade]] = []
+    for trade in trades:
+        close = trade.close
+        entry = trade.row.entry
+        if close is None or close.exit_reason is not ExitReason.SETTLED or entry.entry_price <= 0:
+            continue
+        change = float((close.exit_price - entry.entry_price) / entry.entry_price)
+        stamp = entry.entry_ts.astimezone(UTC) if entry.entry_ts.tzinfo else entry.entry_ts
+        keyed.append(
+            (
+                stamp.date().isoformat(),
+                PaperTrade(entry.symbol, trend_of(entry.side), change, float(entry.cost_bps)),
+            )
+        )
+    return group_by_cycle(keyed)
+
+
+def ledger_curve(trades: Sequence[LedgerTrade]) -> EquityCurve | None:
+    """WIA-59: krzywa portfela o równej wadze per cykl z paper ledgera (te same
+    reguły co `portfolio_curve`); None bez zamkniętej, rozliczonej pozycji."""
+    cycles = ledger_cycles(trades)
     if not cycles:
         return None
     return paper_portfolio_curve(cycles)
