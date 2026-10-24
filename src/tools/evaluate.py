@@ -462,7 +462,7 @@ def with_asset_class(
 ) -> list[dict[str, Any]]:
     """Dopisuje `asset_class` z BIEŻĄCEGO configu — `prediction_logs` nie trzyma
     klasy aktywa, a symbol przeniesiony między listami zmienia segment wstecz.
-    Reguła jak `main_agent._classify_asset`: CRYPTO, potem ETF, reszta STOCK."""
+    Reguła jak `run_cycle.classify_asset`: CRYPTO, potem ETF, reszta STOCK."""
     crypto = {symbol.upper() for symbol in crypto_symbols}
     etf = {symbol.upper() for symbol in etf_symbols}
 

@@ -18,14 +18,12 @@ import os
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
-from src.application.agent_graph import AgentGraphDeps, AgentState
-from src.application.alpha_signals import AlphaSignals
+from src.application.agent_graph import AgentGraphDeps
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.http_metering import HttpCallMeter
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
@@ -68,7 +66,6 @@ from src.application.report_builder import (
     build_cycle_lead,
     build_cycle_signals,
     build_html_report,
-    to_symbol_result,
 )
 from src.application.report_delivery import (
     ChannelDelivery,
@@ -101,7 +98,7 @@ from src.application.track_record_window import (
     TrackRecordReads,
 )
 from src.application.usage_ledger import UsageLedger
-from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidPhase
+from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.assemble_report import (
     RESOLVED_PREDICTIONS_HOURS as RESOLVED_PREDICTIONS_HOURS,
 )
@@ -137,18 +134,23 @@ from src.application.use_cases.publish_public_scorecard import (
     render_public_scorecard,
 )
 from src.application.use_cases.reveal_attestations import RevealAttestationsUseCase
+from src.application.use_cases.run_cycle import (
+    CycleOptions,
+    CycleOutcome,
+    PhaseTwoFeeds,
+    ProcessedSymbol,
+    RunFastLoopCycle,
+    classify_asset,
+)
 from src.config import Settings, load_evaluation_protocol
-from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
-from src.domain.asset import Asset
 from src.domain.calibration_curve import (
     CalibrationBucket,
 )
 from src.domain.conformal import CalibrationPoint
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, lead_headline
-from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.equity_curve import EquityCurve
-from src.domain.finops import CycleCost, estimate_cycle_cost, rank_by_magnitude
+from src.domain.finops import CycleCost, estimate_cycle_cost
 from src.domain.hedge import equity_hedge_symbols
 from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.macro_rates import YieldCurveSnapshot, yield_curve_alert_level
@@ -156,7 +158,6 @@ from src.domain.macro_risk import MacroAlertLevel
 from src.domain.macro_series import MacroSeriesSnapshot, macro_features, macro_series_votes
 from src.domain.market_calendar import closure_reason, to_nyse_time
 from src.domain.number_format import format_money_pl, format_number_pl
-from src.domain.peer_group import build_peer_context
 from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
@@ -1116,7 +1117,7 @@ def build_alpha_enrichment(
             if settings.insider_flow_enabled and repository is not None
             else None
         ),
-        asset_type_of=lambda symbol: _classify_asset(symbol, crypto_set, etf_set),
+        asset_type_of=lambda symbol: classify_asset(symbol, crypto_set, etf_set),
     )
 
 
@@ -1210,7 +1211,7 @@ def build_move_calibration(
         logger.exception("Settled moves unavailable — cykl bez przedziałów ruchu")
         return None
     return calibration_windows(
-        rows, lambda symbol: _classify_asset(symbol, crypto_set, etf_set)
+        rows, lambda symbol: classify_asset(symbol, crypto_set, etf_set)
     )
 
 
@@ -1291,7 +1292,6 @@ def _alpha_vantage_client(
 
 
 # EXP-27: porty feedu fazy 2 dla symboli za bramką (w kolejności fazy 2).
-PhaseTwoFeeds = Callable[[Sequence[str]], tuple[SentimentPort, NewsPort]]
 
 
 def build_phase_two_feeds(
@@ -1765,22 +1765,41 @@ def _apply_regime_hysteresis(
     return state.regime, previous.regime if previous is not None else None
 
 
-def _classify_asset(symbol: str, crypto_set: set[str], etf_set: set[str]) -> AssetType:
-    """STOCK/ETF/CRYPTO — pomijanie fundamentali dla ETF/CRYPTO, osobne progi CRYPTO."""
-    if symbol in crypto_set:
-        return AssetType.CRYPTO
-    if symbol in etf_set:
-        return AssetType.ETF
-    return AssetType.STOCK
+# ARCH-07: przebieg symboli cyklu żyje w `use_cases/run_cycle.py`; `_ProcessedSymbol`
+# i `_process_one_symbol` zostają dla testów wiringu (NIEZ-21, BEZ-07, #6, #14).
+_ProcessedSymbol = ProcessedSymbol
 
 
-class _ProcessedSymbol(NamedTuple):
-    """Wynik przetworzenia jednego symbolu — niezależny od ścieżki (seq/parallel)."""
+def _secret_redactor(secret_values: tuple[str, ...]) -> Callable[[str], str]:
+    """BEZ-07: komunikat błędu symbolu bez URL-a z kluczem i bez dosłownych
+    wartości sekretów z `Settings` (`redact_secrets`)."""
 
-    result: SymbolResult
-    is_failure: bool
-    alpha_signal: AlphaSignals | None
-    alpha_price: Decimal | None
+    def redact(text: str) -> str:
+        return redact_secrets(text, secret_values)
+
+    return redact
+
+
+def _cycle_runner(
+    *,
+    use_case: AnalyzeMarketUseCase,
+    alpha_use_case: AlphaEnrichmentUseCase,
+    options: CycleOptions,
+    secret_values: tuple[str, ...],
+    phase_two_feeds: PhaseTwoFeeds | None = None,
+) -> RunFastLoopCycle:
+    """ARCH-07: use case przebiegu z hookami świata — `time.sleep` (czytany przy
+    wywołaniu, więc patch `time.sleep` w testach działa), redakcja sekretów
+    i kontekst logu symbolu."""
+    return RunFastLoopCycle(
+        use_case=use_case,
+        alpha_use_case=alpha_use_case,
+        options=options,
+        sleep=time.sleep,
+        redact=_secret_redactor(secret_values),
+        symbol_scope=symbol_context,
+        phase_two_feeds=phase_two_feeds,
+    )
 
 
 def _process_one_symbol(
@@ -1798,481 +1817,23 @@ def _process_one_symbol(
     alpha_fusion_enabled: bool = False,
     cycle_at: datetime | None = None,
     secret_values: tuple[str, ...] = (),
-) -> _ProcessedSymbol:
-    """Przetwarza jeden symbol. NIGDY nie rzuca — łapie wyjątek i zwraca wynik
-    z `is_failure=True`. Dzięki temu pula wątków (ścieżka równoległa
-    `_analyze_symbols`) nigdy nie widzi wyjątku, a semantyka resilience jest
-    identyczna z dawną pętlą sekwencyjną.
-
-    `earnings_gate_enabled` (#6) domyślnie WYŁĄCZONE — wtedy ścieżka jest
-    bit-w-bit taka jak przed wprowadzeniem bramki: zero prefetchu, `enrich`
-    wołany dokładnie jak dawniej. Włącza je `settings.earnings_calendar_enabled`.
-
-    `alpha_fusion_enabled` (#14) też domyślnie WYŁĄCZONE. Fuzja zmienia prompt
-    LLM i zapisuje kandydata na cechę ML (`alpha_fusion_score`, poza
-    `ML_FEATURE_COLUMNS` — model go nie widzi), więc jej wdrożenie ma być
-    świadomą, odwracalną decyzją; o promocji do cech modelu rozstrzyga
-    porównanie A/B (EXP-19), nie intuicja dobierającego wagi.
-    Off → `alpha_fusion=None` → prompt i zapis jak przed #14.
-
-    NIEZ-21: symbol trafia do każdej linii logu z tego wywołania — także z wątku
-    puli i z wątków rady (`copy_context`).
-    """
-    with symbol_context(symbol):
-        try:
-            inputs = _symbol_inputs(
-                symbol,
-                crypto_set=crypto_set,
-                etf_set=etf_set,
-                collect_alpha=collect_alpha,
-                alpha_use_case=alpha_use_case,
-                earnings_gate_enabled=earnings_gate_enabled,
-                alpha_fusion_enabled=alpha_fusion_enabled,
-            )
-            raw = use_case.run(
-                symbol,
-                asset=inputs.asset,
-                regime_context=regime_context,
-                regime_multiplier=regime_multiplier,
-                earnings_multiplier=inputs.earnings_multiplier,
-                alpha_fusion=inputs.alpha_fusion,
-                peer_context=peer_ctx,
-                # FIN-14: wiek referencji ceny liczy się od startu cyklu.
-                now=cycle_at,
-            )
-            return _finished_symbol(symbol, raw, inputs.alpha_signal, collect_alpha, cycle_at)
-        except Exception as exc:
-            return _failed_symbol(symbol, exc, secret_values)
-
-
-class _SymbolInputs(NamedTuple):
-    """Wejścia grafu liczone PRZED nim: klasa aktywa, mnożnik earnings, alfa."""
-
-    asset: Asset
-    earnings_multiplier: float
-    alpha_signal: AlphaSignals | None
-    alpha_fusion: AlphaFusionScore | None
-
-
-def _symbol_inputs(
-    symbol: str,
-    *,
-    crypto_set: set[str],
-    etf_set: set[str],
-    collect_alpha: bool,
-    alpha_use_case: AlphaEnrichmentUseCase,
-    earnings_gate_enabled: bool,
-    alpha_fusion_enabled: bool,
-) -> _SymbolInputs:
-    asset = Asset(
-        symbol=symbol,
-        asset_type=_classify_asset(symbol, crypto_set, etf_set),
-    )
-    # #6: bramka earnings. Event pobieramy PRZED grafem, bo mnożnik progu
-    # musi być znany zanim graf zdecyduje o odpaleniu płatnych portów.
-    # Gdy kalendarz earnings jest wyłączony, nie ruszamy portu w ogóle.
-    earnings_event: EarningsEvent | None = None
-    earnings_multiplier = 1.0
-    if earnings_gate_enabled:
-        earnings_event = alpha_use_case.fetch_earnings(symbol)
-        if earnings_event is not None:
-            earnings_multiplier = earnings_threshold_multiplier(
-                earnings_event.proximity()
-            )
-    # #14: enrichment biegnie PRZED grafem. Dawniej działał po nim, więc
-    # LLM i cechy XGBoost nigdy nie widziały sygnałów alfa — 5 pobieranych
-    # źródeł było render-only. Liczba płatnych wywołań się NIE zmienia:
-    # `enrich` i tak leciał raz na symbol, tylko później.
-    alpha_signal: AlphaSignals | None = None
-    alpha_fusion: AlphaFusionScore | None = None
-    if collect_alpha:
-        # De-dup: gdy bramka earnings pobrała już event, wstrzykujemy go,
-        # zamiast płacić za drugie wywołanie Alpha Vantage na ten sam symbol.
-        # Z wyłączoną bramką wołamy `enrich(symbol)` dokładnie jak dawniej.
-        prefetch: dict[str, Any] = (
-            {"earnings": earnings_event, "earnings_prefetched": True}
-            if earnings_gate_enabled
-            else {}
-        )
-        alpha_signal = alpha_use_case.enrich(symbol, **prefetch)
-        if alpha_fusion_enabled and alpha_signal is not None:
-            alpha_fusion = fuse_alpha_signals(
-                insider=alpha_signal.insider,
-                options=alpha_signal.options,
-                social=alpha_signal.social,
-                analyst=alpha_signal.analyst,
-                earnings=alpha_signal.earnings,
-            )
-    return _SymbolInputs(asset, earnings_multiplier, alpha_signal, alpha_fusion)
-
-
-def _finished_symbol(
-    symbol: str,
-    raw: dict[str, Any],
-    alpha_signal: AlphaSignals | None,
-    collect_alpha: bool,
-    cycle_at: datetime | None,
-) -> _ProcessedSymbol:
-    logger.info(
-        "%s: status=%s delta=%s prediction_id=%s",
-        symbol,
-        raw.get("status"),
-        raw.get("delta"),
-        raw.get("prediction_id"),
-    )
-    sr = to_symbol_result(symbol, raw, now=cycle_at)
-    alpha_price: Decimal | None = None
-    if collect_alpha and sr.current_price is not None:
-        alpha_price = sr.current_price
-    return _ProcessedSymbol(sr, False, alpha_signal, alpha_price)
-
-
-def _failed_symbol(
-    symbol: str, exc: Exception, secret_values: tuple[str, ...]
-) -> _ProcessedSymbol:
-    logger.exception("Failed to process symbol %s", symbol)
-    # BEZ-07: komunikat idzie do maila — ani URL z kluczem, ani dosłowna
-    # wartość sekretu z Settings (`secret_values`) nie może w nim zostać.
-    result = to_symbol_result(symbol, None, error=redact_secrets(str(exc), secret_values))
-    # NIEZ-22: typ wyjątku osobno — step summary liczy błędy per klasa, bez komunikatu.
-    return _ProcessedSymbol(
-        dataclasses.replace(result, error_type=type(exc).__name__), True, None, None
-    )
-
-
-def _analyze_symbols_parallel(
-    eligible: list[str],
-    *,
-    max_workers: int,
-    use_case: AnalyzeMarketUseCase,
-    crypto_set: set[str],
-    etf_set: set[str],
-    regime_context: str,
-    regime_multiplier: float,
-    collect_alpha: bool,
-    alpha_use_case: AlphaEnrichmentUseCase,
-    earnings_gate_enabled: bool = False,
-    alpha_fusion_enabled: bool = False,
-    cycle_at: datetime | None = None,
-    secret_values: tuple[str, ...] = (),
-) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
-    """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy
-    od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
-    executor.map zachowuje kolejność wejścia → wyniki deterministyczne."""
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        processed = list(
-            executor.map(
-                lambda sym: _process_one_symbol(
-                    sym,
-                    peer_ctx=(),
-                    use_case=use_case,
-                    crypto_set=crypto_set,
-                    etf_set=etf_set,
-                    regime_context=regime_context,
-                    regime_multiplier=regime_multiplier,
-                    collect_alpha=collect_alpha,
-                    alpha_use_case=alpha_use_case,
-                    earnings_gate_enabled=earnings_gate_enabled,
-                    alpha_fusion_enabled=alpha_fusion_enabled,
-                    cycle_at=cycle_at,
-                    secret_values=secret_values,
-                ),
-                eligible,
-            )
-        )
-    return (
-        [p.result for p in processed],
-        sum(1 for p in processed if p.is_failure),
-        {
-            sym: p.alpha_signal
-            for sym, p in zip(eligible, processed, strict=True)
-            if p.alpha_signal is not None
-        },
-        {
-            sym: p.alpha_price
-            for sym, p in zip(eligible, processed, strict=True)
-            if p.alpha_price is not None
-        },
-    )
-
-
-def _analyze_symbols_sequential(
-    eligible: list[str],
-    *,
-    use_case: AnalyzeMarketUseCase,
-    settings: Settings,
-    crypto_set: set[str],
-    etf_set: set[str],
-    regime_context: str,
-    regime_multiplier: float,
-    collect_alpha: bool,
-    alpha_use_case: AlphaEnrichmentUseCase,
-    cycle_at: datetime | None = None,
-    secret_values: tuple[str, ...] = (),
-) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
-    """Ścieżka sekwencyjna: zachowuje kolejność, buduje peer_context dla contagion
-    (#5) i throttluje między symbolami (ochrona OpenAI TPM)."""
-    results: list[SymbolResult] = []
-    failures = 0
-    # #5: akumulator werdyktów tego cyklu (symbol → stance) dla contagion.
-    processed_stances: dict[str, str] = {}
-    alpha_signals: dict[str, AlphaSignals] = {}
-    alpha_prices: dict[str, Decimal] = {}
-    for index, symbol in enumerate(eligible):
-        peer_ctx = (
-            build_peer_context(symbol, settings.peer_groups, processed_stances)
-            if settings.contagion_enabled
-            else ()
-        )
-        proc = _process_one_symbol(
-            symbol,
-            peer_ctx=peer_ctx,
-            use_case=use_case,
-            crypto_set=crypto_set,
-            etf_set=etf_set,
+) -> ProcessedSymbol:
+    """Jeden symbol przez `RunFastLoopCycle.process_one`. NIGDY nie rzuca."""
+    return _cycle_runner(
+        use_case=use_case,
+        alpha_use_case=alpha_use_case,
+        options=CycleOptions(
             regime_context=regime_context,
             regime_multiplier=regime_multiplier,
             collect_alpha=collect_alpha,
-            alpha_use_case=alpha_use_case,
-            earnings_gate_enabled=settings.earnings_calendar_enabled,
-            alpha_fusion_enabled=settings.alpha_fusion_enabled,
-            cycle_at=cycle_at,
-            secret_values=secret_values,
-        )
-        results.append(proc.result)
-        if proc.is_failure:
-            failures += 1
-        elif proc.result.trend:  # zasil akumulator contagion dla kolejnych symboli
-            processed_stances[symbol] = proc.result.trend
-        if proc.alpha_signal is not None:
-            alpha_signals[symbol] = proc.alpha_signal
-        if proc.alpha_price is not None:
-            alpha_prices[symbol] = proc.alpha_price
-        # Throttle MIĘDZY symbolami — chroni OpenAI TPM. Po ostatnim brak sleepa.
-        if settings.symbol_throttle_seconds > 0 and index < len(eligible) - 1:
-            time.sleep(settings.symbol_throttle_seconds)
-    return results, failures, alpha_signals, alpha_prices
-
-
-class _GatedSymbol(NamedTuple):
-    """EXP-27: symbol po fazie 1 — skończony (`done`) albo czekający na fazę 2."""
-
-    symbol: str
-    done: _ProcessedSymbol | None
-    state: AgentState | None
-    alpha_signal: AlphaSignals | None
-
-
-def _gate_one_symbol(
-    symbol: str,
-    *,
-    use_case: AnalyzeMarketUseCase,
-    crypto_set: set[str],
-    etf_set: set[str],
-    regime_context: str,
-    regime_multiplier: float,
-    collect_alpha: bool,
-    alpha_use_case: AlphaEnrichmentUseCase,
-    earnings_gate_enabled: bool,
-    alpha_fusion_enabled: bool,
-    cycle_at: datetime | None,
-    secret_values: tuple[str, ...],
-) -> _GatedSymbol:
-    """EXP-27 faza 1 jednego symbolu: te same wejścia co `_process_one_symbol`
-    (earnings, alfa) i graf bramki. NIGDY nie rzuca — błąd to wynik `is_failure`."""
-    try:
-        inputs = _symbol_inputs(
-            symbol,
-            crypto_set=crypto_set,
-            etf_set=etf_set,
-            collect_alpha=collect_alpha,
-            alpha_use_case=alpha_use_case,
             earnings_gate_enabled=earnings_gate_enabled,
             alpha_fusion_enabled=alpha_fusion_enabled,
-        )
-        outcome = use_case.run_gate(
-            symbol,
-            asset=inputs.asset,
-            regime_context=regime_context,
-            regime_multiplier=regime_multiplier,
-            earnings_multiplier=inputs.earnings_multiplier,
-            alpha_fusion=inputs.alpha_fusion,
-            now=cycle_at,
-        )
-        if outcome.passed:
-            return _GatedSymbol(symbol, None, outcome.state, inputs.alpha_signal)
-        done = _finished_symbol(
-            symbol, dict(outcome.state), inputs.alpha_signal, collect_alpha, cycle_at
-        )
-        return _GatedSymbol(symbol, done, None, inputs.alpha_signal)
-    except Exception as exc:
-        return _GatedSymbol(symbol, _failed_symbol(symbol, exc, secret_values), None, None)
-
-
-def _analyze_gated_symbol(
-    gated: _GatedSymbol,
-    *,
-    paid_phase: PaidPhase,
-    peer_ctx: tuple[tuple[str, str], ...],
-    collect_alpha: bool,
-    cycle_at: datetime | None,
-    secret_values: tuple[str, ...],
-) -> _ProcessedSymbol:
-    """EXP-27 faza 2 jednego symbolu za bramką. NIGDY nie rzuca."""
-    assert gated.state is not None, "faza 2 dostaje tylko symbole za bramką"
-    try:
-        raw = paid_phase.run(gated.state, peer_context=peer_ctx)
-        return _finished_symbol(gated.symbol, raw, gated.alpha_signal, collect_alpha, cycle_at)
-    except Exception as exc:
-        return _failed_symbol(gated.symbol, exc, secret_values)
-
-
-def _parallel_paths(settings: Settings) -> bool:
-    """Równolegle tylko przy concurrency > 1 i bez contagion (#5 zależy od kolejności)."""
-    return settings.symbol_concurrency > 1 and not settings.contagion_enabled
-
-
-def _run_paid_phase(
-    order: list[str],
-    gated: Mapping[str, _GatedSymbol],
-    *,
-    paid_phase: PaidPhase,
-    settings: Settings,
-    collect_alpha: bool,
-    cycle_at: datetime | None,
-    secret_values: tuple[str, ...],
-) -> dict[str, _ProcessedSymbol]:
-    """EXP-27 faza 2 w kolejności `order` (malejące |Δ|). Równolegle jak cykl
-    jednofazowy (pula startuje symbole w tej kolejności); sekwencyjnie z contagion
-    liczonym z werdyktów wcześniejszych symboli fazy 2 i throttle między nimi."""
-    if _parallel_paths(settings):
-        with ThreadPoolExecutor(max_workers=settings.symbol_concurrency) as executor:
-            processed = list(
-                executor.map(
-                    lambda sym: _analyze_gated_symbol(
-                        gated[sym],
-                        paid_phase=paid_phase,
-                        peer_ctx=(),
-                        collect_alpha=collect_alpha,
-                        cycle_at=cycle_at,
-                        secret_values=secret_values,
-                    ),
-                    order,
-                )
-            )
-        return dict(zip(order, processed, strict=True))
-
-    results: dict[str, _ProcessedSymbol] = {}
-    processed_stances: dict[str, str] = {}
-    for index, symbol in enumerate(order):
-        peer_ctx = (
-            build_peer_context(symbol, settings.peer_groups, processed_stances)
-            if settings.contagion_enabled
-            else ()
-        )
-        proc = _analyze_gated_symbol(
-            gated[symbol],
-            paid_phase=paid_phase,
-            peer_ctx=peer_ctx,
-            collect_alpha=collect_alpha,
             cycle_at=cycle_at,
-            secret_values=secret_values,
-        )
-        results[symbol] = proc
-        if not proc.is_failure and proc.result.trend:
-            processed_stances[symbol] = proc.result.trend
-        # Throttle MIĘDZY płatnymi symbolami — chroni OpenAI TPM.
-        if settings.symbol_throttle_seconds > 0 and index < len(order) - 1:
-            time.sleep(settings.symbol_throttle_seconds)
-    return results
-
-
-def _analyze_symbols_two_phase(
-    eligible: list[str],
-    *,
-    use_case: AnalyzeMarketUseCase,
-    settings: Settings,
-    crypto_set: set[str],
-    etf_set: set[str],
-    regime_context: str,
-    regime_multiplier: float,
-    collect_alpha: bool,
-    alpha_use_case: AlphaEnrichmentUseCase,
-    phase_two_feeds: PhaseTwoFeeds,
-    cycle_at: datetime | None,
-    secret_values: tuple[str, ...],
-) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
-    """EXP-27: cykl dwufazowy. Faza 1 (wszystkie symbole): cena, reflect, bramka
-    domenowa; symbol pod progiem kończy jak dziś. Faza 2: feed AV zbudowany dla
-    symboli za bramką i płatna analiza w kolejności `rank_by_magnitude`, więc
-    sufit FIN-12 odcina najmniejsze |Δ|. Wyniki w kolejności `eligible`."""
-
-    def gate(symbol: str) -> _GatedSymbol:
-        return _gate_one_symbol(
-            symbol,
-            use_case=use_case,
-            crypto_set=crypto_set,
-            etf_set=etf_set,
-            regime_context=regime_context,
-            regime_multiplier=regime_multiplier,
-            collect_alpha=collect_alpha,
-            alpha_use_case=alpha_use_case,
-            earnings_gate_enabled=settings.earnings_calendar_enabled,
-            alpha_fusion_enabled=settings.alpha_fusion_enabled,
-            cycle_at=cycle_at,
-            secret_values=secret_values,
-        )
-
-    # Faza 1 nie zależy od kolejności (contagion żyje w fazie 2), więc idzie
-    # równolegle przy każdym concurrency > 1.
-    if settings.symbol_concurrency > 1:
-        with ThreadPoolExecutor(max_workers=settings.symbol_concurrency) as executor:
-            gated_list = list(executor.map(gate, eligible))
-    else:
-        gated_list = [gate(symbol) for symbol in eligible]
-
-    processed = {g.symbol: g.done for g in gated_list if g.done is not None}
-    passed = {g.symbol: g for g in gated_list if g.state is not None}
-    order = rank_by_magnitude(
-        {symbol: g.state["delta"] for symbol, g in passed.items() if g.state is not None}
-    )
-    logger.info(
-        "EXP-27 two-phase cycle: %d/%d symbols past the gate, paid phase by |Δ|: %s",
-        len(order),
-        len(eligible),
-        order,
-    )
-    if order:
-        sentiment_port, news_port = phase_two_feeds(order)
-        processed.update(
-            _run_paid_phase(
-                order,
-                passed,
-                paid_phase=use_case.paid_phase(
-                    sentiment_port=sentiment_port, news_port=news_port
-                ),
-                settings=settings,
-                collect_alpha=collect_alpha,
-                cycle_at=cycle_at,
-                secret_values=secret_values,
-            )
-        )
-
-    ordered = [processed[symbol] for symbol in eligible]
-    return (
-        [p.result for p in ordered],
-        sum(1 for p in ordered if p.is_failure),
-        {
-            s: p.alpha_signal
-            for s, p in zip(eligible, ordered, strict=True)
-            if p.alpha_signal is not None
-        },
-        {
-            s: p.alpha_price
-            for s, p in zip(eligible, ordered, strict=True)
-            if p.alpha_price is not None
-        },
-    )
+            crypto_symbols=frozenset(crypto_set),
+            etf_symbols=frozenset(etf_set),
+        ),
+        secret_values=secret_values,
+    ).process_one(symbol, peer_ctx)
 
 
 def _analyze_symbols(
@@ -2288,65 +1849,32 @@ def _analyze_symbols(
     alpha_use_case: AlphaEnrichmentUseCase,
     cycle_at: datetime | None = None,
     phase_two_feeds: PhaseTwoFeeds | None = None,
-) -> tuple[list[SymbolResult], int, dict[str, AlphaSignals], dict[str, Decimal]]:
-    """Dispatcher: wybiera ścieżkę równoległą lub sekwencyjną; z `phase_two_feeds`
-    (EXP-27, `two_phase_cycle_enabled`) cykl dwufazowy.
+) -> CycleOutcome:
+    """ARCH-07: przebieg symboli cyklu (`RunFastLoopCycle`) z `CycleOptions`
+    zmapowanymi z `Settings`; z `phase_two_feeds` (EXP-27,
+    `two_phase_cycle_enabled`) cykl dwufazowy.
     Zwraca (wyniki, liczba_błędów, alpha_signals, alpha_prices)."""
-    secret_values = settings.secret_values()
-    if phase_two_feeds is not None:
-        return _analyze_symbols_two_phase(
-            eligible,
-            use_case=use_case,
-            settings=settings,
-            crypto_set=crypto_set,
-            etf_set=etf_set,
-            regime_context=regime_context,
-            regime_multiplier=regime_multiplier,
-            collect_alpha=collect_alpha,
-            alpha_use_case=alpha_use_case,
-            phase_two_feeds=phase_two_feeds,
-            cycle_at=cycle_at,
-            secret_values=secret_values,
-        )
-    # Ścieżka równoległa: tylko gdy concurrency > 1 ORAZ contagion off (contagion
-    # #5 zależy od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
-    if settings.symbol_concurrency > 1 and not settings.contagion_enabled:
-        return _analyze_symbols_parallel(
-            eligible,
-            max_workers=settings.symbol_concurrency,
-            use_case=use_case,
-            crypto_set=crypto_set,
-            etf_set=etf_set,
-            regime_context=regime_context,
-            regime_multiplier=regime_multiplier,
-            collect_alpha=collect_alpha,
-            alpha_use_case=alpha_use_case,
-            earnings_gate_enabled=settings.earnings_calendar_enabled,
-            alpha_fusion_enabled=settings.alpha_fusion_enabled,
-            cycle_at=cycle_at,
-            secret_values=secret_values,
-        )
-
-    if settings.symbol_concurrency > 1 and settings.contagion_enabled:
-        logger.warning(
-            "symbol_concurrency=%d zignorowane — contagion_enabled wymaga "
-            "przetwarzania sekwencyjnego (peer_context zależy od kolejności).",
-            settings.symbol_concurrency,
-        )
-
-    return _analyze_symbols_sequential(
-        eligible,
-        use_case=use_case,
-        settings=settings,
-        crypto_set=crypto_set,
-        etf_set=etf_set,
+    options = CycleOptions(
         regime_context=regime_context,
         regime_multiplier=regime_multiplier,
         collect_alpha=collect_alpha,
-        alpha_use_case=alpha_use_case,
+        earnings_gate_enabled=settings.earnings_calendar_enabled,
+        alpha_fusion_enabled=settings.alpha_fusion_enabled,
         cycle_at=cycle_at,
-        secret_values=secret_values,
+        crypto_symbols=frozenset(crypto_set),
+        etf_symbols=frozenset(etf_set),
+        symbol_concurrency=settings.symbol_concurrency,
+        contagion_enabled=settings.contagion_enabled,
+        peer_groups=settings.peer_groups,
+        throttle_seconds=settings.symbol_throttle_seconds,
     )
+    return _cycle_runner(
+        use_case=use_case,
+        alpha_use_case=alpha_use_case,
+        options=options,
+        secret_values=settings.secret_values(),
+        phase_two_feeds=phase_two_feeds,
+    ).run(eligible)
 
 
 def _build_portfolio_radar(
@@ -3273,7 +2801,7 @@ def _run_fast_loop(
     # ML-31/ML-32/DAT-22: cechy rynkowe cyklu — raz, przed grafem (no-op bez flagi).
     use_case.prepare_market_features(
         eligible,
-        asset_types={s: _classify_asset(s, crypto_set, etf_set) for s in eligible},
+        asset_types={s: classify_asset(s, crypto_set, etf_set) for s in eligible},
         macro_features=macro_features(macro_series) if macro_series is not None else None,
         now=started_at,
     )

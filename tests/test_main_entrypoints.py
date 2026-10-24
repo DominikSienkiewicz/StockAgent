@@ -11,6 +11,7 @@ import main_backtest
 import main_trainer
 from src.application.alpha_signals import AlphaSignals
 from src.application.ports import PreviousVerdict, RepositoryPort
+from src.application.use_cases import run_cycle
 from src.config import Settings
 from src.domain.consensus_shift import ShiftKind
 from src.domain.council import CouncilVerdict
@@ -26,6 +27,8 @@ from src.domain.value_objects import Threshold
 
 # ARCH-06: sekcje raportu składa `ReportAssembler` — tam patchujemy odczyty.
 ASSEMBLY = "src.application.use_cases.assemble_report"
+# ARCH-07: przebieg symboli prowadzi `RunFastLoopCycle` — tam pula wątków i contagion.
+CYCLE = "src.application.use_cases.run_cycle"
 
 
 @pytest.fixture
@@ -966,7 +969,7 @@ class TestAnalyzeSymbolsParallel:
         })
         uc = MagicMock()
         uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
-        spy = mocker.patch("main_agent.build_peer_context")
+        spy = mocker.patch(f"{CYCLE}.build_peer_context")
         main_agent._analyze_symbols(["AAPL", "MSFT"], **self._kwargs(s, uc))
         spy.assert_not_called()
 
@@ -976,7 +979,7 @@ class TestAnalyzeSymbolsParallel:
         })
         uc = MagicMock()
         uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
-        spy = mocker.patch("main_agent.build_peer_context", return_value=())
+        spy = mocker.patch(f"{CYCLE}.build_peer_context", return_value=())
         main_agent._analyze_symbols(["AAPL", "MSFT"], **self._kwargs(s, uc))
         # Sekwencyjna ścieżka (peer_context budowany) mimo concurrency=4.
         assert spy.call_count == 2
@@ -985,7 +988,7 @@ class TestAnalyzeSymbolsParallel:
         s = settings.model_copy(update={"symbol_concurrency": 3})
         uc = MagicMock()
         uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
-        spy = mocker.spy(main_agent, "ThreadPoolExecutor")
+        spy = mocker.spy(run_cycle, "ThreadPoolExecutor")
         main_agent._analyze_symbols(["AAPL", "MSFT"], **self._kwargs(s, uc))
         spy.assert_called_once()
         assert spy.call_args.kwargs.get("max_workers") == 3
@@ -994,7 +997,7 @@ class TestAnalyzeSymbolsParallel:
         s = settings.model_copy(update={"symbol_concurrency": 1})
         uc = MagicMock()
         uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
-        spy = mocker.spy(main_agent, "ThreadPoolExecutor")
+        spy = mocker.spy(run_cycle, "ThreadPoolExecutor")
         main_agent._analyze_symbols(["AAPL", "MSFT"], **self._kwargs(s, uc))
         spy.assert_not_called()
 
@@ -1004,7 +1007,7 @@ class TestAnalyzeSymbolsParallel:
         s = settings.model_copy(update={"symbol_concurrency": concurrency})
         uc = MagicMock()
         uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
-        spy = mocker.spy(main_agent, "to_symbol_result")
+        spy = mocker.spy(run_cycle, "to_symbol_result")
         cycle_at = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
         main_agent._analyze_symbols(
             ["AAPL", "MSFT"], cycle_at=cycle_at, **self._kwargs(s, uc)
