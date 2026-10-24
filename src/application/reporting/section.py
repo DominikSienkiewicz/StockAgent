@@ -55,6 +55,7 @@ SHARED_CONTEXT_FIELDS: frozenset[str] = frozenset(
         # Ranking sygnałów (MAIL-20) i sizing (Q7, PORT-04/08, #9).
         "accuracy_stats",
         "signal_calibration_buckets",
+        "signal_isotonic_calibration",
         "position_risk",
         "portfolio_clusters",
         "symbol_track_record",

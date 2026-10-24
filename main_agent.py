@@ -2188,6 +2188,7 @@ def _report_flags(settings: Settings) -> ReportFlags:
         lessons_enabled=settings.lessons_enabled,
         calibration_curve_enabled=settings.calibration_curve_enabled,
         calibrated_confidence_enabled=settings.calibrated_confidence_enabled,
+        isotonic_calibration_enabled=settings.isotonic_calibration_enabled,
         interval_coverage_enabled=settings.interval_coverage_enabled,
         model_scorecard_enabled=settings.model_scorecard_enabled,
         cycle_diff_enabled=settings.cycle_diff_enabled,

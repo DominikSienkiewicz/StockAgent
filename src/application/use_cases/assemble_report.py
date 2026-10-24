@@ -46,6 +46,7 @@ from src.application.report_models import ResolvedPrediction
 from src.application.report_signals import parse_resolved_predictions
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
 from src.application.report_track_record import TrackRecordStats
+from src.application.signal_calibration import timed_directional_samples
 from src.application.track_record_window import (
     TrackRecordReads,
     window_benchmark,
@@ -63,6 +64,11 @@ from src.domain.council_redundancy import CouncilRedundancy, assess_council_redu
 from src.domain.coverage import CoverageReport
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.equity_curve import EquityCurve
+from src.domain.isotonic_calibration import (
+    ISOTONIC_FIT_WINDOW,
+    IsotonicMap,
+    select_isotonic_calibrator,
+)
 from src.domain.model_scorecard import MODEL_SCORECARD_WINDOW_DAYS
 from src.domain.persona_track_record import (
     PersonaTrackRecord,
@@ -118,6 +124,8 @@ class ReportFlags:
     council_redundancy_enabled: bool = False
     # WIA-56: linia kwitu pod chybieniem w zamkniętych predykcjach tylko przy kwitach.
     receipts_enabled: bool = False
+    # ML-28: mapa izotoniczna zamiast kubełków w rankingu, gdy wygra poza próbą.
+    isotonic_calibration_enabled: bool = False
 
 
 def portfolio_sectors(
@@ -295,6 +303,29 @@ def build_signal_calibration(
         )
         return None
     return reliability_curve(split.directional) if split.directional else None
+
+
+def build_signal_isotonic_calibration(
+    flags: ReportFlags, repository: RepositoryPort, *, now: datetime
+) -> IsotonicMap | None:
+    """ML-28 — mapa izotoniczna pod ranking sygnałów, gdy wygrała poza próbą.
+
+    Działa tylko obok rankingu kalibrowanego (`calibrated_confidence_enabled`) i za
+    własną flagą; czyta raz rozliczenia z 60 dni (okno dopasowania i oceny), więc
+    flaga off nie robi żadnego nowego odczytu. Reguła wyboru żyje w domenie
+    (`select_isotonic_calibrator`). Błąd odczytu → None, ranking zostaje przy
+    kubełkach."""
+    if not (flags.calibrated_confidence_enabled and flags.isotonic_calibration_enabled):
+        return None
+    history_days = ISOTONIC_FIT_WINDOW[0].days
+    try:
+        rows = repository.get_resolved_for_calibration(history_days)
+    except PortError:
+        logger.exception("Isotonic calibration history unavailable — ranking keeps the buckets")
+        return None
+    selection = select_isotonic_calibrator(timed_directional_samples(rows), now=now)
+    logger.info("Isotonic calibration (ML-28): %s", selection.reason)
+    return selection.calibrator
 
 
 def build_track_record(
@@ -650,6 +681,12 @@ class ReportAssembler:
             ]
         # #9: kubełki pod ranking sygnałów (osobna flaga, ten sam odczyt okna).
         signal_calibration_buckets = build_signal_calibration(flags, repository, reads=reads)
+        # ML-28: mapa izotoniczna (flaga) — tylko gdy ranking ma kubełki (WIA-38).
+        signal_isotonic_calibration = (
+            build_signal_isotonic_calibration(flags, repository, now=started_at)
+            if signal_calibration_buckets
+            else None
+        )
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
         maturity = classify_cycle_maturity(results)
         sectors = portfolio_sectors(results, context.sector_map or {})
@@ -678,6 +715,7 @@ class ReportAssembler:
             track_record_stats=track_record_stats,
             symbol_track_record=build_symbol_track_record(flags, repository, reads=reads),
             signal_calibration_buckets=signal_calibration_buckets,
+            signal_isotonic_calibration=signal_isotonic_calibration,
             cycle_maturity=maturity,
             portfolio_sectors=sectors,
             model_scorecard=model_scorecard,

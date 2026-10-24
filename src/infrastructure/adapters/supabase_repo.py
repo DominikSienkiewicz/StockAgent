@@ -1431,6 +1431,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             return []
         return _rows(response)
 
+    @_translates_api_errors
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
         # NIEZ-15: paginacja + `id` jako drugi klucz — przy równych timestampach
         # granica strony musi być deterministyczna (bez gubienia/dublowania wierszy).

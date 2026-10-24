@@ -5299,3 +5299,19 @@ class TestExactRagSearch:
 
         assert repo.find_similar_predictions([0.1], limit=3) == []
         assert "063" in caplog.text
+
+
+def test_calibration_read_failure_crosses_the_port_as_a_port_error(
+    repo: SupabaseRepository, mock_client: MagicMock
+) -> None:
+    # ML-28 / ARCH-33: ranking łapie PortError przy odczycie 60 dni rozliczeń.
+    from postgrest.exceptions import APIError
+
+    from src.application.errors import PortError
+
+    _fail_every_request(
+        mock_client, APIError({"code": "57014", "message": "canceling statement due to timeout"})
+    )
+
+    with pytest.raises(PortError):
+        repo.get_resolved_for_calibration(60)

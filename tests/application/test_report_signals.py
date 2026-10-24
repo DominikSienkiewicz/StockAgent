@@ -190,6 +190,56 @@ class TestCalibratedConfidenceInSignalRanking:
         assert signal.strength == pytest.approx(0.85 * 10.0)
 
 
+class TestIsotonicSignalCalibration:
+    """ML-28: mapa izotoniczna, która wygrała poza próbą, zastępuje w rankingu
+    shrinkage kubełkowy — monotonicznie, więc wyższa pewność nie spada niżej."""
+
+    _saved = staticmethod(TestCalibratedConfidenceInSignalRanking._saved)
+
+    def test_isotonic_map_replaces_the_bucket_shrinkage(self) -> None:
+        from src.domain.isotonic_calibration import IsotonicMap
+
+        isotonic = IsotonicMap(knots=(0.6, 0.9), values=(0.55, 0.65))
+
+        (signal,) = build_trade_signals(
+            [self._saved("AAPL", 0.85, "0.10")],
+            calibration_buckets=TestCalibratedConfidenceInSignalRanking._overconfident_bucket(),
+            isotonic_calibration=isotonic,
+        )
+
+        assert signal.calibrated_confidence == pytest.approx(isotonic.apply(0.85))
+        assert signal.strength == pytest.approx(isotonic.apply(0.85) * 10.0)
+
+    def test_isotonic_map_keeps_the_confidence_order(self) -> None:
+        from src.domain.isotonic_calibration import IsotonicMap
+
+        # Kubełki odwracają porządek 0.85 vs 0.65; mapa izotoniczna nie może.
+        buckets = [
+            CalibrationBucket(0.8, 0.9, count=100, mean_confidence=0.85, hit_rate=0.30),
+            CalibrationBucket(0.6, 0.7, count=100, mean_confidence=0.65, hit_rate=0.70),
+        ]
+        results = [self._saved("MSFT", 0.65, "0.10"), self._saved("AAPL", 0.85, "0.10")]
+
+        ranked = build_trade_signals(
+            results,
+            calibration_buckets=buckets,
+            isotonic_calibration=IsotonicMap(knots=(0.65, 0.85), values=(0.5, 0.5)),
+        )
+
+        assert [s.calibrated_confidence for s in ranked] == [0.5, 0.5]
+
+    def test_without_buckets_the_isotonic_map_stays_unused(self) -> None:
+        # WIA-38: bez kubełków (pewność nie odróżnia trafień) ranking idzie na surowej.
+        from src.domain.isotonic_calibration import IsotonicMap
+
+        (signal,) = build_trade_signals(
+            [self._saved("AAPL", 0.85, "0.10")],
+            isotonic_calibration=IsotonicMap(knots=(0.6, 0.9), values=(0.1, 0.2)),
+        )
+
+        assert signal.calibrated_confidence is None
+
+
 class TestColdStartSignalRanking:
     """WIA-13 (G03): bez wag XGBoost target == bieżąca cena, więc
     pewność × |expected_change| zeruje każdy sygnał i ranking staje się

@@ -87,6 +87,35 @@ def split_calibration_samples(rows: Sequence[Mapping[str, Any]]) -> CalibrationS
     )
 
 
+def timed_directional_samples(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[tuple[datetime, float, bool]]:
+    """ML-28: próbki kierunkowe z chwilą predykcji `(timestamp, pewność, trafienie)`
+    — okna oceny poza próbą tną po czasie. SIDEWAYS (WIA-39) i wiersze bez
+    pewności, werdyktu albo poprawnego znacznika czasu odpadają."""
+    samples: list[tuple[datetime, float, bool]] = []
+    for row in rows:
+        confidence = row.get("confidence_score")
+        correct = row.get("is_trend_correct")
+        stamp = _moment_of(row)
+        if confidence is None or correct is None or stamp is None or _is_sideways(row):
+            continue
+        samples.append((stamp, float(confidence), bool(correct)))
+    return samples
+
+
+def _moment_of(row: Mapping[str, Any]) -> datetime | None:
+    """Znacznik `timestamp` jako chwila UTC; brak albo zły format → None."""
+    raw = row.get("timestamp")
+    if raw is None:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+
+
 def directional_calibration_curve(
     rows: Sequence[Mapping[str, Any]],
 ) -> list[CalibrationBucket] | None:

@@ -1875,3 +1875,16 @@ class TestDirectionClassifierFlag:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "ml_direction_classifier_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
+class TestIsotonicCalibrationFlag:
+    """ML-28: mapa izotoniczna w rankingu sygnałów — domyślnie off, poza przepisem
+    (ranking liczy się po predykcji, jak `calibrated_confidence_enabled`)."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).isotonic_calibration_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "isotonic_calibration_enabled" in NON_RECIPE_SETTINGS_FIELDS

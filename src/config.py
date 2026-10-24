@@ -125,6 +125,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "calibration_curve_enabled",
     "lessons_enabled",
     "calibrated_confidence_enabled",
+    # ML-28: kalibrator rankingu (mapa izotoniczna zamiast kubełków) — render-only.
+    "isotonic_calibration_enabled",
     # PORT-05: peerzy sekcji 💡 Warte uwagi — sugestie liczone po predykcji.
     "sector_peers",
     "model_scorecard_enabled",
@@ -586,6 +588,12 @@ class Settings(BaseSettings):
     # pewność × |Δ|). Niezależna od `calibration_curve_enabled` — tamta flaga
     # rysuje sekcję Track Record, ta zmienia ranking. Render-only, bez zapisu.
     calibrated_confidence_enabled: bool = False
+    # ML-28: ranking sygnałów kalibruje pewność mapą izotoniczną (PAV) zamiast
+    # shrinkage kubełkowego, gdy mapa dopasowana na [t−60 d, t−30 d) ma niższy Brier
+    # na [t−30 d, t) niż surowa pewność i kubełki (reguła w domenie). Działa tylko
+    # z `calibrated_confidence_enabled`; jeden darmowy odczyt 60 dni rozliczeń.
+    # Render-only, bez migracji. Off.
+    isotonic_calibration_enabled: bool = False
     # #12: karta kondycji modelu — jawny scorecard walk-forward (migracja 019).
     # Pokazuje bramkę "nie shipuj modelu gorszego od baseline'u", łącznie
     # z odrzutami. Render-only + insert w Slow Loopie. Off.

@@ -261,3 +261,13 @@ class TestPersonaLeaderboardWiring:
         records = rank_personas({"Buffett": (0.9, 60)})
 
         assert main_agent._assess_personas(records, None) == records
+
+
+class TestIsotonicCalibrationFlag:
+    """ML-28: flaga `isotonic_calibration_enabled` dociera do flag raportu."""
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_flag_reaches_the_report_flags(self, settings: Settings, enabled: bool) -> None:
+        settings = settings.model_copy(update={"isotonic_calibration_enabled": enabled})
+
+        assert main_agent._report_flags(settings).isotonic_calibration_enabled is enabled

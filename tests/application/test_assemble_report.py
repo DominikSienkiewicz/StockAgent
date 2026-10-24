@@ -430,3 +430,108 @@ class TestReceiptLineFollowsTheReceiptsFlag:
         context = _assemble(repo, flags)
 
         assert [r.receipt for r in context.resolved_predictions or []] == [None]
+
+
+# -- ML-28: kalibracja izotoniczna w rankingu sygnałów (flaga) ---------------------
+
+
+def _calibration_row(days_ago: int, confidence: float, correct: bool, trend: str = "BULLISH"):
+    from datetime import timedelta
+
+    return {
+        "confidence_score": confidence,
+        "is_trend_correct": correct,
+        "predicted_trend": trend,
+        "timestamp": (STARTED_AT - timedelta(days=days_ago)).isoformat(),
+    }
+
+
+def _overconfident_history() -> list[dict[str, object]]:
+    """0.9 trafia rzadziej niż 0.6 w obu oknach (45 i 10 dni temu)."""
+    rows: list[dict[str, object]] = []
+    for days_ago in (45, 10):
+        for confidence, hits, misses in ((0.6, 12, 8), (0.9, 11, 9)):
+            rows += [_calibration_row(days_ago, confidence, True)] * hits
+            rows += [_calibration_row(days_ago, confidence, False)] * misses
+    return rows
+
+
+def _isotonic_flags(**overrides: bool) -> ReportFlags:
+    values = {"calibrated_confidence_enabled": True, "isotonic_calibration_enabled": True}
+    values.update(overrides)
+    return ReportFlags(track_record_days=30, reflection_min_age_hours=12, **values)
+
+
+def _history_repo(history: list[dict[str, object]]) -> Mock:
+    repo = _repo()
+    repo.get_resolved_for_calibration.side_effect = lambda days: (
+        history if days == 60 else [_SETTLED]
+    )
+    return repo
+
+
+def test_isotonic_map_enters_the_ranking_when_it_wins_out_of_sample() -> None:
+    from src.domain.isotonic_calibration import fit_isotonic
+
+    history = _overconfident_history()
+    repo = _history_repo(history)
+
+    context = _assemble(repo, _isotonic_flags())
+
+    older = [
+        (row["confidence_score"], row["is_trend_correct"])
+        for row in history
+        if row["timestamp"] < (STARTED_AT.replace(day=1)).isoformat()
+    ]
+    assert context.signal_isotonic_calibration == fit_isotonic(older)
+    assert context.signal_calibration_buckets is not None
+
+
+def test_isotonic_flag_off_reads_no_extra_history() -> None:
+    repo = _history_repo(_overconfident_history())
+
+    context = _assemble(repo, _isotonic_flags(isotonic_calibration_enabled=False))
+
+    assert [c.args for c in repo.get_resolved_for_calibration.call_args_list] == [(30,)]
+    assert context.signal_isotonic_calibration is None
+
+
+def test_isotonic_needs_the_calibrated_ranking() -> None:
+    repo = _history_repo(_overconfident_history())
+
+    context = _assemble(repo, _isotonic_flags(calibrated_confidence_enabled=False))
+
+    repo.get_resolved_for_calibration.assert_not_called()
+    assert context.signal_isotonic_calibration is None
+
+
+def test_sideways_rows_stay_out_of_the_isotonic_history() -> None:
+    # WIA-39: SIDEWAYS trafia za darmo — tylko kierunkowe próbki kalibrują ranking.
+    history = [
+        _calibration_row(days_ago, 0.9, True, trend="SIDEWAYS")
+        for days_ago in (45, 10)
+        for _ in range(40)
+    ]
+
+    context = _assemble(_history_repo(history), _isotonic_flags())
+
+    assert context.signal_isotonic_calibration is None
+
+
+def test_failed_isotonic_history_read_keeps_the_buckets(caplog) -> None:
+    from src.application.errors import ProviderUnavailable
+
+    repo = _repo()
+
+    def read(days: int) -> list[dict[str, object]]:
+        if days == 60:
+            raise ProviderUnavailable("supabase down")
+        return [_SETTLED]
+
+    repo.get_resolved_for_calibration.side_effect = read
+
+    context = _assemble(repo, _isotonic_flags())
+
+    assert context.signal_isotonic_calibration is None
+    assert context.signal_calibration_buckets is not None
+    assert "isotonic" in caplog.text.lower()

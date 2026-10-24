@@ -73,6 +73,7 @@ from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
 from src.domain.equity_curve import EquityCurve
 from src.domain.finops import CycleCost
 from src.domain.insider_flow import InsiderLeadWindow
+from src.domain.isotonic_calibration import IsotonicMap
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.polish_labels import trend_forecast_label
@@ -325,6 +326,7 @@ def build_cycle_signals(
         hit_rate=hit_rate,
         hit_sample=hit_sample,
         calibration_buckets=context.signal_calibration_buckets,
+        isotonic_calibration=context.signal_isotonic_calibration,
         portfolio_weights=portfolio.weights(weight_prices) if portfolio is not None else None,
         cluster_exposures=_cluster_exposure_per_symbol(
             portfolio, context.portfolio_clusters, weight_prices
@@ -447,6 +449,9 @@ class ReportContext:
     yield_curve: YieldCurveSnapshot | None = None
     alpha_prices: dict[str, Decimal] | None = None
     signal_calibration_buckets: list[CalibrationBucket] | None = None
+    # ML-28: mapa izotoniczna, która wygrała poza próbą — zastępuje w rankingu
+    # shrinkage kubełkowy (None = kubełki albo surowa pewność, jak dotąd).
+    signal_isotonic_calibration: IsotonicMap | None = None
     cycle_maturity: CycleMaturity | None = None
     portfolio_sectors: Mapping[str, int] | None = None
     model_scorecard: ModelScorecardView | None = None

@@ -98,6 +98,11 @@ lessons_enabled = true
 # #9: pewność LLM korygowana historycznym hit-rate'em swojego kubełka kalibracji
 # — przestawia ranking „🎯 Najsilniejsze sygnały". Render-only, zero zapisu. Włączone.
 calibrated_confidence_enabled = true
+# ML-28: ranking sygnałów kalibruje pewność mapą izotoniczną (PAV) zamiast kubełków,
+# gdy mapa dopasowana na [t−60 d, t−30 d) wygrywa Brierem na ostatnich 30 dniach z surową
+# pewnością i kubełkami. Działa tylko z calibrated_confidence_enabled; jeden darmowy
+# odczyt 60 dni rozliczeń, bez migracji. Zmienia ranking w mailu — włącz świadomie.
+isotonic_calibration_enabled = false
 # #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego raportu —
 # pełny plain-text przekracza limit 4096 znaków Telegrama (400, cichy zgon). Włączone.
 messenger_digest_enabled = true
