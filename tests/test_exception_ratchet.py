@@ -16,8 +16,11 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-# Stan na 7b44c99 (2026-10-24), policzony tym samym AST-em po src/ i main_*.py.
-BROAD_HANDLER_BASELINE = 157
+# Stan na 7b44c99 (2026-10-24), policzony tym samym AST-em po src/ i main_*.py: 157.
+# +1 za zgodą właściciela (2026-10-25): krok ewaluacji ML-52 w Slow Loopie
+# (`main_trainer._evaluate_snapshot_models`) jest best-effort jak sąsiednie kroki.
+# Kontynuacja ARCH-33 w fali 2 ma sprowadzić liczbę z powrotem do <= 157.
+BROAD_HANDLER_BASELINE = 158
 _BROAD_NAMES = frozenset({"Exception", "BaseException"})
 
 
