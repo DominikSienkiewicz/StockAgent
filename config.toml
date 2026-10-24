@@ -116,6 +116,10 @@ model_scorecard_feature_stats_enabled = false
 # CI-13: karta zapisuje sha256 pliku wag z przebiegu (ten sam plik idzie do Release
 # model-latest). UWAGA: włącz DOPIERO po migracji 060 (inaczej PGRST204).
 model_scorecard_weights_sha256_enabled = false
+# ML-22: karta zapisuje proweniencję treningu (odcisk zbioru, zakres dat, liczności per
+# symbol, parametry z ziarnem, wersja XGBoost, wersja zestawu cech, SHA kodu).
+# UWAGA: włącz DOPIERO po migracji 064 (inaczej PGRST204).
+model_scorecard_provenance_enabled = false
 # #8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
 # spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Włączone.
 cycle_diff_enabled = true

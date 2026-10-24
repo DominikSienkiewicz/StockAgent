@@ -1932,6 +1932,31 @@ class TestModelScorecardRunId:
 
         assert supabase_cls.call_args.kwargs["scorecard_weights_sha256_enabled"] is enabled
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_trainer_repository_follows_the_provenance_flag(
+        self, settings, mocker, enabled: bool
+    ) -> None:
+        # ML-22: kolumny proweniencji treningu (migracja 064) tylko za flagą.
+        supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
+        settings = settings.model_copy(update={"model_scorecard_provenance_enabled": enabled})
+
+        main_trainer.build_repository(settings)
+
+        assert supabase_cls.call_args.kwargs["scorecard_provenance_enabled"] is enabled
+
+    def test_build_use_case_hands_the_commit_sha_to_the_use_case(
+        self, settings, mocker, monkeypatch
+    ) -> None:
+        # ML-22: SHA kodu przebiegu trafia do proweniencji treningu (karta i sidecar).
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("GITHUB_SHA", "0123456789abcdef")
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")
+
+        main_trainer.build_use_case(settings, run_id="run-1")
+
+        assert use_case_cls.call_args.kwargs["git_sha"] == "0123456789abcdef"
+
     def test_build_use_case_hands_the_run_id_to_the_use_case(self, settings, mocker) -> None:
         mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
         use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")

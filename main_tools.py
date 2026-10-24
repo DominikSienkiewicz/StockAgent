@@ -21,6 +21,7 @@ Użycie:
     uv run python main_tools.py persona-ablation [--days N] [--window-days N]
     uv run python main_tools.py council-ablation [--days N]
     uv run python main_tools.py verify-attestation [--commitments PATH] [--reveals PATH]
+    uv run python main_tools.py reproduce-training [--sidecar PATH]
 """
 
 from __future__ import annotations
@@ -66,6 +67,14 @@ from src.tools.render_sample_report import (
     render_sample_report,
 )
 from src.tools.repo_stats import REPO_STATS_NAME, RepoStats, compute_repo_stats
+from src.tools.reproduce_training import (
+    SidecarError,
+    assess_reproduction,
+    fingerprint_of,
+    format_reproduction,
+    parse_sidecar,
+    rows_in_range,
+)
 from src.tools.verify_attestation import (
     DEFAULT_COMMITMENTS_PATH,
     DEFAULT_REVEALS_PATH,
@@ -119,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_persona_ablation(subcommands)
     _add_council_ablation(subcommands)
     _add_verify_attestation(subcommands)
+    _add_reproduce_training(subcommands)
     return parser
 
 
@@ -684,6 +694,73 @@ def _run_verify_attestation(args: argparse.Namespace) -> int:
     reveals, bad_reveals = parse_jsonl(texts["reveals"], Path(args.reveals).name)
     report = verify_ledger(commitments, reveals, malformed=[*bad_commitments, *bad_reveals])
     print(format_report(report))
+    return 0 if report.ok else 1
+
+
+def _add_reproduce_training(
+    subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subcommands.add_parser(
+        "reproduce-training",
+        help="Do the sidecar's dataset fingerprint and seed give the saved booster (read-only)?",
+        description=(
+            "ML-22: rebuilds the shared model's sample the way the Slow Loop does, keeps the "
+            "rows inside the sidecar's date range, compares their fingerprint with the "
+            "sidecar, refits with the sidecar's parameters and compares the tree dump with "
+            "the saved weights. Exit 0 = reproduced, 1 = not reproduced, 2 = no sidecar or "
+            "weights."
+        ),
+    )
+    parser.add_argument(
+        "--sidecar",
+        type=Path,
+        default=None,
+        help="Sidecar JSON (default: ml_model_path with the .json suffix).",
+    )
+    parser.set_defaults(handler=_run_reproduce_training)
+
+
+def _run_reproduce_training(args: argparse.Namespace) -> int:
+    """ML-22: odczyt próbki (bez zapisu i bez odświeżania widoku), refit i werdykt."""
+    from main_trainer import build_use_case
+    from src.domain.model_scorecard import TrainingReport
+    from src.infrastructure.adapters.xgboost_local import LIBRARY_VERSION, XGBoostAdapter
+
+    settings = _load_settings()
+    sidecar_path = args.sidecar or Path(settings.ml_model_path).with_suffix(".json")
+    try:
+        sidecar = parse_sidecar(Path(sidecar_path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"❌ nie da się odczytać {sidecar_path}: {exc.strerror or exc}", file=sys.stderr)
+        return 2
+    except SidecarError as exc:
+        print(f"❌ {sidecar_path}: {exc}", file=sys.stderr)
+        return 2
+    saved = XGBoostAdapter(model_path=settings.ml_model_path)
+    if not saved.is_trained:
+        print(f"❌ brak pliku wag {settings.ml_model_path}", file=sys.stderr)
+        return 2
+    trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
+    prepared = build_use_case(settings).pooled_training_set(trainable)
+    if isinstance(prepared, TrainingReport):
+        print(f"NOT REPRODUCED: the sample is below the training minimum — {prepared.reason}")
+        return 1
+    sample = rows_in_range(prepared, sidecar)
+    fingerprint = fingerprint_of(sample)
+    refit_dump = (
+        XGBoostAdapter.refit_booster_dump(sample.features, sample.target, params=sidecar.params)
+        if fingerprint == sidecar.dataset_sha256
+        else None
+    )
+    report = assess_reproduction(
+        sidecar,
+        fingerprint=fingerprint,
+        n_rows=len(sample.target),
+        refit_dump=refit_dump,
+        saved_dump=saved.booster_dump(),
+        library_version=LIBRARY_VERSION,
+    )
+    print(format_reproduction(report))
     return 0 if report.ok else 1
 
 

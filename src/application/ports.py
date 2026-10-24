@@ -35,6 +35,7 @@ from src.domain.shock import DailyChange
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
 from src.domain.training_labels import FeatureSnapshot
+from src.domain.training_provenance import DatasetDescription
 from src.domain.value_objects import AssetType, Fundamentals, Money, Quote
 
 
@@ -868,6 +869,7 @@ class MLPredictionPort(ABC):
         persist: bool = True,
         timestamps: Sequence[datetime] | None = None,
         target_unit: TargetUnit = TargetUnit.RETURN,
+        dataset: DatasetDescription | None = None,
     ) -> TrainingReport:
         """ARCH-09: `features` to wiersze `{cecha: wartość}` (None = brak), `target`
         wyrównany z nimi — zwykłe sekwencje, bez DataFrame w porcie; ramkę buduje
@@ -882,7 +884,12 @@ class MLPredictionPort(ABC):
 
         ML-11: `target_unit` mówi, w jakich jednostkach jest `target` (wołający
         dzieli zwrot przez σ); metryki i baseline'y są wtedy w jednostkach σ,
-        a zapisane wagi niosą jednostkę, którą odczyta `predict`."""
+        a zapisane wagi niosą jednostkę, którą odczyta `predict`.
+
+        ML-22: raport niesie `provenance` — odcisk wierszy treningu (niezależny od
+        ich kolejności), zakres dat, parametry z jawnym ziarnem i wersję biblioteki,
+        uzupełnione opisem próbki od wołającego (`dataset`: liczności per symbol,
+        wersja zestawu cech, SHA kodu). Zapis wag dostaje sidecar `.json` obok pliku."""
 
     @abstractmethod
     def walk_forward_report(

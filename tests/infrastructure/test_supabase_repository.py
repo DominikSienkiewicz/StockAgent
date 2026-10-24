@@ -2932,6 +2932,55 @@ class TestModelScorecardWeightsSha256:
         assert "weights_sha256" not in payload
 
 
+class TestModelScorecardProvenance:
+    """ML-22: proweniencja treningu (odcisk zbioru, zakres dat, liczności, parametry,
+    wersje, SHA kodu) trafia do karty tylko za flagą — kolumny istnieją od migracji
+    064, a nowy klucz przed nią to PGRST204 i przepadły wiersz karty."""
+
+    _PROVENANCE: dict[str, Any] = {
+        "dataset_sha256": "ab" * 32,
+        "data_start": "2026-10-01T07:30:00+00:00",
+        "data_end": "2026-10-20T07:30:00+00:00",
+        "n_per_symbol": {"AAPL": 40, "BTC": 20},
+        "training_params": {"max_depth": 4, "random_state": 0},
+        "library_version": "xgboost 3.2.0",
+        "feature_set_version": 4,
+        "git_sha": "abc1234",
+    }
+
+    def test_flag_off_payload_has_no_provenance(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_model_scorecard("ALL", {"status": "trained_successfully", **self._PROVENANCE})
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert not set(self._PROVENANCE) & set(payload)
+
+    def test_flag_on_payload_carries_the_provenance(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co",
+            key="anon-key",
+            scorecard_provenance_enabled=True,
+        )
+
+        repo.save_model_scorecard("ALL", {"status": "trained_successfully", **self._PROVENANCE})
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert {key: payload[key] for key in self._PROVENANCE} == self._PROVENANCE
+
+    def test_flag_on_skipped_run_sends_no_provenance_keys(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co",
+            key="anon-key",
+            scorecard_provenance_enabled=True,
+        )
+
+        repo.save_model_scorecard("ALL", {"status": "skipped", "feature_set_version": 4})
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert not set(self._PROVENANCE) & set(payload)
+
+
 class TestSettledAtWindows:
     """WIA-19: okno „rozliczone od `since`” filtruje i sortuje po `settled_at`
     (migracja 029). Bez `since` zapytanie nie dotyka kolumny, której przed

@@ -173,6 +173,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "model_scorecard_feature_stats_enabled",
     # CI-13: sam zapis sha256 pliku wag w karcie; prognoza ta sama.
     "model_scorecard_weights_sha256_enabled",
+    # ML-22: sam zapis proweniencji treningu (odcisk zbioru, parametry, wersje) w karcie.
+    "model_scorecard_provenance_enabled",
     # WIA-57: sam zapis kategorii diagnozy (046) i jej odczyt w panelu lessons.
     "correction_category_enabled",
     # DAT-14: sam zapis znacznika `stale_quote` i odsiew trafności; prognoza ta sama.
@@ -598,6 +600,11 @@ class Settings(BaseSettings):
     # z migracji 060) — wiąże metryki przebiegu z wagami z Release i z
     # `model_version` predykcji. Off: nowy klucz przed migracją → PGRST204.
     model_scorecard_weights_sha256_enabled: bool = False
+    # ML-22: wiersze karty niosą proweniencję treningu — odcisk zbioru (sha256 po
+    # wierszach), zakres dat, liczności per symbol, parametry z jawnym ziarnem,
+    # wersję XGBoost, wersję zestawu cech i SHA kodu (kolumny z migracji 064).
+    # Sidecar `.json` obok pliku wag powstaje bez flagi. Off: PGRST204 przed 064.
+    model_scorecard_provenance_enabled: bool = False
     # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
     # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
     cycle_diff_enabled: bool = False

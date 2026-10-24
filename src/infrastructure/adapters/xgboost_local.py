@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -16,9 +17,17 @@ from src.application.ports import MLPredictionPort, ReturnScaleUnavailableError
 from src.domain.backtest import BacktestSummary, purged_train_end, summarize_folds
 from src.domain.drift import bin_fractions, quantile_edges, recent_window_psi
 from src.domain.model_scorecard import TargetUnit, TrainingOutcome, TrainingReport
+from src.domain.training_provenance import (
+    DatasetDescription,
+    TrainingProvenance,
+    dataset_fingerprint,
+)
 from src.domain.value_objects import Money
 
 # Hiperparametry dobrane pod dane finansowe (zapobieganie overfittingowi).
+# ML-22: ziarno jawne — `subsample`/`colsample_bytree` losują, a te same dane z tym
+# samym ziarnem mają dać identyczny booster. 0 to dotychczasowy domyślny seed
+# XGBoost, więc wagi są bajt w bajt takie jak przed jego dopisaniem.
 DEFAULT_PARAMS: dict[str, Any] = {
     "objective": "reg:squarederror",
     "max_depth": 4,
@@ -26,7 +35,11 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "subsample": 0.8,
     "colsample_bytree": 0.8,
     "n_estimators": 100,
+    "random_state": 0,
 }
+
+# ML-22: wersja biblioteki w karcie i sidecarze — inna wersja może dać inny booster.
+LIBRARY_VERSION = f"xgboost {xgb.__version__}"
 
 VALIDATION_FRACTION = 0.2
 MIN_VALIDATION_SAMPLES = 10
@@ -102,10 +115,12 @@ class XGBoostAdapter(MLPredictionPort):
         persist: bool = True,
         timestamps: Sequence[datetime] | None = None,
         target_unit: TargetUnit = TargetUnit.RETURN,
+        dataset: DatasetDescription | None = None,
     ) -> TrainingReport:
         feature_frame = _feature_frame(features)
         target_series = pd.Series(target).reset_index(drop=True)
         stamps = _global_time_order(timestamps, len(target_series))
+        provenance = self._provenance(feature_frame, target_series, stamps, dataset)
 
         # Walk-forward (expanding window) zamiast jednego splitu 20%: bramka
         # „pobij baseline" opiera się na ŚREDNIEJ z foldów, nie na jednym
@@ -134,6 +149,7 @@ class XGBoostAdapter(MLPredictionPort):
                 model_path=model_path,
                 target_unit=target_unit,
                 weights_sha256=weights_sha256,
+                provenance=provenance,
             )
 
         if not persist:
@@ -173,11 +189,61 @@ class XGBoostAdapter(MLPredictionPort):
         self._target_unit = target_unit
         # CI-13: hash bajtów pliku na dysku — tego samego, który workflow wysyła do
         # Release `model-latest`, a Fast Loop haszuje jako `model_version`.
-        return report(
+        accepted = report(
             TrainingOutcome.ACCEPTED,
             model_path=self._model_path,
             weights_sha256=hashlib.sha256(model_path.read_bytes()).hexdigest(),
         )
+        _write_sidecar(model_path, accepted, target_unit)
+        return accepted
+
+    def _provenance(
+        self,
+        features: pd.DataFrame,
+        target: pd.Series,
+        stamps: list[datetime] | None,
+        dataset: DatasetDescription | None,
+    ) -> TrainingProvenance:
+        """ML-22: odcisk wierszy, na których trenujemy, zakres dat, parametry i wersja
+        biblioteki; resztę opisu próbki (`dataset`) zna wołający."""
+        moments: list[datetime | None] = (
+            list(stamps) if stamps is not None else [None] * len(target)
+        )
+        rows = zip(
+            moments,
+            (float(value) for value in target),
+            features.to_dict("records"),
+            strict=True,
+        )
+        return TrainingProvenance(
+            dataset_sha256=dataset_fingerprint(rows),
+            data_start=stamps[0] if stamps else None,
+            data_end=stamps[-1] if stamps else None,
+            params=dict(self._params),
+            library_version=LIBRARY_VERSION,
+            dataset=dataset or DatasetDescription(),
+        )
+
+    def booster_dump(self) -> str:
+        """ML-22: zrzut drzew wczytanego modelu (JSON) — porównanie z refitem."""
+        if self._model is None:
+            raise RuntimeError(
+                f"Model not trained — no weights at '{self._model_path}'."
+            )
+        return _dump(self._model)
+
+    @staticmethod
+    def refit_booster_dump(
+        features: Sequence[Mapping[str, float | None]],
+        target: Sequence[float],
+        *,
+        params: Mapping[str, object],
+    ) -> str:
+        """ML-22: refit shipowanego modelu (wszystkie wiersze, te parametry) i zrzut
+        jego drzew — bez zapisu i bez zmiany stanu adaptera."""
+        model = xgb.XGBRegressor(**params)
+        model.fit(_feature_frame(features), pd.Series(target).reset_index(drop=True))
+        return _dump(model)
 
     def _walk_forward_folds_detail(
         self,
@@ -360,6 +426,7 @@ def _training_report(
     model_path: str | None,
     target_unit: TargetUnit,
     weights_sha256: str | None = None,
+    provenance: TrainingProvenance | None = None,
 ) -> TrainingReport:
     """ARCH-09: werdykt i metryki walk-forward jako domenowy `TrainingReport`.
 
@@ -384,6 +451,30 @@ def _training_report(
             {} if target_unit is TargetUnit.RETURN else {"target_unit": target_unit.value}
         ),
         weights_sha256=weights_sha256,
+        provenance=provenance,
+    )
+
+
+def _dump(model: xgb.XGBRegressor) -> str:
+    """Drzewa boostera jako jeden tekst JSON — atrybuty pliku (np. jednostka
+    targetu) nie wchodzą, więc porównuje się sam model."""
+    return "\n".join(model.get_booster().get_dump(dump_format="json"))
+
+
+def _write_sidecar(model_path: Path, report: TrainingReport, target_unit: TargetUnit) -> None:
+    """ML-22: sidecar `.json` obok pliku wag — proweniencja, hash pliku i jednostka
+    targetu. Workflow wysyła go do Release razem z wagami."""
+    provenance = report.provenance
+    record = provenance.as_record() if provenance is not None else {}
+    sidecar = {
+        "model_file": model_path.name,
+        "weights_sha256": report.weights_sha256,
+        "target_unit": target_unit.value,
+        "n_samples": report.n_samples,
+        **record,
+    }
+    model_path.with_suffix(".json").write_text(
+        json.dumps(sidecar, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
 

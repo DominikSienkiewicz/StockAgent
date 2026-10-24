@@ -6,7 +6,7 @@ czystą logikę. Każde narzędzie to podkomenda argparse.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -488,3 +488,85 @@ def test_verify_attestation_defaults_to_the_published_ledger_paths() -> None:
 
     assert str(args.commitments) == "public/attestation/commitments.jsonl"
     assert str(args.reveals) == "public/attestation/reveals.jsonl"
+
+
+# --- ML-22: reproduce-training ---------------------------------------------------
+
+
+def _reproduction_case(mocker: Any, tmp_path: Path, *, train: bool = True) -> tuple[Any, Any]:
+    """Prawdziwy trening XGBoost na małej próbce: plik wag + sidecar w `tmp_path`,
+    a use case Slow Loopa (podmieniony) oddaje tę samą próbkę co przy treningu."""
+    import numpy as np
+
+    from src.application.use_cases.train_model import TrainingSet
+    from src.domain.training_provenance import DatasetDescription
+    from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+
+    rng = np.random.default_rng(3)
+    stamps = [datetime(2026, 10, 1, tzinfo=UTC) + timedelta(hours=12 * i) for i in range(200)]
+    features: list[dict[str, float | None]] = [
+        {"price_delta": float(delta), "llm_trend_signal": float(signal)}
+        for delta, signal in zip(
+            rng.normal(0, 0.05, 200), rng.choice([-1, 0, 1], 200), strict=True
+        )
+    ]
+    target = [
+        0.4 * float(row["price_delta"] or 0.0) + 0.02 * float(row["llm_trend_signal"] or 0.0)
+        for row in features
+    ]
+    training_set = TrainingSet(
+        features, target, stamps, DatasetDescription(n_per_symbol={"AAPL": 200})
+    )
+    model_path = tmp_path / "price_predictor.ubj"
+    if train:
+        report = XGBoostAdapter(model_path=str(model_path)).train(
+            features, target, timestamps=stamps
+        )
+        assert report["status"] == "trained_successfully"
+    settings = mocker.patch("src.config.Settings.from_env").return_value
+    settings.ml_model_path = str(model_path)
+    settings.symbols = ["AAPL"]
+    settings.crypto_symbols = []
+    use_case = mocker.patch("main_trainer.build_use_case").return_value
+    use_case.pooled_training_set.return_value = training_set
+    return use_case, training_set
+
+
+def test_reproduce_training_rebuilds_the_saved_booster(
+    mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    use_case, _ = _reproduction_case(mocker, tmp_path)
+
+    code = main_tools.main(["reproduce-training"])
+
+    assert code == 0
+    assert "REPRODUCED" in capsys.readouterr().out
+    use_case.pooled_training_set.assert_called_once_with(["AAPL"])
+    use_case.run_pooled.assert_not_called()
+
+
+def test_reproduce_training_with_a_changed_dataset_exits_one(
+    mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import dataclasses
+
+    use_case, training_set = _reproduction_case(mocker, tmp_path)
+    use_case.pooled_training_set.return_value = dataclasses.replace(
+        training_set, target=[*training_set.target[:-1], 1.0]
+    )
+
+    code = main_tools.main(["reproduce-training"])
+
+    assert code == 1
+    assert "dataset differs" in capsys.readouterr().out
+
+
+def test_reproduce_training_without_a_sidecar_exits_two(
+    mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _reproduction_case(mocker, tmp_path, train=False)
+
+    code = main_tools.main(["reproduce-training"])
+
+    assert code == 2
+    assert "price_predictor.json" in capsys.readouterr().err

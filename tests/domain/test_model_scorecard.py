@@ -17,6 +17,11 @@ from src.domain.model_scorecard import (
     summarize_evaluations,
     summarize_run,
 )
+from src.domain.training_provenance import (
+    PROVENANCE_RECORD_KEYS,
+    DatasetDescription,
+    TrainingProvenance,
+)
 
 
 class TestImprovementPct:
@@ -313,6 +318,35 @@ class TestTrainingReport:
             "model_path": "m.ubj",
         }
         assert "validation_rmse" not in report
+
+    def test_provenance_record_joins_the_legacy_view_before_the_extras(self) -> None:
+        # ML-22: odcisk zbioru, parametry i wersje idą do karty i sidecara.
+        provenance = TrainingProvenance(
+            dataset_sha256="cd" * 32,
+            data_start=None,
+            data_end=None,
+            params={"random_state": 0},
+            library_version="xgboost 3.2.0",
+            dataset=DatasetDescription(n_per_symbol={"AAPL": 60}, feature_set_version=4),
+        )
+        report = TrainingReport(
+            TrainingOutcome.EVALUATION_PASSED,
+            n_samples=60,
+            provenance=provenance,
+            extras={"target_unit": "sigma"},
+        )
+
+        assert list(report)[-len(PROVENANCE_RECORD_KEYS) - 1 :] == [
+            *PROVENANCE_RECORD_KEYS,
+            "target_unit",
+        ]
+        assert report["dataset_sha256"] == "cd" * 32
+        assert report["n_per_symbol"] == {"AAPL": 60}
+
+    def test_report_without_provenance_has_no_provenance_keys(self) -> None:
+        report = TrainingReport(TrainingOutcome.SKIPPED, n_samples=3)
+
+        assert not set(PROVENANCE_RECORD_KEYS) & set(report)
 
     def test_weights_hash_follows_the_model_path_in_the_legacy_view(self) -> None:
         # CI-13: sha256 pliku wag w karcie modelu; bez zapisu wag klucza nie ma.

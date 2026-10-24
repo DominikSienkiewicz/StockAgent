@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 from types import MappingProxyType
 
+from src.domain.training_provenance import TrainingProvenance
+
 # Karta kondycji modelu — czysta domena eksponująca dowód rzetelności retreningu.
 # Repo shipuje model tylko, jeśli bije naiwny baseline persystencji („zwrot=0"),
 # ale ta bramka jest niewidzialna dla użytkownika. Ten moduł liczy procentową
@@ -132,6 +134,8 @@ class TrainingReport(Mapping[str, object]):
     to średnie po foldach (None, gdy trening się nie odbył). `extras` niesie pola
     poboczne (np. `feature_set_version` przy pominięciu, DAT-09). `weights_sha256`
     (CI-13) to sha256 pliku wag zapisanego w tym treningu — None bez zapisu wag.
+    `provenance` (ML-22) — odcisk zbioru, parametry i wersje; None, gdy trening
+    się nie odbył (pominięcie).
 
     Widok `Mapping` to kontrakt słownika sprzed ARCH-09 (te same klucze i wartości,
     status z `LEGACY_STATUS`): czytają go zapis karty (`save_model_scorecard`),
@@ -153,6 +157,7 @@ class TrainingReport(Mapping[str, object]):
     model_path: str | None = None
     extras: Mapping[str, object] = field(default_factory=dict)
     weights_sha256: str | None = None
+    provenance: TrainingProvenance | None = None
 
     @property
     def status(self) -> str:
@@ -183,6 +188,8 @@ class TrainingReport(Mapping[str, object]):
             legacy["model_path"] = self.model_path
         if self.weights_sha256 is not None:
             legacy["weights_sha256"] = self.weights_sha256
+        if self.provenance is not None:
+            legacy.update(self.provenance.as_record())
         legacy.update(self.extras)
         return legacy
 

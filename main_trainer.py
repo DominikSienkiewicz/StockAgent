@@ -134,6 +134,8 @@ def _supabase_repository(settings: Settings) -> SupabaseRepository:
         scorecard_feature_stats_enabled=settings.model_scorecard_feature_stats_enabled,
         # CI-13: sha256 pliku wag w karcie (migracja 060) za flagą.
         scorecard_weights_sha256_enabled=settings.model_scorecard_weights_sha256_enabled,
+        # ML-22: proweniencja treningu w karcie (migracja 064) za flagą.
+        scorecard_provenance_enabled=settings.model_scorecard_provenance_enabled,
         correction_category_enabled=settings.correction_category_enabled,
         # DAT-21: kapitalizacja w cache fundamentów (migracja 056) za flagą.
         fundamentals_market_cap_enabled=settings.fundamentals_market_cap_enabled,
@@ -163,6 +165,8 @@ def build_use_case(settings: Settings, *, run_id: str | None = None) -> TrainMod
         snapshot_source=settings.snapshot_training_enabled,
         # ML-11: target = zwrot / σ, karty w jednostkach σ (zmienia wagi i serving; off).
         sigma_target=settings.ml_sigma_target_enabled,
+        # ML-22: commit kodu przebiegu w proweniencji treningu (karta i sidecar wag).
+        git_sha=RunContext.from_environ(os.environ).git_sha,
     )
 
 

@@ -806,6 +806,19 @@ def test_slow_loop_uploads_the_weights_file_to_the_model_release() -> None:
     assert dict(upload.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}"
 
 
+def test_slow_loop_uploads_the_training_sidecar_next_to_the_weights() -> None:
+    # ML-22: sidecar `.json` (odcisk zbioru, parametry, wersje) idzie do Release
+    # razem z wagami — inaczej proweniencja wag z Release ginęłaby z runnerem.
+    upload = _release_step(_workflow_steps(_slow_loop_spec()), "gh release upload")
+    assert upload is not None
+    run = str(upload.get("run", ""))
+
+    assert 'SIDECAR="${MODEL_PATH%.ubj}.json"' in run
+    assert 'gh release upload model-latest "$SIDECAR" --clobber' in run
+    # Sidecar powstaje tylko z wagami; jego brak nie może wywrócić kroku (bash -e).
+    assert 'if [ -f "$SIDECAR" ]; then' in run
+
+
 def test_slow_loop_runs_queue_instead_of_cancelling() -> None:
     concurrency = _slow_loop_spec().get("concurrency") or {}
 

@@ -100,6 +100,7 @@ MIGRATION_FILES = [
     "061_digests.sql",
     "062_corporate_actions.sql",
     "063_rag_exact_search.sql",
+    "064_model_scorecards_provenance.sql",
     "065_persona_scoring.sql",
 ]
 
@@ -3718,5 +3719,68 @@ class TestMigration060ScorecardWeightsSha256:
                 "SELECT count(*) FROM pg_constraint "
                 "WHERE conrelid = 'model_scorecards'::regclass AND contype = 'c' "
                 "AND pg_get_constraintdef(oid) LIKE '%weights_sha256%'"
+            )
+            assert cur.fetchone() == (1,)
+
+
+@pytest.mark.containers
+class TestMigration064ScorecardProvenance:
+    """ML-22: karta modelu niesie proweniencję treningu; NULL dla pominięć i historii."""
+
+    def test_provenance_columns_round_trip(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {
+            "dataset_sha256",
+            "data_start",
+            "data_end",
+            "n_per_symbol",
+            "training_params",
+            "library_version",
+            "feature_set_version",
+            "git_sha",
+        } <= _columns(migrated_pg_conn, "model_scorecards")
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status, dataset_sha256, data_start, "
+                "data_end, n_per_symbol, training_params, library_version, "
+                "feature_set_version, git_sha) VALUES ('ALL', 'trained_successfully', %s, "
+                "'2026-10-01T07:30:00+00:00', '2026-10-20T07:30:00+00:00', "
+                "'{\"AAPL\": 40}'::jsonb, '{\"random_state\": 0}'::jsonb, "
+                "'xgboost 3.2.0', 4, 'abc1234'), ('AAPL', 'skipped', NULL, NULL, NULL, "
+                "NULL, NULL, NULL, NULL, NULL)",
+                ("ab" * 32,),
+            )
+            cur.execute(
+                "SELECT (n_per_symbol ->> 'AAPL')::int, "
+                "(training_params ->> 'random_state')::int, feature_set_version, "
+                "data_end > data_start FROM model_scorecards WHERE symbol = 'ALL' "
+                "AND dataset_sha256 IS NOT NULL"
+            )
+            row = cur.fetchone()
+
+        assert row == (40, 0, 4, True)
+
+    def test_dataset_hash_rejects_anything_but_a_hex_digest(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status, dataset_sha256) "
+                "VALUES ('ALL', 'trained_successfully', 'not-a-digest')"
+            )
+
+    def test_064_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "064_model_scorecards_provenance.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'model_scorecards'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%dataset_sha256%'"
             )
             assert cur.fetchone() == (1,)

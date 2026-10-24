@@ -133,12 +133,18 @@ jobs:
           fi
 
           SHA256=$(sha256sum "$MODEL_PATH" | cut -d' ' -f1)
+          # ML-22: sidecar proweniencji treningu (odcisk zbioru, parametry z ziarnem,
+          # wersje) powstaje obok wag i jedzie z nimi do Release.
+          SIDECAR="${MODEL_PATH%.ubj}.json"
           NOTES="sha256: ${SHA256} · trening: ${RUN_URL}"
           if ! gh release view model-latest >/dev/null 2>&1; then
             gh release create model-latest --title "Model weights (latest)" \
               --notes "$NOTES" --latest=false
           fi
           gh release upload model-latest "$MODEL_PATH" --clobber
+          if [ -f "$SIDECAR" ]; then
+            gh release upload model-latest "$SIDECAR" --clobber
+          fi
           gh release edit model-latest --notes "$NOTES"
           echo "Wagi modelu w Release model-latest, sha256: ${SHA256}" >> "$GITHUB_STEP_SUMMARY"
 

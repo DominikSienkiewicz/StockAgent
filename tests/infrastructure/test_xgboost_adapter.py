@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from src.application.ports import MLPredictionPort, ReturnScaleUnavailableError
 from src.domain.model_scorecard import TargetUnit, TrainingOutcome, TrainingReport
 from src.domain.value_objects import Money
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+
+T0 = datetime(2026, 10, 1, 7, 30, tzinfo=UTC)
 
 FEATURE_NAMES = [
     "price_delta",
@@ -873,3 +876,104 @@ class TestWeightsHash:
         assert evaluated.weights_sha256 is None
         assert rejected.weights_sha256 is None
         assert "weights_sha256" not in rejected
+
+
+class TestReproducibleTraining:
+    """ML-22: raport niesie odcisk zbioru, parametry z jawnym ziarnem i wersję
+    biblioteki, a zapis wag dostaje sidecar `.json`; te same dane i to samo ziarno
+    dają identyczny booster."""
+
+    def test_default_params_pin_the_random_state(self) -> None:
+        from src.infrastructure.adapters.xgboost_local import DEFAULT_PARAMS
+
+        assert DEFAULT_PARAMS["random_state"] == 0
+
+    def test_dataset_fingerprint_independent_of_input_row_order(
+        self, adapter: XGBoostAdapter
+    ) -> None:
+        features, target = _synthetic_dataset(n=60)
+        rows = features.to_dict("records")
+
+        forward = adapter.train(rows, list(target), persist=False)
+        backward = adapter.train(rows[::-1], list(target)[::-1], persist=False)
+
+        assert forward.provenance is not None and backward.provenance is not None
+        assert forward.provenance.dataset_sha256 == backward.provenance.dataset_sha256
+        changed = adapter.train(rows, [*list(target)[:-1], 0.5], persist=False)
+        assert changed.provenance is not None
+        assert changed.provenance.dataset_sha256 != forward.provenance.dataset_sha256
+
+    def test_same_data_same_seed_gives_identical_booster_dump(self, tmp_path: Path) -> None:
+        features, target = _synthetic_dataset(n=200)
+        first = XGBoostAdapter(model_path=str(tmp_path / "a.ubj"))
+        second = XGBoostAdapter(model_path=str(tmp_path / "b.ubj"))
+
+        report = first.train(features, target)
+        second.train(features, target)
+
+        assert report.outcome is TrainingOutcome.ACCEPTED
+        assert report.provenance is not None
+        assert first.booster_dump() == second.booster_dump()
+        refit = XGBoostAdapter.refit_booster_dump(
+            features.to_dict("records"), list(target), params=report.provenance.params
+        )
+        assert refit == first.booster_dump()
+
+    def test_report_carries_the_provenance_of_the_sample(
+        self, adapter: XGBoostAdapter
+    ) -> None:
+        import xgboost
+
+        from src.domain.training_provenance import DatasetDescription
+
+        features, target = _synthetic_dataset(n=60)
+        stamps = [T0 + pd.Timedelta(hours=i).to_pytimedelta() for i in range(60)]
+        description = DatasetDescription(
+            n_per_symbol={"AAPL": 40, "BTC": 20}, feature_set_version=4, git_sha="abc1234"
+        )
+
+        report = adapter.train(
+            features, target, persist=False, timestamps=stamps, dataset=description
+        )
+
+        assert report["n_per_symbol"] == {"AAPL": 40, "BTC": 20}
+        assert report["feature_set_version"] == 4
+        assert report["git_sha"] == "abc1234"
+        assert report["data_start"] == stamps[0].isoformat()
+        assert report["data_end"] == stamps[-1].isoformat()
+        assert report["library_version"] == f"xgboost {xgboost.__version__}"
+        params = report["training_params"]
+        assert isinstance(params, dict)
+        assert params["random_state"] == 0
+
+    def test_accepted_training_writes_a_sidecar_next_to_the_weights(
+        self, adapter: XGBoostAdapter, model_path: str
+    ) -> None:
+        import json
+
+        features, target = _synthetic_dataset(n=200)
+
+        report = adapter.train(features, target)
+
+        sidecar = json.loads(Path(model_path).with_suffix(".json").read_text(encoding="utf-8"))
+        assert report.provenance is not None
+        assert sidecar == {
+            "model_file": Path(model_path).name,
+            "weights_sha256": report.weights_sha256,
+            "target_unit": "return",
+            "n_samples": 200,
+            **report.provenance.as_record(),
+        }
+
+    def test_rejected_training_writes_no_sidecar(
+        self, adapter: XGBoostAdapter, model_path: str
+    ) -> None:
+        features, _ = _synthetic_dataset(n=200)
+
+        adapter.train(features, pd.Series([0.0] * 200))
+
+        assert not Path(model_path).with_suffix(".json").exists()
+
+    def test_booster_dump_needs_a_trained_model(self, adapter: XGBoostAdapter) -> None:
+        with pytest.raises(RuntimeError, match="not trained"):
+            adapter.booster_dump()

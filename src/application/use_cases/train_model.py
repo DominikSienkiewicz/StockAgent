@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +40,7 @@ from src.domain.training_labels import (
     label_snapshots,
     selection_report,
 )
+from src.domain.training_provenance import DatasetDescription
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,20 @@ class SnapshotModelsResult:
     selection: SelectionReport
     n_snapshots: int
     n_labeled: int
+
+
+@dataclass(frozen=True)
+class TrainingSet:
+    """ML-22: próbka modelu wspólnego dokładnie w postaci, w jakiej idzie do
+    `MLPredictionPort.train` — wiersze cech, target (ML-11: w jednostkach σ przy
+    fladze), znaczniki czasu rosnąco i opis próbki do proweniencji. Z niej
+    `reproduce-training` odtwarza odcisk zbioru i booster."""
+
+    features: list[dict[str, float | None]]
+    target: list[float]
+    timestamps: list[datetime]
+    dataset: DatasetDescription
+
 
 # Minimalna liczba próbek, by trening miał sens (zapobiega overfittingowi na 2 rekordach).
 # Dla modelu wspólnego (ML-13) dotyczy ŁĄCZNEJ próbki wszystkich symboli.
@@ -96,10 +112,12 @@ class TrainModelUseCase:
         training_data: TrainingDataPort | None = None,
         snapshot_source: bool = False,
         sigma_target: bool = False,
+        git_sha: str | None = None,
     ) -> None:
         """`feature_set_version` (DAT-09) zawęża próbkę do wierszy tej wersji
         zestawu cech; None = cała historia (bez migracji 027). `run_id` (ML-24)
-        to identyfikator przebiegu Slow Loopa w wierszu karty modelu wspólnego."""
+        to identyfikator przebiegu Slow Loopa w wierszu karty modelu wspólnego.
+        `git_sha` (ML-22) — commit kodu przebiegu w proweniencji treningu."""
         self._ml_port = ml_port
         self._db_port = db_port
         self._feature_set_version = feature_set_version
@@ -107,6 +125,7 @@ class TrainModelUseCase:
         self._training_data = training_data
         self._snapshot_source = snapshot_source
         self._sigma_target = sigma_target
+        self._git_sha = git_sha
 
     def refresh_feature_store(self) -> None:
         self._db_port.refresh_feature_store()
@@ -138,6 +157,7 @@ class TrainModelUseCase:
             df[TARGET_COLUMN].tolist(),
             persist=False,
             timestamps=None if stamps is None else _moments(stamps),
+            dataset=self._describe({symbol: len(df)}, self._feature_set_version),
         )
 
     def run_pooled(
@@ -221,10 +241,10 @@ class TrainModelUseCase:
         self,
         rows: Sequence[tuple[Mapping[str, float | None], LabeledSnapshot]],
         series: PriceSeries,
-    ) -> list[tuple[Mapping[str, float | None], float, datetime]]:
-        """Wiersze (wektor, target, chwila); ML-11: target = zwrot / σ z chwili
-        wektora, a wiersz bez σ (za krótka historia) wypada."""
-        out: list[tuple[Mapping[str, float | None], float, datetime]] = []
+    ) -> list[tuple[Mapping[str, float | None], float, LabeledSnapshot]]:
+        """Wiersze (wektor, target, wektor z etykietą); ML-11: target = zwrot / σ
+        z chwili wektora, a wiersz bez σ (za krótka historia) wypada."""
+        out: list[tuple[Mapping[str, float | None], float, LabeledSnapshot]] = []
         for vector, item in rows:
             target = item.target_return
             if self._sigma_target:
@@ -232,8 +252,32 @@ class TrainModelUseCase:
                 if sigma is None:
                     continue
                 target /= sigma
-            out.append((vector, target, item.snapshot.as_of))
+            out.append((vector, target, item))
         return out
+
+    def _snapshot_training_set(
+        self, rows: Sequence[tuple[Mapping[str, float | None], float, LabeledSnapshot]]
+    ) -> TrainingSet:
+        """Próbka z wektorów `feature_snapshots` (kolejność `as_of`) z jej opisem."""
+        return TrainingSet(
+            features=[dict(vector) for vector, _, _ in rows],
+            target=[target for _, target, _ in rows],
+            timestamps=[item.snapshot.as_of for _, _, item in rows],
+            dataset=self._describe(
+                Counter(item.snapshot.symbol for _, _, item in rows),
+                SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
+            ),
+        )
+
+    def _describe(
+        self, n_per_symbol: Mapping[str, int], feature_set_version: int | None
+    ) -> DatasetDescription:
+        """ML-22: opis próbki do proweniencji treningu (karta i sidecar)."""
+        return DatasetDescription(
+            n_per_symbol=dict(n_per_symbol),
+            feature_set_version=feature_set_version,
+            git_sha=self._git_sha,
+        )
 
     def _snapshot_reason(self, model: str) -> str:
         history = " with a sigma history" if self._sigma_target else ""
@@ -245,18 +289,20 @@ class TrainModelUseCase:
         series: PriceSeries,
         model: str,
     ) -> TrainingReport:
-        training_set = self._in_target_units(rows, series)
-        if len(training_set) < MIN_SAMPLES_FOR_TRAINING:
+        in_units = self._in_target_units(rows, series)
+        if len(in_units) < MIN_SAMPLES_FOR_TRAINING:
             return _skipped(
                 self._snapshot_reason(model),
-                len(training_set),
+                len(in_units),
                 feature_set_version=SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
             )
+        training_set = self._snapshot_training_set(in_units)
         return self._ml_port.train(
-            [dict(vector) for vector, _, _ in training_set],
-            [target for _, target, _ in training_set],
+            training_set.features,
+            training_set.target,
             persist=False,
-            timestamps=[as_of for _, _, as_of in training_set],
+            timestamps=training_set.timestamps,
+            dataset=training_set.dataset,
             **self._target_unit(),
         )
 
@@ -270,8 +316,23 @@ class TrainModelUseCase:
             self._db_port.save_model_scorecard(symbol, result, run_id=self._run_id)
 
     def _train_pooled(self, symbols: Sequence[str]) -> TrainingReport:
+        prepared = self.pooled_training_set(symbols)
+        if isinstance(prepared, TrainingReport):
+            return prepared
+        return self._ml_port.train(
+            prepared.features,
+            prepared.target,
+            timestamps=prepared.timestamps,
+            dataset=prepared.dataset,
+            **self._target_unit(),
+        )
+
+    def pooled_training_set(self, symbols: Sequence[str]) -> TrainingSet | TrainingReport:
+        """ML-22: próbka modelu wspólnego (widok albo, z `snapshot_source`, wektory
+        cykli gated) w postaci, w jakiej idzie do `train`, albo raport pominięcia,
+        gdy próbka jest poniżej minimum. Sam odczyt — bez treningu i zapisu."""
         if self._snapshot_source:
-            return self._train_pooled_from_snapshots(symbols)
+            return self._pooled_snapshot_set(symbols)
         rows = [
             row
             for symbol in dict.fromkeys(symbols)
@@ -302,11 +363,13 @@ class TrainModelUseCase:
                     "Not enough samples with a sigma history for the pooled model", len(df)
                 )
 
-        return self._ml_port.train(
-            _feature_rows_of(df),
-            target.tolist(),
+        return TrainingSet(
+            features=_feature_rows_of(df),
+            target=target.tolist(),
             timestamps=_moments(df["_global_time"]),
-            **self._target_unit(),
+            dataset=self._describe(
+                Counter(str(symbol) for symbol in df["symbol"]), self._feature_set_version
+            ),
         )
 
     def _row_sigmas(self, symbols: pd.Series, stamps: pd.Series) -> pd.Series:
@@ -335,24 +398,19 @@ class TrainModelUseCase:
         return self._training_data
 
 
-    def _train_pooled_from_snapshots(self, symbols: Sequence[str]) -> TrainingReport:
+    def _pooled_snapshot_set(self, symbols: Sequence[str]) -> TrainingSet | TrainingReport:
         """ML-52 (4): model wspólny z cykli gated w `feature_snapshots` (wektor
         z servingu, etykieta z `price_snapshots`) zamiast z widoku SQL. Jedyny zapis
         wag, jak w ścieżce widoku; poniżej minimum — `SKIPPED` z liczbą próbek."""
         _, labeled, series = self._labeled_snapshots(symbols)
-        training_set = self._in_target_units(_llm_rows(labeled), series)
-        if len(training_set) < MIN_SAMPLES_FOR_TRAINING:
+        in_units = self._in_target_units(_llm_rows(labeled), series)
+        if len(in_units) < MIN_SAMPLES_FOR_TRAINING:
             return _skipped(
                 self._snapshot_reason("the pooled model (gated cycles)"),
-                len(training_set),
+                len(in_units),
                 feature_set_version=SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
             )
-        return self._ml_port.train(
-            [dict(vector) for vector, _, _ in training_set],
-            [target for _, target, _ in training_set],
-            timestamps=[as_of for _, _, as_of in training_set],
-            **self._target_unit(),
-        )
+        return self._snapshot_training_set(in_units)
 
     def _feature_rows(self, symbol: str) -> list[dict[str, Any]]:
         if self._feature_set_version is None:

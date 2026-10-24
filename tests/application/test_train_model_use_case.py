@@ -10,6 +10,7 @@ from src.application.ports import MLPredictionPort, RepositoryPort, TrainingData
 from src.application.use_cases.train_model import (
     MIN_SAMPLES_FOR_TRAINING,
     POOLED_MODEL_SYMBOL,
+    TrainingSet,
     TrainModelUseCase,
 )
 from src.domain.model_scorecard import (
@@ -21,6 +22,7 @@ from src.domain.model_scorecard import (
 )
 from src.domain.price_features import return_sigma
 from src.domain.training_labels import FeatureSnapshot
+from src.domain.training_provenance import DatasetDescription
 
 EXPECTED_ML_FEATURES = [
     "price_delta",
@@ -802,3 +804,110 @@ def test_without_the_flag_training_passes_no_target_unit(
     snapshot_use_case.run_snapshot_models(["BTC"])
 
     assert all("target_unit" not in c.kwargs for c in ml_port.train.call_args_list)
+
+
+# -- ML-22: opis próbki dla proweniencji treningu ---------------------------------
+
+
+def test_pooled_training_describes_the_sample_to_the_model(ml_port, repository_port):
+    # Karta i sidecar mają mówić, na jakich danych powstał model: ile wierszy
+    # per symbol, która wersja zestawu cech i który commit kodu.
+    use_case = TrainModelUseCase(
+        ml_port=ml_port, db_port=repository_port, feature_set_version=2, git_sha="abc1234"
+    )
+    rows = {
+        "AAPL": _stamped_rows("AAPL", 30, start_hour=0, step_hours=2),
+        "BTC": _stamped_rows("BTC", 25, start_hour=1, step_hours=2),
+    }
+    repository_port.get_feature_store_data.side_effect = lambda symbol, **_: rows[symbol]
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=55)
+
+    use_case.run_pooled(["AAPL", "BTC"])
+
+    assert ml_port.train.call_args.kwargs["dataset"] == DatasetDescription(
+        n_per_symbol={"AAPL": 30, "BTC": 25}, feature_set_version=2, git_sha="abc1234"
+    )
+
+
+def test_pooled_training_set_is_exactly_what_the_model_trains_on(
+    use_case, repository_port, ml_port
+):
+    # `reproduce-training` odbudowuje próbkę tą samą ścieżką co Slow Loop.
+    repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
+        {
+            "AAPL": _stamped_rows("AAPL", 30, start_hour=0, step_hours=2),
+            "BTC": _stamped_rows("BTC", 30, start_hour=1, step_hours=2),
+        }
+    )
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=60)
+
+    training_set = use_case.pooled_training_set(["AAPL", "BTC"])
+    use_case.run_pooled(["AAPL", "BTC"])
+
+    assert isinstance(training_set, TrainingSet)
+    features, target = ml_port.train.call_args.args
+    assert training_set.features == features
+    assert training_set.target == target
+    assert training_set.timestamps == ml_port.train.call_args.kwargs["timestamps"]
+    assert training_set.dataset == ml_port.train.call_args.kwargs["dataset"]
+
+
+def test_pooled_training_set_below_the_minimum_is_the_skip_report(use_case, repository_port):
+    repository_port.get_feature_store_data.return_value = _stamped_rows(
+        "AAPL", 5, start_hour=0, step_hours=1
+    )
+
+    skipped = use_case.pooled_training_set(["AAPL"])
+
+    assert isinstance(skipped, TrainingReport)
+    assert skipped.outcome is TrainingOutcome.SKIPPED
+
+
+def test_snapshot_source_describes_the_gated_sample(ml_port, repository_port, training_data):
+    gated, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
+    training_data.get_feature_snapshots.return_value = gated
+    training_data.get_price_series.return_value = {"BTC": prices}
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=51)
+    use_case = TrainModelUseCase(
+        ml_port=ml_port,
+        db_port=repository_port,
+        training_data=training_data,
+        snapshot_source=True,
+        git_sha="abc1234",
+    )
+
+    use_case.run_pooled(["BTC"])
+
+    assert ml_port.train.call_args.kwargs["dataset"] == DatasetDescription(
+        n_per_symbol={"BTC": MIN_SAMPLES_FOR_TRAINING + 1},
+        feature_set_version=MARKET_FEATURE_SET_VERSION,
+        git_sha="abc1234",
+    )
+
+
+def test_snapshot_model_cards_describe_their_own_samples(
+    snapshot_use_case, ml_port, training_data
+):
+    gated, gated_prices = _cycles("BTC", 30)
+    quiet, quiet_prices = _cycles("ETH", 30, gated=False)
+    training_data.get_feature_snapshots.return_value = gated + quiet
+    training_data.get_price_series.return_value = {"BTC": gated_prices, "ETH": quiet_prices}
+
+    snapshot_use_case.run_snapshot_models(["BTC", "ETH"])
+
+    dataset = _train_call(ml_port, llm=False).kwargs["dataset"]
+    assert dataset.n_per_symbol == {"BTC": 30, "ETH": 30}
+    assert dataset.feature_set_version == MARKET_FEATURE_SET_VERSION
+
+
+def test_per_symbol_evaluation_describes_its_symbol(use_case, repository_port, ml_port):
+    repository_port.get_feature_store_data.return_value = _feature_store_rows(
+        MIN_SAMPLES_FOR_TRAINING + 10
+    )
+    ml_port.train.return_value = {"status": "evaluated_passed_gate"}
+
+    use_case.run("AAPL", refresh_view=False)
+
+    assert ml_port.train.call_args.kwargs["dataset"] == DatasetDescription(
+        n_per_symbol={"AAPL": MIN_SAMPLES_FOR_TRAINING + 10}
+    )

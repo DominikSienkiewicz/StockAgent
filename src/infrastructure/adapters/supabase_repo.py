@@ -66,6 +66,7 @@ from src.domain.session_close import SessionCloseSettlement
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
 from src.domain.training_labels import FeatureSnapshot
+from src.domain.training_provenance import PROVENANCE_RECORD_KEYS
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
     AssetType,
@@ -669,6 +670,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         rag_exact_search_enabled: bool = False,
         receipts_enabled: bool = True,
         scorecard_weights_sha256_enabled: bool = False,
+        scorecard_provenance_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
         # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) zamiast ivfflat
@@ -682,6 +684,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # chybieniem tylko przy włączonych kwitach. Domyślnie true — bezpośrednia
         # konstrukcja (narzędzia, testy) czyta jak dotąd; Fast Loop podaje flagę z configu.
         self._receipts_enabled = receipts_enabled
+        # ML-22: kolumny proweniencji treningu istnieją od migracji 064 — ta sama zasada.
+        self._scorecard_provenance_enabled = scorecard_provenance_enabled
         # CI-13: kolumna `model_scorecards.weights_sha256` istnieje od migracji 060 —
         # bez flagi payload karty jej nie niesie (PGRST204 zgubiłby cały wiersz).
         self._scorecard_weights_sha256_enabled = scorecard_weights_sha256_enabled
@@ -2040,6 +2044,10 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         weights_sha256 = result.get("weights_sha256")
         if self._scorecard_weights_sha256_enabled and weights_sha256 is not None:
             payload["weights_sha256"] = weights_sha256
+        # ML-22: proweniencja tylko z treningu, który się odbył (ma odcisk zbioru) —
+        # pominięcie niesie w extras samą wersję zestawu cech, nie proweniencję.
+        if self._scorecard_provenance_enabled and result.get("dataset_sha256") is not None:
+            payload.update({key: result.get(key) for key in PROVENANCE_RECORD_KEYS})
         self._client.table("model_scorecards").insert(payload).execute()
 
     def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:
