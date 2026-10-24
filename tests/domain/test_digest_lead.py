@@ -603,3 +603,39 @@ class TestRegimeChangeTier:
         assert build_lead(signals, [_critical_alert()], regime_change=None) == build_lead(
             signals, [_critical_alert()]
         )
+
+
+class TestShockBetweenMailsOnPosition:
+    """ALR-06: szok z watcha na pozycji z portfela (≥ 10%) jest kandydatem leadu,
+    nawet gdy ruch tego cyklu był już pod bramką — push mógł nie dotrzeć."""
+
+    @staticmethod
+    def _shocked(weight: str = "0.24", shock: str = "-6.2") -> LeadSignal:
+        return LeadSignal(
+            symbol="NVDA",
+            price_delta_pct=Percent(Decimal("-0.4")),
+            position_weight=Decimal(weight),
+            crossed_volatility_gate=False,
+            shock_pct=Percent(Decimal(shock)),
+        )
+
+    def test_shock_on_a_large_position_leads_the_mail(self) -> None:
+        consensus = LeadSignal("AAA", Percent(Decimal("8.0")), _consensus_verdict("BUY"))
+
+        items = build_lead([consensus, self._shocked()])
+
+        assert items[0].icon == "⚡"
+        assert items[0].headline == "NVDA (24% portfela) -6,2% między mailami"
+        assert items[0].symbol == "NVDA"
+
+    def test_shock_on_a_small_position_is_not_a_lead(self) -> None:
+        assert build_lead([self._shocked(weight="0.05")]) == []
+
+    def test_shock_without_a_position_is_not_a_lead(self) -> None:
+        signal = LeadSignal(
+            symbol="NVDA",
+            price_delta_pct=Percent(Decimal("-0.4")),
+            shock_pct=Percent(Decimal("-6.2")),
+        )
+
+        assert build_lead([signal]) == []

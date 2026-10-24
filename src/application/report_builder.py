@@ -83,7 +83,10 @@ from src.domain.provenance import build_provenance_badges
 from src.domain.quota import QuotaAlert
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
+    Percent,
+    Ratio,
     ValuationVerdict,
+    to_percent,
 )
 
 __all__ = [
@@ -157,6 +160,7 @@ def to_lead_signals(
     consensus_shifts: Sequence[tuple[str, ConsensusShift]] | None = None,
     alpha_signals: Mapping[str, AlphaSignals] | None = None,
     insider_lead_window: InsiderLeadWindow | None = None,
+    shock_alerts: Sequence[StoredShockAlert] | None = None,
 ) -> list[LeadSignal]:
     """Mapuje DTO raportu na domenowe `LeadSignal` (#1).
 
@@ -173,6 +177,8 @@ def to_lead_signals(
     DAT-21: `alpha_signals` daje znaczący zakup insidera (próg z kapitalizacji)
     jako gotowy tekst — ten sam co linia w sekcji alfy. `insider_lead_window`
     wpuszcza do leadu tylko filing z ostatnich N dni; None = bez okna.
+    ALR-06: `shock_alerts` (szoki z watcha od ostatniego maila) dają sygnałowi
+    największy szok symbolu — na pozycji z portfela to kandydat leadu.
     """
     # MAIL-15: etykieta trafia do leadu i tematu maila — po polsku, ze wspólnego
     # słownika domeny („trafiona prognoza wzrostu”), nie „predykcja BULLISH”.
@@ -184,6 +190,7 @@ def to_lead_signals(
         for r in resolved
     }
     shifts = dict(consensus_shifts or ())
+    shocks = _largest_shocks(shock_alerts or ())
     signals: list[LeadSignal] = []
     for r in results:
         if r.delta is None:
@@ -203,9 +210,20 @@ def to_lead_signals(
                 insider_buy_label=_insider_buy_label(
                     alpha_signals, r.symbol, insider_lead_window
                 ),
+                shock_pct=shocks.get(r.symbol),
             )
         )
     return signals
+
+
+def _largest_shocks(alerts: Sequence[StoredShockAlert]) -> dict[str, Percent]:
+    """ALR-06: symbol → największy |szok| od ostatniego maila jako PROCENT."""
+    largest: dict[str, Decimal] = {}
+    for alert in alerts:
+        delta = Decimal(str(alert.delta))
+        if alert.symbol not in largest or abs(delta) > abs(largest[alert.symbol]):
+            largest[alert.symbol] = delta
+    return {symbol: to_percent(Ratio(delta)) for symbol, delta in largest.items()}
 
 
 def _insider_buy_label(
@@ -264,6 +282,7 @@ def build_cycle_lead(
         context.consensus_shifts,
         context.alpha_signals,
         context.insider_lead_window,
+        context.shock_alerts,
     )
     # ALR-05: zmiana reżimu (tylko z histerezy) tuż pod CRITICAL quota.
     regime_change = context.regime.change if context.regime is not None else None

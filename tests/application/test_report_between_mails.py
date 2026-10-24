@@ -6,7 +6,12 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from src.application.ports import StoredShockAlert
-from src.application.report_builder import ReportContext, SymbolResult, build_html_report
+from src.application.report_builder import (
+    ReportContext,
+    SymbolResult,
+    build_cycle_lead,
+    build_html_report,
+)
 
 AT = datetime(2026, 10, 15, 5, 30, tzinfo=UTC)
 NVDA_SHOCK = StoredShockAlert(
@@ -50,3 +55,34 @@ def test_shock_section_hides_without_alerts() -> None:
 
         assert "Między mailami" not in html
         assert "MIĘDZY MAILAMI" not in text
+
+
+def test_shock_on_a_held_position_leads_the_mail() -> None:
+    from src.domain.portfolio import Portfolio, Position
+
+    portfolio = Portfolio(
+        positions=(
+            Position(
+                symbol="NVDA",
+                quantity=Decimal("10"),
+                purchase_price=Decimal("100"),
+                purchase_date=datetime(2026, 3, 2, tzinfo=UTC).date(),
+            ),
+        ),
+        as_of=AT,
+    )
+    results = [
+        SymbolResult(
+            symbol="NVDA",
+            status="ignored",
+            delta=Decimal("-0.004"),
+            current_price=Decimal("131.20"),
+        )
+    ]
+    smaller = StoredShockAlert("NVDA", 0.031, "UP", datetime(2026, 10, 14, 9, 0, tzinfo=UTC))
+
+    lead = build_cycle_lead(
+        results, ReportContext(shock_alerts=[smaller, NVDA_SHOCK], user_portfolio=portfolio)
+    )
+
+    assert [item.headline for item in lead] == ["NVDA (100% portfela) -6,2% między mailami"]

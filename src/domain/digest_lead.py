@@ -10,6 +10,7 @@ Kolejność priorytetów (malejąco) jest wiążąca i zamrożona testami:
     2. zmiana reżimu rynku          — wejście w RISK_OFF albo wyjście (ALR-05)
     3. sygnał przeciw Twojej pozycji — rada SPRZEDAJ na pozycji ≥ 10% portfela
     4. ruch Twojej pozycji          — pozycja ≥ 10% portfela ponad bramką volatility
+                                      albo jej szok z watcha od ostatniego maila (ALR-06)
     5. rada PODZIELONA + duże |Δ|  — fundamentalny brak zgody co do kierunku
     6. znaczący zakup insidera      — kod P officera ponad próg z kapitalizacji (DAT-21)
     7. rada się ODWRÓCIŁA (FLIP)   — KUP↔SPRZEDAJ względem poprzedniego cyklu
@@ -122,6 +123,8 @@ class LeadSignal:
     crossed_volatility_gate: bool = False
     consensus_shift: ConsensusShift | None = None
     insider_buy_label: str | None = None
+    # ALR-06: największy szok z watcha od ostatniego maila (PROCENT); None = brak.
+    shock_pct: Percent | None = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +220,21 @@ def _position_candidate(signal: LeadSignal) -> _Candidate | None:
             symbol=signal.symbol,
         )
         return _Candidate(score=_POSITION_MOVE_SCORE + impact, item=item)
+
+    # ALR-06: szok z watcha od ostatniego maila — ruch pozycji, który mógł
+    # przejść bokiem (push bez Telegrama), choć cykl jest już pod bramką.
+    if signal.shock_pct is not None:
+        shock_impact = _magnitude(signal.shock_pct) * float(weight)
+        item = LeadItem(
+            icon="⚡",
+            headline=(
+                f"{signal.symbol} ({_format_weight(weight)} portfela) "
+                f"{_format_delta(signal.shock_pct)} między mailami"
+            ),
+            detail=f"Szok z watcha od ostatniego maila; ruch tego cyklu {delta_label}.",
+            symbol=signal.symbol,
+        )
+        return _Candidate(score=_POSITION_MOVE_SCORE + shock_impact, item=item)
     return None
 
 
