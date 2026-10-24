@@ -11,6 +11,8 @@ i publicznych logów GHA. Adaptery z sekretem w URL-u wołają więc
 
 ARCH-33: `translate_request_error` / `translate_http_error` zamieniają wyjątek
 `requests` na taksonomię portów (`src.application.errors`), zachowując jego typ.
+Adaptery wołają je przez `translated_get`, `raise_for_status_translated`
+i `json_payload` — sieć, status i nieparsowalna treść wychodzą wtedy w taksonomii.
 
 NIEZ-31: każda sesja ma circuit breaker per host na czas procesu
 (`CircuitBreakerRegistry`, wspólny `process_circuits()`): po
@@ -39,7 +41,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from src.application.errors import PortError, ProviderUnavailable, QuotaExhausted
+from src.application.errors import MalformedPayload, PortError, ProviderUnavailable, QuotaExhausted
 from src.application.http_metering import RATE_LIMITED, HttpCallMeter
 from src.application.ports import CircuitState, CircuitStatePort
 from src.infrastructure.error_translation import as_port_error
@@ -449,3 +451,28 @@ def translate_request_error(exc: requests.RequestException) -> requests.RequestE
     dostawca, reszta (np. zły URL z konfiguracji) to ogólny błąd portu."""
     transport = isinstance(exc, requests.ConnectionError | requests.Timeout)
     return as_port_error(exc, ProviderUnavailable if transport else PortError)
+
+
+def translated_get(session: requests.Session, url: str, **kwargs: Any) -> requests.Response:
+    """`safe_get`, którego błąd sieci wychodzi w taksonomii (ARCH-33)."""
+    try:
+        return safe_get(session, url, **kwargs)
+    except requests.RequestException as exc:
+        raise translate_request_error(exc) from None
+
+
+def raise_for_status_translated(response: requests.Response) -> None:
+    """`raise_for_status_redacted` z `HTTPError` w taksonomii statusu (ARCH-33)."""
+    try:
+        raise_for_status_redacted(response)
+    except requests.HTTPError as exc:
+        raise translate_http_error(exc, response.status_code) from None
+
+
+def json_payload(response: requests.Response) -> Any:
+    """Treść JSON odpowiedzi; nieparsowalna → `MalformedPayload`, wciąż `ValueError`
+    (i `requests.JSONDecodeError`), więc dotychczasowi wywołujący działają (ARCH-33)."""
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise as_port_error(exc, MalformedPayload) from None

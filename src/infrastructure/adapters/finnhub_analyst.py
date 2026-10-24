@@ -8,9 +8,10 @@ Dwa darmowe-/premium-owe endpointy Finnhub:
         → {"targetMedian": .., "targetMean": ..}; bywa płatny (403) — wtedy
           po prostu zostawiamy price_target = None, konsensus i tak zwracamy.
 
-Źródło opcjonalne (alpha): adapter NIGDY nie rzuca. Każdy błąd — sieci,
-parsowania, braku pola, non-200 na rekomendacji — kończy się zwróceniem None.
-Cienki I/O; cała logika oceny (rating/upside) siedzi w domenie.
+Źródło opcjonalne (alpha): błąd dostawcy — sieć, nieparsowalna treść, brak pola,
+non-200 na rekomendacji — kończy się zwróceniem None. ARCH-33: łapiemy wyłącznie
+przetłumaczone błędy dostawcy (`PortError`), więc błąd programisty nie udaje braku
+konsensusu. Cienki I/O; cała logika oceny (rating/upside) siedzi w domenie.
 
 DAT-12: każdy request bierze token ze wspólnego limitera Finnhub procesu, a 429
 (QuotaAlert) i 401/403 (jeden WARNING) przestały być ciche.
@@ -23,11 +24,17 @@ from typing import Any
 
 import requests
 
+from src.application.errors import PortError
 from src.application.ports import AnalystConsensusPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.analyst_consensus import AnalystConsensus
 from src.infrastructure.adapters._finnhub_common import FinnhubStatusWatcher
-from src.infrastructure.adapters._http import RateLimiter, build_session, safe_get
+from src.infrastructure.adapters._http import (
+    RateLimiter,
+    build_session,
+    json_payload,
+    translated_get,
+)
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10.0
@@ -72,8 +79,8 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
                 strong_sell=_as_int(snapshot.get("strongSell")),
                 price_target=price_target,
             )
-        except Exception:
-            # Źródło opcjonalne — pojedynczy symbol nie może wywalić cyklu.
+        except PortError:
+            # Źródło opcjonalne — awaria dostawcy dla symbolu nie może wywalić cyklu.
             logger.exception("Finnhub analyst consensus failed for %s", symbol)
             return None
 
@@ -82,7 +89,7 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
         response = self._fetch("stock/recommendation", symbol)
         if response.status_code != 200:
             return None
-        payload = response.json()
+        payload = json_payload(response)
         if not isinstance(payload, list) or not payload:
             return None
         # Bierzemy snapshot o maksymalnym "period" (najświeższy miesiąc).
@@ -97,7 +104,7 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
         if response.status_code != 200:
             # price-target bywa płatny → 403; nie blokuje to konsensusu.
             return None
-        payload = response.json()
+        payload = json_payload(response)
         if not isinstance(payload, dict):
             return None
         target = payload.get("targetMedian")
@@ -109,7 +116,7 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
     def _fetch(self, endpoint: str, symbol: str) -> requests.Response:
         if self._rate_limiter is not None:
             self._rate_limiter.acquire()
-        response = safe_get(
+        response = translated_get(
             self._session,
             f"{self._base_url}/{endpoint}",
             params={"symbol": symbol, "token": self._api_key},

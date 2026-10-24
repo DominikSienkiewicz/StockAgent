@@ -364,3 +364,67 @@ class TestFailedRequestsBySource:
         }
 
         assert failed_requests_by_source(snapshot) == {"EDGAR": 3, "Reddit": 1}
+
+
+class TestTranslatedHelpers:
+    """ARCH-33: wspólne pomocniki adapterów HTTP — błąd sieci, status i śmieciowa
+    treść wychodzą w taksonomii portów, wciąż jako typy `requests` (bez sekretu)."""
+
+    URL = "https://api.example.test/v1/data"
+
+    @staticmethod
+    def _response(status: int, body: bytes = b"{}") -> requests.Response:
+        response = requests.Response()
+        response.status_code = status
+        response.reason = "Error"
+        response.url = "https://api.example.test/v1/data?apikey=secret-value-123"
+        response._content = body
+        return response
+
+    def test_transport_error_is_provider_unavailable_without_secret(self, mocker):
+        from src.application.errors import ProviderUnavailable
+        from src.infrastructure.adapters._http import translated_get
+
+        mocker.patch(
+            "requests.Session.get",
+            side_effect=requests.ReadTimeout("Read timed out: /v1/data?apikey=secret-value-123"),
+        )
+
+        with pytest.raises(ProviderUnavailable) as excinfo:
+            translated_get(requests.Session(), self.URL, timeout=1)
+
+        assert isinstance(excinfo.value, requests.ReadTimeout)
+        assert "secret-value-123" not in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        ("status", "kind_name"),
+        [(429, "QuotaExhausted"), (503, "ProviderUnavailable"), (404, "PortError")],
+    )
+    def test_error_status_maps_to_its_kind(self, status: int, kind_name: str):
+        from src.application import errors
+        from src.infrastructure.adapters._http import raise_for_status_translated
+
+        with pytest.raises(getattr(errors, kind_name)) as excinfo:
+            raise_for_status_translated(self._response(status))
+
+        assert isinstance(excinfo.value, requests.HTTPError)
+        assert "secret-value-123" not in str(excinfo.value)
+
+    def test_success_status_does_not_raise(self):
+        from src.infrastructure.adapters._http import raise_for_status_translated
+
+        raise_for_status_translated(self._response(200))
+
+    def test_unparseable_body_is_malformed_payload(self):
+        from src.application.errors import MalformedPayload
+        from src.infrastructure.adapters._http import json_payload
+
+        with pytest.raises(MalformedPayload) as excinfo:
+            json_payload(self._response(200, b"<html>maintenance</html>"))
+
+        assert isinstance(excinfo.value, requests.JSONDecodeError)
+
+    def test_parsed_body_is_returned(self):
+        from src.infrastructure.adapters._http import json_payload
+
+        assert json_payload(self._response(200, b'{"a": 1}')) == {"a": 1}

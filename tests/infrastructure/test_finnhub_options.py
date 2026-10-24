@@ -242,3 +242,14 @@ def test_option_chain_request_takes_a_token_from_the_shared_limiter(mocker) -> N
     adapter.get_options_flow("AAPL")
 
     limiter.acquire.assert_called_once()
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: adapter łapie wyłącznie przetłumaczone błędy dostawcy (sieć, status,
+    śmieciowa treść → None); błąd programisty nie znika jako „brak opcji”."""
+
+    def test_programming_error_is_not_swallowed(self, adapter, mocker) -> None:
+        mocker.patch("requests.Session.get", side_effect=TypeError("bug in the adapter"))
+
+        with pytest.raises(TypeError, match="bug in the adapter"):
+            adapter.get_options_flow("AAPL")

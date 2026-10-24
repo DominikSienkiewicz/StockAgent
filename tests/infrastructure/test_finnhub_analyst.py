@@ -299,3 +299,25 @@ def test_every_request_takes_a_token_from_the_shared_limiter(mocker) -> None:
     adapter.get_consensus("AAPL")
 
     assert limiter.acquire.call_count == 2
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: adapter łapie wyłącznie przetłumaczone błędy dostawcy (sieć, status,
+    śmieciowa treść → None); błąd programisty nie znika jako „brak konsensusu”."""
+
+    def test_unparseable_recommendation_body_degrades_to_none(
+        self, adapter: FinnhubAnalystAdapter, mocker
+    ) -> None:
+        broken = _ok_response([])
+        broken.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
+        mocker.patch("requests.Session.get", return_value=broken)
+
+        assert adapter.get_consensus("AAPL") is None
+
+    def test_programming_error_is_not_swallowed(
+        self, adapter: FinnhubAnalystAdapter, mocker
+    ) -> None:
+        mocker.patch("requests.Session.get", side_effect=TypeError("bug in the adapter"))
+
+        with pytest.raises(TypeError, match="bug in the adapter"):
+            adapter.get_consensus("AAPL")
