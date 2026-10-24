@@ -5630,3 +5630,201 @@ class TestShadowPredictions:
         )
 
         assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# WIA-59: append-only paper ledger (migracja 073)
+# ---------------------------------------------------------------------------
+
+
+class TestPaperLedger:
+    """Repozytorium dopisuje pozycję za bieżącą głową łańcucha (hash liczy domena),
+    ponawia przy wyścigu o głowę (23505 / 40001), zamyka pozycję raz i oddaje
+    ledger jako wiersze domeny — z hashami, które da się zweryfikować."""
+
+    MONDAY = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    @classmethod
+    def _entry(cls, prediction_id: str = "11111111-1111-1111-1111-111111111111"):
+        from src.domain.paper_ledger import PaperTradeEntry, TradeSide
+
+        return PaperTradeEntry(
+            prediction_id=prediction_id,
+            symbol="NVDA",
+            side=TradeSide.LONG,
+            entry_price=Decimal("100"),
+            entry_ts=cls.MONDAY,
+            cost_bps=Decimal("10"),
+        )
+
+    @staticmethod
+    def _head(chain: MagicMock, rows: list[dict[str, Any]]) -> None:
+        response = MagicMock()
+        response.data = rows
+        chain.select.return_value.order.return_value.limit.return_value.execute.return_value = (
+            response
+        )
+
+    def test_first_trade_chains_from_the_genesis_hash(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.paper_ledger import GENESIS_HASH, chain_entry
+
+        chain = mock_client.table.return_value
+        self._head(chain, [])
+        chain.upsert.return_value.execute.return_value.data = [{"seq": 1}]
+
+        row = repo.append_paper_trade(self._entry())
+
+        assert row == chain_entry(self._entry(), GENESIS_HASH)
+        record = chain.upsert.call_args.args[0]
+        assert record["prev_hash"] == GENESIS_HASH
+        assert record["row_hash"] == row.row_hash
+        assert record["entry_price"] == "100.0000"
+        assert record["side"] == "long"
+        assert "ledger_version" not in record
+        assert chain.upsert.call_args.kwargs == {
+            "on_conflict": "prediction_id",
+            "ignore_duplicates": True,
+        }
+
+    def test_trade_chains_after_the_current_head(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        chain = mock_client.table.return_value
+        self._head(chain, [{"seq": 7, "row_hash": "a" * 64}])
+        chain.upsert.return_value.execute.return_value.data = [{"seq": 8}]
+
+        row = repo.append_paper_trade(self._entry())
+
+        assert row is not None
+        assert row.prev_hash == "a" * 64
+
+    def test_lost_race_for_the_head_retries_from_the_new_head(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        chain = mock_client.table.return_value
+        heads = [MagicMock(data=[{"seq": 7, "row_hash": "a" * 64}]),
+                 MagicMock(data=[{"seq": 8, "row_hash": "b" * 64}])]
+        chain.select.return_value.order.return_value.limit.return_value.execute.side_effect = heads
+        chain.upsert.return_value.execute.side_effect = [
+            APIError({"code": "40001", "message": "not the chain head"}),
+            MagicMock(data=[{"seq": 9}]),
+        ]
+
+        row = repo.append_paper_trade(self._entry())
+
+        assert row is not None
+        assert row.prev_hash == "b" * 64
+
+    def test_trade_already_in_the_ledger_is_kept(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Re-run w tej samej godzinie: pierwsza decyzja zostaje (append-only).
+        chain = mock_client.table.return_value
+        self._head(chain, [{"seq": 7, "row_hash": "a" * 64}])
+        chain.upsert.return_value.execute.return_value.data = []
+
+        assert repo.append_paper_trade(self._entry()) is None
+
+    def test_contention_beyond_the_retries_is_a_port_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.application.errors import PortError
+
+        chain = mock_client.table.return_value
+        self._head(chain, [{"seq": 7, "row_hash": "a" * 64}])
+        chain.upsert.return_value.execute.side_effect = APIError(
+            {"code": "23505", "message": "duplicate key value violates unique constraint"}
+        )
+
+        with pytest.raises(PortError):
+            repo.append_paper_trade(self._entry())
+        assert chain.upsert.return_value.execute.call_count == 3
+
+    def test_close_updates_only_an_open_trade(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.paper_ledger import ExitReason, PaperTradeClose
+
+        _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [])
+        close = PaperTradeClose(
+            exit_price=Decimal("106.0000"),
+            exit_ts=datetime(2026, 10, 20, 5, 30, tzinfo=UTC),
+            pnl=Decimal("0.06"),
+            exit_reason=ExitReason.SETTLED,
+        )
+
+        repo.close_paper_trade("pred-1", close)
+
+        update = mock_client.table.return_value.update
+        assert update.call_args.args[0] == {
+            "exit_price": "106.0000",
+            "exit_ts": "2026-10-20T05:30:00.000000+00:00",
+            "pnl": "0.06",
+            "exit_reason": "settled",
+        }
+        update.return_value.eq.assert_called_once_with("prediction_id", "pred-1")
+        update.return_value.eq.return_value.is_.assert_called_once_with("exit_price", "null")
+
+    def test_ledger_rows_round_trip_into_a_verifiable_chain(
+        self, repo: SupabaseRepository, mock_client: MagicMock, mocker: Any
+    ) -> None:
+        from src.domain.paper_ledger import (
+            GENESIS_HASH,
+            ExitReason,
+            chain_entry,
+            first_broken_row,
+        )
+
+        first = chain_entry(self._entry("p-1"), GENESIS_HASH)
+        second = chain_entry(self._entry("p-2"), first.row_hash)
+        rows = [
+            {
+                "seq": seq, "prediction_id": row.entry.prediction_id, "symbol": "NVDA",
+                "side": "long", "entry_price": 100.0, "entry_ts": "2026-10-19T05:30:00+00:00",
+                "weight": 1.0, "cost_bps": 10.0, "prev_hash": row.prev_hash,
+                "row_hash": row.row_hash, **close,
+            }
+            for seq, row, close in (
+                (1, first, {"exit_price": 106.0, "exit_ts": "2026-10-20T05:30:00+00:00",
+                            "pnl": 0.06, "exit_reason": "settled"}),
+                (2, second, {"exit_price": None, "exit_ts": None, "pnl": None,
+                             "exit_reason": None}),
+            )
+        ]
+        mocker.patch(
+            "src.infrastructure.adapters.supabase_repo._paginate",
+            side_effect=lambda _query: [dict(row) for row in rows],
+        )
+
+        trades = repo.get_paper_trades(30)
+
+        assert [trade.seq for trade in trades] == [1, 2]
+        assert first_broken_row([trade.row for trade in trades]) is None
+        assert trades[0].close is not None
+        assert trades[0].close.exit_reason is ExitReason.SETTLED
+        assert trades[0].close.exit_price == Decimal("106.0")
+        assert trades[1].close is None
+
+    def test_head_is_the_last_row_of_the_chain(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.paper_ledger import LedgerHead
+
+        chain = mock_client.table.return_value
+        self._head(chain, [{"seq": 7, "row_hash": "a" * 64}])
+
+        assert repo.get_paper_ledger_head() == LedgerHead(seq=7, row_hash="a" * 64)
+        chain.select.return_value.order.assert_called_with("seq", desc=True)
+
+    def test_empty_ledger_has_no_head(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._head(mock_client.table.return_value, [])
+
+        assert repo.get_paper_ledger_head() is None

@@ -24,6 +24,13 @@ from src.domain.macro_series import MacroSeriesSnapshot
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.model_scorecard import TargetUnit, TrainingReport
 from src.domain.options_flow import OptionsFlowSnapshot
+from src.domain.paper_ledger import (
+    LedgerHead,
+    LedgerRow,
+    LedgerTrade,
+    PaperTradeClose,
+    PaperTradeEntry,
+)
 from src.domain.persona_track_record import PersonaScoring, PersonaVoteOutcome
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
@@ -849,6 +856,27 @@ class RepositoryPort(ABC):
         """DAT-23 — podejrzenie splitu w `corporate_actions` (migracja 062), raz na
         symbol, rodzaj i dzień UTC wykrycia (powtórka cyklu nie dubluje wiersza).
         Wołane z `check_price` tylko za flagą `split_detection_enabled`."""
+
+    # WIA-59 — append-only paper ledger `paper_trades` (migracja 073). Wołający
+    # pilnuje flagi `paper_ledger_enabled` (bez migracji tabeli nie ma).
+
+    @abstractmethod
+    def append_paper_trade(self, entry: PaperTradeEntry) -> LedgerRow | None:
+        """Dopisuje pozycję za bieżącą głową łańcucha (hash liczy domena) i zwraca
+        wiersz łańcucha. Wyścig o głowę (równoległe symbole) ponawia od nowej głowy;
+        pozycja tej predykcji już w ledgerze → None (pierwsza decyzja zostaje)."""
+
+    @abstractmethod
+    def close_paper_trade(self, prediction_id: str, close: PaperTradeClose) -> None:
+        """Zamyka OTWARTĄ pozycję predykcji (raz); zamkniętej nie dotyka."""
+
+    @abstractmethod
+    def get_paper_trades(self, days: int) -> list[LedgerTrade]:
+        """Wiersze ledgera z wejściem w ostatnich `days` dniach, w kolejności łańcucha."""
+
+    @abstractmethod
+    def get_paper_ledger_head(self) -> LedgerHead | None:
+        """Głowa łańcucha (wiersz o największym `seq`); pusty ledger → None."""
 
 
 class ReturnScaleUnavailableError(RuntimeError):

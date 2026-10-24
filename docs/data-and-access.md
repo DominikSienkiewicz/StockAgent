@@ -19,7 +19,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 
 | Relation | Migrations | Data class | RLS after `038` | Written by | Read by |
 |---|---|---|---|---|---|
-| `prediction_logs` | `001`, columns added up to `043`, `055` (`stale_quote`), `059` (session-close settlement) | Model output: predictions, council verdicts, receipts, settlements, embeddings | on, no policies | Fast Loop (prediction, settlement, calibration, attestation reveal) | Fast Loop (reflection, RAG, report, track record), tools (`evaluate`), Scorecard (public scorecard) |
+| `prediction_logs` | `001`, columns added up to `043`, `055` (`stale_quote`), `059` (session-close settlement), `072` (`entry_price`) | Model output: predictions, council verdicts, receipts, settlements, embeddings | on, no policies | Fast Loop (prediction, settlement, calibration, attestation reveal) | Fast Loop (reflection, RAG, report, track record), tools (`evaluate`), Scorecard (public scorecard) |
 | `price_snapshots` | `002`, `013` | Market data: one price per symbol and hour | on, no policies | Fast Loop (every cycle) | Fast Loop, Shock Watch (fallback reference price when the free quote has no fresh daily change, ALR-02), Deadman (database probe), Scorecard (IVV benchmark) |
 | `ml_feature_store` | materialized view, `001` rebuilt in `004`, `012`, `022`, `026`, `027`, `039`, `047`, `050`, `058` | Derived training features from `prediction_logs`; from `058` without settlements on a stale quote (`stale_quote IS NOT TRUE`, DAT-14) | not applicable (a materialized view has no RLS; grants only) | Slow Loop and backtest refresh it (`refresh_ml_feature_store`) | Slow Loop, backtest |
 | `fundamentals_cache` | `006`, `056` (`market_cap`) | Market data: Alpha Vantage fundamentals cache | on, no policies | Fast Loop | Fast Loop |
@@ -40,6 +40,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `digests` | `061` | Model output: index of the private digest archive (MAIL-24) — one row per cycle with the subject, the lead and the top signals (tickers and labels, no amounts); the full HTML sits in the private Storage bucket `digests` | on, no policies | Fast Loop (`digest_archive_enabled`) | nobody in the app yet |
 | `corporate_actions` | `062` | Market data: suspected stock splits — the quote's previous close against the last price snapshot gave a split ratio (DAT-23), one row per symbol, kind and UTC day | on, no policies | Fast Loop (`split_detection_enabled`) | nobody in the app yet |
 | `shadow_predictions` | `075` | Model output: the champion's and the challengers' forecasts of the ML leg per saved prediction (model name, weights sha256, return or probability, ML-33) | on, no policies | Fast Loop (`shadow_predictions_enabled`) | Slow Loop (promotion verdict in the step summary) |
+| `paper_trades` | `073` | Model output: the append-only paper ledger (WIA-59) — one paper position per saved prediction (side, entry price and time, cost), closed once at settlement; `row_hash = sha256(canonical entry + prev_hash)` chains the rows, triggers allow only the one-time close and refuse `DELETE` and `TRUNCATE` | on, no policies; `service_role` without `DELETE` and `TRUNCATE` | Fast Loop (`paper_ledger_enabled`: entry in save, close in reflect) | Fast Loop (equity curve, chain head for publication) |
 
 The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges) except `schema_version()`. Migration `070` (BEZ-18) pins `search_path = public, extensions, pg_catalog` on `match_news_embeddings`, `persona_accuracy_weights` and `persona_accuracy_stats`, so a call from a session with another path cannot swap in a same-named object; `refresh_ml_feature_store`, `persona_vote_outcomes` and the trigger function still run with the caller's path:
 
@@ -54,6 +55,7 @@ The functions in `public`, all `SECURITY INVOKER` (they run with the caller's pr
 | `persona_scoring_stats(int, text[])` | `065` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_brier_ranking_enabled`) | `service_role` only |
 | `stamp_prediction_settled_at()` | `029` | trigger on `prediction_logs` | `service_role` only; the trigger fires for any writer |
 | `schema_version()` | `071` | Fast Loop and Slow Loop at start (RPC, NIEZ-30) | `service_role` only. `SECURITY DEFINER` with `search_path = ''`: it reads `supabase_migrations.schema_migrations`, which `service_role` cannot, and returns only the highest numeric version (`NULL` when the registry is missing or empty) |
+| `paper_trades_chain_head()`, `paper_trades_close_only()`, `paper_trades_append_only()` | `073` | triggers on `paper_trades` | nobody; the triggers fire for any writer |
 
 `scripts/prod-state-check.sh` reads several of these relations with plain `GET` requests and
 the same `SUPABASE_KEY`; it writes nothing and calls no function.

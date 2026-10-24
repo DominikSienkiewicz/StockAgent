@@ -105,6 +105,7 @@ MIGRATION_FILES = [
     "070_rpc_search_path.sql",
     "071_schema_version.sql",
     "072_prediction_entry_price.sql",
+    "073_paper_trades.sql",
     "075_shadow_predictions.sql",
 ]
 
@@ -3596,6 +3597,138 @@ class TestMigration072PredictionEntryPrice:
                 "AND pg_get_constraintdef(oid) LIKE '%entry_price%'"
             )
             assert cur.fetchone() == (1,)
+
+
+_GENESIS = "0" * 64
+
+
+def _open_trade(
+    cur: psycopg2.extensions.cursor, symbol: str, prev_hash: str, row_hash: str
+) -> int:
+    """Predykcja w `prediction_logs` (FK) i jej otwarta pozycja w ledgerze; zwraca `seq`."""
+    cur.execute(
+        "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+        "VALUES (%s, '2026-10-19T05:30:00+00:00', 100.0) RETURNING id",
+        (symbol,),
+    )
+    prediction_id = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO paper_trades (prediction_id, symbol, side, entry_price, entry_ts, "
+        "weight, cost_bps, prev_hash, row_hash) VALUES "
+        "(%s, %s, 'long', 100.0, '2026-10-19T05:30:00+00:00', 1, 10, %s, %s) RETURNING seq",
+        (prediction_id, symbol, prev_hash, row_hash),
+    )
+    return int(cur.fetchone()[0])
+
+
+_CLOSE = (
+    "UPDATE paper_trades SET exit_price = %s, exit_ts = '2026-10-20T05:30:00+00:00', "
+    "pnl = 0.06, exit_reason = 'settled' WHERE seq = %s"
+)
+
+
+@pytest.mark.containers
+class TestMigration073PaperTrades:
+    """WIA-59: append-only paper ledger — łańcuch liniowy od 64 zer, pozycja
+    zamykana raz, bez DELETE i TRUNCATE; tabela zamknięta dla ról publicznych."""
+
+    def test_trades_chain_from_the_genesis_hash(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert _columns(migrated_pg_conn, "paper_trades") == {
+            "seq", "prediction_id", "symbol", "side", "entry_price", "entry_ts", "weight",
+            "cost_bps", "prev_hash", "row_hash", "exit_price", "exit_ts", "pnl",
+            "exit_reason", "recorded_at",
+        }
+        with _rolled_back(migrated_pg_conn) as cur:
+            _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            _open_trade(cur, "PT_B", "a" * 64, "b" * 64)
+            cur.execute("SELECT prev_hash, row_hash FROM paper_trades ORDER BY seq")
+            assert cur.fetchall() == [(_GENESIS, "a" * 64), ("a" * 64, "b" * 64)]
+
+    def test_insert_after_a_stale_head_is_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        # Drugi zapis z tą samą głową (równoległe symbole) rozgałęziłby łańcuch.
+        with _rolled_back(migrated_pg_conn) as cur:
+            _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            with pytest.raises(psycopg2.errors.SerializationFailure):
+                _open_trade(cur, "PT_B", _GENESIS, "b" * 64)
+
+    def test_paper_trades_rejects_update_of_closed_trade(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            seq = _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            cur.execute(_CLOSE, (106.0, seq))
+            cur.execute(
+                "SELECT exit_price, pnl, exit_reason FROM paper_trades WHERE seq = %s", (seq,)
+            )
+            assert cur.fetchone() == (Decimal("106.0000"), Decimal("0.06000000"), "settled")
+            with pytest.raises(psycopg2.errors.RaiseException):
+                cur.execute(_CLOSE, (90.0, seq))
+
+    @pytest.mark.parametrize(
+        "update",
+        [
+            "UPDATE paper_trades SET side = 'short' WHERE seq = %s",
+            "UPDATE paper_trades SET exit_price = 106, exit_ts = now(), pnl = 0.06, "
+            "exit_reason = 'settled', entry_price = 90 WHERE seq = %s",
+        ],
+    )
+    def test_entry_columns_are_immutable(
+        self, migrated_pg_conn: psycopg2.extensions.connection, update: str
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            seq = _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            with pytest.raises(psycopg2.errors.RaiseException):
+                cur.execute(update, (seq,))
+
+    def test_partial_close_is_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            seq = _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            with pytest.raises(psycopg2.errors.CheckViolation):
+                cur.execute("UPDATE paper_trades SET exit_price = 106 WHERE seq = %s", (seq,))
+
+    @pytest.mark.parametrize("statement", ["DELETE FROM paper_trades", "TRUNCATE paper_trades"])
+    def test_ledger_is_append_only(
+        self, migrated_pg_conn: psycopg2.extensions.connection, statement: str
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            with pytest.raises(psycopg2.errors.RaiseException):
+                cur.execute(statement)
+
+    def test_paper_trades_are_closed_to_public_roles_and_writable_by_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = 'paper_trades'::regclass")
+            assert cur.fetchone() == (True,)
+            public = [_has_table_privilege(cur, role, "paper_trades") for role in PUBLIC_API_ROLES]
+
+            _set_role(cur, "service_role")
+            seq = _open_trade(cur, "PT_SR", _GENESIS, "c" * 64)
+            cur.execute(_CLOSE, (106.0, seq))
+            cur.execute("SELECT exit_reason FROM paper_trades WHERE seq = %s", (seq,))
+            assert cur.fetchone() == ("settled",)
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("DELETE FROM paper_trades WHERE seq = %s", (seq,))
+
+        assert public == [False, False]
+
+    def test_073_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "073_paper_trades.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_trigger "
+                "WHERE tgrelid = 'paper_trades'::regclass AND NOT tgisinternal"
+            )
+            assert cur.fetchone() == (4,)
 
 
 def _full_analysis_record() -> dict[str, object]:

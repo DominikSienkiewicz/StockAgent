@@ -41,6 +41,18 @@ from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
+from src.domain.paper_ledger import (
+    GENESIS_HASH,
+    ExitReason,
+    LedgerHead,
+    LedgerRow,
+    LedgerTrade,
+    PaperTradeClose,
+    PaperTradeEntry,
+    TradeSide,
+    chain_entry,
+    utc_timestamp,
+)
 from src.domain.persona_track_record import (
     PersonaScoring,
     PersonaVoteOutcome,
@@ -627,6 +639,47 @@ def _persona_vote_outcome(row: Mapping[str, Any]) -> PersonaVoteOutcome | None:
         predicted_at=_optional_timestamp(row.get("predicted_at")),
         settled_at=_optional_timestamp(row.get("settled_at")),
     )
+
+
+# WIA-59 (migracja 073): append-only paper ledger.
+PAPER_TRADES_TABLE = "paper_trades"
+_PAPER_LEDGER_APPEND_ATTEMPTS = 3
+# Przegrany wyścig o głowę łańcucha: UNIQUE(prev_hash) albo trigger głowy (40001).
+_PAPER_LEDGER_CONFLICT_CODES = frozenset({"23505", "40001"})
+_PAPER_TRADE_COLUMNS = (
+    "seq, prediction_id, symbol, side, entry_price, entry_ts, weight, cost_bps, "
+    "prev_hash, row_hash, exit_price, exit_ts, pnl, exit_reason"
+)
+
+
+def _paper_trade_record(row: LedgerRow) -> dict[str, Any]:
+    """Wiersz `paper_trades` z tych samych wartości, które weszły do hasha."""
+    payload = row.entry.payload()
+    payload.pop("ledger_version")
+    return {**payload, "prev_hash": row.prev_hash, "row_hash": row.row_hash}
+
+
+def _ledger_trade(raw: Mapping[str, Any]) -> LedgerTrade:
+    """Wiersz bazy → wpis łańcucha domeny (ceny przez `str`, nigdy przez float)."""
+    entry = PaperTradeEntry(
+        prediction_id=str(raw["prediction_id"]),
+        symbol=str(raw["symbol"]),
+        side=TradeSide(raw["side"]),
+        entry_price=Decimal(str(raw["entry_price"])),
+        entry_ts=datetime.fromisoformat(str(raw["entry_ts"])),
+        cost_bps=Decimal(str(raw["cost_bps"])),
+        weight=Decimal(str(raw["weight"])),
+    )
+    row = LedgerRow(entry=entry, prev_hash=str(raw["prev_hash"]), row_hash=str(raw["row_hash"]))
+    close = None
+    if raw.get("exit_price") is not None:
+        close = PaperTradeClose(
+            exit_price=Decimal(str(raw["exit_price"])),
+            exit_ts=datetime.fromisoformat(str(raw["exit_ts"])),
+            pnl=Decimal(str(raw["pnl"])),
+            exit_reason=ExitReason(raw["exit_reason"]),
+        )
+    return LedgerTrade(seq=int(raw["seq"]), row=row, close=close)
 
 
 def _rows(response: Any) -> list[dict[str, Any]]:
@@ -2449,6 +2502,79 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         self._client.table(CORPORATE_ACTIONS_TABLE).upsert(
             record, on_conflict=_CORPORATE_ACTION_UNIQUE, ignore_duplicates=True
         ).execute()
+
+    @_translates_api_errors
+    def append_paper_trade(self, entry: PaperTradeEntry) -> LedgerRow | None:
+        # WIA-59: hash liczy domena za głową odczytaną tuż przed zapisem. Równoległy
+        # symbol z tą samą głową przegrywa w bazie (UNIQUE(prev_hash) → 23505 albo
+        # trigger głowy → 40001) i ponawia od nowej głowy. ON CONFLICT (prediction_id)
+        # DO NOTHING: re-run tej samej predykcji nie dopisuje drugiej pozycji.
+        conflict: APIError | None = None
+        for _attempt in range(_PAPER_LEDGER_APPEND_ATTEMPTS):
+            head = self.get_paper_ledger_head()
+            row = chain_entry(entry, GENESIS_HASH if head is None else head.row_hash)
+            try:
+                response = (
+                    self._client.table(PAPER_TRADES_TABLE)
+                    .upsert(
+                        _paper_trade_record(row),
+                        on_conflict="prediction_id",
+                        ignore_duplicates=True,
+                    )
+                    .execute()
+                )
+            except APIError as exc:
+                if exc.code not in _PAPER_LEDGER_CONFLICT_CODES:
+                    raise
+                conflict = exc
+                continue
+            return row if _rows(response) else None
+        assert conflict is not None
+        raise conflict
+
+    @_translates_api_errors
+    def close_paper_trade(self, prediction_id: str, close: PaperTradeClose) -> None:
+        # Trigger 073 pozwala zamknąć pozycję raz; filtr `exit_price IS NULL` robi
+        # z powtórnego rozliczenia (retry cyklu) no-op zamiast błędu triggera.
+        (
+            self._client.table(PAPER_TRADES_TABLE)
+            .update(
+                {
+                    "exit_price": str(Money(close.exit_price).for_storage().amount),
+                    "exit_ts": utc_timestamp(close.exit_ts),
+                    "pnl": str(close.pnl),
+                    "exit_reason": close.exit_reason.value,
+                }
+            )
+            .eq("prediction_id", prediction_id)
+            .is_("exit_price", "null")
+            .execute()
+        )
+
+    @_translates_api_errors
+    def get_paper_trades(self, days: int) -> list[LedgerTrade]:
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        query = (
+            self._client.table(PAPER_TRADES_TABLE)
+            .select(_PAPER_TRADE_COLUMNS)
+            .gte("entry_ts", cutoff.isoformat())
+            .order("seq")
+        )
+        return [_ledger_trade(row) for row in _paginate(query)]
+
+    @_translates_api_errors
+    def get_paper_ledger_head(self) -> LedgerHead | None:
+        response = (
+            self._client.table(PAPER_TRADES_TABLE)
+            .select("seq, row_hash")
+            .order("seq", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        return LedgerHead(seq=int(rows[0]["seq"]), row_hash=str(rows[0]["row_hash"]))
 
     def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:
         cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours)

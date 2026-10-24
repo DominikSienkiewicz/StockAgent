@@ -46,6 +46,13 @@ from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
+from src.domain.paper_ledger import (
+    LedgerHead,
+    LedgerRow,
+    LedgerTrade,
+    PaperTradeClose,
+    PaperTradeEntry,
+)
 from src.domain.persona_track_record import PersonaScoring, PersonaVoteOutcome
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
@@ -97,6 +104,8 @@ class ReadOnlyRepository(RepositoryPort):
     READ_METHODS: ClassVar[frozenset[str]] = frozenset({
         "get_last_price",
         "get_price_history",
+        "get_paper_trades",
+        "get_paper_ledger_head",
         "get_last_prediction_price",
         "get_latest_prediction",
         "get_latest_regime_state",
@@ -172,6 +181,8 @@ class ReadOnlyRepository(RepositoryPort):
         "settle_reference_call",
         "save_corporate_action",
         "save_shadow_predictions",
+        "append_paper_trade",
+        "close_paper_trade",
     })
 
     def __init__(self, delegate: RepositoryPort) -> None:
@@ -479,6 +490,19 @@ class ReadOnlyRepository(RepositoryPort):
 
     def save_corporate_action(self, action: SplitSuspicion) -> None:
         self._skipped.skip("save_corporate_action")
+
+    def append_paper_trade(self, entry: PaperTradeEntry) -> LedgerRow | None:
+        self._skipped.skip("append_paper_trade")
+        return None
+
+    def close_paper_trade(self, prediction_id: str, close: PaperTradeClose) -> None:
+        self._skipped.skip("close_paper_trade")
+
+    def get_paper_trades(self, days: int) -> list[LedgerTrade]:
+        return self._delegate.get_paper_trades(days)
+
+    def get_paper_ledger_head(self) -> LedgerHead | None:
+        return self._delegate.get_paper_ledger_head()
 
     def settle_reference_call(
         self,

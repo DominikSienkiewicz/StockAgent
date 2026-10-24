@@ -180,3 +180,20 @@ def close_trade(
         change = (exit_stored - entry_price) / entry_price
         pnl = (signal_of(trend_of(side)) * change).quantize(_PNL_SCALE, rounding=ROUND_HALF_UP)
     return PaperTradeClose(exit_price=exit_stored, exit_ts=at, pnl=pnl, exit_reason=reason)
+
+
+@dataclass(frozen=True)
+class LedgerTrade:
+    """Wiersz ledgera odczytany z bazy: łańcuch i zamknięcie (None = pozycja otwarta)."""
+
+    seq: int
+    row: LedgerRow
+    close: PaperTradeClose | None = None
+
+
+@dataclass(frozen=True)
+class LedgerHead:
+    """Głowa łańcucha — `row_hash` wiersza o największym `seq` (do publikacji)."""
+
+    seq: int
+    row_hash: str
