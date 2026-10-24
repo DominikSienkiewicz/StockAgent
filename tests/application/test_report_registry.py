@@ -24,6 +24,7 @@ MAIL_ORDER = (
     "rebaselined",
     "trade_signals",
     "risk_signals",
+    "predictions",
     "crypto",
     "accuracy_history",
     "budget_exhausted",

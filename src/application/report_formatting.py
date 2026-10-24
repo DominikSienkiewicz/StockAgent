@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import urllib.parse
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -489,10 +490,54 @@ def provenance_badges_html(badges: Sequence[ProvenanceBadge]) -> str:
     return "".join(chips)
 
 
+# ---------------------------------------------------------------------------
+# ⚠️  BEZPIECZEŃSTWO — escapowanie niezaufanych pól w treści maila
+# ---------------------------------------------------------------------------
+# Większość HTML-a maila składana jest f-stringami (moduły sekcji
+# `src/application/report_*.py`, np. `report_crypto`, `report_resolved`). W tym
+# trybie escapowanie NIE jest domyślne: KAŻDA wartość pochodząca z danych
+# zewnętrznych (tytuły/źródła newsów z Alpha Vantage, `reasoning`/`insight`
+# z LLM-a, `reflection_insight`, `error_message`, dowolny symbol/tekst spoza
+# whitelisty) MUSI być ręcznie owinięta w `escape(...)` (w modułach sekcji
+# importowane jako `_html`) przed wstawieniem do f-stringa. Jedno zapomniane
+# `_html()` = stored-HTML-injection sink.
+#
+# Regresje pilnujące tej reguły: `TestHtmlEscaping` oraz
+# `TestHtmlEscapingRegression` w tests/application/test_report_builder.py —
+# wstrzykują payload XSS w każde niezaufane pole i żądają zescapowanego outputu.
+# Dodając nowe pole z danych zewnętrznych: owiń je w `_html()` ORAZ dopisz tam
+# test regresyjny.
+#
+# Docelowo te sekcje migrują na autoescapowany Jinja env (jak council/valuation
+# w templates/), gdzie escapowanie jest domyślne, nie opt-in. Pierwszą sekcją
+# przeniesioną na ten model jest blok "Top newsy" (`_render_news_block_html`
+# w `report_reasoning.py`, renderowany przez `_env.from_string` z włączonym
+# autoescape). Pozostałe sekcje wciąż używają ręcznego `_html()`.
+# ---------------------------------------------------------------------------
+
+
 def escape(value: object) -> str:
     """Wartość do wstawienia w HTML maila składanego f-stringiem — każde pole
     z danych zewnętrznych (newsy, LLM, komunikaty błędów) przechodzi tędy."""
     return html.escape(str(value), quote=True)
+
+
+_SAFE_URL_SCHEMES = {"http", "https"}
+
+
+def safe_http_url(url: str | None) -> str | None:
+    """Zwraca ZWALIDOWANY surowy URL (http/https + netloc) albo None.
+
+    Waliduje schemat (tylko http/https) i obecność hosta — odrzuca m.in.
+    `javascript:`. NIE escapuje: autoescape Jinja zrobi to sam w atrybucie
+    `href`, więc unikamy podwójnego escapowania w template'cie.
+    """
+    if not url:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in _SAFE_URL_SCHEMES or not parsed.netloc:
+        return None
+    return url
 
 
 def section_h2(title: str) -> str:

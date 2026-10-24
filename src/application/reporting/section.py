@@ -70,6 +70,13 @@ class SectionInput:
     # WIA-35: trafność kierunkowa per symbol — chip przy sygnale i predykcji.
     symbol_chips: Mapping[str, str]
 
+    @property
+    def large_day(self) -> bool:
+        """MAIL-06: cykl ponad próg pełnych uzasadnień (`full_detail` nie jest
+        None) — Track Record też idzie w wersji zwartej, żeby zastrzeżenie
+        zmieściło się w ~100 KB."""
+        return self.full_detail is not None
+
 
 @dataclasses.dataclass(frozen=True)
 class ReportSection:

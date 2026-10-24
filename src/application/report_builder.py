@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import dataclasses
 import re
-import urllib.parse
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -31,51 +30,24 @@ from src.application.report_council_history import (
 from src.application.report_crypto import CRYPTO_SECTION
 from src.application.report_finops import render_finops_html, render_finops_text
 from src.application.report_formatting import (
-    COLD_START_FORECAST as _COLD_START_FORECAST,
-)
-from src.application.report_formatting import (
     DATA_SOURCES_FOOTER_PL,
     DEFAULT_DISPLAY_TIMEZONE,
     INVESTMENT_DISCLAIMER,
     PALETTE,
-    direction_pct,
     format_local,
+    safe_http_url,
 )
 from src.application.report_formatting import (
     company_label as _company_label,
 )
 from src.application.report_formatting import (
-    company_label_with_sector as _company_label_with_sector,
-)
-from src.application.report_formatting import (
     escape as _html,
-)
-from src.application.report_formatting import (
-    money as _money,
 )
 from src.application.report_formatting import (
     number as _number,
 )
 from src.application.report_formatting import (
-    pct as _pct,
-)
-from src.application.report_formatting import (
-    provenance_badges_html as _provenance_badges_html,
-)
-from src.application.report_formatting import (
     section_h2 as _section_h2,
-)
-from src.application.report_formatting import (
-    sector_label as _sector_label,
-)
-from src.application.report_formatting import (
-    sentiment_label as _sentiment_label,
-)
-from src.application.report_formatting import (
-    trend_color as _trend_color,
-)
-from src.application.report_formatting import (
-    trend_label as _trend_label,
 )
 from src.application.report_header import (
     FIRST_SCREEN_SECTION,
@@ -107,6 +79,7 @@ from src.application.report_portfolio import (
     render_correlation_html,
     render_correlation_text,
 )
+from src.application.report_predictions import PREDICTIONS_SECTION, full_detail_symbols
 from src.application.report_quota_banner import QUOTA_BANNER_SECTION
 from src.application.report_regime import (
     RegimeBanner,
@@ -124,7 +97,6 @@ from src.application.report_signals import (
     build_portfolio_mood,
     build_trade_signals,
     detect_risk_signals,
-    forecast_horizon_label,
     market_status,
     parse_resolved_predictions,
 )
@@ -135,14 +107,7 @@ from src.application.report_skipped import (
     REBASELINED_SECTION,
 )
 from src.application.report_styles import (
-    COUNCIL_FILL,
-    COUNCIL_ROW_TONE,
-    COUNCIL_TONE,
-    EDGE_TONE,
     EMAIL_STYLESHEET,
-    SIGNAL_TONE,
-    delta_tone,
-    trend_tone,
 )
 from src.application.report_suggestions import (
     build_sector_suggestions,
@@ -150,7 +115,6 @@ from src.application.report_suggestions import (
     render_suggestions_text,
 )
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_chip_labels
-from src.application.report_templates import _env, render_template
 from src.application.report_track_record import (
     TrackRecordStats,
     render_track_record_html,
@@ -172,22 +136,18 @@ from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
 from src.domain.equity_curve import EquityCurve
-from src.domain.feature_attribution import FeatureContribution
 from src.domain.finops import CycleCost
 from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.polish_labels import (
-    MODEL_SIGNAL_TITLE,
-    council_recommendation_label,
-    model_signal_label,
     trend_forecast_label,
 )
 from src.domain.portfolio import (
     PlnRates,
     Portfolio,
 )
-from src.domain.provenance import ProvenanceLevel, build_provenance_badges
+from src.domain.provenance import build_provenance_badges
 from src.domain.quota import QuotaAlert
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
@@ -218,11 +178,6 @@ __all__ = [
     "to_symbol_result",
 ]
 
-_SAFE_URL_SCHEMES = {"http", "https"}
-
-# MAIL-06 (c): tło bloku sygnału modelu jako klasa tonu (report_styles).
-_SIGNAL_FILL = {"up": "gu", "dn": "gd", "nt": "gn"}
-
 # Markery slotów — placeholdery wstawiane przy renderze i podmieniane treścią
 # w build_html_report. Trzymane jako stałe (jedno źródło prawdy), żeby literówka
 # w jednym z dwóch miejsc (szablon ↔ replace) nie zostawiła cicho pustego slotu.
@@ -239,356 +194,6 @@ _ALPHA_SLOT = "<!-- ALPHA_SLOT -->"
 _SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
 # MAIL-42: linia proweniencji w stopce (przebieg · commit · logi).
 _RUN_FOOTER_SLOT = "<!-- RUN_FOOTER_SLOT -->"
-
-_COUNCIL_REC_EMOJI = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}
-
-_VERDICT_COLOR = {
-    "UNDERVALUED": "#2e7d32",  # zielony
-    "FAIR": "#616161",         # szary
-    "OVERVALUED": "#c62828",   # czerwony
-    "UNKNOWN": "#9e9e9e",      # jasnoszary
-}
-
-
-def _render_valuation(section: ValuationSection | None) -> str:
-    """Renderuje sekcję wyceny fundamentalnej do HTML (Jinja2 template)."""
-    if section is None:
-        return ""
-
-    def fmt(v: float | None) -> str:
-        return _number(v, decimals=2) if isinstance(v, (int, float)) else "—"
-
-    growth = (
-        _pct(section.eps_growth_yoy, decimals=1)
-        if section.eps_growth_yoy is not None
-        else "—"
-    )
-    return render_template(
-        "valuation_section.html.j2",
-        {
-            "section": section,
-            "verdict_value": section.verdict.value,
-            "verdict_color": _VERDICT_COLOR.get(section.verdict.value, "#616161"),
-            "trailing_pe_fmt": fmt(section.trailing_pe),
-            "forward_pe_fmt": fmt(section.forward_pe),
-            "peg_ratio_fmt": fmt(section.peg_ratio),
-            "growth_fmt": growth,
-            "fetched_at_iso": section.fetched_at.isoformat(),
-        },
-    )
-
-
-def _render_valuation_text(section: ValuationSection | None) -> str:
-    """Renderuje sekcję wyceny fundamentalnej do plain text."""
-    if section is None:
-        return ""
-
-    def fmt(v: float | None) -> str:
-        return _number(v, decimals=2) if isinstance(v, (int, float)) else "—"
-
-    growth = (
-        _pct(section.eps_growth_yoy, decimals=1)
-        if section.eps_growth_yoy is not None
-        else "—"
-    )
-
-    lines = [
-        "  Wycena fundamentalna:",
-        f"    Trailing P/E: {fmt(section.trailing_pe)}  · Forward P/E: {fmt(section.forward_pe)}",
-        f"    PEG ratio: {fmt(section.peg_ratio)}  · EPS growth YoY: {growth}",
-        f"    Werdykt: {section.verdict.value}",
-    ]
-    return "\n".join(lines)
-
-
-def _model_signal(r: SymbolResult) -> str:
-    """MAIL-27: sygnał modelu (KUP/SPRZEDAJ/TRZYMAJ) — etykieta ze wspólnego
-    słownika domeny, nie „rekomendacja”."""
-    return model_signal_label(r.trend)
-
-
-def _signed_move(value: float) -> str:
-    """Zwrot jako „+2,4%” / „-2,1%” (minus ASCII, jedno miejsce, MAIL-58)."""
-    return _pct(value, signed=True, decimals=1)
-
-
-def _move_interval_label(interval: MoveInterval) -> str:
-    """ML-34: „80% przedział: -2,1% … +2,4% (n=57)” albo jawne „za mało
-    historii (n/20)" — krótkie okno nie udaje liczby."""
-    level = f"{_pct(interval.nominal_coverage, decimals=0)} przedział"
-    if interval.low is None or interval.high is None:
-        return (
-            f"{level}: za mało historii "
-            f"({interval.calibration_size}/{interval.required_size})"
-        )
-    return (
-        f"{level}: {_signed_move(interval.low)} … {_signed_move(interval.high)} "
-        f"(n={interval.calibration_size})"
-    )
-
-
-def _model_signal_reason_html(r: SymbolResult) -> str:
-    """Zwraca krótki HTML-owy powód sygnału modelu (1–2 zdania)."""
-    direction = _model_signal(r)
-    tone = SIGNAL_TONE.get(direction, "nt")
-
-    conf_part = (
-        f"Pewność: <strong>{_pct(r.confidence_score, decimals=0)}</strong>."
-        if r.confidence_score is not None
-        else ""
-    )
-    change_part = ""
-    if r.expected_change is not None and not r.ml_cold_start:
-        change_part = (
-            f" Prognozowana zmiana: "
-            f"<strong class='{delta_tone(r.expected_change)}'>"
-            f"{direction_pct(r.expected_change)}</strong>."
-        )
-    sentiment_part = ""
-    if r.sentiment_score is not None:
-        if r.sentiment_score > 0.2:
-            sentiment_part = " Sentyment rynkowy pozytywny."
-        elif r.sentiment_score < -0.2:
-            sentiment_part = " Sentyment rynkowy negatywny."
-        else:
-            sentiment_part = " Sentyment neutralny."
-
-    return (
-        f'<div class="rs {_SIGNAL_FILL[tone]}">'
-        f'<span class="b7 {tone}">➤ {MODEL_SIGNAL_TITLE}: {direction}</span> — '
-        f"{conf_part}{change_part}{sentiment_part}"
-        f"</div>"
-    )
-
-
-def _model_signal_reason_text(r: SymbolResult) -> str:
-    direction = _model_signal(r)
-    conf_part = f"pewność {_pct(r.confidence_score, decimals=0)}" if r.confidence_score is not None else ""
-    change_part = (
-        f"prognoza {_pct(r.expected_change, signed=True)}"
-        if r.expected_change is not None and not r.ml_cold_start
-        else ""
-    )
-    parts = [p for p in [conf_part, change_part] if p]
-    detail = ", ".join(parts)
-    return f"{MODEL_SIGNAL_TITLE}: {direction}" + (f" ({detail})" if detail else "")
-
-
-def _render_council_section(verdict: CouncilVerdict) -> str:
-    """Renderuje sekcję rady doradczej (Jinja2 template).
-
-    Logika decyzyjna (split decision, strong consensus, vote distribution)
-    pochodzi z metod domenowych `CouncilVerdict` — template tylko renderuje.
-    """
-    final = verdict.final_recommendation
-    opinion_rows = [
-        {
-            "name": op.investor_name,
-            "label": council_recommendation_label(op.recommendation),
-            "emoji": _COUNCIL_REC_EMOJI.get(op.recommendation, "⬜"),
-            "tone": COUNCIL_TONE.get(op.recommendation, "nt"),
-            "row_tone": COUNCIL_ROW_TONE.get(op.recommendation, "gn"),
-            "confidence_pct": int(op.confidence * 100),
-            "confidence_label": op.confidence_label(),
-            "factors": ", ".join(op.key_factors[:3]),
-        }
-        for op in verdict.investor_opinions
-    ]
-    return render_template(
-        "council_section.html.j2",
-        {
-            "verdict": verdict,
-            "label": council_recommendation_label(final),
-            "fill": COUNCIL_FILL.get(final, "fn"),
-            "row_tone": COUNCIL_ROW_TONE.get(final, "gn"),
-            "strength_pct": int(verdict.consensus_strength * 100),
-            "opinion_rows": opinion_rows,
-            "vote_dist": verdict.vote_distribution(),
-            "is_split": verdict.is_split_decision(),
-            "strong_consensus": verdict.has_strong_consensus(),
-            "dissenting_views": verdict.dissenting_views,
-        },
-    )
-
-
-# MAIL-06 (b): rada spoza top N sygnałów i spoza leadu — jedna linia (werdykt,
-# rozkład głosów, podsumowanie) i zawsze widoczne głosy niezgodne. Pełna tabela
-# person to ~4 KB na symbol, a Gmail przycina mail powyżej ~102 KB. Summary i
-# dysydenci pochodzą z LLM-a, więc linia idzie przez autoescapowany `_env`.
-_COUNCIL_LINE_TEMPLATE = _env.from_string(
-    "<span class='b7 {{ tone }}'>{{ label }}</span>"
-    " · zgodność {{ strength_pct }}%"
-    "{% if failed %} · ⚠️ odpowiedziało {{ answered }}/{{ size }}{% endif %}"
-    "{% if is_split %} · ⚠️ podzielona{% endif %} · "
-    "🟢 {{ dist['BUY'] }} KUP · 🔴 {{ dist['SELL'] }} SPRZEDAJ · 🟡 {{ dist['HOLD'] }} TRZYMAJ"
-    " — „{{ summary }}”"
-    "{% if dissent %}<div class='dv'>"
-    "⚠️ Głosy niezgodne: {{ dissent | join('; ') }}</div>{% endif %}"
-)
-
-
-def _render_council_line(verdict: CouncilVerdict) -> str:
-    """MAIL-06 (b): zwinięta rada — jedna linia zamiast tabeli person (komórka
-    „Rada” w skrócie pozostałych predykcji)."""
-    final = verdict.final_recommendation
-    return _COUNCIL_LINE_TEMPLATE.render(
-        label=council_recommendation_label(final),
-        tone=COUNCIL_TONE.get(final, "nt"),
-        strength_pct=int(verdict.consensus_strength * 100),
-        failed=verdict.failed_personas,
-        answered=len(verdict.investor_opinions),
-        size=verdict.council_size(),
-        is_split=verdict.is_split_decision(),
-        dist=verdict.vote_distribution(),
-        summary=verdict.summary,
-        dissent=verdict.dissenting_views,
-    )
-
-
-# ---------------------------------------------------------------------------
-# ⚠️  BEZPIECZEŃSTWO — escapowanie niezaufanych pól w treści maila
-# ---------------------------------------------------------------------------
-# Większość HTML-a maila składana jest f-stringami (funkcje `_render_html`,
-# `_render_crypto_section_html`, `_render_resolved_item_html` itd.). W tym trybie
-# escapowanie NIE jest domyślne: KAŻDA wartość pochodząca z danych zewnętrznych
-# (tytuły/źródła newsów z Alpha Vantage, `reasoning`/`insight` z LLM-a,
-# `reflection_insight`, `error_message`, dowolny symbol/tekst spoza whitelisty)
-# MUSI być ręcznie owinięta w `_html(...)` przed wstawieniem do f-stringa.
-# Jedno zapomniane `_html()` = stored-HTML-injection sink.
-#
-# Regresje pilnujące tej reguły: `TestHtmlEscaping` oraz
-# `TestHtmlEscapingRegression` w tests/application/test_report_builder.py —
-# wstrzykują payload XSS w każde niezaufane pole i żądają zescapowanego outputu.
-# Dodając nowe pole z danych zewnętrznych: owiń je w `_html()` ORAZ dopisz tam
-# test regresyjny.
-#
-# Docelowo te sekcje migrują na autoescapowany Jinja env (jak council/valuation
-# w templates/), gdzie escapowanie jest domyślne, nie opt-in. Pierwszą sekcją
-# przeniesioną na ten model jest blok "Top newsy" (`_render_news_block_html`
-# poniżej, renderowany przez `_env.from_string` z włączonym autoescape).
-# Pozostałe sekcje wciąż używają ręcznego `_html()` — patrz końcowy raport.
-# ---------------------------------------------------------------------------
-
-# Inline Jinja template bloku "Top newsy" — renderowany przez WSPÓLNY,
-# autoescapowany `_env` (select_autoescape(default_for_string=True)).
-# Escapowanie `title`/`source` jest tu DOMYŚLNE; `href` to zwalidowany surowy
-# URL (sam autoescape zadba o atrybut, bez podwójnego escapowania).
-_NEWS_BLOCK_TEMPLATE = _env.from_string(
-    "{%- if items -%}"
-    "<div class='nw'>"
-    "📰 <strong>Top newsy:</strong>"
-    "<ul class='nl'>"
-    "{%- for n in items -%}"
-    "<li class='ni'>"
-    "<strong>[{{ n.source_label }}]</strong> "
-    "{% if n.href %}"
-    "<a href='{{ n.href }}' target='_blank' class='na'>{{ n.title }}</a>"
-    "{% else %}{{ n.title }}{% endif %}"
-    " <span class='nm'>"
-    "(relevance {{ n.relevance_fmt }}, sentyment {{ n.sentiment_fmt }})"
-    "</span></li>"
-    "{%- endfor -%}"
-    "</ul></div>"
-    "{%- endif -%}"
-)
-
-
-def _safe_news_url(url: str | None) -> str | None:
-    """Zwraca ZWALIDOWANY surowy URL (http/https + netloc) albo None.
-
-    Waliduje schemat (tylko http/https) i obecność hosta — odrzuca m.in.
-    `javascript:`. NIE escapuje: autoescape Jinja zrobi to sam w atrybucie
-    `href`, więc unikamy podwójnego escapowania w template'cie.
-    """
-    if not url:
-        return None
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in _SAFE_URL_SCHEMES or not parsed.netloc:
-        return None
-    return url
-
-
-def _render_news_block_html(top_news: list[TopNewsItem]) -> str:
-    """Renderuje blok 'Top newsy' przez autoescapowany Jinja env.
-
-    Migracja przyrostowa f-string → Jinja (finding #35): escapowanie tytułów
-    i źródeł newsów jest tu domyślne, nie opt-in. Output równoważny dawnemu
-    f-stringowi (te same style inline, kolejność i format relevance/sentyment)."""
-    items = [
-        {
-            "source_label": n.source or "unknown",
-            "title": n.title,
-            "href": _safe_news_url(n.url),
-            "relevance_fmt": _number(n.relevance, decimals=2),
-            "sentiment_fmt": _number(n.sentiment, decimals=2, signed=True),
-        }
-        for n in top_news
-    ]
-    return _NEWS_BLOCK_TEMPLATE.render(items=items)
-
-
-# Q5: etykieta wyniku analogu (kierunkowo trafiony / chybiony / nieoceniony).
-_PRECEDENT_OUTCOME = {
-    True: ("✅ trafił", PALETTE.positive),
-    False: ("❌ chybił", PALETTE.negative),
-}
-
-
-def _render_precedents_block_html(precedents: list[SimilarPrecedent]) -> str:
-    """Renderuje blok 'Na podstawie analogów' (Q5) — audytowalny ślad RAG.
-
-    Pokazuje historyczne sytuacje, które agent pobrał w tym cyklu, z ich
-    rzeczywistym wynikiem kierunkowym. Pusta lista → pusty string (brak bloku,
-    brak błędu). `summary` pochodzi z LLM-a (dane zewnętrzne) → escapujemy
-    przez `_html`."""
-    if not precedents:
-        return ""
-    items = []
-    for p in precedents:
-        outcome_txt, outcome_color = (
-            _PRECEDENT_OUTCOME[p.is_trend_correct]
-            if p.is_trend_correct is not None
-            else ("• wynik nieznany", "#6b7280")
-        )
-        items.append(
-            f"<li style='margin: 2px 0;'>"
-            f"<span style='color: {_trend_color(p.predicted_trend)}; font-weight: 600;'>"
-            f"{_html(_trend_label(p.predicted_trend))}</span> "
-            f"<span style='color: {outcome_color};'>({outcome_txt})</span> — "
-            f"{_html(p.summary)}</li>"
-        )
-    return (
-        "<div style='font-size: 11px; color: #4b5563; margin-top: 8px;'>"
-        "🧭 <strong>Na podstawie analogów:</strong>"
-        "<ul style='margin: 4px 0 0 20px; padding: 0;'>"
-        + "".join(items)
-        + "</ul></div>"
-    )
-
-
-def _render_attribution_block_html(
-    contribs: tuple[FeatureContribution, ...],
-) -> str:
-    """Renderuje blok 'Wkład cech' (Q3 SHAP-lite) — które cechy ML pchnęły
-    predykcję w górę/dół i o ile. Pusta krotka → pusty string."""
-    if not contribs:
-        return ""
-    chips = []
-    for c in contribs:
-        positive = c.contribution >= 0
-        color = PALETTE.positive if positive else PALETTE.negative
-        chips.append(
-            f"<span style='display:inline-block; margin-right:10px;'>"
-            f"{_html(c.feature)} "
-            f"<strong style='color:{color};'>"
-            f"{_number(c.contribution, decimals=4, signed=True)}</strong></span>"
-        )
-    return (
-        "<div style='font-size: 11px; color: #475569; margin-top: 6px; "
-        "padding: 4px 8px; background: #f8fafc; border-radius: 3px;'>"
-        "🔍 <strong>Wkład cech:</strong> " + "".join(chips) + "</div>"
-    )
-
 
 def _sizing_track_record(
     accuracy_stats: Mapping[str, Any] | None,
@@ -1062,28 +667,6 @@ class ReportContext:
     insider_lead_window: InsiderLeadWindow | None = None
 
 
-# MAIL-06: tyle symboli (wg siły sygnału) dostaje pełny blok uzasadnień z radą.
-_FULL_DETAIL_TOP_N = 10
-
-
-def _full_detail_symbols(
-    saved: list[SymbolResult],
-    ranked_signals: list[TradeSignal],
-    lead_items: list[LeadItem],
-) -> frozenset[str] | None:
-    """MAIL-06: symbole z pełnym blokiem — top N wg siły sygnału (kolejność
-    „🎯 Najsilniejsze sygnały”) i symbole z leadu. Symbole bez sygnału (brak
-    pewności albo prognozy) idą za rankingiem w kolejności cyklu. None = cykl
-    mieści się w top N, więc pełny blok dostaje każdy symbol."""
-    if len(saved) <= _FULL_DETAIL_TOP_N:
-        return None
-    ranked = [sig.symbol for sig in ranked_signals]
-    ranked_set = set(ranked)
-    ranked.extend(r.symbol for r in saved if r.symbol not in ranked_set)
-    lead = {item.symbol for item in lead_items if item.symbol is not None}
-    return frozenset(ranked[:_FULL_DETAIL_TOP_N]) | lead
-
-
 def _section_input(
     results: list[SymbolResult],
     started_at: datetime,
@@ -1130,7 +713,7 @@ def _section_input(
             rates=pln_rates,
         ),
         trade_signals=ranked_signals[:_TOP_SIGNALS],
-        full_detail=_full_detail_symbols(saved, ranked_signals, lead_items),
+        full_detail=full_detail_symbols(saved, ranked_signals, lead_items),
         symbol_chips=symbol_chip_labels(context.symbol_track_record, (r.symbol for r in saved)),
     )
 
@@ -1151,7 +734,6 @@ def build_html_report(
     results, saved, ignored, errors = data.results, data.saved, data.ignored, data.errors
     sector_map = data.sector_map
     mood = build_portfolio_mood(results)
-    forecast_horizon = forecast_horizon_label(started_at)
     macro_risk_html = (
         render_risk_watch_html(context.macro_risk_report) if context.macro_risk_report else ""
     )
@@ -1188,7 +770,7 @@ def build_html_report(
     track_record_html = render_track_record_html(
         context.equity_curve, context.calibration_buckets, context.lessons,
         context.track_record_stats,
-        compact=len(saved) > _FULL_DETAIL_TOP_N,
+        compact=data.large_day,
         expired_count=context.expired_unverified,
     )
     # Dane: sekcja Alpha Signals (insider/analitycy/opcje/social/earnings per
@@ -1210,7 +792,6 @@ def build_html_report(
         mood,
         display_timezone=context.display_timezone,
         sector_map=sector_map,
-        forecast_horizon=forecast_horizon,
     )
     # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
     # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
@@ -1233,7 +814,6 @@ def build_html_report(
         mood,
         display_timezone=context.display_timezone,
         sector_map=sector_map,
-        forecast_horizon=forecast_horizon,
     )
     text = _fill_text_slots(
         text,
@@ -1270,7 +850,7 @@ def _render_run_footer_html(run_context: RunContext | None) -> str:
     if run_context is None:
         return ""
     label = _html(_run_footer_label(run_context))
-    url = _safe_news_url(run_context.run_url)
+    url = safe_http_url(run_context.run_url)
     logs = (
         f' · <a href="{_html(url)}" style="color: {PALETTE.muted};">logi</a>'
         if url is not None
@@ -1282,7 +862,7 @@ def _render_run_footer_html(run_context: RunContext | None) -> str:
 def _render_run_footer_text(run_context: RunContext | None) -> str:
     if run_context is None:
         return ""
-    url = _safe_news_url(run_context.run_url)
+    url = safe_http_url(run_context.run_url)
     logs = f" · logi: {url}" if url is not None else ""
     return "\n".join(["-" * 64, f"{_run_footer_label(run_context)}{logs}"])
 
@@ -1308,227 +888,6 @@ def _render_reflections_html(saved: list[SymbolResult]) -> str:
               </div>
             """)
     return "".join(parts)
-
-
-def _render_prediction_row_html(r: SymbolResult) -> str:
-    """Pojedynczy wiersz tabeli predykcji (saved)."""
-    sentiment_text = (
-        f"{_html(_sentiment_label(r.sentiment_label))} ({_number(r.sentiment_score, decimals=2, signed=True)})"
-        if r.sentiment_score is not None
-        else "—"
-    )
-    confidence_text = (
-        _pct(r.confidence_score, decimals=0)
-        if r.confidence_score is not None
-        else "—"
-    )
-    if r.ml_cold_start:
-        forecast_text = _COLD_START_FORECAST
-    elif r.target_price is not None:
-        forecast_text = (
-            f"{_money(r.target_price)} "
-            f"<span class='{delta_tone(r.expected_change)}'>"
-            f"({direction_pct(r.expected_change)})</span>"
-        )
-    else:
-        forecast_text = "—"
-    rec = _model_signal(r)
-    # MAIL-06 (c): układ komórki i ton kierunku w klasach arkusza.
-    return f"""
-              <tr>
-                <td class="pc b6">{_html(_company_label(r.symbol))}</td>
-                <td class="pc">{_money(r.current_price)}</td>
-                <td class="pc {delta_tone(r.delta)}">{direction_pct(r.delta)}</td>
-                <td class="pc b6 {trend_tone(r.trend)}">{_html(_trend_label(r.trend))}</td>
-                <td class="pc">{forecast_text}</td>
-                <td class="pc">{confidence_text}</td>
-                <td class="pc">{sentiment_text}</td>
-                <td class="pc">{r.news_volume or 0}</td>
-                <td class="pc b7 {SIGNAL_TONE.get(rec, "nt")}">{rec}</td>
-              </tr>
-            """
-
-
-def _render_reasoning_block_html(
-    r: SymbolResult, sector_map: Mapping[str, str], chip: str | None = None
-) -> str:
-    """Blok 'Uzasadnienia' dla jednej predykcji. Pusty string, gdy nie ma
-    czego pokazać (brak reasoning / rady / odznak / analogów / atrybucji).
-    `chip` (WIA-35) — trafność kierunkowa na symbolu, pod oczekiwanym ruchem."""
-    # Q5/Q6: blok renderujemy też, gdy są analogi (precedent receipts)
-    # lub odznaki proweniencji — nawet bez reasoning/rady.
-    badges_html = _provenance_badges_html(r.provenance_badges)
-    precedents_block = _render_precedents_block_html(r.similar_precedents)
-    attribution_block = _render_attribution_block_html(r.feature_attribution)
-    if (
-        not r.reasoning
-        and r.council_verdict is None
-        and not badges_html
-        and not precedents_block
-        and not attribution_block
-        and r.move_interval is None
-    ):
-        return ""
-    move_line = ""
-    if r.current_price is not None and r.target_price is not None:
-        conf_part = (
-            f" · Pewność {_pct(r.confidence_score, decimals=0)}"
-            if r.confidence_score is not None
-            else ""
-        )
-        move_text = (
-            _COLD_START_FORECAST
-            if r.ml_cold_start
-            else (
-                f"{_money(r.current_price)} → {_money(r.target_price)} "
-                f"<span class='{delta_tone(r.expected_change)}'>"
-                f"({direction_pct(r.expected_change)})</span>"
-            )
-        )
-        move_line = f'<div class="rm">Oczekiwany ruch: {move_text}{conf_part}</div>'
-    if r.move_interval is not None:
-        move_line += f'<div class="rm">{_move_interval_label(r.move_interval)}</div>'
-    if chip:
-        move_line += f'<div class="rm">{_html(chip)}</div>'
-    # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
-    # (finding #35). Escapowanie title/source jest tu domyślne.
-    news_block = _render_news_block_html(r.top_news)
-    rec_block = _model_signal_reason_html(r)
-    council_block = (
-        _render_council_section(r.council_verdict)
-        if r.council_verdict is not None
-        else ""
-    )
-    valuation_block = _render_valuation(r.valuation)
-    _sector = _sector_label(r.symbol, sector_map)
-    sector_tag = (
-        f' <span style="color: #6b7280; font-weight: 500;">· {_html(_sector)}</span>'
-        if _sector
-        else ""
-    )
-    return f"""
-              <div class="rb {EDGE_TONE[trend_tone(r.trend)]}">
-                <div class="rh">{_html(_company_label(r.symbol))}{sector_tag} <span class="{trend_tone(r.trend)}">{_html(_trend_label(r.trend))}</span>{badges_html}</div>
-                {move_line}
-                {rec_block}
-                {f'<div class="rt">{_html(r.reasoning)}</div>' if r.reasoning else ''}
-                {attribution_block}
-                {precedents_block}
-                {news_block}
-                {council_block}
-                {valuation_block}
-              </div>
-            """
-
-
-def _render_saved_section_html(
-    saved: list[SymbolResult],
-    full_detail: frozenset[str] | None = None,
-    *,
-    sector_map: Mapping[str, str],
-    forecast_horizon: str = "",
-    symbol_chips: Mapping[str, str] | None = None,
-) -> str:
-    """🔮 Sekcja wygenerowanych predykcji: tabela + wykres prognozy +
-    uzasadnienia. Pusty string, gdy w tym cyklu nic nie zapisano.
-
-    `full_detail` (MAIL-06): symbole z pełnym blokiem uzasadnień; reszta trafia
-    do skrótu (jedna linia rady, zawsze widoczni dysydenci). None = każdy symbol.
-    `forecast_horizon` (ALR-15): najbliższe zamknięcie NYSE z kalendarza sesji."""
-    if not saved:
-        return ""
-    parts = [
-        _section_h2("🔮 Wygenerowane predykcje"),
-        _render_forecast_horizon_html(forecast_horizon),
-        "<table class='pt'>",
-        f"""
-          <tr class="pr">
-            <th scope="col" class="ph">Symbol</th>
-            <th scope="col" class="ph">Cena</th>
-            <th scope="col" class="ph">Zmiana (cykl)</th>
-            <th scope="col" class="ph">Trend</th>
-            <th scope="col" class="ph">Prognoza (nast. cykl)</th>
-            <th scope="col" class="ph">Pewność</th>
-            <th scope="col" class="ph">Sentyment</th>
-            <th scope="col" class="ph">Newsy</th>
-            <th scope="col" class="ph">{MODEL_SIGNAL_TITLE}</th>
-          </tr>
-        """,
-    ]
-    parts.extend(_render_prediction_row_html(r) for r in saved)
-    parts.append("</table>")
-
-    # #2: wykres prognozy jako INLINE HTML — koniec z <img> z zewnętrznego hosta.
-    # Fragment jest już zescapowany przez renderer, więc wstawiamy go wprost.
-    forecast_chart = build_forecast_chart_html(saved)
-    if forecast_chart:
-        parts.append(forecast_chart)
-
-    # Uzasadnienia
-    parts.append("<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>💡 Uzasadnienia</h3>")
-
-    def has_full_block(r: SymbolResult) -> bool:
-        return full_detail is None or r.symbol in full_detail
-
-    chips = symbol_chips or {}
-    parts.extend(
-        _render_reasoning_block_html(r, sector_map, chips.get(r.symbol))
-        for r in saved
-        if has_full_block(r)
-    )
-    parts.append(
-        _render_compact_predictions_html([r for r in saved if not has_full_block(r)])
-    )
-    return "".join(parts)
-
-
-_FORECAST_HORIZON_PREFIX = "Horyzont prognozy: następny cykl · "
-
-
-def _render_forecast_horizon_html(forecast_horizon: str) -> str:
-    """Linia horyzontu nad tabelą predykcji (ALR-15). Pusty string bez etykiety."""
-    if not forecast_horizon:
-        return ""
-    return (
-        "<div style='font-size: 12px; color: #6b7280; margin: 0 0 6px 0;'>"
-        f"{_FORECAST_HORIZON_PREFIX}{_html(forecast_horizon)}</div>"
-    )
-
-
-_COMPACT_PREDICTIONS_NOTE = (
-    f"Pełne uzasadnienie: top {_FULL_DETAIL_TOP_N} sygnałów i lead. Reszta w skrócie "
-    "(limit rozmiaru Gmaila) — pełne w wersji tekstowej maila."
-)
-
-
-def _render_compact_predictions_html(rest: list[SymbolResult]) -> str:
-    """MAIL-06 (d): pozostałe predykcje jako zwarte wiersze — symbol, sygnał modelu
-    i jedna linia rady. Pusty string, gdy wszystko ma pełny blok."""
-    if not rest:
-        return ""
-    rows = []
-    for r in rest:
-        signal = _model_signal(r)
-        council = (
-            _render_council_line(r.council_verdict) if r.council_verdict is not None else "—"
-        )
-        rows.append(
-            f'<tr><td class="pk b6">{_html(_company_label(r.symbol))}</td>'
-            f'<td class="pk b7 {SIGNAL_TONE.get(signal, "nt")}">'
-            f"{signal}</td>"
-            f'<td class="pk">{council}</td></tr>'
-        )
-    return (
-        "<h3 style='font-size: 14px; margin: 16px 0 8px 0;'>📋 Pozostałe predykcje (skrót)</h3>"
-        f"<div class='kn'>{_html(_COMPACT_PREDICTIONS_NOTE)}</div>"
-        "<table class='kt'>"
-        '<tr class="pr">'
-        '<th scope="col" class="pk">Symbol</th>'
-        f'<th scope="col" class="pk">{MODEL_SIGNAL_TITLE}</th>'
-        '<th scope="col" class="pk">Rada</th></tr>'
-        + "".join(rows)
-        + "</table>"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1640,7 +999,6 @@ def _render_html(
     *,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     sector_map: Mapping[str, str],
-    forecast_horizon: str = "",
 ) -> str:
     sections = [PREHEADER_SECTION.render_html(data)]
 
@@ -1657,15 +1015,7 @@ def _render_html(
     sections.append(REBASELINED_SECTION.render_html(data))
     sections.append(TRADE_SIGNALS_SECTION.render_html(data))
     sections.append(RISK_SIGNALS_SECTION.render_html(data))
-    sections.append(
-        _render_saved_section_html(
-            saved,
-            data.full_detail,
-            sector_map=sector_map,
-            forecast_horizon=forecast_horizon,
-            symbol_chips=data.symbol_chips,
-        )
-    )
+    sections.append(PREDICTIONS_SECTION.render_html(data))
     # 🪙 Krypto — osobna sekcja, widoczna też gdy cykl 'ignored' (próg 5%).
     sections.append(CRYPTO_SECTION.render_html(data))
 
@@ -1765,92 +1115,6 @@ def _render_reflections_text(saved: list[SymbolResult]) -> list[str]:
     return lines
 
 
-def _render_prediction_text(
-    r: SymbolResult, sector_map: Mapping[str, str], chip: str | None = None
-) -> list[str]:
-    """Linie jednej predykcji (plain): nagłówek + sentyment + sygnał modelu +
-    trafność na symbolu (WIA-35) + proweniencja + reasoning + analogi + newsy + wycena."""
-    conf_part = (
-        f" · pewność {_pct(r.confidence_score, decimals=0)}"
-        if r.confidence_score is not None
-        else ""
-    )
-    if r.ml_cold_start:
-        forecast_part = f"prognoza {_COLD_START_FORECAST}"
-    elif r.target_price is not None and r.expected_change is not None:
-        forecast_part = (
-            f"prognoza {_money(r.target_price)} ({_pct(r.expected_change, signed=True)})"
-        )
-    else:
-        forecast_part = "prognoza —"
-    sentiment_part = (
-        f"sentyment {_number(r.sentiment_score, decimals=2, signed=True)}"
-        if r.sentiment_score is not None
-        else "sentyment —"
-    )
-    rec_text = _model_signal_reason_text(r)
-    lines = [
-        f"  {_company_label_with_sector(r.symbol, sector_map):55s} {_money(r.current_price):>10s}  "
-        f"Δ {_pct(r.delta, signed=True):>8s}  →  "
-        f"{_trend_label(r.trend):11s} {forecast_part}{conf_part}",
-        f"         {sentiment_part}",
-        f"         {rec_text}",
-    ]
-    if r.move_interval is not None:
-        lines.append(f"         {_move_interval_label(r.move_interval)}")
-    if chip:
-        lines.append(f"         {chip}")
-    # Q6: odznaki proweniencji (pomijamy FRESH — brak szumu).
-    badge_labels = [
-        b.label for b in r.provenance_badges
-        if b.level is not ProvenanceLevel.FRESH
-    ]
-    if badge_labels:
-        lines.append(f"         proweniencja: {', '.join(badge_labels)}")
-    if r.reasoning:
-        lines.append(f"        └ {r.reasoning}")
-    # Q5: precedent receipts (analogi RAG).
-    for prec in r.similar_precedents:
-        if prec.is_trend_correct:
-            outcome = "trafił"
-        elif prec.is_trend_correct is False:
-            outcome = "chybił"
-        else:
-            outcome = "wynik nieznany"
-        lines.append(
-            f"        🧭 analog [{_trend_label(prec.predicted_trend)}, {outcome}]: "
-            f"{prec.summary[:72]}"
-        )
-    for n in r.top_news:
-        lines.append(
-            f"        📰 [{n.source or '?'}] {n.title[:78]}"
-            f" (rel={_number(n.relevance, decimals=2)}, sent={_number(n.sentiment, decimals=2, signed=True)})"
-        )
-    valuation_text = _render_valuation_text(r.valuation)
-    if valuation_text:
-        lines.append(valuation_text)
-    return lines
-
-
-def _render_saved_section_text(
-    saved: list[SymbolResult],
-    sector_map: Mapping[str, str],
-    forecast_horizon: str = "",
-    symbol_chips: Mapping[str, str] | None = None,
-) -> list[str]:
-    """Sekcja 'Predykcje' (plain). Pusta lista, gdy nic nie zapisano."""
-    if not saved:
-        return []
-    lines = ["PREDYKCJE", "-" * 64]
-    if forecast_horizon:
-        lines.append(f"  {_FORECAST_HORIZON_PREFIX}{forecast_horizon}")
-    chips = symbol_chips or {}
-    for r in saved:
-        lines.extend(_render_prediction_text(r, sector_map, chips.get(r.symbol)))
-    lines.append("")
-    return lines
-
-
 def _render_plain(
     data: SectionInput,
     results: list[SymbolResult],
@@ -1863,7 +1127,6 @@ def _render_plain(
     *,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     sector_map: Mapping[str, str],
-    forecast_horizon: str = "",
 ) -> str:
     lines: list[str] = []
     lines.extend(QUOTA_BANNER_SECTION.render_text(data))
@@ -1880,9 +1143,7 @@ def _render_plain(
     lines.extend(REBASELINED_SECTION.render_text(data))
     lines.extend(TRADE_SIGNALS_SECTION.render_text(data))
     lines.extend(RISK_SIGNALS_SECTION.render_text(data))
-    lines.extend(
-        _render_saved_section_text(saved, sector_map, forecast_horizon, data.symbol_chips)
-    )
+    lines.extend(PREDICTIONS_SECTION.render_text(data))
     # Krypto — osobna sekcja (widoczna też gdy 'ignored').
     lines.extend(CRYPTO_SECTION.render_text(data))
 

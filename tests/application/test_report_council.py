@@ -270,8 +270,8 @@ class TestCouncilPartialFailure:
 
     def test_compact_council_line_shows_answered_ratio(self):
         # Rada spoza top N sygnałów jest jedną linią (MAIL-06 b) — też z X/N.
-        from src.application.report_builder import _render_council_line
+        from src.application.report_reasoning import render_council_line
 
-        line = _render_council_line(self._verdict(answered=4, failed=3))
+        line = render_council_line(self._verdict(answered=4, failed=3))
 
         assert "odpowiedziało 4/7" in line

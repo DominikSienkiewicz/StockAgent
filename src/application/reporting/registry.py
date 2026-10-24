@@ -16,6 +16,7 @@ from src.application.report_header import (
 )
 from src.application.report_lead import LEAD_SECTION, PREHEADER_SECTION
 from src.application.report_onboarding import ONBOARDING_SECTION
+from src.application.report_predictions import PREDICTIONS_SECTION
 from src.application.report_quota_banner import QUOTA_BANNER_SECTION
 from src.application.report_resolved import RESOLVED_PREDICTIONS_SECTION
 from src.application.report_risk_signals import RISK_SIGNALS_SECTION
@@ -43,6 +44,7 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     REBASELINED_SECTION,
     TRADE_SIGNALS_SECTION,
     RISK_SIGNALS_SECTION,
+    PREDICTIONS_SECTION,
     CRYPTO_SECTION,
     ACCURACY_HISTORY_SECTION,
     BUDGET_EXHAUSTED_SECTION,
