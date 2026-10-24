@@ -32,7 +32,7 @@ Every section of the cycle email, in the order `build_html_report` renders it (t
 | 22 | `track_record` | `📈 Track Record — skuteczność i kalibracja` (equity curve, benchmark, hit rate with its verdict, Brier, calibration, lessons) | Zaplecze | `equity_curve_enabled`, `calibration_curve_enabled`, `lessons_enabled`; interval coverage with `interval_coverage_enabled` | the three `true`; `interval_coverage_enabled = false` (needs migration `032`) | no |
 | 23 | `accuracy_history` | Accuracy history (`Trafność kierunkowa` next to `Trafność łączna`) | Zaplecze | the accuracy statistics have a sample | no flag | yes |
 | 24 | `model_scorecard` | `🩺 Karta kondycji modelu`, with one line for the `feature_snapshots` model cards (ALL_FREE, ALL_LLM) | Zaplecze | `model_scorecard_enabled` and a scorecard row in the last 42 days | `model_scorecard_enabled = true`, `model_scorecard_baselines_enabled = false` (needs migration `028`) | no |
-| 25 | `persona_leaderboard` | `🏆 Rada — ranking wiarygodności` | Zaplecze | a persona with at least 5 settled votes in 90 days (migration `018`) | no flag | no |
+| 25 | `persona_leaderboard` | `🏆 Rada — ranking wiarygodności` | Zaplecze | a persona with at least 5 settled votes in 90 days (migration `018`); with `persona_brier_ranking_enabled` the order is the Brier skill of the personas' confidence and each row adds `Brier` / `BSS` (migration `065`) | `persona_brier_ranking_enabled = false` | no |
 | 26 | `council_history` | `🗳️ Rada — historia głosów` | Zaplecze | stored council votes | no flag | no |
 | 27 | `mood` | Portfolio mood (`📊 Nastroje portfela`) | Zaplecze | a saved prediction | no flag | yes |
 | 28 | `delta_chart` | Δ chart | Zaplecze | a symbol with a price change | no flag | no |
@@ -45,7 +45,7 @@ Every section of the cycle email, in the order `build_html_report` renders it (t
 | 35 | `errors` | `⚠️ Błędy` | Zaplecze | a symbol that failed | no flag | yes |
 | 36 | `footer` | Footer: disclaimer, pipeline counters, run line | — | always | — | yes |
 
-A separate email goes out after the Sunday Slow Loop: `📅 Tydzień StockAgenta`, the weekly recap with its `🛡️ Wybronieni dysydenci rady` block, with `weekly_recap_enabled` (`true` in `config.toml`) and at least 5 closed predictions in the week; it costs one LLM call ([configuration](configuration.md)).
+A separate email goes out after the Sunday Slow Loop: `📅 Tydzień StockAgenta`, the weekly recap with its `🛡️ Wybronieni dysydenci rady` block, with `weekly_recap_enabled` (`true` in `config.toml`) and at least 5 closed predictions in the week; it costs one LLM call ([configuration](configuration.md)). With `council_redundancy_enabled` it adds a `🧮 Rada: 7 person ≈ 2,1 niezależnego głosu` line (Cohen's kappa between the personas, N_eff, the most agreeing pair); the daily email then drops the `SILNY KONSENSUS` badge of the council section when N_eff < 1.5 (WIA-45). With `council_redundancy_enabled` it adds a `🧮 Rada: 7 person ≈ 2,1 niezależnego głosu` line (Cohen's kappa between the personas, N_eff, the most agreeing pair); the daily email then drops the `SILNY KONSENSUS` badge of the council section when N_eff < 1.5 (WIA-45).
 
 ## Email anatomy
 
