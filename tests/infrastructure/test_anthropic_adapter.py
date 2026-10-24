@@ -706,3 +706,67 @@ class TestPortErrorTaxonomy:
 
         with pytest.raises(MalformedPayload):
             adapter.analyze("Predict.")
+
+
+class TestStopReason:
+    """NIEZ-26: `stop_reason` tłumaczy nieparsowalną odpowiedź — ucięcie limitem
+    tokenów i odmowa modelu to osobne błędy, nie „invalid JSON” jak awaria."""
+
+    @staticmethod
+    def _stopped(text: str | None, stop_reason: str, output_tokens: int = 768) -> MagicMock:
+        response = _message_response(text)
+        response.stop_reason = stop_reason
+        response.usage.output_tokens = output_tokens
+        return response
+
+    def test_max_tokens_stop_reason_raises_truncated(self, adapter_with_client):
+        from src.application.errors import LLMTruncatedError
+
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = self._stopped(
+            '{"trend_direction": "BULL', "max_tokens"
+        )
+
+        with pytest.raises(LLMTruncatedError) as excinfo:
+            adapter.analyze("Predict.")
+
+        assert excinfo.value.output_tokens == 768
+        assert "768" in str(excinfo.value)
+
+    def test_refusal_stop_reason_raises_refusal(self, adapter_with_client):
+        from src.application.errors import LLMRefusalError
+
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = self._stopped(None, "refusal")
+
+        with pytest.raises(LLMRefusalError):
+            adapter.analyze("Predict.")
+
+    def test_parseable_answer_cut_after_the_object_is_kept(self, adapter_with_client, caplog):
+        # Ucięty komentarz PO kompletnym obiekcie nie psuje analizy — odpowiedź,
+        # którą parser przyjmował, zostaje przyjęta (bez zmiany przepisu predykcji).
+        import logging
+
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = self._stopped(
+            '{"trend_direction": "BULLISH"} Additionally, the macro backdrop', "max_tokens"
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = adapter.analyze("Predict.")
+
+        assert result == {"trend_direction": "BULLISH"}
+        assert "max_tokens" in caplog.text
+
+    def test_truncated_diagnosis_text_is_still_returned(self, adapter_with_client, caplog):
+        # Diagnoza to wolny tekst bez guardu w reflect_node — ucięcie loguje WARNING,
+        # ale lekcja wraca jak dotąd.
+        import logging
+
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = self._stopped("Lekcja: model przecenił", "max_tokens")
+
+        with caplog.at_level(logging.WARNING):
+            assert adapter.analyze_mistake("Diagnose.") == "Lekcja: model przecenił"
+
+        assert "max_tokens" in caplog.text

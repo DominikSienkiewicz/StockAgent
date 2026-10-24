@@ -508,6 +508,24 @@ class TestEmptyContentDiagnostics:
         with pytest.raises(ValueError, match="truncat|max_completion_tokens"):
             adapter.analyze("x")
 
+    @pytest.mark.parametrize("content", [None, '{"trend_direction": "BULL'], ids=["empty", "cut"])
+    def test_length_finish_reason_raises_truncated(self, mock_openai_class, content):
+        # NIEZ-26: lustro Anthropic `stop_reason = max_tokens` — graf flaguje oba
+        # przypadki jako `llm_output_truncated`, niezależnie od dostawcy.
+        from src.application.errors import LLMTruncatedError
+
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        response = _completion(content, finish_reason="length")
+        response.usage.completion_tokens = 4096
+        client.chat.completions.create.return_value = response
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-5-mini")
+
+        with pytest.raises(LLMTruncatedError) as excinfo:
+            adapter.analyze("x")
+
+        assert excinfo.value.output_tokens == 4096
+
 
 class TestTemperatureCompatibility:
     """GPT-5 / o-series akceptują tylko domyślną temperature (=1). Adapter NIE

@@ -9,6 +9,7 @@ from typing import Any, TypeVar
 
 from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
 
+from src.application.errors import LLMTruncatedError
 from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
@@ -191,12 +192,13 @@ class OpenAIAdapter(LLMPort):
             # zjadło cały `max_completion_tokens` (regresja 2026-06-21).
             finish_reason = getattr(choice, "finish_reason", None)
             if finish_reason == "length":
-                raise ValueError(
+                raise LLMTruncatedError(
                     "OpenAI returned empty content for analyze(): response "
                     "truncated (finish_reason='length') before any visible "
                     "output — for reasoning models this means reasoning "
                     "consumed the whole max_completion_tokens budget. Raise "
-                    "max_tokens for this model."
+                    "max_tokens for this model.",
+                    output_tokens=_completion_tokens(response),
                 )
             raise ValueError(
                 "OpenAI returned empty content for analyze() "
@@ -213,6 +215,13 @@ class OpenAIAdapter(LLMPort):
         try:
             return parse_json_object(fenced)
         except json.JSONDecodeError as exc:
+            # NIEZ-26: nieparsowalna treść ucięta limitem to ucięcie, nie „zły JSON”.
+            if getattr(choice, "finish_reason", None) == "length":
+                raise LLMTruncatedError(
+                    f"OpenAI {self._model} answer truncated (finish_reason='length') at "
+                    f"{self._resolved_max_tokens()} tokens: {content[:200]!r}",
+                    output_tokens=_completion_tokens(response),
+                ) from exc
             raise ValueError(
                 f"OpenAI returned invalid JSON: {content[:200]!r}"
             ) from exc
@@ -327,3 +336,9 @@ class OpenAIAdapter(LLMPort):
                 occurred_at=datetime.now(UTC),
             )
         )
+
+
+def _completion_tokens(response: Any) -> int | None:
+    """Tokeny wyjścia z `response.usage` (NIEZ-26); None, gdy SDK ich nie podał."""
+    tokens = getattr(getattr(response, "usage", None), "completion_tokens", None)
+    return tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else None

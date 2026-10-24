@@ -15,6 +15,7 @@ from langgraph.graph import END, StateGraph
 
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.decision_receipt import RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2
+from src.application.errors import LLMOutputIncomplete
 from src.application.ml_features import (
     FREE_SNAPSHOT_FEATURES,
     GATED_SNAPSHOT_EXTRAS,
@@ -462,6 +463,9 @@ LLM_FAILOVER_FLAG = "llm_failover"
 # MAIL-12: rada miała zagłosować, ale nie dała werdyktu (żadna persona nie
 # odpowiedziała albo adapter rzucił). Predykcja zostaje w track recordzie.
 COUNCIL_UNAVAILABLE_FLAG = "council_unavailable"
+# NIEZ-26: odpowiedź LLM ucięta limitem tokenów albo odrzucona przez model — obok
+# `llm_analysis_failed` (atrapa dalej poza track recordem), odróżnia to od awarii dostawcy.
+LLM_OUTPUT_TRUNCATED_FLAG = "llm_output_truncated"
 # Znacznik failovera bez modelu — przepis i tak nie może udawać głównego modelu.
 _UNKNOWN_FAILOVER_MODEL = "unknown"
 
@@ -1359,25 +1363,38 @@ def _compute_rag_context(
 
 def _run_llm_analysis(
     deps: AgentGraphDeps, state: AgentState, prompt: str, symbol: str
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[dict[str, Any], list[str]]:
     """Płatna analiza jakościowa LLM. #6: dla NAJWIĘKSZYCH ruchów (osobny próg
     ``tool_use_threshold``) idzie kosztowna pętla tool-use; inaczej zwykły
     ``llm_port.analyze``. #12-guard: błąd parsowania/API degradujemy do
-    neutralnego fallbacku. Zwraca ``(llm_analysis, llm_failed)``."""
+    neutralnego fallbacku. Zwraca ``(llm_analysis, flagi_jakości)``."""
     try:
         with usage_scope(source="llm", node="predict", symbol=symbol):
-            return _call_prediction_llm(deps, state, prompt, symbol), False
+            return _call_prediction_llm(deps, state, prompt, symbol), []
+    except LLMOutputIncomplete as exc:
+        logger.warning(
+            "llm_port.analyze returned an incomplete answer for %s (%s: %s) — "
+            "degraduję do neutralnej analizy",
+            state["symbol"],
+            type(exc).__name__,
+            exc,
+        )
+        return _neutral_llm_analysis(), ["llm_analysis_failed", LLM_OUTPUT_TRUNCATED_FLAG]
     except Exception:
         logger.exception(
             "llm_port.analyze failed for %s — degraduję do neutralnej analizy",
             state["symbol"],
         )
-        return {
-            "trend_direction": "SIDEWAYS",
-            "confidence_score": 0.5,
-            "av_agreement": 0.5,
-            "reasoning": "Analiza LLM niedostępna — neutralny fallback.",
-        }, True
+        return _neutral_llm_analysis(), ["llm_analysis_failed"]
+
+
+def _neutral_llm_analysis() -> dict[str, Any]:
+    return {
+        "trend_direction": "SIDEWAYS",
+        "confidence_score": 0.5,
+        "av_agreement": 0.5,
+        "reasoning": "Analiza LLM niedostępna — neutralny fallback.",
+    }
 
 
 def _call_prediction_llm(
@@ -1699,7 +1716,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         include_memory=memory,
         include_probabilities=deps.trend_probabilities_enabled,
     )
-    raw_analysis, llm_failed = _run_llm_analysis(deps, state, prompt, symbol)
+    raw_analysis, llm_flags = _run_llm_analysis(deps, state, prompt, symbol)
     failover, raw_analysis = _split_failover_marker(raw_analysis)
     # ML-07: kanonizacja PRZED pierwszym odczytem — rada, zapis i raport
     # czytają już ten sam znormalizowany dict, nie surowy tekst modelu.
@@ -1717,9 +1734,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     # Walidacja pól liczbowych — każdy padły input zostawia ślad w
     # data_quality_flags (None → _missing, nie-numeryczne/NaN → _invalid,
     # poza skalą [0, 1] → _out_of_range).
-    flags: list[str] = []
-    if llm_failed:
-        flags.append("llm_analysis_failed")
+    flags: list[str] = list(llm_flags)
     if failover is not None:
         flags.append(LLM_FAILOVER_FLAG)
     flags.extend(analysis_flags)

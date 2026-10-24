@@ -1055,6 +1055,53 @@ class TestPredictNodeLlmGuard:
         saved_record = repository_port.save_prediction.call_args.args[0]
         assert "llm_analysis_failed" in saved_record["data_quality_flags"]
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param("truncated", id="max-tokens"),
+            pytest.param("refused", id="refusal"),
+        ],
+    )
+    def test_incomplete_llm_output_is_flagged_as_truncated(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, error,
+    ):
+        # NIEZ-26: ucięta albo odrzucona odpowiedź ma własną flagę jakości — odróżnialna
+        # od awarii dostawcy. `llm_analysis_failed` zostaje: to dalej atrapa SIDEWAYS 50%,
+        # którą track record i rada pomijają.
+        from src.application.errors import LLMRefusalError, LLMTruncatedError
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        llm_port.analyze.side_effect = (
+            LLMTruncatedError("cut at max_tokens", output_tokens=768)
+            if error == "truncated"
+            else LLMRefusalError("refused")
+        )
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "saved"
+        assert final["llm_analysis"]["trend_direction"] == "SIDEWAYS"
+        saved_flags = repository_port.save_prediction.call_args.args[0]["data_quality_flags"]
+        assert saved_flags[:2] == ["llm_analysis_failed", "llm_output_truncated"]
+
+    def test_generic_llm_failure_is_not_flagged_as_truncated(
+        self, workflow, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        llm_port.analyze.side_effect = RuntimeError("provider down")
+
+        final = workflow.compile().invoke(_initial_state("100.0"))
+
+        assert "llm_output_truncated" not in final["data_quality_flags"]
+
     def test_predict_continues_to_ml_when_llm_fails(
         self, workflow, market_port, sentiment_port, news_port,
         repository_port, ml_port, llm_port,
