@@ -113,13 +113,8 @@ def render_quota_banner_text(alerts: list[QuotaAlert]) -> str:
     return "\n".join(lines)
 
 
-# Bez alertów w HTML zostaje dawny znacznik slotu — niewidoczny komentarz, mail
-# bajt w bajt jak przed ARCH-12 (golden snapshot). Wersja tekstowa go nie ma.
-_EMPTY_HTML = "<!-- QUOTA_BANNER_SLOT -->"
-
-
 def _section_html(data: SectionInput) -> str:
-    return render_quota_banner_html(data.context.quota_alerts or []) or _EMPTY_HTML
+    return render_quota_banner_html(data.context.quota_alerts or [])
 
 
 def _section_text(data: SectionInput) -> list[str]:

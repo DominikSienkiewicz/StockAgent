@@ -316,14 +316,9 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
     return "\n".join(lines)
 
 
-# Bez raportu w HTML zostaje dawny znacznik slotu — niewidoczny komentarz, mail
-# bajt w bajt jak przed ARCH-12 (golden snapshot). Wersja tekstowa go nie ma.
-_EMPTY_HTML = "<!-- RISK_WATCH_SLOT -->"
-
-
 def _section_html(data: SectionInput) -> str:
     report = data.context.macro_risk_report
-    return (render_risk_watch_html(report) if report else "") or _EMPTY_HTML
+    return render_risk_watch_html(report) if report else ""
 
 
 def _section_text(data: SectionInput) -> list[str]:
