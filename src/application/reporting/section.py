@@ -65,6 +65,8 @@ SHARED_CONTEXT_FIELDS: frozenset[str] = frozenset(
         # Etykiety sektorów i strefa czasu — wiele sekcji.
         "sector_map",
         "display_timezone",
+        # ALR-06: szoki od ostatniego maila — sekcja ⚡ i kandydat leadu.
+        "shock_alerts",
     }
 )
 

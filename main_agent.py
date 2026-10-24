@@ -2066,6 +2066,7 @@ def _report_flags(settings: Settings) -> ReportFlags:
         model_scorecard_enabled=settings.model_scorecard_enabled,
         cycle_diff_enabled=settings.cycle_diff_enabled,
         settled_at_windows_enabled=settings.settled_at_windows_enabled,
+        shock_alerts_enabled=settings.shock_alerts_enabled,
     )
 
 

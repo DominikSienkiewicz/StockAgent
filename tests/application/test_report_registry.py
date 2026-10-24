@@ -53,6 +53,7 @@ MAIL_ORDER = (
     "onboarding",
     "session",
     "first_screen",
+    "between_mails",
     "user_portfolio",
     "resolved_predictions",
     "consensus_shift",

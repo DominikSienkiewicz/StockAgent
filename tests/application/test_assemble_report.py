@@ -6,10 +6,11 @@ Wiring z `Settings` (aliasy w `main_agent`) pilnują testy w
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
-from src.application.ports import RepositoryPort, WebPublisherPort
+from src.application.errors import ProviderUnavailable
+from src.application.ports import RepositoryPort, StoredShockAlert, WebPublisherPort
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import ReportContext, SymbolResult
 from src.application.report_evidence import PaperCosts
@@ -129,3 +130,61 @@ def test_settled_window_flag_reads_settlements_since_the_cycle_start() -> None:
 
     assert repo.get_recently_resolved_predictions.call_args.kwargs == {"since": STARTED_AT}
     assert context.resolved_this_cycle is True
+
+
+class TestShocksSinceLastMail:
+    """ALR-06: szoki z watcha od ostatniego dostarczonego maila do sekcji ⚡."""
+
+    _SHOCK = StoredShockAlert(
+        symbol="NVDA",
+        delta=-0.062,
+        direction="DOWN",
+        created_at=datetime(2026, 10, 17, 22, 7, tzinfo=UTC),
+    )
+
+    @staticmethod
+    def _flags(*, enabled: bool) -> ReportFlags:
+        return ReportFlags(
+            track_record_days=30, reflection_min_age_hours=12, shock_alerts_enabled=enabled
+        )
+
+    def test_reads_alerts_since_the_last_delivered_mail(self) -> None:
+        repo = _repo()
+        last_mail = datetime(2026, 10, 17, 5, 31, tzinfo=UTC)
+        repo.get_last_report_at.return_value = last_mail
+        repo.get_shock_alerts_since.return_value = [self._SHOCK]
+
+        context = _assemble(repo, self._flags(enabled=True))
+
+        repo.get_last_report_at.assert_called_once_with(STARTED_AT)
+        repo.get_shock_alerts_since.assert_called_once_with(last_mail)
+        assert context.shock_alerts == [self._SHOCK]
+
+    def test_without_a_delivered_mail_falls_back_to_the_last_day(self) -> None:
+        repo = _repo()
+        repo.get_last_report_at.return_value = None
+        repo.get_shock_alerts_since.return_value = []
+
+        context = _assemble(repo, self._flags(enabled=True))
+
+        repo.get_shock_alerts_since.assert_called_once_with(STARTED_AT - timedelta(hours=24))
+        assert context.shock_alerts == []
+
+    def test_failed_read_hides_the_section(self) -> None:
+        repo = _repo()
+        repo.get_last_report_at.side_effect = ProviderUnavailable("cycle_runs down")
+        repo.get_shock_alerts_since.side_effect = ProviderUnavailable("shock_alerts down")
+
+        context = _assemble(repo, self._flags(enabled=True))
+
+        repo.get_shock_alerts_since.assert_called_once_with(STARTED_AT - timedelta(hours=24))
+        assert context.shock_alerts is None
+
+    def test_paused_watch_reads_nothing(self) -> None:
+        repo = _repo()
+
+        context = _assemble(repo, self._flags(enabled=False))
+
+        repo.get_shock_alerts_since.assert_not_called()
+        repo.get_last_report_at.assert_not_called()
+        assert context.shock_alerts is None

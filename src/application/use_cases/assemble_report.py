@@ -20,11 +20,12 @@ import dataclasses
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
+from src.application.errors import PortError
 from src.application.move_interval import interval_coverage
-from src.application.ports import RepositoryPort
+from src.application.ports import RepositoryPort, StoredShockAlert
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import ReportContext, SymbolResult
 from src.application.report_council_history import InvestorHistory
@@ -71,6 +72,9 @@ RESOLVED_PREDICTIONS_HOURS = 24
 # NIEZ-01: banner alertów kwot sięga tydzień + 3 h wstecz, żeby niedzielny CRITICAL
 # ze Slow Loopa (cron raz w tygodniu) był w najbliższym mailu, a nie znikał po 24 h.
 QUOTA_ALERT_LOOKBACK_HOURS = 7 * 24 + 3
+# ALR-06: okno szoków, gdy nie wiadomo, kiedy wyszedł ostatni mail (doba = cykl
+# Fast Loopa w dzień roboczy).
+SHOCK_FALLBACK_LOOKBACK_HOURS = 24
 # Okno track recordu person (#3) — 90 dni, tak jak domyślne okno RPC z migracji
 # 018. Dłuższe niż okno accuracy: hit-rate per persona potrzebuje próbki.
 PERSONA_TRACK_RECORD_DAYS = 90
@@ -98,6 +102,8 @@ class ReportFlags:
     model_scorecard_enabled: bool = False
     cycle_diff_enabled: bool = False
     settled_at_windows_enabled: bool = False
+    # ALR-06: szoki z watcha (#11) od ostatniego maila — czytane tylko, gdy watch działa.
+    shock_alerts_enabled: bool = False
 
 
 def portfolio_sectors(
@@ -375,6 +381,31 @@ def build_track_record_stats(
     )
 
 
+def shocks_since_last_mail(
+    flags: ReportFlags, repository: RepositoryPort, started_at: datetime
+) -> list[StoredShockAlert] | None:
+    """ALR-06 — szoki z watcha od startu ostatniego Fast Loopa, którego mail wyszedł.
+
+    Bez takiego przebiegu (pierwszy mail, pauza `cycle_runs`, błąd odczytu) okno to
+    ostatnie `SHOCK_FALLBACK_LOOKBACK_HOURS` — wolimy pominąć starszy szok niż
+    powtórzyć ten, który był już w mailu. Flaga watcha off → None bez zapytań; błąd
+    odczytu alertów → None, sekcja się chowa, cykl leci dalej."""
+    if not flags.shock_alerts_enabled:
+        return None
+    since: datetime | None = None
+    try:
+        since = repository.get_last_report_at(started_at)
+    except PortError:
+        logger.warning("Failed to read the last delivered mail — shocks of the last day")
+    if since is None:
+        since = started_at - timedelta(hours=SHOCK_FALLBACK_LOOKBACK_HOURS)
+    try:
+        return repository.get_shock_alerts_since(since)
+    except PortError:
+        logger.warning("Failed to fetch shock alerts — report without them", exc_info=True)
+        return None
+
+
 def persist_quota_alerts(repository: RepositoryPort, alerts: list[QuotaAlert]) -> None:
     """Zapis alertów kwot, każdy osobno — błąd jednego nie gubi pozostałych."""
     for alert in alerts:
@@ -582,5 +613,6 @@ class ReportAssembler:
             portfolio_sectors=sectors,
             model_scorecard=model_scorecard,
             consensus_shifts=consensus_shifts,
+            shock_alerts=shocks_since_last_mail(flags, repository, started_at),
         )
         return AssembledReport(context=report_context, reads=reads, costs=self._costs)

@@ -18,6 +18,7 @@ from typing import Any
 
 from src.application.alpha_signals import AlphaSignals
 from src.application.portfolio_fx import effective_pln_rates
+from src.application.ports import StoredShockAlert
 from src.application.report_alpha import significant_buy_label
 from src.application.report_charts import (
     build_correlation_chart_html,
@@ -474,6 +475,9 @@ class ReportContext:
     # MAIL-21: stan każdego źródła danych w cyklu (obwody HTTP, flagi jakości,
     # błędne odpowiedzi). None = sekcja 📡 bez danych, jak przed MAIL-21.
     source_health: tuple[SourceHealth, ...] | None = None
+    # ALR-06: alerty szoku z watcha od ostatniego maila — sekcja ⚡ Między mailami
+    # i kandydat leadu na pozycji z portfela. None = nie czytano (flaga watcha off).
+    shock_alerts: list[StoredShockAlert] | None = None
 
 
 def _section_input(

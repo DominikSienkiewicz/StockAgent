@@ -9,6 +9,7 @@ from __future__ import annotations
 from src.application.report_accuracy_history import ACCURACY_HISTORY_SECTION
 from src.application.report_alpha import ALPHA_SECTION
 from src.application.report_backoffice import BACKOFFICE_SECTION
+from src.application.report_between_mails import BETWEEN_MAILS_SECTION
 from src.application.report_charts import CORRELATION_CHART_SECTION, DELTA_CHART_SECTION
 from src.application.report_consensus_shift import CONSENSUS_SHIFT_SECTION
 from src.application.report_council_history import COUNCIL_HISTORY_SECTION
@@ -54,6 +55,7 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     ONBOARDING_SECTION,
     SESSION_SECTION,
     FIRST_SCREEN_SECTION,
+    BETWEEN_MAILS_SECTION,
     USER_PORTFOLIO_SECTION,
     RESOLVED_PREDICTIONS_SECTION,
     CONSENSUS_SHIFT_SECTION,
