@@ -148,7 +148,7 @@ def _render_hedges_table_html(hedges: list[HedgeAssessment]) -> str:
         )
     return (
         "<p style='font-size: 12px; color: #6b7280; margin: 12px 0 6px 0;'>"
-        "🛡️ Skuteczność hedge'y (realized corr vs portfel):</p>"
+        "🛡️ Skuteczność hedge'y (realized corr vs watchlista):</p>"
         "<table style='width: 100%; border-collapse: collapse; "
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
@@ -288,7 +288,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         lines.append("")
 
     if report.hedges:
-        lines.append("-- Skuteczność hedge'y (corr vs portfel) --")
+        lines.append("-- Skuteczność hedge'y (corr vs watchlista) --")
         for h in report.hedges:
             lines.append(
                 f"  {company_label(h.hedge_symbol):40s} "

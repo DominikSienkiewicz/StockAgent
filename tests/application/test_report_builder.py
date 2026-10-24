@@ -3879,9 +3879,22 @@ class TestPositionAwareSignals:
         assert "% portfela" not in section
 
 
+def test_watchlist_mood_section_not_called_portfolio():
+    # MAIL-31: sentyment liczy się po symbolach watchlisty; „portfel” to od #15
+    # sekcja „💼 Twój portfel” z realnymi pozycjami.
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
+    )
+
+    assert "Nastroje portfela" not in html
+    assert "NASTROJE PORTFELA" not in text
+    assert "📊 Nastroje watchlisty" in html
+    assert "NASTROJE WATCHLISTY" in text
+
+
 class TestDegradedDayMood:
     """MAIL-10 (G46): dzień bez danych nie udaje neutralnego nastroju — box
-    „Nastroje portfela” znika, gdy nic nie zapisano, a bez sentymentów średnia
+    „Nastroje watchlisty” znika, gdy nic nie zapisano, a bez sentymentów średnia
     to „—”, nie zmyślone „+0,00 (Neutralny)”."""
 
     _STARTED = datetime(2026, 5, 14, tzinfo=UTC)
@@ -3891,8 +3904,8 @@ class TestDegradedDayMood:
             [_ignored_result("MSFT"), _ignored_result("AAPL")], self._STARTED, 1.0
         )
 
-        assert "Nastroje portfela" not in html
-        assert "NASTROJE PORTFELA" not in text
+        assert "Nastroje watchlisty" not in html
+        assert "NASTROJE WATCHLISTY" not in text
         assert "Średni sentyment" not in html
         assert "Średni sentyment" not in text
         assert "0 / 0" not in html
@@ -3904,7 +3917,7 @@ class TestDegradedDayMood:
 
         html, text = build_html_report([degraded], self._STARTED, 1.0)
 
-        assert "Nastroje portfela" in html
+        assert "Nastroje watchlisty" in html
         assert "Średni sentyment: <strong>—</strong> (brak danych)" in html
         assert "  Średni sentyment: — (brak danych)" in text
         assert "+0,00 (Neutralny)" not in text

@@ -29,7 +29,7 @@ _HEADING = "🎯 Portfolio Radar — koncentracja i ryzyko"
 _STAT_LABELS: dict[RiskStat, str] = {
     "correlation": "Klastry korelacji",
     "var": "Value-at-Risk",
-    "beta": "Stress-test (β-to-portfel)",
+    "beta": "Stress-test (β względem watchlisty)",
 }
 
 
@@ -104,7 +104,7 @@ def render_correlation_text(report: PortfolioRiskReport) -> str:
         worst = impact.worst_symbol if impact.worst_symbol is not None else "—"
         lines.append(
             f"  🧪 {impact.scenario_name} ({pct(impact.market_shock, signed=True, decimals=0)}): "
-            f"portfel {pct(impact.portfolio_pnl, signed=True, decimals=1)}, najsłabszy {worst} "
+            f"watchlista {pct(impact.portfolio_pnl, signed=True, decimals=1)}, najsłabszy {worst} "
             f"({pct(impact.worst_pnl, signed=True, decimals=1)})"
         )
     lines.extend(f"  ⏳ {note}" for note in _insufficient_notes(report))
@@ -137,7 +137,7 @@ def _render_clusters_block_html(report: PortfolioRiskReport) -> str:
 
 
 def _render_var_html(report: PortfolioRiskReport) -> str:
-    """Podsekcja VaR/CVaR (R1) — strata ogona portfela równoważonego."""
+    """Podsekcja VaR/CVaR (R1) — strata ogona watchlisty o równych wagach (MAIL-31)."""
     if report.var is None:
         return ""
     conf_pct = round(report.var_confidence * 100)
@@ -149,7 +149,7 @@ def _render_var_html(report: PortfolioRiskReport) -> str:
         "border-left: 3px solid #f59e0b; border-radius: 4px; "
         "margin-bottom: 12px; font-size: 13px;'>"
         f"<strong>📉 Value-at-Risk ({conf_pct}%):</strong> w najgorszych "
-        f"{tail_pct}% okresów dzienna strata portfela równoważonego sięga "
+        f"{tail_pct}% okresów dzienna strata watchlisty (równe wagi) sięga "
         f"≥ <strong>{var_pct}</strong>; średnia strata w tym ogonie "
         f"(CVaR / expected shortfall) to <strong>{cvar_pct}</strong>."
         "</div>"
@@ -157,7 +157,7 @@ def _render_var_html(report: PortfolioRiskReport) -> str:
 
 
 def _render_stress_html(report: PortfolioRiskReport) -> str:
-    """Podsekcja stress-test (R2) — wpływ scenariuszy szoku na portfel."""
+    """Podsekcja stress-test (R2) — wpływ scenariuszy szoku na watchlistę."""
     if not report.scenarios:
         return ""
     rows: list[str] = []
@@ -182,14 +182,14 @@ def _render_stress_html(report: PortfolioRiskReport) -> str:
         )
     return (
         "<p style='font-size: 12px; color: #6b7280; margin: 12px 0 6px 0;'>"
-        "🧪 Stress-test (β-to-portfel × szok rynku):</p>"
+        "🧪 Stress-test (β względem watchlisty × szok rynku):</p>"
         "<table style='width: 100%; border-collapse: collapse; "
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
         "text-transform: uppercase; font-size: 11px;'>"
         "<th scope='col' style='padding: 6px 8px; text-align: left;'>Scenariusz</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: right;'>Szok</th>"
-        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Portfel</th>"
+        "<th scope='col' style='padding: 6px 8px; text-align: right;'>Watchlista</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: left;'>Najsłabszy</th>"
         "</tr></thead><tbody>"
         + "".join(rows)

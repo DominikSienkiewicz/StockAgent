@@ -141,7 +141,7 @@ KARTA KONDYCJI MODELU
   Soros — ostatnie 30 dni na NVDA: HOLD, SELL, SELL — najbardziej bearish głos
     Bilans: BUY 0 · SELL 2 · HOLD 1
 
-NASTROJE PORTFELA
+NASTROJE WATCHLISTY
 ----------------------------------------------------------------
   Średni sentyment: +0,15 (Lekko pozytywny)
   Najbardziej pozytywny: NVDA (NVIDIA Corporation) (+0,41)

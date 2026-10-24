@@ -1,4 +1,4 @@
-"""Sekcja 📊 Nastroje portfela — sentyment cyklu w Zapleczu.
+"""Sekcja 📊 Nastroje watchlisty — sentyment cyklu w Zapleczu.
 
 Średni sentyment, skrajne symbole, predykcje z wysoką pewnością i liczba newsów.
 MAIL-10: cykl bez zapisanych predykcji nie ma sekcji, a średnia bez ani jednego
@@ -33,7 +33,7 @@ def _mood_average(mood: PortfolioMood) -> tuple[str, str]:
 
 
 def _render_mood_html(mood: PortfolioMood) -> str:
-    """📊 Nastroje portfela — sentyment cyklu w Zapleczu. MAIL-10: cykl bez
+    """📊 Nastroje watchlisty — sentyment cyklu w Zapleczu. MAIL-10: cykl bez
     zapisanych predykcji (dzień zdegradowany, same pominięte) nie ma boxu."""
     if mood.saved_count == 0:
         return ""
@@ -53,7 +53,7 @@ def _render_mood_html(mood: PortfolioMood) -> str:
       <div style="padding: 12px 14px; background: #eff6ff; border-left: 3px solid #2563eb;
                   border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
         <div style="font-weight: 600; margin-bottom: 6px; color: #1e3a8a;">
-          📊 Nastroje portfela
+          📊 Nastroje watchlisty
         </div>
         <div style="color: #1e40af; line-height: 1.7;">
           Średni sentyment: <strong>{average}</strong>
@@ -67,13 +67,13 @@ def _render_mood_html(mood: PortfolioMood) -> str:
 
 
 def _render_mood_text(mood: PortfolioMood) -> list[str]:
-    """Sekcja 'Nastroje portfela' (plain) — w Zapleczu, jak w HTML (MAIL-10: bez
+    """Sekcja 'Nastroje watchlisty' (plain) — w Zapleczu, jak w HTML (MAIL-10: bez
     zapisanych predykcji sekcji nie ma)."""
     if mood.saved_count == 0:
         return []
     average, average_label = _mood_average(mood)
     lines = [
-        "NASTROJE PORTFELA",
+        "NASTROJE WATCHLISTY",
         "-" * 64,
         f"  Średni sentyment: {average} ({average_label})",
     ]

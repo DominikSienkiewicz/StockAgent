@@ -107,6 +107,26 @@ class TestHedgeRendering:
         assert "SH" in text
         assert "skuteczny" in text
 
+    def test_hedge_effectiveness_is_measured_against_the_watchlist(self) -> None:
+        # MAIL-31: książka hedge'a to równoważona watchlista, nie pozycje właściciela.
+        from src.domain.hedge import HedgeAssessment
+
+        report = MacroRiskReport(
+            hedges=[
+                HedgeAssessment(
+                    hedge_symbol="SH", correlation=-0.92, effectiveness=0.92, label="skuteczny"
+                )
+            ],
+        )
+
+        html = render_risk_watch_html(report)
+        text = render_risk_watch_text(report)
+
+        assert "realized corr vs watchlista" in html
+        assert "corr vs watchlista" in text
+        assert "portfel" not in html.lower()
+        assert "portfel" not in text.lower()
+
     def test_empty_hedges_render_nothing_extra(self) -> None:
         report = MacroRiskReport(hedges=[])
         assert render_risk_watch_html(report) == ""

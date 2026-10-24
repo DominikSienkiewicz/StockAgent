@@ -155,7 +155,7 @@ class TradeSignal:
 
 @dataclass(frozen=True)
 class PortfolioMood:
-    """📊 Nastroje portfela — agregaty sentymentu jednego cyklu (MAIL-10).
+    """📊 Nastroje watchlisty — agregaty sentymentu jednego cyklu (MAIL-10, MAIL-31).
 
     `avg_sentiment` i `avg_sentiment_label` są None, gdy cykl nie ma ani jednego
     sentymentu: brak danych to nie neutralny nastrój „+0,00”."""
