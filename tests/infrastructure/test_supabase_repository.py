@@ -4284,6 +4284,26 @@ class TestStaleQuote:
         assert len(selects) == len(readers)
         assert all("stale_quote" in c.args[0] for c in selects)
 
+    def test_settled_moves_drop_stale_settlements_with_the_flag(
+        self, mock_client: MagicMock, mocker: Any
+    ) -> None:
+        # Rozliczenie ceną równą cenie wejścia nie jest ruchem — nie może zawężać
+        # przedziału ruchu (ML-34) ani reszt ACI.
+        repo = self._repo(mock_client)
+        rows = [
+            {"symbol": "AAPL", "actual_price_after_12h": 100.0, "stale_quote": True},
+            {"symbol": "NVDA", "actual_price_after_12h": 101.0, "stale_quote": None},
+        ]
+        mocker.patch(
+            "src.infrastructure.adapters.supabase_repo._paginate",
+            side_effect=lambda _query: [dict(row) for row in rows],
+        )
+
+        moves = repo.get_settled_moves(90, with_intervals=True)
+
+        assert [row["symbol"] for row in moves] == ["NVDA"]
+        assert "stale_quote" in mock_client.table.return_value.select.call_args.args[0]
+
 
 # ---------------------------------------------------------------------------
 # DAT-21: `fundamentals_cache.market_cap` (migracja 056)

@@ -527,7 +527,10 @@ class RepositoryPort(ABC):
         `actual_price_after_12h`. Zasila okno kalibracyjne przedziału ruchu.
 
         `with_intervals` dokłada `interval_low` / `interval_high` do pomiaru
-        pokrycia — WYMAGA migracji 032 (inaczej PostgREST zwraca 400)."""
+        pokrycia — WYMAGA migracji 032 (inaczej PostgREST zwraca 400).
+
+        DAT-14: za `stale_quote_enabled` (migracja 055) bez rozliczeń z notowania
+        sprzed sesji po predykcji — cena równa cenie wejścia to nie ruch."""
 
     @abstractmethod
     def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:

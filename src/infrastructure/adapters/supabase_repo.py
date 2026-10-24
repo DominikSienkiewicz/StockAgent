@@ -256,16 +256,17 @@ def _without_llm_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 _STALE_QUOTE_COLUMN = "stale_quote"
 
 
-def _countable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Wiersze, które liczą się do trafności: bez atrap LLM (WIA-09) i bez
-    rozliczeń z nieaktualnego notowania (DAT-14, `stale_quote` = true).
+def _without_stale_quote(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bez rozliczeń z nieaktualnego notowania (DAT-14, `stale_quote` = true).
 
     Bez kolumny w SELECT (flaga off) `stale_quote` jest None, więc filtr nic nie tnie."""
-    return [
-        row
-        for row in _without_llm_fallback(rows)
-        if row.get(_STALE_QUOTE_COLUMN) is not True
-    ]
+    return [row for row in rows if row.get(_STALE_QUOTE_COLUMN) is not True]
+
+
+def _countable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Wiersze, które liczą się do trafności: bez atrap LLM (WIA-09) i bez
+    rozliczeń z nieaktualnego notowania (DAT-14)."""
+    return _without_stale_quote(_without_llm_fallback(rows))
 
 
 def _price_level_alert(row: Mapping[str, Any]) -> PriceLevelAlert:
@@ -899,12 +900,13 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             columns += ", interval_low, interval_high"
         query = (
             self._client.table(self._table)
-            .select(columns)
+            # DAT-14: rozliczenie ceną wejścia (notowanie sprzed sesji) to nie ruch.
+            .select(self._countable_columns(columns))
             .gte("timestamp", cutoff.isoformat())
             .not_.is_("actual_price_after_12h", "null")
             .order("timestamp", desc=False)
         )
-        return _paginate(query)
+        return _without_stale_quote(_paginate(query))
 
     def get_accuracy_stats(self, days: int) -> dict[str, Any]:
         """Trafność kierunkowa predykcji z ostatnich `days` dni.
