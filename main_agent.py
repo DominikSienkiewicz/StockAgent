@@ -1159,6 +1159,7 @@ def build_alpha_enrichment(
         if settings.analyst_consensus_enabled
         else NullAnalystConsensusAdapter()
     )
+    crypto_set, etf_set = set(settings.crypto_symbols), set(settings.symbols_etf)
     return AlphaEnrichmentUseCase(
         insider_port=insider,
         earnings_port=earnings,
@@ -1172,6 +1173,7 @@ def build_alpha_enrichment(
             if settings.insider_flow_enabled and repository is not None
             else None
         ),
+        asset_type_of=lambda symbol: _classify_asset(symbol, crypto_set, etf_set),
     )
 
 

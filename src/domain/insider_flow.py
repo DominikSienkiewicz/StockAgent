@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 
+from src.domain.value_objects import AssetType
+
 # DAT-21: próg znaczącego zakupu — kod P od officera za co najmniej tyle USD.
 # Dolna granica przy każdej kapitalizacji i cały próg, gdy kapitalizacja nieznana.
 SIGNIFICANT_BUY_MIN_USD = 100_000.0
@@ -67,6 +69,16 @@ class InsiderLeadWindow:
         if buy.filed_on is None:
             return True
         return (self.as_of - buy.filed_on).days <= self.max_age_days
+
+
+def has_insider_filings(asset_type: AssetType) -> bool:
+    """Czy aktywo ma insiderów składających Form 4 — tylko spółki (STOCK).
+
+    Krypto nie ma insiderów SEC, a ticker `BTC`/`ETH` w mapie SEC może należeć do
+    trustu ETF, więc wiersz krypto dostałby cudze dane. ETF-y to fundusze otwarte
+    bez Form 4: puste okno głosowałoby w Alpha Fusion neutralnie. Ta sama granica
+    co przy fundamentach (`Asset.evaluate_valuation`)."""
+    return asset_type is AssetType.STOCK
 
 
 class InsiderSignal(Enum):

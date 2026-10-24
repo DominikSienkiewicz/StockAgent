@@ -23,11 +23,16 @@ from src.application.ports import (
     SocialVelocityPort,
 )
 from src.domain.earnings import EarningsEvent
-from src.domain.insider_flow import InsiderFlowSnapshot
+from src.domain.insider_flow import InsiderFlowSnapshot, has_insider_filings
+from src.domain.value_objects import AssetType
 
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+
+def _stock(_symbol: str) -> AssetType:
+    return AssetType.STOCK
 
 
 class AlphaEnrichmentUseCase:
@@ -42,7 +47,10 @@ class AlphaEnrichmentUseCase:
         social_port: SocialVelocityPort,
         analyst_port: AnalystConsensusPort,
         market_cap_port: FundamentalsPort | None = None,
+        asset_type_of: Callable[[str], AssetType] = _stock,
     ) -> None:
+        """`asset_type_of` klasyfikuje symbol (DI zna listy krypto/ETF); insider
+        flow pytamy tylko o aktywa z Form 4 (`has_insider_filings`)."""
         self._insider = insider_port
         self._earnings = earnings_port
         self._options = options_port
@@ -51,6 +59,7 @@ class AlphaEnrichmentUseCase:
         # DAT-21: fundamenty WYŁĄCZNIE z cache (DI) — kapitalizacja do progu
         # znaczącego zakupu insidera. None = próg stały, jak przed DAT-21.
         self._market_caps = market_cap_port
+        self._asset_type_of = asset_type_of
 
     def fetch_earnings(self, symbol: str) -> EarningsEvent | None:
         """#6 — pobiera najbliższy raport kwartalny gracefully (błąd → None).
@@ -77,7 +86,11 @@ class AlphaEnrichmentUseCase:
             if earnings_prefetched
             else self._safe(self._earnings.get_next_earnings, symbol, "earnings")
         )
-        insider = self._safe(self._insider.get_insider_flow, symbol, "insider")
+        insider = (
+            self._safe(self._insider.get_insider_flow, symbol, "insider")
+            if has_insider_filings(self._asset_type_of(symbol))
+            else None
+        )
         return AlphaSignals(
             symbol=symbol,
             insider=insider,

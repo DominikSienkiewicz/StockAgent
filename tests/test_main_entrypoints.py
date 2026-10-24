@@ -2821,6 +2821,36 @@ class TestReflectionAgeWindowWiring:
         assert use_case_cls.call_args.args[0].reflection_max_age_hours is None
 
 
+class TestInsiderFlowCoversStocksOnly:
+    """Form 4 składają insiderzy spółek. Krypto nie ma insiderów SEC, a w mapie
+    tickerów SEC `BTC`/`ETH` mogą oznaczać trusty ETF, więc wiersz krypto dostałby
+    cudze dane. ETF-y to fundusze otwarte bez Form 4: puste okno głosowałoby
+    w Alpha Fusion neutralnie z największą wagą. Jak fundamenty — tylko STOCK."""
+
+    @staticmethod
+    def _enrichment(settings):
+        settings.insider_flow_enabled = True
+        settings.crypto_symbols = ["BTC"]
+        settings.symbols_etf = ["VOO"]
+        return main_agent.build_alpha_enrichment(settings)
+
+    @pytest.mark.parametrize("symbol", ["BTC", "VOO"])
+    def test_non_stock_symbol_never_reaches_edgar(self, settings, mocker, symbol) -> None:
+        mock_get = mocker.patch("requests.Session.get")
+
+        signals = self._enrichment(settings).enrich(symbol)
+
+        assert signals.insider is None
+        mock_get.assert_not_called()
+
+    def test_stock_symbol_still_reaches_edgar(self, settings, mocker) -> None:
+        mock_get = mocker.patch("requests.Session.get")
+
+        self._enrichment(settings).enrich("AAPL")
+
+        assert mock_get.called
+
+
 class TestAlphaVantageNewsWindowWiring:
     """DAT-09: Fast Loop pyta AV o newsy z ostatnich 24 h (`time_from`), żeby
     `news_volume_24h` znaczyło to, co mówi nazwa — bez dodatkowych requestów."""
