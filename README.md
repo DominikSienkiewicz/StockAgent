@@ -226,7 +226,8 @@ claim is written next to the code, where a change has to face it.
    [`src/domain/attestation.py`](src/domain/attestation.py) says so: Git commit dates can be
    forged, so commit-reveal only shows that a published commitment was not altered later
    under branch protection. Today nothing is published: `attestation_enabled` stays off until
-   a workflow has a publish step.
+   the `attestation-log` branch exists and is protected (the workflow that appends to it is
+   in place).
 2. **The model scorecard describes the candidate, not the shipped model.** `METRIC_NOTE` in
    [`src/domain/model_scorecard.py`](src/domain/model_scorecard.py), printed under every
    scorecard: the metrics come from walk-forward folds, while the shipped model is refit on

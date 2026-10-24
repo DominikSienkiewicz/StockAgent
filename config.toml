@@ -184,9 +184,10 @@ liveness_slow_loop_max_gap_h = 192
 alpha_fusion_enabled = true
 # #16: commit-reveal (migracja 024) — kryptograficznie weryfikowalny track record.
 # Claim: tamper-evidence przy branch protection, NIE niepodrabialny timestamp.
-# Wyłączone: żaden workflow nie publikuje `public/attestation/` (brak kroku
-# deploy/push), więc commitmenty lądowałyby tylko na efemerycznym dysku runnera.
-# Włącz razem z krokiem publikacji i DOPIERO po migracji 024 (inaczej PGRST204).
+# Wyłączone do czasu utworzenia i ochrony gałęzi `attestation-log`: Fast Loop
+# checkoutuje ją do `public/attestation/`, a job `publish-attestation-ledger` pushuje
+# tam nowe linie (WIA-14). UWAGA: włącz DOPIERO po migracjach 024 i 043 (inaczej
+# PGRST204) i po kroku 9 z docs/resume-checklist.md (flaga on bez gałęzi wywala cykl).
 attestation_enabled = false
 # #15: realny portfel użytkownika (tabela `positions`, migracja 023) — wagi,
 # P/L i VaR w PLN zamiast fikcji równych wag. Flaga off → Null adapter. Włączone.

@@ -18,6 +18,8 @@ on:
 permissions:
   contents: read       # tylko czytamy kod; Fast Loop nie pisze do repo
   # WIA-16: `pages: write` / `id-token: write` ma wyłącznie job `deploy-scorecard`.
+  # WIA-14: `contents: write` ma wyłącznie job `publish-attestation-ledger` (push na
+  # gałąź `attestation-log`, nigdy na main) i ani jednego klucza API.
 
 # Zapobiega overlapowi: jeśli opóźniony pierwszy run trwa nadal gdy ruszy
 # drugi (GHA cron bywa best-effort, opóźnienia 5-60 min są normalne), nowy
@@ -34,10 +36,45 @@ jobs:
     outputs:
       # WIA-16: `success` tylko wtedy, gdy powstał artefakt Pages publicznego scorecardu.
       scorecard: ${{ steps.scorecard-artifact.outcome }}
+      # WIA-14: czy agent dopisał coś do ledgera atestacji i od którego commitu gałęzi
+      # `attestation-log` zaczął (push zaczyna od tego commitu, nie od bieżącego końca).
+      ledger_changed: ${{ steps.ledger-changes.outputs.changed }}
+      ledger_base: ${{ steps.ledger-changes.outputs.base }}
 
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: 🔎 Check the attestation-log branch
+        # WIA-14: ledger JSONL jest append-only, więc agent musi dopisywać do checkoutu
+        # gałęzi `attestation-log`. Na świeżym runnerze bez checkoutu `FileAttestationPublisher`
+        # (tryb "a") zaczynałby pusty plik i push zgubiłby historię. Gałąź tworzy właściciel
+        # (docs/resume-checklist.md, krok 9): do tego czasu flaga `attestation_enabled`
+        # jest off i cykl biegnie jak dotąd. Flaga on bez gałęzi = błąd PRZED płatnymi wywołaniami.
+        id: ledger-branch
+        run: |
+          if git ls-remote --exit-code --heads origin attestation-log >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif grep -Eq '^attestation_enabled[[:space:]]*=[[:space:]]*true' config.toml; then
+            echo "::error title=StockAgent::attestation_enabled = true, ale brak gałęzi attestation-log (docs/resume-checklist.md, krok 9)"
+            exit 1
+          else
+            echo "::notice title=StockAgent::Brak gałęzi attestation-log — ledger atestacji nie jest checkoutowany (attestation_enabled = false)"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 📚 Checkout the attestation ledger (attestation-log)
+        id: ledger-checkout
+        if: steps.ledger-branch.outputs.exists == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Katalog z `attestation_commitments_path` i `attestation_reveals_path` (config.toml);
+          # pilnuje tego tests/test_workflow_env_wiring.py. Job agenta nie ma prawa zapisu,
+          # więc token nie zostaje w configu tego checkoutu.
+          ref: attestation-log
+          path: public/attestation
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: 🙈 Mask each Alpha Vantage key
         # BEZ-03: GitHub maskuje sekret CSV tylko w całości — pojedynczy klucz z listy
@@ -119,6 +156,30 @@ jobs:
           HEARTBEAT_URL:          ${{ secrets.HEARTBEAT_URL }}
         run: uv run --frozen --no-build --no-sync python main_agent.py
 
+      - name: 🔍 Detect new ledger lines
+        id: ledger-changes
+        # `!cancelled()`: agent kończy się exit 1, gdy padły wszystkie symbole, a predykcje
+        # zapisane wcześniej mają już commitment w bazie — jego hash musi trafić do ledgera.
+        if: ${{ !cancelled() && steps.ledger-checkout.outcome == 'success' }}
+        run: |
+          echo "base=$(git -C public/attestation rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [ -n "$(git -C public/attestation status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 📤 Upload attestation ledger (for the publish job)
+        if: ${{ !cancelled() && steps.ledger-changes.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: attestation-ledger
+          path: |
+            public/attestation/commitments.jsonl
+            public/attestation/reveals.jsonl
+          if-no-files-found: ignore
+          retention-days: 7   # jedyna kopia nowych linii, gdyby push padł
+
       - name: 📤 Upload public scorecard (Pages artifact)
         id: scorecard-artifact
         # WIA-16: wyłącznie katalog scorecardu (dirname `public_scorecard_path`), nigdy
@@ -132,6 +193,86 @@ jobs:
       - name: 📮 Mail o porażce jobu
         # NIEZ-23: GitHub mailuje o porażce crona tylko autora ostatniej zmiany crona,
         # a timeout i anulowanie są ciche. Bez Pythona — działa też, gdy padło `uv sync`.
+        if: failure() || cancelled()
+        env:
+          RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO_EMAIL: ${{ secrets.DIGEST_TO_EMAIL }}
+          RUN_URL:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS:      ${{ job.status }}
+          WORKFLOW_NAME:   ${{ github.workflow }}
+        run: scripts/notify-failure.sh "$WORKFLOW_NAME"
+
+  publish-attestation-ledger:
+    # WIA-14: jedyny job z `contents: write` i bez żadnego klucza API (poza mailem o jego
+    # porażce). Dokłada linie agenta do `attestation-log`: commit `[skip ci]`, `pull --rebase`
+    # z ponowieniami, push wyłącznie na tę gałąź — nigdy na main. Branch protection gałęzi
+    # (bez force-push i delete) ustawia właściciel: docs/resume-checklist.md, krok 9.
+    needs: run-market-agent
+    if: ${{ !cancelled() && needs.run-market-agent.outputs.ledger_changed == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    # Kolejka, nie anulowanie: przerwany push zostawiłby commitmenty tylko w bazie.
+    concurrency:
+      group: attestation-ledger
+      cancel-in-progress: false
+    env:
+      LEDGER_BASE: ${{ needs.run-market-agent.outputs.ledger_base }}
+
+    steps:
+      - name: 📥 Checkout repository
+        # Tylko skrypt alertu o porażce — bez tokenu w configu.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: 📚 Checkout the attestation ledger (attestation-log)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Pełna historia: rebase potrzebuje wspólnego przodka z commitem, od którego
+          # zaczął agent. Token tego jobu (contents: write) służy tylko do pusha.
+          ref: attestation-log
+          path: public/attestation
+          fetch-depth: 0
+
+      - name: 📥 Download attestation ledger
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: attestation-ledger
+          path: ledger-artifact
+
+      - name: 📮 Commit and push the ledger
+        run: |
+          set -euo pipefail
+          git -C public/attestation config user.name "github-actions[bot]"
+          git -C public/attestation config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Dwa dopisania na końcu tego samego pliku (inny przebieg zdążył wypchnąć wcześniej)
+          # łączą się bez konfliktu: rebase bierze linie z obu stron.
+          mkdir -p public/attestation/.git/info
+          printf '*.jsonl merge=union\n' >> public/attestation/.git/info/attributes
+          # Zaczynamy od commitu, który agent dopisywał; bieżący koniec gałęzi dołoży rebase.
+          git -C public/attestation checkout --quiet -B ledger-update "$LEDGER_BASE"
+          cp ledger-artifact/*.jsonl public/attestation/
+          touch public/attestation/commitments.jsonl public/attestation/reveals.jsonl
+          git -C public/attestation add commitments.jsonl reveals.jsonl
+          if git -C public/attestation diff --cached --quiet; then
+            echo "Ledger bez zmian — nic do wypchnięcia."
+            exit 0
+          fi
+          git -C public/attestation commit --quiet -m "ledger: run ${GITHUB_RUN_ID} [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git -C public/attestation pull --rebase --quiet origin attestation-log
+            if git -C public/attestation push --quiet origin HEAD:attestation-log; then
+              echo "Ledger wypchnięty (próba ${attempt})."
+              exit 0
+            fi
+            sleep "$((attempt * ${LEDGER_RETRY_DELAY_SECONDS:-3}))"
+          done
+          echo "::error title=StockAgent::Ledger atestacji nie został wypchnięty na attestation-log"
+          exit 1
+
+      - name: 📮 Mail o porażce jobu
         if: failure() || cancelled()
         env:
           RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}

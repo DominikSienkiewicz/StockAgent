@@ -1,6 +1,6 @@
 # Resume checklist: Fast Loop and Shock Watch crons
 
-**Status (2026-10-23): both crons are resumed.** The resume moved to a new, empty Supabase project, so DB Migrate applied every migration from `001` to `042`, not only `026`–`042`. Steps 1–4, 6, 7 and 10 are done: every flag of step 4 is on, both experiments run from 2026-10-26 (the first scheduled cycle) to 2027-01-29, and the deadman alerts after 26 h. Still open: step 5 (no `HEARTBEAT_URL` secret yet), step 8's check of the number of Alpha Vantage keys, step 9 (the attestation flags stay off), a push channel for Shock Watch (`TELEGRAM_*` or `SLACK_WEBHOOK_URL`; without one it logs an error and sends nothing), and step 11 after the first scheduled run.
+**Status (2026-10-23): both crons are resumed.** The resume moved to a new, empty Supabase project, so DB Migrate applied every migration from `001` to `042`, not only `026`–`042`. Steps 1–4, 6, 7 and 10 are done: every flag of step 4 is on, both experiments run from 2026-10-26 (the first scheduled cycle) to 2027-01-29, and the deadman alerts after 26 h. Still open: step 5 (no `HEARTBEAT_URL` secret yet), step 8's check of the number of Alpha Vantage keys, step 9 (the `attestation-log` branch, its protection and the attestation flags, which stay off), a push channel for Shock Watch (`TELEGRAM_*` or `SLACK_WEBHOOK_URL`; without one it logs an error and sends nothing), and step 11 after the first scheduled run.
 
 The daily Fast Loop cron has been commented out since 2026-08-17 (commit `02fc397`, decision 2): the loop cost money and its failures were silent, and nothing raised an alarm during the quiet weeks from 2026-08-17 to 2026-10-15. The hourly Shock Watch cron was paused on 2026-10-16 to match (`f886da0`). Waves A to R added what a resume needs: a cost ceiling per cycle, a daily Alpha Vantage budget, a daily deadman, an external heartbeat, explicit write and paid-call switches in the workflows, a cost ledger, a run history and a free reference signal. This page is the owner's list of steps, in order. Switching the `schedule` back on is the last step, and it is the owner's call.
 
@@ -86,7 +86,41 @@ Both experiments are defined in `config.toml` and inactive until the Fast Loop r
 
 ### 9. Pages and the `attestation-log` branch before the attestation flags
 
-`attestation_enabled` and `public_scorecard_enabled` stay off until their artefacts have a durable home (attestation also needs migration `043` from step 3, or each cycle runs without it): deploy GitHub Pages (Settings → Pages → Source: GitHub Actions) and protect the `attestation-log` branch, then turn both flags on (WIA-62). `tests/test_workflow_env_wiring.py` fails either flag while no workflow that runs `main_agent.py` has an `actions/deploy-pages` or `git push` step in that job, and the attestation has no publish step yet, so the publish step lands first. The attestation has no publish step yet, and the Fast Loop deploys the scorecard from its separate `deploy-scorecard` job (WIA-16), which that guard does not look at, so it still fails `public_scorecard_enabled` today. `tests/test_workflow_env_wiring.py::test_enabled_public_artifacts_have_a_durable_publish_step` checks each flag against its own mechanism, in the job that runs `main_agent.py` or in any job that waits for it through `needs` (directly or transitively): `public_scorecard_enabled` needs an `actions/upload-pages-artifact` of the scorecard's directory and an `actions/deploy-pages` step, which the Fast Loop has since WIA-16, so that flag can go on once Pages is set up; `attestation_enabled` needs a `git add` of both ledger files (`attestation_commitments_path`, `attestation_reveals_path`) and a `git push`, because a Pages deploy replaces the whole site and cannot keep an append-only ledger. The attestation has no such step yet, so its push lands first. The public scorecard has its own deploy: [`scorecard_pages.yml`](../.github/workflows/scorecard_pages.yml) runs the free `main_scorecard.py` and deploys only `dirname(public_scorecard_path)` to Pages (WIA-52), and every Fast Loop run that wrote the page deploys it the same way (WIA-16). Once Pages is set up and `public_scorecard_enabled` is on, run **🏅 Public Scorecard** from the Actions tab with a `days` input that reaches back to the last settled predictions (the Fast Loop has been paused since 2026-08-17, so the default 30 days are empty and write no page), then check the page URL on the run summary.
+`attestation_enabled` and `public_scorecard_enabled` stay off until their artefacts have a durable home. The workflows are ready (WIA-14, WIA-16); what is left is repository settings, which only the owner can change.
+
+**9a. Create the `attestation-log` branch** (an orphan branch holding only the two ledger files, created from a throwaway clone so your checkout is untouched). The Fast Loop checks this branch out into `public/attestation/` before the agent runs, and the separate `publish-attestation-ledger` job (the only one with `contents: write`, no API key) appends the new lines in a `[skip ci]` commit and pushes to this branch only, never to `main`:
+
+```bash
+ledger=$(mktemp -d) \
+  && git clone --quiet --no-checkout "$(git remote get-url origin)" "$ledger" \
+  && git -C "$ledger" switch --orphan attestation-log \
+  && : > "$ledger/commitments.jsonl" && : > "$ledger/reveals.jsonl" \
+  && git -C "$ledger" add commitments.jsonl reveals.jsonl \
+  && git -C "$ledger" commit -m "ledger: init [skip ci]" \
+  && git -C "$ledger" push origin attestation-log \
+  && rm -rf "$ledger"
+```
+
+**9b. Protect it** (no force-push, no deletion, admins included; pushes stay open, because the workflow pushes with the job token):
+
+```bash
+gh api -X PUT "repos/DominikSienkiewicz/StockAgent/branches/attestation-log/protection" --input - <<'JSON'
+{
+  "required_status_checks": null,
+  "enforce_admins": true,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
+```
+
+**9c. Check the pinned `actions/download-artifact`** in `fast_loop_12h.yml` (`publish-attestation-ledger` job) still points at the commit of its tag: `gh api repos/actions/download-artifact/git/ref/tags/v4.3.0 --jq .object.sha` must print the SHA in the `uses:` line. The job runs only when the agent appended to the ledger, so a wrong SHA would surface on the first run with the flag on.
+
+**9d. Turn the flag on** (attestation also needs migration `043` from step 3, or each cycle runs without it): set `attestation_enabled = true` in `config.toml`. A flag on without the branch fails the Fast Loop in its first step, before any paid call, with an `::error` annotation. Then run the Fast Loop once by hand and check that `attestation-log` has a `ledger: run <id> [skip ci]` commit with the new `commitments.jsonl` lines. The first push is also the start of the verifiable track record (WIA-27).
+
+**9e. Pages for the public scorecard:** deploy GitHub Pages (Settings → Pages → Source: GitHub Actions), then turn `public_scorecard_enabled` on. `tests/test_workflow_env_wiring.py::test_enabled_public_artifacts_have_a_durable_publish_step` checks each flag against its own mechanism, in the job that runs `main_agent.py` or in any job that waits for it through `needs` (directly or transitively): `public_scorecard_enabled` needs an `actions/upload-pages-artifact` of the scorecard's directory and an `actions/deploy-pages` step, which the Fast Loop has since WIA-16; `attestation_enabled` needs a `git add` of both ledger files (`attestation_commitments_path`, `attestation_reveals_path`) and a `git push`, which the `publish-attestation-ledger` job has since WIA-14, because a Pages deploy replaces the whole site and cannot keep an append-only ledger. The public scorecard has its own deploy: [`scorecard_pages.yml`](../.github/workflows/scorecard_pages.yml) runs the free `main_scorecard.py` and deploys only `dirname(public_scorecard_path)` to Pages (WIA-52), and every Fast Loop run that wrote the page deploys it the same way (WIA-16). Once Pages is set up and `public_scorecard_enabled` is on, run **🏅 Public Scorecard** from the Actions tab with a `days` input that reaches back to the last settled predictions, then check the page URL on the run summary.
 
 ### 10. Uncomment the crons
 
