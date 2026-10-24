@@ -22,7 +22,7 @@ import math
 import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 # Najdłuższa dopuszczalna przerwa między kolejnymi zamknięciami w oknie (dni).
 MAX_GAP_DAYS = 5
@@ -146,3 +146,46 @@ def price_features(history: Iterable[tuple[datetime, float]], as_of: datetime) -
         ),
         gate_move_z=_ratio(gate_move, vol_long),
     )
+
+
+
+# ML-11: σ zwrotów symbolu do normalizacji targetu modelu wspólnego (zwrot / σ).
+# Zwroty liczone między KOLEJNYMI snapshotami ceny (cykl do cyklu — ta sama skala co
+# target „zwrot do następnego cyklu”), z ostatnich `SIGMA_WINDOW_CYCLES` cykli.
+SIGMA_WINDOW_CYCLES = 20
+# Krótsza historia daje niestabilną σ — wtedy brak σ (wiersz poza treningiem,
+# serving bez predykcji modelu), zamiast dzielić przez przypadkową liczbę.
+SIGMA_MIN_RETURNS = 10
+# Podłoga σ: weekend akcji i stęchłe notowania dają zwroty 0, a σ bliska zeru
+# rozdmuchałaby target. 0,25% na cykl leży poniżej najspokojniejszych ETF-ów
+# (σ dzienna ≈ 0,8%), więc obcina tylko zdegenerowane okna.
+SIGMA_FLOOR = 0.0025
+# Punkt bieżącego cyklu nie jest „poprzednim cyklem”: węzeł terminalny zapisuje
+# snapshot ceny tuż PRZED wektorem cech, więc w treningu ma chwilę sprzed `as_of`
+# wektora, a w servingu (predict) jeszcze go nie ma. Cykle tego samego symbolu dzieli
+# co najmniej godzina (upsert per godzina), a jeden cykl trwa minuty.
+SAME_CYCLE_TOLERANCE = timedelta(minutes=30)
+
+
+def return_sigma(history: Iterable[tuple[datetime, float]], as_of: datetime) -> float | None:
+    """σ (próbkowe odchylenie standardowe) zwrotów z poprzednich cykli w chwili `as_of`.
+
+    Jedna funkcja dla treningu (as_of = chwila wektora) i servingu (as_of = zegar
+    cyklu): bierze wyłącznie punkty sprzed `as_of − SAME_CYCLE_TOLERANCE`, z dodatnią
+    i skończoną ceną, i ostatnie `SIGMA_WINDOW_CYCLES` zwrotów między kolejnymi
+    punktami. Mniej niż `SIGMA_MIN_RETURNS` zwrotów → None; wynik nie spada poniżej
+    `SIGMA_FLOOR`."""
+    cutoff = as_of - SAME_CYCLE_TOLERANCE
+    prices = [
+        float(price)
+        for moment, price in sorted(
+            (moment, price) for moment, price in history if moment < cutoff
+        )
+        if math.isfinite(price) and price > 0
+    ]
+    returns = [b / a - 1.0 for a, b in zip(prices, prices[1:], strict=False)][
+        -SIGMA_WINDOW_CYCLES:
+    ]
+    if len(returns) < SIGMA_MIN_RETURNS:
+        return None
+    return max(statistics.stdev(returns), SIGMA_FLOOR)
