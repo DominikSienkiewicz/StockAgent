@@ -313,3 +313,45 @@ def test_scheduled_and_database_writing_workflows_have_concurrency(workflow: str
         f"{workflow} ma cron albo pisze do bazy, a nie deklaruje `concurrency:` na poziomie "
         "workflowu — dwa przebiegi nałożyłyby się"
     )
+
+
+# Token checkoutu zostaje w `.git/config` na cały job; job instalujący ~150 zależności
+# nie ma po co go widzieć, jeśli nic nie pushuje. Push jest tam, gdzie `git ... push`.
+_GIT_PUSH = re.compile(r"\bgit\b[^\n]*\bpush\b")
+
+
+def _pushes_with_git(job: dict[str, Any]) -> bool:
+    return any(_GIT_PUSH.search(str(step.get("run", ""))) for step in job.get("steps", []))
+
+
+def _checkouts(job: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        step
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+
+
+def _pushing_jobs() -> list[tuple[str, str]]:
+    return [
+        (workflow, name)
+        for workflow, name in _job_ids()
+        if _pushes_with_git(_jobs(_workflow_specs()[workflow])[name])
+    ]
+
+
+def test_the_checkout_rule_finds_the_one_pushing_job() -> None:
+    assert _pushing_jobs() == [("fast_loop_12h.yml", "publish-attestation-ledger")]
+
+
+@pytest.mark.parametrize(
+    ("workflow", "name"), [pair for pair in _job_ids() if pair not in _pushing_jobs()]
+)
+def test_non_pushing_checkouts_do_not_persist_credentials(workflow: str, name: str) -> None:
+    job = _jobs(_workflow_specs()[workflow])[name]
+
+    for checkout in _checkouts(job):
+        assert dict(checkout.get("with") or {}).get("persist-credentials") is False, (
+            f"{workflow}:{name}: checkout bez `persist-credentials: false` zostawia token "
+            "w .git/config joba, który niczego nie pushuje"
+        )

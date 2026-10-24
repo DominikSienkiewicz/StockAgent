@@ -36,6 +36,7 @@ jobs:
         with:
           # Upload wag idzie domyślnym GITHUB_TOKEN z `contents: write` tego joba.
           fetch-depth: 1
+          persist-credentials: false
 
       - name: 🙈 Mask each Alpha Vantage key
         # BEZ-03: GitHub maskuje sekret CSV tylko w całości — pojedynczy klucz z listy
