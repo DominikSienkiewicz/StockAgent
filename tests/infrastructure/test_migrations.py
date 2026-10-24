@@ -104,6 +104,7 @@ MIGRATION_FILES = [
     "065_persona_scoring.sql",
     "070_rpc_search_path.sql",
     "071_schema_version.sql",
+    "075_shadow_predictions.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -2224,6 +2225,41 @@ class TestSupabaseRoleEmulation:
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 cur.execute("SELECT 1 FROM price_level_alerts LIMIT 1")
 
+    def test_shadow_predictions_are_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn
+    ) -> None:
+        """ML-33: nowa tabela po 038 — RLS włączony w 075, anon i authenticated bez
+        prawa, a service_role (Fast Loop) dopisuje prognozę cienia i (Slow Loop) czyta."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'shadow_predictions'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [
+                _has_table_privilege(cur, role, "shadow_predictions") for role in PUBLIC_API_ROLES
+            ]
+
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction) "
+                "VALUES ('SP_SR', 100.0) RETURNING id"
+            )
+            prediction_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO shadow_predictions "
+                "(prediction_id, symbol, model_name, model_version, proba) "
+                "VALUES (%s, 'SP_SR', 'direction', %s, 0.7)",
+                (prediction_id, "c" * 64),
+            )
+            cur.execute("SELECT count(*) FROM shadow_predictions WHERE symbol = 'SP_SR'")
+            assert cur.fetchone() == (1,)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM shadow_predictions LIMIT 1")
+
     def test_service_role_executes_the_rpc_functions(self, supabase_like_conn) -> None:
         """RPC, które aplikacja woła przez PostgREST. `refresh_ml_feature_store`
         poza zakresem: REFRESH wymaga właściciela widoku, a prawo MAINTAIN dla
@@ -3726,6 +3762,130 @@ class TestMigration061Digests:
             cur.execute(migration)
             cur.execute("SELECT to_regclass('storage.buckets')")
             assert cur.fetchone() == (None,)
+
+
+@pytest.mark.containers
+class TestMigration075ShadowPredictions:
+    """ML-33: prognozy cienia nogi ML — jeden wiersz na model i predykcję, prognoza
+    zwrotu albo prawdopodobieństwo, wersja wag jako sha256; znikają z predykcją."""
+
+    CHAMPION = "a" * 64
+    DIRECTION = "c" * 64
+
+    @staticmethod
+    def _prediction(cur: psycopg2.extensions.cursor, symbol: str) -> str:
+        cur.execute(
+            "INSERT INTO prediction_logs (symbol, price_at_prediction, actual_price_after_12h) "
+            "VALUES (%s, 100.0, 102.0) RETURNING id",
+            (symbol,),
+        )
+        return str(cur.fetchone()[0])
+
+    @staticmethod
+    def _shadow(
+        cur: psycopg2.extensions.cursor,
+        prediction_id: str,
+        name: str,
+        version: str,
+        predicted_return: float | None = None,
+        proba: float | None = None,
+    ) -> None:
+        cur.execute(
+            "INSERT INTO shadow_predictions "
+            "(prediction_id, symbol, model_name, model_version, predicted_return, proba) "
+            "VALUES (%s, 'SP', %s, %s, %s, %s)",
+            (prediction_id, name, version, predicted_return, proba),
+        )
+
+    def test_champion_and_challenger_rows_join_their_settled_prediction(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {
+            "prediction_id",
+            "symbol",
+            "model_name",
+            "model_version",
+            "predicted_return",
+            "proba",
+            "created_at",
+        } <= _columns(migrated_pg_conn, "shadow_predictions")
+        assert "shadow_predictions_created_at_idx" in _indexes(
+            migrated_pg_conn, "shadow_predictions"
+        )
+        with _rolled_back(migrated_pg_conn) as cur:
+            prediction_id = self._prediction(cur, "SP_JOIN")
+            self._shadow(cur, prediction_id, "champion", self.CHAMPION, predicted_return=0.01)
+            self._shadow(cur, prediction_id, "direction", self.DIRECTION, proba=0.7)
+            cur.execute(
+                "SELECT s.model_name, s.predicted_return, s.proba, "
+                "p.actual_price_after_12h / p.price_at_prediction - 1 "
+                "FROM shadow_predictions s JOIN prediction_logs p ON p.id = s.prediction_id "
+                "WHERE p.symbol = 'SP_JOIN' ORDER BY s.model_name"
+            )
+            rows = cur.fetchall()
+
+        assert [(name, ret, proba) for name, ret, proba, _ in rows] == [
+            ("champion", 0.01, None),
+            ("direction", None, 0.7),
+        ]
+        assert all(float(realized) == pytest.approx(0.02) for *_, realized in rows)
+
+    def test_one_row_per_model_and_prediction(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            prediction_id = self._prediction(cur, "SP_UNIQ")
+            self._shadow(cur, prediction_id, "direction", self.DIRECTION, proba=0.7)
+            with pytest.raises(psycopg2.errors.UniqueViolation):
+                self._shadow(cur, prediction_id, "direction", self.DIRECTION, proba=0.6)
+
+    @pytest.mark.parametrize(
+        ("name", "version", "predicted_return", "proba"),
+        [
+            ("direction", "c" * 64, None, None),
+            ("direction", "c" * 64, None, 1.2),
+            ("direction", "cold_start", None, 0.6),
+            ("", "c" * 64, 0.01, None),
+        ],
+    )
+    def test_rejects_rows_that_cannot_be_scored(
+        self,
+        migrated_pg_conn: psycopg2.extensions.connection,
+        name: str,
+        version: str,
+        predicted_return: float | None,
+        proba: float | None,
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            prediction_id = self._prediction(cur, "SP_CHECK")
+            self._shadow(cur, prediction_id, name, version, predicted_return, proba)
+
+    def test_rows_go_with_their_prediction(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            prediction_id = self._prediction(cur, "SP_CASCADE")
+            self._shadow(cur, prediction_id, "champion", self.CHAMPION, predicted_return=0.01)
+            cur.execute("DELETE FROM prediction_logs WHERE id = %s", (prediction_id,))
+            cur.execute(
+                "SELECT count(*) FROM shadow_predictions WHERE prediction_id = %s",
+                (prediction_id,),
+            )
+            assert cur.fetchone() == (0,)
+
+    def test_075_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "075_shadow_predictions.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'shadow_predictions'::regclass AND contype = 'u'"
+            )
+            assert cur.fetchone() == (1,)
 
 
 @pytest.mark.containers
