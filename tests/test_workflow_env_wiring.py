@@ -514,6 +514,79 @@ def test_real_workflows_publish_only_the_scorecard_dir() -> None:
     assert not violations, violations
 
 
+# WIA-62: trwała publikacja to WYŁĄCZNIE katalogi publicznych artefaktów — scorecardu
+# (Pages, razem ze `scorecard.json` i stroną statusu) i ledgera atestacji (git push na
+# `attestation-log`). Każda inna ścieżka w artefakcie Pages albo w `git add` jobu, który
+# pushuje, to nowy publiczny artefakt bez decyzji (i bez strażników anty-PII).
+PUBLIC_ARTIFACT_PATH_KEYS = ("public_scorecard_path", *ATTESTATION_LEDGER_KEYS)
+
+
+def _public_artifact_dirs(config: Mapping[str, Any]) -> set[str]:
+    return {posixpath.dirname(_normalized(str(config[key]))) for key in PUBLIC_ARTIFACT_PATH_KEYS}
+
+
+def _published_paths(spec: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """(job, ścieżka) każdej publikacji: artefakt Pages i `git add` w jobie z `git push`."""
+    published: list[tuple[str, str]] = []
+    for name, job in (spec.get("jobs") or {}).items():
+        steps = job.get("steps", [])
+        scripts = [str(step.get("run", "")) for step in steps]
+        pushes = any(_git_pushes(script) for script in scripts)
+        for step in steps:
+            upload = _pages_upload_path(step)
+            if upload is not None:
+                published.append((name, upload))
+        if pushes:
+            published += [(name, path) for script in scripts for path in _git_added_paths(script)]
+    return published
+
+
+def _unexpected_publications(
+    config: Mapping[str, Any], workflows: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
+    allowed = _public_artifact_dirs(config)
+    return [
+        f"{workflow}/{job}: {path}"
+        for workflow, spec in workflows.items()
+        for job, path in _published_paths(spec)
+        if not any(_contains(directory, path) for directory in allowed)
+    ]
+
+
+def test_workflows_publish_only_the_public_artifact_dirs() -> None:
+    assert _unexpected_publications(_repo_config(), _all_workflow_specs()) == []
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        ({"uses": "actions/upload-pages-artifact@v3", "with": {"path": "public"}},),
+        ({"uses": "actions/upload-pages-artifact@v3"},),
+        ({"run": "git add data/models/price_predictor.ubj && git commit -m w && git push"},),
+        ({"run": "git add -A"}, {"run": "git commit -m all && git push"}),
+    ],
+)
+def test_publication_guard_catches_a_path_outside_the_public_artifacts(
+    steps: tuple[dict[str, Any], ...],
+) -> None:
+    assert _unexpected_publications(_repo_config(), _synthetic_workflow(*steps)) != []
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        ({"uses": "actions/upload-pages-artifact@v3", "with": {"path": "public/scorecard"}},),
+        ({"run": "git -C public/attestation add commitments.jsonl reveals.jsonl\ngit push"},),
+        # `git add` bez pusha w tym samym jobie niczego nie publikuje.
+        ({"run": "git add data/models/price_predictor.ubj"},),
+    ],
+)
+def test_publication_guard_accepts_the_scorecard_and_the_ledger(
+    steps: tuple[dict[str, Any], ...],
+) -> None:
+    assert _unexpected_publications(_repo_config(), _synthetic_workflow(*steps)) == []
+
+
 # WIA-16/WIA-52: deploy publicznego scorecardu na Pages. Artefakt to sam katalog
 # scorecardu, wysyłany tylko gdy plik powstał (`hashFiles`), a deploy idzie
 # w osobnym jobie z environment `github-pages` — wyłącznie ten job dostaje
