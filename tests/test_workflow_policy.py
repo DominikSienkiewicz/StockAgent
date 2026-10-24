@@ -405,3 +405,53 @@ def test_paid_jobs_never_cancel_a_run_in_progress(workflow: str, name: str) -> N
         f"{workflow}:{name} woła płatne API, a `cancel-in-progress` nie jest false "
         f"({cancelling}) — anulowanie zabiłoby run, który już zapłacił"
     )
+
+
+# CI-25: bez `version` setup-uv instaluje najnowsze uv przy każdym runie, więc wynik
+# `--frozen`, format locka i flagi zależą od daty uruchomienia. Wersja jest jawna w
+# każdym kroku i taka sama we wszystkich workflowach. `[tool.uv] required-version` w
+# pyproject odpada: zatrzymałoby też lokalne uv każdego dewelopera.
+# Dependabot nie podbija parametru `version`: podbijaj ręcznie, wszędzie naraz.
+_EXACT_VERSION = re.compile(r"\d+\.\d+\.\d+")
+RUNNING_LOCALLY = ROOT / "docs" / "running-locally.md"
+
+
+def _setup_uv_steps() -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (workflow, dict(step.get("with") or {}))
+        for workflow, name in _job_ids()
+        for step in _jobs(_workflow_specs()[workflow])[name].get("steps", [])
+        if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
+    ]
+
+
+def test_setup_uv_pins_uv_version() -> None:
+    steps = _setup_uv_steps()
+
+    assert steps, "żaden workflow nie instaluje uv — test niczego nie pilnuje"
+    unpinned = [
+        workflow
+        for workflow, inputs in steps
+        if not _EXACT_VERSION.fullmatch(str(inputs.get("version", "")))
+    ]
+    assert unpinned == [], (
+        f"setup-uv bez jawnej `version: \"x.y.z\"` w {unpinned} — instaluje najnowsze uv"
+    )
+
+
+def test_setup_uv_steps_share_one_uv_version() -> None:
+    versions = {str(inputs.get("version", "")) for _, inputs in _setup_uv_steps()}
+
+    assert len(versions) == 1, f"różne wersje uv w workflowach: {sorted(versions)}"
+    assert all(_EXACT_VERSION.fullmatch(version) for version in versions), sorted(versions)
+
+
+def test_docs_name_the_pinned_uv_version() -> None:
+    versions = {str(inputs.get("version", "")) for _, inputs in _setup_uv_steps()}
+
+    assert versions
+    for version in versions:
+        assert _EXACT_VERSION.fullmatch(version)
+        assert f"`{version}`" in RUNNING_LOCALLY.read_text(encoding="utf-8"), (
+            f"docs/running-locally.md nie podaje przypiętej wersji uv {version}"
+        )
