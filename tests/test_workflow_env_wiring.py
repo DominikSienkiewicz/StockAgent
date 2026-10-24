@@ -857,6 +857,56 @@ def test_fast_loop_downloads_the_weights_before_the_agent_runs() -> None:
     assert dict(download.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}"
 
 
+# ML-33: challengerzy nogi ML jadą tym samym Release co champion — Slow Loop wysyła
+# wagi klasyfikatora kierunku ML-30 (plik `<champion>_direction.ubj`), Fast Loop
+# pobiera wagi każdego challengera z config.toml przed agentem; brak assetu nie jest błędem.
+def _direction_weights_path() -> str:
+    stem, suffix = posixpath.splitext(_ml_model_path())
+    return f"{stem}_direction{suffix}"
+
+
+def _steps_naming(steps: list[dict[str, Any]], command: str, path: str) -> list[dict[str, Any]]:
+    return [
+        step
+        for step in steps
+        if f"{command} {MODEL_RELEASE_TAG}" in str(step.get("run", ""))
+        and posixpath.basename(path) in str(step.get("run", "")) + str(step.get("env", ""))
+    ]
+
+
+def test_slow_loop_uploads_the_direction_challenger_weights() -> None:
+    uploads = _steps_naming(
+        _workflow_steps(_slow_loop_spec()), "gh release upload", _direction_weights_path()
+    )
+
+    assert len(uploads) == 1, "Slow Loop nie wysyła wag challengera kierunku do Release"
+    (upload,) = uploads
+    run = str(upload.get("run", ""))
+    assert _direction_weights_path() in str(upload.get("env", "")) + run
+    assert "--clobber" in run
+    # Wagi istnieją tylko, gdy klasyfikator przeszedł bramkę w tym runie (bash -e).
+    assert '[ ! -f "$CHALLENGER_PATH" ]' in run
+    assert str(upload.get("if", "")).replace(" ", "") == "${{!cancelled()}}"
+    assert dict(upload.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}"
+
+
+def test_fast_loop_downloads_every_configured_challenger_before_the_agent() -> None:
+    steps = _steps()
+    agent = next(s for s in steps if str(s.get("run", "")).endswith("main_agent.py"))
+    challengers = _repo_config()["ml_challengers"]
+
+    assert challengers, "config.toml nie ma challengerów — test nie miałby czego sprawdzić"
+    for challenger in challengers:
+        downloads = _steps_naming(steps, "gh release download", challenger["path"])
+        assert len(downloads) == 1, f"Fast Loop nie pobiera wag challengera {challenger['name']}"
+        (download,) = downloads
+        run = str(download.get("run", ""))
+        assert steps.index(download) < steps.index(agent)
+        assert posixpath.dirname(challenger["path"]) in run
+        # Brak assetu (klasyfikator jeszcze nie przeszedł bramki) nie wywraca joba.
+        assert run.lstrip().startswith("if gh release download")
+
+
 def test_slow_loop_write_permission_is_scoped_to_the_trainer_job() -> None:
     # BEZ-12: `contents: write` na poziomie workflowu dostałby każdy dopisany job.
     # Upload wag do Release (CI-13) idzie domyślnym GITHUB_TOKEN, więc checkout nie

@@ -127,6 +127,22 @@ jobs:
             echo "::warning::Brak wag w Release model-latest — Fast Loop bez modelu ML (cold start)."
           fi
 
+      - name: 📦 Download challenger weights (Release model-latest)
+        # ML-33: wagi challengera nogi ML (klasyfikator kierunku ML-30) z tego samego
+        # Release co champion. Agent czyta je tylko z `shadow_predictions_enabled`, a ich
+        # prognoza nie wpływa na wynik cyklu; brak assetu (klasyfikator jeszcze nie przeszedł
+        # bramki) = brak challengera, nie błąd. Sam odczyt — wystarcza `contents: read`.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release download model-latest --pattern price_predictor_direction.ubj \
+              --dir data/models --clobber; then
+            sha256sum data/models/price_predictor_direction.ubj
+          else
+            echo "Brak wag challengera w Release model-latest — bez prognoz cienia kierunku."
+          fi
+
       - name: 🧠 Run Agent (LangGraph + XGBoost + LLM)
         # Tu wstrzykujemy WYŁĄCZNIE sekrety (plus przełączniki DB_WRITES_ENABLED
         # i PAID_CALLS_ENABLED niżej).

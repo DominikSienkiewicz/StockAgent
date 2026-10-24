@@ -157,6 +157,30 @@ jobs:
           gh release edit model-latest --notes "$NOTES"
           echo "Wagi modelu w Release model-latest, sha256: ${SHA256}" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: 💾 Upload challenger weights (Release model-latest)
+        # ML-33: challengerzy nogi ML (prognozy cienia w Fast Loopie) jadą tym samym
+        # Release co champion. Klasyfikator kierunku ML-30 zapisuje wagi tylko po przejściu
+        # swojej bramki, więc plik istnieje wyłącznie, gdy ten run go wytrenował — inaczej
+        # Release zostaje przy wagach z poprzedniego przejścia bramki, jak champion.
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CHALLENGER_PATH: data/models/price_predictor_direction.ubj
+        run: |
+          if [ ! -f "$CHALLENGER_PATH" ]; then
+            echo "Klasyfikator kierunku nie zapisał wag w tym runie — pomijam upload challengera."
+            exit 0
+          fi
+
+          SHA256=$(sha256sum "$CHALLENGER_PATH" | cut -d' ' -f1)
+          if ! gh release view model-latest >/dev/null 2>&1; then
+            gh release create model-latest --title "Model weights (latest)" \
+              --notes "challenger sha256: ${SHA256}" --latest=false
+          fi
+          gh release upload model-latest "$CHALLENGER_PATH" --clobber
+          echo "Wagi challengera kierunku w Release model-latest, sha256: ${SHA256}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: 📮 Mail o porażce jobu
         # NIEZ-23: GitHub mailuje o porażce crona tylko autora ostatniej zmiany crona,
         # a timeout i anulowanie są ciche. Bez Pythona — działa też, gdy padło `uv sync`.
