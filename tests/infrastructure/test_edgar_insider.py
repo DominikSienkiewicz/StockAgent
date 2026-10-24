@@ -15,6 +15,7 @@ import os
 import tomllib
 import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -855,6 +856,32 @@ class TestSecFairAccess:
             thread.join()
 
         assert self._ticker_downloads(mock_get) == 1
+
+    def test_requests_stay_under_the_sec_rate_limit(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        clock = {"now": 0.0}
+
+        def sleep(seconds: float) -> None:
+            clock["now"] += seconds
+
+        mocker.patch("time.monotonic", side_effect=lambda: clock["now"])
+        mocker.patch("time.sleep", side_effect=sleep)
+        sent_at: list[float] = []
+
+        def get(url: str, **kwargs: object) -> Mock:
+            sent_at.append(clock["now"])
+            return self._no_form4_get(url, **kwargs)
+
+        mocker.patch("requests.Session.get", side_effect=get)
+
+        for symbol in ("AAPL", "MSFT"):
+            adapter.get_insider_flow(symbol)
+
+        # Ticker map + 2× submissions; SEC: najwyżej 10 req/s → odstęp ≥ 0.1 s.
+        gaps = [later - earlier for earlier, later in pairwise(sent_at)]
+        assert len(gaps) == 2
+        assert min(gaps) >= 0.1
 
 
 class TestNullInsiderFlowAdapter:

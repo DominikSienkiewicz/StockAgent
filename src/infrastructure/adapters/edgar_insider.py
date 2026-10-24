@@ -58,7 +58,9 @@ from src.infrastructure.adapters._http import build_session
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_WINDOW_DAYS = 90
 DEFAULT_MAX_FORM4 = 20
-# Polityka SEC: ≤ 10 requestów/s na aplikację — 0.12 s to zapas na drgania zegara.
+# Polityka SEC: ≤ 10 requestów/s na użytkownika, niezależnie od liczby maszyn
+# (sec.gov/os/accessing-edgar-data). 0.12 s (~8 req/s) to zapas na drgania zegara
+# i na retry urllib3 z `build_session`, które idą poza pacerem.
 SEC_MIN_REQUEST_INTERVAL_SECONDS = 0.12
 
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -161,6 +163,17 @@ def _raw_form4_doc(primary_doc: str) -> str:
     return primary_doc
 
 
+def _monotonic() -> float:
+    """Zegar domyślnego pacera — `time.monotonic` czytany przy wywołaniu, nie
+    przy definicji klasy, więc pacer idzie za zegarem, który ma moduł `time`."""
+    return time.monotonic()
+
+
+def _sleep(seconds: float) -> None:
+    """Czekanie domyślnego pacera — `time.sleep` czytany przy wywołaniu."""
+    time.sleep(seconds)
+
+
 class _RequestPacer:
     """Minimalny odstęp między kolejnymi requestami jednej instancji (DAT-10).
 
@@ -202,8 +215,8 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         timeout: float = DEFAULT_TIMEOUT,
         *,
         min_request_interval: float = SEC_MIN_REQUEST_INTERVAL_SECONDS,
-        clock: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = _monotonic,
+        sleep: Callable[[float], None] = _sleep,
     ) -> None:
         self._user_agent = user_agent
         self._window_days = window_days
