@@ -52,11 +52,14 @@ from functools import partial
 from src.application.alert_context import (
     AlertContext,
     PositionContext,
+    comparable_prices,
     position_context,
     render_alert_context,
 )
+from src.application.portfolio_fx import collect_current_pln_rates, nbp_today
 from src.application.ports import (
     DailyChangePort,
+    FxRatePort,
     LatestPrediction,
     MarketDataPort,
     PreviousVerdict,
@@ -68,7 +71,7 @@ from src.application.report_ops import render_watch_summary_markdown
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
 from src.domain.number_format import format_number_pl, format_pct_pl
-from src.domain.portfolio import Portfolio
+from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.price_levels import LevelDirection, PriceLevelAlert
 from src.domain.quiet_hours import is_quiet
 from src.domain.shock import (
@@ -121,6 +124,17 @@ def _render_alert(
     return subject, "\n".join(lines)
 
 
+def _current_pln_rates(
+    fx: FxRatePort | None, portfolio: Portfolio, moment: datetime
+) -> PlnRates | None:
+    """ALR-08: kursy NBP z dziś (Warszawa) obcych walut portfela. Portfel w jednej
+    walucie albo brak portu → None bez zapytań; błąd pojedynczego kursu to brak tego
+    kursu (`collect_current_pln_rates`), nigdy przerwany alert."""
+    if fx is None or len({lot.currency for lot in portfolio.positions}) <= 1:
+        return None
+    return collect_current_pln_rates(portfolio, fx, today=nbp_today(moment))
+
+
 def _load_user_portfolio(settings: Settings) -> Portfolio | None:
     """ALR-08: portfel z fabryki Fast Loopa — ta sama flaga `portfolio_positions_enabled`
     i ta sama reguła (błąd albo brak pozycji → None). Sam odczyt Supabase."""
@@ -143,12 +157,16 @@ class _AlertContextReader:
         repository: RepositoryPort,
         market: MarketDataPort,
         portfolio_loader: Callable[[], Portfolio | None],
+        rates_loader: Callable[[Portfolio], PlnRates | None] = lambda _portfolio: None,
     ) -> None:
         self._repository = repository
         self._market = market
         self._portfolio_loader = portfolio_loader
+        self._rates_loader = rates_loader
         self._portfolio: Portfolio | None = None
         self._portfolio_read = False
+        self._rates: PlnRates | None = None
+        self._rates_read = False
 
     def read(self, symbol: str) -> AlertContext:
         return AlertContext(
@@ -181,7 +199,17 @@ class _AlertContextReader:
         portfolio = self.user_portfolio()
         if portfolio is None or symbol not in {lot.symbol for lot in portfolio.positions}:
             return None
-        return position_context(portfolio, symbol, self.held_prices(portfolio))
+        return position_context(
+            portfolio, symbol, self.held_prices(portfolio), self.rates(portfolio)
+        )
+
+    def rates(self, portfolio: Portfolio) -> PlnRates | None:
+        """Kursy NBP do wag w złotych (ALR-08), raz na przebieg. None = bez kursów
+        (portfel w jednej walucie ich nie potrzebuje; reszta pomija udział)."""
+        if not self._rates_read:
+            self._rates_read = True
+            self._rates = self._rates_loader(portfolio)
+        return self._rates
 
     def user_portfolio(self) -> Portfolio | None:
         if not self._portfolio_read:
@@ -380,8 +408,15 @@ def _portfolio_shock_step(
     push wyszedł. Bez kanału push: log błędu, bez wysyłki i bez zapisu debounce
     (zapis zablokowałby alert na dobę, choć nikt go nie dostał). Błąd wysyłki leci
     do pętli watcha, która liczy go jak błąd symbolu."""
-    prices = reader.held_prices(portfolio)
-    weights = portfolio.weights(_pre_move_prices(prices, deltas))
+    comparable = comparable_prices(
+        portfolio, reader.held_prices(portfolio), reader.rates(portfolio)
+    )
+    if comparable is None:
+        logger.warning(
+            "Shock watch: portfel w kilku walutach bez kursów NBP — szok portfela pominięty"
+        )
+        return 0
+    weights = portfolio.weights(_pre_move_prices(dict(comparable.prices), deltas))
     shock = detect_portfolio_shock(weights, deltas, settings.portfolio_shock_threshold)
     if shock is None:
         return 0
@@ -412,6 +447,7 @@ def scan_watch(
     now: datetime | None = None,
     daily_change: DailyChangePort | None = None,
     portfolio_loader: Callable[[], Portfolio | None] | None = None,
+    fx_port: FxRatePort | None = None,
 ) -> WatchOutcome:
     """Jeden przebieg watcha.
 
@@ -425,6 +461,8 @@ def scan_watch(
     snapshoty, jak przed ALR-02.
     `portfolio_loader` (ALR-08): skąd wziąć portfel do linii „Twoja pozycja”;
     None → fabryka Fast Loopa (za `portfolio_positions_enabled`).
+    `fx_port` (ALR-08): kursy NBP do udziału pozycji w złotych, gdy portfel trzyma
+    kilka walut; None albo brak kursu → linia udziału pominięta, alert idzie.
     `portfolio_shock_enabled` (ALR-07): watch mierzy też symbole trzymane w portfelu,
     które dziś już zaalarmowały (ich ruch wchodzi do szoku portfela), a po pętli
     liczy szok portfela jako dodatkowy element przebiegu — jego błąd liczy się jak
@@ -451,7 +489,10 @@ def scan_watch(
     crypto_alert_times = _crypto_alert_times(repository, daily_change, symbols, crypto, moment)
     silent = _silent_delivery(settings, moment)
     context_reader = _AlertContextReader(
-        repository, market, portfolio_loader or partial(_load_user_portfolio, settings)
+        repository,
+        market,
+        portfolio_loader or partial(_load_user_portfolio, settings),
+        lambda portfolio: _current_pln_rates(fx_port, portfolio, moment),
     )
 
     # ALR-07: szok portfela raz dziennie; portfel czytamy tylko, gdy jest co mierzyć.
@@ -689,11 +730,12 @@ def run_watch(
     now: datetime | None = None,
     daily_change: DailyChangePort | None = None,
     portfolio_loader: Callable[[], Portfolio | None] | None = None,
+    fx_port: FxRatePort | None = None,
 ) -> int:
     """Jeden przebieg watcha. Zwraca liczbę WYSŁANYCH alertów.
 
     `daily_change=None` → wyłącznie snapshoty Fast Loopa (zachowanie sprzed ALR-02).
-    `portfolio_loader` jak w `scan_watch` (ALR-08)."""
+    `portfolio_loader` i `fx_port` jak w `scan_watch` (ALR-08)."""
     return scan_watch(
         settings,
         repository=repository,
@@ -702,6 +744,7 @@ def run_watch(
         now=now,
         daily_change=daily_change,
         portfolio_loader=portfolio_loader,
+        fx_port=fx_port,
     ).sent
 
 
@@ -719,6 +762,7 @@ def _run_watch(settings: Settings) -> int:
     # Import lokalny — DI Container Fast Loopa buduje darmowe adaptery ceny
     # i kanały push; watch tylko je składa. Zero płatnych portów.
     from main_agent import (
+        build_fx_port,
         build_market_port,
         build_push_channels,
         build_push_notifier,
@@ -741,6 +785,9 @@ def _run_watch(settings: Settings) -> int:
         market=market,
         push_notifier=push_notifier,
     )
+    if settings.nbp_enabled:
+        # ALR-08: darmowe kursy NBP do udziału pozycji w złotych, tylko za `nbp_enabled`.
+        scan = partial(scan, fx_port=build_fx_port(settings))
     # ALR-02: router darmowych cen (Finnhub /quote, CoinGecko) jest też źródłem dziennej
     # zmiany. Port ceny bez tej zdolności → przebieg wyłącznie na snapshotach.
     outcome = scan(daily_change=market) if isinstance(market, DailyChangePort) else scan()

@@ -218,6 +218,29 @@ def test_main_wires_free_adapters_only(settings, mocker) -> None:
         builder.assert_not_called()
 
 
+def test_main_hands_the_nbp_port_to_the_scan_only_with_nbp_enabled(settings, mocker) -> None:
+    # ALR-08: udział pozycji w złotych potrzebuje kursów NBP; bez `nbp_enabled` watch
+    # nie buduje portu kursów, a skan idzie jak przed ALR-08.
+    mocker.patch("main_agent.build_repository")
+    mocker.patch("main_agent.build_market_port")
+    mocker.patch("main_agent.build_push_notifier")
+    fx = mocker.patch("main_agent.build_fx_port")
+    settings.telegram_bot_token = "tg-token"
+    settings.telegram_chat_id = "42"
+    scan_watch = mocker.patch(
+        "main_watch.scan_watch", return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1)
+    )
+
+    settings.nbp_enabled = False
+    main_watch.main(settings)
+    assert "fx_port" not in scan_watch.call_args.kwargs
+    fx.assert_not_called()
+
+    settings.nbp_enabled = True
+    main_watch.main(settings)
+    assert scan_watch.call_args.kwargs["fx_port"] is fx.return_value
+
+
 class TestWatchMain:
     def test_main_returns_1_when_every_symbol_raises(self, settings, mocker) -> None:
         # NIEZ-05: padnięta baza dawała zielony run z „0 alertów”.
@@ -934,6 +957,97 @@ class TestAlertContext:
         positions_port.assert_not_called()
 
 
+class TestPositionShareInZlotys:
+    """ALR-08: udział pozycji w alercie szoku liczony w złotych (kursy NBP). Portfel
+    z pozycją w USD i w PLN dawał wagę z kwot w różnych walutach; brak kursu
+    pomija linię udziału, a odczyt kursu nigdy nie zatrzymuje alertu."""
+
+    _NOW = datetime(2026, 10, 16, 15, 7, tzinfo=UTC)
+
+    @staticmethod
+    def _fx(**rates: str) -> MagicMock:
+        from src.application.ports import FxRatePort
+        from src.domain.fx import FxRate
+
+        port = MagicMock(spec=FxRatePort)
+        port.get_rate.side_effect = lambda currency, day: (
+            FxRate(currency, day, day, Decimal(rates[currency])) if currency in rates else None
+        )
+        return port
+
+    @staticmethod
+    def _mixed_portfolio(as_of: datetime):
+        from src.domain.portfolio import Portfolio, Position
+
+        return Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("10"), purchase_price=Decimal("80")),
+                Position(
+                    symbol="PKN", quantity=Decimal("100"), purchase_price=Decimal("50"),
+                    currency="PLN",
+                ),
+            ),
+            as_of=as_of,
+        )
+
+    def _body(self, settings, fx_port: MagicMock | None) -> str:
+        settings.display_timezone = "Europe/Warsaw"
+        repo = _repo("100", age_hours=1.0, now=self._NOW)
+        repo.get_previous_verdict.return_value = None
+        repo.get_latest_prediction.return_value = None
+        market = MagicMock()
+        market.get_current_price.side_effect = lambda symbol: Money(
+            Decimal({"AAPL": "90", "PKN": "50"}[symbol])
+        )
+        push = MagicMock()
+
+        main_watch.scan_watch(
+            settings,
+            repository=repo,
+            market=market,
+            push_notifier=push,
+            now=self._NOW,
+            portfolio_loader=lambda: self._mixed_portfolio(self._NOW),
+            fx_port=fx_port,
+        )
+
+        body: str = push.send_report.call_args.kwargs["plain_text"]
+        return body
+
+    def test_share_of_the_usd_position_is_converted_with_the_nbp_rate(self, settings) -> None:
+        body = self._body(settings, self._fx(USD="4.00"))
+
+        # 10 × 90 USD × 4,00 = 3 600 zł z 8 600 zł (41,9%); z kwot natywnych: 900 / 5 900.
+        assert "Twoja pozycja: 42% portfela, +12,5% od zakupu" in body
+
+    def test_without_a_nbp_rate_the_share_is_left_out_but_the_alert_goes(self, settings) -> None:
+        body = self._body(settings, self._fx())
+
+        assert "Twoja pozycja: +12,5% od zakupu" in body
+        assert "% portfela" not in body
+
+    def test_without_an_fx_port_the_share_is_left_out(self, settings) -> None:
+        body = self._body(settings, None)
+
+        assert "Twoja pozycja: +12,5% od zakupu" in body
+
+    def test_a_failing_rate_read_never_stops_the_alert(self, settings) -> None:
+        fx = self._fx(USD="4.00")
+        fx.get_rate.side_effect = RuntimeError("NBP 503")
+
+        body = self._body(settings, fx)
+
+        assert "Twoja pozycja: +12,5% od zakupu" in body
+
+    def test_only_todays_rates_are_requested(self, settings) -> None:
+        fx = self._fx(USD="4.00")
+
+        self._body(settings, fx)
+
+        assert {call.args[0] for call in fx.get_rate.call_args_list} == {"USD"}
+        assert {call.args[1] for call in fx.get_rate.call_args_list} == {self._NOW.date()}
+
+
 # ---------------------------------------------------------------------------
 # ALR-11: alerty poziomów cenowych ustawiane przez użytkownika
 # ---------------------------------------------------------------------------
@@ -1312,3 +1426,80 @@ class TestPortfolioShockWatch:
 
         assert sent == 1
         assert "💼 Portfel -3,5%" in push.send_report.call_args.kwargs["plain_text"]
+
+
+class TestPortfolioShockInZlotys:
+    """ALR-07 + ALR-08: wagi szoku portfela w złotych, a bez kursów NBP portfela
+    w kilku walutach nie oceniamy (nie zgadujemy)."""
+
+    _NOW = datetime(2026, 10, 27, 14, 0, tzinfo=UTC)
+
+    def _run(self, settings: Settings, fx_port: MagicMock | None, caplog=None) -> MagicMock:
+        from src.domain.portfolio import Portfolio, Position
+
+        portfolio = Portfolio(
+            positions=(
+                Position(symbol="AAPL", quantity=Decimal("10"), purchase_price=Decimal("80")),
+                Position(
+                    symbol="PKN", quantity=Decimal("100"), purchase_price=Decimal("50"),
+                    currency="PLN",
+                ),
+            ),
+            as_of=self._NOW,
+        )
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_last_price_snapshot.side_effect = lambda symbol: (
+            Money(Decimal({"AAPL": "100", "PKN": "50"}[symbol])),
+            self._NOW - timedelta(hours=1),
+        )
+        repo.get_sent_shock_alerts.return_value = set()
+        repo.get_previous_verdict.return_value = None
+        repo.get_latest_prediction.return_value = None
+        # AAPL −8% (USD), PKN bez zmiany: w złotych AAPL waży ~42%, więc portfel −3,4%.
+        market = MagicMock()
+        market.get_current_price.side_effect = lambda symbol: Money(
+            Decimal({"AAPL": "92", "PKN": "50"}[symbol])
+        )
+        push = MagicMock()
+        cfg = settings.model_copy(
+            update={
+                "symbols": ["AAPL", "PKN"],
+                "portfolio_shock_enabled": True,
+                "portfolio_shock_threshold": Decimal("0.03"),
+                "quiet_hours_enabled": False,
+                "volatility_threshold": Decimal("0.05"),  # symbol: 10% progu, −8% nie alarmuje
+            }
+        )
+
+        main_watch.scan_watch(
+            cfg,
+            repository=repo,
+            market=market,
+            push_notifier=push,
+            now=self._NOW,
+            portfolio_loader=lambda: portfolio,
+            fx_port=fx_port,
+        )
+        return push
+
+    def test_weights_are_in_zlotys(self, settings) -> None:
+        from src.application.ports import FxRatePort
+        from src.domain.fx import FxRate
+
+        fx = MagicMock(spec=FxRatePort)
+        fx.get_rate.side_effect = lambda currency, day: FxRate(
+            currency, day, day, Decimal("4.00")
+        )
+
+        push = self._run(settings, fx)
+
+        push.send_report.assert_called_once()
+        # Waga AAPL przed ruchem: 10 × 100 × 4 = 4 000 zł z 9 000 zł → −8% × 44,4% = −3,6%.
+        assert "💼 Portfel -3,6%" in push.send_report.call_args.kwargs["plain_text"]
+
+    def test_mixed_currencies_without_rates_are_not_assessed(self, settings, caplog) -> None:
+        with caplog.at_level(logging.WARNING):
+            push = self._run(settings, None)
+
+        push.send_report.assert_not_called()
+        assert "kurs" in caplog.text.lower()
