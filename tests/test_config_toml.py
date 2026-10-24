@@ -534,6 +534,12 @@ def test_real_config_toml_ships_the_persona_vote_outcomes_off_until_migration() 
     assert data["persona_vote_outcomes_enabled"] is False
 
 
+def test_real_config_toml_ships_the_persona_brier_ranking_off_until_migration() -> None:
+    """WIA-44: RPC `persona_scoring_stats` powstaje dopiero w migracji 065 (DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["persona_brier_ranking_enabled"] is False
+
+
 def test_real_config_toml_ships_the_correction_category_off_until_migration() -> None:
     """WIA-57: kolumna `correction_category` powstaje dopiero w migracji 046 (DB Migrate)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))

@@ -5417,6 +5417,16 @@ def test_build_repository_passes_the_persona_vote_outcomes_flag(
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+def test_report_flags_carry_the_persona_brier_ranking_flag(settings, enabled: bool) -> None:
+    # WIA-44: kolejność leaderboardu person to flaga raportu (ReportFlags), nie adaptera.
+    settings.persona_brier_ranking_enabled = enabled
+
+    flags = main_agent._report_flags(settings)
+
+    assert flags.persona_brier_ranking_enabled is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
 def test_build_repository_passes_the_correction_category_flag(
     settings, mocker, enabled: bool
 ) -> None:

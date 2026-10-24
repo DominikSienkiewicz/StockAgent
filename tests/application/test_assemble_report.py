@@ -14,13 +14,20 @@ from src.application.ports import RepositoryPort, StoredShockAlert, WebPublisher
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import ReportContext, SymbolResult
 from src.application.report_evidence import PaperCosts
-from src.application.use_cases.assemble_report import ReportAssembler, ReportFlags
+from src.application.report_track_record import TrackRecordStats
+from src.application.use_cases.assemble_report import (
+    ReportAssembler,
+    ReportFlags,
+    assess_personas,
+    fetch_report_context,
+)
 from src.application.use_cases.publish_public_scorecard import (
     PublicScorecardOptions,
     PublishPublicScorecardUseCase,
 )
 from src.domain.cycle_maturity import CycleMaturity
 from src.domain.evaluation_protocol import EvaluationProtocol
+from src.domain.persona_track_record import PersonaScoring, PersonaTrackRecord
 
 STARTED_AT = datetime(2026, 10, 18, 5, 30, tzinfo=UTC)
 _SETTLED = {
@@ -210,3 +217,88 @@ def test_model_scorecard_carries_the_snapshot_model_cards() -> None:
 
     assert context.model_scorecard is not None
     assert [card.symbol for card in context.model_scorecard.snapshot_models] == ["ALL_FREE"]
+
+
+class TestPersonaBrierRanking:
+    """WIA-44: leaderboard po Brier Skill pewności tylko za flagą
+    `persona_brier_ranking_enabled`; bez niej zero nowych odczytów."""
+
+    @staticmethod
+    def _scoring() -> dict[str, PersonaScoring]:
+        return {
+            "Alfa": PersonaScoring(hit_rate=0.6, votes=20, brier=0.40, log_loss=0.95),
+            "Zeta": PersonaScoring(hit_rate=0.6, votes=20, brier=0.24, log_loss=0.67),
+        }
+
+    def _fetch(self, repo: Mock, *, enabled: bool) -> list[PersonaTrackRecord]:
+        monitor = QuotaMonitor()
+        *_, ranking = fetch_report_context(
+            repo, monitor, ["AAPL"], persona_brier_ranking=enabled
+        )
+        return ranking
+
+    def test_flag_orders_the_leaderboard_by_brier_skill(self) -> None:
+        repo = _repo()
+        repo.get_persona_scoring.return_value = self._scoring()
+
+        ranking = self._fetch(repo, enabled=True)
+
+        assert [r.investor_name for r in ranking] == ["Zeta", "Alfa"]
+        assert ranking[0].brier == 0.24
+        repo.get_persona_track_record.assert_not_called()
+
+    def test_flag_off_never_reads_the_scoring(self) -> None:
+        repo = _repo()
+        repo.get_persona_track_record.return_value = {"Alfa": (0.6, 20), "Zeta": (0.6, 20)}
+
+        ranking = self._fetch(repo, enabled=False)
+
+        assert [r.investor_name for r in ranking] == ["Alfa", "Zeta"]
+        assert all(r.brier is None for r in ranking)
+        repo.get_persona_scoring.assert_not_called()
+
+    def test_flag_without_scoring_falls_back_to_the_hit_rate_ranking(self) -> None:
+        repo = _repo()
+        repo.get_persona_scoring.return_value = {}
+        repo.get_persona_track_record.return_value = {"Alfa": (0.6, 20), "Zeta": (0.5, 20)}
+
+        ranking = self._fetch(repo, enabled=True)
+
+        assert [r.investor_name for r in ranking] == ["Alfa", "Zeta"]
+        assert all(r.brier is None for r in ranking)
+
+    def test_significance_assessment_keeps_the_brier_order(self) -> None:
+        from src.domain.persona_track_record import rank_scored_personas
+        from src.domain.track_record import ScoredCall, assess_directional_hit_rate
+
+        calls = [
+            ScoredCall(
+                cycle=f"2026-09-{day + 1:02d}",
+                predicted_trend="BULLISH",
+                is_correct=(day + i) % 2 == 0,
+                realized_change=0.01 if (day + i) % 2 == 0 else -0.01,
+            )
+            for day in range(20)
+            for i in range(2)
+        ]
+        stats = TrackRecordStats(hit_rate=assess_directional_hit_rate(calls, n_boot=0))
+        ranked = rank_scored_personas(self._scoring())
+
+        assessed = assess_personas(ranked, stats)
+
+        assert [r.investor_name for r in assessed] == ["Zeta", "Alfa"]
+        assert all(r.verdict is not None for r in assessed)
+
+    def test_the_report_flag_reaches_the_assembler(self) -> None:
+        repo = _repo()
+        repo.get_persona_scoring.return_value = self._scoring()
+        flags = ReportFlags(
+            track_record_days=30,
+            reflection_min_age_hours=12,
+            symbols=["AAPL"],
+            persona_brier_ranking_enabled=True,
+        )
+
+        context = _assemble(repo, flags)
+
+        assert [r.investor_name for r in context.persona_track_record or []] == ["Zeta", "Alfa"]

@@ -65,8 +65,10 @@ from src.domain.equity_curve import EquityCurve
 from src.domain.model_scorecard import MODEL_SCORECARD_WINDOW_DAYS
 from src.domain.persona_track_record import (
     PersonaTrackRecord,
+    RankBy,
     assess_against_track_record,
     rank_personas,
+    rank_scored_personas,
     sort_personas,
 )
 from src.domain.quota import QuotaAlert
@@ -108,6 +110,8 @@ class ReportFlags:
     settled_at_windows_enabled: bool = False
     # ALR-06: szoki z watcha (#11) od ostatniego maila — czytane tylko, gdy watch działa.
     shock_alerts_enabled: bool = False
+    # WIA-44: leaderboard person po Brier Skill pewności (RPC 065) zamiast hit-rate'u.
+    persona_brier_ranking_enabled: bool = False
 
 
 def portfolio_sectors(
@@ -430,6 +434,7 @@ def fetch_report_context(
     all_symbols: list[str],
     *,
     resolved_since: datetime | None = None,
+    persona_brier_ranking: bool = False,
 ) -> tuple[
     dict[str, Any] | None,
     list[ResolvedPrediction] | None,
@@ -446,7 +451,10 @@ def fetch_report_context(
     chwili (start cyklu), a nie utworzone w ostatnich 24 h. None = okno 24 h.
 
     MAIL-25: nieudany odczyt zamkniętych predykcji zwraca None, nie pustą listę —
-    pusta lista znaczy w mailu „brak rozliczeń”, czego po awarii nie wiemy."""
+    pusta lista znaczy w mailu „brak rozliczeń”, czego po awarii nie wiemy.
+
+    `persona_brier_ranking` (WIA-44) — leaderboard person po Brier Skill z RPC 065;
+    brak oceny (migracja, błąd) wraca do rankingu po hit-rate'cie."""
     accuracy_stats: dict[str, Any] | None = None
     resolved: list[ResolvedPrediction] | None = None
     try:
@@ -489,9 +497,14 @@ def fetch_report_context(
     # → sekcja sama się chowa, cykl leci dalej. WIA-30: po dolnej granicy Wilsona.
     persona_track_record: list[PersonaTrackRecord] = []
     try:
-        persona_track_record = rank_personas(
-            repository.get_persona_track_record(PERSONA_TRACK_RECORD_DAYS), rank_by="wilson"
-        )
+        if persona_brier_ranking:
+            persona_track_record = rank_scored_personas(
+                repository.get_persona_scoring(PERSONA_TRACK_RECORD_DAYS)
+            )
+        if not persona_track_record:
+            persona_track_record = rank_personas(
+                repository.get_persona_track_record(PERSONA_TRACK_RECORD_DAYS), rank_by="wilson"
+            )
     except Exception:
         logger.exception("Failed to fetch persona track record")
     return (
@@ -509,11 +522,13 @@ def assess_personas(
     """WIA-22: werdykt istotności person (BH-FDR) na parametrach z okna scorecardu,
     bez migracji; WIA-30: ranking po dolnej granicy Wilsona na n_eff — tym samym
     przedziale, który pokazuje wiersz. Bez dowodu trafności okna
-    (`equity_curve_enabled` off, brak danych) ranking zostaje bez werdyktu."""
+    (`equity_curve_enabled` off, brak danych) ranking zostaje bez werdyktu.
+    WIA-44: rekordy z oceną Briera zachowują kolejność po Brier Skill."""
     evidence = None if stats is None else stats.hit_rate
     if not records or evidence is None:
         return records
-    return sort_personas(assess_against_track_record(records, evidence), "wilson")
+    rank_by: RankBy = "brier_skill" if any(r.brier is not None for r in records) else "wilson"
+    return sort_personas(assess_against_track_record(records, evidence), rank_by)
 
 
 @dataclass(frozen=True)
@@ -569,7 +584,11 @@ class ReportAssembler:
             council_history,
             persona_track_record,
         ) = fetch_report_context(
-            repository, quota_monitor, all_symbols, resolved_since=resolved_since
+            repository,
+            quota_monitor,
+            all_symbols,
+            resolved_since=resolved_since,
+            persona_brier_ranking=flags.persona_brier_ranking_enabled,
         )
 
         # T1/T2/T4: Track Record (render-only, zero płatnych). Każda podsekcja

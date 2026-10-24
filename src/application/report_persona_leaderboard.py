@@ -15,10 +15,11 @@ przekroczyła progu `min_votes`) → `render_*` zwraca "".
 from __future__ import annotations
 
 import html as _html
+from decimal import Decimal
 
 from src.application.report_evidence import interval_label
 from src.application.reporting.section import ReportSection, SectionInput, no_text
-from src.domain.number_format import DecimalMark
+from src.domain.number_format import DecimalMark, format_number_pl
 from src.domain.persona_track_record import PersonaTrackRecord
 
 # Medal dla lidera — tylko dla pierwszego miejsca. Przy 2-3 personach podium
@@ -37,6 +38,13 @@ _VERDICT_NOTE_PL = (
     "KUP / SPRZEDAJ / TRZYMAJ”) z korektą BH-FDR po personach, a kolejność po "
     "dolnej granicy przedziału — to przybliżenie: baseline i n_eff liczymy "
     "z predykcji okna track recordu, nie z samych głosów person."
+)
+
+# WIA-44: kolejność po Brier Skill (tylko gdy rekordy niosą ocenę Briera, czyli za flagą).
+_BRIER_NOTE_PL = (
+    " Kolejność: umiejętność Briera (BSS) pewności względem stałej prognozy persony — "
+    "przepewna persona (wysokie „KUP 0,95” i pudło) traci więcej niż ostrożna przy tym "
+    "samym odsetku trafień."
 )
 
 _COLOR_GOOD = "#16a34a"
@@ -77,6 +85,8 @@ def render_persona_leaderboard_html(records: list[PersonaTrackRecord]) -> str:
         for position, record in enumerate(records, start=1)
     ]
     note = _VERDICT_NOTE_PL if any(r.p_value is not None for r in records) else ""
+    if any(r.brier is not None for r in records):
+        note += _BRIER_NOTE_PL
 
     return (
         "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
@@ -118,10 +128,24 @@ def _render_row_html(record: PersonaTrackRecord, *, position: int) -> str:
         f"<td style='padding: 6px 8px;'>{medal}<strong>{name}</strong></td>"
         f"<td style='padding: 6px 8px; color: {color}; font-weight: 600;'>"
         f"{record.hit_rate_pct}% <span style='color: #9ca3af; font-weight: 400;'>"
-        f"({interval_label(low, high)})</span>{verdict_html}</td>"
+        f"({interval_label(low, high)})</span>{_brier_html(record)}{verdict_html}</td>"
         f"<td style='padding: 6px 8px; color: #6b7280;'>"
         f"{_votes_label(record.votes)}{n_eff}</td>"
         "</tr>"
+    )
+
+
+def _brier_html(record: PersonaTrackRecord) -> str:
+    """WIA-44: „Brier 0,31 · BSS -0,12” pod hit-rate'em; "" bez oceny Briera."""
+    if record.brier is None:
+        return ""
+    parts = [f"Brier {format_number_pl(Decimal(str(record.brier)), signed=False, decimals=2)}"]
+    skill = record.brier_skill
+    if skill is not None:
+        parts.append(f"BSS {format_number_pl(Decimal(str(skill)), signed=False, decimals=2)}")
+    return (
+        "<div style='font-size: 11px; color: #6b7280; font-weight: 400;'>"
+        f"{_html.escape(' · '.join(parts))}</div>"
     )
 
 

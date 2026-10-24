@@ -95,6 +95,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "quiet_hours_enabled",
     "quiet_hours_start",
     "quiet_hours_end",
+    # WIA-44: sama kolejność i opis leaderboardu person w mailu; wagi konsensusu
+    # (`persona_weighting_enabled`) liczy osobna ścieżka.
+    "persona_brier_ranking_enabled",
     # ALR-11: alerty poziomów cenowych watcha — push poza cyklem, nie prognoza.
     "price_level_alerts_enabled",
     "price_alerts",
@@ -488,6 +491,10 @@ class Settings(BaseSettings):
     # `persona_vote_outcomes` (migracja 045): HOLD na krypto w paśmie ±2.5%, nie
     # akcyjnym ±0.5%. Off: RPC 015/018 — przed migracją 045 funkcji nie ma.
     persona_vote_outcomes_enabled: bool = False
+    # WIA-44: leaderboard person w mailu układa się po Brier Skill pewności (RPC
+    # `persona_scoring_stats`, migracja 065) zamiast po samym hit-rate'cie. Tylko
+    # kolejność i opis w mailu — prognoza ta sama. Off: ranking jak dotąd.
+    persona_brier_ranking_enabled: bool = False
     debate_mode_enabled: bool = False
 
     # ----- Model routing (#2 — tani model + eskalacja do frontier) -----

@@ -1594,6 +1594,23 @@ class TestPersonaVoteOutcomesFlag:
         assert "persona_vote_outcomes_enabled" in RECIPE_SETTINGS_FIELDS
 
 
+class TestPersonaBrierRankingFlag:
+    """WIA-44: kolejność leaderboardu person po Brier Skill (RPC 065) — flaga
+    odczytu wymagającego migracji, domyślnie off, tylko treść maila."""
+
+    def test_defaults_off(self, env):
+        assert (
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).persona_brier_ranking_enabled
+            is False
+        )
+
+    def test_is_not_part_of_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS, RECIPE_SETTINGS_FIELDS
+
+        assert "persona_brier_ranking_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        assert "persona_brier_ranking_enabled" not in RECIPE_SETTINGS_FIELDS
+
+
 class TestCorrectionCategoryFlag:
     """WIA-57: kolumna `correction_category` (migracja 046) — sam zapis kategorii
     diagnozy i jej odczyt w panelu lessons; prognoza ta sama, poza przepisem."""

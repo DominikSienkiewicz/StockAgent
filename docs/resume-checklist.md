@@ -68,6 +68,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `061` | `digest_archive_enabled` | The full email goes to the private Supabase Storage bucket `digests` and the owner's email and push carry an `Otwórz w przeglądarce` link valid for 7 days (MAIL-24); `061` creates the `digests` index table and, where the migration role may write `storage.buckets`, the private bucket. Check under Dashboard → Storage that `digests` exists and **Public bucket** is off; if it is missing, create it there with Public off. |
 | `062` | `split_detection_enabled` | A suspected split (the quote's `pc` against the last snapshot) adjusts the gate, the settlement and `price_delta` and is recorded in `corporate_actions` (DAT-23); part of `config_hash` and it changes settlements, so turn it on after EXP-02/03 end (2027-01-29). |
 | `063` | `rag_exact_search_enabled` | RAG analogs come from an exact nearest-neighbour scan instead of the ivfflat index at `probes = 1` (ML-23); it changes the analogs in the prediction prompt and is part of `config_hash`, so turn it on after EXP-03 ends (2027-01-29). |
+| `065` | `persona_brier_ranking_enabled` | The persona leaderboard of the email sorts by the Brier skill of the personas' confidence and shows `Brier` / `BSS` under the hit rate (WIA-44); presentation only, so it does not start a new `recipe_version` segment. |
 
 ### 5. Add the `HEARTBEAT_URL` secret
 
