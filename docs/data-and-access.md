@@ -21,7 +21,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 |---|---|---|---|---|---|
 | `prediction_logs` | `001`, columns added up to `043`, `055` (`stale_quote`) | Model output: predictions, council verdicts, receipts, settlements, embeddings | on, no policies | Fast Loop (prediction, settlement, calibration, attestation reveal) | Fast Loop (reflection, RAG, report, track record), tools (`evaluate`), Scorecard (public scorecard) |
 | `price_snapshots` | `002`, `013` | Market data: one price per symbol and hour | on, no policies | Fast Loop (every cycle) | Fast Loop, Shock Watch (fallback reference price when the free quote has no fresh daily change, ALR-02), Deadman (database probe), Scorecard (IVV benchmark) |
-| `ml_feature_store` | materialized view, `001` rebuilt in `004`, `012`, `022`, `026`, `027`, `039`, `047`, `050` | Derived training features from `prediction_logs` | not applicable (a materialized view has no RLS; grants only) | Slow Loop and backtest refresh it (`refresh_ml_feature_store`) | Slow Loop, backtest |
+| `ml_feature_store` | materialized view, `001` rebuilt in `004`, `012`, `022`, `026`, `027`, `039`, `047`, `050`, `058` | Derived training features from `prediction_logs`; from `058` without settlements on a stale quote (`stale_quote IS NOT TRUE`, DAT-14) | not applicable (a materialized view has no RLS; grants only) | Slow Loop and backtest refresh it (`refresh_ml_feature_store`) | Slow Loop, backtest |
 | `fundamentals_cache` | `006`, `056` (`market_cap`) | Market data: Alpha Vantage fundamentals cache | on, no policies | Fast Loop | Fast Loop |
 | `council_votes` | `007`, `054` (unique vote per persona and prediction) | Model output: one vote per persona and prediction | on, no policies | Fast Loop | Fast Loop (persona weights and track record) |
 | `quota_alerts` | `010` | Operational: API quota exhaustion events | on, no policies | Fast Loop, Slow Loop | Fast Loop (report banner) |
@@ -44,9 +44,9 @@ The functions in `public`, all `SECURITY INVOKER` (they run with the caller's pr
 |---|---|---|---|
 | `refresh_ml_feature_store()` | `001`, `004` | Slow Loop, backtest (RPC) | `service_role` only |
 | `match_news_embeddings(vector, int, text)` | `011`, `017` | Fast Loop (RAG, RPC) | `service_role` only |
-| `persona_accuracy_weights(int)` | `015` | Fast Loop (RPC) | `service_role` only |
-| `persona_accuracy_stats(int)` | `018` | Fast Loop (RPC) | `service_role` only |
-| `persona_vote_outcomes(int)` | `045` | Fast Loop (RPC, `persona_vote_outcomes_enabled`), tools (`persona-ablation`) | `service_role` only |
+| `persona_accuracy_weights(int)` | `015`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
+| `persona_accuracy_stats(int)` | `018`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
+| `persona_vote_outcomes(int)` | `045`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_vote_outcomes_enabled`), tools (`persona-ablation`) | `service_role` only |
 | `stamp_prediction_settled_at()` | `029` | trigger on `prediction_logs` | `service_role` only; the trigger fires for any writer |
 
 `scripts/prod-state-check.sh` reads several of these relations with plain `GET` requests and

@@ -90,6 +90,7 @@ MIGRATION_FILES = [
     "055_prediction_stale_quote.sql",
     "056_fundamentals_market_cap.sql",
     "057_price_level_alerts.sql",
+    "058_settled_reads_without_stale_quote.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -2830,6 +2831,100 @@ class TestMigration054CouncilVotesUnique:
             )
             assert cur.fetchall() == [("Michael Burry", "SELL"), ("Warren Buffett", "SELL")]
         assert "idx_council_votes_prediction_investor_uniq" in _indexes(conn, "council_votes")
+
+
+@pytest.mark.containers
+class TestMigration058SettledReadsWithoutStaleQuote:
+    """DAT-14: rozliczenie z notowania sprzed sesji po predykcji (`stale_quote` =
+    true, 055) ma cenę równą cenie wejścia — 058 wycina je z danych treningowych
+    i z trafności person (RPC 015, 018 i 045). `IS NOT TRUE`: NULL (krypto, wiersze
+    sprzed 055) zostaje."""
+
+    @staticmethod
+    def _settled(cur: psycopg2.extensions.cursor, symbol: str, stale: bool | None) -> str:
+        cur.execute(
+            "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction, "
+            "actual_price_after_12h, stale_quote) "
+            "VALUES (%s, NOW() - interval '2 days', 100.0, 102.0, %s) RETURNING id",
+            (symbol, stale),
+        )
+        return str(cur.fetchone()[0])
+
+    @staticmethod
+    def _vote(cur: psycopg2.extensions.cursor, prediction_id: str, symbol: str) -> None:
+        cur.execute(
+            "INSERT INTO council_votes "
+            "(prediction_id, symbol, investor_name, recommendation, confidence) "
+            "VALUES (%s, %s, 'SQ058 Persona', 'BUY', 0.7)",
+            (prediction_id, symbol),
+        )
+
+    def test_feature_store_drops_stale_settlements(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            for symbol, stale in (("SQ058_T", True), ("SQ058_F", False), ("SQ058_N", None)):
+                self._settled(cur, symbol, stale)
+            cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
+            cur.execute(
+                "SELECT symbol FROM ml_feature_store WHERE symbol LIKE 'SQ058_%' ORDER BY symbol"
+            )
+            symbols = [row[0] for row in cur.fetchall()]
+
+        assert symbols == ["SQ058_F", "SQ058_N"]
+
+    def test_feature_store_after_058_keeps_the_lag_columns_and_indexes(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        """058 odtwarza widok z 050 1:1 — nowy jest tylko filtr."""
+        assert {"settled_at", "label_horizon_hours", "price_prev_12h"} <= _columns(
+            migrated_pg_conn, "ml_feature_store"
+        )
+        assert {
+            "idx_ml_feature_store_id",
+            "idx_ml_feature_store_symbol_timestamp",
+        } <= _indexes(migrated_pg_conn, "ml_feature_store")
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute("SELECT refresh_ml_feature_store()")
+            cur.execute("SELECT obj_description('ml_feature_store'::regclass)")
+            assert "058" in cur.fetchone()[0]
+
+    def test_persona_reads_drop_stale_settlements(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            self._vote(cur, self._settled(cur, "SQ058_VT", True), "SQ058_VT")
+            self._vote(cur, self._settled(cur, "SQ058_VN", None), "SQ058_VN")
+            cur.execute(
+                "SELECT symbol FROM persona_vote_outcomes(90) "
+                "WHERE investor_name = 'SQ058 Persona'"
+            )
+            outcomes = [row[0] for row in cur.fetchall()]
+            cur.execute(
+                "SELECT vote_count FROM persona_accuracy_stats(90) "
+                "WHERE investor_name = 'SQ058 Persona'"
+            )
+            stats = cur.fetchall()
+            cur.execute(
+                "SELECT weight FROM persona_accuracy_weights(90) "
+                "WHERE investor_name = 'SQ058 Persona'"
+            )
+            weights = cur.fetchall()
+
+        assert outcomes == ["SQ058_VN"]
+        assert stats == [(1,)]
+        # Jeden trafiony BUY (102 > 100): waga 0.5 + 1.0 = 1.5 — bez stęchłego głosu.
+        assert weights == [(pytest.approx(1.5),)]
+
+    def test_058_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "058_settled_reads_without_stale_quote.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT obj_description('persona_vote_outcomes(integer)'::regprocedure)"
+            )
+            assert "DAT-14" in cur.fetchone()[0]
 
 
 @pytest.mark.containers
