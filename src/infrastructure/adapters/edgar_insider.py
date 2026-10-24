@@ -23,8 +23,11 @@ niesie liczbę widzianych i sparsowanych Form 4 (DAT-03), więc domena
 from __future__ import annotations
 
 import logging
+import threading
+import time
 import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime, timedelta
+from http import HTTPStatus
 
 import requests
 
@@ -35,6 +38,11 @@ from src.infrastructure.adapters._http import build_session
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_WINDOW_DAYS = 90
 DEFAULT_MAX_FORM4 = 20
+# SEC: „Current max request rate: 10 requests/second" na użytkownika, niezależnie
+# od liczby maszyn (sec.gov/os/accessing-edgar-data). 8 zostawia zapas na retry
+# urllib3 z `build_session`, które idą poza tym pacerem.
+MAX_REQUESTS_PER_SECOND = 8
+MIN_REQUEST_INTERVAL_SECONDS = 1.0 / MAX_REQUESTS_PER_SECOND
 
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -63,6 +71,14 @@ def _find_local(element: ET.Element, name: str) -> ET.Element | None:
 def _findall_local(element: ET.Element, name: str) -> list[ET.Element]:
     """Wszyscy potomkowie o lokalnej nazwie `name` (tolerancja na namespace)."""
     return [d for d in element.iter() if _local_name(d.tag) == name]
+
+
+def _padded_cik(raw: object) -> str | None:
+    """CIK bywa intem lub stringiem → 10 cyfr; brak albo nie-numeryczny → None."""
+    try:
+        return str(int(str(raw))).zfill(10)
+    except ValueError:
+        return None
 
 
 def _raw_form4_doc(primary_doc: str) -> str:
@@ -98,8 +114,17 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         self._session = session if session is not None else build_session()
         # SEC wymaga User-Agent na KAŻDYM żądaniu — ustawiamy raz na sesji.
         self._session.headers.update({"User-Agent": user_agent})
+        # Adapter żyje jeden cykl: po 403 SEC dalsze żądania tylko przedłużają
+        # blokadę (dostęp wraca po 10 min poniżej progu), więc milkniemy do końca.
+        self._blocked = False
+        self._ciks: dict[str, str] | None = None
+        self._ciks_lock = threading.Lock()
+        self._last_request_at: float | None = None
+        self._pace_lock = threading.Lock()
 
     def get_insider_flow(self, symbol: str) -> InsiderFlowSnapshot | None:
+        if self._blocked:
+            return None
         try:
             cik = self._resolve_cik(symbol)
             if cik is None:
@@ -123,6 +148,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
                 sell_count += sells
                 filings_parsed += 1
 
+            if self._blocked:
+                # Snapshot z częścią filingów wyglądałby jak awaria parsowania.
+                return None
             return InsiderFlowSnapshot(
                 symbol=symbol,
                 net_shares=net_shares,
@@ -137,10 +165,52 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             logger.exception("EDGAR insider flow failed for %s", symbol)
             return None
 
+    def _get(self, url: str) -> requests.Response | None:
+        """GET do SEC; None, gdy SEC odrzucił nas w tym cyklu (403)."""
+        if self._blocked:
+            return None
+        self._pace()
+        response = self._session.get(url, timeout=self._timeout)
+        if response.status_code == HTTPStatus.FORBIDDEN:
+            self._blocked = True
+            logger.warning(
+                "SEC EDGAR answered 403 for %s — no more EDGAR requests this cycle "
+                "(see docs/configuration.md, insider flow)",
+                url,
+            )
+            return None
+        return response
+
+    def _pace(self) -> None:
+        """Odstęp ≥ `MIN_REQUEST_INTERVAL_SECONDS` między żądaniami WSZYSTKICH
+        wątków. Bez niego równoległe symbole (`symbol_concurrency` > 1), każdy
+        z kilkunastoma Form 4, strzelałyby burstem ponad limit SEC."""
+        with self._pace_lock:
+            if self._last_request_at is not None:
+                wait = MIN_REQUEST_INTERVAL_SECONDS - (time.monotonic() - self._last_request_at)
+                if wait > 0:
+                    time.sleep(wait)
+            self._last_request_at = time.monotonic()
+
     def _resolve_cik(self, symbol: str) -> str | None:
         """Mapuje ticker → 10-cyfrowy CIK (z paddingiem)."""
+        ciks = self._ticker_ciks()
+        return None if ciks is None else ciks.get(symbol.upper())
+
+    def _ticker_ciks(self) -> dict[str, str] | None:
+        """Mapa ticker → CIK pobierana raz na cykl: plik ma ~1 MB i jest wspólny
+        dla wszystkich symboli. Lock, bo symbole idą równolegle
+        (`symbol_concurrency`); nieudane pobranie nie trafia do cache'u."""
+        with self._ciks_lock:
+            if self._ciks is None:
+                self._ciks = self._fetch_ticker_ciks()
+            return self._ciks
+
+    def _fetch_ticker_ciks(self) -> dict[str, str] | None:
         try:
-            response = self._session.get(TICKERS_URL, timeout=self._timeout)
+            response = self._get(TICKERS_URL)
+            if response is None:
+                return None
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError):
@@ -150,21 +220,15 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         if not isinstance(payload, dict):
             return None
 
-        target = symbol.upper()
+        ciks: dict[str, str] = {}
         for entry in payload.values():
             if not isinstance(entry, dict):
                 continue
-            if str(entry.get("ticker", "")).upper() == target:
-                cik_raw = entry.get("cik_str")
-                if cik_raw is None:
-                    return None
-                try:
-                    # CIK bywa intem lub stringiem; nie-numeryczny → graceful None
-                    # (zamiast ValueError wyciekającego z _resolve_cik).
-                    return str(int(cik_raw)).zfill(10)
-                except (TypeError, ValueError):
-                    return None
-        return None
+            ticker = str(entry.get("ticker", "")).upper()
+            cik = _padded_cik(entry.get("cik_str"))
+            if ticker and cik is not None:
+                ciks.setdefault(ticker, cik)
+        return ciks
 
     def _recent_form4_filings(self, cik: str) -> list[tuple[str, str]] | None:
         """Zwraca [(accessionNumber, primaryDocument)] dla Form 4 w oknie.
@@ -172,7 +236,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
         None gdy submissions niedostępne; pusta lista gdy brak Form 4."""
         url = SUBMISSIONS_URL.format(cik=cik)
         try:
-            response = self._session.get(url, timeout=self._timeout)
+            response = self._get(url)
+            if response is None:
+                return None
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError):
@@ -232,7 +298,9 @@ class EdgarInsiderAdapter(InsiderFlowPort):
             doc=_raw_form4_doc(primary_doc),
         )
         try:
-            response = self._session.get(url, timeout=self._timeout)
+            response = self._get(url)
+            if response is None:
+                return None
             response.raise_for_status()
             xml_text = response.text
         except requests.RequestException:

@@ -15,6 +15,7 @@ import os
 import tomllib
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -524,6 +525,116 @@ class TestFilingEvidence:
         assert snap is not None
         assert (snap.filings_seen, snap.filings_parsed) == (2, 1)
         assert snap.has_evidence()
+
+
+class TestSecFairAccess:
+    """Polityka SEC (sec.gov/os/accessing-edgar-data): najwyżej 10 req/s na
+    użytkownika, a dostęp wraca dopiero po 10 minutach poniżej progu. Adapter
+    żyje jeden cykl, więc 403 kończy EDGAR do końca cyklu — każde kolejne
+    żądanie tylko przedłuża blokadę (od 2026-07 każdy symbol dostawał 403)."""
+
+    def test_403_on_ticker_lookup_stops_requests_for_later_symbols(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        mock_get = mocker.patch(
+            "requests.Session.get", return_value=_error_response(403)
+        )
+
+        snaps = [adapter.get_insider_flow(s) for s in ("AAPL", "MSFT", "NVDA")]
+
+        assert snaps == [None, None, None]
+        assert mock_get.call_count == 1
+
+    def test_403_on_form4_returns_none_without_fetching_the_rest(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        def get(url: str, **_: object) -> Mock:
+            if "company_tickers.json" in url:
+                return _ok_json(_company_tickers())
+            if "submissions" in url:
+                return _ok_json(_two_form4_submissions())
+            return _error_response(403)
+
+        mock_get = mocker.patch("requests.Session.get", side_effect=get)
+
+        snap = adapter.get_insider_flow("AAPL")
+
+        # Snapshot z połową filingów udawałby awarię parsowania (DAT-03).
+        assert snap is None
+        archive_calls = [c for c in mock_get.call_args_list if "/Archives/" in c.args[0]]
+        assert len(archive_calls) == 1
+
+    @staticmethod
+    def _no_form4_get(url: str, **_: object) -> Mock:
+        if "company_tickers.json" in url:
+            return _ok_json(_company_tickers())
+        return _ok_json(_submissions(forms=[], dates=[], accessions=[], primary_docs=[]))
+
+    @staticmethod
+    def _ticker_downloads(mock_get: Mock) -> int:
+        return sum("company_tickers.json" in c.args[0] for c in mock_get.call_args_list)
+
+    def test_ticker_map_is_downloaded_once_per_cycle(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        mock_get = mocker.patch("requests.Session.get", side_effect=self._no_form4_get)
+
+        snaps = [adapter.get_insider_flow(s) for s in ("AAPL", "MSFT", "ZZZZ")]
+
+        assert [s is not None for s in snaps] == [True, True, False]
+        assert self._ticker_downloads(mock_get) == 1
+
+    def test_parallel_symbols_share_one_ticker_download(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        import threading
+        import time as real_time
+
+        def slow_get(url: str, **kwargs: object) -> Mock:
+            real_time.sleep(0.02)  # poszerza okno race'a
+            return self._no_form4_get(url, **kwargs)
+
+        mock_get = mocker.patch("requests.Session.get", side_effect=slow_get)
+        symbols = ("AAPL", "MSFT", "AAPL", "MSFT")
+        barrier = threading.Barrier(len(symbols))
+
+        def worker(symbol: str) -> None:
+            barrier.wait()
+            adapter.get_insider_flow(symbol)
+
+        threads = [threading.Thread(target=worker, args=(s,)) for s in symbols]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert self._ticker_downloads(mock_get) == 1
+
+    def test_requests_stay_under_the_sec_rate_limit(
+        self, adapter: EdgarInsiderAdapter, mocker
+    ) -> None:
+        clock = {"now": 0.0}
+
+        def sleep(seconds: float) -> None:
+            clock["now"] += seconds
+
+        mocker.patch("time.monotonic", side_effect=lambda: clock["now"])
+        mocker.patch("time.sleep", side_effect=sleep)
+        sent_at: list[float] = []
+
+        def get(url: str, **kwargs: object) -> Mock:
+            sent_at.append(clock["now"])
+            return self._no_form4_get(url, **kwargs)
+
+        mocker.patch("requests.Session.get", side_effect=get)
+
+        for symbol in ("AAPL", "MSFT"):
+            adapter.get_insider_flow(symbol)
+
+        # Ticker map + 2× submissions; SEC: najwyżej 10 req/s → odstęp ≥ 0.1 s.
+        gaps = [later - earlier for earlier, later in pairwise(sent_at)]
+        assert len(gaps) == 2
+        assert min(gaps) >= 0.1
 
 
 class TestNullInsiderFlowAdapter:
