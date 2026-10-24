@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from src.application.agent_graph import AgentGraphDeps
+from src.application.circuit_alerts import record_open_circuit_alerts
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.http_metering import HttpCallMeter
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
@@ -166,7 +167,12 @@ from src.domain.scenarios import Scenario
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
 from src.infrastructure.adapters._finnhub_common import FINNHUB_REQUESTS_PER_MINUTE
-from src.infrastructure.adapters._http import RateLimiter, metered_http, redact_secrets
+from src.infrastructure.adapters._http import (
+    RateLimiter,
+    metered_http,
+    process_circuits,
+    redact_secrets,
+)
 from src.infrastructure.adapters.advisory_council import (
     COUNCIL_MAX_PERSONAS,
     LLMAdvisoryCouncil,
@@ -2867,6 +2873,8 @@ def _run_fast_loop(
     # przy obecności krypto/unsupported ratio się rozjeżdża (failures mogą nawet
     # przekroczyć mianownik). Spójne z logiką exit-code (też używa len(eligible)).
     logger.info("Fast Loop done — failures=%d/%d", failures, len(eligible))
+    # NIEZ-31: otwarty obwód hosta (np. Finnhub) — jeden WARNING per host w bannerze.
+    record_open_circuit_alerts(quota_monitor, process_circuits(), clock())
 
     # ---- Portfolio Radar (Q4 — korelacja/koncentracja watchlisty, darmowe) ----
     portfolio_risk_report = _build_portfolio_radar(settings, repository, all_symbols)
