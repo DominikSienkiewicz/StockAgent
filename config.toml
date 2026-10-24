@@ -129,6 +129,12 @@ feature_snapshots_enabled = true
 # snapshotów cen) + wersja zestawu cech 4 w stemplach (filtr treningu też po 4).
 # Działa tylko z feature_snapshots_enabled; bez nowej migracji, zero płatnych wywołań.
 market_features_enabled = false
+# ML-52: model wspólny (wagi serwowane przez Fast Loop) z wektorów feature_snapshots
+# wersji 4 (cykle gated, wektor z servingu, etykieta 12 h z price_snapshots) zamiast
+# z widoku ml_feature_store. Bez nowej migracji (031 jest na produkcji), ale wymaga
+# wektorów wersji 4: włącz DOPIERO po market_features_enabled i zebraniu >= 75
+# oznaczonych cykli gated (karta ALL_LLM w summary Slow Loopa pokazuje ich liczbę).
+snapshot_training_enabled = false
 # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze — liczony w cyklu
 # z rozliczonych predykcji, bez migracji. Flaga dokłada zapis `interval_low/high`
 # i pokrycie zrealizowane vs nominalne w Track Record. UWAGA: włącz DOPIERO po

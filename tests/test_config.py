@@ -558,6 +558,20 @@ class TestMarketFeaturesFlag:
         assert flipped == baseline
 
 
+class TestSnapshotTrainingFlag:
+    """ML-52 (4): model wspólny z wektorów `feature_snapshots` zamiast widoku SQL.
+    Zmienia to, co Fast Loop serwuje (wagi), więc domyślnie off; wpływ na prognozę
+    idzie wyłącznie przez wagi, które łapie `model_version` — poza przepisem."""
+
+    def test_defaults_off(self, env):
+        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).snapshot_training_enabled is False
+
+    def test_is_outside_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "snapshot_training_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
 class TestIntervalCoverageFlag:
     """ML-34: zapis kolumn przedziału (migracja 032) i pokrycie w Track Record.
     Przedział to prezentacja niepewności, nie prognoza — flaga jest poza

@@ -2617,6 +2617,16 @@ class TestSnapshotModelsLoop:
 
         assert main_trainer.main(settings) == 0
 
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_snapshot_training_flag_reaches_the_use_case(
+        self, settings, mock_external_clients, enabled
+    ) -> None:
+        settings.snapshot_training_enabled = enabled
+
+        use_case = main_trainer.build_use_case(settings)
+
+        assert use_case._snapshot_source is enabled
+
     def test_use_case_reads_training_data_from_supabase(
         self, settings, mock_external_clients
     ) -> None:

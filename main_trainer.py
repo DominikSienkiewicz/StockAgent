@@ -157,6 +157,8 @@ def build_use_case(settings: Settings, *, run_id: str | None = None) -> TrainMod
         # ML-52: wektory `feature_snapshots` i ceny do etykiety — sam odczyt,
         # więc bez strażnika zapisu (działa także lokalnie bez `db_writes_enabled`).
         training_data=_supabase_repository(settings),
+        # ML-52 (4): model wspólny z wektorów zamiast z widoku (zmienia wagi; off).
+        snapshot_source=settings.snapshot_training_enabled,
     )
 
 

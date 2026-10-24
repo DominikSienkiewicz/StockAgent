@@ -661,3 +661,54 @@ def test_snapshot_models_are_recorded_as_two_cards(
     assert [c.args[0] for c in calls] == [FREE_SNAPSHOT_MODEL_SYMBOL, LLM_SNAPSHOT_MODEL_SYMBOL]
     assert [c.args[1] for c in calls] == [result.free_model, result.llm_model]
     assert all(c.kwargs == {"run_id": "run-1"} for c in calls)
+
+
+# -- ML-52 (4): model wspólny z wektorów zamiast widoku SQL (flaga) ----------------
+
+
+def test_snapshot_source_trains_the_shipped_model_on_gated_served_vectors(
+    ml_port, repository_port, training_data
+):
+    gated, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
+    quiet, quiet_prices = _cycles("ETH", 20, gated=False)
+    training_data.get_feature_snapshots.return_value = gated + quiet
+    training_data.get_price_series.return_value = {"BTC": prices, "ETH": quiet_prices}
+    ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=51)
+    use_case = TrainModelUseCase(
+        ml_port=ml_port,
+        db_port=repository_port,
+        training_data=training_data,
+        snapshot_source=True,
+    )
+
+    result = use_case.run_pooled(["BTC", "ETH"])
+
+    repository_port.get_feature_store_data.assert_not_called()
+    rows, target = ml_port.train.call_args.args
+    assert rows[0] == SERVED_VECTOR
+    assert len(rows) == len(target) == MIN_SAMPLES_FOR_TRAINING + 1
+    assert target[0] == pytest.approx(0.01)
+    assert ml_port.train.call_args.kwargs.get("persist", True) is True
+    assert result.outcome is TrainingOutcome.ACCEPTED
+
+
+def test_snapshot_source_with_too_few_gated_vectors_skips_the_shipped_model(
+    ml_port, repository_port, training_data
+):
+    gated, prices = _cycles("BTC", 10)
+    training_data.get_feature_snapshots.return_value = gated
+    training_data.get_price_series.return_value = {"BTC": prices}
+    use_case = TrainModelUseCase(
+        ml_port=ml_port,
+        db_port=repository_port,
+        training_data=training_data,
+        snapshot_source=True,
+    )
+
+    result = use_case.run_pooled(["BTC"], record_scorecard=True)
+
+    ml_port.train.assert_not_called()
+    assert result.outcome is TrainingOutcome.SKIPPED
+    assert result.n_samples == 10
+    assert result["feature_set_version"] == MARKET_FEATURE_SET_VERSION
+    repository_port.save_model_scorecard.assert_called_once_with(POOLED_MODEL_SYMBOL, result)

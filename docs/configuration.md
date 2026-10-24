@@ -164,6 +164,7 @@ Every on/off switch of `Settings` in one table (DOC-19); why each one exists and
 | `session_close_settlement_enabled` | `false` | `false` | `059` | — | 0 (`c` / `pc` of the same `/quote` request) | built, not deployed |
 | `price_level_alerts_enabled` | `false` | `false` | `057` | — | 0 (inside the free Shock Watch) | built, not deployed |
 | `market_features_enabled` | `false` | `false` | `031` | — | 0 (free price snapshots) | built, not deployed |
+| `snapshot_training_enabled` | `false` | `false` | `031` | — | 0 (free Slow Loop reads) | built, not deployed |
 | `macro_series_enabled` | `false` | `false` | — | `FRED_API_KEY` | 0 (FRED, free) | built, not deployed |
 | `model_probe_enabled` | `false` | `true` | — | — | 0 (Models API, no tokens; weekly Slow Loop) | deployed |
 

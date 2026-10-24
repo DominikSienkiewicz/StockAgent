@@ -81,6 +81,7 @@ class TrainModelUseCase:
         feature_set_version: int | None = None,
         run_id: str | None = None,
         training_data: TrainingDataPort | None = None,
+        snapshot_source: bool = False,
     ) -> None:
         """`feature_set_version` (DAT-09) zawęża próbkę do wierszy tej wersji
         zestawu cech; None = cała historia (bez migracji 027). `run_id` (ML-24)
@@ -90,6 +91,7 @@ class TrainModelUseCase:
         self._feature_set_version = feature_set_version
         self._run_id = run_id
         self._training_data = training_data
+        self._snapshot_source = snapshot_source
 
     def refresh_feature_store(self) -> None:
         self._db_port.refresh_feature_store()
@@ -156,12 +158,7 @@ class TrainModelUseCase:
         free_rows = [
             (free_model_vector(item.snapshot.features), item) for item in labeled
         ]
-        llm_rows = [
-            (vector, item)
-            for item in labeled
-            if usable_for_llm_model(item.snapshot.gated, item.snapshot.features)
-            and (vector := llm_model_vector(item.snapshot.features)) is not None
-        ]
+        llm_rows = _llm_rows(labeled)
         result = SnapshotModelsResult(
             free_model=self._evaluate_snapshot_rows(free_rows, "the free-feature model"),
             llm_model=self._evaluate_snapshot_rows(
@@ -231,6 +228,8 @@ class TrainModelUseCase:
             self._db_port.save_model_scorecard(symbol, result, run_id=self._run_id)
 
     def _train_pooled(self, symbols: Sequence[str]) -> TrainingReport:
+        if self._snapshot_source:
+            return self._train_pooled_from_snapshots(symbols)
         rows = [
             row
             for symbol in dict.fromkeys(symbols)
@@ -259,6 +258,24 @@ class TrainModelUseCase:
             timestamps=df["_global_time"],
         )
 
+
+    def _train_pooled_from_snapshots(self, symbols: Sequence[str]) -> TrainingReport:
+        """ML-52 (4): model wspólny z cykli gated w `feature_snapshots` (wektor
+        z servingu, etykieta z `price_snapshots`) zamiast z widoku SQL. Jedyny zapis
+        wag, jak w ścieżce widoku; poniżej minimum — `SKIPPED` z liczbą próbek."""
+        _, labeled = self._labeled_snapshots(symbols)
+        rows = _llm_rows(labeled)
+        if len(rows) < MIN_SAMPLES_FOR_TRAINING:
+            return _skipped(
+                "Not enough labeled gated feature snapshots for the pooled model",
+                len(rows),
+                feature_set_version=SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
+            )
+        return self._ml_port.train(
+            [dict(vector) for vector, _ in rows],
+            [item.target_return for _, item in rows],
+            timestamps=[item.snapshot.as_of for _, item in rows],
+        )
 
     def _feature_rows(self, symbol: str) -> list[dict[str, Any]]:
         if self._feature_set_version is None:
@@ -290,6 +307,18 @@ class TrainModelUseCase:
             n_samples,
             feature_set_version=self._feature_set_version,
         )
+
+
+def _llm_rows(
+    labeled: Sequence[LabeledSnapshot],
+) -> list[tuple[dict[str, float], LabeledSnapshot]]:
+    """Cykle gated bez flag wykluczających, z kompletnym wektorem `ML_FEATURE_COLUMNS`."""
+    return [
+        (vector, item)
+        for item in labeled
+        if usable_for_llm_model(item.snapshot.gated, item.snapshot.features)
+        and (vector := llm_model_vector(item.snapshot.features)) is not None
+    ]
 
 
 def _valid_rows(rows: list[dict[str, Any]]) -> pd.DataFrame:

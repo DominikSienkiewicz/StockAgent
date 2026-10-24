@@ -182,6 +182,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # NIEZ-25: sonda Models API w Slow Loopie — sam odczyt katalogu dostawcy.
     "model_probe_enabled",
     "feature_set_filter_enabled",
+    # ML-52: źródło próbki modelu wspólnego (wektory zamiast widoku) — wpływ na
+    # prognozę wyłącznie przez wagi, które łapie `model_version`.
+    "snapshot_training_enabled",
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
     "fast_loop_cycles_per_day",
@@ -582,6 +585,12 @@ class Settings(BaseSettings):
     # i backtest filtrują wtedy po 4). Działa tylko z `feature_snapshots_enabled`
     # (migracja 031); nowej migracji nie wymaga. Zero płatnych wywołań. Off.
     market_features_enabled: bool = False
+    # ML-52 (4): model wspólny (jedyne wagi, które serwuje Fast Loop) trenowany
+    # z wektorów `feature_snapshots` w wersji 4 (cykle gated, wektor dokładnie
+    # z servingu) z etykietą 12 h z `price_snapshots`, zamiast z widoku
+    # `ml_feature_store`. Zmienia serwowane wagi, więc off; potrzebuje wektorów
+    # wersji 4 (`market_features_enabled`) — bez nich model wspólny jest pomijany.
+    snapshot_training_enabled: bool = False
     # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze, liczony
     # w cyklu bez migracji. Ta flaga dokłada zapis `interval_low/high` (migracja
     # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz

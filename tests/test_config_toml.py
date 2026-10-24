@@ -459,6 +459,12 @@ def test_real_config_toml_ships_the_market_features_off() -> None:
     assert data["market_features_enabled"] is False
 
 
+def test_real_config_toml_ships_the_snapshot_training_off() -> None:
+    """ML-52: wagi z `feature_snapshots` dopiero po zebraniu wektorów wersji 4."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["snapshot_training_enabled"] is False
+
+
 def test_real_config_toml_ships_the_macro_series_off() -> None:
     """DAT-22: głosy VIX/HY zmieniają reżim (przepis) — świadome włączenie właściciela."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
