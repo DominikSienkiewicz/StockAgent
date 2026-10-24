@@ -4,10 +4,12 @@ from decimal import Decimal
 from src.domain.asset import Asset, PriceDelta
 from src.domain.shock import (
     CRYPTO_SHOCK_THRESHOLD,
+    PORTFOLIO_ALERT_SYMBOL,
     SHOCK_THRESHOLD_MULTIPLIER,
     SNAPSHOT_MAX_AGE_HOURS,
     ShockAlert,
     ShockDirection,
+    detect_portfolio_shock,
     detect_shock,
     is_reference_stale,
     should_emit,
@@ -231,3 +233,102 @@ class TestRollingWindowCooldown:
         from src.domain.shock import is_move_already_alerted
 
         assert is_move_already_alerted(None, self._NOW) is False
+
+
+class TestPortfolioShock:
+    """ALR-07: próg per symbol (2× bramki) nie łapie skoordynowanego spadku wielu
+    pozycji; portfel liczy Σ waga × Δ i ma własny próg."""
+
+    THRESHOLD = Decimal("0.03")
+
+    @staticmethod
+    def _equal_weights(*symbols: str) -> dict[str, Decimal]:
+        return {symbol: Decimal(1) / len(symbols) for symbol in symbols}
+
+    def test_portfolio_shock_fires_on_correlated_small_moves(self) -> None:
+        # 4 pozycje po 25%, każda −3,5%: żadna nie przekracza progu symbolu (4%),
+        # a portfel traci 3,5% ≥ 3%.
+        symbols = ("NVDA", "AMD", "AVGO", "TSM")
+        weights = self._equal_weights(*symbols)
+        deltas = dict.fromkeys(symbols, Decimal("-0.035"))
+        for symbol in symbols:
+            assert (
+                detect_shock(
+                    Asset(symbol, AssetType.STOCK),
+                    PriceDelta(deltas[symbol]),
+                    FAST_LOOP_THRESHOLD,
+                    FRESH_SNAPSHOT_HOURS,
+                )
+                is None
+            )
+
+        shock = detect_portfolio_shock(weights, deltas, self.THRESHOLD)
+
+        assert shock is not None
+        assert shock.delta.fraction == Decimal("-0.035")
+        assert shock.direction is ShockDirection.DOWN
+        assert shock.measured_weight == Decimal(1)
+
+    def test_move_below_the_portfolio_threshold_is_not_a_shock(self) -> None:
+        weights = self._equal_weights("NVDA", "AMD")
+        deltas = {"NVDA": Decimal("-0.06"), "AMD": Decimal("0.02")}  # Σ = −2%
+
+        assert detect_portfolio_shock(weights, deltas, self.THRESHOLD) is None
+
+    def test_a_big_mover_with_a_small_weight_does_not_move_the_portfolio(self) -> None:
+        weights = {"NVDA": Decimal("0.1"), "VOO": Decimal("0.9")}
+        deltas = {"NVDA": Decimal("-0.06"), "VOO": Decimal("0.0")}  # −0,6%
+
+        assert detect_portfolio_shock(weights, deltas, self.THRESHOLD) is None
+
+    def test_the_threshold_itself_fires(self) -> None:
+        weights = {"NVDA": Decimal(1)}
+
+        shock = detect_portfolio_shock(weights, {"NVDA": Decimal("-0.03")}, self.THRESHOLD)
+
+        assert shock is not None
+
+    def test_a_rise_is_a_shock_too(self) -> None:
+        weights = self._equal_weights("NVDA", "AMD")
+        deltas = {"NVDA": Decimal("0.05"), "AMD": Decimal("0.03")}
+
+        shock = detect_portfolio_shock(weights, deltas, self.THRESHOLD)
+
+        assert shock is not None
+        assert shock.direction is ShockDirection.UP
+
+    def test_movers_are_the_largest_contributors_in_the_direction_of_the_shock(self) -> None:
+        weights = {
+            "NVDA": Decimal("0.5"), "AMD": Decimal("0.3"),
+            "AVGO": Decimal("0.1"), "TSM": Decimal("0.1"),
+        }
+        deltas = {
+            "NVDA": Decimal("-0.08"), "AMD": Decimal("-0.05"),
+            "AVGO": Decimal("-0.01"), "TSM": Decimal("0.04"),
+        }
+
+        shock = detect_portfolio_shock(weights, deltas, self.THRESHOLD, top=2)
+
+        assert shock is not None
+        assert shock.movers == (("NVDA", Decimal("-0.08")), ("AMD", Decimal("-0.05")))
+
+    def test_symbols_without_a_move_are_left_out_not_guessed(self) -> None:
+        weights = {"NVDA": Decimal("0.5"), "AMD": Decimal("0.5")}
+
+        shock = detect_portfolio_shock(weights, {"NVDA": Decimal("-0.08")}, self.THRESHOLD)
+
+        assert shock is not None
+        assert shock.delta.fraction == Decimal("-0.04")
+        assert shock.measured_weight == Decimal("0.5")
+
+    def test_nothing_measured_is_no_shock(self) -> None:
+        assert detect_portfolio_shock({"NVDA": Decimal(1)}, {}, self.THRESHOLD) is None
+        assert detect_portfolio_shock({}, {"NVDA": Decimal("-0.5")}, self.THRESHOLD) is None
+
+    def test_portfolio_alert_is_debounced_once_a_day_under_its_own_key(self) -> None:
+        today = date(2026, 10, 26)
+        sent = {(PORTFOLIO_ALERT_SYMBOL, today)}
+
+        assert should_emit(PORTFOLIO_ALERT_SYMBOL, today, set()) is True
+        assert should_emit(PORTFOLIO_ALERT_SYMBOL, today, sent) is False
+        assert should_emit("NVDA", today, sent) is True
