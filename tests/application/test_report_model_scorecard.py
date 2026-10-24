@@ -13,6 +13,7 @@ from src.application.report_model_scorecard import (
     build_scorecard_view,
     render_model_scorecard_html,
     render_model_scorecard_text,
+    snapshot_model_cards,
 )
 from src.domain.model_scorecard import METRIC_NOTE, RunSummary, summarize_run
 
@@ -562,3 +563,53 @@ class TestFeatureDriftWarning:
         for render in (render_model_scorecard_html, render_model_scorecard_text):
             out = render(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
             assert "Dryf cech" not in out
+
+
+class TestSnapshotModelCardsLine:
+    """ML-52 (decyzja właściciela 2026-10-25): karty modeli z `feature_snapshots`
+    (ALL_FREE, ALL_LLM) dostają w mailu jedną linię pod werdyktem modelu wspólnego —
+    bez wpływu na werdykt i ewaluacje per symbol."""
+
+    _ROWS: list[dict[str, object]] = [
+        {"symbol": "ALL_FREE", "status": "evaluated_failed_gate",
+         "timestamp": "2026-10-04T03:36:00+00:00", "candidate_holdout_rmse": 0.5},
+        {"symbol": "ALL_FREE", "status": "trained_successfully",
+         "timestamp": "2026-10-11T03:36:00+00:00", "candidate_holdout_rmse": 0.021,
+         "baseline_rmse": 0.024, "n_samples": 812},
+        {"symbol": "ALL_LLM", "status": "skipped",
+         "timestamp": "2026-10-11T03:37:00+00:00", "n_samples": 37},
+        {"symbol": "ALL", "status": "trained_successfully",
+         "timestamp": "2026-10-11T03:35:00+00:00"},
+    ]
+
+    def test_newest_card_of_each_snapshot_model_free_first(self) -> None:
+        from src.application.report_model_scorecard import SnapshotModelCard
+        from src.domain.model_scorecard import TrainingOutcome
+
+        assert snapshot_model_cards(list(reversed(self._ROWS))) == (
+            SnapshotModelCard(
+                symbol="ALL_FREE",
+                outcome=TrainingOutcome.ACCEPTED,
+                candidate_rmse=0.021,
+                baseline_rmse=0.024,
+                n_samples=812,
+            ),
+            SnapshotModelCard(symbol="ALL_LLM", outcome=TrainingOutcome.SKIPPED, n_samples=37),
+        )
+
+    def test_html_and_text_show_one_line_for_both_cards(self) -> None:
+        cards = snapshot_model_cards(self._ROWS)
+        expected = (
+            "Modele z feature_snapshots (ewaluacja, bez zapisu wag): "
+            "cechy darmowe — bije baseline, RMSE 0,0210 vs 0,0240 (+12,5%), n=812 · "
+            "cechy LLM (cykle gated) — pominięty (za mało próbek), n=37"
+        )
+
+        for render in (render_model_scorecard_html, render_model_scorecard_text):
+            out = render(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW, snapshot_models=cards)
+            assert expected in out
+
+    def test_no_line_without_snapshot_cards(self) -> None:
+        for render in (render_model_scorecard_html, render_model_scorecard_text):
+            out = render(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
+            assert "feature_snapshots" not in out

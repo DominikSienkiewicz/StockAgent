@@ -37,7 +37,11 @@ from src.application.report_evidence import (
     portfolio_curve,
 )
 from src.application.report_lessons import LessonsReport, build_lessons
-from src.application.report_model_scorecard import ModelScorecardView, build_scorecard_view
+from src.application.report_model_scorecard import (
+    ModelScorecardView,
+    build_scorecard_view,
+    snapshot_model_cards,
+)
 from src.application.report_models import ResolvedPrediction
 from src.application.report_signals import parse_resolved_predictions
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
@@ -203,7 +207,12 @@ def build_model_scorecard(
     if view is None:
         return None
     # DAT-16: karta mówi też, ile sesji okna ma dane i które symbole nie mają rozliczeń.
-    return dataclasses.replace(view, coverage=data_coverage(flags, repository, reads=reads))
+    # ML-52: karty modeli z `feature_snapshots` z tego samego odczytu — jedna linia.
+    return dataclasses.replace(
+        view,
+        coverage=data_coverage(flags, repository, reads=reads),
+        snapshot_models=snapshot_model_cards(rows),
+    )
 
 
 def data_coverage(

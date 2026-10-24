@@ -188,3 +188,25 @@ class TestShocksSinceLastMail:
         repo.get_shock_alerts_since.assert_not_called()
         repo.get_last_report_at.assert_not_called()
         assert context.shock_alerts is None
+
+
+def test_model_scorecard_carries_the_snapshot_model_cards() -> None:
+    # ML-52 (decyzja 2026-10-25): karty ALL_FREE i ALL_LLM z tego samego odczytu
+    # okna karty trafiają do maila jedną linią obok werdyktu modelu wspólnego.
+    repo = _repo()
+    repo.get_recent_model_scorecards.return_value = [
+        {"symbol": "ALL", "status": "trained_successfully",
+         "timestamp": "2026-10-17T03:35:00+00:00"},
+        {"symbol": "ALL_FREE", "status": "skipped", "n_samples": 12,
+         "timestamp": "2026-10-17T03:36:00+00:00"},
+    ]
+
+    context = _assemble(
+        repo,
+        ReportFlags(
+            track_record_days=30, reflection_min_age_hours=12, model_scorecard_enabled=True
+        ),
+    )
+
+    assert context.model_scorecard is not None
+    assert [card.symbol for card in context.model_scorecard.snapshot_models] == ["ALL_FREE"]
