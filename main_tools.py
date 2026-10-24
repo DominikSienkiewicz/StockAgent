@@ -19,6 +19,7 @@ Użycie:
     uv run python main_tools.py repo-stats [--out docs/repo-stats.json]
     uv run python main_tools.py explain <prediction_id> | --symbol X --date RRRR-MM-DD
     uv run python main_tools.py persona-ablation [--days N] [--window-days N]
+    uv run python main_tools.py council-ablation [--days N]
     uv run python main_tools.py verify-attestation [--commitments PATH] [--reveals PATH]
 """
 
@@ -32,12 +33,14 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
+from src.domain.council_ablation import leave_one_out
 from src.tools.cost_envelope import (
     EnvelopeInputs,
     cost_envelope,
     render_cost_envelope,
     render_weekly_budget,
 )
+from src.tools.council_ablation import format_council_ablation
 from src.tools.evaluate import (
     GATE_DELTA_FIELD,
     OPTIONAL_COLUMNS,
@@ -75,6 +78,7 @@ if TYPE_CHECKING:
     from src.application.ports import PositionsImportPort
     from src.config import Settings
     from src.domain.experiment import Experiment
+    from src.domain.persona_track_record import PersonaVoteOutcome
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
 Handler = Callable[[argparse.Namespace], int]
@@ -113,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_repo_stats(subcommands)
     _add_explain(subcommands)
     _add_persona_ablation(subcommands)
+    _add_council_ablation(subcommands)
     _add_verify_attestation(subcommands)
     return parser
 
@@ -573,15 +578,9 @@ def _run_persona_ablation(args: argparse.Namespace) -> int:
     settings = _load_settings()
     repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
     since = _now() - timedelta(days=args.days)
-    try:
-        # Historia sięga okno wag dalej niż najstarsza oceniana predykcja.
-        outcomes = repo.get_persona_vote_outcomes(window_days=args.days + args.window_days)
-    except Exception as exc:
-        print(
-            f"❌ RPC persona_vote_outcomes niedostępne ({type(exc).__name__}) — "
-            "uruchom migrację 045 (DB Migrate).",
-            file=sys.stderr,
-        )
+    # Historia sięga okno wag dalej niż najstarsza oceniana predykcja.
+    outcomes = _read_persona_votes(repo, window_days=args.days + args.window_days)
+    if outcomes is None:
         return 1
     report = replay_persona_weighting(
         outcomes,
@@ -590,6 +589,55 @@ def _run_persona_ablation(args: argparse.Namespace) -> int:
         crypto_symbols=settings.crypto_symbols,
     )
     print(format_ablation(report, days=args.days, window_days=args.window_days))
+    return 0
+
+
+def _read_persona_votes(
+    repo: SupabaseRepository, *, window_days: int
+) -> list[PersonaVoteOutcome] | None:
+    """Surowe głosy person z RPC 045 albo None z komunikatem na stderr (brak
+    migracji, błąd sieci) — wspólne dla ablacji ważenia i leave-one-out."""
+    try:
+        return repo.get_persona_vote_outcomes(window_days=window_days)
+    except Exception as exc:
+        print(
+            f"❌ RPC persona_vote_outcomes niedostępne ({type(exc).__name__}) — "
+            "uruchom migrację 045 (DB Migrate).",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _add_council_ablation(
+    subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subcommands.add_parser(
+        "council-ablation",
+        help="Marginal contribution of each council persona, leave-one-out (read-only, needs 045).",
+        description=(
+            "WIA-43: for every settled prediction recomputes the council verdict without "
+            "persona X and reports the change in hit rate and Brier of the consensus strength, "
+            "with a block-bootstrap interval. Personas whose removal does not hurt are "
+            "candidates for removal."
+        ),
+    )
+    parser.add_argument(
+        "--days", type=int, default=90, help="Okno (dni) ocenianych predykcji (default: 90)."
+    )
+    parser.set_defaults(handler=_run_council_ablation)
+
+
+def _run_council_ablation(args: argparse.Namespace) -> int:
+    """WIA-43: leave-one-out na zapisanych głosach; exit 1 tylko bez danych RPC 045."""
+    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+    settings = _load_settings()
+    repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    outcomes = _read_persona_votes(repo, window_days=args.days)
+    if outcomes is None:
+        return 1
+    report = leave_one_out(outcomes, crypto_symbols=settings.crypto_symbols)
+    print(format_council_ablation(report, days=args.days))
     return 0
 
 
