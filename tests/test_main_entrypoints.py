@@ -7337,7 +7337,7 @@ def test_deliver_report_returns_outcome_per_channel(settings, mocker) -> None:
     web_publisher.publish.return_value = "public/digest/index.html"
 
     outcome = main_agent.deliver_report(
-        _assembled_report(),
+        _assembled_report,
         results=[],
         started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
         duration=1.0,
@@ -7384,7 +7384,7 @@ def test_deliver_report_lists_each_subscriber_under_a_masked_address(settings, m
     web_publisher.publish.return_value = ""
 
     outcome = main_agent.deliver_report(
-        _assembled_report(),
+        _assembled_report,
         results=[],
         started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
         duration=1.0,

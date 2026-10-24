@@ -2166,10 +2166,11 @@ def _dispatch_reports(
     # NIEZ-03: alerty do tego miejsca zapisuje `fetch_report_context`; te, które
     # powstaną później (np. Resend przy samej wysyłce), zapisuje `deliver_report`.
     persisted_alerts = len(quota_monitor.alerts)
-    try:
+
+    def assemble() -> AssembledReport:
         # WIA-50: krzywa, jej etykieta i scorecard z tymi samymi kosztami.
         assembler = ReportAssembler(repository, _report_flags(settings), _paper_costs(settings))
-        report = assembler.assemble(
+        return assembler.assemble(
             results=results,
             started_at=started_at,
             quota_monitor=quota_monitor,
@@ -2182,13 +2183,9 @@ def _dispatch_reports(
                 started_at=started_at,
             ),
         )
-    except Exception:
-        # Wyjątek PRZED wysyłką = raportu nie ma.
-        logger.exception("Failed to send report")
-        _persist_quota_alerts(repository, quota_monitor.alerts[persisted_alerts:])
-        return False
+
     return deliver_report(
-        report,
+        assemble,
         results=results,
         started_at=started_at,
         duration=duration,
@@ -2206,7 +2203,7 @@ def _dispatch_reports(
 
 
 def deliver_report(
-    report: AssembledReport,
+    assemble: Callable[[], AssembledReport],
     *,
     results: list[SymbolResult],
     started_at: datetime,
@@ -2235,6 +2232,9 @@ def deliver_report(
     channels: list[ChannelDelivery] = []
     report_sent = False
     try:
+        # Złożenie raportu w tym samym `try` co wysyłka: wyjątek PRZED wysyłką =
+        # raportu nie ma (report_sent False), a alerty i tak zapisuje `finally`.
+        report = assemble()
         context = report.context
         html, text = _render_report(context, results, started_at, duration)
         # Subject prefix gdy są CRITICAL — wymusza zwrócenie uwagi w skrzynce.

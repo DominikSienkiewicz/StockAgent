@@ -28,26 +28,19 @@ from src.domain.coverage import CoverageReport
 logger = logging.getLogger(__name__)
 
 class _Once[T]:
-    """Wynik albo wyjątek jednego wywołania `load`, oddawany przy każdym `get`.
+    """Wynik pierwszego udanego wywołania `load`, oddawany przy każdym `get`.
 
-    Zapamiętany wyjątek leci do każdego wołającego, więc każda sekcja łapie go
-    w swoim `try` i loguje jak przy własnym odczycie — zmienia się tylko liczba
-    zapytań do bazy."""
+    Wyjątek nie jest zapamiętywany: leci do wołającego, a następna sekcja ponawia
+    odczyt i łapie błąd w swoim `try` jak przy własnym odczycie (jak przed ARCH-16).
+    Bez szerokiego `except` — zapadka ARCH-33 (`tests/test_exception_ratchet.py`)."""
 
     def __init__(self, load: Callable[[], T]) -> None:
         self._load = load
         self._result: tuple[T] | None = None
-        self._error: Exception | None = None
 
     def get(self) -> T:
-        if self._error is not None:
-            raise self._error
         if self._result is None:
-            try:
-                self._result = (self._load(),)
-            except Exception as exc:
-                self._error = exc
-                raise
+            self._result = (self._load(),)
         return self._result[0]
 
 

@@ -50,7 +50,7 @@ def test_every_section_shares_one_read_of_the_window() -> None:
     assert reads.calibration().directional == [(0.8, True)]
 
 
-def test_a_failed_read_fails_every_section_without_a_second_query() -> None:
+def test_a_failed_read_fails_every_section_and_is_retried() -> None:
     repo = _repo()
     repo.get_resolved_for_calibration.side_effect = RuntimeError("supabase down")
     reads = TrackRecordReads(repo, 30)
@@ -59,5 +59,5 @@ def test_a_failed_read_fails_every_section_without_a_second_query() -> None:
         with pytest.raises(RuntimeError, match="supabase down"):
             reads.calibration()
 
-    repo.get_resolved_for_calibration.assert_called_once_with(30)
+    assert repo.get_resolved_for_calibration.call_count == 2
     assert reads.resolved_rows() == [_ROW]

@@ -290,7 +290,9 @@ class RunFastLoopCycle:
         # wartość sekretu z Settings nie może w nim zostać (`redact`).
         error = self._redact(str(exc))
         if provider_failure:
-            logger.warning("Failed to process symbol %s — %s: %s", symbol, type(exc).__name__, error)
+            logger.warning(
+                "Failed to process symbol %s — %s: %s", symbol, type(exc).__name__, error
+            )
         else:
             logger.exception("Failed to process symbol %s", symbol)
         result = to_symbol_result(symbol, None, error=error)
