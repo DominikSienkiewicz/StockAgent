@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
+from typing import NewType
 
 from src.domain.market_calendar import (
     TradingSession,
@@ -77,6 +78,18 @@ def clamp_unit(value: float) -> tuple[float, bool]:
         raise ValueError("clamp_unit requires a number, got NaN")
     clamped = min(max(value, 0.0), 1.0)
     return clamped, clamped != value
+
+
+# ARCH-04: jednostki zmian względnych. `Ratio` to ułamek (0.025 = 2,5%), `Percent`
+# to procent (2.5 = 2,5%). NewType nie chroni arytmetyki (`Ratio * 100` to zwykły
+# Decimal), więc ułamek zmienia się w procent wyłącznie przez `to_percent`.
+Ratio = NewType("Ratio", Decimal)
+Percent = NewType("Percent", Decimal)
+
+
+def to_percent(ratio: Ratio) -> Percent:
+    """Ułamek → procent (0.025 → 2.5)."""
+    return Percent(ratio * 100)
 
 
 def require_finite(values: Iterable[float], what: str) -> None:

@@ -11,8 +11,10 @@ from src.domain.value_objects import (
     Fundamentals,
     Money,
     Quote,
+    Ratio,
     Threshold,
     ValuationVerdict,
+    to_percent,
 )
 
 
@@ -146,6 +148,17 @@ def test_fundamentals_ttl_spans_weekly_refresh_cadence() -> None:
     # niż 7 × 24 h, bo inaczej kolejny przebieg uzna cache za świeży i odświeży
     # dane dopiero za dwa tygodnie.
     assert 124 < FUNDAMENTALS_CACHE_TTL_HOURS < 167
+
+
+class TestToPercent:
+    """ARCH-04: jedyne przejście z ułamka (`Ratio`) na procent (`Percent`)."""
+
+    def test_scales_a_ratio_to_percent(self) -> None:
+        assert to_percent(Ratio(Decimal("-0.042"))) == Decimal("-4.2")
+
+    def test_keeps_the_decimal_scale_of_multiplying_by_hundred(self) -> None:
+        # Prompt i rada dostają `str()` tej liczby — ta sama postać co dawne `* 100`.
+        assert str(to_percent(Ratio(Decimal("-0.10")))) == "-10.00"
 
 
 class TestClampUnit:
