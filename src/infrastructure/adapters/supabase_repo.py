@@ -22,6 +22,7 @@ from src.application.ports import (
     PreviousVerdict,
     RepositoryPort,
     StoredReceipt,
+    StoredShockAlert,
     TrainingDataPort,
 )
 from src.application.report_council_history import InvestorHistory
@@ -1814,6 +1815,48 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             if key not in latest or stamp > latest[key]:
                 latest[key] = stamp
         return latest
+
+    @_translates_api_errors
+    def get_shock_alerts_since(self, since: datetime) -> list[StoredShockAlert]:
+        # SUROWO (ARCH-33): błąd bazy leci do ReportAssemblera, który chowa sekcję.
+        response = (
+            self._client.table("shock_alerts")
+            .select("symbol, delta, direction, created_at")
+            .gte("created_at", since.isoformat())
+            .order("created_at", desc=False)
+            .execute()
+        )
+        alerts: list[StoredShockAlert] = []
+        for row in _rows(response):
+            symbol, delta = row.get("symbol"), row.get("delta")
+            direction, raw_stamp = row.get("direction"), row.get("created_at")
+            if symbol is None or delta is None or not isinstance(raw_stamp, str):
+                continue
+            alerts.append(
+                StoredShockAlert(
+                    symbol=str(symbol),
+                    delta=float(delta),
+                    direction=str(direction),
+                    created_at=datetime.fromisoformat(raw_stamp),
+                )
+            )
+        return alerts
+
+    @_translates_api_errors
+    def get_last_report_at(self, before: datetime) -> datetime | None:
+        response = (
+            self._client.table("cycle_runs")
+            .select("started_at")
+            .eq("loop", "fast")
+            .eq("report_delivered", True)
+            .lt("started_at", before.isoformat())
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        stamp = rows[0].get("started_at") if rows else None
+        return datetime.fromisoformat(stamp) if isinstance(stamp, str) else None
 
     def get_active_price_levels(self) -> list[PriceLevelAlert]:
         # SUROWO, bez try/except — watch czyta za flagą i sam degraduje (ALR-11).

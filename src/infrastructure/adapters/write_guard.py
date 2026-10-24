@@ -36,6 +36,7 @@ from src.application.ports import (
     PreviousVerdict,
     RepositoryPort,
     StoredReceipt,
+    StoredShockAlert,
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
@@ -128,6 +129,8 @@ class ReadOnlyRepository(RepositoryPort):
         "get_last_price_snapshot",
         "get_sent_shock_alerts",
         "get_shock_alert_times",
+        "get_shock_alerts_since",
+        "get_last_report_at",
         "get_active_price_levels",
         "get_previous_verdict",
         "get_recent_model_scorecards",
@@ -295,6 +298,12 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
         return self._delegate.get_shock_alert_times(since)
+
+    def get_shock_alerts_since(self, since: datetime) -> list[StoredShockAlert]:
+        return self._delegate.get_shock_alerts_since(since)
+
+    def get_last_report_at(self, before: datetime) -> datetime | None:
+        return self._delegate.get_last_report_at(before)
 
     def get_active_price_levels(self) -> list[PriceLevelAlert]:
         return self._delegate.get_active_price_levels()

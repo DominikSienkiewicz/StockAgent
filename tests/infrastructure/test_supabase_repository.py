@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from src.application.ports import RepositoryPort
+from src.application.ports import RepositoryPort, StoredShockAlert
 from src.domain.prediction import TrendDirection
 from src.domain.value_objects import FUNDAMENTALS_CACHE_TTL_HOURS, Fundamentals, Money
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
@@ -3340,6 +3340,71 @@ class TestShockAlertTimes:
         mock_client.table.side_effect = Exception("no table")
 
         assert repo.get_shock_alert_times(datetime(2026, 10, 16, tzinfo=UTC)) == {}
+
+
+class TestShockAlertsSince:
+    """ALR-06: alerty szoku od ostatniego maila do sekcji „⚡ Między mailami”."""
+
+    def test_returns_alerts_since_the_moment_oldest_first(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "gte", "order"],
+            [
+                {
+                    "symbol": "NVDA",
+                    "delta": -0.062,
+                    "direction": "DOWN",
+                    "created_at": "2026-10-14T22:07:00+00:00",
+                },
+                {"symbol": None, "delta": 0.1, "direction": "UP", "created_at": None},
+            ],
+        )
+
+        alerts = repo.get_shock_alerts_since(datetime(2026, 10, 14, 5, 30, tzinfo=UTC))
+
+        mock_client.table.assert_called_with("shock_alerts")
+        select = mock_client.table.return_value.select.return_value
+        select.gte.assert_called_once_with("created_at", "2026-10-14T05:30:00+00:00")
+        select.gte.return_value.order.assert_called_once_with("created_at", desc=False)
+        assert alerts == [
+            StoredShockAlert(
+                symbol="NVDA",
+                delta=-0.062,
+                direction="DOWN",
+                created_at=datetime(2026, 10, 14, 22, 7, tzinfo=UTC),
+            )
+        ]
+
+
+class TestLastReportAt:
+    """ALR-06: start ostatniego Fast Loopa z dostarczonym mailem (`cycle_runs`, 041)."""
+
+    def test_reads_the_latest_delivered_fast_loop_before_the_cycle(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        chain = ["table", "select", "eq", "eq", "lt", "order", "limit"]
+        _set_chain_response(mock_client, chain, [{"started_at": "2026-10-14T05:31:00+00:00"}])
+
+        last = repo.get_last_report_at(datetime(2026, 10, 15, 5, 30, tzinfo=UTC))
+
+        mock_client.table.assert_called_with("cycle_runs")
+        select = mock_client.table.return_value.select.return_value
+        select.eq.assert_called_once_with("loop", "fast")
+        select.eq.return_value.eq.assert_called_once_with("report_delivered", True)
+        select.eq.return_value.eq.return_value.lt.assert_called_once_with(
+            "started_at", "2026-10-15T05:30:00+00:00"
+        )
+        assert last == datetime(2026, 10, 14, 5, 31, tzinfo=UTC)
+
+    def test_none_without_a_delivered_run(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        chain = ["table", "select", "eq", "eq", "lt", "order", "limit"]
+        _set_chain_response(mock_client, chain, [])
+
+        assert repo.get_last_report_at(datetime(2026, 10, 15, tzinfo=UTC)) is None
 
 
 class TestReferencePredictions:

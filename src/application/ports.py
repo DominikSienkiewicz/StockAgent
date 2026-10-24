@@ -121,6 +121,19 @@ class CycleRun:
 
 
 @dataclass(frozen=True)
+class StoredShockAlert:
+    """ALR-06 — alert szoku wysłany przez watch (wiersz `shock_alerts`, migracja 021).
+
+    `delta` to UŁAMEK ruchu, który wyzwolił alert (-0.062 = -6,2%), `direction`
+    'UP' / 'DOWN', `created_at` — chwila wysyłki (strefa jak w bazie)."""
+
+    symbol: str
+    delta: float
+    direction: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
 class StoredReceipt:
     """WIA-56 — kwit decyzyjny predykcji z kontekstem jej wiersza `prediction_logs`.
 
@@ -634,6 +647,18 @@ class RepositoryPort(ABC):
         (`shock_alerts.created_at`, migracja 021). Watch tłumi nią alert krypto
         ze zmiany 24 h, póki okno zawiera ruch już zaalarmowany. Pusty słownik =
         brak alertów / brak migracji 021."""
+
+    @abstractmethod
+    def get_shock_alerts_since(self, since: datetime) -> list[StoredShockAlert]:
+        """ALR-06 — alerty szoku wysłane od `since` (`created_at`, migracja 021),
+        rosnąco po czasie — sekcja „⚡ Między mailami”. Błąd bazy leci jako
+        `PortError`; mail chowa wtedy sekcję."""
+
+    @abstractmethod
+    def get_last_report_at(self, before: datetime) -> datetime | None:
+        """ALR-06 — start ostatniego przebiegu Fast Loopa sprzed `before`, którego
+        mail wyszedł (`cycle_runs.report_delivered`, migracja 041). None = brak
+        takiego przebiegu. Błąd bazy leci jako `PortError`."""
 
     @abstractmethod
     def get_active_price_levels(self) -> list[PriceLevelAlert]:
