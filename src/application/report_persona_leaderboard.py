@@ -17,6 +17,7 @@ from __future__ import annotations
 import html as _html
 
 from src.application.report_evidence import interval_label
+from src.application.reporting.section import ReportSection, SectionInput, no_text
 from src.domain.number_format import DecimalMark
 from src.domain.persona_track_record import PersonaTrackRecord
 
@@ -122,3 +123,16 @@ def _render_row_html(record: PersonaTrackRecord, *, position: int) -> str:
         f"{_votes_label(record.votes)}{n_eff}</td>"
         "</tr>"
     )
+
+
+def _section_html(data: SectionInput) -> str:
+    return render_persona_leaderboard_html(data.context.persona_track_record or [])
+
+
+# #3: „kto z rady miał rację” — ranking z progiem min_votes przychodzi z domeny.
+PERSONA_LEADERBOARD_SECTION = ReportSection(
+    key="persona_leaderboard",
+    render_html=_section_html,
+    render_text=no_text,
+    context_fields=frozenset({"persona_track_record"}),
+)

@@ -17,6 +17,7 @@ from decimal import Decimal
 
 from src.application.report_formatting import pct, sector_label
 from src.application.report_models import SymbolResult
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 
 # Progi 'gorącości' — wyższe niż główna bramka volatility (0.02), by sugestie
 # pojawiały się tylko przy realnym ruchu sektora, nie przy szumie.
@@ -137,3 +138,26 @@ def render_suggestions_text(suggestions: list[SectorSuggestion]) -> str:
         )
         lines.append(f"      rozważ: {', '.join(s.candidates)}")
     return "\n".join(lines)
+
+
+def _suggestions(data: SectionInput) -> list[SectorSuggestion]:
+    return build_sector_suggestions(
+        data.results, data.sector_map, data.context.sector_peers or {}
+    )
+
+
+def _section_html(data: SectionInput) -> str:
+    return render_suggestions_html(_suggestions(data))
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    return text_block(render_suggestions_text(_suggestions(data)), spaced=True)
+
+
+# 💡 Warte uwagi: peerzy sektorów z config.toml (PORT-05) dla ruchów cyklu.
+SUGGESTIONS_SECTION = ReportSection(
+    key="suggestions",
+    render_html=_section_html,
+    render_text=_section_text,
+    context_fields=frozenset({"sector_peers"}),
+)

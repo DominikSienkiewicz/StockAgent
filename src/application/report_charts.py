@@ -27,6 +27,7 @@ from src.application.report_signals import (
     DIVERGENCE_SENTIMENT_THRESHOLD,
 )
 from src.application.report_styles import delta_tone, fill_tone
+from src.application.reporting.section import ReportSection, SectionInput, no_text
 
 # Minimalna i maksymalna szerokość słupka w px. Minimum > 0, by najmniejszy
 # ruch pozostał widoczny; jednocześnie na tyle małe względem maksimum, żeby
@@ -180,3 +181,27 @@ def build_correlation_chart_html(results: list[SymbolResult]) -> str:
         + "</tr>"
         "</tbody></table></div>"
     )
+
+
+def _delta_chart_html(data: SectionInput) -> str:
+    return build_delta_chart_html(data.results)
+
+
+def _correlation_chart_html(data: SectionInput) -> str:
+    chart = build_correlation_chart_html(data.results)
+    if not chart:
+        return ""
+    return (
+        '<h3 style="font-size: 14px; margin: 20px 0 8px 0;">'
+        "📈 Korelacja sentymentu z ruchem ceny</h3>"
+    ) + chart
+
+
+# #2: wykres Δ cen jako inline HTML (żadne dane nie opuszczają maila).
+DELTA_CHART_SECTION = ReportSection(
+    key="delta_chart", render_html=_delta_chart_html, render_text=no_text
+)
+# #2: dawny scatter → tabela kwadrantów, inline (≥3 punkty).
+CORRELATION_CHART_SECTION = ReportSection(
+    key="correlation_chart", render_html=_correlation_chart_html, render_text=no_text
+)

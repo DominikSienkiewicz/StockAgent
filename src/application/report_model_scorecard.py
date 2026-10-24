@@ -30,6 +30,7 @@ from typing import Any
 from src.application.data_coverage import coverage_line_pl
 from src.application.report_formatting import number as _number
 from src.application.report_formatting import pct as _pct
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.backtest import (
     DRIFT_BASELINE_LABEL,
     LLM_BASELINE_LABEL,
@@ -479,3 +480,59 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
         llm_baseline_rmse=metrics.get("llm_baseline_rmse") if metrics else None,
         drifted_features=_feature_drifts(metrics),
     )
+
+
+def _section_html(data: SectionInput) -> str:
+    """#12: karta kondycji modelu. Brak danych → "" (sekcja sama się chowa)."""
+    model_scorecard = data.context.model_scorecard
+    if model_scorecard is None:
+        return ""
+    return render_model_scorecard_html(
+        model_scorecard.summary,
+        trained_at=model_scorecard.trained_at,
+        now=data.started_at,
+        model_loaded=data.context.ml_model_loaded,
+        candidate_rmse=model_scorecard.candidate_rmse,
+        baseline_rmse=model_scorecard.baseline_rmse,
+        directional_hit_rate=model_scorecard.directional_hit_rate,
+        folds=model_scorecard.folds,
+        metrics_symbol=model_scorecard.metrics_symbol,
+        n_samples=model_scorecard.metrics_n_samples,
+        evaluations=model_scorecard.evaluations,
+        drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
+        llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
+        coverage=model_scorecard.coverage,
+        drifted_features=model_scorecard.drifted_features,
+    )
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    """MAIL-09: karta kondycji modelu w wersji tekstowej (te same dane co HTML)."""
+    model_scorecard = data.context.model_scorecard
+    if model_scorecard is None:
+        return []
+    text = render_model_scorecard_text(
+        model_scorecard.summary,
+        trained_at=model_scorecard.trained_at,
+        now=data.started_at,
+        model_loaded=data.context.ml_model_loaded,
+        candidate_rmse=model_scorecard.candidate_rmse,
+        baseline_rmse=model_scorecard.baseline_rmse,
+        directional_hit_rate=model_scorecard.directional_hit_rate,
+        folds=model_scorecard.folds,
+        metrics_symbol=model_scorecard.metrics_symbol,
+        n_samples=model_scorecard.metrics_n_samples,
+        evaluations=model_scorecard.evaluations,
+        drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
+        llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
+    )
+    return text_block(text)
+
+
+# #12: tuż za Track Recordem i Historią trafności — ta sama oś zaufania.
+MODEL_SCORECARD_SECTION = ReportSection(
+    key="model_scorecard",
+    render_html=_section_html,
+    render_text=_section_text,
+    context_fields=frozenset({"model_scorecard", "ml_model_loaded"}),
+)

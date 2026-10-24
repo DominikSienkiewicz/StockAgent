@@ -18,18 +18,19 @@ from src.application.report_accuracy_history import ACCURACY_HISTORY_SECTION
 from src.application.report_alpha import ALPHA_SECTION, significant_buy_label
 from src.application.report_backoffice import BACKOFFICE_SECTION
 from src.application.report_charts import (
+    CORRELATION_CHART_SECTION,
+    DELTA_CHART_SECTION,
     build_correlation_chart_html,
     build_delta_chart_html,
     build_forecast_chart_html,
 )
 from src.application.report_consensus_shift import CONSENSUS_SHIFT_SECTION
 from src.application.report_council_history import (
+    COUNCIL_HISTORY_SECTION,
     InvestorHistory,
-    render_council_history_html,
-    render_council_history_text,
 )
 from src.application.report_crypto import CRYPTO_SECTION
-from src.application.report_finops import render_finops_html, render_finops_text
+from src.application.report_finops import FINOPS_SECTION
 from src.application.report_formatting import (
     DATA_SOURCES_FOOTER_PL,
     DEFAULT_DISPLAY_TIMEZONE,
@@ -39,16 +40,10 @@ from src.application.report_formatting import (
     safe_http_url,
 )
 from src.application.report_formatting import (
-    company_label as _company_label,
-)
-from src.application.report_formatting import (
     escape as _html,
 )
 from src.application.report_formatting import (
     number as _number,
-)
-from src.application.report_formatting import (
-    section_h2 as _section_h2,
 )
 from src.application.report_header import (
     FIRST_SCREEN_SECTION,
@@ -58,9 +53,8 @@ from src.application.report_header import (
 from src.application.report_lead import LEAD_SECTION, PREHEADER_SECTION
 from src.application.report_lessons import LessonsReport
 from src.application.report_model_scorecard import (
+    MODEL_SCORECARD_SECTION,
     ModelScorecardView,
-    render_model_scorecard_html,
-    render_model_scorecard_text,
 )
 from src.application.report_models import (
     PortfolioMood,
@@ -72,13 +66,15 @@ from src.application.report_models import (
     TradeSignal,
     ValuationSection,
 )
+from src.application.report_mood import MOOD_SECTION
 from src.application.report_onboarding import ONBOARDING_SECTION
 from src.application.report_persona_leaderboard import (
-    render_persona_leaderboard_html,
+    PERSONA_LEADERBOARD_SECTION,
 )
 from src.application.report_portfolio import PORTFOLIO_RADAR_SECTION
 from src.application.report_predictions import PREDICTIONS_SECTION, full_detail_symbols
 from src.application.report_quota_banner import QUOTA_BANNER_SECTION
+from src.application.report_reflections import REFLECTIONS_SECTION
 from src.application.report_regime import (
     RegimeBanner,
 )
@@ -105,9 +101,7 @@ from src.application.report_styles import (
     EMAIL_STYLESHEET,
 )
 from src.application.report_suggestions import (
-    build_sector_suggestions,
-    render_suggestions_html,
-    render_suggestions_text,
+    SUGGESTIONS_SECTION,
 )
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_chip_labels
 from src.application.report_track_record import TRACK_RECORD_SECTION, TrackRecordStats
@@ -170,18 +164,10 @@ __all__ = [
     "to_symbol_result",
 ]
 
-# Markery slotów — placeholdery wstawiane przy renderze i podmieniane treścią
-# w build_html_report. Trzymane jako stałe (jedno źródło prawdy), żeby literówka
-# w jednym z dwóch miejsc (szablon ↔ replace) nie zostawiła cicho pustego slotu.
-_COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
-_PERSONA_LEADERBOARD_SLOT = "<!-- PERSONA_LEADERBOARD_SLOT -->"
-# #12: karta kondycji modelu — tuż za Track Recordem (ta sama oś zaufania).
-_MODEL_SCORECARD_SLOT = "<!-- MODEL_SCORECARD_SLOT -->"
-# FinOps: „agent, który raportuje własny rachunek" — koszt cyklu.
-_FINOPS_SLOT = "<!-- FINOPS_SLOT -->"
-_SUGGESTIONS_SLOT = "<!-- SUGGESTIONS_SLOT -->"
-# MAIL-42: linia proweniencji w stopce (przebieg · commit · logi).
+# MAIL-42: linia proweniencji w stopce (przebieg · commit · logi) — ostatni
+# znacznik slotu, podmieniany w build_html_report.
 _RUN_FOOTER_SLOT = "<!-- RUN_FOOTER_SLOT -->"
+
 
 def _sizing_track_record(
     accuracy_stats: Mapping[str, Any] | None,
@@ -421,38 +407,6 @@ def _email_document(body: str) -> str:
     )
 
 
-def _fill_html_slots(html: str, sections: Mapping[str, str]) -> str:
-    """Wstawia treść w sloty HTML — klucz to znacznik slotu, wartość to gotowy
-    HTML sekcji. Podmieniamy zawsze (też na ""), żeby znacznik nie został w treści
-    maila."""
-    for slot, content in sections.items():
-        html = html.replace(slot, content, 1)
-    return html
-
-
-def _fill_text_slots(
-    text: str,
-    *,
-    suggestions_text: str,
-    sections: Mapping[str, str] | None = None,
-) -> str:
-    """Wstawia treść w sloty plain-text. Pusty slot usuwa cały wiersz znacznika —
-    tekst nie ma komentarzy HTML, więc znacznik byłby w nim dosłowną linią.
-
-    `sections` (MAIL-09): znacznik slotu → tekst sekcji z jej `render_*_text`, który
-    kończy się już pustą linią odstępu."""
-    text = text.replace(
-        f"{_SUGGESTIONS_SLOT}\n",
-        f"{suggestions_text}\n\n" if suggestions_text else "",
-        1,
-    ).replace(_SUGGESTIONS_SLOT, suggestions_text, 1)
-    for slot, content in (sections or {}).items():
-        text = text.replace(f"{slot}\n", f"{content}\n" if content else "", 1).replace(
-            slot, content, 1
-        )
-    return text
-
-
 def _partition_by_status(
     results: list[SymbolResult],
 ) -> tuple[list[SymbolResult], list[SymbolResult], list[SymbolResult]]:
@@ -484,60 +438,6 @@ def _usd_pln_of(macro_risk_report: MacroRiskReport | None) -> Decimal | None:
     if macro_risk_report is None or macro_risk_report.polish_macro is None:
         return None
     return macro_risk_report.polish_macro.usd_pln
-
-
-def _build_model_scorecard_text(
-    model_scorecard: ModelScorecardView | None,
-    *,
-    now: datetime,
-    model_loaded: bool,
-) -> str:
-    """MAIL-09: karta kondycji modelu w wersji tekstowej (te same dane co HTML)."""
-    if model_scorecard is None:
-        return ""
-    return render_model_scorecard_text(
-        model_scorecard.summary,
-        trained_at=model_scorecard.trained_at,
-        now=now,
-        model_loaded=model_loaded,
-        candidate_rmse=model_scorecard.candidate_rmse,
-        baseline_rmse=model_scorecard.baseline_rmse,
-        directional_hit_rate=model_scorecard.directional_hit_rate,
-        folds=model_scorecard.folds,
-        metrics_symbol=model_scorecard.metrics_symbol,
-        n_samples=model_scorecard.metrics_n_samples,
-        evaluations=model_scorecard.evaluations,
-        drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
-        llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
-    )
-
-
-def _build_model_scorecard_html(
-    model_scorecard: ModelScorecardView | None,
-    *,
-    now: datetime,
-    model_loaded: bool,
-) -> str:
-    """#12: karta kondycji modelu. Brak danych → "" (sekcja sama się chowa)."""
-    if model_scorecard is None:
-        return ""
-    return render_model_scorecard_html(
-        model_scorecard.summary,
-        trained_at=model_scorecard.trained_at,
-        now=now,
-        model_loaded=model_loaded,
-        candidate_rmse=model_scorecard.candidate_rmse,
-        baseline_rmse=model_scorecard.baseline_rmse,
-        directional_hit_rate=model_scorecard.directional_hit_rate,
-        folds=model_scorecard.folds,
-        metrics_symbol=model_scorecard.metrics_symbol,
-        n_samples=model_scorecard.metrics_n_samples,
-        evaluations=model_scorecard.evaluations,
-        drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
-        llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
-        coverage=model_scorecard.coverage,
-        drifted_features=model_scorecard.drifted_features,
-    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -697,64 +597,15 @@ def build_html_report(
     context = context or ReportContext()
     data = _section_input(results, started_at, duration_seconds, context)
     results, saved, ignored, errors = data.results, data.saved, data.ignored, data.errors
-    sector_map = data.sector_map
-    mood = build_portfolio_mood(results)
-    # U5: panel historii głosów rady per inwestor (render zwraca "" gdy brak).
-    council_history_html = render_council_history_html(context.council_history or [])
-    # #3: ranking wiarygodności person — ranking (z progiem min_votes) przychodzi
-    # gotowy z domeny; render zwraca "" gdy żadna persona nie ma dość głosów.
-    persona_leaderboard_html = render_persona_leaderboard_html(
-        context.persona_track_record or []
-    )
-    # FinOps: koszt cyklu. Cykl darmowy (0 wywołań) renderuje się JAWNIE —
-    # to najciekawsza informacja w tej sekcji, nie brak danych.
-    finops_html = render_finops_html(context.cycle_cost)
-    model_scorecard_html = _build_model_scorecard_html(
-        context.model_scorecard,
-        now=started_at,
-        model_loaded=context.ml_model_loaded,
-    )
-    suggestions = build_sector_suggestions(results, sector_map, context.sector_peers or {})
-    suggestions_html = render_suggestions_html(suggestions)
-    suggestions_text = render_suggestions_text(suggestions)
-
-    started_local = data.started_local
     html = _render_html(
         data,
-        results, saved, ignored, errors, started_local, duration_seconds,
-        mood,
-        display_timezone=context.display_timezone,
-        sector_map=sector_map,
+        results, saved, ignored, errors, duration_seconds,
     )
-    # Kolejność jak w poprzedniej wersji — znaczniki są rozłączne, więc nie ma
-    # znaczenia dla wyniku, ale trzyma diff czytelnym przy porównaniu z historią.
-    html = _fill_html_slots(html, {
-        _COUNCIL_HISTORY_SLOT: council_history_html,
-        _PERSONA_LEADERBOARD_SLOT: persona_leaderboard_html,
-        _MODEL_SCORECARD_SLOT: model_scorecard_html,
-        _FINOPS_SLOT: finops_html,
-        _SUGGESTIONS_SLOT: suggestions_html,
-        _RUN_FOOTER_SLOT: _render_run_footer_html(context.run_context),
-    })
+    html = html.replace(_RUN_FOOTER_SLOT, _render_run_footer_html(context.run_context), 1)
     html = _email_document(_compact_markup(html))
     text = _render_plain(
         data,
-        results, saved, ignored, errors, started_local, duration_seconds,
-        mood,
-        display_timezone=context.display_timezone,
-        sector_map=sector_map,
-    )
-    text = _fill_text_slots(
-        text,
-        suggestions_text=suggestions_text,
-        # MAIL-09: sekcje z rendererem tekstu, których wersja tekstowa nie miała.
-        sections={
-            _MODEL_SCORECARD_SLOT: _build_model_scorecard_text(
-                context.model_scorecard, now=started_at, model_loaded=context.ml_model_loaded
-            ),
-            _COUNCIL_HISTORY_SLOT: render_council_history_text(context.council_history or []),
-            _FINOPS_SLOT: render_finops_text(context.cycle_cost),
-        },
+        results, saved, ignored, errors, duration_seconds,
     )
     run_footer_text = _render_run_footer_text(context.run_context)
     if run_footer_text:
@@ -799,24 +650,6 @@ def _render_run_footer_text(run_context: RunContext | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _render_reflections_html(saved: list[SymbolResult]) -> str:
-    """🧠 Wnioski z poprzednich cykli (Self-Reflection). Pusty string, gdy brak."""
-    reflections = [r for r in saved if r.reflection_insight]
-    if not reflections:
-        return ""
-    parts = [_section_h2("🧠 Wnioski z poprzednich cykli (Self-Reflection)")]
-    for r in reflections:
-        parts.append(f"""
-              <div style="margin-bottom: 8px; padding: 10px 12px; background: #faf5ff;
-                          border-left: 3px solid #9333ea; border-radius: 4px;
-                          font-size: 12px;">
-                <strong>{_html(_company_label(r.symbol))}:</strong>
-                <span style="color: #581c87;">{_html(r.reflection_insight)}</span>
-              </div>
-            """)
-    return "".join(parts)
-
-
 # ---------------------------------------------------------------------------
 # MAIL-16: pierwszy ekran — liczby dla czytelnika, liczniki do stopki
 # ---------------------------------------------------------------------------
@@ -859,62 +692,13 @@ def _technical_footer_text(
 # MAIL-17: dwie strefy — „Na dziś” przed „Zapleczem”
 # ---------------------------------------------------------------------------
 
-# MAIL-10: średnia bez ani jednego sentymentu to brak danych, nie „+0,00 (Neutralny)”.
-_NO_SENTIMENT_LABEL = "brak danych"
-
-
-def _mood_average(mood: PortfolioMood) -> tuple[str, str]:
-    """(średni sentyment, etykieta) — „—” i „brak danych”, gdy cykl nie ma sentymentu."""
-    if mood.avg_sentiment is None or mood.avg_sentiment_label is None:
-        return "—", _NO_SENTIMENT_LABEL
-    return _number(mood.avg_sentiment, decimals=2, signed=True), mood.avg_sentiment_label
-
-
-def _render_mood_html(mood: PortfolioMood) -> str:
-    """📊 Nastroje portfela — sentyment cyklu w Zapleczu. MAIL-10: cykl bez
-    zapisanych predykcji (dzień zdegradowany, same pominięte) nie ma boxu."""
-    if mood.saved_count == 0:
-        return ""
-    average, average_label = _mood_average(mood)
-    bullish_part = (
-        f"<strong>{_html(_company_label(mood.most_bullish.symbol))}</strong> "
-        f"({_number(mood.most_bullish.sentiment_score, decimals=2, signed=True)})"
-        if mood.most_bullish else "—"
-    )
-    bearish_part = (
-        f"<strong>{_html(_company_label(mood.most_bearish.symbol))}</strong> "
-        f"({_number(mood.most_bearish.sentiment_score, decimals=2, signed=True)})"
-        if mood.most_bearish else "—"
-    )
-    return f"""
-      <div style="padding: 12px 14px; background: #eff6ff; border-left: 3px solid #2563eb;
-                  border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
-        <div style="font-weight: 600; margin-bottom: 6px; color: #1e3a8a;">
-          📊 Nastroje portfela
-        </div>
-        <div style="color: #1e40af; line-height: 1.7;">
-          Średni sentyment: <strong>{average}</strong>
-          ({average_label})<br/>
-          Najbardziej pozytywny: {bullish_part} · Najbardziej negatywny: {bearish_part}<br/>
-          Predykcje z wysoką pewnością (≥70%): {mood.high_confidence_count} / {mood.saved_count}
-          · Łącznie newsów: {mood.total_news}
-        </div>
-      </div>
-    """
-
-
 def _render_html(
     data: SectionInput,
     results: list[SymbolResult],
     saved: list[SymbolResult],
     ignored: list[SymbolResult],
     errors: list[SymbolResult],
-    started_local: str,
     duration_seconds: float,
-    mood: PortfolioMood,
-    *,
-    display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
-    sector_map: Mapping[str, str],
 ) -> str:
     sections = [PREHEADER_SECTION.render_html(data)]
 
@@ -943,26 +727,15 @@ def _render_html(
     sections.append(ALPHA_SECTION.render_html(data))
     sections.append(TRACK_RECORD_SECTION.render_html(data))
     sections.append(ACCURACY_HISTORY_SECTION.render_html(data))
-    sections.append(_MODEL_SCORECARD_SLOT)
-    # Slot na ranking wiarygodności person (#3) — "kto z rady miał rację".
-    sections.append(_PERSONA_LEADERBOARD_SLOT)
-    # Slot na panel historii głosów rady (U5).
-    sections.append(_COUNCIL_HISTORY_SLOT)
-    sections.append(_render_mood_html(mood))
-    # #2: wykres Δ cen jako inline HTML (żadne dane nie opuszczają maila).
-    sections.append(build_delta_chart_html(results))
-    # Self-Reflection — wnioski z poprzednich cykli
-    sections.append(_render_reflections_html(saved))
-    sections.append(_SUGGESTIONS_SLOT)
-    # #2: dawny scatter → tabela kwadrantów, inline (≥3 punkty).
-    correlation_chart = build_correlation_chart_html(results)
-    if correlation_chart:
-        sections.append(
-            '<h3 style="font-size: 14px; margin: 20px 0 8px 0;">'
-            "📈 Korelacja sentymentu z ruchem ceny</h3>"
-        )
-        sections.append(correlation_chart)
-    sections.append(_FINOPS_SLOT)
+    sections.append(MODEL_SCORECARD_SECTION.render_html(data))
+    sections.append(PERSONA_LEADERBOARD_SECTION.render_html(data))
+    sections.append(COUNCIL_HISTORY_SECTION.render_html(data))
+    sections.append(MOOD_SECTION.render_html(data))
+    sections.append(DELTA_CHART_SECTION.render_html(data))
+    sections.append(REFLECTIONS_SECTION.render_html(data))
+    sections.append(SUGGESTIONS_SECTION.render_html(data))
+    sections.append(CORRELATION_CHART_SECTION.render_html(data))
+    sections.append(FINOPS_SECTION.render_html(data))
     sections.append(BUDGET_EXHAUSTED_SECTION.render_html(data))
     sections.append(IGNORED_SECTION.render_html(data))
     sections.append(ERRORS_SECTION.render_html(data))
@@ -988,56 +761,13 @@ def _render_html(
 # ---------------------------------------------------------------------------
 
 
-def _render_mood_text(mood: PortfolioMood) -> list[str]:
-    """Sekcja 'Nastroje portfela' (plain) — w Zapleczu, jak w HTML (MAIL-10: bez
-    zapisanych predykcji sekcji nie ma)."""
-    if mood.saved_count == 0:
-        return []
-    average, average_label = _mood_average(mood)
-    lines = [
-        "NASTROJE PORTFELA",
-        "-" * 64,
-        f"  Średni sentyment: {average} ({average_label})",
-    ]
-    if mood.most_bullish:
-        mb = mood.most_bullish
-        lines.append(f"  Najbardziej pozytywny: {_company_label(mb.symbol)} ({_number(mb.sentiment_score, decimals=2, signed=True)})")
-    if mood.most_bearish:
-        mbe = mood.most_bearish
-        lines.append(f"  Najbardziej negatywny: {_company_label(mbe.symbol)} ({_number(mbe.sentiment_score, decimals=2, signed=True)})")
-    lines.append(
-        f"  Wysoka pewność (≥70%): {mood.high_confidence_count} / {mood.saved_count}"
-        f"  ·  Newsów: {mood.total_news}"
-    )
-    lines.append("")
-    return lines
-
-
-def _render_reflections_text(saved: list[SymbolResult]) -> list[str]:
-    """Sekcja 'Wnioski z poprzednich cykli' (plain). Pusta lista, gdy brak."""
-    reflections = [r for r in saved if r.reflection_insight]
-    if not reflections:
-        return []
-    lines = ["WNIOSKI Z POPRZEDNICH CYKLI (Self-Reflection)", "-" * 64]
-    lines.extend(
-        f"  {_company_label(r.symbol)}: {r.reflection_insight}" for r in reflections
-    )
-    lines.append("")
-    return lines
-
-
 def _render_plain(
     data: SectionInput,
     results: list[SymbolResult],
     saved: list[SymbolResult],
     ignored: list[SymbolResult],
     errors: list[SymbolResult],
-    started_local: str,
     duration_seconds: float,
-    mood: PortfolioMood,
-    *,
-    display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
-    sector_map: Mapping[str, str],
 ) -> str:
     lines: list[str] = []
     lines.extend(QUOTA_BANNER_SECTION.render_text(data))
@@ -1064,13 +794,12 @@ def _render_plain(
     # PORT-22: radar portfela (klastry, VaR, stress, „za mało historii”).
     lines.extend(PORTFOLIO_RADAR_SECTION.render_text(data))
     lines.extend(ACCURACY_HISTORY_SECTION.render_text(data))
-    lines.append(_MODEL_SCORECARD_SLOT)
-    lines.append(_COUNCIL_HISTORY_SLOT)
-    lines.extend(_render_mood_text(mood))
-    # Wnioski z poprzednich cykli
-    lines.extend(_render_reflections_text(saved))
-    lines.append(_SUGGESTIONS_SLOT)
-    lines.append(_FINOPS_SLOT)
+    lines.extend(MODEL_SCORECARD_SECTION.render_text(data))
+    lines.extend(COUNCIL_HISTORY_SECTION.render_text(data))
+    lines.extend(MOOD_SECTION.render_text(data))
+    lines.extend(REFLECTIONS_SECTION.render_text(data))
+    lines.extend(SUGGESTIONS_SECTION.render_text(data))
+    lines.extend(FINOPS_SECTION.render_text(data))
     lines.extend(BUDGET_EXHAUSTED_SECTION.render_text(data))
     lines.extend(IGNORED_SECTION.render_text(data))
     lines.extend(ERRORS_SECTION.render_text(data))

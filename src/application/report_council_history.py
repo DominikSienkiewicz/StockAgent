@@ -19,6 +19,7 @@ from __future__ import annotations
 import html as _html
 from dataclasses import dataclass
 
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.council import Recommendation
 
 _RECOMMENDATIONS: tuple[Recommendation, ...] = ("BUY", "SELL", "HOLD")
@@ -192,3 +193,20 @@ def render_council_history_text(histories: list[InvestorHistory]) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def _section_html(data: SectionInput) -> str:
+    return render_council_history_html(data.context.council_history or [])
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    return text_block(render_council_history_text(data.context.council_history or []))
+
+
+# U5: historia głosów rady per inwestor.
+COUNCIL_HISTORY_SECTION = ReportSection(
+    key="council_history",
+    render_html=_section_html,
+    render_text=_section_text,
+    context_fields=frozenset({"council_history"}),
+)

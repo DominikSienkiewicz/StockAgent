@@ -9,18 +9,25 @@ from __future__ import annotations
 from src.application.report_accuracy_history import ACCURACY_HISTORY_SECTION
 from src.application.report_alpha import ALPHA_SECTION
 from src.application.report_backoffice import BACKOFFICE_SECTION
+from src.application.report_charts import CORRELATION_CHART_SECTION, DELTA_CHART_SECTION
 from src.application.report_consensus_shift import CONSENSUS_SHIFT_SECTION
+from src.application.report_council_history import COUNCIL_HISTORY_SECTION
 from src.application.report_crypto import CRYPTO_SECTION
+from src.application.report_finops import FINOPS_SECTION
 from src.application.report_header import (
     FIRST_SCREEN_SECTION,
     MASTHEAD_SECTION,
     SESSION_SECTION,
 )
 from src.application.report_lead import LEAD_SECTION, PREHEADER_SECTION
+from src.application.report_model_scorecard import MODEL_SCORECARD_SECTION
+from src.application.report_mood import MOOD_SECTION
 from src.application.report_onboarding import ONBOARDING_SECTION
+from src.application.report_persona_leaderboard import PERSONA_LEADERBOARD_SECTION
 from src.application.report_portfolio import PORTFOLIO_RADAR_SECTION
 from src.application.report_predictions import PREDICTIONS_SECTION
 from src.application.report_quota_banner import QUOTA_BANNER_SECTION
+from src.application.report_reflections import REFLECTIONS_SECTION
 from src.application.report_resolved import RESOLVED_PREDICTIONS_SECTION
 from src.application.report_risk_signals import RISK_SIGNALS_SECTION
 from src.application.report_risk_watch import RISK_WATCH_SECTION
@@ -30,6 +37,7 @@ from src.application.report_skipped import (
     IGNORED_SECTION,
     REBASELINED_SECTION,
 )
+from src.application.report_suggestions import SUGGESTIONS_SECTION
 from src.application.report_track_record import TRACK_RECORD_SECTION
 from src.application.report_trade_signals import TRADE_SIGNALS_SECTION
 from src.application.report_user_portfolio import USER_PORTFOLIO_SECTION
@@ -57,6 +65,15 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     ALPHA_SECTION,
     TRACK_RECORD_SECTION,
     ACCURACY_HISTORY_SECTION,
+    MODEL_SCORECARD_SECTION,
+    PERSONA_LEADERBOARD_SECTION,
+    COUNCIL_HISTORY_SECTION,
+    MOOD_SECTION,
+    DELTA_CHART_SECTION,
+    REFLECTIONS_SECTION,
+    SUGGESTIONS_SECTION,
+    CORRELATION_CHART_SECTION,
+    FINOPS_SECTION,
     BUDGET_EXHAUSTED_SECTION,
     IGNORED_SECTION,
     ERRORS_SECTION,

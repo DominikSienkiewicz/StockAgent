@@ -27,6 +27,7 @@ import html as _html
 from datetime import date
 
 from src.application.report_formatting import number, plural_pl
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.finops import CycleCost, SourceCost
 
 _HEADING = "💸 Koszt cyklu"
@@ -235,3 +236,21 @@ def render_finops_text(cost: CycleCost | None) -> str:
     lines.append(f"  Uwaga: {_token_disclaimer(cost) if cost.from_tokens else _DISCLAIMER}")
     lines.append("")
     return "\n".join(lines)
+
+
+def _section_html(data: SectionInput) -> str:
+    return render_finops_html(data.context.cycle_cost)
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    return text_block(render_finops_text(data.context.cycle_cost))
+
+
+# FinOps: „agent, który raportuje własny rachunek”. Cykl darmowy (0 wywołań)
+# renderuje się JAWNIE — to najciekawsza informacja w tej sekcji, nie brak danych.
+FINOPS_SECTION = ReportSection(
+    key="finops",
+    render_html=_section_html,
+    render_text=_section_text,
+    context_fields=frozenset({"cycle_cost"}),
+)
