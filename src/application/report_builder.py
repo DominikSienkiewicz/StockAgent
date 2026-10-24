@@ -6,7 +6,6 @@ Czysta logika prezentacji — bez I/O, łatwo testowalne.
 from __future__ import annotations
 
 import dataclasses
-import html
 import re
 import urllib.parse
 from collections.abc import Mapping, Sequence
@@ -15,24 +14,20 @@ from decimal import Decimal
 from typing import Any
 
 from src.application.alpha_signals import AlphaSignals
-from src.application.decision_receipt import receipt_line_pl
 from src.application.portfolio_fx import effective_pln_rates
+from src.application.report_accuracy_history import ACCURACY_HISTORY_SECTION
 from src.application.report_alpha import render_alpha_html, significant_buy_label
 from src.application.report_charts import (
     build_correlation_chart_html,
     build_delta_chart_html,
     build_forecast_chart_html,
 )
-from src.application.report_consensus_shift import (
-    render_consensus_shift_html,
-    render_consensus_shift_text,
-)
+from src.application.report_consensus_shift import CONSENSUS_SHIFT_SECTION
 from src.application.report_council_history import (
     InvestorHistory,
     render_council_history_html,
     render_council_history_text,
 )
-from src.application.report_evidence import wilson_label
 from src.application.report_finops import render_finops_html, render_finops_text
 from src.application.report_formatting import (
     DATA_SOURCES_FOOTER_PL,
@@ -113,6 +108,12 @@ from src.application.report_regime import (
     render_regime_html,
     render_regime_text,
 )
+from src.application.report_resolved import (
+    RESOLVED_PREDICTIONS_SECTION,
+    RESOLVED_WINDOW_24H,
+    RESOLVED_WINDOW_THIS_CYCLE,
+    resolved_window,
+)
 from src.application.report_risk_watch import (
     render_risk_watch_html,
     render_risk_watch_text,
@@ -164,7 +165,7 @@ from src.domain.consensus_shift import ConsensusShift
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
-from src.domain.equity_curve import EquityCurve, directional_hit_rate
+from src.domain.equity_curve import EquityCurve
 from src.domain.feature_attribution import FeatureContribution
 from src.domain.finops import CycleCost
 from src.domain.insider_flow import InsiderLeadWindow
@@ -183,7 +184,6 @@ from src.domain.portfolio import (
     Portfolio,
     PortfolioChange,
 )
-from src.domain.prediction import is_substantive_insight
 from src.domain.provenance import ProvenanceLevel, build_provenance_badges
 from src.domain.quota import QuotaAlert
 from src.domain.sizing import PositionAction, SizeBand
@@ -231,8 +231,6 @@ _PORTFOLIO_SLOT = "<!-- PORTFOLIO_SLOT -->"
 _USER_PORTFOLIO_SLOT = "<!-- USER_PORTFOLIO_SLOT -->"
 _COUNCIL_HISTORY_SLOT = "<!-- COUNCIL_HISTORY_SLOT -->"
 _PERSONA_LEADERBOARD_SLOT = "<!-- PERSONA_LEADERBOARD_SLOT -->"
-# #8: "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs poprzedni cykl.
-_CONSENSUS_SHIFT_SLOT = "<!-- CONSENSUS_SHIFT_SLOT -->"
 _TRACK_RECORD_SLOT = "<!-- TRACK_RECORD_SLOT -->"
 # #12: karta kondycji modelu — tuż za Track Recordem (ta sama oś zaufania).
 _MODEL_SCORECARD_SLOT = "<!-- MODEL_SCORECARD_SLOT -->"
@@ -486,75 +484,6 @@ def _render_crypto_section_text(
             f"Δ {_pct(r.delta, signed=True):>8s}  {status}"
         )
     return "\n".join(lines)
-
-
-def _resolved_why(p: ResolvedPrediction) -> str:
-    """Zwięzłe 'dlaczego' werdyktu: dla chybionych — diagnoza z reflect,
-    dla trafionych — potwierdzenie tezy. Placeholdery reflect_node („Trafiona
-    predykcja.”, „diagnoza pominięta/odłożona”) nie są diagnozą, więc ich nie
-    pokazujemy dosłownie (WIA-10)."""
-    if p.is_correct:
-        return "Teza prognozy się potwierdziła."
-    if p.insight is not None and is_substantive_insight(p.insight):
-        return p.insight
-    return "Kierunek się nie potwierdził."
-
-
-def _resolved_receipt_line(p: ResolvedPrediction) -> str | None:
-    """WIA-56: pod chybieniem jedna linia z kwitu — na czym predykcja stała.
-    Trafiona nie potrzebuje audytu, a brak kwitu to brak linii."""
-    if p.is_correct or p.receipt is None:
-        return None
-    return receipt_line_pl(p.receipt)
-
-
-def _render_resolved_item_html(p: ResolvedPrediction, sector_map: Mapping[str, str]) -> str:
-    mark = "✅" if p.is_correct else "❌"
-    color = PALETTE.positive if p.is_correct else PALETTE.negative
-    verdict = "Trafiona" if p.is_correct else "Błędna"
-    reason_line = (
-        f"<div style='font-size: 11px; color: #4b5563; margin-top: 3px;'>"
-        f"<strong>Prognoza ({_html(_trend_label(p.predicted_trend))})</strong>, bo: "
-        f"{_html(p.reasoning)}</div>"
-        if p.reasoning
-        else ""
-    )
-    move_line = ""
-    if p.actual_change_pct is not None:
-        move_txt = direction_pct(p.actual_change_pct)
-        prices = (
-            f"{_money(p.price_at_prediction)} → {_money(p.actual_price)} "
-            if p.price_at_prediction is not None and p.actual_price is not None
-            else ""
-        )
-        move_line = (
-            f"<div style='font-size: 11px; color: #4b5563; margin-top: 2px;'>"
-            f"Faktycznie: {prices}"
-            f"<span style='color: {_delta_color(p.actual_change_pct)};'>"
-            f"({move_txt})</span></div>"
-        )
-    why_line = (
-        f"<div style='font-size: 11px; margin-top: 2px;'>"
-        f"<strong style='color: {color};'>Dlaczego:</strong> "
-        f"<span style='color: #4b5563;'>{_html(_resolved_why(p))}</span></div>"
-    )
-    receipt = _resolved_receipt_line(p)
-    if receipt:
-        why_line += (
-            "<div style='font-size: 11px; color: #4b5563; margin-top: 2px;'>"
-            f"🧾 <strong>Kwit:</strong> {_html(receipt)}</div>"
-        )
-    return f"""
-      <div style="margin-bottom: 8px; padding: 8px 10px; background: #fafafa;
-                  border-left: 3px solid {color}; border-radius: 4px;
-                  font-size: 12px;">
-        {mark} <strong>{_html(_company_label_with_sector(p.symbol, sector_map))}</strong>
-        <span style="color: {color}; font-weight: 600;">· {verdict}</span>
-        {reason_line}
-        {move_line}
-        {why_line}
-      </div>
-    """
 
 
 def _render_council_section(verdict: CouncilVerdict) -> str:
@@ -1379,22 +1308,6 @@ class ReportContext:
     insider_lead_window: InsiderLeadWindow | None = None
 
 
-def _resolved_note(context: ReportContext, window: str) -> str | None:
-    """MAIL-25: linia sekcji zamkniętych predykcji, gdy nie ma czego wylistować.
-
-    Awaria odczytu ma pierwszeństwo przed pustą listą — nie może udawać „brak
-    rozliczeń”. None w `resolved_predictions` (wołający nie dociągnął rozliczeń)
-    → brak linii, czyli brak sekcji, jak przed MAIL-25.
-    """
-    if context.resolved_predictions:
-        return None
-    if context.resolved_unavailable:
-        return _RESOLVED_UNAVAILABLE_NOTE
-    if context.resolved_predictions is not None:
-        return _RESOLVED_EMPTY_NOTE[window]
-    return None
-
-
 # MAIL-06: tyle symboli (wg siły sygnału) dostaje pełny blok uzasadnień z radą.
 _FULL_DETAIL_TOP_N = 10
 
@@ -1443,6 +1356,7 @@ def _section_input(
         # domenowe — `src/domain/digest_lead.py` ich nie importuje.
         lead_items=build_cycle_lead(results, context),
         resolved=context.resolved_predictions or [],
+        resolved_window=resolved_window(context.resolved_this_cycle),
     )
 
 
@@ -1549,9 +1463,6 @@ def build_html_report(
         if context.user_portfolio_in_text
         else ""
     )
-    # #8: zmiany nastawienia rady. Render odfiltrowuje STABLE i jawnie oznacza
-    # stęchłe porównania — pusta lista → sekcja się chowa.
-    consensus_shift_html = render_consensus_shift_html(context.consensus_shifts or [])
     # FinOps: koszt cyklu. Cykl darmowy (0 wywołań) renderuje się JAWNIE —
     # to najciekawsza informacja w tej sekcji, nie brak danych.
     finops_html = render_finops_html(context.cycle_cost)
@@ -1582,16 +1493,13 @@ def build_html_report(
     suggestions_text = render_suggestions_text(suggestions)
 
     started_local = format_local(started_at, context.display_timezone)
-    resolved_window = (
-        _RESOLVED_WINDOW_THIS_CYCLE if context.resolved_this_cycle else _RESOLVED_WINDOW_24H
-    )
-    resolved_note = _resolved_note(context, resolved_window)
+    resolved_window = data.resolved_window
     symbol_chips = symbol_chip_labels(context.symbol_track_record, (r.symbol for r in saved))
     html = _render_html(
         data,
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
-        resolved, resolved_window=resolved_window, resolved_note=resolved_note,
+        resolved, resolved_window=resolved_window,
         display_timezone=context.display_timezone,
         portfolio_change_box=portfolio_change_box,
         settlements_unavailable=context.resolved_unavailable,
@@ -1609,7 +1517,6 @@ def build_html_report(
         _USER_PORTFOLIO_SLOT: user_portfolio_html,
         _COUNCIL_HISTORY_SLOT: council_history_html,
         _PERSONA_LEADERBOARD_SLOT: persona_leaderboard_html,
-        _CONSENSUS_SHIFT_SLOT: consensus_shift_html,
         _TRACK_RECORD_SLOT: track_record_html,
         _MODEL_SCORECARD_SLOT: model_scorecard_html,
         _FINOPS_SLOT: finops_html,
@@ -1622,7 +1529,7 @@ def build_html_report(
         data,
         results, saved, ignored, errors, started_local, duration_seconds,
         mood, session, context.accuracy_stats, trade_signals, risk_signals,
-        resolved, resolved_window=resolved_window, resolved_note=resolved_note,
+        resolved, resolved_window=resolved_window,
         display_timezone=context.display_timezone,
         portfolio_change_line=portfolio_change_line,
         settlements_unavailable=context.resolved_unavailable,
@@ -1639,7 +1546,6 @@ def build_html_report(
         suggestions_text=suggestions_text,
         # MAIL-09: sekcje z rendererem tekstu, których wersja tekstowa nie miała.
         sections={
-            _CONSENSUS_SHIFT_SLOT: render_consensus_shift_text(context.consensus_shifts or []),
             _MODEL_SCORECARD_SLOT: _build_model_scorecard_text(
                 context.model_scorecard, now=started_at, model_loaded=context.ml_model_loaded
             ),
@@ -1858,146 +1764,6 @@ def _render_risk_signals_html(risk_signals: list[RiskSignal]) -> str:
               </div>
             """)
     return "".join(parts)
-
-
-# WIA-19: okno sekcji zamkniętych predykcji w jej nagłówku (HTML i tekst).
-_RESOLVED_WINDOW_24H = "ostatnie 24h"
-_RESOLVED_WINDOW_THIS_CYCLE = "rozliczone w tym cyklu"
-# MAIL-25: linia zamiast pustego miejsca — zgodna z oknem w nagłówku sekcji.
-_RESOLVED_EMPTY_NOTE = {
-    _RESOLVED_WINDOW_24H: "Brak rozliczeń predykcji z ostatnich 24h.",
-    _RESOLVED_WINDOW_THIS_CYCLE: "Brak rozliczeń w tym cyklu.",
-}
-_RESOLVED_UNAVAILABLE_NOTE = (
-    "⚠️ Nie udało się odczytać rozliczeń — w tym mailu ich brakuje "
-    "(szczegóły w logach przebiegu)."
-)
-
-
-def _render_resolved_predictions_html(
-    resolved_predictions: list[ResolvedPrediction],
-    window: str = _RESOLVED_WINDOW_24H,
-    note: str | None = None,
-    *,
-    sector_map: Mapping[str, str],
-) -> str:
-    """📊 Zamknięte predykcje z okna `window`. Bez predykcji: nagłówek z linią
-    `note` (MAIL-25) albo pusty string, gdy `note` None."""
-    if not resolved_predictions:
-        if note is None:
-            return ""
-        return _section_h2(f"📊 Zamknięte predykcje ({window})") + (
-            "<div style='font-size: 12px; color: #6b7280; margin: 4px 0 16px 0;'>"
-            f"{_html(note)}</div>"
-        )
-    correct = [p for p in resolved_predictions if p.is_correct]
-    wrong = [p for p in resolved_predictions if not p.is_correct]
-    parts = [_section_h2(f"📊 Zamknięte predykcje ({window})")]
-    parts.extend(_render_resolved_item_html(p, sector_map) for p in resolved_predictions)
-    parts.append(
-        "<div style='font-size: 11px; color: #6b7280; margin: 4px 0 16px 0;'>"
-        f"Suma: {len(correct)} trafionych / {len(wrong)} błędnych · "
-        f"{_resolved_accuracy_pair(resolved_predictions)}"
-        "</div>"
-    )
-    return "".join(parts)
-
-
-def _resolved_accuracy_pair(resolved_predictions: list[ResolvedPrediction]) -> str:
-    """Kierunkowa obok łącznej — te same etykiety co Historia trafności (WIA-29)."""
-    directional = directional_hit_rate(
-        (p.predicted_trend, p.is_correct) for p in resolved_predictions
-    )
-    directional_txt = (
-        "— (brak prognoz kierunkowych)"
-        if directional.rate is None
-        else f"{_pct(directional.rate, decimals=0)} (n={directional.directional})"
-    )
-    total = len(resolved_predictions)
-    correct = sum(1 for p in resolved_predictions if p.is_correct)
-    return (
-        f"{_DIRECTIONAL_ACCURACY_LABEL}: {directional_txt} · "
-        f"{_TOTAL_ACCURACY_LABEL}: {_pct(correct / total, decimals=0)} (n={total})"
-    )
-
-
-# WIA-29 (c): dwie definicje trafności obok siebie, każda nazwana tym, co liczy.
-_DIRECTIONAL_ACCURACY_LABEL = "Trafność kierunkowa (bez prognoz „bez ruchu”)"
-_TOTAL_ACCURACY_LABEL = "Trafność łączna (z prognozami „bez ruchu”)"
-
-
-# WIA-61 (okres przejściowy, opcja „oba”): druga cena rozliczenia obok /quote.
-_SESSION_CLOSE_ACCURACY_LABEL = "Na oficjalnym zamknięciu sesji"
-
-
-def _session_close_accuracy(accuracy_stats: dict[str, Any]) -> str | None:
-    """WIA-61: linia trafności na zamknięciu sesji z trafnością /quote tych samych
-    predykcji; None, gdy statystyki jej nie niosą (flaga off) albo próba pusta."""
-    n = accuracy_stats.get("session_close_count")
-    if not n:
-        return None
-    hits = accuracy_stats["session_close_correct_count"]
-    quote_hits = accuracy_stats["session_close_quote_correct_count"]
-    return (
-        f"{_SESSION_CLOSE_ACCURACY_LABEL}: {_pct(hits / n, decimals=1)}"
-        f" ({wilson_label(hits, n)}) · na cenie /quote tych samych predykcji:"
-        f" {_pct(quote_hits / n, decimals=1)}"
-    )
-
-
-def _directional_accuracy(accuracy_stats: dict[str, Any]) -> tuple[str, str] | None:
-    """(wartość, dopisek) trafności kierunkowej; None, gdy statystyki jej nie niosą."""
-    n = accuracy_stats.get("directional_count")
-    hits = accuracy_stats.get("directional_correct_count")
-    if n is None or hits is None:
-        return None
-    if n == 0:
-        return "—", "brak prognoz kierunkowych"
-    return _pct(hits / n, decimals=1), wilson_label(hits, n)
-
-
-def _render_accuracy_history_html(accuracy_stats: dict[str, Any] | None) -> str:
-    """🎯 Historia trafności. Pusty string, gdy brak danych statystyk."""
-    if accuracy_stats and accuracy_stats.get("mean_accuracy") is not None:
-        acc = accuracy_stats["mean_accuracy"]
-        n = accuracy_stats["sample_count"]
-        correct = accuracy_stats["correct_count"]
-        days = accuracy_stats["days_window"]
-        # WIA-32: przedział Wilsona obok procentu — goły % jest nieweryfikowalny.
-        interval = wilson_label(correct, n)
-        directional = _directional_accuracy(accuracy_stats)
-        directional_html = (
-            f"{_DIRECTIONAL_ACCURACY_LABEL}: <strong>{directional[0]}</strong>"
-            f" ({directional[1]})<br/>"
-            if directional is not None
-            else ""
-        )
-        session_close = _session_close_accuracy(accuracy_stats)
-        session_close_html = (
-            f"<br/>{html.escape(session_close)}" if session_close is not None else ""
-        )
-        return f"""
-      <div style="padding: 12px 14px; background: #fef3c7; border-left: 3px solid #f59e0b;
-                  border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
-        <div style="font-weight: 600; margin-bottom: 6px; color: #92400e;">
-          🎯 Historia trafności (ostatnie {days} dni)
-        </div>
-        <div style="color: #78350f;">
-          {directional_html}
-          {_TOTAL_ACCURACY_LABEL}: <strong>{_pct(acc, decimals=1)}</strong> ({interval})
-          · Predykcji ocenionych: {n}
-          · Poprawnych: {correct}{session_close_html}
-        </div>
-      </div>
-        """
-    if accuracy_stats is not None:
-        return """
-      <div style="padding: 10px 14px; background: #f9fafb; border-radius: 4px;
-                  margin-bottom: 20px; font-size: 12px; color: #6b7280;">
-        🎯 Historia trafności: brak ocenionych predykcji (potrzeba ≥1 zamkniętego cyklu).
-      </div>
-        """
-    return ""
 
 
 def _render_reflections_html(saved: list[SymbolResult]) -> str:
@@ -2377,8 +2143,8 @@ def _render_compact_predictions_html(rest: list[SymbolResult]) -> str:
 
 # Okno rozliczeń w boxie pierwszego ekranu — krócej niż w nagłówku sekcji.
 _SETTLEMENT_WINDOW_SHORT = {
-    _RESOLVED_WINDOW_24H: "ostatnie 24h",
-    _RESOLVED_WINDOW_THIS_CYCLE: "w tym cyklu",
+    RESOLVED_WINDOW_24H: "ostatnie 24h",
+    RESOLVED_WINDOW_THIS_CYCLE: "w tym cyklu",
 }
 
 
@@ -2572,8 +2338,7 @@ def _render_html(
     risk_signals: list[RiskSignal],
     resolved_predictions: list[ResolvedPrediction],
     *,
-    resolved_window: str = _RESOLVED_WINDOW_24H,
-    resolved_note: str | None = None,
+    resolved_window: str = RESOLVED_WINDOW_24H,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     portfolio_change_box: str = "",
     settlements_unavailable: bool = False,
@@ -2637,12 +2402,8 @@ def _render_html(
     sections.append(_render_credibility_bar_html(accuracy_stats))
     sections.append(_USER_PORTFOLIO_SLOT)
     # Zmiany od wczoraj: rozliczenia, zmiany nastawienia, nowy punkt odniesienia.
-    sections.append(
-        _render_resolved_predictions_html(
-            resolved_predictions, resolved_window, resolved_note, sector_map=sector_map
-        )
-    )
-    sections.append(_CONSENSUS_SHIFT_SLOT)
+    sections.append(RESOLVED_PREDICTIONS_SECTION.render_html(data))
+    sections.append(CONSENSUS_SHIFT_SECTION.render_html(data))
     sections.append(_render_rebaselined_html(ignored, display_timezone))
     sections.append(_render_trade_signals_html(trade_signals, symbol_chips))
     sections.append(_render_risk_signals_html(risk_signals))
@@ -2670,7 +2431,7 @@ def _render_html(
     sections.append(_ALPHA_SLOT)
     # Slot na sekcję Track Record (T1 equity curve, T2 calibration, T4 lessons).
     sections.append(_TRACK_RECORD_SLOT)
-    sections.append(_render_accuracy_history_html(accuracy_stats))
+    sections.append(ACCURACY_HISTORY_SECTION.render_html(data))
     sections.append(_MODEL_SCORECARD_SLOT)
     # Slot na ranking wiarygodności person (#3) — "kto z rady miał rację".
     sections.append(_PERSONA_LEADERBOARD_SLOT)
@@ -2761,75 +2522,6 @@ def _render_risk_signals_text(risk_signals: list[RiskSignal]) -> list[str]:
         lines.append(
             f"  ⚠ {_company_label(rs.symbol)}: [{type_label.get(rs.type, rs.type)}] {rs.description}"
         )
-    lines.append("")
-    return lines
-
-
-def _render_resolved_predictions_text(
-    resolved_predictions: list[ResolvedPrediction],
-    window: str = _RESOLVED_WINDOW_24H,
-    note: str | None = None,
-    *,
-    sector_map: Mapping[str, str],
-) -> list[str]:
-    """Sekcja 'Zamknięte predykcje' (plain). Bez predykcji: nagłówek z linią
-    `note` (MAIL-25) albo pusta lista, gdy `note` None."""
-    if not resolved_predictions:
-        if note is None:
-            return []
-        return [f"ZAMKNIĘTE PREDYKCJE ({window})", "-" * 64, f"  {note}", ""]
-    correct = sum(1 for p in resolved_predictions if p.is_correct)
-    lines = [f"ZAMKNIĘTE PREDYKCJE ({window})", "-" * 64]
-    for p in resolved_predictions:
-        mark = "✅" if p.is_correct else "❌"
-        verdict = "Trafiona" if p.is_correct else "Błędna"
-        lines.append(
-            f"  {mark} {_company_label_with_sector(p.symbol, sector_map)}  "
-            f"prognoza {_trend_label(p.predicted_trend)} — {verdict}"
-        )
-        if p.reasoning:
-            lines.append(f"        bo: {p.reasoning}")
-        if p.actual_change_pct is not None:
-            prices = (
-                f"{_money(p.price_at_prediction)} → {_money(p.actual_price)} "
-                if p.price_at_prediction is not None and p.actual_price is not None
-                else ""
-            )
-            lines.append(
-                f"        faktycznie: {prices}({_pct(p.actual_change_pct, signed=True)})"
-            )
-        lines.append(f"        dlaczego: {_resolved_why(p)}")
-        receipt = _resolved_receipt_line(p)
-        if receipt:
-            lines.append(f"        kwit: {receipt}")
-    lines.append(
-        f"  Suma: {correct}/{len(resolved_predictions)} · "
-        f"{_resolved_accuracy_pair(resolved_predictions)}"
-    )
-    lines.append("")
-    return lines
-
-
-def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list[str]:
-    """Sekcja 'Historia trafności' (plain). Pusta lista, gdy brak danych."""
-    if not (accuracy_stats and accuracy_stats.get("mean_accuracy") is not None):
-        return []
-    lines = [
-        f"HISTORIA TRAFNOŚCI (ostatnie {accuracy_stats['days_window']} dni)",
-        "-" * 64,
-    ]
-    directional = _directional_accuracy(accuracy_stats)
-    if directional is not None:
-        lines.append(f"  {_DIRECTIONAL_ACCURACY_LABEL}: {directional[0]} ({directional[1]})")
-    lines.extend([
-        f"  {_TOTAL_ACCURACY_LABEL}: {_pct(accuracy_stats['mean_accuracy'], decimals=1)}"
-        f" ({wilson_label(accuracy_stats['correct_count'], accuracy_stats['sample_count'])})"
-        f"  ·  Predykcji ocenionych: {accuracy_stats['sample_count']}"
-        f"  ·  Poprawnych: {accuracy_stats['correct_count']}",
-    ])
-    session_close = _session_close_accuracy(accuracy_stats)
-    if session_close is not None:
-        lines.append(f"  {session_close}")
     lines.append("")
     return lines
 
@@ -3002,8 +2694,7 @@ def _render_plain(
     risk_signals: list[RiskSignal],
     resolved_predictions: list[ResolvedPrediction],
     *,
-    resolved_window: str = _RESOLVED_WINDOW_24H,
-    resolved_note: str | None = None,
+    resolved_window: str = RESOLVED_WINDOW_24H,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
     portfolio_change_line: str = "",
     settlements_unavailable: bool = False,
@@ -3043,13 +2734,9 @@ def _render_plain(
     # 💼 Twój portfel — zaraz za pierwszym ekranem.
     lines.append(_USER_PORTFOLIO_SLOT)
     # Zmiany od wczoraj: rozliczenia i nowy punkt odniesienia.
-    lines.extend(
-        _render_resolved_predictions_text(
-            resolved_predictions, resolved_window, resolved_note, sector_map=sector_map
-        )
-    )
+    lines.extend(RESOLVED_PREDICTIONS_SECTION.render_text(data))
     # MAIL-09: zmiany nastawienia rady — jak w HTML, za rozliczeniami.
-    lines.append(_CONSENSUS_SHIFT_SLOT)
+    lines.extend(CONSENSUS_SHIFT_SECTION.render_text(data))
     lines.extend(_render_rebaselined_text(ignored, display_timezone))
     lines.extend(_render_trade_signals_text(trade_signals, symbol_chips))
     lines.extend(_render_risk_signals_text(risk_signals))
@@ -3066,7 +2753,7 @@ def _render_plain(
     lines.append(_RISK_WATCH_SLOT)
     # PORT-22: radar portfela (klastry, VaR, stress, „za mało historii”).
     lines.append(_PORTFOLIO_SLOT)
-    lines.extend(_render_accuracy_history_text(accuracy_stats))
+    lines.extend(ACCURACY_HISTORY_SECTION.render_text(data))
     lines.append(_MODEL_SCORECARD_SLOT)
     lines.append(_COUNCIL_HISTORY_SLOT)
     lines.extend(_render_mood_text(mood))

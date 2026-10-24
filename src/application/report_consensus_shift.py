@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import html as _html
 
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.consensus_shift import ConsensusShift, ShiftKind
 
 # Kolory rekomendacji spójne z sekcją RADA DORADCZA / historią głosów.
@@ -165,3 +166,17 @@ def render_consensus_shift_text(shifts: list[tuple[str, ConsensusShift]]) -> str
         lines.append(f"  {sym}: {_narrative_text(s)}")
     lines.append("")
     return "\n".join(lines)
+
+
+def _section_html(data: SectionInput) -> str:
+    return render_consensus_shift_html(data.context.consensus_shifts or [])
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    return text_block(render_consensus_shift_text(data.context.consensus_shifts or []))
+
+
+# #8: flipy rady i skoki sentymentu vs poprzedni cykl — za rozliczeniami.
+CONSENSUS_SHIFT_SECTION = ReportSection(
+    key="consensus_shift", render_html=_section_html, render_text=_section_text
+)

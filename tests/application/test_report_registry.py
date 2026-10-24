@@ -15,6 +15,9 @@ MAIL_ORDER = (
     "quota_banner",
     "lead",
     "onboarding",
+    "resolved_predictions",
+    "consensus_shift",
+    "accuracy_history",
 )
 
 

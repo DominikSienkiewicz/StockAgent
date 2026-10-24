@@ -47,8 +47,10 @@ class SectionInput:
     sector_map: Mapping[str, str]
     # #1: lead cyklu — jedno źródło treści maila, preheadera i tematu.
     lead_items: list[LeadItem]
-    # `ReportContext.resolved_predictions` albo pusta lista.
+    # `ReportContext.resolved_predictions` albo pusta lista i okno ich rozliczeń
+    # (WIA-19) — sekcja zamkniętych predykcji i pierwszy ekran.
     resolved: list[ResolvedPrediction]
+    resolved_window: str
 
 
 @dataclasses.dataclass(frozen=True)
