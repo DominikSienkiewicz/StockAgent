@@ -102,6 +102,7 @@ MIGRATION_FILES = [
     "063_rag_exact_search.sql",
     "064_model_scorecards_provenance.sql",
     "065_persona_scoring.sql",
+    "070_rpc_search_path.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -2250,6 +2251,60 @@ class TestSupabaseRoleEmulation:
             _set_role(cur, "service_role")
             cur.execute("SELECT count(*) FROM persona_scoring_stats(90, ARRAY['BTC'])")
             assert cur.fetchone() == (0,)
+
+
+# BEZ-18: RPC aplikacji miały zmienny search_path (Supabase advisor
+# `function_search_path_mutable`). Wywołanie z innej roli i innym search_path mogłoby
+# podstawić obiekt o tej samej nazwie. EXECUTE odebrane PUBLIC i rolom API już w 038.
+RPC_FUNCTIONS = (
+    "match_news_embeddings(vector,integer,text)",
+    "persona_accuracy_weights(integer)",
+    "persona_accuracy_stats(integer)",
+)
+_PUBLIC_GRANTEE = 0
+
+
+@pytest.mark.containers
+class TestRpcFunctionHardening:
+    @pytest.mark.parametrize("function", RPC_FUNCTIONS)
+    def test_rpc_function_pins_its_search_path(self, supabase_like_conn, function: str) -> None:
+        with supabase_like_conn.cursor() as cur:
+            cur.execute("SELECT proconfig FROM pg_proc WHERE oid = %s::regprocedure", (function,))
+            (config,) = cur.fetchone()
+
+        assert any(item.startswith("search_path=") for item in config or []), config
+
+    @pytest.mark.parametrize("function", RPC_FUNCTIONS)
+    def test_rpc_functions_not_executable_by_arbitrary_role(
+        self, supabase_like_conn, function: str
+    ) -> None:
+        """PUBLIC (`acldefault`, gdy `proacl` jest NULL) i role API nie wykonują RPC;
+        klucz secret (service_role) tak."""
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_proc p,
+                         aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+                    WHERE p.oid = %s::regprocedure
+                      AND acl.grantee = %s
+                      AND acl.privilege_type = 'EXECUTE'
+                )
+                """,
+                (function, _PUBLIC_GRANTEE),
+            )
+            public_can_execute = cur.fetchone()[0]
+            can_execute = {}
+            for role in (*PUBLIC_API_ROLES, "service_role"):
+                cur.execute(
+                    "SELECT has_function_privilege(%s::name, %s::regprocedure, 'EXECUTE')",
+                    (role, function),
+                )
+                can_execute[role] = cur.fetchone()[0]
+
+        assert public_can_execute is False
+        assert can_execute == {"anon": False, "authenticated": False, "service_role": True}
 
 
 @pytest.fixture
