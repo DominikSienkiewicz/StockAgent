@@ -74,6 +74,7 @@ from src.domain.earnings import EarningsEvent
 from src.domain.equity_curve import EquityCurve
 from src.domain.finops import CycleCost
 from src.domain.insider_flow import InsiderLeadWindow
+from src.domain.invalidation import Invalidation
 from src.domain.isotonic_calibration import IsotonicMap
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
@@ -742,6 +743,7 @@ def to_symbol_result(
         regime_multiplier=_multiplier_of(raw, "regime_multiplier"),
         earnings_multiplier=_multiplier_of(raw, "earnings_multiplier"),
         data_quality_flags=tuple(str(flag) for flag in raw.get("data_quality_flags") or ()),
+        invalidation=_invalidation_of(raw),
     )
 
 
@@ -755,6 +757,12 @@ def _move_interval_of(raw: dict[str, Any]) -> MoveInterval | None:
     """ML-34: przedział z grafu albo None (brak / zniekształcony)."""
     interval = raw.get("move_interval")
     return interval if isinstance(interval, MoveInterval) else None
+
+
+def _invalidation_of(raw: dict[str, Any]) -> Invalidation | None:
+    """ML-27: poziom unieważnienia tezy z grafu albo None (brak / zniekształcony)."""
+    level = raw.get("invalidation")
+    return level if isinstance(level, Invalidation) else None
 
 
 def _extract_precedents(raw_precedents: Any) -> list[SimilarPrecedent]:

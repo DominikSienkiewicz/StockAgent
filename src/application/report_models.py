@@ -9,6 +9,7 @@ from src.domain.conformal import MoveInterval
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import SkipReason
 from src.domain.feature_attribution import FeatureContribution
+from src.domain.invalidation import Invalidation
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.provenance import ProvenanceBadge
 from src.domain.sizing import PositionAction, SizeBand
@@ -110,6 +111,8 @@ class SymbolResult:
     # MAIL-21: flagi jakości danych symbolu z grafu (`data_quality_flags`) —
     # z nich linijka stanu źródeł przypisuje awarie dostawcom.
     data_quality_flags: tuple[str, ...] = ()
+    # ML-27: poziom unieważnienia tezy (za `invalidation_level_enabled`). None = brak.
+    invalidation: Invalidation | None = None
 
     @property
     def expected_change(self) -> Decimal | None:

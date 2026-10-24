@@ -41,6 +41,7 @@ from src.application.report_formatting import (
 )
 from src.application.report_models import SymbolResult, TradeSignal
 from src.application.report_reasoning import (
+    invalidation_label,
     model_signal,
     model_signal_reason_text,
     move_interval_label,
@@ -247,6 +248,9 @@ def _render_prediction_text(
     ]
     if r.move_interval is not None:
         lines.append(f"         {move_interval_label(r.move_interval)}")
+    invalidation = invalidation_label(r)
+    if invalidation is not None:
+        lines.append(f"         🛑 {invalidation}")
     if chip:
         lines.append(f"         {chip}")
     # Q6: odznaki proweniencji (pomijamy FRESH — brak szumu).

@@ -2907,6 +2907,58 @@ class TestMoveIntervalInReport:
         assert result.move_interval is None
 
 
+class TestInvalidationInReport:
+    """ML-27 — poziom unieważnienia tezy pod uzasadnieniem: „Teza upada poniżej
+    $290,00 — …” w HTML i w tekście. Bez poziomu (flaga off) mail bez zmian."""
+
+    _STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _with_level(price: str, reason: str = "Zejście pod 290 obala wzrost.") -> SymbolResult:
+        from src.domain.invalidation import Invalidation
+
+        return dataclasses.replace(
+            _saved_result(), invalidation=Invalidation(price=Decimal(price), reason=reason)
+        )
+
+    def test_level_below_the_price_reaches_html_and_text(self):
+        html, text = build_html_report([self._with_level("290")], self._STARTED, 1.0)
+
+        assert "Teza upada poniżej $290,00 — Zejście pod 290 obala wzrost." in html
+        assert "Teza upada poniżej $290,00 — Zejście pod 290 obala wzrost." in text
+
+    def test_level_above_the_price_says_above(self):
+        html, _ = build_html_report([self._with_level("310", reason="")], self._STARTED, 1.0)
+
+        assert "Teza upada powyżej $310,00" in html
+        assert "Teza upada powyżej $310,00 —" not in html
+
+    def test_reason_is_escaped(self):
+        html, _ = build_html_report(
+            [self._with_level("290", reason="<b>wsparcie</b>")], self._STARTED, 1.0
+        )
+
+        assert "&lt;b&gt;wsparcie&lt;/b&gt;" in html
+        assert "<b>wsparcie</b>" not in html
+
+    def test_no_level_no_line(self):
+        html, text = build_html_report([_saved_result()], self._STARTED, 1.0)
+
+        assert "Teza upada" not in html
+        assert "Teza upada" not in text
+
+    def test_to_symbol_result_carries_the_level_from_the_graph(self):
+        from src.domain.invalidation import Invalidation
+
+        level = Invalidation(price=Decimal("290"), reason="x")
+
+        carried = to_symbol_result("AAPL", {"status": "saved", "invalidation": level})
+        malformed = to_symbol_result("AAPL", {"status": "saved", "invalidation": "x"})
+
+        assert carried.invalidation == level
+        assert malformed.invalidation is None
+
+
 class TestInvestmentDisclaimer:
     """MAIL-08 (G21): „Sygnał modelu: KUP” i bandy % portfela nie mogą iść bez
     zastrzeżenia. Stopka HTML i koniec tekstu niosą je ZAWSZE — także w raporcie

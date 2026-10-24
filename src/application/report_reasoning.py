@@ -164,6 +164,17 @@ def move_interval_label(interval: MoveInterval) -> str:
     )
 
 
+def invalidation_label(r: SymbolResult) -> str | None:
+    """ML-27: „Teza upada poniżej $118,00 — <powód>” (strona względem ceny cyklu)
+    albo None bez poziomu. Tekst surowy — HTML escapuje wołający."""
+    level = r.invalidation
+    if level is None:
+        return None
+    side = "poniżej" if r.current_price is None or level.price < r.current_price else "powyżej"
+    label = f"Teza upada {side} {_money(level.price)}"
+    return f"{label} — {level.reason}" if level.reason else label
+
+
 def _model_signal_reason_html(r: SymbolResult) -> str:
     """Zwraca krótki HTML-owy powód sygnału modelu (1–2 zdania)."""
     direction = model_signal(r)
@@ -432,6 +443,7 @@ def render_reasoning_block_html(
         and not precedents_block
         and not attribution_block
         and r.move_interval is None
+        and r.invalidation is None
     ):
         return ""
     move_line = ""
@@ -453,6 +465,9 @@ def render_reasoning_block_html(
         move_line = f'<div class="rm">Oczekiwany ruch: {move_text}{conf_part}</div>'
     if r.move_interval is not None:
         move_line += f'<div class="rm">{move_interval_label(r.move_interval)}</div>'
+    invalidation = invalidation_label(r)
+    if invalidation is not None:
+        move_line += f'<div class="rm">🛑 {_html(invalidation)}</div>'
     if chip:
         move_line += f'<div class="rm">{_html(chip)}</div>'
     move_line += _market_context_html(r)
