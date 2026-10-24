@@ -20,6 +20,7 @@ from src.application.report_formatting import format_local_date
 from src.domain.number_format import format_pct_pl
 from src.domain.polish_labels import council_recommendation_label
 from src.domain.portfolio import Portfolio, is_stale
+from src.domain.value_objects import Ratio, to_percent
 
 # Uzasadnienie LLM bywa akapitem, a push ma zostać krótki (Telegram tnie 4096 znaków).
 REASONING_MAX_CHARS = 240
@@ -35,7 +36,7 @@ class PositionContext:
     `as_of` — chwila stanu tabeli pozycji (stęchły portfel daje fałszywy P/L)."""
 
     weight: Decimal | None
-    return_pct: Decimal | None
+    return_pct: Ratio | None
     fully_priced: bool
     as_of: datetime
 
@@ -63,7 +64,7 @@ def position_context(
     cost = sum((lot.cost_basis() for lot in lots), Decimal("0"))
     weight = portfolio.weights(prices).get(symbol) if price is not None else None
     return_pct = (
-        sum((lot.market_value(price) for lot in lots), Decimal("0")) / cost - 1
+        Ratio(sum((lot.market_value(price) for lot in lots), Decimal("0")) / cost - 1)
         if price is not None and cost > 0
         else None
     )
@@ -107,7 +108,7 @@ def _position_line(position: PositionContext, now: datetime, tz: str) -> str:
         share = "portfela" if position.fully_priced else "wycenionej części portfela"
         parts.append(f"{format_pct_pl(position.weight * 100, signed=False, decimals=0)} {share}")
     if position.return_pct is not None:
-        parts.append(f"{format_pct_pl(position.return_pct * 100, signed=True)} od zakupu")
+        parts.append(f"{format_pct_pl(to_percent(position.return_pct), signed=True)} od zakupu")
     line = f"💼 Twoja pozycja: {', '.join(parts)}" if parts else "💼 Masz tę pozycję w portfelu"
     if is_stale(position.as_of, now):
         line += (
