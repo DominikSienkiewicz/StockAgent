@@ -105,6 +105,7 @@ from src.application.report_regime import RegimeBanner
 from src.application.report_symbol_record import SymbolTrackRecordView
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
+from src.application.schema_gate import evaluate_schema_gate
 from src.application.source_health import (
     SourceHealth,
     assess_source_health,
@@ -171,6 +172,7 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_this_week
 from src.domain.equity_curve import EquityCurve
+from src.domain.feature_requirements import FLAG_REQUIRED_MIGRATION
 from src.domain.finops import CycleCost, estimate_cycle_cost
 from src.domain.hedge import equity_hedge_symbols
 from src.domain.insider_flow import InsiderLeadWindow
@@ -2976,6 +2978,46 @@ def prediction_columns_missing(
     return True
 
 
+SCHEMA_PROBE_UNAVAILABLE_SUMMARY = (
+    "### Schema probe\n\n"
+    "`schema_version()` did not answer (migration 071 not applied, or the database did not "
+    "respond) — flags that need a migration were left on."
+)
+
+
+def _migration_bound_flags(settings: Settings) -> dict[str, bool]:
+    """NIEZ-30: efektywna wartość każdej flagi z `FLAG_REQUIRED_MIGRATION`; niejawne
+    `regime_tagging_enabled` idzie za `regime_aware_enabled` jak w `build_use_case`."""
+    flags = {name: bool(getattr(settings, name)) for name in FLAG_REQUIRED_MIGRATION}
+    flags["regime_tagging_enabled"] = _regime_tagging_enabled(settings)
+    return flags
+
+
+def gate_flags_by_schema(
+    settings: Settings,
+    repository: RepositoryPort,
+    quota_monitor: QuotaMonitor,
+    *,
+    now: datetime,
+    rebuild: Callable[[Settings], RepositoryPort],
+) -> tuple[Settings, RepositoryPort]:
+    """NIEZ-30: wyłącza na czas przebiegu flagi, których migracji baza jeszcze nie ma
+    (inaczej zapis nieistniejącej kolumny kończy się PGRST204 i gubi predykcję).
+
+    Wyłączone flagi to WARNING w logu i w bannerze maila (`quota_monitor`); repozytorium
+    budowane jest od nowa z oczyszczonymi flagami (`rebuild`), bo część z nich trafia do
+    jego konstruktora. Gdy wersji nie da się ustalić, nic się nie zmienia (fail-open,
+    decyzja właściciela), a podsumowanie przebiegu dostaje notkę."""
+    outcome = evaluate_schema_gate(repository, _migration_bound_flags(settings), now=now)
+    if outcome.schema_version is None:
+        append_step_summary(SCHEMA_PROBE_UNAVAILABLE_SUMMARY)
+    if outcome.alert is None:
+        return settings, repository
+    quota_monitor.record(outcome.alert)
+    gated = settings.model_copy(update=dict.fromkeys(outcome.disabled, False))
+    return gated, rebuild(gated)
+
+
 def _run_fast_loop_metered(settings: Settings, clock: Callable[[], datetime]) -> int:
     """NIEZ-24: przebieg z jednym miernikiem żądań HTTP — liczy każdą sesję
     `build_session()` adapterów, bez zmian w ich kodzie."""
@@ -3022,6 +3064,9 @@ def _run_fast_loop(
     _record_av_budget_alert(settings, quota_monitor)
     _record_weekly_budget_alert(settings, quota_monitor)
     repository = build_repository(settings)
+    settings, repository = gate_flags_by_schema(
+        settings, repository, quota_monitor, now=clock(), rebuild=build_repository
+    )
     # FIN-13: jeden ledger tokenów na przebieg — adaptery zgłaszają, mail wycenia.
     usage_ledger = UsageLedger()
     use_case = build_use_case(

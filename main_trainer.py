@@ -27,6 +27,7 @@ from main_agent import (
     build_notifier,
     build_push_channels,
     flag_undelivered_report,
+    gate_flags_by_schema,
     llm_fallback_available,
     persist_llm_calls,
     refuses_stub_writes,
@@ -856,6 +857,9 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     warn_if_paid_calls_disabled(settings)
     quota_monitor = QuotaMonitor()
     repository = build_repository(settings)
+    settings, repository = gate_flags_by_schema(
+        settings, repository, quota_monitor, now=datetime.now(UTC), rebuild=build_repository
+    )
     # ML-24: jeden identyfikator na przebieg — wspólny dla wszystkich wierszy karty.
     run_id = str(uuid.uuid4())
     use_case = build_use_case(settings, run_id=run_id)
