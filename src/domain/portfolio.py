@@ -43,6 +43,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 
+from src.domain.value_objects import Ratio
+
 # Zamrożony próg świeżości portfela. Ręcznie aktualizowana tabela pozycji
 # starsza niż tyle dni jest STALE — badge to wymaganie, więc zmiana tej
 # wartości ma świadomie łamać test `test_default_max_age_is_frozen_constant`.
@@ -125,8 +127,9 @@ class Position:
 class PositionPnL:
     """P/L pojedynczej pozycji w danym momencie.
 
-    `return_pct` to zwrot względem kosztu (0.5 == +50%); `None`, gdy koszt
-    bazowy jest zerowy (np. pozycja o cenie zakupu 0) — nie dzielimy przez 0.
+    `return_pct` to zwrot względem kosztu jako UŁAMEK (`Ratio`: 0.5 == +50%),
+    mimo sufiksu `_pct` (ARCH-04); `None`, gdy koszt bazowy jest zerowy (np.
+    pozycja o cenie zakupu 0) — nie dzielimy przez 0.
     """
 
     symbol: str
@@ -136,7 +139,7 @@ class PositionPnL:
     cost_basis: Decimal
     market_value: Decimal
     unrealized_pnl: Decimal
-    return_pct: Decimal | None
+    return_pct: Ratio | None
     # PORT-18: waluta, w której są ceny i kwoty tego wiersza.
     currency: str = DEFAULT_POSITION_CURRENCY
 
@@ -514,7 +517,7 @@ class Portfolio:
                     cost_basis=cost,
                     market_value=value,
                     unrealized_pnl=pnl,
-                    return_pct=(pnl / cost) if cost != 0 else None,
+                    return_pct=Ratio(pnl / cost) if cost != 0 else None,
                     currency=pos.currency,
                 )
             )
