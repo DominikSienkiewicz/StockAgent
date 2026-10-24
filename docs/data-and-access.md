@@ -144,3 +144,15 @@ default grants, then checks through `SET ROLE` that `anon` and `authenticated` r
 and that `service_role` still reads, writes and calls the RPC functions. The emulation is not
 Supabase: it has no PostgREST and no JWTs, and it runs Postgres 16, where only the owner of
 `ml_feature_store` may refresh it.
+
+`tests/infrastructure/test_supabase_repo_postgrest.py` (TEST-17) adds the missing seam between
+`SupabaseRepository` and the schema: one module-scoped set of containers runs the same
+migrations and roles behind a real `postgrest/postgrest` container (`PGRST_DB_MAX_ROWS=1000`,
+as on hosted Supabase) with JWTs signed by a local test secret, and the repository talks to
+it through `supabase-py` as in production. The contract tests cover `save_prediction` and the
+idempotent upsert on `(symbol, timestamp_hour)`, `get_unverified_prediction` (oldest first,
+the age window, prices back as `Decimal` in the `DECIMAL(14,4)` scale although PostgREST
+sends numbers), `find_similar_predictions` through the `match_news_embeddings` RPC, reads
+past the 1000-row cap, `PGRST204` for a column without its migration, and an `anon` key that
+can write nothing. The one difference from Supabase: there is no gateway serving PostgREST
+under `/rest/v1`, so the test points the client at the PostgREST root.

@@ -208,7 +208,7 @@ uv run python main_tools.py verify-attestation --commitments /tmp/attestation-lo
 uv run python main_tools.py reproduce-training  # does the sidecar's fingerprint and seed give the saved booster (ML-22): rebuilds the shared model's sample read-only, keeps the sidecar's date range, compares the dataset sha256, refits and compares the tree dump; REPRODUCED and exit 0, otherwise exit 1 (2 without the sidecar or the weights; `--sidecar` to point at another file)
 uv run pytest -m "not integration and not containers" # the quality gate, as in CI
 uv run pytest                                   # everything, including live-API tests (real keys, paid calls, a real email)
-uv run pytest -m containers                    # Docker/Postgres schema tests
+uv run pytest -m containers                    # Docker: Postgres schema tests and the SupabaseRepository contract tests on PostgREST (TEST-17)
 uv run pytest -m integration                   # live API tests (requires real keys)
 uv run pytest tests/application/test_report_builder_snapshot.py --update-golden  # rewrite the email golden snapshots after an intended email change
 uv run pytest tests/application/test_prompt_golden.py --update-golden  # rewrite the prompt golden files after an intended prompt change
