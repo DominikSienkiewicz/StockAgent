@@ -10,8 +10,9 @@ import pandas as pd
 import xgboost as xgb
 
 from src.application.ports import MLPredictionPort
-from src.domain.backtest import purged_train_end, summarize_folds
+from src.domain.backtest import BacktestSummary, purged_train_end, summarize_folds
 from src.domain.drift import bin_fractions, quantile_edges, recent_window_psi
+from src.domain.model_scorecard import TrainingOutcome, TrainingReport
 from src.domain.value_objects import Money
 
 # Hiperparametry dobrane pod dane finansowe (zapobieganie overfittingowi).
@@ -89,7 +90,7 @@ class XGBoostAdapter(MLPredictionPort):
         *,
         persist: bool = True,
         timestamps: Any = None,
-    ) -> dict[str, Any]:
+    ) -> TrainingReport:
         feature_frame = pd.DataFrame(features).reset_index(drop=True)
         target_series = pd.Series(target).reset_index(drop=True)
         stamps = _global_time_order(timestamps, len(target_series))
@@ -101,46 +102,45 @@ class XGBoostAdapter(MLPredictionPort):
         summary = summarize_folds(
             self._walk_forward_folds_detail(feature_frame, target_series, stamps)
         )
-        metrics: dict[str, Any] = {
-            "n_samples": len(target_series),
-            "n_folds": summary.n_folds,
-            "n_oos_points": summary.n_oos_points,
-            "candidate_holdout_rmse": summary.mean_candidate_rmse,
-            "baseline_rmse": summary.mean_baseline_rmse,
-            # ML-10: baseline'y „dryf średniej" i „sam LLM" (bramka bije najsilniejszy).
-            "drift_baseline_rmse": summary.mean_drift_baseline_rmse,
-            "llm_baseline_rmse": summary.mean_llm_baseline_rmse,
-            "candidate_holdout_directional_hit_rate": summary.mean_hit_rate,
-            # Per-feature drift stats (mean/std, ML-21: biny kwantylowe i PSI
-            # ostatnich 30 dni) — obserwowalne niezależnie od werdyktu bramki.
-            "feature_stats": _feature_distribution_stats(feature_frame, stamps),
-            "metric_note": METRIC_NOTE,
-        }
+        # Per-feature drift stats (mean/std, ML-21: biny kwantylowe i PSI ostatnich
+        # 30 dni) — obserwowalne niezależnie od werdyktu bramki.
+        feature_stats = _feature_distribution_stats(feature_frame, stamps)
+
+        def report(
+            outcome: TrainingOutcome,
+            *,
+            reason: str | None = None,
+            model_path: str | None = None,
+        ) -> TrainingReport:
+            return _training_report(
+                outcome,
+                summary,
+                n_samples=len(target_series),
+                feature_stats=feature_stats,
+                reason=reason,
+                model_path=model_path,
+            )
 
         if not persist:
             # ML-13: per-symbol ewaluacja — żadnego zapisu ani podmiany modelu w
             # pamięci; jedyne wagi produkuje model wspólny.
-            return {
-                "status": (
-                    "evaluated_passed_gate"
-                    if summary.beats_baseline
-                    else "evaluated_failed_gate"
-                ),
-                "reason": f"Evaluation only, weights not written: {summary.verdict}.",
-                **metrics,
-            }
+            return report(
+                TrainingOutcome.EVALUATION_PASSED
+                if summary.beats_baseline
+                else TrainingOutcome.EVALUATION_FAILED,
+                reason=f"Evaluation only, weights not written: {summary.verdict}.",
+            )
 
         if not summary.beats_baseline:
-            return {
-                "status": "skipped_validation_failed",
-                "reason": (
+            return report(
+                TrainingOutcome.REJECTED,
+                reason=(
                     "Candidate did not pass the walk-forward gate against the "
                     "strongest baseline (zero return, mean drift, LLM only): "
                     f"{summary.verdict}."
                 ),
-                **metrics,
-                "model_path": self._model_path,
-            }
+                model_path=self._model_path,
+            )
 
         # Shipowany model: refit na WSZYSTKICH danych (train+holdout) — NIE jest
         # re-walidowany, więc raportowane RMSE/hit-rate to metryki KANDYDATA
@@ -151,11 +151,7 @@ class XGBoostAdapter(MLPredictionPort):
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model.save_model(self._model_path)
         self._model = model
-        return {
-            "status": "trained_successfully",
-            **metrics,
-            "model_path": self._model_path,
-        }
+        return report(TrainingOutcome.ACCEPTED, model_path=self._model_path)
 
     def _walk_forward_folds_detail(
         self,
@@ -296,6 +292,36 @@ class XGBoostAdapter(MLPredictionPort):
                 f"Missing required ML features for prediction: {missing}"
             )
         return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
+
+
+def _training_report(
+    outcome: TrainingOutcome,
+    summary: BacktestSummary,
+    *,
+    n_samples: int,
+    feature_stats: dict[str, dict[str, Any]],
+    reason: str | None,
+    model_path: str | None,
+) -> TrainingReport:
+    """ARCH-09: werdykt i metryki walk-forward jako domenowy `TrainingReport`.
+
+    Metryki to średnie kandydata na foldach (`METRIC_NOTE`); baseline'y ML-10
+    („dryf średniej", „sam LLM") są None, gdy foldy ich nie liczyły."""
+    return TrainingReport(
+        outcome,
+        n_samples=n_samples,
+        reason=reason,
+        n_folds=summary.n_folds,
+        n_oos_points=summary.n_oos_points,
+        rmse=summary.mean_candidate_rmse,
+        baseline_rmse=summary.mean_baseline_rmse,
+        drift_baseline_rmse=summary.mean_drift_baseline_rmse,
+        llm_baseline_rmse=summary.mean_llm_baseline_rmse,
+        hit_rate=summary.mean_hit_rate,
+        feature_stats=feature_stats,
+        metric_note=METRIC_NOTE,
+        model_path=model_path,
+    )
 
 
 def _baseline_predictions(

@@ -1,12 +1,14 @@
 from datetime import datetime, timedelta
 
 from src.domain.model_scorecard import (
+    LEGACY_STATUS,
     METRIC_NOTE,
     MODEL_STALE_AFTER_DAYS,
     POOLED_MODEL_SYMBOL,
     RUN_MAX_GAP,
     RunSummary,
     TrainingOutcome,
+    TrainingReport,
     classify_status,
     improvement_pct,
     is_stale,
@@ -244,3 +246,70 @@ class TestSummarizeEvaluations:
         )
 
         assert POOLED_MODEL_SYMBOL == TRAINER_POOLED_SYMBOL == "ALL"
+
+
+class TestTrainingReport:
+    """ARCH-09: werdykt treningu jako typ domenowy. Do `model_scorecards.status`
+    idzie status z `LEGACY_STATUS`, więc historia tabeli czyta się tak samo."""
+
+    def test_legacy_status_names_every_outcome_with_the_stored_strings(self) -> None:
+        assert dict(LEGACY_STATUS) == {
+            TrainingOutcome.ACCEPTED: "trained_successfully",
+            TrainingOutcome.REJECTED: "skipped_validation_failed",
+            TrainingOutcome.SKIPPED: "skipped",
+            TrainingOutcome.EVALUATION_PASSED: "evaluated_passed_gate",
+            TrainingOutcome.EVALUATION_FAILED: "evaluated_failed_gate",
+        }
+
+    def test_every_stored_status_reads_back_as_its_outcome(self) -> None:
+        # Mapa wstecz: bez niej wiersz „evaluated_passed_gate” po cichu stawał się SKIPPED.
+        for outcome, status in LEGACY_STATUS.items():
+            assert classify_status(status) is outcome
+
+    def test_skipped_report_keeps_the_legacy_keys(self) -> None:
+        report = TrainingReport(
+            TrainingOutcome.SKIPPED,
+            n_samples=12,
+            reason="Not enough samples (12 < 50).",
+            extras={"feature_set_version": 4},
+        )
+
+        assert dict(report) == {
+            "status": "skipped",
+            "reason": "Not enough samples (12 < 50).",
+            "n_samples": 12,
+            "feature_set_version": 4,
+        }
+
+    def test_accepted_report_carries_the_walk_forward_metrics_and_model_path(self) -> None:
+        report = TrainingReport(
+            TrainingOutcome.ACCEPTED,
+            n_samples=200,
+            n_folds=4,
+            n_oos_points=160,
+            rmse=0.010,
+            baseline_rmse=0.012,
+            drift_baseline_rmse=0.0125,
+            llm_baseline_rmse=None,
+            hit_rate=0.55,
+            feature_stats={},
+            metric_note="note",
+            model_path="m.ubj",
+        )
+
+        assert report.status == "trained_successfully"
+        assert dict(report) == {
+            "status": "trained_successfully",
+            "n_samples": 200,
+            "n_folds": 4,
+            "n_oos_points": 160,
+            "candidate_holdout_rmse": 0.010,
+            "baseline_rmse": 0.012,
+            "drift_baseline_rmse": 0.0125,
+            "llm_baseline_rmse": None,
+            "candidate_holdout_directional_hit_rate": 0.55,
+            "feature_stats": {},
+            "metric_note": "note",
+            "model_path": "m.ubj",
+        }
+        assert "validation_rmse" not in report

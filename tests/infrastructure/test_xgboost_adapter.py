@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from src.application.ports import MLPredictionPort
+from src.domain.model_scorecard import TrainingOutcome, TrainingReport
 from src.domain.value_objects import Money
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 
@@ -475,6 +476,35 @@ class TestDomainGate:
 
 def _hourly_stamps(n: int) -> pd.Series:
     return pd.Series(pd.date_range("2026-09-01", periods=n, freq="h", tz="UTC"))
+
+
+class TestTypedTrainingReport:
+    """ARCH-09: adapter zwraca domenowy `TrainingReport` z typowanym werdyktem."""
+
+    def test_shipped_model_is_an_accepted_report_with_fold_metrics(
+        self, adapter: XGBoostAdapter, model_path: str
+    ):
+        features, target = _synthetic_dataset(n=200)
+
+        report = adapter.train(features, target)
+
+        assert isinstance(report, TrainingReport)
+        assert report.outcome is TrainingOutcome.ACCEPTED
+        assert report.n_samples == 200
+        assert report.n_folds is not None and report.n_folds > 1
+        assert report.rmse is not None and report.baseline_rmse is not None
+        assert report.rmse < report.baseline_rmse
+        assert report.model_path == model_path
+
+    def test_evaluation_reports_carry_evaluation_outcomes(self, adapter: XGBoostAdapter):
+        features, target = _synthetic_dataset(n=200)
+
+        passed = adapter.train(features, target, persist=False)
+        failed = adapter.train(features, pd.Series([0.0] * 200), persist=False)
+
+        assert passed.outcome is TrainingOutcome.EVALUATION_PASSED
+        assert failed.outcome is TrainingOutcome.EVALUATION_FAILED
+        assert passed.model_path is None
 
 
 class TestPooledTrainingSupport:

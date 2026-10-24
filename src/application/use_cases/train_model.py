@@ -18,6 +18,7 @@ from src.domain.backtest import LabelOverlap, count_label_overlaps
 
 # Jawny re-eksport: symbol wiersza karty modelu wspólnego żyje w domenie karty.
 from src.domain.model_scorecard import POOLED_MODEL_SYMBOL as POOLED_MODEL_SYMBOL
+from src.domain.model_scorecard import TrainingOutcome, TrainingReport
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ class TrainModelUseCase:
     def refresh_feature_store(self) -> None:
         self._db_port.refresh_feature_store()
 
-    def run(self, symbol: str, refresh_view: bool = True) -> dict[str, Any]:
+    def run(self, symbol: str, refresh_view: bool = True) -> TrainingReport:
         """Per-symbol ewaluacja walk-forward — nigdy nie zapisuje wag (ML-13).
 
         Foldy purgują horyzont etykiety po znacznikach czasu wierszy, tak jak model
@@ -90,7 +91,7 @@ class TrainModelUseCase:
 
     def run_pooled(
         self, symbols: Sequence[str], *, record_scorecard: bool = False
-    ) -> dict[str, Any]:
+    ) -> TrainingReport:
         """ML-13 — jeden wspólny model na wierszach wszystkich `symbols`, jeden zapis.
 
         Wiersze są sortowane po czasie GLOBALNYM, a walk-forward dostaje ich
@@ -99,16 +100,6 @@ class TrainModelUseCase:
         trafia do `model_scorecards` jako `POOLED_MODEL_SYMBOL`, best-effort.
         """
         result = self._train_pooled(symbols)
-        if self._feature_set_version is not None and result.get("status") == "skipped":
-            # DAT-09: odcięcie historii po wersji zestawu cech nie może cicho
-            # zatrzymać jedynego zapisu wag — ostrzeżenie z liczbą próbek.
-            logger.warning(
-                "Pooled model skipped: feature set version %d leaves %s samples "
-                "(minimum %d)",
-                self._feature_set_version,
-                result.get("n_samples"),
-                MIN_SAMPLES_FOR_TRAINING,
-            )
         if record_scorecard:
             try:
                 self._save_pooled_scorecard(result)
@@ -116,7 +107,7 @@ class TrainModelUseCase:
                 logger.exception("Failed to persist the pooled model scorecard")
         return result
 
-    def _save_pooled_scorecard(self, result: dict[str, Any]) -> None:
+    def _save_pooled_scorecard(self, result: TrainingReport) -> None:
         if self._run_id is None:
             self._db_port.save_model_scorecard(POOLED_MODEL_SYMBOL, result)
         else:
@@ -124,7 +115,7 @@ class TrainModelUseCase:
                 POOLED_MODEL_SYMBOL, result, run_id=self._run_id
             )
 
-    def _train_pooled(self, symbols: Sequence[str]) -> dict[str, Any]:
+    def _train_pooled(self, symbols: Sequence[str]) -> TrainingReport:
         rows = [
             row
             for symbol in dict.fromkeys(symbols)
@@ -132,12 +123,12 @@ class TrainModelUseCase:
         ]
 
         if len(rows) < MIN_SAMPLES_FOR_TRAINING:
-            return self._skipped("Not enough samples for the pooled model", len(rows))
+            return self._pooled_skipped("Not enough samples for the pooled model", len(rows))
 
         df = _valid_rows(rows)
 
         if len(df) < MIN_SAMPLES_FOR_TRAINING:
-            return self._skipped(
+            return self._pooled_skipped(
                 "Not enough valid samples for the pooled model", len(df)
             )
 
@@ -161,18 +152,29 @@ class TrainModelUseCase:
             symbol, feature_set_version=self._feature_set_version
         )
 
-    def _skipped(self, reason: str, n_samples: int) -> dict[str, Any]:
+    def _pooled_skipped(self, reason: str, n_samples: int) -> TrainingReport:
+        """Pominięty model wspólny. DAT-09: odcięcie historii po wersji zestawu cech
+        nie może cicho zatrzymać jedynego zapisu wag — ostrzeżenie z liczbą próbek."""
+        if self._feature_set_version is not None:
+            logger.warning(
+                "Pooled model skipped: feature set version %d leaves %s samples "
+                "(minimum %d)",
+                self._feature_set_version,
+                n_samples,
+                MIN_SAMPLES_FOR_TRAINING,
+            )
+        return self._skipped(reason, n_samples)
+
+    def _skipped(self, reason: str, n_samples: int) -> TrainingReport:
         """Pominięcie treningu; przy filtrze wersji (DAT-09) wynik mówi wprost, że
         próbkę obcięto do bieżącej wersji zestawu cech."""
         if self._feature_set_version is None:
             return _skipped(reason, n_samples)
-        return {
-            **_skipped(
-                f"{reason} at feature set version {self._feature_set_version}",
-                n_samples,
-            ),
-            "feature_set_version": self._feature_set_version,
-        }
+        return _skipped(
+            f"{reason} at feature set version {self._feature_set_version}",
+            n_samples,
+            feature_set_version=self._feature_set_version,
+        )
 
 
 def _valid_rows(rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -219,11 +221,12 @@ def _log_label_overlap(df: pd.DataFrame) -> None:
     )
 
 
-def _skipped(reason: str, n_samples: int) -> dict[str, Any]:
+def _skipped(reason: str, n_samples: int, **extras: Any) -> TrainingReport:
     """Wynik pominiętego treningu. `n_samples` jest polem (ML-04), nie tylko tekstem
     powodu — scorecard i logi pokazują, ile próbek brakuje do progu."""
-    return {
-        "status": "skipped",
-        "reason": f"{reason} ({n_samples} < {MIN_SAMPLES_FOR_TRAINING}).",
-        "n_samples": n_samples,
-    }
+    return TrainingReport(
+        TrainingOutcome.SKIPPED,
+        n_samples=n_samples,
+        reason=f"{reason} ({n_samples} < {MIN_SAMPLES_FOR_TRAINING}).",
+        extras=extras,
+    )

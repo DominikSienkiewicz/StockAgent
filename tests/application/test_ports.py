@@ -1,4 +1,5 @@
 import inspect
+import typing
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -16,6 +17,7 @@ from src.application.ports import (
     SentimentPort,
 )
 from src.domain.council import CouncilInput
+from src.domain.model_scorecard import TrainingReport
 
 ALL_PORTS = [
     MarketDataPort,
@@ -78,3 +80,11 @@ def test_repository_port_has_save_council_votes() -> None:
     sig = inspect.signature(RepositoryPort.save_council_votes)
     assert "prediction_id" in sig.parameters
     assert "votes" in sig.parameters
+
+
+def test_ml_train_returns_domain_training_report() -> None:
+    # ARCH-09: werdykt treningu przekracza port jako typ domenowy, nie jako
+    # dict[str, Any] ze stringami, z którego nieznany status stawał się SKIPPED.
+    hints = typing.get_type_hints(MLPredictionPort.train)
+
+    assert hints["return"] is TrainingReport

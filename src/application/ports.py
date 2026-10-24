@@ -18,6 +18,7 @@ from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_series import MacroSeriesSnapshot
 from src.domain.mistake_taxonomy import MistakeCategory
+from src.domain.model_scorecard import TrainingReport
 from src.domain.options_flow import OptionsFlowSnapshot
 from src.domain.persona_track_record import PersonaVoteOutcome
 from src.domain.polish_macro import PolishMacroSnapshot
@@ -783,15 +784,16 @@ class MLPredictionPort(ABC):
         *,
         persist: bool = True,
         timestamps: Any = None,
-    ) -> dict[str, Any]:
+    ) -> TrainingReport:
         """`features`/`target` to `pandas.DataFrame`/`Series` — typujemy luźno,
         by nie wprowadzać zależności od pandas w warstwie application.
 
-        `persist=False` to sama ewaluacja walk-forward: wagi nie są zapisywane ani
-        ładowane, a status to `evaluated_passed_gate` / `evaluated_failed_gate`
-        (ML-13 — per-symbol pętla Slow Loopa). `timestamps` (wyrównane z wierszami,
-        rosnąco) włączają foldy po czasie GLOBALNYM z purgem horyzontu etykiety —
-        wymagane dla modelu wspólnego na wielu symbolach."""
+        Zwraca domenowy `TrainingReport` (ARCH-09): `ACCEPTED` / `REJECTED` przy
+        zapisie wag, a przy `persist=False` — samej ewaluacji walk-forward, bez
+        zapisu ani ładowania wag (ML-13, per-symbol pętla Slow Loopa) —
+        `EVALUATION_PASSED` / `EVALUATION_FAILED`. `timestamps` (wyrównane
+        z wierszami, rosnąco) włączają foldy po czasie GLOBALNYM z purgem horyzontu
+        etykiety — wymagane dla modelu wspólnego na wielu symbolach."""
 
     @abstractmethod
     def walk_forward_report(
